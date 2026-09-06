@@ -1,0 +1,15 @@
+# NasOS Image Factory Schematic
+# This schematic extends stock Talos Linux with the ZFS extension.
+# It is applied to any Talos version via the Image Factory to produce
+# a NasOS boot image. No base Talos modification is needed.
+#
+# Usage:
+#   talosctl image factory schematic render --schematic bootstrap/schematic/nasos.yaml
+#   talosctl image factory schematic bundle --schematic bootstrap/schematic/nasos.yaml --output nasos-installer.tar
+
+customization:
+  systemExtensions:
+    officialExtensions:
+      # ZFS extension provides the signed kernel module + zfs-service
+      # which auto-imports pools at boot via zpool import -fal
+      - siderolabs/zfs

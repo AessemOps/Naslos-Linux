@@ -1,0 +1,130 @@
+# NasOS Helm chart values
+
+# API server configuration
+api:
+  enabled: true
+  image:
+    repository: ghcr.io/nasos/nasos-api
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# UI configuration
+ui:
+  enabled: true
+  image:
+    repository: ghcr.io/nasos/nasos-ui
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# Agent DaemonSet configuration
+agent:
+  enabled: true
+  image:
+    repository: ghcr.io/nasos/nasos-agent
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  # Privileged is required for chroot /host zpool/zfs operations
+  privileged: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# ZFS configuration
+zfs:
+  enabled: true
+  # ARC max size in bytes (0 = auto-detect based on system memory)
+  arcMax: 0
+  # Auto-import pools at boot (handled by zfs-service extension)
+  autoImport: true
+
+# Shares configuration
+shares:
+  enabled: true
+  smb:
+    enabled: true
+    workgroup: "NASOS"
+    # Time Machine support for macOS
+    timeMachine: true
+  nfs:
+    enabled: true
+  afp:
+    enabled: false  # Deprecated in favor of SMB Time Machine
+
+# Notifications (ntfy)
+ntfy:
+  enabled: true
+  server:
+    url: ""  # Empty = use bundled ntfy
+    topic: "nasos-alerts"
+
+# Monitoring
+prometheus:
+  enabled: true
+  prometheus:
+    prometheusSpec:
+      retention: 30d
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+
+grafana:
+  enabled: true
+  adminPassword: "nasos-admin"
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: nasos
+          orgId: 1
+          folder: NasOS
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/nasos
+  dashboards:
+    nasos:
+      nasos-overview:
+        json: |
+          {"title": "NasOS Overview", "uid": "nasos-home"}
+
+# Storage classes
+storage:
+  # Local path provisioner for app data
+  localPath:
+    enabled: true
+    path: /var/mnt/local-path-provisioner
+  # ZFS LocalPV CSI for ZFS-backed volumes
+  zfsLocalPV:
+    enabled: true
+    poolName: "nasos-pool"
+
+# Namespace for all NasOS components
+namespace: nasos

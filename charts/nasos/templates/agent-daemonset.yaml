@@ -1,0 +1,90 @@
+{{- if .Values.agent.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nasos-agent
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: nasos-agent
+    app.kubernetes.io/component: agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nasos-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nasos-agent
+    spec:
+      serviceAccountName: nasos-agent
+      hostPID: true
+      hostNetwork: true
+      containers:
+        - name: agent
+          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          securityContext:
+            privileged: {{ .Values.agent.privileged }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            # Host root for chroot /host zpool/zfs operations
+            - name: host-root
+              mountPath: /host
+              mountPropagation: HostToContainer
+            - name: host-dev
+              mountPath: /dev
+              mountPropagation: HostToContainer
+            - name: host-run
+              mountPath: /run
+              mountPropagation: HostToContainer
+            - name: host-var
+              mountPath: /var
+              mountPropagation: HostToContainer
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
+        - name: host-dev
+          hostPath:
+            path: /dev
+        - name: host-run
+          hostPath:
+            path: /run
+        - name: host-var
+          hostPath:
+            path: /var
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nasos-agent
+  namespace: {{ .Values.namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nasos-agent
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nasos-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nasos-agent
+subjects:
+  - kind: ServiceAccount
+    name: nasos-agent
+    namespace: {{ .Values.namespace }}
+{{- end }}
