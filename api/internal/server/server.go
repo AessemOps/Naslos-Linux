@@ -10,17 +10,20 @@ import (
 
 	"github.com/nasos/nasos/api/internal/catalog"
 	"github.com/nasos/nasos/api/internal/helm"
+	"github.com/nasos/nasos/api/internal/shares"
 	"github.com/nasos/nasos/api/internal/talos"
 )
 
 // Server is the HTTP API server.
 type Server struct {
-	addr    string
-	talos   *talos.Client
-	helm    *helm.Client
-	catalog *catalog.Catalog
-	router  *http.ServeMux
-	server  *http.Server
+	addr      string
+	talos     *talos.Client
+	helm      *helm.Client
+	catalog   *catalog.Catalog
+	shares    *shares.Manager
+	kubeconfig string
+	router    *http.ServeMux
+	server    *http.Server
 }
 
 // New creates a new server.
@@ -31,12 +34,16 @@ func New(addr string, tc *talos.Client) *Server {
 	// Initialize app catalog (built-in)
 	c := catalog.New("")
 
+	// Initialize share manager
+	shareManager := shares.NewManager("")
+
 	s := &Server{
-		addr:    addr,
-		talos:   tc,
-		helm:    helmClient,
-		catalog: c,
-		router:  http.NewServeMux(),
+		addr:      addr,
+		talos:     tc,
+		helm:      helmClient,
+		catalog:   c,
+		shares:    shareManager,
+		router:    http.NewServeMux(),
 	}
 	s.routes()
 	return s
@@ -63,13 +70,15 @@ func (s *Server) routes() {
 	s.router.HandleFunc("/api/volumes", s.handleVolumes)
 	s.router.HandleFunc("/api/volumes/zfs", s.handleZFSPools)
 
-	// Logs & terminal
-	s.router.HandleFunc("/api/pods/logs", s.handlePodLogs)
-	s.router.HandleFunc("/api/pods/exec", s.handlePodExec)
+	// Logs & terminal (WebSocket)
+	s.router.HandleFunc("/api/ws/logs", s.handleLogsWS)
+	s.router.HandleFunc("/api/ws/exec", s.handleExecWS)
 
 	// Shares
 	s.router.HandleFunc("/api/shares", s.handleShares)
 	s.router.HandleFunc("/api/shares/", s.handleShareDetail)
+	s.router.HandleFunc("/api/shares/config/samba", s.handleSambaConfig)
+	s.router.HandleFunc("/api/shares/config/nfs", s.handleNFSConfig)
 
 	// Notifications
 	s.router.HandleFunc("/api/notifications", s.handleNotifications)
