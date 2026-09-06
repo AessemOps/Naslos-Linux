@@ -2,6 +2,17 @@
 
 A user-friendly NAS distribution built on **stock Talos Linux** — no base modification, so Talos upgrades stay clean via `talosctl upgrade`.
 
+> ⚠️ **AI Use Disclaimer**
+> This project was developed with the assistance of AI tools (AI-assisted coding). While every effort has been made to ensure correctness, security, and best practices, this software is provided **as-is** without warranty of any kind.
+>
+> **Please be aware:**
+> - AI-generated code may contain bugs, security vulnerabilities, or suboptimal patterns that are not immediately obvious.
+> - You should **thoroughly review, test, and audit** all code before deploying it in any production environment or connecting it to untrusted networks.
+> - The authors and contributors **accept no liability** for data loss, security breaches, system damage, or any other consequences arising from the use of this software.
+> - Critical infrastructure (including NAS/storage systems holding valuable data) demands **independent verification** — do not rely solely on AI-generated implementations.
+>
+> **Use at your own risk.** Always maintain backups of your data.
+
 ## Why Talos
 
 Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes. NasOS layers on top of it as machine-config documents, Helm charts, and a management UI — nothing is forked.

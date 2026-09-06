@@ -10,20 +10,24 @@ import (
 
 	"github.com/nasos/nasos/api/internal/catalog"
 	"github.com/nasos/nasos/api/internal/helm"
+	"github.com/nasos/nasos/api/internal/metrics"
+	"github.com/nasos/nasos/api/internal/notifications"
 	"github.com/nasos/nasos/api/internal/shares"
 	"github.com/nasos/nasos/api/internal/talos"
 )
 
 // Server is the HTTP API server.
 type Server struct {
-	addr      string
-	talos     *talos.Client
-	helm      *helm.Client
-	catalog   *catalog.Catalog
-	shares    *shares.Manager
-	kubeconfig string
-	router    *http.ServeMux
-	server    *http.Server
+	addr          string
+	talos         *talos.Client
+	helm          *helm.Client
+	catalog       *catalog.Catalog
+	shares        *shares.Manager
+	metrics       *metrics.Manager
+	notifications *notifications.Manager
+	kubeconfig    string
+	router        *http.ServeMux
+	server        *http.Server
 }
 
 // New creates a new server.
@@ -37,13 +41,21 @@ func New(addr string, tc *talos.Client) *Server {
 	// Initialize share manager
 	shareManager := shares.NewManager("")
 
+	// Initialize metrics manager
+	metricsManager := metrics.NewManager()
+
+	// Initialize notification manager
+	notifManager := notifications.NewManager("")
+
 	s := &Server{
-		addr:      addr,
-		talos:     tc,
-		helm:      helmClient,
-		catalog:   c,
-		shares:    shareManager,
-		router:    http.NewServeMux(),
+		addr:          addr,
+		talos:         tc,
+		helm:          helmClient,
+		catalog:       c,
+		shares:        shareManager,
+		metrics:       metricsManager,
+		notifications: notifManager,
+		router:        http.NewServeMux(),
 	}
 	s.routes()
 	return s
@@ -82,9 +94,11 @@ func (s *Server) routes() {
 
 	// Notifications
 	s.router.HandleFunc("/api/notifications", s.handleNotifications)
+	s.router.HandleFunc("/api/notifications/test", s.handleNotificationTest)
 
-	// Metrics
+	// Metrics & Dashboard
 	s.router.HandleFunc("/api/metrics", s.handleMetrics)
+	s.router.HandleFunc("/api/dashboard", s.handleDashboard)
 
 	// Serve UI static files
 	s.router.Handle("/", http.FileServer(http.Dir("/var/nasos/ui")))

@@ -1,20 +1,21 @@
 <script lang="ts">
-  interface PoolStatus {
-    name: string;
-    size: string;
-    alloc: string;
-    free: string;
-    health: string;
+  interface DashboardData {
+    cpu?: { usage: number; cores: number };
+    memory?: { usage: number; total: number; used: number; available: number };
+    disk?: { usage: number; total: number; used: number; free: number };
+    zfs?: { poolCount: number; pools: any[] };
+    system?: { hostname: string; uptime: number; os: string };
+    updatedAt?: string;
   }
 
-  let pools: PoolStatus[] = [];
+  let data: DashboardData = {};
   let loading = true;
 
-  async function loadPools() {
+  async function loadDashboard() {
     try {
-      const res = await fetch('/api/volumes/zfs');
+      const res = await fetch('/api/dashboard');
       if (res.ok) {
-        pools = await res.json();
+        data = await res.json();
       }
     } catch (e) {
       // API may not be available yet
@@ -23,85 +24,105 @@
     }
   }
 
-  loadPools();
+  function formatBytes(bytes: number): string {
+    if (!bytes) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0;
+    let size = bytes;
+    while (size >= 1024 && i < units.length - 1) {
+      size /= 1024;
+      i++;
+    }
+    return `${size.toFixed(1)} ${units[i]}`;
+  }
+
+  function formatUptime(seconds: number): string {
+    if (!seconds) return '—';
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    if (days > 0) return `${days}d ${hours}h ${mins}m`;
+    if (hours > 0) return `${hours}h ${mins}m`;
+    return `${mins}m`;
+  }
+
+  loadDashboard();
 </script>
 
 <div>
   <h1 class="text-3xl font-bold mb-2">Dashboard</h1>
   <p class="text-gray-400 mb-8">Overview of your NasOS system.</p>
 
-  <!-- Quick stats -->
-  <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-    <div class="card">
-      <div class="text-sm text-gray-400 mb-1">Pools</div>
-      <div class="text-3xl font-bold text-nasos-primary">{pools.length}</div>
-    </div>
-    <div class="card">
-      <div class="text-sm text-gray-400 mb-1">Total Capacity</div>
-      <div class="text-3xl font-bold text-green-400">
-        {pools.length > 0 ? pools[0].size : '—'}
+  {#if loading}
+    <p class="text-gray-400">Loading dashboard...</p>
+  {:else}
+    <!-- Quick stats -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+      <div class="card">
+        <div class="text-sm text-gray-400 mb-1">CPU Usage</div>
+        <div class="text-3xl font-bold text-nasos-primary">{data.cpu?.usage?.toFixed(1) || '—'}%</div>
+        <div class="text-xs text-gray-500">{data.cpu?.cores || 0} cores</div>
+      </div>
+      <div class="card">
+        <div class="text-sm text-gray-400 mb-1">Memory</div>
+        <div class="text-3xl font-bold text-green-400">{data.memory?.usage?.toFixed(1) || '—'}%</div>
+        <div class="text-xs text-gray-500">{formatBytes(data.memory?.used || 0)} / {formatBytes(data.memory?.total || 0)}</div>
+      </div>
+      <div class="card">
+        <div class="text-sm text-gray-400 mb-1">Disk</div>
+        <div class="text-3xl font-bold text-blue-400">{data.disk?.usage?.toFixed(1) || '—'}%</div>
+        <div class="text-xs text-gray-500">{formatBytes(data.disk?.used || 0)} / {formatBytes(data.disk?.total || 0)}</div>
+      </div>
+      <div class="card">
+        <div class="text-sm text-gray-400 mb-1">Uptime</div>
+        <div class="text-3xl font-bold text-purple-400">{formatUptime(data.system?.uptime || 0)}</div>
+        <div class="text-xs text-gray-500">{data.system?.hostname || '—'}</div>
       </div>
     </div>
-    <div class="card">
-      <div class="text-sm text-gray-400 mb-1">Health</div>
-      <div class="text-3xl font-bold">
-        {#if pools.length > 0}
-          <span class="text-green-400">✓ ONLINE</span>
-        {:else}
-          <span class="text-gray-500">—</span>
-        {/if}
-      </div>
-    </div>
-    <div class="card">
-      <div class="text-sm text-gray-400 mb-1">Apps Running</div>
-      <div class="text-3xl font-bold text-blue-400">—</div>
-    </div>
-  </div>
 
-  <!-- Pool list -->
-  <div class="card">
-    <h2 class="text-xl font-bold mb-4">ZFS Pools</h2>
-    {#if loading}
-      <p class="text-gray-400">Loading pools...</p>
-    {:else if pools.length === 0}
-      <div class="text-center py-12">
-        <p class="text-gray-400 mb-4">No ZFS pools configured yet.</p>
-        <a href="/disks" class="btn btn-primary">Create Your First Pool</a>
+    <!-- ZFS Pools -->
+    <div class="card mb-6">
+      <h2 class="text-xl font-bold mb-4">ZFS Pools</h2>
+      {#if data.zfs?.pools?.length > 0}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {#each data.zfs.pools as pool}
+            <div class="bg-nasos-dark rounded-lg p-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="font-bold">{pool.name}</span>
+                <span class="text-xs px-2 py-0.5 rounded" class:bg-green-900/50={pool.health === 'ONLINE'} class:text-green-400={pool.health === 'ONLINE'} class:bg-red-900/50={pool.health !== 'ONLINE'} class:text-red-400={pool.health !== 'ONLINE'}>{pool.health}</span>
+              </div>
+              <div class="w-full bg-nasos-border rounded-full h-2 mb-1">
+                <div class="bg-nasos-primary h-2 rounded-full" style="width: {pool.usagePercent || 0}%"></div>
+              </div>
+              <div class="text-xs text-gray-500">{formatBytes(pool.alloc || 0)} / {formatBytes(pool.size || 0)} ({pool.usagePercent?.toFixed(1) || 0}%)</div>
+            </div>
+          {/each}
+        </div>
+      {:else}
+        <div class="text-center py-8">
+          <p class="text-gray-400 mb-4">No ZFS pools configured yet.</p>
+          <a href="/disks" class="btn btn-primary">Create Your First Pool</a>
+        </div>
+      {/if}
+    </div>
+
+    <!-- System Info -->
+    <div class="card">
+      <h2 class="text-xl font-bold mb-4">System Information</h2>
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <div>
+          <div class="text-sm text-gray-400">Hostname</div>
+          <div class="font-medium">{data.system?.hostname || '—'}</div>
+        </div>
+        <div>
+          <div class="text-sm text-gray-400">OS</div>
+          <div class="font-medium">{data.system?.os || 'Talos Linux'}</div>
+        </div>
+        <div>
+          <div class="text-sm text-gray-400">Updated</div>
+          <div class="font-medium">{data.updatedAt || '—'}</div>
+        </div>
       </div>
-    {:else}
-      <div class="overflow-x-auto">
-        <table class="w-full">
-          <thead>
-            <tr class="text-left text-gray-400 text-sm border-b border-nasos-border">
-              <th class="pb-3 font-medium">Pool</th>
-              <th class="pb-3 font-medium">Size</th>
-              <th class="pb-3 font-medium">Used</th>
-              <th class="pb-3 font-medium">Free</th>
-              <th class="pb-3 font-medium">Health</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each pools as pool}
-              <tr class="border-b border-nasos-border last:border-0">
-                <td class="py-3 font-medium">{pool.name}</td>
-                <td class="py-3">{pool.size}</td>
-                <td class="py-3">{pool.alloc}</td>
-                <td class="py-3">{pool.free}</td>
-                <td class="py-3">
-                  <span class="px-2 py-1 rounded text-xs"
-                    class:bg-green-900/50={pool.health === 'ONLINE'}
-                    class:text-green-400={pool.health === 'ONLINE'}
-                    class:bg-red-900/50={pool.health !== 'ONLINE'}
-                    class:text-red-400={pool.health !== 'ONLINE'}
-                  >
-                    {pool.health}
-                  </span>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
-  </div>
+    </div>
+  {/if}
 </div>
