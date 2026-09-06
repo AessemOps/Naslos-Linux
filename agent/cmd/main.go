@@ -4,22 +4,26 @@ import (
 	"context"
 	"flag"
 	"log"
+	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
-	"strings"
 	"syscall"
+
+	"github.com/nasos/nasos/agent/internal/zfs"
+	"github.com/nasos/nasos/agent/internal/server"
 )
 
 // nasos-agent runs as a privileged DaemonSet on each node.
 // It executes zpool/zfs commands via chroot /host to manage ZFS pools,
 // since ZFS pools live outside Talos's volume system.
 
-const hostRoot = "/host"
-
 func main() {
-	var node string
+	var (
+		node   string
+		listen string
+	)
 	flag.StringVar(&node, "node", os.Getenv("NODE_NAME"), "Node name this agent runs on")
+	flag.StringVar(&listen, "listen", ":9090", "HTTP listen address for agent API")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -27,27 +31,30 @@ func main() {
 
 	log.Printf("nasos-agent starting on node %s", node)
 
-	// Verify ZFS module is loaded
-	if err := hostExec("zpool", "version"); err != nil {
-		log.Fatalf("ZFS not available on host: %v", err)
+	// Verify ZFS is available on the host
+	if !zfs.IsZFSAvailable() {
+		log.Fatalf("ZFS not available on host — is the zfs extension installed?")
 	}
 
+	// Create ZFS client
+	zfsClient := zfs.NewClient(ctx)
+
 	// Import any existing pools (idempotent)
-	if err := hostExec("zpool", "import", "-fal"); err != nil {
+	if err := zfsClient.ImportPool(""); err != nil {
 		log.Printf("Note: zpool import returned: %v", err)
 	}
 
-	// Start API server for pool operations
+	// Start HTTP server for pool operations
+	srv := server.New(listen, zfsClient)
+	go func() {
+		if err := srv.Start(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Agent server error: %v", err)
+		}
+	}()
+
+	log.Printf("nasos-agent listening on %s", listen)
+
 	<-ctx.Done()
 	log.Println("Shutting down...")
-}
-
-// hostExec runs a command inside the host namespace via chroot.
-func hostExec(name string, args ...string) error {
-	cmd := exec.CommandContext(context.Background(), "chroot", hostRoot, name)
-	cmd.Args = append(cmd.Args, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	log.Printf("host exec: %s %s", name, strings.Join(args, " "))
-	return cmd.Run()
+	srv.Shutdown(context.Background())
 }
