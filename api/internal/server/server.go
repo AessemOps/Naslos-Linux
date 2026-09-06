@@ -8,23 +8,35 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nasos/nasos/api/internal/catalog"
+	"github.com/nasos/nasos/api/internal/helm"
 	"github.com/nasos/nasos/api/internal/talos"
 )
 
 // Server is the HTTP API server.
 type Server struct {
-	addr   string
-	talos  *talos.Client
-	router *http.ServeMux
-	server *http.Server
+	addr    string
+	talos   *talos.Client
+	helm    *helm.Client
+	catalog *catalog.Catalog
+	router  *http.ServeMux
+	server  *http.Server
 }
 
 // New creates a new server.
 func New(addr string, tc *talos.Client) *Server {
+	// Initialize Helm client for the nasos namespace
+	helmClient := helm.NewClient("nasos")
+
+	// Initialize app catalog (built-in)
+	c := catalog.New("")
+
 	s := &Server{
-		addr:   addr,
-		talos:  tc,
-		router: http.NewServeMux(),
+		addr:    addr,
+		talos:   tc,
+		helm:    helmClient,
+		catalog: c,
+		router:  http.NewServeMux(),
 	}
 	s.routes()
 	return s
@@ -35,6 +47,14 @@ func (s *Server) routes() {
 	// Health
 	s.router.HandleFunc("/api/health", s.handleHealth)
 
+	// Catalog (app store)
+	s.router.HandleFunc("/api/catalog", s.handleCatalog)
+	s.router.HandleFunc("/api/catalog/", s.handleCatalogApp)
+
+	// Apps (installed)
+	s.router.HandleFunc("/api/apps", s.handleApps)
+	s.router.HandleFunc("/api/apps/", s.handleAppDetail)
+
 	// Disks
 	s.router.HandleFunc("/api/disks", s.handleDisks)
 	s.router.HandleFunc("/api/disks/recommend", s.handleDiskRecommend)
@@ -42,10 +62,6 @@ func (s *Server) routes() {
 	// Volumes
 	s.router.HandleFunc("/api/volumes", s.handleVolumes)
 	s.router.HandleFunc("/api/volumes/zfs", s.handleZFSPools)
-
-	// Apps
-	s.router.HandleFunc("/api/apps", s.handleApps)
-	s.router.HandleFunc("/api/apps/", s.handleAppDetail)
 
 	// Logs & terminal
 	s.router.HandleFunc("/api/pods/logs", s.handlePodLogs)
