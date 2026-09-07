@@ -108,7 +108,7 @@
                 </div>
               </td>
               <td class="p-4">
-                <span class="text-xs px-2 py-1 rounded" class:bg-green-900/50={user.enabled} class:text-green-400={user.enabled} class:bg-red-900/50={!user.enabled} class:text-red-400={!user.enabled}>
+                <span class={`text-xs px-2 py-1 rounded ${user.enabled ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>
                   {user.enabled ? 'Active' : 'Disabled'}
                 </span>
               </td>

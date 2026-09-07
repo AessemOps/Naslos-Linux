@@ -68,7 +68,7 @@
           <div class="flex-1">
             <div class="flex items-center gap-3 mb-1">
               <h3 class="font-bold">{app.name}</h3>
-              <span class="text-xs px-2 py-0.5 rounded" class:text-green-400={app.status === 'running'} class:bg-green-900/50={app.status === 'running'} class:text-red-400={app.status === 'failed'} class:bg-red-900/50={app.status === 'failed'} class:text-yellow-400={app.status === 'pending'} class:bg-yellow-900/50={app.status === 'pending'} class:text-gray-400={app.status === 'stopped'} class:bg-gray-900/50={app.status === 'stopped'}>
+              <span class={`text-xs px-2 py-0.5 rounded ${app.status === 'running' ? 'bg-green-900/50 text-green-400' : app.status === 'failed' ? 'bg-red-900/50 text-red-400' : app.status === 'pending' ? 'bg-yellow-900/50 text-yellow-400' : 'bg-gray-900/50 text-gray-400'}`}>
                 {app.status}
               </span>
             </div>

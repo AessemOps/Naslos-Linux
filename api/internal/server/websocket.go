@@ -88,7 +88,7 @@ func (s *Server) handleLogsWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tailLines := int64(100)
-	logReq := clientset.CoreV1().Pods(namespace).GetLogs(pod, &corev1.LogOptions{
+	logReq := clientset.CoreV1().Pods(namespace).GetLogs(pod, &corev1.PodLogOptions{
 		Container: container,
 		TailLines: &tailLines,
 		Follow:    true,
@@ -201,7 +201,7 @@ func (s *Server) handleExecWS(w http.ResponseWriter, r *http.Request) {
 		Stdin:  nil, // In production: pipe from WebSocket
 		Stdout: &wsWriter{client: client},
 		Stderr: &wsWriter{client: client},
-		TTY:    true,
+		Tty:    true,
 	})
 	if err != nil {
 		client.write([]byte("\nError: " + err.Error()))

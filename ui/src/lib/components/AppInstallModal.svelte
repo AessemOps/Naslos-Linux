@@ -1,96 +1,5 @@
 <script lang="ts">
   import { onMount, createEventDispatcher } from 'svelte';
-
-  interface SchemaProperty {
-    type: string;
-    title?: string;
-    description?: string;
-    default?: any;
-    format?: string;
-    required?: boolean;
-    properties?: Record<string, SchemaProperty>;
-    items?: { type: string; title?: string };
-  }
-
-  interface CatalogApp {
-    name: string;
-    displayName: string;
-    description: string;
-    icon: string;
-    version: string;
-    chart: string;
-    schema: { properties: Record<string, SchemaProperty>; required?: string[] };
-    defaultValues: Record<string, any>;
-  }
-
-  export let appName: string;
-
-  let app: CatalogApp | null = null;
-  let loading = true;
-  let installing = false;
-  let error = '';
-  let values: Record<string, any> = {};
-  let activeStep: 'config' | 'review' = 'config';
-
-  const dispatch = createEventDispatcher();
-
-  async function loadApp() {
-    try {
-      const res = await fetch(`/api/catalog/${appName}`);
-      app = await res.json();
-      // Initialize values with defaults
-      values = { ...app.defaultValues };
-    } catch (e) {
-      error = 'Failed to load app details';
-    } finally {
-      loading = false;
-    }
-  }
-
-  function updateValue(key: string, value: any) {
-    values[key] = value;
-  }
-
-  async function install() {
-    installing = true;
-    error = '';
-    try {
-      const res = await fetch('/api/apps', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: appName, values })
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Install failed');
-      }
-      dispatch('close');
-    } catch (e: any) {
-      error = e.message;
-    } finally {
-      installing = false;
-    }
-  }
-
-  function renderField(key: string, prop: SchemaProperty, depth = 0) {
-    const value = values[key] ?? prop.default ?? '';
-    const required = app?.schema.required?.includes(key);
-
-    if (prop.type === 'object' && prop.properties) {
-      return `
-        <div class="border border-nasos-border rounded-lg p-4 mb-4">
-          <h4 class="font-medium mb-3">${prop.title || key}</h4>
-          ${Object.entries(prop.properties).map(([k, p]) => renderField(k, p, depth + 1)).join('')}
-        </div>
-      `;
-    }
-
-    return { key, prop, value, required };
-  }
-
-  onMount(loadApp);
-<script lang="ts">
-  import { onMount, createEventDispatcher } from 'svelte';
   import SchemaForm from './SchemaForm.svelte';
 
   interface CatalogApp {
@@ -119,7 +28,7 @@
     try {
       const res = await fetch(`/api/catalog/${appName}`);
       app = await res.json();
-      values = { ...app.defaultValues };
+      if (app) values = { ...app.defaultValues };
     } catch (e) {
       error = 'Failed to load app details';
     } finally {
@@ -166,8 +75,14 @@
         <button class="text-gray-400 hover:text-white text-2xl" on:click={() => dispatch('close')}>×</button>
       </div>
       <div class="px-6 pt-4 flex gap-4">
-        <button class="text-sm font-medium pb-2 border-b-2" class:border-nasos-primary={activeStep === 'config'} class:text-nasos-primary={activeStep === 'config'} class:border-transparent={activeStep !== 'config'} class:text-gray-400={activeStep !== 'config'} on:click={() => activeStep = 'config'}>Configuration</button>
-        <button class="text-sm font-medium pb-2 border-b-2" class:border-nasos-primary={activeStep === 'review'} class:text-nasos-primary={activeStep === 'review'} class:border-transparent={activeStep !== 'review'} class:text-gray-400={activeStep !== 'review'} on:click={() => activeStep = 'review'}>Review</button>
+        <button
+          class={`text-sm font-medium pb-2 border-b-2 ${activeStep === 'config' ? 'border-nasos-primary text-nasos-primary' : 'border-transparent text-gray-400'}`}
+          on:click={() => activeStep = 'config'}
+        >Configuration</button>
+        <button
+          class={`text-sm font-medium pb-2 border-b-2 ${activeStep === 'review' ? 'border-nasos-primary text-nasos-primary' : 'border-transparent text-gray-400'}`}
+          on:click={() => activeStep = 'review'}
+        >Review</button>
       </div>
       <div class="flex-1 overflow-y-auto p-6">
         {#if activeStep === 'config'}
@@ -192,4 +107,3 @@
     {/if}
   </div>
 </div>
-</script>

@@ -4,12 +4,7 @@ package zfs
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"os/exec"
-	"strconv"
-	"strings"
-	"time"
 )
 
 const (

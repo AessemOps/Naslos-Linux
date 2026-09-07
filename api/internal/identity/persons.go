@@ -1,11 +1,7 @@
 package identity
 
 import (
-	"crypto/md4"
-	"encoding/binary"
 	"fmt"
-	"strings"
-	"unicode/utf16"
 
 	"github.com/go-ldap/ldap/v3"
 )
