@@ -76,6 +76,40 @@ shares:
   afp:
     enabled: false  # Deprecated in favor of SMB Time Machine
 
+# Traefik ingress controller
+traefik:
+  enabled: true
+  ports:
+    web:
+      port: 80
+      expose: true
+      exposedPort: 80
+    websecure:
+      port: 443
+      expose: true
+      exposedPort: 443
+  service:
+    type: LoadBalancer
+  additionalArguments:
+    - "--api.dashboard=false"
+  logs:
+    general:
+      level: INFO
+
+# Authelia authentication
+authelia:
+  enabled: true
+  domain: nasos.local
+  server:
+    host: 0.0.0.0
+    port: 9091
+  configMap:
+    enabled: true
+    name: authelia-config
+  # SMTP not required - password resets handled by LDAP/UI
+  # Session storage uses local SQLite for single-node
+  # LDAP backend configured in templates/authelia-config.yaml
+
 # Notifications (ntfy)
 ntfy:
   enabled: true
@@ -125,6 +159,15 @@ storage:
   zfsLocalPV:
     enabled: true
     poolName: "nasos-pool"
+
+# OpenLDAP configuration
+openldap:
+  enabled: true
+  serviceName: nasos-openldap
+  host: ldap.nasos.local
+  baseDN: "dc=nasos,dc=local"
+  bindDN: "cn=nasos-service,ou=services,dc=nasos,dc=local"
+  bindPassword: "CHANGE_ME_SERVICE_PASSWORD"
 
 # Namespace for all NasOS components
 namespace: nasos

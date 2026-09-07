@@ -18,6 +18,14 @@ maintainers:
   - name: NasOS Team
     email: team@nasos.dev
 dependencies:
+  - name: traefik
+    version: "39.0.0"
+    repository: https://traefik.github.io/charts
+    condition: traefik.enabled
+  - name: authelia
+    version: "0.10.0"
+    repository: https://charts.authelia.com
+    condition: authelia.enabled
   - name: ntfy
     version: "0.1.0"
     repository: https://helm.ntfy.sh/

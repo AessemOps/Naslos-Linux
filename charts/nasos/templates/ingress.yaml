@@ -1,0 +1,52 @@
+{{- if .Values.traefik.enabled }}
+---
+# NasOS UI IngressRoute
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nasos-ui
+  namespace: {{ .Values.namespace }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{ .Values.authelia.domain }}`)
+      kind: Rule
+      middlewares:
+        - name: forwardauth-authelia
+        - name: security-headers
+      services:
+        - name: nasos-ui
+          port: {{ .Values.ui.service.port }}
+  tls:
+    secretName: nasos-tls
+---
+# HTTP to HTTPS redirect
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nasos-redirect
+  namespace: {{ .Values.namespace }}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`{{ .Values.authelia.domain }}`)
+      kind: Rule
+      middlewares:
+        - name: redirect-https
+      services:
+        - name: nasos-ui
+          port: {{ .Values.ui.service.port }}
+---
+# Redirect middleware
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: {{ .Values.namespace }}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+{{- end }}
