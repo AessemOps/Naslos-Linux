@@ -39,6 +39,8 @@
   }
 
   async function getRecommendation() {
+    loading = true;
+    error = '';
     try {
       const res = await fetch('/api/disks/recommend', {
         method: 'POST',
@@ -48,6 +50,8 @@
       recommendation = await res.json();
     } catch (e) {
       error = 'Failed to get recommendation: ' + e;
+    } finally {
+      loading = false;
     }
   }
 
@@ -71,7 +75,7 @@
           topology: recommendation?.topology || 'single',
           disks: selectedDisks,
           options: {}
-        });
+        })
       });
       if (res.ok) {
         createResult = 'Pool created successfully!';
@@ -88,7 +92,7 @@
   }
 
   function nextStep() {
-    if (step === 2 && selectedDisks.length > 0) {
+    if (step === 1 && selectedDisks.length > 0) {
       getRecommendation();
     }
     step++;
@@ -117,13 +121,7 @@
   <div class="flex items-center justify-center mb-8">
     {#each [1, 2, 3, 4] as s}
       <div class="flex items-center">
-        <div
-          class="w-10 h-10 rounded-full flex items-center justify-center font-bold"
-          class:bg-nasos-primary={step >= s}
-          class:text-white={step >= s}
-          class:bg-nasos-border={step < s}
-          class:text-gray-500={step < s}
-        >
+        <div class={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${step >= s ? 'bg-nasos-primary text-white' : 'bg-nasos-border text-gray-500'}`}>
           {s}
         </div>
         {#if s < 4}
@@ -147,11 +145,7 @@
         <div class="space-y-3">
           {#each disks.filter(d => !d.isSystemDisk) as disk}
             <label
-              class="flex items-center gap-4 p-4 rounded-lg border cursor-pointer transition-colors"
-              class:border-nasos-primary={selectedDisks.includes(disk.device)}
-              class:bg-nasos-primary/10={selectedDisks.includes(disk.device)}
-              class:border-nasos-border={!selectedDisks.includes(disk.device)}
-              class:hover:border-nasos-accent={!selectedDisks.includes(disk.device)}
+              class={`flex items-center gap-4 p-4 rounded-lg border cursor-pointer transition-colors ${selectedDisks.includes(disk.device) ? 'border-nasos-primary bg-nasos-primary/10' : 'border-nasos-border hover:border-nasos-accent'}`}
             >
               <input
                 type="checkbox"
@@ -180,3 +174,88 @@
       </div>
     </div>
   {/if}
+
+  <!-- Step 2: Review Recommendation -->
+  {#if step === 2}
+    <div class="card">
+      <h2 class="text-xl font-bold mb-4">Review Recommendation</h2>
+      <p class="text-gray-400 mb-6">Based on your disk selection, we recommend the following configuration.</p>
+
+      {#if loading}
+        <p class="text-gray-400">Generating recommendation...</p>
+      {:else if error}
+        <p class="text-red-400">{error}</p>
+      {:else if recommendation}
+        <div class="mb-6">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h3 class="font-bold">Topology</h3>
+              <p class="text-gray-400">{recommendation.topology}</p>
+            </div>
+            <div>
+              <h3 class="font-bold">Disks</h3>
+              <p class="text-gray-400">{recommendation.disks.length} disks</p>
+            </div>
+          </div>
+          <div class="bg-nasos-border/30 p-4 rounded-lg">
+            <p class="text-sm">{recommendation.description}</p>
+          </div>
+        </div>
+
+        <div class="mb-6">
+          <h3 class="font-bold mb-2">Selected Disks</h3>
+          <div class="space-y-2">
+            {#each selectedDisks as device}
+              <div class="flex items-center gap-2 p-2 bg-nasos-border/30 rounded">
+                <span class="text-xs px-2 py-1 rounded bg-nasos-border text-gray-300">disk</span>
+                <span>{device}</span>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      <div class="flex justify-between mt-6">
+        <button class="btn btn-secondary" on:click={prevStep}>← Back</button>
+        <button class="btn btn-primary" on:click={nextStep}>Next →</button>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Step 3: Pool Name -->
+  {#if step === 3}
+    <div class="card">
+      <h2 class="text-xl font-bold mb-4">Pool Name</h2>
+      <p class="text-gray-400 mb-6">Enter a name for your ZFS pool.</p>
+
+      <div class="mb-6">
+        <label class="label" for="pool-name">Pool Name</label>
+        <input id="pool-name" type="text" bind:value={poolName} class="input w-full" placeholder="e.g. tank" />
+        <p class="text-xs text-gray-500 mt-1">Lowercase letters, numbers and dashes. Used as the ZFS pool name.</p>
+      </div>
+
+      <div class="flex justify-between mt-6">
+        <button class="btn btn-secondary" on:click={prevStep}>← Back</button>
+        <button class="btn btn-primary" on:click={createPool} disabled={!poolName.trim() || creating}>
+          {creating ? 'Creating…' : 'Create Pool'}
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Step 4: Result -->
+  {#if step === 4}
+    <div class="card">
+      <h2 class="text-xl font-bold mb-4">Pool Created</h2>
+      <p class="text-gray-400 mb-6">Your ZFS pool has been created with the selected configuration.</p>
+
+      {#if createResult}
+        <div class="mb-6 p-4 bg-nasos-border/30 rounded-lg"><p>{createResult}</p></div>
+      {/if}
+
+      <div class="flex justify-end mt-6">
+        <button class="btn btn-primary" on:click={() => step = 1}>Create Another Pool</button>
+      </div>
+    </div>
+  {/if}
+</div>

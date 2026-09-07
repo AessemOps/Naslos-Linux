@@ -83,13 +83,13 @@
     <!-- ZFS Pools -->
     <div class="card mb-6">
       <h2 class="text-xl font-bold mb-4">ZFS Pools</h2>
-      {#if data.zfs?.pools?.length > 0}
+      {#if (data.zfs?.pools?.length ?? 0) > 0}
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {#each data.zfs.pools as pool}
+          {#each data.zfs?.pools ?? [] as pool}
             <div class="bg-nasos-dark rounded-lg p-4">
               <div class="flex items-center justify-between mb-2">
                 <span class="font-bold">{pool.name}</span>
-                <span class="text-xs px-2 py-0.5 rounded" class:bg-green-900/50={pool.health === 'ONLINE'} class:text-green-400={pool.health === 'ONLINE'} class:bg-red-900/50={pool.health !== 'ONLINE'} class:text-red-400={pool.health !== 'ONLINE'}>{pool.health}</span>
+                <span class={`text-xs px-2 py-0.5 rounded ${pool.health === 'ONLINE' ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>{pool.health}</span>
               </div>
               <div class="w-full bg-nasos-border rounded-full h-2 mb-1">
                 <div class="bg-nasos-primary h-2 rounded-full" style="width: {pool.usagePercent || 0}%"></div>

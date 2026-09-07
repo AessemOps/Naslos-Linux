@@ -3,7 +3,6 @@ package zfs
 import (
 	"fmt"
 	"strings"
-	"time"
 )
 
 // Pools lists all ZFS pools.

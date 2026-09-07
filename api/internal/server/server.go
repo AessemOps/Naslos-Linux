@@ -9,7 +9,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/nasos/nasos/api/internal/auth"
 	"github.com/nasos/nasos/api/internal/catalog"

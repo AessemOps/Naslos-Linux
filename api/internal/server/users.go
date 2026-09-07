@@ -2,9 +2,7 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"strings"
 )
 
 // handleUsers handles user collection operations.

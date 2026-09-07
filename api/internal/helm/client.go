@@ -2,24 +2,19 @@
 package helm
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"helm.sh/helm/v3/pkg/action"
-	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/cli"
-	"helm.sh/helm/v3/pkg/release"
-	"helm.sh/helm/v3/pkg/repo"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
 
 // Client provides Helm operations for app management.
 type Client struct {
-	settings  *cli.Settings
+	settings  *cli.EnvSettings
 	namespace string
 	cacheDir  string
 }

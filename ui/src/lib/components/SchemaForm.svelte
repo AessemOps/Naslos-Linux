@@ -14,9 +14,19 @@
   function updateNested(obj: Record<string, any>, key: string, subKey: string, value: any) {
     if (!obj[key]) obj[key] = {};
     obj[key][subKey] = value;
+    values = values;
   }
 
-  $: entries = Object.entries(app.schema.properties);
+  function updateValue(key: string, value: any) {
+    values[key] = value;
+    values = values;
+  }
+
+  function subEntries(prop: any): [string, any][] {
+    return Object.entries(prop?.properties ?? {});
+  }
+
+  $: entries = Object.entries(app.schema.properties as Record<string, any>);
 </script>
 
 <div class="space-y-4">
@@ -41,7 +51,7 @@
       {:else if prop.type === 'object' && prop.properties}
         <div class="border border-nasos-border rounded-lg p-4 space-y-3">
           {#if prop.description}<p class="text-sm text-gray-400 mb-2">{prop.description}</p>{/if}
-          {#each Object.entries(prop.properties) as [subKey, subProp]}
+          {#each subEntries(prop) as [subKey, subProp]}
             <div>
               <label class="label" for="field-{key}-{subKey}">{subProp.title || subKey}</label>
               {#if subProp.type === 'boolean'}
@@ -59,7 +69,8 @@
                 <input
                   type={inputType(subProp.format)}
                   id="field-{key}-{subKey}"
-                  bind:value={values[key][subKey]}
+                  value={values[key]?.[subKey] ?? ''}
+                  on:input={(e) => updateNested(values, key, subKey, e.currentTarget.value)}
                   placeholder={subProp.default || subProp.description || ''}
                   class="input w-full"
                 />
@@ -71,7 +82,8 @@
         <input
           type={inputType(prop.format)}
           id="field-{key}"
-          bind:value={values[key]}
+          value={values[key] ?? ''}
+          on:input={(e) => updateValue(key, e.currentTarget.value)}
           placeholder={prop.default || prop.description || ''}
           class="input w-full"
         />

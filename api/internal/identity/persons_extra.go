@@ -1,12 +1,12 @@
 package identity
 
 import (
-	"crypto/md4"
 	"encoding/binary"
 	"fmt"
 	"unicode/utf16"
 
 	"github.com/go-ldap/ldap/v3"
+	"golang.org/x/crypto/md4"
 )
 
 // UpdatePerson updates person attributes.

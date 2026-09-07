@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -110,6 +111,3 @@ func parseGroups(groups string) []string {
 	}
 	return parts
 }
-
-// fmt is imported for error formatting
-var _ = fmt.Sprintf
