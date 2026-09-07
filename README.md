@@ -37,8 +37,29 @@ ui/          SvelteKit + Tailwind — dashboard, wizards, terminal
 catalog/     Helm chart repo — the app store
 charts/      nasos umbrella chart (api, ui, agent, ntfy, shares, monitoring)
 shares/      Samba + NFS-Ganesha + Avahi images/config
+openldap/    OpenLDAP SSO image + manifests (identity store)
 bootstrap/   schematic + ISO generator, first-boot wizard
+docs/        architecture, API, storage, identity, catalog, ops docs
 ```
+
+## Documentation
+
+The full documentation set lives in [`docs/`](docs/README.md):
+
+| Doc | Topic |
+| --- | --- |
+| [architecture](docs/architecture.md) | Design principles + system/deployment/component diagrams, data flows |
+| [api](docs/api.md) | HTTP API reference (nasos-api + nasos-agent) |
+| [bootstrap](docs/bootstrap.md) | Image Factory schematic & ZFS extension |
+| [storage-zfs](docs/storage-zfs.md) | ZFS pools, datasets, snapshots, storage classes |
+| [identity-sso](docs/identity-sso.md) | Authelia + OpenLDAP + Samba single sign-on |
+| [shares](docs/shares.md) | SMB / NFS / Time-Machine shares |
+| [app-catalog](docs/app-catalog.md) | Catalog, schema-driven forms, Helm lifecycle |
+| [monitoring](docs/monitoring.md) | Metrics API + Prometheus/Grafana |
+| [notifications](docs/notifications.md) | ntfy alerts |
+| [deployment](docs/deployment.md) | Prerequisites, Make targets, Helm values |
+| [operations](docs/operations.md) | Backups, restore, troubleshooting |
+| [development](docs/development.md) | Layout, builds, extending the catalog |
 
 ## Requirements
 
