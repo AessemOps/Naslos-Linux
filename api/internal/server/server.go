@@ -6,10 +6,15 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/nasos/nasos/api/internal/auth"
 	"github.com/nasos/nasos/api/internal/catalog"
 	"github.com/nasos/nasos/api/internal/helm"
+	"github.com/nasos/nasos/api/internal/identity"
 	"github.com/nasos/nasos/api/internal/metrics"
 	"github.com/nasos/nasos/api/internal/notifications"
 	"github.com/nasos/nasos/api/internal/shares"
@@ -25,6 +30,8 @@ type Server struct {
 	shares        *shares.Manager
 	metrics       *metrics.Manager
 	notifications *notifications.Manager
+	identity      *identity.Client
+	auth          *auth.Middleware
 	kubeconfig    string
 	router        *http.ServeMux
 	server        *http.Server
@@ -47,6 +54,30 @@ func New(addr string, tc *talos.Client) *Server {
 	// Initialize notification manager
 	notifManager := notifications.NewManager("")
 
+	// Initialize identity client (LDAP)
+	identityClient, err := identity.NewClient(identity.Config{
+		Host:     getEnv("LDAP_HOST", "nasos-openldap"),
+		Port:     getEnvInt("LDAP_PORT", 636),
+		BaseDN:   getEnv("LDAP_BASE_DN", "dc=nasos,dc=local"),
+		BindDN:   getEnv("LDAP_BIND_DN", "cn=nasos-service,ou=services,dc=nasos,dc=local"),
+		BindPass: getEnv("LDAP_BIND_PASS", ""),
+		UseTLS:   getEnv("LDAP_USE_TLS", "true") == "true",
+		CACertPath: getEnv("LDAP_CA_CERT", ""),
+	})
+	if err != nil {
+		log.Printf("Warning: Failed to connect to LDAP: %v", err)
+		// Continue without identity - will retry on first use
+		identityClient = nil
+	}
+
+	// Initialize auth middleware
+	authMiddleware, err := auth.NewMiddleware([]string{
+		getEnv("TRAEFIK_CIDR", "10.0.0.0/8"),
+	})
+	if err != nil {
+		log.Fatalf("Failed to create auth middleware: %v", err)
+	}
+
 	s := &Server{
 		addr:          addr,
 		talos:         tc,
@@ -55,10 +86,30 @@ func New(addr string, tc *talos.Client) *Server {
 		shares:        shareManager,
 		metrics:       metricsManager,
 		notifications: notifManager,
+		identity:      identityClient,
+		auth:          authMiddleware,
 		router:        http.NewServeMux(),
 	}
 	s.routes()
 	return s
+}
+
+// getEnv returns the value of an environment variable or a default.
+func getEnv(key, defaultValue string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return defaultValue
+}
+
+// getEnvInt returns the integer value of an environment variable or a default.
+func getEnvInt(key string, defaultValue int) int {
+	if value, ok := os.LookupEnv(key); ok {
+		if intVal, err := strconv.Atoi(value); err == nil {
+			return intVal
+		}
+	}
+	return defaultValue
 }
 
 // routes registers all API routes.
@@ -100,8 +151,33 @@ func (s *Server) routes() {
 	s.router.HandleFunc("/api/metrics", s.handleMetrics)
 	s.router.HandleFunc("/api/dashboard", s.handleDashboard)
 
+	// Users & Groups (identity management)
+	s.router.HandleFunc("/api/users", s.handleUsers)
+	s.router.HandleFunc("/api/users/", s.handleUserPath)
+	s.router.HandleFunc("/api/groups", s.handleGroups)
+	s.router.HandleFunc("/api/groups/", s.handleGroupDetail)
+	s.router.HandleFunc("/api/auth/me", s.handleAuthMe)
+
 	// Serve UI static files
 	s.router.Handle("/", http.FileServer(http.Dir("/var/nasos/ui")))
+}
+
+// handleUserPath routes user sub-paths (password, enable, disable).
+func (s *Server) handleUserPath(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path[len("/api/users/"):]
+
+	// Check for sub-paths
+	if strings.HasSuffix(path, "/password") {
+		s.handleUserPassword(w, r)
+		return
+	}
+	if strings.HasSuffix(path, "/enable") || strings.HasSuffix(path, "/disable") {
+		s.handleUserEnable(w, r)
+		return
+	}
+
+	// Default: user detail
+	s.handleUserDetail(w, r)
 }
 
 // Start starts the HTTP server.

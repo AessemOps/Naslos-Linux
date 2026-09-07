@@ -9,6 +9,7 @@
 
   const navItems: NavItem[] = [
     { name: 'Dashboard', path: '/', icon: '📊' },
+    { name: 'Users', path: '/users', icon: '👤' },
     { name: 'Disks', path: '/disks', icon: '💾' },
     { name: 'Apps', path: '/apps', icon: '📦' },
     { name: 'Shares', path: '/shares', icon: '🔗' },

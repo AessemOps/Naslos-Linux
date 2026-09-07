@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nasos-openldap-backup
+  namespace: nasos
+spec:
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: nasos-openldap-backup
+          containers:
+            - name: backup
+              image: ghcr.io/nasos/nasos-openldap:0.1.0
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  BACKUP_DIR="/var/lib/ldap/backups"
+                  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+                  # Backup config
+                  slapcat -n 0 -l "${BACKUP_DIR}/config_${TIMESTAMP}.ldif"
+
+                  # Backup data
+                  slapcat -n 1 -l "${BACKUP_DIR}/data_${TIMESTAMP}.ldif"
+
+                  # Keep only last 7 backups
+                  ls -t ${BACKUP_DIR}/config_*.ldif 2>/dev/null | tail -n +8 | xargs rm -f
+                  ls -t ${BACKUP_DIR}/data_*.ldif 2>/dev/null | tail -n +8 | xargs rm -f
+
+                  echo "Backup completed: ${TIMESTAMP}"
+              volumeMounts:
+                - name: data
+                  mountPath: /var/lib/ldap
+                  readOnly: true
+                - name: backup
+                  mountPath: /var/lib/ldap/backups
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: data-nasos-openldap-0
+            - name: backup
+              persistentVolumeClaim:
+                claimName: config-nasos-openldap-0
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nasos-openldap-backup
+  namespace: nasos

@@ -1,0 +1,43 @@
+# NasOS OpenLDAP Bootstrap
+# Base organizational structure, groups, and service accounts
+
+dn: ou=people,dc=nasos,dc=local
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=nasos,dc=local
+objectClass: organizationalUnit
+ou: groups
+
+dn: ou=services,dc=nasos,dc=local
+objectClass: organizationalUnit
+ou: services
+
+# Admin group - full access to NasOS
+dn: cn=nasos_admins,ou=groups,dc=nasos,dc=local
+objectClass: groupOfNames
+cn: nasos_admins
+member: cn=empty-members,dc=nasos,dc=local
+description: NasOS administrators with full access
+
+# Users group - read-only access
+dn: cn=nasos_users,ou=groups,dc=nasos,dc=local
+objectClass: groupOfNames
+cn: nasos_users
+member: cn=empty-members,dc=nasos,dc=local
+description: NasOS users with read-only access
+
+# Service account for NasOS API
+dn: cn=nasos-service,ou=services,dc=nasos,dc=local
+objectClass: simpleSecurityObject
+objectClass: organizationalRole
+cn: nasos-service
+description: NasOS API service account for LDAP operations
+userPassword: {SSHA}placeholder
+
+# Empty members placeholder (required for groupOfNames)
+dn: cn=empty-members,dc=nasos,dc=local
+objectClass: person
+cn: empty-members
+sn: placeholder
+description: Placeholder to satisfy groupOfNames schema requirement
