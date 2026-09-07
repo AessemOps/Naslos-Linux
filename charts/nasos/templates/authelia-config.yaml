@@ -1,0 +1,133 @@
+{{- if .Values.authelia.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authelia-config
+  namespace: {{ .Values.namespace }}
+data:
+  configuration.yml: |
+    ##################################
+    #     Authelia Configuration     #
+    ##################################
+
+    theme: dark
+    default_redirection_url: https://{{ .Values.authelia.domain }}/
+    jwt_secret: {{ randAlphaNum 32 | quote }}
+
+    server:
+      host: 0.0.0.0
+      port: 9091
+      path: ""
+      asset_path: /srv/
+      disable_healthcheck: false
+
+    log:
+      level: info
+      format: text
+
+    totp:
+      disable: false
+      issuer: {{ .Values.authelia.domain }}
+      algorithm: sha1
+      digits: 6
+      period: 30
+      skew: 1
+
+    webauthn:
+      disable: false
+      display_name: {{ .Values.authelia.domain }}
+      attestation_conveyance_preference: indirect
+      user_verification: preferred
+      timeout: 60s
+
+    duo_api:
+      disable: true
+
+    # Password reset is handled by NasOS UI (LDAP password-modify)
+    # Disable Authelia's built-in reset to avoid conflicts
+    authentication_backend:
+      ldap:
+        implementation: custom
+        url: ldaps://{{ .Values.openldap.serviceName | default "nasos-openldap" }}.{{ .Values.namespace }}.svc.cluster.local:636
+        timeout: 5s
+        start_tls: false
+        tls:
+          server_name: {{ .Values.openldap.host | default "ldap.nasos.local" }}
+          skip_verify: false
+          minimum_version: TLS1.2
+        base_dn: {{ .Values.openldap.baseDN | default "dc=nasos,dc=local" }}
+        username_attribute: uid
+        additional_users_dn: ou=people
+        users_filter: (&(objectClass=inetOrgPerson)({{`{{input}}`}}={input}))
+        additional_groups_dn: ou=groups
+        groups_filter: (&(objectClass=groupOfNames)(member={dn}))
+        group_name_attribute: cn
+        mail_attribute: mail
+        display_name_attribute: displayName
+        user: {{ .Values.openldap.bindDN | default "cn=nasos-service,ou=services,dc=nasos,dc=local" }}
+        password: {{ .Values.openldap.bindPassword | default "CHANGE_ME" | quote }}
+
+    session:
+      name: authelia_session
+      domain: {{ .Values.authelia.domain }}
+      same_site: lax
+      expiration: 1h
+      inactivity: 5m
+      remember_me: 1M
+      redis:
+        enabled: false
+
+    # Local SQLite for session storage (single-node)
+    storage:
+      local:
+        path: /config/db.sqlite3
+
+    # Local secrets
+    regulation:
+      max_retries: 3
+      find_time: 2m
+      ban_time: 5m
+
+    access_control:
+      default_policy: deny
+      rules:
+        # Public health check
+        - domain: "*"
+          policy: bypass
+          resources:
+            - "^/api/health$"
+        # Authelia's own endpoints
+        - domain: {{ .Values.authelia.domain | quote }}
+          policy: bypass
+        # Authenticated users for API
+        - domain: "*"
+          policy: one_factor
+        # Admin-only endpoints
+        - domain: "*"
+          policy: two_factor
+          resources:
+            - "^/api/users"
+            - "^/api/groups"
+            - "^/api/apps"
+            - "^/api/volumes"
+            - "^/api/shares"
+
+    notifier:
+      disable_startup_check: false
+      filesystem:
+        filename: /config/notification.txt
+
+    password_policy:
+      standard:
+        enabled: true
+        min_length: 8
+        max_length: 72
+        require_uppercase: true
+        require_lowercase: true
+        require_number: true
+        require_special: false
+
+    # Password reset handled externally (NasOS UI -> LDAP)
+    password_reset:
+      disable: true
+{{- end }}
