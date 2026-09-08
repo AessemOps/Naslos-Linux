@@ -30,6 +30,11 @@ ui:
   service:
     type: ClusterIP
     port: 80
+  # Optional NodePort for environments without a LoadBalancer (e.g. single-node VM).
+  # See charts/nasos/values-vm.yaml for an example override.
+  nodePort:
+    enabled: false
+    port: 30080
   resources:
     requests:
       cpu: 50m

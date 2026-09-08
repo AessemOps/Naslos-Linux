@@ -29,6 +29,10 @@ Thumbs.db
 # Build artifacts
 bootstrap/*.tar
 *.iso
+bootstrap/out/
+bootstrap/vm/controlplane.yaml
+bootstrap/vm/talosconfig
+bootstrap/vm/worker.yaml
 
 # Secrets
 *.pem
