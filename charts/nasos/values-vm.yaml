@@ -1,0 +1,33 @@
+# NasOS Helm values override for the 192.168.1.96 single-node VM.
+# Usage:
+#   make install-vm
+# or manually:
+#   helm upgrade --install nasos charts/nasos -n nasos --create-namespace \
+#     -f charts/nasos/values.yaml -f charts/nasos/values-vm.yaml
+
+# Use the VM IP as the Authelia domain (self-signed TLS).
+authelia:
+  domain: 192.168.1.96
+
+# Expose the UI directly via NodePort on 192.168.1.96:30080.
+# Traefik is still installed but the IngressRoute expects the authelia.domain,
+# which is the VM IP; browsers can reach the NodePort without a LoadBalancer.
+ui:
+  nodePort:
+    enabled: true
+    port: 30080
+
+# Traefik: keep it enabled but use ClusterIP by default on the VM.
+# If your VM environment provides a LoadBalancer (e.g. MetalLB), set
+# traefik.service.type back to LoadBalancer.
+traefik:
+  service:
+    type: ClusterIP
+
+# OpenLDAP host is the VM IP for any external references.
+openldap:
+  host: 192.168.1.96
+
+# Grafana admin password — change in production.
+grafana:
+  adminPassword: nasos-admin

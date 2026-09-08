@@ -1,0 +1,21 @@
+{{- if and .Values.ui.enabled .Values.ui.nodePort.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nasos-ui-nodeport
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: nasos-ui
+    app.kubernetes.io/component: ui-nodeport
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: nasos-ui
+  ports:
+    - port: {{ .Values.ui.service.port }}
+      targetPort: 80
+      nodePort: {{ .Values.ui.nodePort.port }}
+      protocol: TCP
+      name: http
+{{- end }}
