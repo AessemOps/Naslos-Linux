@@ -6,7 +6,7 @@ import (
 )
 
 // ZFS Pool API handlers.
-// Pool operations are executed by the privileged nasos-agent DaemonSet
+// Pool operations are executed by the privileged naslos-agent DaemonSet
 // running on each node, since ZFS pools live outside Talos's volume system.
 
 func (s *Server) handleZFSPools(w http.ResponseWriter, r *http.Request) {

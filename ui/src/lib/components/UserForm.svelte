@@ -102,8 +102,8 @@
 </script>
 
 <div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" on:click|self={() => dispatch('close')}>
-  <div class="bg-nasos-surface rounded-2xl border border-nasos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
-    <div class="p-6 border-b border-nasos-border flex items-center justify-between">
+  <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
+    <div class="p-6 border-b border-naslos-border flex items-center justify-between">
       <h2 class="text-xl font-bold">{user ? 'Edit User' : 'New User'}</h2>
       <button class="text-gray-400 hover:text-white text-2xl" on:click={() => dispatch('close')}>×</button>
     </div>
@@ -145,19 +145,19 @@
         <label class="label">Groups</label>
         <div class="space-y-2">
           {#each availableGroups as group}
-            <label class="flex items-center gap-3 p-2 rounded hover:bg-nasos-dark cursor-pointer">
+            <label class="flex items-center gap-3 p-2 rounded hover:bg-naslos-dark cursor-pointer">
               <input type="checkbox" checked={groups.includes(group)} on:change={() => toggleGroup(group)} class="w-4 h-4 rounded" />
               <span class="text-gray-300">{group}</span>
             </label>
           {/each}
         </div>
-        <p class="text-xs text-gray-500 mt-1">nasos_admins = full access, nasos_users = read-only</p>
+        <p class="text-xs text-gray-500 mt-1">naslos_admins = full access, naslos_users = read-only</p>
       </div>
 
       {#if error}<div class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
     </div>
 
-    <div class="p-6 border-t border-nasos-border flex justify-end gap-3">
+    <div class="p-6 border-t border-naslos-border flex justify-end gap-3">
       <button class="btn btn-secondary" on:click={() => dispatch('close')}>Cancel</button>
       <button class="btn btn-primary" on:click={save} disabled={saving || !uid || !lastName}>
         {saving ? 'Saving...' : user ? 'Update' : 'Create'}

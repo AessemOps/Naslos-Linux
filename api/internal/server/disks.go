@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/nasos/nasos/api/internal/talos"
+	"github.com/AessemOps/Naslos-Linux/api/internal/talos"
 )
 
 // handleDisks returns discovered disks.

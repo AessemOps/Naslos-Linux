@@ -1,8 +1,8 @@
-# NasOS — AI Handoff (single-file resume)
+# Naslos — AI Handoff (single-file resume)
 Branch: `stage-6-sso` · Repo: Naslos-Linux (remote `git@github.com:AessemOps/Naslos-Linux.git`) · Generated: 2026-09-07
 
 ## 1. TL;DR
-- ✅ **`make all` PASSES** (verified 2026-09-07, exit 0): api → `bin/nasos-api` · agent → `bin/nasos-agent` · ui → `ui/dist`.
+- ✅ **`make all` PASSES** (verified 2026-09-07, exit 0): api → `bin/naslos-api` · agent → `bin/naslos-agent` · ui → `ui/dist`.
 - All §7 UI fixes are APPLIED in the working tree (`class:` directives → template literals; DiskWizard steps 2-4 complete).
 - Extra fixes applied beyond §7: `SchemaForm.svelte` had a TS `as` cast inside a template `{#each}` (Svelte 4's
   template parser rejects TS casts — they're only stripped in `<script>`) → cast removed; Go API fixed for Talos
@@ -14,7 +14,7 @@ Branch: `stage-6-sso` · Repo: Naslos-Linux (remote `git@github.com:AessemOps/Na
   cast removal); they do NOT block `vite build`. Optional follow-up: type the `{#each}` destructure.
 - Zsh support: implemented (§8). bcachefs: NOT in repo (§8).
 
-## 2. What NasOS is
+## 2. What Naslos is
 User-friendly NAS operating system on **stock Talos Linux** (no base modification — everything via machine-config,
 Helm charts, containers). Design principles (docs/architecture.md):
 1. Stock Talos only — clean `talosctl upgrade` path.
@@ -33,7 +33,7 @@ api/      Go — HTTP API server "the brain" (:8080)
                      server (routes, WebSocket log/exec) · shares (smb.conf/exports gen) · talos (machinery client, VolumeAdvisor)
 agent/    Go — privileged DaemonSet for ZFS (:9090); internal/: server · zfs (chroot /host)
 ui/       SvelteKit 2 + Svelte 4 + Tailwind 3 + xterm (static build → ui/dist)
-charts/nasos/          umbrella Helm chart (api, ui, agent, traefik/authelia/openldap deps)
+charts/naslos/          umbrella Helm chart (api, ui, agent, traefik/authelia/openldap deps)
 bootstrap/schematic/   Talos Image Factory schematic (ZFS extension)
 openldap/              OpenLDAP image + manifests
 zsh-terminal/          web-terminal container image (zsh + autosuggestions + syntax-highlighting + zfs utils)
@@ -44,12 +44,12 @@ Makefile               build/install/dev targets
 ## 4. Build & run
 | Target | Command | Output |
 |---|---|---|
-| API | `make api` | `bin/nasos-api` |
-| Agent | `make agent` | `bin/nasos-agent` |
+| API | `make api` | `bin/naslos-api` |
+| Agent | `make agent` | `bin/naslos-agent` |
 | UI | `make ui` | `ui/dist` (static) |
 | All | `make all` | all three |
-| Dev cluster | `make dev-cluster` | local Talos cluster (uses bootstrap/schematic/nasos.yaml) |
-| Install | `make crds && make install` | Traefik CRDs + `helm upgrade --install nasos charts/nasos -n nasos` |
+| Dev cluster | `make dev-cluster` | local Talos cluster (uses bootstrap/schematic/naslos.yaml) |
+| Install | `make crds && make install` | Traefik CRDs + `helm upgrade --install naslos charts/naslos -n naslos` |
 
 - Versions: Go 1.22+, Node 20+.
 - UI dev: `cd ui && npm run dev` (Vite proxies `/api` → `http://localhost:8080`); type checks: `npm run check` (svelte-check).
@@ -58,13 +58,13 @@ Makefile               build/install/dev targets
   `npm audit` reports 11 vulns (4 low / 6 moderate / 1 high).
 
 ## 5. API surface (verified in source)
-`nasos-api` :8080 — api/internal/server/server.go:116-161:
+`naslos-api` :8080 — api/internal/server/server.go:116-161:
 `/api/health` · `/api/catalog[/{app}]` · `/api/apps[/{name}]` · `/api/disks` · `/api/disks/recommend` ·
 `/api/volumes` · `/api/volumes/zfs` · `/api/ws/logs` · `/api/ws/exec` (WebSocket) · `/api/shares[/{id}]` +
 `/api/shares/config/samba` + `/api/shares/config/nfs` · `/api/notifications[+/test]` · `/api/metrics` ·
 `/api/dashboard` · `/api/users[/{name}]` · `/api/groups[/{name}]` · `/api/auth/me` · UI static files.
 
-`nasos-agent` :9090 (one per node) — agent/internal/server/server.go:34-40:
+`naslos-agent` :9090 (one per node) — agent/internal/server/server.go:34-40:
 `/health` · `/api/v1/pools` · `/api/v1/pools/{name}` · `/api/v1/datasets/{pool}` · `/api/v1/snapshots/...`
 
 Disk-wizard payloads (from DiskWizard.svelte):
@@ -80,7 +80,7 @@ direct curl may need dev headers; read that file before smoke-testing.
 - **Svelte 4, not Svelte 5** — use `export let`, `on:click`, `class:x={cond}`; no runes/`$props`/`$state`.
 - Pages: `/` (Dashboard) · `/disks` (DiskWizard) · `/users` · `/notifications` · `/terminal`.
 - Components: Dashboard, DiskWizard, InstalledApps, CatalogBrowser, UserForm, ShareForm, Sidebar.
-- Custom Tailwind tokens: `nasos-primary`, `nasos-accent`, `nasos-surface`, `nasos-border`; utilities:
+- Custom Tailwind tokens: `naslos-primary`, `naslos-accent`, `naslos-surface`, `naslos-border`; utilities:
   `card`, `btn btn-primary|btn-secondary`, `input`, `label` (verify tailwind.config).
 
 ## 7. ⚠️ CURRENT BLOCKERS — exact fix list (all verified on disk 2026-09-07)
@@ -117,12 +117,12 @@ Fix pattern — one template-literal class attribute. Colons ARE legal (`class:h
 a) Label directives at lines 149-155 → one template literal:
 ```svelte
 <label
-  class={`flex items-center gap-4 p-4 rounded-lg border cursor-pointer transition-colors ${selectedDisks.includes(disk.device) ? 'border-nasos-primary bg-nasos-primary/10' : 'border-nasos-border hover:border-nasos-accent'}`}
+  class={`flex items-center gap-4 p-4 rounded-lg border cursor-pointer transition-colors ${selectedDisks.includes(disk.device) ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}
 >
 ```
 b) Step-indicator div (lines 120-126) — the `class:` form is legal but convert for consistency:
 ```svelte
-<div class={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${step >= s ? 'bg-nasos-primary text-white' : 'bg-nasos-border text-gray-500'}`}>
+<div class={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${step >= s ? 'bg-naslos-primary text-white' : 'bg-naslos-border text-gray-500'}`}>
 ```
 c) The file is truncated: after the Step-1 closing `{/if}` (line 182) append Steps 2-4 **and the final
    `</div>`** closing the wrapper from line 115. Full code (authored to match §5 API shapes; the original
@@ -151,7 +151,7 @@ c) The file is truncated: after the Step-1 closing `{/if}` (line 182) append Ste
               <p class="text-gray-400">{recommendation.disks.length} disks</p>
             </div>
           </div>
-          <div class="bg-nasos-border/30 p-4 rounded-lg">
+          <div class="bg-naslos-border/30 p-4 rounded-lg">
             <p class="text-sm">{recommendation.description}</p>
           </div>
         </div>
@@ -160,8 +160,8 @@ c) The file is truncated: after the Step-1 closing `{/if}` (line 182) append Ste
           <h3 class="font-bold mb-2">Selected Disks</h3>
           <div class="space-y-2">
             {#each selectedDisks as device}
-              <div class="flex items-center gap-2 p-2 bg-nasos-border/30 rounded">
-                <span class="text-xs px-2 py-1 rounded bg-nasos-border text-gray-300">disk</span>
+              <div class="flex items-center gap-2 p-2 bg-naslos-border/30 rounded">
+                <span class="text-xs px-2 py-1 rounded bg-naslos-border text-gray-300">disk</span>
                 <span>{device}</span>
               </div>
             {/each}
@@ -204,7 +204,7 @@ c) The file is truncated: after the Step-1 closing `{/if}` (line 182) append Ste
       <p class="text-gray-400 mb-6">Your ZFS pool has been created with the selected configuration.</p>
 
       {#if createResult}
-        <div class="mb-6 p-4 bg-nasos-border/30 rounded-lg"><p>{createResult}</p></div>
+        <div class="mb-6 p-4 bg-naslos-border/30 rounded-lg"><p>{createResult}</p></div>
       {/if}
 
       <div class="flex justify-end mt-6">
@@ -215,7 +215,7 @@ c) The file is truncated: after the Step-1 closing `{/if}` (line 182) append Ste
 </div>
 ```
 
-**7.6 Sidebar.svelte:36** — `class:hover:bg-nasos-border={…}` is expected to PARSE fine (colons are legal in
+**7.6 Sidebar.svelte:36** — `class:hover:bg-naslos-border={…}` is expected to PARSE fine (colons are legal in
 directive names). Convert to a template literal only if the compiler complains at that line.
 
 **7.7 Verify:** `cd ui && npm run build` then `npm run check`; expect clean build.
@@ -241,7 +241,7 @@ directive names). Convert to a template literal only if the compiler complains a
 1. ✅ DONE — tree state confirmed (working tree contained the prior session's fixes).
 2. ✅ DONE — §7 fixes applied, plus SchemaForm template-cast fix and Talos v1.14 Go API fixes (see §1).
 3. ✅ DONE — `npm run build` passes (svelte-check: 7 non-blocking TS errors in SchemaForm).
-4. ✅ DONE — `make all` exit 0 → `bin/nasos-api`, `bin/nasos-agent`, `ui/dist`.
+4. ✅ DONE — `make all` exit 0 → `bin/naslos-api`, `bin/naslos-agent`, `ui/dist`.
 5. ✅ DONE — committed (includes `api/go.sum`, `ui/package-lock.json`, this handoff doc).
 6. TODO: smoke-test endpoints (§5; mind auth middleware) with api+agent running locally.
 7. TODO: E2E `make dev-cluster && make crds && make install`.

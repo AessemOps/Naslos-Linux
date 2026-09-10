@@ -1,21 +1,42 @@
-# NasOS Helm values override for the 192.168.1.96 single-node VM.
+# Naslos Helm values override for the 192.168.1.96 single-node VM.
 # Usage:
 #   make install-vm
 # or manually:
-#   helm upgrade --install nasos charts/nasos -n nasos --create-namespace \
-#     -f charts/nasos/values.yaml -f charts/nasos/values-vm.yaml
+#   helm upgrade --install naslos charts/naslos -n naslos --create-namespace \
+#     -f charts/naslos/values.yaml -f charts/naslos/values-vm.yaml
+
+# Registry default for the VM deployment (private HTTP registry).
+# scripts/deploy-vm.sh passes explicit --set overrides as well, so these
+# values mainly serve direct `make install-vm` / `helm` invocations.
+api:
+  image:
+    repository: 192.168.1.2:30095/naslos-api
+    tag: "0.1.0"
+  # The API manages the node via the Talos API; without this it crashes at
+  # startup with "Failed to create Talos client: failed to determine endpoints".
+  talosEndpoints: "192.168.1.96:50000"
+agent:
+  image:
+    repository: 192.168.1.2:30095/naslos-agent
+    tag: "0.1.0"
+ui:
+  image:
+    repository: 192.168.1.2:30095/naslos-ui
+    tag: "0.1.0"
+  # Expose the UI directly via NodePort on 192.168.1.96:30080.
+  # Traefik is still installed but the IngressRoute expects the authelia.domain,
+  # which is the VM IP; browsers can reach the NodePort without a LoadBalancer.
+  nodePort:
+    enabled: true
+    port: 30080
+openldap:
+  image: 192.168.1.2:30095/naslos-openldap:0.1.0
+  # OpenLDAP host is the service name for internal cluster references.
+  host: naslos-openldap
 
 # Use the VM IP as the Authelia domain (self-signed TLS).
 authelia:
   domain: 192.168.1.96
-
-# Expose the UI directly via NodePort on 192.168.1.96:30080.
-# Traefik is still installed but the IngressRoute expects the authelia.domain,
-# which is the VM IP; browsers can reach the NodePort without a LoadBalancer.
-ui:
-  nodePort:
-    enabled: true
-    port: 30080
 
 # Traefik: keep it enabled but use ClusterIP by default on the VM.
 # If your VM environment provides a LoadBalancer (e.g. MetalLB), set
@@ -24,10 +45,6 @@ traefik:
   service:
     type: ClusterIP
 
-# OpenLDAP host is the VM IP for any external references.
-openldap:
-  host: 192.168.1.96
-
 # Grafana admin password — change in production.
 grafana:
-  adminPassword: nasos-admin
+  adminPassword: naslos-admin

@@ -14,7 +14,7 @@
   let settings: Settings = {
     enabled: false,
     serverUrl: 'https://ntfy.sh',
-    topic: 'nasos-alerts',
+    topic: 'naslos-alerts',
     authToken: '',
     email: '',
     enabledEvents: ['zfs_health', 'app_status', 'disk_failure'],
@@ -128,7 +128,7 @@
         </div>
         <div>
           <label class="label">Topic</label>
-          <input type="text" bind:value={settings.topic} class="input w-full" placeholder="nasos-alerts" />
+          <input type="text" bind:value={settings.topic} class="input w-full" placeholder="naslos-alerts" />
           <p class="text-xs text-gray-500 mt-1">Subscribe to this topic in the ntfy app to receive notifications.</p>
         </div>
         <div>
@@ -145,7 +145,7 @@
         <h2 class="text-lg font-bold">Events</h2>
         <div class="space-y-2">
           {#each eventTypes as event}
-            <label class="flex items-center gap-3 p-2 rounded hover:bg-nasos-dark cursor-pointer">
+            <label class="flex items-center gap-3 p-2 rounded hover:bg-naslos-dark cursor-pointer">
               <input type="checkbox" checked={settings.enabledEvents.includes(event.id)} on:change={() => toggleEvent(event.id)} class="w-4 h-4 rounded" />
               <span class="text-gray-300">{event.label}</span>
             </label>

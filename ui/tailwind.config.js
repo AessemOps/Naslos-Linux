@@ -4,7 +4,7 @@ export default {
   theme: {
     extend: {
       colors: {
-        nasos: {
+        naslos: {
           primary: '#2563eb',
           secondary: '#1e40af',
           accent: '#3b82f6',

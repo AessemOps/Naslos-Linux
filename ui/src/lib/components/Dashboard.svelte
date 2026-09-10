@@ -51,7 +51,7 @@
 
 <div>
   <h1 class="text-3xl font-bold mb-2">Dashboard</h1>
-  <p class="text-gray-400 mb-8">Overview of your NasOS system.</p>
+  <p class="text-gray-400 mb-8">Overview of your Naslos system.</p>
 
   {#if loading}
     <p class="text-gray-400">Loading dashboard...</p>
@@ -60,7 +60,7 @@
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
       <div class="card">
         <div class="text-sm text-gray-400 mb-1">CPU Usage</div>
-        <div class="text-3xl font-bold text-nasos-primary">{data.cpu?.usage?.toFixed(1) || '—'}%</div>
+        <div class="text-3xl font-bold text-naslos-primary">{data.cpu?.usage?.toFixed(1) || '—'}%</div>
         <div class="text-xs text-gray-500">{data.cpu?.cores || 0} cores</div>
       </div>
       <div class="card">
@@ -86,13 +86,13 @@
       {#if (data.zfs?.pools?.length ?? 0) > 0}
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           {#each data.zfs?.pools ?? [] as pool}
-            <div class="bg-nasos-dark rounded-lg p-4">
+            <div class="bg-naslos-dark rounded-lg p-4">
               <div class="flex items-center justify-between mb-2">
                 <span class="font-bold">{pool.name}</span>
                 <span class={`text-xs px-2 py-0.5 rounded ${pool.health === 'ONLINE' ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>{pool.health}</span>
               </div>
-              <div class="w-full bg-nasos-border rounded-full h-2 mb-1">
-                <div class="bg-nasos-primary h-2 rounded-full" style="width: {pool.usagePercent || 0}%"></div>
+              <div class="w-full bg-naslos-border rounded-full h-2 mb-1">
+                <div class="bg-naslos-primary h-2 rounded-full" style="width: {pool.usagePercent || 0}%"></div>
               </div>
               <div class="text-xs text-gray-500">{formatBytes(pool.alloc || 0)} / {formatBytes(pool.size || 0)} ({pool.usagePercent?.toFixed(1) || 0}%)</div>
             </div>

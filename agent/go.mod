@@ -1,3 +1,3 @@
-module github.com/nasos/nasos/agent
+module github.com/AessemOps/Naslos-Linux/agent
 
-go 1.22
+go 1.26.5

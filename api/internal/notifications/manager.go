@@ -60,7 +60,7 @@ func defaultSettings() Settings {
 	return Settings{
 		Enabled:   false,
 		ServerURL: "https://ntfy.sh",
-		Topic:     "nasos-alerts",
+		Topic:     "naslos-alerts",
 		EnabledEvents: []EventType{
 			EventZFSHealth,
 			EventAppStatus,
@@ -141,10 +141,10 @@ func (m *Manager) Send(notif Notification) error {
 // SendTest sends a test notification.
 func (m *Manager) SendTest() error {
 	return m.Send(Notification{
-		Title:    "NasOS Test",
-		Message:  "This is a test notification from NasOS.",
+		Title:    "Naslos Test",
+		Message:  "This is a test notification from Naslos.",
 		Severity: SeverityInfo,
-		Tags:     []string{"white_check_mark", "nasos"},
+		Tags:     []string{"white_check_mark", "naslos"},
 		Time:     time.Now(),
 	})
 }

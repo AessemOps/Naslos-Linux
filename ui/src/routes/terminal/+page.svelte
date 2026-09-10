@@ -9,7 +9,7 @@
   let fitAddon: FitAddon;
   let ws: WebSocket | null = null;
   let connected = false;
-  let namespace = 'nasos';
+  let namespace = 'naslos';
   let pod = '';
   let container = '';
   let command = '/bin/zsh';
@@ -81,7 +81,7 @@
     fitAddon.fit();
 
     term.writeln('\x1b[36m╔══════════════════════════════════════╗\x1b[0m');
-    term.writeln('\x1b[36m║\x1b[0m  \x1b[1mNasOS Web Terminal\x1b[0m                  \x1b[36m║\x1b[0m');
+    term.writeln('\x1b[36m║\x1b[0m  \x1b[1mNaslos Web Terminal\x1b[0m                  \x1b[36m║\x1b[0m');
     term.writeln('\x1b[36m║\x1b[0m  Enter pod details above to connect   \x1b[36m║\x1b[0m');
     term.writeln('\x1b[36m╚══════════════════════════════════════╝\x1b[0m');
     term.writeln('');
@@ -115,7 +115,7 @@
       </div>
       <div class="flex-1">
         <label class="label">Pod Name *</label>
-        <input type="text" bind:value={pod} placeholder="e.g. nasos-api-abc123" class="input w-full" />
+        <input type="text" bind:value={pod} placeholder="e.g. naslos-api-abc123" class="input w-full" />
       </div>
       <div class="flex-1">
         <label class="label">Container</label>
@@ -139,6 +139,6 @@
 
   <!-- Terminal -->
   <div class="card p-0 overflow-hidden">
-    <div bind:this={terminalEl} class="h-[500px] bg-nasos-dark"></div>
+    <div bind:this={terminalEl} class="h-[500px] bg-naslos-dark"></div>
   </div>
 </div>

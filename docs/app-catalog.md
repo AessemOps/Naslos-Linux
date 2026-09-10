@@ -49,7 +49,7 @@ External JSON entries **override** built-ins of the same `name`.
 
 | Action | API | Behavior |
 | --- | --- | --- |
-| Install | `POST /api/apps {name, values}` | catalog defaults merged (request wins) → `helm install` into `nasos` ns |
+| Install | `POST /api/apps {name, values}` | catalog defaults merged (request wins) → `helm install` into `naslos` ns |
 | List | `GET /api/apps` | Releases with status: `running` / `failed` / `pending` / `stopped` / `superseded` |
 | Detail | `GET /api/apps/{name}` | Plus `values` |
 | Reconfigure | `PUT /api/apps/{name} {values}` | `helm upgrade` |
@@ -59,7 +59,7 @@ External JSON entries **override** built-ins of the same `name`.
 PVC persistence: because apps keep their Helm releases and PVCs, scaling
 replicas to 0 and back preserves data (this is the intended "stop" path).
 
-The Helm client uses an in-process cache dir (`$TMP/nasos-helm-cache`) and a
+The Helm client uses an in-process cache dir (`$TMP/naslos-helm-cache`) and a
 chart repository file, so each API pod resolves charts independently.
 
 ## Schema-driven forms
@@ -86,5 +86,5 @@ chart repository file, so each API pod resolves charts independently.
 
 ## Storage for apps
 
-Apps request `storageClass: nasos-zfs` (ZFS LocalPV) or use
+Apps request `storageClass: naslos-zfs` (ZFS LocalPV) or use
 `local-path-provisioner` — see [storage-zfs.md](storage-zfs.md#storage-classes--app-data).

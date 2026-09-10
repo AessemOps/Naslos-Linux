@@ -1,6 +1,6 @@
-# NasOS Documentation
+# Naslos Documentation
 
-Welcome to the **NasOS** documentation set. NasOS is a user-friendly NAS
+Welcome to the **Naslos** documentation set. Naslos is a user-friendly NAS
 distribution built on top of **stock Talos Linux** — no base modification.
 Everything (ZFS, app catalog, shares, identity/SSO, monitoring, notifications)
 is delivered as a Kubernetes workload, a Helm chart, or an Image Factory
@@ -14,7 +14,7 @@ read them in order for the full picture, or jump straight to a topic.
 | Document | Covers | Status |
 | --- | --- | --- |
 | [architecture.md](architecture.md) | Design principles, system-context / deployment / component diagrams, data flows, trust map | Rebuilt |
-| [api.md](api.md) | HTTP API surface of `nasos-api` and `nasos-agent`, env vars, error format | New |
+| [api.md](api.md) | HTTP API surface of `naslos-api` and `naslos-agent`, env vars, error format | New |
 | [bootstrap.md](bootstrap.md) | Image Factory schematic, ZFS extension, boot-time pool import, upgrades | New |
 | [storage-zfs.md](storage-zfs.md) | ZFS pools, datasets, snapshots, topology advisor, Talos gotchas | New |
 | [identity-sso.md](identity-sso.md) | Single sign-on: Authelia, OpenLDAP, Samba hash sync, RBAC groups, 2FA | Rebuilt (replaces `authentication.md`) |
@@ -38,8 +38,8 @@ read them in order for the full picture, or jump straight to a topic.
 ## Conventions
 
 - All diagrams are ASCII and render in any Markdown viewer.
-- “Talos” always refers to stock Talos Linux; “NasOS” is the integration layer
+- “Talos” always refers to stock Talos Linux; “Naslos” is the integration layer
   on top (schematic, chart, agents).
-- All components run in the `nasos` Kubernetes namespace unless noted.
+- All components run in the `naslos` Kubernetes namespace unless noted.
 - Command examples assume `kubectl`/`talosctl`/`helm` are available and pointed
   at the right cluster.

@@ -1,4 +1,4 @@
-// Package notifications provides ntfy push notification management for NasOS.
+// Package notifications provides ntfy push notification management for Naslos.
 package notifications
 
 import (

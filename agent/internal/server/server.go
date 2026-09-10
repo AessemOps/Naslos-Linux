@@ -1,5 +1,5 @@
-// Package server provides the nasos-agent HTTP API server.
-// The nasos-api calls this server to execute ZFS operations on each node.
+// Package server provides the naslos-agent HTTP API server.
+// The naslos-api calls this server to execute ZFS operations on each node.
 package server
 
 import (
@@ -8,7 +8,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/nasos/nasos/agent/internal/zfs"
+	"github.com/AessemOps/Naslos-Linux/agent/internal/zfs"
 )
 
 // Server is the agent's HTTP server.
@@ -39,6 +39,18 @@ func (s *Server) routes() {
 	s.router.HandleFunc("/api/v1/snapshots/", s.handleSnapshots)
 }
 
+// zfsUnavailable reports whether the agent runs in degraded mode (no ZFS on
+// the host) and, in that case, writes a 503 response. Call at the top of
+// every ZFS-backed handler.
+func (s *Server) zfsUnavailable(w http.ResponseWriter) bool {
+	if s.zfs == nil {
+		writeError(w, http.StatusServiceUnavailable,
+			"ZFS is not available on this node (agent running in degraded mode)")
+		return true
+	}
+	return false
+}
+
 // Start starts the HTTP server.
 func (s *Server) Start() error {
 	s.server = &http.Server{
@@ -58,6 +70,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePools(w http.ResponseWriter, r *http.Request) {
+	if s.zfsUnavailable(w) {
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		pools, err := s.zfs.Pools()
@@ -83,6 +98,9 @@ func (s *Server) handlePools(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePoolDetail(w http.ResponseWriter, r *http.Request) {
+	if s.zfsUnavailable(w) {
+		return
+	}
 	pool := r.URL.Path[len("/api/v1/pools/"):]
 	switch r.Method {
 	case http.MethodGet:
@@ -104,6 +122,9 @@ func (s *Server) handlePoolDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDatasets(w http.ResponseWriter, r *http.Request) {
+	if s.zfsUnavailable(w) {
+		return
+	}
 	pool := r.URL.Path[len("/api/v1/datasets/"):]
 	switch r.Method {
 	case http.MethodGet:
@@ -134,6 +155,9 @@ func (s *Server) handleDatasets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
+	if s.zfsUnavailable(w) {
+		return
+	}
 	dataset := r.URL.Path[len("/api/v1/snapshots/"):]
 	switch r.Method {
 	case http.MethodGet:

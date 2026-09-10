@@ -12,8 +12,8 @@ func (m *Manager) GenerateSambaConfig() string {
 	var sb strings.Builder
 
 	sb.WriteString("[global]\n")
-	sb.WriteString("   workgroup = NASOS\n")
-	sb.WriteString("   server string = NasOS\n")
+	sb.WriteString("   workgroup = NASLOS\n")
+	sb.WriteString("   server string = Naslos\n")
 	sb.WriteString("   security = user\n")
 	sb.WriteString("   map to guest = Bad User\n")
 	sb.WriteString("   log file = /var/log/samba/%m.log\n")

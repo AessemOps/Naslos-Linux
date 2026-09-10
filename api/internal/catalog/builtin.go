@@ -63,14 +63,14 @@ func (c *Catalog) loadBuiltIn() {
 				"adminUsername": {"type": "string", "title": "Admin Username", "default": "admin"},
 				"adminPassword": {"type": "string", "title": "Admin Password", "format": "password"},
 				"domain": {"type": "string", "title": "Domain", "description": "Your Nextcloud domain"},
-				"storageClass": {"type": "string", "title": "Storage Class", "default": "nasos-zfs"},
+				"storageClass": {"type": "string", "title": "Storage Class", "default": "naslos-zfs"},
 				"storageSize": {"type": "string", "title": "Storage Size", "default": "100Gi"}
 			},
 			"required": ["adminPassword"]
 		}`),
 		DefaultValues: map[string]interface{}{
 			"adminUsername": "admin",
-			"storageClass":  "nasos-zfs",
+			"storageClass":  "naslos-zfs",
 			"storageSize":   "100Gi",
 		},
 	}

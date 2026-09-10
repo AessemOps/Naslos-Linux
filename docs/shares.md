@@ -41,7 +41,7 @@ under `/var/mnt`. `AvailablePaths` lists candidate ZFS dataset mount dirs.
 
 ### Samba (`GenerateSambaConfig`)
 
-- `[global]` workgroup `NASOS`, `security = user`, fruit VFS enabled
+- `[global]` workgroup `NASLOS`, `security = user`, fruit VFS enabled
   (`fruit:time machine = yes`, `fruit:model = MacSamba`, …) for macOS interop.
 - One `[share]` stanza per enabled `smb`/`afp` share:
   `path`, `comment`, `read only`, `browseable`, `hosts allow/deny`,
@@ -69,14 +69,14 @@ Time Machine uses SMB + `fruit` VFS: no dedicated AFP daemon is required in
 modern deployments (`values.yaml: shares.afp.enabled: false`, SMB
 `timeMachine: true` preferred).
 
-## Chart flags (`charts/nasos/values.yaml`)
+## Chart flags (`charts/naslos/values.yaml`)
 
 ```yaml
 shares:
   enabled: true
   smb:
     enabled: true
-    workgroup: "NASOS"
+    workgroup: "NASLOS"
     timeMachine: true
   nfs:
     enabled: true

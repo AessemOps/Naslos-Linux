@@ -1,4 +1,4 @@
-// Package server provides the NasOS HTTP API server.
+// Package server provides the Naslos HTTP API server.
 package server
 
 import (
@@ -10,14 +10,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nasos/nasos/api/internal/auth"
-	"github.com/nasos/nasos/api/internal/catalog"
-	"github.com/nasos/nasos/api/internal/helm"
-	"github.com/nasos/nasos/api/internal/identity"
-	"github.com/nasos/nasos/api/internal/metrics"
-	"github.com/nasos/nasos/api/internal/notifications"
-	"github.com/nasos/nasos/api/internal/shares"
-	"github.com/nasos/nasos/api/internal/talos"
+	"github.com/AessemOps/Naslos-Linux/api/internal/auth"
+	"github.com/AessemOps/Naslos-Linux/api/internal/catalog"
+	"github.com/AessemOps/Naslos-Linux/api/internal/helm"
+	"github.com/AessemOps/Naslos-Linux/api/internal/identity"
+	"github.com/AessemOps/Naslos-Linux/api/internal/metrics"
+	"github.com/AessemOps/Naslos-Linux/api/internal/notifications"
+	"github.com/AessemOps/Naslos-Linux/api/internal/shares"
+	"github.com/AessemOps/Naslos-Linux/api/internal/talos"
 )
 
 // Server is the HTTP API server.
@@ -38,8 +38,8 @@ type Server struct {
 
 // New creates a new server.
 func New(addr string, tc *talos.Client) *Server {
-	// Initialize Helm client for the nasos namespace
-	helmClient := helm.NewClient("nasos")
+	// Initialize Helm client for the naslos namespace
+	helmClient := helm.NewClient("naslos")
 
 	// Initialize app catalog (built-in)
 	c := catalog.New("")
@@ -55,10 +55,10 @@ func New(addr string, tc *talos.Client) *Server {
 
 	// Initialize identity client (LDAP)
 	identityClient, err := identity.NewClient(identity.Config{
-		Host:     getEnv("LDAP_HOST", "nasos-openldap"),
+		Host:     getEnv("LDAP_HOST", "naslos-openldap"),
 		Port:     getEnvInt("LDAP_PORT", 636),
-		BaseDN:   getEnv("LDAP_BASE_DN", "dc=nasos,dc=local"),
-		BindDN:   getEnv("LDAP_BIND_DN", "cn=nasos-service,ou=services,dc=nasos,dc=local"),
+		BaseDN:   getEnv("LDAP_BASE_DN", "dc=naslos,dc=local"),
+		BindDN:   getEnv("LDAP_BIND_DN", "cn=naslos-service,ou=services,dc=naslos,dc=local"),
 		BindPass: getEnv("LDAP_BIND_PASS", ""),
 		UseTLS:   getEnv("LDAP_USE_TLS", "true") == "true",
 		CACertPath: getEnv("LDAP_CA_CERT", ""),
@@ -158,7 +158,7 @@ func (s *Server) routes() {
 	s.router.HandleFunc("/api/auth/me", s.handleAuthMe)
 
 	// Serve UI static files
-	s.router.Handle("/", http.FileServer(http.Dir("/var/nasos/ui")))
+	s.router.Handle("/", http.FileServer(http.Dir("/var/naslos/ui")))
 }
 
 // handleUserPath routes user sub-paths (password, enable, disable).
@@ -185,7 +185,7 @@ func (s *Server) Start() error {
 		Addr:    s.addr,
 		Handler: s.router,
 	}
-	log.Printf("NasOS API listening on %s", s.addr)
+	log.Printf("Naslos API listening on %s", s.addr)
 	return s.server.ListenAndServe()
 }
 

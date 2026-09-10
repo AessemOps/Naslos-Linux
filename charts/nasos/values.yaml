@@ -1,16 +1,22 @@
-# NasOS Helm chart values
+# Naslos Helm chart values
 
 # API server configuration
 api:
   enabled: true
   image:
-    repository: ghcr.io/nasos/nasos-api
+    repository: 192.168.1.2:30095/naslos-api
     tag: "0.1.0"
     pullPolicy: IfNotPresent
   replicas: 1
   service:
     type: ClusterIP
     port: 8080
+  # Talos API endpoint(s) the API server uses to manage the node,
+  # comma-separated. The talos client library reads TALOS_ENDPOINTS and the
+  # API fatals at startup without it ("failed to determine endpoints").
+  # Empty disables the env (and thus node management) — set per environment,
+  # e.g. "192.168.1.96:50000" for the single-node VM (see values-vm.yaml).
+  talosEndpoints: ""
   resources:
     requests:
       cpu: 100m
@@ -23,7 +29,7 @@ api:
 ui:
   enabled: true
   image:
-    repository: ghcr.io/nasos/nasos-ui
+    repository: 192.168.1.2:30095/naslos-ui
     tag: "0.1.0"
     pullPolicy: IfNotPresent
   replicas: 1
@@ -31,7 +37,7 @@ ui:
     type: ClusterIP
     port: 80
   # Optional NodePort for environments without a LoadBalancer (e.g. single-node VM).
-  # See charts/nasos/values-vm.yaml for an example override.
+  # See charts/naslos/values-vm.yaml for an example override.
   nodePort:
     enabled: false
     port: 30080
@@ -47,7 +53,7 @@ ui:
 agent:
   enabled: true
   image:
-    repository: ghcr.io/nasos/nasos-agent
+    repository: 192.168.1.2:30095/naslos-agent
     tag: "0.1.0"
     pullPolicy: IfNotPresent
   # Privileged is required for chroot /host zpool/zfs operations
@@ -73,7 +79,7 @@ shares:
   enabled: true
   smb:
     enabled: true
-    workgroup: "NASOS"
+    workgroup: "NASLOS"
     # Time Machine support for macOS
     timeMachine: true
   nfs:
@@ -82,17 +88,20 @@ shares:
     enabled: false  # Deprecated in favor of SMB Time Machine
 
 # Traefik ingress controller
+# Traefik chart v39+ requires the new ports schema:
+#   expose is an object with nested http level, not a boolean.
+# The chart is wired into naslos via the `condition: traefik.enabled` in
+# Chart.yaml (there is no `enabled:` key in the traefik subchart's schema).
 traefik:
-  enabled: true
   ports:
     web:
       port: 80
-      expose: true
-      exposedPort: 80
+      expose:
+        default: true
     websecure:
       port: 443
-      expose: true
-      exposedPort: 443
+      expose:
+        default: true
   service:
     type: LoadBalancer
   additionalArguments:
@@ -104,7 +113,7 @@ traefik:
 # Authelia authentication
 authelia:
   enabled: true
-  domain: nasos.local
+  domain: naslos.local
   server:
     host: 0.0.0.0
     port: 9091
@@ -115,12 +124,15 @@ authelia:
   # Session storage uses local SQLite for single-node
   # LDAP backend configured in templates/authelia-config.yaml
 
-# Notifications (ntfy)
+# Notifications (ntfy) — sent by the Naslos API. No bundled ntfy chart: the
+# previous repository https://helm.ntfy.sh/ no longer resolves (DNS failure) so
+# the dependency was dropped from Chart.yaml. The API sends to the public
+# ntfy.sh server (empty URL) or any self-hosted ntfy server.
 ntfy:
   enabled: true
   server:
-    url: ""  # Empty = use bundled ntfy
-    topic: "nasos-alerts"
+    url: ""  # Empty = use https://ntfy.sh (public)
+    topic: "naslos-alerts"
 
 # Monitoring
 prometheus:
@@ -135,24 +147,24 @@ prometheus:
 
 grafana:
   enabled: true
-  adminPassword: "nasos-admin"
+  adminPassword: "naslos-admin"
   dashboardProviders:
     dashboardproviders.yaml:
       apiVersion: 1
       providers:
-        - name: nasos
+        - name: naslos
           orgId: 1
-          folder: NasOS
+          folder: Naslos
           type: file
           disableDeletion: false
           editable: true
           options:
-            path: /var/lib/grafana/dashboards/nasos
+            path: /var/lib/grafana/dashboards/naslos
   dashboards:
-    nasos:
-      nasos-overview:
+    naslos:
+      naslos-overview:
         json: |
-          {"title": "NasOS Overview", "uid": "nasos-home"}
+          {"title": "Naslos Overview", "uid": "naslos-home"}
 
 # Storage classes
 storage:
@@ -163,16 +175,19 @@ storage:
   # ZFS LocalPV CSI for ZFS-backed volumes
   zfsLocalPV:
     enabled: true
-    poolName: "nasos-pool"
+    poolName: "naslos-pool"
 
 # OpenLDAP configuration
 openldap:
   enabled: true
-  serviceName: nasos-openldap
-  host: ldap.nasos.local
-  baseDN: "dc=nasos,dc=local"
-  bindDN: "cn=nasos-service,ou=services,dc=nasos,dc=local"
+  serviceName: naslos-openldap
+  # Custom Naslos OpenLDAP image (in the chart authelia only needs host/baseDN;
+  # deploy-vm.sh overrides this for the standalone manifests).
+  image: 192.168.1.2:30095/naslos-openldap:0.1.0
+  host: ldap.naslos.local
+  baseDN: "dc=naslos,dc=local"
+  bindDN: "cn=naslos-service,ou=services,dc=naslos,dc=local"
   bindPassword: "CHANGE_ME_SERVICE_PASSWORD"
 
-# Namespace for all NasOS components
-namespace: nasos
+# Namespace for all Naslos components
+namespace: naslos

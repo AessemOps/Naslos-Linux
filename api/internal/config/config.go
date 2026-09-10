@@ -1,4 +1,4 @@
-// Package config holds NasOS API server configuration.
+// Package config holds Naslos API server configuration.
 package config
 
 // Config is the API server configuration.

@@ -1,4 +1,4 @@
-// Package auth provides authentication middleware for NasOS API.
+// Package auth provides authentication middleware for Naslos API.
 // It trusts Remote-User/Remote-Groups headers ONLY from Traefik's pod CIDR.
 package auth
 
@@ -91,7 +91,7 @@ func (m *Middleware) RequireAdmin(next http.Handler) http.Handler {
 			return
 		}
 
-		if !user.HasGroup("nasos_admins") {
+		if !user.HasGroup("naslos_admins") {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}

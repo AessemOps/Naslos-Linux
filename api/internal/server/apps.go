@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/nasos/nasos/api/internal/helm"
+	"github.com/AessemOps/Naslos-Linux/api/internal/helm"
 )
 
 // handleCatalog returns the list of available apps in the catalog.

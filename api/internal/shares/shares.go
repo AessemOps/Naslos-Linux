@@ -1,4 +1,4 @@
-// Package shares provides SMB/NFS/Time Machine share management for NasOS.
+// Package shares provides SMB/NFS/Time Machine share management for Naslos.
 package shares
 
 import (
@@ -56,7 +56,7 @@ type UpdateShareRequest struct {
 	Enabled      *bool    `json:"enabled,omitempty"`
 }
 
-// Manager manages shares on a ZFS-backed NasOS system.
+// Manager manages shares on a ZFS-backed Naslos system.
 type Manager struct {
 	shares     map[string]*Share
 	configPath string
