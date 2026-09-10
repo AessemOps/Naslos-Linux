@@ -1,6 +1,6 @@
 # Notifications (ntfy)
 
-NasOS pushes alerts to [ntfy](https://ntfy.sh) topics. Notifications are
+Naslos pushes alerts to [ntfy](https://ntfy.sh) topics. Notifications are
 managed by `notifications.Manager` and configured under **Notifications** in the
 UI (or via `GET/PUT /api/notifications`).
 
@@ -10,7 +10,7 @@ UI (or via `GET/PUT /api/notifications`).
 | --- | --- | --- |
 | `enabled` | `false` | Master on/off switch |
 | `serverUrl` | `https://ntfy.sh` | ntfy server; empty = bundled ntfy (`values.yaml: ntfy.server.url`) |
-| `topic` | `nasos-alerts` | Topic to publish to |
+| `topic` | `naslos-alerts` | Topic to publish to |
 | `authToken` | — | Bearer token when the server requires auth |
 | `email` | — | `X-Email` header (server-side email sending) |
 | `enabledEvents` | `[zfs_health, app_status, disk_failure]` | Which event types fire |
@@ -24,7 +24,7 @@ UI (or via `GET/PUT /api/notifications`).
 | `zfs_scrub` | Scrub start/stop |
 | `app_status` | App install/upgrade/uninstall transitions |
 | `disk_failure` | Disk health alarms |
-| `system_update` | Talos/NasOS update availability |
+| `system_update` | Talos/Naslos update availability |
 | `share_access` | Share-level access events |
 
 ## Severity → priority mapping
@@ -62,7 +62,7 @@ HTTP client timeout is 10 s.
 | empty | Use the bundled `ntfy` Helm chart (same cluster) |
 | `https://ntfy.sh` (or any URL) | Publish to an external server / topic |
 
-Default setting in code is `https://ntfy.sh` with topic `nasos-alerts`.
+Default setting in code is `https://ntfy.sh` with topic `naslos-alerts`.
 
 ## API
 
@@ -70,6 +70,6 @@ Default setting in code is `https://ntfy.sh` with topic `nasos-alerts`.
 | --- | --- | --- |
 | GET | `/api/notifications` | Current settings |
 | PUT | `/api/notifications` | Update settings |
-| POST | `/api/notifications/test` | Send a test notification ("NasOS Test", info severity) |
+| POST | `/api/notifications/test` | Send a test notification ("Naslos Test", info severity) |
 
 See [api.md](api.md) for the full route table.

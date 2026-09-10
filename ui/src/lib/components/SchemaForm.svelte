@@ -49,7 +49,7 @@
           <span class="text-gray-300">{prop.description || 'Enable'}</span>
         </label>
       {:else if prop.type === 'object' && prop.properties}
-        <div class="border border-nasos-border rounded-lg p-4 space-y-3">
+        <div class="border border-naslos-border rounded-lg p-4 space-y-3">
           {#if prop.description}<p class="text-sm text-gray-400 mb-2">{prop.description}</p>{/if}
           {#each subEntries(prop) as [subKey, subProp]}
             <div>

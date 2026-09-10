@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/nasos/nasos/api/internal/shares"
+	"github.com/AessemOps/Naslos-Linux/api/internal/shares"
 )
 
 // handleShares handles share operations.

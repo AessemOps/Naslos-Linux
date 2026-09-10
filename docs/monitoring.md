@@ -1,11 +1,11 @@
 # Monitoring
 
-NasOS ships two monitoring layers:
+Naslos ships two monitoring layers:
 
 1. A **live metrics API** (`GET /api/metrics`, `GET /api/dashboard`) served by
-   `nasos-api` from the `metrics` package.
+   `naslos-api` from the `metrics` package.
 2. **Prometheus + Grafana** (Helm dependencies) with a 30-day retention and a
-   preloaded `NasOS Overview` dashboard.
+   preloaded `Naslos Overview` dashboard.
 
 ## Metrics model
 
@@ -32,7 +32,7 @@ snapshot; the API serves it under a mutex.
 
 ## Prometheus & Grafana
 
-Wired through `charts/nasos/values.yaml`:
+Wired through `charts/naslos/values.yaml`:
 
 ```yaml
 prometheus:
@@ -45,25 +45,25 @@ prometheus:
 
 grafana:
   enabled: true
-  adminPassword: "nasos-admin"     # CHANGE ME
+  adminPassword: "naslos-admin"     # CHANGE ME
   dashboardProviders:
     dashboardproviders.yaml:
       providers:
-        - name: nasos
+        - name: naslos
           orgId: 1
-          folder: NasOS
+          folder: Naslos
           type: file
           options:
-            path: /var/lib/grafana/dashboards/nasos
+            path: /var/lib/grafana/dashboards/naslos
   dashboards:
-    nasos:
-      nasos-overview:
-        json: '{ "title": "NasOS Overview", "uid": "nasos-home" }'
+    naslos:
+      naslos-overview:
+        json: '{ "title": "Naslos Overview", "uid": "naslos-home" }'
 ```
 
 - Prometheus scrapes Kubernetes metrics; retention is 30 days.
-- Grafana reads a `NasOS Overview` dashboard from the provided JSON (extend
-  `dashboards.nasos` with real panels).
+- Grafana reads a `Naslos Overview` dashboard from the provided JSON (extend
+  `dashboards.naslos` with real panels).
 - Both are Helm dependencies of the umbrella chart, enabled by default.
 
 ## Relating to the dashboard UI

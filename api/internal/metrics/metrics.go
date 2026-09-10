@@ -1,4 +1,4 @@
-// Package metrics provides system monitoring metrics for the NasOS dashboard.
+// Package metrics provides system monitoring metrics for the Naslos dashboard.
 package metrics
 
 import (

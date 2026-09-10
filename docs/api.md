@@ -1,15 +1,15 @@
-# NasOS API
+# Naslos API
 
 Two HTTP APIs exist:
 
 | API | Base | Runs as | Port |
 | --- | --- | --- | --- |
-| `nasos-api` | `/api/...` | Deployment in `nasos` namespace | 8080 (ClusterIP) |
-| `nasos-agent` | `/api/v1/...` | DaemonSet on every node (hostNetwork) | 9090 |
+| `naslos-api` | `/api/...` | Deployment in `naslos` namespace | 8080 (ClusterIP) |
+| `naslos-agent` | `/api/v1/...` | DaemonSet on every node (hostNetwork) | 9090 |
 
-The web UI is served as static files by `nasos-api` (`/var/nasos/ui`) and also by
-the separate `nasos-ui` SvelteKit deployment; the IngressRoute routes the UI to
-`nasos-ui` and lets the SPA reach the API on the same origin.
+The web UI is served as static files by `naslos-api` (`/var/naslos/ui`) and also by
+the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
+`naslos-ui` and lets the SPA reach the API on the same origin.
 
 ## Common behaviors
 
@@ -24,7 +24,7 @@ the separate `nasos-ui` SvelteKit deployment; the IngressRoute routes the UI to
   `api/internal/auth` middleware, which only trusts `Remote-*` headers from the
   Traefik pod CIDR (see [identity-sso.md](identity-sso.md#header-trust)).
 
-## nasos-api routes
+## naslos-api routes
 
 ### Health & auth
 
@@ -59,7 +59,7 @@ the separate `nasos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | GET | `/api/volumes/zfs` | Stub describing pool listing “via agent” |
 | POST | `/api/volumes/zfs` | Request `{name, topology, disks, options}` pool creation |
 
-The actual ZFS work is delegated to `nasos-agent` on each node:
+The actual ZFS work is delegated to `naslos-agent` on each node:
 `chroot /host zpool …` / `chroot /host zfs …`.
 
 ### Shares
@@ -98,9 +98,9 @@ uses the Kubernetes `remotecommand` SPDY executor over a websocket.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/` | Serves `/var/nasos/ui` via `http.FileServer` as a fallback |
+| GET | `/` | Serves `/var/naslos/ui` via `http.FileServer` as a fallback |
 
-## nasos-agent routes (host-level)
+## naslos-agent routes (host-level)
 
 | Method | Path | Description |
 | --- | --- | --- |
@@ -112,29 +112,29 @@ uses the Kubernetes `remotecommand` SPDY executor over a websocket.
 | GET/POST | `/api/v1/datasets/{pool}` | List / create dataset |
 | GET/POST | `/api/v1/snapshots/{dataset}` | List / create snapshot |
 
-## Environment variables (`nasos-api`)
+## Environment variables (`naslos-api`)
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `LDAP_HOST` | `nasos-openldap` | LDAP server hostname |
+| `LDAP_HOST` | `naslos-openldap` | LDAP server hostname |
 | `LDAP_PORT` | `636` | LDAPS port |
-| `LDAP_BASE_DN` | `dc=nasos,dc=local` | Base DN |
-| `LDAP_BIND_DN` | `cn=nasos-service,ou=services,dc=nasos,dc=local` | Service bind DN |
+| `LDAP_BASE_DN` | `dc=naslos,dc=local` | Base DN |
+| `LDAP_BIND_DN` | `cn=naslos-service,ou=services,dc=naslos,dc=local` | Service bind DN |
 | `LDAP_BIND_PASS` | — | Service account password |
 | `LDAP_USE_TLS` | `true` | Use LDAPS |
 | `LDAP_CA_CERT` | — | Path to CA cert for LDAPS verification |
 | `TRAEFIK_CIDR` | `10.0.0.0/8` | Comma-separated CIDRs trusted for auth headers |
-| `NASOS_NAMESPACE` | — | Namespace injected by the Helm chart |
+| `NASLOS_NAMESPACE` | — | Namespace injected by the Helm chart |
 | `KUBECONFIG` | — | Path to kubeconfig (default: in-cluster) |
 
-The `nasos-agent` uses `NODE_NAME` (from `spec.nodeName`) and listens on `:9090`.
+The `naslos-agent` uses `NODE_NAME` (from `spec.nodeName`) and listens on `:9090`.
 
 ## API flow notes
 
 - The disk wizard calls `POST /api/disks/recommend`, then `POST /api/volumes/zfs`
   (the agent creates the pool; `zfs-service` re-imports on boot).
 - The app catalog merges `DefaultValues` with request `values` (request wins)
-  before `helm install`; apps are installed into the `nasos` namespace.
+  before `helm install`; apps are installed into the `naslos` namespace.
 - Password changes hit `/api/users/{uid}/password`, which updates LDAP via
   Password Modify (RFC 3062) and returns the NT hash for the Samba sync half
   described in [identity-sso.md](identity-sso.md#shared-password-flow).

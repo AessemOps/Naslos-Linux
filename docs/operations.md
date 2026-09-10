@@ -4,7 +4,7 @@ Day-2 topics: backups, restore, common failures.
 
 ## OpenLDAP backup
 
-`nasos-openldap-backup` CronJob:
+`naslos-openldap-backup` CronJob:
 
 - Runs daily at **03:00 UTC**.
 - Exports config (`slapcat -n 0`) and data (`slapcat -n 1`) to
@@ -14,14 +14,14 @@ Day-2 topics: backups, restore, common failures.
 ### Manual backup
 
 ```bash
-kubectl exec -n nasos deploy/nasos-openldap -- slapcat -n 1 > backup.ldif
+kubectl exec -n naslos deploy/naslos-openldap -- slapcat -n 1 > backup.ldif
 ```
 
 ### Restore
 
 ```bash
 # Stop writes, restore, restart
-kubectl exec -n nasos deploy/nasos-openldap -- slapadd -n 1 -l backup.ldif
+kubectl exec -n naslos deploy/naslos-openldap -- slapadd -n 1 -l backup.ldif
 ```
 
 (Stop the API or put LDAP in read-only mode first; the API reconnects
@@ -31,13 +31,13 @@ automatically on the next operation.)
 
 ### Cannot log in via web
 
-1. Check Authelia logs: `kubectl logs -n nasos deploy/authelia`.
+1. Check Authelia logs: `kubectl logs -n naslos deploy/authelia`.
 2. Verify `LDAP_HOST`, `LDAP_BIND_PASS`, and the Authelia LDAP config map
    (`LDAP_BIND_DN`/`LDAP_BIND_PASS` under `authentication_backend.ldap`).
 3. Test a bind directly:
    ```bash
-   ldapwhoami -H ldaps://nasos-openldap:636 \
-     -D "uid=user,ou=people,dc=nasos,dc=local" -W
+   ldapwhoami -H ldaps://naslos-openldap:636 \
+     -D "uid=user,ou=people,dc=naslos,dc=local" -W
    ```
 4. Check TOTP/WebAuthn registration for 2FA users; check the regulation ban
    (`max_retries: 3`, 5 min ban).
@@ -46,7 +46,7 @@ automatically on the next operation.)
 
 1. Check Samba logs (`/var/log/samba/%m.log`).
 2. Verify NT-hash sync: API logs should show "Syncing SMB password for …".
-3. Test: `smbclient //nasos/share -U user`.
+3. Test: `smbclient //naslos/share -U user`.
 4. Ensure the share path exists under `/var/mnt` and the ZFS dataset is
    mounted (`zpool status`, `zfs list`).
 
@@ -72,9 +72,9 @@ automatically on the next operation.)
 ### Agent unreachable
 
 - Agent runs as DaemonSet `hostNetwork`; confirm it's on the same host as the
-  pool: `kubectl get daemonsets -n nasos`.
+  pool: `kubectl get daemonsets -n naslos`.
 - API reaches the agent via the node address (`:9090`); check K8s network
-  policy / RBAC (`nasos-agent` ClusterRole grants node/pod read).
+  policy / RBAC (`naslos-agent` ClusterRole grants node/pod read).
 
 ## Reference
 

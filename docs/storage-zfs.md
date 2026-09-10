@@ -1,7 +1,7 @@
 # Storage & ZFS
 
-ZFS is NasOS's primary filesystem. Pools are created and managed by the
-privileged **nasos-agent** (a DaemonSet) because they live outside Talos's
+ZFS is Naslos's primary filesystem. Pools are created and managed by the
+privileged **naslos-agent** (a DaemonSet) because they live outside Talos's
 volume system. Talos's own `UserVolumeConfig` only supports ext4/xfs/btrfs and
 is exposed separately via `/api/volumes`.
 
@@ -9,11 +9,11 @@ is exposed separately via `/api/volumes`.
 
 | Layer | Actor | Responsibility |
 | --- | --- | --- |
-| Disk discovery | `nasos-api` `talos.GetDiscoveredVolumes` | `talosctl get discoveredvolumes` |
+| Disk discovery | `naslos-api` `talos.GetDiscoveredVolumes` | `talosctl get discoveredvolumes` |
 | Topology advice | `talos.VolumeAdvisor` | Recommends `single/mirror/raidz1/raidz2/raidz3` |
-| Pool/DS/snapshot ops | `nasos-agent` (`chroot /host zpool/zfs`) | Actual creation, status, destroy, import/export |
+| Pool/DS/snapshot ops | `naslos-agent` (`chroot /host zpool/zfs`) | Actual creation, status, destroy, import/export |
 | Boot import | `zfs-service` (Image Factory extension) | `zpool import -fal` at boot |
-| Volumes for K8s | `nasos-zfs` storage class + local-path provisioner | App PVCs |
+| Volumes for K8s | `naslos-zfs` storage class + local-path provisioner | App PVCs |
 
 ## Pool creation (what actually runs)
 
@@ -63,7 +63,7 @@ Machine; the modern path is SMB + `fruit` VFS (see [shares.md](shares.md)).
 
 ## Storage classes & app data
 
-`charts/nasos/values.yaml`:
+`charts/naslos/values.yaml`:
 
 ```yaml
 storage:
@@ -72,13 +72,13 @@ storage:
     path: /var/mnt/local-path-provisioner
   zfsLocalPV:
     enabled: true
-    poolName: "nasos-pool"
+    poolName: "naslos-pool"
 ```
 
 - **local-path-provisioner** gives apps cheap host-path storage.
-- **ZFS LocalPV CSI / `nasos-zfs`** gives apps ZFS-backed PVCs (used by the
+- **ZFS LocalPV CSI / `naslos-zfs`** gives apps ZFS-backed PVCs (used by the
   OpenLDAP StatefulSet and by catalog apps that request `storageClass:
-  nasos-zfs`).
+  naslos-zfs`).
 
 ## Lifecycle & gotchas
 

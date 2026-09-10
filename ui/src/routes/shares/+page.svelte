@@ -100,7 +100,7 @@
           <div class="flex-1">
             <div class="flex items-center gap-2 mb-1">
               <h3 class="font-bold">{share.name}</h3>
-              <span class="text-xs px-2 py-0.5 rounded bg-nasos-border text-gray-300">{protocolLabel(share.protocol)}</span>
+              <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{protocolLabel(share.protocol)}</span>
               {#if share.timeMachine}<span class="text-xs px-2 py-0.5 rounded bg-blue-900/50 text-blue-300">Time Machine</span>{/if}
               {#if !share.enabled}<span class="text-xs px-2 py-0.5 rounded bg-yellow-900/50 text-yellow-300">Disabled</span>{/if}
             </div>

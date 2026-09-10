@@ -84,7 +84,7 @@
     <div class="card p-0 overflow-hidden">
       <table class="w-full">
         <thead>
-          <tr class="text-left text-gray-400 text-sm border-b border-nasos-border bg-nasos-dark">
+          <tr class="text-left text-gray-400 text-sm border-b border-naslos-border bg-naslos-dark">
             <th class="p-4 font-medium">User</th>
             <th class="p-4 font-medium">Email</th>
             <th class="p-4 font-medium">Groups</th>
@@ -94,7 +94,7 @@
         </thead>
         <tbody>
           {#each users as user}
-            <tr class="border-b border-nasos-border last:border-0 hover:bg-nasos-dark/50">
+            <tr class="border-b border-naslos-border last:border-0 hover:bg-naslos-dark/50">
               <td class="p-4">
                 <div class="font-medium">{user.displayName || user.uid}</div>
                 <div class="text-sm text-gray-500">{user.uid}</div>
@@ -103,7 +103,7 @@
               <td class="p-4">
                 <div class="flex flex-wrap gap-1">
                   {#each user.groups as group}
-                    <span class="text-xs px-2 py-0.5 rounded bg-nasos-border text-gray-300">{group}</span>
+                    <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{group}</span>
                   {/each}
                 </div>
               </td>

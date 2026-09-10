@@ -30,7 +30,7 @@ func (u *UserInfo) HasGroup(group string) bool {
 
 // IsAdmin checks if the user is an admin.
 func (u *UserInfo) IsAdmin() bool {
-	return u.HasGroup("nasos_admins")
+	return u.HasGroup("naslos_admins")
 }
 
 // WithUser adds user info to context.

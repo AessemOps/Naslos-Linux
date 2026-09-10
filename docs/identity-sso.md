@@ -1,11 +1,11 @@
 # Identity & Single Sign-On
 
-NasOS uses a **shared-password SSO**: one password grants access to both the
+Naslos uses a **shared-password SSO**: one password grants access to both the
 web interface (Authelia → OpenLDAP) and file shares (Samba). All password
-changes flow through the NasOS API, which updates both stores atomically.
+changes flow through the Naslos API, which updates both stores atomically.
 
 ```
- User → Traefik (IngressRoute) → Authelia (forwardAuth) → NasOS UI / API
+ User → Traefik (IngressRoute) → Authelia (forwardAuth) → Naslos UI / API
                                   ↓
                            OpenLDAP (identity store)
                                   ↓
@@ -26,10 +26,10 @@ changes flow through the NasOS API, which updates both stores atomically.
 ## Directory layout
 
 ```
-dc=nasos,dc=local
+dc=naslos,dc=local
 ├── ou=people      (inetOrgPerson + posixAccount + shadowAccount)
-├── ou=groups      (groupOfNames: nasos_admins, nasos_users, …)
-└── ou=services    (cn=nasos-service — the API's LDAP bind account)
+├── ou=groups      (groupOfNames: naslos_admins, naslos_users, …)
+└── ou=services    (cn=naslos-service — the API's LDAP bind account)
 ```
 
 Users are created with objectClasses `inetOrgPerson`, `posixAccount`,
@@ -38,7 +38,7 @@ Users are created with objectClasses `inetOrgPerson`, `posixAccount`,
 
 ## Shared Password Flow
 
-1. User changes password via the NasOS UI (or admin sets it).
+1. User changes password via the Naslos UI (or admin sets it).
 2. `POST /api/users/{uid}/password` → `identity.SetPassword(uid, password)`:
    - LDAP **Password Modify** extended operation (RFC 3062) → directory hashes
      and stores `userPassword`;
@@ -52,7 +52,7 @@ Users are created with objectClasses `inetOrgPerson`, `posixAccount`,
 ## Header Trust
 
 Authelia sets `Remote-User`, `Remote-Groups`, `Remote-Email`, `Remote-Name`
-headers. The NasOS API **trusts these only from Traefik's pod CIDR**
+headers. The Naslos API **trusts these only from Traefik's pod CIDR**
 (`TRAEFIK_CIDR` env var; default `10.0.0.0/8` — **tighten this in production**).
 
 > This is the most critical security boundary. An attacker who can reach the
@@ -61,7 +61,7 @@ headers. The NasOS API **trusts these only from Traefik's pod CIDR**
 AuthZ is enforced by `auth.Middleware`:
 
 - `RequireAuth` — source IP ∈ `TRAEFIK_CIDR` **and** a `Remote-User` present.
-- `RequireAdmin` — additionally the user must be in group `nasos_admins`.
+- `RequireAdmin` — additionally the user must be in group `naslos_admins`.
 
 ## Access control
 
@@ -69,10 +69,10 @@ Two default groups:
 
 | Group | Access |
 | --- | --- |
-| `nasos_admins` | Full access (users, apps, disks, shares) |
-| `nasos_users` | Read-only (view only) |
+| `naslos_admins` | Full access (users, apps, disks, shares) |
+| `naslos_users` | Read-only (view only) |
 
-Authelia rules (`charts/nasos/templates/authelia-config.yaml`):
+Authelia rules (`charts/naslos/templates/authelia-config.yaml`):
 
 | Resource | Policy |
 | --- | --- |
@@ -88,7 +88,7 @@ Authelia rules (`charts/nasos/templates/authelia-config.yaml`):
   SQLite (`/config/db.sqlite3`) for single-node.
 - Regulation: 3 retries → 2 min window → 5 min ban.
 - Password policy: ≥8 chars ≤72, upper + lower + number required.
-- Authelia's own password reset is disabled; resets happen in the NasOS UI → LDAP.
+- Authelia's own password reset is disabled; resets happen in the Naslos UI → LDAP.
 
 ## TLS
 
@@ -100,8 +100,8 @@ Authelia rules (`charts/nasos/templates/authelia-config.yaml`):
 ## Third-party apps & LDAP
 
 The same directory can back apps (e.g. Plex, Nextcloud) configured with the
-OpenLDAP server (`ldaps://nasos-openldap:636`, `dc=nasos,dc=local`) and the
-`nasos-service` bind account — avoiding per-app user databases.
+OpenLDAP server (`ldaps://naslos-openldap:636`, `dc=naslos,dc=local`) and the
+`naslos-service` bind account — avoiding per-app user databases.
 
 ## Deployment & first admin
 
@@ -110,14 +110,14 @@ OpenLDAP server (`ldaps://nasos-openldap:636`, `dc=nasos,dc=local`) and the
 3. Create the first admin via the API:
 
 ```bash
-kubectl port-forward -n nasos svc/nasos-api 8080:8080
+kubectl port-forward -n naslos svc/naslos-api 8080:8080
 curl -X POST http://localhost:8080/api/users \
   -H 'Content-Type: application/json' \
   -d '{
     "uid": "admin", "firstName": "Admin", "lastName": "User",
-    "email": "admin@nasos.local",
+    "email": "admin@naslos.local",
     "password": "SecurePassword123!",
-    "groups": ["nasos_admins"]
+    "groups": ["naslos_admins"]
   }'
 ```
 

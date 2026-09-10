@@ -1,31 +1,35 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: nasos-openldap-bootstrap
-  namespace: nasos
+  name: naslos-openldap-bootstrap
+  namespace: naslos
 spec:
   ttlSecondsAfterFinished: 3600
   backoffLimit: 3
   template:
     spec:
       restartPolicy: OnFailure
-      serviceAccountName: nasos-openldap-bootstrap
+      serviceAccountName: naslos-openldap-bootstrap
       initContainers:
-        # Wait for OpenLDAP to be ready
+        # Wait for OpenLDAP to be ready (uses ldapsearch from the Naslos
+        # OpenLDAP image so the VM does not need to pull busybox externally).
         - name: wait-for-ldap
-          image: busybox:1.36
+          image: 192.168.1.2:30095/naslos-openldap:0.1.0
+          env:
+            - name: LDAPTLS_REQCERT
+              value: never
           command:
             - sh
             - -c
             - |
-              until nc -z nasos-openldap 636; do
+              until ldapsearch -x -H ldaps://naslos-openldap:636 -b "" -s base >/dev/null 2>&1; do
                 echo "Waiting for OpenLDAP..."
                 sleep 2
               done
               echo "OpenLDAP is ready"
       containers:
         - name: bootstrap
-          image: ghcr.io/nasos/nasos-openldap:0.1.0
+          image: 192.168.1.2:30095/naslos-openldap:0.1.0
           command:
             - /bin/sh
             - -c
@@ -39,18 +43,18 @@ spec:
               SERVICE_PW_HASH=$(slappasswd -h "{SSHA}" -s "$SERVICE_PW")
 
               cat > /tmp/update-service-pw.ldif <<EOF
-              dn: cn=nasos-service,ou=services,dc=nasos,dc=local
+              dn: cn=naslos-service,ou=services,dc=naslos,dc=local
               changetype: modify
               replace: userPassword
               userPassword: $SERVICE_PW_HASH
               EOF
 
-              ldapmodify -x -H ldapi:/// -D "cn=admin,dc=nasos,dc=local" -w "$(cat /run/secrets/admin-password)" -f /tmp/update-service-pw.ldif
+              ldapmodify -x -H ldapi:/// -D "cn=admin,dc=naslos,dc=local" -w "$(cat /run/secrets/admin-password)" -f /tmp/update-service-pw.ldif
 
               # Verify groups exist (created by bootstrap.ldif)
               echo "Verifying groups..."
-              ldapsearch -x -H ldapi:/// -D "cn=admin,dc=nasos,dc=local" -w "$(cat /run/secrets/admin-password)" \
-                -b "cn=nasos_admins,ou=groups,dc=nasos,dc=local" -s base "(objectClass=*)" cn
+              ldapsearch -x -H ldapi:/// -D "cn=admin,dc=naslos,dc=local" -w "$(cat /run/secrets/admin-password)" \
+                -b "cn=naslos_admins,ou=groups,dc=naslos,dc=local" -s base "(objectClass=*)" cn
 
               echo "OpenLDAP bootstrap completed successfully!"
           volumeMounts:
@@ -60,7 +64,7 @@ spec:
       volumes:
         - name: secrets
           secret:
-            secretName: nasos-openldap
+            secretName: naslos-openldap
             items:
               - key: admin-password
                 path: admin-password
@@ -70,14 +74,14 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: nasos-openldap-bootstrap
-  namespace: nasos
+  name: naslos-openldap-bootstrap
+  namespace: naslos
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: nasos-openldap-bootstrap
-  namespace: nasos
+  name: naslos-openldap-bootstrap
+  namespace: naslos
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -89,13 +93,13 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: nasos-openldap-bootstrap
-  namespace: nasos
+  name: naslos-openldap-bootstrap
+  namespace: naslos
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: nasos-openldap-bootstrap
+  name: naslos-openldap-bootstrap
 subjects:
   - kind: ServiceAccount
-    name: nasos-openldap-bootstrap
-    namespace: nasos
+    name: naslos-openldap-bootstrap
+    namespace: naslos

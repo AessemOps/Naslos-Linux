@@ -1,11 +1,11 @@
 # Development
 
-Guide for working with the NasOS codebase: layout, builds, and how to extend.
+Guide for working with the Naslos codebase: layout, builds, and how to extend.
 
 ## Repository layout
 
 ```
-Nasos-Linux/
+Naslos-Linux/
 ├── api/                 Go — HTTP API server (the brain)
 │   └── internal/
 │       ├── auth/        header-trust middleware (Remote-*, TRAEFIK_CIDR)
@@ -23,7 +23,7 @@ Nasos-Linux/
 │       ├── server/      agent HTTP API (:9090)
 │       └── zfs/         pool/dataset/snapshot via chroot /host
 ├── ui/                  SvelteKit + Tailwind + xterm
-├── charts/nasos/        umbrella Helm chart (api, ui, agent, deps…)
+├── charts/naslos/        umbrella Helm chart (api, ui, agent, deps…)
 ├── bootstrap/schematic/ Image Factory schematic (ZFS extension)
 ├── openldap/            OpenLDAP image + manifests (StatefulSet, jobs)
 ├── zsh-terminal/        web-terminal container image
@@ -35,8 +35,8 @@ Nasos-Linux/
 
 | Component | Command | Output |
 | --- | --- | --- |
-| API | `make api` | `bin/nasos-api` |
-| Agent | `make agent` | `bin/nasos-agent` |
+| API | `make api` | `bin/naslos-api` |
+| Agent | `make agent` | `bin/naslos-agent` |
 | UI | `make ui` | `ui/dist` (static) |
 | All | `make all` | above three |
 | Dev cluster | `make dev-cluster` | local Talos cluster |
@@ -58,7 +58,7 @@ cd agent && go build ./... && go vet ./...
 ```
 
 For a live smoke test: `make dev-cluster && make crds && make install`, then
-`kubectl port-forward -n nasos svc/nasos-ui 8080:80`.
+`kubectl port-forward -n naslos svc/naslos-ui 8080:80`.
 
 ## Extending — add a catalog app
 
@@ -68,7 +68,7 @@ For a live smoke test: `make dev-cluster && make crds && make install`, then
 3. Fill `schema` (JSON Schema — drives `SchemaForm`) and `defaultValues`.
 4. Build: `make api`; test install in dev cluster:
    ```bash
-   helm repo add <repo> <url> && helm install <name> <repo>/<chart> -n nasos
+   helm repo add <repo> <url> && helm install <name> <repo>/<chart> -n naslos
    POST /api/apps { "name": "<name>", "values": {} }
    ```
 5. Wire anything extra (ingress, storage) via chart `values`.

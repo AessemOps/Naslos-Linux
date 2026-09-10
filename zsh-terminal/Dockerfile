@@ -1,4 +1,4 @@
-# NasOS Zsh Web Terminal
+# Naslos Zsh Web Terminal
 # Provides a zsh shell in a container with host mounts for NAS management.
 # This is the user-facing shell — Talos itself has no shell by design.
 

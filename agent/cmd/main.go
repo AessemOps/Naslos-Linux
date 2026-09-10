@@ -9,11 +9,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/nasos/nasos/agent/internal/zfs"
-	"github.com/nasos/nasos/agent/internal/server"
+	"github.com/AessemOps/Naslos-Linux/agent/internal/zfs"
+	"github.com/AessemOps/Naslos-Linux/agent/internal/server"
 )
 
-// nasos-agent runs as a privileged DaemonSet on each node.
+// naslos-agent runs as a privileged DaemonSet on each node.
 // It executes zpool/zfs commands via chroot /host to manage ZFS pools,
 // since ZFS pools live outside Talos's volume system.
 
@@ -29,19 +29,21 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("nasos-agent starting on node %s", node)
+	log.Printf("naslos-agent starting on node %s", node)
 
-	// Verify ZFS is available on the host
+	// ZFS is optional: on nodes without the ZFS system extension (e.g. the
+	// stock Talos installer used for the single-node VM), the agent starts in
+	// degraded mode — its ZFS endpoints return 503 instead of crash-looping.
+	var zfsClient *zfs.Client
 	if !zfs.IsZFSAvailable() {
-		log.Fatalf("ZFS not available on host — is the zfs extension installed?")
-	}
+		log.Printf("WARN: ZFS not available on host — starting in degraded mode (ZFS endpoints return 503)")
+	} else {
+		zfsClient = zfs.NewClient(ctx)
 
-	// Create ZFS client
-	zfsClient := zfs.NewClient(ctx)
-
-	// Import any existing pools (idempotent)
-	if err := zfsClient.ImportPool(""); err != nil {
-		log.Printf("Note: zpool import returned: %v", err)
+		// Import any existing pools (idempotent)
+		if err := zfsClient.ImportPool(""); err != nil {
+			log.Printf("Note: zpool import returned: %v", err)
+		}
 	}
 
 	// Start HTTP server for pool operations
@@ -52,7 +54,7 @@ func main() {
 		}
 	}()
 
-	log.Printf("nasos-agent listening on %s", listen)
+	log.Printf("naslos-agent listening on %s", listen)
 
 	<-ctx.Done()
 	log.Println("Shutting down...")

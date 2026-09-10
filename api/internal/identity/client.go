@@ -1,4 +1,4 @@
-// Package identity provides LDAP-based user and group management for NasOS.
+// Package identity provides LDAP-based user and group management for Naslos.
 // All password changes flow through SetPassword to keep LDAP and SMB in sync.
 package identity
 
@@ -113,7 +113,7 @@ func (c *Client) reconnect() error {
 
 func extractHost(bindDN string) string {
 	// Simple extraction - in production, store host separately
-	return "nasos-openldap"
+	return "naslos-openldap"
 }
 
 // Person represents a user account.

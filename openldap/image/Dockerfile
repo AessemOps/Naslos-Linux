@@ -1,15 +1,15 @@
-# NasOS OpenLDAP Server
+# Naslos OpenLDAP Server
 # Debian bookworm slapd with memberOf overlay, LDAPS, and bootstrap support.
 # Designed to run on Talos Linux with ZFS-backed persistence.
 
 FROM debian:bookworm-slim
 
-LABEL maintainer="NasOS <team@nasos.dev>"
-LABEL description="OpenLDAP server for NasOS identity management"
+LABEL maintainer="Naslos <team@naslos.dev>"
+LABEL description="OpenLDAP server for Naslos identity management"
 
-ENV LDAP_ORGANISATION="NasOS"
-ENV LDAP_DOMAIN="nasos.local"
-ENV LDAP_BASE_DN="dc=nasos,dc=local"
+ENV LDAP_ORGANISATION="Naslos"
+ENV LDAP_DOMAIN="naslos.local"
+ENV LDAP_BASE_DN="dc=naslos,dc=local"
 ENV LDAP_ADMIN_PASSWORD="admin"
 ENV LDAP_TLS="true"
 ENV LDAP_TLS_ENFORCE="false"
@@ -30,11 +30,10 @@ RUN mkdir -p /container/service/slapd/assets/certs \
              /container/service/slapd/assets/config/bootstrap \
              /var/lib/ldap/backups
 
-# Copy entrypoint and bootstrap scripts
+# Copy entrypoint and bootstrap data (overlays are configured inline in
+# entrypoint.sh, so only the base bootstrap LDIF is needed here)
 COPY entrypoint.sh /container/entrypoint.sh
 COPY bootstrap.ldif /container/service/slapd/assets/config/bootstrap/10-bootstrap.ldif
-COPY memberof.ldif /container/service/slapd/assets/config/bootstrap/20-memberof.ldif
-COPY refint.ldif /container/service/slapd/assets/config/bootstrap/30-refint.ldif
 
 RUN chmod +x /container/entrypoint.sh
 

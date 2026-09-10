@@ -43,19 +43,19 @@ data:
     duo_api:
       disable: true
 
-    # Password reset is handled by NasOS UI (LDAP password-modify)
+    # Password reset is handled by Naslos UI (LDAP password-modify)
     # Disable Authelia's built-in reset to avoid conflicts
     authentication_backend:
       ldap:
         implementation: custom
-        url: ldaps://{{ .Values.openldap.serviceName | default "nasos-openldap" }}.{{ .Values.namespace }}.svc.cluster.local:636
+        url: ldaps://{{ .Values.openldap.serviceName | default "naslos-openldap" }}.{{ .Values.namespace }}.svc.cluster.local:636
         timeout: 5s
         start_tls: false
         tls:
-          server_name: {{ .Values.openldap.host | default "ldap.nasos.local" }}
+          server_name: {{ .Values.openldap.host | default "ldap.naslos.local" }}
           skip_verify: false
           minimum_version: TLS1.2
-        base_dn: {{ .Values.openldap.baseDN | default "dc=nasos,dc=local" }}
+        base_dn: {{ .Values.openldap.baseDN | default "dc=naslos,dc=local" }}
         username_attribute: uid
         additional_users_dn: ou=people
         users_filter: (&(objectClass=inetOrgPerson)({{`{{input}}`}}={input}))
@@ -64,7 +64,7 @@ data:
         group_name_attribute: cn
         mail_attribute: mail
         display_name_attribute: displayName
-        user: {{ .Values.openldap.bindDN | default "cn=nasos-service,ou=services,dc=nasos,dc=local" }}
+        user: {{ .Values.openldap.bindDN | default "cn=naslos-service,ou=services,dc=naslos,dc=local" }}
         password: {{ .Values.openldap.bindPassword | default "CHANGE_ME" | quote }}
 
     session:
@@ -127,7 +127,7 @@ data:
         require_number: true
         require_special: false
 
-    # Password reset handled externally (NasOS UI -> LDAP)
+    # Password reset handled externally (Naslos UI -> LDAP)
     password_reset:
       disable: true
 {{- end }}

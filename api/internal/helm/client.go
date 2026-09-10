@@ -1,4 +1,4 @@
-// Package helm provides a Helm SDK wrapper for NasOS app lifecycle management.
+// Package helm provides a Helm SDK wrapper for Naslos app lifecycle management.
 package helm
 
 import (
@@ -24,7 +24,7 @@ func NewClient(namespace string) *Client {
 	settings := cli.New()
 	settings.SetNamespace(namespace)
 
-	cacheDir := filepath.Join(os.TempDir(), "nasos-helm-cache")
+	cacheDir := filepath.Join(os.TempDir(), "naslos-helm-cache")
 	os.MkdirAll(cacheDir, 0755)
 	settings.RepositoryConfig = filepath.Join(cacheDir, "repositories.yaml")
 	settings.RepositoryCache = filepath.Join(cacheDir, "repository")

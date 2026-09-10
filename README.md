@@ -1,4 +1,4 @@
-# NasOS
+# Naslos
 
 A user-friendly NAS distribution built on **stock Talos Linux** — no base modification, so Talos upgrades stay clean via `talosctl upgrade`.
 
@@ -15,7 +15,7 @@ A user-friendly NAS distribution built on **stock Talos Linux** — no base modi
 
 ## Why Talos
 
-Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes. NasOS layers on top of it as machine-config documents, Helm charts, and a management UI — nothing is forked.
+Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes. Naslos layers on top of it as machine-config documents, Helm charts, and a management UI — nothing is forked.
 
 ## Features
 
@@ -35,7 +35,7 @@ api/         Go — Talos API + K8s API + ZFS orchestration (the brain)
 agent/       Go DaemonSet, privileged — executes zpool/zfs via chroot /host
 ui/          SvelteKit + Tailwind — dashboard, wizards, terminal
 catalog/     Helm chart repo — the app store
-charts/      nasos umbrella chart (api, ui, agent, ntfy, shares, monitoring)
+charts/      naslos umbrella chart (api, ui, agent, ntfy, shares, monitoring)
 shares/      Samba + NFS-Ganesha + Avahi images/config
 openldap/    OpenLDAP SSO image + manifests (identity store)
 bootstrap/   schematic + ISO generator, first-boot wizard
@@ -49,7 +49,7 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | Doc | Topic |
 | --- | --- |
 | [architecture](docs/architecture.md) | Design principles + system/deployment/component diagrams, data flows |
-| [api](docs/api.md) | HTTP API reference (nasos-api + nasos-agent) |
+| [api](docs/api.md) | HTTP API reference (naslos-api + naslos-agent) |
 | [bootstrap](docs/bootstrap.md) | Image Factory schematic & ZFS extension |
 | [storage-zfs](docs/storage-zfs.md) | ZFS pools, datasets, snapshots, storage classes |
 | [identity-sso](docs/identity-sso.md) | Authelia + OpenLDAP + Samba single sign-on |
@@ -80,7 +80,7 @@ make all
 make dev-cluster
 
 # Access the UI
-kubectl port-forward -n nasos svc/nasos-ui 8080:80
+kubectl port-forward -n naslos svc/naslos-ui 8080:80
 ```
 
 ## License

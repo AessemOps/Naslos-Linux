@@ -1,0 +1,15 @@
+dependencies:
+- name: traefik
+  repository: https://traefik.github.io/charts
+  version: 39.0.0
+- name: authelia
+  repository: https://charts.authelia.com
+  version: 0.10.0
+- name: prometheus
+  repository: https://prometheus-community.github.io/helm-charts
+  version: 25.0.0
+- name: grafana
+  repository: https://grafana.github.io/helm-charts
+  version: 7.0.0
+digest: sha256:b05c4159f26f884ecb1a61f25a8653df2c6c9eee78aac55180995bca037630e3
+generated: "2026-09-10T23:25:39.672596358+02:00"

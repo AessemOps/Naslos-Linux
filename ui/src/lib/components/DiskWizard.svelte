@@ -121,11 +121,11 @@
   <div class="flex items-center justify-center mb-8">
     {#each [1, 2, 3, 4] as s}
       <div class="flex items-center">
-        <div class={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${step >= s ? 'bg-nasos-primary text-white' : 'bg-nasos-border text-gray-500'}`}>
+        <div class={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${step >= s ? 'bg-naslos-primary text-white' : 'bg-naslos-border text-gray-500'}`}>
           {s}
         </div>
         {#if s < 4}
-          <div class="w-16 h-1 mx-2 rounded" class:bg-nasos-primary={step > s} class:bg-nasos-border={step <= s}></div>
+          <div class="w-16 h-1 mx-2 rounded" class:bg-naslos-primary={step > s} class:bg-naslos-border={step <= s}></div>
         {/if}
       </div>
     {/each}
@@ -145,7 +145,7 @@
         <div class="space-y-3">
           {#each disks.filter(d => !d.isSystemDisk) as disk}
             <label
-              class={`flex items-center gap-4 p-4 rounded-lg border cursor-pointer transition-colors ${selectedDisks.includes(disk.device) ? 'border-nasos-primary bg-nasos-primary/10' : 'border-nasos-border hover:border-nasos-accent'}`}
+              class={`flex items-center gap-4 p-4 rounded-lg border cursor-pointer transition-colors ${selectedDisks.includes(disk.device) ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}
             >
               <input
                 type="checkbox"
@@ -197,7 +197,7 @@
               <p class="text-gray-400">{recommendation.disks.length} disks</p>
             </div>
           </div>
-          <div class="bg-nasos-border/30 p-4 rounded-lg">
+          <div class="bg-naslos-border/30 p-4 rounded-lg">
             <p class="text-sm">{recommendation.description}</p>
           </div>
         </div>
@@ -206,8 +206,8 @@
           <h3 class="font-bold mb-2">Selected Disks</h3>
           <div class="space-y-2">
             {#each selectedDisks as device}
-              <div class="flex items-center gap-2 p-2 bg-nasos-border/30 rounded">
-                <span class="text-xs px-2 py-1 rounded bg-nasos-border text-gray-300">disk</span>
+              <div class="flex items-center gap-2 p-2 bg-naslos-border/30 rounded">
+                <span class="text-xs px-2 py-1 rounded bg-naslos-border text-gray-300">disk</span>
                 <span>{device}</span>
               </div>
             {/each}
@@ -250,7 +250,7 @@
       <p class="text-gray-400 mb-6">Your ZFS pool has been created with the selected configuration.</p>
 
       {#if createResult}
-        <div class="mb-6 p-4 bg-nasos-border/30 rounded-lg"><p>{createResult}</p></div>
+        <div class="mb-6 p-4 bg-naslos-border/30 rounded-lg"><p>{createResult}</p></div>
       {/if}
 
       <div class="flex justify-end mt-6">

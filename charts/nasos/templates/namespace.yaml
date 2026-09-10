@@ -3,6 +3,6 @@ kind: Namespace
 metadata:
   name: {{ .Values.namespace }}
   labels:
-    app.kubernetes.io/name: nasos
-    app.kubernetes.io/part-of: nasos
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
     pod-security.kubernetes.io/enforce: privileged

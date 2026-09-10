@@ -1,4 +1,4 @@
-// Package zfs provides ZFS pool and dataset operations for the nasos-agent.
+// Package zfs provides ZFS pool and dataset operations for the naslos-agent.
 // All operations execute via chroot /host to manage pools on the Talos host.
 package zfs
 

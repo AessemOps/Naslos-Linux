@@ -1,18 +1,18 @@
 #!/bin/bash
 set -e
 
-# NasOS OpenLDAP Entrypoint
+# Naslos OpenLDAP Entrypoint
 # Handles TLS certificate generation, bootstrap, and slapd startup.
 
 SLAPD_CONFIG_DIR="/etc/ldap/slapd.d"
 SLAPD_DATA_DIR="/var/lib/ldap"
 CERT_DIR="/container/service/slapd/assets/certs"
-LDAP_DOMAIN="${LDAP_DOMAIN:-nasos.local}"
-LDAP_ORGANISATION="${LDAP_ORGANISATION:-NasOS}"
+LDAP_DOMAIN="${LDAP_DOMAIN:-naslos.local}"
+LDAP_ORGANISATION="${LDAP_ORGANISATION:-Naslos}"
 LDAP_ADMIN_PASSWORD="${LDAP_ADMIN_PASSWORD:-admin}"
 LDAP_TLS="${LDAP_TLS:-true}"
 
-# Generate domain components from LDAP_DOMAIN (e.g. nasos.local -> dc=nasos,dc=local)
+# Generate domain components from LDAP_DOMAIN (e.g. naslos.local -> dc=naslos,dc=local)
 IFS='.' read -ra DOMAIN_PARTS <<< "$LDAP_DOMAIN"
 BASE_DN=""
 for part in "${DOMAIN_PARTS[@]}"; do
@@ -54,6 +54,9 @@ if [ ! -f "${SLAPD_CONFIG_DIR}/cn=config/olcDatabase={1}mdb.ldif" ]; then
     ADMIN_PW_HASH=$(slappasswd -h "{SSHA}" -s "${LDAP_ADMIN_PASSWORD}")
 
     # Load initial configuration via slapadd
+    # NOTE: no olcTLSCipherSuite here — Debian's OpenLDAP uses GnuTLS, which
+    # rejects OpenSSL-style cipher strings ("HIGH:!aNULL:!MD5") and makes
+    # slapadd fail on the cn=config entry with an opaque error.
     cat <<EOF | slapadd -n 0 -F "${SLAPD_CONFIG_DIR}"
 dn: cn=config
 objectClass: olcGlobal
@@ -63,7 +66,6 @@ olcLogLevel: none
 olcTLSCertificateFile: ${CERT_DIR}/ldap.crt
 olcTLSCertificateKeyFile: ${CERT_DIR}/ldap.key
 olcTLSCACertificateFile: ${CERT_DIR}/ca.crt
-olcTLSCipherSuite: HIGH:!aNULL:!MD5
 olcTLSProtocolMin: 3.3
 
 dn: olcDatabase={0}config,cn=config
@@ -82,16 +84,16 @@ olcSuffix: ${BASE_DN}
 olcRootDN: cn=admin,${BASE_DN}
 olcRootPW: ${ADMIN_PW_HASH}
 olcAccess: {0}to attrs=userPassword,shadowLastChange
-    by dn="cn=admin,${BASE_DN}" write
-    by dn="cn=nasos-service,ou=services,${BASE_DN}" write
-    by self write
-    by anonymous auth
-    by * none
+ by dn="cn=admin,${BASE_DN}" write
+ by dn="cn=naslos-service,ou=services,${BASE_DN}" write
+ by self write
+ by anonymous auth
+ by * none
 olcAccess: {1}to dn.base="" by * read
 olcAccess: {2}to *
-    by dn="cn=admin,${BASE_DN}" write
-    by dn="cn=nasos-service,ou=services,${BASE_DN}" write
-    by * read
+ by dn="cn=admin,${BASE_DN}" write
+ by dn="cn=naslos-service,ou=services,${BASE_DN}" write
+ by * read
 olcDbIndex: objectClass eq
 olcDbIndex: cn,uid eq
 olcDbIndex: mail eq

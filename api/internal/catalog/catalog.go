@@ -1,4 +1,4 @@
-// Package catalog provides the NasOS app catalog — curated apps with
+// Package catalog provides the Naslos app catalog — curated apps with
 // JSON schemas that generate config forms in the UI.
 package catalog
 

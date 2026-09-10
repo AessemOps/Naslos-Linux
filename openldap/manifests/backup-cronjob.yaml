@@ -1,8 +1,8 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: nasos-openldap-backup
-  namespace: nasos
+  name: naslos-openldap-backup
+  namespace: naslos
 spec:
   schedule: "0 3 * * *"
   concurrencyPolicy: Forbid
@@ -11,10 +11,10 @@ spec:
       template:
         spec:
           restartPolicy: OnFailure
-          serviceAccountName: nasos-openldap-backup
+          serviceAccountName: naslos-openldap-backup
           containers:
             - name: backup
-              image: ghcr.io/nasos/nasos-openldap:0.1.0
+              image: 192.168.1.2:30095/naslos-openldap:0.1.0
               command:
                 - /bin/sh
                 - -c
@@ -43,13 +43,13 @@ spec:
           volumes:
             - name: data
               persistentVolumeClaim:
-                claimName: data-nasos-openldap-0
+                claimName: data-naslos-openldap-0
             - name: backup
               persistentVolumeClaim:
-                claimName: config-nasos-openldap-0
+                claimName: config-naslos-openldap-0
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: nasos-openldap-backup
-  namespace: nasos
+  name: naslos-openldap-backup
+  namespace: naslos

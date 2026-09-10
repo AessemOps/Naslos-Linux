@@ -81,14 +81,14 @@
   {:else}
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       {#each filteredApps as app}
-        <div class="card hover:border-nasos-accent transition-colors cursor-pointer" on:click={() => openInstall(app.name)}>
+        <div class="card hover:border-naslos-accent transition-colors cursor-pointer" on:click={() => openInstall(app.name)}>
           <div class="flex items-start gap-4">
             <div class="text-4xl">{app.icon}</div>
             <div class="flex-1 min-w-0">
               <h3 class="font-bold text-lg truncate">{app.displayName}</h3>
               <p class="text-sm text-gray-400 line-clamp-2 mb-2">{app.description}</p>
               <div class="flex items-center gap-2">
-                <span class="text-xs px-2 py-0.5 rounded bg-nasos-border text-gray-300">{app.category}</span>
+                <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{app.category}</span>
                 <span class="text-xs text-gray-500">v{app.version}</span>
               </div>
             </div>

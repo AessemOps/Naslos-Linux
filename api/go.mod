@@ -1,4 +1,4 @@
-module github.com/nasos/nasos/api
+module github.com/AessemOps/Naslos-Linux/api
 
 go 1.26.5
 
