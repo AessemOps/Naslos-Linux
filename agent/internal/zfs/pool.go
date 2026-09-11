@@ -4,6 +4,7 @@ package zfs
 
 import (
 	"context"
+	"os"
 	"os/exec"
 )
 
@@ -13,6 +14,13 @@ const (
 	zfsBin    = "/usr/local/sbin/zfs"
 	wipefsBin = "/usr/bin/wipefs"
 )
+
+// hostBinExists checks if a binary exists inside the host root.
+// Used to gate optional steps (e.g. wipefs) that Talos may not ship.
+func hostBinExists(bin string) bool {
+	_, err := os.Stat(hostRoot + bin)
+	return err == nil
+}
 
 // Pool represents a ZFS pool.
 type Pool struct {
@@ -43,20 +51,18 @@ type PoolConfig struct {
 	Options  map[string]string `json:"options"`
 }
 
-// DefaultOptions returns ZFS best-practice options for Talos.
+// DefaultOptions returns ZFS best-practice dataset options for Talos.
+// mountpoint is applied separately (not via zpool create -o, which
+// OpenZFS 2.4.x rejects) and is not included here.
 func DefaultOptions() map[string]string {
 	return map[string]string{
-		"ashift":               "12",
-		"mountpoint":           "/var/mnt/<pool>",
-		"xattr":                "sa",
-		"compression":          "zstd",
-		"acltype":              "posixacl",
-		"atime":                "off",
-		"dnodesize":            "auto",
-		"relatime":             "on",
-		"recordsize":           "128K",
-		"special_small_blocks": "0",
-		"com.sun:auto-snapshot": "false",
+		"xattr":       "sa",
+		"compression": "zstd",
+		"acltype":     "posixacl",
+		"atime":       "off",
+		"dnodesize":   "auto",
+		"relatime":    "on",
+		"recordsize":  "128K",
 	}
 }
 
