@@ -12,6 +12,7 @@
 
   let data: DashboardData = {};
   let loading = true;
+  let error = '';
 
   // Delete pool state
   let deleteTarget: string | null = null;
@@ -21,11 +22,13 @@
   async function loadDashboard() {
     try {
       const res = await fetch('/api/dashboard');
-      if (res.ok) {
-        data = await res.json();
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
+      data = await res.json();
+      error = '';
     } catch (e) {
-      // API may not be available yet
+      error = 'Failed to load dashboard data: ' + e;
     } finally {
       loading = false;
     }
@@ -85,6 +88,15 @@
     return `${mins}m`;
   }
 
+  // formatUpdatedAt renders the ISO timestamp in the browser's locale and
+  // hides the zero-value Go time (0001-01-01...) shown before first collection.
+  function formatUpdatedAt(iso?: string): string {
+    if (!iso || iso.startsWith('0001-01-01')) return '—';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleString();
+  }
+
   loadDashboard();
 </script>
 
@@ -95,6 +107,9 @@
   {#if loading}
     <p class="text-gray-400">Loading dashboard...</p>
   {:else}
+    {#if error}
+      <p class="text-red-400 mb-4">{error}</p>
+    {/if}
     <!-- Quick stats -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
       <div class="card">
@@ -179,7 +194,7 @@
     <!-- System Info -->
     <div class="card">
       <h2 class="text-xl font-bold mb-4">System Information</h2>
-      <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div>
           <div class="text-sm text-gray-400">Hostname</div>
           <div class="font-medium">{data.system?.hostname || '—'}</div>
@@ -189,8 +204,12 @@
           <div class="font-medium">{data.system?.os || 'Talos Linux'}</div>
         </div>
         <div>
+          <div class="text-sm text-gray-400">Uptime</div>
+          <div class="font-medium">{formatUptime(data.system?.uptime || 0)}</div>
+        </div>
+        <div>
           <div class="text-sm text-gray-400">Updated</div>
-          <div class="font-medium">{data.updatedAt || '—'}</div>
+          <div class="font-medium">{formatUpdatedAt(data.updatedAt)}</div>
         </div>
       </div>
     </div>

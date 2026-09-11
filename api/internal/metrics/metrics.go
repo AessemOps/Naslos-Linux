@@ -8,13 +8,13 @@ import (
 
 // SystemMetrics holds all system metrics for the dashboard.
 type SystemMetrics struct {
-	CPU        CPUMetrics        `json:"cpu"`
-	Memory     MemoryMetrics     `json:"memory"`
-	Disk       DiskMetrics       `json:"disk"`
-	Network    NetworkMetrics    `json:"network"`
-	ZFS        ZFSMetrics        `json:"zfs"`
-	System     SystemInfo        `json:"system"`
-	UpdatedAt  time.Time         `json:"updatedAt"`
+	CPU       CPUMetrics     `json:"cpu"`
+	Memory    MemoryMetrics  `json:"memory"`
+	Disk      DiskMetrics    `json:"disk"`
+	Network   NetworkMetrics `json:"network"`
+	ZFS       ZFSMetrics     `json:"zfs"`
+	System    SystemInfo     `json:"system"`
+	UpdatedAt time.Time      `json:"updatedAt"`
 }
 
 // CPUMetrics holds CPU usage metrics.
@@ -28,30 +28,30 @@ type CPUMetrics struct {
 
 // MemoryMetrics holds memory usage metrics.
 type MemoryMetrics struct {
-	Total       uint64  `json:"total"`
-	Used        uint64  `json:"used"`
-	Free        uint64  `json:"free"`
-	Available   uint64  `json:"available"`
+	Total        uint64  `json:"total"`
+	Used         uint64  `json:"used"`
+	Free         uint64  `json:"free"`
+	Available    uint64  `json:"available"`
 	UsagePercent float64 `json:"usagePercent"`
-	SwapTotal   uint64  `json:"swapTotal"`
-	SwapUsed    uint64  `json:"swapUsed"`
+	SwapTotal    uint64  `json:"swapTotal"`
+	SwapUsed     uint64  `json:"swapUsed"`
 }
 
 // DiskMetrics holds disk usage metrics.
 type DiskMetrics struct {
-	Total       uint64  `json:"total"`
-	Used        uint64  `json:"used"`
-	Free        uint64  `json:"free"`
+	Total        uint64  `json:"total"`
+	Used         uint64  `json:"used"`
+	Free         uint64  `json:"free"`
 	UsagePercent float64 `json:"usagePercent"`
 }
 
 // NetworkMetrics holds network interface metrics.
 type NetworkMetrics struct {
-	BytesSent     uint64 `json:"bytesSent"`
-	BytesRecv     uint64 `json:"bytesRecv"`
-	PacketsSent   uint64 `json:"packetsSent"`
-	PacketsRecv   uint64 `json:"packetsRecv"`
-	Interfaces    []NetworkInterface `json:"interfaces"`
+	BytesSent   uint64             `json:"bytesSent"`
+	BytesRecv   uint64             `json:"bytesRecv"`
+	PacketsSent uint64             `json:"packetsSent"`
+	PacketsRecv uint64             `json:"packetsRecv"`
+	Interfaces  []NetworkInterface `json:"interfaces"`
 }
 
 // NetworkInterface holds per-interface network stats.
@@ -70,22 +70,22 @@ type ZFSMetrics struct {
 
 // PoolMetrics holds per-pool ZFS metrics.
 type PoolMetrics struct {
-	Name       string `json:"name"`
-	Size       uint64 `json:"size"`
-	Alloc      uint64 `json:"alloc"`
-	Free       uint64 `json:"free"`
+	Name         string  `json:"name"`
+	Size         uint64  `json:"size"`
+	Alloc        uint64  `json:"alloc"`
+	Free         uint64  `json:"free"`
 	UsagePercent float64 `json:"usagePercent"`
-	Health     string `json:"health"`
+	Health       string  `json:"health"`
 }
 
 // SystemInfo holds general system information.
 type SystemInfo struct {
-	Hostname   string    `json:"hostname"`
-	Uptime     uint64    `json:"uptime"`
-	OS         string    `json:"os"`
-	Kernel     string    `kernel"`
-	TalosVersion string  `json:"talosVersion"`
-	LastBoot   time.Time `json:"lastBoot"`
+	Hostname     string    `json:"hostname"`
+	Uptime       uint64    `json:"uptime"`
+	OS           string    `json:"os"`
+	Kernel       string    `json:"kernel"`
+	TalosVersion string    `json:"talosVersion"`
+	LastBoot     time.Time `json:"lastBoot"`
 }
 
 // Manager manages metrics collection.
