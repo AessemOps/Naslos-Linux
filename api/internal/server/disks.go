@@ -8,7 +8,25 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/api/storage"
 )
 
-// handleDisks returns discovered disks.
+// isRealDisk filters out devices that cannot be used for ZFS pools:
+// loop devices (UNKNOWN type), optical drives (CD type), and the system disk.
+// Real disks are SSD, HDD, NVME, or SD (eMMC / card).
+func isRealDisk(d *storage.Disk) bool {
+	if d.SystemDisk {
+		return false
+	}
+	switch d.Type {
+	case storage.Disk_SSD, storage.Disk_HDD, storage.Disk_NVME, storage.Disk_SD:
+		return true
+	default:
+		return false
+	}
+}
+
+// handleDisks returns discovered disks suitable for pool creation.
+// Each disk is annotated with `inPool` (the pool name) if it is already a
+// member of an existing ZFS pool, so the UI can show a badge and prevent
+// selecting it for a new pool.
 func (s *Server) handleDisks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -21,18 +39,35 @@ func (s *Server) handleDisks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert to our DiskInfo format
-	result := make([]map[string]interface{}, len(disks))
-	for i, d := range disks {
-		result[i] = map[string]interface{}{
-			"device":        d.DeviceName,
-			"size":          d.Size,
-			"isSystemDisk":  d.SystemDisk,
-			"model":         d.Model,
-			"serial":        d.Serial,
-			"busPath":       d.BusPath,
-			"type":          d.Type.String(),
+	// Build a set of device → pool name for disks already in a pool.
+	inPool := map[string]string{}
+	if pools, err := s.agent.ListPools(); err == nil {
+		for _, p := range pools {
+			for _, d := range p.Disks {
+				inPool[d] = p.Name
+			}
 		}
+	}
+
+	// Convert to our DiskInfo format, filtering out non-disk devices.
+	result := make([]map[string]interface{}, 0, len(disks))
+	for _, d := range disks {
+		if !isRealDisk(d) {
+			continue
+		}
+		diskInfo := map[string]interface{}{
+			"device":       d.DeviceName,
+			"size":         d.Size,
+			"isSystemDisk": d.SystemDisk,
+			"model":        d.Model,
+			"serial":       d.Serial,
+			"busPath":      d.BusPath,
+			"type":         d.Type.String(),
+		}
+		if pool, ok := inPool[d.DeviceName]; ok {
+			diskInfo["inPool"] = pool
+		}
+		result = append(result, diskInfo)
 	}
 
 	writeJSON(w, http.StatusOK, result)
@@ -79,9 +114,21 @@ func (s *Server) handleDiskRecommend(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// candidates is either the user's explicit selection or, when nothing
+	// was selected, all discovered disks. We then narrow it to real disks
+	// so loop devices and the CD-ROM never shape the recommendation.
 	candidates := disks
 	if len(filtered) > 0 {
 		candidates = filtered
+	}
+	var real []*storage.Disk
+	for _, d := range candidates {
+		if isRealDisk(d) {
+			real = append(real, d)
+		}
+	}
+	if len(real) > 0 {
+		candidates = real
 	}
 
 	// Build disk info list

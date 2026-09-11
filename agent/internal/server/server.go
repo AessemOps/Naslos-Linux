@@ -34,6 +34,7 @@ func New(addr string, zfsClient *zfs.Client) *Server {
 func (s *Server) routes() {
 	s.router.HandleFunc("/health", s.handleHealth)
 	s.router.HandleFunc("/api/v1/pools", s.handlePools)
+	s.router.HandleFunc("/api/v1/pools/import", s.handlePoolImport)
 	s.router.HandleFunc("/api/v1/pools/", s.handlePoolDetail)
 	s.router.HandleFunc("/api/v1/datasets/", s.handleDatasets)
 	s.router.HandleFunc("/api/v1/snapshots/", s.handleSnapshots)
@@ -97,6 +98,39 @@ func (s *Server) handlePools(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handlePoolImport(w http.ResponseWriter, r *http.Request) {
+	if s.zfsUnavailable(w) {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		// List pools available for import.
+		pools, err := s.zfs.ListImportable()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, pools)
+	case http.MethodPost:
+		// Import pool(s). Body: {"name": "tank"} or empty {} for all.
+		var req struct {
+			Name string `json:"name"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		if err := s.zfs.ImportPool(req.Name); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if req.Name == "" {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "all pools imported"})
+		} else {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "pool imported", "name": req.Name})
+		}
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
 func (s *Server) handlePoolDetail(w http.ResponseWriter, r *http.Request) {
 	if s.zfsUnavailable(w) {
 		return
@@ -104,12 +138,12 @@ func (s *Server) handlePoolDetail(w http.ResponseWriter, r *http.Request) {
 	pool := r.URL.Path[len("/api/v1/pools/"):]
 	switch r.Method {
 	case http.MethodGet:
-		status, err := s.zfs.PoolStatus(pool)
+		health, err := s.zfs.PoolHealth(pool)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": status})
+		writeJSON(w, http.StatusOK, health)
 	case http.MethodDelete:
 		if err := s.zfs.DestroyPool(pool); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())

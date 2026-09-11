@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+
   interface DashboardData {
     cpu?: { usage: number; cores: number };
     memory?: { usage: number; total: number; used: number; available: number };
@@ -11,6 +13,11 @@
   let data: DashboardData = {};
   let loading = true;
 
+  // Delete pool state
+  let deleteTarget: string | null = null;
+  let deleting = false;
+  let deleteError = '';
+
   async function loadDashboard() {
     try {
       const res = await fetch('/api/dashboard');
@@ -21,6 +28,38 @@
       // API may not be available yet
     } finally {
       loading = false;
+    }
+  }
+
+  function confirmDelete(name: string) {
+    deleteTarget = name;
+    deleteError = '';
+  }
+
+  function cancelDelete() {
+    deleteTarget = null;
+    deleteError = '';
+  }
+
+  async function deletePool() {
+    if (!deleteTarget) return;
+    deleting = true;
+    deleteError = '';
+    try {
+      const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(deleteTarget)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status} — ${text.slice(0, 200)}`);
+      }
+      // Refresh dashboard to reflect the deletion
+      await loadDashboard();
+      cancelDelete();
+    } catch (e) {
+      deleteError = 'Failed to delete pool: ' + e;
+    } finally {
+      deleting = false;
     }
   }
 
@@ -88,13 +127,22 @@
           {#each data.zfs?.pools ?? [] as pool}
             <div class="bg-naslos-dark rounded-lg p-4">
               <div class="flex items-center justify-between mb-2">
-                <span class="font-bold">{pool.name}</span>
-                <span class={`text-xs px-2 py-0.5 rounded ${pool.health === 'ONLINE' ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>{pool.health}</span>
+                <a href="/pools/{pool.name}" class="font-bold hover:text-naslos-primary transition-colors">{pool.name}</a>
+                <div class="flex items-center gap-2">
+                  <span class={`text-xs px-2 py-0.5 rounded ${pool.health === 'ONLINE' ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>{pool.health}</span>
+                  <button
+                    class="text-xs px-2 py-0.5 rounded bg-red-900/30 text-red-400 hover:bg-red-900/60 transition-colors"
+                    on:click={() => confirmDelete(pool.name)}
+                    title="Delete pool '{pool.name}'"
+                  >Delete</button>
+                </div>
               </div>
-              <div class="w-full bg-naslos-border rounded-full h-2 mb-1">
-                <div class="bg-naslos-primary h-2 rounded-full" style="width: {pool.usagePercent || 0}%"></div>
-              </div>
-              <div class="text-xs text-gray-500">{formatBytes(pool.alloc || 0)} / {formatBytes(pool.size || 0)} ({pool.usagePercent?.toFixed(1) || 0}%)</div>
+              <a href="/pools/{pool.name}" class="block">
+                <div class="w-full bg-naslos-border rounded-full h-2 mb-1">
+                  <div class="bg-naslos-primary h-2 rounded-full" style="width: {pool.usagePercent || 0}%"></div>
+                </div>
+                <div class="text-xs text-gray-500">{formatBytes(pool.alloc || 0)} / {formatBytes(pool.size || 0)} ({pool.usagePercent?.toFixed(1) || 0}%)</div>
+              </a>
             </div>
           {/each}
         </div>
@@ -105,6 +153,28 @@
         </div>
       {/if}
     </div>
+
+    <!-- Delete Confirmation Modal -->
+    {#if deleteTarget}
+      <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+        <div class="bg-naslos-card border border-naslos-border rounded-lg p-6 max-w-md w-full mx-4">
+          <h3 class="text-xl font-bold mb-2">Delete Pool</h3>
+          <p class="text-gray-400 mb-4">
+            Are you sure you want to delete pool <strong class="text-white">{deleteTarget}</strong>?
+            This will destroy the pool and all data on it. This action cannot be undone.
+          </p>
+          {#if deleteError}
+            <p class="text-red-400 text-sm mb-4">{deleteError}</p>
+          {/if}
+          <div class="flex justify-end gap-3">
+            <button class="btn btn-secondary" on:click={cancelDelete} disabled={deleting}>Cancel</button>
+            <button class="btn bg-red-600 hover:bg-red-700 text-white" on:click={deletePool} disabled={deleting}>
+              {deleting ? 'Deleting…' : 'Delete Pool'}
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
 
     <!-- System Info -->
     <div class="card">

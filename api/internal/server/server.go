@@ -143,6 +143,7 @@ func (s *Server) routes() {
 	// Volumes
 	s.router.HandleFunc("/api/volumes", s.handleVolumes)
 	s.router.HandleFunc("/api/volumes/zfs", s.handleZFSPools)
+	s.router.HandleFunc("/api/volumes/zfs/import", s.handleZFSImport)
 	s.router.HandleFunc("/api/volumes/zfs/", s.handleZFSPoolDetail)
 
 	// Logs & terminal (WebSocket)
