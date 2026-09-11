@@ -25,6 +25,7 @@
   let recommendation: Recommendation | null = null;
   let customTopology = '';
   let poolName = '';
+  let cacheDisk = '';
   let creating = false;
   let createResult = '';
 
@@ -117,6 +118,7 @@
           name: poolName,
           topology: customTopology || recommendation?.topology || 'single',
           disks: selectedDisks,
+          cache: cacheDisk || undefined,
           options: {}
         })
       });
@@ -304,6 +306,45 @@
                 <span class="text-xs px-2 py-1 rounded bg-naslos-border text-gray-300">disk</span>
                 <span>{device}</span>
               </div>
+            {/each}
+          </div>
+        </div>
+
+        <!-- Optional Cache Drive (L2ARC) -->
+        <div class="mb-6">
+          <h3 class="font-bold mb-2">Cache Drive (Optional)</h3>
+          <p class="text-sm text-gray-400 mb-3">Add a fast device (NVMe/SSD) as a read cache (L2ARC) to speed up random reads. Leave empty to skip.</p>
+          <div class="space-y-2">
+            <label class={`flex items-center gap-3 p-3 rounded-lg border transition-colors cursor-pointer ${cacheDisk === '' ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}>
+              <input
+                type="radio"
+                name="cache"
+                value=""
+                bind:group={cacheDisk}
+                class="w-4 h-4 accent-naslos-primary"
+              />
+              <div class="flex-1">
+                <span class="font-medium">No cache</span>
+                <p class="text-sm text-gray-400">Standard pool without L2ARC</p>
+              </div>
+            </label>
+            {#each disks.filter(d => !d.isSystemDisk && !selectedDisks.includes(d.device) && !d.inPool) as disk}
+              <label class={`flex items-center gap-3 p-3 rounded-lg border transition-colors cursor-pointer ${cacheDisk === disk.device ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}>
+                <input
+                  type="radio"
+                  name="cache"
+                  value={disk.device}
+                  bind:group={cacheDisk}
+                  class="w-4 h-4 accent-naslos-primary"
+                />
+                <div class="flex-1">
+                  <div class="flex items-center gap-2">
+                    <span class="font-medium">{disk.device}</span>
+                    <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{disk.type}</span>
+                  </div>
+                  <p class="text-sm text-gray-400">{disk.model || 'Unknown'} · {formatSize(disk.size)}</p>
+                </div>
+              </label>
             {/each}
           </div>
         </div>

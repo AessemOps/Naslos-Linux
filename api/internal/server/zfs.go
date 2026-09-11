@@ -39,6 +39,7 @@ func (s *Server) handleZFSPools(w http.ResponseWriter, r *http.Request) {
 			Name     string            `json:"name"`
 			Topology string            `json:"topology"` // mirror, raidz1, raidz2, raidz3
 			Disks    []string          `json:"disks"`
+			Cache    string            `json:"cache"` // optional L2ARC device
 			Options  map[string]string `json:"options"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -65,6 +66,7 @@ func (s *Server) handleZFSPools(w http.ResponseWriter, r *http.Request) {
 			Name:     req.Name,
 			Topology: req.Topology,
 			Disks:    req.Disks,
+			Cache:    req.Cache,
 			Options:  req.Options,
 		}); err != nil {
 			writeAgentError(w, err)
