@@ -26,11 +26,40 @@
   let creating = false;
   let createResult = '';
 
+  async function parseJsonSafe(res: Response, what: string) {
+    // Read the body once as text so we can produce a readable error when the
+    // server answers with something that is not JSON. Without this guard, a
+    // proxy misroute (e.g. nginx serving index.html for /api/* with HTTP 200)
+    // surfaces as a cryptic "SyntaxError: JSON.parse: unexpected character
+    // at line 1 column 1 of the JSON data".
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`${what} failed: HTTP ${res.status} — ${text.slice(0, 200)}`);
+    }
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      throw new Error(
+        `${what} failed: expected JSON but got "${contentType || 'unknown content type'}" — ${text.slice(0, 200)}`
+      );
+    }
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      throw new Error(`${what} failed: invalid JSON response — ${text.slice(0, 200)}`);
+    }
+  }
+
   async function loadDisks() {
     loading = true;
+    error = '';
+    disks = [];
     try {
       const res = await fetch('/api/disks');
-      disks = await res.json();
+      const data = await parseJsonSafe(res, 'Loading disks');
+      if (!Array.isArray(data)) {
+        throw new Error('Loading disks failed: expected a disk list but got ' + typeof data);
+      }
+      disks = data;
     } catch (e) {
       error = 'Failed to load disks: ' + e;
     } finally {
@@ -47,7 +76,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ disks: selectedDisks })
       });
-      recommendation = await res.json();
+      recommendation = await parseJsonSafe(res, 'Getting recommendation');
     } catch (e) {
       error = 'Failed to get recommendation: ' + e;
     } finally {
@@ -81,8 +110,14 @@
         createResult = 'Pool created successfully!';
         step = 4;
       } else {
-        const data = await res.json();
-        createResult = 'Error: ' + (data.error || 'Unknown error');
+        let detail: string;
+        try {
+          const data = await parseJsonSafe(res, 'Creating pool');
+          detail = data.error || 'Unknown error';
+        } catch (e) {
+          detail = String(e);
+        }
+        createResult = 'Error: ' + detail;
       }
     } catch (e) {
       createResult = 'Error: ' + e;
