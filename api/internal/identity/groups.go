@@ -14,7 +14,9 @@ func (c *Client) CreateGroup(cn, description string) (*Group, error) {
 	addReq := ldap.NewAddRequest(dn, nil)
 	addReq.Attribute("objectClass", []string{"groupOfNames"})
 	addReq.Attribute("cn", []string{cn})
-	addReq.Attribute("description", []string{description})
+	if description != "" {
+		addReq.Attribute("description", []string{description})
+	}
 	// Add placeholder member to satisfy groupOfNames schema
 	addReq.Attribute("member", []string{c.placeholderMemberDN()})
 
