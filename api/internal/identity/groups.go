@@ -7,7 +7,8 @@ import (
 	"github.com/go-ldap/ldap/v3"
 )
 
-// CreateGroup creates a new group.
+// CreateGroup creates a new group. The description attribute is optional
+// and omitted when empty (OpenLDAP rejects empty string values).
 func (c *Client) CreateGroup(cn, description string) (*Group, error) {
 	dn := fmt.Sprintf("cn=%s,ou=groups,%s", cn, c.baseDN)
 
