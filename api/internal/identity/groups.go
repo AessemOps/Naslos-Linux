@@ -34,7 +34,7 @@ func (c *Client) placeholderMemberDN() string {
 // filterPlaceholderMembers removes the schema-required placeholder member from
 // the returned member list.
 func (c *Client) filterPlaceholderMembers(members []string) []string {
-	var filtered []string
+	var filtered []string = []string{}
 	for _, m := range members {
 		if strings.HasPrefix(m, "cn=empty-members,") {
 			continue
@@ -93,7 +93,7 @@ func (c *Client) ListGroups() ([]Group, error) {
 		return nil, fmt.Errorf("listing groups: %w", err)
 	}
 
-	var groups []Group
+	var groups []Group = []Group{}
 	for _, entry := range result.Entries {
 		groups = append(groups, Group{
 			DN:          entry.DN,

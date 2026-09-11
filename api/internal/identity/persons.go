@@ -90,7 +90,7 @@ func (c *Client) ListPeople() ([]Person, error) {
 		return nil, fmt.Errorf("listing people: %w", err)
 	}
 
-	var people []Person
+	var people []Person = []Person{}
 	for _, entry := range result.Entries {
 		people = append(people, Person{
 			DN:          entry.DN,
