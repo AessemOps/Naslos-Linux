@@ -13,12 +13,22 @@ data:
     theme: dark
     default_redirection_url: https://{{ .Values.authelia.domain }}/
     jwt_secret: {{ randAlphaNum 32 | quote }}
+    # Trust the openldap self-signed CA (mounted at /certificates from the
+    # naslos-openldap-tls secret via authelia.certificates.existingSecret in
+    # values.yaml) for the ldaps:// connection below. Without this, startup
+    # fails with "tls: failed to verify certificate: x509: certificate
+    # signed by unknown authority".
+    certificates_directory: /certificates
 
     server:
       host: 0.0.0.0
       port: 9091
       path: ""
-      asset_path: /srv/
+      # No asset_path: Authelia 4.39 validates the directory exists at
+      # startup ("error occurred reading the '/srv/' directory: the
+      # directory does not exist") — this image doesn't ship custom
+      # assets, so the field is omitted and Authelia serves its bundled
+      # default web UI.
       disable_healthcheck: false
 
     log:
@@ -43,9 +53,14 @@ data:
     duo_api:
       disable: true
 
-    # Password reset is handled by Naslos UI (LDAP password-modify)
-    # Disable Authelia's built-in reset to avoid conflicts
+    # Password reset is handled by Naslos UI (LDAP password-modify).
+    # Disable Authelia's built-in reset to avoid conflicts. In Authelia
+    # 4.39 this lives under authentication_backend.password_reset (a
+    # top-level "password_reset.disable" key is rejected with
+    # "configuration key not expected").
     authentication_backend:
+      password_reset:
+        disable: true
       ldap:
         implementation: custom
         url: ldaps://{{ .Values.openldap.serviceName | default "naslos-openldap" }}.{{ .Values.namespace }}.svc.cluster.local:636
@@ -58,7 +73,15 @@ data:
         base_dn: {{ .Values.openldap.baseDN | default "dc=naslos,dc=local" }}
         username_attribute: uid
         additional_users_dn: ou=people
-        users_filter: (&(objectClass=inetOrgPerson)({{`{{input}}`}}={input}))
+        # Authelia's LDAP users_filter placeholders are {username_attribute}
+        # (replaced with the attribute name above, i.e. "uid") and {input}
+        # (the typed username) — NOT the double-brace form. Authelia 4.38+
+        # also parses the whole configuration file as a Go template before
+        # YAML parsing, so a literal double-brace "input" is interpreted as
+        # a template action calling an undefined "input" function, which
+        # fatals with a "function not defined" error before the LDAP config
+        # is even validated.
+        users_filter: (&(objectClass=inetOrgPerson)({username_attribute}={input}))
         additional_groups_dn: ou=groups
         groups_filter: (&(objectClass=groupOfNames)(member={dn}))
         group_name_attribute: cn
@@ -74,8 +97,11 @@ data:
       expiration: 1h
       inactivity: 5m
       remember_me: 1M
-      redis:
-        enabled: false
+      # No redis block: this is a single-node deployment using the default
+      # in-memory session provider. Authelia 4.39 rejects an explicit
+      # "session.redis.enabled" key ("configuration key not expected") and,
+      # once present, also requires "session.redis.host" — so the whole
+      # redis block must be omitted rather than merely disabled.
 
     # Local SQLite for session storage (single-node)
     storage:
@@ -126,8 +152,4 @@ data:
         require_lowercase: true
         require_number: true
         require_special: false
-
-    # Password reset handled externally (Naslos UI -> LDAP)
-    password_reset:
-      disable: true
 {{- end }}

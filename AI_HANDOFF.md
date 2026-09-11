@@ -228,7 +228,7 @@ directive names). Convert to a template literal only if the compiler complains a
   Would require a Talos extension + agent/api support. Confirm scope with the user before building.
 - Unverified: tailwind token definitions; auth header bypass for local curl; full `git diff` state
   (`git status --short` output was lost to a flaky terminal — re-run it first thing).
-- RESOLVED during handoff write: `/home/aessem/Documents/NasOS` is a **symlink** to `/home/aessem/Naslos-Linux`
+- RESOLVED during handoff write: `/home/aessem/Documents/Naslos` is a **symlink** to `/home/aessem/Naslos-Linux`
   — one tree, two paths. All edits are equivalent from either side.
 
 ## 9. Non-fatal a11y warnings (optional cleanups)
@@ -248,7 +248,7 @@ directive names). Convert to a template literal only if the compiler complains a
 8. TODO/optional: a11y cleanups (§9), SchemaForm subProp typing, npm audit. Open question: bcachefs scope (§8).
 
 ## 11. Environment quirks for the next AI
-- TWO checkout paths: `/home/aessem/Naslos-Linux` (real dir) and `/home/aessem/Documents/NasOS` (symlink to it).
+- TWO checkout paths: `/home/aessem/Naslos-Linux` (real dir) and `/home/aessem/Documents/Naslos` (symlink to it).
   Both resolve to the same `stage-6-sso` branch — keep edits in this single tree.
 - Terminal output capture is UNRELIABLE (`run_commands` sometimes returns stale/interleaved output — it once
   wrongly reported branch `master` and "No such file or directory" for files that exist). Prefer file-read tools

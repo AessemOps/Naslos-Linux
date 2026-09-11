@@ -7,7 +7,7 @@
 #
 # Environment variables:
 #   VM_IP          Target Talos node IP (default: 192.168.1.96)
-#   REGISTRY       Container registry for NasOS images (default: 192.168.1.2:30095)
+#   REGISTRY       Container registry for Naslos images (default: 192.168.1.2:30095)
 #   REGISTRY_HTTP_SECRET  HTTP basic-auth password for the registry (default: secret)
 #   IMAGE_TAG      Image tag (default: 0.1.0)
 #   SKIP_BOOTSTRAP Set to "1" to skip talosctl bootstrap (default: 0)
@@ -32,7 +32,7 @@ cd "$REPO_ROOT"
 TALOSCONFIG="$REPO_ROOT/bootstrap/vm/talosconfig"
 CONTROLPLANE="$REPO_ROOT/bootstrap/vm/controlplane.yaml"
 
-echo "=== NasOS VM deployment ==="
+echo "=== Naslos VM deployment ==="
 echo "VM IP:        $VM_IP"
 echo "Registry:     $REGISTRY"
 echo "Image tag:    $IMAGE_TAG"
@@ -129,7 +129,7 @@ fi
 if [[ "$SKIP_IMAGES" == "1" ]]; then
     echo "=== Skipping image build/push (SKIP_IMAGES=1; assuming $REGISTRY already has :$IMAGE_TAG) ==="
 elif command -v docker >/dev/null 2>&1; then
-    echo "=== Building NasOS container images ==="
+    echo "=== Building Naslos container images ==="
     make images REGISTRY="$REGISTRY" IMAGE_TAG="$IMAGE_TAG"
 
     echo "=== Pushing images to $REGISTRY ==="
@@ -312,6 +312,29 @@ kubectl annotate namespace naslos "meta.helm.sh/release-name=naslos" --overwrite
 kubectl annotate namespace naslos "meta.helm.sh/release-namespace=naslos" --overwrite 2>/dev/null || true
 LDAP_IMAGE="$REGISTRY/naslos-openldap:$IMAGE_TAG" ./openldap/generate-secrets.sh
 
+# --- create the talosconfig secret the API pod needs to manage the node ---
+# The talos machinery client resolves its config via the TALOSCONFIG env var
+# pointing at a mounted file; the CLI talosconfig ($TALOSCONFIG) has an empty
+# `endpoints:` list (endpoints are normally passed via --endpoints on the
+# CLI), so a pod-ready copy with endpoints filled in is generated here.
+echo "=== Creating naslos-talosconfig secret for the API pod ==="
+TALOSCONFIG_POD="$REPO_ROOT/bootstrap/vm/talosconfig-pod"
+python3 - "$TALOSCONFIG" "$TALOSCONFIG_POD" "$VM_IP" <<'PYEOF'
+import sys
+import yaml
+
+src, dst, vm_ip = sys.argv[1:4]
+with open(src) as f:
+    cfg = yaml.safe_load(f)
+ctx = cfg["contexts"][cfg["context"]]
+ctx["endpoints"] = [vm_ip]
+with open(dst, "w") as f:
+    yaml.safe_dump(cfg, f)
+PYEOF
+kubectl create secret generic naslos-talosconfig -n naslos \
+    --from-file=talosconfig="$TALOSCONFIG_POD" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
 echo "=== Deploying OpenLDAP ==="
 # Standalone manifests use a fixed image; substitute the target registry/tag
 # (they live outside the Helm chart, so --set openldap.image would not apply).
@@ -326,8 +349,8 @@ for f in openldap/manifests/*.yaml; do
 done
 kubectl apply -f "$LDAP_MANIFEST_DIR"
 
-# --- install NasOS Helm chart ---
-echo "=== Installing NasOS on the VM ==="
+# --- install Naslos Helm chart ---
+echo "=== Installing Naslos on the VM ==="
 make install-vm VM_IP="$VM_IP" HELM_FLAGS="$HELM_FLAGS \
   --set api.image.repository=$REGISTRY/naslos-api \
   --set api.image.tag=$IMAGE_TAG \

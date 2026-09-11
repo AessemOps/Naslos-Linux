@@ -32,6 +32,7 @@ bootstrap/*.tar
 bootstrap/out/
 bootstrap/vm/controlplane.yaml
 bootstrap/vm/talosconfig
+bootstrap/vm/talosconfig-pod
 bootstrap/vm/worker.yaml
 
 # Secrets
