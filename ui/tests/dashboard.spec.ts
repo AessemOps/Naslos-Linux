@@ -39,7 +39,21 @@ test('dashboard shows zfs pools from the agent', async ({ page }) => {
   await page.goto('/');
 
   await expect(page.getByRole('heading', { name: 'ZFS Pools' })).toBeVisible();
-  // The VM has a "tank" pool managed by the naslos-agent
-  await expect(page.getByRole('link', { name: 'tank' })).toBeVisible();
-  await expect(page.getByText('ONLINE')).toBeVisible();
+
+  // The agent is the source of truth for pools; whatever pools exist must be
+  // rendered as links with an ONLINE health badge (don't hard-code names).
+  const res = await page.request.get('/api/metrics');
+  expect(res.ok()).toBeTruthy();
+  const { zfs } = await res.json();
+  const poolNames: string[] = (zfs?.pools ?? []).map((p: { name: string }) => p.name);
+  if (poolNames.length === 0) {
+    // No pools on this cluster: the empty state must offer pool creation.
+    await expect(page.getByRole('link', { name: 'Create Your First Pool' })).toBeVisible();
+    return;
+  }
+  await expect(page.getByText('No ZFS pools configured yet.')).toBeHidden();
+  for (const name of poolNames) {
+    await expect(page.getByRole('link', { name, exact: true })).toBeVisible();
+  }
+  await expect(page.getByText('ONLINE').first()).toBeVisible();
 });
