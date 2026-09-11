@@ -11,6 +11,7 @@
     { name: 'Dashboard', path: '/', icon: '📊' },
     { name: 'Pools', path: '/pools', icon: '🗄️' },
     { name: 'Users', path: '/users', icon: '👤' },
+    { name: 'Groups', path: '/groups', icon: '👥' },
     { name: 'Disks', path: '/disks', icon: '💾' },
     { name: 'Apps', path: '/apps', icon: '📦' },
     { name: 'Shares', path: '/shares', icon: '🔗' },

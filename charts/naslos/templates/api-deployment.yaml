@@ -48,22 +48,43 @@ spec:
                 secretKeyRef:
                   name: naslos-openldap
                   key: service-password
-          {{- if .Values.api.talosConfigSecret }}
+            {{- if .Values.api.ldapCA.secretName }}
+            - name: LDAP_CA_CERT
+              value: /var/run/secrets/ldap.ca/ca.crt
+            {{- end }}
+          {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName }}
           volumeMounts:
+            {{- if .Values.api.talosConfigSecret }}
             - name: talosconfig
               mountPath: /var/run/secrets/talos.dev
               readOnly: true
+            {{- end }}
+            {{- if .Values.api.ldapCA.secretName }}
+            - name: ldap-ca
+              mountPath: /var/run/secrets/ldap.ca
+              readOnly: true
+            {{- end }}
           {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
-      {{- if .Values.api.talosConfigSecret }}
+      {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName }}
       volumes:
+        {{- if .Values.api.talosConfigSecret }}
         - name: talosconfig
           secret:
             secretName: {{ .Values.api.talosConfigSecret }}
             items:
               - key: talosconfig
                 path: config
+        {{- end }}
+        {{- if .Values.api.ldapCA.secretName }}
+        - name: ldap-ca
+          secret:
+            secretName: {{ .Values.api.ldapCA.secretName }}
+            items:
+              - key: {{ .Values.api.ldapCA.key | default "ca.crt" }}
+                path: ca.crt
+        {{- end }}
       {{- end }}
 ---
 apiVersion: v1

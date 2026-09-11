@@ -9,6 +9,9 @@ import (
 
 // handleUserPassword handles password changes.
 func (s *Server) handleUserPassword(w http.ResponseWriter, r *http.Request) {
+	if s.identityUnavailable(w) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -46,6 +49,9 @@ func (s *Server) handleUserPassword(w http.ResponseWriter, r *http.Request) {
 
 // handleUserEnable handles enable/disable operations.
 func (s *Server) handleUserEnable(w http.ResponseWriter, r *http.Request) {
+	if s.identityUnavailable(w) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -80,6 +86,9 @@ func (s *Server) handleUserEnable(w http.ResponseWriter, r *http.Request) {
 
 // handleGroups handles group operations.
 func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
+	if s.identityUnavailable(w) {
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		groups, err := s.identity.ListGroups()
@@ -113,6 +122,9 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 
 // handleGroupDetail handles individual group operations.
 func (s *Server) handleGroupDetail(w http.ResponseWriter, r *http.Request) {
+	if s.identityUnavailable(w) {
+		return
+	}
 	cn := r.URL.Path[len("/api/groups/"):]
 
 	switch r.Method {
@@ -165,6 +177,9 @@ func (s *Server) handleGroupDetail(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthMe returns the current authenticated user.
 func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
+	if s.identityUnavailable(w) {
+		return
+	}
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
