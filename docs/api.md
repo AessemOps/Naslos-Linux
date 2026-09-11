@@ -33,6 +33,39 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | GET | `/api/health` | Liveness probe; always `{"status":"ok"}` and bypassed by Authelia |
 | GET | `/api/auth/me` | Current user from `Remote-*` headers (username, groups, email, displayName) |
 
+### Users
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/users` | List all users (uid, displayName, firstName, lastName, email, enabled, groups) |
+| POST | `/api/users` | Create user: `{uid, displayName, firstName, lastName, email, password, groups[]}` |
+| GET | `/api/users/{uid}` | User detail |
+| PUT | `/api/users/{uid}` | Update user attributes (`displayName`, `firstName`, `lastName`, `email`) |
+| DELETE | `/api/users/{uid}` | Delete user (also removes SMB password entry) |
+| POST | `/api/users/{uid}/password` | Change password: `{password}` — syncs LDAP + Samba NT hash |
+| POST | `/api/users/{uid}/enable` | Enable account (`shadowExpire = -1`) |
+| POST | `/api/users/{uid}/disable` | Disable account (`shadowExpire = 1`) |
+
+**Notes:**
+- `uid` is case-insensitive and auto-normalized to lowercase.
+- On creation, `uidNumber` is derived from a hash of the uid; all users get `gidNumber=10000`.
+- `enabled` is derived from `shadowExpire`: `-1` or unset = enabled; `0` = expired/disabled; `1` = disabled.
+- An empty `groups` array is returned on success (never `null`) to prevent UI freezes.
+
+### Groups
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/groups` | List all groups (cn, description, members[]) |
+| POST | `/api/groups` | Create group: `{cn, description}` — description is optional |
+| GET | `/api/groups/{cn}` | Group detail |
+| PUT | `/api/groups/{cn}` | Update group members: `{members: [uid, ...]}` |
+| DELETE | `/api/groups/{cn}` | Delete group |
+
+**Notes:**
+- Groups use `groupOfNames` objectClass; a placeholder member (`cn=empty-members,ou=groups,...`) is added during creation to satisfy the schema's "at least one member" requirement, then filtered from API responses.
+- The `description` attribute is optional and omitted from the LDAP add request when empty (OpenLDAP rejects empty string values).
+
 ### App catalog & installed apps
 
 | Method | Path | Description |

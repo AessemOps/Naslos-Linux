@@ -125,3 +125,27 @@ curl -X POST http://localhost:8080/api/users \
 
 Moved to [operations.md](operations.md#openldap-backup) — includes the nightly backup
 CronJob, manual `slapcat`/`slapadd`, and the login/SMB/password-sync checklists.
+
+## UI management (Users & Groups pages)
+
+The Naslos UI (`/users` and `/groups`) provides full CRUD management:
+
+- **Users page**: lists all users in a table with display name, email, group
+  badges, status (Active/Disabled), and actions (Edit, Enable/Disable, Delete).
+  The Enable/Disable toggle maps to `shadowExpire` on the LDAP `shadowAccount`
+  objectClass (`-1` = enabled, `1` = disabled).
+- **Groups page**: lists all groups as cards with member count and member badges.
+  Groups can be edited to add/remove members.
+- **Table alignment**: the users table uses `table-layout: fixed` with explicit
+  column widths and `align-top` so multi-line group badges don't misalign rows.
+- **Short names**: group and user references are displayed as short names
+  (e.g. `naslos_users`) instead of full DNs (e.g.
+  `cn=naslos_users,ou=groups,dc=naslos,dc=local`).
+- **Empty API responses**: both `/api/users` and `/api/groups` always return
+  arrays (never `null`), preventing UI freezes when LDAP has no entries.
+- **Group descriptions**: optional in the UI and API. When empty, the
+  `description` LDAP attribute is omitted entirely (OpenLDAP rejects empty
+  string values).
+- **Placeholder members**: `groupOfNames` requires at least one `member`. The API
+  adds a schema-required placeholder (`cn=empty-members,ou=groups,...`) during
+  creation and filters it from all responses, so users see only real members.
