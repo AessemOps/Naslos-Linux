@@ -20,6 +20,8 @@ test('full user and group lifecycle', async ({ page }) => {
   await page.fill('input[type="password"]', 'TestPass123!');
   await page.getByRole('button', { name: 'Create', exact: true }).click();
   await expect(page.locator('tr', { hasText: uid })).toBeVisible();
+  // Verify the new user shows as Active (not Disabled)
+  await expect(page.locator('tr', { hasText: uid }).getByText('Active', { exact: true })).toBeVisible();
 
   // Create a group
   await page.goto('/groups');
