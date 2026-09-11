@@ -35,7 +35,17 @@ with an in-flight guard and interval cleanup in `onDestroy`).
 - `ui/src/lib/components/Dashboard.svelte`: error banner, locale-formatted
   `updatedAt` (hides the Go zero time), System Info grid now 4 columns.
 
-**Deployed:** `naslos-api:0.1.0-12`, `naslos-ui:0.1.0-6` (5s refresh cadence)
+**Deployed:** `naslos-api:0.1.0-12`, `naslos-ui:0.1.0-7` (5s refresh cadence)
+
+### Branding (sidebar logo)
+- `ui/static/logo.png`: 128×128 downscale (13KB) of the 1254×1254 root
+  `logo.png` (made with PIL; do not ship the 926KB original to the UI).
+- `ui/src/lib/components/Sidebar.svelte`: 40px logo beside the "Naslos" title
+  in the top-left header block.
+- Gotcha: nginx's SPA fallback answers `200 text/html` for missing assets, so
+  asset tests must assert `content-type` (e.g. `image/png`), not just `ok()`.
+- Test: `ui/tests/logo.spec.ts` (asset is a real PNG, rendered ≤64px next to
+  the title). Full suite: 8 passing tests.
 (roll via `kubectl -n naslos set image deployment/naslos-api api=…` — note the
 container names are `api` and `ui`, not the deployment names).
 
