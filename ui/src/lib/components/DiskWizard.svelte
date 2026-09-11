@@ -23,9 +23,19 @@
   let error = '';
   let selectedDisks: string[] = [];
   let recommendation: Recommendation | null = null;
+  let customTopology = '';
   let poolName = '';
   let creating = false;
   let createResult = '';
+
+  // Available topologies with descriptions for the customization UI.
+  const topologyOptions = [
+    { value: 'single', label: 'Single', desc: 'No redundancy. All disks combined into one pool. If any disk fails, all data is lost.' },
+    { value: 'mirror', label: 'Mirror', desc: 'Each disk has an exact copy. Survives one disk failure per mirror pair. Best performance for reads.' },
+    { value: 'raidz1', label: 'RAIDZ1', desc: 'One disk parity. Survives one disk failure. Good balance of capacity and redundancy for 3-5 disks.' },
+    { value: 'raidz2', label: 'RAIDZ2', desc: 'Two disk parity. Survives two disk failures. Recommended for larger pools (6+ disks).' },
+    { value: 'raidz3', label: 'RAIDZ3', desc: 'Three disk parity. Survives three disk failures. Maximum redundancy for large pools.' },
+  ];
 
   async function parseJsonSafe(res: Response, what: string) {
     // Read the body once as text so we can produce a readable error when the
@@ -78,6 +88,9 @@
         body: JSON.stringify({ disks: selectedDisks })
       });
       recommendation = await parseJsonSafe(res, 'Getting recommendation');
+      // Default the custom topology to the recommendation so the UI reflects
+      // the advised choice until the user overrides it.
+      customTopology = recommendation?.topology || 'single';
     } catch (e) {
       error = 'Failed to get recommendation: ' + e;
     } finally {
@@ -102,7 +115,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: poolName,
-          topology: recommendation?.topology || 'single',
+          topology: customTopology || recommendation?.topology || 'single',
           disks: selectedDisks,
           options: {}
         })
@@ -232,7 +245,7 @@
   {#if step === 2}
     <div class="card">
       <h2 class="text-xl font-bold mb-4">Review Recommendation</h2>
-      <p class="text-gray-400 mb-6">Based on your disk selection, we recommend the following configuration.</p>
+      <p class="text-gray-400 mb-6">Based on your disk selection, we recommend the following configuration. You can customize the topology below.</p>
 
       {#if loading}
         <p class="text-gray-400">Generating recommendation...</p>
@@ -242,7 +255,7 @@
         <div class="mb-6">
           <div class="flex items-center justify-between mb-4">
             <div>
-              <h3 class="font-bold">Topology</h3>
+              <h3 class="font-bold">Recommended Topology</h3>
               <p class="text-gray-400">{recommendation.topology}</p>
             </div>
             <div>
@@ -252,6 +265,34 @@
           </div>
           <div class="bg-naslos-border/30 p-4 rounded-lg">
             <p class="text-sm">{recommendation.description}</p>
+          </div>
+        </div>
+
+        <!-- Topology Customization -->
+        <div class="mb-6">
+          <h3 class="font-bold mb-2">Customize Topology</h3>
+          <p class="text-sm text-gray-400 mb-3">Override the recommended topology. The recommended option is pre-selected.</p>
+          <div class="space-y-2">
+            {#each topologyOptions as opt}
+              <label class={`flex items-start gap-3 p-3 rounded-lg border transition-colors cursor-pointer ${customTopology === opt.value ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}>
+                <input
+                  type="radio"
+                  name="topology"
+                  value={opt.value}
+                  bind:group={customTopology}
+                  class="mt-1 w-4 h-4 accent-naslos-primary"
+                />
+                <div class="flex-1">
+                  <div class="flex items-center gap-2">
+                    <span class="font-medium">{opt.label}</span>
+                    {#if opt.value === recommendation.topology}
+                      <span class="text-xs px-2 py-0.5 rounded bg-naslos-primary/20 text-naslos-primary">Recommended</span>
+                    {/if}
+                  </div>
+                  <p class="text-sm text-gray-400">{opt.desc}</p>
+                </div>
+              </label>
+            {/each}
           </div>
         </div>
 
