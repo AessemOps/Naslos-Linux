@@ -57,3 +57,31 @@ test('dashboard shows zfs pools from the agent', async ({ page }) => {
   }
   await expect(page.getByText('ONLINE').first()).toBeVisible();
 });
+
+test('dashboard auto-refreshes every 5 seconds', async ({ page }) => {
+  // Serve incrementing CPU values; the UI must re-render without a reload.
+  let call = 0;
+  await page.route('**/api/dashboard', async (route) => {
+    call += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        cpu: { usage: call, cores: 6 },
+        system: { hostname: 'test-node', uptime: 60 },
+        updatedAt: new Date().toISOString(),
+      }),
+    });
+  });
+
+  await page.goto('/');
+  await expect(page.getByText('Loading dashboard...')).toBeHidden();
+
+  const cpuValue = page.locator('.card').filter({ hasText: 'CPU Usage' }).locator('.text-3xl');
+  const first = (await cpuValue.textContent())?.trim();
+  expect(first).toBe('1.0%');
+
+  // A later poll tick must replace the rendered value within 10s (interval 5s).
+  await expect(cpuValue).not.toHaveText(first!, { timeout: 10_000 });
+  expect(call).toBeGreaterThanOrEqual(2);
+});

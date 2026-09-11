@@ -17,6 +17,11 @@
 5. `Kernel` struct tag in `api/internal/metrics/metrics.go` was malformed
    (`` `kernel"` ``) so it never serialized.
 
+**Refresh cadence (5s):** the API collector defaults to
+`METRICS_INTERVAL_SECONDS=5`, and the dashboard component polls
+`/api/dashboard` every 5s (`REFRESH_INTERVAL_MS` in `Dashboard.svelte`,
+with an in-flight guard and interval cleanup in `onDestroy`).
+
 **Fixes:**
 - `api/internal/server/metrics_collector.go` (new): background collector
   started from `Server.Start()`; collects immediately then every
@@ -30,13 +35,14 @@
 - `ui/src/lib/components/Dashboard.svelte`: error banner, locale-formatted
   `updatedAt` (hides the Go zero time), System Info grid now 4 columns.
 
-**Deployed:** `naslos-api:0.1.0-10`, `naslos-ui:0.1.0-4`
+**Deployed:** `naslos-api:0.1.0-12`, `naslos-ui:0.1.0-6` (5s refresh cadence)
 (roll via `kubectl -n naslos set image deployment/naslos-api api=…` — note the
 container names are `api` and `ui`, not the deployment names).
 
-**Tests:** `ui/tests/dashboard.spec.ts` (2 tests) asserts API values are live
-(hostname/cores/memory/updatedAt) and the UI renders them; the full suite is
-6 passing Playwright tests against `http://192.168.1.96:30080`.
+**Tests:** `ui/tests/dashboard.spec.ts` (3 tests) asserts API values are live
+(hostname/cores/memory/updatedAt), that pools render, and that the dashboard
+re-renders on the 5s poll (mocked API with incrementing values); the full
+suite is 7 passing Playwright tests against `http://192.168.1.96:30080`.
 
 ---
 
@@ -134,11 +140,14 @@ All tests run against the deployed VM at `192.168.1.96:30080`.
 - `docs/identity-sso.md` — UI management section
 
 ## Deployment
-Current live images on the VM: `naslos-api:0.1.0-10` and `naslos-ui:0.1.0-4`
-(users/groups work shipped as `naslos-api:0.1.0-5` / `naslos-ui:0.1.0-3`).
+Current live images on the VM: `naslos-api:0.1.0-12` and `naslos-ui:0.1.0-6`.
 Registry: `192.168.1.2:30095`. Because the registry reuses tags and nodes pull
-with `IfNotPresent`, always retag to a fresh suffix (e.g. `0.1.0-11`) and
+with `IfNotPresent`, always retag to a fresh suffix (e.g. `0.1.0-13`) and
 `kubectl -n naslos set image` before rolling out.
+**Pitfall:** never run `make *-image` and `docker tag/push` concurrently — the
+tag can capture the stale `0.1.0` image before the build finishes (this shipped
+old content under a new tag once). Chain them with `&&` instead, and verify the
+pushed digest matches the local one (`docker images --digests`).
 
 ## Git Context
 - Branch: `feature/dashboard-and-metrics` (current work)

@@ -10,14 +10,15 @@ import (
 )
 
 // metricsInterval returns how often to poll the Talos node for metrics.
-// Overridable via METRICS_INTERVAL_SECONDS for local dev; defaults to 15s.
+// Overridable via METRICS_INTERVAL_SECONDS for local dev; defaults to 5s so
+// the dashboard (which polls /api/dashboard every 5s) always shows fresh data.
 func metricsInterval() time.Duration {
 	if v := os.Getenv("METRICS_INTERVAL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return time.Duration(n) * time.Second
 		}
 	}
-	return 15 * time.Second
+	return 5 * time.Second
 }
 
 // startMetricsCollector periodically collects node metrics from the Talos
