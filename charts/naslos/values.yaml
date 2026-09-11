@@ -1,0 +1,219 @@
+# Naslos Helm chart values
+
+# API server configuration
+api:
+  enabled: true
+  image:
+    repository: 192.168.1.2:30095/naslos-api
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  # Name of a Secret (key "talosconfig") containing a talosconfig file with
+  # its `endpoints:` list populated. Mounted into the pod and referenced via
+  # the TALOSCONFIG env var — the talos machinery client library resolves its
+  # config from that env var (NOT a "TALOS_ENDPOINTS" var, which it never
+  # reads). Empty disables the mount/env (and thus node management) — set
+  # per environment, e.g. "naslos-talosconfig" for the single-node VM (see
+  # values-vm.yaml).
+  talosConfigSecret: ""
+  # Base URL of the naslos-agent Service for ZFS pool operations
+  # (see templates/agent-daemonset.yaml headless Service). Empty selects the
+  # in-namespace default http://naslos-agent.<namespace>.svc.cluster.local:9090.
+  agentBaseURL: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# UI configuration
+ui:
+  enabled: true
+  image:
+    repository: 192.168.1.2:30095/naslos-ui
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    type: ClusterIP
+    port: 80
+  # Optional NodePort for environments without a LoadBalancer (e.g. single-node VM).
+  # See charts/naslos/values-vm.yaml for an example override.
+  nodePort:
+    enabled: false
+    port: 30080
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# Agent DaemonSet configuration
+agent:
+  enabled: true
+  image:
+    repository: 192.168.1.2:30095/naslos-agent
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  # Privileged is required for chroot /host zpool/zfs operations
+  privileged: true
+  # Headless Service fronting the agent pods (port 9090). naslos-api dials
+  # this DNS name for ZFS operations; ClusterIP must stay None so multi-node
+  # clusters resolve one A record per agent pod.
+  service:
+    port: 9090
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# ZFS configuration
+zfs:
+  enabled: true
+  # ARC max size in bytes (0 = auto-detect based on system memory)
+  arcMax: 0
+  # Auto-import pools at boot (handled by zfs-service extension)
+  autoImport: true
+
+# Shares configuration
+shares:
+  enabled: true
+  smb:
+    enabled: true
+    workgroup: "NASLOS"
+    # Time Machine support for macOS
+    timeMachine: true
+  nfs:
+    enabled: true
+  afp:
+    enabled: false  # Deprecated in favor of SMB Time Machine
+
+# Traefik ingress controller
+# Traefik chart v39+ requires the new ports schema:
+#   expose is an object with nested http level, not a boolean.
+# The chart is wired into naslos via the `condition: traefik.enabled` in
+# Chart.yaml (there is no `enabled:` key in the traefik subchart's schema).
+traefik:
+  ports:
+    web:
+      port: 80
+      expose:
+        default: true
+    websecure:
+      port: 443
+      expose:
+        default: true
+  service:
+    type: LoadBalancer
+  additionalArguments:
+    - "--api.dashboard=false"
+  logs:
+    general:
+      level: INFO
+
+# Authelia authentication
+authelia:
+  enabled: true
+  domain: naslos.local
+  server:
+    host: 0.0.0.0
+    port: 9091
+  configMap:
+    # Use our own ConfigMap (charts/naslos/templates/authelia-config.yaml,
+    # wired up with the LDAP backend) instead of the authelia subchart's
+    # generated one. The subchart only understands `configMap.existingConfigMap`
+    # / `configMap.key` / `configMap.disabled` — NOT `configMap.enabled`/`name`.
+    existingConfigMap: authelia-config
+    key: configuration.yml
+  # Trust the openldap self-signed CA for the ldaps:// connection — the
+  # secret (created by openldap/generate-secrets.sh) already has a ca.crt
+  # key; the authelia chart mounts every key of this secret at /certificates
+  # and trusts them as additional CAs.
+  certificates:
+    existingSecret: naslos-openldap-tls
+  # Persist Authelia's SQLite session/storage DB — without this, /config
+  # doesn't exist and Authelia fatals at startup with "unable to open
+  # database file: no such file or directory".
+  persistence:
+    enabled: true
+  # SMTP not required - password resets handled by LDAP/UI
+  # Session storage uses local SQLite for single-node
+  # LDAP backend configured in templates/authelia-config.yaml
+
+# Notifications (ntfy) — sent by the Naslos API. No bundled ntfy chart: the
+# previous repository https://helm.ntfy.sh/ no longer resolves (DNS failure) so
+# the dependency was dropped from Chart.yaml. The API sends to the public
+# ntfy.sh server (empty URL) or any self-hosted ntfy server.
+ntfy:
+  enabled: true
+  server:
+    url: ""  # Empty = use https://ntfy.sh (public)
+    topic: "naslos-alerts"
+
+# Monitoring
+prometheus:
+  enabled: true
+  prometheus:
+    prometheusSpec:
+      retention: 30d
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+
+grafana:
+  enabled: true
+  adminPassword: "naslos-admin"
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: naslos
+          orgId: 1
+          folder: Naslos
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/naslos
+  dashboards:
+    naslos:
+      naslos-overview:
+        json: |
+          {"title": "Naslos Overview", "uid": "naslos-home"}
+
+# Storage classes
+storage:
+  # Local path provisioner for app data
+  localPath:
+    enabled: true
+    path: /var/mnt/local-path-provisioner
+  # ZFS LocalPV CSI for ZFS-backed volumes
+  zfsLocalPV:
+    enabled: true
+    poolName: "naslos-pool"
+
+# OpenLDAP configuration
+openldap:
+  enabled: true
+  serviceName: naslos-openldap
+  # Custom Naslos OpenLDAP image (in the chart authelia only needs host/baseDN;
+  # deploy-vm.sh overrides this for the standalone manifests).
+  image: 192.168.1.2:30095/naslos-openldap:0.1.0
+  host: ldap.naslos.local
+  baseDN: "dc=naslos,dc=local"
+  bindDN: "cn=naslos-service,ou=services,dc=naslos,dc=local"
+  bindPassword: "CHANGE_ME_SERVICE_PASSWORD"
+
+# Namespace for all Naslos components
+namespace: naslos

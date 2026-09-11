@@ -1,10 +1,21 @@
-# NasOS
+# Naslos
 
 A user-friendly NAS distribution built on **stock Talos Linux** — no base modification, so Talos upgrades stay clean via `talosctl upgrade`.
 
+> ⚠️ **AI Use Disclaimer**
+> This project was developed with the assistance of AI tools (AI-assisted coding). While every effort has been made to ensure correctness, security, and best practices, this software is provided **as-is** without warranty of any kind.
+>
+> **Please be aware:**
+> - AI-generated code may contain bugs, security vulnerabilities, or suboptimal patterns that are not immediately obvious.
+> - You should **thoroughly review, test, and audit** all code before deploying it in any production environment or connecting it to untrusted networks.
+> - The authors and contributors **accept no liability** for data loss, security breaches, system damage, or any other consequences arising from the use of this software.
+> - Critical infrastructure (including NAS/storage systems holding valuable data) demands **independent verification** — do not rely solely on AI-generated implementations.
+>
+> **Use at your own risk.** Always maintain backups of your data.
+
 ## Why Talos
 
-Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes. NasOS layers on top of it as machine-config documents, Helm charts, and a management UI — nothing is forked.
+Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes. Naslos layers on top of it as machine-config documents, Helm charts, and a management UI — nothing is forked.
 
 ## Features
 
@@ -24,10 +35,31 @@ api/         Go — Talos API + K8s API + ZFS orchestration (the brain)
 agent/       Go DaemonSet, privileged — executes zpool/zfs via chroot /host
 ui/          SvelteKit + Tailwind — dashboard, wizards, terminal
 catalog/     Helm chart repo — the app store
-charts/      nasos umbrella chart (api, ui, agent, ntfy, shares, monitoring)
+charts/      naslos umbrella chart (api, ui, agent, ntfy, shares, monitoring)
 shares/      Samba + NFS-Ganesha + Avahi images/config
+openldap/    OpenLDAP SSO image + manifests (identity store)
 bootstrap/   schematic + ISO generator, first-boot wizard
+docs/        architecture, API, storage, identity, catalog, ops docs
 ```
+
+## Documentation
+
+The full documentation set lives in [`docs/`](docs/README.md):
+
+| Doc | Topic |
+| --- | --- |
+| [architecture](docs/architecture.md) | Design principles + system/deployment/component diagrams, data flows |
+| [api](docs/api.md) | HTTP API reference (naslos-api + naslos-agent) |
+| [bootstrap](docs/bootstrap.md) | Image Factory schematic & ZFS extension |
+| [storage-zfs](docs/storage-zfs.md) | ZFS pools, datasets, snapshots, storage classes |
+| [identity-sso](docs/identity-sso.md) | Authelia + OpenLDAP + Samba single sign-on |
+| [shares](docs/shares.md) | SMB / NFS / Time-Machine shares |
+| [app-catalog](docs/app-catalog.md) | Catalog, schema-driven forms, Helm lifecycle |
+| [monitoring](docs/monitoring.md) | Metrics API + Prometheus/Grafana |
+| [notifications](docs/notifications.md) | ntfy alerts |
+| [deployment](docs/deployment.md) | Prerequisites, Make targets, Helm values |
+| [operations](docs/operations.md) | Backups, restore, troubleshooting |
+| [development](docs/development.md) | Layout, builds, extending the catalog |
 
 ## Requirements
 
@@ -48,7 +80,7 @@ make all
 make dev-cluster
 
 # Access the UI
-kubectl port-forward -n nasos svc/nasos-ui 8080:80
+kubectl port-forward -n naslos svc/naslos-ui 8080:80
 ```
 
 ## License

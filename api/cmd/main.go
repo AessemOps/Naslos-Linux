@@ -8,9 +8,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/nasos/nasos/api/internal/config"
-	"github.com/nasos/nasos/api/internal/server"
-	"github.com/nasos/nasos/api/internal/talos"
+	"github.com/AessemOps/Naslos-Linux/api/internal/config"
+	"github.com/AessemOps/Naslos-Linux/api/internal/server"
+	"github.com/AessemOps/Naslos-Linux/api/internal/talos"
 )
 
 func main() {

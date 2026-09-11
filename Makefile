@@ -1,31 +1,136 @@
-.PHONY: all api agent ui bootstrap dev-cluster clean
+.PHONY: all api agent ui images push-images \
+        bootstrap bootstrap-vm dev-cluster crds \
+        install install-vm uninstall clean
 
 GO := go
 DOCKER := docker
 TALOSCTL := talosctl
 KUBECTL := kubectl
+HELM := helm
+
+VM_IP := 192.168.1.96
+VM_CONFIG_DIR := bootstrap/vm
+REGISTRY ?= 192.168.1.2:30095
+IMAGE_TAG ?= 0.1.0
+
+API_IMAGE := $(REGISTRY)/naslos-api:$(IMAGE_TAG)
+AGENT_IMAGE := $(REGISTRY)/naslos-agent:$(IMAGE_TAG)
+UI_IMAGE := $(REGISTRY)/naslos-ui:$(IMAGE_TAG)
+OPENLDAP_IMAGE := $(REGISTRY)/naslos-openldap:$(IMAGE_TAG)
+
+# Extra flags passed through to helm upgrade (e.g. image registry overrides).
+HELM_FLAGS :=
+
+# File/dir names: accept both the post-rename names (charts/naslos,
+# naslos-vm.yaml, naslos.yaml) and the pre-rename ones, so the repo works
+# either way (see the rename note in docs/deployment.md).
+CHART_DIR := charts/naslos
+VM_PATCH := $(if $(wildcard $(VM_CONFIG_DIR)/naslos-vm.yaml),$(VM_CONFIG_DIR)/naslos-vm.yaml)
+SCHEMATIC := $(if $(wildcard bootstrap/schematic/naslos.yaml),bootstrap/schematic/naslos.yaml)
 
 all: api agent ui
 
 api:
-	cd api && $(GO) build -o ../bin/nasos-api ./cmd
+	cd api && $(GO) build -o ../bin/naslos-api ./cmd
 
 agent:
-	cd agent && $(GO) build -o ../bin/nasos-agent ./cmd
+	cd agent && $(GO) build -o ../bin/naslos-agent ./cmd
 
 ui:
 	cd ui && npm install && npm run build
 
+# Build all Naslos container images locally.
+images: api-image agent-image ui-image openldap-image
+
+api-image:
+	$(DOCKER) build -t $(API_IMAGE) -f api/Dockerfile .
+
+agent-image:
+	$(DOCKER) build -t $(AGENT_IMAGE) -f agent/Dockerfile .
+
+ui-image:
+	$(DOCKER) build -t $(UI_IMAGE) -f ui/Dockerfile .
+
+openldap-image:
+	$(DOCKER) build -t $(OPENLDAP_IMAGE) -f openldap/image/Dockerfile openldap/image
+
+# Push all Naslos container images to REGISTRY (requires docker login / insecure-registry config for HTTP registries).
+push-images: images
+	$(DOCKER) push $(API_IMAGE)
+	$(DOCKER) push $(AGENT_IMAGE)
+	$(DOCKER) push $(UI_IMAGE)
+	$(DOCKER) push $(OPENLDAP_IMAGE)
+
 bootstrap:
 	$(TALOSCTL) image factory schematic bundle \
-		--schematic bootstrap/schematic/nasos.yaml \
-		--output bootstrap/nasos-installer.tar
+		--schematic $(SCHEMATIC) \
+		--output bootstrap/naslos-installer.tar
+
+# Generate a single-node Talos control-plane config for the VM and merge the Naslos patch.
+# Outputs: bootstrap/vm/controlplane.yaml, bootstrap/vm/talosconfig
+# NOTE: `talosctl gen config --force` regenerates ALL PKI. Only run this on a
+# fresh node. Re-running it against an already-installed node orphans the
+# existing talosconfig (bootstrap then fails with "certificate signed by
+# unknown authority"). If the node is already installed, keep the existing
+# talosconfig and just re-apply (see scripts/deploy-vm.sh fallback).
+# NOTE 2: v1.14 `gen config` emits a stock UnattendedInstallConfig doc that
+# is mutually exclusive with our machine.install block — it is stripped
+# below so machine.install stays authoritative.
+bootstrap-vm:
+	@if [ -f $(VM_CONFIG_DIR)/talosconfig ] && [ -z "$(REGEN)" ]; then \
+		echo "ERROR: $(VM_CONFIG_DIR)/talosconfig already exists."; \
+		echo "Refusing to regenerate PKI (would orphan the installed node)."; \
+		echo "To force regeneration on a FRESH node only: make bootstrap-vm REGEN=1"; \
+		exit 1; \
+	fi
+	@mkdir -p $(VM_CONFIG_DIR)
+	$(TALOSCTL) gen config naslos-vm \
+		https://$(VM_IP):6443 \
+		--output-types controlplane,talosconfig \
+		--output $(VM_CONFIG_DIR) \
+		--force \
+		--with-docs=false \
+		--with-examples=false \
+		--config-patch @$(VM_PATCH)
+	@echo "VM bootstrap config written to $(VM_CONFIG_DIR)/controlplane.yaml (UnattendedInstallConfig stripped, machine.install wins)"
+	@python3 -c "import re,sys; p=sys.argv[1]; t=open(p).read(); d=re.split(r'(?m)^---\s*$$', t); open(p,'w').write('---'.join(x for x in d if 'kind: UnattendedInstallConfig' not in x))" $(VM_CONFIG_DIR)/controlplane.yaml
+	@if grep -q "^kind: UnattendedInstallConfig" $(VM_CONFIG_DIR)/controlplane.yaml; then echo "ERROR: strip failed"; exit 1; fi
+	@echo "talosconfig written to $(VM_CONFIG_DIR)/talosconfig"
+	@echo "Next: boot the VM from the Naslos ISO and run:"
+	@echo "  export TALOSCONFIG=$(VM_CONFIG_DIR)/talosconfig"
+	@echo "  talosctl apply-config --insecure --nodes $(VM_IP) --file $(VM_CONFIG_DIR)/controlplane.yaml"
+	@echo "  talosctl bootstrap --nodes $(VM_IP) --endpoints $(VM_IP)"
+
+# Install Traefik CRDs (required before first Helm install)
+crds:
+	$(HELM) repo add traefik https://traefik.github.io/charts --force-update
+	$(HELM) repo update traefik
+	$(HELM) show crds traefik/traefik | $(KUBECTL) apply --server-side --force-conflicts -f -
+
+# Install Naslos Helm chart
+install: crds
+	$(HELM) dependency update $(CHART_DIR)
+	$(HELM) upgrade --install naslos $(CHART_DIR) -n naslos --create-namespace \
+		--skip-crds
+
+# Install Naslos on the single-node VM using the VM-specific values override.
+install-vm: crds
+	$(HELM) dependency update $(CHART_DIR)
+	$(HELM) upgrade --install naslos $(CHART_DIR) -n naslos --create-namespace \
+		-f $(CHART_DIR)/values.yaml \
+		-f $(CHART_DIR)/values-vm.yaml \
+		--skip-crds \
+		$(HELM_FLAGS)
+
+# Uninstall Naslos
+uninstall:
+	$(HELM) uninstall naslos -n naslos
 
 dev-cluster:
-	$(TALOSCTL) cluster create --name nasos-dev \
+	$(TALOSCTL) cluster create --name naslos-dev \
 		--image factory.talos.dev/$(shell $(TALOSCTL) image factory schematic render \
-			--schematic bootstrap/schematic/nasos.yaml | tail -1) \
+			--schematic $(SCHEMATIC) | tail -1) \
 		--workers 0
 
 clean:
-	rm -rf bin/ ui/dist ui/node_modules
+	rm -rf bin/ ui/dist ui/node_modules bootstrap/*.tar *.iso

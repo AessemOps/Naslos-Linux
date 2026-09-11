@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/nasos/nasos/api/internal/talos"
+	"github.com/AessemOps/Naslos-Linux/api/internal/talos"
+	"github.com/siderolabs/talos/pkg/machinery/api/storage"
 )
 
 // handleDisks returns discovered disks.
@@ -59,9 +60,33 @@ func (s *Server) handleDiskRecommend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Restrict the recommendation to the disks the user actually selected.
+	// A previous version ignored req.Disks and recommended over every
+	// discovered volume (including loop devices and the install ISO), which
+	// produced wrong topologies (e.g. raidz1 for 5 devices when the user
+	// picked 2). Unknown names are dropped; an empty selection (or a
+	// selection matching nothing) falls back to all non-system disks so a
+	// bare POST without a body still yields a useful recommendation.
+	selected := make(map[string]struct{}, len(req.Disks))
+	for _, d := range req.Disks {
+		selected[d] = struct{}{}
+	}
+	var filtered []*storage.Disk
+	if len(selected) > 0 {
+		for _, d := range disks {
+			if _, ok := selected[d.DeviceName]; ok {
+				filtered = append(filtered, d)
+			}
+		}
+	}
+	candidates := disks
+	if len(filtered) > 0 {
+		candidates = filtered
+	}
+
 	// Build disk info list
-	diskInfos := make([]talos.DiskInfo, 0, len(disks))
-	for _, d := range disks {
+	diskInfos := make([]talos.DiskInfo, 0, len(candidates))
+	for _, d := range candidates {
 		diskInfos = append(diskInfos, talos.DiskInfo{
 			DevicePath:   d.DeviceName,
 			Size:         d.Size,
