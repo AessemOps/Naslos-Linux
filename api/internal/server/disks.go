@@ -24,6 +24,9 @@ func isRealDisk(d *storage.Disk) bool {
 }
 
 // handleDisks returns discovered disks suitable for pool creation.
+// Each disk is annotated with `inPool` (the pool name) if it is already a
+// member of an existing ZFS pool, so the UI can show a badge and prevent
+// selecting it for a new pool.
 func (s *Server) handleDisks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -36,21 +39,35 @@ func (s *Server) handleDisks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build a set of device → pool name for disks already in a pool.
+	inPool := map[string]string{}
+	if pools, err := s.agent.ListPools(); err == nil {
+		for _, p := range pools {
+			for _, d := range p.Disks {
+				inPool[d] = p.Name
+			}
+		}
+	}
+
 	// Convert to our DiskInfo format, filtering out non-disk devices.
 	result := make([]map[string]interface{}, 0, len(disks))
 	for _, d := range disks {
 		if !isRealDisk(d) {
 			continue
 		}
-		result = append(result, map[string]interface{}{
-			"device":        d.DeviceName,
-			"size":          d.Size,
-			"isSystemDisk":  d.SystemDisk,
-			"model":         d.Model,
-			"serial":        d.Serial,
-			"busPath":       d.BusPath,
-			"type":          d.Type.String(),
-		})
+		diskInfo := map[string]interface{}{
+			"device":       d.DeviceName,
+			"size":         d.Size,
+			"isSystemDisk": d.SystemDisk,
+			"model":        d.Model,
+			"serial":       d.Serial,
+			"busPath":      d.BusPath,
+			"type":         d.Type.String(),
+		}
+		if pool, ok := inPool[d.DeviceName]; ok {
+			diskInfo["inPool"] = pool
+		}
+		result = append(result, diskInfo)
 	}
 
 	writeJSON(w, http.StatusOK, result)

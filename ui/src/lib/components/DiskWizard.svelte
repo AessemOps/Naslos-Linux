@@ -8,6 +8,7 @@
     model: string;
     serial: string;
     type: string;
+    inPool?: string; // name of the pool this disk already belongs to (if any)
   }
 
   interface Recommendation {
@@ -189,17 +190,24 @@
       {:else}
         <div class="space-y-3">
           {#each disks.filter(d => !d.isSystemDisk) as disk}
+            <!-- in-pool disks are disabled: they already belong to a pool. -->
             <label
-              class={`flex items-center gap-4 p-4 rounded-lg border cursor-pointer transition-colors ${selectedDisks.includes(disk.device) ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}
+              class={`flex items-center gap-4 p-4 rounded-lg border transition-colors ${disk.inPool ? 'border-naslos-border/50 bg-naslos-border/10 opacity-60 cursor-not-allowed' : selectedDisks.includes(disk.device) ? 'border-naslos-primary bg-naslos-primary/10 cursor-pointer' : 'border-naslos-border hover:border-naslos-accent cursor-pointer'}`}
             >
               <input
                 type="checkbox"
                 checked={selectedDisks.includes(disk.device)}
+                disabled={!!disk.inPool}
                 on:change={() => toggleDisk(disk.device)}
                 class="w-5 h-5 rounded"
               />
               <div class="flex-1">
-                <div class="font-medium">{disk.device}</div>
+                <div class="flex items-center gap-2">
+                  <span class="font-medium">{disk.device}</span>
+                  {#if disk.inPool}
+                    <span class="text-xs px-2 py-0.5 rounded bg-yellow-900/50 text-yellow-400" title="Already a member of pool '{disk.inPool}'">in pool: {disk.inPool}</span>
+                  {/if}
+                </div>
                 <div class="text-sm text-gray-400">
                   {formatSize(disk.size)} {disk.model ? `• ${disk.model}` : ''}
                 </div>

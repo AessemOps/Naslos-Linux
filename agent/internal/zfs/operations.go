@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Pools lists all ZFS pools.
+// Pools lists all ZFS pools with their member disks.
 func (c *Client) Pools() ([]Pool, error) {
 	out, err := c.hostExec(zpoolBin, "list", "-H", "-o", "name,size,alloc,free,health")
 	if err != nil {
@@ -21,15 +21,71 @@ func (c *Client) Pools() ([]Pool, error) {
 		if len(fields) < 5 {
 			continue
 		}
-		pools = append(pools, Pool{
+		pool := Pool{
 			Name:   fields[0],
 			Size:   fields[1],
 			Alloc:  fields[2],
 			Free:   fields[3],
 			Health: fields[4],
-		})
+		}
+		// Populate member disks by parsing `zpool status`. This lets the
+		// disk-setup wizard mark disks that are already part of a pool so
+		// the user cannot accidentally add them to another one.
+		if disks, err := c.poolDisks(pool.Name); err == nil {
+			pool.Disks = disks
+		}
+		pools = append(pools, pool)
 	}
 	return pools, nil
+}
+
+// poolDisks returns the member devices of a pool by parsing `zpool status`.
+// It walks the config section and collects leaf devices (real disks),
+// skipping virtual devices (mirror-*, raidz*, cache, spare, logs).
+func (c *Client) poolDisks(name string) ([]string, error) {
+	out, err := c.hostExec(zpoolBin, "status", name)
+	if err != nil {
+		return nil, err
+	}
+
+	var disks []string
+	inConfig := false
+	headerSeen := false
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "config:" {
+			inConfig = true
+			continue
+		}
+		if !inConfig {
+			continue
+		}
+		// Skip empty lines and the header line (NAME STATE READ WRITE CKSUM).
+		if trimmed == "" {
+			continue
+		}
+		if !headerSeen {
+			headerSeen = true
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) < 2 {
+			continue
+		}
+		dev := fields[0]
+		// Skip the pool name line (same indentation as header) and virtual
+		// devices (mirror-*, raidz*, cache-*, spare-*, logs). Real disks are
+		// indented further and have simple names (vdb, sda, nvme0n1, ...).
+		if dev == name || strings.Contains(dev, "-") || strings.Contains(dev, ":") {
+			continue
+		}
+		// Normalize to /dev/<name> if not already a full path.
+		if !strings.HasPrefix(dev, "/dev/") {
+			dev = "/dev/" + dev
+		}
+		disks = append(disks, dev)
+	}
+	return disks, nil
 }
 
 // PoolStatus returns detailed status of a pool.
