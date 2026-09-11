@@ -12,6 +12,8 @@ is exposed separately via `/api/volumes`.
 | Disk discovery | `naslos-api` `talos.GetDiscoveredVolumes` | `talosctl get discoveredvolumes` |
 | Topology advice | `talos.VolumeAdvisor` | Recommends `single/mirror/raidz1/raidz2/raidz3` |
 | Pool/DS/snapshot ops | `naslos-agent` (`chroot /host zpool/zfs`) | Actual creation, status, destroy, import/export |
+| Health monitoring | `naslos-agent` | Parses `zpool status` + `zpool iostat` into structured data |
+| Pool import | `naslos-agent` | `zpool import` (dry-run) to list; `zpool import -f` to import |
 | Boot import | `zfs-service` (Image Factory extension) | `zpool import -fal` at boot |
 | Volumes for K8s | `naslos-zfs` storage class + local-path provisioner | App PVCs |
 
@@ -49,6 +51,55 @@ Highlights:
 | 3–5 | `raidz1` — single parity |
 | 6–10 | `raidz2` — double parity |
 | 11+ | `raidz3` — triple parity |
+
+## Pool health
+
+`GET /api/volumes/zfs/{name}` (and `/api/volumes/zfs/{name}/health`) returns
+structured health data parsed from `zpool status` and `zpool iostat`:
+
+```json
+{
+  "name": "tank",
+  "state": "ONLINE",
+  "scan": "scrub repaired 0B in 00:01:23 with 0 errors",
+  "errors": "No known data errors",
+  "config": [
+    {
+      "name": "tank", "state": "ONLINE",
+      "read": "0", "write": "0", "cksum": "0",
+      "devices": [
+        { "name": "mirror-0", "state": "ONLINE", "devices": [
+          { "name": "/dev/sda", "state": "ONLINE", "read": "0", "write": "0", "cksum": "0" },
+          { "name": "/dev/sdb", "state": "ONLINE", "read": "0", "write": "0", "cksum": "0" }
+        ]}
+      ]
+    }
+  ],
+  "ioStats": { "readOps": "12", "writeOps": "345", "readBW": "1.2K", "writeBW": "45.6K" }
+}
+```
+
+The device tree preserves indentation: top-level vdevs (mirror, raidz, cache)
+nest their child disks under `devices`. The UI renders this on the
+**Pool Health** page (`/pools/{name}`) with color-coded state badges.
+
+## Import existing pools
+
+Pools that already exist on disk but are not currently imported can be discovered
+and imported:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/volumes/zfs/import` | List importable pools (name, state, topology, disks) |
+| POST | `/api/volumes/zfs/import` | `{"name":"tank"}` imports one; `{}` imports all |
+
+The agent runs `zpool import` (dry-run) to list candidates, then
+`zpool import -f <name>` (or `zpool import -f` for all) to import. Already-imported
+pools are excluded from the list.
+
+The UI offers **Import Pool** on the `/pools` page: a modal shows each importable
+pool's name, topology (Mirror/RAIDZ1/etc.), state, and member disks with a
+per-pool Import action.
 
 ## Datasets & snapshots
 
