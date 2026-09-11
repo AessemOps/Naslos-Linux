@@ -127,7 +127,7 @@
           {#each data.zfs?.pools ?? [] as pool}
             <div class="bg-naslos-dark rounded-lg p-4">
               <div class="flex items-center justify-between mb-2">
-                <span class="font-bold">{pool.name}</span>
+                <a href="/pools/{pool.name}" class="font-bold hover:text-naslos-primary transition-colors">{pool.name}</a>
                 <div class="flex items-center gap-2">
                   <span class={`text-xs px-2 py-0.5 rounded ${pool.health === 'ONLINE' ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>{pool.health}</span>
                   <button
@@ -137,10 +137,12 @@
                   >Delete</button>
                 </div>
               </div>
-              <div class="w-full bg-naslos-border rounded-full h-2 mb-1">
-                <div class="bg-naslos-primary h-2 rounded-full" style="width: {pool.usagePercent || 0}%"></div>
-              </div>
-              <div class="text-xs text-gray-500">{formatBytes(pool.alloc || 0)} / {formatBytes(pool.size || 0)} ({pool.usagePercent?.toFixed(1) || 0}%)</div>
+              <a href="/pools/{pool.name}" class="block">
+                <div class="w-full bg-naslos-border rounded-full h-2 mb-1">
+                  <div class="bg-naslos-primary h-2 rounded-full" style="width: {pool.usagePercent || 0}%"></div>
+                </div>
+                <div class="text-xs text-gray-500">{formatBytes(pool.alloc || 0)} / {formatBytes(pool.size || 0)} ({pool.usagePercent?.toFixed(1) || 0}%)</div>
+              </a>
             </div>
           {/each}
         </div>

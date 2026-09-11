@@ -153,3 +153,44 @@ func (c *Client) PoolStatus(name string) (string, error) {
 	}
 	return payload["status"], nil
 }
+
+// PoolHealth returns structured health data for a pool.
+func (c *Client) PoolHealth(name string) (*PoolHealth, error) {
+	httpReq, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/pools/"+name, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating pool-health request: %w", err)
+	}
+	var health PoolHealth
+	if err := c.do(httpReq, &health); err != nil {
+		return nil, err
+	}
+	return &health, nil
+}
+
+// PoolHealth mirrors the agent agent's PoolHealth JSON shape.
+type PoolHealth struct {
+	Name    string       `json:"name"`
+	State   string       `json:"state"`
+	Scan    string       `json:"scan"`
+	Errors  string       `json:"errors"`
+	Config  []PoolDevice `json:"config"`
+	IOStats PoolIOStats  `json:"ioStats"`
+}
+
+// PoolDevice is a single device in the pool config tree.
+type PoolDevice struct {
+	Name    string       `json:"name"`
+	State   string       `json:"state"`
+	Read    string       `json:"read"`
+	Write   string       `json:"write"`
+	Cksum   string       `json:"cksum"`
+	Devices []PoolDevice `json:"devices,omitempty"`
+}
+
+// PoolIOStats holds `zpool iostat` counters.
+type PoolIOStats struct {
+	ReadOps  string `json:"readOps"`
+	WriteOps string `json:"writeOps"`
+	ReadBW   string `json:"readBW"`
+	WriteBW  string `json:"writeBW"`
+}

@@ -238,3 +238,107 @@ func (c *Client) ExportPool(name string) error {
 	}
 	return nil
 }
+
+// PoolHealth returns structured health data for a pool by parsing
+// `zpool status` and `zpool iostat`.
+func (c *Client) PoolHealth(name string) (*PoolHealth, error) {
+	out, err := c.hostExec(zpoolBin, "status", name)
+	if err != nil {
+		return nil, fmt.Errorf("getting pool status: %w", err)
+	}
+
+	h := &PoolHealth{Name: name}
+	var currentDev *PoolDevice
+	inConfig := false
+	headerSeen := false
+
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+
+		// Parse key: value lines outside the config section.
+		if !inConfig {
+			if idx := strings.Index(trimmed, ":"); idx > 0 {
+				key := strings.TrimSpace(trimmed[:idx])
+				val := strings.TrimSpace(trimmed[idx+1:])
+				switch key {
+				case "pool":
+					h.Name = val
+				case "state":
+					h.State = val
+				case "scan":
+					h.Scan = val
+				case "errors":
+					h.Errors = val
+				}
+			}
+			if trimmed == "config:" {
+				inConfig = true
+				headerSeen = false
+			}
+			continue
+		}
+
+		// Inside config section: skip empty lines and header, then parse
+		// device tree. The config section ends at the first empty line
+		// after devices (before the "errors:" summary).
+		if trimmed == "" {
+			if headerSeen {
+				inConfig = false
+			}
+			continue
+		}
+		if !headerSeen {
+			headerSeen = true
+			continue
+		}
+
+		fields := strings.Fields(trimmed)
+		if len(fields) < 5 {
+			continue
+		}
+		dev := PoolDevice{
+			Name:  fields[0],
+			State: fields[1],
+			Read:  fields[2],
+			Write: fields[3],
+			Cksum: fields[4],
+		}
+
+		// Indentation determines depth: top-level vdevs have no leading
+		// spaces in the first field; children are indented further.
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		if indent <= 1 {
+			// Top-level vdev (mirror-0, raidz, cache, etc. or a single disk).
+			h.Config = append(h.Config, dev)
+			currentDev = &h.Config[len(h.Config)-1]
+		} else if currentDev != nil {
+			// Child device — append to the last top-level vdev.
+			currentDev.Devices = append(currentDev.Devices, dev)
+		}
+	}
+
+	// Fetch I/O stats.
+	if ioOut, err := c.hostExec(zpoolBin, "iostat", "-v", name, "1", "1"); err == nil {
+		h.IOStats = parseIOStats(ioOut, name)
+	}
+
+	return h, nil
+}
+
+// parseIOStats extracts the pool's I/O counters from `zpool iostat -v`.
+func parseIOStats(out, poolName string) PoolIOStats {
+	var stats PoolIOStats
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		// The header is: ... capacity operations bandwidth
+		// The pool line has: <pool> <alloc> <cap> <read> <write> <read> <write>
+		if len(fields) >= 7 && fields[0] == poolName {
+			stats.ReadOps = fields[3]
+			stats.WriteOps = fields[4]
+			stats.ReadBW = fields[5]
+			stats.WriteBW = fields[6]
+			break
+		}
+	}
+	return stats
+}
