@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-naslos-dark text-gray-100 antialiased;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-lg font-medium transition-colors;
+  }
+  .btn-primary {
+    @apply bg-naslos-primary hover:bg-naslos-secondary text-white;
+  }
+  .btn-danger {
+    @apply bg-red-600 hover:bg-red-700 text-white;
+  }
+  .btn-secondary {
+    @apply bg-naslos-surface hover:bg-naslos-border text-gray-200 border border-naslos-border;
+  }
+  .card {
+    @apply bg-naslos-surface rounded-xl border border-naslos-border p-6;
+  }
+  .input {
+    @apply bg-naslos-dark border border-naslos-border rounded-lg px-3 py-2 text-gray-100 focus:outline-none focus:border-naslos-primary;
+  }
+  .label {
+    @apply text-sm font-medium text-gray-400 mb-1 block;
+  }
+}

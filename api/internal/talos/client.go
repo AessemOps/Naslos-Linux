@@ -4,8 +4,6 @@ package talos
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
@@ -39,16 +37,17 @@ func NewClient(ctx context.Context, talosConfig string) (*Client, error) {
 }
 
 // loadConfig loads a talosconfig from the given path or the default location.
+//
+// When path is empty, this delegates to clientconfig.Open("") so the
+// machinery library's own default-path resolution runs: it checks the
+// TALOSCONFIG environment variable first, then ~/.talos/config, then the
+// in-cluster service-account mount (/var/run/secrets/talos.dev/config).
+// A previous version of this function hardcoded ~/.talos/config directly,
+// which silently skipped the TALOSCONFIG env var and made the API pod fail
+// at startup with "failed to determine endpoints" even when a talosconfig
+// was mounted and TALOSCONFIG was set.
 func loadConfig(path string) (*clientconfig.Config, error) {
-	if path != "" {
-		return clientconfig.Open(path)
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("getting home dir: %w", err)
-	}
-	return clientconfig.Open(filepath.Join(home, ".talos", "config"))
+	return clientconfig.Open(path)
 }
 
 // Close closes the Talos client connection.

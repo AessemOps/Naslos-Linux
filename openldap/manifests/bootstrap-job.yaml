@@ -1,0 +1,123 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: naslos-openldap-bootstrap
+  namespace: naslos
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: naslos-openldap-bootstrap
+      # The bootstrap script only runs ldapmodify/ldapsearch — it never
+      # calls the Kubernetes API — so the projected service-account token
+      # is not needed. On this cluster, projecting it triggers a runc
+      # mount error at container init ("create mountpoint ... Read-only
+      # file system") that fails the container before entrypoint even
+      # runs; disabling the automount avoids that mount altogether.
+      automountServiceAccountToken: false
+      initContainers:
+        # Wait for OpenLDAP to be ready (uses ldapsearch from the Naslos
+        # OpenLDAP image so the VM does not need to pull busybox externally).
+        - name: wait-for-ldap
+          image: 192.168.1.2:30095/naslos-openldap:0.1.0
+          env:
+            - name: LDAPTLS_REQCERT
+              value: never
+          command:
+            - sh
+            - -c
+            - |
+              until ldapsearch -x -H ldaps://naslos-openldap:636 -b "" -s base >/dev/null 2>&1; do
+                echo "Waiting for OpenLDAP..."
+                sleep 2
+              done
+              echo "OpenLDAP is ready"
+      containers:
+        - name: bootstrap
+          image: 192.168.1.2:30095/naslos-openldap:0.1.0
+          env:
+            - name: LDAPTLS_REQCERT
+              value: never
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              echo "Configuring OpenLDAP..."
+
+              # NOTE: ldapi:/// is a Unix domain socket only reachable from
+              # inside the openldap server's own container/network
+              # namespace. This Job runs in a separate pod, so it must
+              # connect over the network via ldaps://naslos-openldap:636
+              # (same as the wait-for-ldap init container above) — using
+              # ldapi:/// here fails with "Can't contact LDAP server (-1)".
+              LDAP_URI="ldaps://naslos-openldap:636"
+
+              # Update service account password
+              SERVICE_PW=$(cat /run/secrets/service-password)
+              SERVICE_PW_HASH=$(slappasswd -h "{SSHA}" -s "$SERVICE_PW")
+
+              cat > /tmp/update-service-pw.ldif <<EOF
+              dn: cn=naslos-service,ou=services,dc=naslos,dc=local
+              changetype: modify
+              replace: userPassword
+              userPassword: $SERVICE_PW_HASH
+              EOF
+
+              ldapmodify -x -H "$LDAP_URI" -D "cn=admin,dc=naslos,dc=local" -w "$(cat /run/secrets/admin-password)" -f /tmp/update-service-pw.ldif
+
+              # Verify groups exist (created by bootstrap.ldif)
+              echo "Verifying groups..."
+              ldapsearch -x -H "$LDAP_URI" -D "cn=admin,dc=naslos,dc=local" -w "$(cat /run/secrets/admin-password)" \
+                -b "cn=naslos_admins,ou=groups,dc=naslos,dc=local" -s base "(objectClass=*)" cn
+
+              echo "OpenLDAP bootstrap completed successfully!"
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+      volumes:
+        - name: secrets
+          secret:
+            secretName: naslos-openldap
+            items:
+              - key: admin-password
+                path: admin-password
+              - key: service-password
+                path: service-password
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: naslos-openldap-bootstrap
+  namespace: naslos
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: naslos-openldap-bootstrap
+  namespace: naslos
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-openldap-bootstrap
+  namespace: naslos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: naslos-openldap-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: naslos-openldap-bootstrap
+    namespace: naslos

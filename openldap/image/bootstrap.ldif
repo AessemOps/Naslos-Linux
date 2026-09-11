@@ -1,0 +1,55 @@
+# Naslos OpenLDAP Bootstrap
+# Base organizational structure, groups, and service accounts
+
+# Root suffix entry. Configuring olcSuffix: dc=naslos,dc=local on the mdb
+# database (in entrypoint.sh) only tells slapd what DN subtree it serves —
+# it does NOT create the entry itself. Without this entry, every search at
+# or under dc=naslos,dc=local fails with "No such object" even though the
+# database and its children below load fine.
+dn: dc=naslos,dc=local
+objectClass: dcObject
+objectClass: organization
+dc: naslos
+o: Naslos
+
+dn: ou=people,dc=naslos,dc=local
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=naslos,dc=local
+objectClass: organizationalUnit
+ou: groups
+
+dn: ou=services,dc=naslos,dc=local
+objectClass: organizationalUnit
+ou: services
+
+# Empty members placeholder (required for groupOfNames)
+# NOTE: must appear BEFORE the groups that reference it as member.
+dn: cn=empty-members,dc=naslos,dc=local
+objectClass: person
+cn: empty-members
+sn: placeholder
+description: Placeholder to satisfy groupOfNames schema requirement
+
+# Admin group - full access to Naslos
+dn: cn=naslos_admins,ou=groups,dc=naslos,dc=local
+objectClass: groupOfNames
+cn: naslos_admins
+member: cn=empty-members,dc=naslos,dc=local
+description: Naslos administrators with full access
+
+# Users group - read-only access
+dn: cn=naslos_users,ou=groups,dc=naslos,dc=local
+objectClass: groupOfNames
+cn: naslos_users
+member: cn=empty-members,dc=naslos,dc=local
+description: Naslos users with read-only access
+
+# Service account for Naslos API
+dn: cn=naslos-service,ou=services,dc=naslos,dc=local
+objectClass: simpleSecurityObject
+objectClass: organizationalRole
+cn: naslos-service
+description: Naslos API service account for LDAP operations
+userPassword: {SSHA}placeholder

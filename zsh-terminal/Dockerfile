@@ -1,4 +1,4 @@
-# NasOS Zsh Web Terminal
+# Naslos Zsh Web Terminal
 # Provides a zsh shell in a container with host mounts for NAS management.
 # This is the user-facing shell — Talos itself has no shell by design.
 
@@ -34,14 +34,14 @@ RUN curl -sL https://github.com/siderolabs/talos/releases/latest/download/talosc
 RUN apk add --no-cache zfs zfs-utils
 
 # Configure zsh
-RUN echo 'export PS1="%n@nasos:%~%# "' >> /etc/zsh/zshrc \
+RUN echo 'export PS1="%n@naslos:%~%# "' >> /etc/zsh/zshrc \
     && echo 'setopt AUTO_CD' >> /etc/zsh/zshrc \
     && echo 'setopt CORRECT' >> /etc/zsh/zshrc \
     && echo 'source /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh 2>/dev/null' >> /etc/zsh/zshrc \
     && echo 'source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null' >> /etc/zsh/zshrc
 
 # Welcome message
-RUN echo 'echo "Welcome to NasOS Terminal — type help for commands"' >> /etc/zsh/zshrc
+RUN echo 'echo "Welcome to Naslos Terminal — type help for commands"' >> /etc/zsh/zshrc
 
 WORKDIR /root
 SHELL ["/bin/zsh", "-c"]

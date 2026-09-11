@@ -1,9 +1,3 @@
-module github.com/nasos/nasos/agent
+module github.com/AessemOps/Naslos-Linux/agent
 
-go 1.22
-
-require (
-	k8s.io/api v0.31.0
-	k8s.io/apimachinery v0.31.0
-	k8s.io/client-go v0.31.0
-)
+go 1.26.5

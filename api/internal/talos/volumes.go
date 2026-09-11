@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/siderolabs/talos/pkg/machinery/api/machine"
+	"github.com/siderolabs/talos/pkg/machinery/api/storage"
 	"github.com/siderolabs/talos/pkg/machinery/config/types/block"
+	resblock "github.com/siderolabs/talos/pkg/machinery/resources/block"
 )
 
 // VolumeAdvisor provides best-practice recommendations for disk configuration.
@@ -14,16 +15,20 @@ type VolumeAdvisor struct{}
 // Recommendation is a disk configuration recommendation.
 type Recommendation struct {
 	// Topology is the recommended topology: "mirror", "raidz1", "raidz2", "raidz3".
-	Topology string
+	// JSON tags are lowercase to match the UI contract (DiskWizard.svelte
+	// reads recommendation.topology/.disks/.description); without them Go's
+	// encoding/json emits capitalized keys ("Topology", "Disks", ...) which
+	// the UI reads as undefined.
+	Topology string `json:"topology"`
 
 	// Disks is the list of disk device paths recommended.
-	Disks []string
+	Disks []string `json:"disks"`
 
 	// Description explains the recommendation.
-	Description string
+	Description string `json:"description"`
 
 	// HumanReadableSize is the usable capacity.
-	HumanReadableSize string
+	HumanReadableSize string `json:"humanReadableSize"`
 }
 
 // NewVolumeAdvisor creates a new VolumeAdvisor.
@@ -103,9 +108,9 @@ func devicePaths(disks []DiskInfo) []string {
 	return paths
 }
 
-// GetDiscoveredVolumes fetches discovered volumes from the Talos node.
+// GetDiscoveredVolumes fetches discovered disks from the Talos node.
 // This returns raw data that can be converted to DiskInfo.
-func (c *Client) GetDiscoveredVolumes() ([]*machine.Disk, error) {
+func (c *Client) GetDiscoveredVolumes() ([]*storage.Disk, error) {
 	resp, err := c.client.Disks(c.ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetching disks: %w", err)
@@ -134,41 +139,35 @@ func ZFSBestPractices() map[string]string {
 func UserVolumeConfig(name, fsType string, minSize string) (*block.UserVolumeConfigV1Alpha1, error) {
 	cfg := block.NewUserVolumeConfigV1Alpha1()
 	cfg.MetaName = name
-	cfg.FilesystemSpec.FilesystemType = block.FilesystemType(fsType)
+
+	fst, err := parseFilesystemType(fsType)
+	if err != nil {
+		return nil, err
+	}
+	cfg.FilesystemSpec.FilesystemType = fst
 
 	if minSize != "" {
-		size, err := parseSize(minSize)
-		if err != nil {
+		var size block.ByteSize
+		if err := size.UnmarshalText([]byte(minSize)); err != nil {
 			return nil, fmt.Errorf("parsing size: %w", err)
 		}
-		cfg.ProvisioningSpec.ProvisioningMinSize = uint64(size)
+		cfg.ProvisioningSpec.ProvisioningMinSize = size
 	}
 	return cfg, nil
 }
 
-// parseSize parses a human-readable size string (e.g. "100GB", "2TB").
-func parseSize(s string) (uint64, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, nil
+// parseFilesystemType maps a filesystem type string to the Talos enum.
+func parseFilesystemType(s string) (block.FilesystemType, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "ext4":
+		return resblock.FilesystemTypeEXT4, nil
+	case "xfs":
+		return resblock.FilesystemTypeXFS, nil
+	case "btrfs":
+		return resblock.FilesystemTypeBtrfs, nil
+	case "vfat":
+		return resblock.FilesystemTypeVFAT, nil
+	default:
+		return resblock.FilesystemTypeNone, fmt.Errorf("unsupported filesystem type %q (supported: ext4, xfs, btrfs, vfat)", s)
 	}
-	// Simple parsing — in production, use resource.Quantity
-	var value float64
-	var unit string
-	if _, err := fmt.Sscanf(s, "%f%s", &value, &unit); err != nil {
-		return 0, fmt.Errorf("invalid size %q: %w", s, err)
-	}
-	switch strings.ToUpper(unit) {
-	case "B", "":
-		return uint64(value), nil
-	case "KB", "KIB":
-		return uint64(value * 1024), nil
-	case "MB", "MIB":
-		return uint64(value * 1024 * 1024), nil
-	case "GB", "GIB":
-		return uint64(value * 1024 * 1024 * 1024), nil
-	case "TB", "TIB":
-		return uint64(value * 1024 * 1024 * 1024 * 1024), nil
-	}
-	return 0, fmt.Errorf("unknown unit %q", unit)
 }

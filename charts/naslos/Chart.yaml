@@ -1,0 +1,42 @@
+apiVersion: v2
+name: naslos
+description: Naslos - A user-friendly NAS distribution for Talos Linux
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - nas
+  - talos
+  - zfs
+  - storage
+  - smb
+  - nfs
+home: https://github.com/AessemOps/Naslos-Linux
+sources:
+  - https://github.com/AessemOps/Naslos-Linux
+maintainers:
+  - name: Naslos Team
+    email: team@naslos.dev
+dependencies:
+  - name: traefik
+    version: "39.0.0"
+    repository: https://traefik.github.io/charts
+    condition: traefik.enabled
+  - name: authelia
+    version: "0.10.0"
+    repository: https://charts.authelia.com
+    condition: authelia.enabled
+  # ntfy chart dependency intentionally omitted: the previous repository
+  # https://helm.ntfy.sh/ is no longer resolvable (DNS failure), and it broke
+  # `helm dependency update` with a bogus "no cached repository for
+  # helm-manager-<hash>" error. Notifications still work: the Naslos API sends
+  # to the public ntfy.sh server (api ServerURL default) or any self-hosted
+  # ntfy server you configure.
+  - name: prometheus
+    version: "25.0.0"
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: prometheus.enabled
+  - name: grafana
+    version: "7.0.0"
+    repository: https://grafana.github.io/helm-charts
+    condition: grafana.enabled
