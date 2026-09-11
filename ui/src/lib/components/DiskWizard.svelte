@@ -127,10 +127,20 @@
   }
 
   function nextStep() {
-    if (step === 1 && selectedDisks.length > 0) {
+    // Guard against interaction while an async step is in flight: without
+    // this, double-clicking Next on step 1 fires getRecommendation() twice and
+    // the responses can race, and clicking Next on step 2 while loading (or
+    // after a failed recommendation left recommendation=null) advances to
+    // step 3 showing an empty card or a pool form with no topology context.
+    if (loading || creating) return;
+    if (step === 1) {
+      if (selectedDisks.length === 0) return;
+      step = 2;
       getRecommendation();
+    } else if (step === 2) {
+      if (!recommendation) return;
+      step = 3;
     }
-    step++;
   }
 
   function prevStep() {
@@ -252,7 +262,7 @@
 
       <div class="flex justify-between mt-6">
         <button class="btn btn-secondary" on:click={prevStep}>← Back</button>
-        <button class="btn btn-primary" on:click={nextStep}>Next →</button>
+        <button class="btn btn-primary" on:click={nextStep} disabled={loading || !recommendation}>Next →</button>
       </div>
     </div>
   {/if}
