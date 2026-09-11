@@ -2,6 +2,7 @@ package identity
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/go-ldap/ldap/v3"
 )
@@ -28,6 +29,7 @@ func (c *Client) CreatePerson(uid, displayName, email, firstName, lastName strin
 	addReq.Attribute("homeDirectory", []string{fmt.Sprintf("/home/%s", uid)})
 	addReq.Attribute("loginShell", []string{"/bin/bash"})
 	addReq.Attribute("userPassword", []string{"TempPass123!"})
+	addReq.Attribute("shadowExpire", []string{"-1"})
 
 	if err := c.conn.Add(addReq); err != nil {
 		return nil, fmt.Errorf("creating person: %w", err)
@@ -67,9 +69,30 @@ func (c *Client) GetPerson(uid string) (*Person, error) {
 		Email:       entry.GetAttributeValue("mail"),
 		FirstName:   entry.GetAttributeValue("givenName"),
 		LastName:    entry.GetAttributeValue("sn"),
-		Groups:      entry.GetAttributeValues("memberOf"),
-		Enabled:     entry.GetAttributeValue("shadowExpire") == "-1",
+		Groups:      shortNames(entry.GetAttributeValues("memberOf")),
+		Enabled:     isPersonEnabled(entry),
 	}, nil
+}
+
+// shortNames converts a list of DNs/CNs into short names.
+func shortNames(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		v = strings.ToLower(v)
+		if strings.HasPrefix(v, "cn=") {
+			parts := strings.SplitN(v, ",", 2)
+			result = append(result, strings.TrimPrefix(parts[0], "cn="))
+		} else if strings.HasPrefix(v, "uid=") {
+			parts := strings.SplitN(v, ",", 2)
+			result = append(result, strings.TrimPrefix(parts[0], "uid="))
+		} else {
+			result = append(result, v)
+		}
+	}
+	return result
 }
 
 // ListPeople returns all persons.
@@ -90,7 +113,7 @@ func (c *Client) ListPeople() ([]Person, error) {
 		return nil, fmt.Errorf("listing people: %w", err)
 	}
 
-	var people []Person
+	var people []Person = []Person{}
 	for _, entry := range result.Entries {
 		people = append(people, Person{
 			DN:          entry.DN,
@@ -99,10 +122,21 @@ func (c *Client) ListPeople() ([]Person, error) {
 			Email:       entry.GetAttributeValue("mail"),
 			FirstName:   entry.GetAttributeValue("givenName"),
 			LastName:    entry.GetAttributeValue("sn"),
-			Groups:      entry.GetAttributeValues("memberOf"),
-			Enabled:     entry.GetAttributeValue("shadowExpire") == "-1",
+			Groups:      shortNames(entry.GetAttributeValues("memberOf")),
+			Enabled:     isPersonEnabled(entry),
 		})
 	}
 
 	return people, nil
+}
+
+// isPersonEnabled returns true if the account is not expired.
+// shadowExpire == "-1" means never expires; empty means not set (enabled);
+// a non-zero, non-"-1" value is days since epoch — 0 means expired.
+func isPersonEnabled(entry *ldap.Entry) bool {
+	v := entry.GetAttributeValue("shadowExpire")
+	if v == "" || v == "-1" {
+		return true
+	}
+	return v != "0"
 }
