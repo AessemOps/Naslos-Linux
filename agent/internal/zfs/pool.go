@@ -4,6 +4,7 @@ package zfs
 
 import (
 	"context"
+	"os"
 	"os/exec"
 )
 
@@ -13,6 +14,13 @@ const (
 	zfsBin    = "/usr/local/sbin/zfs"
 	wipefsBin = "/usr/bin/wipefs"
 )
+
+// hostBinExists checks if a binary exists inside the host root.
+// Used to gate optional steps (e.g. wipefs) that Talos may not ship.
+func hostBinExists(bin string) bool {
+	_, err := os.Stat(hostRoot + bin)
+	return err == nil
+}
 
 // Pool represents a ZFS pool.
 type Pool struct {
@@ -40,23 +48,50 @@ type PoolConfig struct {
 	Name     string            `json:"name"`
 	Topology string            `json:"topology"`
 	Disks    []string          `json:"disks"`
+	Cache    string            `json:"cache"` // optional cache (L2ARC) device
 	Options  map[string]string `json:"options"`
 }
 
-// DefaultOptions returns ZFS best-practice options for Talos.
+// PoolHealth is a structured parse of `zpool status` for the health page.
+type PoolHealth struct {
+	Name       string          `json:"name"`
+	State      string          `json:"state"`
+	Scan       string          `json:"scan"`
+	Errors     string          `json:"errors"`
+	Config     []PoolDevice    `json:"config"`
+	IOStats    PoolIOStats     `json:"ioStats"`
+}
+
+// PoolDevice is a single device in the pool config tree.
+type PoolDevice struct {
+	Name   string       `json:"name"`
+	State  string       `json:"state"`
+	Read   string       `json:"read"`
+	Write  string       `json:"write"`
+	Cksum  string       `json:"cksum"`
+	Devices []PoolDevice `json:"devices,omitempty"`
+}
+
+// PoolIOStats holds `zpool iostat` counters for a pool.
+type PoolIOStats struct {
+	ReadOps  string `json:"readOps"`
+	WriteOps string `json:"writeOps"`
+	ReadBW   string `json:"readBW"`
+	WriteBW  string `json:"writeBW"`
+}
+
+// DefaultOptions returns ZFS best-practice dataset options for Talos.
+// mountpoint is applied separately (not via zpool create -o, which
+// OpenZFS 2.4.x rejects) and is not included here.
 func DefaultOptions() map[string]string {
 	return map[string]string{
-		"ashift":               "12",
-		"mountpoint":           "/var/mnt/<pool>",
-		"xattr":                "sa",
-		"compression":          "zstd",
-		"acltype":              "posixacl",
-		"atime":                "off",
-		"dnodesize":            "auto",
-		"relatime":             "on",
-		"recordsize":           "128K",
-		"special_small_blocks": "0",
-		"com.sun:auto-snapshot": "false",
+		"xattr":       "sa",
+		"compression": "zstd",
+		"acltype":     "posixacl",
+		"atime":       "off",
+		"dnodesize":   "auto",
+		"relatime":    "on",
+		"recordsize":  "128K",
 	}
 }
 

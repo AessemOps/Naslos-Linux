@@ -40,6 +40,7 @@ type CreatePoolRequest struct {
 	Name     string            `json:"name"`
 	Topology string            `json:"topology"`
 	Disks    []string          `json:"disks"`
+	Cache    string            `json:"cache"`
 	Options  map[string]string `json:"options"`
 }
 
@@ -151,4 +152,83 @@ func (c *Client) PoolStatus(name string) (string, error) {
 		return "", err
 	}
 	return payload["status"], nil
+}
+
+// ImportablePool is a pool that exists on disk but is not currently imported.
+type ImportablePool struct {
+	Name     string   `json:"name"`
+	State    string   `json:"state"`
+	Topology string   `json:"topology"`
+	Disks    []string `json:"disks"`
+}
+
+// ListImportablePools returns pools available for import.
+func (c *Client) ListImportablePools() ([]ImportablePool, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/pools/import", nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating list-importable request: %w", err)
+	}
+	var pools []ImportablePool
+	if err := c.do(req, &pools); err != nil {
+		return nil, err
+	}
+	if pools == nil {
+		pools = []ImportablePool{}
+	}
+	return pools, nil
+}
+
+// ImportPool imports an existing pool via the agent.
+func (c *Client) ImportPool(name string) error {
+	body, err := json.Marshal(map[string]string{"name": name})
+	if err != nil {
+		return fmt.Errorf("encoding import request: %w", err)
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, c.baseURL+"/api/v1/pools/import", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("creating import-pool request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	return c.do(httpReq, nil)
+}
+
+// PoolHealth returns structured health data for a pool.
+func (c *Client) PoolHealth(name string) (*PoolHealth, error) {
+	httpReq, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/pools/"+name, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating pool-health request: %w", err)
+	}
+	var health PoolHealth
+	if err := c.do(httpReq, &health); err != nil {
+		return nil, err
+	}
+	return &health, nil
+}
+
+// PoolHealth mirrors the agent agent's PoolHealth JSON shape.
+type PoolHealth struct {
+	Name    string       `json:"name"`
+	State   string       `json:"state"`
+	Scan    string       `json:"scan"`
+	Errors  string       `json:"errors"`
+	Config  []PoolDevice `json:"config"`
+	IOStats PoolIOStats  `json:"ioStats"`
+}
+
+// PoolDevice is a single device in the pool config tree.
+type PoolDevice struct {
+	Name    string       `json:"name"`
+	State   string       `json:"state"`
+	Read    string       `json:"read"`
+	Write   string       `json:"write"`
+	Cksum   string       `json:"cksum"`
+	Devices []PoolDevice `json:"devices,omitempty"`
+}
+
+// PoolIOStats holds `zpool iostat` counters.
+type PoolIOStats struct {
+	ReadOps  string `json:"readOps"`
+	WriteOps string `json:"writeOps"`
+	ReadBW   string `json:"readBW"`
+	WriteBW  string `json:"writeBW"`
 }

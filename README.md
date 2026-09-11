@@ -21,6 +21,8 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 
 - **ZFS** — official `siderolabs/zfs` extension; pools auto-import at boot via `zfs-service`
 - **Disk setup wizard** — topology advisor (mirror / RAIDZ1 / RAIDZ2), best-practice tuning (`ashift=12`, `compression=zstd`, `xattr=sa`, `acltype=posixacl`, `atime=off`)
+- **Pool health page** — live device tree, IO stats, scan state, and error summary from `zpool status` / `zpool iostat`
+- **Import existing pools** — discover and import pools already on disk via `zpool import`
 - **App catalog** — deploy and configure apps via Helm with schema-driven forms
 - **Logs & terminal** — stream logs and open a zsh shell to any pod from the UI
 - **Start/stop apps** — scale replicas 0↔N, preserving PVCs

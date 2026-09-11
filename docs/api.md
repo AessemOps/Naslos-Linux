@@ -58,8 +58,11 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | POST | `/api/volumes` | Create ext4/xfs/btrfs `UserVolumeConfig` document (ZFS is handled by the agent) |
 | GET | `/api/volumes/zfs` | List ZFS pools via `naslos-agent` (`agent.ListPools`) |
 | POST | `/api/volumes/zfs` | Create pool `{name, topology, disks, options}` via `naslos-agent` (validated: ZFS-safe name, non-empty disks, known topology) |
-| GET | `/api/volumes/zfs/{name}` | `zpool status` output for a pool via `naslos-agent` |
+| GET | `/api/volumes/zfs/{name}` | Structured health data (device tree, IO stats, scan state, errors) |
 | DELETE | `/api/volumes/zfs/{name}` | Destroy a pool via `naslos-agent` |
+| GET | `/api/volumes/zfs/{name}/health` | Structured health data (alias) |
+| GET | `/api/volumes/zfs/import` | List pools available for import (on disk but not imported) |
+| POST | `/api/volumes/zfs/import` | Import: `{"name":"tank"}` for one pool, `{}` for all |
 
 The actual ZFS work is delegated to `naslos-agent` on each node:
 `chroot /host zpool …` / `chroot /host zfs …`. The API reaches the agent
@@ -123,8 +126,10 @@ uses the Kubernetes `remotecommand` SPDY executor over a websocket.
 | GET | `/health` | Agent health |
 | GET | `/api/v1/pools` | `zpool list` |
 | POST | `/api/v1/pools` | Create pool `{name, topology, disks, options}` |
-| GET | `/api/v1/pools/{name}` | `zpool status` |
+| GET | `/api/v1/pools/{name}` | Structured health data (device tree, IO stats, scan, errors) |
 | DELETE | `/api/v1/pools/{name}` | Destroy pool |
+| GET | `/api/v1/pools/import` | List pools available for import (`zpool import` dry-run) |
+| POST | `/api/v1/pools/import` | Import pool(s): `{"name":"tank"}` or `{}` for all |
 | GET/POST | `/api/v1/datasets/{pool}` | List / create dataset |
 | GET/POST | `/api/v1/snapshots/{dataset}` | List / create snapshot |
 
@@ -149,6 +154,9 @@ The `naslos-agent` uses `NODE_NAME` (from `spec.nodeName`) and listens on `:9090
 
 - The disk wizard calls `POST /api/disks/recommend`, then `POST /api/volumes/zfs`
   (the agent creates the pool; `zfs-service` re-imports on boot).
+- To import an existing pool, the UI calls `GET /api/volumes/zfs/import` to discover
+  pools on disk, then `POST /api/volumes/zfs/import` with `{"name":"tank"}` to import.
+  Pools already imported do not appear in the list.
 - The app catalog merges `DefaultValues` with request `values` (request wins)
   before `helm install`; apps are installed into the `naslos` namespace.
 - Password changes hit `/api/users/{uid}/password`, which updates LDAP via

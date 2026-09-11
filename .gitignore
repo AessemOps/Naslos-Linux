@@ -38,4 +38,5 @@ bootstrap/vm/worker.yaml
 # Secrets
 *.pem
 *.key
+*.age
 .talos/

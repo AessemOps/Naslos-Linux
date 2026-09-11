@@ -39,6 +39,7 @@ func (s *Server) handleZFSPools(w http.ResponseWriter, r *http.Request) {
 			Name     string            `json:"name"`
 			Topology string            `json:"topology"` // mirror, raidz1, raidz2, raidz3
 			Disks    []string          `json:"disks"`
+			Cache    string            `json:"cache"` // optional L2ARC device
 			Options  map[string]string `json:"options"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -65,6 +66,7 @@ func (s *Server) handleZFSPools(w http.ResponseWriter, r *http.Request) {
 			Name:     req.Name,
 			Topology: req.Topology,
 			Disks:    req.Disks,
+			Cache:    req.Cache,
 			Options:  req.Options,
 		}); err != nil {
 			writeAgentError(w, err)
@@ -80,21 +82,62 @@ func (s *Server) handleZFSPools(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleZFSPoolDetail handles per-pool operations: GET status, DELETE pool.
+// handleZFSImport handles pool import: GET lists importable pools, POST imports.
+func (s *Server) handleZFSImport(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		pools, err := s.agent.ListImportablePools()
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, pools)
+	case http.MethodPost:
+		var req struct {
+			Name string `json:"name"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		if err := s.agent.ImportPool(req.Name); err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		if req.Name == "" {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "all pools imported"})
+		} else {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "pool imported", "pool": req.Name})
+		}
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// handleZFSPoolDetail handles per-pool operations: GET status, GET health, DELETE pool.
+// Routes: GET /api/volumes/zfs/{name}      → raw zpool status
+//         GET /api/volumes/zfs/{name}/health → structured health data
+//         DELETE /api/volumes/zfs/{name}   → destroy pool
 func (s *Server) handleZFSPoolDetail(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/volumes/zfs/")
-	if name == "" || strings.Contains(name, "/") {
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "pool name required")
+		return
+	}
+	// Dispatch /health sub-route.
+	if strings.HasSuffix(name, "/health") {
+		s.handleZFSPoolHealth(w, r, strings.TrimSuffix(name, "/health"))
+		return
+	}
+	if strings.Contains(name, "/") {
 		writeError(w, http.StatusBadRequest, "pool name required")
 		return
 	}
 	switch r.Method {
 	case http.MethodGet:
-		status, err := s.agent.PoolStatus(name)
+		health, err := s.agent.PoolHealth(name)
 		if err != nil {
 			writeAgentError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"name": name, "status": status})
+		writeJSON(w, http.StatusOK, health)
 	case http.MethodDelete:
 		if err := s.agent.DeletePool(name); err != nil {
 			writeAgentError(w, err)
@@ -104,6 +147,25 @@ func (s *Server) handleZFSPoolDetail(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// handleZFSPoolHealth returns structured health data (device tree, IO stats,
+// scan state, errors) for a pool by name.
+func (s *Server) handleZFSPoolHealth(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !poolNamePattern.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "invalid pool name")
+		return
+	}
+	health, err := s.agent.PoolHealth(name)
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, health)
 }
 
 // writeAgentError maps agent client errors to HTTP responses. Agent-side

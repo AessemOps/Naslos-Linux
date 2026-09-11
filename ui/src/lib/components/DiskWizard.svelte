@@ -8,6 +8,7 @@
     model: string;
     serial: string;
     type: string;
+    inPool?: string; // name of the pool this disk already belongs to (if any)
   }
 
   interface Recommendation {
@@ -22,9 +23,20 @@
   let error = '';
   let selectedDisks: string[] = [];
   let recommendation: Recommendation | null = null;
+  let customTopology = '';
   let poolName = '';
+  let cacheDisk = '';
   let creating = false;
   let createResult = '';
+
+  // Available topologies with descriptions for the customization UI.
+  const topologyOptions = [
+    { value: 'single', label: 'Single', desc: 'No redundancy. All disks combined into one pool. If any disk fails, all data is lost.' },
+    { value: 'mirror', label: 'Mirror', desc: 'Each disk has an exact copy. Survives one disk failure per mirror pair. Best performance for reads.' },
+    { value: 'raidz1', label: 'RAIDZ1', desc: 'One disk parity. Survives one disk failure. Good balance of capacity and redundancy for 3-5 disks.' },
+    { value: 'raidz2', label: 'RAIDZ2', desc: 'Two disk parity. Survives two disk failures. Recommended for larger pools (6+ disks).' },
+    { value: 'raidz3', label: 'RAIDZ3', desc: 'Three disk parity. Survives three disk failures. Maximum redundancy for large pools.' },
+  ];
 
   async function parseJsonSafe(res: Response, what: string) {
     // Read the body once as text so we can produce a readable error when the
@@ -77,6 +89,9 @@
         body: JSON.stringify({ disks: selectedDisks })
       });
       recommendation = await parseJsonSafe(res, 'Getting recommendation');
+      // Default the custom topology to the recommendation so the UI reflects
+      // the advised choice until the user overrides it.
+      customTopology = recommendation?.topology || 'single';
     } catch (e) {
       error = 'Failed to get recommendation: ' + e;
     } finally {
@@ -101,8 +116,9 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: poolName,
-          topology: recommendation?.topology || 'single',
+          topology: customTopology || recommendation?.topology || 'single',
           disks: selectedDisks,
+          cache: cacheDisk || undefined,
           options: {}
         })
       });
@@ -189,17 +205,24 @@
       {:else}
         <div class="space-y-3">
           {#each disks.filter(d => !d.isSystemDisk) as disk}
+            <!-- in-pool disks are disabled: they already belong to a pool. -->
             <label
-              class={`flex items-center gap-4 p-4 rounded-lg border cursor-pointer transition-colors ${selectedDisks.includes(disk.device) ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}
+              class={`flex items-center gap-4 p-4 rounded-lg border transition-colors ${disk.inPool ? 'border-naslos-border/50 bg-naslos-border/10 opacity-60 cursor-not-allowed' : selectedDisks.includes(disk.device) ? 'border-naslos-primary bg-naslos-primary/10 cursor-pointer' : 'border-naslos-border hover:border-naslos-accent cursor-pointer'}`}
             >
               <input
                 type="checkbox"
                 checked={selectedDisks.includes(disk.device)}
+                disabled={!!disk.inPool}
                 on:change={() => toggleDisk(disk.device)}
                 class="w-5 h-5 rounded"
               />
               <div class="flex-1">
-                <div class="font-medium">{disk.device}</div>
+                <div class="flex items-center gap-2">
+                  <span class="font-medium">{disk.device}</span>
+                  {#if disk.inPool}
+                    <span class="text-xs px-2 py-0.5 rounded bg-yellow-900/50 text-yellow-400" title="Already a member of pool '{disk.inPool}'">in pool: {disk.inPool}</span>
+                  {/if}
+                </div>
                 <div class="text-sm text-gray-400">
                   {formatSize(disk.size)} {disk.model ? `• ${disk.model}` : ''}
                 </div>
@@ -224,7 +247,7 @@
   {#if step === 2}
     <div class="card">
       <h2 class="text-xl font-bold mb-4">Review Recommendation</h2>
-      <p class="text-gray-400 mb-6">Based on your disk selection, we recommend the following configuration.</p>
+      <p class="text-gray-400 mb-6">Based on your disk selection, we recommend the following configuration. You can customize the topology below.</p>
 
       {#if loading}
         <p class="text-gray-400">Generating recommendation...</p>
@@ -234,7 +257,7 @@
         <div class="mb-6">
           <div class="flex items-center justify-between mb-4">
             <div>
-              <h3 class="font-bold">Topology</h3>
+              <h3 class="font-bold">Recommended Topology</h3>
               <p class="text-gray-400">{recommendation.topology}</p>
             </div>
             <div>
@@ -247,6 +270,34 @@
           </div>
         </div>
 
+        <!-- Topology Customization -->
+        <div class="mb-6">
+          <h3 class="font-bold mb-2">Customize Topology</h3>
+          <p class="text-sm text-gray-400 mb-3">Override the recommended topology. The recommended option is pre-selected.</p>
+          <div class="space-y-2">
+            {#each topologyOptions as opt}
+              <label class={`flex items-start gap-3 p-3 rounded-lg border transition-colors cursor-pointer ${customTopology === opt.value ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}>
+                <input
+                  type="radio"
+                  name="topology"
+                  value={opt.value}
+                  bind:group={customTopology}
+                  class="mt-1 w-4 h-4 accent-naslos-primary"
+                />
+                <div class="flex-1">
+                  <div class="flex items-center gap-2">
+                    <span class="font-medium">{opt.label}</span>
+                    {#if opt.value === recommendation.topology}
+                      <span class="text-xs px-2 py-0.5 rounded bg-naslos-primary/20 text-naslos-primary">Recommended</span>
+                    {/if}
+                  </div>
+                  <p class="text-sm text-gray-400">{opt.desc}</p>
+                </div>
+              </label>
+            {/each}
+          </div>
+        </div>
+
         <div class="mb-6">
           <h3 class="font-bold mb-2">Selected Disks</h3>
           <div class="space-y-2">
@@ -255,6 +306,45 @@
                 <span class="text-xs px-2 py-1 rounded bg-naslos-border text-gray-300">disk</span>
                 <span>{device}</span>
               </div>
+            {/each}
+          </div>
+        </div>
+
+        <!-- Optional Cache Drive (L2ARC) -->
+        <div class="mb-6">
+          <h3 class="font-bold mb-2">Cache Drive (Optional)</h3>
+          <p class="text-sm text-gray-400 mb-3">Add a fast device (NVMe/SSD) as a read cache (L2ARC) to speed up random reads. Leave empty to skip.</p>
+          <div class="space-y-2">
+            <label class={`flex items-center gap-3 p-3 rounded-lg border transition-colors cursor-pointer ${cacheDisk === '' ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}>
+              <input
+                type="radio"
+                name="cache"
+                value=""
+                bind:group={cacheDisk}
+                class="w-4 h-4 accent-naslos-primary"
+              />
+              <div class="flex-1">
+                <span class="font-medium">No cache</span>
+                <p class="text-sm text-gray-400">Standard pool without L2ARC</p>
+              </div>
+            </label>
+            {#each disks.filter(d => !d.isSystemDisk && !selectedDisks.includes(d.device) && !d.inPool) as disk}
+              <label class={`flex items-center gap-3 p-3 rounded-lg border transition-colors cursor-pointer ${cacheDisk === disk.device ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}>
+                <input
+                  type="radio"
+                  name="cache"
+                  value={disk.device}
+                  bind:group={cacheDisk}
+                  class="w-4 h-4 accent-naslos-primary"
+                />
+                <div class="flex-1">
+                  <div class="flex items-center gap-2">
+                    <span class="font-medium">{disk.device}</span>
+                    <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{disk.type}</span>
+                  </div>
+                  <p class="text-sm text-gray-400">{disk.model || 'Unknown'} · {formatSize(disk.size)}</p>
+                </div>
+              </label>
             {/each}
           </div>
         </div>
