@@ -8,10 +8,19 @@ import (
 	"time"
 )
 
-// IsZFSAvailable checks if ZFS tools are available on the host.
+// IsZFSAvailable checks if ZFS is usable on the host: the zpool binary
+// must exist inside the host root AND the zfs module must be loaded
+// (/dev/zfs present). The binary can be present without a loaded module
+// (e.g. extension installed but machine.kernel.modules missing), which
+// would fail at `zpool create` with a confusing error — this catches it.
 func IsZFSAvailable() bool {
-	_, err := os.Stat(hostRoot + zpoolBin)
-	return err == nil
+	if _, err := os.Stat(hostRoot + zpoolBin); err != nil {
+		return false
+	}
+	if _, err := os.Stat(hostRoot + "/dev/zfs"); err != nil {
+		return false
+	}
+	return true
 }
 
 // WaitForDevice waits for a device to appear (after wipefs).
