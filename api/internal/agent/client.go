@@ -40,6 +40,7 @@ type CreatePoolRequest struct {
 	Name     string            `json:"name"`
 	Topology string            `json:"topology"`
 	Disks    []string          `json:"disks"`
+	Cache    string            `json:"cache"`
 	Options  map[string]string `json:"options"`
 }
 

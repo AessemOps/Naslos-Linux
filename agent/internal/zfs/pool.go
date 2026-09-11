@@ -48,6 +48,7 @@ type PoolConfig struct {
 	Name     string            `json:"name"`
 	Topology string            `json:"topology"`
 	Disks    []string          `json:"disks"`
+	Cache    string            `json:"cache"` // optional cache (L2ARC) device
 	Options  map[string]string `json:"options"`
 }
 

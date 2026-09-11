@@ -189,6 +189,19 @@ func (c *Client) CreatePool(cfg PoolConfig) error {
 		return fmt.Errorf("disabling SELinux on pool: %w", err)
 	}
 
+	// Add optional cache (L2ARC) device. Cache devices are added after
+	// pool creation via `zpool add` — they cannot be included in the
+	// initial `zpool create` command.
+	if cfg.Cache != "" {
+		cacheDev := cfg.Cache
+		if !strings.HasPrefix(cacheDev, "/dev/") {
+			cacheDev = "/dev/" + cacheDev
+		}
+		if _, err := c.hostExec(zpoolBin, "add", cfg.Name, "cache", cacheDev); err != nil {
+			return fmt.Errorf("adding cache device %s: %w", cacheDev, err)
+		}
+	}
+
 	return nil
 }
 
