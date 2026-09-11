@@ -15,16 +15,20 @@ type VolumeAdvisor struct{}
 // Recommendation is a disk configuration recommendation.
 type Recommendation struct {
 	// Topology is the recommended topology: "mirror", "raidz1", "raidz2", "raidz3".
-	Topology string
+	// JSON tags are lowercase to match the UI contract (DiskWizard.svelte
+	// reads recommendation.topology/.disks/.description); without them Go's
+	// encoding/json emits capitalized keys ("Topology", "Disks", ...) which
+	// the UI reads as undefined.
+	Topology string `json:"topology"`
 
 	// Disks is the list of disk device paths recommended.
-	Disks []string
+	Disks []string `json:"disks"`
 
 	// Description explains the recommendation.
-	Description string
+	Description string `json:"description"`
 
 	// HumanReadableSize is the usable capacity.
-	HumanReadableSize string
+	HumanReadableSize string `json:"humanReadableSize"`
 }
 
 // NewVolumeAdvisor creates a new VolumeAdvisor.
