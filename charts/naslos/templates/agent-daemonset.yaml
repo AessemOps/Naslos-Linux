@@ -60,6 +60,29 @@ spec:
           hostPath:
             path: /var
 ---
+# Headless Service for the agent DaemonSet: gives naslos-api a stable DNS
+# name (naslos-agent.<namespace>.svc.cluster.local:9090) for ZFS pool
+# operations without needing K8s RBAC for pod discovery. The agent is
+# hostNetwork, so each endpoint is the node's address; on multi-node
+# clusters DNS returns one A record per agent pod.
+apiVersion: v1
+kind: Service
+metadata:
+  name: naslos-agent
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: naslos-agent
+    app.kubernetes.io/component: agent
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: naslos-agent
+  ports:
+    - name: http
+      port: {{ .Values.agent.service.port }}
+      targetPort: 9090
+      protocol: TCP
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
