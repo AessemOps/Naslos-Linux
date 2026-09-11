@@ -23,6 +23,12 @@ api:
   # (see templates/agent-daemonset.yaml headless Service). Empty selects the
   # in-namespace default http://naslos-agent.<namespace>.svc.cluster.local:9090.
   agentBaseURL: ""
+  # LDAP CA certificate Secret (key ca.crt) used to verify the OpenLDAP TLS
+  # certificate. The API mounts it and sets LDAP_CA_CERT. Defaults to the
+  # secret created by openldap/generate-secrets.sh.
+  ldapCA:
+    secretName: naslos-openldap-tls
+    key: ca.crt
   resources:
     requests:
       cpu: 100m

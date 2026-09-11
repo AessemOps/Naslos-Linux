@@ -7,6 +7,9 @@ import (
 
 // handleUsers handles user collection operations.
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
+	if s.identityUnavailable(w) {
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		people, err := s.identity.ListPeople()
@@ -70,6 +73,9 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 
 // handleUserDetail handles individual user operations.
 func (s *Server) handleUserDetail(w http.ResponseWriter, r *http.Request) {
+	if s.identityUnavailable(w) {
+		return
+	}
 	uid := r.URL.Path[len("/api/users/"):]
 
 	switch r.Method {

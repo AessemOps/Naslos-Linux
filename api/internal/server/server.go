@@ -208,6 +208,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
 }
 
+func (s *Server) identityUnavailable(w http.ResponseWriter) bool {
+	if s.identity == nil {
+		writeError(w, http.StatusServiceUnavailable,
+			"Identity/LDAP is not available (check LDAP_HOST, LDAP_BIND_PASS, and that OpenLDAP is running)")
+		return true
+	}
+	return false
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
