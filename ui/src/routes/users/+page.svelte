@@ -21,9 +21,16 @@
     loading = true;
     try {
       const res = await fetch('/api/users');
-      users = await res.json();
+      if (res.ok) {
+        const data = await res.json();
+        users = Array.isArray(data) ? data : [];
+      } else {
+        console.error('Failed to load users:', res.status);
+        users = [];
+      }
     } catch (e) {
       console.error('Failed to load users:', e);
+      users = [];
     } finally {
       loading = false;
     }

@@ -26,13 +26,16 @@
     try {
       const res = await fetch('/api/groups');
       if (res.ok) {
-        groups = await res.json();
+        const data = await res.json();
+        groups = Array.isArray(data) ? data : [];
       } else {
         const data = await res.json().catch(() => ({}));
         error = data.error || `Failed to load groups (HTTP ${res.status})`;
+        groups = [];
       }
     } catch (e) {
       error = 'Failed to connect to API';
+      groups = [];
     } finally {
       loading = false;
     }
@@ -42,7 +45,8 @@
     try {
       const res = await fetch('/api/users');
       if (res.ok) {
-        users = await res.json();
+        const data = await res.json();
+        users = Array.isArray(data) ? data : [];
       }
     } catch (e) {
       // ignore
