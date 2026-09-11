@@ -17,8 +17,14 @@ spec:
       labels:
         app.kubernetes.io/name: naslos-openldap
     spec:
+      # fsGroup must match the openldap user's GID (101 in the Debian
+      # image), not an arbitrary value — otherwise the group-owned
+      # /container/service/slapd/assets/certs (mounted from a Secret
+      # with defaultMode 0440 below) stays unreadable by openldap and
+      # slapd fails at startup with "TLS: could not use CA certificate
+      # file ...: Error while reading file".
       securityContext:
-        fsGroup: 1001
+        fsGroup: 101
       containers:
         - name: openldap
           image: 192.168.1.2:30095/naslos-openldap:0.1.0
@@ -52,7 +58,11 @@ spec:
               memory: 256Mi
             limits:
               cpu: 500m
-              memory: 512Mi
+              # 512Mi was too tight for first-boot initialization (RSA-4096
+              # TLS cert generation + full schema/module/database slapadd
+              # bootstrap) and caused the container to be OOMKilled before
+              # slapd ever finished starting.
+              memory: 1Gi
           livenessProbe:
             tcpSocket:
               port: 636
@@ -67,7 +77,10 @@ spec:
         - name: certs
           secret:
             secretName: naslos-openldap-tls
-            defaultMode: 0400
+            # 0440 (not 0400): the file must be group-readable so the
+            # fsGroup-owned group (101 = openldap, set above) can read it
+            # once slapd drops root privileges to the openldap user.
+            defaultMode: 0440
   volumeClaimTemplates:
     - metadata:
         name: data

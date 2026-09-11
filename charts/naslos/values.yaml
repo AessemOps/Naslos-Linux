@@ -11,12 +11,14 @@ api:
   service:
     type: ClusterIP
     port: 8080
-  # Talos API endpoint(s) the API server uses to manage the node,
-  # comma-separated. The talos client library reads TALOS_ENDPOINTS and the
-  # API fatals at startup without it ("failed to determine endpoints").
-  # Empty disables the env (and thus node management) — set per environment,
-  # e.g. "192.168.1.96:50000" for the single-node VM (see values-vm.yaml).
-  talosEndpoints: ""
+  # Name of a Secret (key "talosconfig") containing a talosconfig file with
+  # its `endpoints:` list populated. Mounted into the pod and referenced via
+  # the TALOSCONFIG env var — the talos machinery client library resolves its
+  # config from that env var (NOT a "TALOS_ENDPOINTS" var, which it never
+  # reads). Empty disables the mount/env (and thus node management) — set
+  # per environment, e.g. "naslos-talosconfig" for the single-node VM (see
+  # values-vm.yaml).
+  talosConfigSecret: ""
   resources:
     requests:
       cpu: 100m
@@ -118,8 +120,23 @@ authelia:
     host: 0.0.0.0
     port: 9091
   configMap:
+    # Use our own ConfigMap (charts/naslos/templates/authelia-config.yaml,
+    # wired up with the LDAP backend) instead of the authelia subchart's
+    # generated one. The subchart only understands `configMap.existingConfigMap`
+    # / `configMap.key` / `configMap.disabled` — NOT `configMap.enabled`/`name`.
+    existingConfigMap: authelia-config
+    key: configuration.yml
+  # Trust the openldap self-signed CA for the ldaps:// connection — the
+  # secret (created by openldap/generate-secrets.sh) already has a ca.crt
+  # key; the authelia chart mounts every key of this secret at /certificates
+  # and trusts them as additional CAs.
+  certificates:
+    existingSecret: naslos-openldap-tls
+  # Persist Authelia's SQLite session/storage DB — without this, /config
+  # doesn't exist and Authelia fatals at startup with "unable to open
+  # database file: no such file or directory".
+  persistence:
     enabled: true
-    name: authelia-config
   # SMTP not required - password resets handled by LDAP/UI
   # Session storage uses local SQLite for single-node
   # LDAP backend configured in templates/authelia-config.yaml

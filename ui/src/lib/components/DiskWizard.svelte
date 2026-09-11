@@ -159,7 +159,7 @@
                   {formatSize(disk.size)} {disk.model ? `• ${disk.model}` : ''}
                 </div>
               </div>
-              <span class="text-xs px-2 py-1 rounded bg-nasos-border text-gray-300">
+              <span class="text-xs px-2 py-1 rounded bg-naslos-border text-gray-300">
                 {disk.type}
               </span>
             </label>

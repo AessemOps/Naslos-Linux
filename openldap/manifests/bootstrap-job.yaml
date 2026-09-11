@@ -10,6 +10,13 @@ spec:
     spec:
       restartPolicy: OnFailure
       serviceAccountName: naslos-openldap-bootstrap
+      # The bootstrap script only runs ldapmodify/ldapsearch — it never
+      # calls the Kubernetes API — so the projected service-account token
+      # is not needed. On this cluster, projecting it triggers a runc
+      # mount error at container init ("create mountpoint ... Read-only
+      # file system") that fails the container before entrypoint even
+      # runs; disabling the automount avoids that mount altogether.
+      automountServiceAccountToken: false
       initContainers:
         # Wait for OpenLDAP to be ready (uses ldapsearch from the Naslos
         # OpenLDAP image so the VM does not need to pull busybox externally).
@@ -30,6 +37,9 @@ spec:
       containers:
         - name: bootstrap
           image: 192.168.1.2:30095/naslos-openldap:0.1.0
+          env:
+            - name: LDAPTLS_REQCERT
+              value: never
           command:
             - /bin/sh
             - -c
@@ -37,6 +47,14 @@ spec:
               set -e
 
               echo "Configuring OpenLDAP..."
+
+              # NOTE: ldapi:/// is a Unix domain socket only reachable from
+              # inside the openldap server's own container/network
+              # namespace. This Job runs in a separate pod, so it must
+              # connect over the network via ldaps://naslos-openldap:636
+              # (same as the wait-for-ldap init container above) — using
+              # ldapi:/// here fails with "Can't contact LDAP server (-1)".
+              LDAP_URI="ldaps://naslos-openldap:636"
 
               # Update service account password
               SERVICE_PW=$(cat /run/secrets/service-password)
@@ -49,11 +67,11 @@ spec:
               userPassword: $SERVICE_PW_HASH
               EOF
 
-              ldapmodify -x -H ldapi:/// -D "cn=admin,dc=naslos,dc=local" -w "$(cat /run/secrets/admin-password)" -f /tmp/update-service-pw.ldif
+              ldapmodify -x -H "$LDAP_URI" -D "cn=admin,dc=naslos,dc=local" -w "$(cat /run/secrets/admin-password)" -f /tmp/update-service-pw.ldif
 
               # Verify groups exist (created by bootstrap.ldif)
               echo "Verifying groups..."
-              ldapsearch -x -H ldapi:/// -D "cn=admin,dc=naslos,dc=local" -w "$(cat /run/secrets/admin-password)" \
+              ldapsearch -x -H "$LDAP_URI" -D "cn=admin,dc=naslos,dc=local" -w "$(cat /run/secrets/admin-password)" \
                 -b "cn=naslos_admins,ou=groups,dc=naslos,dc=local" -s base "(objectClass=*)" cn
 
               echo "OpenLDAP bootstrap completed successfully!"
