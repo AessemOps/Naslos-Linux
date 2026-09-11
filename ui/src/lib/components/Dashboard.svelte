@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy } from 'svelte';
 
   interface DashboardData {
     cpu?: { usage: number; cores: number };
@@ -14,12 +14,20 @@
   let loading = true;
   let error = '';
 
+  // Auto-refresh: poll the dashboard API every 5 seconds. A request that is
+  // still in flight when the next tick fires is skipped (inFlight guard).
+  const REFRESH_INTERVAL_MS = 5000;
+  let inFlight = false;
+  let refreshTimer: ReturnType<typeof setInterval>;
+
   // Delete pool state
   let deleteTarget: string | null = null;
   let deleting = false;
   let deleteError = '';
 
   async function loadDashboard() {
+    if (inFlight) return;
+    inFlight = true;
     try {
       const res = await fetch('/api/dashboard');
       if (!res.ok) {
@@ -30,6 +38,7 @@
     } catch (e) {
       error = 'Failed to load dashboard data: ' + e;
     } finally {
+      inFlight = false;
       loading = false;
     }
   }
@@ -98,6 +107,8 @@
   }
 
   loadDashboard();
+  refreshTimer = setInterval(loadDashboard, REFRESH_INTERVAL_MS);
+  onDestroy(() => clearInterval(refreshTimer));
 </script>
 
 <div>
