@@ -23,8 +23,13 @@
 
 <aside class="fixed left-0 top-0 h-screen w-64 bg-naslos-surface border-r border-naslos-border flex flex-col">
   <div class="p-6 border-b border-naslos-border">
-    <h1 class="text-2xl font-bold text-naslos-primary">Naslos</h1>
-    <p class="text-xs text-gray-500 mt-1">Talos Linux NAS</p>
+    <div class="flex items-center gap-3">
+      <img src="/logo.png" alt="Naslos logo" class="w-10 h-10 shrink-0" />
+      <div>
+        <h1 class="text-2xl font-bold text-naslos-primary">Naslos</h1>
+        <p class="text-xs text-gray-500 mt-1">Talos Linux NAS</p>
+      </div>
+    </div>
   </div>
 
   <nav class="flex-1 p-4 space-y-1">
