@@ -104,12 +104,12 @@ func (s *Server) handlePoolDetail(w http.ResponseWriter, r *http.Request) {
 	pool := r.URL.Path[len("/api/v1/pools/"):]
 	switch r.Method {
 	case http.MethodGet:
-		status, err := s.zfs.PoolStatus(pool)
+		health, err := s.zfs.PoolHealth(pool)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": status})
+		writeJSON(w, http.StatusOK, health)
 	case http.MethodDelete:
 		if err := s.zfs.DestroyPool(pool); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())

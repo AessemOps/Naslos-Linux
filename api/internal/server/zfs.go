@@ -82,21 +82,33 @@ func (s *Server) handleZFSPools(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleZFSPoolDetail handles per-pool operations: GET status, DELETE pool.
+// handleZFSPoolDetail handles per-pool operations: GET status, GET health, DELETE pool.
+// Routes: GET /api/volumes/zfs/{name}      → raw zpool status
+//         GET /api/volumes/zfs/{name}/health → structured health data
+//         DELETE /api/volumes/zfs/{name}   → destroy pool
 func (s *Server) handleZFSPoolDetail(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/volumes/zfs/")
-	if name == "" || strings.Contains(name, "/") {
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "pool name required")
+		return
+	}
+	// Dispatch /health sub-route.
+	if strings.HasSuffix(name, "/health") {
+		s.handleZFSPoolHealth(w, r, strings.TrimSuffix(name, "/health"))
+		return
+	}
+	if strings.Contains(name, "/") {
 		writeError(w, http.StatusBadRequest, "pool name required")
 		return
 	}
 	switch r.Method {
 	case http.MethodGet:
-		status, err := s.agent.PoolStatus(name)
+		health, err := s.agent.PoolHealth(name)
 		if err != nil {
 			writeAgentError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"name": name, "status": status})
+		writeJSON(w, http.StatusOK, health)
 	case http.MethodDelete:
 		if err := s.agent.DeletePool(name); err != nil {
 			writeAgentError(w, err)
@@ -106,6 +118,25 @@ func (s *Server) handleZFSPoolDetail(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// handleZFSPoolHealth returns structured health data (device tree, IO stats,
+// scan state, errors) for a pool by name.
+func (s *Server) handleZFSPoolHealth(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !poolNamePattern.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "invalid pool name")
+		return
+	}
+	health, err := s.agent.PoolHealth(name)
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, health)
 }
 
 // writeAgentError maps agent client errors to HTTP responses. Agent-side

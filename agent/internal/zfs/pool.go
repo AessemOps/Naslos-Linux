@@ -52,6 +52,34 @@ type PoolConfig struct {
 	Options  map[string]string `json:"options"`
 }
 
+// PoolHealth is a structured parse of `zpool status` for the health page.
+type PoolHealth struct {
+	Name       string          `json:"name"`
+	State      string          `json:"state"`
+	Scan       string          `json:"scan"`
+	Errors     string          `json:"errors"`
+	Config     []PoolDevice    `json:"config"`
+	IOStats    PoolIOStats     `json:"ioStats"`
+}
+
+// PoolDevice is a single device in the pool config tree.
+type PoolDevice struct {
+	Name   string       `json:"name"`
+	State  string       `json:"state"`
+	Read   string       `json:"read"`
+	Write  string       `json:"write"`
+	Cksum  string       `json:"cksum"`
+	Devices []PoolDevice `json:"devices,omitempty"`
+}
+
+// PoolIOStats holds `zpool iostat` counters for a pool.
+type PoolIOStats struct {
+	ReadOps  string `json:"readOps"`
+	WriteOps string `json:"writeOps"`
+	ReadBW   string `json:"readBW"`
+	WriteBW  string `json:"writeBW"`
+}
+
 // DefaultOptions returns ZFS best-practice dataset options for Talos.
 // mountpoint is applied separately (not via zpool create -o, which
 // OpenZFS 2.4.x rejects) and is not included here.
