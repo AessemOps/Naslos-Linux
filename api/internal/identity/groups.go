@@ -2,6 +2,7 @@ package identity
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/go-ldap/ldap/v3"
 )
@@ -15,13 +16,32 @@ func (c *Client) CreateGroup(cn, description string) (*Group, error) {
 	addReq.Attribute("cn", []string{cn})
 	addReq.Attribute("description", []string{description})
 	// Add placeholder member to satisfy groupOfNames schema
-	addReq.Attribute("member", []string{fmt.Sprintf("cn=empty-members,ou=groups,%s", c.baseDN)})
+	addReq.Attribute("member", []string{c.placeholderMemberDN()})
 
 	if err := c.conn.Add(addReq); err != nil {
 		return nil, fmt.Errorf("creating group: %w", err)
 	}
 
 	return c.GetGroup(cn)
+}
+
+// placeholderMemberDN returns the DN used to satisfy the groupOfNames schema
+// requirement of at least one member. It is filtered from API responses.
+func (c *Client) placeholderMemberDN() string {
+	return fmt.Sprintf("cn=empty-members,ou=groups,%s", c.baseDN)
+}
+
+// filterPlaceholderMembers removes the schema-required placeholder member from
+// the returned member list.
+func (c *Client) filterPlaceholderMembers(members []string) []string {
+	var filtered []string
+	for _, m := range members {
+		if strings.HasPrefix(m, "cn=empty-members,") {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	return filtered
 }
 
 // GetGroup retrieves a group by CN.
@@ -51,7 +71,7 @@ func (c *Client) GetGroup(cn string) (*Group, error) {
 		DN:          entry.DN,
 		CN:          entry.GetAttributeValue("cn"),
 		Description: entry.GetAttributeValue("description"),
-		Members:     entry.GetAttributeValues("member"),
+		Members:     c.filterPlaceholderMembers(entry.GetAttributeValues("member")),
 	}, nil
 }
 
@@ -79,7 +99,7 @@ func (c *Client) ListGroups() ([]Group, error) {
 			DN:          entry.DN,
 			CN:          entry.GetAttributeValue("cn"),
 			Description: entry.GetAttributeValue("description"),
-			Members:     entry.GetAttributeValues("member"),
+			Members:     c.filterPlaceholderMembers(entry.GetAttributeValues("member")),
 		})
 	}
 
