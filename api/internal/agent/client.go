@@ -154,6 +154,44 @@ func (c *Client) PoolStatus(name string) (string, error) {
 	return payload["status"], nil
 }
 
+// ImportablePool is a pool that exists on disk but is not currently imported.
+type ImportablePool struct {
+	Name     string   `json:"name"`
+	State    string   `json:"state"`
+	Topology string   `json:"topology"`
+	Disks    []string `json:"disks"`
+}
+
+// ListImportablePools returns pools available for import.
+func (c *Client) ListImportablePools() ([]ImportablePool, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/pools/import", nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating list-importable request: %w", err)
+	}
+	var pools []ImportablePool
+	if err := c.do(req, &pools); err != nil {
+		return nil, err
+	}
+	if pools == nil {
+		pools = []ImportablePool{}
+	}
+	return pools, nil
+}
+
+// ImportPool imports an existing pool via the agent.
+func (c *Client) ImportPool(name string) error {
+	body, err := json.Marshal(map[string]string{"name": name})
+	if err != nil {
+		return fmt.Errorf("encoding import request: %w", err)
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, c.baseURL+"/api/v1/pools/import", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("creating import-pool request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	return c.do(httpReq, nil)
+}
+
 // PoolHealth returns structured health data for a pool.
 func (c *Client) PoolHealth(name string) (*PoolHealth, error) {
 	httpReq, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/pools/"+name, nil)

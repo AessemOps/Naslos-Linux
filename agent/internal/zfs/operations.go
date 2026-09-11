@@ -217,11 +217,118 @@ func (c *Client) DestroyPool(name string) error {
 	return nil
 }
 
-// ImportPool imports an existing pool.
+// ImportablePool is a pool that exists on disk but is not currently imported.
+type ImportablePool struct {
+	Name    string   `json:"name"`
+	State   string   `json:"state"`
+	Topology string  `json:"topology"`
+	Disks   []string `json:"disks"`
+}
+
+// ListImportable runs `zpool import` (dry-run) and returns pools that can be
+// imported but are not currently active.
+func (c *Client) ListImportable() ([]ImportablePool, error) {
+	out, err := c.hostExec(zpoolBin, "import")
+	if err != nil {
+		return nil, fmt.Errorf("listing importable pools: %w", err)
+	}
+
+	var pools []ImportablePool
+	var cur *ImportablePool
+	inConfig := false
+	headerSeen := false
+
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+
+		// Each pool block starts with "pool: <name>".
+		if strings.HasPrefix(trimmed, "pool:") {
+			if cur != nil {
+				pools = append(pools, *cur)
+			}
+			cur = &ImportablePool{
+				Name: strings.TrimSpace(strings.TrimPrefix(trimmed, "pool:")),
+			}
+			inConfig = false
+			headerSeen = false
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+
+		// Parse key: value lines outside the config section.
+		if !inConfig {
+			if idx := strings.Index(trimmed, ":"); idx > 0 {
+				key := strings.TrimSpace(trimmed[:idx])
+				val := strings.TrimSpace(trimmed[idx+1:])
+				if key == "state" {
+					cur.State = val
+				}
+			}
+			if trimmed == "config:" {
+				inConfig = true
+				headerSeen = false
+			}
+			continue
+		}
+
+		// Inside config section: skip empty lines and header, then parse device tree.
+		if trimmed == "" {
+			if headerSeen {
+				inConfig = false
+			}
+			continue
+		}
+		if !headerSeen {
+			headerSeen = true
+			continue
+		}
+
+		fields := strings.Fields(trimmed)
+		if len(fields) < 2 {
+			continue
+		}
+		dev := fields[0]
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+
+		// Top-level vdev: determine topology.
+		if indent <= 1 {
+			if strings.HasPrefix(dev, "mirror") {
+				cur.Topology = "mirror"
+			} else if strings.HasPrefix(dev, "raidz3") {
+				cur.Topology = "raidz3"
+			} else if strings.HasPrefix(dev, "raidz2") {
+				cur.Topology = "raidz2"
+			} else if strings.HasPrefix(dev, "raidz") {
+				cur.Topology = "raidz1"
+			} else if dev != cur.Name {
+				cur.Topology = "single"
+			}
+		} else {
+			// Leaf device — collect if it looks like a real disk.
+			if !strings.Contains(dev, "-") && !strings.HasPrefix(dev, cur.Name) {
+				if !strings.HasPrefix(dev, "/dev/") {
+					dev = "/dev/" + dev
+				}
+				cur.Disks = append(cur.Disks, dev)
+			}
+		}
+	}
+	if cur != nil {
+		pools = append(pools, *cur)
+	}
+	return pools, nil
+}
+
+// ImportPool imports an existing pool. When name is empty, imports all
+// available pools; otherwise imports the named pool specifically.
 func (c *Client) ImportPool(name string) error {
-	args := []string{"import", "-fal"}
-	if name != "" {
-		args = append(args, name)
+	var args []string
+	if name == "" {
+		args = []string{"import", "-f"} // import all
+	} else {
+		args = []string{"import", "-f", name}
 	}
 	out, err := c.hostExec(zpoolBin, args...)
 	if err != nil {

@@ -82,6 +82,35 @@ func (s *Server) handleZFSPools(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleZFSImport handles pool import: GET lists importable pools, POST imports.
+func (s *Server) handleZFSImport(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		pools, err := s.agent.ListImportablePools()
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, pools)
+	case http.MethodPost:
+		var req struct {
+			Name string `json:"name"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		if err := s.agent.ImportPool(req.Name); err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		if req.Name == "" {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "all pools imported"})
+		} else {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "pool imported", "pool": req.Name})
+		}
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
 // handleZFSPoolDetail handles per-pool operations: GET status, GET health, DELETE pool.
 // Routes: GET /api/volumes/zfs/{name}      → raw zpool status
 //         GET /api/volumes/zfs/{name}/health → structured health data
