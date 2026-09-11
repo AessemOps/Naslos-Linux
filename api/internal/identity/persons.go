@@ -2,6 +2,7 @@ package identity
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/go-ldap/ldap/v3"
 )
@@ -67,9 +68,30 @@ func (c *Client) GetPerson(uid string) (*Person, error) {
 		Email:       entry.GetAttributeValue("mail"),
 		FirstName:   entry.GetAttributeValue("givenName"),
 		LastName:    entry.GetAttributeValue("sn"),
-		Groups:      entry.GetAttributeValues("memberOf"),
+		Groups:      shortNames(entry.GetAttributeValues("memberOf")),
 		Enabled:     entry.GetAttributeValue("shadowExpire") == "-1",
 	}, nil
+}
+
+// shortNames converts a list of DNs/CNs into short names.
+func shortNames(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		v = strings.ToLower(v)
+		if strings.HasPrefix(v, "cn=") {
+			parts := strings.SplitN(v, ",", 2)
+			result = append(result, strings.TrimPrefix(parts[0], "cn="))
+		} else if strings.HasPrefix(v, "uid=") {
+			parts := strings.SplitN(v, ",", 2)
+			result = append(result, strings.TrimPrefix(parts[0], "uid="))
+		} else {
+			result = append(result, v)
+		}
+	}
+	return result
 }
 
 // ListPeople returns all persons.
@@ -99,7 +121,7 @@ func (c *Client) ListPeople() ([]Person, error) {
 			Email:       entry.GetAttributeValue("mail"),
 			FirstName:   entry.GetAttributeValue("givenName"),
 			LastName:    entry.GetAttributeValue("sn"),
-			Groups:      entry.GetAttributeValues("memberOf"),
+			Groups:      shortNames(entry.GetAttributeValues("memberOf")),
 			Enabled:     entry.GetAttributeValue("shadowExpire") == "-1",
 		})
 	}

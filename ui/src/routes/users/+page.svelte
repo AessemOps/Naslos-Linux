@@ -89,38 +89,38 @@
     </div>
   {:else}
     <div class="card p-0 overflow-hidden">
-      <table class="w-full">
+      <table class="w-full table-fixed">
         <thead>
           <tr class="text-left text-gray-400 text-sm border-b border-naslos-border bg-naslos-dark">
-            <th class="p-4 font-medium">User</th>
-            <th class="p-4 font-medium">Email</th>
+            <th class="p-4 font-medium w-48">User</th>
+            <th class="p-4 font-medium w-56">Email</th>
             <th class="p-4 font-medium">Groups</th>
-            <th class="p-4 font-medium">Status</th>
-            <th class="p-4 font-medium">Actions</th>
+            <th class="p-4 font-medium w-28">Status</th>
+            <th class="p-4 font-medium w-48">Actions</th>
           </tr>
         </thead>
         <tbody>
           {#each users as user}
             <tr class="border-b border-naslos-border last:border-0 hover:bg-naslos-dark/50">
-              <td class="p-4">
-                <div class="font-medium">{user.displayName || user.uid}</div>
-                <div class="text-sm text-gray-500">{user.uid}</div>
+              <td class="p-4 align-top">
+                <div class="font-medium truncate" title={user.displayName || user.uid}>{user.displayName || user.uid}</div>
+                <div class="text-sm text-gray-500 truncate" title={user.uid}>{user.uid}</div>
               </td>
-              <td class="p-4 text-gray-300">{user.email || '—'}</td>
-              <td class="p-4">
-                <div class="flex flex-wrap gap-1">
+              <td class="p-4 text-gray-300 align-top truncate" title={user.email || ''}>{user.email || '—'}</td>
+              <td class="p-4 align-top">
+                <div class="flex flex-wrap gap-1 content-start">
                   {#each user.groups as group}
-                    <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{group}</span>
+                    <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300 whitespace-nowrap">{group}</span>
                   {/each}
                 </div>
               </td>
-              <td class="p-4">
+              <td class="p-4 align-top">
                 <span class={`text-xs px-2 py-1 rounded ${user.enabled ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>
                   {user.enabled ? 'Active' : 'Disabled'}
                 </span>
               </td>
-              <td class="p-4">
-                <div class="flex gap-2">
+              <td class="p-4 align-top">
+                <div class="flex gap-2 flex-wrap">
                   <button class="btn btn-secondary text-sm" on:click={() => editUser(user)}>Edit</button>
                   <button class="btn btn-secondary text-sm" on:click={() => toggleUser(user)}>{user.enabled ? 'Disable' : 'Enable'}</button>
                   <button class="btn btn-danger text-sm" on:click={() => deleteUser(user.uid)}>Delete</button>
