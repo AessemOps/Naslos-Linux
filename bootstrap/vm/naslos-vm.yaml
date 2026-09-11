@@ -13,6 +13,15 @@
 # auto hostname; the VIP 192.168.1.96 is what matters for access.
 
 machine:
+  # ZFS kernel module: REQUIRED for the siderolabs/zfs extension to work.
+  # The extension ships the module binaries + userspace + ext-zfs-service,
+  # but Talos never modprobes it on its own — without this block there is no
+  # /dev/zfs, ext-zfs-service waits forever ("Waiting for file /dev/zfs to
+  # exist"), and naslos-agent runs degraded. Verified via maintenance-boot
+  # probe on 2026-09-11 (extension present, module absent, service Waiting).
+  kernel:
+    modules:
+      - name: zfs
   network:
     interfaces:
       - interface: eth0
@@ -28,17 +37,12 @@ machine:
   # so we use it instead of the UnattendedInstall
   # document for the Naslos/stock installer image selection.
   install:
-    # Stock Talos v1.14 installer via Image Factory (empty schematic, no
-    # extensions). Empty schematic ID 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba
-    # confirmed from the generated base / factory on 2026-09-10.
-    # (The earlier truncated ID 37656798…ad3701… returned `not found` — the
-    # full ID above is the correct one.) ZFS stays out of the boot path:
-    # the siderolabs/zfs extension stalled the installed system at
-    # `ext-zfs-service: Waiting for file "/dev/zfs" to exist` (module never
-    # loads, kernel 6.18.48). local-path-provisioner (scripts/deploy-vm.sh)
-    # covers VM storage meanwhile. ZFS schematic kept in
-    # bootstrap/schematic/naslos.yaml for when the module failure is fixed.
-    image: factory.talos.dev/installer/376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba:v1.14.0
+    # Talos v1.14 installer via Image Factory with the siderolabs/zfs
+    # extension (schematic 4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c,
+    # confirmed bootable with zfs 2.4.4-v1.14.0 on kernel 6.18.48 on
+    # 2026-09-11). The boot ISO (metal-amd64.iso for the same schematic) is
+    # attached as the VM cdrom for (re)installs.
+    image: factory.talos.dev/installer/4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c:v1.14.0
     disk: /dev/vda
     wipe: true
   registries:
@@ -55,8 +59,8 @@ machine:
 ---
 # Talos v1.14 `gen config` auto-generates a stock UnattendedInstallConfig doc
 # for /dev/sda. It is still stripped (see `bootstrap-vm` target) so our
-# machine.install above — stock installer
-# 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba,
+# machine.install above — ZFS installer
+# 4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c,
 # /dev/vda, wipe:true — stays authoritative.
 # Talos v1.14: install is driven by machine.install above; the
 # UnattendedInstallConfig document form is intentionally omitted.
