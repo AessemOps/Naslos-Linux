@@ -34,6 +34,8 @@ test('full user and group lifecycle', async ({ page }) => {
   await page.click('label:has-text("John Doe") input[type="checkbox"]');
   await page.getByRole('button', { name: 'Update' }).click();
   await expect(page.locator('div.card', { hasText: cn }).getByText('1 member')).toBeVisible();
+  // Verify the full DN is NOT shown (the fix we made)
+  await expect(page.locator('div.card', { hasText: cn }).getByText(/ou=people,dc=naslos/)).not.toBeVisible();
 
   // Delete the group
   await page.locator('div.card', { hasText: cn }).getByRole('button', { name: 'Delete' }).click();
