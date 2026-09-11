@@ -28,6 +28,11 @@ spec:
           env:
             - name: NASLOS_NAMESPACE
               value: {{ .Values.namespace }}
+            # Base URL of the naslos-agent Service (headless, one endpoint per
+            # node) used for ZFS pool operations. Overridable for local dev
+            # (e.g. AGENT_BASE_URL=http://127.0.0.1:9090 with a port-forward).
+            - name: AGENT_BASE_URL
+              value: {{ .Values.api.agentBaseURL | default (printf "http://naslos-agent.%s.svc.cluster.local:9090" .Values.namespace) | quote }}
             {{- if .Values.api.talosConfigSecret }}
             # The talos machinery client library (api/internal/talos/client.go)
             # resolves its config via the TALOSCONFIG env var pointing at a

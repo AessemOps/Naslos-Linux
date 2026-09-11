@@ -4,12 +4,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/AessemOps/Naslos-Linux/api/internal/agent"
 	"github.com/AessemOps/Naslos-Linux/api/internal/auth"
 	"github.com/AessemOps/Naslos-Linux/api/internal/catalog"
 	"github.com/AessemOps/Naslos-Linux/api/internal/helm"
@@ -24,6 +26,7 @@ import (
 type Server struct {
 	addr          string
 	talos         *talos.Client
+	agent         *agent.Client
 	helm          *helm.Client
 	catalog       *catalog.Catalog
 	shares        *shares.Manager
@@ -77,9 +80,18 @@ func New(addr string, tc *talos.Client) *Server {
 		log.Fatalf("Failed to create auth middleware: %v", err)
 	}
 
+	// Agent client for ZFS pool operations. The agent DaemonSet is fronted by
+	// the headless naslos-agent Service (see agent-daemonset.yaml); the base
+	// URL defaults to the in-namespace DNS name and is overridable via
+	// AGENT_BASE_URL for local dev (e.g. with a kubectl port-forward).
+	namespace := getEnv("NASLOS_NAMESPACE", "naslos")
+	agentBaseURL := getEnv("AGENT_BASE_URL", fmt.Sprintf(agent.DefaultBaseURLPattern, namespace))
+	agentClient := agent.NewClient(agentBaseURL)
+
 	s := &Server{
 		addr:          addr,
 		talos:         tc,
+		agent:         agentClient,
 		helm:          helmClient,
 		catalog:       c,
 		shares:        shareManager,
@@ -131,6 +143,7 @@ func (s *Server) routes() {
 	// Volumes
 	s.router.HandleFunc("/api/volumes", s.handleVolumes)
 	s.router.HandleFunc("/api/volumes/zfs", s.handleZFSPools)
+	s.router.HandleFunc("/api/volumes/zfs/", s.handleZFSPoolDetail)
 
 	// Logs & terminal (WebSocket)
 	s.router.HandleFunc("/api/ws/logs", s.handleLogsWS)

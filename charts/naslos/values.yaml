@@ -19,6 +19,10 @@ api:
   # per environment, e.g. "naslos-talosconfig" for the single-node VM (see
   # values-vm.yaml).
   talosConfigSecret: ""
+  # Base URL of the naslos-agent Service for ZFS pool operations
+  # (see templates/agent-daemonset.yaml headless Service). Empty selects the
+  # in-namespace default http://naslos-agent.<namespace>.svc.cluster.local:9090.
+  agentBaseURL: ""
   resources:
     requests:
       cpu: 100m
@@ -60,6 +64,11 @@ agent:
     pullPolicy: IfNotPresent
   # Privileged is required for chroot /host zpool/zfs operations
   privileged: true
+  # Headless Service fronting the agent pods (port 9090). naslos-api dials
+  # this DNS name for ZFS operations; ClusterIP must stay None so multi-node
+  # clusters resolve one A record per agent pod.
+  service:
+    port: 9090
   resources:
     requests:
       cpu: 50m

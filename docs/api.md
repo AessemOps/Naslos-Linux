@@ -56,8 +56,24 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | POST | `/api/disks/recommend` | `{disks:[...]}` → `VolumeAdvisor` topology recommendation |
 | GET | `/api/volumes` | List Talos user volumes (stub: returns a status message) |
 | POST | `/api/volumes` | Create ext4/xfs/btrfs `UserVolumeConfig` document (ZFS is handled by the agent) |
-| GET | `/api/volumes/zfs` | Stub describing pool listing “via agent” |
-| POST | `/api/volumes/zfs` | Request `{name, topology, disks, options}` pool creation |
+| GET | `/api/volumes/zfs` | List ZFS pools via `naslos-agent` (`agent.ListPools`) |
+| POST | `/api/volumes/zfs` | Create pool `{name, topology, disks, options}` via `naslos-agent` (validated: ZFS-safe name, non-empty disks, known topology) |
+| GET | `/api/volumes/zfs/{name}` | `zpool status` output for a pool via `naslos-agent` |
+| DELETE | `/api/volumes/zfs/{name}` | Destroy a pool via `naslos-agent` |
+
+The actual ZFS work is delegated to `naslos-agent` on each node:
+`chroot /host zpool …` / `chroot /host zfs …`. The API reaches the agent
+through the headless `naslos-agent` Service (`:9090`, one endpoint per node;
+see `charts/naslos/templates/agent-daemonset.yaml`), overridable via the
+`AGENT_BASE_URL` env var.
+
+Error contract for the ZFS endpoints:
+
+| Situation | Status | Example |
+| --- | --- | --- |
+| Bad request (name/topology/disks validation) | `400` | `{"error":"invalid pool name ..."}` |
+| Node has no ZFS (agent degraded mode) | `503` (forwarded from agent) | `{"error":"ZFS is not available on this node ..."}` |
+| Agent unreachable | `502` | `{"error":"contacting agent at ...: ..."}` |
 
 The actual ZFS work is delegated to `naslos-agent` on each node:
 `chroot /host zpool …` / `chroot /host zfs …`.
