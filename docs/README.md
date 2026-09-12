@@ -13,6 +13,7 @@ read them in order for the full picture, or jump straight to a topic.
 
 | Document | Covers | Status |
 | --- | --- | --- |
+| [spec.md](spec.md) | **Normative system specification** — requirements (FR/SEC/NFR IDs), API & data contracts, acceptance criteria, conformance | Authoritative |
 | [architecture.md](architecture.md) | Design principles, system-context / deployment / component diagrams, data flows, trust map | Rebuilt |
 | [api.md](api.md) | HTTP API surface of `naslos-api` and `naslos-agent`, env vars, error format | New |
 | [bootstrap.md](bootstrap.md) | Image Factory schematic, ZFS extension, boot-time pool import, upgrades | New |
@@ -28,7 +29,7 @@ read them in order for the full picture, or jump straight to a topic.
 
 ## Reading order
 
-1. **[architecture.md](architecture.md)** — how the whole system fits together.
+0. **[spec.md](spec.md)** — the normative requirements and contracts everything else implements.
 2. **[api.md](api.md)** and **[development.md](development.md)** — the concrete contracts and where code lives.
 3. **[bootstrap.md](bootstrap.md)** + **[storage-zfs.md](storage-zfs.md)** — how the OS image and storage are built.
 4. **[identity-sso.md](identity-sso.md)** + **[shares.md](shares.md)** — how users log in everywhere.
