@@ -1,5 +1,14 @@
 # AI Handoff — Naslos
 
+## Specification
+`docs/spec.md` is now the **normative system specification** (RFC-2119 style):
+stable requirement IDs (`FR-STO/IDN/SHR/APP/MET/LOG/NTF`, `SEC-*`, `NFR-*`,
+`API-*`, `DM-*`, `VER-*`), full API contracts, data models, and the
+acceptance-criteria ↔ Playwright-test mapping. Where the topical docs
+disagree with the spec, the spec wins. Known gaps are marked **[OPEN]**
+(e.g. FR-MET-10: per-interface IPs / multi-node aggregation). When a code
+change alters a MUST in the spec, update the spec and its test in the same PR.
+
 ## Current branch: `feature/dashboard-and-metrics` (dashboard & metrics work)
 
 ### Live metrics on the main dashboard (latest work)
