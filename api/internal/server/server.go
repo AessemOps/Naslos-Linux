@@ -58,12 +58,12 @@ func New(addr string, tc *talos.Client) *Server {
 
 	// Initialize identity client (LDAP)
 	identityClient, err := identity.NewClient(identity.Config{
-		Host:     getEnv("LDAP_HOST", "naslos-openldap"),
-		Port:     getEnvInt("LDAP_PORT", 636),
-		BaseDN:   getEnv("LDAP_BASE_DN", "dc=naslos,dc=local"),
-		BindDN:   getEnv("LDAP_BIND_DN", "cn=naslos-service,ou=services,dc=naslos,dc=local"),
-		BindPass: getEnv("LDAP_BIND_PASS", ""),
-		UseTLS:   getEnv("LDAP_USE_TLS", "true") == "true",
+		Host:       getEnv("LDAP_HOST", "naslos-openldap"),
+		Port:       getEnvInt("LDAP_PORT", 636),
+		BaseDN:     getEnv("LDAP_BASE_DN", "dc=naslos,dc=local"),
+		BindDN:     getEnv("LDAP_BIND_DN", "cn=naslos-service,ou=services,dc=naslos,dc=local"),
+		BindPass:   getEnv("LDAP_BIND_PASS", ""),
+		UseTLS:     getEnv("LDAP_USE_TLS", "true") == "true",
 		CACertPath: getEnv("LDAP_CA_CERT", ""),
 	})
 	if err != nil {
@@ -195,6 +195,10 @@ func (s *Server) handleUserPath(w http.ResponseWriter, r *http.Request) {
 
 // Start starts the HTTP server.
 func (s *Server) Start() error {
+	// Kick off the background metrics collector so the dashboard has data
+	// as soon as the server comes up.
+	s.startMetricsCollector()
+
 	s.server = &http.Server{
 		Addr:    s.addr,
 		Handler: s.router,
@@ -230,5 +234,5 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 
 // writeError writes an error response.
 func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error":msg})
+	writeJSON(w, status, map[string]string{"error": msg})
 }
