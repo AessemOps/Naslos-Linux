@@ -231,6 +231,39 @@ Discovery is **best-effort**: if Avahi or wsdd cannot start (no multicast, port
 conflict), the failure is logged and SMB keeps serving — a client can always
 connect by address (see the share card URL).
 
+### How fast a password change applies
+
+Measured on the VM against a fresh SMB login (a *new* connection, not an
+existing one):
+
+| `shares.confCheckInterval` | API call itself | Until a new SMB login accepts it |
+| --- | --- | --- |
+| 3 (default) | 24–29 ms | **2.6 – 3.0 s** |
+| 1 | 27–30 ms | **0.8 – 1.1 s** |
+
+The API call is synchronous: the LDAP password, the recorded NT hash and the
+push to the node all complete before it returns, so the API call itself costs
+tens of milliseconds. The delay is entirely the serving container's poll
+interval, which is why it is tunable via `shares.confCheckInterval`
+(`CONF_CHECK_INTERVAL`). Measured figures include ~0.4 s of probe overhead.
+
+Three nuances matter more than the number:
+
+- **Only new connections are affected.** Samba authenticates at session setup,
+  so an already-mounted share keeps working with the old password until the
+  client reconnects. A share that "still works" right after a change is a stale
+  session, not a failed sync.
+- **Client credential caches** (macOS Keychain, Windows Credential Manager,
+  GNOME Keyring) can keep replaying the old password. That is client-side.
+- **Web/SSO is immediate** — Authelia validates against LDAP directly, with no
+  polling step.
+
+Change detection uses a **content hash**, not mtime: mtime has one-second
+granularity, so two writes inside the same second would compare equal and the
+later change could be skipped. Verified by firing 8 password changes ~0.4 s
+apart (several within the same second) and confirming the final password is the
+one that works, while intermediate and initial passwords are rejected.
+
 ## Config generation
 
 ### Samba (`GenerateSambaConfig`)
@@ -278,6 +311,9 @@ shares:
     enabled: true
     name: "naslos"     # also the Samba NetBIOS name
     interface: ""      # empty = auto-detect the default-route interface
+  # Seconds between config/account re-checks; bounds how long a password change
+  # takes to apply to new SMB connections (3 = up to ~3 s, 1 = up to ~1 s).
+  confCheckInterval: 3
   nfs:
     enabled: true
     image: { repository: 192.168.1.2:30095/naslos-nfs,   tag: "0.1.0" }

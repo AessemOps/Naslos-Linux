@@ -149,6 +149,11 @@ shares:
     # interface, which keeps the advertisement off the pod network
     # (cni0/flannel/veth) so clients do not see a 10.x address.
     interface: ""
+  # How often the samba container re-checks the rendered config and account
+  # file, in seconds. This bounds how long a password change takes to apply to
+  # NEW SMB connections (existing sessions keep their credentials until they
+  # reconnect), so lowering it converges faster at the cost of more polling.
+  confCheckInterval: 3
   nfs:
     enabled: true
     image:

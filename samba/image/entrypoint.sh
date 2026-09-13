@@ -31,7 +31,13 @@ log() { echo "[naslos-samba] $*"; }
 
 mkdir -p "$CONF_DIR/private" "$CONF_DIR/lock" "$CONF_DIR/state" "$CONF_DIR/cache" /var/log/samba
 
-mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; }
+# content_hash fingerprints a file so changes are detected reliably. mtime is
+# only accurate to the second, so two writes inside the same second compare
+# equal and the second change would silently never be applied.
+content_hash() {
+  [ -f "$1" ] || { echo ""; return; }
+  sha256sum "$1" 2>/dev/null | awk '{print $1}'
+}
 
 # import_users merges the API-rendered account file into the passdb smbd
 # actually uses. `pdbedit -i smbpasswd:` creates or updates each account
@@ -167,8 +173,8 @@ fi
 import_users
 check_nss
 
-CONF_MTIME="$(mtime "$CONF")"
-USERS_MTIME="$(mtime "$USERS_FILE")"
+CONF_HASH="$(content_hash "$CONF")"
+USERS_HASH="$(content_hash "$USERS_FILE")"
 log "starting smbd with $CONF"
 
 smbd --foreground --no-process-group -s "$CONF" &
@@ -183,16 +189,16 @@ start_discovery
   while kill -0 "$SMBD_PID" 2>/dev/null; do
     sleep "$CHECK_INTERVAL"
 
-    CUR_USERS_MTIME="$(mtime "$USERS_FILE")"
-    if [ "$CUR_USERS_MTIME" != "$USERS_MTIME" ]; then
-      USERS_MTIME="$CUR_USERS_MTIME"
+    CUR_USERS_HASH="$(content_hash "$USERS_FILE")"
+    if [ "$CUR_USERS_HASH" != "$USERS_HASH" ]; then
+      USERS_HASH="$CUR_USERS_HASH"
       import_users
       check_nss
     fi
 
-    CUR_MTIME="$(mtime "$CONF")"
-    [ "$CUR_MTIME" = "$CONF_MTIME" ] && continue
-    CONF_MTIME="$CUR_MTIME"
+    CUR_HASH="$(content_hash "$CONF")"
+    [ "$CUR_HASH" = "$CONF_HASH" ] && continue
+    CONF_HASH="$CUR_HASH"
 
     if testparm -s "$CONF" >/dev/null 2>&1; then
       log "configuration changed - reloading smbd"

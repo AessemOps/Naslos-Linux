@@ -65,6 +65,12 @@ removed) and enable/disable (account flagged `[DU]`, hash retained). Verified
 end-to-end: a user created through the API can immediately log into SMB and
 read/write a ZFS dataset, with no local account on the node.
 
+Timing: the API call itself is synchronous and returns in ~25 ms, but the
+serving container picks the change up on its next poll, so a **new** SMB
+connection accepts the new password within ~3 s (tunable down to ~1 s with
+`shares.confCheckInterval`). Existing SMB sessions keep their credentials until
+they reconnect — see [shares.md](shares.md#how-fast-a-password-change-applies).
+
 Note the NT hash is *not* stored in LDAP: that would require the Samba schema
 (`sambaNTPassword`, `sambaSamAccount`) and is a possible future change. Today
 the directory remains the identity source of truth and the SMB mirror lives
