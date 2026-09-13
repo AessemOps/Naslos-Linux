@@ -146,6 +146,18 @@ Requirement IDs are stable: never renumber, only deprecate.
   the Samba NT hash (same password everywhere).
 - **FR-IDN-10** — Web login MUST flow through Authelia forwardAuth; API
   routes behind Traefik MUST reject unauthenticated requests.
+- **FR-IDN-11** — LDAP connectivity MUST NOT be established at process start.
+  The client MUST connect lazily and re-establish the connection automatically
+  after failure, so that:
+  - LDAP being unavailable when the API starts (e.g. both pods restarting
+    together) MUST NOT disable identity permanently;
+  - an LDAP restart at runtime MUST be recovered from without restarting the
+    API pod;
+  - while LDAP is down, identity routes MUST return `503` whose body names the
+    underlying cause, and MUST recover once LDAP returns.
+- **FR-IDN-12** — LDAP outages MUST NOT make non-identity features unavailable:
+  the dashboard, pools, disks, apps, shares and metrics MUST keep working, and
+  the API pod MUST NOT be considered unready because of LDAP.
 
 ### 3.3 Shares (`FR-SHR`)
 
@@ -246,7 +258,8 @@ Requirement IDs are stable: never renumber, only deprecate.
 
 | Route | Methods | Notes |
 | --- | --- | --- |
-| `/api/health` | GET | Liveness |
+| `/api/health` | GET | Liveness (process only, never LDAP-dependent) |
+| `/api/ready` | GET | Readiness; always 200, reports `{"status","ldap":"up"\|"down"}` |
 | `/api/auth/me` | GET | Authenticated user from trusted headers |
 | `/api/users` | GET, POST | List (array) / create |
 | `/api/users/{uid}` | GET, DELETE | Detail / delete |
@@ -304,9 +317,10 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **NFR-2 Talos compatibility** — Talos upgrades MUST remain clean; Naslos
   MUST NOT modify the Talos base image.
 - **NFR-3 Security** — see §2.2 (SEC-1…SEC-5).
-- **NFR-4 Resilience** — API MUST return usable (non-crashing) responses when
-  LDAP is down (`503` + explanatory message); the UI MUST show errors, never
-  silently freeze.
+- **NFR-4 Resilience** — The API MUST return usable (non-crashing) responses
+  when a dependency is down: LDAP failures yield `503` with the underlying
+  cause (FR-IDN-11) while non-identity features keep working (FR-IDN-12); the
+  UI MUST show errors, never silently freeze.
 - **NFR-5 Footprint** — UI assets MUST be minimized (e.g. the logo ships as a
   128×128 PNG, not the 1254×1254 original).
 
@@ -329,6 +343,17 @@ The authoritative executable acceptance suite is the Playwright suite in
 
 Go verification: `go build ./...` in `api/` and `agent/`; `go vet` clean;
 `gofmt` clean on touched files; `npm run check` in `ui/` with 0 errors.
+
+LDAP resilience (FR-IDN-11/12) is covered by
+`api/internal/identity/client_test.go` (`TestNewClientIsLazyAndDoesNotFailWhenLDAPIsDown`,
+`TestEnsureConnectionRetriesAfterFailure`) plus this live drill:
+
+1. `kubectl -n naslos scale sts naslos-openldap --replicas=0`
+2. `kubectl -n naslos rollout restart deploy/naslos-api` (the restart race)
+3. `/api/groups` → `503` naming the cause; `/api/ready` → `ldap:down` but
+   `200`; `/` and `/api/metrics` → `200`
+4. `kubectl -n naslos scale sts naslos-openldap --replicas=1`
+5. `/api/groups` → `200` **with the same API pod, 0 restarts**
 
 Conformance rule: any PR that changes a MUST in this spec MUST update the
 corresponding test in the same PR.

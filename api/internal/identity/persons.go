@@ -31,7 +31,9 @@ func (c *Client) CreatePerson(uid, displayName, email, firstName, lastName strin
 	addReq.Attribute("userPassword", []string{"TempPass123!"})
 	addReq.Attribute("shadowExpire", []string{"-1"})
 
-	if err := c.conn.Add(addReq); err != nil {
+	if err := c.do(func(conn *ldap.Conn) error {
+		return conn.Add(addReq)
+	}); err != nil {
 		return nil, fmt.Errorf("creating person: %w", err)
 	}
 
@@ -52,8 +54,12 @@ func (c *Client) GetPerson(uid string) (*Person, error) {
 		nil,
 	)
 
-	result, err := c.conn.Search(searchReq)
-	if err != nil {
+	var result *ldap.SearchResult
+	if err := c.do(func(conn *ldap.Conn) error {
+		var err error
+		result, err = conn.Search(searchReq)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("searching for person: %w", err)
 	}
 
@@ -108,8 +114,12 @@ func (c *Client) ListPeople() ([]Person, error) {
 		nil,
 	)
 
-	result, err := c.conn.Search(searchReq)
-	if err != nil {
+	var result *ldap.SearchResult
+	if err := c.do(func(conn *ldap.Conn) error {
+		var err error
+		result, err = conn.Search(searchReq)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("listing people: %w", err)
 	}
 

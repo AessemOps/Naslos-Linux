@@ -127,6 +127,7 @@ func getEnvInt(key string, defaultValue int) int {
 func (s *Server) routes() {
 	// Health
 	s.router.HandleFunc("/api/health", s.handleHealth)
+	s.router.HandleFunc("/api/ready", s.handleReady)
 
 	// Catalog (app store)
 	s.router.HandleFunc("/api/catalog", s.handleCatalog)
@@ -212,10 +213,20 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
 }
 
+// identityUnavailable reports (and writes) an error when LDAP cannot be used.
+// The check actively attempts to (re)connect, so a client that could not reach
+// LDAP at startup — or lost it later — recovers on its own instead of failing
+// permanently until the API pod is restarted.
 func (s *Server) identityUnavailable(w http.ResponseWriter) bool {
 	if s.identity == nil {
 		writeError(w, http.StatusServiceUnavailable,
-			"Identity/LDAP is not available (check LDAP_HOST, LDAP_BIND_PASS, and that OpenLDAP is running)")
+			"Identity/LDAP is not configured (check LDAP_HOST, LDAP_BIND_PASS, and that OpenLDAP is running)")
+		return true
+	}
+	if err := s.identity.EnsureConnection(); err != nil {
+		log.Printf("LDAP unavailable: %v", err)
+		writeError(w, http.StatusServiceUnavailable,
+			fmt.Sprintf("Identity/LDAP is not reachable (will retry automatically): %v", err))
 		return true
 	}
 	return false
@@ -223,6 +234,17 @@ func (s *Server) identityUnavailable(w http.ResponseWriter) bool {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleReady reports process readiness. It intentionally does NOT fail when
+// LDAP is down: the UI and the dashboard remain usable, and the identity
+// client retries on demand. The LDAP state is reported for observability.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	ldapState := "down"
+	if s.identity != nil && s.identity.EnsureConnection() == nil {
+		ldapState = "up"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "ldap": ldapState})
 }
 
 // writeJSON writes a JSON response.
