@@ -21,6 +21,9 @@ users could never authenticate over SMB.
   created on the node. Verified: create → login, change password, disable
   (`NT_STATUS_ACCOUNT_DISABLED`), enable, delete — all without manual steps.
 - API: `/api/shares/paths`, `/api/shares/status`, `/api/shares/apply`.
+- The shares UI shows each share's `smb://<host>/<name>` address (host taken from
+  the browsing URL) with a copy button, and no longer offers AFP (the API
+  rejects it).
 
 ### Two traps that cost most of the debugging time
 1. **`SMB_CONF_PATH`**: `smbd` is started with `-s …/smb.conf` but
