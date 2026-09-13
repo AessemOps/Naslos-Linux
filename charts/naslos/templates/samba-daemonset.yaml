@@ -1,0 +1,89 @@
+# Naslos Samba (SMB / Time Machine) share server.
+#
+# SMB is not HTTP and cannot be reverse-proxied by Traefik, so this DaemonSet
+# uses hostNetwork and binds the node's 445/139 directly. The API renders
+# smb.conf (pushed through the privileged naslos-agent) into
+# /var/lib/naslos/shares on the host, which is mounted here along with the ZFS
+# datasets under /var/mnt.
+{{- if and .Values.shares.enabled .Values.shares.smb.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: naslos-samba
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: naslos-samba
+    app.kubernetes.io/component: shares
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-samba
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: naslos-samba
+        app.kubernetes.io/component: shares
+    spec:
+      hostNetwork: true
+      # hostNetwork pods need this to resolve cluster DNS names.
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: samba
+          image: "{{ .Values.shares.smb.image.repository }}:{{ .Values.shares.smb.image.tag }}"
+          imagePullPolicy: {{ .Values.shares.smb.image.pullPolicy }}
+          # smbd must be able to setuid to the configured share users, and to
+          # read/write datasets owned by root on the host, but it does not need
+          # the full privileged flag.
+          securityContext:
+            runAsUser: 0
+            capabilities:
+              add:
+                - CHOWN
+                - DAC_OVERRIDE
+                - FOWNER
+                - FSETID
+                - SETGID
+                - SETUID
+          ports:
+            - name: smb
+              containerPort: 445
+              protocol: TCP
+            - name: netbios-ssn
+              containerPort: 139
+              protocol: TCP
+          # A TCP probe is used instead of an smbclient handshake so that the
+          # probe does not depend on there being an account to authenticate
+          # with (or on guest access being allowed).
+          livenessProbe:
+            tcpSocket:
+              port: smb
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: smb
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            # Rendered smb.conf + samba private/lock/state dirs.
+            - name: share-config
+              mountPath: /etc/naslos/shares
+            # ZFS datasets served by the shares.
+            - name: datasets
+              mountPath: /var/mnt
+          resources:
+            {{- toYaml .Values.shares.smb.resources | nindent 12 }}
+      volumes:
+        - name: share-config
+          hostPath:
+            path: /var/lib/naslos/shares
+            type: DirectoryOrCreate
+        - name: datasets
+          hostPath:
+            path: /var/mnt
+            type: DirectoryOrCreate
+{{- end }}

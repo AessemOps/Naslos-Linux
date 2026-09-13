@@ -42,6 +42,16 @@ ui:
   nodePort:
     enabled: true
     port: 30080
+# Share services (SMB + NFS) for the single-node VM.
+shares:
+  smb:
+    image:
+      repository: 192.168.1.2:30095/naslos-samba
+      tag: "0.1.0"
+  nfs:
+    image:
+      repository: 192.168.1.2:30095/naslos-nfs
+      tag: "0.1.0"
 openldap:
   image: 192.168.1.2:30095/naslos-openldap:0.1.0
   # OpenLDAP host is the service name for internal cluster references.

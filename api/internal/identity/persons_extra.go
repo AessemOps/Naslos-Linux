@@ -3,6 +3,7 @@ package identity
 import (
 	"encoding/binary"
 	"fmt"
+	"strconv"
 	"unicode/utf16"
 
 	"github.com/go-ldap/ldap/v3"
@@ -62,6 +63,46 @@ func (c *Client) SetPassword(uid, password string) (string, error) {
 	// Compute NT hash for SMB sync
 	ntHash := computeNTHash(password)
 	return ntHash, nil
+}
+
+// GetUIDNumber returns the POSIX uidNumber of a person, used when mirroring
+// the account into Samba (which keys its passdb on the POSIX uid).
+func (c *Client) GetUIDNumber(uid string) (int, error) {
+	uid = normalizeUID(uid)
+	filter := fmt.Sprintf("(uid=%s)", uid)
+	searchBase := fmt.Sprintf("ou=people,%s", c.baseDN)
+
+	searchReq := ldap.NewSearchRequest(
+		searchBase,
+		ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 1, 0, false,
+		filter,
+		[]string{"uidNumber"},
+		nil,
+	)
+
+	var result *ldap.SearchResult
+	if err := c.do(func(conn *ldap.Conn) error {
+		var err error
+		result, err = conn.Search(searchReq)
+		return err
+	}); err != nil {
+		return 0, fmt.Errorf("searching for uidNumber: %w", err)
+	}
+
+	if len(result.Entries) == 0 {
+		return 0, fmt.Errorf("person %q not found", uid)
+	}
+
+	value := result.Entries[0].GetAttributeValue("uidNumber")
+	if value == "" {
+		return 0, fmt.Errorf("person %q has no uidNumber", uid)
+	}
+
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("person %q has an invalid uidNumber %q: %w", uid, value, err)
+	}
+	return n, nil
 }
 
 // EnablePerson enables a person account.
