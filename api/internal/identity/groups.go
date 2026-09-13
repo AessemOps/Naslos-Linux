@@ -21,7 +21,9 @@ func (c *Client) CreateGroup(cn, description string) (*Group, error) {
 	// Add placeholder member to satisfy groupOfNames schema
 	addReq.Attribute("member", []string{c.placeholderMemberDN()})
 
-	if err := c.conn.Add(addReq); err != nil {
+	if err := c.do(func(conn *ldap.Conn) error {
+		return conn.Add(addReq)
+	}); err != nil {
 		return nil, fmt.Errorf("creating group: %w", err)
 	}
 
@@ -60,8 +62,12 @@ func (c *Client) GetGroup(cn string) (*Group, error) {
 		nil,
 	)
 
-	result, err := c.conn.Search(searchReq)
-	if err != nil {
+	var result *ldap.SearchResult
+	if err := c.do(func(conn *ldap.Conn) error {
+		var err error
+		result, err = conn.Search(searchReq)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("searching for group: %w", err)
 	}
 
@@ -91,8 +97,12 @@ func (c *Client) ListGroups() ([]Group, error) {
 		nil,
 	)
 
-	result, err := c.conn.Search(searchReq)
-	if err != nil {
+	var result *ldap.SearchResult
+	if err := c.do(func(conn *ldap.Conn) error {
+		var err error
+		result, err = conn.Search(searchReq)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("listing groups: %w", err)
 	}
 
@@ -116,7 +126,9 @@ func (c *Client) AddMember(groupCN, personUID string) error {
 
 	modReq := ldap.NewModifyRequest(dn, nil)
 	modReq.Add("member", []string{personDN})
-	return c.conn.Modify(modReq)
+	return c.do(func(conn *ldap.Conn) error {
+		return conn.Modify(modReq)
+	})
 }
 
 // RemoveMember removes a person from a group.
@@ -126,14 +138,18 @@ func (c *Client) RemoveMember(groupCN, personUID string) error {
 
 	modReq := ldap.NewModifyRequest(dn, nil)
 	modReq.Delete("member", []string{personDN})
-	return c.conn.Modify(modReq)
+	return c.do(func(conn *ldap.Conn) error {
+		return conn.Modify(modReq)
+	})
 }
 
 // DeleteGroup removes a group.
 func (c *Client) DeleteGroup(cn string) error {
 	dn := fmt.Sprintf("cn=%s,ou=groups,%s", cn, c.baseDN)
 	delReq := ldap.NewDelRequest(dn, nil)
-	return c.conn.Del(delReq)
+	return c.do(func(conn *ldap.Conn) error {
+		return conn.Del(delReq)
+	})
 }
 
 // GetPersonGroups returns all groups a person belongs to.
