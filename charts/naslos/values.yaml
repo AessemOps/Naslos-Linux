@@ -11,6 +11,13 @@ api:
   service:
     type: ClusterIP
     port: 8080
+  # Startup ordering guard: wait briefly for OpenLDAP before starting the API
+  # so a cold start (both pods restarting together) does not serve identity
+  # errors. Best-effort only — the API starts anyway if LDAP is down, because
+  # the identity client reconnects lazily on its own.
+  waitForLdap:
+    retries: 10
+    intervalSeconds: 1
   # Name of a Secret (key "talosconfig") containing a talosconfig file with
   # its `endpoints:` list populated. Mounted into the pod and referenced via
   # the TALOSCONFIG env var — the talos machinery client library resolves its

@@ -29,7 +29,9 @@ func (c *Client) UpdatePerson(uid, displayName, email, firstName, lastName strin
 		modReq.Replace("sn", []string{lastName})
 	}
 
-	return c.conn.Modify(modReq)
+	return c.do(func(conn *ldap.Conn) error {
+		return conn.Modify(modReq)
+	})
 }
 
 // DeletePerson removes a person.
@@ -38,7 +40,9 @@ func (c *Client) DeletePerson(uid string) error {
 	dn := fmt.Sprintf("uid=%s,ou=people,%s", uid, c.baseDN)
 
 	delReq := ldap.NewDelRequest(dn, nil)
-	return c.conn.Del(delReq)
+	return c.do(func(conn *ldap.Conn) error {
+		return conn.Del(delReq)
+	})
 }
 
 // SetPassword sets the password for a person and returns the NT hash for SMB sync.
@@ -48,8 +52,10 @@ func (c *Client) SetPassword(uid, password string) (string, error) {
 
 	// Use LDAP Password Modify extended operation (RFC 3062)
 	passwordModify := ldap.NewPasswordModifyRequest(dn, "", password)
-	_, err := c.conn.PasswordModify(passwordModify)
-	if err != nil {
+	if err := c.do(func(conn *ldap.Conn) error {
+		_, err := conn.PasswordModify(passwordModify)
+		return err
+	}); err != nil {
 		return "", fmt.Errorf("setting password: %w", err)
 	}
 
@@ -65,7 +71,9 @@ func (c *Client) EnablePerson(uid string) error {
 
 	modReq := ldap.NewModifyRequest(dn, nil)
 	modReq.Replace("shadowExpire", []string{"-1"})
-	return c.conn.Modify(modReq)
+	return c.do(func(conn *ldap.Conn) error {
+		return conn.Modify(modReq)
+	})
 }
 
 // DisablePerson disables a person account.
@@ -75,7 +83,9 @@ func (c *Client) DisablePerson(uid string) error {
 
 	modReq := ldap.NewModifyRequest(dn, nil)
 	modReq.Replace("shadowExpire", []string{"1"})
-	return c.conn.Modify(modReq)
+	return c.do(func(conn *ldap.Conn) error {
+		return conn.Modify(modReq)
+	})
 }
 
 // computeNTHash computes the NT hash (MD4 of UTF-16LE password) for SMB.

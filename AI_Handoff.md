@@ -1,5 +1,41 @@
 # AI Handoff — Naslos
 
+## Known issue (separate, unresolved)
+`naslos-openldap-backup` CronJob is in CrashLoopBackOff on the VM as of
+2026-09-13 — LDAP backups are failing. Not related to the LDAP-availability
+fix below; needs its own investigation.
+
+## LDAP availability after restart (fixed)
+**Symptom:** after a restart, Users/Groups showed "Identity/LDAP is not
+available…" although OpenLDAP was healthy, until the API pod was restarted.
+
+**Cause:** `identity.NewClient` dialed LDAP eagerly at process start.
+`server.New` turned any failure into a permanent `identity = nil` (its comment
+"will retry on first use" was false — nothing retried). Losing the startup
+race against OpenLDAP therefore disabled identity for the pod's whole life.
+There were also no probes in the chart, so Kubernetes kept serving the
+degraded pod.
+
+**Fix:**
+- `api/internal/identity/client.go`: `NewClient` no longer dials; added
+  mutex-guarded lazy `EnsureConnection()` with a 2 s retry cooldown, plus a
+  `do()` helper that drops a dead connection and retries the operation once.
+  Removed the broken `reconnect()`/`extractHost()` dead code.
+- `api/internal/server/server.go`: `identityUnavailable()` now attempts a
+  reconnect and returns 503 **with the underlying cause**; added `/api/ready`
+  (always 200; reports `ldap: up|down`).
+- `charts/naslos/templates/api-deployment.yaml`: best-effort `wait-for-ldap`
+  initContainer (~10 s, then starts anyway — deliberately NOT blocking, so an
+  LDAP outage cannot take the dashboard down) + liveness on `/api/health` and
+  readiness on `/api/ready`.
+- Chart changes need `helm upgrade … --force-conflicts` (earlier
+  `kubectl set image` owns the image field, so plain upgrade conflicts).
+
+**Verified by live drill on the VM:** LDAP scaled to 0 → API restarted (503
+naming `connection refused`, dashboard/metrics still 200) → LDAP scaled back →
+`/api/groups` 200 **on the same API pod with 0 restarts**. Plus Go tests
+`api/internal/identity/client_test.go`.
+
 ## Specification
 `docs/spec.md` is now the **normative system specification** (RFC-2119 style):
 stable requirement IDs (`FR-STO/IDN/SHR/APP/MET/LOG/NTF`, `SEC-*`, `NFR-*`,
