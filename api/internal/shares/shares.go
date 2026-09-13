@@ -20,17 +20,21 @@ const (
 
 // Share represents a single share configuration.
 type Share struct {
-	Name         string    `json:"name"`
-	Path         string    `json:"path"`
-	Protocol     Protocol  `json:"protocol"`
-	Description  string    `json:"description"`
-	ReadOnly     bool      `json:"readOnly"`
-	Browseable   bool      `json:"browseable"`
-	AllowedHosts []string  `json:"allowedHosts"`
-	ValidUsers   []string  `json:"validUsers"`
-	TimeMachine  bool      `json:"timeMachine"`
-	CreatedAt    time.Time `json:"createdAt"`
-	Enabled      bool      `json:"enabled"`
+	Name         string   `json:"name"`
+	Path         string   `json:"path"`
+	Protocol     Protocol `json:"protocol"`
+	Description  string   `json:"description"`
+	ReadOnly     bool     `json:"readOnly"`
+	Browseable   bool     `json:"browseable"`
+	AllowedHosts []string `json:"allowedHosts"`
+	ValidUsers   []string `json:"validUsers"`
+	// ValidGroups lists LDAP groups allowed to use the share, rendered into
+	// smb.conf as `@group` entries. Kept separate from ValidUsers so a name is
+	// never ambiguous between a user and a group.
+	ValidGroups []string  `json:"validGroups"`
+	TimeMachine bool      `json:"timeMachine"`
+	CreatedAt   time.Time `json:"createdAt"`
+	Enabled     bool      `json:"enabled"`
 }
 
 // CreateShareRequest is the request to create a new share.
@@ -46,6 +50,7 @@ type CreateShareRequest struct {
 	Browseable   *bool    `json:"browseable,omitempty"`
 	AllowedHosts []string `json:"allowedHosts"`
 	ValidUsers   []string `json:"validUsers"`
+	ValidGroups  []string `json:"validGroups"`
 	TimeMachine  bool     `json:"timeMachine"`
 	Enabled      *bool    `json:"enabled,omitempty"`
 }
@@ -59,6 +64,7 @@ type UpdateShareRequest struct {
 	Browseable   *bool    `json:"browseable,omitempty"`
 	AllowedHosts []string `json:"allowedHosts,omitempty"`
 	ValidUsers   []string `json:"validUsers,omitempty"`
+	ValidGroups  []string `json:"validGroups,omitempty"`
 	TimeMachine  *bool    `json:"timeMachine,omitempty"`
 	Enabled      *bool    `json:"enabled,omitempty"`
 }

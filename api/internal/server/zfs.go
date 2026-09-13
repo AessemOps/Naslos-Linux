@@ -113,8 +113,9 @@ func (s *Server) handleZFSImport(w http.ResponseWriter, r *http.Request) {
 
 // handleZFSPoolDetail handles per-pool operations: GET status, GET health, DELETE pool.
 // Routes: GET /api/volumes/zfs/{name}      → raw zpool status
-//         GET /api/volumes/zfs/{name}/health → structured health data
-//         DELETE /api/volumes/zfs/{name}   → destroy pool
+//
+//	GET /api/volumes/zfs/{name}/health → structured health data
+//	DELETE /api/volumes/zfs/{name}   → destroy pool
 func (s *Server) handleZFSPoolDetail(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/volumes/zfs/")
 	if name == "" {

@@ -142,6 +142,42 @@ func (s *Server) handleSharesApply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
+// ldapNSSGroups converts the LDAP groups into the form the extrausers group
+// file needs, so Samba can resolve `valid users = @group` on the node.
+//
+// Membership is resolved from the group's member DNs (uid=<uid>,ou=people,...)
+// down to plain uids, because NSS lists members by name. A group that cannot be
+// read is skipped rather than failing the whole render: losing the share config
+// would be worse than losing one group's membership, and the next apply
+// (or LDAP recovery) restores it.
+func (s *Server) ldapNSSGroups() []shares.NSSGroup {
+	if s.identity == nil {
+		return nil
+	}
+
+	groups, err := s.identity.ListGroups()
+	if err != nil {
+		log.Printf("Warning: could not read LDAP groups for share access lists: %v", err)
+		return nil
+	}
+
+	out := make([]shares.NSSGroup, 0, len(groups))
+	for _, g := range groups {
+		members := make([]string, 0, len(g.Members))
+		for _, dn := range g.Members {
+			if uid := extractUID(dn); uid != "" {
+				members = append(members, uid)
+			}
+		}
+		out = append(out, shares.NSSGroup{
+			Name:    g.CN,
+			GID:     shares.GroupGID(g.CN),
+			Members: members,
+		})
+	}
+	return out
+}
+
 // applySharesConfig renders the current share configuration and pushes it to
 // the agent. Failures are logged and surfaced to the caller but never roll
 // back the share definition: the API remains the source of truth and the next
@@ -154,7 +190,7 @@ func (s *Server) applySharesConfig() (*agent.SharesConfigStatus, error) {
 	if s.sambaUsers != nil {
 		bundle.SambaUsers = s.sambaUsers.RenderSMBPasswd()
 		bundle.NSSPasswd = s.sambaUsers.RenderPasswd()
-		bundle.NSSGroup = s.sambaUsers.RenderGroup()
+		bundle.NSSGroup = s.sambaUsers.RenderGroup(s.ldapNSSGroups())
 		bundle.NSSShadow = s.sambaUsers.RenderShadow()
 	}
 

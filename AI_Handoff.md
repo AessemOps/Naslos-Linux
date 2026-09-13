@@ -29,6 +29,12 @@ users could never authenticate over SMB.
   lists `naslos` at 192.168.1.96:445 next to the real `truenas`). Discovery is
   pinned to the default-route interface, otherwise avahi also advertises pod
   network (10.x) addresses.
+- **Share access by group works**: a share can be restricted to LDAP groups
+  (`validGroups` → `valid users = @group`), with the group's real membership
+  mirrored into the node's NSS files. Verified live: member OK, non-member
+  refused, and membership changes take effect without touching the share.
+  Every identity change that affects access (membership, group delete, user
+  create/delete) now re-pushes the mirror.
 - **Password change → SMB**: measured 2.6–3.0 s until a *new* SMB login accepts
   the new password at the default `shares.confCheckInterval: 3`, and 0.8–1.1 s at
   `1`. The API call itself is ~25 ms; the delay is the serving container's poll.

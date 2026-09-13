@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 )
 
@@ -62,6 +63,12 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
+		}
+
+		// Group membership affects which shares the new user may use, so push
+		// the refreshed mirror before answering.
+		if err := s.refreshShareAccess(); err != nil {
+			log.Printf("Warning: user created but pushing the share access mirror failed: %v", err)
 		}
 
 		writeJSON(w, http.StatusCreated, person)
