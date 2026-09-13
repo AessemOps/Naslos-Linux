@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/AessemOps/Naslos-Linux/agent/internal/shares"
 	"github.com/AessemOps/Naslos-Linux/agent/internal/zfs"
 )
 
@@ -15,15 +16,17 @@ import (
 type Server struct {
 	addr   string
 	zfs    *zfs.Client
+	shares *shares.Client
 	router *http.ServeMux
 	server *http.Server
 }
 
 // New creates a new agent server.
-func New(addr string, zfsClient *zfs.Client) *Server {
+func New(addr string, zfsClient *zfs.Client, sharesClient *shares.Client) *Server {
 	s := &Server{
 		addr:   addr,
 		zfs:    zfsClient,
+		shares: sharesClient,
 		router: http.NewServeMux(),
 	}
 	s.routes()
@@ -38,6 +41,8 @@ func (s *Server) routes() {
 	s.router.HandleFunc("/api/v1/pools/", s.handlePoolDetail)
 	s.router.HandleFunc("/api/v1/datasets/", s.handleDatasets)
 	s.router.HandleFunc("/api/v1/snapshots/", s.handleSnapshots)
+	s.router.HandleFunc("/api/v1/shares/config", s.handleSharesConfig)
+	s.router.HandleFunc("/api/v1/shares/status", s.handleSharesStatus)
 }
 
 // zfsUnavailable reports whether the agent runs in degraded mode (no ZFS on

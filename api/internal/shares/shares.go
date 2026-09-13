@@ -2,6 +2,7 @@
 package shares
 
 import (
+	"os"
 	"time"
 )
 
@@ -19,35 +20,41 @@ const (
 
 // Share represents a single share configuration.
 type Share struct {
-	Name         string   `json:"name"`
-	Path         string   `json:"path"`
-	Protocol     Protocol `json:"protocol"`
-	Description  string   `json:"description"`
-	ReadOnly     bool     `json:"readOnly"`
-	Browseable   bool     `json:"browseable"`
-	AllowedHosts []string `json:"allowedHosts"`
-	ValidUsers   []string `json:"validUsers"`
-	TimeMachine  bool     `json:"timeMachine"`
+	Name         string    `json:"name"`
+	Path         string    `json:"path"`
+	Protocol     Protocol  `json:"protocol"`
+	Description  string    `json:"description"`
+	ReadOnly     bool      `json:"readOnly"`
+	Browseable   bool      `json:"browseable"`
+	AllowedHosts []string  `json:"allowedHosts"`
+	ValidUsers   []string  `json:"validUsers"`
+	TimeMachine  bool      `json:"timeMachine"`
 	CreatedAt    time.Time `json:"createdAt"`
-	Enabled      bool     `json:"enabled"`
+	Enabled      bool      `json:"enabled"`
 }
 
 // CreateShareRequest is the request to create a new share.
+// Browseable and Enabled are pointers so "omitted" is distinguishable from
+// "explicitly false": omitted browseable defaults to true (the historical
+// behaviour), omitted enabled defaults to true.
 type CreateShareRequest struct {
 	Name         string   `json:"name"`
 	Path         string   `json:"path"`
 	Protocol     Protocol `json:"protocol"`
 	Description  string   `json:"description"`
 	ReadOnly     bool     `json:"readOnly"`
-	Browseable   bool     `json:"browseable"`
+	Browseable   *bool    `json:"browseable,omitempty"`
 	AllowedHosts []string `json:"allowedHosts"`
 	ValidUsers   []string `json:"validUsers"`
 	TimeMachine  bool     `json:"timeMachine"`
+	Enabled      *bool    `json:"enabled,omitempty"`
 }
 
-// UpdateShareRequest is the request to update a share.
+// UpdateShareRequest is the request to update a share. Pointer fields are
+// optional; a non-nil Description allows clearing the description (an empty
+// string is a valid value), which a plain string could not express.
 type UpdateShareRequest struct {
-	Description  string   `json:"description,omitempty"`
+	Description  *string  `json:"description,omitempty"`
 	ReadOnly     *bool    `json:"readOnly,omitempty"`
 	Browseable   *bool    `json:"browseable,omitempty"`
 	AllowedHosts []string `json:"allowedHosts,omitempty"`
@@ -63,13 +70,38 @@ type Manager struct {
 	zfsBase    string
 }
 
-// NewManager creates a new share manager.
+// NewManager creates a new share manager. configPath is the JSON file the
+// share definitions are persisted to; an empty string keeps the manager
+// in-memory only (used by tests). zfsBase is the only directory tree shares
+// may point at.
 func NewManager(configPath string) *Manager {
+	return NewManagerWithBase(configPath, DefaultZFSBase())
+}
+
+// NewManagerWithBase creates a share manager with an explicit ZFS base path.
+func NewManagerWithBase(configPath, zfsBase string) *Manager {
+	if zfsBase == "" {
+		zfsBase = DefaultZFSBase()
+	}
 	m := &Manager{
 		shares:     make(map[string]*Share),
 		configPath: configPath,
-		zfsBase:    "/var/mnt",
+		zfsBase:    zfsBase,
 	}
 	m.load()
 	return m
+}
+
+// DefaultZFSBase returns the directory tree shares live under. Overridable
+// via SHARES_ZFS_BASE for development outside the Talos host layout.
+func DefaultZFSBase() string {
+	if v := os.Getenv("SHARES_ZFS_BASE"); v != "" {
+		return v
+	}
+	return "/var/mnt"
+}
+
+// ZFSBase returns the configured base path for share datasets.
+func (m *Manager) ZFSBase() string {
+	return m.zfsBase
 }

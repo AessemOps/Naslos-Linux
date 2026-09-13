@@ -102,6 +102,82 @@ func (c *Client) do(req *http.Request, out interface{}) error {
 	return nil
 }
 
+// SharesConfigRequest is the desired share configuration pushed to the node.
+// The agent renders these into the service config files it manages; the API
+// renders the file contents because the share definitions live there.
+type SharesConfigRequest struct {
+	// SambaConf is the full smb.conf content.
+	SambaConf string `json:"sambaConf"`
+	// NFSExports is the full /etc/exports content.
+	NFSExports string `json:"nfsExports"`
+	// SambaUsers is the smbpasswd-format account file whose NT hashes are
+	// imported into Samba's passdb (keeps SMB logins in step with LDAP).
+	SambaUsers string `json:"sambaUsers"`
+	// Revision is an opaque content hash used to skip redundant reloads.
+	Revision string `json:"revision"`
+	// ShareCount is the number of enabled shares, for status reporting.
+	ShareCount int `json:"shareCount"`
+}
+
+// SharesConfigStatus is the agent's report of what it applied on the host.
+type SharesConfigStatus struct {
+	// Applied indicates the configuration was written successfully.
+	Applied bool `json:"applied"`
+	// Revision is the revision currently on disk.
+	Revision string `json:"revision"`
+	// SambaConfPath / NFSExportsPath are the rendered file locations.
+	SambaConfPath  string `json:"sambaConfPath"`
+	NFSExportsPath string `json:"nfsExportsPath"`
+	// SambaRunning / NFSRunning report whether the share services are
+	// currently active on the node.
+	SambaRunning bool `json:"sambaRunning"`
+	NFSRunning   bool `json:"nfsRunning"`
+	// SambaReloaded / NFSReloaded report whether this call triggered a reload.
+	SambaReloaded bool `json:"sambaReloaded"`
+	NFSReloaded   bool `json:"nfsReloaded"`
+	// SambaTestOutput / NFSTestOutput hold the validation command output.
+	SambaTestOutput string `json:"sambaTestOutput"`
+	NFSTestOutput   string `json:"nfsTestOutput"`
+	// Messages collects human-readable notes/errors from the apply step.
+	Messages []string `json:"messages"`
+	// Error is set when the configuration could not be applied.
+	Error string `json:"error,omitempty"`
+}
+
+// ApplySharesConfig pushes the rendered share configuration to the agent,
+// which writes it into the share services' config directory on the node.
+func (c *Client) ApplySharesConfig(req SharesConfigRequest) (*SharesConfigStatus, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encoding shares config: %w", err)
+	}
+
+	httpReq, err := http.NewRequest(http.MethodPut, c.baseURL+"/api/v1/shares/config", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating shares-config request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	var status SharesConfigStatus
+	if err := c.do(httpReq, &status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
+// GetSharesStatus reports what share configuration and services the node has.
+func (c *Client) GetSharesStatus() (*SharesConfigStatus, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/shares/status", nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating shares-status request: %w", err)
+	}
+	var status SharesConfigStatus
+	if err := c.do(req, &status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
 // ListPools returns all ZFS pools known to the agent.
 func (c *Client) ListPools() ([]Pool, error) {
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/pools", nil)

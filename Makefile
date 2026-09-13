@@ -17,6 +17,8 @@ API_IMAGE := $(REGISTRY)/naslos-api:$(IMAGE_TAG)
 AGENT_IMAGE := $(REGISTRY)/naslos-agent:$(IMAGE_TAG)
 UI_IMAGE := $(REGISTRY)/naslos-ui:$(IMAGE_TAG)
 OPENLDAP_IMAGE := $(REGISTRY)/naslos-openldap:$(IMAGE_TAG)
+SAMBA_IMAGE := $(REGISTRY)/naslos-samba:$(IMAGE_TAG)
+NFS_IMAGE := $(REGISTRY)/naslos-nfs:$(IMAGE_TAG)
 
 # Extra flags passed through to helm upgrade (e.g. image registry overrides).
 HELM_FLAGS :=
@@ -40,7 +42,7 @@ ui:
 	cd ui && npm install && npm run build
 
 # Build all Naslos container images locally.
-images: api-image agent-image ui-image openldap-image
+images: api-image agent-image ui-image openldap-image samba-image nfs-image
 
 api-image:
 	$(DOCKER) build -t $(API_IMAGE) -f api/Dockerfile .
@@ -54,12 +56,20 @@ ui-image:
 openldap-image:
 	$(DOCKER) build -t $(OPENLDAP_IMAGE) -f openldap/image/Dockerfile openldap/image
 
+samba-image:
+	$(DOCKER) build -t $(SAMBA_IMAGE) -f samba/image/Dockerfile samba/image
+
+nfs-image:
+	$(DOCKER) build -t $(NFS_IMAGE) -f nfs/image/Dockerfile nfs/image
+
 # Push all Naslos container images to REGISTRY (requires docker login / insecure-registry config for HTTP registries).
 push-images: images
 	$(DOCKER) push $(API_IMAGE)
 	$(DOCKER) push $(AGENT_IMAGE)
 	$(DOCKER) push $(UI_IMAGE)
 	$(DOCKER) push $(OPENLDAP_IMAGE)
+	$(DOCKER) push $(SAMBA_IMAGE)
+	$(DOCKER) push $(NFS_IMAGE)
 
 bootstrap:
 	$(TALOSCTL) image factory schematic bundle \

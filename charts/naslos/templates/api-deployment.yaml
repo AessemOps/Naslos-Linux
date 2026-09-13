@@ -97,11 +97,16 @@ spec:
                 secretKeyRef:
                   name: naslos-openldap
                   key: service-password
+            {{- if .Values.api.sharesConfig.enabled }}
+            # Where share definitions are persisted (see api/internal/shares).
+            - name: SHARES_CONFIG
+              value: {{ .Values.api.sharesConfig.file | default "/var/lib/naslos/shares.json" }}
+            {{- end }}
             {{- if .Values.api.ldapCA.secretName }}
             - name: LDAP_CA_CERT
               value: /var/run/secrets/ldap.ca/ca.crt
             {{- end }}
-          {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName }}
+          {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath }}
           volumeMounts:
             {{- if .Values.api.talosConfigSecret }}
             - name: talosconfig
@@ -113,10 +118,23 @@ spec:
               mountPath: /var/run/secrets/ldap.ca
               readOnly: true
             {{- end }}
+            {{- if .Values.api.sharesConfig.enabled }}
+            # Persists share definitions across restarts.
+            - name: shares-config
+              mountPath: {{ .Values.api.sharesConfig.mountPath | default "/var/lib/naslos" }}
+            {{- end }}
+            {{- if .Values.api.datasetsHostPath }}
+            # Read-only view of the share datasets so the API can list and
+            # validate paths for the shares UI. Gated on a hostPath because it
+            # pins the pod to a node (fine for the single-node layout).
+            - name: datasets
+              mountPath: /var/mnt
+              readOnly: true
+            {{- end }}
           {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
-      {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName }}
+      {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath }}
       volumes:
         {{- if .Values.api.talosConfigSecret }}
         - name: talosconfig
@@ -134,7 +152,35 @@ spec:
               - key: {{ .Values.api.ldapCA.key | default "ca.crt" }}
                 path: ca.crt
         {{- end }}
+        {{- if .Values.api.sharesConfig.enabled }}
+        - name: shares-config
+          persistentVolumeClaim:
+            claimName: naslos-shares-config
+        {{- end }}
+        {{- if .Values.api.datasetsHostPath }}
+        - name: datasets
+          hostPath:
+            path: {{ .Values.api.datasetsHostPath }}
+            type: Directory
+        {{- end }}
       {{- end }}
+---
+{{- if .Values.api.sharesConfig.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: naslos-shares-config
+  namespace: {{ .Values.namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.api.sharesConfig.size | default "64Mi" }}
+  {{- if .Values.api.sharesConfig.storageClassName }}
+  storageClassName: {{ .Values.api.sharesConfig.storageClassName }}
+  {{- end }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Service

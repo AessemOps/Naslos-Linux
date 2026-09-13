@@ -30,6 +30,7 @@ type Server struct {
 	helm          *helm.Client
 	catalog       *catalog.Catalog
 	shares        *shares.Manager
+	sambaUsers    *shares.SambaUserStore
 	metrics       *metrics.Manager
 	notifications *notifications.Manager
 	identity      *identity.Client
@@ -47,8 +48,14 @@ func New(addr string, tc *talos.Client) *Server {
 	// Initialize app catalog (built-in)
 	c := catalog.New("")
 
-	// Initialize share manager
-	shareManager := shares.NewManager("")
+	// Initialize share manager. The config path is where share definitions
+	// are persisted; without it shares would live only in memory and be lost
+	// on every restart (see SHARES_CONFIG / the naslos-shares volume).
+	shareManager := shares.NewManager(getEnv("SHARES_CONFIG", "/var/lib/naslos/shares.json"))
+
+	// SMB account mirror: LDAP users' NT hashes, rendered into the passdb
+	// import file so SMB logins track LDAP password changes.
+	sambaUserStore := shares.NewSambaUserStore(getEnv("SMB_USERS_CONFIG", "/var/lib/naslos/smbusers.json"))
 
 	// Initialize metrics manager
 	metricsManager := metrics.NewManager()
@@ -95,6 +102,7 @@ func New(addr string, tc *talos.Client) *Server {
 		helm:          helmClient,
 		catalog:       c,
 		shares:        shareManager,
+		sambaUsers:    sambaUserStore,
 		metrics:       metricsManager,
 		notifications: notifManager,
 		identity:      identityClient,
@@ -153,9 +161,12 @@ func (s *Server) routes() {
 
 	// Shares
 	s.router.HandleFunc("/api/shares", s.handleShares)
-	s.router.HandleFunc("/api/shares/", s.handleShareDetail)
+	s.router.HandleFunc("/api/shares/paths", s.handleSharePaths)
+	s.router.HandleFunc("/api/shares/status", s.handleSharesStatus)
+	s.router.HandleFunc("/api/shares/apply", s.handleSharesApply)
 	s.router.HandleFunc("/api/shares/config/samba", s.handleSambaConfig)
 	s.router.HandleFunc("/api/shares/config/nfs", s.handleNFSConfig)
+	s.router.HandleFunc("/api/shares/", s.handleShareDetail)
 
 	// Notifications
 	s.router.HandleFunc("/api/notifications", s.handleNotifications)
@@ -199,6 +210,16 @@ func (s *Server) Start() error {
 	// Kick off the background metrics collector so the dashboard has data
 	// as soon as the server comes up.
 	s.startMetricsCollector()
+
+	// Converge the node's share services with the persisted share definitions.
+	// This covers first boot, chart upgrades and node reboots: the host's
+	// config directory may be empty or stale, and the API is the source of
+	// truth. Failures are logged only — the API stays useful without shares.
+	go func() {
+		if _, err := s.applySharesConfig(); err != nil {
+			log.Printf("Warning: initial shares apply failed: %v", err)
+		}
+	}()
 
 	s.server = &http.Server{
 		Addr:    s.addr,

@@ -30,6 +30,22 @@ api:
   # (see templates/agent-daemonset.yaml headless Service). Empty selects the
   # in-namespace default http://naslos-agent.<namespace>.svc.cluster.local:9090.
   agentBaseURL: ""
+  # Read-only hostPath to the ZFS datasets, mounted at /var/mnt so the API can
+  # list and validate share paths for the shares UI. Set to "null"/empty on
+  # multi-node clusters (a hostPath pins the pod to one node and would list
+  # only that node's datasets).
+  datasetsHostPath: /var/mnt
+  # Share definitions are persisted to SHARES_CONFIG so they survive API pod
+  # restarts and chart upgrades. Without a mounted path the share manager is
+  # in-memory only and every share is lost on restart.
+  sharesConfig:
+    enabled: true
+    # Path inside the API container (mounted from a PVC).
+    mountPath: /var/lib/naslos
+    file: /var/lib/naslos/shares.json
+    # Size of the PersistentVolumeClaim holding SHARES_CONFIG.
+    size: 64Mi
+    storageClassName: ""
   # LDAP CA certificate Secret (key ca.crt) used to verify the OpenLDAP TLS
   # certificate. The API mounts it and sets LDAP_CA_CERT. Defaults to the
   # secret created by openldap/generate-secrets.sh.
@@ -98,18 +114,46 @@ zfs:
   # Auto-import pools at boot (handled by zfs-service extension)
   autoImport: true
 
-# Shares configuration
+# Shares configuration.
+#
+# Share definitions live in the API (persisted on a PVC) and are rendered into
+# smb.conf / exports, which the privileged naslos-agent writes to the host at
+# /var/lib/naslos/shares. Dedicated serving workloads mount that directory and
+# reload themselves when the rendered config changes.
 shares:
   enabled: true
   smb:
     enabled: true
     workgroup: "NASLOS"
-    # Time Machine support for macOS
+    # Time Machine support for macOS (SMB + fruit VFS; AFP is deprecated)
     timeMachine: true
+    image:
+      repository: 192.168.1.2:30095/naslos-samba
+      tag: "0.1.0"
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
   nfs:
     enabled: true
+    image:
+      repository: 192.168.1.2:30095/naslos-nfs
+      tag: "0.1.0"
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  # AFP is deprecated in favour of SMB Time Machine and is not served.
   afp:
-    enabled: false  # Deprecated in favor of SMB Time Machine
+    enabled: false
 
 # Traefik ingress controller
 # Traefik chart v39+ requires the new ports schema:
