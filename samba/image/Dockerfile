@@ -17,8 +17,19 @@ RUN apt-get update && \
         samba-vfs-modules \
         smbclient \
         libnss-extrausers \
+        avahi-daemon \
+        avahi-utils \
+        dbus \
+        wsdd \
         tini \
         && rm -rf /var/lib/apt/lists/*
+
+# Network discovery: Avahi publishes _smb._tcp over mDNS so file managers that
+# browse the network (Dolphin, Finder) list this server under smb:// — the same
+# way a NAS appliance appears. wsdd provides Web Service Discovery so Windows
+# Explorer's Network view finds it too (Windows dropped SMBv1 browsing).
+COPY avahi-daemon.conf /etc/avahi/avahi-daemon.conf
+COPY avahi-smb.service /etc/avahi/services/naslos-smb.service
 
 # The extrausers NSS module lets Samba resolve the LDAP users mirrored by the
 # API into /var/lib/extrausers (mounted from the node), so an SMB session maps
