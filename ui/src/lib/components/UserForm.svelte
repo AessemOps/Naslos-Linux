@@ -139,6 +139,15 @@
         <label class="label">{user ? 'New Password (leave blank to keep current)' : 'Password'}</label>
         <input type="password" bind:value={password} class="input w-full" />
         <p class="text-xs text-gray-500 mt-1">This password is used for both web login and file shares (SMB).</p>
+        <div class="mt-2 p-3 rounded-lg bg-naslos-dark border border-naslos-border text-xs text-gray-400 space-y-1">
+          <p class="font-medium text-gray-300">Applying a password to file shares takes a moment</p>
+          <!-- Kept as single-source-line sentences: wrapping the text in the template puts the
+               newline and indentation into the DOM, which splits the sentence when matched. -->
+          <p>Web login changes immediately, but SMB picks the new password up within about 3 seconds &mdash; a share login may still be refused briefly after saving.</p>
+          {#if user}
+            <p>File share sessions that are already connected keep working with the old password until that client reconnects, so disconnect and reconnect (or unmount and remount) to be sure. Some clients also remember the old password and need it removed before they will ask for the new one.</p>
+          {/if}
+        </div>
       </div>
 
       <div>
