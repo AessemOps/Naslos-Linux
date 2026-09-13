@@ -1,5 +1,62 @@
 # AI Handoff — Naslos
 
+## Current branch: `feature/shares` (SMB shares + LDAP account sync)
+
+### What was broken
+Shares were **metadata only**. `server.New` called `shares.NewManager("")`, so
+every share was lost on restart, and nothing in the cluster served SMB — the
+generated `smb.conf` was returned as text over the API and consumed by nobody.
+`syncSMBPassword`/`removeSMBUser` were **stubs that only printed**, so LDAP
+users could never authenticate over SMB.
+
+### What now works (verified end-to-end on the VM)
+- Share definitions persist (`SHARES_CONFIG`, PVC) and are validated
+  (canonicalised paths — the old prefix check allowed `/var/mnt/../etc`).
+- The privileged agent writes rendered config to `/var/lib/naslos/shares`; the
+  `naslos-samba` DaemonSet serves SMB on the node's :445 and reloads itself,
+  only after `testparm` accepts the new file.
+- **LDAP → Samba NT-hash sync is live**: password set/create/delete/enable all
+  mirror into the passdb via a rendered `smbusers` file imported with
+  `pdbedit -i smbpasswd:`. Proven: an LDAP user's password listed, downloaded
+  and uploaded files on a ZFS dataset.
+- API: `/api/shares/paths`, `/api/shares/status`, `/api/shares/apply`.
+
+### Two traps that cost most of the debugging time
+1. **`SMB_CONF_PATH`**: `smbd` is started with `-s …/smb.conf` but
+   `pdbedit`/`smbpasswd` default to `/etc/samba/smb.conf`, so they wrote a
+   *different* passdb than the running smbd. Symptom: accounts "create" fine
+   while every login returns `NT_STATUS_ACCESS_DENIED` (falling back to guest).
+   The image now exports `SMB_CONF_PATH`.
+2. **`!` in test passwords under zsh**: `NaslosTest123!` inside double quotes
+   triggers history expansion and silently mangles the password. Use `%%` or
+   single quotes when testing SMB from the shell.
+
+### Known gaps (documented in docs/shares.md)
+- **LDAP users need NSS resolution in the samba container.** Samba maps a
+  session to a UNIX uid; the image resolves only local accounts, so an
+  otherwise-correct passdb entry with an unresolvable uid stores
+  `4294967295` and cannot log in. Fix: `libnss-ldapd`/`nslcd` in the samba
+  image (every LDAP user already has `posixAccount` + `uidNumber`), or
+  `passdb backend = ldapsam`. This is the next step for SMB.
+- **NFS**: Talos has no kernel `nfsd` (`/proc/filesystems` shows only the
+  client; `/proc/fs/nfsd` is absent). The `naslos-nfs` image/make target exists
+  but serving needs a userspace server (NFS-Ganesha) — not yet implemented.
+- `naslos-openldap-backup` CronJob is still in CrashLoopBackOff (pre-existing).
+
+### Environment notes
+- Deploy: `helm upgrade naslos charts/naslos -n naslos -f charts/naslos/values-vm.yaml
+  --set <component>.image.tag=<tag>` with `TALOSCONFIG=bootstrap/vm/talosconfig`.
+  Bump tag suffixes per deploy (registry reuses `0.1.0` with `IfNotPresent`).
+- Images: `make samba-image` / `make nfs-image` (new). Deployed tags at time of
+  writing: api `0.1.0-s4`, agent `0.1.0-s5`, samba `0.1.0-s4`, ui `0.1.0-s1`.
+- Playwright: 8 tests, all passing (`cd ui && npx playwright test`).
+- Go tests: `api/internal/identity` (incl. NT-hash vectors cross-checked with
+  OpenSSL) and `api/internal/shares` (smbpasswd rendering/persistence).
+
+---
+
+## Earlier work: dashboard & metrics (`feature/dashboard-and-metrics`)
+
 ## Known issue (separate, unresolved)
 `naslos-openldap-backup` CronJob is in CrashLoopBackOff on the VM as of
 2026-09-13 — LDAP backups are failing. Not related to the LDAP-availability
