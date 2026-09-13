@@ -42,11 +42,19 @@ const (
 // container imports it so LDAP password changes reach Samba's passdb.
 const SMBUsersPath = ConfigDir + "/smbusers"
 
+// NSSDir holds the extrausers-format files. The serving container (which runs
+// with `passwd: files extrausers`) mounts this directory at /var/lib/extrausers
+// so Samba can resolve LDAP users to UNIX uids without local accounts.
+const NSSDir = ConfigDir + "/extrausers"
+
 // Config is the rendered configuration pushed by the API.
 type Config struct {
 	SambaConf  string
 	NFSExports string
 	SambaUsers string
+	NSSPasswd  string
+	NSSGroup   string
+	NSSShadow  string
 	Revision   string
 	ShareCount int
 }
@@ -154,6 +162,30 @@ func (c *Client) Apply(cfg Config) (*Status, error) {
 	if existing := readHostFile(SMBUsersPath); existing != cfg.SambaUsers {
 		// 0600: this file carries NT hashes.
 		if err := writeAtomic(SMBUsersPath, cfg.SambaUsers, 0600); err != nil {
+			return nil, err
+		}
+	}
+
+	// extrausers files let the serving container resolve LDAP users through
+	// NSS (Samba maps a session to a UNIX uid, and without this the account
+	// cannot log in even when the passdb entry is correct).
+	if err := os.MkdirAll(hostPath(NSSDir), 0755); err != nil {
+		return nil, fmt.Errorf("creating extrausers dir: %w", err)
+	}
+	for _, f := range []struct {
+		name    string
+		content string
+		mode    os.FileMode
+	}{
+		{"passwd", cfg.NSSPasswd, 0644},
+		{"group", cfg.NSSGroup, 0644},
+		{"shadow", cfg.NSSShadow, 0644},
+	} {
+		path := NSSDir + "/" + f.name
+		if readHostFile(path) == f.content {
+			continue
+		}
+		if err := writeAtomic(path, f.content, f.mode); err != nil {
 			return nil, err
 		}
 	}

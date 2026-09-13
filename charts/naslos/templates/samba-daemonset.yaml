@@ -72,6 +72,11 @@ spec:
             # Rendered smb.conf + samba private/lock/state dirs.
             - name: share-config
               mountPath: /etc/naslos/shares
+            # NSS resolution of the LDAP users mirrored by the API. Samba maps
+            # an SMB session to a UNIX uid, so without this the accounts exist
+            # in the passdb but no login can succeed.
+            - name: extrausers
+              mountPath: /var/lib/extrausers
             # ZFS datasets served by the shares.
             - name: datasets
               mountPath: /var/mnt
@@ -81,6 +86,10 @@ spec:
         - name: share-config
           hostPath:
             path: /var/lib/naslos/shares
+            type: DirectoryOrCreate
+        - name: extrausers
+          hostPath:
+            path: /var/lib/naslos/shares/extrausers
             type: DirectoryOrCreate
         - name: datasets
           hostPath:

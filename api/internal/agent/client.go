@@ -113,6 +113,11 @@ type SharesConfigRequest struct {
 	// SambaUsers is the smbpasswd-format account file whose NT hashes are
 	// imported into Samba's passdb (keeps SMB logins in step with LDAP).
 	SambaUsers string `json:"sambaUsers"`
+	// NSSPasswd / NSSGroup / NSSShadow are extrausers-format files written to
+	// the node so the serving container can resolve LDAP users via NSS.
+	NSSPasswd string `json:"nssPasswd"`
+	NSSGroup  string `json:"nssGroup"`
+	NSSShadow string `json:"nssShadow"`
 	// Revision is an opaque content hash used to skip redundant reloads.
 	Revision string `json:"revision"`
 	// ShareCount is the number of enabled shares, for status reporting.
@@ -128,16 +133,11 @@ type SharesConfigStatus struct {
 	// SambaConfPath / NFSExportsPath are the rendered file locations.
 	SambaConfPath  string `json:"sambaConfPath"`
 	NFSExportsPath string `json:"nfsExportsPath"`
-	// SambaRunning / NFSRunning report whether the share services are
-	// currently active on the node.
-	SambaRunning bool `json:"sambaRunning"`
-	NFSRunning   bool `json:"nfsRunning"`
-	// SambaReloaded / NFSReloaded report whether this call triggered a reload.
-	SambaReloaded bool `json:"sambaReloaded"`
-	NFSReloaded   bool `json:"nfsReloaded"`
-	// SambaTestOutput / NFSTestOutput hold the validation command output.
-	SambaTestOutput string `json:"sambaTestOutput"`
-	NFSTestOutput   string `json:"nfsTestOutput"`
+	// SMBShareCount is the number of share sections the node's rendered
+	// smb.conf contains, and NFSExportCount the number of export lines, so
+	// callers can confirm the node received the expected shares.
+	SMBShareCount  int `json:"smbShareCount"`
+	NFSExportCount int `json:"nfsExportCount"`
 	// Messages collects human-readable notes/errors from the apply step.
 	Messages []string `json:"messages"`
 	// Error is set when the configuration could not be applied.

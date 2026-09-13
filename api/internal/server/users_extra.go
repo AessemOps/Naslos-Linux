@@ -247,16 +247,22 @@ func (s *Server) syncSMBPassword(uid, ntHash string) error {
 		return fmt.Errorf("uid and NT hash are required to sync an SMB account")
 	}
 
-	uidNumber := 0
+	uidNumber, gidNumber := 0, 0
 	if s.identity != nil {
-		if n, err := s.identity.GetUIDNumber(uid); err == nil {
-			uidNumber = n
+		u, g, err := s.identity.GetPosixIDs(uid)
+		if err == nil {
+			uidNumber, gidNumber = u, g
 		} else {
-			log.Printf("Warning: could not read uidNumber for %s (SMB account will use Samba's own uid): %v", uid, err)
+			log.Printf("Warning: could not read POSIX ids for %s (SMB login will need a local account): %v", uid, err)
 		}
 	}
 
-	if err := s.sambaUsers.Upsert(uid, uidNumber, ntHash); err != nil {
+	if err := s.sambaUsers.Upsert(shares.PosixIdentity{
+		UID:    uid,
+		UIDNum: uidNumber,
+		GIDNum: gidNumber,
+		Gecos:  uid,
+	}, ntHash); err != nil {
 		return err
 	}
 

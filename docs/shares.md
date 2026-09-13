@@ -103,6 +103,43 @@ Trigger points: user create (with a password), password change, delete, and
 enable/disable (a disabled account keeps its hash but is flagged `[DU]`, so
 re-enabling requires no new password).
 
+### POSIX identity (why NSS is involved)
+
+Samba attaches an SMB session to a **UNIX uid**, so an account that exists in
+the passdb but cannot be resolved through NSS still cannot log in — it is
+mapped to guest and the client sees `NT_STATUS_ACCESS_DENIED`, which is easy to
+misread as a bad password. (An unresolvable uid is stored as `4294967295`.)
+
+The API therefore mirrors each user's POSIX identity too: it reads `uidNumber`
+and `gidNumber` from the LDAP entry and renders the `extrausers` files
+
+```
+/var/lib/naslos/shares/extrausers/passwd   →  mounted at /var/lib/extrausers
+/var/lib/naslos/shares/extrausers/group
+/var/lib/naslos/shares/extrausers/shadow
+```
+
+which the `naslos-samba` image resolves with
+
+```
+passwd: files extrausers
+group:  files extrausers
+shadow: files extrausers
+```
+
+This keeps the whole path automated — creating a user through the API is
+enough; no account is ever created on the node, and the serving container needs
+no LDAP credentials, CA or network path to OpenLDAP (it only needs the files).
+The entrypoint additionally runs a **resolution check** on every sync and warns
+loudly about any passdb account that does not resolve through NSS, because that
+specific mismatch is otherwise silent.
+
+> Alternatives considered: `nslcd`/`libnss-ldapd` or `passdb backend =
+> ldapsam` against OpenLDAP directly. Both work, but they require directory
+> credentials and TLS material inside the serving container and add a runtime
+> dependency on LDAP for mere name resolution. The file-based mirror reuses the
+> transport that already delivers the share configuration.
+
 ### Two pitfalls that silently break SMB logins
 
 1. **`SMB_CONF_PATH` must be set for every Samba tool.** `smbd` is started with
@@ -112,16 +149,19 @@ re-enabling requires no new password).
    smbd. Accounts then look "created" to the tooling while every login falls
    back to guest and returns `NT_STATUS_ACCESS_DENIED`. The image exports
    `SMB_CONF_PATH` in its entrypoint for this reason.
-2. **A resolvable POSIX account is required.** Samba maps an SMB session to a
-   UNIX uid, so the user must exist in NSS with the uid recorded in the passdb;
-   an unresolvable uid is stored as `4294967295` and cannot log in.
+2. **A resolvable POSIX account is required** — handled by the extrausers
+   mirror above. Verify with `getent passwd <uid>` inside the samba pod.
 
-> **Status:** the NT-hash sync, the passdb import and SMB serving are verified
-> end-to-end — an LDAP user's password lists and writes files on a ZFS dataset.
-> Outstanding: (2) is not yet automated, because the samba image resolves only
-> local accounts. The next step is `libnss-ldapd`/`nslcd` inside the image
-> (every LDAP user already has `posixAccount` + `uidNumber`), or
-> `passdb backend = ldapsam`.
+### Verified behaviour
+
+| Action (via API) | SMB result |
+| --- | --- |
+| Create user with a password | logs in immediately, no node account needed |
+| Change password | new password works, old one stops working |
+| Disable user | `NT_STATUS_ACCOUNT_DISABLED` (passdb flag `[DU]`) |
+| Enable user | logs in again with the same password (hash retained) |
+| Delete user | account removed from passdb and NSS files |
+| Create / edit / delete share | smbd reloads and serves the change |
 
 ## Config generation
 
@@ -180,7 +220,7 @@ for the single-node layout, but it must be cleared on multi-node clusters
 
 | Image | Role | Make target |
 | --- | --- | --- |
-| `naslos-samba` | SMB / Time Machine serving (smbd, smbclient, pdbedit, samba-vfs-modules) | `make samba-image` |
+| `naslos-samba` | SMB / Time Machine serving (smbd, smbclient, pdbedit, samba-vfs-modules, **libnss-extrausers**) | `make samba-image` |
 | `naslos-nfs` | NFS serving (userspace, planned) | `make nfs-image` |
 
 ## Verification
@@ -191,8 +231,12 @@ curl -s "$API/api/shares/status"
 talosctl -n "$VM" read /var/lib/naslos/shares/smb.conf
 talosctl -n "$VM" read /var/lib/naslos/shares/smbusers
 
-# An LDAP user's password works over SMB
+# An LDAP user's password works over SMB (no node account is created)
 kubectl -n naslos exec ds/naslos-samba -- sh -c \
   "export SMB_CONF_PATH=/etc/naslos/shares/smb.conf; \
+   getent passwd '<uid>'; \
    smbclient //127.0.0.1/<share> -U '<uid>%<password>' -c 'ls; put /etc/hostname probe.txt'"
+
+# The account mirror resolves, or the entrypoint says which user does not
+kubectl -n naslos logs ds/naslos-samba | grep -i 'resolve through NSS'
 ```

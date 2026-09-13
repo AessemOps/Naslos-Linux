@@ -16,8 +16,17 @@ RUN apt-get update && \
         samba-common-bin \
         samba-vfs-modules \
         smbclient \
+        libnss-extrausers \
         tini \
         && rm -rf /var/lib/apt/lists/*
+
+# The extrausers NSS module lets Samba resolve the LDAP users mirrored by the
+# API into /var/lib/extrausers (mounted from the node), so an SMB session maps
+# to a real UNIX uid without local accounts being created anywhere. Without it
+# Samba stores an unresolvable uid (4294967295) and denies every login even
+# when the passdb entry and NT hash are correct.
+COPY nsswitch.conf /etc/nsswitch.conf
+RUN mkdir -p /var/lib/extrausers
 
 # The rendered config, passdb and lock state live here (mounted from the host
 # at /var/lib/naslos/shares).
