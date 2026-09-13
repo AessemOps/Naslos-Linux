@@ -27,6 +27,15 @@ func (m *Manager) load() {
 	}
 
 	for _, s := range shares {
+		if s == nil || s.Name == "" {
+			continue
+		}
+		// Normalise the list fields: a share stored before a field existed (or
+		// with an empty array) would otherwise be served as null, and clients
+		// would have to defend against it.
+		s.AllowedHosts = normalizeList(s.AllowedHosts)
+		s.ValidUsers = normalizeList(s.ValidUsers)
+		s.ValidGroups = normalizeList(s.ValidGroups)
 		m.shares[s.Name] = s
 	}
 }
