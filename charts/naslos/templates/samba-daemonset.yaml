@@ -54,6 +54,9 @@ spec:
               value: {{ .Values.shares.smb.workgroup | quote }}
             - name: SMB_DISCOVERY_INTERFACE
               value: {{ .Values.shares.discovery.interface | quote }}
+            # Bounds how quickly a password change reaches new SMB sessions.
+            - name: CONF_CHECK_INTERVAL
+              value: {{ .Values.shares.confCheckInterval | default 3 | quote }}
           ports:
             - name: smb
               containerPort: 445

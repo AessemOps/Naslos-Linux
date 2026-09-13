@@ -29,6 +29,10 @@ users could never authenticate over SMB.
   lists `naslos` at 192.168.1.96:445 next to the real `truenas`). Discovery is
   pinned to the default-route interface, otherwise avahi also advertises pod
   network (10.x) addresses.
+- **Password change → SMB**: measured 2.6–3.0 s until a *new* SMB login accepts
+  the new password at the default `shares.confCheckInterval: 3`, and 0.8–1.1 s at
+  `1`. The API call itself is ~25 ms; the delay is the serving container's poll.
+  Existing sessions keep their old credentials until they reconnect.
 
 ### Two traps that cost most of the debugging time
 1. **`SMB_CONF_PATH`**: `smbd` is started with `-s …/smb.conf` but
