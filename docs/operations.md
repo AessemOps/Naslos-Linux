@@ -69,6 +69,31 @@ automatically on the next operation.)
   zpool import -f <pool>; zfs set context=none … <pool>
   ```
 
+### Users/Groups page says "Identity/LDAP is not reachable"
+
+The API connects to LDAP lazily and reconnects on demand, so this is
+transient by design.
+
+1. Check LDAP is actually up: `kubectl -n naslos get pods,svc naslos-openldap`
+   and `kubectl -n naslos get endpoints naslos-openldap` (a Service with no
+   endpoints means the pod is not ready).
+2. Check what the API thinks: `curl -s localhost:8080/api/ready` (via the
+   NodePort or a port-forward) → `{"status":"ok","ldap":"up"|"down"}`.
+3. The error body names the underlying cause (e.g. `dial tcp …: connect:
+   connection refused`, or `no such host`).
+4. **No API restart is required** — the next request after LDAP returns will
+   succeed. Restarting the API pod is only a last resort.
+5. If `ldap: down` persists while LDAP is healthy, check the API's secret and
+   CA: `LDAP_BIND_PASS` (Secret `naslos-openldap`/`service-password`) and
+   `LDAP_CA_CERT` (Secret `naslos-openldap-tls`).
+6. Startup ordering: on a cold start the API waits briefly (best-effort,
+   ~10 s) for OpenLDAP, then starts anyway. `kubectl -n naslos logs
+   deploy/naslos-api -c wait-for-ldap` shows whether the wait succeeded.
+
+> Historical note: before the lazy client, a failed startup bind set the
+> identity client to `nil` permanently, so this error stuck until the API pod
+> was restarted by hand. That is fixed (spec FR-IDN-11/12).
+
 ### Agent unreachable
 
 - Agent runs as DaemonSet `hostNetwork`; confirm it's on the same host as the

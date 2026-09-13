@@ -18,6 +18,36 @@ spec:
         app.kubernetes.io/name: naslos-api
     spec:
       serviceAccountName: naslos-api
+      initContainers:
+        # Best-effort ordering guard: wait briefly for OpenLDAP so a cold start
+        # (both pods restarting together) does not serve identity errors in the
+        # first seconds. It MUST NOT block indefinitely — if LDAP is genuinely
+        # down we start anyway, because the API stays useful (dashboard, disks,
+        # pools) and the identity client reconnects lazily on its own
+        # (api/internal/identity/client.go). Blocking here would take the whole
+        # UI down with LDAP.
+        - name: wait-for-ldap
+          image: "{{ .Values.openldap.image }}"
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          env:
+            - name: LDAPTLS_REQCERT
+              value: never
+          command:
+            - sh
+            - -c
+            - |
+              i=0
+              while [ $i -lt {{ .Values.api.waitForLdap.retries | default 10 }} ]; do
+                if ldapsearch -x -H ldaps://{{ .Values.openldap.serviceName }}:636 -b "" -s base >/dev/null 2>&1; then
+                  echo "OpenLDAP is reachable."
+                  exit 0
+                fi
+                i=$((i+1))
+                echo "Waiting for OpenLDAP... ($i)"
+                sleep {{ .Values.api.waitForLdap.intervalSeconds | default 1 }}
+              done
+              echo "OpenLDAP not reachable yet - starting anyway (identity will retry)." >&2
+              exit 0
       containers:
         - name: api
           image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
@@ -25,6 +55,25 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+          # Liveness only checks the process (no LDAP dependency), so an LDAP
+          # outage never takes the dashboard down. /api/ready reports LDAP
+          # state for observability without gating traffic on it.
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           env:
             - name: NASLOS_NAMESPACE
               value: {{ .Values.namespace }}
