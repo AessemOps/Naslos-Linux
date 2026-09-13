@@ -65,9 +65,10 @@ func (c *Client) SetPassword(uid, password string) (string, error) {
 	return ntHash, nil
 }
 
-// GetUIDNumber returns the POSIX uidNumber of a person, used when mirroring
-// the account into Samba (which keys its passdb on the POSIX uid).
-func (c *Client) GetUIDNumber(uid string) (int, error) {
+// GetPosixIDs returns the POSIX uidNumber and gidNumber of a person. Samba
+// keys its passdb on the POSIX uid and resolves the account through NSS, so
+// both values are mirrored to the serving node alongside the NT hash.
+func (c *Client) GetPosixIDs(uid string) (uidNumber, gidNumber int, err error) {
 	uid = normalizeUID(uid)
 	filter := fmt.Sprintf("(uid=%s)", uid)
 	searchBase := fmt.Sprintf("ou=people,%s", c.baseDN)
@@ -76,7 +77,7 @@ func (c *Client) GetUIDNumber(uid string) (int, error) {
 		searchBase,
 		ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 1, 0, false,
 		filter,
-		[]string{"uidNumber"},
+		[]string{"uidNumber", "gidNumber"},
 		nil,
 	)
 
@@ -86,23 +87,41 @@ func (c *Client) GetUIDNumber(uid string) (int, error) {
 		result, err = conn.Search(searchReq)
 		return err
 	}); err != nil {
-		return 0, fmt.Errorf("searching for uidNumber: %w", err)
+		return 0, 0, fmt.Errorf("searching for POSIX ids: %w", err)
 	}
 
 	if len(result.Entries) == 0 {
-		return 0, fmt.Errorf("person %q not found", uid)
+		return 0, 0, fmt.Errorf("person %q not found", uid)
+	}
+	entry := result.Entries[0]
+
+	parse := func(attr string) (int, error) {
+		value := entry.GetAttributeValue(attr)
+		if value == "" {
+			return 0, fmt.Errorf("person %q has no %s", uid, attr)
+		}
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return 0, fmt.Errorf("person %q has an invalid %s %q: %w", uid, attr, value, err)
+		}
+		return n, nil
 	}
 
-	value := result.Entries[0].GetAttributeValue("uidNumber")
-	if value == "" {
-		return 0, fmt.Errorf("person %q has no uidNumber", uid)
-	}
-
-	n, err := strconv.Atoi(value)
+	uidNumber, err = parse("uidNumber")
 	if err != nil {
-		return 0, fmt.Errorf("person %q has an invalid uidNumber %q: %w", uid, value, err)
+		return 0, 0, err
 	}
-	return n, nil
+	gidNumber, err = parse("gidNumber")
+	if err != nil {
+		return 0, 0, err
+	}
+	return uidNumber, gidNumber, nil
+}
+
+// GetUIDNumber returns just the POSIX uidNumber of a person.
+func (c *Client) GetUIDNumber(uid string) (int, error) {
+	n, _, err := c.GetPosixIDs(uid)
+	return n, err
 }
 
 // EnablePerson enables a person account.

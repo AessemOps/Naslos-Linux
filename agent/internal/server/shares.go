@@ -35,6 +35,9 @@ func (s *Server) handleSharesConfig(w http.ResponseWriter, r *http.Request) {
 		SambaConf:  req.SambaConf,
 		NFSExports: req.NFSExports,
 		SambaUsers: req.SambaUsers,
+		NSSPasswd:  req.NSSPasswd,
+		NSSGroup:   req.NSSGroup,
+		NSSShadow:  req.NSSShadow,
 		Revision:   req.Revision,
 		ShareCount: req.ShareCount,
 	})
@@ -77,6 +80,11 @@ type sharesConfigRequest struct {
 	// SambaUsers is the smbpasswd-format account file whose NT hashes are
 	// imported into Samba's passdb.
 	SambaUsers string `json:"sambaUsers"`
+	// NSSPasswd / NSSGroup / NSSShadow are extrausers-format files that make
+	// the container able to resolve LDAP users through NSS.
+	NSSPasswd  string `json:"nssPasswd"`
+	NSSGroup   string `json:"nssGroup"`
+	NSSShadow  string `json:"nssShadow"`
 	Revision   string `json:"revision"`
 	ShareCount int    `json:"shareCount"`
 }

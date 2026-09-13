@@ -12,7 +12,7 @@ import (
 func TestRenderSMBPasswdFormat(t *testing.T) {
 	store := NewSambaUserStore("")
 
-	if err := store.Upsert("jdoe", 10123, "6574cc330574c3fb138e544592d125c9"); err != nil {
+	if err := store.Upsert(PosixIdentity{UID: "jdoe", UIDNum: 10123, GIDNum: 10000}, "6574cc330574c3fb138e544592d125c9"); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	// Hashes are stored uppercase regardless of input casing.
@@ -60,7 +60,7 @@ func TestRenderSMBPasswdFormat(t *testing.T) {
 // NT hash (so re-enabling needs no new password) and sets the disabled flag.
 func TestDisabledAccountKeepsHash(t *testing.T) {
 	store := NewSambaUserStore("")
-	if err := store.Upsert("jdoe", 10123, "AABB"); err != nil {
+	if err := store.Upsert(PosixIdentity{UID: "jdoe", UIDNum: 10123, GIDNum: 10000}, "AABB"); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	if err := store.SetEnabled("jdoe", false); err != nil {
@@ -83,7 +83,7 @@ func TestStorePersistsAcrossReload(t *testing.T) {
 	path := filepath.Join(dir, "smbusers.json")
 
 	store := NewSambaUserStore(path)
-	if err := store.Upsert("jdoe", 10123, "AABBCC"); err != nil {
+	if err := store.Upsert(PosixIdentity{UID: "jdoe", UIDNum: 10123, GIDNum: 10000}, "AABBCC"); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -100,10 +100,53 @@ func TestStorePersistsAcrossReload(t *testing.T) {
 	}
 }
 
-// TestRemoveDeletesAccount checks that deleting an LDAP user removes SMB access.
+// TestRenderNSSFiles checks the extrausers files that let the serving
+// container resolve LDAP users to UNIX uids. Without these Samba cannot attach
+// a session to a uid and every login is denied.
+func TestRenderNSSFiles(t *testing.T) {
+	store := NewSambaUserStore("")
+	if err := store.Upsert(PosixIdentity{
+		UID: "smbtest", UIDNum: 19330, GIDNum: 10000, Gecos: "Smb Test",
+	}, "6574CC330574C3FB138E544592D125C9"); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	passwd := store.RenderPasswd()
+	if !strings.Contains(passwd, "smbtest:x:19330:10000:Smb Test:/home/smbtest:/bin/bash") {
+		t.Errorf("passwd entry wrong:\n%s", passwd)
+	}
+
+	group := store.RenderGroup()
+	if !strings.Contains(group, "naslos_users:x:10000:smbtest") {
+		t.Errorf("group entry wrong:\n%s", group)
+	}
+
+	shadow := store.RenderShadow()
+	if !strings.Contains(shadow, "smbtest:*:") {
+		t.Errorf("shadow entry wrong:\n%s", shadow)
+	}
+}
+
+// TestRenderPasswdSkipsAccountsWithoutUid guards the failure mode that made
+// SMB logins fail silently: an account with no POSIX uid must not be rendered,
+// because Samba would store uid 4294967295 and deny the login.
+func TestRenderPasswdSkipsAccountsWithoutUid(t *testing.T) {
+	store := NewSambaUserStore("")
+	if err := store.Upsert(PosixIdentity{UID: "nouid"}, "AABB"); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if out := store.RenderPasswd(); strings.Contains(out, "nouid") {
+		t.Fatalf("account without a uid must not be rendered:\n%s", out)
+	}
+	// It is still imported (the NT hash is valid), so the operator can see the
+	// account and the entrypoint's NSS check can warn about it.
+	if out := store.RenderSMBPasswd(); !strings.Contains(out, "nouid") {
+		t.Fatalf("account should still be rendered for the passdb:\n%s", out)
+	}
+}
 func TestRemoveDeletesAccount(t *testing.T) {
 	store := NewSambaUserStore("")
-	if err := store.Upsert("jdoe", 1, "AABB"); err != nil {
+	if err := store.Upsert(PosixIdentity{UID: "jdoe", UIDNum: 1, GIDNum: 10000}, "AABB"); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	if err := store.Remove("jdoe"); err != nil {

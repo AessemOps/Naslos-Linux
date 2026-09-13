@@ -47,6 +47,29 @@ import_users() {
   fi
 }
 
+# check_nss verifies every mirrored account resolves through NSS. Samba needs a
+# UNIX uid to attach a session to, so an account that exists in the passdb but
+# not in NSS can never log in - it fails with NT_STATUS_ACCESS_DENIED after
+# being mapped to guest, which is easy to misread as a password problem.
+check_nss() {
+  [ -s "$USERS_FILE" ] || return 0
+
+  unresolved=0
+  checked=0
+  while IFS=: read -r name _uid _rest; do
+    case "$name" in ''|'#'*) continue ;; esac
+    checked=$((checked + 1))
+    if ! getent passwd "$name" >/dev/null 2>&1; then
+      unresolved=$((unresolved + 1))
+      log "WARN: $name is in the passdb but does not resolve through NSS - its SMB login will be denied. Is the extrausers file mounted at /var/lib/extrausers?"
+    fi
+  done < "$USERS_FILE"
+
+  [ "$checked" -gt 0 ] && [ "$unresolved" -eq 0 ] && \
+    log "all $checked mirrored accounts resolve through NSS"
+  return 0
+}
+
 # Best-effort wait for the first render: if it never arrives we still start
 # smbd with a minimal config, because an unreachable SMB service is worse than
 # an empty one (and the API pushes the real config moments later).
@@ -78,6 +101,7 @@ fi
 
 # Sync accounts before accepting logins.
 import_users
+check_nss
 
 CONF_MTIME="$(mtime "$CONF")"
 USERS_MTIME="$(mtime "$USERS_FILE")"
@@ -96,6 +120,7 @@ SMBD_PID=$!
     if [ "$CUR_USERS_MTIME" != "$USERS_MTIME" ]; then
       USERS_MTIME="$CUR_USERS_MTIME"
       import_users
+      check_nss
     fi
 
     CUR_MTIME="$(mtime "$CONF")"

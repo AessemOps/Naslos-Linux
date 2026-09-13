@@ -161,6 +161,12 @@ type ConfigBundle struct {
 	// SambaUsers is the smbpasswd-format account file mirroring LDAP users
 	// with their NT hashes (see SambaUserStore.RenderSMBPasswd).
 	SambaUsers string `json:"sambaUsers"`
+	// NSSPasswd / NSSGroup / NSSShadow are the extrausers-format files that
+	// let the serving container resolve LDAP users through NSS, which Samba
+	// needs in order to map a session to a UNIX uid.
+	NSSPasswd string `json:"nssPasswd"`
+	NSSGroup  string `json:"nssGroup"`
+	NSSShadow string `json:"nssShadow"`
 	// Revision changes whenever the share set changes, letting the servers
 	// detect that a reload is needed.
 	Revision string `json:"revision"`

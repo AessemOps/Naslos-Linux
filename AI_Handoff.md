@@ -15,10 +15,11 @@ users could never authenticate over SMB.
 - The privileged agent writes rendered config to `/var/lib/naslos/shares`; the
   `naslos-samba` DaemonSet serves SMB on the node's :445 and reloads itself,
   only after `testparm` accepts the new file.
-- **LDAP → Samba NT-hash sync is live**: password set/create/delete/enable all
-  mirror into the passdb via a rendered `smbusers` file imported with
-  `pdbedit -i smbpasswd:`. Proven: an LDAP user's password listed, downloaded
-  and uploaded files on a ZFS dataset.
+- **LDAP → Samba sync is fully automated**: creating a user through the API is
+  enough. NT hashes go to the passdb (imported with `pdbedit -i smbpasswd:`)
+  and the POSIX identity goes to NSS `extrausers` files, so no account is ever
+  created on the node. Verified: create → login, change password, disable
+  (`NT_STATUS_ACCOUNT_DISABLED`), enable, delete — all without manual steps.
 - API: `/api/shares/paths`, `/api/shares/status`, `/api/shares/apply`.
 
 ### Two traps that cost most of the debugging time
@@ -32,16 +33,14 @@ users could never authenticate over SMB.
    single quotes when testing SMB from the shell.
 
 ### Known gaps (documented in docs/shares.md)
-- **LDAP users need NSS resolution in the samba container.** Samba maps a
-  session to a UNIX uid; the image resolves only local accounts, so an
-  otherwise-correct passdb entry with an unresolvable uid stores
-  `4294967295` and cannot log in. Fix: `libnss-ldapd`/`nslcd` in the samba
-  image (every LDAP user already has `posixAccount` + `uidNumber`), or
-  `passdb backend = ldapsam`. This is the next step for SMB.
 - **NFS**: Talos has no kernel `nfsd` (`/proc/filesystems` shows only the
   client; `/proc/fs/nfsd` is absent). The `naslos-nfs` image/make target exists
   but serving needs a userspace server (NFS-Ganesha) — not yet implemented.
 - `naslos-openldap-backup` CronJob is still in CrashLoopBackOff (pre-existing).
+- `naslos-api`'s `AgentSharesStatus` struct still names the old agent status
+  fields (`sambaRunning`, `nfsRunning`, `sambaTestOutput`, …), so
+  `/api/shares/status` shows empty values for them. The agent reports
+  `smbShareCount`/`nfsExportCount` instead; the API type should be updated.
 
 ### Environment notes
 - Deploy: `helm upgrade naslos charts/naslos -n naslos -f charts/naslos/values-vm.yaml

@@ -50,13 +50,20 @@ Users are created with objectClasses `inetOrgPerson`, `posixAccount`,
    - render the mirror as an `smbpasswd`-format file, push it through the
      privileged **naslos-agent** to `/var/lib/naslos/shares/smbusers` on the
      node, where the naslos-samba container imports it with
-     `pdbedit -i smbpasswd:<file>`.
+     `pdbedit -i smbpasswd:<file>`;
+   - also mirror the POSIX identity: read `uidNumber`/`gidNumber` from the LDAP
+     entry and render the `extrausers` files (`passwd`, `group`, `shadow`) that
+     the samba container resolves through NSS. Samba attaches a session to a
+     UNIX uid, so this is what makes the login work with **no account created
+     on the node** and no LDAP credentials in the serving container.
 3. Both stores now reflect the new password.
 4. Web login: Authelia → LDAP bind validates `userPassword`.
 5. SMB login: Samba → its passdb validates the NT hash.
 
 The same triggers fire on user create (with a password), delete (account
-removed) and enable/disable (account flagged `[DU]`, hash retained).
+removed) and enable/disable (account flagged `[DU]`, hash retained). Verified
+end-to-end: a user created through the API can immediately log into SMB and
+read/write a ZFS dataset, with no local account on the node.
 
 Note the NT hash is *not* stored in LDAP: that would require the Samba schema
 (`sambaNTPassword`, `sambaSamAccount`) and is a possible future change. Today

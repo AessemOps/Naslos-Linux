@@ -153,12 +153,18 @@ func (s *Server) applySharesConfig() (*agent.SharesConfigStatus, error) {
 	// passdb in the same push as the share configuration.
 	if s.sambaUsers != nil {
 		bundle.SambaUsers = s.sambaUsers.RenderSMBPasswd()
+		bundle.NSSPasswd = s.sambaUsers.RenderPasswd()
+		bundle.NSSGroup = s.sambaUsers.RenderGroup()
+		bundle.NSSShadow = s.sambaUsers.RenderShadow()
 	}
 
 	status, err := s.agent.ApplySharesConfig(agent.SharesConfigRequest{
 		SambaConf:  bundle.SambaConf,
 		NFSExports: bundle.NFSExports,
 		SambaUsers: bundle.SambaUsers,
+		NSSPasswd:  bundle.NSSPasswd,
+		NSSGroup:   bundle.NSSGroup,
+		NSSShadow:  bundle.NSSShadow,
 		Revision:   bundle.Revision,
 		ShareCount: bundle.ShareCount,
 	})
