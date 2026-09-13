@@ -184,6 +184,53 @@ smb://192.168.1.96/test                  [Copy]
 - The create/edit form offers only `smb` and `nfs`: AFP is rejected by the API,
   so offering it would produce a 400.
 
+## Network discovery (browsing `smb://`)
+
+The server advertises itself so it appears in a client's network browse view —
+Dolphin's `smb://` place list, Finder's sidebar, Explorer's Network — instead
+of being reachable only by typing its address:
+
+- **mDNS / DNS-SD via Avahi** publishes `_smb._tcp` on port 445 (plus
+  `_device-info._tcp` with `model=MacSamba`, so macOS shows a server icon
+  rather than an unknown device). This is what Linux and macOS file managers
+  browse.
+- **WSD via `wsdd`** covers Windows Explorer, which dropped SMBv1 browsing.
+- `netbios name` in the rendered `smb.conf` is set to the same name
+  (`shares.discovery.name`, default `naslos`, sanitised to NetBIOS rules by the
+  API), so browsing clients and direct connections see one identity.
+
+```
+$ avahi-browse -rt _smb._tcp
++ enp1s0 IPv4 naslos     Microsoft Windows Network local
+   hostname = [naslos.local]
+   address  = [192.168.1.96]
+   port     = [445]
+```
+
+### Advertising on the right interface
+
+The node also has `cni0`, `flannel.1` and a veth pair per pod. Left alone,
+Avahi enumerates all of them and advertises the server at pod-network (10.x)
+addresses too, which clients cannot reach. The entrypoint therefore pins
+discovery to the **default-route interface**, auto-detected by parsing
+`/proc/net/route` (so no iproute2 is needed in the image), and passes the same
+interface to `wsdd -i`. Override it with `shares.discovery.interface`.
+
+### Verifying
+
+```bash
+# What the network advertises (run from the samba pod, or any Avahi host)
+kubectl -n naslos exec ds/naslos-samba -- avahi-browse -rt _smb._tcp
+kubectl -n naslos exec ds/naslos-samba -- avahi-resolve -n naslos.local
+
+# The daemons and their sockets
+kubectl -n naslos exec ds/naslos-samba -- ps -eo pid,args | grep -E 'avahi|wsdd'
+```
+
+Discovery is **best-effort**: if Avahi or wsdd cannot start (no multicast, port
+conflict), the failure is logged and SMB keeps serving — a client can always
+connect by address (see the share card URL).
+
 ## Config generation
 
 ### Samba (`GenerateSambaConfig`)
@@ -226,6 +273,11 @@ shares:
     workgroup: "NASLOS"
     timeMachine: true
     image: { repository: 192.168.1.2:30095/naslos-samba, tag: "0.1.0" }
+  # Network advertisement (mDNS + WSD) so the server shows up when browsing.
+  discovery:
+    enabled: true
+    name: "naslos"     # also the Samba NetBIOS name
+    interface: ""      # empty = auto-detect the default-route interface
   nfs:
     enabled: true
     image: { repository: 192.168.1.2:30095/naslos-nfs,   tag: "0.1.0" }
@@ -241,7 +293,7 @@ for the single-node layout, but it must be cleared on multi-node clusters
 
 | Image | Role | Make target |
 | --- | --- | --- |
-| `naslos-samba` | SMB / Time Machine serving (smbd, smbclient, pdbedit, samba-vfs-modules, **libnss-extrausers**) | `make samba-image` |
+| `naslos-samba` | SMB / Time Machine serving (smbd, smbclient, pdbedit, samba-vfs-modules, libnss-extrausers, **avahi-daemon + wsdd** for discovery) | `make samba-image` |
 | `naslos-nfs` | NFS serving (userspace, planned) | `make nfs-image` |
 
 ## Verification

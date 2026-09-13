@@ -70,6 +70,70 @@ check_nss() {
   return 0
 }
 
+# detect_lan_interface returns the interface holding the default route, read
+# from /proc/net/route so no iproute2 is needed. Without this, avahi enumerates
+# every interface on the node — including cni0, flannel.1 and the veth pairs —
+# and advertises the server at pod-network addresses as well as the LAN one.
+detect_lan_interface() {
+  awk '$2 == "00000000" { print $1; exit }' /proc/net/route 2>/dev/null
+}
+
+# start_discovery advertises this host as an SMB server so it shows up when a
+# client browses the network (Dolphin/Finder via mDNS, Windows via WSD). It is
+# best-effort: if discovery cannot start, SMB itself keeps working, so a
+# failure here is logged and never brought the server down.
+start_discovery() {
+  if [ "${SMB_DISCOVERY_ENABLED:-true}" != "true" ]; then
+    log "network discovery disabled"
+    return 0
+  fi
+
+  name="${SMB_DISCOVERY_NAME:-naslos}"
+  workgroup="${SMB_WORKGROUP:-NASLOS}"
+
+  # Advertise under the configured name; it must match the Samba NetBIOS name
+  # the API renders into smb.conf, or clients see two different hosts.
+  sed -i "s/^host-name=.*/host-name=${name}/" /etc/avahi/avahi-daemon.conf
+
+  iface="${SMB_DISCOVERY_INTERFACE:-}"
+  [ -z "$iface" ] && iface="$(detect_lan_interface)"
+  if [ -n "$iface" ]; then
+    sed -i "s|^allow-interfaces=.*|allow-interfaces=${iface}|" /etc/avahi/avahi-daemon.conf
+    log "restricting discovery to interface $iface"
+  fi
+
+  mkdir -p /run/dbus /run/avahi-daemon
+  chown avahi:avahi /run/avahi-daemon 2>/dev/null || true
+
+  # avahi-daemon needs the system D-Bus.
+  if ! dbus-daemon --system --fork >/tmp/dbus.out 2>&1; then
+    log "WARN: could not start dbus - network discovery unavailable"
+    sed 's/^/  /' /tmp/dbus.out 2>/dev/null | tail -3
+    return 0
+  fi
+
+  # --no-chroot: there is no init system inside the container to provide it.
+  if avahi-daemon --no-chroot --daemonize >/tmp/avahi.out 2>&1; then
+    log "advertising _smb._tcp as ${name}.local (mDNS)"
+  else
+    log "WARN: avahi-daemon failed to start - mDNS discovery unavailable"
+    sed 's/^/  /' /tmp/avahi.out 2>/dev/null | tail -5
+  fi
+
+  # Web Service Discovery: what Windows Explorer's Network view uses now that
+  # SMBv1 browsing is gone.
+  if command -v wsdd >/dev/null 2>&1; then
+    if [ -n "$iface" ]; then
+      wsdd -n "$name" -w "$workgroup" -4 -s -i "$iface" >/tmp/wsdd.out 2>&1 &
+    else
+      wsdd -n "$name" -w "$workgroup" -4 -s >/tmp/wsdd.out 2>&1 &
+    fi
+    log "advertising via WSD as $name (workgroup $workgroup)"
+  fi
+
+  return 0
+}
+
 # Best-effort wait for the first render: if it never arrives we still start
 # smbd with a minimal config, because an unreachable SMB service is worse than
 # an empty one (and the API pushes the real config moments later).
@@ -109,6 +173,9 @@ log "starting smbd with $CONF"
 
 smbd --foreground --no-process-group -s "$CONF" &
 SMBD_PID=$!
+
+# Advertise the server on the network (mDNS + WSD) once smbd is on its way up.
+start_discovery
 
 # Reload smbd whenever the rendered config changes, and re-import accounts
 # whenever the API syncs a password change.

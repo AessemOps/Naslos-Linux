@@ -97,6 +97,11 @@ spec:
                 secretKeyRef:
                   name: naslos-openldap
                   key: service-password
+            # Name Samba advertises itself as; kept in step with the mDNS/WSD
+            # name published by the naslos-samba container so browsing clients
+            # and direct connections see one identity.
+            - name: SMB_NETBIOS_NAME
+              value: {{ .Values.shares.discovery.name | quote }}
             {{- if .Values.api.sharesConfig.enabled }}
             # Where share definitions are persisted (see api/internal/shares).
             - name: SHARES_CONFIG

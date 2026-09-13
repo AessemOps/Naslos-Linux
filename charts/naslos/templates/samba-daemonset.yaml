@@ -44,6 +44,16 @@ spec:
                 - FSETID
                 - SETGID
                 - SETUID
+          env:
+            # Network discovery (mDNS via Avahi, WSD via wsdd).
+            - name: SMB_DISCOVERY_ENABLED
+              value: {{ .Values.shares.discovery.enabled | quote }}
+            - name: SMB_DISCOVERY_NAME
+              value: {{ .Values.shares.discovery.name | quote }}
+            - name: SMB_WORKGROUP
+              value: {{ .Values.shares.smb.workgroup | quote }}
+            - name: SMB_DISCOVERY_INTERFACE
+              value: {{ .Values.shares.discovery.interface | quote }}
           ports:
             - name: smb
               containerPort: 445

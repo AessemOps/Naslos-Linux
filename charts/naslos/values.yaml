@@ -138,6 +138,17 @@ shares:
       limits:
         cpu: 500m
         memory: 256Mi
+  # Advertise the server on the network so it appears when a client browses
+  # SMB (Dolphin/Finder use mDNS, Windows Explorer uses WSD) instead of having
+  # to type the address. `name` is also used as the Samba NetBIOS name, so
+  # clients see one identity.
+  discovery:
+    enabled: true
+    name: "naslos"
+    # Interface to advertise on. Empty auto-detects the default-route
+    # interface, which keeps the advertisement off the pod network
+    # (cni0/flannel/veth) so clients do not see a 10.x address.
+    interface: ""
   nfs:
     enabled: true
     image:

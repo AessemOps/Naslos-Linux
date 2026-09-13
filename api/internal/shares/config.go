@@ -18,6 +18,11 @@ func (m *Manager) GenerateSambaConfig() string {
 	sb.WriteString("   workgroup = NASLOS\n")
 	sb.WriteString("   server string = Naslos\n")
 	sb.WriteString("   security = user\n")
+	// Advertise the same name that the serving container publishes over
+	// mDNS/WSD, so browsing clients and direct connections agree.
+	if name := m.NetBIOSName(); name != "" {
+		sb.WriteString(fmt.Sprintf("   netbios name = %s\n", name))
+	}
 	sb.WriteString("   map to guest = Bad User\n")
 	sb.WriteString("   log file = /var/log/samba/%m.log\n")
 	sb.WriteString("   max log size = 1000\n")
@@ -174,8 +179,38 @@ type ConfigBundle struct {
 	ShareCount int `json:"shareCount"`
 }
 
-// RenderConfigBundle renders every service configuration for the current
-// share state.
+// NetBIOSName returns the name Samba advertises itself as, or "" to let Samba
+// derive one from the host. Set via SMB_NETBIOS_NAME so it matches the name
+// published over mDNS/WSD by the serving container — otherwise clients see the
+// same server under two different names.
+func (m *Manager) NetBIOSName() string {
+	return sanitizeNetBIOSName(os.Getenv("SMB_NETBIOS_NAME"))
+}
+
+// sanitizeNetBIOSName enforces the NetBIOS rules: uppercase, no dots, at most
+// 15 characters. Returns "" when there is nothing usable.
+func sanitizeNetBIOSName(name string) string {
+	name = strings.ToUpper(strings.TrimSpace(name))
+	if name == "" {
+		return ""
+	}
+	// A NetBIOS name is a single label; drop any domain part and characters
+	// Samba would reject.
+	if i := strings.IndexByte(name, '.'); i >= 0 {
+		name = name[:i]
+	}
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	name = b.String()
+	if len(name) > 15 {
+		name = name[:15]
+	}
+	return name
+}
 func (m *Manager) RenderConfigBundle() ConfigBundle {
 	enabled := 0
 	for _, s := range m.shares {

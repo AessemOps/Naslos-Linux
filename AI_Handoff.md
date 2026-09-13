@@ -24,6 +24,11 @@ users could never authenticate over SMB.
 - The shares UI shows each share's `smb://<host>/<name>` address (host taken from
   the browsing URL) with a copy button, and no longer offers AFP (the API
   rejects it).
+- **Network discovery is live**: Avahi publishes `_smb._tcp` and `wsdd` provides
+  WSD, so the server appears when browsing the network (verified: `avahi-browse`
+  lists `naslos` at 192.168.1.96:445 next to the real `truenas`). Discovery is
+  pinned to the default-route interface, otherwise avahi also advertises pod
+  network (10.x) addresses.
 
 ### Two traps that cost most of the debugging time
 1. **`SMB_CONF_PATH`**: `smbd` is started with `-s …/smb.conf` but

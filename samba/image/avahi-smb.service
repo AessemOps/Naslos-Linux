@@ -1,0 +1,24 @@
+<?xml version="1.0" standalone='no'?><!--*-nxml-*-->
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!--
+  Advertises this host as an SMB file server over mDNS, which is what makes it
+  appear when a file manager browses the network (e.g. Dolphin at smb://).
+
+  %h is replaced by the host name from avahi-daemon.conf (set from
+  SMB_DISCOVERY_NAME), so clients see one consistent name.
+
+  _device-info._tcp with model=MacSamba makes macOS show a server icon rather
+  than an unknown device.
+-->
+<service-group>
+  <name replace-wildcards="yes">%h</name>
+  <service>
+    <type>_smb._tcp</type>
+    <port>445</port>
+  </service>
+  <service>
+    <type>_device-info._tcp</type>
+    <port>0</port>
+    <txt-record>model=MacSamba</txt-record>
+  </service>
+</service-group>
