@@ -116,9 +116,9 @@ func TestRenderNSSFiles(t *testing.T) {
 		t.Errorf("passwd entry wrong:\n%s", passwd)
 	}
 
-	group := store.RenderGroup()
+	group := store.RenderGroup(nil)
 	if !strings.Contains(group, "naslos_users:x:10000:smbtest") {
-		t.Errorf("group entry wrong:\n%s", group)
+		t.Errorf("primary group entry wrong:\n%s", group)
 	}
 
 	shadow := store.RenderShadow()

@@ -66,6 +66,7 @@ the API stays the source of truth and the next apply converges the node.
 | `browseable` | Visible in share list (defaults to true when omitted) |
 | `allowedHosts` | Host allow list (empty = all) |
 | `validUsers` | SMB users/groups allowed (empty = all authenticated users) |
+| `validGroups` | LDAP groups allowed, rendered as `@group` (empty = all) |
 | `timeMachine` | SMB Time Machine (macOS) share |
 | `enabled` | Export active/inactive (defaults to true when omitted) |
 
@@ -183,6 +184,58 @@ smb://192.168.1.96/test                  [Copy]
 - Disabled shares show "Disabled — not reachable until enabled" instead.
 - The create/edit form offers only `smb` and `nfs`: AFP is rejected by the API,
   so offering it would produce a 400.
+
+## Share access by user and group
+
+A share is open to any authenticated account until an access list is set:
+
+- `validUsers` — user names, rendered bare in `valid users`.
+- `validGroups` — LDAP group names, rendered as `@group`.
+
+They are separate fields on purpose: a single free-text list would be ambiguous
+about whether `naslos_users` means a user or a group. Typing `@group` directly
+into `validUsers` still works (it is passed through), and a stray `@` elsewhere
+in a user name is stripped, since Samba would otherwise read the remainder as a
+group name and silently widen or break access.
+
+### How Samba evaluates a group on the node
+
+Samba does not ask LDAP: it resolves `@group` through **NSS** and checks the
+session user against the group's members. Two things therefore have to be true
+on the node, and both are automated:
+
+1. `valid users = @group` appears in the rendered `smb.conf` (from
+   `validGroups`).
+2. The group exists in the mirrored `extrausers` group file with its real
+   members, e.g. `sharetest:x:27676:alice,bob`.
+
+LDAP groups are `groupOfNames` with **no gidNumber**, but NSS needs one, so a
+stable gid is derived from the group name (`shares.GroupGID`, in the
+20000–27999 range so it cannot collide with the 10000-range user gids). The gid
+must be stable across renders or the group would change identity between syncs.
+
+Because the node evaluates a *mirror* rather than LDAP itself, every change that
+affects access re-pushes it: group membership add/remove, group delete, user
+create (which may add group memberships), user delete, and password change.
+
+### Verified end-to-end
+
+```
+smb.conf:  valid users = @sharetest
+node NSS:  sharetest:x:27676:grpmember
+```
+
+| Check | Result |
+| --- | --- |
+| Group member logs in | OK |
+| Non-member refused | FAIL (`NT_STATUS_ACCESS_DENIED`) |
+| Member removed from group → revoked | access FAIL |
+| Outsider added to group → granted | access OK |
+
+The API also accepts either uids or DNs in a group's `members` on PUT: GET
+returns member DNs, so a client that PUTs back exactly what it read must not
+corrupt the group (a DN used as a uid once produced
+`uid=uid=alice,ou=people,...`).
 
 ## Network discovery (browsing `smb://`)
 

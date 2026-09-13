@@ -10,6 +10,7 @@
     browseable: boolean;
     allowedHosts: string[];
     validUsers: string[];
+    validGroups: string[];
     timeMachine: boolean;
     enabled: boolean;
   }
@@ -27,9 +28,33 @@
   let timeMachine = false;
   let allowedHostsStr = '';
   let validUsersStr = '';
+  let validGroups: string[] = [];
+  let availableGroups: string[] = [];
   let saving = false;
   let error = '';
   let availablePaths: string[] = [];
+
+  // LDAP groups available to grant share access to. Access is evaluated by
+  // Samba on the node, so the group has to exist there (mirrored into NSS) for
+  // this to work - hence a picker rather than free text.
+  async function loadGroups() {
+    try {
+      const res = await fetch('/api/groups');
+      if (!res.ok) return;
+      const data = await res.json();
+      availableGroups = (Array.isArray(data) ? data : [])
+        .map((g: any) => g.cn || g.name)
+        .filter(Boolean);
+    } catch (e) {
+      // Ignore: the picker stays empty and access can still be typed manually.
+    }
+  }
+
+  function toggleGroup(group: string) {
+    validGroups = validGroups.includes(group)
+      ? validGroups.filter(g => g !== group)
+      : [...validGroups, group];
+  }
 
   async function loadPaths() {
     try {
@@ -54,6 +79,7 @@
       timeMachine = share.timeMachine;
       allowedHostsStr = share.allowedHosts?.join(', ') || '';
       validUsersStr = share.validUsers?.join(', ') || '';
+      validGroups = [...(share.validGroups || [])];
     }
   }
 
@@ -70,7 +96,8 @@
       browseable,
       timeMachine,
       allowedHosts: allowedHostsStr ? allowedHostsStr.split(',').map(s => s.trim()) : [],
-      validUsers: validUsersStr ? validUsersStr.split(',').map(s => s.trim()) : []
+      validUsers: validUsersStr ? validUsersStr.split(',').map(s => s.trim()) : [],
+      validGroups
     };
 
     try {
@@ -95,6 +122,7 @@
 
   onMount(() => {
     loadPaths();
+    loadGroups();
     init();
   });
 </script>
@@ -163,6 +191,23 @@
       <div>
         <label class="label">Valid Users</label>
         <input type="text" bind:value={validUsersStr} placeholder="e.g. user1, user2 (empty = all)" class="input w-full" />
+      </div>
+
+      <div>
+        <label class="label">Allowed Groups</label>
+        {#if availableGroups.length > 0}
+          <div class="space-y-2">
+            {#each availableGroups as group}
+              <label class="flex items-center gap-3 p-2 rounded hover:bg-naslos-dark cursor-pointer">
+                <input type="checkbox" checked={validGroups.includes(group)} on:change={() => toggleGroup(group)} class="w-4 h-4 rounded" />
+                <span class="text-gray-300">{group}</span>
+              </label>
+            {/each}
+          </div>
+        {:else}
+          <p class="text-xs text-gray-500">No groups available.</p>
+        {/if}
+        <p class="text-xs text-gray-500 mt-1">Members of the selected groups can use this share. With no users and no groups selected, any valid account can.</p>
       </div>
 
       {#if error}<div class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}

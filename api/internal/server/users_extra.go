@@ -163,15 +163,44 @@ func (s *Server) handleGroupDetail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		for _, member := range group.Members {
-			if !contains(req.Members, member) {
-				s.identity.RemoveMember(cn, extractUID(member))
+		requested := make(map[string]struct{}, len(req.Members))
+		for _, member := range req.Members {
+			if uid := extractUID(member); uid != "" {
+				requested[uid] = struct{}{}
 			}
 		}
-		for _, member := range req.Members {
-			if !contains(group.Members, member) {
-				s.identity.AddMember(cn, member)
+		current := make(map[string]struct{}, len(group.Members))
+		for _, member := range group.Members {
+			if uid := extractUID(member); uid != "" {
+				current[uid] = struct{}{}
 			}
+		}
+
+		// Both sides are compared as uids. GET returns member DNs while
+		// Add/RemoveMember take uids, so normalising here means a client can
+		// safely PUT back exactly what it read - otherwise a DN would be
+		// treated as a uid and stored as a malformed member
+		// ("uid=uid=alice,ou=people,...").
+		for uid := range current {
+			if _, keep := requested[uid]; !keep {
+				if err := s.identity.RemoveMember(cn, uid); err != nil {
+					log.Printf("Warning: could not remove %s from %s: %v", uid, cn, err)
+				}
+			}
+		}
+		for uid := range requested {
+			if _, already := current[uid]; !already {
+				if err := s.identity.AddMember(cn, uid); err != nil {
+					log.Printf("Warning: could not add %s to %s: %v", uid, cn, err)
+				}
+			}
+		}
+		// Share access is evaluated by Samba against the group membership
+		// mirrored on the node, so a membership change must re-push it -
+		// otherwise a newly added member keeps being refused (and a removed one
+		// keeps being allowed) until something else triggers an apply.
+		if err := s.refreshShareAccess(); err != nil {
+			log.Printf("Warning: group membership changed but pushing it to the node failed: %v", err)
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "group updated"})
 
@@ -179,6 +208,11 @@ func (s *Server) handleGroupDetail(w http.ResponseWriter, r *http.Request) {
 		if err := s.identity.DeleteGroup(cn); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		// A deleted group must disappear from the node's mirror, or shares
+		// restricted to it would keep granting access to its last members.
+		if err := s.refreshShareAccess(); err != nil {
+			log.Printf("Warning: group deleted but pushing it to the node failed: %v", err)
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "group deleted"})
 
@@ -220,18 +254,43 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
+// extractUID reduces a member reference to a bare uid. It accepts both a
+// person DN ("uid=alice,ou=people,dc=naslos,dc=local") and a plain uid, because
+// GET returns DNs and PUT is documented to take uids.
 func extractUID(dn string) string {
-	if strings.HasPrefix(dn, "uid=") {
-		parts := strings.Split(dn, ",")
-		return strings.TrimPrefix(parts[0], "uid=")
+	dn = strings.TrimSpace(dn)
+	if dn == "" {
+		return ""
 	}
-	return dn
+	if !strings.Contains(dn, "=") {
+		return dn
+	}
+
+	// Take the value of the first uid= RDN, unescaping the DN value.
+	value := strings.TrimPrefix(strings.Split(dn, ",")[0], "uid=")
+	value = strings.NewReplacer(`\2C`, ",", `\3D`, "=", `\2c`, ",", `\3d`, "=").Replace(value)
+
+	// Defend against a member that was itself stored as a DN (a historical
+	// malformed entry looks like "uid=uid=alice"): keep the innermost value.
+	if idx := strings.LastIndex(value, "uid="); idx >= 0 {
+		value = value[idx+len("uid="):]
+	}
+	return strings.TrimSpace(value)
 }
 
 // Store accessor for the SMB account mirror. The store is created alongside
 // the share manager; tests may construct a Server without one.
 func (s *Server) smbUsers() *shares.SambaUserStore {
 	return s.sambaUsers
+}
+
+// refreshShareAccess re-renders and pushes the share configuration plus the
+// account/group mirrors. Called after anything that changes the identity data
+// the node evaluates access against (group membership, group delete), because
+// Samba reads that mirror rather than asking LDAP.
+func (s *Server) refreshShareAccess() error {
+	_, err := s.applySharesConfig()
+	return err
 }
 
 // syncSMBPassword records the user's NT hash so SMB logins use the same

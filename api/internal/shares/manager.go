@@ -148,6 +148,7 @@ func (m *Manager) Create(req CreateShareRequest) (*Share, error) {
 		Browseable:   browseable,
 		AllowedHosts: normalizeList(req.AllowedHosts),
 		ValidUsers:   normalizeList(req.ValidUsers),
+		ValidGroups:  normalizeList(req.ValidGroups),
 		TimeMachine:  req.TimeMachine,
 		CreatedAt:    time.Now().UTC(),
 		Enabled:      enabled,
@@ -187,6 +188,9 @@ func (m *Manager) Update(name string, req UpdateShareRequest) (*Share, error) {
 	}
 	if req.ValidUsers != nil {
 		share.ValidUsers = normalizeList(req.ValidUsers)
+	}
+	if req.ValidGroups != nil {
+		share.ValidGroups = normalizeList(req.ValidGroups)
 	}
 	if req.TimeMachine != nil {
 		share.TimeMachine = *req.TimeMachine

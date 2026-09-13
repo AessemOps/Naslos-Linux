@@ -11,6 +11,7 @@
     browseable: boolean;
     allowedHosts: string[];
     validUsers: string[];
+    validGroups: string[];
     timeMachine: boolean;
     createdAt: string;
     enabled: boolean;
@@ -139,6 +140,18 @@
             </div>
             <p class="text-sm text-gray-400">{share.path}</p>
             {#if share.description}<p class="text-sm text-gray-500 mt-1">{share.description}</p>{/if}
+            {#if (share.validGroups?.length ?? 0) > 0 || (share.validUsers?.length ?? 0) > 0}
+              <p class="text-xs text-gray-500 mt-1">
+                Access:
+                {#if (share.validUsers?.length ?? 0) > 0}
+                  <span class="text-gray-400">users {share.validUsers.join(', ')}</span>
+                {/if}
+                {#if (share.validUsers?.length ?? 0) > 0 && (share.validGroups?.length ?? 0) > 0}<span class="text-gray-600"> · </span>{/if}
+                {#if (share.validGroups?.length ?? 0) > 0}
+                  <span class="text-gray-400">groups {share.validGroups.join(', ')}</span>
+                {/if}
+              </p>
+            {/if}
             {#if connectURL(share)}
               <div class="flex items-center gap-2 mt-2">
                 <code class="text-xs bg-naslos-dark border border-naslos-border rounded px-2 py-1 text-naslos-primary select-all">{connectURL(share)}</code>

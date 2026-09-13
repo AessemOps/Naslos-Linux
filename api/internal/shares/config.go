@@ -73,8 +73,8 @@ func (m *Manager) GenerateSambaConfig() string {
 			sb.WriteString("   hosts deny = all\n")
 		}
 
-		if len(share.ValidUsers) > 0 {
-			sb.WriteString(fmt.Sprintf("   valid users = %s\n", strings.Join(share.ValidUsers, " ")))
+		if access := accessList(share); len(access) > 0 {
+			sb.WriteString(fmt.Sprintf("   valid users = %s\n", strings.Join(access, " ")))
 		}
 
 		if share.TimeMachine {
@@ -153,6 +153,55 @@ func (m *Manager) AvailablePaths() ([]string, error) {
 	sort.Strings(paths)
 
 	return paths, nil
+}
+
+// accessList builds the `valid users` entry for a share.
+//
+// Samba reads a bare name as a user and a name prefixed with '@' as a group, so
+// ValidGroups entries are prefixed here. A '@' typed directly into ValidUsers
+// is passed through unchanged, which keeps the raw field useful for groups that
+// exist in the directory but are not mirrored yet.
+//
+// The list is empty when access is unrestricted (any authenticated user).
+func accessList(share *Share) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(share.ValidUsers)+len(share.ValidGroups))
+
+	add := func(entry string) {
+		if entry == "" {
+			return
+		}
+		if _, dup := seen[entry]; dup {
+			return
+		}
+		seen[entry] = struct{}{}
+		out = append(out, entry)
+	}
+
+	for _, u := range share.ValidUsers {
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		// An operator-typed '@group' is passed through as a group.
+		if strings.HasPrefix(u, "@") {
+			add(u)
+			continue
+		}
+		// Strip a stray '@' elsewhere: Samba would read everything after it as
+		// a group name, which would silently widen or break access.
+		add(strings.ReplaceAll(u, "@", ""))
+	}
+
+	for _, g := range share.ValidGroups {
+		g = strings.TrimPrefix(strings.TrimSpace(g), "@")
+		if g == "" {
+			continue
+		}
+		add("@" + g)
+	}
+
+	return out
 }
 
 // ConfigBundle is the set of rendered service configurations for the current
