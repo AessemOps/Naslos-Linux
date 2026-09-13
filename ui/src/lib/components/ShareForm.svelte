@@ -128,8 +128,8 @@
         <select bind:value={protocol} class="input w-full">
           <option value="smb">SMB/CIFS (Windows, macOS, Linux)</option>
           <option value="nfs">NFS (Linux, macOS)</option>
-          <option value="afp">AFP (Time Machine)</option>
         </select>
+        <p class="text-xs text-gray-500 mt-1">Time Machine is served over SMB; AFP is not supported.</p>
       </div>
 
       <div>
@@ -148,7 +148,7 @@
         </label>
       </div>
 
-      {#if protocol === 'smb' || protocol === 'afp'}
+      {#if protocol === 'smb'}
         <label class="flex items-center gap-3 cursor-pointer">
           <input type="checkbox" bind:checked={timeMachine} class="w-5 h-5 rounded" />
           <span class="text-gray-300">Time Machine (macOS backup)</span>

@@ -163,6 +163,27 @@ specific mismatch is otherwise silent.
 | Delete user | account removed from passdb and NSS files |
 | Create / edit / delete share | smbd reloads and serves the change |
 
+## UI (Shares page)
+
+Each share card shows the address a client should use, with a copy button:
+
+```
+test            [SMB/CIFS]                      Edit  Delete
+/var/mnt/test
+smb://192.168.1.96/test                  [Copy]
+```
+
+- The host is taken from the address the operator is browsing the UI on
+  (`window.location.hostname`). SMB is served by a `hostNetwork` pod on that
+  same node, so the UI host *is* the SMB server; the port is deliberately not
+  included because SMB uses 445, not the UI's NodePort.
+- Only protocols that are actually served get an address. NFS shares show none,
+  because Talos has no kernel NFS server yet (see the limitation below) — a
+  copyable address that cannot be dialled would be worse than none.
+- Disabled shares show "Disabled — not reachable until enabled" instead.
+- The create/edit form offers only `smb` and `nfs`: AFP is rejected by the API,
+  so offering it would produce a 400.
+
 ## Config generation
 
 ### Samba (`GenerateSambaConfig`)

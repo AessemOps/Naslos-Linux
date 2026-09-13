@@ -20,16 +20,46 @@
   let loading = true;
   let showForm = false;
   let editingShare: Share | null = null;
+  // The host the operator reached the NAS on. SMB is served by a hostNetwork
+  // pod on the same node, so this is also the SMB server address. Resolved in
+  // onMount because it reads `window` (this component is pre-rendered).
+  let host = '';
+  let copied = '';
 
   async function loadShares() {
     loading = true;
     try {
       const res = await fetch('/api/shares');
-      shares = await res.json();
+      const data = await res.json();
+      shares = Array.isArray(data) ? data : [];
     } catch (e) {
       console.error('Failed to load shares:', e);
+      shares = [];
     } finally {
       loading = false;
+    }
+  }
+
+  // connectURL returns the address to hand to a client for this share, or an
+  // empty string when the protocol has no shareable URL (or nothing serves it
+  // yet — NFS is not implemented on Talos, which has no kernel nfsd).
+  function connectURL(share: Share): string {
+    if (!host) return '';
+    switch (share.protocol) {
+      case 'smb':
+        return `smb://${host}/${share.name}`;
+      default:
+        return '';
+    }
+  }
+
+  async function copyURL(url: string) {
+    try {
+      await navigator.clipboard.writeText(url);
+      copied = url;
+      setTimeout(() => { if (copied === url) copied = ''; }, 2000);
+    } catch (e) {
+      console.error('Failed to copy:', e);
     }
   }
 
@@ -71,14 +101,17 @@
     }
   }
 
-  onMount(loadShares);
+  onMount(() => {
+    host = window.location.hostname;
+    loadShares();
+  });
 </script>
 
 <div class="max-w-5xl mx-auto">
   <div class="flex justify-between items-center mb-6">
     <div>
       <h1 class="text-3xl font-bold mb-2">Shares</h1>
-      <p class="text-gray-400">Configure SMB, NFS, and Time Machine shares.</p>
+      <p class="text-gray-400">Configure SMB, NFS, and Time Machine shares. Connect to an SMB share with the address shown on its card.</p>
     </div>
     <button class="btn btn-primary" on:click={newShare}>+ New Share</button>
   </div>
@@ -106,6 +139,18 @@
             </div>
             <p class="text-sm text-gray-400">{share.path}</p>
             {#if share.description}<p class="text-sm text-gray-500 mt-1">{share.description}</p>{/if}
+            {#if connectURL(share)}
+              <div class="flex items-center gap-2 mt-2">
+                <code class="text-xs bg-naslos-dark border border-naslos-border rounded px-2 py-1 text-naslos-primary select-all">{connectURL(share)}</code>
+                <button
+                  class="text-xs px-2 py-1 rounded border border-naslos-border text-gray-300 hover:text-white hover:bg-naslos-border transition-colors"
+                  on:click={() => copyURL(connectURL(share))}
+                  title="Copy the share address"
+                >{copied === connectURL(share) ? 'Copied' : 'Copy'}</button>
+              </div>
+            {:else if !share.enabled}
+              <p class="text-xs text-gray-500 mt-2">Disabled — not reachable until enabled.</p>
+            {/if}
           </div>
           <div class="flex gap-2">
             <button class="btn btn-secondary" on:click={() => editShare(share)}>Edit</button>
