@@ -17,6 +17,36 @@ spec:
       labels:
         app.kubernetes.io/name: naslos-ui
     spec:
+      initContainers:
+        # nginx resolves the API host name once at startup (see ui/nginx.conf)
+        # and refuses to boot if it does not resolve yet. That is exactly what
+        # happens after a node reboot: the UI comes up before the API Service is
+        # in DNS, and nginx dies with
+        #   [emerg] host not found in upstream "naslos-api"   (exit 1)
+        # leaving the pod to crash-loop until DNS catches up. Wait briefly for
+        # the name so the container starts cleanly the first time.
+        # Best-effort: after the retries we start anyway rather than block
+        # forever, since Kubernetes will restart us if nginx still cannot start.
+        - name: wait-for-api
+          image: "{{ .Values.ui.image.repository }}:{{ .Values.ui.image.tag }}"
+          imagePullPolicy: {{ .Values.ui.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              name="naslos-api.{{ .Values.namespace }}.svc.cluster.local"
+              i=0
+              while [ $i -lt {{ .Values.ui.waitForApi.retries | default 30 }} ]; do
+                if nslookup "$name" >/dev/null 2>&1; then
+                  echo "API name $name resolves."
+                  exit 0
+                fi
+                i=$((i+1))
+                echo "Waiting for $name ... ($i)"
+                sleep {{ .Values.ui.waitForApi.intervalSeconds | default 1 }}
+              done
+              echo "$name still unresolved - starting anyway (nginx may retry)." >&2
+              exit 0
       containers:
         - name: ui
           image: "{{ .Values.ui.image.repository }}:{{ .Values.ui.image.tag }}"

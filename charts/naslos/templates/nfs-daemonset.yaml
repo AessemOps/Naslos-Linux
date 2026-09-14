@@ -1,0 +1,96 @@
+# Naslos NFS-Ganesha server.
+#
+# Talos has no kernel NFS server, so NFS is served in userspace by Ganesha on
+# the node's :2049 (hostNetwork, like Samba: NFS is not HTTP and cannot go
+# through Traefik). The API renders ganesha.conf, pushed through the privileged
+# agent, and this container reloads its export table on change.
+{{- if and .Values.shares.enabled .Values.shares.nfs.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: naslos-nfs
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: naslos-nfs
+    app.kubernetes.io/component: shares
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-nfs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: naslos-nfs
+        app.kubernetes.io/component: shares
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: nfs
+          image: "{{ .Values.shares.nfs.image.repository }}:{{ .Values.shares.nfs.image.tag }}"
+          imagePullPolicy: {{ .Values.shares.nfs.image.pullPolicy }}
+          # Ganesha runs as root to bind the privileged port and to read/write
+          # the datasets. DAC_READ_SEARCH is required, not optional: the VFS
+          # FSAL serves files by NFS file handle through open_by_handle_at(2),
+          # which returns EPERM without it (every READDIR/OPEN then fails with
+          # NFS4ERR_PERM while the mount itself still succeeds).
+          securityContext:
+            runAsUser: 0
+            capabilities:
+              add:
+                - CHOWN
+                - DAC_OVERRIDE
+                - DAC_READ_SEARCH
+                - FOWNER
+                - FSETID
+                - SETGID
+                - SETUID
+          # NFSv4 only: no rpcbind (111) and no NLM/statd ports are needed on
+          # Talos, which does not ship them.
+          ports:
+            - name: nfs
+              containerPort: 2049
+              protocol: TCP
+          # A TCP probe on 2049: it verifies the NFS service is listening
+          # without needing a client mount from inside the pod.
+          livenessProbe:
+            tcpSocket:
+              port: nfs
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: nfs
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          env:
+            # Same knob as the samba container: how quickly a change to the
+            # rendered config is picked up.
+            - name: CONF_CHECK_INTERVAL
+              value: {{ .Values.shares.confCheckInterval | default 3 | quote }}
+          volumeMounts:
+            # Rendered ganesha.conf.
+            - name: share-config
+              mountPath: /etc/naslos/shares
+            # ZFS datasets exported to clients. HostToContainer so a dataset
+            # mounted after this pod starts (pool import on boot) is visible
+            # instead of the export serving the underlying ephemeral directory.
+            - name: datasets
+              mountPath: /var/mnt
+              mountPropagation: HostToContainer
+          resources:
+            {{- toYaml .Values.shares.nfs.resources | nindent 12 }}
+      volumes:
+        - name: share-config
+          hostPath:
+            path: /var/lib/naslos/shares
+            type: DirectoryOrCreate
+        - name: datasets
+          hostPath:
+            path: /var/mnt
+            type: DirectoryOrCreate
+{{- end }}

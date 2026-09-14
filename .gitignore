@@ -16,6 +16,10 @@ dist/
 .next/
 .svelte-kit/
 
+# Playwright
+ui/test-results/
+ui/playwright-report/
+
 # IDE
 .vscode/
 .idea/

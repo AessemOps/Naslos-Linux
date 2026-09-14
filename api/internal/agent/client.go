@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -102,6 +103,108 @@ func (c *Client) do(req *http.Request, out interface{}) error {
 	return nil
 }
 
+// SharesConfigRequest is the desired share configuration pushed to the node.
+// The agent renders these into the service config files it manages; the API
+// renders the file contents because the share definitions live there.
+type SharesConfigRequest struct {
+	// SambaConf is the full smb.conf content.
+	SambaConf string `json:"sambaConf"`
+	// GaneshaConf is the NFS-Ganesha configuration content (NFS is served by
+	// Ganesha on Talos, which has no kernel NFS server).
+	GaneshaConf string `json:"ganeshaConf"`
+	// SambaUsers is the smbpasswd-format account file whose NT hashes are
+	// imported into Samba's passdb (keeps SMB logins in step with LDAP).
+	SambaUsers string `json:"sambaUsers"`
+	// NSSPasswd / NSSGroup / NSSShadow are extrausers-format files written to
+	// the node so the serving container can resolve LDAP users via NSS.
+	NSSPasswd string `json:"nssPasswd"`
+	NSSGroup  string `json:"nssGroup"`
+	NSSShadow string `json:"nssShadow"`
+	// Revision is an opaque content hash used to skip redundant reloads.
+	Revision string `json:"revision"`
+	// ShareCount is the number of enabled shares, for status reporting.
+	ShareCount int `json:"shareCount"`
+}
+
+// SharesConfigStatus is the agent's report of what it applied on the host.
+type SharesConfigStatus struct {
+	// Applied indicates the configuration was written successfully.
+	Applied bool `json:"applied"`
+	// Revision is the revision currently on disk.
+	Revision string `json:"revision"`
+	// SambaConfPath / GaneshaConfPath are the rendered file locations.
+	SambaConfPath   string `json:"sambaConfPath"`
+	GaneshaConfPath string `json:"ganeshaConfPath"`
+	// SMBShareCount is the number of share sections the node's rendered
+	// smb.conf contains, and NFSExportCount the number of export lines, so
+	// callers can confirm the node received the expected shares.
+	SMBShareCount  int `json:"smbShareCount"`
+	NFSExportCount int `json:"nfsExportCount"`
+	// Messages collects human-readable notes/errors from the apply step.
+	Messages []string `json:"messages"`
+	// Error is set when the configuration could not be applied.
+	Error string `json:"error,omitempty"`
+}
+
+// ApplySharesConfig pushes the rendered share configuration to the agent,
+// which writes it into the share services' config directory on the node.
+func (c *Client) ApplySharesConfig(req SharesConfigRequest) (*SharesConfigStatus, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encoding shares config: %w", err)
+	}
+
+	httpReq, err := http.NewRequest(http.MethodPut, c.baseURL+"/api/v1/shares/config", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating shares-config request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	var status SharesConfigStatus
+	if err := c.do(httpReq, &status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
+// GetSharesStatus reports what share configuration and services the node has.
+func (c *Client) GetSharesStatus() (*SharesConfigStatus, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/shares/status", nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating shares-status request: %w", err)
+	}
+	var status SharesConfigStatus
+	if err := c.do(req, &status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
+// Dataset mirrors the agent's Dataset JSON shape (agent/internal/zfs/dataset.go).
+type Dataset struct {
+	Name       string `json:"name"`
+	Used       string `json:"used,omitempty"`
+	Avail      string `json:"avail,omitempty"`
+	Refer      string `json:"refer,omitempty"`
+	Mountpoint string `json:"mountpoint"`
+}
+
+// ListDatasets returns every dataset on the node with its mountpoint.
+func (c *Client) ListDatasets() ([]Dataset, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/datasets", nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating list-datasets request: %w", err)
+	}
+	var datasets []Dataset
+	if err := c.do(req, &datasets); err != nil {
+		return nil, err
+	}
+	if datasets == nil {
+		datasets = []Dataset{}
+	}
+	return datasets, nil
+}
+
 // ListPools returns all ZFS pools known to the agent.
 func (c *Client) ListPools() ([]Pool, error) {
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/pools", nil)
@@ -116,6 +219,56 @@ func (c *Client) ListPools() ([]Pool, error) {
 		pools = []Pool{}
 	}
 	return pools, nil
+}
+
+// ListShareFolders returns the subfolders of a folder inside the share datasets.
+func (c *Client) ListShareFolders(path string) ([]string, error) {
+	req, err := http.NewRequest(http.MethodGet,
+		c.baseURL+"/api/v1/shares/folders?path="+url.QueryEscape(path), nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating list-folders request: %w", err)
+	}
+
+	var payload struct {
+		Folders []string `json:"folders"`
+	}
+	if err := c.do(req, &payload); err != nil {
+		return nil, err
+	}
+	if payload.Folders == nil {
+		payload.Folders = []string{}
+	}
+	return payload.Folders, nil
+}
+
+// CreateShareFolder creates a folder inside path and returns the new path.
+func (c *Client) CreateShareFolder(path, name string) (string, error) {
+	body, err := json.Marshal(map[string]string{"path": path, "name": name})
+	if err != nil {
+		return "", fmt.Errorf("encoding create-folder request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/api/v1/shares/folders", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("creating create-folder request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	var payload map[string]string
+	if err := c.do(req, &payload); err != nil {
+		return "", err
+	}
+	return payload["path"], nil
+}
+
+// DeleteShareFolder removes an empty folder inside the share datasets.
+func (c *Client) DeleteShareFolder(path string) error {
+	req, err := http.NewRequest(http.MethodDelete,
+		c.baseURL+"/api/v1/shares/folders?path="+url.QueryEscape(path), nil)
+	if err != nil {
+		return fmt.Errorf("creating delete-folder request: %w", err)
+	}
+	return c.do(req, nil)
 }
 
 // CreatePool creates a ZFS pool via the agent.
