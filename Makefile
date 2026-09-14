@@ -19,6 +19,7 @@ UI_IMAGE := $(REGISTRY)/naslos-ui:$(IMAGE_TAG)
 OPENLDAP_IMAGE := $(REGISTRY)/naslos-openldap:$(IMAGE_TAG)
 SAMBA_IMAGE := $(REGISTRY)/naslos-samba:$(IMAGE_TAG)
 NFS_IMAGE := $(REGISTRY)/naslos-nfs:$(IMAGE_TAG)
+TERMINAL_IMAGE := $(REGISTRY)/naslos-terminal:$(IMAGE_TAG)
 
 # Extra flags passed through to helm upgrade (e.g. image registry overrides).
 HELM_FLAGS :=
@@ -42,7 +43,7 @@ ui:
 	cd ui && npm install && npm run build
 
 # Build all Naslos container images locally.
-images: api-image agent-image ui-image openldap-image samba-image nfs-image
+images: api-image agent-image ui-image openldap-image samba-image nfs-image terminal-image
 
 api-image:
 	$(DOCKER) build -t $(API_IMAGE) -f api/Dockerfile .
@@ -61,6 +62,11 @@ samba-image:
 
 nfs-image:
 	$(DOCKER) build -t $(NFS_IMAGE) -f nfs/image/Dockerfile nfs/image
+
+# The web terminal's exec target: a privileged shell container with the host
+# mounted, because Talos has no shell of its own (spec FR-LOG-02).
+terminal-image:
+	$(DOCKER) build -t $(TERMINAL_IMAGE) -f terminal/image/Dockerfile terminal/image
 
 # Push all Naslos container images to REGISTRY (requires docker login / insecure-registry config for HTTP registries).
 push-images: images

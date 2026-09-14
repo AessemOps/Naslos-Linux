@@ -82,6 +82,14 @@ spec:
             # (e.g. AGENT_BASE_URL=http://127.0.0.1:9090 with a port-forward).
             - name: AGENT_BASE_URL
               value: {{ .Values.api.agentBaseURL | default (printf "http://naslos-agent.%s.svc.cluster.local:9090" .Values.namespace) | quote }}
+            # Terminal authorisation: the API serves the terminal's endpoints only
+            # to requests carrying the authenticated proxy's identity header
+            # (FR-LOG-08). `toString` matters: `default` would replace an explicit
+            # `false` with true, which is exactly the value that must survive.
+            - name: TERMINAL_REQUIRE_AUTH
+              value: {{ .Values.terminal.requireAuth | toString | quote }}
+            - name: TERMINAL_AUTH_HEADER
+              value: {{ .Values.terminal.authHeader | default "Remote-User" | quote }}
             {{- if .Values.api.talosConfigSecret }}
             # The talos machinery client library (api/internal/talos/client.go)
             # resolves its config via the TALOSCONFIG env var pointing at a
