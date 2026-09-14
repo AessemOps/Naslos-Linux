@@ -1,17 +1,32 @@
 import { test, expect } from '@playwright/test';
 
-// The web terminal is only useful if a browser can attach to the shell container
-// and run commands, so these tests drive the real thing: a websocket through
-// nginx, an exec through the Kubernetes API, and output rendered by xterm.
-//
-// They need the chart's terminal pod (terminal.enabled) and the API's exec RBAC;
-// without them the picker reports that nothing is deployed to attach to.
-async function terminalPodName(request: any): Promise<string | null> {
+// The terminal reaches a root shell in a privileged container, so it must not be
+// usable from an unauthenticated entry point. Reaching the UI on a node port
+// (this suite's default baseURL) is exactly that case: the terminal endpoints are
+// refused there, and the chart routes them from Traefik straight to the API so
+// that only the authenticated proxy can supply the identity header the API
+// trusts.
+const TERMINAL_PATHS = [
+  '/api/pods?namespace=naslos',
+  '/api/namespaces',
+  '/api/ws/exec?namespace=naslos&pod=whatever&shell=sh'
+];
+
+test('the terminal is refused without an authenticated session', async ({ request }) => {
+  for (const path of TERMINAL_PATHS) {
+    const res = await request.get(path);
+    expect([401, 403], `${path} answered ${res.status()}`).toContain(res.status());
+    // The refusal must be understandable (the UI shows this text).
+    expect(await res.text()).toContain('authenticated');
+  }
+});
+
+// Whether the authenticated entry point is reachable from this run. Through the
+// node port it is not, so the interactive test below is skipped rather than
+// failing: that refusal is the assertion above.
+async function terminalReachable(request: any): Promise<boolean> {
   const res = await request.get('/api/pods?namespace=naslos');
-  if (!res.ok()) return null;
-  const pods = await res.json();
-  const shell = (Array.isArray(pods) ? pods : []).find((p: any) => p.terminal);
-  return shell?.name ?? null;
+  return res.status() === 200;
 }
 
 // xterm renders each row into the DOM, so the visible screen can be asserted.
@@ -20,7 +35,11 @@ function screen(page: any) {
 }
 
 test('the terminal lists pods, preselects the shell container and runs commands', async ({ page, request }) => {
-  const shellPod = await terminalPodName(request);
+  test.skip(!(await terminalReachable(request)),
+    'run this against the authenticated entry point (Authelia) to exercise the terminal');
+
+  const pods = await (await request.get('/api/pods?namespace=naslos')).json();
+  const shellPod = (pods as any[]).find(p => p.terminal);
   test.skip(!shellPod, 'no terminal pod deployed (terminal.enabled=false)');
 
   await page.goto('/terminal');
@@ -28,10 +47,10 @@ test('the terminal lists pods, preselects the shell container and runs commands'
 
   // Targets are discovered, not typed: the shell container is preselected.
   const selects = page.locator('select');
-  await expect(selects.nth(0)).toContainText('naslos');       // namespace
-  await expect(selects.nth(1)).toContainText('— shell');      // pod, marked
-  await expect(selects.nth(1)).toHaveValue(shellPod!);
-  await expect(selects.nth(2)).toHaveValue('shell');          // container
+  await expect(selects.nth(0)).toContainText('naslos');  // namespace
+  await expect(selects.nth(1)).toContainText('— shell'); // pod, marked
+  await expect(selects.nth(1)).toHaveValue((shellPod as any).name);
+  await expect(selects.nth(2)).toHaveValue('shell');     // container
 
   await page.click('button:has-text("Connect")');
 
@@ -60,13 +79,16 @@ test('the terminal lists pods, preselects the shell container and runs commands'
   await page.keyboard.press('Enter');
   await expect(screen(page)).toContainText('test', { timeout: 20_000 });
 
-  // Disconnecting is explicit and reported in the terminal.
   await page.click('button:has-text("Disconnect")');
   await expect(screen(page)).toContainText('Session closed', { timeout: 15_000 });
 });
 
 test('the exec preflight reports what would go wrong, before the socket opens', async ({ request }) => {
-  const shellPod = await terminalPodName(request);
+  test.skip(!(await terminalReachable(request)),
+    'run this against the authenticated entry point (Authelia) to exercise the preflight');
+
+  const pods = await (await request.get('/api/pods?namespace=naslos')).json();
+  const shellPod = (pods as any[]).find(p => p.terminal);
 
   // A misspelled pod is a 404 the UI can show, instead of a failed handshake
   // with no explanation.
@@ -80,15 +102,16 @@ test('the exec preflight reports what would go wrong, before the socket opens', 
   if (!shellPod) return;
 
   // Only shells are allowed: the endpoint must not become "run anything as root".
-  const badShell = await request.get(`/api/ws/exec?namespace=naslos&pod=${shellPod}&shell=rm`);
+  const badShell = await request.get(`/api/ws/exec?namespace=naslos&pod=${shellPod.name}&shell=rm`);
   expect(badShell.status()).toBe(400);
   expect(await badShell.text()).toContain('unsupported shell');
 
   // The preflight answers with the container it resolved, so the UI can show
   // what it is about to attach to.
-  const ok = await request.get(`/api/ws/exec?namespace=naslos&pod=${shellPod}&shell=bash`);
+  const ok = await request.get(`/api/ws/exec?namespace=naslos&pod=${shellPod.name}&shell=bash`);
   expect(ok.status(), await ok.text()).toBe(200);
   const resolved = await ok.json();
   expect(resolved.container).toBe('shell');
   expect(resolved.status).toBe('ready to attach');
 });
+
