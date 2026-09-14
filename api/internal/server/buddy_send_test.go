@@ -44,6 +44,9 @@ type fakeAgent struct {
 	received     bytes.Buffer
 	// receiveErr makes the faked `zfs receive` refuse the stream.
 	receiveErr string
+	// sendDelay, when set, stalls the send stream (a slow `zfs send`), so a
+	// test can hold a job in running state and exercise the 409 path.
+	sendDelay time.Duration
 }
 
 func newFakeAgent(t *testing.T, payload []byte) *fakeAgent {
@@ -94,6 +97,7 @@ func newFakeAgent(t *testing.T, payload []byte) *fakeAgent {
 		payload := fake.payload
 		estimate := fake.estimateOverride
 		truncateTo := fake.truncateTo
+		delay := fake.sendDelay
 		fake.mu.Unlock()
 
 		if query.Get("estimate") == "true" {
@@ -107,6 +111,9 @@ func newFakeAgent(t *testing.T, payload []byte) *fakeAgent {
 
 		if truncateTo > 0 && truncateTo < len(payload) {
 			payload = payload[:truncateTo]
+		}
+		if delay > 0 {
+			time.Sleep(delay)
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusOK)
@@ -235,6 +242,52 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder, out any) {
 	}
 }
 
+// startSend POSTs /api/buddy/send and expects the async 202 with a job id.
+func startSend(t *testing.T, h *senderHarness, body map[string]any) string {
+	t.Helper()
+
+	rec := h.call(t, http.MethodPost, "/api/buddy/send", body)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("send = %d, want 202 (%s)", rec.Code, rec.Body.String())
+	}
+	var started struct {
+		JobID  string `json:"jobId"`
+		Status string `json:"status"`
+	}
+	decode(t, rec, &started)
+	if started.JobID == "" || started.Status != "started" {
+		t.Fatalf("start response = %s, want a jobId and started status", rec.Body.String())
+	}
+	return started.JobID
+}
+
+// waitSend waits for a job to finish and returns its snapshot.
+func waitSend(t *testing.T, h *senderHarness, jobID string) buddyJobPublic {
+	t.Helper()
+
+	job := h.server.waitBuddyJob(jobID, 60*time.Second)
+	if job == nil {
+		t.Fatalf("job %s did not finish in time", jobID)
+	}
+	return *job
+}
+
+// sendAndWait starts a send and waits for it to succeed, returning the result.
+func sendAndWait(t *testing.T, h *senderHarness, dataset, source string) buddySendResult {
+	t.Helper()
+
+	jobID := startSend(t, h, map[string]any{
+		"dataset":  dataset,
+		"source":   source,
+		"receiver": h.receiverURL,
+	})
+	job := waitSend(t, h, jobID)
+	if job.State != buddyJobSucceeded || job.Result == nil {
+		t.Fatalf("job %s = %s (%s), want succeeded", jobID, job.State, job.Error)
+	}
+	return *job.Result
+}
+
 func TestBuddyIdentityLifecycle(t *testing.T) {
 	harness := newSenderHarness(t, []byte("payload"))
 
@@ -304,25 +357,7 @@ func TestBuddySendFullThenIncremental(t *testing.T) {
 	harness := newSenderHarness(t, payload)
 	source := "naslos-test/test"
 
-	rec := harness.call(t, http.MethodPost, "/api/buddy/send", map[string]any{
-		"dataset":  "test/data",
-		"source":   source,
-		"receiver": harness.receiverURL,
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("send = %d, want 200 (%s)", rec.Code, rec.Body.String())
-	}
-	var first struct {
-		Status      string `json:"status"`
-		Snapshot    string `json:"snapshot"`
-		ToGUID      string `json:"toGUID"`
-		Incremental bool   `json:"incremental"`
-		Base        string `json:"base"`
-		Chunks      int    `json:"chunks"`
-		PlainBytes  int64  `json:"plainBytes"`
-		Chain       string `json:"chain"`
-	}
-	decode(t, rec, &first)
+	first := sendAndWait(t, harness, "test/data", source)
 
 	if first.Status != "backed up" || first.Incremental || first.Base != "" {
 		t.Errorf("first send = %+v, want a full backup", first)
@@ -361,21 +396,7 @@ func TestBuddySendFullThenIncremental(t *testing.T) {
 
 	// Second send: the buddy already holds the first snapshot's GUID, so the agent
 	// must be asked for an incremental stream.
-	rec = harness.call(t, http.MethodPost, "/api/buddy/send", map[string]any{
-		"dataset":  "test/data",
-		"source":   source,
-		"receiver": harness.receiverURL,
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("second send = %d, want 200 (%s)", rec.Code, rec.Body.String())
-	}
-	var second struct {
-		Incremental bool   `json:"incremental"`
-		Base        string `json:"base"`
-		Chain       string `json:"chain"`
-		Snapshot    string `json:"snapshot"`
-	}
-	decode(t, rec, &second)
+	second := sendAndWait(t, harness, "test/data", source)
 
 	if !second.Incremental || second.Base != first.Snapshot {
 		t.Errorf("second send = %+v, want an incremental from %q", second, first.Snapshot)
@@ -407,16 +428,19 @@ func TestBuddySendRefusesATruncatedStream(t *testing.T) {
 	// The dry run promises the whole payload; the send delivers 60% of it.
 	harness.agent.truncateTo = len(payload) * 6 / 10
 
-	rec := harness.call(t, http.MethodPost, "/api/buddy/send", map[string]any{
+	// Enqueueing still succeeds: the truncation is discovered mid-stream, so the
+	// job fails asynchronously and nothing is published.
+	jobID := startSend(t, harness, map[string]any{
 		"dataset":  "test/data",
 		"source":   "naslos-test/short",
 		"receiver": harness.receiverURL,
 	})
-	if rec.Code == http.StatusOK {
-		t.Fatalf("a truncated stream reported success: %s", rec.Body.String())
+	failed := waitSend(t, harness, jobID)
+	if failed.State != buddyJobFailed {
+		t.Fatalf("job = %s, want failed (%s)", failed.State, failed.Error)
 	}
-	if !strings.Contains(rec.Body.String(), "ended early") {
-		t.Errorf("unexpected error: %s", rec.Body.String())
+	if !strings.Contains(failed.Error, "ended early") {
+		t.Errorf("unexpected error: %s", failed.Error)
 	}
 
 	// The chain must not be published, so "the latest backup" never points at an
@@ -432,22 +456,23 @@ func TestBuddySendRefusesATruncatedStream(t *testing.T) {
 	harness.agent.truncateTo = 0
 	harness.agent.mu.Unlock()
 
-	rec = harness.call(t, http.MethodPost, "/api/buddy/send", map[string]any{
+	rec := harness.call(t, http.MethodPost, "/api/buddy/send", map[string]any{
 		"dataset":  "test/data",
 		"source":   "naslos-test/short",
 		"receiver": harness.receiverURL,
 	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("retry = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("retry enqueue = %d, want 202 (%s)", rec.Code, rec.Body.String())
 	}
-	var retried struct {
-		Resumed  bool   `json:"resumed"`
-		Snapshot string `json:"snapshot"`
-		Chain    string `json:"chain"`
-		Uploaded int    `json:"uploaded"`
-		Skipped  int    `json:"skipped"`
+	var retryStarted struct {
+		JobID string `json:"jobId"`
 	}
-	decode(t, rec, &retried)
+	decode(t, rec, &retryStarted)
+	retriedJob := waitSend(t, harness, retryStarted.JobID)
+	if retriedJob.State != buddyJobSucceeded || retriedJob.Result == nil {
+		t.Fatalf("retry = %s (%s), want succeeded", retriedJob.State, retriedJob.Error)
+	}
+	retried := *retriedJob.Result
 
 	if !retried.Resumed {
 		t.Error("the retry did not report itself as a resume")
@@ -485,14 +510,7 @@ func TestBuddyRestoreStreamsIntoZFS(t *testing.T) {
 	// to bring back the full chain first and apply the incremental on top, because
 	// ZFS refuses an incremental stream whose base is missing.
 	for i := 0; i < 2; i++ {
-		rec := harness.call(t, http.MethodPost, "/api/buddy/send", map[string]any{
-			"dataset":  "test/data",
-			"source":   source,
-			"receiver": harness.receiverURL,
-		})
-		if rec.Code != http.StatusOK {
-			t.Fatalf("send %d = %d, want 200 (%s)", i, rec.Code, rec.Body.String())
-		}
+		sendAndWait(t, harness, "test/data", source)
 	}
 
 	rec := harness.call(t, http.MethodPost, "/api/buddy/restore", map[string]any{
@@ -557,14 +575,7 @@ func TestBuddyRestoreReportsZFSRefusal(t *testing.T) {
 	harness := newSenderHarness(t, []byte("payload"))
 	source := "naslos-test/refused"
 
-	rec := harness.call(t, http.MethodPost, "/api/buddy/send", map[string]any{
-		"dataset":  "test/data",
-		"source":   source,
-		"receiver": harness.receiverURL,
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("send = %d, want 200 (%s)", rec.Code, rec.Body.String())
-	}
+	sendAndWait(t, harness, "test/data", source)
 
 	// A destination that already has a snapshot refuses the stream; that refusal
 	// must reach the operator instead of being reported as success.
@@ -572,7 +583,7 @@ func TestBuddyRestoreReportsZFSRefusal(t *testing.T) {
 	harness.agent.receiveErr = "cannot receive: destination has snapshots"
 	harness.agent.mu.Unlock()
 
-	rec = harness.call(t, http.MethodPost, "/api/buddy/restore", map[string]any{
+	rec := harness.call(t, http.MethodPost, "/api/buddy/restore", map[string]any{
 		"source":   source,
 		"receiver": harness.receiverURL,
 		"dataset":  "test/restored",
@@ -590,17 +601,10 @@ func TestBuddyVerifyHashesTheStreamWithoutTouchingZFS(t *testing.T) {
 	harness := newSenderHarness(t, payload)
 	source := "naslos-test/verify"
 
-	rec := harness.call(t, http.MethodPost, "/api/buddy/send", map[string]any{
-		"dataset":  "test/data",
-		"source":   source,
-		"receiver": harness.receiverURL,
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("send = %d, want 200 (%s)", rec.Code, rec.Body.String())
-	}
+	sendAndWait(t, harness, "test/data", source)
 
 	// Verify needs no dataset: it decrypts and hashes instead of writing.
-	rec = harness.call(t, http.MethodPost, "/api/buddy/restore", map[string]any{
+	rec := harness.call(t, http.MethodPost, "/api/buddy/restore", map[string]any{
 		"source":   source,
 		"receiver": harness.receiverURL,
 		"verify":   true,

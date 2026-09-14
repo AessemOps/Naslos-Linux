@@ -294,11 +294,14 @@ BASE=http://naslos-a:30080   # reach the API the way the UI does
 curl -sX POST -H 'Remote-User: admin' -H 'Content-Type: application/json' \
   -d '{"name":"naslos-a"}' $BASE/api/buddy/identity
 
-# 2. Back a dataset up. The API snapshots it, decides whether the buddy already
-#    holds a base snapshot (by GUID) and sends incrementally if so.
+# 2. Back a dataset up. The API answers 202 with a job id immediately and runs
+#    the send under a server-owned context (a disconnected client no longer
+#    kills it); poll the job for progress and cancel it with DELETE.
 curl -sX POST -H 'Remote-User: admin' -H 'Content-Type: application/json' \
   -d '{"dataset":"test/data","source":"naslos-a/test","receiver":"https://naslos-b"}' \
-  $BASE/api/buddy/send
+  $BASE/api/buddy/send                       # → {"jobId":"…","status":"started"}
+curl -sH 'Remote-User: admin' $BASE/api/buddy/jobs/<jobId>
+curl -sX DELETE -H 'Remote-User: admin' $BASE/api/buddy/jobs/<jobId>   # cancel
 
 # 3. Prove the backup is intact without touching ZFS: it decrypts the stored
 #    stream and hashes every chain.
@@ -411,9 +414,12 @@ error instead of writing damaged data. `TestReceiverRefusesTamperedChunk` in
   be stopped by cryptography. That is what a second buddy is for.
 - **A revoked key's old chunks stay** until they are pruned: revoking stops new
   pushes, it is not a delete. The API says so in its response, deliberately.
-- **No scheduler yet.** Pushes are operator-driven (`buddyctl`) or pipeline-driven
-  (`zfs send | buddyctl push`). Scheduling, and streaming `zfs send` from the
-  instance itself, come next (§8).
+- **Scheduling and retention are built in.** Schedules (`hourly|daily|weekly` +
+  run-at time, `GET/POST/DELETE /api/buddy/schedules`, stored at
+  `BUDDY_SCHEDULES`) run sends through the async job path, prune to `pruneKeep`
+  on success and notify via ntfy (`backup_success` / `backup_failure`). The
+  `/backups` page manages them, starts manual sends with live progress and
+  verifies restores.
 - **tar payloads lose symlinks, devices and xattrs** in v1, and only regular files
   and directories are archived. For filesystems that need all of it, send a ZFS
   stream (`--kind zfs-send`), which preserves everything by construction.
@@ -460,10 +466,13 @@ Implemented and tested in this change:
 
 Next, in the order the plan calls for:
 
-1. **Backup page in the UI** — buddies, "Back up now", progress, free space and
-   last-backup columns. The data plane and the API already provide all of it.
-2. **Scheduler + retention** — per-source schedule, `prune` after success, ntfy
-   notification on failure.
+1. ~~**Backup page in the UI** — buddies, "Back up now", progress, free space and
+   last-backup columns. The data plane and the API already provide all of it.~~
+   **Done**: `/backups` shows the identity, schedules, live job progress,
+   verify digests, a confirmation-gated restore form and the receiver status.
+2. ~~**Scheduler + retention** — per-source schedule, `prune` after success, ntfy
+   notification on failure.~~ **Done**: `hourly|daily|weekly` schedules with
+   catch-up, `pruneKeep` on success and ntfy on success *and* failure.
 3. **Multi-buddy fan-out** — the same chain pushed to several receivers, with the
    last successful destination surfaced per buddy.
 4. **Peer exposure** — decide between a dedicated listener and Traefik + Authelia

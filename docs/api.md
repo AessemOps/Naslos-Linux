@@ -130,6 +130,19 @@ The actual ZFS work is delegated to `naslos-agent` on each node:
 | GET | `/api/shares/config/samba` | Generated `smb.conf` (text/plain) |
 | GET | `/api/shares/config/nfs` | Generated `/etc/exports` (text/plain) |
 
+### Buddy Backup (see also [buddy-backup.md](buddy-backup.md))
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/buddy/status` | Owner view: free space, peers, stored backups (503 when not configured) |
+| GET, POST, DELETE | `/api/buddy/peers` | List / authorize / revoke peer keys (authenticated session required) |
+| GET, POST | `/api/buddy/identity` | This instance's public key / create it (`replace` to overwrite) |
+| POST | `/api/buddy/send` | Back a dataset up: `202 {"jobId","status":"started"}` immediately; the send runs under a server-owned context |
+| GET | `/api/buddy/jobs` | List send jobs (running + recent finished) |
+| GET, DELETE | `/api/buddy/jobs/{id}` | Job detail incl. progress / cancel (resume state is kept) |
+| GET, POST, DELETE | `/api/buddy/schedules` | Scheduled backups (`hourly\|daily\|weekly` + run-at UTC, `pruneKeep`); delete takes `?id=` |
+| POST | `/api/buddy/restore` | Restore into a dataset, or `{"verify":true}` to hash without touching ZFS |
+
 ### Notifications & metrics
 
 | Method | Path | Description |
@@ -211,6 +224,7 @@ shell, never an arbitrary command.
 | `BUDDY_ENROLL_TOKEN` | — | One-time token that lets a peer authorize its own key (from the `naslos-buddy` Secret) |
 | `BUDDY_REQUIRE_AUTH` | `true` | Require an authenticated session to authorize/revoke peers |
 | `BUDDY_IDENTITY` | `/var/lib/naslos/buddy-identity.json` | This instance's key material (private key + KEK); created on demand |
+| `BUDDY_SCHEDULES` | `/var/lib/naslos/buddy-schedules.json` | Scheduled backups (interval cadence, catch-up on startup) |
 
 The `naslos-agent` uses `NODE_NAME` (from `spec.nodeName`) and listens on `:9090`.
 
