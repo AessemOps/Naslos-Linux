@@ -124,7 +124,23 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-STO-06** — Pool health view MUST expose: device tree, IO stats, scan
   state, and error summary (from `zpool status` / `zpool iostat`).
 - **FR-STO-07** — Datasets and snapshots on a pool MUST be creatable and
-  listable from the UI via the agent.
+  listable from the UI via the agent. Dataset names MUST be validated
+  (ZFS-safe per component, no traversal, no snapshot `@`), and creation MUST
+  only set a safe property subset (`compression`, `quota`, `recordsize`,
+  `atime`, `copies`, `readonly`) so a request cannot place a dataset outside
+  the pool (e.g. `mountpoint=/`).
+- **FR-STO-08** — A pool MUST be growable from the UI by attaching disks
+  (`zpool add`). The API MUST refuse a disk that is not a whole disk the node
+  reported as usable (so the system disk and a mistyped path are rejected) and
+  MUST refuse a disk that already belongs to a pool **even with `force`**, since
+  that would overwrite the owning pool's label. The UI MUST state, before the
+  operation, that a redundancy-less vdev lowers the pool's fault tolerance and
+  that the change is not reversible.
+- **FR-STO-09** — Dataset destruction MUST be explicit: a non-empty dataset
+  MUST require the recursive flag (the UI MUST say what that destroys), a pool's
+  root dataset MUST NOT be destroyable through the dataset API, and a dataset
+  that a share is serving (or that backs a share's path) MUST be refused with a
+  conflict instead of removing the share's data.
 
 ### 3.2 Identity & SSO (`FR-IDN`)
 

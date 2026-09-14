@@ -34,6 +34,23 @@ users could never authenticate over SMB.
   created `/var/mnt/test/media` from the API, shared it over NFS, mounted it from
   a client, wrote a file — and it landed in that folder on the pool. 18/18
   Playwright tests pass.
+- **Datasets can be created, listed and destroyed from the pool page.** `Pools →
+  <pool>` now has a Datasets list (name, mountpoint, used/free) with **New
+  Dataset** (name, compression, quota) and per-row **Delete**. Verified live:
+  created `test/media` with zstd + a 500G quota and `zfs list` on the node showed
+  exactly those properties; the dataset then appeared in `/api/shares/paths`, so
+  it is immediately shareable.
+- **A pool can be grown with Add Drive** (`zpool add`), with the disk picker
+  marking disks that are already in a pool as unselectable. No spare disk exists
+  on the VM (both `/dev/vdb` and `/dev/vdc` belong to `test`), so the *success*
+  path was verified only by unit tests asserting the exact `zpool add` command
+  line — the live checks cover the refusals, which is what protects the pool:
+  a member disk is refused even with `force: true`, a non-`/dev` path, an unknown
+  disk, an unknown topology, and too few disks for a RAIDZ level are all 400s,
+  and the pool's members are unchanged afterwards.
+- **Destruction is guarded**: destroying a dataset a share serves is a 409 with
+  the share named, a pool's root dataset is refused, and a non-empty dataset
+  needs `recursive=true` (the UI asks in those terms).
 - **NFS is served** by NFS-Ganesha in userspace (`naslos-nfs` DaemonSet,
   hostNetwork, NFSv4/TCP :2049) — Talos has no kernel `nfsd`, so the API renders
   Ganesha's config instead of `/etc/exports`. Verified live: a *separate client

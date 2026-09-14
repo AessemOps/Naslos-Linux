@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -122,9 +123,13 @@ func (s *Server) handleZFSPoolDetail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "pool name required")
 		return
 	}
-	// Dispatch /health sub-route.
+	// Dispatch /health and /devices sub-routes.
 	if strings.HasSuffix(name, "/health") {
 		s.handleZFSPoolHealth(w, r, strings.TrimSuffix(name, "/health"))
+		return
+	}
+	if strings.HasSuffix(name, "/devices") {
+		s.handleZFSPoolDevices(w, r, strings.TrimSuffix(name, "/devices"))
 		return
 	}
 	if strings.Contains(name, "/") {
@@ -148,6 +153,327 @@ func (s *Server) handleZFSPoolDetail(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// datasetNamePattern is the ZFS-safe charset for each component of a dataset
+// name, mirroring the agent's check so bad input fails fast with a 400.
+var datasetNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// datasetCompression are the algorithms the dataset form may set.
+var datasetCompression = map[string]bool{
+	"on": true, "off": true, "lz4": true, "zstd": true, "zstd-fast": true,
+	"gzip": true, "gzip-1": true, "gzip-9": true, "lzjb": true, "zle": true,
+}
+
+// sizePattern matches ZFS sizes such as 500G or 1.5T.
+var sizePattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[KMGTPE]?$`)
+
+// vdevMinimumDisks mirrors the agent's rule (ZFS's own minimum per topology) so
+// the user gets an immediate answer instead of a round trip.
+var vdevMinimumDisks = map[string]int{
+	"": 1, "single": 1, "stripe": 1, "mirror": 2,
+	"raidz": 2, "raidz1": 2, "raidz2": 3, "raidz3": 4,
+}
+
+// handleDatasets lists, creates and destroys datasets.
+//
+//	GET    /api/datasets                     → every dataset, with space used
+//	POST   /api/datasets {pool,name,options} → create
+//	DELETE /api/datasets?name=<pool>/<name>  → destroy (recursive=true to force)
+//
+// A dataset is the level a share points at, so this is what turns a pool into
+// something useful without shelling into the node.
+func (s *Server) handleDatasets(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		datasets, err := s.agent.ListDatasets()
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, datasets)
+
+	case http.MethodPost:
+		var req struct {
+			Pool    string            `json:"pool"`
+			Name    string            `json:"name"`
+			Options map[string]string `json:"options"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := validateDatasetCreate(req.Pool, req.Name, req.Options); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// The pool has to exist: otherwise a typo is reported as a ZFS error
+		// after the dataset name was already accepted.
+		if err := s.requirePool(req.Pool); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		if err := s.agent.CreateDataset(req.Pool, req.Name, req.Options); err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		log.Printf("created dataset %s/%s", req.Pool, req.Name)
+		writeJSON(w, http.StatusCreated, map[string]string{
+			"status": "dataset created",
+			"name":   req.Pool + "/" + req.Name,
+		})
+
+	case http.MethodDelete:
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		recursive := r.URL.Query().Get("recursive") == "true"
+		if err := validateDatasetPath(name); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// A dataset that is serving a share must not vanish underneath it.
+		if err := s.requireUnusedByShares(name); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if err := s.agent.DestroyDataset(name, recursive); err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		log.Printf("destroyed dataset %s (recursive=%v)", name, recursive)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "dataset destroyed", "name": name})
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// requirePool confirms a pool exists, so dependent operations report the problem
+// instead of letting ZFS complain about a missing pool.
+func (s *Server) requirePool(name string) error {
+	pools, err := s.agent.ListPools()
+	if err != nil {
+		return fmt.Errorf("cannot verify pool %s (agent unavailable): %w", name, err)
+	}
+	for _, p := range pools {
+		if p.Name == name {
+			return nil
+		}
+	}
+	return fmt.Errorf("pool %q not found", name)
+}
+
+// requireUnusedByShares refuses to destroy a dataset that a share serves, or a
+// parent of one: the share would keep working until the next restart and then
+// fail, with the data already gone. Share paths are mount paths, so the check is
+// made against the mountpoints of the dataset and anything below it.
+func (s *Server) requireUnusedByShares(name string) error {
+	datasets, err := s.agent.ListDatasets()
+	if err != nil {
+		return fmt.Errorf("cannot verify which paths dataset %s backs: %w", name, err)
+	}
+
+	mountpoints := make([]string, 0, 2)
+	for _, d := range datasets {
+		if d.Name == name || strings.HasPrefix(d.Name, name+"/") {
+			if d.Mountpoint != "" && d.Mountpoint != "none" {
+				mountpoints = append(mountpoints, d.Mountpoint)
+			}
+		}
+	}
+
+	for _, share := range s.shares.List() {
+		for _, mp := range mountpoints {
+			if share.Path == mp || strings.HasPrefix(share.Path, mp+"/") {
+				return fmt.Errorf("dataset %s backs path %s, which share %q is serving: delete or repoint the share first", name, mp, share.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// validateDatasetCreate checks a create request: pool name, dataset name and the
+// safe option subset.
+func validateDatasetCreate(pool, name string, options map[string]string) error {
+	if !poolNamePattern.MatchString(pool) {
+		return fmt.Errorf("invalid pool name %q", pool)
+	}
+	if err := validateDatasetName(name); err != nil {
+		return err
+	}
+	for key, value := range options {
+		value = strings.TrimSpace(value)
+		switch key {
+		case "compression":
+			if !datasetCompression[value] {
+				return fmt.Errorf("unsupported compression %q", value)
+			}
+		case "quota":
+			if value != "" && value != "none" && !sizePattern.MatchString(value) {
+				return fmt.Errorf("invalid quota %q: use a size such as 500G, or none", value)
+			}
+		case "recordsize":
+			if !sizePattern.MatchString(value) {
+				return fmt.Errorf("invalid recordsize %q", value)
+			}
+		case "atime", "readonly":
+			if value != "on" && value != "off" {
+				return fmt.Errorf("%s must be on or off", key)
+			}
+		case "copies":
+			if value != "1" && value != "2" && value != "3" {
+				return fmt.Errorf("copies must be 1, 2 or 3")
+			}
+		default:
+			return fmt.Errorf("unsupported dataset option %q", key)
+		}
+	}
+	return nil
+}
+
+// validateDatasetName checks a dataset name relative to its pool.
+func validateDatasetName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return fmt.Errorf("dataset name is required")
+	}
+	if trimmed != name {
+		return fmt.Errorf("dataset name must not start or end with whitespace")
+	}
+	if strings.HasPrefix(trimmed, "/") {
+		return fmt.Errorf("dataset name must be relative to its pool, not a path")
+	}
+	if strings.Contains(trimmed, "@") {
+		return fmt.Errorf("dataset name must not contain '@' (that is a snapshot)")
+	}
+	for _, part := range strings.Split(trimmed, "/") {
+		if !datasetNamePattern.MatchString(part) {
+			return fmt.Errorf("invalid dataset name %q: each part must start with a letter or digit and contain only letters, digits, '.', '_' or '-'", trimmed)
+		}
+	}
+	return nil
+}
+
+// validateDatasetPath checks a full dataset path (pool/name[/…]).
+func validateDatasetPath(name string) error {
+	if name == "" {
+		return fmt.Errorf("dataset name is required")
+	}
+	parts := strings.Split(name, "/")
+	if len(parts) < 2 {
+		return fmt.Errorf("dataset %q must be <pool>/<name>", name)
+	}
+	if !poolNamePattern.MatchString(parts[0]) {
+		return fmt.Errorf("invalid pool name %q", parts[0])
+	}
+	return validateDatasetName(strings.Join(parts[1:], "/"))
+}
+
+// handleZFSPoolDevices attaches disks to an existing pool: this is how a pool
+// grows. It is the most consequential operation in the product - it writes to
+// raw disks, and adding a redundancy-less vdev also lowers the pool's fault
+// tolerance - so it is guarded on every side and needs explicit confirmation in
+// the UI.
+func (s *Server) handleZFSPoolDevices(w http.ResponseWriter, r *http.Request, pool string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !poolNamePattern.MatchString(pool) {
+		writeError(w, http.StatusBadRequest, "invalid pool name")
+		return
+	}
+
+	var req struct {
+		Disks    []string `json:"disks"`
+		Topology string   `json:"topology"`
+		Force    bool     `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := s.requirePool(pool); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.validateAddDisks(req.Topology, req.Disks); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := s.agent.AddPoolVDev(pool, req.Topology, req.Disks, req.Force); err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	log.Printf("attached %d disk(s) to pool %s (topology %q, force %v)",
+		len(req.Disks), pool, req.Topology, req.Force)
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"status":   "vdev added",
+		"pool":     pool,
+		"topology": req.Topology,
+		"disks":    req.Disks,
+	})
+}
+
+// validateAddDisks checks an add-vdev request against the node's real inventory:
+// only disks the node itself reported (which excludes the system disk), and only
+// disks that no pool already owns.
+func (s *Server) validateAddDisks(topology string, disks []string) error {
+	norm := strings.ToLower(strings.TrimSpace(topology))
+	minimum, known := vdevMinimumDisks[norm]
+	if !known {
+		return fmt.Errorf("unsupported topology %q (supported: single, mirror, raidz1, raidz2, raidz3)", topology)
+	}
+	if len(disks) == 0 {
+		return fmt.Errorf("select at least one disk")
+	}
+	if len(disks) < minimum {
+		return fmt.Errorf("topology %q needs at least %d disks, got %d", norm, minimum, len(disks))
+	}
+
+	discovered, err := s.talos.GetDiscoveredVolumes()
+	if err != nil {
+		return fmt.Errorf("cannot list the node's disks: %w", err)
+	}
+	usable := make(map[string]bool, len(discovered))
+	for _, d := range discovered {
+		if d.SystemDisk {
+			continue
+		}
+		usable[d.DeviceName] = true
+	}
+
+	// A disk already in a pool must not be attached again: `zpool add -f` would
+	// overwrite the owning pool's label and destroy it.
+	inPool := map[string]string{}
+	if pools, err := s.agent.ListPools(); err == nil {
+		for _, p := range pools {
+			for _, d := range p.Disks {
+				inPool[d] = p.Name
+			}
+		}
+	}
+
+	seen := map[string]bool{}
+	for _, disk := range disks {
+		dev := strings.TrimSpace(disk)
+		if !strings.HasPrefix(dev, "/dev/") {
+			return fmt.Errorf("disk %q must be an absolute path under /dev", disk)
+		}
+		if seen[dev] {
+			return fmt.Errorf("disk %s was selected twice", dev)
+		}
+		seen[dev] = true
+		if owner, inUse := inPool[dev]; inUse {
+			return fmt.Errorf("disk %s already belongs to pool %q", dev, owner)
+		}
+		if !usable[dev] {
+			return fmt.Errorf("disk %s is not a disk this node can use (unknown, or the system disk)", dev)
+		}
+	}
+	return nil
 }
 
 // handleZFSPoolHealth returns structured health data (device tree, IO stats,
