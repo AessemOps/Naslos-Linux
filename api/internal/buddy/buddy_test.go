@@ -665,6 +665,151 @@ func TestEnrollAuthorizesTheFirstKey(t *testing.T) {
 	}
 }
 
+func TestRestoreSequenceFollowsTheChainLinks(t *testing.T) {
+	receiver := newTestReceiver(t, "")
+	sender := newTestIdentity(t, "naslos-a")
+	receiver.authorize(t, sender, nil, 0)
+	client := receiver.client(sender)
+	source := "naslos-a/incremental"
+
+	// A full send, then an incremental that names the first snapshot's GUID as its
+	// base - the shape the instance-side sender writes.
+	full, err := client.Push(PushOptions{
+		Source: source, Kind: "zfs-send", Reader: bytes.NewReader(randomBytes(t, 512)),
+		ToSnapshot: "buddy-1", ToGUID: "1000",
+	})
+	if err != nil {
+		t.Fatalf("full push: %v", err)
+	}
+	delta, err := client.Push(PushOptions{
+		Source: source, Kind: "zfs-send", Reader: bytes.NewReader(randomBytes(t, 128)),
+		FromSnapshot: "buddy-1", FromGUID: "1000", ToSnapshot: "buddy-2", ToGUID: "2000",
+	})
+	if err != nil {
+		t.Fatalf("incremental push: %v", err)
+	}
+
+	sequence, err := client.RestoreSequence(source, "")
+	if err != nil {
+		t.Fatalf("RestoreSequence: %v", err)
+	}
+	if len(sequence) != 2 {
+		t.Fatalf("sequence = %d chains, want 2", len(sequence))
+	}
+	if sequence[0].Chain != full.Chain || sequence[1].Chain != delta.Chain {
+		t.Errorf("sequence = [%s %s], want [full %s then incremental %s]",
+			sequence[0].Chain, sequence[1].Chain, full.Chain, delta.Chain)
+	}
+
+	// Asking for the incremental alone must still pull in its base: an incremental
+	// stream cannot be applied on its own.
+	sequence, err = client.RestoreSequence(source, delta.Chain)
+	if err != nil {
+		t.Fatalf("RestoreSequence(%s): %v", delta.Chain, err)
+	}
+	if len(sequence) != 2 || sequence[0].Chain != full.Chain {
+		t.Errorf("sequence for the incremental = %+v, want the full chain first", sequence)
+	}
+
+	// A chain whose base is missing cannot be rebuilt, and saying so beats applying
+	// half a backup.
+	if _, err := client.Push(PushOptions{
+		Source: source, Kind: "zfs-send", Reader: bytes.NewReader(randomBytes(t, 64)),
+		FromSnapshot: "buddy-9", FromGUID: "9999", ToSnapshot: "buddy-3", ToGUID: "3000",
+	}); err != nil {
+		t.Fatalf("orphan push: %v", err)
+	}
+	if _, err := client.RestoreSequence(source, ""); err == nil {
+		t.Error("a chain with a missing base was accepted for restore")
+	} else if !strings.Contains(err.Error(), "not stored here") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestChainsAreListedNewestFirst(t *testing.T) {
+	receiver := newTestReceiver(t, "")
+	sender := newTestIdentity(t, "naslos-a")
+	receiver.authorize(t, sender, nil, 0)
+	client := receiver.client(sender)
+	source := "naslos-a/history"
+
+	for i := 0; i < 3; i++ {
+		if _, err := client.Push(PushOptions{Source: source, Reader: bytes.NewReader(randomBytes(t, 256))}); err != nil {
+			t.Fatalf("push %d: %v", i, err)
+		}
+		// CreatedAt has second granularity in the manifest only when it is scrubbed;
+		// the store sorts on the real timestamp, so a small wait keeps the order
+		// deterministic.
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	chains, err := client.Chains(source)
+	if err != nil {
+		t.Fatalf("Chains: %v", err)
+	}
+	if len(chains) != 3 {
+		t.Fatalf("chains = %d, want 3", len(chains))
+	}
+	for i := 1; i < len(chains); i++ {
+		if chains[i-1].CreatedAt.Before(chains[i].CreatedAt) {
+			t.Errorf("chains are not newest-first: %+v", chains)
+		}
+	}
+	if chains[0].Chunks == 0 {
+		t.Error("the chain summary does not report its chunks")
+	}
+}
+
+// TestKeyDirHandlesFingerprintsWithSlashes pins the bug the first instance-side
+// sender hit: a fingerprint is base64-derived and can contain '/', which used to
+// split one key's tree into nested directories and made its backups unreachable from
+// the listing endpoints.
+func TestKeyDirHandlesFingerprintsWithSlashes(t *testing.T) {
+	fingerprint := "SHA256:du3R5I6q+piUaqr61Y/NV5FZv6qk0yrOXaxY0/5pHbM"
+
+	dir := keyDir(fingerprint)
+	if strings.ContainsAny(dir, "/\\") {
+		t.Fatalf("keyDir(%q) = %q, want a name with no path separators", fingerprint, dir)
+	}
+	if keyDir(fingerprint) != dir {
+		t.Error("keyDir is not deterministic")
+	}
+	if keyDir(fingerprint) == keyDir("SHA256:du3R5I6q+piUaqr61Y/NV5FZv6qk0yrOXaxY0/5pHbN") {
+		t.Error("two different fingerprints mapped to the same directory")
+	}
+
+	// The whole round trip has to work: a store that accepted such a key must still
+	// be able to list what it holds.
+	store := NewStore(t.TempDir())
+	manifest := &Manifest{
+		Version:   EnvelopeVersion,
+		Source:    "naslos-a/data",
+		Chain:     "c1",
+		Kind:      "tar",
+		CreatedAt: time.Now().UTC(),
+		Chunks:    []ManifestChunk{{Index: 0, PlainBytes: 1, SealedBytes: 37, Sha256Plain: digestOf([]byte("x"))}},
+	}
+	if err := store.PutManifest(fingerprint, "naslos-a/data", manifest); err != nil {
+		t.Fatalf("PutManifest: %v", err)
+	}
+
+	sources, err := store.Sources(fingerprint)
+	if err != nil {
+		t.Fatalf("Sources: %v", err)
+	}
+	if len(sources) != 1 || sources[0] != "naslos-a/data" {
+		t.Errorf("Sources = %v, want [naslos-a/data]", sources)
+	}
+
+	summary, err := store.Summary("")
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if len(summary) != 1 || summary[0].Chain != "c1" {
+		t.Errorf("Summary = %+v, want the stored chain", summary)
+	}
+}
+
 func TestPruneKeepsNewestChains(t *testing.T) {
 	receiver := newTestReceiver(t, "")
 	sender := newTestIdentity(t, "naslos-a")

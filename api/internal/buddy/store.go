@@ -1,6 +1,8 @@
 package buddy
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -40,22 +42,106 @@ func NewStore(dir string) *Store {
 // Root is the storage root.
 func (s *Store) Root() string { return s.root }
 
-// keyDir maps a key fingerprint to a directory name. The colon in "SHA256:…" is
-// replaced so the tree is safe on every filesystem.
+// keyDir maps a key fingerprint to a directory name.
+//
+// A fingerprint is derived from a base64 hash, so it can contain '/', '+' and ':';
+// '/' in particular would silently turn one key's tree into nested directories - it
+// did, for the first instance-side sender (SHA256:du3R5I6q+piUaqr61Y/NV5FZv6qk0y…),
+// whose backups became unreachable. The directory is therefore a hash of the
+// fingerprint, not a sanitised copy of it, and nothing ever parses it back: callers
+// that walk the tree work with these names directly.
 func keyDir(fingerprint string) string {
-	return strings.ReplaceAll(fingerprint, ":", "_")
+	sum := sha256.Sum256([]byte(fingerprint))
+	return "k" + hex.EncodeToString(sum[:16])
+}
+
+// sourcesIn lists the logical sources stored under a key directory (sources may be
+// nested, so one level is walked).
+func (s *Store) sourcesIn(keyDirName string) ([]string, error) {
+	root := filepath.Join(s.root, keyDirName)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var sources []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, entry.Name(), "current.json")); err == nil {
+			sources = append(sources, entry.Name())
+			continue
+		}
+		nested, _ := os.ReadDir(filepath.Join(root, entry.Name()))
+		for _, child := range nested {
+			if !child.IsDir() {
+				continue
+			}
+			candidate := entry.Name() + "/" + child.Name()
+			if _, err := os.Stat(filepath.Join(root, candidate, "current.json")); err == nil {
+				sources = append(sources, candidate)
+			}
+		}
+	}
+	sort.Strings(sources)
+	return sources, nil
+}
+
+// sourceDirIn is <root>/<keyDir>/<source>, validating every component so a peer can
+// never write outside its own tree.
+func (s *Store) sourceDirIn(keyDirName, source string) (string, error) {
+	if err := ValidateSource(source); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(keyDirName) == "" {
+		return "", fmt.Errorf("key id is required")
+	}
+	return filepath.Join(s.root, keyDirName, source), nil
 }
 
 // sourceDir is <root>/<key>/<source>, validating every component so a peer can
 // never write outside its own tree.
 func (s *Store) sourceDir(keyID, source string) (string, error) {
-	if err := ValidateSource(source); err != nil {
-		return "", err
-	}
 	if strings.TrimSpace(keyID) == "" {
 		return "", fmt.Errorf("key id is required")
 	}
-	return filepath.Join(s.root, keyDir(keyID), source), nil
+	return s.sourceDirIn(keyDir(keyID), source)
+}
+
+// chainDirIn is the directory holding one chain's chunks, by key directory name.
+func (s *Store) chainDirIn(keyDirName, source, chain string) (string, error) {
+	if chain == "" || strings.ContainsAny(chain, "/\\") || strings.Contains(chain, "..") {
+		return "", fmt.Errorf("invalid chain id %q", chain)
+	}
+	dir, err := s.sourceDirIn(keyDirName, source)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "chains", chain), nil
+}
+
+// manifestIn reads the current manifest of a source, by key directory name.
+func (s *Store) manifestIn(keyDirName, source string) (*Manifest, error) {
+	dir, err := s.sourceDirIn(keyDirName, source)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "current.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("no backup stored for %s", source)
+		}
+		return nil, err
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return nil, fmt.Errorf("parsing manifest for %s: %w", source, err)
+	}
+	return &manifest, nil
 }
 
 // chainDir is the directory holding one chain's chunks.
@@ -75,9 +161,15 @@ func chunkName(index int) string {
 	return fmt.Sprintf("chunk-%06d.enc", index)
 }
 
-// PutChunk stores one sealed chunk. An existing chunk with the same index must be
-// byte-identical: overwriting it with different bytes would corrupt a chain that
-// already references it (a resumed push re-sends the same chunks on purpose).
+// PutChunk stores one sealed chunk.
+//
+// A chunk that already exists must normally be byte-identical: a published chain is
+// immutable, because a restore may already reference those bytes. The exception is
+// an *unpublished* chain (an interrupted push), where the highest chunk may be
+// rewritten: that is the partial tail a stream that died in the middle left behind,
+// and the sender re-sends it whole when it resumes. Only the highest index may be
+// replaced, so a peer can never mix two versions of the data into one chain by
+// rewriting something that already has successors.
 func (s *Store) PutChunk(keyID, source, chain string, index int, sealed []byte) error {
 	if index < 0 {
 		return fmt.Errorf("invalid chunk index %d", index)
@@ -95,11 +187,19 @@ func (s *Store) PutChunk(keyID, source, chain string, index int, sealed []byte) 
 	}
 
 	target := filepath.Join(dir, chunkName(index))
+	var replaced int64
 	if existing, err := os.ReadFile(target); err == nil {
-		if digestOf(existing) != digestOf(sealed) {
+		if digestOf(existing) == digestOf(sealed) {
+			return nil // already stored by an earlier attempt
+		}
+		allowed, err := s.mayReplace(keyID, source, chain, index)
+		if err != nil {
+			return err
+		}
+		if !allowed {
 			return fmt.Errorf("chunk %d already exists with different content", index)
 		}
-		return nil // already stored by an earlier attempt
+		replaced = int64(len(existing))
 	}
 
 	tmp, err := os.CreateTemp(dir, ".chunk-*.tmp")
@@ -123,8 +223,44 @@ func (s *Store) PutChunk(keyID, source, chain string, index int, sealed []byte) 
 	if err := os.Rename(tmpName, target); err != nil {
 		return err
 	}
-	s.addUsage(keyID, int64(len(sealed)))
+	s.addUsage(keyID, int64(len(sealed))-replaced)
 	return nil
+}
+
+// mayReplace reports whether a chunk of an unfinished chain can be rewritten: only
+// the highest index of a chain that has no manifest yet.
+func (s *Store) mayReplace(keyID, source, chain string, index int) (bool, error) {
+	published, err := s.chainPublished(keyID, source, chain)
+	if err != nil {
+		return false, err
+	}
+	if published {
+		return false, nil
+	}
+
+	indices, err := s.ListChunks(keyID, source, chain)
+	if err != nil {
+		return false, err
+	}
+	if len(indices) == 0 {
+		return false, nil
+	}
+	return indices[len(indices)-1] == index, nil
+}
+
+// chainPublished reports whether a chain has a manifest, i.e. whether it is a
+// finished backup rather than an upload in progress.
+func (s *Store) chainPublished(keyID, source, chain string) (bool, error) {
+	dir, err := s.chainDir(keyID, source, chain)
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err == nil {
+		return true, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	return false, nil
 }
 
 // Chunk reads a sealed chunk back (what a restore does).
@@ -242,40 +378,9 @@ func (s *Store) Manifest(keyID, source string) (*Manifest, error) {
 	return &m, nil
 }
 
-// Sources lists the logical sources stored for a key (sources may be nested, so
-// one level is walked).
+// Sources lists the logical sources stored for a key.
 func (s *Store) Sources(keyID string) ([]string, error) {
-	root := filepath.Join(s.root, keyDir(keyID))
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var sources []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(root, entry.Name(), "current.json")); err == nil {
-			sources = append(sources, entry.Name())
-			continue
-		}
-		nested, _ := os.ReadDir(filepath.Join(root, entry.Name()))
-		for _, child := range nested {
-			if !child.IsDir() {
-				continue
-			}
-			candidate := entry.Name() + "/" + child.Name()
-			if _, err := os.Stat(filepath.Join(root, candidate, "current.json")); err == nil {
-				sources = append(sources, candidate)
-			}
-		}
-	}
-	sort.Strings(sources)
-	return sources, nil
+	return s.sourcesIn(keyDir(keyID))
 }
 
 // Backups summarises what is stored for one source.
@@ -288,9 +393,64 @@ type Backups struct {
 	StoredBytes int64     `json:"storedBytes"`
 }
 
-// Summary lists the backups stored for a key (all keys when keyID is empty).
+// ManifestForChain returns the manifest of one specific chain of a source.
+func (s *Store) ManifestForChain(keyID, source, chain string) (*Manifest, error) {
+	dir, err := s.chainDir(keyID, source, chain)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("chain %s is not stored for %s", chain, source)
+		}
+		return nil, err
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return nil, fmt.Errorf("parsing manifest of chain %s: %w", chain, err)
+	}
+	return &manifest, nil
+}
+
+// Chains returns every chain manifest stored for a source, newest first. A restore
+// needs the whole chain, not just the current one: an incremental stream can only be
+// applied on top of the chain it was taken from.
+func (s *Store) Chains(keyID, source string) ([]Manifest, error) {
+	dir, err := s.sourceDir(keyID, source)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "chains"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	manifests := make([]Manifest, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, "chains", entry.Name(), "manifest.json"))
+		if err != nil {
+			continue // an unfinished chain has no manifest yet
+		}
+		var manifest Manifest
+		if err := json.Unmarshal(raw, &manifest); err != nil {
+			continue
+		}
+		manifests = append(manifests, manifest)
+	}
+	sort.Slice(manifests, func(i, j int) bool { return manifests[i].CreatedAt.After(manifests[j].CreatedAt) })
+	return manifests, nil
+}
 func (s *Store) Summary(keyID string) ([]Backups, error) {
-	keyIDs := []string{keyID}
+	// Work with directory names rather than fingerprints: a fingerprint cannot be
+	// parsed back out of a directory name, and it never needs to be.
+	keyDirs := []string{keyDir(keyID)}
 	if keyID == "" {
 		entries, err := os.ReadDir(s.root)
 		if err != nil {
@@ -299,22 +459,22 @@ func (s *Store) Summary(keyID string) ([]Backups, error) {
 			}
 			return nil, err
 		}
-		keyIDs = keyIDs[:0]
+		keyDirs = keyDirs[:0]
 		for _, entry := range entries {
 			if entry.IsDir() {
-				keyIDs = append(keyIDs, strings.ReplaceAll(entry.Name(), "_", ":"))
+				keyDirs = append(keyDirs, entry.Name())
 			}
 		}
 	}
 
 	var out []Backups
-	for _, id := range keyIDs {
-		sources, err := s.Sources(id)
+	for _, dir := range keyDirs {
+		sources, err := s.sourcesIn(dir)
 		if err != nil {
 			return nil, err
 		}
 		for _, source := range sources {
-			manifest, err := s.Manifest(id, source)
+			manifest, err := s.manifestIn(dir, source)
 			if err != nil {
 				continue
 			}
@@ -325,8 +485,8 @@ func (s *Store) Summary(keyID string) ([]Backups, error) {
 				CreatedAt: manifest.CreatedAt,
 				Chunks:    len(manifest.Chunks),
 			}
-			if dir, err := s.chainDir(id, source, manifest.Chain); err == nil {
-				if size, err := dirSize(dir); err == nil {
+			if chainDir, err := s.chainDirIn(dir, source, manifest.Chain); err == nil {
+				if size, err := dirSize(chainDir); err == nil {
 					row.StoredBytes = size
 				}
 			}

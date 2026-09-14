@@ -187,6 +187,9 @@ shell, never an arbitrary command.
 | POST | `/api/v1/pools/import` | Import pool(s): `{"name":"tank"}` or `{}` for all |
 | GET/POST | `/api/v1/datasets/{pool}` | List / create dataset |
 | GET/POST | `/api/v1/snapshots/{dataset}` | List / create snapshot |
+| GET | `/api/v1/zfs/send/{dataset}?to=&from=&raw=&estimate=` | Stream a `zfs send` (or report its size with `estimate=true`) |
+| POST | `/api/v1/zfs/receive/{dataset}?force=` | Stream a restore into `zfs receive` |
+| GET | `/api/v1/zfs/snapshots/{dataset}` | Snapshots with their GUIDs (how an incremental base is found) |
 
 ## Environment variables (`naslos-api`)
 
@@ -207,6 +210,7 @@ shell, never an arbitrary command.
 | `BUDDY_PEERS` | `/var/lib/naslos/buddy-peers.json` | Authorized-keys registry for backup peers |
 | `BUDDY_ENROLL_TOKEN` | — | One-time token that lets a peer authorize its own key (from the `naslos-buddy` Secret) |
 | `BUDDY_REQUIRE_AUTH` | `true` | Require an authenticated session to authorize/revoke peers |
+| `BUDDY_IDENTITY` | `/var/lib/naslos/buddy-identity.json` | This instance's key material (private key + KEK); created on demand |
 
 The `naslos-agent` uses `NODE_NAME` (from `spec.nodeName`) and listens on `:9090`.
 

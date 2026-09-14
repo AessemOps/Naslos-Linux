@@ -104,6 +104,10 @@ unmodified Talos installation, administered through a web UI.
   input (source names) and MUST confine the received data to the dataset it was
   given: the receive dataset is the only read-write host path the API Deployment
   may hold.
+- **SEC-9** — The agent's streaming backup endpoints MUST NOT be reachable from
+  outside the cluster (the agent Service stays ClusterIP/headless) and MUST be
+  limited to server-generated command lines: a caller may name a dataset and a
+  snapshot, nothing more.
 
 ### 2.3 Request flow (normative)
 
@@ -416,6 +420,24 @@ See `docs/buddy-backup.md`.
 - **FR-BUD-10** — Unknown keys, unsigned requests, stale timestamps, replayed
   requests, out-of-scope sources, tampered chunks and tampered manifests MUST each
   fail with an explicit error; a restore MUST never write unverified data.
+- **FR-BUD-11** — An instance MUST be able to back up its own datasets without an
+  external tool: the API MUST drive the node's `zfs send` through the agent, stream
+  it (never buffering a whole dataset in memory) into the encrypted push, and MUST
+  send incrementally whenever the receiver already holds the base snapshot,
+  identified by its ZFS GUID rather than by name.
+- **FR-BUD-12** — The agent MUST expose `zfs send`/`zfs receive` as streams, and MUST
+  validate every dataset and snapshot name it is given before it reaches a command
+  line (`SEC-1`). Streaming calls MUST NOT be bound by the control-plane client's
+  180 s timeout.
+- **FR-BUD-13** — An interrupted instance-side send MUST be resumable, and safely so:
+  a manifest MUST NOT be published for a stream that did not arrive whole, the resume
+  MUST repeat the same stream (same snapshot, same chain, same data key) so the
+  receiver can skip what it already holds, and a chain whose recorded snapshot no
+  longer exists MUST be abandoned rather than guessed at.
+- **FR-BUD-14** — A restore MUST rebuild the sequence a backup needs - the last full
+  send followed by each incremental in order - MUST refuse a sequence whose base
+  chain is missing rather than applying half a backup, and MUST offer verification
+  that decrypts and hashes the stored stream without touching ZFS.
 
 ---
 
@@ -464,12 +486,16 @@ See `docs/buddy-backup.md`.
 | `/api/notifications` | GET | Notification settings/state |
 | `/api/notifications/test` | POST | Send test push |
 | `/api/buddy/v1/status` `/backups` | GET | Receiver report to a peer: free space, stored bytes, quota, sources, last backup (§3.8) |
+| `/api/buddy/v1/chains/{source}` | GET | Every stored chain of a source, newest first (a restore replays them in order) |
 | `/api/buddy/v1/chunks/{source}` | GET, PUT | List / fetch / upload one sealed chunk (`?chain=&index=`) |
 | `/api/buddy/v1/manifest/{source}` | GET, PUT | Fetch / publish the signed manifest of a chain |
 | `/api/buddy/v1/prune/{source}` | POST | Keep the newest N chains |
 | `/api/buddy/v1/enroll` | POST | Single-use token bootstrap: authorize a new peer key (the only unsigned buddy route) |
 | `/api/buddy/status` | GET | Owner view: free space, peers, stored backups |
 | `/api/buddy/peers` | GET, POST, DELETE | List / authorize / revoke peer keys (authenticated session required) |
+| `/api/buddy/identity` | GET, POST | This instance's key material: report the public key / create it (`replace` required to overwrite) |
+| `/api/buddy/send` | POST | Back a local dataset up to a buddy: snapshot, incremental by GUID, stream `zfs send` into the push |
+| `/api/buddy/restore` | POST | Restore a buddy's backup into a local dataset (whole chain sequence), or `verify` to hash it without touching ZFS |
 | `/api/metrics` | GET | Live `SystemMetrics` (§3.5) |
 | `/api/dashboard` | GET | Dashboard view model + live pools |
 | `/api/ws/logs` `/api/ws/exec` | WS | Streams (§3.6) |

@@ -281,7 +281,65 @@ buddyctl push $RECEIVER --source naslos-a/data --dir /var/mnt/test/data   # dies
 buddyctl push $RECEIVER --source naslos-a/data --dir /var/mnt/test/data --resume
 ```
 
-### 5.3 Receiver: the standalone container
+### 5.3 Backing up an instance from itself
+
+An instance can also back *itself* up: the API drives the node's `zfs send`, streams
+it into the encrypted push, and can restore it back into ZFS. No `buddyctl`, no
+shell, no operator piping:
+
+```bash
+BASE=http://naslos-a:30080   # reach the API the way the UI does
+
+# 1. Create this instance's key (its public key is what the buddy authorizes).
+curl -sX POST -H 'Remote-User: admin' -H 'Content-Type: application/json' \
+  -d '{"name":"naslos-a"}' $BASE/api/buddy/identity
+
+# 2. Back a dataset up. The API snapshots it, decides whether the buddy already
+#    holds a base snapshot (by GUID) and sends incrementally if so.
+curl -sX POST -H 'Remote-User: admin' -H 'Content-Type: application/json' \
+  -d '{"dataset":"test/data","source":"naslos-a/test","receiver":"https://naslos-b"}' \
+  $BASE/api/buddy/send
+
+# 3. Prove the backup is intact without touching ZFS: it decrypts the stored
+#    stream and hashes every chain.
+curl -sX POST -H 'Remote-User: admin' -H 'Content-Type: application/json' \
+  -d '{"source":"naslos-a/test","receiver":"https://naslos-b","verify":true}' \
+  $BASE/api/buddy/restore
+
+# 4. Restore it (or an older chain) into a dataset.
+curl -sX POST -H 'Remote-User: admin' -H 'Content-Type: application/json' \
+  -d '{"source":"naslos-a/test","receiver":"https://naslos-b","dataset":"test/restored"}' \
+  $BASE/api/buddy/restore
+```
+
+What the send does, in order:
+
+1. Resolves the base: the buddy's manifest records the **GUID** of the snapshot it
+   was given, and the node is asked which local snapshot carries that GUID. GUIDs,
+   not names, are what make the incremental decision safe - a renamed snapshot still
+   counts, and a destroyed one is *known* to be gone.
+2. Snapshots the dataset (`buddy-<UTC>-<4 hex>`; the random suffix exists because two
+   sends in the same second would otherwise collide).
+3. Asks the node for a dry-run size (`zfs send -nP`), streams the send, encrypts and
+   uploads it, and only then publishes the signed manifest.
+4. If the stream came in short of that estimate by more than the allowance, **no
+   manifest is published** and the API says to retry: the chunks stay, the resume
+   state stays, and the next attempt continues the same chain with the same snapshot,
+   so the buddy skips what it already has.
+
+That last point is worth spelling out, because it is what makes a multi-terabyte
+backup over a flaky link tolerable: an interrupted send is resumed, not restarted.
+The resume state (chain id, data key, nonce prefix, snapshot pair) lives beside the
+identity on the persistent volume, is written `0600` before the first chunk leaves,
+and is deleted once the manifest is published.
+
+A restore is usually a **sequence**: the newest backup is normally an incremental,
+and ZFS refuses an incremental stream whose base is missing. The API therefore works
+out the sequence (the last full send, then each incremental in order, following the
+recorded GUID links), applies them into the destination, and refuses up front if a
+link is missing - rather than applying half a backup and leaving you to notice.
+
+### 5.4 Receiver: the standalone container
 
 ```bash
 docker build -f api/Dockerfile.receiver -t naslos-buddy-receiver .
@@ -371,7 +429,8 @@ error instead of writing damaged data. `TestReceiverRefusesTamperedChunk` in
 | `this request was already used (nonce replay)` | Two identical signed requests: a proxy retrying a request is the usual cause. Signatures are single-use by design. |
 | 413 on a chunk, or `client_max_body_size` in a proxy log | A proxy in front limits the body. The UI's nginx needs the `/api/buddy/` location (it is in `ui/nginx.conf`). |
 | `mkdir /var/lib/naslos/buddy/SHA256_…: permission denied` | The receive dataset is not writable by the API's user. The API is distroless and runs as uid 65532: `chown 65532:65532 /var/mnt/<pool>/naslos-buddy` (hostPath volumes ignore `fsGroup`). |
-| Backups work but the dataset's `USED` stays ~0 while the pool's grows | The dataset is not mounted in the host namespace, so the API bind-mounted the parent dataset's directory. On Talos a `zfs create` from inside a pod mounts only in that pod's namespace (`mountPropagation: HostToContainer` is one-way). Reboot the node, or mount it from a host-context process, then restart the API deployment. Detect it with `df -h` from a fresh pod on the mount path: it must name `<pool>/naslos-buddy`, not the pool. |
+| Backups work but the dataset's `USED` stays ~0 while the pool's grows | The dataset is not mounted in the host namespace, so the API bind-mounted the parent dataset's directory. On Talos a `zfs create` from inside a pod mounts only in that pod's namespace (`mountPropagation: HostToContainer` is one-way), and writes through the mountpoint land on the **parent** dataset instead. Detect it with `df -h` from a fresh pod on the mount path: it must name `<pool>/naslos-buddy`, not the pool. Workarounds: reboot the node (the ZFS extension runs `zfs mount -a` at boot), or populate the dataset with `zfs receive` instead of writing through its mountpoint. |
+| `the send stream ended early (N of at least M bytes)` | The node's `zfs send` died mid-stream, so nothing was published. Retry the same send: it continues the same chain and the buddy skips the chunks it already has. Note the dry-run estimate is an approximation (measured: +232 B on a 44 KB full send, +9.7 KB on a 53 MB full send, −120 KB on a 57 MB incremental), so the allowance is 1% and anything smaller is caught by `zfs receive` at restore time instead. |
 | `quota exceeded: … bytes are already stored for this key` | The receiver's quota for this key is full. Prune, or raise `QuotaBytes` on the peer entry. |
 | `the receiver already holds different bytes for chunk N` | The source changed while a push was interrupted. Start a new chain (drop `--resume`). |
 | `cannot unwrap the data key` | The identity being used did not encrypt this backup. Restores need the sender's own identity file (private key **and** KEK). |
@@ -392,19 +451,24 @@ Implemented and tested in this change:
 - Receive side on a Naslos instance: `/api/buddy/v1/*`, `/api/buddy/status`,
   `/api/buddy/peers`, chart values, enrollment Secret, the dataset mount, and the
   UI proxy's body limit.
+- **Instance-side sender and restore**: streaming `zfs send`/`zfs receive` seams in
+  the agent (`/api/v1/zfs/send`, `/api/v1/zfs/receive`, `/api/v1/zfs/snapshots`),
+  driven by `/api/buddy/send` and `/api/buddy/restore` (+ `verify`) on the API,
+  with GUID-matched incrementals, a resumable interrupted send, an up-front
+  sequence check for restores and a shortfall guard that keeps an incomplete stream
+  from ever being published as the latest backup.
 
 Next, in the order the plan calls for:
 
 1. **Backup page in the UI** — buddies, "Back up now", progress, free space and
    last-backup columns. The data plane and the API already provide all of it.
-2. **Instance-side ZFS streaming** — a streaming exec seam in the agent (its
-   `hostExec` buffers output today, and the API's agent client has a 180 s timeout),
-   so an instance can run `zfs send -w -i` itself instead of an operator piping into
-   `buddyctl`.
-3. **Scheduler + retention** — per-source schedule, `prune` after success, ntfy
+2. **Scheduler + retention** — per-source schedule, `prune` after success, ntfy
    notification on failure.
-4. **Multi-buddy fan-out** — the same chain pushed to several receivers, with the
+3. **Multi-buddy fan-out** — the same chain pushed to several receivers, with the
    last successful destination surfaced per buddy.
+4. **Peer exposure** — decide between a dedicated listener and Traefik + Authelia
+   for letting a peer reach `/api/buddy/v1/*` across networks (`SEC-9` keeps the
+   agent's streaming endpoints in-cluster regardless).
 
 
 
