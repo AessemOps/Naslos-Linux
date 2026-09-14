@@ -297,3 +297,17 @@ openldap:
 
 # Namespace for all Naslos components
 namespace: naslos
+
+# Web terminal (spec FR-LOG-02). `enabled` controls the privileged shell
+# container and the API's exec RBAC together: with it off, /api/ws/exec has no
+# target and the terminal page reports that the terminal is disabled.
+terminal:
+  enabled: true
+  image: { repository: 192.168.1.2:30095/naslos-terminal, tag: "0.1.0" }
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
