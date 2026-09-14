@@ -382,7 +382,10 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **NFR-4 Resilience** — The API MUST return usable (non-crashing) responses
   when a dependency is down: LDAP failures yield `503` with the underlying
   cause (FR-IDN-11) while non-identity features keep working (FR-IDN-12); the
-  UI MUST show errors, never silently freeze.
+  UI MUST show errors, never silently freeze. A component MUST also survive a
+  **node reboot**: startup MUST NOT depend on another component already being
+  resolvable, or it will crash-loop in the race (nginx resolving the API host
+  name at boot was exactly that failure, so the UI waits for the name first).
 - **NFR-5 Footprint** — UI assets MUST be minimized (e.g. the logo ships as a
   128×128 PNG, not the 1254×1254 original).
 

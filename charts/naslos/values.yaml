@@ -76,6 +76,13 @@ ui:
   nodePort:
     enabled: false
     port: 30080
+  # Startup guard: nginx resolves the API host name at startup and refuses to
+  # boot if it is not in DNS yet, which is the case right after a node reboot
+  # (the UI comes up before the API Service). The UI pod waits for the name -
+  # bounded - so it starts on the first attempt instead of crash-looping.
+  waitForApi:
+    retries: 30
+    intervalSeconds: 1
   resources:
     requests:
       cpu: 50m
