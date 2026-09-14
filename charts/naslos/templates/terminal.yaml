@@ -1,0 +1,138 @@
+# Web terminal: the privileged container the browser gets a shell in.
+#
+# Talos has no host shell by design, so FR-LOG-02 asks for exactly this: a
+# privileged container with the host mounted, whose shell can inspect and repair
+# the node (zpool/zfs directly or via `chroot /host`). It runs no service - the
+# API execs into it over the Kubernetes API, so it is idle when nobody is using
+# the terminal.
+#
+# Security: this container is root and privileged by necessity. It is reachable
+# only through the API's exec endpoint, which the chart scopes to this namespace,
+# but that makes the UI's authentication the real boundary - see docs/terminal.md
+# (notably: the UI NodePort bypasses Authelia, so it must not be exposed).
+{{- if and .Values.ui.enabled .Values.terminal.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: naslos-terminal
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: naslos-terminal
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: naslos-terminal
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: naslos-terminal
+    app.kubernetes.io/component: terminal
+spec:
+  replicas: 1
+  # A single shared shell container: exec sessions attach to it, so it must not
+  # be replaced while someone is working in it. Chart upgrades recreate it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-terminal
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: naslos-terminal
+        app.kubernetes.io/component: terminal
+    spec:
+      serviceAccountName: naslos-terminal
+      # The shell must survive between exec sessions, so the container idles.
+      containers:
+        - name: shell
+          image: "{{ .Values.terminal.image.repository }}:{{ .Values.terminal.image.tag }}"
+          imagePullPolicy: {{ .Values.terminal.image.pullPolicy }}
+          command: ["sleep", "infinity"]
+          stdin: true
+          tty: true
+          securityContext:
+            runAsUser: 0
+            privileged: true
+          volumeMounts:
+            # The Talos host filesystem: /host/usr/local/sbin/zpool, /etc, logs.
+            - name: host
+              mountPath: /host
+              mountPropagation: HostToContainer
+            # The ZFS datasets, for inspecting share content directly.
+            - name: datasets
+              mountPath: /var/mnt
+              mountPropagation: HostToContainer
+            # Device nodes: /dev/zfs for the ZFS tooling, the disks themselves.
+            - name: dev
+              mountPath: /dev
+          resources:
+            {{- toYaml .Values.terminal.resources | nindent 12 }}
+      volumes:
+        - name: host
+          hostPath:
+            path: /
+            type: Directory
+        - name: datasets
+          hostPath:
+            path: /var/mnt
+            type: DirectoryOrCreate
+        - name: dev
+          hostPath:
+            path: /dev
+            type: Directory
+---
+# The API execs into pods in its own namespace and reads their logs. Scoped with
+# a namespaced Role rather than a ClusterRole: the API has no business exec-ing
+# into anything outside Naslos.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: naslos-api-terminal
+  namespace: {{ .Values.namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-api-terminal
+  namespace: {{ .Values.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: naslos-api-terminal
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ .Values.namespace }}
+---
+# Namespaces are cluster-scoped, so the picker needs one narrow ClusterRole (a
+# Role cannot grant them). Read-only, nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: naslos-api-namespaces
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: naslos-api-namespaces
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: naslos-api-namespaces
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ .Values.namespace }}
+{{- end }}

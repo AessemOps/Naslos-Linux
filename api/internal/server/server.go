@@ -36,8 +36,11 @@ type Server struct {
 	identity      *identity.Client
 	auth          *auth.Middleware
 	kubeconfig    string
-	router        *http.ServeMux
-	server        *http.Server
+	// namespace is where Naslos runs; it is the terminal's default namespace and
+	// the scope the API's exec permission is limited to.
+	namespace string
+	router    *http.ServeMux
+	server    *http.Server
 }
 
 // New creates a new server.
@@ -107,6 +110,7 @@ func New(addr string, tc *talos.Client) *Server {
 		notifications: notifManager,
 		identity:      identityClient,
 		auth:          authMiddleware,
+		namespace:     namespace,
 		router:        http.NewServeMux(),
 	}
 	s.routes()
@@ -158,6 +162,8 @@ func (s *Server) routes() {
 
 	// Logs & terminal (WebSocket)
 	s.router.HandleFunc("/api/ws/logs", s.handleLogsWS)
+	s.router.HandleFunc("/api/pods", s.handlePods)
+	s.router.HandleFunc("/api/namespaces", s.handleNamespaces)
 	s.router.HandleFunc("/api/ws/exec", s.handleExecWS)
 
 	// Shares
