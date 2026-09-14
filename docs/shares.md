@@ -185,6 +185,49 @@ smb://192.168.1.96/test                  [Copy]
 - The create/edit form offers only `smb` and `nfs`: AFP is rejected by the API,
   so offering it would produce a 400.
 
+## Share paths must be on a ZFS dataset
+
+A share path MUST be a directory on a ZFS dataset. This is enforced, not just
+documented, because the alternative fails **silently and destructively**.
+
+Talos keeps `/var` (and therefore `/var/mnt`) on its **EPHEMERAL partition**.
+A directory such as `/var/mnt/tank` is a real, writable directory even when
+`tank` is *not* a dataset — so a share pointed at it works perfectly until the
+data is needed:
+
+- the data is **not in any pool**: no checksums, no snapshots, no redundancy,
+  invisible to `zpool`/`zfs`, absent from pool health and scrubs;
+- it is **wiped by a Talos upgrade** (EPHEMERAL is not preserved);
+- if a dataset is later mounted over that directory, the files are **shadowed**
+  and appear to vanish from the share;
+- if the pool that used to be mounted there is destroyed, the data goes with it.
+
+Enforcement, at every layer:
+
+| Layer | Behaviour |
+| --- | --- |
+| `GET /api/shares/paths` | Offers **only dataset mountpoints** (from the agent's `zfs list`), never arbitrary directories under the base |
+| `POST /api/shares` | Rejects a path that is not on a dataset (HTTP 400) naming the datasets that would work |
+| `naslos-samba` startup | Logs each share path with the mount backing it, and warns loudly for any path that is not on a mounted filesystem |
+| Schedules | `mountPropagation: HostToContainer` on the `/var/mnt` mounts, so a dataset mounted *after* a pod starts (pool import on boot) is visible instead of the pod serving the underlying directory |
+
+```
+$ curl -X POST /api/shares -d '{"name":"trap","path":"/var/mnt/tank",...}'
+{"error":"/var/mnt/tank is not on a ZFS dataset, so its data would live on the
+node's ephemeral partition (no snapshots, no redundancy, lost on upgrade).
+Create a dataset under one of /var/mnt/test first"}
+```
+
+### Recovering files that "disappeared"
+
+1. Check whether the path was actually a dataset: `zfs list -o name,mountpoint`.
+   If the path is not listed, the files were on EPHEMERAL.
+2. If EPHEMERAL is intact but a dataset now covers the path, the files are
+   **shadowed, not gone** — they are visible from the host with the dataset
+   temporarily unmounted (`zfs unmount <dataset>`).
+3. If the pool itself is gone, `zpool import` / `zpool import -D` are the only
+   recovery paths; a destroyed pool with no importable label cannot be recovered.
+
 ## Share access by user and group
 
 A share is open to any authenticated account until an access list is set:

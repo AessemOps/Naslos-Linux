@@ -39,6 +39,7 @@ func (s *Server) routes() {
 	s.router.HandleFunc("/api/v1/pools", s.handlePools)
 	s.router.HandleFunc("/api/v1/pools/import", s.handlePoolImport)
 	s.router.HandleFunc("/api/v1/pools/", s.handlePoolDetail)
+	s.router.HandleFunc("/api/v1/datasets", s.handleDatasetsAll)
 	s.router.HandleFunc("/api/v1/datasets/", s.handleDatasets)
 	s.router.HandleFunc("/api/v1/snapshots/", s.handleSnapshots)
 	s.router.HandleFunc("/api/v1/shares/config", s.handleSharesConfig)

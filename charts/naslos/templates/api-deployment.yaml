@@ -132,9 +132,12 @@ spec:
             # Read-only view of the share datasets so the API can list and
             # validate paths for the shares UI. Gated on a hostPath because it
             # pins the pod to a node (fine for the single-node layout).
+            # HostToContainer so datasets mounted after this pod starts (pool
+            # import on boot) become visible for validation.
             - name: datasets
               mountPath: /var/mnt
               readOnly: true
+              mountPropagation: HostToContainer
             {{- end }}
           {{- end }}
           resources:

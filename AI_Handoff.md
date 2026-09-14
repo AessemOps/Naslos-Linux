@@ -92,6 +92,39 @@ After the reboot everything else converged on its own: the API re-applied the
 share configuration on startup (`applied: true`, revision set), and discovery,
 the account mirror and group access were all healthy.
 
+### Files "disappearing" from shares (reported, root-caused, mitigated)
+Reported: files created on an SMB share vanished after a VM reboot.
+
+What the node actually showed: only **one** pool exists (`test`, mirror of
+`/dev/vdb`+`/dev/vdc`) mounted at `/var/mnt/test`; `/var/mnt/tank` and
+`/var/mnt/Pog` are **plain directories on Talos's EPHEMERAL partition**, not
+datasets. `zpool import` and `zpool import -D` both report nothing importable,
+so whatever pool used to back those paths is gone.
+
+Root cause: nothing required a share path to be a dataset. `AvailablePaths`
+listed every child of `/var/mnt`, so the path picker *offered* `/var/mnt/tank`
+and `/var/mnt/Pog`, and the API accepted them. Data written there is not in any
+pool (no checksums/snapshots/redundancy), is wiped by a Talos upgrade, and is
+shadowed - appearing to vanish - the moment a dataset is mounted over it.
+
+Mitigated (all deployed):
+- `GET /api/shares/paths` now returns **dataset mountpoints** from the agent.
+- `POST /api/shares` **refuses** a path that is not on a dataset, naming the
+  datasets that would work (`shares.PathOnDataset`, unit-tested).
+- Mounts use `mountPropagation: HostToContainer`, so a dataset mounted after a
+  pod starts is visible instead of the pod silently serving the underlying dir.
+- `naslos-samba` logs each share path with its backing mount and warns for any
+  path that is not on a mounted filesystem.
+- `AvailablePaths` deleted so the trap cannot be reintroduced.
+
+Verified: a share on `/var/mnt/test` refused nothing, an SMB write through it
+appeared in the host's dataset view and survived a pod restart; a share on
+`/var/mnt/tank` was refused with a 400 explaining why.
+
+Note: my own earlier test files in `/var/mnt/tank` (hello.txt,
+uploaded-from-smb.txt, auto-synced.txt, container-write-test) are still there on
+EPHEMERAL - left untouched, and they are a live example of the trap.
+
 ## Earlier work: dashboard & metrics (`feature/dashboard-and-metrics`)
 ## Known issue (separate, unresolved)
 `naslos-openldap-backup` CronJob is in CrashLoopBackOff on the VM as of

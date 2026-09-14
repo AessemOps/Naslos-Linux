@@ -219,10 +219,10 @@ func (c *Client) DestroyPool(name string) error {
 
 // ImportablePool is a pool that exists on disk but is not currently imported.
 type ImportablePool struct {
-	Name    string   `json:"name"`
-	State   string   `json:"state"`
-	Topology string  `json:"topology"`
-	Disks   []string `json:"disks"`
+	Name     string   `json:"name"`
+	State    string   `json:"state"`
+	Topology string   `json:"topology"`
+	Disks    []string `json:"disks"`
 }
 
 // ListImportable runs `zpool import` (dry-run) and returns pools that can be

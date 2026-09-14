@@ -84,6 +84,37 @@ detect_lan_interface() {
   awk '$2 == "00000000" { print $1; exit }' /proc/net/route 2>/dev/null
 }
 
+# check_share_paths reports whether each share in the rendered config is
+# actually on a mounted filesystem. A path that is only inside /var/mnt (e.g.
+# /var/mnt/tank when "tank" is a plain directory, not a dataset) lives on the
+# node's ephemeral partition: not checksummed, not snapshotted, not redundant,
+# invisible to pool operations, and wiped by a Talos upgrade. Samba would serve
+# it happily, so say so loudly instead of letting data land there silently.
+check_share_paths() {
+  [ -s "$CONF" ] || return 0
+
+  mounts="$(awk '{print $2}' /proc/mounts 2>/dev/null | sort -r)"
+  paths="$(sed -n 's/^[[:space:]]*path[[:space:]]*=[[:space:]]*//p' "$CONF" | tr -d '\r' | sort -u)"
+
+  [ -n "$paths" ] || return 0
+
+  printf '%s\n' "$paths" | while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    backed=""
+    for m in $mounts; do
+      case "$path" in
+        "$m"|"$m"/*) backed="$m"; break ;;
+      esac
+    done
+    if [ -n "$backed" ]; then
+      log "share path $path is on mounted filesystem $backed"
+    else
+      log "WARN: share path $path is NOT on a mounted filesystem - data there lives on the ephemeral partition and can be lost. Create it on a ZFS dataset (see docs/shares.md)."
+    fi
+  done
+  return 0
+}
+
 # start_discovery advertises this host as an SMB server so it shows up when a
 # client browses the network (Dolphin/Finder via mDNS, Windows via WSD). It is
 # best-effort: if discovery cannot start, SMB itself keeps working, so a
@@ -172,6 +203,7 @@ fi
 # Sync accounts before accepting logins.
 import_users
 check_nss
+check_share_paths
 
 CONF_HASH="$(content_hash "$CONF")"
 USERS_HASH="$(content_hash "$USERS_FILE")"
