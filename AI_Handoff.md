@@ -144,9 +144,18 @@ collided on the same name.
 **Deployed**: api `0.1.0-b7` (helm revision 56), agent `0.1.0-b2`, ui `0.1.0-b1`,
 terminal `0.1.0-t2`, samba `0.1.0-s15`, nfs `0.1.0-n2`.
 
-**Not done yet, in plan order**: the UI backup page (the API already returns
-everything it needs — see the `/api/buddy/status` payload); a scheduler with
-retention and ntfy notifications; multi-buddy fan-out; and the peer-exposure
+**Delivered since: UI + scheduler (FR-BUD-15/16)**
+- `POST /api/buddy/send` is async (`202 {jobId}` + `GET/DELETE
+  /api/buddy/jobs/{id}`, progress + cancel; 409 while the same
+  (receiver, source) or dataset runs); the resume-state semantics are unchanged.
+- Schedules (`GET/POST/DELETE /api/buddy/schedules`, `hourly|daily|weekly` +
+  run-at UTC, `BUDDY_SCHEDULES`, minute tick, catch-up on startup, `pruneKeep`
+  on success, ntfy `backup_success` + `backup_failure` gated on enabled events).
+- `/backups` UI page: identity card, schedules + Back up now with live progress,
+  ad-hoc send, per-source verify, confirmation-gated restore form, receiver
+  status; `ui/tests/backups.spec.ts`.
+
+**Not done yet, in plan order**: multi-buddy fan-out; and the peer-exposure
 decision (a dedicated listener vs. Traefik + Authelia) still has to be taken. Also
 still open: the receive dataset's host-namespace mount on Talos (see the platform
 gotcha above), which the restore drill does not depend on because `zfs receive`

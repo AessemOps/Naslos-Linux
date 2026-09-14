@@ -296,15 +296,10 @@ func normalizeReceiverURL(raw string) (string, error) {
 	return strings.TrimRight(trimmed, "/"), nil
 }
 
-// handleBuddySend backs a dataset up to a buddy from the instance itself:
-//
-//	POST /api/buddy/send {"dataset":"test/data","source":"naslos-a/test","receiver":"https://buddy"}
-//
-// It snapshots, decides whether the buddy already holds a snapshot of this dataset
-// (by GUID, so a renamed snapshot still counts) and therefore whether the send can
-// be incremental, streams that into the encrypted push, and publishes the manifest
-// only once the whole stream arrived.
-func (s *Server) handleBuddySend(w http.ResponseWriter, req *http.Request) {
+// handleBuddySendSyncLegacy is the pre-jobs synchronous send, kept for reference
+// during the async migration. It is no longer routed; POST /api/buddy/send is
+// served by handleBuddySend in buddy_jobs.go.
+func (s *Server) handleBuddySendSyncLegacy(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return

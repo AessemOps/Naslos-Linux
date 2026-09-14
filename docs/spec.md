@@ -438,6 +438,19 @@ See `docs/buddy-backup.md`.
   send followed by each incremental in order - MUST refuse a sequence whose base
   chain is missing rather than applying half a backup, and MUST offer verification
   that decrypts and hashes the stored stream without touching ZFS.
+- **FR-BUD-15** — Scheduled backups: an instance MUST be able to back its datasets
+  up on an interval cadence (hourly / daily / weekly with a run-at time in UTC),
+  persisted across restarts. A run missed while the API was down MUST fire once on
+  startup (catch-up). A scheduled run MUST apply the entry's retention
+  (`pruneKeep`) on success and MUST notify via ntfy on success
+  (`backup_success`) and on failure (`backup_failure`), gated on the
+  notification settings' enabled events.
+- **FR-BUD-16** — Owner UI: the `/backups` page MUST show the instance identity,
+  the schedules, live progress of a manual send, the receiver status and a
+  verify view. A manual send MUST run as an async job (`202` + pollable
+  progress + cancellation) and MUST refuse a second send for the same
+  (receiver, source) or dataset while one runs. A restore from the UI MUST
+  require an explicit confirmation naming the destination dataset.
 
 ---
 
@@ -494,7 +507,10 @@ See `docs/buddy-backup.md`.
 | `/api/buddy/status` | GET | Owner view: free space, peers, stored backups |
 | `/api/buddy/peers` | GET, POST, DELETE | List / authorize / revoke peer keys (authenticated session required) |
 | `/api/buddy/identity` | GET, POST | This instance's key material: report the public key / create it (`replace` required to overwrite) |
-| `/api/buddy/send` | POST | Back a local dataset up to a buddy: snapshot, incremental by GUID, stream `zfs send` into the push |
+| `/api/buddy/send` | POST | Back a local dataset up to a buddy: `202 {"jobId"}` immediately, then snapshot, incremental by GUID, stream `zfs send` into the push under a server-owned context |
+| `/api/buddy/jobs` | GET | List async send jobs (running + recent finished) |
+| `/api/buddy/jobs/{id}` | GET, DELETE | Job detail incl. progress / cancel a running send (resume state is kept) |
+| `/api/buddy/schedules` | GET, POST, DELETE | Scheduled backups: list / create-or-update / delete (`?id=`) |
 | `/api/buddy/restore` | POST | Restore a buddy's backup into a local dataset (whole chain sequence), or `verify` to hash it without touching ZFS |
 | `/api/metrics` | GET | Live `SystemMetrics` (§3.5) |
 | `/api/dashboard` | GET | Dashboard view model + live pools |
@@ -618,6 +634,11 @@ nginx → API, with the chart's `buddy` values enabled:
 | `curl` without headers → 401; a second identity's key → 401 `unknown key`; push outside the key's scope → 403 | FR-BUD-03/08/10 |
 | `buddyctl prune --keep 1` → storage drops by the pruned chain; remaining chain still restores | FR-BUD-09 |
 | `GET /api/buddy/peers` without the proxy identity → 401, with `Remote-User` → 200 and the peer list | SEC-7 |
+| `POST /api/buddy/send` → `202 {jobId}`; `GET /api/buddy/jobs/{id}` reaches `succeeded` with the sync-era result fields | FR-BUD-16 (async jobs) |
+| second send for the same (receiver, source) or dataset while running → 409; `DELETE` mid-send → `cancelled`, resume state kept, retry `resumed: true` | FR-BUD-16 |
+| schedule due → job runs, `lastResult: ok`, `pruneKeep` leaves one chain, one `backup_success` ntfy post | FR-BUD-15 |
+| schedule against a dead receiver → job `failed`, `lastResult: failed`, one `backup_failure` ntfy post | FR-BUD-15 |
+| `ui/tests/backups.spec.ts` — identity card, schedule create/delete, receiver free space, manual send to `succeeded` | FR-BUD-16 |
 
 Go verification: `go build ./...` in `api/` and `agent/`; `go vet` clean;
 `gofmt` clean on touched files; `npm run check` in `ui/` with 0 errors.

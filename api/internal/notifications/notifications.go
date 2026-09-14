@@ -17,6 +17,10 @@ const (
 	EventDiskFailure  EventType = "disk_failure"
 	EventSystemUpdate EventType = "system_update"
 	EventShareAccess  EventType = "share_access"
+	// EventBackupFailure is a failed scheduled or manual instance-side backup.
+	EventBackupFailure EventType = "backup_failure"
+	// EventBackupSuccess is a completed instance-side backup.
+	EventBackupSuccess EventType = "backup_success"
 )
 
 // Severity is the notification severity level.
