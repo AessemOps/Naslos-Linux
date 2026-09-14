@@ -26,6 +26,8 @@ read them in order for the full picture, or jump straight to a topic.
 | [deployment.md](deployment.md) | Prerequisites, Make targets, Helm values walkthrough | New |
 | [operations.md](operations.md) | Day-2: LDAP backup/restore, troubleshooting | New |
 | [development.md](development.md) | Repo layout, how to build, extend the catalog/shares | New |
+| [SECURITY-AUDIT.md](SECURITY-AUDIT.md) | Full static security audit (2026-09-14): findings NAS-001…022, severity, evidence, remediation checklist | New |
+| [SECURITY-FIX-PLAN.md](SECURITY-FIX-PLAN.md) | Implementation plan for the Critical findings (NAS-001/002/003) + coupled auth Highs | New |
 
 ## Reading order
 
