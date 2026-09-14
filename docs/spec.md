@@ -44,6 +44,9 @@ unmodified Talos installation, administered through a web UI.
   **single-node** cluster (one control-plane node); multi-node aggregation of
   metrics is **[OPEN]**.
 - Replacing Kubernetes tooling: Naslos sits on top of k8s, not beside it.
+- Serving NFS. Talos ships no kernel NFS server, so this needs a userspace
+  implementation (NFS-Ganesha); it is **[OPEN]** and NFS shares are not
+  presented as reachable (FR-SHR-02).
 
 ### 1.4 Target platform
 
@@ -63,8 +66,9 @@ unmodified Talos installation, administered through a web UI.
 | Component | Kind | Role |
 | --- | --- | --- |
 | `naslos-api` | Deployment | The brain: Talos API + K8s API + ZFS orchestration + HTTP API for the UI |
-| `naslos-agent` | privileged DaemonSet (hostNetwork) | Executes `zpool`/`zfs` via `chroot /host` on each node |
+| `naslos-agent` | privileged DaemonSet (hostNetwork) | Executes `zpool`/`zfs` via `chroot /host`, and is the only writer of the rendered share configuration on the host (`/var/lib/naslos/shares`) |
 | `naslos-ui` | Deployment (nginx, static SvelteKit) | Dashboard, wizards, terminal, admin pages |
+| `naslos-samba` | DaemonSet (hostNetwork) | Serves SMB on the node's :445, reloads on config change, imports the account mirror, advertises via mDNS/WSD |
 | `naslos-openldap` | Deployment | Identity store (users, groups, password hashes) |
 | `naslos-traefik` | DaemonSet | Ingress (IngressRoutes), TLS termination, forwardAuth to Authelia |
 | Authelia | Deployment | Web SSO / 2FA against OpenLDAP |
@@ -158,15 +162,68 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-IDN-12** — LDAP outages MUST NOT make non-identity features unavailable:
   the dashboard, pools, disks, apps, shares and metrics MUST keep working, and
   the API pod MUST NOT be considered unready because of LDAP.
+- **FR-IDN-13** — SMB authentication MUST work for directory users with no
+  account created on the node. Since Samba attaches a session to a POSIX uid,
+  the API MUST mirror each user's POSIX identity (`uidNumber`, `gidNumber`) and
+  each group's membership into the NSS files the serving container resolves
+  (`passwd`/`group`/`shadow` via `extrausers`), and MUST mirror the NT hash into
+  Samba's passdb. The serving container MUST NOT need LDAP credentials, TLS
+  material or network access to the directory.
+- **FR-IDN-14** — A password change MUST apply to **new** SMB sessions, and the
+  UI MUST state (a) that it is not instant and (b) that already-connected
+  sessions keep the old credentials until the client reconnects. The convergence
+  window MUST be bounded and tunable (`shares.confCheckInterval`).
+- **FR-IDN-15** — Account state MUST track LDAP: disabling a user MUST deny SMB
+  logins (`NT_STATUS_ACCOUNT_DISABLED`) while retaining the stored hash, so
+  re-enabling needs no new password; deleting a user MUST remove both the
+  passdb account and its NSS entry.
+- **FR-IDN-16** — Change detection for the node's mirror MUST NOT rely on
+  whole-second timestamps: two writes in the same second MUST both take effect.
 
 ### 3.3 Shares (`FR-SHR`)
 
-- **FR-SHR-01** — Shares MUST be backed by ZFS datasets.
-- **FR-SHR-02** — The system MUST support SMB, NFS, and Time Machine (AFP)
-  share types, generating Samba `smb.conf`, NFS-Ganesha, and Avahi configs
-  from the share model.
+- **FR-SHR-01** — Shares MUST be backed by ZFS datasets: a share path MUST be a
+  directory strictly inside the ZFS base (`/var/mnt` by default).
+- **FR-SHR-02** — SMB (including Time Machine via the `fruit` VFS) MUST be
+  served. AFP MUST NOT be offered — it is not served, and the API MUST reject
+  it rather than accept a share nothing exports. NFS serving is **[OPEN]**: the
+  Talos kernel has no NFS server (`nfsd`), so it requires a userspace server
+  (NFS-Ganesha) that is not implemented yet; NFS shares may be defined but MUST
+  NOT be presented as reachable.
 - **FR-SHR-03** — Effective Samba/NFS configuration MUST be retrievable from
   the API (`/api/shares/config/samba`, `/api/shares/config/nfs`).
+- **FR-SHR-04** — Share definitions MUST be durable: they MUST survive an API
+  pod restart and a chart upgrade. (An in-memory-only manager was the original
+  defect.)
+- **FR-SHR-05** — Share paths MUST be canonicalised before validation, and a
+  path that escapes the ZFS base after canonicalisation (e.g.
+  `/var/mnt/../etc`) MUST be rejected. A plain prefix check is not sufficient.
+- **FR-SHR-06** — Rendered configuration MUST reach the node without the API
+  needing cluster RBAC: the privileged agent MUST be the only writer of the
+  host configuration, writing atomically, and MUST NOT rewrite unchanged files.
+  A new configuration MUST NOT be applied unless it validates (`testparm`), so
+  a bad render leaves the previous working configuration serving.
+- **FR-SHR-07** — Share access MUST be restrictable by **user and by LDAP
+  group**. Group entries MUST be rendered as `@group`, and the group's real
+  membership MUST be resolvable on the node (see FR-IDN-13). A name MUST NOT be
+  ambiguous between a user and a group.
+- **FR-SHR-08** — The server MUST advertise itself so it is discoverable by
+  browsing clients: mDNS (`_smb._tcp`) for Linux/macOS and WSD for Windows. The
+  advertisement MUST be restricted to the LAN interface — advertising
+  pod-network addresses MUST NOT happen — and MUST be best-effort: a discovery
+  failure MUST NOT stop SMB from serving.
+- **FR-SHR-09** — The UI MUST display, for each share, the address a client
+  should use (`smb://<host>/<name>`), and MUST NOT display an address for a
+  protocol that is not served.
+- **FR-SHR-10** — The Samba `netbios name` MUST equal the advertised discovery
+  name, so browsing clients and direct connections see one identity.
+- **FR-SHR-11** — Any change that affects access MUST re-push the node's
+  mirror: share create/update/delete, but also group membership changes, group
+  delete, user create and user delete. A change that only mutates LDAP and
+  never re-pushes would leave access stale.
+- **FR-SHR-12** — Share list fields (`allowedHosts`, `validUsers`,
+  `validGroups`) MUST be served as arrays, never `null`, including for
+  definitions read back from disk (FR-IDN-08's rule applies to shares too).
 
 ### 3.4 App catalog (`FR-APP`)
 
@@ -279,6 +336,9 @@ Requirement IDs are stable: never renumber, only deprecate.
 | `/api/volumes/zfs/{pool}` | GET, DELETE | Pool health / destroy |
 | `/api/shares` | GET, POST | List / create |
 | `/api/shares/{name}` | PUT, DELETE | Update / delete |
+| `/api/shares/paths` | GET | Shareable dataset paths + ZFS base |
+| `/api/shares/status` | GET | Rendered revision + what the node has applied |
+| `/api/shares/apply` | POST | Re-render and push the configuration to the node |
 | `/api/shares/config/samba` `/nfs` | GET | Generated configs |
 | `/api/notifications` | GET | Notification settings/state |
 | `/api/notifications/test` | POST | Send test push |
@@ -297,6 +357,8 @@ Requirement IDs are stable: never renumber, only deprecate.
 | `/api/v1/pools/{name}` | GET, DELETE | Status/iostat / destroy |
 | `/api/v1/datasets/{pool}` | GET, POST | List / create datasets |
 | `/api/v1/snapshots/{pool}` | GET, POST | List / create snapshots |
+| `/api/v1/shares/config` | PUT | Write the API-rendered share config to the host (atomic) |
+| `/api/v1/shares/status` | GET | Applied revision + rendered share counts |
 
 ---
 
@@ -305,7 +367,7 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **DM-1 Person**: `{ "uid", "displayName", "email", "uidNumber", "enabled": bool, "groups": ["short-name", …] }`
 - **DM-2 Group**: `{ "cn", "description?", "members": ["uid", …] }` — `members` MUST be an array (possibly empty), `description` omitted when empty.
 - **DM-3 Pool**: `{ "name", "size", "alloc", "free", "usagePercent", "health" }` — sizes in bytes, parsed from human `zpool list` output.
-- **DM-4 Share**: `{ "name", "type": "smb"|"nfs"|"timemachine", "dataset", "…type-specific options" }`
+- **DM-4 Share**: `{ "name", "path", "protocol": "smb"|"nfs", "description", "readOnly": bool, "browseable": bool, "allowedHosts": [], "validUsers": [], "validGroups": [], "timeMachine": bool, "createdAt", "enabled": bool }` — `path` MUST be inside the ZFS base; the three list fields MUST be arrays (never `null`, including when read back from disk); `validUsers` entries render bare and `validGroups` entries render as `@group` in `smb.conf` (FR-SHR-07/12).
 - **DM-5 SystemMetrics**: see FR-MET-03. `updatedAt` is RFC 3339; before the first successful collection it is the Go zero time and consumers MUST treat it as "no data yet".
 
 ---
@@ -336,10 +398,32 @@ The authoritative executable acceptance suite is the Playwright suite in
 | `dashboard.spec.ts` — live node metrics | FR-MET-03/04/05, FR-IDN-08 (live values, non-zero memory/cores, no zero-time) |
 | `dashboard.spec.ts` — zfs pools | FR-STO-06, FR-MET-07 |
 | `dashboard.spec.ts` — auto-refresh | FR-MET-08 (5 s re-render without reload) |
-| `users.spec.ts` | FR-IDN-02, FR-IDN-08 |
+| `users.spec.ts` | FR-IDN-02, FR-IDN-08, **FR-IDN-14** (the edit dialog states the share timing and the stale-session caveat) |
 | `groups.spec.ts` (both) | FR-IDN-06, FR-IDN-08 |
 | `e2e.spec.ts` — full lifecycle | FR-IDN-01…05, FR-STO-07 (group add-member), delete paths |
+| `shares.spec.ts` — smb:// address | FR-SHR-09 |
+| `shares.spec.ts` — group restriction + AFP absent | FR-SHR-07, FR-SHR-02 (no AFP offered) |
 | `logo.spec.ts` | NFR-5, asset served as real PNG (SPA-fallback guard) |
+
+Share serving, the account mirror and group access involve the node, so they
+are additionally verified against the live VM (not by Playwright):
+
+| Check | Verifies |
+| --- | --- |
+| `pdbedit -L`/`getent passwd` inside `naslos-samba` | FR-IDN-13 (a directory user with no node account resolves) |
+| SMB login + read/write with a directory user's password | FR-IDN-13, FR-SHR-06 |
+| Disable → `NT_STATUS_ACCOUNT_DISABLED`; enable → works again | FR-IDN-15 |
+| Password change → new session accepted, timed | FR-IDN-14 (2.6–3.0 s at interval 3; 0.8–1.1 s at 1) |
+| 8 changes ~0.4 s apart → final password wins | FR-IDN-16 |
+| Group-restricted share: member OK / non-member refused | FR-SHR-07 |
+| Remove member → revoked; add outsider → granted | FR-SHR-07, FR-SHR-11 |
+| `avahi-browse -rt _smb._tcp` lists the server at the LAN address | FR-SHR-08 |
+| `netbios name` in `smb.conf` equals the advertised discovery name | FR-SHR-10 |
+
+Go tests cover the parts that need no node: `api/internal/shares`
+(`TestComputeNTHashKnownVector` against OpenSSL-computed vectors, smbpasswd and
+extrausers rendering, `TestGroupGIDIsStable`, `TestAccessListRendersGroups`,
+`TestNetBIOSNameSanitised`).
 
 Go verification: `go build ./...` in `api/` and `agent/`; `go vet` clean;
 `gofmt` clean on touched files; `npm run check` in `ui/` with 0 errors.
