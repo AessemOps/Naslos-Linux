@@ -1,12 +1,25 @@
 import { test, expect } from '@playwright/test';
 
+// Shares must sit on a ZFS dataset, so tests have to ask the API which paths are
+// shareable rather than assuming one - the picker is dataset-driven, and a path
+// that is only a directory under the base is refused (see the last test).
+async function shareableDataset(request: any): Promise<string> {
+  const res = await request.get('/api/shares/paths');
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const body = await res.json();
+  expect(Array.isArray(body.paths) && body.paths.length > 0,
+    'no ZFS dataset available to share - create one first').toBeTruthy();
+  return body.paths[0];
+}
+
 // The shares page must tell the operator how to reach a share. SMB is served by
 // a hostNetwork pod on the node the UI is being browsed from, so the address is
 // derived from the page's own host.
 test('shares page shows a usable smb:// address for each SMB share', async ({ page, request }) => {
   const name = 'urlspectest';
+  const path = await shareableDataset(request);
   const created = await request.post('/api/shares', {
-    data: { name, path: '/var/mnt/tank', protocol: 'smb', description: 'URL display test' }
+    data: { name, path, protocol: 'smb', description: 'URL display test' }
   });
   expect(created.status(), await created.text()).toBe(201);
 
@@ -74,6 +87,32 @@ test('a share can be restricted to an LDAP group from the form', async ({ page, 
   } finally {
     await request.delete(`/api/shares/${name}`);
   }
+});
+
+// A share whose path is not on a dataset must be refused: Talos keeps /var on
+// EPHEMERAL, so such data would live outside every pool (no checksums, no
+// snapshots, no redundancy) and be lost on an upgrade - the reported
+// "files disappeared" failure. The picker must not offer such paths either.
+test('shares can only be created on a ZFS dataset', async ({ page, request }) => {
+  const res = await request.post('/api/shares', {
+    data: { name: 'trap', path: '/var/mnt/definitely-not-a-dataset', protocol: 'smb' }
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.text()).toMatch(/not on a ZFS dataset/);
+
+  // And the form only offers dataset mountpoints. The picker is filled
+  // asynchronously from /api/shares/paths, so wait for it.
+  const paths = await (await request.get('/api/shares/paths')).json();
+  await page.goto('/shares');
+  await page.click('text=+ New Share');
+  await expect(page.getByRole('heading', { name: 'New Share' })).toBeVisible();
+
+  const pathSelect = page.locator('select').first();
+  await expect(pathSelect).toContainText('/', { timeout: 10_000 });
+  const options = await pathSelect.locator('option').allTextContents();
+  const offered = options.filter(o => o.startsWith('/'));
+  expect(offered.length).toBeGreaterThan(0);
+  expect(offered.sort()).toEqual([...paths.paths].sort());
 });
 
 test('share form does not offer AFP, which the API rejects', async ({ page }) => {

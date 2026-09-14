@@ -90,9 +90,14 @@ spec:
             # in the passdb but no login can succeed.
             - name: extrausers
               mountPath: /var/lib/extrausers
-            # ZFS datasets served by the shares.
+            # ZFS datasets served by the shares. HostToContainer matters: the
+            # agent imports pools after this container starts, and without
+            # propagation a dataset mounted later is invisible here - the share
+            # would then serve the *underlying* ephemeral directory (files appear
+            # to vanish, and new writes bypass ZFS entirely).
             - name: datasets
               mountPath: /var/mnt
+              mountPropagation: HostToContainer
           resources:
             {{- toYaml .Values.shares.smb.resources | nindent 12 }}
       volumes:

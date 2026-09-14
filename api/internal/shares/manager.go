@@ -226,6 +226,40 @@ func (m *Manager) Delete(name string) error {
 	return m.save()
 }
 
+// PathOnDataset reports whether path lives on one of the given ZFS dataset
+// mountpoints, and returns the dataset it belongs to.
+//
+// This is the guard that keeps share data on ZFS. A path that is merely inside
+// the ZFS base directory - e.g. /var/mnt/tank when "tank" is a plain directory
+// rather than a dataset - lives on Talos's EPHEMERAL partition instead: no
+// checksums, no snapshots, no redundancy, invisible to pool operations, and
+// wiped by a Talos upgrade. Accepting such a share silently puts user data
+// outside the pool, so it must be refused.
+//
+// Mountpoints that cannot contain user data ("none", "-", "/") are ignored; "/"
+// in particular would otherwise match every path.
+func PathOnDataset(path string, mountpoints []string) (string, bool) {
+	clean := filepath.Clean(path)
+	if !strings.HasPrefix(clean, "/") {
+		return "", false
+	}
+
+	best := ""
+	for _, mp := range mountpoints {
+		mp = filepath.Clean(strings.TrimSpace(mp))
+		if mp == "" || mp == "." || mp == "/" || !strings.HasPrefix(mp, "/") {
+			continue
+		}
+		if clean == mp || strings.HasPrefix(clean, mp+string(filepath.Separator)) {
+			// Nested datasets exist, so the most specific mountpoint wins.
+			if len(mp) > len(best) {
+				best = mp
+			}
+		}
+	}
+	return best, best != ""
+}
+
 // ValidatePath checks that path is inside the ZFS base tree and exists as a
 // directory. The path is compared after canonicalisation so that traversal
 // sequences such as "/var/mnt/../../etc" cannot escape the base.

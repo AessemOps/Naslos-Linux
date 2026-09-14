@@ -5,6 +5,28 @@ import (
 	"strings"
 )
 
+// AllDatasets lists every dataset on the node with its mountpoint, so callers
+// can tell which paths are actually ZFS-backed.
+func (c *Client) AllDatasets() ([]Dataset, error) {
+	out, err := c.hostExec(zfsBin, "list", "-H", "-o", "name,mountpoint", "-t", "filesystem", "-r")
+	if err != nil {
+		return nil, fmt.Errorf("listing datasets: %w", err)
+	}
+
+	datasets := []Dataset{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 2 {
+			continue
+		}
+		datasets = append(datasets, Dataset{Name: fields[0], Mountpoint: fields[1]})
+	}
+	return datasets, nil
+}
+
 // Datasets lists datasets in a pool.
 func (c *Client) Datasets(pool string) ([]Dataset, error) {
 	out, err := c.hostExec(zfsBin, "list", "-H", "-o", "name,used,avail,refer,mountpoint", "-r", pool)

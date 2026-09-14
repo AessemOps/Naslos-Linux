@@ -183,7 +183,15 @@ Requirement IDs are stable: never renumber, only deprecate.
 ### 3.3 Shares (`FR-SHR`)
 
 - **FR-SHR-01** — Shares MUST be backed by ZFS datasets: a share path MUST be a
-  directory strictly inside the ZFS base (`/var/mnt` by default).
+  directory on a mounted ZFS dataset, and the API MUST refuse a path that is not
+  (the base directory's children are not necessarily datasets — Talos keeps
+  `/var` on EPHEMERAL, so a plain directory there would hold data outside every
+  pool, without checksums, snapshots or redundancy, and lose it on upgrade).
+  `GET /api/shares/paths` MUST offer only dataset mountpoints, and the serving
+  container MUST log whether each share path is on a mounted filesystem.
+  Mount points exposed to containers MUST use `mountPropagation: HostToContainer`
+  so a dataset mounted after a pod starts is visible rather than the pod serving
+  the underlying directory.
 - **FR-SHR-02** — SMB (including Time Machine via the `fruit` VFS) MUST be
   served. AFP MUST NOT be offered — it is not served, and the API MUST reject
   it rather than accept a share nothing exports. NFS serving is **[OPEN]**: the
@@ -420,6 +428,9 @@ are additionally verified against the live VM (not by Playwright):
 | 8 changes ~0.4 s apart → final password wins | FR-IDN-16 |
 | Group-restricted share: member OK / non-member refused | FR-SHR-07 |
 | Remove member → revoked; add outsider → granted | FR-SHR-07, FR-SHR-11 |
+| `POST /api/shares` on a non-dataset path → 400; `/api/shares/paths` lists datasets only | FR-SHR-01 |
+| SMB write lands in the pool (`talosctl ls <dataset>`) and survives a pod restart | FR-SHR-01, FR-SHR-04 |
+| `naslos-samba` logs each share path with its backing mount | FR-SHR-01 |
 | `avahi-browse -rt _smb._tcp` lists the server at the LAN address | FR-SHR-08 |
 | `netbios name` in `smb.conf` equals the advertised discovery name | FR-SHR-10 |
 

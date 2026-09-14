@@ -2,8 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/AessemOps/Naslos-Linux/api/internal/agent"
@@ -22,6 +24,14 @@ func (s *Server) handleShares(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+
+		// Refuse a path that is not on a ZFS dataset before anything is
+		// created: this is what keeps share data inside the pool.
+		if err := s.requireDatasetPath(req.Path); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
 		share, err := s.shares.Create(req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -79,24 +89,75 @@ func (s *Server) handleShareDetail(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleSharePaths lists the ZFS dataset directories that may be shared.
-// Returning a guaranteed (possibly empty) array keeps the create form usable
-// even when no datasets exist yet, instead of leaving its path picker blank.
+// handleSharePaths lists the ZFS datasets that may be shared.
+//
+// Only real dataset mountpoints are offered: a directory that merely sits under
+// the ZFS base (e.g. /var/mnt/tank when "tank" is not a dataset) lives on the
+// node's EPHEMERAL partition, so offering it would invite a share whose data is
+// outside the pool - no redundancy, no snapshots, and lost on an upgrade.
 func (s *Server) handleSharePaths(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	paths, err := s.shares.AvailablePaths()
+	mountpoints, err := s.datasetMountpoints()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		// Fail rather than fall back to listing the base directory: the
+		// fallback is exactly how non-dataset paths used to be offered.
+		writeError(w, http.StatusServiceUnavailable,
+			"cannot list shareable datasets: "+err.Error())
 		return
 	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"base":  s.shares.ZFSBase(),
-		"paths": paths,
+		"paths": mountpoints,
 	})
+}
+
+// datasetMountpoints returns the mountpoints of all datasets on the node.
+func (s *Server) datasetMountpoints() ([]string, error) {
+	datasets, err := s.agent.ListDatasets()
+	if err != nil {
+		return nil, err
+	}
+
+	paths := make([]string, 0, len(datasets))
+	for _, d := range datasets {
+		if _, ok := shares.PathOnDataset(d.Mountpoint, []string{d.Mountpoint}); ok {
+			paths = append(paths, d.Mountpoint)
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+// requireDatasetPath rejects a share path that is not on a ZFS dataset.
+//
+// Without this a share silently stores its data on the ephemeral partition,
+// where it is not checksummed, not snapshotted, not redundant and is wiped by a
+// Talos upgrade - the failure mode reported as "my files disappeared".
+func (s *Server) requireDatasetPath(path string) error {
+	datasets, err := s.agent.ListDatasets()
+	if err != nil {
+		return fmt.Errorf("cannot verify that %s is on a ZFS dataset (agent unavailable): %w", path, err)
+	}
+
+	mountpoints := make([]string, 0, len(datasets))
+	for _, d := range datasets {
+		mountpoints = append(mountpoints, d.Mountpoint)
+	}
+
+	if dataset, ok := shares.PathOnDataset(path, mountpoints); ok {
+		_ = dataset
+		return nil
+	}
+
+	return fmt.Errorf(
+		"%s is not on a ZFS dataset, so its data would live on the node's ephemeral partition "+
+			"(no snapshots, no redundancy, lost on upgrade). Create a dataset under one of %s first",
+		path, strings.Join(mountpoints, ", "))
 }
 
 // handleSharesStatus reports whether the node-side share services have the

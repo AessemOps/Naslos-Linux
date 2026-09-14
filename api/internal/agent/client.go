@@ -178,6 +178,31 @@ func (c *Client) GetSharesStatus() (*SharesConfigStatus, error) {
 	return &status, nil
 }
 
+// Dataset mirrors the agent's Dataset JSON shape (agent/internal/zfs/dataset.go).
+type Dataset struct {
+	Name       string `json:"name"`
+	Used       string `json:"used,omitempty"`
+	Avail      string `json:"avail,omitempty"`
+	Refer      string `json:"refer,omitempty"`
+	Mountpoint string `json:"mountpoint"`
+}
+
+// ListDatasets returns every dataset on the node with its mountpoint.
+func (c *Client) ListDatasets() ([]Dataset, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/datasets", nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating list-datasets request: %w", err)
+	}
+	var datasets []Dataset
+	if err := c.do(req, &datasets); err != nil {
+		return nil, err
+	}
+	if datasets == nil {
+		datasets = []Dataset{}
+	}
+	return datasets, nil
+}
+
 // ListPools returns all ZFS pools known to the agent.
 func (c *Client) ListPools() ([]Pool, error) {
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/pools", nil)

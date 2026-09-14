@@ -5,8 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -126,34 +124,11 @@ func (m *Manager) GenerateNFSExports() string {
 	return sb.String()
 }
 
-// AvailablePaths returns the directories directly under the ZFS base that are
-// valid share targets. Returns an empty (non-nil) slice when the base is
-// missing, so callers can distinguish "no datasets" from an error.
-func (m *Manager) AvailablePaths() ([]string, error) {
-	entries, err := os.ReadDir(m.zfsBase)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []string{}, nil
-		}
-		return nil, fmt.Errorf("reading ZFS base: %w", err)
-	}
-
-	paths := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		// Skip hidden/system entries so internal bookkeeping dirs are not
-		// offered as share targets.
-		if strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-		paths = append(paths, filepath.Join(m.zfsBase, entry.Name()))
-	}
-	sort.Strings(paths)
-
-	return paths, nil
-}
+// AvailablePaths was removed deliberately: it listed every directory under the
+// ZFS base, which includes plain directories on the node's ephemeral partition
+// (e.g. /var/mnt/tank when "tank" is not a dataset). Offering those as share
+// targets is how share data ended up outside ZFS, so the shareable paths now
+// come from the agent's dataset list instead (see Server.datasetMountpoints).
 
 // accessList builds the `valid users` entry for a share.
 //
