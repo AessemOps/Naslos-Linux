@@ -94,6 +94,7 @@ func (r *Receiver) Handler() http.Handler {
 	mux.HandleFunc("/enroll", r.handleEnroll)
 	mux.HandleFunc("/backups", r.handleBackups)
 	mux.HandleFunc("/chunks/", r.handleChunks)
+	mux.HandleFunc("/chains/", r.handleChains)
 	mux.HandleFunc("/manifest/", r.handleManifest)
 	mux.HandleFunc("/prune/", r.handlePrune)
 	return http.StripPrefix(PathPrefix, mux)
@@ -345,16 +346,24 @@ func (r *Receiver) handleChunks(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		// The digest lets a resuming sender prove the chunks it skips are the
-		// chunks it sent.
+		// chunks it sent; `published` tells it whether the chain is a finished
+		// backup (immutable) or still an upload in progress, where the partial tail
+		// chunk may legitimately be re-sent whole.
+		published, err := r.Store.chainPublished(peer.Fingerprint, source, chain)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		chunks := make([]chunkListEntry, 0, len(digests))
 		for index, digest := range digests {
 			chunks = append(chunks, chunkListEntry{Index: index, Digest: digest})
 		}
 		sort.Slice(chunks, func(i, j int) bool { return chunks[i].Index < chunks[j].Index })
 		writeJSON(w, http.StatusOK, map[string]any{
-			"source": source,
-			"chain":  chain,
-			"chunks": chunks,
+			"source":    source,
+			"chain":     chain,
+			"published": published,
+			"chunks":    chunks,
 		})
 
 	case http.MethodPut:
@@ -404,6 +413,45 @@ func (r *Receiver) handleChunks(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// handleChains lists the chains stored for a source, newest first:
+//
+//	GET PathPrefix/chains/<source>
+//
+// A restore needs the whole chain of chains, not just the current one: an
+// incremental stream can only be applied on top of the chain it came from.
+func (r *Receiver) handleChains(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	source := strings.TrimPrefix(req.URL.Path, "/chains/")
+	peer, ok := r.peerFor(w, req, BodyDigest(nil), source)
+	if !ok {
+		return
+	}
+
+	manifests, err := r.Store.Chains(peer.Fingerprint, source)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	chains := make([]map[string]any, 0, len(manifests))
+	for _, manifest := range manifests {
+		chains = append(chains, map[string]any{
+			"chain":        manifest.Chain,
+			"kind":         manifest.Kind,
+			"createdAt":    manifest.CreatedAt,
+			"fromSnapshot": manifest.FromSnapshot,
+			"toSnapshot":   manifest.ToSnapshot,
+			"fromGUID":     manifest.FromGUID,
+			"toGUID":       manifest.ToGUID,
+			"chunks":       len(manifest.Chunks),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"source": source, "chains": chains})
+}
+
 // handleManifest serves the manifest endpoints:
 //
 //	GET PathPrefix/manifest/<source>?chain=<id>  fetch a stored manifest
@@ -432,8 +480,14 @@ func (r *Receiver) handleManifest(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		if chain != "" && chain != manifest.Chain {
+			// An older chain is a legitimate request: a restore has to start from the
+			// last full send and apply each incremental in order.
+			if stored, err := r.Store.ManifestForChain(peer.Fingerprint, source, chain); err == nil {
+				writeJSON(w, http.StatusOK, stored)
+				return
+			}
 			writeError(w, http.StatusNotFound, fmt.Sprintf(
-				"chain %s is not the current chain of %s (current: %s)", chain, source, manifest.Chain))
+				"chain %s is not stored for %s (current: %s)", chain, source, manifest.Chain))
 			return
 		}
 		writeJSON(w, http.StatusOK, manifest)

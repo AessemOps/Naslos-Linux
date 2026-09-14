@@ -164,28 +164,131 @@ func (c *Client) Manifest(source, chain string) (*Manifest, error) {
 	return &manifest, nil
 }
 
-// storedChunks returns the digest of every sealed chunk the receiver already
-// holds for a chain: how an interrupted push knows where to continue, and how it
-// proves the bytes it skips are the bytes it sent.
-func (c *Client) storedChunks(source, chain string) (map[int]string, error) {
+// storedChunks returns the digest of every sealed chunk the receiver already holds
+// for a chain, and whether that chain is already published. A resuming sender uses
+// the digests to prove the chunks it skips are the chunks it sent, and the
+// published flag to know whether the chain is a finished backup (immutable) or still
+// an upload in progress (whose partial tail chunk it may re-send whole).
+func (c *Client) storedChunks(source, chain string) (map[int]string, bool, error) {
 	if err := ValidateSource(source); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	data, _, err := c.do(http.MethodGet, "/chunks/"+source+"?chain="+chain, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var response struct {
-		Chunks []chunkListEntry `json:"chunks"`
+		Published bool             `json:"published"`
+		Chunks    []chunkListEntry `json:"chunks"`
 	}
 	if err := json.Unmarshal(data, &response); err != nil {
-		return nil, fmt.Errorf("parsing chunk list: %w", err)
+		return nil, false, fmt.Errorf("parsing chunk list: %w", err)
 	}
 	stored := make(map[int]string, len(response.Chunks))
 	for _, chunk := range response.Chunks {
 		stored[chunk.Index] = chunk.Digest
 	}
-	return stored, nil
+	return stored, response.Published, nil
+}
+
+// highestIndex is the largest stored chunk index (or -1 for an empty chain).
+func highestIndex(stored map[int]string) int {
+	highest := -1
+	for index := range stored {
+		if index > highest {
+			highest = index
+		}
+	}
+	return highest
+}
+
+// ChainSummary is one stored chain of a source: enough to work out how to replay a
+// backup (which chain follows which), without fetching every manifest.
+type ChainSummary struct {
+	Chain        string    `json:"chain"`
+	Kind         string    `json:"kind"`
+	CreatedAt    time.Time `json:"createdAt"`
+	FromSnapshot string    `json:"fromSnapshot,omitempty"`
+	ToSnapshot   string    `json:"toSnapshot,omitempty"`
+	FromGUID     string    `json:"fromGUID,omitempty"`
+	ToGUID       string    `json:"toGUID,omitempty"`
+	Chunks       int       `json:"chunks"`
+}
+
+// Chains lists the chains stored for a source, newest first.
+func (c *Client) Chains(source string) ([]ChainSummary, error) {
+	if err := ValidateSource(source); err != nil {
+		return nil, err
+	}
+	data, _, err := c.do(http.MethodGet, "/chains/"+source, nil)
+	if err != nil {
+		return nil, err
+	}
+	var response struct {
+		Chains []ChainSummary `json:"chains"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, fmt.Errorf("parsing chain list: %w", err)
+	}
+	return response.Chains, nil
+}
+
+// RestoreSequence returns the chains needed to rebuild a source from scratch, oldest
+// first: the last full send plus every incremental that follows it. A restore cannot
+// skip a link - `zfs receive` refuses an incremental stream whose base is missing -
+// so this is the order the streams must be applied in.
+func (c *Client) RestoreSequence(source, chain string) ([]ChainSummary, error) {
+	chains, err := c.Chains(source)
+	if err != nil {
+		return nil, err
+	}
+	if len(chains) == 0 {
+		return nil, fmt.Errorf("no backup of %s is stored here", source)
+	}
+
+	// Start at the requested chain (or the newest one) and walk backwards through
+	// the FromGUID links until a chain has no base: that is the full send.
+	target := chains[0]
+	if chain != "" {
+		target = ChainSummary{}
+		for _, candidate := range chains {
+			if candidate.Chain == chain {
+				target = candidate
+				break
+			}
+		}
+		if target.Chain == "" {
+			return nil, fmt.Errorf("chain %s is not stored for %s", chain, source)
+		}
+	}
+
+	byGUID := make(map[string]ChainSummary, len(chains))
+	for _, candidate := range chains {
+		if candidate.ToGUID != "" {
+			byGUID[candidate.ToGUID] = candidate
+		}
+	}
+
+	sequence := []ChainSummary{target}
+	seen := map[string]bool{target.Chain: true}
+	for current := target; current.FromGUID != ""; {
+		base, ok := byGUID[current.FromGUID]
+		if !ok || seen[base.Chain] {
+			// The base is missing (pruned, or from another sender): the restore
+			// cannot be completed, and saying so now beats applying half a backup.
+			return nil, fmt.Errorf("chain %s needs the chain that produced GUID %s, which is not stored here: "+
+				"the backup cannot be rebuilt from this receiver", current.Chain, current.FromGUID)
+		}
+		sequence = append(sequence, base)
+		seen[base.Chain] = true
+		current = base
+	}
+
+	// Reverse into apply order: oldest (the full send) first.
+	for i, j := 0, len(sequence)-1; i < j; i, j = i+1, j-1 {
+		sequence[i], sequence[j] = sequence[j], sequence[i]
+	}
+	return sequence, nil
 }
 
 // Prune asks the receiver to keep only the newest chains of a source.
@@ -373,6 +476,11 @@ type PushOptions struct {
 	// PruneKeep, when greater than zero, asks the receiver to keep only the
 	// newest N chains once this push has been published.
 	PruneKeep int
+	// BeforePublish runs once every chunk is stored but *before* the manifest is
+	// published. Returning an error aborts the push with the chunks left in place,
+	// so an incomplete stream can never become "the latest backup" - and the next
+	// attempt resumes it instead of starting over.
+	BeforePublish func(*PushResult) error
 	// Progress is called after every chunk (nil is fine).
 	Progress func(PushProgress)
 }
@@ -442,10 +550,11 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 		return nil, err
 	}
 
-	stored, err := c.storedChunks(opts.Source, state.Chain)
+	stored, published, err := c.storedChunks(opts.Source, state.Chain)
 	if err != nil {
 		return nil, err
 	}
+	tailIndex := highestIndex(stored)
 
 	manifest := &Manifest{
 		Version:        EnvelopeVersion,
@@ -486,17 +595,45 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 
 		if storedDigest, ok := stored[index]; ok {
 			// Already on the receiver: describe it, do not re-upload. The sealed
-			// size is deterministic, so the manifest stays exact. If the bytes
-			// differ the source changed since the interruption and continuing
-			// would produce a chain that cannot be restored - fail instead.
+			// size is deterministic, so the manifest stays exact.
+			//
+			// A digest mismatch means something changed. Usually that is a caller
+			// resuming a chain with different data, which must fail rather than
+			// stitch two versions together. The one legitimate exception is the
+			// *tail* of an unpublished chain: a stream that died in the middle left
+			// a partial last chunk behind, and finishing the job means replacing it
+			// with the complete one.
 			if storedDigest != digestOf(sealed) {
-				return result, fmt.Errorf(
-					"the receiver already holds different bytes for chunk %d of chain %s: the source changed since the push was interrupted, start a new chain",
-					index, state.Chain)
+				if published || index != tailIndex {
+					return result, fmt.Errorf(
+						"the receiver already holds different bytes for chunk %d of chain %s: the source changed since the push was interrupted, start a new chain",
+						index, state.Chain)
+				}
+				// Fall through and upload: this is the interrupted tail.
+			} else {
+				entry.SealedBytes = n + sealedOverhead
+				result.Skipped++
+				result.Chunks++
+				result.PlainBytes += int64(n)
+				result.SealedBytes += int64(entry.SealedBytes)
+				manifest.Chunks = append(manifest.Chunks, entry)
+				if opts.Progress != nil {
+					opts.Progress(PushProgress{
+						Chunk:       index,
+						PlainBytes:  result.PlainBytes,
+						SealedBytes: result.SealedBytes,
+						Uploaded:    result.Uploaded,
+						Skipped:     result.Skipped,
+					})
+				}
+				if readErr != nil {
+					break
+				}
+				continue
 			}
-			entry.SealedBytes = n + sealedOverhead
-			result.Skipped++
-		} else {
+		}
+
+		{
 			path := fmt.Sprintf("/chunks/%s?chain=%s&index=%d", opts.Source, state.Chain, index)
 			if _, _, err := c.do(http.MethodPut, path, sealed); err != nil {
 				return result, err
@@ -525,6 +662,15 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 
 	if len(manifest.Chunks) == 0 {
 		return result, fmt.Errorf("nothing to back up: the input stream produced no data")
+	}
+
+	// The sender's own veto, used to refuse a stream that ended early: publishing
+	// the manifest is what makes a chain "the latest backup", so this is the last
+	// moment at which an incomplete one can be kept out of the restore path.
+	if opts.BeforePublish != nil {
+		if err := opts.BeforePublish(result); err != nil {
+			return result, err
+		}
 	}
 
 	kek, err := c.Identity.KEKBytes()

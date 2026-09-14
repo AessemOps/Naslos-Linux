@@ -226,6 +226,11 @@ func (s *Server) routes() {
 		s.router.Handle(buddy.PathPrefix+"/", s.buddy.Handler())
 		s.router.HandleFunc("/api/buddy/status", s.handleBuddyStatus)
 		s.router.HandleFunc("/api/buddy/peers", s.handleBuddyPeers)
+		// Sender side: this instance backing *itself* (and its datasets) up to a
+		// buddy, using the agent's streaming `zfs send`/`zfs receive`.
+		s.router.HandleFunc("/api/buddy/identity", s.handleBuddyIdentity)
+		s.router.HandleFunc("/api/buddy/send", s.handleBuddySend)
+		s.router.HandleFunc("/api/buddy/restore", s.handleBuddyRestore)
 	}
 
 	// Metrics & Dashboard

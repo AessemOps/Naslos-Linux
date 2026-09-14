@@ -89,15 +89,68 @@ The check is one command from a fresh pod (`df -h` on the mount path must name
 `<pool>/naslos-buddy`); it is written up as step 1c and in the troubleshooting
 table of `docs/buddy-backup.md`.
 
-**Deployed**: api/ui `0.1.0-b1` (helm revision 50); everything else unchanged
-(agent `0.1.0-z1`, terminal `0.1.0-t2`, samba `0.1.0-s15`, nfs `0.1.0-n2`).
+**Instance-side sender and restore (new in this change, drilled live)**
+
+- The agent grew streaming seams — `GET /api/v1/zfs/send/{dataset}?to=&from=&raw=&estimate=`,
+  `POST /api/v1/zfs/receive/{dataset}?force=`, `GET /api/v1/zfs/snapshots/{dataset}`
+  (GUIDs) and `POST /api/v1/snapshots/{dataset}` — and the control-plane client's
+  180 s timeout is deliberately bypassed for them (bounded by the caller's context
+  instead; `hostExec` still buffers, the streaming paths use `cmd.StdoutPipe`).
+- The API drives them: `POST /api/buddy/send`, `POST /api/buddy/restore` (plus a
+  `verify` mode that decrypts and hashes without touching ZFS) and
+  `GET|POST /api/buddy/identity`. An interrupted send resumes from a `0600` state
+  file written before the first chunk; snapshots are named `buddy-<UTC>-<4 hex>`.
+- The base for an incremental is found by **GUID**, not name: the manifest records
+  the GUID the receiver was given and the node is asked which snapshot carries it,
+  so a rename still counts and a destroyed snapshot is known to be gone (the send
+  then falls back to a full one rather than guessing).
+
+**The drill, bit-for-bit** (`test/drill-src`, 53 MB full + a 57 MB change):
+
+- full send: `POST /api/buddy/send` → chain `ff6e4b183f22f62e`, 53,390,016 bytes;
+  the instance's `verify` digest equals the node's `zfs send -w | sha256sum`.
+- incremental: chain `fe3a45a0c1dc502b`, `zfs send -w -i <base> <new>` on the node
+  hashes `908ba240b9d93144a53bb18c2446eb1dc178506703636426fbf15320607802fd` over
+  56,801,992 bytes — the instance's `verify` reports the same digest and count,
+  exactly.
+- the resume path: the first attempt was refused by the shortfall guard *after*
+  every chunk was stored, so the chain had data but no manifest. Re-sending the same
+  request **resumed** it (`resumed: true`, `uploaded: 0`, `skipped: 55`) and published
+  the manifest — a stream that did not arrive whole never became the latest backup,
+  and the retry continued the same chain, snapshot and data key.
+- restore after a real `zfs destroy -rf test/drill-src`: the sequence
+  (`ff6e4b18…` → `fe3a45a0…`) restored into `test/drill-restored` in 1.57 s —
+  106 chunks, 110,192,008 bytes (= 53,390,016 + 56,801,992, exact), final snapshot
+  `buddy-…308d`, and the dataset matches the destroyed source
+  (`USED`/`REFER`/`LREFER` = 106M/106M/114M) while carrying both buddy snapshots.
+- `verify` still succeeded with the source dataset gone (the backup, not the source,
+  is what it reads).
+
+**Fourth live finding — the dry-run estimate is not a floor.** `zfs send -nP` is
+exact-to-within-framing for *full* sends (measured +232 B on 44 KB, +9,712 B on
+53 MB) but can sit *above* an *incremental* stream: a 57 MB incremental came in
+119,688 bytes below its estimate (−0.21%). The original 0.1% allowance therefore
+rejected a complete send. It is now `max(1 MiB, 1%)`, documented as an early warning
+rather than the integrity boundary: anything smaller is caught by ZFS at
+`zfs receive` (the stream carries its own end record and per-record checksums) and a
+retry resumes the chain.
+
+**Third live finding — a `/` in a fingerprint split the key directory.** A peer
+fingerprint used verbatim as a path component (`SHA256:ab/cd…`) created two nested
+directories and the push failed with `permission denied`; key directories are now
+hashed names, and snapshots take a random suffix because two sends inside one second
+collided on the same name.
+
+**Deployed**: api `0.1.0-b7` (helm revision 56), agent `0.1.0-b2`, ui `0.1.0-b1`,
+terminal `0.1.0-t2`, samba `0.1.0-s15`, nfs `0.1.0-n2`.
 
 **Not done yet, in plan order**: the UI backup page (the API already returns
-everything it needs — see the `/api/buddy/status` payload); instance-side
-`zfs send -w -i` streaming (needs a streaming exec seam in the agent, whose
-`hostExec` buffers output today, plus a no-timeout path in the API's agent client —
-its 180 s timeout is the current blocker); a scheduler with retention and ntfy
-notifications; and multi-buddy fan-out.
+everything it needs — see the `/api/buddy/status` payload); a scheduler with
+retention and ntfy notifications; multi-buddy fan-out; and the peer-exposure
+decision (a dedicated listener vs. Traefik + Authelia) still has to be taken. Also
+still open: the receive dataset's host-namespace mount on Talos (see the platform
+gotcha above), which the restore drill does not depend on because `zfs receive`
+creates the mount itself.
 
 ## Current branch: `feature/shares` (SMB shares + LDAP account sync)
 
