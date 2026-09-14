@@ -1,166 +1,192 @@
-# Buddy Backup: UI page + scheduler (plan-order items 1–2)
+# Buddy Backup UI + scheduler (FR-BUD-15/16): VM verification plan
 
-Branch: `feature/buddy-backup` (clean). The receiver, `buddyctl`, the standalone
-receiver and the instance-side send/restore (FR-BUD-01…14) are delivered and
-drilled live. This plan covers the two next items from `docs/buddy-backup.md` §9
-and `AI_Handoff.md`: the **UI backup page** and the **scheduler with retention +
-ntfy notifications**. Multi-buddy fan-out and the peer-exposure decision are
-**out of scope**.
+## Status
 
-## Decisions (agreed with the user)
+The implementation plan that used to live here has **landed** on
+`feature/buddy-backup`:
 
-1. **Async send jobs.** `POST /api/buddy/send` (api/internal/server/buddy_send.go:307)
-   is synchronous today and is deliberately killed when the caller's request
-   context goes away. Convert it to a job model: start the send with a
-   server-owned context, answer `202 {jobId}` immediately, expose progress and
-   cancellation via job endpoints. One job model — no parallel sync path.
-   (Only tests and curl drills use the synchronous shape today; no UI or
-   `buddyctl` depends on it.)
-2. **Scheduler.** Interval enum (hourly / daily / weekly + run-at time), entries
-   persisted as JSON beside the peer registry, managed over the API, with
-   catch-up of a run missed while the API pod was down. No cron parser, no K8s
-   CronJob.
-3. **UI.** Route `/backups` with a sender half (identity, schedules, Back up now
-   with live progress, ad-hoc send, verify) and a receiver half (the existing
-   `/api/buddy/status` payload). No restore-from-the-UI in this round.
+- `11b9dff` — `feat(buddy): async send jobs, scheduler and backups UI (FR-BUD-15/16)`
+  (17 files, +2592/−99: `buddy_jobs.go`, `buddy_schedules.go`, jobs/scheduler
+  tests, `/backups` Svelte page, `ui/tests/backups.spec.ts`, spec §3.8
+  FR-BUD-15/16, docs, notifications events `backup_success`/`backup_failure`).
+- `4ffeab7` — security-audit docs only (`docs/SECURITY-AUDIT.md`,
+  `docs/SECURITY-FIX-PLAN.md`), **no code**; nothing to test from it here.
 
-## Tasks (in order)
+It is **not deployed**: live tags per `AI_Handoff.md` are api `0.1.0-b7`, ui
+`0.1.0-b1`, agent `0.1.0-b2`. The agreed scope is to **deploy the update to the
+VM and run the full drill**, then record findings.
 
-### A. Job runner (API)
+VM: `192.168.1.96`, UI via NodePort `http://192.168.1.96:30080`, registry
+`192.168.1.2:30095`, `TALOSCONFIG=bootstrap/vm/talosconfig`. All owner-facing
+buddy endpoints sit behind `requireBuddyAdminAuth`, so curl needs
+`-H 'Remote-User: admin'` (`BUDDY_REQUIRE_AUTH=true`).
 
-1. New `api/internal/server/buddy_jobs.go`:
-   - `buddyJob`: id (short random hex), kind "send", request params
-     (dataset/source/receiver/pruneKeep/raw/force), state
-     (running|succeeded|failed|cancelled), startedAt/finishedAt, mutex-guarded
-     progress snapshot (`buddy.PushProgress` — the callback seam already exists,
-     client.go:485), result payload (the fields handleBuddySend returns today),
-     error string, cancel func.
-   - Jobs live in memory on the Server; keep the last ~20 finished jobs plus
-     running ones. Restart clears history — the receiver's manifests are the
-     durable record; acceptable.
-   - **Mutual exclusion**: refuse (409) a new send job for the same
-     (receiver, source) while one runs (they share one resume-state file,
-     `sendStateName`), and refuse a second job touching the same dataset while
-     one runs (snapshot races).
-   - Jobs use `context.WithCancel(background)`; cancel on `DELETE`, and cancel
-     all running jobs on server shutdown (mirror how the metrics collector is
-     stopped in `Server.Start`/`Stop`).
-2. Convert `handleBuddySend`: keep today's validation + `requireBuddyAdminAuth`,
-   then enqueue and return `202 {"jobId":…, "status":"started"}`. Move the send
-   body into the job function; `ctx` becomes the job context instead of
-   `req.Context()`. Wire `PushOptions.Progress` into the job's snapshot.
-   The resume-state semantics are unchanged: a cancelled/killed send keeps its
-   state file, so a retry continues the same chain.
-3. Routes (all behind `requireBuddyAdminAuth`):
-   - `GET /api/buddy/jobs` — list (running + recent finished)
-   - `GET /api/buddy/jobs/{id}` — detail incl. progress
-   - `DELETE /api/buddy/jobs/{id}` — cancel
-4. Tests in `api/internal/server/buddy_send_test.go` (the harness with the fake
-   agent + real receiver already exists):
-   - start → 202 + id; job reaches `succeeded` with the same result fields the
-     sync handler produced; manifest published.
-   - second job for the same (receiver, source) while running → 409.
-   - DELETE mid-send → `cancelled`, resume state file still present, retry
-     resumes (`resumed: true`, chunks skipped).
-   - job list/detail shapes.
+## Known preconditions / traps (confirmed in code)
 
-### B. Scheduler (API)
-
-5. Schedule store, persisted at `BUDDY_SCHEDULES` (default
-   `/var/lib/naslos/buddy-schedules.json`), modeled on `buddy.NewPeerStore`
-   (load/save pattern, api/internal/buddy/peers.go). Entry:
-   `id, dataset, source, receiver, cadence (hourly|daily|weekly), runAt
-   (HH:MM UTC, or weekday+HH:MM for weekly), pruneKeep, enabled, lastRun,
-   lastResult (ok|failed + error), nextRun`.
-6. Endpoints behind `requireBuddyAdminAuth`:
-   `GET /api/buddy/schedules`, `POST /api/buddy/schedules` (create/update),
-   `DELETE /api/buddy/schedules?id=`. Validation reuses `buddy.ValidateSource`
-   and `normalizeReceiverURL`, and refuses a dataset the agent does not know.
-   No separate "run now" endpoint — the UI's Back up now button POSTs
-   `/api/buddy/send` with the entry's parameters, sharing A's mutual exclusion.
-7. Runner goroutine started from `Server.Start()` (pattern:
-   api/internal/server/metrics_collector.go): tick every minute; for each
-   enabled entry with `nextRun <= now`, start a send job through the same path
-   as A; on completion update `lastRun`/`lastResult`/`nextRun` and persist.
-   **Catch-up**: at startup, an entry whose `nextRun` is in the past fires once
+1. **Chart does not pass `BUDDY_SCHEDULES`** (or `BUDDY_SCHEDULER_INTERVAL_MS`):
+   the implicit default `/var/lib/naslos/buddy-schedules.json` is used, which is
+   on the `naslos-shares-config` PVC (`api.sharesConfig.enabled: true`,
+   mountPath `/var/lib/naslos`, values.yaml:42) — so schedules persist. Record
+   the missing explicit chart env as a finding (same for the interval override).
+2. **Re-apply the `--set buddy.*` flags on upgrade.** `values-vm.yaml` does not
+   set `buddy.*`; the release only has it enabled from the original
+   `--set buddy.enabled=true --set buddy.receivePath=/var/mnt/test/naslos-buddy
+   --set buddy.name=naslos-b`. A plain `-f values.yaml -f values-vm.yaml`
+   upgrade would disable the receiver.
+3. **Self-send needs the instance's own key authorized on its own receiver.**
+   `ui/tests/backups.spec.ts` tolerates an `unknown key` failure by skipping, so
+   the manual drill must add the instance key to `/api/buddy/peers` first,
+   otherwise "succeeded" is never actually exercised.
+4. **Notifications are in-memory.** `notifications.NewManager("")` (server.go:85)
+   → settings reset to `Enabled:false` on every pod restart, and
+   `MinSeverity` defaults to `warning`, so `backup_success` (Info) is filtered:
+   set `minSeverity:"info"` for the success check. Pre-existing gap, note it.
+5. **409 needs a send that lasts.** The conflict window is the run time, so use a
+   large dataset (e.g. a ~0.5–1 GiB test dataset) and issue the second POST
    immediately.
-8. Notifications on failure: add `EventBackupFailure EventType =
-   "backup_failure"` to api/internal/notifications/notifications.go and send
-   via the existing `Manager.Send` (manager.go:90) with `SeverityError`, title
-   naming dataset + receiver. Gate on the settings' `EnabledEvents` containing
-   the new event type (check the settings before calling `Send`, which today
-   filters only on enabled/min-severity). Add the checkbox to the
-   Notifications settings UI page.
-   Note: `Manager.Send` holds the manager mutex during the HTTP POST — verify
-   the manager's http.Client has a sane timeout; if not, set one.
-9. Tests: store round-trip; runner fires a due entry (short cadence),
-   records success and passes `pruneKeep` through; a failing receiver
-   (httptest 500) records the failure and produces one ntfy POST to a mock
-   server; catch-up fires once after "restart"; disabled entries never fire.
+6. **Catch-up cannot be triggered through the API** (every POST recomputes a
+   future `nextRun`) and the API image is distroless (no shell in
+   `kubectl exec`). Patch the PVC from a throwaway busybox pod (pattern already
+   used in the handoff for `df`), then restart the API. To exercise the *real*
+   runner without patching, use a `daily` schedule with `runAt` = now+2 min UTC
+   and `kubectl set env deployment/naslos-api BUDDY_SCHEDULER_INTERVAL_MS=5000`.
+7. **Restore confirmation is client-side only**: the page refuses unless the
+   typed destination equals the dataset (backups/+page.svelte:312); the API
+   accepts `restore` with no `confirm` field. Test the UI refusal, don't expect
+   an API-level guard.
 
-### C. UI
+## Task list
 
-10. `ui/src/lib/components/Sidebar.svelte`: add "Backups" → `/backups`.
-11. `ui/src/routes/backups/+page.svelte`, following existing page conventions
-    (Tailwind, fixed table layout, `Array.isArray` guards, error banner):
-    - **Sender half** — identity card from `GET /api/buddy/identity`
-      (fingerprint, copyable public key, create button via POST when
-      `exists:false`, the back-it-up warning); schedules table (dataset, buddy,
-      cadence/run-at, last run + result, next run, Back up now, delete) with a
-      create form (dataset picker from the existing pools API, receiver URL,
-      source, cadence, pruneKeep); ad-hoc send form (dataset, receiver, source).
-      Back up now / ad-hoc send → `POST /api/buddy/send` → poll
-      `GET /api/buddy/jobs/{id}` (~1 s, in-flight guard like Dashboard's poll)
-      and render a progress bar (chunks, plain/sealed bytes,
-      incremental/resumed badges, final result or error; surface a 409 as
-      "a backup of this source is already running").
-    - **Receiver half** — `GET /api/buddy/status`: free/used bytes,
-      enrollment-open badge, peers table, backups table with last-backup
-      columns. The 503 "not configured" case renders an info panel pointing at
-      docs/buddy-backup.md §5.1 instead of an error.
-    - **Verify** — a Verify button per schedule/source driving
-      `POST /api/buddy/restore {verify:true}`, showing the chain digests.
-      No restore form in this round.
-12. Playwright `ui/tests/backups.spec.ts` against the VM (192.168.1.96:30080),
-    asserting API-backed values (not placeholders), following the existing
-    specs: page loads with identity card; create a schedule on a test dataset;
-    Back up now → job reaches succeeded with chunks > 0; receiver section shows
-    free space; full existing suite still passes.
+### 0. Pre-flight (local, before touching the VM)
 
-### D. Docs + spec (same change, per the spec's own rule)
+- `cd api && go build ./... && go vet ./... && go test ./...` — expect green,
+  including `buddy_jobs_test.go` and `buddy_scheduler_test.go`.
+- `cd ui && npm run check` — expect 0 errors.
 
-13. `docs/spec.md` §3.8: add **FR-BUD-15** (scheduled backups: interval
-    cadence, catch-up after downtime, prune on success, notify on failure) and
-    **FR-BUD-16** (owner UI: receiver status, manual send with live progress,
-    verify), plus rows in the test mapping. Update the "No scheduler yet" bullet
-    in docs/buddy-backup.md §7 and mark items 1–2 done in §9; document the
-    async `/api/buddy/send` shape in §5.3. Update `AI_Handoff.md`'s buddy
-    section (delivered / not-done lists) when the work lands.
+### 1. Build, push, deploy
 
-## Validation
+- Fresh tag suffixes per the handoff (`always retag`; registry serves
+  `IfNotPresent`): `make api-image IMAGE_TAG=0.1.0-b8`, `make ui-image
+  IMAGE_TAG=0.1.0-b2`, then `docker push` both. Do **not** parallelise build and
+  push.
+- `helm upgrade naslos charts/naslos -n naslos -f charts/naslos/values.yaml
+  -f charts/naslos/values-vm.yaml --set api.image.tag=0.1.0-b8
+  --set ui.image.tag=0.1.0-b2 --set buddy.enabled=true
+  --set buddy.receivePath=/var/mnt/test/naslos-buddy --set buddy.name=naslos-b`
+  with `TALOSCONFIG=bootstrap/vm/talosconfig`, adding `--force-conflicts` if the
+  image field is owned by an earlier `kubectl set image`.
+- Confirm: `kubectl -n naslos get pods`, the api/ui images show the new tags,
+  `/api/ready` is 200, `http://192.168.1.96:30080/backups` renders "Backups".
+- Note the release revision and tags in the findings.
 
-- `go build ./... && go vet` in `api/` (agent untouched).
-- `go test ./internal/server/ ./internal/buddy/ ./internal/notifications/` in `api/`.
-- `cd ui && npx playwright test` (new spec + full suite).
-- Live drill on the VM, per the handoff's deployment notes (fresh image tag
-  suffixes, `helm upgrade … --force-conflicts`): create a schedule on a test
-  dataset → scheduled/triggered run succeeds and prunes to `pruneKeep`;
-  cancel a run mid-stream via the UI, retry, confirm `resumed: true`; point a
-  schedule at a dead receiver URL → failure recorded + ntfy message arrives;
-  Verify digest equals the node's `zfs send -w | sha256sum`.
+### 2. Automated suites against the live VM
 
-## Risks / notes
+- `cd ui && npx playwright test` — full suite (9 specs incl.
+  `backups.spec.ts`); expect the pre-existing 8 topics still pass.
+- If `backups.spec.ts` skips the send (unknown key) or the schedule (no
+  dataset), treat it as a setup gap and re-run after step 3.1's peer enrollment.
 
-- Converting the send endpoint changes its contract — update the existing
-  `buddy_send_test.go` drills to the job shape in the same change.
-- Jobs now outlive requests, so cancellation (DELETE + shutdown) is mandatory;
-  without it a stuck send runs forever.
-- Scheduler and manual Back up now share the (receiver, source) exclusion —
-  the 409 must be a first-class UI state.
-- The receive dataset's host-namespace mount gotcha (AI_Handoff, "second
-  gotcha") is still open on the VM; it does not block sender-side work.
+### 3. API drills through the NodePort (nginx path + `Remote-User`)
+
+1. **Self-enrollment**: `POST /api/buddy/peers` with this instance's `name` and
+   `publicKey` from `GET /api/buddy/identity` (scoped to the test source), so a
+   self-send can succeed.
+2. **Auth**: `GET /api/buddy/jobs`, `GET /api/buddy/schedules`,
+   `POST /api/buddy/send` without `Remote-User` → 401 (SEC-7).
+3. **Async happy path**: `POST /api/buddy/send {dataset,source,receiver}` → 202
+   `{jobId}`; poll `GET /api/buddy/jobs/{id}`: `running` with `progress` ticks,
+   then `succeeded` with the sync-era fields (`chunks>0`, `chain`,
+   `plainBytes`, `incremental`, `resumed`, `durationSeconds`); the job appears in
+   `GET /api/buddy/jobs`. Compare the reported `plainBytes`/digest against the
+   node's own `zfs send -w | sha256sum` for that snapshot (as the earlier drills
+   did).
+4. **409 conflict**: with the large dataset from precondition 5, POST twice in a
+   row → second is 409 naming the running job; also confirm a *different*
+   dataset is still accepted in parallel.
+5. **Cancel + resume**: start a large send, `DELETE /api/buddy/jobs/{id}` after
+   ~1 s → `{"status":"cancelling"}`; GET reaches `cancelled`. Check the resume
+   state file exists (`/var/lib/naslos/buddy-sends/*.json`) — read it from the
+   busybox PVC pod or `kubectl cp` is unavailable, so list via the pod. Re-POST
+   the same request → `resumed: true`, `skipped > 0`, and it completes.
+6. **Validate + job list/404**: bad schedule cadence, bad `runAt`
+   (`"25:00"`, `"Mon"` for weekly), absolute/`..` source, unknown dataset,
+   bad receiver URL → 400 each; unknown job id → 404; `DELETE` of a finished
+   job → 409.
+
+### 4. Scheduler + retention + catch-up
+
+1. **Due run (shell-free)**: `kubectl -n naslos set env deployment/naslos-api
+   BUDDY_SCHEDULER_INTERVAL_MS=5000`; create a `daily` schedule with `runAt`
+   ≈ now+2 min UTC and `pruneKeep:1`; watch `GET /api/buddy/schedules` move
+   `lastRun`/`lastResult:"ok"`/`nextRun` and a job with `scheduleId` appear in
+   `/api/buddy/jobs`; then `kubectl set env deployment/naslos-api
+   BUDDY_SCHEDULER_INTERVAL_MS-` to restore the 1-minute default.
+2. **Retention**: let that schedule run twice (second is incremental) with
+   `pruneKeep:1` → the receiver's chain list for the source (owner
+   `GET /api/buddy/status` or `buddyctl backups`) holds only the newest chain,
+   and a verify still passes.
+3. **Catch-up**: stop the API (`kubectl scale deploy/naslos-api --replicas=0` or
+   `rollout restart`), rewrite that schedule's `nextRun` to a past timestamp in
+   `/var/lib/naslos/buddy-schedules.json` from a busybox pod mounting the
+   `naslos-shares-config` PVC, restart the API → exactly one job fires on
+   startup (restart again → no second fire).
+4. **Failure path**: schedule/manual send to a dead receiver
+   (`http://192.168.1.96:1` or an unresolvable host) → job `failed`,
+   `lastResult:"failed"` + `lastError` persisted, entry's `nextRun` advanced.
+
+### 5. Notifications (ntfy)
+
+- Run a capture listener reachable from the pod (small python HTTP server on the
+  VM host; fallback: a throwaway public ntfy topic subscribed to
+  `https://ntfy.sh/<topic>/json`).
+- `PUT /api/notifications` with `enabled:true`, `serverURL` = capture base,
+  `topic`, `minSeverity:"info"`, `enabledEvents` including `backup_success` and
+  `backup_failure`.
+- Trigger one success and one failure → exactly one POST each; then remove
+  `backup_success` from `enabledEvents` and confirm a success produces **no**
+  POST; re-check that a failure still does (gate behaviour, FR-BUD-15).
+- Note the in-memory settings + restart reset (precondition 4) in findings.
+
+### 6. UI / browser drill (Playwright + manual click-through)
+
+- Identity card: fingerprint + public key match `GET /api/buddy/identity`; the
+  `exists:false` → "Create identity" path if the VM has no identity.
+- Schedules table: create via the form, see it rendered, delete with the
+  confirmation dialog; corrupting the form (bad cadence/runAt) surfaces the 400.
+- **Back up now**: progress bar advances (chunks/bytes), incremental/resumed
+  badges, cancel button cancels, final result renders; a second concurrent start
+  surfaces the 409 message.
+- **Verify**: per-schedule Verify shows chain digests; compare with step 3.3's
+  digest.
+- **Restore**: the typed-confirmation gate refuses a wrong dataset (no API call),
+  and a real restore of a test source into a throwaway dataset lands (check
+  `zfs list` on the node), following the existing restore drill.
+- Receiver half: free/used space, peers, stored backups + last-backup columns;
+  the not-configured 503 state renders the docs pointer.
+
+### 7. Persistence & regression
+
+- `kubectl -n naslos rollout restart deployment/naslos-api` → schedules and
+  identity survive (PVC); jobs list is empty (in-memory, expected); a retry of an
+  interrupted send still resumes.
+- Receive-side regression: `buddyctl enroll`/`push`/`status`/restore for one
+  source, plus `/api/buddy/status` and `/api/buddy/peers` 401/200 — the receiver
+  code is untouched but the deploy is the risk.
+- `ui/tests/*` and the dashboard/shares/terminal smoke checks to catch UI
+  regressions from the sidebar/notifications edits.
+
+## Deliverable / findings
+
+- Test report appended to `AI_Handoff.md` (buddy section): deployed tags +
+  revision, which checks passed, any defects with the exact failing command and
+  response.
+- Defects found get fixed in the same branch (implementation agent), with the
+  spec/test updated together if a MUST changed.
+- Record these gaps even if everything passes: `BUDDY_SCHEDULES` /
+  `BUDDY_SCHEDULER_INTERVAL_MS` not wired in the chart; notifications settings
+  not persisted; the `--set buddy.*` flags not captured in `values-vm.yaml`.
 
 ## Out of scope
 
-Multi-buddy fan-out; peer-exposure decision (dedicated listener vs
-Traefik + Authelia); restore UI; `buddyctl` changes.
+Multi-buddy fan-out; the peer-exposure decision; `buddyctl` changes; the
+security-audit *fixes* (that repo change is docs-only).
