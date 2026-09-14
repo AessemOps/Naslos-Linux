@@ -162,6 +162,7 @@ func (s *Server) routes() {
 	// Shares
 	s.router.HandleFunc("/api/shares", s.handleShares)
 	s.router.HandleFunc("/api/shares/paths", s.handleSharePaths)
+	s.router.HandleFunc("/api/shares/folders", s.handleShareFolders)
 	s.router.HandleFunc("/api/shares/status", s.handleSharesStatus)
 	s.router.HandleFunc("/api/shares/apply", s.handleSharesApply)
 	s.router.HandleFunc("/api/shares/config/samba", s.handleSambaConfig)

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -218,6 +219,56 @@ func (c *Client) ListPools() ([]Pool, error) {
 		pools = []Pool{}
 	}
 	return pools, nil
+}
+
+// ListShareFolders returns the subfolders of a folder inside the share datasets.
+func (c *Client) ListShareFolders(path string) ([]string, error) {
+	req, err := http.NewRequest(http.MethodGet,
+		c.baseURL+"/api/v1/shares/folders?path="+url.QueryEscape(path), nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating list-folders request: %w", err)
+	}
+
+	var payload struct {
+		Folders []string `json:"folders"`
+	}
+	if err := c.do(req, &payload); err != nil {
+		return nil, err
+	}
+	if payload.Folders == nil {
+		payload.Folders = []string{}
+	}
+	return payload.Folders, nil
+}
+
+// CreateShareFolder creates a folder inside path and returns the new path.
+func (c *Client) CreateShareFolder(path, name string) (string, error) {
+	body, err := json.Marshal(map[string]string{"path": path, "name": name})
+	if err != nil {
+		return "", fmt.Errorf("encoding create-folder request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/api/v1/shares/folders", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("creating create-folder request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	var payload map[string]string
+	if err := c.do(req, &payload); err != nil {
+		return "", err
+	}
+	return payload["path"], nil
+}
+
+// DeleteShareFolder removes an empty folder inside the share datasets.
+func (c *Client) DeleteShareFolder(path string) error {
+	req, err := http.NewRequest(http.MethodDelete,
+		c.baseURL+"/api/v1/shares/folders?path="+url.QueryEscape(path), nil)
+	if err != nil {
+		return fmt.Errorf("creating delete-folder request: %w", err)
+	}
+	return c.do(req, nil)
 }
 
 // CreatePool creates a ZFS pool via the agent.

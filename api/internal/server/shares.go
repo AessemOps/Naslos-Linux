@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 
@@ -28,6 +29,10 @@ func (s *Server) handleShares(w http.ResponseWriter, r *http.Request) {
 		// Refuse a path that is not on a ZFS dataset before anything is
 		// created: this is what keeps share data inside the pool.
 		if err := s.requireDatasetPath(req.Path); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.requireSharePathExist(req.Path); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -67,6 +72,18 @@ func (s *Server) handleShareDetail(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		// A share can be repointed at another folder; validate the new path
+		// exactly like a create, so an edit cannot move data off the pool.
+		if req.Path != nil {
+			if err := s.requireDatasetPath(*req.Path); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if err := s.requireSharePathExist(*req.Path); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 		share, err := s.shares.Update(name, req)
 		if err != nil {
@@ -114,6 +131,90 @@ func (s *Server) handleSharePaths(w http.ResponseWriter, r *http.Request) {
 		"base":  s.shares.ZFSBase(),
 		"paths": mountpoints,
 	})
+}
+
+// handleShareFolders manages folders inside the share datasets, for building a
+// share path that is a subfolder of a dataset ("link this share to a new folder
+// in the pool").
+//
+//	GET    /api/shares/folders?path=/var/mnt/test       list subfolders
+//	POST   /api/shares/folders  {"path":..., "name":...} create a subfolder
+//	DELETE /api/shares/folders?path=/var/mnt/test/media  remove an empty folder
+//
+// Every path is checked against the node's datasets first, so a folder can only
+// ever be created inside the pool - the same guarantee that keeps share data
+// durable.
+func (s *Server) handleShareFolders(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		path := r.URL.Query().Get("path")
+		if err := s.requireDatasetPath(path); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		folders, err := s.agent.ListShareFolders(path)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"base":    s.shares.ZFSBase(),
+			"path":    path,
+			"folders": folders,
+		})
+
+	case http.MethodPost:
+		var req struct {
+			Path string `json:"path"`
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.requireDatasetPath(req.Path); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		created, err := s.agent.CreateShareFolder(req.Path, req.Name)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]string{"path": created})
+
+	case http.MethodDelete:
+		path := r.URL.Query().Get("path")
+		if err := s.requireDatasetPath(path); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.agent.DeleteShareFolder(path); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "folder removed", "path": path})
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// requireSharePathExist confirms the share path exists as a folder before a
+// share is pointed at it, so a typo is reported instead of a share that serves
+// nothing.
+//
+// The API mounts the datasets read-only, which is enough to stat them. When that
+// mount is absent (a deployment without api.datasetsHostPath) the check is
+// skipped rather than blocking every share: the serving containers log what they
+// cannot see either way.
+func (s *Server) requireSharePathExist(path string) error {
+	if _, err := os.Stat(s.shares.ZFSBase()); err != nil {
+		return nil
+	}
+	return s.shares.ValidatePath(path)
 }
 
 // datasetMountpoints returns the mountpoints of all datasets on the node.

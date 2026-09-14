@@ -183,6 +183,13 @@ func (m *Manager) Update(name string, req UpdateShareRequest) (*Share, error) {
 
 	previous := *share
 
+	if req.Path != nil {
+		cleanPath, err := m.normalizePath(*req.Path)
+		if err != nil {
+			return nil, err
+		}
+		share.Path = cleanPath
+	}
 	if req.Description != nil {
 		share.Description = *req.Description
 	}

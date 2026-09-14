@@ -184,12 +184,18 @@ Requirement IDs are stable: never renumber, only deprecate.
 ### 3.3 Shares (`FR-SHR`)
 
 - **FR-SHR-01** — Shares MUST be backed by ZFS datasets: a share path MUST be a
-  directory on a mounted ZFS dataset, and the API MUST refuse a path that is not
-  (the base directory's children are not necessarily datasets — Talos keeps
-  `/var` on EPHEMERAL, so a plain directory there would hold data outside every
-  pool, without checksums, snapshots or redundancy, and lose it on upgrade).
+  folder on a mounted ZFS dataset — either the dataset's mountpoint or a
+  subfolder of it — and the API MUST refuse a path that is not (the base
+  directory's children are not necessarily datasets — Talos keeps `/var` on
+  EPHEMERAL, so a plain directory there would hold data outside every pool,
+  without checksums, snapshots or redundancy, and lose it on upgrade). A share
+  path MUST exist as a folder; the API MUST provide folder creation and listing
+  confined to the datasets so an operator can point a share at a new folder
+  inside the pool without leaving the UI, and that creation MUST be refused
+  outside the datasets and MUST NOT be able to delete non-empty folders. Share
+  paths MUST be editable, and a path change MUST be validated like a create.
   `GET /api/shares/paths` MUST offer only dataset mountpoints, and the serving
-  container MUST log whether each share path is on a mounted filesystem.
+  containers MUST log whether each share path is on a mounted filesystem.
   Mount points exposed to containers MUST use `mountPropagation: HostToContainer`
   so a dataset mounted after a pod starts is visible rather than the pod serving
   the underlying directory.

@@ -59,6 +59,9 @@ type CreateShareRequest struct {
 // optional; a non-nil Description allows clearing the description (an empty
 // string is a valid value), which a plain string could not express.
 type UpdateShareRequest struct {
+	// Path repoints the share at another folder (a subfolder of a dataset is
+	// allowed, see FR-SHR-01). The API validates it like a create.
+	Path         *string  `json:"path,omitempty"`
 	Description  *string  `json:"description,omitempty"`
 	ReadOnly     *bool    `json:"readOnly,omitempty"`
 	Browseable   *bool    `json:"browseable,omitempty"`

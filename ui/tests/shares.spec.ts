@@ -101,6 +101,75 @@ test('an NFS share is exported to the node as a Ganesha export block', async ({ 
   }
 });
 
+test('a share can be linked to a new folder created from the share form', async ({ page, request }) => {
+  const dataset = await shareableDataset(request);
+  const folder = `uifolder${Date.now().toString().slice(-6)}`;
+  const name = 'folderlinktest';
+  const expected = `${dataset}/${folder}`;
+
+  try {
+    await page.goto('/shares');
+    await page.click('text=+ New Share');
+
+    const dialog = page.locator('.fixed.inset-0');
+    await expect(dialog.getByRole('heading', { name: 'New Share' })).toBeVisible();
+
+    // The picker starts on a dataset, which is what the share would use.
+    await expect(dialog.locator('code')).toHaveText(dataset);
+
+    // Create a folder inside the dataset: this is the "link the share to a new
+    // folder in the pool" flow, and the picker must follow the new folder.
+    await dialog.locator('input[placeholder="New folder name"]').fill(folder);
+    await dialog.getByRole('button', { name: 'Create folder' }).click();
+    await expect(dialog.locator('code')).toHaveText(expected, { timeout: 10_000 });
+
+    // The folder has to be real on the node, not just rendered in the UI.
+    const listing = await request.get(`/api/shares/folders?path=${encodeURIComponent(expected)}`);
+    expect(listing.ok(), await listing.text()).toBeTruthy();
+
+    // Save; the share must point at the folder that was just created.
+    await dialog.locator('input[type="text"]').first().fill(name);
+    await dialog.getByRole('button', { name: 'Create', exact: true }).click();
+    await expect(dialog).toBeHidden({ timeout: 10_000 });
+
+    const share = await (await request.get(`/api/shares/${name}`)).json();
+    expect(share.path).toBe(expected);
+
+    // Editing the share reopens the picker at that folder, so it can be
+    // repointed at another folder later.
+    await page.locator('.card').filter({ hasText: name }).getByText('Edit').click();
+    const editDialog = page.locator('.fixed.inset-0');
+    await expect(editDialog.getByRole('heading', { name: 'Edit Share' })).toBeVisible();
+    await expect(editDialog.locator('code')).toHaveText(expected);
+  } finally {
+    await request.delete(`/api/shares/${name}`);
+    await request.delete(`/api/shares/folders?path=${encodeURIComponent(expected)}`);
+  }
+});
+
+test('folder creation is confined to the ZFS datasets', async ({ request }) => {
+  // The folder endpoints are reachable from the UI, so they must refuse a path
+  // outside the pool instead of becoming a file-creation primitive on the node.
+  const outside = await request.post('/api/shares/folders', {
+    data: { path: '/etc', name: 'nope' }
+  });
+  expect(outside.status(), await outside.text()).toBe(400);
+
+  // Traversal is normalised away before the check.
+  const traversal = await request.post('/api/shares/folders', {
+    data: { path: '/var/mnt/test/../../etc', name: 'nope' }
+  });
+  expect(traversal.status(), await traversal.text()).toBe(400);
+
+  // A share cannot be pointed at a folder that does not exist.
+  const dataset = await shareableDataset(request);
+  const missing = await request.post('/api/shares', {
+    data: { name: 'missingfoldertest', path: `${dataset}/does-not-exist`, protocol: 'smb' }
+  });
+  expect(missing.status(), await missing.text()).toBe(400);
+  expect(await missing.text()).toContain('does not exist');
+});
+
 test('a share can be restricted to an LDAP group from the form', async ({ page, request }) => {
   const name = 'grouppickertest';
 
@@ -122,7 +191,7 @@ test('a share can be restricted to an LDAP group from the form', async ({ page, 
     await expect(groupBox).toBeVisible();
     await groupBox.check();
 
-    await page.getByRole('button', { name: 'Create' }).click();
+    await page.getByRole('button', { name: 'Create', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'New Share' })).toBeHidden({ timeout: 10_000 });
 
     // Stored as a group, not as a user name.
