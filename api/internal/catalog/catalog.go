@@ -11,25 +11,25 @@ import (
 
 // Catalog is the app catalog.
 type Catalog struct {
-	apps    map[string]*App
+	apps        map[string]*App
 	catalogPath string
 }
 
 // App is a catalog entry for an installable app.
 type App struct {
-	Name        string          `json:"name"`
-	DisplayName string          `json:"displayName"`
-	Description string          `json:"description"`
-	Category    string          `json:"category"`
-	Icon        string          `json:"icon"`
-	Version     string          `json:"version"`
-	Chart       string          `json:"chart"`
-	Repository  string          `json:"repository"`
-	Schema      json.RawMessage `json:"schema"` // JSON Schema for config form
+	Name          string                 `json:"name"`
+	DisplayName   string                 `json:"displayName"`
+	Description   string                 `json:"description"`
+	Category      string                 `json:"category"`
+	Icon          string                 `json:"icon"`
+	Version       string                 `json:"version"`
+	Chart         string                 `json:"chart"`
+	Repository    string                 `json:"repository"`
+	Schema        json.RawMessage        `json:"schema"` // JSON Schema for config form
 	DefaultValues map[string]interface{} `json:"defaultValues"`
-	Ports       []int           `json:"ports"`
-	Website     string          `json:"website"`
-	Tags        []string        `json:"tags"`
+	Ports         []int                  `json:"ports"`
+	Website       string                 `json:"website"`
+	Tags          []string               `json:"tags"`
 }
 
 // CatalogEntry is the catalog index response.

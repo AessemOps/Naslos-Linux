@@ -54,21 +54,21 @@ type PoolConfig struct {
 
 // PoolHealth is a structured parse of `zpool status` for the health page.
 type PoolHealth struct {
-	Name       string          `json:"name"`
-	State      string          `json:"state"`
-	Scan       string          `json:"scan"`
-	Errors     string          `json:"errors"`
-	Config     []PoolDevice    `json:"config"`
-	IOStats    PoolIOStats     `json:"ioStats"`
+	Name    string       `json:"name"`
+	State   string       `json:"state"`
+	Scan    string       `json:"scan"`
+	Errors  string       `json:"errors"`
+	Config  []PoolDevice `json:"config"`
+	IOStats PoolIOStats  `json:"ioStats"`
 }
 
 // PoolDevice is a single device in the pool config tree.
 type PoolDevice struct {
-	Name   string       `json:"name"`
-	State  string       `json:"state"`
-	Read   string       `json:"read"`
-	Write  string       `json:"write"`
-	Cksum  string       `json:"cksum"`
+	Name    string       `json:"name"`
+	State   string       `json:"state"`
+	Read    string       `json:"read"`
+	Write   string       `json:"write"`
+	Cksum   string       `json:"cksum"`
 	Devices []PoolDevice `json:"devices,omitempty"`
 }
 

@@ -9,8 +9,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/AessemOps/Naslos-Linux/agent/internal/zfs"
 	"github.com/AessemOps/Naslos-Linux/agent/internal/server"
+	"github.com/AessemOps/Naslos-Linux/agent/internal/shares"
+	"github.com/AessemOps/Naslos-Linux/agent/internal/zfs"
 )
 
 // naslos-agent runs as a privileged DaemonSet on each node.
@@ -46,8 +47,18 @@ func main() {
 		}
 	}
 
-	// Start HTTP server for pool operations
-	srv := server.New(listen, zfsClient)
+	// Share configuration is optional too: it needs the host root mounted at
+	// /host. Without it the agent still serves ZFS operations and the shares
+	// endpoints return 503.
+	var sharesClient *shares.Client
+	if !shares.IsAvailable() {
+		log.Printf("WARN: host root not available at /host — share configuration endpoints return 503")
+	} else {
+		sharesClient = shares.NewClient(ctx)
+	}
+
+	// Start HTTP server for pool and share configuration operations
+	srv := server.New(listen, zfsClient, sharesClient)
 	go func() {
 		if err := srv.Start(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Agent server error: %v", err)

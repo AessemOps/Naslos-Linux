@@ -30,6 +30,22 @@ api:
   # (see templates/agent-daemonset.yaml headless Service). Empty selects the
   # in-namespace default http://naslos-agent.<namespace>.svc.cluster.local:9090.
   agentBaseURL: ""
+  # Read-only hostPath to the ZFS datasets, mounted at /var/mnt so the API can
+  # list and validate share paths for the shares UI. Set to "null"/empty on
+  # multi-node clusters (a hostPath pins the pod to one node and would list
+  # only that node's datasets).
+  datasetsHostPath: /var/mnt
+  # Share definitions are persisted to SHARES_CONFIG so they survive API pod
+  # restarts and chart upgrades. Without a mounted path the share manager is
+  # in-memory only and every share is lost on restart.
+  sharesConfig:
+    enabled: true
+    # Path inside the API container (mounted from a PVC).
+    mountPath: /var/lib/naslos
+    file: /var/lib/naslos/shares.json
+    # Size of the PersistentVolumeClaim holding SHARES_CONFIG.
+    size: 64Mi
+    storageClassName: ""
   # LDAP CA certificate Secret (key ca.crt) used to verify the OpenLDAP TLS
   # certificate. The API mounts it and sets LDAP_CA_CERT. Defaults to the
   # secret created by openldap/generate-secrets.sh.
@@ -60,6 +76,13 @@ ui:
   nodePort:
     enabled: false
     port: 30080
+  # Startup guard: nginx resolves the API host name at startup and refuses to
+  # boot if it is not in DNS yet, which is the case right after a node reboot
+  # (the UI comes up before the API Service). The UI pod waits for the name -
+  # bounded - so it starts on the first attempt instead of crash-looping.
+  waitForApi:
+    retries: 30
+    intervalSeconds: 1
   resources:
     requests:
       cpu: 50m
@@ -98,18 +121,62 @@ zfs:
   # Auto-import pools at boot (handled by zfs-service extension)
   autoImport: true
 
-# Shares configuration
+# Shares configuration.
+#
+# Share definitions live in the API (persisted on a PVC) and are rendered into
+# smb.conf / exports, which the privileged naslos-agent writes to the host at
+# /var/lib/naslos/shares. Dedicated serving workloads mount that directory and
+# reload themselves when the rendered config changes.
 shares:
   enabled: true
   smb:
     enabled: true
     workgroup: "NASLOS"
-    # Time Machine support for macOS
+    # Time Machine support for macOS (SMB + fruit VFS; AFP is deprecated)
     timeMachine: true
+    image:
+      repository: 192.168.1.2:30095/naslos-samba
+      tag: "0.1.0"
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  # Advertise the server on the network so it appears when a client browses
+  # SMB (Dolphin/Finder use mDNS, Windows Explorer uses WSD) instead of having
+  # to type the address. `name` is also used as the Samba NetBIOS name, so
+  # clients see one identity.
+  discovery:
+    enabled: true
+    name: "naslos"
+    # Interface to advertise on. Empty auto-detects the default-route
+    # interface, which keeps the advertisement off the pod network
+    # (cni0/flannel/veth) so clients do not see a 10.x address.
+    interface: ""
+  # How often the samba container re-checks the rendered config and account
+  # file, in seconds. This bounds how long a password change takes to apply to
+  # NEW SMB connections (existing sessions keep their credentials until they
+  # reconnect), so lowering it converges faster at the cost of more polling.
+  confCheckInterval: 3
   nfs:
     enabled: true
+    image:
+      repository: 192.168.1.2:30095/naslos-nfs
+      tag: "0.1.0"
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  # AFP is deprecated in favour of SMB Time Machine and is not served.
   afp:
-    enabled: false  # Deprecated in favor of SMB Time Machine
+    enabled: false
 
 # Traefik ingress controller
 # Traefik chart v39+ requires the new ports schema:
