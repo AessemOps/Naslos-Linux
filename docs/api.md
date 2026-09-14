@@ -202,6 +202,11 @@ shell, never an arbitrary command.
 | `TRAEFIK_CIDR` | `10.0.0.0/8` | Comma-separated CIDRs trusted for auth headers |
 | `NASLOS_NAMESPACE` | — | Namespace injected by the Helm chart |
 | `KUBECONFIG` | — | Path to kubeconfig (default: in-cluster) |
+| `BUDDY_NAME` | `naslos` | Name this instance reports to backup peers |
+| `BUDDY_RECEIVE_PATH` | `/var/lib/naslos/buddy` | Dataset (mounted read-write) that stores received sealed chunks |
+| `BUDDY_PEERS` | `/var/lib/naslos/buddy-peers.json` | Authorized-keys registry for backup peers |
+| `BUDDY_ENROLL_TOKEN` | — | One-time token that lets a peer authorize its own key (from the `naslos-buddy` Secret) |
+| `BUDDY_REQUIRE_AUTH` | `true` | Require an authenticated session to authorize/revoke peers |
 
 The `naslos-agent` uses `NODE_NAME` (from `spec.nodeName`) and listens on `:9090`.
 
