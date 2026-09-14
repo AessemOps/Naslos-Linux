@@ -318,8 +318,38 @@ Requirement IDs are stable: never renumber, only deprecate.
 
 - **FR-LOG-01** — Log streaming and shell access MUST use WebSockets
   (`/api/ws/logs`, `/api/ws/exec`).
-- **FR-LOG-02** — The web terminal MUST run zsh in a privileged container
-  with host mounts (Talos has no shell by design).
+- **FR-LOG-02** — The web terminal MUST run a shell in a privileged container
+  with the host mounted (Talos has no shell by design), deployed by the chart
+  and switchable off with `terminal.enabled`. The container MUST NOT need ZFS
+  packages of its own: it reaches the host's tooling through `chroot /host`, so
+  it runs the binaries matching the kernel module.
+- **FR-LOG-03** — The terminal MUST NOT require typing a pod name: the API MUST
+  list namespaces and pods (with their containers) and mark the shell container,
+  and the UI MUST preselect it.
+- **FR-LOG-04** — The exec endpoint MUST accept only shell names from a fixed
+  set (never an arbitrary command), MUST resolve the container rather than guess
+  (an ambiguous pod is an error naming the containers), MUST reject a pod that is
+  not running, and MUST validate namespace/pod names against DNS-1123 so a caller
+  cannot shape an API path.
+- **FR-LOG-05** — The interactive session MUST carry window resizes, so
+  full-screen tools are usable: the browser MUST send the terminal size on open
+  and on every resize, and the server MUST apply it as the session's TTY size.
+- **FR-LOG-06** — A failed session MUST be diagnosable: the endpoint MUST answer
+  a plain GET (no upgrade) with the resolved target or the reason it cannot
+  attach, because a browser cannot read the status of a failed WebSocket
+  handshake.
+- **FR-LOG-07** — The API's terminal permissions MUST be least-privilege: pods,
+  pods/log and pods/exec scoped to the Naslos namespace by a Role, and only
+  namespace listing granted cluster-wide.
+- **FR-LOG-08** — The terminal MUST be served only to requests that prove an
+  authenticated session, and MUST fail closed without it: the API MUST require
+  the identity header its authenticating proxy injects (Authelia's `Remote-User`
+  via Traefik `forwardAuth`, which replaces any client-supplied value), and the
+  unauthenticated listener (the UI's nginx, reachable on a node port) MUST refuse
+  the terminal paths outright rather than forward them. The chart MUST route
+  those paths from the proxy straight to the API, MUST expose
+  `terminal.requireAuth` (default `true`) for the explicit opt-out used on
+  trusted networks, and the refusal message MUST say how to fix it.
 
 ### 3.7 Notifications (`FR-NTF`)
 

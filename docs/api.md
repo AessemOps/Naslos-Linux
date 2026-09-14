@@ -144,11 +144,29 @@ The actual ZFS work is delegated to `naslos-agent` on each node:
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/ws/logs?namespace=&pod=&container=` | Stream a pod's live logs |
-| GET | `/api/ws/exec?namespace=&pod=&container=&command=` | Interactive exec (xterm); defaults: pod required, ns `default`, container `main`, command `/bin/sh` |
+| GET | `/api/namespaces` | Namespace names, for the terminal's picker |
+| GET | `/api/pods?namespace=naslos` | Pods with their containers, phase, readiness, and a `terminal` flag marking the shell container |
+| GET | `/api/ws/logs?namespace=&pod=&container=&tail=` | Stream a pod's live logs |
+| GET | `/api/ws/exec?namespace=&pod=&container=&shell=` | Interactive exec (xterm). Defaults: namespace = the Naslos namespace, shell = `sh`, container = the pod's only container |
 
-`/api/ws/logs` reads the pod log stream (`tail: 100` lines, follow). `/api/ws/exec`
-uses the Kubernetes `remotecommand` SPDY executor over a websocket.
+`/api/ws/logs` reads the pod log stream (tail 200 lines, follow).
+`/api/ws/exec` uses the Kubernetes `remotecommand` SPDY executor over a websocket.
+
+**Frame protocol** (the two are split by frame type so a resize can never be
+typed into the shell as garbage):
+
+| Frame | Meaning |
+| --- | --- |
+| binary | raw keystrokes → stdin |
+| text | JSON control message: `{"type":"resize","cols":N,"rows":N}` |
+
+**Preflight.** A plain `GET /api/ws/exec` (no `Upgrade` header) validates the
+target and answers with the resolved `namespace`/`pod`/`container`/`shell`, or
+the reason it cannot attach (404 unknown pod, 400 unknown shell or ambiguous
+container, 409 pod not running). The terminal calls this before opening the
+socket, because a browser cannot read the HTTP status of a failed websocket
+handshake. `shell` is limited to `bash`, `sh`, `ash`, `zsh` - the endpoint runs a
+shell, never an arbitrary command.
 
 ### Static assets
 

@@ -51,6 +51,31 @@ users could never authenticate over SMB.
 - **Destruction is guarded**: destroying a dataset a share serves is a 409 with
   the share named, a pool's root dataset is refused, and a non-empty dataset
   needs `recursive=true` (the UI asks in those terms).
+- **The web terminal is real.** It used to be a facade: `handleExecWS` streamed
+  output with `Stdin: nil` (keystrokes were read and thrown away), never sent a
+  window size, defaulted the container to `main`, and nginx had no WebSocket
+  upgrade headers at all - so nothing could work. Now: pickers for
+  namespace/pod/container fed by new `/api/namespaces` and `/api/pods` endpoints
+  (the shell container is marked and preselected), a privileged `naslos-terminal`
+  container the chart deploys (`terminal.enabled`, FR-LOG-02), a real stdin pipe,
+  resize messages, shells limited to bash/sh/ash/zsh, least-privilege RBAC (Role
+  in the namespace + namespaces read), and a preflight GET that turns "pod not
+  found" into a message the UI can show.
+- **Verified in a browser**: Playwright attaches, waits for the prompt, runs
+  `echo`, `id -u` (⇒ 0) and `zpool list` (⇒ the real pool), then disconnects.
+  That exercises nginx's upgrade path, the API's exec, the RBAC and the host
+  tooling in one go.
+- Two bugs that test caught: nginx forwards `Host` **without** the NodePort while
+  the browser's `Origin` keeps it, so a port-sensitive origin check refused the
+  terminal's own UI; and `chroot /host /host/usr/local/sbin/zpool` is wrong -
+  paths after a chroot are relative to the *new* root.
+- **The terminal is gated on an authenticated session (FR-LOG-08).** The API
+  requires the identity header the authenticating proxy injects (`Remote-User`,
+  via Traefik `forwardAuth`, whose `authResponseHeaders` replaces any value a
+  client sent) and fails closed with 401; the UI's nginx **refuses** the terminal
+  paths outright (403), so the node-port listener - where nothing proves who is
+  asking - cannot even forward them, and the chart routes them from Traefik
+  straight to the API. `terminal.requireAuth: false` is the explicit opt-out.
 - **NFS is served** by NFS-Ganesha in userspace (`naslos-nfs` DaemonSet,
   hostNetwork, NFSv4/TCP :2049) — Talos has no kernel `nfsd`, so the API renders
   Ganesha's config instead of `/etc/exports`. Verified live: a *separate client
