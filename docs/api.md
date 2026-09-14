@@ -96,6 +96,10 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | GET | `/api/volumes/zfs/{name}/health` | Structured health data (alias) |
 | GET | `/api/volumes/zfs/import` | List pools available for import (on disk but not imported) |
 | POST | `/api/volumes/zfs/import` | Import: `{"name":"tank"}` for one pool, `{}` for all |
+| POST | `/api/volumes/zfs/{name}/devices` | Attach disks: `{disks, topology, force}` → `zpool add`. Refuses a disk already in any pool (even with `force`), a non-`/dev` path, an unknown disk, and too few disks for the topology (FR-STO-08) |
+| GET | `/api/datasets` | Every dataset with used/avail/refer/mountpoint |
+| POST | `/api/datasets` | Create: `{pool, name, options}` → `zfs create -p` (validated name + safe option subset, FR-STO-07) |
+| DELETE | `/api/datasets?name=<pool>/<name>&recursive=true` | Destroy a dataset. Empty → plain destroy; non-empty needs `recursive=true`; a pool root dataset is refused; a dataset backing a share's path is refused with 409 (FR-STO-09) |
 
 The actual ZFS work is delegated to `naslos-agent` on each node:
 `chroot /host zpool …` / `chroot /host zfs …`. The API reaches the agent

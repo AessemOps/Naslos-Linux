@@ -205,6 +205,68 @@ func (c *Client) ListDatasets() ([]Dataset, error) {
 	return datasets, nil
 }
 
+// CreateDataset creates a dataset inside an existing pool. name is relative to
+// the pool ("media", "photos/2026"); options is the safe property subset the
+// agent accepts (compression, quota, recordsize, atime, copies, readonly).
+func (c *Client) CreateDataset(pool, name string, options map[string]string) error {
+	body, err := json.Marshal(map[string]interface{}{"name": name, "options": options})
+	if err != nil {
+		return fmt.Errorf("encoding create-dataset request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost,
+		c.baseURL+"/api/v1/datasets/"+url.PathEscape(pool), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("creating create-dataset request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return c.do(req, nil)
+}
+
+// DestroyDataset destroys a dataset (pool/name[/…]). recursive must be set
+// explicitly for a dataset with children or snapshots.
+func (c *Client) DestroyDataset(name string, recursive bool) error {
+	target := c.baseURL + "/api/v1/datasets/" + escapeDatasetPath(name)
+	if recursive {
+		target += "?recursive=true"
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, target, nil)
+	if err != nil {
+		return fmt.Errorf("creating destroy-dataset request: %w", err)
+	}
+	return c.do(req, nil)
+}
+
+// AddPoolVDev attaches disks to an existing pool: `zpool add [-f] <pool>
+// [<topology>] <disk>…`. force allows overwriting an unrecognised signature.
+func (c *Client) AddPoolVDev(pool, topology string, disks []string, force bool) error {
+	body, err := json.Marshal(map[string]interface{}{
+		"disks": disks, "topology": topology, "force": force,
+	})
+	if err != nil {
+		return fmt.Errorf("encoding add-devices request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost,
+		c.baseURL+"/api/v1/pools/"+url.PathEscape(pool)+"/devices", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("creating add-devices request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return c.do(req, nil)
+}
+
+// escapeDatasetPath escapes each component of a dataset path but keeps the
+// separators, so pool/name reaches the agent as two path segments.
+func escapeDatasetPath(name string) string {
+	parts := strings.Split(name, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
+}
+
 // ListPools returns all ZFS pools known to the agent.
 func (c *Client) ListPools() ([]Pool, error) {
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/pools", nil)
