@@ -72,8 +72,27 @@ users could never authenticate over SMB.
 
 ---
 
-## Earlier work: dashboard & metrics (`feature/dashboard-and-metrics`)
+### Node reboot (observed, fixed)
+The VM rebooted during this work (node uptime reset). Every pod restarted with
+`Unknown`/exit 255, which is expected — but the UI showed **2 restarts** because
+nginx resolves `naslos-api` at startup and refuses to boot before the Service is
+in DNS:
 
+```
+[emerg] host not found in upstream "naslos-api" in /etc/nginx/conf.d/default.conf
+```
+
+Fixed by waiting for the name in an init container (`ui.waitForApi`, mirroring
+the API's `wait-for-ldap`). Note: switching nginx to a `resolver` + variable
+does **not** work here — nginx's own resolver ignores the pod search domains, so
+the short name fails (returns 502); the literal name is resolved by the system
+resolver, which applies them.
+
+After the reboot everything else converged on its own: the API re-applied the
+share configuration on startup (`applied: true`, revision set), and discovery,
+the account mirror and group access were all healthy.
+
+## Earlier work: dashboard & metrics (`feature/dashboard-and-metrics`)
 ## Known issue (separate, unresolved)
 `naslos-openldap-backup` CronJob is in CrashLoopBackOff on the VM as of
 2026-09-13 — LDAP backups are failing. Not related to the LDAP-availability
