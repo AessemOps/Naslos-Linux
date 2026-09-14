@@ -161,6 +161,105 @@ still open: the receive dataset's host-namespace mount on Talos (see the platfor
 gotcha above), which the restore drill does not depend on because `zfs receive`
 creates the mount itself.
 
+**UI + scheduler verified live on the VM (2026-09-14/15), api `0.1.0-b8` + ui
+`0.1.0-b4`, helm revision 59.** `go build`/`vet`/`test` clean, `svelte-check` 0
+errors, full Playwright suite **29 passed / 2 skipped / 0 failed** (terminal exec
+tests skip without a session). Drills, all through the UI NodePort with
+`Remote-User: admin`:
+
+- async jobs: `POST /api/buddy/send` → `202 {jobId}`, poll → `succeeded` with the
+  full result payload (chain, chunks, uploaded/skipped, plainBytes, snapshot,
+  GUIDs) and progress ticks; `GET /api/buddy/jobs` lists it; unknown job → 404;
+  second send for the same (receiver, source) → 409 naming the running job.
+- cancel + resume (FR-BUD-16): an in-cluster drill cancelled a 106 MiB send at
+  chunk 16 (`DELETE` → `cancelling` → `cancelled`), and the retry resumed the
+  **same snapshot**: `resumed: true`, 16 skipped, 90 uploaded, 106 chunks,
+  succeeded. Same receiver+source is required (a different receiver is a
+  different chain, by design).
+- schedules (FR-BUD-15): a `daily` entry fired at its run-at, recorded
+  `lastResult: ok` and advanced `nextRun`; the job carries `scheduleId`; a
+  schedule pointed at a dead receiver recorded `lastResult: failed` +
+  `lastError`; a `hourly` entry stayed due while a conflicting manual send ran.
+  Catch-up is unit-tested (`TestBuddySchedulerCatchUpFiresOnceAndDisabledNeverFires`),
+  not repeated live (it needs a past `nextRun` patched into the PVC, and the API
+  image is distroless).
+- notifier: ntfy `backup_success` (priority 2) and `backup_failure` (priority 4)
+  both arrived at a capture listener with the expected titles/bodies; with only
+  `backup_failure` enabled a success produced **no** post while failures still did.
+- retention: the second send of a source was `incremental: true` off the recorded
+  GUID (1 chunk), `pruneKeep` reported `prunedChains: 1` and the receiver kept one
+  chain.
+- restore: verify returned a chain digest and a restore landed with the source's
+  exact `USED/REFER/RATIO` and its `buddy-…` snapshot (receive validates the
+  stream itself; node-side `sha256sum` comparison was skipped because the sandbox
+  forbids shell pipes).
+- persistence: schedules (with `lastRun`/`lastResult`/`lastError`) and the identity
+  survive an API restart; the job list is in-memory and resets.
+- the receiver store holds only `chunk-*.enc` (0600, 1 MiB + 36 B) and the signed
+  `manifest.json`/`current.json` — no plaintext.
+- **the host-namespace mount gotcha is fixed on the VM by the node reboot**:
+  `df` on `/var/mnt/test/naslos-buddy` from a fresh pod now names
+  `test/naslos-buddy`, not the pool root. The `chown 65532:65532` step is still
+  needed (the dataset was `root:root` again and the first push failed with
+  `mkdir …/buddy/<key>: permission denied` until it was applied).
+
+**Defects found live and fixed in this change**
+
+- `ui/tests/backups.spec.ts` could not pass against a default deployment: the
+  Playwright request context sent no `Remote-User`, so every owner-facing buddy
+  call was 401 under `buddy.requireAuth=true`. It now sets the header (what
+  Traefik's `forwardAuth` injects; the NodePort variant is NAS-008), uses an
+  unambiguous heading locator (`exact: true` — "Backups" also matched "Stored
+  backups"), picks a child dataset (the pool root is refused by the agent:
+  `dataset must be <pool>/<name>`), and uses the instance's own name as the source
+  prefix so the self-send is inside the peer's scope.
+- `/backups` rendered the receiver's **Stored** column from `b.bytes`, but the API
+  sends `storedBytes`, so it always showed `0 B` — fixed.
+- The schedule table had no **Source** column (two schedules on one dataset were
+  indistinguishable) — added, which is also what the spec's test expects.
+- The dataset pickers offered the pool root, which the agent always refuses —
+  they now list child datasets only.
+- Added two page-level tests: "Back up now" driving a real job with Verify
+  reading the chain back, and the restore form refusing an unconfirmed/incorrect
+  destination before any request.
+
+**Findings to follow up (not fixed here)**
+
+1. **Cancel is not prompt while a chunk request is in flight.** `DELETE` sets the
+   job context, but `buddy.Client`'s HTTP calls are not context-bound
+   (`PushOptions`/`RestoreOptions` carry no context); the job only turns
+   `cancelled` when the next read of the agent stream fails. Live: with a receiver
+   that stalled 30 s, `DELETE` returned `cancelling` immediately but the job stayed
+   `running` for the full 30 s. Thread a context through the client
+   (`http.NewRequestWithContext`) so cancel aborts the in-flight request.
+2. **A backup of a dataset that is not mounted in the host namespace succeeds
+   while storing nothing.** A `dd` of 512 MiB / 2 GiB into datasets created from
+   inside a pod landed on the **parent** dataset (the child datasets read 96 K,
+   `test` grew to 2.76 G), and the sends reported `succeeded` with one 44 KB chunk
+   — an empty backup over a green result. This is the documented
+   `mountPropagation: HostToContainer` trap, but on the *send* path it is silent:
+   the agent/API should verify the dataset is mounted in its namespace before
+   snapshotting, or the send should warn.
+3. **`pruneKeep` can leave only unrestorable incrementals.** With `pruneKeep: 1`
+   on a chain whose newest backup is incremental, the base chain is pruned; the
+   send and the schedule both report success, and only `verify`/restore later
+   refuses: `chain … needs the chain that produced GUID …, which is not stored
+   here`. Retention needs to count the sequence depth, or the UI/docs must warn.
+4. **Schedule dataset validation is a loose pool-prefix match** (audit NAS-018,
+   now confirmed live): `{"dataset":"test/nope"}` was accepted with 200. It fails
+   later at send time, but the schedule looks valid.
+5. **Minor:** a job can report a `snapshot` name that was never created (the
+   field is set before `zfs create`/snapshot succeeds); a never-run schedule
+   serialises `lastRun` as `"0001-01-01T00:00:00Z"` (`time.Time` ignores
+   `omitempty`); a `zfs receive` destination stays mounted in the **agent's**
+   namespace, so host-side `zfs destroy` reports `dataset is busy` until the
+   agent pod restarts (`test/drill-api-restored`, empty 96 K, was left behind).
+6. Deploy notes: the chart still does not pass `BUDDY_SCHEDULES` or
+   `BUDDY_SCHEDULER_INTERVAL_MS` (defaults are used), `buddy.*` is not in
+   `values-vm.yaml` so an upgrade must repeat the `--set` flags (or use
+   `--reuse-values`), and notification settings are still in-memory
+   (`notifications.NewManager("")`), so they reset on restart.
+
 ## Current branch: `feature/shares` (SMB shares + LDAP account sync)
 
 ### What was broken
