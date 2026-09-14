@@ -38,7 +38,7 @@ func (c *Catalog) loadBuiltIn() {
 			"timezone":    "UTC",
 			"advertiseIp": "http://localhost:32400",
 			"transcoder": map[string]interface{}{
-				"tempPath":              "/transcode",
+				"tempPath":             "/transcode",
 				"hardwareAcceleration": true,
 			},
 		},

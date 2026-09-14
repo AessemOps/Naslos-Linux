@@ -121,15 +121,15 @@ func (c *Client) GetDiscoveredVolumes() ([]*storage.Disk, error) {
 // ZFSBestPractices returns the recommended ZFS pool options for Talos.
 func ZFSBestPractices() map[string]string {
 	return map[string]string{
-		"ashift":            "12", // 4K sector alignment
-		"mountpoint":        "/var/mnt/<pool>",
-		"xattr":             "sa",
-		"compression":       "zstd",
-		"acltype":           "posixacl",
-		"atime":             "off",
-		"dnodesize":         "auto",
-		"relatime":          "on",
-		"recordsize":        "128K",
+		"ashift":               "12", // 4K sector alignment
+		"mountpoint":           "/var/mnt/<pool>",
+		"xattr":                "sa",
+		"compression":          "zstd",
+		"acltype":              "posixacl",
+		"atime":                "off",
+		"dnodesize":            "auto",
+		"relatime":             "on",
+		"recordsize":           "128K",
 		"special_small_blocks": "0",
 	}
 }

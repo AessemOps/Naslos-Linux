@@ -72,9 +72,9 @@ func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
 
 		// Store user info in context
 		ctx := WithUser(r.Context(), &UserInfo{
-			Username:  username,
-			Groups:    parseGroups(r.Header.Get("Remote-Groups")),
-			Email:     r.Header.Get("Remote-Email"),
+			Username:    username,
+			Groups:      parseGroups(r.Header.Get("Remote-Groups")),
+			Email:       r.Header.Get("Remote-Email"),
 			DisplayName: r.Header.Get("Remote-Name"),
 		})
 

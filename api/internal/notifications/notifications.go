@@ -11,12 +11,12 @@ import (
 type EventType string
 
 const (
-	EventZFSHealth     EventType = "zfs_health"
-	EventZFSScrub      EventType = "zfs_scrub"
-	EventAppStatus     EventType = "app_status"
-	EventDiskFailure   EventType = "disk_failure"
-	EventSystemUpdate  EventType = "system_update"
-	EventShareAccess   EventType = "share_access"
+	EventZFSHealth    EventType = "zfs_health"
+	EventZFSScrub     EventType = "zfs_scrub"
+	EventAppStatus    EventType = "app_status"
+	EventDiskFailure  EventType = "disk_failure"
+	EventSystemUpdate EventType = "system_update"
+	EventShareAccess  EventType = "share_access"
 )
 
 // Severity is the notification severity level.
@@ -37,15 +37,15 @@ type Settings struct {
 	AuthToken     string      `json:"authToken"`
 	Email         string      `json:"email"`
 	EnabledEvents []EventType `json:"enabledEvents"`
-	MinSeverity   Severity   `json:"minSeverity"`
+	MinSeverity   Severity    `json:"minSeverity"`
 }
 
 // Notification is a notification to be sent.
 type Notification struct {
-	Title    string   `json:"title"`
-	Message  string   `json:"message"`
-	Severity Severity `json:"severity"`
-	Tags     []string `json:"tags"`
+	Title    string    `json:"title"`
+	Message  string    `json:"message"`
+	Severity Severity  `json:"severity"`
+	Tags     []string  `json:"tags"`
 	Time     time.Time `json:"time"`
 }
 

@@ -154,7 +154,7 @@ func (c *Catalog) loadBuiltInExtra() {
 			"required": ["adminEmail", "adminPassword"]
 		}`),
 		DefaultValues: map[string]interface{}{
-			"libraryPath":      "/photos",
+			"libraryPath":     "/photos",
 			"machineLearning": true,
 		},
 	}
