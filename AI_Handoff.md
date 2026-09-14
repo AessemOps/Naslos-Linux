@@ -24,6 +24,14 @@ users could never authenticate over SMB.
 - The shares UI shows each share's `smb://<host>/<name>` address (host taken from
   the browsing URL) with a copy button, and no longer offers AFP (the API
   rejects it).
+- **NFS is served** by NFS-Ganesha in userspace (`naslos-nfs` DaemonSet,
+  hostNetwork, NFSv4/TCP :2049) — Talos has no kernel `nfsd`, so the API renders
+  Ganesha's config instead of `/etc/exports`. Verified live: a *separate client
+  pod* mounted `192.168.1.96:/nfsproof`, listed, wrote, read back, created a
+  directory, `df` showed the 38 G dataset, and unmounted cleanly. Ownership on
+  the pool is the caller's real uid (uid 1000 → `1000:1000`, root → `0:0`), and
+  permissions are enforced (uid 1000 was refused on a `755` root-owned dir).
+  Changing a share reloads exports with `SIGHUP` — mounts are not interrupted.
 - **Network discovery is live**: Avahi publishes `_smb._tcp` and `wsdd` provides
   WSD, so the server appears when browsing the network (verified: `avahi-browse`
   lists `naslos` at 192.168.1.96:445 next to the real `truenas`). Discovery is
@@ -51,9 +59,13 @@ users could never authenticate over SMB.
    single quotes when testing SMB from the shell.
 
 ### Known gaps (documented in docs/shares.md)
-- **NFS**: Talos has no kernel `nfsd` (`/proc/filesystems` shows only the
-  client; `/proc/fs/nfsd` is absent). The `naslos-nfs` image/make target exists
-  but serving needs a userspace server (NFS-Ganesha) — not yet implemented.
+- **NFS is NFSv4-only** (no NFSv3: it would need `rpcbind`/`statd`, which Talos
+  does not ship) and uses AUTH_SYS, so ownership is numeric uid/gid — `sec=krb5`
+  is not configured. Clients resolve owner *names* through their own
+  `rpc.idmapd`; a client without idmapping shows root-owned entries as `nobody`
+  (display only — the file's uid on the pool is correct).
+- An NFS share's `allowedHosts` maps to Ganesha `CLIENT` blocks and `readOnly`
+  to `Access_Type = RO`; `No_Root_Squash` mirrors SMB's `force user = root`.
 - `naslos-openldap-backup` CronJob is still in CrashLoopBackOff (pre-existing).
 - `naslos-api`'s `AgentSharesStatus` struct still names the old agent status
   fields (`sambaRunning`, `nfsRunning`, `sambaTestOutput`, …), so

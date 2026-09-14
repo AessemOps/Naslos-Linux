@@ -108,8 +108,9 @@ func (c *Client) do(req *http.Request, out interface{}) error {
 type SharesConfigRequest struct {
 	// SambaConf is the full smb.conf content.
 	SambaConf string `json:"sambaConf"`
-	// NFSExports is the full /etc/exports content.
-	NFSExports string `json:"nfsExports"`
+	// GaneshaConf is the NFS-Ganesha configuration content (NFS is served by
+	// Ganesha on Talos, which has no kernel NFS server).
+	GaneshaConf string `json:"ganeshaConf"`
 	// SambaUsers is the smbpasswd-format account file whose NT hashes are
 	// imported into Samba's passdb (keeps SMB logins in step with LDAP).
 	SambaUsers string `json:"sambaUsers"`
@@ -130,9 +131,9 @@ type SharesConfigStatus struct {
 	Applied bool `json:"applied"`
 	// Revision is the revision currently on disk.
 	Revision string `json:"revision"`
-	// SambaConfPath / NFSExportsPath are the rendered file locations.
-	SambaConfPath  string `json:"sambaConfPath"`
-	NFSExportsPath string `json:"nfsExportsPath"`
+	// SambaConfPath / GaneshaConfPath are the rendered file locations.
+	SambaConfPath   string `json:"sambaConfPath"`
+	GaneshaConfPath string `json:"ganeshaConfPath"`
 	// SMBShareCount is the number of share sections the node's rendered
 	// smb.conf contains, and NFSExportCount the number of export lines, so
 	// callers can confirm the node received the expected shares.

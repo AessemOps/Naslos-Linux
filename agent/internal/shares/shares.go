@@ -32,8 +32,8 @@ const (
 	ConfigDir = "/var/lib/naslos/shares"
 	// SambaConfPath is the rendered smb.conf.
 	SambaConfPath = ConfigDir + "/smb.conf"
-	// NFSExportsPath is the rendered /etc/exports.
-	NFSExportsPath = ConfigDir + "/exports"
+	// GaneshaConfPath is the rendered NFS-Ganesha configuration.
+	GaneshaConfPath = ConfigDir + "/ganesha.conf"
 	// RevisionPath records the revision currently applied on the host.
 	RevisionPath = ConfigDir + "/revision"
 )
@@ -49,25 +49,25 @@ const NSSDir = ConfigDir + "/extrausers"
 
 // Config is the rendered configuration pushed by the API.
 type Config struct {
-	SambaConf  string
-	NFSExports string
-	SambaUsers string
-	NSSPasswd  string
-	NSSGroup   string
-	NSSShadow  string
-	Revision   string
-	ShareCount int
+	SambaConf   string
+	GaneshaConf string
+	SambaUsers  string
+	NSSPasswd   string
+	NSSGroup    string
+	NSSShadow   string
+	Revision    string
+	ShareCount  int
 }
 
 // Status reports the outcome of an apply, or the current on-host state.
 type Status struct {
-	Applied        bool   `json:"applied"`
-	Revision       string `json:"revision"`
-	SambaConfPath  string `json:"sambaConfPath"`
-	NFSExportsPath string `json:"nfsExportsPath"`
+	Applied         bool   `json:"applied"`
+	Revision        string `json:"revision"`
+	SambaConfPath   string `json:"sambaConfPath"`
+	GaneshaConfPath string `json:"ganeshaConfPath"`
 	// SMBShareCount is the number of share blocks in the rendered smb.conf,
-	// and NFSExportCount the number of export lines, so callers can confirm
-	// the node actually received the expected shares.
+	// and NFSExportCount the number of EXPORT blocks in the Ganesha config, so
+	// callers can confirm the node received the expected shares.
 	SMBShareCount  int      `json:"smbShareCount"`
 	NFSExportCount int      `json:"nfsExportCount"`
 	Messages       []string `json:"messages"`
@@ -154,8 +154,8 @@ func (c *Client) Apply(cfg Config) (*Status, error) {
 			return nil, err
 		}
 	}
-	if existing := readHostFile(NFSExportsPath); existing != cfg.NFSExports {
-		if err := writeAtomic(NFSExportsPath, cfg.NFSExports, 0644); err != nil {
+	if existing := readHostFile(GaneshaConfPath); existing != cfg.GaneshaConf {
+		if err := writeAtomic(GaneshaConfPath, cfg.GaneshaConf, 0644); err != nil {
 			return nil, err
 		}
 	}
@@ -206,14 +206,14 @@ func (c *Client) Apply(cfg Config) (*Status, error) {
 // Status reports the configuration currently present on the host.
 func (c *Client) Status() (*Status, error) {
 	st := &Status{
-		Revision:       strings.TrimSpace(readHostFile(RevisionPath)),
-		SambaConfPath:  hostPath(SambaConfPath),
-		NFSExportsPath: hostPath(NFSExportsPath),
-		Messages:       []string{},
+		Revision:        strings.TrimSpace(readHostFile(RevisionPath)),
+		SambaConfPath:   hostPath(SambaConfPath),
+		GaneshaConfPath: hostPath(GaneshaConfPath),
+		Messages:        []string{},
 	}
 
 	sambaConf := readHostFile(SambaConfPath)
-	nfsExports := readHostFile(NFSExportsPath)
+	ganeshaConf := readHostFile(GaneshaConfPath)
 
 	if sambaConf == "" {
 		st.Messages = append(st.Messages, "no smb.conf applied on this node yet")
@@ -221,10 +221,10 @@ func (c *Client) Status() (*Status, error) {
 		st.Applied = true
 		st.SMBShareCount = countSambaSections(sambaConf)
 	}
-	if nfsExports == "" {
-		st.Messages = append(st.Messages, "no exports file applied on this node yet")
+	if ganeshaConf == "" {
+		st.Messages = append(st.Messages, "no ganesha.conf applied on this node yet")
 	} else {
-		st.NFSExportCount = countExports(nfsExports)
+		st.NFSExportCount = countGaneshaExports(ganeshaConf)
 	}
 
 	return st, nil
@@ -246,15 +246,13 @@ func countSambaSections(conf string) int {
 	return count
 }
 
-// countExports counts non-empty, non-comment export lines.
-func countExports(exports string) int {
+// countGaneshaExports counts EXPORT blocks in the rendered Ganesha config.
+func countGaneshaExports(conf string) int {
 	count := 0
-	for _, line := range strings.Split(exports, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	for _, line := range strings.Split(conf, "\n") {
+		if strings.TrimSpace(line) == "EXPORT {" {
+			count++
 		}
-		count++
 	}
 	return count
 }

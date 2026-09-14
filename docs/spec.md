@@ -44,9 +44,10 @@ unmodified Talos installation, administered through a web UI.
   **single-node** cluster (one control-plane node); multi-node aggregation of
   metrics is **[OPEN]**.
 - Replacing Kubernetes tooling: Naslos sits on top of k8s, not beside it.
-- Serving NFS. Talos ships no kernel NFS server, so this needs a userspace
-  implementation (NFS-Ganesha); it is **[OPEN]** and NFS shares are not
-  presented as reachable (FR-SHR-02).
+- Serving NFS from the kernel: Talos ships no kernel NFS server, so NFS is
+  served in userspace by NFS-Ganesha, NFSv4 only (FR-SHR-02). NFSv3 and its
+  `rpcbind`/`statd` dependencies are out of scope, as is Kerberos
+  (`sec=krb5`) — NFS uses AUTH_SYS.
 
 ### 1.4 Target platform
 
@@ -194,10 +195,11 @@ Requirement IDs are stable: never renumber, only deprecate.
   the underlying directory.
 - **FR-SHR-02** — SMB (including Time Machine via the `fruit` VFS) MUST be
   served. AFP MUST NOT be offered — it is not served, and the API MUST reject
-  it rather than accept a share nothing exports. NFS serving is **[OPEN]**: the
-  Talos kernel has no NFS server (`nfsd`), so it requires a userspace server
-  (NFS-Ganesha) that is not implemented yet; NFS shares may be defined but MUST
-  NOT be presented as reachable.
+  it rather than accept a share nothing exports. NFS MUST also be served, in
+  userspace: the Talos kernel has no NFS server (`nfsd`), so NFS is served by
+  NFS-Ganesha (NFSv4 over TCP on the node's :2049) from an API-rendered config,
+  and it MUST NOT require `rpcbind`, a node account, or a kernel module. Every
+  NFS share MUST be presented with a reachable address in the UI.
 - **FR-SHR-03** — Effective Samba/NFS configuration MUST be retrievable from
   the API (`/api/shares/config/samba`, `/api/shares/config/nfs`).
 - **FR-SHR-04** — Share definitions MUST be durable: they MUST survive an API
