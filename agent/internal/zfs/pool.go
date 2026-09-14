@@ -9,11 +9,15 @@ import (
 )
 
 const (
-	hostRoot  = "/host"
 	zpoolBin  = "/usr/local/sbin/zpool"
 	zfsBin    = "/usr/local/sbin/zfs"
 	wipefsBin = "/usr/bin/wipefs"
 )
+
+// hostRoot is where the Talos host filesystem is mounted into the agent pod.
+// A variable rather than a constant so tests can stand in a temporary tree
+// (device paths are validated by stat-ing them through this root).
+var hostRoot = "/host"
 
 // hostBinExists checks if a binary exists inside the host root.
 // Used to gate optional steps (e.g. wipefs) that Talos may not ship.
@@ -107,7 +111,17 @@ func NewClient(ctx context.Context) *Client {
 
 // hostExec runs a command inside the host namespace via chroot.
 func (c *Client) hostExec(name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(c.ctx, "chroot", hostRoot, name)
+	return runHost(c.ctx, name, args...)
+}
+
+// runHost executes a command in the host's chroot.
+//
+// It is a variable rather than a plain function so tests can capture the exact
+// command line without a host: pool and dataset operations are destructive and
+// irreversible (a wrong `zpool add` argument attaches the wrong disk), so the
+// arguments deserve to be asserted, not just the happy path.
+var runHost = func(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "chroot", hostRoot, name)
 	cmd.Args = append(cmd.Args, args...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
