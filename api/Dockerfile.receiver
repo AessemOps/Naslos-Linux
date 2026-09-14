@@ -14,13 +14,17 @@ FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
 
+# Stamped into the binary so `buddyctl status` can report which receiver build it
+# is talking to (make buddy-receiver-image passes IMAGE_TAG).
+ARG VERSION=dev
+
 # Pre-fetch dependencies
 COPY api/go.mod ./
 RUN go mod download
 
 # Copy the API source and build the receiver
 COPY api/ ./
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/buddy-receiver ./cmd/buddy-receiver
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/buddy-receiver ./cmd/buddy-receiver
 
 # Minimal runtime image: no shell, no package manager, just the receiver.
 FROM gcr.io/distroless/static-debian12:nonroot

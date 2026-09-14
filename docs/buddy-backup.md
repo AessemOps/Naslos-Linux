@@ -270,7 +270,9 @@ buddyctl push $RECEIVER --source naslos-a/data --dir /var/mnt/test/data --resume
 docker build -f api/Dockerfile.receiver -t naslos-buddy-receiver .
 
 mkdir -p /srv/buddy-data /srv/buddy-config
-sudo chown -R 10001:10001 /srv/buddy-data /srv/buddy-config   # image runs as uid 10001
+# The image is distroless and runs as its unprivileged "nonroot" user (uid 65532,
+# the same one the API runs as), so hand it both volumes:
+sudo chown -R 65532:65532 /srv/buddy-data /srv/buddy-config
 
 docker run -d --name buddy-receiver --restart unless-stopped \
   -p 8484:8484 \

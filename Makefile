@@ -77,7 +77,7 @@ terminal-image:
 # The standalone Buddy Backup receiver: a two-volume container that stores
 # encrypted backups it cannot read (docs/buddy-backup.md).
 buddy-receiver-image:
-	$(DOCKER) build -t $(BUDDY_RECEIVER_IMAGE) -f api/Dockerfile.receiver .
+	$(DOCKER) build -t $(BUDDY_RECEIVER_IMAGE) --build-arg VERSION=$(IMAGE_TAG) -f api/Dockerfile.receiver .
 
 # Push all Naslos container images to REGISTRY (requires docker login / insecure-registry config for HTTP registries).
 push-images: images

@@ -59,6 +59,14 @@ enabled, dataset `test/naslos-buddy`):
   signed manifest; a plaintext needle is absent from it — the zero-knowledge
   property, checked on the deployed instance.
 
+**The standalone container receiver is verified too**: `docker build -f
+api/Dockerfile.receiver` → run with two volumes → enroll, push, `status` (free
+space and last backup from the container's own volume), restore and `diff -r`
+byte-identical. The volumes hold the same envelope-only tree and a `peers.json`
+with public keys alone, and the binary passes its own `-health` check as the
+image's HEALTHCHECK. Its volumes must be owned by **65532** (`-v` mounts keep host
+ownership): `sudo chown -R 65532:65532 /srv/buddy-data /srv/buddy-config`.
+
 **Deployment gotcha found live**: the API image is distroless and runs as uid
 **65532**, so the receive dataset has to be handed to it —
 `chown 65532:65532 /var/mnt/<pool>/naslos-buddy`. `fsGroup` does **not** apply to
