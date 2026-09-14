@@ -582,6 +582,7 @@ nginx → API, with the chart's `buddy` values enabled:
 | Check | Verifies |
 | --- | --- |
 | `zfs create test/naslos-buddy`, `chown 65532:65532` (API runs as distroless nonroot), helm upgrade | SEC-8, the dataset is the only read-write host path |
+| `df -h` on the receive mount path from a *fresh* pod | SEC-8, positive and negative: it found that a dataset created from inside a pod is mounted only in that pod's namespace, so the API's hostPath bound the parent dataset (`test`), not `test/naslos-buddy` — detection is now a documented deployment step |
 | `buddyctl enroll --token …` then a second enrollment with the same token → 403 | FR-BUD-03 (single-use bootstrap) |
 | `buddyctl push --dir` 3 MiB → 4 chunks; `buddyctl status`/`backups` show free space, stored bytes and last backup | FR-BUD-07, the nginx `client_max_body_size` path |
 | `find` + `grep` in the store: only `chunk-*.enc` (1 MiB + 36 B, mode 0600) and the signed manifest; the plaintext needle is absent | FR-BUD-02 (zero-knowledge receiver) |

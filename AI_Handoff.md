@@ -74,6 +74,21 @@ ownership): `sudo chown -R 65532:65532 /srv/buddy-data /srv/buddy-config`.
 `mkdir /var/lib/naslos/buddy/<key>: permission denied`. Documented in
 `docs/buddy-backup.md` (§5.1 step 1b and the troubleshooting table).
 
+**Second gotcha, platform-level and still open on the VM**: the agent and
+terminal containers mount `/host` with `mountPropagation: HostToContainer`
+(one-way), so a `zfs create` run inside a pod mounts the dataset only in *that
+pod's* namespace. Pods that bind-mount the path - including the API - therefore
+resolve it to the **parent** dataset, which is what the VM shows now:
+`zfs list` reports `test/naslos-buddy` `USED 96K` while `df`/`du` on
+`/var/mnt/test/naslos-buddy` report the pool root `test` with 133 MB. Backups are
+stored and restorable either way, but the dedicated dataset's isolation (and its
+quota) is not in effect until the dataset is mounted in the host namespace - a
+node reboot does it (the ZFS extension runs `zfs mount -a` at boot), after which
+the API deployment must be restarted so its hostPath bind picks the dataset up.
+The check is one command from a fresh pod (`df -h` on the mount path must name
+`<pool>/naslos-buddy`); it is written up as step 1c and in the troubleshooting
+table of `docs/buddy-backup.md`.
+
 **Deployed**: api/ui `0.1.0-b1` (helm revision 50); everything else unchanged
 (agent `0.1.0-z1`, terminal `0.1.0-t2`, samba `0.1.0-s15`, nfs `0.1.0-n2`).
 

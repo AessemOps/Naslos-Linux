@@ -198,6 +198,23 @@ zfs create test/naslos-buddy                 # -> /var/mnt/test/naslos-buddy
 #     help for a hostPath volume, so the ownership has to be set here:
 chown 65532:65532 /var/mnt/test/naslos-buddy
 
+# 1c. Make sure the dataset is mounted *in the host's mount namespace*, or the
+#     API's hostPath will bind the parent dataset's directory instead and your
+#     backups will quietly land on the pool root (no quota isolation). On Talos
+#     the agent and terminal containers mount /host with
+#     mountPropagation: HostToContainer, which is one-way: a `zfs create` run
+#     inside a pod mounts the dataset only inside *that pod's* namespace. The
+#     host mounts it at boot (the ZFS extension runs `zfs mount -a`), so either
+#     reboot the node after creating the dataset, or create it from a
+#     host-context process - then verify from a *fresh* pod:
+#       kubectl run check --rm -it --image=busybox:1.36 --restart=Never \
+#         --overrides='{"spec":{"containers":[{"name":"c","image":"busybox:1.36",
+#         "command":["df","-h","/data"],"volumeMounts":[{"name":"d","mountPath":"/data"}]}],
+#         "volumes":[{"name":"d","hostPath":{"path":"/var/mnt/test/naslos-buddy","type":"Directory"}}]}}'
+#     `Filesystem ... test/naslos-buddy` = correct. Bare `test` = the dataset is
+#     not mounted on the host yet: fix that before enabling Buddy Backup, then
+#     restart the API deployment so its bind mount picks the dataset up.
+
 # 2. Enable the receive side. buddy.receiveHostPath is required when enabled: the
 #    chart refuses to render without it rather than quietly filling the config
 #    volume with backups.
@@ -354,6 +371,7 @@ error instead of writing damaged data. `TestReceiverRefusesTamperedChunk` in
 | `this request was already used (nonce replay)` | Two identical signed requests: a proxy retrying a request is the usual cause. Signatures are single-use by design. |
 | 413 on a chunk, or `client_max_body_size` in a proxy log | A proxy in front limits the body. The UI's nginx needs the `/api/buddy/` location (it is in `ui/nginx.conf`). |
 | `mkdir /var/lib/naslos/buddy/SHA256_…: permission denied` | The receive dataset is not writable by the API's user. The API is distroless and runs as uid 65532: `chown 65532:65532 /var/mnt/<pool>/naslos-buddy` (hostPath volumes ignore `fsGroup`). |
+| Backups work but the dataset's `USED` stays ~0 while the pool's grows | The dataset is not mounted in the host namespace, so the API bind-mounted the parent dataset's directory. On Talos a `zfs create` from inside a pod mounts only in that pod's namespace (`mountPropagation: HostToContainer` is one-way). Reboot the node, or mount it from a host-context process, then restart the API deployment. Detect it with `df -h` from a fresh pod on the mount path: it must name `<pool>/naslos-buddy`, not the pool. |
 | `quota exceeded: … bytes are already stored for this key` | The receiver's quota for this key is full. Prune, or raise `QuotaBytes` on the peer entry. |
 | `the receiver already holds different bytes for chunk N` | The source changed while a push was interrupted. Start a new chain (drop `--resume`). |
 | `cannot unwrap the data key` | The identity being used did not encrypt this backup. Restores need the sender's own identity file (private key **and** KEK). |
