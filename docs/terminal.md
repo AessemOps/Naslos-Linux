@@ -52,31 +52,50 @@ This container is **root and privileged**, with the host filesystem mounted. Tha
 is inherent to the feature: a NAS terminal that cannot reach the host could not
 repair a pool, mount a disk or read a config.
 
-What the design does about it:
+The terminal is therefore gated on **proof of an authenticated session**, checked
+in three places so that no single mistake opens it:
 
-- **One target.** The API execs only into pods in the Naslos namespace (a
-  namespaced `Role` granting `pods`, `pods/log`, `pods/exec`) and can only list
-  namespaces cluster-wide - nothing else. It cannot exec into another workload,
-  even one on the same node.
-- **Shells, not commands.** `/api/ws/exec` accepts `bash`, `sh`, `ash`, `zsh`. Any
-  other `shell` value is a 400, so the endpoint is not a "run this as root" API.
-- **Origins are checked.** A browser websocket is accepted only when its `Origin`
-  host matches the host it is talking to (ports ignored, because nginx forwards
-  `Host` without the UI's NodePort).
-- **The UI's authentication is the real boundary.** Deployed behind Traefik with
-  Authelia `forwardAuth`, that is what keeps the terminal to authenticated users.
-  
-  ⚠️ **The UI NodePort (30080 by default, `ui.nodePort.enabled`) bypasses
-  Authelia.** That is a pre-existing property of the VM layout, but with a
-  privileged shell behind it the exposure is much larger. Set
-  `ui.nodePort.enabled: false` (or firewall the port) on anything reachable by
-  more than its owner.
-- **Nothing is exposed by the terminal pod itself**: it runs no server, listens
-  on no port, and is reachable only through the API's exec endpoint.
+| Layer | Behaviour |
+| --- | --- |
+| `naslos-ui` nginx | **Refuses** `/api/ws/exec`, `/api/pods`, `/api/namespaces` outright (403, JSON body). This listener is the node-port one, where nothing proves who is asking - so it never forwards these paths, and a client cannot smuggle the identity header through it |
+| Traefik (`traefik.enabled`) | Routes those paths **straight to the API** (not through nginx) behind the `forwardauth-authelia` middleware. That middleware declares `authResponseHeaders`, so Traefik *replaces* any `Remote-User` a client sent with Authelia's answer - which is what makes the header trustworthy |
+| `naslos-api` | Requires a non-empty identity header (default `Remote-User`) on every terminal endpoint, and fails closed: missing/blank → 401. `terminal.requireAuth: false` disables the check (development only) |
 
-If the terminal is not wanted at all, set `terminal.enabled: false`: the shell
-container and the exec RBAC are removed, and the page reports that nothing is
-deployed to attach to.
+The API's exec permission is a namespaced `Role` (pods, pods/log, pods/exec) plus
+a `ClusterRole` for namespace listing only, so it cannot exec into anything outside
+Naslos. Shells are limited to `bash`/`sh`/`ash`/`zsh` - the endpoint runs a shell,
+never an arbitrary command. Websocket upgrades are accepted only from the same
+host (ports ignored). Sessions are logged with the authenticated user.
+
+### Current state of this installation
+
+There are **no `IngressRoute`/`Middleware` resources in the cluster** -
+`traefik.enabled` is unset in `values-vm.yaml`, so the chart's Traefik routes
+(including the terminal's) are not rendered, and the node port is the only way to
+reach the UI. With `terminal.requireAuth: true` (the default) that means **the
+terminal is refused everywhere**, which is the intended behaviour for an
+unauthenticated entry point.
+
+Two ways forward:
+
+```bash
+# 1. Give the terminal its authenticated entry point (the intended shape):
+#    deploys the chart's IngressRoutes + Authelia middleware for <authelia.domain>
+helm upgrade ... --set traefik.enabled=true
+
+# 2. Or accept unauthenticated access on a trusted network (development only):
+helm upgrade ... --set terminal.requireAuth=false
+```
+
+With (2) the node port serves the terminal again - that is what the interactive
+Playwright test needs, and it is why that test skips when the terminal is not
+reachable.
+
+The terminal container itself exposes nothing: it runs no server, listens on no
+port, and is reachable only through the API's exec endpoint. If the terminal is
+not wanted at all, `terminal.enabled: false` removes the container and the exec
+RBAC together.
+
 
 ## Protocol notes
 

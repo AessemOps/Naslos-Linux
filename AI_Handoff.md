@@ -69,6 +69,13 @@ users could never authenticate over SMB.
   the browser's `Origin` keeps it, so a port-sensitive origin check refused the
   terminal's own UI; and `chroot /host /host/usr/local/sbin/zpool` is wrong -
   paths after a chroot are relative to the *new* root.
+- **The terminal is gated on an authenticated session (FR-LOG-08).** The API
+  requires the identity header the authenticating proxy injects (`Remote-User`,
+  via Traefik `forwardAuth`, whose `authResponseHeaders` replaces any value a
+  client sent) and fails closed with 401; the UI's nginx **refuses** the terminal
+  paths outright (403), so the node-port listener - where nothing proves who is
+  asking - cannot even forward them, and the chart routes them from Traefik
+  straight to the API. `terminal.requireAuth: false` is the explicit opt-out.
 - **NFS is served** by NFS-Ganesha in userspace (`naslos-nfs` DaemonSet,
   hostNetwork, NFSv4/TCP :2049) — Talos has no kernel `nfsd`, so the API renders
   Ganesha's config instead of `/etc/exports`. Verified live: a *separate client

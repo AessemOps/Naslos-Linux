@@ -39,8 +39,13 @@ type Server struct {
 	// namespace is where Naslos runs; it is the terminal's default namespace and
 	// the scope the API's exec permission is limited to.
 	namespace string
-	router    *http.ServeMux
-	server    *http.Server
+	// terminalRequireAuth gates the terminal on an authenticated session, and
+	// terminalAuthHeader is the header the authenticated proxy injects
+	// (Authelia's Remote-User by default). See requireTerminalAuth.
+	terminalRequireAuth bool
+	terminalAuthHeader  string
+	router              *http.ServeMux
+	server              *http.Server
 }
 
 // New creates a new server.
@@ -111,7 +116,12 @@ func New(addr string, tc *talos.Client) *Server {
 		identity:      identityClient,
 		auth:          authMiddleware,
 		namespace:     namespace,
-		router:        http.NewServeMux(),
+		// The terminal reaches a root shell, so it is protected by default: only
+		// requests carrying the proxy's identity header are served. Turning this
+		// off is a development convenience and is logged as such.
+		terminalRequireAuth: getEnv("TERMINAL_REQUIRE_AUTH", "true") != "false",
+		terminalAuthHeader:  getEnv("TERMINAL_AUTH_HEADER", "Remote-User"),
+		router:              http.NewServeMux(),
 	}
 	s.routes()
 	return s

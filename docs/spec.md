@@ -341,6 +341,15 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-LOG-07** — The API's terminal permissions MUST be least-privilege: pods,
   pods/log and pods/exec scoped to the Naslos namespace by a Role, and only
   namespace listing granted cluster-wide.
+- **FR-LOG-08** — The terminal MUST be served only to requests that prove an
+  authenticated session, and MUST fail closed without it: the API MUST require
+  the identity header its authenticating proxy injects (Authelia's `Remote-User`
+  via Traefik `forwardAuth`, which replaces any client-supplied value), and the
+  unauthenticated listener (the UI's nginx, reachable on a node port) MUST refuse
+  the terminal paths outright rather than forward them. The chart MUST route
+  those paths from the proxy straight to the API, MUST expose
+  `terminal.requireAuth` (default `true`) for the explicit opt-out used on
+  trusted networks, and the refusal message MUST say how to fix it.
 
 ### 3.7 Notifications (`FR-NTF`)
 

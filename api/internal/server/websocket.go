@@ -313,6 +313,12 @@ func (s *Server) handleLogsWS(w http.ResponseWriter, r *http.Request) {
 // resolved *before* the upgrade, so a bad pod/container/shell is an HTTP status
 // the UI can show properly rather than text inside a terminal that just opened.
 func (s *Server) handleExecWS(w http.ResponseWriter, r *http.Request) {
+	// The terminal runs a root shell in a privileged container, so it is gated on
+	// an authenticated session before anything else is even resolved.
+	if !s.requireTerminalAuth(w, r) {
+		return
+	}
+
 	namespace := r.URL.Query().Get("namespace")
 	if namespace == "" {
 		namespace = s.namespace
@@ -422,8 +428,8 @@ func (s *Server) handleExecWS(w http.ResponseWriter, r *http.Request) {
 	go stdin.run()
 	defer stdin.close()
 
-	log.Printf("terminal: session opened %s/%s (container %s, shell %s)",
-		namespace, podName, container, strings.Join(command, " "))
+	log.Printf("terminal: session opened %s/%s (container %s, shell %s, user %s)",
+		namespace, podName, container, strings.Join(command, " "), s.terminalUsername(r))
 
 	err = executor.StreamWithContext(r.Context(), remotecommand.StreamOptions{
 		Stdin:             stdin,

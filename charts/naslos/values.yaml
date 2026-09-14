@@ -303,6 +303,13 @@ namespace: naslos
 # target and the terminal page reports that the terminal is disabled.
 terminal:
   enabled: true
+  # Require evidence of an authenticated session (the proxy's identity header)
+  # before serving the terminal's endpoints; see docs/terminal.md. Setting this
+  # false serves a root shell to anything that can reach the API - development
+  # only, and the API logs nothing about it.
+  requireAuth: true
+  # Header the authenticated proxy injects (Authelia via Traefik forwardAuth).
+  authHeader: Remote-User
   image: { repository: 192.168.1.2:30095/naslos-terminal, tag: "0.1.0" }
   resources:
     requests:
