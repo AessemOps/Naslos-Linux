@@ -46,6 +46,61 @@ test('shares page shows a usable smb:// address for each SMB share', async ({ pa
   }
 });
 
+test('shares page shows a usable nfs:// address for each NFS share', async ({ page, request }) => {
+  const name = 'urlnfstest';
+  const path = await shareableDataset(request);
+  const created = await request.post('/api/shares', {
+    data: { name, path, protocol: 'nfs', description: 'NFS URL display test' }
+  });
+  expect(created.status(), await created.text()).toBe(201);
+
+  try {
+    await page.goto('/shares');
+    await expect(page.getByRole('heading', { name: 'Shares' })).toBeVisible();
+    await expect(page.getByText('Loading shares...')).toBeHidden({ timeout: 10_000 });
+
+    const card = page.locator('.card').filter({ hasText: name });
+    await expect(card).toBeVisible();
+
+    // NFS is served in userspace by Ganesha on the same node (:2049), and the
+    // share is exported under a pseudo path equal to its name, so the address is
+    // host:/<name> - exactly the source `mount -t nfs4` expects.
+    const expected = `nfs://${new URL(page.url()).hostname}/${name}`;
+    const address = card.locator('code');
+    await expect(address).toHaveText(expected);
+
+    const text = (await address.textContent())?.trim();
+    expect(text).toBe(expected);
+    expect(text).toMatch(/^nfs:\/\/[^/]+\/[A-Za-z0-9._-]+$/);
+  } finally {
+    await request.delete(`/api/shares/${name}`);
+  }
+});
+
+test('an NFS share is exported to the node as a Ganesha export block', async ({ request }) => {
+  const name = 'nfsconfigtest';
+  const path = await shareableDataset(request);
+  const created = await request.post('/api/shares', {
+    data: { name, path, protocol: 'nfs', description: 'NFS config test' }
+  });
+  expect(created.status(), await created.text()).toBe(201);
+
+  try {
+    // The rendered config is what the nfs container actually loads, so it must
+    // carry the export's real path, its pseudo path and the v4-only settings.
+    const res = await request.get('/api/shares/config/nfs');
+    expect(res.ok(), await res.text()).toBeTruthy();
+    const conf = await res.text();
+
+    expect(conf).toContain(`Path = ${path};`);
+    expect(conf).toContain(`Pseudo = /${name};`);
+    expect(conf).toContain('Protocols = 4;');
+    expect(conf).toContain('Name = VFS;');
+  } finally {
+    await request.delete(`/api/shares/${name}`);
+  }
+});
+
 test('a share can be restricted to an LDAP group from the form', async ({ page, request }) => {
   const name = 'grouppickertest';
 

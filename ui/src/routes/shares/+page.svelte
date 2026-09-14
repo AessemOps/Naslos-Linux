@@ -42,13 +42,16 @@
   }
 
   // connectURL returns the address to hand to a client for this share, or an
-  // empty string when the protocol has no shareable URL (or nothing serves it
-  // yet — NFS is not implemented on Talos, which has no kernel nfsd).
+  // empty string when the protocol has no shareable URL.
   function connectURL(share: Share): string {
     if (!host) return '';
     switch (share.protocol) {
       case 'smb':
         return `smb://${host}/${share.name}`;
+      case 'nfs':
+        // NFSv4 pseudo path: the address clients use is host:/<share name>,
+        // which is also what `mount -t nfs4` takes.
+        return `nfs://${host}/${share.name}`;
       default:
         return '';
     }

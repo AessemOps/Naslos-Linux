@@ -32,14 +32,14 @@ func (s *Server) handleSharesConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status, err := s.shares.Apply(shares.Config{
-		SambaConf:  req.SambaConf,
-		NFSExports: req.NFSExports,
-		SambaUsers: req.SambaUsers,
-		NSSPasswd:  req.NSSPasswd,
-		NSSGroup:   req.NSSGroup,
-		NSSShadow:  req.NSSShadow,
-		Revision:   req.Revision,
-		ShareCount: req.ShareCount,
+		SambaConf:   req.SambaConf,
+		GaneshaConf: req.GaneshaConf,
+		SambaUsers:  req.SambaUsers,
+		NSSPasswd:   req.NSSPasswd,
+		NSSGroup:    req.NSSGroup,
+		NSSShadow:   req.NSSShadow,
+		Revision:    req.Revision,
+		ShareCount:  req.ShareCount,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -75,8 +75,8 @@ func (s *Server) handleSharesStatus(w http.ResponseWriter, r *http.Request) {
 // sharesConfigRequest mirrors the API's rendered-config payload. Declared
 // locally so the agent keeps its HTTP contract independent of the API types.
 type sharesConfigRequest struct {
-	SambaConf  string `json:"sambaConf"`
-	NFSExports string `json:"nfsExports"`
+	SambaConf   string `json:"sambaConf"`
+	GaneshaConf string `json:"ganeshaConf"`
 	// SambaUsers is the smbpasswd-format account file whose NT hashes are
 	// imported into Samba's passdb.
 	SambaUsers string `json:"sambaUsers"`

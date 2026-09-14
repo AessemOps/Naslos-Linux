@@ -256,14 +256,14 @@ func (s *Server) applySharesConfig() (*agent.SharesConfigStatus, error) {
 	}
 
 	status, err := s.agent.ApplySharesConfig(agent.SharesConfigRequest{
-		SambaConf:  bundle.SambaConf,
-		NFSExports: bundle.NFSExports,
-		SambaUsers: bundle.SambaUsers,
-		NSSPasswd:  bundle.NSSPasswd,
-		NSSGroup:   bundle.NSSGroup,
-		NSSShadow:  bundle.NSSShadow,
-		Revision:   bundle.Revision,
-		ShareCount: bundle.ShareCount,
+		SambaConf:   bundle.SambaConf,
+		GaneshaConf: bundle.GaneshaConf,
+		SambaUsers:  bundle.SambaUsers,
+		NSSPasswd:   bundle.NSSPasswd,
+		NSSGroup:    bundle.NSSGroup,
+		NSSShadow:   bundle.NSSShadow,
+		Revision:    bundle.Revision,
+		ShareCount:  bundle.ShareCount,
 	})
 	if err != nil {
 		log.Printf("Warning: failed to apply shares config (revision %s): %v", bundle.Revision, err)
@@ -282,12 +282,12 @@ func (s *Server) handleSambaConfig(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(s.shares.GenerateSambaConfig()))
 }
 
-// handleNFSConfig returns the generated NFS exports configuration.
+// handleNFSConfig returns the generated NFS-Ganesha configuration.
 func (s *Server) handleNFSConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte(s.shares.GenerateNFSExports()))
+	w.Write([]byte(s.shares.GenerateGaneshaConfig()))
 }

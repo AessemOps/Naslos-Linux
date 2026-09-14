@@ -9,26 +9,30 @@ containers that run on the node with `hostNetwork` and host mounts.
 ```
  Naslos UI ──▶ API (source of truth)
                  │  shares.json + smbusers.json  (PVC: /var/lib/naslos)
-                 │  renders smb.conf / exports / smbusers
+                 │  renders smb.conf / ganesha.conf / smbusers
                  ▼
         naslos-agent (privileged DaemonSet, /host mounted)
                  │  atomic writes
                  ▼
-   /var/lib/naslos/shares/{smb.conf,exports,smbusers}   (Talos host)
+   /var/lib/naslos/shares/{smb.conf,ganesha.conf,smbusers}   (Talos host)
                  │  hostPath, mounted read-write
                  ▼
    naslos-samba (DaemonSet, hostNetwork)  ── smbd :445
      • reloads smbd when smb.conf changes (after `testparm` accepts it)
      • imports accounts with `pdbedit -i smbpasswd:<smbusers>` on change
      • serves /var/mnt (the ZFS datasets) with `force user = root`
+   naslos-nfs (DaemonSet, hostNetwork)  ── ganesha.nfsd :2049 (NFSv4/TCP)
+     • reloads exports on SIGHUP when ganesha.conf changes (mounts stay alive)
+     • serves /var/mnt with `Squash = No_Root_Squash`, AUTH_SYS numeric ids
 ```
 
 Why the agent writes the files: the API is a non-root Deployment with no
 cluster RBAC. The agent is the only component that can write to the Talos host
 filesystem (`/host`), so it is the sole writer of the rendered configuration.
 
-Why SMB uses `hostNetwork`: SMB is not HTTP and cannot be reverse-proxied by
-Traefik. The pod binds the node's 445/139 directly.
+Why SMB and NFS use `hostNetwork`: neither is HTTP, so neither can be
+reverse-proxied by Traefik. The pods bind the node's 445 (SMB) and 2049 (NFS)
+directly.
 
 ## API surface
 
@@ -40,7 +44,7 @@ Traefik. The pod binds the node's 445/139 directly.
 | GET | `/api/shares/status` | Rendered revision + what the node has applied |
 | POST | `/api/shares/apply` | Re-render and push the configuration to the node |
 | GET | `/api/shares/config/samba` | Generated `smb.conf` (text/plain) |
-| GET | `/api/shares/config/nfs` | Generated `/etc/exports` (text/plain) |
+| GET | `/api/shares/config/nfs` | Generated NFS-Ganesha config (text/plain) |
 
 Agent endpoints (`naslos-agent`, in-cluster only):
 
@@ -175,12 +179,12 @@ smb://192.168.1.96/test                  [Copy]
 ```
 
 - The host is taken from the address the operator is browsing the UI on
-  (`window.location.hostname`). SMB is served by a `hostNetwork` pod on that
-  same node, so the UI host *is* the SMB server; the port is deliberately not
-  included because SMB uses 445, not the UI's NodePort.
-- Only protocols that are actually served get an address. NFS shares show none,
-  because Talos has no kernel NFS server yet (see the limitation below) — a
-  copyable address that cannot be dialled would be worse than none.
+  (`window.location.hostname`). SMB and NFS are both served by `hostNetwork`
+  pods on that same node, so the UI host *is* the file server; the port is
+  deliberately not included (SMB uses 445, NFS 2049 — not the UI's NodePort).
+- SMB shares show `smb://<host>/<name>`; NFS shares show `nfs://<host>/<name>`,
+  which is the NFSv4 pseudo path, i.e. exactly the source that
+  `mount -t nfs4` takes (`mount -t nfs4 <host>:/<name> /mnt`).
 - Disabled shares show "Disabled — not reachable until enabled" instead.
 - The create/edit form offers only `smb` and `nfs`: AFP is rejected by the API,
   so offering it would produce a 400.
@@ -371,10 +375,101 @@ one that works, while intermediate and initial passwords are rejected.
   `valid users`, and `fruit:time machine` when `timeMachine` is set.
 - `force user = root`, `force group = root`, masks `0664`/`0775`.
 
-### NFS (`GenerateNFSExports`)
+### NFS (`GenerateGaneshaConfig`)
 
-- One line per enabled NFS share: `<path> <host>(opts) …`
-- Options: `rw|ro,sync,no_subtree_check`; no `allowedHosts` → `*(…)` (everyone).
+NFS is served by **NFS-Ganesha in userspace**, not by kernel `nfsd`: Talos ships
+only the NFS *client* (`/proc/filesystems` lists `nfs`/`nfs4`; `/proc/fs/nfsd`
+does not exist), so there is no `nfsd` to read `/etc/exports` and no `rpcbind`
+to register with. The API therefore renders Ganesha's own config format, and
+`/api/shares/config/nfs` returns that (not `/etc/exports`).
+
+For every enabled NFS share the renderer emits one `EXPORT` block:
+
+```
+NFS_CORE_PARAM { Protocols = 4; Enable_NLM = false; Enable_RQUOTA = false;
+                 NFS_Port = 2049; mount_path_pseudo = true; }
+NFSv4         { Grace_Period = 10; Lease_Lifetime = 90; }
+NFS_KRB5      { Active_krb5 = false; }        # no krb5 configured → no keytab probing
+
+EXPORT {
+    Export_Id       = <stable hash of the share name>;   # unique, non-zero
+    Path            = /var/mnt/test;                     # the real path served
+    Pseudo          = /<share name>;                     # what clients mount
+    Access_Type     = RW | RO;                           # from readOnly
+    Squash          = No_Root_Squash;
+    SecType         = sys;                               # AUTH_SYS, numeric uid/gid
+    Protocols       = 4;
+    Transports      = TCP;
+    FSAL            { Name = VFS; }
+    CLIENT          { Clients = <allowedHosts…> | *; Access_Type = RW|RO; }
+}
+```
+
+Decisions worth knowing:
+
+- **NFSv4 only.** NFSv3 needs `rpcbind` (111) and `statd`, neither of which
+  exists on Talos. v4 also has locking built in, so `Enable_NLM = false` is not
+  a compromise.
+- **`Pseudo` is separate from `Path`**, so clients mount `<host>:/<share name>`
+  and the share can be repointed at another dataset without clients changing
+  anything. `Export_Id` is derived from the share name (not a running counter),
+  so adding or removing one share does not renumber the others.
+- **No host restriction = `Clients = *`** (everyone), matching the SMB default;
+  `allowedHosts` entries become one `CLIENT` block each, so a share can be
+  limited to a subnet or a single host.
+- **`No_Root_Squash` mirrors SMB's `force user = root`.** The datasets are
+  root-owned, so squashing root would make them unwritable for an admin client.
+  Change it here if root-squash semantics are wanted.
+
+## NFS serving container (`naslos-nfs`)
+
+| Aspect | Behaviour |
+| --- | --- |
+| Image | `nfs/image/Dockerfile` — Debian + `nfs-ganesha` + `nfs-ganesha-vfs` |
+| Config | `/var/lib/naslos/shares/ganesha.conf`, written by the agent, read-only mounted |
+| Reload | Polls the config every `shares.confCheckInterval` seconds and sends `SIGHUP`; Ganesha re-reads its export table **without dropping mounts**. A config that fails to parse leaves the running exports in place |
+| Port | `2049/TCP` on the node (`hostNetwork`); readiness/liveness are TCP probes |
+| Datasets | `/var/mnt` with `mountPropagation: HostToContainer` (same reason as Samba: a pool imported after pod start must become visible) |
+| Startup log | Reports each export path *with the filesystem backing it*, and warns when a path is not on a mounted filesystem |
+
+Two container-specific requirements, both of which fail in confusing ways if
+missed:
+
+1. **`/etc/mtab`** — the VFS FSAL enumerates mounted filesystems through it, and
+   Debian containers do not ship it (`systemd` normally creates it). Without it
+   *every* export fails to load with
+   `vfs_create_export: resolve_posix_filesystem(<path>) returned No such file or directory`.
+   The image symlinks `/etc/mtab → /proc/mounts`.
+2. **`CAP_DAC_READ_SEARCH`** — the VFS FSAL serves files by NFS file handle via
+   `open_by_handle_at(2)`, which needs this capability. Without it the mount
+   *succeeds* but every `ls`/open fails with `Operation not permitted`
+   (`NFS4ERR_PERM`); the server log shows
+   `vfs_open_by_handle :FSAL :Failed with Operation not permitted`.
+
+### Using it from a client
+
+```bash
+# Linux
+sudo mount -t nfs4 192.168.1.96:/test /mnt/nas
+# macOS
+mount_nfs -o vers=4 192.168.1.96:/test /Volumes/nas
+```
+
+Client notes:
+
+- **Ownership display depends on the client's idmap.** Ganesha reports owners as
+  *names* when it can resolve them locally (uid 0 → `root`), and clients resolve
+  them back through `rpc.idmapd`/`nfsidmap` — which every normal distribution
+  starts. A client with idmapping disabled and no idmap daemon (e.g. a bare
+  container) shows such entries as `nobody`/`4294967294`. This is display-only:
+  verified on the pool, files written through NFS carry the caller's real uid
+  (a client running as uid 1000 created `1000:1000`, root created `0:0`).
+- **Permissions are enforced, not widened** (verified live): uid 1000 could not
+  write into a `755` root-owned directory (`Permission denied`), while a
+  world-writable directory accepted the write.
+- LDAP users are known to the *server* through the NSS mirror, so a client using
+  matching uids keeps its identity on the share; `No_Root_Squash` means the
+  client's numeric uid is what the filesystem records.
 
 ## AFP / Time Machine
 
@@ -383,8 +478,8 @@ AFP is not served (netatalk is effectively dead). Time Machine uses SMB with the
 
 > **Talos NFS limitation:** the kernel has no NFS *server* (`nfsd`) — only the
 > client (`/proc/filesystems` lists `nfs`/`nfs4`, and `/proc/fs/nfsd` does not
-> exist). Serving NFS therefore requires a userspace server (NFS-Ganesha) in a
-> container with `hostNetwork`; kernel `nfsd` is not an option on Talos.
+> exist). Kernel `nfsd` is therefore never an option on Talos; NFS is served in
+> userspace by NFS-Ganesha (see "NFS serving container" above).
 
 ## Chart flags (`charts/naslos/values.yaml`)
 
@@ -426,7 +521,7 @@ for the single-node layout, but it must be cleared on multi-node clusters
 | Image | Role | Make target |
 | --- | --- | --- |
 | `naslos-samba` | SMB / Time Machine serving (smbd, smbclient, pdbedit, samba-vfs-modules, libnss-extrausers, **avahi-daemon + wsdd** for discovery) | `make samba-image` |
-| `naslos-nfs` | NFS serving (userspace, planned) | `make nfs-image` |
+| `naslos-nfs` | NFS serving (NFS-Ganesha, NFSv4/TCP on :2049) | `make nfs-image` |
 
 ## Verification
 
@@ -444,4 +539,20 @@ kubectl -n naslos exec ds/naslos-samba -- sh -c \
 
 # The account mirror resolves, or the entrypoint says which user does not
 kubectl -n naslos logs ds/naslos-samba | grep -i 'resolve through NSS'
+
+# NFS: the rendered config reached the node and Ganesha loaded every export
+talosctl -n "$VM" read /var/lib/naslos/shares/ganesha.conf
+kubectl -n naslos logs ds/naslos-nfs | grep -E 'ganesha.nfsd running|export path'
+kubectl -n naslos exec ds/naslos-nfs -- \
+  grep -icE 'Could not create export|NFS4ERR_PERM' /var/log/ganesha/ganesha.log   # 0
+
+# NFS: a real client mounts, reads, writes and unmounts (run on the LAN, not in
+# the cluster - a pod has no CAP_SYS_ADMIN and cannot mount)
+sudo mkdir -p /mnt/nas
+sudo mount -t nfs4 "$VM":/<share> /mnt/nas && ls -la /mnt/nas \
+  && echo probe > /mnt/nas/probe.txt && cat /mnt/nas/probe.txt \
+  && cd / && sudo umount /mnt/nas
+
+# NFS: a share change is reloaded in place (mounts are not interrupted)
+kubectl -n naslos logs ds/naslos-nfs | grep 'reloading exports'
 ```
