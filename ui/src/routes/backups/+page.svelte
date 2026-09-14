@@ -51,7 +51,7 @@
     usedBytes: number;
     enrollmentOpen: boolean;
     peers: Array<{ name: string; fingerprint: string; enabled: boolean }>;
-    backups: Array<{ source: string; chain: string; created?: string; chunks?: number; bytes?: number }>;
+    backups: Array<{ source: string; chain: string; created?: string; chunks?: number; storedBytes?: number }>;
   }
 
   interface VerifyChain {
@@ -69,6 +69,9 @@
 
   let schedules: Schedule[] = [];
   let datasets: Array<{ name: string }> = [];
+  // A send streams one dataset: the agent refuses the pool root itself
+  // ("dataset must be <pool>/<name>"), so only child datasets are offered.
+  $: sendableDatasets = datasets.filter((d) => d.name.includes('/'));
   let newSchedule = { dataset: '', receiver: '', source: '', cadence: 'daily', runAt: '02:30', pruneKeep: 7 };
   let savingSchedule = false;
 
@@ -379,17 +382,19 @@
       {:else}
         <table class="w-full text-sm table-fixed mb-4">
           <thead><tr class="text-left text-gray-500">
-            <th class="w-32 py-1 align-top">Dataset</th>
+            <th class="w-28 py-1 align-top">Dataset</th>
+            <th class="w-40 py-1 align-top">Source</th>
             <th class="w-40 py-1 align-top">Buddy</th>
-            <th class="w-28 py-1 align-top">Cadence</th>
-            <th class="w-32 py-1 align-top">Last run</th>
-            <th class="w-32 py-1 align-top">Next run</th>
+            <th class="w-24 py-1 align-top">Cadence</th>
+            <th class="w-28 py-1 align-top">Last run</th>
+            <th class="w-28 py-1 align-top">Next run</th>
             <th class="w-48 py-1 align-top">Actions</th>
           </tr></thead>
           <tbody>
             {#each schedules as s}
               <tr class="border-t border-naslos-border">
                 <td class="py-2 pr-2 align-top truncate" title={s.dataset}>{s.dataset}</td>
+                <td class="py-2 pr-2 align-top truncate" title={s.source}>{s.source}</td>
                 <td class="py-2 pr-2 align-top truncate" title={s.receiver}>{s.receiver}</td>
                 <td class="py-2 pr-2 align-top whitespace-nowrap">{s.cadence}{s.runAt ? ` ${s.runAt}` : ''}</td>
                 <td class="py-2 pr-2 align-top">{s.lastResult ? `${s.lastResult} (${fmtTime(s.lastRun)})` : 'never'}</td>
@@ -409,7 +414,7 @@
       <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
         <select bind:value={newSchedule.dataset} class="input">
           <option value="">Dataset…</option>
-          {#each datasets as d}<option value={d.name}>{d.name}</option>{/each}
+          {#each sendableDatasets as d}<option value={d.name}>{d.name}</option>{/each}
         </select>
         <input type="text" bind:value={newSchedule.receiver} placeholder="Buddy URL https://…" class="input" />
         <input type="text" bind:value={newSchedule.source} placeholder="Source name naslos-a/data" class="input" />
@@ -442,7 +447,7 @@
       <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
         <select bind:value={adhoc.dataset} class="input">
           <option value="">Dataset…</option>
-          {#each datasets as d}<option value={d.name}>{d.name}</option>{/each}
+          {#each sendableDatasets as d}<option value={d.name}>{d.name}</option>{/each}
         </select>
         <input type="text" bind:value={adhoc.receiver} placeholder="Buddy URL https://…" class="input" />
         <input type="text" bind:value={adhoc.source} placeholder="Source name" class="input" />
@@ -508,7 +513,7 @@
         {:else}
           <table class="w-full text-sm table-fixed">
             <thead><tr class="text-left text-gray-500"><th class="py-1 align-top">Source</th><th class="py-1 align-top">Chain</th><th class="py-1 align-top">Stored</th></tr></thead>
-            <tbody>{#each receiver.backups as b}<tr class="border-t border-naslos-border"><td class="py-1 pr-2 align-top truncate">{b.source}</td><td class="py-1 pr-2 align-top truncate">{b.chain}</td><td class="py-1 align-top">{fmtBytes(b.bytes ?? 0)}</td></tr>{/each}</tbody>
+            <tbody>{#each receiver.backups as b}<tr class="border-t border-naslos-border"><td class="py-1 pr-2 align-top truncate">{b.source}</td><td class="py-1 pr-2 align-top truncate">{b.chain}</td><td class="py-1 align-top">{fmtBytes(b.storedBytes ?? 0)}</td></tr>{/each}</tbody>
           </table>
         {/if}
       {/if}
