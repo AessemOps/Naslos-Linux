@@ -43,6 +43,12 @@ type Server struct {
 	// buddy is the receive side of Buddy Backup: peers push encrypted chunks that
 	// this instance stores but cannot read (docs/buddy-backup.md).
 	buddy *buddy.Receiver
+	// buddyJobs tracks async instance-side sends (POST /api/buddy/send → 202).
+	buddyJobs *buddyJobManager
+	// buddySchedules persists scheduled backups and drives the runner.
+	buddySchedules *buddyScheduleStore
+	// schedulerStop stops the backup scheduler; nil until started.
+	schedulerStop chan struct{}
 	// buddyRequireAuth gates the endpoints that authorize or revoke peers, the
 	// same way terminalRequireAuth gates the terminal.
 	buddyRequireAuth bool
@@ -231,6 +237,9 @@ func (s *Server) routes() {
 		s.router.HandleFunc("/api/buddy/identity", s.handleBuddyIdentity)
 		s.router.HandleFunc("/api/buddy/send", s.handleBuddySend)
 		s.router.HandleFunc("/api/buddy/restore", s.handleBuddyRestore)
+		s.router.HandleFunc("/api/buddy/jobs", s.handleBuddyJobs)
+		s.router.HandleFunc("/api/buddy/jobs/", s.handleBuddyJobDetail)
+		s.router.HandleFunc("/api/buddy/schedules", s.handleBuddySchedules)
 	}
 
 	// Metrics & Dashboard
@@ -272,6 +281,11 @@ func (s *Server) Start() error {
 	// as soon as the server comes up.
 	s.startMetricsCollector()
 
+	// Async buddy sends and the backup scheduler (FR-BUD-15/16).
+	s.ensureBuddyJobs()
+	s.ensureBuddySchedules()
+	s.startBuddyScheduler()
+
 	// Converge the node's share services with the persisted share definitions.
 	// This covers first boot, chart upgrades and node reboots: the host's
 	// config directory may be empty or stale, and the API is the source of
@@ -292,6 +306,13 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.stopBuddyScheduler()
+	if s.buddyJobs != nil {
+		s.buddyJobs.cancelAll()
+	}
+	if s.server == nil {
+		return nil
+	}
 	return s.server.Shutdown(ctx)
 }
 
