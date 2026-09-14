@@ -203,6 +203,37 @@ tests skip without a session). Drills, all through the UI NodePort with
   needed (the dataset was `root:root` again and the first push failed with
   `mkdir …/buddy/<key>: permission denied` until it was applied).
 
+**Cross-flavour interop verified live (VM instance ↔ standalone container).**
+The standalone `naslos-buddy-receiver:0.1.0-b9` (`api/Dockerfile.receiver`) ran on
+the workstation (`192.168.1.135:8484`, two volumes at `~/buddy-standalone`,
+enrollment closed, the VM's key pre-authorized in `peers.json`), reachable from
+the VM's API pod; both flavours spoke the same protocol unchanged.
+
+- **VM sender → container receiver:** `POST /api/buddy/send` → `succeeded`,
+  chain `79c6006f5bc8fd5c`; `verify` returned the digest; restore onto the VM
+  landed `test/docker-restored` identical to `test/Backup` (96K/96K, ratio
+  1.00x) with the `buddy-…28a9` snapshot. A second send was `incremental: true`
+  off the recorded base GUID (1 chunk, 624 B, chain `3f2dcb81e031f323`). The
+  container's store held the same envelope layout as the VM's (and the same
+  hashed key dir `k519a911…`, deterministic from the sender fingerprint).
+- **Container restart** (`docker restart`): peer registry and store survived;
+  the VM's `verify` then walked the full sequence (44,368 + 624 = 44,992 B).
+- **Standalone client (`buddyctl`) → container:** a fresh `ws-sender` key pushed
+  a directory (chain `f1b8c05c90ff8d2b`), restored byte-identical (`diff -r`
+  clean), and a root `grep` for a plaintext needle in the receiver's store found
+  **nothing** — ciphertext only. Restoring with a copy of the identity whose KEK
+  was replaced failed with `cannot unwrap the data key: this backup was not made
+  with this key` — the zero-knowledge property on real cross-flavour data.
+- **Standalone client → VM receiver (reverse direction):** `buddyctl enroll` with
+  the chart's token succeeded (the API restart re-armed the "single-use" token —
+  audit NAS-011), push chain `4a0c114e0203f61b`, `buddyctl status` showed the
+  per-key view (free space, stored-for-me, sources, last backup) and the restore
+  was byte-identical. The test peer was then revoked and the VM store emptied.
+- **Minor finding:** the peer-facing `/status` returns every peer *name*
+  (`Status.PeerNames`, `api/internal/buddy/http.go:186-190`), so any authorized
+  key learns which other peers exist (names only, no keys). Low sensitivity, but
+  it is a deliberate choice worth making.
+
 **Defects found live and fixed in this change**
 
 - `ui/tests/backups.spec.ts` could not pass against a default deployment: the
