@@ -1,5 +1,81 @@
 # AI Handoff — Naslos
 
+## Buddy Backup (`feature/buddy-backup`) — zero-knowledge peer backups
+
+**What it is.** One Naslos instance can push backups to another instance — or to a
+standalone container — over a key-authenticated API. The receiver stores
+**ciphertext it cannot read**: the sender encrypts with a per-chain AES-256-GCM key
+wrapped by a key encryption key (KEK) only the owner holds. Full documentation in
+`docs/buddy-backup.md`; requirements in `docs/spec.md` §3.8 (FR-BUD-01…10, SEC-6…8).
+
+**Protocol** (identical for both receiver flavours):
+
+- **Auth** — Ed25519 in OpenSSH form; the signature covers
+  `BUDDY1\nMETHOD\nfull-URI\nsha256(body)\ntimestamp\nnonce`. 5-minute clock
+  window, nonce replay cache, and a nonce is burned only **after** the signature
+  verifies so junk traffic cannot exhaust a peer's nonces. First key in via a
+  single-use enrollment token; everything else needs an already-authorized key.
+- **Envelope** — 1 MiB chunks: `NBC1 | plainLen(4) | nonce(12) | ct+tag`, nonce =
+  `streamPrefix||index`, AAD binds source+chain+index+plainLen. Per-chain DEK,
+  wrapped by the KEK and carried in the signed manifest, which also stores a
+  SHA-256 per plaintext chunk (only the owner can check that — the receiver cannot).
+- **Endpoints** — `/api/buddy/v1/{enroll,status,backups,chunks/{source},manifest/{source},prune/{source}}`.
+  A push is many small requests plus a signed manifest, which is what makes resume
+  cheap and idempotent.
+
+**Delivered**
+
+- `api/internal/buddy/` — keys/identity, request signing + replay protection,
+  chunked envelope, receiver store, peer registry, receiver HTTP surface, sender
+  client.
+- `api/cmd/buddyctl` — identity/enroll/push/status/backups/restore/prune
+  (`make buddyctl`, dir/file/stdin, `--resume`).
+- `api/cmd/buddy-receiver` + `api/Dockerfile.receiver` +
+  `make buddy-receiver-image` — the standalone two-volume receiver (no ZFS, no
+  Kubernetes, no database; two volumes and one binary).
+- Instance receive side: the routes above plus `/api/buddy/status` and
+  `/api/buddy/peers` for the owner, chart values (`buddy.*`), a `naslos-buddy`
+  enrollment Secret, the dataset mount, and a UI-nginx `/api/buddy/` location with
+  `client_max_body_size 8m` — the default 1 MB would reject every 1 MiB chunk with
+  a 413 before it reached the API.
+- 11 Go tests in `api/internal/buddy/buddy_test.go` driving a real receiver over
+  `httptest`: round trip, tamper (flip/truncate/reorder/cross-chain), resume (and
+  refusal to resume with changed data), scope, quota, unsigned/unknown/stale/replay,
+  single-use enrollment, prune.
+
+**Verified live on the VM** (peer → UI NodePort → nginx → API, chart `buddy`
+enabled, dataset `test/naslos-buddy`):
+
+- enrollment token accepted once (second attempt → 403); push 3 MiB → 4 chunks;
+  `status`/`backups` report free space, stored bytes, last backup; restore + `diff -r`
+  + `md5sum` byte-identical.
+- 128 MiB push killed with `timeout -s KILL 1`, then `--resume` → 15 chunks
+  verified-and-skipped, 114 uploaded, full verify-only restore clean.
+- one byte flipped in a stored chunk → restore fails `cipher: message authentication
+  failed` (the earlier "passed" run was my test racing the tamper, not a defect).
+- unsigned → 401, unknown key → 401, out-of-scope source → 403, prune drops the old
+  chain and the remaining chain still restores.
+- the store contains only `chunk-*.enc` (1 MiB + 36 B, mode 0600, uid 65532) and the
+  signed manifest; a plaintext needle is absent from it — the zero-knowledge
+  property, checked on the deployed instance.
+
+**Deployment gotcha found live**: the API image is distroless and runs as uid
+**65532**, so the receive dataset has to be handed to it —
+`chown 65532:65532 /var/mnt/<pool>/naslos-buddy`. `fsGroup` does **not** apply to
+`hostPath` volumes, and without the chown the first push fails with
+`mkdir /var/lib/naslos/buddy/<key>: permission denied`. Documented in
+`docs/buddy-backup.md` (§5.1 step 1b and the troubleshooting table).
+
+**Deployed**: api/ui `0.1.0-b1` (helm revision 50); everything else unchanged
+(agent `0.1.0-z1`, terminal `0.1.0-t2`, samba `0.1.0-s15`, nfs `0.1.0-n2`).
+
+**Not done yet, in plan order**: the UI backup page (the API already returns
+everything it needs — see the `/api/buddy/status` payload); instance-side
+`zfs send -w -i` streaming (needs a streaming exec seam in the agent, whose
+`hostExec` buffers output today, plus a no-timeout path in the API's agent client —
+its 180 s timeout is the current blocker); a scheduler with retention and ntfy
+notifications; and multi-buddy fan-out.
+
 ## Current branch: `feature/shares` (SMB shares + LDAP account sync)
 
 ### What was broken

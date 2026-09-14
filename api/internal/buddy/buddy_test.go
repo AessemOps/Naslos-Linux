@@ -1,0 +1,720 @@
+package buddy
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+// testReceiver is the fake-peer harness: a real receiver (the same handlers,
+// authenticator and store the instance runs) behind an httptest server, so the
+// tests exercise the protocol over HTTP rather than calling internals.
+type testReceiver struct {
+	server *httptest.Server
+	store  *Store
+	peers  *PeerStore
+	dir    string
+	token  string
+}
+
+// newTestReceiver builds a receiver rooted in a temp dir.
+func newTestReceiver(t *testing.T, token string) *testReceiver {
+	t.Helper()
+
+	dir := t.TempDir()
+	store := NewStore(filepath.Join(dir, "data"))
+	peers := NewPeerStore(filepath.Join(dir, "peers.json"))
+	if err := peers.Load(); err != nil {
+		t.Fatalf("loading peer store: %v", err)
+	}
+
+	receiver := &Receiver{
+		Store:       store,
+		Peers:       peers,
+		Auth:        NewAuthenticator(peers),
+		Name:        "test-receiver",
+		Version:     "test",
+		EnrollToken: token,
+	}
+	server := httptest.NewServer(receiver.Handler())
+	t.Cleanup(server.Close)
+
+	return &testReceiver{server: server, store: store, peers: peers, dir: dir, token: token}
+}
+
+// authorize registers an identity's public key directly (the out-of-band path).
+func (r *testReceiver) authorize(t *testing.T, id *Identity, sources []string, quota int64) *Peer {
+	t.Helper()
+
+	peer := &Peer{
+		Name:           id.Name,
+		PublicKey:      id.PublicKey,
+		AllowedSources: sources,
+		QuotaBytes:     quota,
+		Enabled:        true,
+	}
+	if err := r.peers.Add(peer); err != nil {
+		t.Fatalf("authorizing %s: %v", id.Name, err)
+	}
+	return peer
+}
+
+// client returns a sender pointed at the receiver.
+func (r *testReceiver) client(id *Identity) *Client {
+	return NewClient(r.server.URL, id)
+}
+
+// newTestIdentity creates an identity in memory (no key file needed).
+func newTestIdentity(t *testing.T, name string) *Identity {
+	t.Helper()
+
+	id, err := NewIdentity(name)
+	if err != nil {
+		t.Fatalf("creating identity: %v", err)
+	}
+	return id
+}
+
+// randomBytes returns n random bytes.
+func randomBytes(t *testing.T, n int) []byte {
+	t.Helper()
+
+	data := make([]byte, n)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatalf("generating test data: %v", err)
+	}
+	return data
+}
+
+func TestIdentityRoundTrip(t *testing.T) {
+	id := newTestIdentity(t, "naslos-a")
+
+	path := filepath.Join(t.TempDir(), "identity.json")
+	if err := id.Save(path); err != nil {
+		t.Fatalf("saving identity: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat identity: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("identity permissions are %o, want 600: a private key must not be world readable", perm)
+	}
+
+	loaded, err := LoadIdentity(path)
+	if err != nil {
+		t.Fatalf("loading identity: %v", err)
+	}
+	if loaded.PublicKey != id.PublicKey {
+		t.Error("public key changed across save/load")
+	}
+
+	fingerprint, err := loaded.Fingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	if !strings.HasPrefix(fingerprint, "SHA256:") {
+		t.Errorf("fingerprint %q is not ssh-style", fingerprint)
+	}
+
+	// The signature must verify with the public key alone, and must not verify
+	// against a different message.
+	sig, err := loaded.Sign([]byte("payload"))
+	if err != nil {
+		t.Fatalf("signing: %v", err)
+	}
+	if err := Verify(loaded.PublicKey, []byte("payload"), sig); err != nil {
+		t.Fatalf("verifying own signature: %v", err)
+	}
+	if err := Verify(loaded.PublicKey, []byte("other payload"), sig); err == nil {
+		t.Error("signature verified against a different message")
+	}
+}
+
+func TestEnvelopeRejectsTampering(t *testing.T) {
+	dek := randomBytes(t, 32)
+	prefix := randomBytes(t, 8)
+	plain := []byte("the quick brown fox jumps over the lazy dog")
+
+	sealed, sha, err := SealChunk(dek, prefix, "naslos-a/data", "chain1", 0, plain)
+	if err != nil {
+		t.Fatalf("sealing: %v", err)
+	}
+	if sha != digestOf(plain) {
+		t.Error("seal returned the wrong plaintext digest")
+	}
+
+	opened, err := OpenChunk(dek, "naslos-a/data", "chain1", 0, sealed)
+	if err != nil {
+		t.Fatalf("opening: %v", err)
+	}
+	if !bytes.Equal(opened, plain) {
+		t.Error("round trip changed the data")
+	}
+
+	cases := []struct {
+		name    string
+		mutate  func([]byte) []byte
+		atIndex int
+	}{
+		{"flipped ciphertext bit", func(in []byte) []byte {
+			out := append([]byte(nil), in...)
+			out[len(out)-1] ^= 0x01
+			return out
+		}, 0},
+		{"truncated", func(in []byte) []byte { return in[:len(in)-4] }, 0},
+		{"wrong chunk index", func(in []byte) []byte { return in }, 1},
+		{"bad magic", func(in []byte) []byte {
+			out := append([]byte(nil), in...)
+			out[0] = 'X'
+			return out
+		}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := OpenChunk(dek, "naslos-a/data", "chain1", tc.atIndex, tc.mutate(sealed)); err == nil {
+				t.Error("tampered chunk opened without error")
+			}
+		})
+	}
+
+	// A chunk moved to another source or chain must not open either: the AAD
+	// binds it to its position.
+	if _, err := OpenChunk(dek, "naslos-b/data", "chain1", 0, sealed); err == nil {
+		t.Error("chunk opened under a different source")
+	}
+	if _, err := OpenChunk(dek, "naslos-a/data", "chain2", 0, sealed); err == nil {
+		t.Error("chunk opened under a different chain")
+	}
+}
+
+func TestDEKWrapNeedsTheOwnersKEK(t *testing.T) {
+	owner := newTestIdentity(t, "naslos-a")
+	stranger := newTestIdentity(t, "nosy-receiver")
+
+	dek := randomBytes(t, 32)
+	kek, err := owner.KEKBytes()
+	if err != nil {
+		t.Fatalf("owner kek: %v", err)
+	}
+	wrapped, err := WrapDEK(kek, dek, "naslos-a/data", "chain1")
+	if err != nil {
+		t.Fatalf("wrapping: %v", err)
+	}
+
+	unwrapped, err := UnwrapDEK(kek, wrapped, "naslos-a/data", "chain1")
+	if err != nil {
+		t.Fatalf("unwrapping: %v", err)
+	}
+	if !bytes.Equal(unwrapped, dek) {
+		t.Error("unwrapped key differs from the original")
+	}
+
+	// The receiver's KEK is a different secret: it must fail, which is the whole
+	// zero-knowledge property.
+	strangerKEK, err := stranger.KEKBytes()
+	if err != nil {
+		t.Fatalf("stranger kek: %v", err)
+	}
+	if _, err := UnwrapDEK(strangerKEK, wrapped, "naslos-a/data", "chain1"); err == nil {
+		t.Error("a stranger's key unwrapped the data key")
+	}
+	// Binding the wrapped key to its chain prevents moving it around.
+	if _, err := UnwrapDEK(kek, wrapped, "naslos-a/data", "chain2"); err == nil {
+		t.Error("wrapped key opened under a different chain")
+	}
+}
+
+func TestManifestSignature(t *testing.T) {
+	id := newTestIdentity(t, "naslos-a")
+	manifest := &Manifest{
+		Version:      EnvelopeVersion,
+		Source:       "naslos-a/data",
+		Chain:        "chain1",
+		Kind:         "tar",
+		CreatedAt:    time.Now().UTC(),
+		Chunks:       []ManifestChunk{{Index: 0, PlainBytes: 10, SealedBytes: 46, Sha256Plain: digestOf([]byte("0123456789"))}},
+		DEKWrapped:   base64.StdEncoding.EncodeToString(randomBytes(t, 60)),
+		StreamPrefix: base64.StdEncoding.EncodeToString(randomBytes(t, 8)),
+	}
+	if err := manifest.Sign(id); err != nil {
+		t.Fatalf("signing manifest: %v", err)
+	}
+	if err := manifest.VerifySignature(id.PublicKey); err != nil {
+		t.Fatalf("verifying manifest: %v", err)
+	}
+
+	// Editing the metadata after signing must invalidate it: this is what stops a
+	// receiver from lying about what it stored.
+	tampered := *manifest
+	tampered.Chunks = []ManifestChunk{{Index: 0, PlainBytes: 10, SealedBytes: 46, Sha256Plain: digestOf([]byte("9999999999"))}}
+	if err := tampered.VerifySignature(id.PublicKey); err == nil {
+		t.Error("a tampered manifest still verified")
+	}
+
+	other := newTestIdentity(t, "naslos-b")
+	if err := manifest.VerifySignature(other.PublicKey); err == nil {
+		t.Error("a manifest verified against another identity's key")
+	}
+}
+
+// failAfterReader serves data up to limit bytes and then fails, standing in for a
+// dropped connection or a killed process mid-push.
+type failAfterReader struct {
+	data  []byte
+	limit int
+	pos   int
+}
+
+func (r *failAfterReader) Read(p []byte) (int, error) {
+	if r.pos >= r.limit {
+		return 0, errSimulatedInterruption
+	}
+	end := r.limit
+	if end > len(r.data) {
+		end = len(r.data)
+	}
+	n := copy(p, r.data[r.pos:end])
+	r.pos += n
+	if n == 0 {
+		return 0, errSimulatedInterruption
+	}
+	return n, nil
+}
+
+var errSimulatedInterruption = errors.New("simulated connection loss")
+
+// assertNoPlaintext walks the receiver's storage and fails if any of it contains
+// the plaintext needle. It is the check that backs the "the receiver cannot read
+// your backups" claim.
+func assertNoPlaintext(t *testing.T, dir string, needle []byte) {
+	t.Helper()
+
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if bytes.Contains(content, needle) {
+			t.Errorf("plaintext leaked into %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking receiver storage: %v", err)
+	}
+}
+
+func TestPushRestoreRoundTrip(t *testing.T) {
+	receiver := newTestReceiver(t, "")
+	sender := newTestIdentity(t, "naslos-a")
+	receiver.authorize(t, sender, nil, 0)
+	client := receiver.client(sender)
+
+	source := "naslos-a/data"
+	// Deliberately not a whole number of chunks: the final partial chunk is the
+	// case a naive implementation gets wrong.
+	data := randomBytes(t, ChunkPlainSize*2+1234)
+
+	result, err := client.Push(PushOptions{Source: source, Kind: "tar", Reader: bytes.NewReader(data)})
+	if err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if result.Chunks != 3 {
+		t.Errorf("chunks = %d, want 3", result.Chunks)
+	}
+	if result.Uploaded != 3 || result.Skipped != 0 {
+		t.Errorf("uploaded/skipped = %d/%d, want 3/0", result.Uploaded, result.Skipped)
+	}
+	if result.PlainBytes != int64(len(data)) {
+		t.Errorf("plain bytes = %d, want %d", result.PlainBytes, len(data))
+	}
+
+	// The receiver stores ciphertext only.
+	assertNoPlaintext(t, receiver.dir, data[:64])
+
+	status, err := client.Status()
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.FreeBytes <= 0 {
+		t.Errorf("receiver reported %d free bytes", status.FreeBytes)
+	}
+	if status.UsedBytes <= 0 {
+		t.Errorf("receiver reported %d used bytes after a push", status.UsedBytes)
+	}
+	if status.LastBackup == nil {
+		t.Error("status did not report a last backup time")
+	}
+	if len(status.Sources) != 1 || status.Sources[0] != source {
+		t.Errorf("status sources = %v, want [%s]", status.Sources, source)
+	}
+	if status.Chains[source] != result.Chain {
+		t.Errorf("status chain = %q, want %q", status.Chains[source], result.Chain)
+	}
+
+	var restored bytes.Buffer
+	restoreResult, err := client.Restore(RestoreOptions{Source: source, Out: &restored})
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if !bytes.Equal(restored.Bytes(), data) {
+		t.Error("restored bytes differ from the original")
+	}
+	if restoreResult.Chunks != 3 || restoreResult.Chain != result.Chain {
+		t.Errorf("restore = %d chunks on chain %q, want 3 on %q", restoreResult.Chunks, restoreResult.Chain, result.Chain)
+	}
+
+	backups, err := client.Backups()
+	if err != nil {
+		t.Fatalf("backups: %v", err)
+	}
+	if len(backups) != 1 || backups[0].Source != source {
+		t.Fatalf("backups = %+v, want one row for %s", backups, source)
+	}
+	if backups[0].StoredBytes <= 0 {
+		t.Error("backups row reported no stored bytes")
+	}
+}
+
+// signedRequest builds a request signed with an explicit timestamp and nonce, so
+// tests can exercise clock skew and replay outside the normal signing path.
+func signedRequest(t *testing.T, id *Identity, url, method string, body []byte, timestamp int64, nonce string) *http.Request {
+	t.Helper()
+
+	req, err := http.NewRequest(method, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	stamp := strconv.FormatInt(timestamp, 10)
+	canonical := CanonicalRequest(method, req.URL.RequestURI(), BodyDigest(body), stamp, nonce)
+	sig, err := id.Sign([]byte(canonical))
+	if err != nil {
+		t.Fatalf("signing: %v", err)
+	}
+	fingerprint, err := id.Fingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	req.Header.Set(HeaderKeyID, fingerprint)
+	req.Header.Set(HeaderTimestamp, stamp)
+	req.Header.Set(HeaderNonce, nonce)
+	req.Header.Set(HeaderSignature, base64.StdEncoding.EncodeToString(sig))
+	return req
+}
+
+func TestPushResumeUploadsOnlyMissingChunks(t *testing.T) {
+	receiver := newTestReceiver(t, "")
+	sender := newTestIdentity(t, "naslos-a")
+	receiver.authorize(t, sender, nil, 0)
+	client := receiver.client(sender)
+
+	source := "naslos-a/big"
+	data := randomBytes(t, ChunkPlainSize*3)
+
+	state, err := NewChainState(source, "zfs-send")
+	if err != nil {
+		t.Fatalf("chain state: %v", err)
+	}
+
+	// First attempt dies after two chunks.
+	interrupted := &failAfterReader{data: data, limit: ChunkPlainSize * 2}
+	if _, err := client.Push(PushOptions{Source: source, Kind: "zfs-send", Reader: interrupted, State: state}); err == nil {
+		t.Fatal("the interrupted push reported success")
+	}
+
+	// Resuming must reuse the chain and only move what is missing.
+	result, err := client.Push(PushOptions{Source: source, State: state, Reader: bytes.NewReader(data)})
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if result.Uploaded != 1 {
+		t.Errorf("resume uploaded %d chunks, want 1", result.Uploaded)
+	}
+	if result.Skipped != 2 {
+		t.Errorf("resume skipped %d chunks, want 2", result.Skipped)
+	}
+	if result.Skipped+result.Uploaded != result.Chunks {
+		t.Errorf("accounting mismatch: %d skipped + %d uploaded != %d chunks", result.Skipped, result.Uploaded, result.Chunks)
+	}
+
+	var restored bytes.Buffer
+	if _, err := client.Restore(RestoreOptions{Source: source, Out: &restored}); err != nil {
+		t.Fatalf("restore after resume: %v", err)
+	}
+	if !bytes.Equal(restored.Bytes(), data) {
+		t.Error("restored data differs after a resume")
+	}
+
+	// Resuming the same chain with different data must fail instead of mixing two
+	// versions into one chain.
+	changed := randomBytes(t, ChunkPlainSize*3)
+	_, err = client.Push(PushOptions{Source: source, State: state, Reader: bytes.NewReader(changed)})
+	if err == nil {
+		t.Fatal("resuming a chain with different data succeeded")
+	}
+	if !strings.Contains(err.Error(), "different bytes") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestReceiverRefusesTamperedChunk(t *testing.T) {
+	receiver := newTestReceiver(t, "")
+	sender := newTestIdentity(t, "naslos-a")
+	receiver.authorize(t, sender, nil, 0)
+	client := receiver.client(sender)
+
+	source := "naslos-a/data"
+	data := randomBytes(t, ChunkPlainSize)
+	if _, err := client.Push(PushOptions{Source: source, Reader: bytes.NewReader(data)}); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	// Corrupt the stored ciphertext the way a failing disk would.
+	var target string
+	err := filepath.Walk(receiver.dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() && strings.HasSuffix(path, "chunk-000000.enc") {
+			target = path
+		}
+		return nil
+	})
+	if err != nil || target == "" {
+		t.Fatalf("could not find the stored chunk (target=%q err=%v)", target, err)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("reading chunk: %v", err)
+	}
+	content[len(content)-1] ^= 0xff
+	if err := os.WriteFile(target, content, 0644); err != nil {
+		t.Fatalf("corrupting chunk: %v", err)
+	}
+
+	var out bytes.Buffer
+	if _, err := client.Restore(RestoreOptions{Source: source, Out: &out}); err == nil {
+		t.Fatal("restore succeeded from a corrupted chunk")
+	} else if !strings.Contains(err.Error(), "authentication") {
+		t.Errorf("unexpected restore error: %v", err)
+	}
+}
+
+func TestScopeAndQuota(t *testing.T) {
+	t.Run("scope", func(t *testing.T) {
+		receiver := newTestReceiver(t, "")
+		sender := newTestIdentity(t, "naslos-a")
+		receiver.authorize(t, sender, []string{"naslos-a/data"}, 0)
+		client := receiver.client(sender)
+
+		_, err := client.Push(PushOptions{Source: "naslos-a/other", Reader: bytes.NewReader(randomBytes(t, 64))})
+		if err == nil {
+			t.Fatal("a scoped key pushed outside its scope")
+		}
+		if !strings.Contains(err.Error(), "not allowed") {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if _, err := client.Push(PushOptions{Source: "naslos-a/data", Reader: bytes.NewReader(randomBytes(t, 64))}); err != nil {
+			t.Fatalf("push inside the scope failed: %v", err)
+		}
+	})
+
+	t.Run("quota", func(t *testing.T) {
+		receiver := newTestReceiver(t, "")
+		sender := newTestIdentity(t, "naslos-a")
+		// One and a half chunks of room: the first chunk fits, the second does not.
+		receiver.authorize(t, sender, nil, int64(ChunkPlainSize)+ChunkPlainSize/2)
+		client := receiver.client(sender)
+
+		_, err := client.Push(PushOptions{Source: "naslos-a/data", Reader: bytes.NewReader(randomBytes(t, ChunkPlainSize*2))})
+		if err == nil {
+			t.Fatal("a push beyond the quota succeeded")
+		}
+		if !strings.Contains(err.Error(), "quota exceeded") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestRequestAuthentication(t *testing.T) {
+	receiver := newTestReceiver(t, "")
+	sender := newTestIdentity(t, "naslos-a")
+	receiver.authorize(t, sender, nil, 0)
+	statusURL := receiver.server.URL + PathPrefix + "/status"
+
+	t.Run("unsigned", func(t *testing.T) {
+		resp, err := http.Get(statusURL)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("unsigned request got %d, want 401", resp.StatusCode)
+		}
+	})
+
+	t.Run("unknown key", func(t *testing.T) {
+		stranger := newTestIdentity(t, "not-authorized")
+		req := signedRequest(t, stranger, statusURL, http.MethodGet, nil, time.Now().Unix(), "nonce-unknown")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("unauthorized key got %d, want 401", resp.StatusCode)
+		}
+	})
+
+	t.Run("stale timestamp", func(t *testing.T) {
+		// Signed correctly, but an hour old: a captured request must not stay
+		// valid forever.
+		req := signedRequest(t, sender, statusURL, http.MethodGet, nil, time.Now().Add(-time.Hour).Unix(), "nonce-stale")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("stale request got %d, want 401", resp.StatusCode)
+		}
+	})
+
+	t.Run("replay", func(t *testing.T) {
+		timestamp := time.Now().Unix()
+		first := signedRequest(t, sender, statusURL, http.MethodGet, nil, timestamp, "nonce-replayed")
+		resp, err := http.DefaultClient.Do(first)
+		if err != nil {
+			t.Fatalf("first request: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("first request got %d, want 200", resp.StatusCode)
+		}
+
+		second := signedRequest(t, sender, statusURL, http.MethodGet, nil, timestamp, "nonce-replayed")
+		resp2, err := http.DefaultClient.Do(second)
+		if err != nil {
+			t.Fatalf("second request: %v", err)
+		}
+		defer resp2.Body.Close()
+		if resp2.StatusCode != http.StatusUnauthorized {
+			t.Errorf("replayed request got %d, want 401", resp2.StatusCode)
+		}
+		body, _ := io.ReadAll(resp2.Body)
+		if !strings.Contains(string(body), "already used") {
+			t.Errorf("replay was rejected for the wrong reason: %s", body)
+		}
+	})
+}
+
+func TestEnrollAuthorizesTheFirstKey(t *testing.T) {
+	receiver := newTestReceiver(t, "one-time-token")
+
+	t.Run("wrong token", func(t *testing.T) {
+		sender := newTestIdentity(t, "naslos-a")
+		if _, err := receiver.client(sender).Enroll("not-the-token", "naslos-a", nil); err == nil {
+			t.Error("enrollment with a wrong token succeeded")
+		}
+	})
+
+	sender := newTestIdentity(t, "naslos-a")
+	if _, err := receiver.client(sender).Enroll("one-time-token", "naslos-a", []string{"naslos-a/"}); err != nil {
+		t.Fatalf("enrollment: %v", err)
+	}
+
+	// The enrolled key can now work.
+	client := receiver.client(sender)
+	if _, err := client.Status(); err != nil {
+		t.Fatalf("status after enrollment: %v", err)
+	}
+	if _, err := client.Push(PushOptions{Source: "naslos-a/data", Reader: bytes.NewReader(randomBytes(t, 128))}); err != nil {
+		t.Fatalf("push after enrollment: %v", err)
+	}
+
+	// A second key must not be able to use the same token: a leaked token would
+	// otherwise authorize anyone forever.
+	other := newTestIdentity(t, "naslos-c")
+	if _, err := receiver.client(other).Enroll("one-time-token", "naslos-c", nil); err == nil {
+		t.Error("a single-use enrollment token authorized a second key")
+	}
+
+	// And an enrollment on a receiver without a token is refused outright.
+	closed := newTestReceiver(t, "")
+	if _, err := closed.client(other).Enroll("anything", "naslos-c", nil); err == nil {
+		t.Error("enrollment succeeded on a receiver that has it disabled")
+	}
+}
+
+func TestPruneKeepsNewestChains(t *testing.T) {
+	receiver := newTestReceiver(t, "")
+	sender := newTestIdentity(t, "naslos-a")
+	receiver.authorize(t, sender, nil, 0)
+	client := receiver.client(sender)
+
+	source := "naslos-a/data"
+	data := randomBytes(t, 4096)
+
+	for i := 0; i < 3; i++ {
+		if _, err := client.Push(PushOptions{Source: source, Reader: bytes.NewReader(data)}); err != nil {
+			t.Fatalf("push %d: %v", i, err)
+		}
+	}
+	current, err := client.Manifest(source, "")
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+
+	removed, err := client.Prune(source, 1)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if removed != 2 {
+		t.Errorf("prune removed %d chains, want 2", removed)
+	}
+
+	// The current chain survives and still restores.
+	var restored bytes.Buffer
+	if _, err := client.Restore(RestoreOptions{Source: source, Out: &restored}); err != nil {
+		t.Fatalf("restore after prune: %v", err)
+	}
+	if !bytes.Equal(restored.Bytes(), data) {
+		t.Error("restored data differs after a prune")
+	}
+
+	chains := 0
+	err = filepath.Walk(receiver.dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() && info.Name() == current.Chain {
+			chains++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking storage: %v", err)
+	}
+	if chains != 1 {
+		t.Errorf("the pruned chain is still on disk (found %d copies of %s)", chains, current.Chain)
+	}
+}

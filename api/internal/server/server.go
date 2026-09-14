@@ -13,6 +13,7 @@ import (
 
 	"github.com/AessemOps/Naslos-Linux/api/internal/agent"
 	"github.com/AessemOps/Naslos-Linux/api/internal/auth"
+	"github.com/AessemOps/Naslos-Linux/api/internal/buddy"
 	"github.com/AessemOps/Naslos-Linux/api/internal/catalog"
 	"github.com/AessemOps/Naslos-Linux/api/internal/helm"
 	"github.com/AessemOps/Naslos-Linux/api/internal/identity"
@@ -39,6 +40,12 @@ type Server struct {
 	// namespace is where Naslos runs; it is the terminal's default namespace and
 	// the scope the API's exec permission is limited to.
 	namespace string
+	// buddy is the receive side of Buddy Backup: peers push encrypted chunks that
+	// this instance stores but cannot read (docs/buddy-backup.md).
+	buddy *buddy.Receiver
+	// buddyRequireAuth gates the endpoints that authorize or revoke peers, the
+	// same way terminalRequireAuth gates the terminal.
+	buddyRequireAuth bool
 	// terminalRequireAuth gates the terminal on an authenticated session, and
 	// terminalAuthHeader is the header the authenticated proxy injects
 	// (Authelia's Remote-User by default). See requireTerminalAuth.
@@ -103,6 +110,23 @@ func New(addr string, tc *talos.Client) *Server {
 	agentBaseURL := getEnv("AGENT_BASE_URL", fmt.Sprintf(agent.DefaultBaseURLPattern, namespace))
 	agentClient := agent.NewClient(agentBaseURL)
 
+	// Buddy Backup, receive side. The peer registry lives with the other state
+	// files; the chunks live on the backup dataset (BUDDY_RECEIVE_PATH), which is
+	// mounted read-write into the API precisely because this is the one place a
+	// non-owner may write, and it can only ever write opaque ciphertext.
+	buddyPeers := buddy.NewPeerStore(getEnv("BUDDY_PEERS", "/var/lib/naslos/buddy-peers.json"))
+	if err := buddyPeers.Load(); err != nil {
+		log.Printf("Warning: could not load the buddy peer registry: %v", err)
+	}
+	buddyReceiver := &buddy.Receiver{
+		Store:       buddy.NewStore(getEnv("BUDDY_RECEIVE_PATH", "/var/lib/naslos/buddy")),
+		Peers:       buddyPeers,
+		Auth:        buddy.NewAuthenticator(buddyPeers),
+		Name:        getEnv("BUDDY_NAME", "naslos"),
+		Version:     getEnv("BUDDY_VERSION", "1"),
+		EnrollToken: getEnv("BUDDY_ENROLL_TOKEN", ""),
+	}
+
 	s := &Server{
 		addr:          addr,
 		talos:         tc,
@@ -116,6 +140,10 @@ func New(addr string, tc *talos.Client) *Server {
 		identity:      identityClient,
 		auth:          authMiddleware,
 		namespace:     namespace,
+		buddy:         buddyReceiver,
+		// Authorizing a peer grants storage access, so it is gated on an
+		// authenticated session for the same reason the terminal is.
+		buddyRequireAuth: getEnv("BUDDY_REQUIRE_AUTH", "true") != "false",
 		// The terminal reaches a root shell, so it is protected by default: only
 		// requests carrying the proxy's identity header are served. Turning this
 		// off is a development convenience and is logged as such.
@@ -189,6 +217,16 @@ func (s *Server) routes() {
 	// Notifications
 	s.router.HandleFunc("/api/notifications", s.handleNotifications)
 	s.router.HandleFunc("/api/notifications/test", s.handleNotificationTest)
+
+	// Buddy Backup. The peer-facing API is authenticated by the peers' own keys
+	// (never by the proxy: a peer cannot complete an interactive login), while the
+	// owner-facing endpoints follow the terminal's rule and require a proxied
+	// identity unless buddy.requireAuth=false.
+	if s.buddy != nil {
+		s.router.Handle(buddy.PathPrefix+"/", s.buddy.Handler())
+		s.router.HandleFunc("/api/buddy/status", s.handleBuddyStatus)
+		s.router.HandleFunc("/api/buddy/peers", s.handleBuddyPeers)
+	}
 
 	// Metrics & Dashboard
 	s.router.HandleFunc("/api/metrics", s.handleMetrics)

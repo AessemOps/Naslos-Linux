@@ -115,11 +115,34 @@ spec:
             - name: SHARES_CONFIG
               value: {{ .Values.api.sharesConfig.file | default "/var/lib/naslos/shares.json" }}
             {{- end }}
+            {{- if .Values.buddy.enabled }}
+            # Buddy Backup receive side (docs/buddy-backup.md): peers push
+            # encrypted chunks that this instance stores but cannot read. The
+            # peer registry lives beside the other state files; the chunks live
+            # on their own dataset.
+            - name: BUDDY_NAME
+              value: {{ .Values.buddy.name | default "naslos" | quote }}
+            - name: BUDDY_RECEIVE_PATH
+              value: {{ .Values.buddy.receivePath | default "/var/lib/naslos/buddy" | quote }}
+            - name: BUDDY_PEERS
+              value: {{ .Values.buddy.peersFile | default "/var/lib/naslos/buddy-peers.json" | quote }}
+            # `toString` matters: `default` would replace an explicit false with
+            # true, which is exactly the value that must survive.
+            - name: BUDDY_REQUIRE_AUTH
+              value: {{ .Values.buddy.requireAuth | toString | quote }}
+            {{- if or .Values.buddy.enrollToken .Values.buddy.enrollTokenSecret }}
+            - name: BUDDY_ENROLL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.buddy.enrollTokenSecret | default "naslos-buddy" }}
+                  key: enrollToken
+            {{- end }}
+            {{- end }}
             {{- if .Values.api.ldapCA.secretName }}
             - name: LDAP_CA_CERT
               value: /var/run/secrets/ldap.ca/ca.crt
             {{- end }}
-          {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath }}
+          {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath .Values.buddy.enabled }}
           volumeMounts:
             {{- if .Values.api.talosConfigSecret }}
             - name: talosconfig
@@ -136,6 +159,14 @@ spec:
             - name: shares-config
               mountPath: {{ .Values.api.sharesConfig.mountPath | default "/var/lib/naslos" }}
             {{- end }}
+            {{- if .Values.buddy.enabled }}
+            # The Buddy Backup receive dataset. It is the only read-write host
+            # path this pod gets, and it is a dataset of its own for two reasons:
+            # a backup volume must be able to fill up without taking the OS with
+            # it, and the API can only ever write opaque ciphertext into it.
+            - name: buddy-data
+              mountPath: {{ .Values.buddy.receivePath | default "/var/lib/naslos/buddy" }}
+            {{- end }}
             {{- if .Values.api.datasetsHostPath }}
             # Read-only view of the share datasets so the API can list and
             # validate paths for the shares UI. Gated on a hostPath because it
@@ -150,7 +181,7 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
-      {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath }}
+      {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath .Values.buddy.enabled }}
       volumes:
         {{- if .Values.api.talosConfigSecret }}
         - name: talosconfig
@@ -177,6 +208,15 @@ spec:
         - name: datasets
           hostPath:
             path: {{ .Values.api.datasetsHostPath }}
+            type: Directory
+        {{- end }}
+        {{- if .Values.buddy.enabled }}
+        - name: buddy-data
+          hostPath:
+            # Must already exist: `zfs create <pool>/naslos-buddy`
+            # (see docs/buddy-backup.md). Created here rather than by the API
+            # because the API is deliberately not a host writer.
+            path: {{ required "buddy.receiveHostPath is required when buddy.enabled=true: it is the dataset that stores received chunks" .Values.buddy.receiveHostPath }}
             type: Directory
         {{- end }}
       {{- end }}
