@@ -24,6 +24,16 @@ users could never authenticate over SMB.
 - The shares UI shows each share's `smb://<host>/<name>` address (host taken from
   the browsing URL) with a copy button, and no longer offers AFP (the API
   rejects it).
+- **Share paths can be folders inside a dataset, and the UI can create them.**
+  The Path field is a folder picker (dataset → subfolders → `Create folder`), so
+  one dataset can hold several shares (`/var/mnt/test/media`, …) without ever
+  leaving the pool: folder creation goes through the agent and is refused for
+  anything not on a dataset, for a missing parent, and for traversal. Shares can
+  be repointed at another folder when edited (validated like a create), and a
+  share can no longer be created on a folder that does not exist. Verified live:
+  created `/var/mnt/test/media` from the API, shared it over NFS, mounted it from
+  a client, wrote a file — and it landed in that folder on the pool. 18/18
+  Playwright tests pass.
 - **NFS is served** by NFS-Ganesha in userspace (`naslos-nfs` DaemonSet,
   hostNetwork, NFSv4/TCP :2049) — Talos has no kernel `nfsd`, so the API renders
   Ganesha's config instead of `/etc/exports`. Verified live: a *separate client

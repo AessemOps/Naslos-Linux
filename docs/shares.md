@@ -41,6 +41,7 @@ directly.
 | GET / POST | `/api/shares` | List / create |
 | GET / PUT / DELETE | `/api/shares/{name}` | Detail / update / delete |
 | GET | `/api/shares/paths` | Shareable dataset paths + ZFS base |
+| GET / POST / DELETE | `/api/shares/folders` | List / create / remove folders inside the datasets (share paths) |
 | GET | `/api/shares/status` | Rendered revision + what the node has applied |
 | POST | `/api/shares/apply` | Re-render and push the configuration to the node |
 | GET | `/api/shares/config/samba` | Generated `smb.conf` (text/plain) |
@@ -63,7 +64,7 @@ the API stays the source of truth and the next apply converges the node.
 | Field | Meaning |
 | --- | --- |
 | `name` | Unique share name (no `/ \ [ ] " ' : * ? < > = + ; ,`, ≤80 chars) |
-| `path` | Filesystem path — must be **inside** `/var/mnt` (`SHARES_ZFS_BASE`) |
+| `path` | Filesystem path — a folder **on a ZFS dataset**: the dataset mountpoint itself or any subfolder of one. Must be inside `/var/mnt` (`SHARES_ZFS_BASE`) and must exist (create it from the UI's folder picker) |
 | `protocol` | `smb` \| `nfs` |
 | `description` | Comment (may be empty) |
 | `readOnly` | Export read-only |
@@ -80,8 +81,48 @@ Validation (`Manager.Create`):
 - `path` required, canonicalised with `filepath.Clean`, and rejected unless it
   is *strictly inside* the ZFS base — this blocks traversal such as
   `/var/mnt/../etc`, which a plain prefix check would allow;
+- `path` must be on a **dataset** (or in a subfolder of one) and must exist as a
+  folder: a path on the ephemeral partition is refused (see "Share paths must be
+  on a ZFS dataset"), and so is a folder that is not there yet;
 - protocol must be `smb` or `nfs` (AFP is not served — see below);
 - duplicate names rejected.
+
+An existing share can be repointed at another folder (`PUT /api/shares/{name}`
+with `path`); the new path is validated exactly like a create.
+
+## Folders in the pool (share paths)
+
+Share paths are not limited to dataset roots: any folder inside a dataset is a
+valid share path, so one dataset can hold several shares (`/var/mnt/test/media`,
+`/var/mnt/test/backups`, …) and each stays visible/redundant/snapshotted with the
+dataset.
+
+The share form is a folder picker rather than a flat list: pick the dataset, walk
+into its folders, or create a new one — creating it and saving the share links
+the share to that new folder in the pool. Folders are created on the host by the
+privileged agent (the API mounts the datasets **read-only**, it only needs to
+list and stat them):
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/shares/folders?path=/var/mnt/test` | List the subfolders of a folder (`base`, `path`, `folders`) |
+| POST | `/api/shares/folders` | Create `{"path": "<parent>", "name": "<folder>"}` → `{"path": "<parent>/<folder>"}` |
+| DELETE | `/api/shares/folders?path=…` | Remove an **empty** folder |
+
+Guarantees, checked on both sides:
+
+- **Confined to the datasets.** The API rejects a path that is not on a dataset
+  (and normalises `..` first); the agent rejects anything outside `/var/mnt`.
+  Without that, the endpoint would be a remote file-creation primitive on the
+  node.
+- **One level at a time.** The parent must exist, so a typo cannot silently
+  create a chain of directories and then share it.
+- **Nothing is destroyed.** Delete refuses a non-empty folder (and the dataset
+  root): a folder picker must not be able to remove share data — there is no
+  recycle bin.
+- **Reserved names.** Names containing separators or control characters are
+  refused, as is `.zfs` (ZFS's snapshot directory, which is also hidden from
+  listings).
 
 ## Account synchronisation (SMB ⇄ LDAP)
 
@@ -186,6 +227,12 @@ smb://192.168.1.96/test                  [Copy]
   which is the NFSv4 pseudo path, i.e. exactly the source that
   `mount -t nfs4` takes (`mount -t nfs4 <host>:/<name> /mnt`).
 - Disabled shares show "Disabled — not reachable until enabled" instead.
+- The **Path** control is a folder picker, not a flat list: it offers dataset
+  mountpoints (the durable choices), walks into their subfolders, and can create
+  a new folder to link the share to (`+ Create folder`). The dataset is what the
+  browsing is confined to, so "Up" stops there and no path outside the pool can
+  be selected. When editing a share the picker opens at the share's current
+  folder, so it can be repointed at another one.
 - The create/edit form offers only `smb` and `nfs`: AFP is rejected by the API,
   so offering it would produce a 400.
 
@@ -211,8 +258,9 @@ Enforcement, at every layer:
 | Layer | Behaviour |
 | --- | --- |
 | `GET /api/shares/paths` | Offers **only dataset mountpoints** (from the agent's `zfs list`), never arbitrary directories under the base |
-| `POST /api/shares` | Rejects a path that is not on a dataset (HTTP 400) naming the datasets that would work |
-| `naslos-samba` startup | Logs each share path with the mount backing it, and warns loudly for any path that is not on a mounted filesystem |
+| `POST /api/shares` | Rejects a path that is not on a dataset (HTTP 400) naming the datasets that would work, and rejects a dataset path that does not exist |
+| `GET/POST/DELETE /api/shares/folders` | Folders can be created *inside* a dataset only (see "Folders in the pool") — so a share can be pointed at a subfolder without ever leaving the pool |
+| `naslos-samba` / `naslos-nfs` startup | Log each share/export path with the mount backing it, and warn loudly for any path that is not on a mounted filesystem |
 | Schedules | `mountPropagation: HostToContainer` on the `/var/mnt` mounts, so a dataset mounted *after* a pod starts (pool import on boot) is visible instead of the pod serving the underlying directory |
 
 ```
@@ -552,6 +600,18 @@ sudo mkdir -p /mnt/nas
 sudo mount -t nfs4 "$VM":/<share> /mnt/nas && ls -la /mnt/nas \
   && echo probe > /mnt/nas/probe.txt && cat /mnt/nas/probe.txt \
   && cd / && sudo umount /mnt/nas
+
+# NFS: a share on a FOLDER inside a dataset (created from the UI's picker)
+curl -s -X POST "$API/api/shares/folders" -H 'Content-Type: application/json' \
+  -d '{"path":"/var/mnt/test","name":"media"}'      # -> {"path":"/var/mnt/test/media"}
+curl -s -X POST "$API/api/shares" -H 'Content-Type: application/json' \
+  -d '{"name":"media","path":"/var/mnt/test/media","protocol":"nfs"}'
+# ...then mount it from another machine and write:
+sudo mount -t nfs4 "$VM":/media /mnt/nas && echo ok > /mnt/nas/probe.txt && ls -la /mnt/nas
+
+# The folder endpoints are confined to the datasets: both of these must be 400
+curl -s -X POST "$API/api/shares/folders" -d '{"path":"/etc","name":"evil"}'
+curl -s -X POST "$API/api/shares/folders" -d '{"path":"/var/mnt/test/../../etc","name":"evil"}'
 
 # NFS: a share change is reloaded in place (mounts are not interrupted)
 kubectl -n naslos logs ds/naslos-nfs | grep 'reloading exports'

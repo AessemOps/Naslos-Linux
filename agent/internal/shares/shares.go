@@ -24,7 +24,8 @@ import (
 )
 
 // hostRoot is where the Talos host filesystem is mounted into the agent pod.
-const hostRoot = "/host"
+// A variable rather than a constant so tests can stand in a temporary tree.
+var hostRoot = "/host"
 
 // Paths relative to the host root.
 const (

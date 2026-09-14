@@ -44,6 +44,8 @@ func (s *Server) routes() {
 	s.router.HandleFunc("/api/v1/snapshots/", s.handleSnapshots)
 	s.router.HandleFunc("/api/v1/shares/config", s.handleSharesConfig)
 	s.router.HandleFunc("/api/v1/shares/status", s.handleSharesStatus)
+	// Folder management for share paths (the API's dataset mount is read-only).
+	s.router.HandleFunc("/api/v1/shares/folders", s.handleShareFolders)
 }
 
 // zfsUnavailable reports whether the agent runs in degraded mode (no ZFS on
