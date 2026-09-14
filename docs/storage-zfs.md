@@ -105,12 +105,52 @@ per-pool Import action.
 
 The agent exposes dataset and snapshot operations:
 
-- `GET/POST /api/v1/datasets/{pool}`
+- `GET/POST /api/v1/datasets/{pool}`, `DELETE /api/v1/datasets/{pool}/{name…}`
 - `GET/POST /api/v1/snapshots/{dataset}`
 
 Datasets are how shares get structured sizes/quota boundaries and are the unit
 of snapshots (`zfs snapshot pool/ds@name`). Shares previously used AFP/Time
 Machine; the modern path is SMB + `fruit` VFS (see [shares.md](shares.md)).
+
+### Creating a dataset (UI)
+
+`Pools → <pool>` lists the pool's datasets and creates new ones. The API layer
+(`POST /api/datasets`, `DELETE /api/datasets?name=…`) validates before anything
+reaches ZFS:
+
+| Rule | Why |
+| --- | --- |
+| Each name component is ZFS-safe, no traversal, no `@` | A name is interpolated into `zfs create`; `../` or a snapshot marker must not get through |
+| Nested names allowed (`photos/2026`), created with `-p` | One call, and the intermediate levels are what the operator meant |
+| Options limited to `compression`, `quota`, `recordsize`, `atime`, `copies`, `readonly` with validated values | `zfs create -o` accepts arbitrary properties; `mountpoint=/` would put the dataset somewhere unexpected |
+| The pool must exist | Otherwise the failure surfaces after the name was accepted |
+| Destroy needs `recursive=true` for a non-empty dataset, never applies to a pool's root dataset, and is refused (409) while a share serves the dataset's path | A dataset picker must not delete data or quietly break a share |
+
+The UI's dataset form only asks for what matters (name, compression, quota) and
+the pool page shows used/free per dataset.
+
+### Growing a pool (adding disks)
+
+`POST /api/volumes/zfs/{pool}/devices` → `zpool add [-f] <pool> [<topology>]
+<disk>…`, surfaced as **Add Drive** on the pool page. Three properties drive the
+design:
+
+- **`zpool add` does not rebalance.** Existing data stays on the existing vdevs,
+  so this adds capacity, not throughput for data already written.
+- **Losing any vdev loses the pool.** A stripe vdev therefore *lowers* the pool's
+  fault tolerance, which the dialog says in plain words before the button.
+- **It writes to the disks.** Hence: only disks the node reports as usable whole
+  disks are accepted (the system disk cannot be selected), a disk that already
+  belongs to a pool is refused *even with `force`*, and `force` itself is a
+  separate opt-in checkbox with its own warning.
+
+Both the API and the agent check these, so the guardrails hold even when the UI
+is bypassed.
+
+### AGENT-side dataset/device endpoints
+
+- `GET/POST /api/v1/datasets/{pool}`, `DELETE /api/v1/datasets/{pool}/{name…}?recursive=true`
+- `GET/POST /api/v1/pools/{pool}/devices` (list disks that are free / attach a vdev)
 
 ## Storage classes & app data
 

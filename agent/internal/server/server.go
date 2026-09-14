@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/AessemOps/Naslos-Linux/agent/internal/shares"
 	"github.com/AessemOps/Naslos-Linux/agent/internal/zfs"
@@ -144,6 +145,13 @@ func (s *Server) handlePoolDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pool := r.URL.Path[len("/api/v1/pools/"):]
+
+	// Dispatch /devices: attaching a vdev (adding disks) to an existing pool.
+	if strings.HasSuffix(pool, "/devices") {
+		s.handlePoolDevices(w, r, strings.TrimSuffix(pool, "/devices"))
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		health, err := s.zfs.PoolHealth(pool)
@@ -163,19 +171,82 @@ func (s *Server) handlePoolDetail(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handlePoolDevices adds a vdev (disks) to an existing pool.
+//
+//	GET  /api/v1/pools/{pool}/devices → disks that could be added (not in any pool)
+//	POST /api/v1/pools/{pool}/devices {"disks":[…],"topology":"mirror","force":false}
+//
+// "force" is deliberately a separate, opt-in flag: it lets `zpool add -f`
+// overwrite an unrecognised signature, which is unrecoverable.
+func (s *Server) handlePoolDevices(w http.ResponseWriter, r *http.Request, pool string) {
+	if s.zfsUnavailable(w) {
+		return
+	}
+	if err := zfs.ValidatePoolName(pool); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		free, err := s.zfs.FreeDisks()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"pool": pool, "disks": free})
+
+	case http.MethodPost:
+		var req struct {
+			Disks    []string `json:"disks"`
+			Topology string   `json:"topology"`
+			Force    bool     `json:"force"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.zfs.AddVDev(pool, req.Topology, req.Disks, req.Force); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		log.Printf("added %d disk(s) to pool %s (topology %q, force %v)", len(req.Disks), pool, req.Topology, req.Force)
+		writeJSON(w, http.StatusCreated, map[string]interface{}{
+			"status":   "vdev added",
+			"pool":     pool,
+			"topology": req.Topology,
+			"disks":    req.Disks,
+		})
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// handleDatasets handles dataset operations for a pool.
+//
+//	GET    /api/v1/datasets/{pool}          → datasets in a pool
+//	POST   /api/v1/datasets/{pool}          → create {name, options}
+//	DELETE /api/v1/datasets/{pool}/{name…}  → destroy (recursive=true to force)
 func (s *Server) handleDatasets(w http.ResponseWriter, r *http.Request) {
 	if s.zfsUnavailable(w) {
 		return
 	}
-	pool := r.URL.Path[len("/api/v1/datasets/"):]
+	rest := r.URL.Path[len("/api/v1/datasets/"):]
+	if rest == "" {
+		writeError(w, http.StatusBadRequest, "pool name required")
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
-		datasets, err := s.zfs.Datasets(pool)
+		datasets, err := s.zfs.Datasets(rest)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, datasets)
+
 	case http.MethodPost:
 		var req struct {
 			Name    string            `json:"name"`
@@ -185,12 +256,24 @@ func (s *Server) handleDatasets(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		datasetName := pool + "/" + req.Name
+		datasetName := rest + "/" + req.Name
 		if err := s.zfs.CreateDataset(datasetName, req.Options); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		log.Printf("created dataset %s", datasetName)
 		writeJSON(w, http.StatusCreated, map[string]string{"status": "dataset created", "name": datasetName})
+
+	case http.MethodDelete:
+		// rest is the full dataset path here (pool/name[/…]).
+		recursive := r.URL.Query().Get("recursive") == "true"
+		if err := s.zfs.DestroyDataset(rest, recursive); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		log.Printf("destroyed dataset %s (recursive=%v)", rest, recursive)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "dataset destroyed", "name": rest})
+
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
