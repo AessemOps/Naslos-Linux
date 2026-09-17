@@ -261,16 +261,16 @@
   <div class="card mb-4">
     <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
       <div>
-        <label class="label">Namespace</label>
-        <select class="input w-full" bind:value={namespace} on:change={onNamespaceChange}>
+        <label class="label" for="term-field-1">Namespace</label>
+        <select id="term-field-1" class="input w-full" bind:value={namespace} on:change={onNamespaceChange}>
           {#each namespaces as ns}
             <option value={ns}>{ns}</option>
           {/each}
         </select>
       </div>
       <div class="md:col-span-2">
-        <label class="label">Pod *</label>
-        <select class="input w-full" bind:value={pod} on:change={onPodChange} disabled={loadingTargets}>
+        <label class="label" for="term-field-2">Pod *</label>
+        <select id="term-field-2" class="input w-full" bind:value={pod} on:change={onPodChange} disabled={loadingTargets}>
           {#if pods.length === 0}
             <option value="">{loadingTargets ? 'Loading pods...' : 'No pods'}</option>
           {/if}
@@ -280,8 +280,8 @@
         </select>
       </div>
       <div>
-        <label class="label">Container</label>
-        <select class="input w-full" bind:value={container}>
+        <label class="label" for="term-field-3">Container</label>
+        <select id="term-field-3" class="input w-full" bind:value={container}>
           {#each containersFor(pod) as c}
             <option value={c}>{c}</option>
           {/each}
@@ -291,8 +291,8 @@
 
     <div class="flex items-end gap-3 mt-3 flex-wrap">
       <div class="w-32">
-        <label class="label">Shell</label>
-        <select class="input w-full" bind:value={shell}>
+        <label class="label" for="term-field-4">Shell</label>
+        <select id="term-field-4" class="input w-full" bind:value={shell}>
           {#each SHELLS as s}
             <option value={s}>{s}</option>
           {/each}
