@@ -7,7 +7,7 @@ This document is the complete normative specification of Naslos. It defines
 acceptance criteria. The other documents in `docs/` describe *how it currently
 does it*; where they disagree with this spec, this spec wins. Where the
 implementation lags a requirement, the requirement is marked **[OPEN]** and
-tracked in `AI_Handoff.md`.
+tracked in `AI_Handoff.md` (current state) and `docs/CODE-REVIEW.md` (findings).
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY**
 are to be interpreted as described in RFC 2119.
@@ -730,7 +730,7 @@ corresponding test in the same PR.
   to §4/§5 contracts require a minor version bump and an update to
   `docs/api.md`.
 - **VER-4** — Known gaps are tracked as **[OPEN]** requirements here and in
-  `AI_Handoff.md`; a release MUST NOT claim conformance to an [OPEN]
-  requirement.
+  `AI_Handoff.md`/`docs/CODE-REVIEW.md`; a release MUST NOT claim conformance to an
+  [OPEN] requirement.
 
 ---
