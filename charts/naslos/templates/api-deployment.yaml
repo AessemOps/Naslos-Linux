@@ -48,6 +48,44 @@ spec:
               done
               echo "OpenLDAP not reachable yet - starting anyway (identity will retry)." >&2
               exit 0
+        {{- if .Values.buddy.enabled }}
+        # The receive dataset is created on the host (`zfs create`) and belongs to
+        # root, but the API runs as 65532 and must write into it. Doing this by
+        # hand was a documented step that, when missed, made every push fail with
+        # "mkdir …: permission denied" while the UI looked healthy. Only the
+        # dataset root is chowned: the per-key trees inside are created by the API
+        # itself, so a recursive walk (slow on a large store) buys nothing.
+        # The API image is distroless (no shell), so this reuses the Debian-based
+        # OpenLDAP image that this pod already pulls for the LDAP wait above.
+        - name: fix-receive-dataset-ownership
+          image: "{{ .Values.openldap.image }}"
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              target={{ .Values.buddy.receivePath | default "/var/lib/naslos/buddy" }}
+              if [ ! -d "$target" ]; then
+                echo "$target does not exist - is the receive dataset mounted?" >&2
+                exit 1
+              fi
+              current=$(stat -c '%u:%g' "$target")
+              if [ "$current" = "65532:65532" ]; then
+                echo "Receive dataset already owned by 65532."
+                exit 0
+              fi
+              chown 65532:65532 "$target" || {
+                echo "cannot chown $target (currently $current): run 'chown 65532:65532' on the node" >&2
+                exit 1
+              }
+              echo "Receive dataset $target chowned to 65532:65532 (was $current)."
+          volumeMounts:
+            - name: buddy-data
+              mountPath: {{ .Values.buddy.receivePath | default "/var/lib/naslos/buddy" }}
+        {{- end }}
       containers:
         - name: api
           image: {{ include "naslos.image" .Values.api.image }}

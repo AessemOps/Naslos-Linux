@@ -192,12 +192,15 @@ is exactly the intended asymmetry.
 zpool list                                   # e.g. pool "test"
 zfs create test/naslos-buddy                 # -> /var/mnt/test/naslos-buddy
 
-# 1b. Hand the dataset to the API's user. The API image is distroless and runs as
-#     its unprivileged "nonroot" user (uid 65532); a dataset created by root is
-#     mode 0755 root:root, so without this the first push fails with
-#     "mkdir /var/lib/naslos/buddy/<key>: permission denied". fsGroup does NOT
-#     help for a hostPath volume, so the ownership has to be set here:
-chown 65532:65532 /var/mnt/test/naslos-buddy
+# 1b. The dataset ownership is fixed automatically: the API deployment runs a
+#     short init container (root, reusing the OpenLDAP image because the API image
+#     is distroless) that chowns the dataset root to 65532:65532. It only touches
+#     the root - the per-key trees inside are created by the API itself - and it
+#     skips the work when the ownership is already right.
+#     If it cannot (a read-only mount, for instance) the pod fails with the same
+#     message you would otherwise get on the first push, so this is the manual
+#     fallback:
+# chown 65532:65532 /var/mnt/test/naslos-buddy
 
 # 1c. Make sure the dataset is mounted *in the host's mount namespace*, or the
 #     API's hostPath will bind the parent dataset's directory instead and your
@@ -453,7 +456,7 @@ error instead of writing damaged data. `TestReceiverRefusesTamperedChunk` in
 | `unknown key SHA256:…` | The sending key is not authorized on the receiver. `buddyctl enroll … --token …`, or authorize the public key from `buddyctl identity`. |
 | `this request was already used (nonce replay)` | Two identical signed requests: a proxy retrying a request is the usual cause. Signatures are single-use by design. |
 | 413 on a chunk, or `client_max_body_size` in a proxy log | A proxy in front limits the body. The UI's nginx needs the `/api/buddy/` location (it is in `ui/nginx.conf`). |
-| `mkdir /var/lib/naslos/buddy/SHA256_…: permission denied` | The receive dataset is not writable by the API's user. The API is distroless and runs as uid 65532: `chown 65532:65532 /var/mnt/<pool>/naslos-buddy` (hostPath volumes ignore `fsGroup`). |
+| `mkdir /var/lib/naslos/buddy/SHA256_…: permission denied` | The receive dataset is not writable by the API's user. The API runs as uid 65532 and the `fix-receive-dataset-ownership` init container normally handles this; if it could not, `chown 65532:65532 /var/mnt/<pool>/naslos-buddy` on the node (hostPath volumes ignore `fsGroup`). |
 | Backups work but the dataset's `USED` stays ~0 while the pool's grows | The dataset is not mounted in the host namespace, so the API bind-mounted the parent dataset's directory. On Talos a `zfs create` from inside a pod mounts only in that pod's namespace (`mountPropagation: HostToContainer` is one-way), and writes through the mountpoint land on the **parent** dataset instead. Detect it with `df -h` from a fresh pod on the mount path: it must name `<pool>/naslos-buddy`, not the pool. Workarounds: reboot the node (the ZFS extension runs `zfs mount -a` at boot), or populate the dataset with `zfs receive` instead of writing through its mountpoint. |
 | `the send stream ended early (N of at least M bytes)` | The node's `zfs send` died mid-stream, so nothing was published. Retry the same send: it continues the same chain and the buddy skips the chunks it already has. Note the dry-run estimate is an approximation (measured: +232 B on a 44 KB full send, +9.7 KB on a 53 MB full send, −120 KB on a 57 MB incremental), so the allowance is 1% and anything smaller is caught by `zfs receive` at restore time instead. |
 | `quota exceeded: … bytes are already stored for this key` | The receiver's quota for this key is full. Prune, or raise `QuotaBytes` on the peer entry. |
