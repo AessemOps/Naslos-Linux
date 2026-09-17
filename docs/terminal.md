@@ -58,8 +58,13 @@ in three places so that no single mistake opens it:
 | Layer | Behaviour |
 | --- | --- |
 | `naslos-ui` nginx | **Refuses** `/api/ws/exec`, `/api/pods`, `/api/namespaces` outright (403, JSON body). This listener is the node-port one, where nothing proves who is asking - so it never forwards these paths, and a client cannot smuggle the identity header through it |
-| Traefik (`traefik.enabled`) | Routes those paths **straight to the API** (not through nginx) behind the `forwardauth-authelia` middleware. That middleware declares `authResponseHeaders`, so Traefik *replaces* any `Remote-User` a client sent with Authelia's answer - which is what makes the header trustworthy |
-| `naslos-api` | Requires a non-empty identity header (default `Remote-User`) on every terminal endpoint, and fails closed: missing/blank → 401. `terminal.requireAuth: false` disables the check (development only) |
+| Traefik (`ingress.enabled`) | Routes those paths **straight to the API** (not through nginx) behind the `forwardauth-authelia` and `proxy-identity` middlewares. `forwardauth-authelia` declares `authResponseHeaders`, so Traefik *replaces* any `Remote-User` a client sent with Authelia's answer; `proxy-identity` adds the shared secret from the `naslos-internal-auth` Secret |
+| `naslos-api` | Requires the proxy-issued shared secret **and** a non-empty identity header on every terminal endpoint, and fails closed: missing/absent/wrong secret → 401. The API refuses to start without `PROXY_SHARED_SECRET` unless `auth.disabled: true` is set (development only, logged loudly) |
+
+The shared secret is what closes the forgery hole: an identity header alone proves
+nothing when a client can reach the API directly (for example over the node port),
+because anyone can send `Remote-User: admin`. Only the proxy knows the secret, and
+the API never reads the identity header without it.
 
 The API's exec permission is a namespaced `Role` (pods, pods/log, pods/exec) plus
 a `ClusterRole` for namespace listing only, so it cannot exec into anything outside
@@ -70,26 +75,31 @@ host (ports ignored). Sessions are logged with the authenticated user.
 ### Current state of this installation
 
 There are **no `IngressRoute`/`Middleware` resources in the cluster** -
-`traefik.enabled` is unset in `values-vm.yaml`, so the chart's Traefik routes
+`ingress.enabled` is `false` in `values-vm.yaml`, so the chart's Traefik routes
 (including the terminal's) are not rendered, and the node port is the only way to
-reach the UI. With `terminal.requireAuth: true` (the default) that means **the
-terminal is refused everywhere**, which is the intended behaviour for an
+reach the UI. The node port still refuses the three terminal paths in nginx, so
+**the terminal is refused everywhere** - the intended behaviour for an
 unauthenticated entry point.
 
 Two ways forward:
 
 ```bash
 # 1. Give the terminal its authenticated entry point (the intended shape):
-#    deploys the chart's IngressRoutes + Authelia middleware for <authelia.domain>
-helm upgrade ... --set traefik.enabled=true
+#    deploys the chart's IngressRoutes + Authelia + proxy-identity middlewares
+#    for <authelia.domain>, and keeps auth.disabled=false so the API requires
+#    the proxy secret.
+helm upgrade ... --set ingress.enabled=true
 
 # 2. Or accept unauthenticated access on a trusted network (development only):
-helm upgrade ... --set terminal.requireAuth=false
+#    auth.disabled=true serves every owner API route without the proxy secret.
+#    Note this does NOT open the terminal: nginx still refuses its paths on the
+#    node port, so a terminal needs option 1.
+helm upgrade ... --set auth.disabled=true
 ```
 
-With (2) the node port serves the terminal again - that is what the interactive
-Playwright test needs, and it is why that test skips when the terminal is not
-reachable.
+Option 1 is what the interactive Playwright test needs (reached through Traefik
+with Authelia), which is why that test skips when the chart's ingress is not
+deployed.
 
 The terminal container itself exposes nothing: it runs no server, listens on no
 port, and is reachable only through the API's exec endpoint. If the terminal is

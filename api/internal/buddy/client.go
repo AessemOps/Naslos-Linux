@@ -2,6 +2,7 @@ package buddy
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -38,9 +39,14 @@ func NewClient(baseURL string, id *Identity) *Client {
 	}
 }
 
-// do signs and sends one request, returning the body and status.
-func (c *Client) do(method, path string, body []byte) ([]byte, int, error) {
-	req, err := http.NewRequest(method, c.BaseURL+PathPrefix+path, bytes.NewReader(body))
+// do signs and sends one request, returning the body and status. ctx bounds the
+// request: cancelling it aborts an in-flight chunk transfer (which is what makes
+// cancelling a backup job prompt rather than waiting for the current 1 MiB chunk).
+func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]byte, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+PathPrefix+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -92,7 +98,7 @@ func describeError(status int, data []byte) string {
 // Status fetches the receiver's report: free space, what is stored and when this
 // key last backed up.
 func (c *Client) Status() (*Status, error) {
-	data, _, err := c.do(http.MethodGet, "/status", nil)
+	data, _, err := c.do(context.Background(), http.MethodGet, "/status", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +122,7 @@ func (c *Client) Enroll(token, name string, sources []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, _, err := c.do(http.MethodPost, "/enroll", payload)
+	data, _, err := c.do(context.Background(), http.MethodPost, "/enroll", payload)
 	if err != nil {
 		return "", err
 	}
@@ -131,7 +137,7 @@ func (c *Client) Enroll(token, name string, sources []string) (string, error) {
 
 // Backups lists the backups stored on the receiver for this key.
 func (c *Client) Backups() ([]Backups, error) {
-	data, _, err := c.do(http.MethodGet, "/backups", nil)
+	data, _, err := c.do(context.Background(), http.MethodGet, "/backups", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +151,14 @@ func (c *Client) Backups() ([]Backups, error) {
 }
 
 // Manifest fetches a stored manifest (the current one when chain is empty).
+// Manifest fetches a source's manifest (the current chain when chain is empty).
 func (c *Client) Manifest(source, chain string) (*Manifest, error) {
+	return c.ManifestContext(context.Background(), source, chain)
+}
+
+// manifest is Manifest with a caller context, so a cancelled job can abort the
+// base lookup instead of waiting for an unresponsive receiver (FR-BUD-16).
+func (c *Client) ManifestContext(ctx context.Context, source, chain string) (*Manifest, error) {
 	if err := ValidateSource(source); err != nil {
 		return nil, err
 	}
@@ -153,7 +166,7 @@ func (c *Client) Manifest(source, chain string) (*Manifest, error) {
 	if chain != "" {
 		path += "?chain=" + chain
 	}
-	data, _, err := c.do(http.MethodGet, path, nil)
+	data, _, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -169,11 +182,11 @@ func (c *Client) Manifest(source, chain string) (*Manifest, error) {
 // the digests to prove the chunks it skips are the chunks it sent, and the
 // published flag to know whether the chain is a finished backup (immutable) or still
 // an upload in progress (whose partial tail chunk it may re-send whole).
-func (c *Client) storedChunks(source, chain string) (map[int]string, bool, error) {
+func (c *Client) storedChunks(ctx context.Context, source, chain string) (map[int]string, bool, error) {
 	if err := ValidateSource(source); err != nil {
 		return nil, false, err
 	}
-	data, _, err := c.do(http.MethodGet, "/chunks/"+source+"?chain="+chain, nil)
+	data, _, err := c.do(ctx, http.MethodGet, "/chunks/"+source+"?chain="+chain, nil)
 	if err != nil {
 		return nil, false, err
 	}
@@ -216,11 +229,17 @@ type ChainSummary struct {
 }
 
 // Chains lists the chains stored for a source, newest first.
+// Chains lists the stored chains of a source, newest first.
 func (c *Client) Chains(source string) ([]ChainSummary, error) {
+	return c.ChainsContext(context.Background(), source)
+}
+
+// chains is Chains with a caller context.
+func (c *Client) ChainsContext(ctx context.Context, source string) ([]ChainSummary, error) {
 	if err := ValidateSource(source); err != nil {
 		return nil, err
 	}
-	data, _, err := c.do(http.MethodGet, "/chains/"+source, nil)
+	data, _, err := c.do(ctx, http.MethodGet, "/chains/"+source, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +257,12 @@ func (c *Client) Chains(source string) ([]ChainSummary, error) {
 // skip a link - `zfs receive` refuses an incremental stream whose base is missing -
 // so this is the order the streams must be applied in.
 func (c *Client) RestoreSequence(source, chain string) ([]ChainSummary, error) {
-	chains, err := c.Chains(source)
+	return c.RestoreSequenceContext(context.Background(), source, chain)
+}
+
+// restoreSequence is RestoreSequence with a caller context.
+func (c *Client) RestoreSequenceContext(ctx context.Context, source, chain string) ([]ChainSummary, error) {
+	chains, err := c.ChainsContext(ctx, source)
 	if err != nil {
 		return nil, err
 	}
@@ -293,6 +317,12 @@ func (c *Client) RestoreSequence(source, chain string) ([]ChainSummary, error) {
 
 // Prune asks the receiver to keep only the newest chains of a source.
 func (c *Client) Prune(source string, keep int) (int, error) {
+	return c.prune(context.Background(), source, keep)
+}
+
+// prune is Prune with a caller context, so a cancelled push can abort its own
+// prune request instead of waiting for it.
+func (c *Client) prune(ctx context.Context, source string, keep int) (int, error) {
 	if err := ValidateSource(source); err != nil {
 		return 0, err
 	}
@@ -300,7 +330,7 @@ func (c *Client) Prune(source string, keep int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	data, _, err := c.do(http.MethodPost, "/prune/"+source, payload)
+	data, _, err := c.do(ctx, http.MethodPost, "/prune/"+source, payload)
 	if err != nil {
 		return 0, err
 	}
@@ -463,6 +493,9 @@ func validChainID(chain string) error {
 
 // PushOptions describes one push.
 type PushOptions struct {
+	// Context bounds the push: cancelling it aborts an in-flight chunk request
+	// and stops the loop between chunks (nil means no cancellation).
+	Context context.Context
 	// Source is the logical name this backup is stored under on the receiver.
 	Source string
 	// Kind labels the payload ("tar", "zfs-send") so a restore knows what it got.
@@ -517,6 +550,10 @@ type PushResult struct {
 // index), the receiver can also reject a resume that no longer matches the data
 // it already holds - a changed source is a new chain, never a corrupted one.
 func (c *Client) Push(opts PushOptions) (*PushResult, error) {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ValidateSource(opts.Source); err != nil {
 		return nil, err
 	}
@@ -550,7 +587,7 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 		return nil, err
 	}
 
-	stored, published, err := c.storedChunks(opts.Source, state.Chain)
+	stored, published, err := c.storedChunks(ctx, opts.Source, state.Chain)
 	if err != nil {
 		return nil, err
 	}
@@ -571,8 +608,17 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 	}
 	result := &PushResult{Source: opts.Source, Chain: state.Chain, State: state}
 
+	// Stop between chunks as well as inside a request: the transport aborts an
+	// in-flight chunk, this makes the loop exit before starting the next one, so
+	// a cancel is bounded by one chunk rather than by a whole transfer.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	buf := make([]byte, ChunkPlainSize)
 	for index := 0; ; index++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		n, readErr := io.ReadFull(opts.Reader, buf)
 		if readErr == io.EOF && n == 0 {
 			break
@@ -635,7 +681,7 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 
 		{
 			path := fmt.Sprintf("/chunks/%s?chain=%s&index=%d", opts.Source, state.Chain, index)
-			if _, _, err := c.do(http.MethodPut, path, sealed); err != nil {
+			if _, _, err := c.do(ctx, http.MethodPut, path, sealed); err != nil {
 				return result, err
 			}
 			result.Uploaded++
@@ -690,12 +736,12 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 	if err != nil {
 		return result, err
 	}
-	if _, _, err := c.do(http.MethodPut, "/manifest/"+opts.Source, payload); err != nil {
+	if _, _, err := c.do(ctx, http.MethodPut, "/manifest/"+opts.Source, payload); err != nil {
 		return result, err
 	}
 
 	if opts.PruneKeep > 0 {
-		removed, err := c.Prune(opts.Source, opts.PruneKeep)
+		removed, err := c.prune(ctx, opts.Source, opts.PruneKeep)
 		if err != nil {
 			return result, err
 		}
@@ -708,7 +754,10 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 
 // RestoreOptions describes a restore from a receiver.
 type RestoreOptions struct {
-	Source string
+	// Context bounds the restore: cancelling it aborts an in-flight chunk fetch
+	// and stops the loop between chunks (nil means no cancellation).
+	Context context.Context
+	Source  string
 	// Chain is the chain to restore; empty means the current one.
 	Chain string
 	// Out receives the decrypted stream (a tar extractor, a zfs receive pipe, a
@@ -743,11 +792,18 @@ type RestoreResult struct {
 // would silently corrupt a zfs send stream), and each chunk's SHA-256 against the
 // signed manifest (the receiver cannot forge that).
 func (c *Client) Restore(opts RestoreOptions) (*RestoreResult, error) {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ValidateSource(opts.Source); err != nil {
 		return nil, err
 	}
 	if opts.Out == nil {
 		return nil, fmt.Errorf("restore needs an output stream")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	manifest, err := c.Manifest(opts.Source, opts.Chain)
@@ -776,11 +832,14 @@ func (c *Client) Restore(opts RestoreOptions) (*RestoreResult, error) {
 	sort.Slice(chunks, func(i, j int) bool { return chunks[i].Index < chunks[j].Index })
 
 	for expected, chunk := range chunks {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		if chunk.Index != expected {
 			return result, fmt.Errorf("chain %s is not contiguous: expected chunk %d, found %d",
 				manifest.Chain, expected, chunk.Index)
 		}
-		sealed, err := c.fetchChunk(manifest.Source, manifest.Chain, chunk.Index)
+		sealed, err := c.fetchChunk(ctx, manifest.Source, manifest.Chain, chunk.Index)
 		if err != nil {
 			return result, err
 		}
@@ -808,8 +867,8 @@ func (c *Client) Restore(opts RestoreOptions) (*RestoreResult, error) {
 }
 
 // fetchChunk downloads one sealed chunk.
-func (c *Client) fetchChunk(source, chain string, index int) ([]byte, error) {
-	data, _, err := c.do(http.MethodGet, fmt.Sprintf("/chunks/%s?chain=%s&index=%d", source, chain, index), nil)
+func (c *Client) fetchChunk(ctx context.Context, source, chain string, index int) ([]byte, error) {
+	data, _, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/chunks/%s?chain=%s&index=%d", source, chain, index), nil)
 	if err != nil {
 		return nil, err
 	}

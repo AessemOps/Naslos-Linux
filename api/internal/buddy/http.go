@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -252,7 +253,10 @@ func (r *Receiver) handleEnroll(w http.ResponseWriter, req *http.Request) {
 	}
 
 	r.mu.Lock()
-	if r.enrollUsed && !r.EnrollOpen {
+	// The token is single use across restarts: the in-memory flag catches the
+	// same process, the store marker catches every later one (NAS-011).
+	used := r.enrollUsed || (r.Store != nil && r.Store.EnrollmentUsed())
+	if used && !r.EnrollOpen {
 		r.mu.Unlock()
 		writeError(w, http.StatusForbidden, "this enrollment token has already been used")
 		return
@@ -266,6 +270,13 @@ func (r *Receiver) handleEnroll(w http.ResponseWriter, req *http.Request) {
 	err = r.Peers.Add(peer)
 	if err == nil && !r.EnrollOpen {
 		r.enrollUsed = true
+		if r.Store != nil {
+			if markErr := r.Store.MarkEnrollmentUsed(); markErr != nil {
+				// The peer is authorized; the marker only protects future
+				// restarts, so report it rather than fail the enrollment.
+				log.Printf("buddy enroll: cannot record that the token was used (%v): a restart would re-arm it", markErr)
+			}
+		}
 	}
 	r.mu.Unlock()
 
