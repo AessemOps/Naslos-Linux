@@ -381,7 +381,7 @@ func (s *Server) runBuddySendJob(job *buddyJob) {
 	if state != nil {
 		base, baseGUID = state.FromSnapshot, state.FromGUID
 	} else if !force {
-		previous, err := client.Manifest(source, "")
+		previous, err := client.ManifestContext(ctx, source, "")
 		if err == nil && previous.Kind == "zfs-send" && previous.ToGUID != "" {
 			if snapshots, err := s.agent.SnapshotsWithGUID(ctx, dataset); err == nil {
 				for _, snapshot := range snapshots {

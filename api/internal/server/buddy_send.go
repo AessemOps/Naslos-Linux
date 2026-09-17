@@ -407,7 +407,7 @@ func (s *Server) handleBuddyRestore(w http.ResponseWriter, req *http.Request) {
 	// incremental, and ZFS refuses an incremental stream whose base is missing. So
 	// the chains are worked out first (oldest full send, then each incremental) and
 	// applied in that order - which is the only order that can succeed.
-	sequence, err := client.RestoreSequence(source, request.Chain)
+	sequence, err := client.RestoreSequenceContext(ctx, source, request.Chain)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return

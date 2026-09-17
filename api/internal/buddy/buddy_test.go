@@ -929,6 +929,48 @@ func TestPruneNeverOrphansAnIncremental(t *testing.T) {
 	}
 }
 
+// TestManifestLookupAbortsWhenTheContextIsCancelled covers the other half of
+// prompt cancellation: the base-manifest lookup happens before any chunk, so it
+// must be abortable too. The live drill found a cancel waiting out the receiver's
+// whole stall here.
+func TestManifestLookupAbortsWhenTheContextIsCancelled(t *testing.T) {
+	reached := make(chan struct{})
+	stall := make(chan struct{})
+
+	var once sync.Once
+	mux := http.NewServeMux()
+	mux.HandleFunc(PathPrefix+"/manifest/", func(w http.ResponseWriter, _ *http.Request) {
+		once.Do(func() { close(reached) })
+		<-stall
+	})
+	server := httptest.NewServer(mux)
+	defer func() {
+		close(stall)
+		server.Close()
+	}()
+
+	client := NewClient(server.URL, newTestIdentity(t, "naslos-a"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		<-reached
+		cancel()
+	}()
+
+	started := time.Now()
+	_, err := client.ManifestContext(ctx, "naslos-a/stalled", "")
+	if err == nil {
+		t.Fatal("ManifestContext returned a manifest after the context was cancelled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want it to wrap context.Canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Errorf("ManifestContext took %s to abort, want it bounded by the cancellation", elapsed)
+	}
+}
+
 // TestPushAbortsWhenTheContextIsCancelled pins FR-BUD-16: a cancelled job must
 // stop a running push *promptly*. Before PushOptions carried a context, a
 // DELETE only took effect when the in-flight chunk request returned (the live

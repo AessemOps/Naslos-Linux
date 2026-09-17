@@ -151,7 +151,14 @@ func (c *Client) Backups() ([]Backups, error) {
 }
 
 // Manifest fetches a stored manifest (the current one when chain is empty).
+// Manifest fetches a source's manifest (the current chain when chain is empty).
 func (c *Client) Manifest(source, chain string) (*Manifest, error) {
+	return c.ManifestContext(context.Background(), source, chain)
+}
+
+// manifest is Manifest with a caller context, so a cancelled job can abort the
+// base lookup instead of waiting for an unresponsive receiver (FR-BUD-16).
+func (c *Client) ManifestContext(ctx context.Context, source, chain string) (*Manifest, error) {
 	if err := ValidateSource(source); err != nil {
 		return nil, err
 	}
@@ -159,7 +166,7 @@ func (c *Client) Manifest(source, chain string) (*Manifest, error) {
 	if chain != "" {
 		path += "?chain=" + chain
 	}
-	data, _, err := c.do(context.Background(), http.MethodGet, path, nil)
+	data, _, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -222,11 +229,17 @@ type ChainSummary struct {
 }
 
 // Chains lists the chains stored for a source, newest first.
+// Chains lists the stored chains of a source, newest first.
 func (c *Client) Chains(source string) ([]ChainSummary, error) {
+	return c.ChainsContext(context.Background(), source)
+}
+
+// chains is Chains with a caller context.
+func (c *Client) ChainsContext(ctx context.Context, source string) ([]ChainSummary, error) {
 	if err := ValidateSource(source); err != nil {
 		return nil, err
 	}
-	data, _, err := c.do(context.Background(), http.MethodGet, "/chains/"+source, nil)
+	data, _, err := c.do(ctx, http.MethodGet, "/chains/"+source, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +257,12 @@ func (c *Client) Chains(source string) ([]ChainSummary, error) {
 // skip a link - `zfs receive` refuses an incremental stream whose base is missing -
 // so this is the order the streams must be applied in.
 func (c *Client) RestoreSequence(source, chain string) ([]ChainSummary, error) {
-	chains, err := c.Chains(source)
+	return c.RestoreSequenceContext(context.Background(), source, chain)
+}
+
+// restoreSequence is RestoreSequence with a caller context.
+func (c *Client) RestoreSequenceContext(ctx context.Context, source, chain string) ([]ChainSummary, error) {
+	chains, err := c.ChainsContext(ctx, source)
 	if err != nil {
 		return nil, err
 	}
