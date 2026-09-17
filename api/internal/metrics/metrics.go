@@ -145,6 +145,15 @@ func (m *Manager) GetDashboardData() map[string]interface{} {
 			"uptime":   m.metrics.System.Uptime,
 			"os":       m.metrics.System.OS,
 		},
+		// Per-interface addresses and totals, so the dashboard can show how to
+		// reach this node (FR-MET-10).
+		"network": map[string]interface{}{
+			"bytesSent":   m.metrics.Network.BytesSent,
+			"bytesRecv":   m.metrics.Network.BytesRecv,
+			"packetsSent": m.metrics.Network.PacketsSent,
+			"packetsRecv": m.metrics.Network.PacketsRecv,
+			"interfaces":  m.metrics.Network.Interfaces,
+		},
 		"updatedAt": m.metrics.UpdatedAt,
 	}
 }
