@@ -41,10 +41,15 @@ func main() {
 		log.Fatalf("cannot read the peer registry at %s: %v", peersPath, err)
 	}
 
+	auth := buddy.NewAuthenticator(peers)
+	// Keep the replay cache across restarts: a request captured just before a
+	// restart could otherwise be replayed inside the clock-skew window (NAS-014).
+	auth.PersistNonces(storePath)
+
 	receiver := &buddy.Receiver{
 		Store:       buddy.NewStore(storePath),
 		Peers:       peers,
-		Auth:        buddy.NewAuthenticator(peers),
+		Auth:        auth,
 		Name:        env("BUDDY_NAME", "buddy-receiver"),
 		Version:     version,
 		EnrollToken: env("BUDDY_ENROLL_TOKEN", ""),
