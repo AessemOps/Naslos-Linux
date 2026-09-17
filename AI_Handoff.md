@@ -1,6 +1,30 @@
 # AI Handoff — Naslos
 
-## Buddy Backup (`feature/buddy-backup`) — zero-knowledge peer backups
+## Current branch: `master`
+
+The integration branch is `master`. The Buddy Backup work (and the security audit +
+remediation plan) landed from `feature/buddy-backup` via **PR #9**, merge commit
+`1f1edcf`; `master..feature/buddy-backup` is now 0. Earlier features are all in
+master too (storage, shares, users/identity, dashboard/metrics, terminal, app catalog,
+SSO, zfs-host-support, web-terminal). The project roadmap lives in
+`.kilo/plans/1789412781292-buddy-ui-scheduler-plan.md` (consolidate → security gate →
+buddy completion → product gaps).
+
+**Post-merge verification (2026-09-17, from `master` `1f1edcf`)** — deployed api
+`0.1.0-b9`, agent `0.1.0-b3`, ui `0.1.0-b5` (helm revision 60, `--reuse-values`):
+
+- Local: `api` and `agent` `go build`/`vet`/`test` clean; `svelte-check` 0 errors /
+  45 warnings.
+- Playwright against the VM: **29 passed / 2 skipped / 0 failed** (the 2 skips need an
+  interactive terminal session).
+- Buddy smoke on the merged tree: `POST /api/buddy/send` → `succeeded`
+  (chain `d8c080128f5e85ca`), `verify` returned the digest; a `daily` schedule due
+  ~2 min later fired (`lastRun 17:32:41Z`, `lastResult: ok`, `nextRun` +1 day) and its
+  job carried `scheduleId` + `pruneKeep: 2` and ran `incremental: true` off the base
+  GUID. Identity and peers survived the reboot and the redeploy (PVC); the receive
+  dataset ownership was still `65532:65532`, so no `chown` step was needed.
+
+## Buddy Backup (in `master`) — zero-knowledge peer backups
 
 **What it is.** One Naslos instance can push backups to another instance — or to a
 standalone container — over a key-authenticated API. The receiver stores
@@ -141,8 +165,9 @@ directories and the push failed with `permission denied`; key directories are no
 hashed names, and snapshots take a random suffix because two sends inside one second
 collided on the same name.
 
-**Deployed**: api `0.1.0-b7` (helm revision 56), agent `0.1.0-b2`, ui `0.1.0-b1`,
-terminal `0.1.0-t2`, samba `0.1.0-s15`, nfs `0.1.0-n2`.
+**Deployed**: api `0.1.0-b9`, agent `0.1.0-b3`, ui `0.1.0-b5` (helm revision 60 —
+superseding the api `0.1.0-b7`/ui `0.1.0-b1` line below), terminal `0.1.0-t2`,
+samba `0.1.0-s15`, nfs `0.1.0-n2`.
 
 **Delivered since: UI + scheduler (FR-BUD-15/16)**
 - `POST /api/buddy/send` is async (`202 {jobId}` + `GET/DELETE
@@ -291,7 +316,7 @@ the VM's API pod; both flavours spoke the same protocol unchanged.
    `--reuse-values`), and notification settings are still in-memory
    (`notifications.NewManager("")`), so they reset on restart.
 
-## Current branch: `feature/shares` (SMB shares + LDAP account sync)
+## Shares & LDAP account sync (in `master`)
 
 ### What was broken
 Shares were **metadata only**. `server.New` called `shares.NewManager("")`, so
@@ -526,7 +551,7 @@ disagree with the spec, the spec wins. Known gaps are marked **[OPEN]**
 (e.g. FR-MET-10: per-interface IPs / multi-node aggregation). When a code
 change alters a MUST in the spec, update the spec and its test in the same PR.
 
-## Current branch: `feature/dashboard-and-metrics` (dashboard & metrics work)
+## Dashboard & metrics (in `master`)
 
 ### Live metrics on the main dashboard (latest work)
 **Symptom:** `/api/metrics` and `/api/dashboard` always returned zeroed values
