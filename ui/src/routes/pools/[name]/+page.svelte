@@ -370,7 +370,7 @@
 
 <!-- New Dataset modal -->
 {#if showDatasetModal}
-  <div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" on:click|self={() => showDatasetModal = false}>
+  <div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" role="presentation" on:click|self={() => showDatasetModal = false}>
     <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-md">
       <div class="p-6 border-b border-naslos-border flex items-center justify-between">
         <h2 class="text-xl font-bold">New Dataset</h2>
@@ -384,13 +384,13 @@
         </p>
 
         <div>
-          <label class="label">Name *</label>
-          <input type="text" bind:value={datasetName} placeholder="e.g. media" class="input w-full" />
+          <label class="label" for="pool-field-1">Name *</label>
+          <input id="pool-field-1" type="text" bind:value={datasetName} placeholder="e.g. media" class="input w-full" />
         </div>
 
         <div>
-          <label class="label">Compression</label>
-          <select bind:value={datasetCompression} class="input w-full">
+          <label class="label" for="pool-field-2">Compression</label>
+          <select id="pool-field-2" bind:value={datasetCompression} class="input w-full">
             <option value="lz4">lz4 (fast, good default)</option>
             <option value="zstd">zstd (better ratio, more CPU)</option>
             <option value="off">off</option>
@@ -399,8 +399,8 @@
         </div>
 
         <div>
-          <label class="label">Quota</label>
-          <input type="text" bind:value={datasetQuota} placeholder="e.g. 500G (empty = pool-wide limit)" class="input w-full" />
+          <label class="label" for="pool-field-3">Quota</label>
+          <input id="pool-field-3" type="text" bind:value={datasetQuota} placeholder="e.g. 500G (empty = pool-wide limit)" class="input w-full" />
         </div>
 
         {#if datasetError}<div class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{datasetError}</div>{/if}
@@ -420,7 +420,7 @@
 
 <!-- Add Drive modal -->
 {#if showAddDriveModal}
-  <div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" on:click|self={() => showAddDriveModal = false}>
+  <div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" role="presentation" on:click|self={() => showAddDriveModal = false}>
     <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg">
       <div class="p-6 border-b border-naslos-border flex items-center justify-between">
         <h2 class="text-xl font-bold">Add Drive to {poolName}</h2>
@@ -467,8 +467,8 @@
         {/if}
 
         <div>
-          <label class="label">Topology</label>
-          <select bind:value={addTopology} class="input w-full">
+          <label class="label" for="pool-field-4">Topology</label>
+          <select id="pool-field-4" bind:value={addTopology} class="input w-full">
             <option value="single">Stripe (no redundancy)</option>
             <option value="mirror">Mirror (2+ disks, survives 1 failure)</option>
             <option value="raidz1">RAIDZ1 (2+ disks, survives 1 failure)</option>

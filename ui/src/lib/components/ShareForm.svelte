@@ -237,7 +237,7 @@
   });
 </script>
 
-<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" on:click|self={() => dispatch('close')}>
+<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" role="presentation" on:click|self={() => dispatch('close')}>
   <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
     <div class="p-6 border-b border-naslos-border flex items-center justify-between">
       <h2 class="text-xl font-bold">{share ? 'Edit Share' : 'New Share'}</h2>
@@ -246,18 +246,19 @@
 
     <div class="flex-1 overflow-y-auto p-6 space-y-4">
       <div>
-        <label class="label">Share Name *</label>
-        <input type="text" bind:value={name} placeholder="e.g. media, documents" class="input w-full" disabled={!!share} />
+        <label class="label" for="share-field-1">Share Name *</label>
+        <input id="share-field-1" type="text" bind:value={name} placeholder="e.g. media, documents" class="input w-full" disabled={!!share} />
       </div>
 
       <div>
-        <label class="label">Path *</label>
+        <label class="label" for="share-dataset">Path *</label>
 
         <!-- A share is served from a folder on a dataset. The dropdown picks the
              dataset (the only thing that guarantees the data is in the pool);
              the listing below descends into it, and any subfolder - existing or
              newly created - can be the share's path. -->
         <select
+          id="share-dataset"
           class="input w-full"
           value={baseDir}
           on:change={onDatasetChange}
@@ -322,8 +323,8 @@
       </div>
 
       <div>
-        <label class="label">Protocol *</label>
-        <select bind:value={protocol} class="input w-full">
+        <label class="label" for="share-field-2">Protocol *</label>
+        <select id="share-field-2" bind:value={protocol} class="input w-full">
           <option value="smb">SMB/CIFS (Windows, macOS, Linux)</option>
           <option value="nfs">NFS (Linux, macOS)</option>
         </select>
@@ -331,8 +332,8 @@
       </div>
 
       <div>
-        <label class="label">Description</label>
-        <input type="text" bind:value={description} placeholder="Optional description" class="input w-full" />
+        <label class="label" for="share-field-3">Description</label>
+        <input id="share-field-3" type="text" bind:value={description} placeholder="Optional description" class="input w-full" />
       </div>
 
       <div class="flex items-center gap-6">
@@ -354,19 +355,19 @@
       {/if}
 
       <div>
-        <label class="label">Allowed Hosts</label>
-        <input type="text" bind:value={allowedHostsStr} placeholder="e.g. 192.168.1.0/24, 10.0.0.5 (empty = all)" class="input w-full" />
+        <label class="label" for="share-field-4">Allowed Hosts</label>
+        <input id="share-field-4" type="text" bind:value={allowedHostsStr} placeholder="e.g. 192.168.1.0/24, 10.0.0.5 (empty = all)" class="input w-full" />
       </div>
 
       <div>
-        <label class="label">Valid Users</label>
-        <input type="text" bind:value={validUsersStr} placeholder="e.g. user1, user2 (empty = all)" class="input w-full" />
+        <label class="label" for="share-field-5">Valid Users</label>
+        <input id="share-field-5" type="text" bind:value={validUsersStr} placeholder="e.g. user1, user2 (empty = all)" class="input w-full" />
       </div>
 
       <div>
-        <label class="label">Allowed Groups</label>
+        <div class="label" id="share-allowed-groups-label">Allowed Groups</div>
         {#if availableGroups.length > 0}
-          <div class="space-y-2">
+          <div class="space-y-2" role="group" aria-labelledby="share-allowed-groups-label">
             {#each availableGroups as group}
               <label class="flex items-center gap-3 p-2 rounded hover:bg-naslos-dark cursor-pointer">
                 <input type="checkbox" checked={validGroups.includes(group)} on:change={() => toggleGroup(group)} class="w-4 h-4 rounded" />

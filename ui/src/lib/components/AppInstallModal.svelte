@@ -61,7 +61,7 @@
   onMount(loadApp);
 </script>
 
-<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" on:click|self={() => dispatch('close')}>
+<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" role="presentation" on:click|self={() => dispatch('close')}>
   <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
     {#if loading}
       <div class="p-12 text-center text-gray-400">Loading app...</div>
