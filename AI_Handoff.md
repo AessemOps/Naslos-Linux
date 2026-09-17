@@ -1,5 +1,296 @@
 # AI Handoff — Naslos
 
+## Buddy Backup (`feature/buddy-backup`) — zero-knowledge peer backups
+
+**What it is.** One Naslos instance can push backups to another instance — or to a
+standalone container — over a key-authenticated API. The receiver stores
+**ciphertext it cannot read**: the sender encrypts with a per-chain AES-256-GCM key
+wrapped by a key encryption key (KEK) only the owner holds. Full documentation in
+`docs/buddy-backup.md`; requirements in `docs/spec.md` §3.8 (FR-BUD-01…10, SEC-6…8).
+
+**Protocol** (identical for both receiver flavours):
+
+- **Auth** — Ed25519 in OpenSSH form; the signature covers
+  `BUDDY1\nMETHOD\nfull-URI\nsha256(body)\ntimestamp\nnonce`. 5-minute clock
+  window, nonce replay cache, and a nonce is burned only **after** the signature
+  verifies so junk traffic cannot exhaust a peer's nonces. First key in via a
+  single-use enrollment token; everything else needs an already-authorized key.
+- **Envelope** — 1 MiB chunks: `NBC1 | plainLen(4) | nonce(12) | ct+tag`, nonce =
+  `streamPrefix||index`, AAD binds source+chain+index+plainLen. Per-chain DEK,
+  wrapped by the KEK and carried in the signed manifest, which also stores a
+  SHA-256 per plaintext chunk (only the owner can check that — the receiver cannot).
+- **Endpoints** — `/api/buddy/v1/{enroll,status,backups,chunks/{source},manifest/{source},prune/{source}}`.
+  A push is many small requests plus a signed manifest, which is what makes resume
+  cheap and idempotent.
+
+**Delivered**
+
+- `api/internal/buddy/` — keys/identity, request signing + replay protection,
+  chunked envelope, receiver store, peer registry, receiver HTTP surface, sender
+  client.
+- `api/cmd/buddyctl` — identity/enroll/push/status/backups/restore/prune
+  (`make buddyctl`, dir/file/stdin, `--resume`).
+- `api/cmd/buddy-receiver` + `api/Dockerfile.receiver` +
+  `make buddy-receiver-image` — the standalone two-volume receiver (no ZFS, no
+  Kubernetes, no database; two volumes and one binary).
+- Instance receive side: the routes above plus `/api/buddy/status` and
+  `/api/buddy/peers` for the owner, chart values (`buddy.*`), a `naslos-buddy`
+  enrollment Secret, the dataset mount, and a UI-nginx `/api/buddy/` location with
+  `client_max_body_size 8m` — the default 1 MB would reject every 1 MiB chunk with
+  a 413 before it reached the API.
+- 11 Go tests in `api/internal/buddy/buddy_test.go` driving a real receiver over
+  `httptest`: round trip, tamper (flip/truncate/reorder/cross-chain), resume (and
+  refusal to resume with changed data), scope, quota, unsigned/unknown/stale/replay,
+  single-use enrollment, prune.
+
+**Verified live on the VM** (peer → UI NodePort → nginx → API, chart `buddy`
+enabled, dataset `test/naslos-buddy`):
+
+- enrollment token accepted once (second attempt → 403); push 3 MiB → 4 chunks;
+  `status`/`backups` report free space, stored bytes, last backup; restore + `diff -r`
+  + `md5sum` byte-identical.
+- 128 MiB push killed with `timeout -s KILL 1`, then `--resume` → 15 chunks
+  verified-and-skipped, 114 uploaded, full verify-only restore clean.
+- one byte flipped in a stored chunk → restore fails `cipher: message authentication
+  failed` (the earlier "passed" run was my test racing the tamper, not a defect).
+- unsigned → 401, unknown key → 401, out-of-scope source → 403, prune drops the old
+  chain and the remaining chain still restores.
+- the store contains only `chunk-*.enc` (1 MiB + 36 B, mode 0600, uid 65532) and the
+  signed manifest; a plaintext needle is absent from it — the zero-knowledge
+  property, checked on the deployed instance.
+
+**The standalone container receiver is verified too**: `docker build -f
+api/Dockerfile.receiver` → run with two volumes → enroll, push, `status` (free
+space and last backup from the container's own volume), restore and `diff -r`
+byte-identical. The volumes hold the same envelope-only tree and a `peers.json`
+with public keys alone, and the binary passes its own `-health` check as the
+image's HEALTHCHECK. Its volumes must be owned by **65532** (`-v` mounts keep host
+ownership): `sudo chown -R 65532:65532 /srv/buddy-data /srv/buddy-config`.
+
+**Deployment gotcha found live**: the API image is distroless and runs as uid
+**65532**, so the receive dataset has to be handed to it —
+`chown 65532:65532 /var/mnt/<pool>/naslos-buddy`. `fsGroup` does **not** apply to
+`hostPath` volumes, and without the chown the first push fails with
+`mkdir /var/lib/naslos/buddy/<key>: permission denied`. Documented in
+`docs/buddy-backup.md` (§5.1 step 1b and the troubleshooting table).
+
+**Second gotcha, platform-level and still open on the VM**: the agent and
+terminal containers mount `/host` with `mountPropagation: HostToContainer`
+(one-way), so a `zfs create` run inside a pod mounts the dataset only in *that
+pod's* namespace. Pods that bind-mount the path - including the API - therefore
+resolve it to the **parent** dataset, which is what the VM shows now:
+`zfs list` reports `test/naslos-buddy` `USED 96K` while `df`/`du` on
+`/var/mnt/test/naslos-buddy` report the pool root `test` with 133 MB. Backups are
+stored and restorable either way, but the dedicated dataset's isolation (and its
+quota) is not in effect until the dataset is mounted in the host namespace - a
+node reboot does it (the ZFS extension runs `zfs mount -a` at boot), after which
+the API deployment must be restarted so its hostPath bind picks the dataset up.
+The check is one command from a fresh pod (`df -h` on the mount path must name
+`<pool>/naslos-buddy`); it is written up as step 1c and in the troubleshooting
+table of `docs/buddy-backup.md`.
+
+**Instance-side sender and restore (new in this change, drilled live)**
+
+- The agent grew streaming seams — `GET /api/v1/zfs/send/{dataset}?to=&from=&raw=&estimate=`,
+  `POST /api/v1/zfs/receive/{dataset}?force=`, `GET /api/v1/zfs/snapshots/{dataset}`
+  (GUIDs) and `POST /api/v1/snapshots/{dataset}` — and the control-plane client's
+  180 s timeout is deliberately bypassed for them (bounded by the caller's context
+  instead; `hostExec` still buffers, the streaming paths use `cmd.StdoutPipe`).
+- The API drives them: `POST /api/buddy/send`, `POST /api/buddy/restore` (plus a
+  `verify` mode that decrypts and hashes without touching ZFS) and
+  `GET|POST /api/buddy/identity`. An interrupted send resumes from a `0600` state
+  file written before the first chunk; snapshots are named `buddy-<UTC>-<4 hex>`.
+- The base for an incremental is found by **GUID**, not name: the manifest records
+  the GUID the receiver was given and the node is asked which snapshot carries it,
+  so a rename still counts and a destroyed snapshot is known to be gone (the send
+  then falls back to a full one rather than guessing).
+
+**The drill, bit-for-bit** (`test/drill-src`, 53 MB full + a 57 MB change):
+
+- full send: `POST /api/buddy/send` → chain `ff6e4b183f22f62e`, 53,390,016 bytes;
+  the instance's `verify` digest equals the node's `zfs send -w | sha256sum`.
+- incremental: chain `fe3a45a0c1dc502b`, `zfs send -w -i <base> <new>` on the node
+  hashes `908ba240b9d93144a53bb18c2446eb1dc178506703636426fbf15320607802fd` over
+  56,801,992 bytes — the instance's `verify` reports the same digest and count,
+  exactly.
+- the resume path: the first attempt was refused by the shortfall guard *after*
+  every chunk was stored, so the chain had data but no manifest. Re-sending the same
+  request **resumed** it (`resumed: true`, `uploaded: 0`, `skipped: 55`) and published
+  the manifest — a stream that did not arrive whole never became the latest backup,
+  and the retry continued the same chain, snapshot and data key.
+- restore after a real `zfs destroy -rf test/drill-src`: the sequence
+  (`ff6e4b18…` → `fe3a45a0…`) restored into `test/drill-restored` in 1.57 s —
+  106 chunks, 110,192,008 bytes (= 53,390,016 + 56,801,992, exact), final snapshot
+  `buddy-…308d`, and the dataset matches the destroyed source
+  (`USED`/`REFER`/`LREFER` = 106M/106M/114M) while carrying both buddy snapshots.
+- `verify` still succeeded with the source dataset gone (the backup, not the source,
+  is what it reads).
+
+**Fourth live finding — the dry-run estimate is not a floor.** `zfs send -nP` is
+exact-to-within-framing for *full* sends (measured +232 B on 44 KB, +9,712 B on
+53 MB) but can sit *above* an *incremental* stream: a 57 MB incremental came in
+119,688 bytes below its estimate (−0.21%). The original 0.1% allowance therefore
+rejected a complete send. It is now `max(1 MiB, 1%)`, documented as an early warning
+rather than the integrity boundary: anything smaller is caught by ZFS at
+`zfs receive` (the stream carries its own end record and per-record checksums) and a
+retry resumes the chain.
+
+**Third live finding — a `/` in a fingerprint split the key directory.** A peer
+fingerprint used verbatim as a path component (`SHA256:ab/cd…`) created two nested
+directories and the push failed with `permission denied`; key directories are now
+hashed names, and snapshots take a random suffix because two sends inside one second
+collided on the same name.
+
+**Deployed**: api `0.1.0-b7` (helm revision 56), agent `0.1.0-b2`, ui `0.1.0-b1`,
+terminal `0.1.0-t2`, samba `0.1.0-s15`, nfs `0.1.0-n2`.
+
+**Delivered since: UI + scheduler (FR-BUD-15/16)**
+- `POST /api/buddy/send` is async (`202 {jobId}` + `GET/DELETE
+  /api/buddy/jobs/{id}`, progress + cancel; 409 while the same
+  (receiver, source) or dataset runs); the resume-state semantics are unchanged.
+- Schedules (`GET/POST/DELETE /api/buddy/schedules`, `hourly|daily|weekly` +
+  run-at UTC, `BUDDY_SCHEDULES`, minute tick, catch-up on startup, `pruneKeep`
+  on success, ntfy `backup_success` + `backup_failure` gated on enabled events).
+- `/backups` UI page: identity card, schedules + Back up now with live progress,
+  ad-hoc send, per-source verify, confirmation-gated restore form, receiver
+  status; `ui/tests/backups.spec.ts`.
+
+**Not done yet, in plan order**: multi-buddy fan-out; and the peer-exposure
+decision (a dedicated listener vs. Traefik + Authelia) still has to be taken. Also
+still open: the receive dataset's host-namespace mount on Talos (see the platform
+gotcha above), which the restore drill does not depend on because `zfs receive`
+creates the mount itself.
+
+**UI + scheduler verified live on the VM (2026-09-14/15), api `0.1.0-b8` + ui
+`0.1.0-b4`, helm revision 59.** `go build`/`vet`/`test` clean, `svelte-check` 0
+errors, full Playwright suite **29 passed / 2 skipped / 0 failed** (terminal exec
+tests skip without a session). Drills, all through the UI NodePort with
+`Remote-User: admin`:
+
+- async jobs: `POST /api/buddy/send` → `202 {jobId}`, poll → `succeeded` with the
+  full result payload (chain, chunks, uploaded/skipped, plainBytes, snapshot,
+  GUIDs) and progress ticks; `GET /api/buddy/jobs` lists it; unknown job → 404;
+  second send for the same (receiver, source) → 409 naming the running job.
+- cancel + resume (FR-BUD-16): an in-cluster drill cancelled a 106 MiB send at
+  chunk 16 (`DELETE` → `cancelling` → `cancelled`), and the retry resumed the
+  **same snapshot**: `resumed: true`, 16 skipped, 90 uploaded, 106 chunks,
+  succeeded. Same receiver+source is required (a different receiver is a
+  different chain, by design).
+- schedules (FR-BUD-15): a `daily` entry fired at its run-at, recorded
+  `lastResult: ok` and advanced `nextRun`; the job carries `scheduleId`; a
+  schedule pointed at a dead receiver recorded `lastResult: failed` +
+  `lastError`; a `hourly` entry stayed due while a conflicting manual send ran.
+  Catch-up is unit-tested (`TestBuddySchedulerCatchUpFiresOnceAndDisabledNeverFires`),
+  not repeated live (it needs a past `nextRun` patched into the PVC, and the API
+  image is distroless).
+- notifier: ntfy `backup_success` (priority 2) and `backup_failure` (priority 4)
+  both arrived at a capture listener with the expected titles/bodies; with only
+  `backup_failure` enabled a success produced **no** post while failures still did.
+- retention: the second send of a source was `incremental: true` off the recorded
+  GUID (1 chunk), `pruneKeep` reported `prunedChains: 1` and the receiver kept one
+  chain.
+- restore: verify returned a chain digest and a restore landed with the source's
+  exact `USED/REFER/RATIO` and its `buddy-…` snapshot (receive validates the
+  stream itself; node-side `sha256sum` comparison was skipped because the sandbox
+  forbids shell pipes).
+- persistence: schedules (with `lastRun`/`lastResult`/`lastError`) and the identity
+  survive an API restart; the job list is in-memory and resets.
+- the receiver store holds only `chunk-*.enc` (0600, 1 MiB + 36 B) and the signed
+  `manifest.json`/`current.json` — no plaintext.
+- **the host-namespace mount gotcha is fixed on the VM by the node reboot**:
+  `df` on `/var/mnt/test/naslos-buddy` from a fresh pod now names
+  `test/naslos-buddy`, not the pool root. The `chown 65532:65532` step is still
+  needed (the dataset was `root:root` again and the first push failed with
+  `mkdir …/buddy/<key>: permission denied` until it was applied).
+
+**Cross-flavour interop verified live (VM instance ↔ standalone container).**
+The standalone `naslos-buddy-receiver:0.1.0-b9` (`api/Dockerfile.receiver`) ran on
+the workstation (`192.168.1.135:8484`, two volumes at `~/buddy-standalone`,
+enrollment closed, the VM's key pre-authorized in `peers.json`), reachable from
+the VM's API pod; both flavours spoke the same protocol unchanged.
+
+- **VM sender → container receiver:** `POST /api/buddy/send` → `succeeded`,
+  chain `79c6006f5bc8fd5c`; `verify` returned the digest; restore onto the VM
+  landed `test/docker-restored` identical to `test/Backup` (96K/96K, ratio
+  1.00x) with the `buddy-…28a9` snapshot. A second send was `incremental: true`
+  off the recorded base GUID (1 chunk, 624 B, chain `3f2dcb81e031f323`). The
+  container's store held the same envelope layout as the VM's (and the same
+  hashed key dir `k519a911…`, deterministic from the sender fingerprint).
+- **Container restart** (`docker restart`): peer registry and store survived;
+  the VM's `verify` then walked the full sequence (44,368 + 624 = 44,992 B).
+- **Standalone client (`buddyctl`) → container:** a fresh `ws-sender` key pushed
+  a directory (chain `f1b8c05c90ff8d2b`), restored byte-identical (`diff -r`
+  clean), and a root `grep` for a plaintext needle in the receiver's store found
+  **nothing** — ciphertext only. Restoring with a copy of the identity whose KEK
+  was replaced failed with `cannot unwrap the data key: this backup was not made
+  with this key` — the zero-knowledge property on real cross-flavour data.
+- **Standalone client → VM receiver (reverse direction):** `buddyctl enroll` with
+  the chart's token succeeded (the API restart re-armed the "single-use" token —
+  audit NAS-011), push chain `4a0c114e0203f61b`, `buddyctl status` showed the
+  per-key view (free space, stored-for-me, sources, last backup) and the restore
+  was byte-identical. The test peer was then revoked and the VM store emptied.
+- **Minor finding:** the peer-facing `/status` returns every peer *name*
+  (`Status.PeerNames`, `api/internal/buddy/http.go:186-190`), so any authorized
+  key learns which other peers exist (names only, no keys). Low sensitivity, but
+  it is a deliberate choice worth making.
+
+**Defects found live and fixed in this change**
+
+- `ui/tests/backups.spec.ts` could not pass against a default deployment: the
+  Playwright request context sent no `Remote-User`, so every owner-facing buddy
+  call was 401 under `buddy.requireAuth=true`. It now sets the header (what
+  Traefik's `forwardAuth` injects; the NodePort variant is NAS-008), uses an
+  unambiguous heading locator (`exact: true` — "Backups" also matched "Stored
+  backups"), picks a child dataset (the pool root is refused by the agent:
+  `dataset must be <pool>/<name>`), and uses the instance's own name as the source
+  prefix so the self-send is inside the peer's scope.
+- `/backups` rendered the receiver's **Stored** column from `b.bytes`, but the API
+  sends `storedBytes`, so it always showed `0 B` — fixed.
+- The schedule table had no **Source** column (two schedules on one dataset were
+  indistinguishable) — added, which is also what the spec's test expects.
+- The dataset pickers offered the pool root, which the agent always refuses —
+  they now list child datasets only.
+- Added two page-level tests: "Back up now" driving a real job with Verify
+  reading the chain back, and the restore form refusing an unconfirmed/incorrect
+  destination before any request.
+
+**Findings to follow up (not fixed here)**
+
+1. **Cancel is not prompt while a chunk request is in flight.** `DELETE` sets the
+   job context, but `buddy.Client`'s HTTP calls are not context-bound
+   (`PushOptions`/`RestoreOptions` carry no context); the job only turns
+   `cancelled` when the next read of the agent stream fails. Live: with a receiver
+   that stalled 30 s, `DELETE` returned `cancelling` immediately but the job stayed
+   `running` for the full 30 s. Thread a context through the client
+   (`http.NewRequestWithContext`) so cancel aborts the in-flight request.
+2. **A backup of a dataset that is not mounted in the host namespace succeeds
+   while storing nothing.** A `dd` of 512 MiB / 2 GiB into datasets created from
+   inside a pod landed on the **parent** dataset (the child datasets read 96 K,
+   `test` grew to 2.76 G), and the sends reported `succeeded` with one 44 KB chunk
+   — an empty backup over a green result. This is the documented
+   `mountPropagation: HostToContainer` trap, but on the *send* path it is silent:
+   the agent/API should verify the dataset is mounted in its namespace before
+   snapshotting, or the send should warn.
+3. **`pruneKeep` can leave only unrestorable incrementals.** With `pruneKeep: 1`
+   on a chain whose newest backup is incremental, the base chain is pruned; the
+   send and the schedule both report success, and only `verify`/restore later
+   refuses: `chain … needs the chain that produced GUID …, which is not stored
+   here`. Retention needs to count the sequence depth, or the UI/docs must warn.
+4. **Schedule dataset validation is a loose pool-prefix match** (audit NAS-018,
+   now confirmed live): `{"dataset":"test/nope"}` was accepted with 200. It fails
+   later at send time, but the schedule looks valid.
+5. **Minor:** a job can report a `snapshot` name that was never created (the
+   field is set before `zfs create`/snapshot succeeds); a never-run schedule
+   serialises `lastRun` as `"0001-01-01T00:00:00Z"` (`time.Time` ignores
+   `omitempty`); a `zfs receive` destination stays mounted in the **agent's**
+   namespace, so host-side `zfs destroy` reports `dataset is busy` until the
+   agent pod restarts (`test/drill-api-restored`, empty 96 K, was left behind).
+6. Deploy notes: the chart still does not pass `BUDDY_SCHEDULES` or
+   `BUDDY_SCHEDULER_INTERVAL_MS` (defaults are used), `buddy.*` is not in
+   `values-vm.yaml` so an upgrade must repeat the `--set` flags (or use
+   `--reuse-values`), and notification settings are still in-memory
+   (`notifications.NewManager("")`), so they reset on restart.
+
 ## Current branch: `feature/shares` (SMB shares + LDAP account sync)
 
 ### What was broken

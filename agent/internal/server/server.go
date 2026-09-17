@@ -18,6 +18,9 @@ type Server struct {
 	addr   string
 	zfs    *zfs.Client
 	shares *shares.Client
+	// backup is the streaming slice of the ZFS client (send/receive/estimate).
+	// Nil when the agent runs degraded (no ZFS on the host).
+	backup backupZFS
 	router *http.ServeMux
 	server *http.Server
 }
@@ -29,6 +32,9 @@ func New(addr string, zfsClient *zfs.Client, sharesClient *shares.Client) *Serve
 		zfs:    zfsClient,
 		shares: sharesClient,
 		router: http.NewServeMux(),
+	}
+	if zfsClient != nil {
+		s.backup = zfsClient
 	}
 	s.routes()
 	return s
@@ -47,6 +53,11 @@ func (s *Server) routes() {
 	s.router.HandleFunc("/api/v1/shares/status", s.handleSharesStatus)
 	// Folder management for share paths (the API's dataset mount is read-only).
 	s.router.HandleFunc("/api/v1/shares/folders", s.handleShareFolders)
+	// Backup streams (FR-BUD): `zfs send`/`receive` as pipes rather than
+	// captured output, which is what lets an instance back itself up.
+	s.router.HandleFunc("/api/v1/zfs/send/", s.handleSendStream)
+	s.router.HandleFunc("/api/v1/zfs/receive/", s.handleReceiveStream)
+	s.router.HandleFunc("/api/v1/zfs/snapshots/", s.handleBackupSnapshots)
 }
 
 // zfsUnavailable reports whether the agent runs in degraded mode (no ZFS on
@@ -56,6 +67,17 @@ func (s *Server) zfsUnavailable(w http.ResponseWriter) bool {
 	if s.zfs == nil {
 		writeError(w, http.StatusServiceUnavailable,
 			"ZFS is not available on this node (agent running in degraded mode)")
+		return true
+	}
+	return false
+}
+
+// backupUnavailable is zfsUnavailable for the streaming backup endpoints, which
+// need the streaming client rather than the buffered one.
+func (s *Server) backupUnavailable(w http.ResponseWriter) bool {
+	if s.backup == nil {
+		writeError(w, http.StatusServiceUnavailable,
+			"ZFS streaming is not available on this node (agent running in degraded mode)")
 		return true
 	}
 	return false

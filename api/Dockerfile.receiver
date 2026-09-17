@@ -1,0 +1,50 @@
+# Standalone Buddy Backup receiver image.
+# Build context: repo root (it compiles the api module's buddy package).
+#
+# This is the "plain Docker receiver": two mounted volumes, no ZFS, no Kubernetes,
+# no database. It stores AES-256-GCM ciphertext it cannot read.
+#
+#   docker build -f api/Dockerfile.receiver -t naslos-buddy-receiver .
+#   docker run -d --name buddy-receiver -p 8484:8484 \
+#     -e BUDDY_ENROLL_TOKEN=one-time-token \
+#     -v /srv/buddy-data:/data -v /srv/buddy-config:/config \
+#     naslos-buddy-receiver
+
+FROM golang:1.26-alpine AS builder
+
+WORKDIR /build
+
+# Stamped into the binary so `buddyctl status` can report which receiver build it
+# is talking to (make buddy-receiver-image passes IMAGE_TAG).
+ARG VERSION=dev
+
+# Pre-fetch dependencies
+COPY api/go.mod ./
+RUN go mod download
+
+# Copy the API source and build the receiver
+COPY api/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/buddy-receiver ./cmd/buddy-receiver
+
+# Minimal runtime image: no shell, no package manager, just the receiver.
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /out/buddy-receiver /app/buddy-receiver
+
+# /data holds the encrypted chunks, /config holds the authorized public keys.
+VOLUME ["/data", "/config"]
+
+ENV BUDDY_LISTEN=:8484 \
+    BUDDY_RECEIVE_PATH=/data \
+    BUDDY_PEERS=/config/peers.json \
+    BUDDY_NAME=buddy-receiver
+
+USER nonroot:nonroot
+
+EXPOSE 8484
+
+# distroless has no shell, so the healthcheck uses the binary itself.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s \
+    CMD ["/app/buddy-receiver", "-health"]
+
+ENTRYPOINT ["/app/buddy-receiver"]

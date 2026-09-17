@@ -92,6 +92,22 @@ unmodified Talos installation, administered through a web UI.
   anywhere.
 - **SEC-5** — Service secrets (`LDAP_BIND_PASS`, ntfy topic tokens) MUST be
   injected by the Helm chart, never baked into images.
+- **SEC-6** — Backup peer requests MUST authenticate with the peer's own Ed25519
+  key and MUST NOT be served on the strength of the interactive-proxy identity
+  header (a peer cannot complete an interactive login). The receive API MUST be
+  discoverable only where the API already is: no additional listener, port or
+  ingress is introduced for peers.
+- **SEC-7** — The endpoints that authorize or revoke backup peers MUST require
+  evidence of an authenticated session, like the terminal (`buddy.requireAuth`,
+  default `true`).
+- **SEC-8** — A receiver MUST validate every path component derived from a peer's
+  input (source names) and MUST confine the received data to the dataset it was
+  given: the receive dataset is the only read-write host path the API Deployment
+  may hold.
+- **SEC-9** — The agent's streaming backup endpoints MUST NOT be reachable from
+  outside the cluster (the agent Service stays ClusterIP/headless) and MUST be
+  limited to server-generated command lines: a caller may name a dataset and a
+  snapshot, nothing more.
 
 ### 2.3 Request flow (normative)
 
@@ -358,6 +374,84 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-NTF-02** — The API MUST expose `POST /api/notifications/test` to send
   a test notification.
 
+### 3.8 Buddy Backup (`FR-BUD`)
+
+Buddy Backup lets one instance push encrypted backups to another instance, or to
+a standalone container receiver, without the receiver being able to read them.
+See `docs/buddy-backup.md`.
+
+- **FR-BUD-01** — Every instance MUST be able to act as both a receiver and a
+  sender; the receive API MUST live at `/api/buddy/v1/*` and the standalone
+  `naslos-buddy-receiver` container MUST serve the identical routes, so a sender
+  needs no special case per receiver flavour (SQLite-free, ZFS-free).
+- **FR-BUD-02** — Backups MUST be encrypted **client-side** with AES-256-GCM
+  before they leave the sender, using a fresh per-chain 256-bit data key that is
+  wrapped with the owner's key encryption key (KEK) and stored in the signed
+  manifest. The receiver MUST NOT hold, request or be able to derive the KEK: it
+  stores ciphertext and wrapped keys only.
+- **FR-BUD-03** — Requests MUST be authenticated with an Ed25519 keypair owned by
+  the sender (OpenSSH form): the signature MUST cover the method, the full request
+  URI, the SHA-256 of the body, a timestamp and a nonce. The receiver MUST reject
+  a timestamp outside 5 minutes of its clock and MUST reject a repeated nonce.
+  Enrollment of a first key MUST be possible with a single-use token.
+- **FR-BUD-04** — The payload MUST be sent as independently sealed, fixed-size
+  chunks whose nonce is derived from a per-chain prefix and the chunk index, and
+  whose AEAD additional data MUST bind the source, the chain, the index and the
+  plaintext length, so that reordering, swapping, truncation or cross-source
+  substitution is detectable.
+- **FR-BUD-05** — A push MUST be resumable: interrupting it MUST NOT require
+  re-sending what the receiver already holds, and resuming MUST verify the stored
+  chunks against the sender's own bytes and MUST fail rather than mix two versions
+  of the data into one chain.
+- **FR-BUD-06** — A chain MUST NOT be restorable until its manifest is published,
+  and the receiver MUST refuse a manifest whose listed chunks are not all present,
+  so "the latest backup" can never point at an incomplete chain. The manifest MUST
+  be signed by the sender's key and MUST record a SHA-256 per plaintext chunk so
+  the owner can verify integrity independently of the receiver.
+- **FR-BUD-07** — The receiver MUST report, per key: free space, bytes stored,
+  optional quota, the sources it holds, their current chains, and the time of the
+  last backup; the sender MUST be able to display these.
+- **FR-BUD-08** — A receiver MUST enforce per-key scope (allowed source prefixes,
+  no path traversal, no absolute sources) and an optional per-key quota, and MUST
+  refuse a chunk that would exceed it.
+- **FR-BUD-09** — The owner MUST be able to prune a source to the newest N chains
+  and to revoke a key. Revoking MUST stop new pushes immediately and MUST NOT be
+  presented as a deletion of existing backups.
+- **FR-BUD-10** — Unknown keys, unsigned requests, stale timestamps, replayed
+  requests, out-of-scope sources, tampered chunks and tampered manifests MUST each
+  fail with an explicit error; a restore MUST never write unverified data.
+- **FR-BUD-11** — An instance MUST be able to back up its own datasets without an
+  external tool: the API MUST drive the node's `zfs send` through the agent, stream
+  it (never buffering a whole dataset in memory) into the encrypted push, and MUST
+  send incrementally whenever the receiver already holds the base snapshot,
+  identified by its ZFS GUID rather than by name.
+- **FR-BUD-12** — The agent MUST expose `zfs send`/`zfs receive` as streams, and MUST
+  validate every dataset and snapshot name it is given before it reaches a command
+  line (`SEC-1`). Streaming calls MUST NOT be bound by the control-plane client's
+  180 s timeout.
+- **FR-BUD-13** — An interrupted instance-side send MUST be resumable, and safely so:
+  a manifest MUST NOT be published for a stream that did not arrive whole, the resume
+  MUST repeat the same stream (same snapshot, same chain, same data key) so the
+  receiver can skip what it already holds, and a chain whose recorded snapshot no
+  longer exists MUST be abandoned rather than guessed at.
+- **FR-BUD-14** — A restore MUST rebuild the sequence a backup needs - the last full
+  send followed by each incremental in order - MUST refuse a sequence whose base
+  chain is missing rather than applying half a backup, and MUST offer verification
+  that decrypts and hashes the stored stream without touching ZFS.
+- **FR-BUD-15** — Scheduled backups: an instance MUST be able to back its datasets
+  up on an interval cadence (hourly / daily / weekly with a run-at time in UTC),
+  persisted across restarts. A run missed while the API was down MUST fire once on
+  startup (catch-up). A scheduled run MUST apply the entry's retention
+  (`pruneKeep`) on success and MUST notify via ntfy on success
+  (`backup_success`) and on failure (`backup_failure`), gated on the
+  notification settings' enabled events.
+- **FR-BUD-16** — Owner UI: the `/backups` page MUST show the instance identity,
+  the schedules, live progress of a manual send, the receiver status and a
+  verify view. A manual send MUST run as an async job (`202` + pollable
+  progress + cancellation) and MUST refuse a second send for the same
+  (receiver, source) or dataset while one runs. A restore from the UI MUST
+  require an explicit confirmation naming the destination dataset.
+
 ---
 
 ## 4. API contracts (normative)
@@ -404,6 +498,20 @@ Requirement IDs are stable: never renumber, only deprecate.
 | `/api/shares/config/samba` `/nfs` | GET | Generated configs |
 | `/api/notifications` | GET | Notification settings/state |
 | `/api/notifications/test` | POST | Send test push |
+| `/api/buddy/v1/status` `/backups` | GET | Receiver report to a peer: free space, stored bytes, quota, sources, last backup (§3.8) |
+| `/api/buddy/v1/chains/{source}` | GET | Every stored chain of a source, newest first (a restore replays them in order) |
+| `/api/buddy/v1/chunks/{source}` | GET, PUT | List / fetch / upload one sealed chunk (`?chain=&index=`) |
+| `/api/buddy/v1/manifest/{source}` | GET, PUT | Fetch / publish the signed manifest of a chain |
+| `/api/buddy/v1/prune/{source}` | POST | Keep the newest N chains |
+| `/api/buddy/v1/enroll` | POST | Single-use token bootstrap: authorize a new peer key (the only unsigned buddy route) |
+| `/api/buddy/status` | GET | Owner view: free space, peers, stored backups |
+| `/api/buddy/peers` | GET, POST, DELETE | List / authorize / revoke peer keys (authenticated session required) |
+| `/api/buddy/identity` | GET, POST | This instance's key material: report the public key / create it (`replace` required to overwrite) |
+| `/api/buddy/send` | POST | Back a local dataset up to a buddy: `202 {"jobId"}` immediately, then snapshot, incremental by GUID, stream `zfs send` into the push under a server-owned context |
+| `/api/buddy/jobs` | GET | List async send jobs (running + recent finished) |
+| `/api/buddy/jobs/{id}` | GET, DELETE | Job detail incl. progress / cancel a running send (resume state is kept) |
+| `/api/buddy/schedules` | GET, POST, DELETE | Scheduled backups: list / create-or-update / delete (`?id=`) |
+| `/api/buddy/restore` | POST | Restore a buddy's backup into a local dataset (whole chain sequence), or `verify` to hash it without touching ZFS |
 | `/api/metrics` | GET | Live `SystemMetrics` (§3.5) |
 | `/api/dashboard` | GET | Dashboard view model + live pools |
 | `/api/ws/logs` `/api/ws/exec` | WS | Streams (§3.6) |
@@ -492,6 +600,45 @@ Go tests cover the parts that need no node: `api/internal/shares`
 (`TestComputeNTHashKnownVector` against OpenSSL-computed vectors, smbpasswd and
 extrausers rendering, `TestGroupGIDIsStable`, `TestAccessListRendersGroups`,
 `TestNetBIOSNameSanitised`).
+
+Buddy Backup is verified by `api/internal/buddy/buddy_test.go`, which runs the
+real receiver over HTTP (an `httptest` server) against the real client:
+
+| Test | Verifies |
+| --- | --- |
+| `TestIdentityRoundTrip` | FR-BUD-03 (OpenSSH-form key, 0600 on disk, signatures verify with the public key only) |
+| `TestEnvelopeRejectsTampering` | FR-BUD-04 (bit flip, truncation, wrong index, wrong source, wrong chain all fail) |
+| `TestDEKWrapNeedsTheOwnersKEK` | FR-BUD-02 (a stranger's KEK cannot unwrap a chain; the wrapped key is chain-bound) |
+| `TestManifestSignature` | FR-BUD-06 (edited metadata invalidates the signature; another key cannot sign for it) |
+| `TestPushRestoreRoundTrip` | FR-BUD-02/06/07 (byte-identical restore, `unknown`/free space/last backup, and the receiver's files contain no plaintext) |
+| `TestPushResumeUploadsOnlyMissingChunks` | FR-BUD-05 (killed push resumes: 2 skipped, 1 uploaded; a changed source is refused) |
+| `TestReceiverRefusesTamperedChunk` | FR-BUD-10 (corrupted ciphertext fails authentication instead of restoring) |
+| `TestScopeAndQuota` | FR-BUD-08 (out-of-scope source 403, quota 413) |
+| `TestRequestAuthentication` | FR-BUD-03 (unsigned 401, unknown key 401, stale timestamp 401, replayed nonce 401) |
+| `TestEnrollAuthorizesTheFirstKey` | FR-BUD-03 (single-use token; closed receivers refuse enrollment) |
+| `TestPruneKeepsNewestChains` | FR-BUD-09 (prune removes the old chains, keeps the current one restorable) |
+
+Verified on the live VM (192.168.1.96) through the UI's NodePort, i.e. peer →
+nginx → API, with the chart's `buddy` values enabled:
+
+| Check | Verifies |
+| --- | --- |
+| `zfs create test/naslos-buddy`, `chown 65532:65532` (API runs as distroless nonroot), helm upgrade | SEC-8, the dataset is the only read-write host path |
+| `df -h` on the receive mount path from a *fresh* pod | SEC-8, positive and negative: it found that a dataset created from inside a pod is mounted only in that pod's namespace, so the API's hostPath bound the parent dataset (`test`), not `test/naslos-buddy` — detection is now a documented deployment step |
+| `buddyctl enroll --token …` then a second enrollment with the same token → 403 | FR-BUD-03 (single-use bootstrap) |
+| `buddyctl push --dir` 3 MiB → 4 chunks; `buddyctl status`/`backups` show free space, stored bytes and last backup | FR-BUD-07, the nginx `client_max_body_size` path |
+| `find` + `grep` in the store: only `chunk-*.enc` (1 MiB + 36 B, mode 0600) and the signed manifest; the plaintext needle is absent | FR-BUD-02 (zero-knowledge receiver) |
+| `buddyctl restore --dir` + `diff -r` + `md5sum` | FR-BUD-06 (byte-identical restore) |
+| 128 MiB push killed with `timeout -s KILL 1`, then `--resume` → 15 already present, 114 uploaded, full verify-only restore clean | FR-BUD-05 |
+| one byte flipped in a stored chunk → restore fails with `cipher: message authentication failed` | FR-BUD-10 |
+| `curl` without headers → 401; a second identity's key → 401 `unknown key`; push outside the key's scope → 403 | FR-BUD-03/08/10 |
+| `buddyctl prune --keep 1` → storage drops by the pruned chain; remaining chain still restores | FR-BUD-09 |
+| `GET /api/buddy/peers` without the proxy identity → 401, with `Remote-User` → 200 and the peer list | SEC-7 |
+| `POST /api/buddy/send` → `202 {jobId}`; `GET /api/buddy/jobs/{id}` reaches `succeeded` with the sync-era result fields | FR-BUD-16 (async jobs) |
+| second send for the same (receiver, source) or dataset while running → 409; `DELETE` mid-send → `cancelled`, resume state kept, retry `resumed: true` | FR-BUD-16 |
+| schedule due → job runs, `lastResult: ok`, `pruneKeep` leaves one chain, one `backup_success` ntfy post | FR-BUD-15 |
+| schedule against a dead receiver → job `failed`, `lastResult: failed`, one `backup_failure` ntfy post | FR-BUD-15 |
+| `ui/tests/backups.spec.ts` — identity card, schedule create/delete, receiver free space, manual send to `succeeded` | FR-BUD-16 |
 
 Go verification: `go build ./...` in `api/` and `agent/`; `go vet` clean;
 `gofmt` clean on touched files; `npm run check` in `ui/` with 0 errors.

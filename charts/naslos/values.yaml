@@ -318,3 +318,35 @@ terminal:
     limits:
       cpu: 500m
       memory: 256Mi
+
+# Buddy Backup (docs/buddy-backup.md): a key-authenticated API that lets another
+# Naslos instance - or the standalone naslos-buddy-receiver container - push
+# incremental ZFS backups to this one. Everything arrives already encrypted with
+# a key only the sender holds, so this instance stores bytes it cannot read.
+buddy:
+  # Serve /api/buddy/v1/* on this instance. Peers reach it the same way the UI
+  # does: through the NodePort/ingress you already expose, via /api/. Enabling it
+  # needs receiveHostPath, so leave this off until the dataset exists.
+  enabled: false
+  # Name this instance reports to peers ("naslos-a", "backup-nas").
+  name: naslos
+  # Host path of the dataset that stores received chunks. Create it first:
+  #   zfs create naslos-pool/naslos-buddy
+  # On the VM layout that is /var/mnt/naslos-pool/naslos-buddy. It is mounted
+  # read-write into the API because that is the one thing a receiver may write,
+  # and only ciphertext can ever land there.
+  receiveHostPath: ""
+  # Where the chunks are mounted inside the API pod.
+  receivePath: /var/lib/naslos/buddy
+  # The authorized-keys registry, kept with the other Naslos state files.
+  peersFile: /var/lib/naslos/buddy-peers.json
+  # A one-time token that lets a peer authorize its own key (buddyctl enroll).
+  # Empty means every key must be authorized explicitly. Either set it in values
+  # (rendered into the naslos-buddy Secret) or point enrollTokenSecret at a
+  # Secret you created out of band with kubectl.
+  enrollToken: ""
+  enrollTokenSecret: ""
+  # Require an authenticated session (the proxy's identity header) to authorize
+  # or revoke peers, exactly like the terminal: those calls hand out storage
+  # access, so never disable this on a reachable network.
+  requireAuth: true

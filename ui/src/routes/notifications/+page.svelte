@@ -31,7 +31,9 @@
     { id: 'app_status', label: 'App Status Change' },
     { id: 'disk_failure', label: 'Disk Failure' },
     { id: 'system_update', label: 'System Update' },
-    { id: 'share_access', label: 'Share Access' }
+    { id: 'share_access', label: 'Share Access' },
+    { id: 'backup_failure', label: 'Backup Failure' },
+    { id: 'backup_success', label: 'Backup Success' }
   ];
 
   const severityLevels = [
