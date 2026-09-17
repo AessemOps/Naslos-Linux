@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/AessemOps/Naslos-Linux/api/internal/auth"
 	"github.com/AessemOps/Naslos-Linux/api/internal/shares"
 )
 
@@ -221,7 +222,9 @@ func (s *Server) handleGroupDetail(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAuthMe returns the current authenticated user.
+// handleAuthMe returns the current authenticated user. The identity comes from
+// the auth middleware's context (populated only for a request that carried the
+// proxy secret), never from the raw header.
 func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	if s.identityUnavailable(w) {
 		return
@@ -231,17 +234,17 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	username := r.Header.Get("Remote-User")
-	if username == "" {
+	user := auth.UserFromContext(r.Context())
+	if user == nil || strings.TrimSpace(user.Username) == "" {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"username":    username,
-		"groups":      r.Header.Get("Remote-Groups"),
-		"email":       r.Header.Get("Remote-Email"),
-		"displayName": r.Header.Get("Remote-Name"),
+		"username":    user.Username,
+		"groups":      strings.Join(user.Groups, ","),
+		"email":       user.Email,
+		"displayName": user.DisplayName,
 	})
 }
 

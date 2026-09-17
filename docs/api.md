@@ -222,7 +222,10 @@ shell, never an arbitrary command.
 | `BUDDY_RECEIVE_PATH` | `/var/lib/naslos/buddy` | Dataset (mounted read-write) that stores received sealed chunks |
 | `BUDDY_PEERS` | `/var/lib/naslos/buddy-peers.json` | Authorized-keys registry for backup peers |
 | `BUDDY_ENROLL_TOKEN` | — | One-time token that lets a peer authorize its own key (from the `naslos-buddy` Secret) |
-| `BUDDY_REQUIRE_AUTH` | `true` | Require an authenticated session to authorize/revoke peers |
+| `AUTH_DISABLED` | `false` | Serve every owner route without the proxy secret (development only; logged at startup) |
+| `PROXY_SHARED_SECRET` | — | Shared secret Traefik's `proxy-identity` middleware injects; required unless `AUTH_DISABLED=true` (from the `naslos-internal-auth` Secret) |
+| `AGENT_TOKEN` | — | Bearer token sent to the agent on every request but `/health` (from the `naslos-internal-auth` Secret) |
+| `AGENT_AUTH_DISABLED` | `false` | Agent-side equivalent of `AUTH_DISABLED` (set on the agent, not the API) |
 | `BUDDY_IDENTITY` | `/var/lib/naslos/buddy-identity.json` | This instance's key material (private key + KEK); created on demand |
 | `BUDDY_SCHEDULES` | `/var/lib/naslos/buddy-schedules.json` | Scheduled backups (interval cadence, catch-up on startup) |
 

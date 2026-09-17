@@ -57,8 +57,25 @@ func main() {
 		sharesClient = shares.NewClient(ctx)
 	}
 
-	// Start HTTP server for pool and share configuration operations
-	srv := server.New(listen, zfsClient, sharesClient)
+	// Start HTTP server for pool and share configuration operations. The agent
+	// is privileged and host-networked, so it only serves callers that prove they
+	// are the API: the shared token, mounted into both workloads from the
+	// naslos-agent-auth Secret (NAS-002).
+	authDisabled := os.Getenv("AGENT_AUTH_DISABLED") == "true"
+	authToken := os.Getenv("AGENT_TOKEN")
+	if !authDisabled && authToken == "" {
+		log.Fatalf("AGENT_TOKEN is required; mount it from the naslos-agent-auth Secret, or set " +
+			"AGENT_AUTH_DISABLED=true for local development only")
+	}
+	if authDisabled {
+		log.Printf("WARNING: AGENT_AUTH_DISABLED=true - every privileged agent endpoint is served " +
+			"without authentication; do not use this on a real node")
+	}
+
+	srv := server.New(listen, zfsClient, sharesClient, server.Options{
+		AuthToken:    authToken,
+		AuthDisabled: authDisabled,
+	})
 	go func() {
 		if err := srv.Start(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Agent server error: %v", err)

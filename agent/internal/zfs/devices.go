@@ -166,6 +166,30 @@ func isWholeDisk(name string) bool {
 	}
 }
 
+// normalizeDiskSet validates a set of disks for a destructive ZFS operation:
+// each must be an existing absolute /dev path, none may be repeated, and none may
+// already belong to a pool - `zpool create`/`add` would otherwise overwrite that
+// pool's label. members comes from PoolMembers.
+func normalizeDiskSet(disks []string, members map[string]string) ([]string, error) {
+	clean := make([]string, 0, len(disks))
+	seen := make(map[string]bool, len(disks))
+	for _, disk := range disks {
+		dev, err := normalizeDiskPath(disk)
+		if err != nil {
+			return nil, err
+		}
+		if seen[dev] {
+			return nil, fmt.Errorf("disk %s was given more than once", dev)
+		}
+		seen[dev] = true
+		if owner, inUse := members[dev]; inUse {
+			return nil, fmt.Errorf("disk %s already belongs to pool %q", dev, owner)
+		}
+		clean = append(clean, dev)
+	}
+	return clean, nil
+}
+
 // AddVDev attaches one vdev (a group of disks in a topology) to an existing
 // pool, e.g. `zpool add tank mirror /dev/sdb /dev/sdc`.
 //
@@ -204,21 +228,9 @@ func (c *Client) AddVDev(pool, topology string, disks []string, force bool) erro
 		return err
 	}
 
-	clean := make([]string, 0, len(disks))
-	seen := make(map[string]bool, len(disks))
-	for _, disk := range disks {
-		dev, err := normalizeDiskPath(disk)
-		if err != nil {
-			return err
-		}
-		if seen[dev] {
-			return fmt.Errorf("disk %s was given more than once", dev)
-		}
-		seen[dev] = true
-		if owner, inUse := members[dev]; inUse {
-			return fmt.Errorf("disk %s already belongs to pool %q", dev, owner)
-		}
-		clean = append(clean, dev)
+	clean, err := normalizeDiskSet(disks, members)
+	if err != nil {
+		return err
 	}
 
 	args := []string{"add"}

@@ -37,6 +37,9 @@ func (c *Client) AllDatasets() ([]Dataset, error) {
 
 // Datasets lists datasets in a pool.
 func (c *Client) Datasets(pool string) ([]Dataset, error) {
+	if err := ValidatePoolName(pool); err != nil {
+		return nil, err
+	}
 	out, err := c.hostExec(zfsBin, "list", "-H", "-o", "name,used,avail,refer,mountpoint", "-r", pool)
 	if err != nil {
 		return nil, fmt.Errorf("listing datasets: %w", err)
@@ -225,8 +228,15 @@ func (c *Client) DatasetExists(name string) bool {
 	return err == nil
 }
 
-// Snapshot creates a snapshot of a dataset.
+// Snapshot creates a snapshot of a dataset. Both halves reach `zfs snapshot`
+// argv, so both are validated (NAS-003).
 func (c *Client) Snapshot(dataset, snapName string) error {
+	if err := validateDatasetPath(dataset); err != nil {
+		return err
+	}
+	if err := ValidateSnapshotName(snapName); err != nil {
+		return err
+	}
 	name := dataset + "@" + snapName
 	out, err := c.hostExec(zfsBin, "snapshot", name)
 	if err != nil {
@@ -237,6 +247,9 @@ func (c *Client) Snapshot(dataset, snapName string) error {
 
 // Snapshots lists snapshots for a dataset.
 func (c *Client) Snapshots(dataset string) ([]string, error) {
+	if err := validateDatasetPath(dataset); err != nil {
+		return nil, err
+	}
 	out, err := c.hostExec(zfsBin, "list", "-H", "-t", "snapshot", "-o", "name", "-r", dataset)
 	if err != nil {
 		return nil, fmt.Errorf("listing snapshots: %w", err)

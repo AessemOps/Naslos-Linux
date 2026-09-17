@@ -66,9 +66,11 @@ type fakeError struct{ msg string }
 func (e *fakeError) Error() string { return e.msg }
 
 // newTestServer builds a server with the fake streaming client wired in. A nil
-// client means a degraded agent (no ZFS on the host).
+// client means a degraded agent (no ZFS on the host). The token check is off:
+// these tests exercise the handlers, and the gate itself is covered by
+// TestRequireAuth.
 func newTestServer(backup backupZFS) *Server {
-	s := &Server{router: http.NewServeMux()}
+	s := &Server{router: http.NewServeMux(), authDisabled: true}
 	if backup != nil {
 		s.backup = backup
 		s.zfs = &zfs.Client{}

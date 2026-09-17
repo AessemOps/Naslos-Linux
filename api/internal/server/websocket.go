@@ -312,13 +312,11 @@ func (s *Server) handleLogsWS(w http.ResponseWriter, r *http.Request) {
 // This is what the terminal page attaches to. Everything that can fail is
 // resolved *before* the upgrade, so a bad pod/container/shell is an HTTP status
 // the UI can show properly rather than text inside a terminal that just opened.
+//
+// The session is authenticated by the owner auth middleware: the terminal runs a
+// root shell, so it is only reachable through the proxy (or with AUTH_DISABLED,
+// which is a development-only posture).
 func (s *Server) handleExecWS(w http.ResponseWriter, r *http.Request) {
-	// The terminal runs a root shell in a privileged container, so it is gated on
-	// an authenticated session before anything else is even resolved.
-	if !s.requireTerminalAuth(w, r) {
-		return
-	}
-
 	namespace := r.URL.Query().Get("namespace")
 	if namespace == "" {
 		namespace = s.namespace

@@ -241,9 +241,6 @@ func (s *Server) handleBuddySend(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if !s.requireBuddyAdminAuth(w, req) {
-		return
-	}
 	if s.agent == nil {
 		writeError(w, http.StatusServiceUnavailable, "the API has no agent client, so it cannot stream ZFS data")
 		return
@@ -582,9 +579,6 @@ func (s *Server) handleBuddyJobs(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if !s.requireBuddyAdminAuth(w, req) {
-		return
-	}
 	jobs := s.ensureBuddyJobs().list()
 	if jobs == nil {
 		jobs = []buddyJobPublic{}
@@ -595,9 +589,6 @@ func (s *Server) handleBuddyJobs(w http.ResponseWriter, req *http.Request) {
 // handleBuddyJobDetail reports or cancels one job: GET (detail incl. progress),
 // DELETE (cancel a running send; the resume state stays so a retry continues).
 func (s *Server) handleBuddyJobDetail(w http.ResponseWriter, req *http.Request) {
-	if !s.requireBuddyAdminAuth(w, req) {
-		return
-	}
 	id := strings.TrimPrefix(req.URL.Path, "/api/buddy/jobs/")
 	if id == "" || strings.Contains(id, "/") {
 		writeError(w, http.StatusBadRequest, "job id is required")

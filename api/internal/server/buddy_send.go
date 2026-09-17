@@ -63,9 +63,6 @@ func loadBuddyIdentity() (*buddy.Identity, error) {
 // The private key and the key encryption key never leave the file and are never
 // returned; the public key is what an operator hands to a buddy.
 func (s *Server) handleBuddyIdentity(w http.ResponseWriter, req *http.Request) {
-	if !s.requireBuddyAdminAuth(w, req) {
-		return
-	}
 
 	path := buddyIdentityPath()
 	switch req.Method {
@@ -302,9 +299,6 @@ func normalizeReceiverURL(raw string) (string, error) {
 func (s *Server) handleBuddySendSyncLegacy(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if !s.requireBuddyAdminAuth(w, req) {
 		return
 	}
 	if s.agent == nil {
@@ -553,9 +547,6 @@ type streamDigest struct {
 func (s *Server) handleBuddyRestore(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if !s.requireBuddyAdminAuth(w, req) {
 		return
 	}
 	if s.agent == nil {

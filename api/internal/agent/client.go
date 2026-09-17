@@ -63,12 +63,39 @@ type Client struct {
 	http    *http.Client
 }
 
+// authTransport injects the shared agent bearer token on every request. Doing it
+// in the transport (rather than at each call site) means the streaming
+// send/receive paths, which build their own requests, cannot be forgotten.
+type authTransport struct {
+	token string
+	base  http.RoundTripper
+}
+
+func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if t.token == "" {
+		return base.RoundTrip(req)
+	}
+	// Clone: the caller's request must not be mutated.
+	cloned := req.Clone(req.Context())
+	cloned.Header.Set("Authorization", "Bearer "+t.token)
+	return base.RoundTrip(cloned)
+}
+
 // NewClient creates an agent client for baseURL (e.g.
-// http://naslos-agent.naslos.svc.cluster.local:9090).
-func NewClient(baseURL string) *Client {
+// http://naslos-agent.naslos.svc.cluster.local:9090). token is the shared secret
+// from the naslos-agent-auth Secret; the agent refuses every request but /health
+// without it. An empty token is a deliberate local-development posture only.
+func NewClient(baseURL, token string) *Client {
 	return &Client{
 		baseURL: strings.TrimSuffix(baseURL, "/"),
-		http:    &http.Client{Timeout: DefaultTimeout},
+		http: &http.Client{
+			Timeout:   DefaultTimeout,
+			Transport: &authTransport{token: token},
+		},
 	}
 }
 

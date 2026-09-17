@@ -131,11 +131,12 @@ Owner-facing endpoints on a Naslos instance (not peer-facing):
 | GET | `/api/buddy/status` | Receiver state for the UI: free space, peers, stored backups |
 | GET/POST/DELETE | `/api/buddy/peers` | List / authorize / revoke peer keys |
 
-`/api/buddy/peers` hands out storage access, so it requires the same
-authenticated-session evidence as the terminal (`buddy.requireAuth`, default
-`true`; it reads the proxy's identity header). The peer API is deliberately *not*
-gated that way: a peer cannot complete an interactive login, which is the whole
-reason it authenticates with its own key.
+`/api/buddy/peers` hands out storage access, so it goes through the owner gate like
+every other owner route (SEC-10): the request must carry the proxy-issued shared
+secret **and** the identity header, so a client that can reach the API directly
+cannot authorize a key by sending a header itself. The peer API is deliberately
+*not* gated that way: a peer cannot complete an interactive login, which is the
+whole reason it authenticates with its own key.
 
 ### 3.3 Pushing and resuming
 
