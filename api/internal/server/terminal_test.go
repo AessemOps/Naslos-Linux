@@ -1,9 +1,6 @@
 package server
 
 import (
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -99,61 +96,6 @@ func TestResolveContainer(t *testing.T) {
 	}
 	if name, err := resolveContainer(several, "sidecar"); err != nil || name != "sidecar" {
 		t.Errorf("resolveContainer(several, sidecar) = %q, %v", name, err)
-	}
-}
-
-// TestRequireTerminalAuth pins the gate in front of a privileged shell: it must
-// fail closed when the authenticated proxy's identity header is missing, and it
-// must be possible to turn it off explicitly for development.
-func TestRequireTerminalAuth(t *testing.T) {
-	gated := &Server{terminalRequireAuth: true, terminalAuthHeader: "Remote-User"}
-
-	// No header: refused, with a reason (the UI shows this text).
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/pods", nil)
-	if gated.requireTerminalAuth(rec, req) {
-		t.Error("requireTerminalAuth(no header) = true, want false")
-	}
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want 401", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "authenticated") {
-		t.Errorf("body = %q, want it to explain that a session is required", rec.Body.String())
-	}
-
-	// Blank header (a client sending an empty value) must not pass either.
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/pods", nil)
-	req.Header.Set("Remote-User", "   ")
-	if gated.requireTerminalAuth(rec, req) {
-		t.Error("requireTerminalAuth(blank header) = true, want false")
-	}
-
-	// The header the authenticated proxy injects: allowed.
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/pods", nil)
-	req.Header.Set("Remote-User", "smbtest")
-	if !gated.requireTerminalAuth(rec, req) {
-		t.Error("requireTerminalAuth(with header) = false, want true")
-	}
-	if user := gated.terminalUsername(req); user != "smbtest" {
-		t.Errorf("terminalUsername = %q, want smbtest", user)
-	}
-
-	// Development escape hatch.
-	open := &Server{terminalRequireAuth: false, terminalAuthHeader: "Remote-User"}
-	rec = httptest.NewRecorder()
-	if !open.requireTerminalAuth(rec, httptest.NewRequest(http.MethodGet, "/api/pods", nil)) {
-		t.Error("requireTerminalAuth(requireAuth=false) = false, want true")
-	}
-
-	// A differently named header is honoured (the chart makes it configurable).
-	custom := &Server{terminalRequireAuth: true, terminalAuthHeader: "X-Auth-User"}
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/pods", nil)
-	req.Header.Set("Remote-User", "smbtest")
-	if custom.requireTerminalAuth(rec, req) {
-		t.Error("an unrelated header was accepted, want a refusal")
 	}
 }
 

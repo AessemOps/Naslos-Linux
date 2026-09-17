@@ -8,6 +8,16 @@
 # Registry default for the VM deployment (private HTTP registry).
 # scripts/deploy-vm.sh passes explicit --set overrides as well, so these
 # values mainly serve direct `make install-vm` / `helm` invocations.
+
+# Internal auth is OFF on the VM: the UI is reached over its NodePort and there
+# is no Traefik/Authelia in front of it, so the proxy secret that the API
+# requires on every owner route would never be injected. This is a
+# development-only posture - the NodePort reaches every API route, including the
+# terminal, unauthenticated. Never use these values on a reachable instance; run
+# with the default auth.disabled=false behind the authenticating proxy instead.
+auth:
+  disabled: true
+
 api:
   image:
     repository: 192.168.1.2:30095/naslos-api

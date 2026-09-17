@@ -43,6 +43,9 @@ func (c *Client) Pools() ([]Pool, error) {
 // It walks the config section and collects leaf devices (real disks),
 // skipping virtual devices (mirror-*, raidz*, cache, spare, logs).
 func (c *Client) poolDisks(name string) ([]string, error) {
+	if err := ValidatePoolName(name); err != nil {
+		return nil, err
+	}
 	out, err := c.hostExec(zpoolBin, "status", name)
 	if err != nil {
 		return nil, err
@@ -90,6 +93,9 @@ func (c *Client) poolDisks(name string) ([]string, error) {
 
 // PoolStatus returns detailed status of a pool.
 func (c *Client) PoolStatus(name string) (string, error) {
+	if err := ValidatePoolName(name); err != nil {
+		return "", err
+	}
 	out, err := c.hostExec(zpoolBin, "status", name)
 	if err != nil {
 		return "", fmt.Errorf("pool status: %w", err)
@@ -98,18 +104,55 @@ func (c *Client) PoolStatus(name string) (string, error) {
 }
 
 // CreatePool creates a new ZFS pool with best-practice options.
+//
+// Every input reaches `zpool create`/`zfs set` argv or wipes a device, so each
+// one is validated first (NAS-003): a valid pool name, a known topology, disks
+// that exist and belong to no other pool, and only allow-listed dataset options.
 func (c *Client) CreatePool(cfg PoolConfig) error {
-	if cfg.Name == "" {
-		return fmt.Errorf("pool name is required")
+	if err := ValidatePoolName(cfg.Name); err != nil {
+		return err
+	}
+	topology, err := NormalizeVDevTopology(cfg.Topology)
+	if err != nil {
+		return err
+	}
+	if err := ValidateDatasetOptions(cfg.Options); err != nil {
+		return err
 	}
 	if len(cfg.Disks) < 1 {
-		return fmt.Errorf("at least one disk is required")
+		return invalidf("at least one disk is required")
+	}
+	if min := vdevMinimumDisks(topology); len(cfg.Disks) < min {
+		return invalidf("creating %s needs at least %d disks, got %d", vdevLabel(topology), min, len(cfg.Disks))
 	}
 
 	// Check if pool already exists
-	_, err := c.hostExec(zpoolBin, "list", cfg.Name)
-	if err == nil {
-		return fmt.Errorf("pool %q already exists", cfg.Name)
+	if _, err := c.hostExec(zpoolBin, "list", cfg.Name); err == nil {
+		return invalidf("pool %q already exists", cfg.Name)
+	}
+
+	// A disk that belongs to another pool must never be accepted: `zpool create
+	// -f` would overwrite its label and destroy that pool.
+	members, err := c.PoolMembers()
+	if err != nil {
+		return err
+	}
+	disks, err := normalizeDiskSet(cfg.Disks, members)
+	if err != nil {
+		return err
+	}
+	cache := ""
+	if cfg.Cache != "" {
+		normalized, err := normalizeDiskSet([]string{cfg.Cache}, members)
+		if err != nil {
+			return err
+		}
+		cache = normalized[0]
+		for _, disk := range disks {
+			if disk == cache {
+				return invalidf("disk %s cannot be both a data disk and the cache device", cache)
+			}
+		}
 	}
 
 	// Wipe disks to remove any existing filesystem signatures.
@@ -117,11 +160,7 @@ func (c *Client) CreatePool(cfg PoolConfig) error {
 	// gracefully when the binary is absent — `zpool create -f` handles
 	// fresh disks (e.g. vdb/vdc) on its own.
 	if hostBinExists(wipefsBin) {
-		for _, disk := range cfg.Disks {
-			diskPath := disk
-			if !strings.HasPrefix(disk, "/dev/") {
-				diskPath = "/dev/" + disk
-			}
+		for _, diskPath := range disks {
 			if _, err := c.hostExec(wipefsBin, "--all", diskPath); err != nil {
 				return fmt.Errorf("wiping %s: %w", diskPath, err)
 			}
@@ -137,17 +176,15 @@ func (c *Client) CreatePool(cfg PoolConfig) error {
 	args = append(args, cfg.Name)
 
 	// Build topology
-	switch cfg.Topology {
+	switch topology {
 	case "mirror":
 		args = append(args, "mirror")
-		args = append(args, cfg.Disks...)
+		args = append(args, disks...)
 	case "raidz1", "raidz", "raidz2", "raidz3":
-		args = append(args, cfg.Topology)
-		args = append(args, cfg.Disks...)
-	case "single", "":
-		args = append(args, cfg.Disks...)
-	default:
-		return fmt.Errorf("unsupported topology: %s", cfg.Topology)
+		args = append(args, topology)
+		args = append(args, disks...)
+	default: // single
+		args = append(args, disks...)
 	}
 
 	out, err := c.hostExec(zpoolBin, args...)
@@ -192,13 +229,9 @@ func (c *Client) CreatePool(cfg PoolConfig) error {
 	// Add optional cache (L2ARC) device. Cache devices are added after
 	// pool creation via `zpool add` — they cannot be included in the
 	// initial `zpool create` command.
-	if cfg.Cache != "" {
-		cacheDev := cfg.Cache
-		if !strings.HasPrefix(cacheDev, "/dev/") {
-			cacheDev = "/dev/" + cacheDev
-		}
-		if _, err := c.hostExec(zpoolBin, "add", cfg.Name, "cache", cacheDev); err != nil {
-			return fmt.Errorf("adding cache device %s: %w", cacheDev, err)
+	if cache != "" {
+		if _, err := c.hostExec(zpoolBin, "add", cfg.Name, "cache", cache); err != nil {
+			return fmt.Errorf("adding cache device %s: %w", cache, err)
 		}
 	}
 
@@ -207,8 +240,8 @@ func (c *Client) CreatePool(cfg PoolConfig) error {
 
 // DestroyPool destroys a ZFS pool.
 func (c *Client) DestroyPool(name string) error {
-	if name == "" {
-		return fmt.Errorf("pool name is required")
+	if err := ValidatePoolName(name); err != nil {
+		return err
 	}
 	out, err := c.hostExec(zpoolBin, "destroy", "-f", name)
 	if err != nil {
@@ -328,6 +361,9 @@ func (c *Client) ImportPool(name string) error {
 	if name == "" {
 		args = []string{"import", "-f"} // import all
 	} else {
+		if err := ValidatePoolName(name); err != nil {
+			return err
+		}
 		args = []string{"import", "-f", name}
 	}
 	out, err := c.hostExec(zpoolBin, args...)
@@ -339,6 +375,9 @@ func (c *Client) ImportPool(name string) error {
 
 // ExportPool exports a pool.
 func (c *Client) ExportPool(name string) error {
+	if err := ValidatePoolName(name); err != nil {
+		return err
+	}
 	out, err := c.hostExec(zpoolBin, "export", name)
 	if err != nil {
 		return fmt.Errorf("exporting pool: %s: %w", out, err)
@@ -349,6 +388,9 @@ func (c *Client) ExportPool(name string) error {
 // PoolHealth returns structured health data for a pool by parsing
 // `zpool status` and `zpool iostat`.
 func (c *Client) PoolHealth(name string) (*PoolHealth, error) {
+	if err := ValidatePoolName(name); err != nil {
+		return nil, err
+	}
 	out, err := c.hostExec(zpoolBin, "status", name)
 	if err != nil {
 		return nil, fmt.Errorf("getting pool status: %w", err)

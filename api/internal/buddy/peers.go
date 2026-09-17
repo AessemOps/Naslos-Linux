@@ -183,6 +183,12 @@ func (s *PeerStore) Add(p *Peer) error {
 		if existing.Fingerprint == fingerprint && existing.Name != p.Name {
 			return fmt.Errorf("this key is already authorized as %q", existing.Name)
 		}
+		// Refuse to replace a peer's key under an existing name: that is a key
+		// substitution (an enrollment token could otherwise overwrite a peer's
+		// key, and the owner would see an unchanged peer list). Revoke first.
+		if existing.Name == p.Name && existing.Fingerprint != fingerprint {
+			return fmt.Errorf("peer %q already exists with a different key; revoke it before authorizing a new key under that name", p.Name)
+		}
 	}
 	s.peers[p.Name] = p
 	return s.save()

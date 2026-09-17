@@ -42,6 +42,27 @@ func NewStore(dir string) *Store {
 // Root is the storage root.
 func (s *Store) Root() string { return s.root }
 
+// enrollmentMarker is the file that records a spent enrollment token.
+const enrollmentMarker = ".enroll-used"
+
+// MarkEnrollmentUsed records that the one-time enrollment token has been spent.
+// It is a file rather than a flag because the flag lived in memory: restarting
+// the receiver re-armed the token, so a leaked token worked again after every
+// restart (NAS-011).
+func (s *Store) MarkEnrollmentUsed() error {
+	if err := os.MkdirAll(s.root, 0o755); err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(s.root, enrollmentMarker),
+		[]byte(time.Now().UTC().Format(time.RFC3339)+"\n"))
+}
+
+// EnrollmentUsed reports whether the enrollment token has already been spent.
+func (s *Store) EnrollmentUsed() bool {
+	_, err := os.Stat(filepath.Join(s.root, enrollmentMarker))
+	return err == nil
+}
+
 // keyDir maps a key fingerprint to a directory name.
 //
 // A fingerprint is derived from a base64 hash, so it can contain '/', '+' and ':';
@@ -586,6 +607,12 @@ func (s *Store) LastBackup(keyID string) (time.Time, error) {
 
 // Prune keeps the newest `keep` chains of a source and deletes the rest: the
 // retention policy the owner asks the receiver to enforce.
+//
+// It never deletes a chain the newest one descends from. An incremental zfs-send
+// chain can only be rebuilt with every chain below it, so a naive keep-count
+// would leave a backup that looks fine (the send succeeded, the manifest is
+// signed) and only fails at restore or verify time. Keeping a few more chains
+// than asked is the safe side of that trade; the alternative is silent data loss.
 func (s *Store) Prune(keyID, source string, keep int) (int, error) {
 	if keep < 1 {
 		return 0, fmt.Errorf("keep must be at least 1")
@@ -604,8 +631,10 @@ func (s *Store) Prune(keyID, source string, keep int) (int, error) {
 	}
 
 	type chainInfo struct {
-		name string
-		when time.Time
+		name     string
+		when     time.Time
+		fromGUID string
+		toGUID   string
 	}
 	chains := make([]chainInfo, 0, len(entries))
 	for _, entry := range entries {
@@ -617,15 +646,39 @@ func (s *Store) Prune(keyID, source string, keep int) (int, error) {
 			var manifest Manifest
 			if json.Unmarshal(raw, &manifest) == nil {
 				info.when = manifest.CreatedAt
+				info.fromGUID = manifest.FromGUID
+				info.toGUID = manifest.ToGUID
 			}
 		}
 		chains = append(chains, info)
 	}
 	sort.Slice(chains, func(i, j int) bool { return chains[i].when.After(chains[j].when) })
 
+	// Walk the dependency chain of the newest backup: the newest chain, then the
+	// chain whose ToGUID is its FromGUID, and so on.
+	required := map[string]bool{}
+	if len(chains) > 0 {
+		required[chains[0].name] = true
+		baseGUID := chains[0].fromGUID
+		for baseGUID != "" {
+			next := ""
+			for _, candidate := range chains {
+				if candidate.toGUID == baseGUID && !required[candidate.name] {
+					next = candidate.name
+					baseGUID = candidate.fromGUID
+					break
+				}
+			}
+			if next == "" {
+				break
+			}
+			required[next] = true
+		}
+	}
+
 	removed := 0
 	for i, chain := range chains {
-		if i < keep {
+		if i < keep || required[chain.name] {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(chainsDir, chain.name)); err == nil {

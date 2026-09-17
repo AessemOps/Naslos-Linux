@@ -1,6 +1,142 @@
 # AI Handoff — Naslos
 
-## Current branch: `master`
+## Phase 2: buddy completion (`feature/buddy-completion`, implemented, not merged)
+
+Stacked on `feature/security-fixes` (Phase 1, still unmerged), because the
+peer-exposure decision and the owner gate belong together. Commits: the
+correctness batch and the cancel follow-up.
+
+**Deployed for the validation:** api `0.1.0-b12`, agent `0.1.0-b6`, ui `0.1.0-b5`
+(helm revision 66), `auth.disabled=true` (the VM's documented dev posture).
+
+**What changed**
+
+- **Prompt cancel (FR-BUD-16).** `PushOptions`/`RestoreOptions` carry a context, the
+  client's requests use `http.NewRequestWithContext`, and the loops check it between
+  chunks. The base-manifest lookup needed the same treatment: the first live check
+  still waited out the receiver's stall there, so `ManifestContext` /
+  `ChainsContext` / `RestoreSequenceContext` exist for the API's job paths.
+- **Refuse an unmounted dataset (FR-BUD-11).** The agent reports each dataset's
+  `mounted` state (host mount namespace, where `zfs send` runs); a send refuses a
+  dataset whose mountpoint is a path but is not mounted, with the fix in the
+  message. This is the mount-propagation trap: a dataset created from inside a pod
+  lives in that pod's namespace, so a send captured an empty filesystem and still
+  reported success (observed as a 44 KB "backup" of a 2 GiB dataset).
+  Deliberately conservative: an unmounted dataset with a real mountpoint is refused
+  even though it may hold its own data; mount it (or set mountpoint `none`) first.
+- **Retention never orphans an incremental (FR-BUD-09).** `Store.Prune` walks the
+  newest chain's `FromGUID` links and keeps every chain it descends from, even when
+  `keep` is smaller. Keeping more chains than asked is correct; an incremental
+  without its base reported success and only failed at verify/restore time.
+- **Single-use enrollment across restarts (SEC-12).** The receiver records the spent
+  token in the store (`.enroll-used`), so a restart cannot re-arm it as it did
+  before. `PeerStore.Add` also refuses to replace an existing name with a different
+  key (a leaked token could otherwise substitute a peer's key invisibly).
+- **Job ids are 128-bit (SEC-13)**, up from 32 bits.
+- **Schedules only accept a dataset that exists (FR-BUD-17)**: an exact match
+  against the agent's list instead of a pool-prefix guess (NAS-018).
+- Chart: `BUDDY_SCHEDULES` and `BUDDY_SCHEDULER_INTERVAL_MS` are passed explicitly
+  (`buddy.schedulesFile`, `buddy.schedulerIntervalMs`) instead of relying on the
+  compiled-in defaults.
+- The dead pre-jobs synchronous send (`handleBuddySendSyncLegacy`, never routed) is
+  deleted: it was a second, unguarded copy of the send path.
+
+**Live validation (VM, 2026-09-17)**
+
+- Unmounted refusal: a dataset created from inside the terminal pod reported
+  `mounted:false` (its 64 MiB had gone to the parent), the send failed in 8 ms with
+  `refusing to back up: dataset test/trapcheck is not mounted on the node …`, no
+  snapshot was created and nothing was stored. The other test datasets all report
+  `mounted:true`, so the rule does not over-refuse in practice.
+- Retention: a full send (106 chunks) plus an incremental with `pruneKeep:1` kept
+  **both** chains (pruned 0) and `verify` walked the sequence successfully —
+  previously that drill left one chain and verify failed with the missing-base
+  error.
+- Cancel: with a receiver stalling 30 s per request, `DELETE` reached `cancelled` in
+  ~4 s wall clock (the DELETE round trip), against the full 30 s before the fix.
+- Enrollment: first enroll 201; a second attempt 403 in the same process and
+  **still 403 after an API restart** (the marker is on the PVC). Re-keying
+  `enroll-a` through `POST /api/buddy/peers` → 400 `already exists with a different
+  key`.
+- Job ids in the responses are 32 hex characters.
+- Playwright: **29 passed / 2 skipped / 0 failed**. Go suites green for `api` and
+  `agent`; `helm lint` clean.
+- Cleanup afterwards: the test peer revoked, the receiver store emptied, the
+  listener removed, the trap dataset destroyed, and the `.enroll-used` marker
+  deleted so the VM's enrollment token works again for the next drill (that file is
+  the only place the "token spent" state lives; delete it to re-arm the token).
+
+**Still open in Phase 2**
+
+- **Multi-buddy fan-out** (one source → several receivers): not started; the
+  schedule entry still holds a single receiver.
+- **Peer-exposure decision**: recommended (and now unblocked) — keep the existing
+  Traefik + Authelia path with the `proxy-identity` secret; no dedicated listener.
+  Needs a decision + a doc paragraph, not code.
+- Hardening still open: NAS-012 (manifest rollback protection), NAS-013 (quota
+  race/undercount), NAS-021 (counter overflow, FS walks).
+- Polish: notification settings are still in memory (`notifications.NewManager("")`);
+  a never-run schedule still serialises `lastRun` as `0001-01-01T00:00:00Z`.
+
+## Phase 1: security fixes (`feature/security-fixes`, implemented, not merged)
+
+The security batch from `docs/SECURITY-FIX-PLAN.md` is implemented and live-verified
+on the VM; it is **not merged yet** (two commits on `feature/security-fixes`).
+`master` is at `0f1068a` (the buddy merge + handoff).
+
+**Deployed to the VM for the validation (helm revision 64 at the end):** api
+`0.1.0-b10`, agent `0.1.0-b5`, ui `0.1.0-b5`, with `auth.disabled=true` restored
+afterwards (the VM has no reachable Traefik, so the chart's `ingress.enabled=false`
+means the proxy secret would never be injected).
+
+**What the batch changes**
+
+- **NAS-001** — every owner route now lives on an `owner` mux behind
+  `auth.RequireAuth`, which requires the proxy-issued `X-Naslos-Proxy-Secret`
+  (constant time) *and* the identity header, in addition to the trusted CIDR. Only
+  `/api/health`, `/api/ready`, the buddy peer API (`/api/buddy/v1/*`, its own
+  Ed25519 auth) and the static UI are public. The API refuses to start without
+  `PROXY_SHARED_SECRET` unless `AUTH_DISABLED=true` (then it logs a loud warning).
+- **NAS-004/005** — the per-handler switches are gone (`requireTerminalAuth`,
+  `requireBuddyAdminAuth`, the `Remote-User` reads in `handleAuthMe`); `/api/ws/logs`
+  is authenticated by construction.
+- **NAS-002** — the agent requires `Authorization: Bearer <AGENT_TOKEN>` on
+  everything but `/health` (constant time) and refuses to start without a token
+  (`AGENT_AUTH_DISABLED=true` is the logged dev opt-out). The API injects the token
+  in a transport, so the streaming send/receive requests are covered too.
+- **NAS-003** — every destructive sink validates first (pool name, topology, disks
+  via `normalizeDiskPath` + duplicate + pool-member checks, cache device, dataset
+  options, dataset paths, snapshot names). Caller-fixable input is now a **400**
+  (`zfs.ValidationError` → `writeClientError`), node failures stay 500. The API
+  mirrors the pool-name and disk checks (fast 400) and no longer offers the pool
+  root as a send source.
+- Chart: `naslos-proxy`/`secret` and `naslos-agent`/`token` Secrets (generated once,
+  `lookup`-preserved, or `auth.proxySecretName`/`agent.tokenSecret`), the
+  `proxy-identity` Traefik Middleware, `PROXY_SHARED_SECRET`/`AGENT_TOKEN`/
+  `TRAEFIK_CIDR`/`AUTH_DISABLED` env, and the new `auth.*` values. Also: the ingress
+  templates were dead — they were gated on `traefik.enabled`, which the Traefik
+  subchart's schema **rejects**, so no IngressRoute/Middleware had ever been
+  deployed; they are now gated on `ingress.enabled` (default false).
+
+**Live validation (2026-09-17, VM, chart-generated Secrets, gate armed)**
+
+- Armed (`auth.disabled=false`): `/api/users` → **401** with no headers, **401** with
+  a forged `Remote-User`, **401** with a wrong secret, **200** with the generated
+  secret + user; `/api/ws/logs` → **401**; `/api/volumes/zfs` with the secret → **200**
+  (proves the API→agent token reaches the agent); a typo'd header name is rejected.
+- Agent: `/health` → 200; `/api/v1/pools` without/with a wrong token → **401**; with
+  the generated token → 200. Negative checks (`-x` name, unknown topology, absent
+  disk, member disk) → **400** with the right message and no state change; a
+  traversal path never reached the handler.
+- Dev posture restored (`auth.disabled=true`): the startup warning is logged, owner
+  routes are served, and the full Playwright suite passes: **29 passed / 2 skipped /
+  0 failed**.
+- Local: `api` + `agent` `go build`/`vet`/`test` clean; `helm lint` passes;
+  `svelte-check` 0 errors.
+- Left open deliberately: dropping the agent's `hostNetwork` (hostPID removed);
+  NAS-006/007 and NAS-009+ are out of this batch.
+
+## Current branch: `master` (integration)
 
 The integration branch is `master`. The Buddy Backup work (and the security audit +
 remediation plan) landed from `feature/buddy-backup` via **PR #9**, merge commit

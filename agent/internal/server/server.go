@@ -4,7 +4,9 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -12,6 +14,18 @@ import (
 	"github.com/AessemOps/Naslos-Linux/agent/internal/shares"
 	"github.com/AessemOps/Naslos-Linux/agent/internal/zfs"
 )
+
+// Options configure the agent's authentication. The agent is a privileged,
+// hostNetwork DaemonSet whose endpoints destroy pools and receive datasets, so a
+// caller must prove it is the API (NAS-002).
+type Options struct {
+	// AuthToken is the shared bearer token every request except /health must
+	// present. The API reads the same value from the same Secret.
+	AuthToken string
+	// AuthDisabled is the explicit development opt-out
+	// (AGENT_AUTH_DISABLED=true). It must never be used on a real node.
+	AuthDisabled bool
+}
 
 // Server is the agent's HTTP server.
 type Server struct {
@@ -21,17 +35,22 @@ type Server struct {
 	// backup is the streaming slice of the ZFS client (send/receive/estimate).
 	// Nil when the agent runs degraded (no ZFS on the host).
 	backup backupZFS
-	router *http.ServeMux
-	server *http.Server
+	// authToken is the shared API token; authDisabled is the dev opt-out.
+	authToken    string
+	authDisabled bool
+	router       *http.ServeMux
+	server       *http.Server
 }
 
 // New creates a new agent server.
-func New(addr string, zfsClient *zfs.Client, sharesClient *shares.Client) *Server {
+func New(addr string, zfsClient *zfs.Client, sharesClient *shares.Client, opts Options) *Server {
 	s := &Server{
-		addr:   addr,
-		zfs:    zfsClient,
-		shares: sharesClient,
-		router: http.NewServeMux(),
+		addr:         addr,
+		zfs:          zfsClient,
+		shares:       sharesClient,
+		authToken:    opts.AuthToken,
+		authDisabled: opts.AuthDisabled,
+		router:       http.NewServeMux(),
 	}
 	if zfsClient != nil {
 		s.backup = zfsClient
@@ -40,24 +59,52 @@ func New(addr string, zfsClient *zfs.Client, sharesClient *shares.Client) *Serve
 	return s
 }
 
+// requireAuth wraps a handler with the bearer-token check. It fails closed: an
+// agent started without a configured token refuses everything (main refuses to
+// start in that case, this is the belt to that braces).
+func (s *Server) requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.authDisabled {
+			next.ServeHTTP(w, r)
+			return
+		}
+		const prefix = "Bearer "
+		header := r.Header.Get("Authorization")
+		if s.authToken == "" || !strings.HasPrefix(header, prefix) ||
+			subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(header, prefix)), []byte(s.authToken)) != 1 {
+			writeError(w, http.StatusUnauthorized, "missing or invalid agent token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // routes registers all agent API routes.
+//
+// /health is public so the DaemonSet's probes keep working; every other route
+// lives on the `api` mux, which is wrapped in the token check. A new route added
+// to `api` is therefore authenticated by default.
 func (s *Server) routes() {
 	s.router.HandleFunc("/health", s.handleHealth)
-	s.router.HandleFunc("/api/v1/pools", s.handlePools)
-	s.router.HandleFunc("/api/v1/pools/import", s.handlePoolImport)
-	s.router.HandleFunc("/api/v1/pools/", s.handlePoolDetail)
-	s.router.HandleFunc("/api/v1/datasets", s.handleDatasetsAll)
-	s.router.HandleFunc("/api/v1/datasets/", s.handleDatasets)
-	s.router.HandleFunc("/api/v1/snapshots/", s.handleSnapshots)
-	s.router.HandleFunc("/api/v1/shares/config", s.handleSharesConfig)
-	s.router.HandleFunc("/api/v1/shares/status", s.handleSharesStatus)
+
+	api := http.NewServeMux()
+	api.HandleFunc("/api/v1/pools", s.handlePools)
+	api.HandleFunc("/api/v1/pools/import", s.handlePoolImport)
+	api.HandleFunc("/api/v1/pools/", s.handlePoolDetail)
+	api.HandleFunc("/api/v1/datasets", s.handleDatasetsAll)
+	api.HandleFunc("/api/v1/datasets/", s.handleDatasets)
+	api.HandleFunc("/api/v1/snapshots/", s.handleSnapshots)
+	api.HandleFunc("/api/v1/shares/config", s.handleSharesConfig)
+	api.HandleFunc("/api/v1/shares/status", s.handleSharesStatus)
 	// Folder management for share paths (the API's dataset mount is read-only).
-	s.router.HandleFunc("/api/v1/shares/folders", s.handleShareFolders)
+	api.HandleFunc("/api/v1/shares/folders", s.handleShareFolders)
 	// Backup streams (FR-BUD): `zfs send`/`receive` as pipes rather than
 	// captured output, which is what lets an instance back itself up.
-	s.router.HandleFunc("/api/v1/zfs/send/", s.handleSendStream)
-	s.router.HandleFunc("/api/v1/zfs/receive/", s.handleReceiveStream)
-	s.router.HandleFunc("/api/v1/zfs/snapshots/", s.handleBackupSnapshots)
+	api.HandleFunc("/api/v1/zfs/send/", s.handleSendStream)
+	api.HandleFunc("/api/v1/zfs/receive/", s.handleReceiveStream)
+	api.HandleFunc("/api/v1/zfs/snapshots/", s.handleBackupSnapshots)
+
+	s.router.Handle("/api/", s.requireAuth(api))
 }
 
 // zfsUnavailable reports whether the agent runs in degraded mode (no ZFS on
@@ -109,7 +156,7 @@ func (s *Server) handlePools(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		pools, err := s.zfs.Pools()
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, pools)
@@ -120,7 +167,7 @@ func (s *Server) handlePools(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.zfs.CreatePool(cfg); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, map[string]string{"status": "pool created", "name": cfg.Name})
@@ -138,7 +185,7 @@ func (s *Server) handlePoolImport(w http.ResponseWriter, r *http.Request) {
 		// List pools available for import.
 		pools, err := s.zfs.ListImportable()
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, pools)
@@ -149,7 +196,7 @@ func (s *Server) handlePoolImport(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewDecoder(r.Body).Decode(&req)
 		if err := s.zfs.ImportPool(req.Name); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		if req.Name == "" {
@@ -178,13 +225,13 @@ func (s *Server) handlePoolDetail(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		health, err := s.zfs.PoolHealth(pool)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, health)
 	case http.MethodDelete:
 		if err := s.zfs.DestroyPool(pool); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "pool destroyed", "name": pool})
@@ -213,7 +260,7 @@ func (s *Server) handlePoolDevices(w http.ResponseWriter, r *http.Request, pool 
 	case http.MethodGet:
 		free, err := s.zfs.FreeDisks()
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"pool": pool, "disks": free})
@@ -264,7 +311,7 @@ func (s *Server) handleDatasets(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		datasets, err := s.zfs.Datasets(rest)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, datasets)
@@ -310,7 +357,7 @@ func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		snaps, err := s.zfs.Snapshots(dataset)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, snaps)
@@ -323,7 +370,7 @@ func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.zfs.Snapshot(dataset, req.Name); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, map[string]string{"status": "snapshot created"})
@@ -340,6 +387,18 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeClientError answers a backend client error with the right status: input
+// the caller can fix (a bad name, disk, topology or option) is a 400, anything
+// else is a node-side failure and stays a 500 (NAS-003).
+func writeClientError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	var invalid *zfs.ValidationError
+	if errors.As(err, &invalid) {
+		status = http.StatusBadRequest
+	}
+	writeError(w, status, err.Error())
 }
 
 var _ = log.Printf // suppress unused import

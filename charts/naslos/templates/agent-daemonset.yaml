@@ -17,7 +17,13 @@ spec:
         app.kubernetes.io/name: naslos-agent
     spec:
       serviceAccountName: naslos-agent
-      hostPID: true
+      # hostNetwork keeps the agent reachable at the node's own address, which is
+      # what the headless Service advertises one endpoint per node for (and what
+      # AGENT_BASE_URL can be pointed at directly). Dropping it was attempted in
+      # the NAS-002 review and deliberately kept: the agent chroots into /host and
+      # is the only path to ZFS on the node, so changing its network identity
+      # needs a live multi-node check, not a guess. hostPID is NOT required and is
+      # not set (nothing in the agent reads host processes).
       hostNetwork: true
       containers:
         - name: agent
@@ -30,6 +36,19 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            # The agent is privileged and host-networked, so it only serves
+            # callers proving they are the API: every request but /health must
+            # carry the shared bearer token (NAS-002). auth.disabled is the
+            # development opt-out; the agent warns loudly when it is set.
+            - name: AGENT_AUTH_DISABLED
+              value: {{ include "naslos.authDisabled" . | quote }}
+            {{- if eq (include "naslos.authEnabled" .) "true" }}
+            - name: AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "naslos.agentTokenSecret" . | default "naslos-agent" }}
+                  key: token
+            {{- end }}
           volumeMounts:
             # Host root for chroot /host zpool/zfs operations
             - name: host-root

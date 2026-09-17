@@ -82,14 +82,27 @@ spec:
             # (e.g. AGENT_BASE_URL=http://127.0.0.1:9090 with a port-forward).
             - name: AGENT_BASE_URL
               value: {{ .Values.api.agentBaseURL | default (printf "http://naslos-agent.%s.svc.cluster.local:9090" .Values.namespace) | quote }}
-            # Terminal authorisation: the API serves the terminal's endpoints only
-            # to requests carrying the authenticated proxy's identity header
-            # (FR-LOG-08). `toString` matters: `default` would replace an explicit
-            # `false` with true, which is exactly the value that must survive.
-            - name: TERMINAL_REQUIRE_AUTH
-              value: {{ .Values.terminal.requireAuth | toString | quote }}
-            - name: TERMINAL_AUTH_HEADER
-              value: {{ .Values.terminal.authHeader | default "Remote-User" | quote }}
+            # Owner-route authentication (NAS-001). Unless auth.disabled is set,
+            # the API serves /api/* only to requests carrying the shared secret
+            # that Traefik's proxy-identity middleware injects; the API logs a
+            # warning at startup when the check is off.
+            - name: AUTH_DISABLED
+              value: {{ include "naslos.authDisabled" . | quote }}
+            - name: TRAEFIK_CIDR
+              value: {{ include "naslos.authTraefikCIDR" . | quote }}
+            {{- if eq (include "naslos.authEnabled" .) "true" }}
+            - name: PROXY_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "naslos.authProxySecretName" . | default "naslos-proxy" }}
+                  key: secret
+            # The bearer token the agent requires on every request but /health.
+            - name: AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "naslos.agentTokenSecret" . | default "naslos-agent" }}
+                  key: token
+            {{- end }}
             {{- if .Values.api.talosConfigSecret }}
             # The talos machinery client library (api/internal/talos/client.go)
             # resolves its config via the TALOSCONFIG env var pointing at a
@@ -126,10 +139,12 @@ spec:
               value: {{ .Values.buddy.receivePath | default "/var/lib/naslos/buddy" | quote }}
             - name: BUDDY_PEERS
               value: {{ .Values.buddy.peersFile | default "/var/lib/naslos/buddy-peers.json" | quote }}
-            # `toString` matters: `default` would replace an explicit false with
-            # true, which is exactly the value that must survive.
-            - name: BUDDY_REQUIRE_AUTH
-              value: {{ .Values.buddy.requireAuth | toString | quote }}
+            # Scheduled backups: the store beside the other state files, and the
+            # runner's tick. Both used to rely on the compiled-in defaults.
+            - name: BUDDY_SCHEDULES
+              value: {{ .Values.buddy.schedulesFile | default "/var/lib/naslos/buddy-schedules.json" | quote }}
+            - name: BUDDY_SCHEDULER_INTERVAL_MS
+              value: {{ .Values.buddy.schedulerIntervalMs | default 60000 | quote }}
             {{- if or .Values.buddy.enrollToken .Values.buddy.enrollTokenSecret }}
             - name: BUDDY_ENROLL_TOKEN
               valueFrom:

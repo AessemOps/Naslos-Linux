@@ -2,6 +2,7 @@ package buddy
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -861,5 +863,175 @@ func TestPruneKeepsNewestChains(t *testing.T) {
 	}
 	if chains != 1 {
 		t.Errorf("the pruned chain is still on disk (found %d copies of %s)", chains, current.Chain)
+	}
+}
+
+// TestPruneNeverOrphansAnIncremental pins the retention rule: a keep-count must
+// not delete a chain that the newest backup descends from. Before this, a
+// schedule with pruneKeep=1 on an incremental chain reported success and pruned
+// the base, leaving a backup that only failed later at verify/restore time.
+func TestPruneNeverOrphansAnIncremental(t *testing.T) {
+	receiver := newTestReceiver(t, "")
+	sender := newTestIdentity(t, "naslos-a")
+	receiver.authorize(t, sender, nil, 0)
+	client := receiver.client(sender)
+
+	source := "naslos-a/incremental"
+	data := randomBytes(t, 4096)
+
+	// A full chain, then an incremental that descends from it.
+	if _, err := client.Push(PushOptions{
+		Source: source, Reader: bytes.NewReader(data), ToSnapshot: "s1", ToGUID: "1000",
+	}); err != nil {
+		t.Fatalf("full push: %v", err)
+	}
+	if _, err := client.Push(PushOptions{
+		Source: source, Reader: bytes.NewReader(data),
+		FromSnapshot: "s1", ToSnapshot: "s2", FromGUID: "1000", ToGUID: "2000",
+	}); err != nil {
+		t.Fatalf("incremental push: %v", err)
+	}
+
+	// keep=1 would delete the base. The receiver must keep both instead: an
+	// incremental without its base is not a backup.
+	removed, err := client.Prune(source, 1)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("prune removed %d chains, want 0 (the base is required to restore)", removed)
+	}
+
+	sequence, err := client.RestoreSequence(source, "")
+	if err != nil {
+		t.Fatalf("restore sequence: %v", err)
+	}
+	if len(sequence) != 2 {
+		t.Errorf("sequence = %d chains, want the full chain plus the incremental", len(sequence))
+	}
+
+	var restored bytes.Buffer
+	if _, err := client.Restore(RestoreOptions{Source: source, Out: &restored}); err != nil {
+		t.Fatalf("restore after prune: %v", err)
+	}
+	if !bytes.Equal(restored.Bytes(), data) {
+		t.Error("restored data differs after a prune")
+	}
+
+	// With keep=2 the same graph prunes nothing either; with an independent
+	// second chain, keep=1 prunes that one but still keeps the sequence.
+	removed, err = client.Prune(source, 2)
+	if err != nil {
+		t.Fatalf("prune keep=2: %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("prune keep=2 removed %d chains, want 0", removed)
+	}
+}
+
+// TestManifestLookupAbortsWhenTheContextIsCancelled covers the other half of
+// prompt cancellation: the base-manifest lookup happens before any chunk, so it
+// must be abortable too. The live drill found a cancel waiting out the receiver's
+// whole stall here.
+func TestManifestLookupAbortsWhenTheContextIsCancelled(t *testing.T) {
+	reached := make(chan struct{})
+	stall := make(chan struct{})
+
+	var once sync.Once
+	mux := http.NewServeMux()
+	mux.HandleFunc(PathPrefix+"/manifest/", func(w http.ResponseWriter, _ *http.Request) {
+		once.Do(func() { close(reached) })
+		<-stall
+	})
+	server := httptest.NewServer(mux)
+	defer func() {
+		close(stall)
+		server.Close()
+	}()
+
+	client := NewClient(server.URL, newTestIdentity(t, "naslos-a"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		<-reached
+		cancel()
+	}()
+
+	started := time.Now()
+	_, err := client.ManifestContext(ctx, "naslos-a/stalled", "")
+	if err == nil {
+		t.Fatal("ManifestContext returned a manifest after the context was cancelled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want it to wrap context.Canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Errorf("ManifestContext took %s to abort, want it bounded by the cancellation", elapsed)
+	}
+}
+
+// TestPushAbortsWhenTheContextIsCancelled pins FR-BUD-16: a cancelled job must
+// stop a running push *promptly*. Before PushOptions carried a context, a
+// DELETE only took effect when the in-flight chunk request returned (the live
+// drill measured the receiver's full stall, 30 s). Here the receiver stalls on
+// the first chunk PUT and the test asserts Push returns as soon as the context
+// is cancelled, not when the receiver answers.
+func TestPushAbortsWhenTheContextIsCancelled(t *testing.T) {
+	reached := make(chan struct{})
+	stall := make(chan struct{})
+
+	var once sync.Once
+	mux := http.NewServeMux()
+	mux.HandleFunc(PathPrefix+"/chunks/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			// The resume lookup: nothing stored yet, so every chunk is uploaded.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"published":false,"chunks":[]}`))
+		case http.MethodPut:
+			once.Do(func() { close(reached) })
+			<-stall // hold the request until the test is done
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+	server := httptest.NewServer(mux)
+	// Release the stalled handler *before* closing the server: Close waits for
+	// outstanding requests, and the handler is blocked by design.
+	defer func() {
+		close(stall)
+		server.Close()
+	}()
+
+	sender := newTestIdentity(t, "naslos-a")
+	client := NewClient(server.URL, sender)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		<-reached
+		cancel()
+	}()
+
+	// Two chunks, so the loop would keep going after the first one.
+	payload := bytes.Repeat([]byte("x"), ChunkPlainSize*2)
+	started := time.Now()
+	_, err := client.Push(PushOptions{
+		Context: ctx,
+		Source:  "naslos-a/cancel",
+		Kind:    "zfs-send",
+		Reader:  bytes.NewReader(payload),
+	})
+
+	if err == nil {
+		t.Fatal("Push reported success after the context was cancelled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want it to wrap context.Canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Errorf("Push took %s to abort, want it bounded by the cancellation, not by the receiver", elapsed)
 	}
 }

@@ -117,10 +117,14 @@ func newBuddyJobManager() *buddyJobManager {
 	return &buddyJobManager{jobs: make(map[string]*buddyJob)}
 }
 
+// randomJobID returns a 128-bit hex job id. 32 bits (the original 8 hex
+// characters) is small enough to be worth guessing for a caller who can already
+// reach the API, and job ids are the handle for cancelling or inspecting someone
+// else's transfer (NAS-014).
 func randomJobID() string {
-	buf := make([]byte, 4)
+	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("%08x", time.Now().UnixNano()&0xffffffff)
+		return fmt.Sprintf("%032x", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf)
 }
@@ -239,9 +243,6 @@ func (s *Server) ensureBuddyJobs() *buddyJobManager {
 func (s *Server) handleBuddySend(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if !s.requireBuddyAdminAuth(w, req) {
 		return
 	}
 	if s.agent == nil {
@@ -380,7 +381,7 @@ func (s *Server) runBuddySendJob(job *buddyJob) {
 	if state != nil {
 		base, baseGUID = state.FromSnapshot, state.FromGUID
 	} else if !force {
-		previous, err := client.Manifest(source, "")
+		previous, err := client.ManifestContext(ctx, source, "")
 		if err == nil && previous.Kind == "zfs-send" && previous.ToGUID != "" {
 			if snapshots, err := s.agent.SnapshotsWithGUID(ctx, dataset); err == nil {
 				for _, snapshot := range snapshots {
@@ -395,13 +396,25 @@ func (s *Server) runBuddySendJob(job *buddyJob) {
 		}
 	}
 
+	// Refuse a dataset the host namespace cannot see, before snapshotting
+	// anything: `zfs send` would capture an empty filesystem and the job would
+	// still report success (the mount-propagation trap).
+	if err := s.requireMountedDataset(dataset); err != nil {
+		fail("refusing to back up: " + err.Error())
+		return
+	}
+
 	snapshot := "buddy-" + time.Now().UTC().Format("20060102T150405Z") + "-" + randomSuffix()
 	targetGUID := ""
 	if state != nil {
 		snapshot, targetGUID = state.ToSnapshot, state.ToGUID
 	}
 	job.mu.Lock()
-	job.Snapshot = snapshot
+	// A resumed attempt reuses the snapshot it started with, so it is already
+	// real; a fresh attempt reports its snapshot after creating it below.
+	if state != nil {
+		job.Snapshot = snapshot
+	}
 	job.Resumed = wasResume
 	job.Incremental = base != ""
 	job.mu.Unlock()
@@ -411,6 +424,12 @@ func (s *Server) runBuddySendJob(job *buddyJob) {
 			fail("snapshotting " + dataset + ": " + err.Error())
 			return
 		}
+		// Report the snapshot only once it exists: the job used to name the
+		// proposed snapshot before creating it, so a failed attempt showed a
+		// snapshot that was never taken.
+		job.mu.Lock()
+		job.Snapshot = snapshot
+		job.mu.Unlock()
 		if snapshots, err := s.agent.SnapshotsWithGUID(ctx, dataset); err == nil {
 			for _, info := range snapshots {
 				if info.Name == snapshot {
@@ -582,9 +601,6 @@ func (s *Server) handleBuddyJobs(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if !s.requireBuddyAdminAuth(w, req) {
-		return
-	}
 	jobs := s.ensureBuddyJobs().list()
 	if jobs == nil {
 		jobs = []buddyJobPublic{}
@@ -595,9 +611,6 @@ func (s *Server) handleBuddyJobs(w http.ResponseWriter, req *http.Request) {
 // handleBuddyJobDetail reports or cancels one job: GET (detail incl. progress),
 // DELETE (cancel a running send; the resume state stays so a retry continues).
 func (s *Server) handleBuddyJobDetail(w http.ResponseWriter, req *http.Request) {
-	if !s.requireBuddyAdminAuth(w, req) {
-		return
-	}
 	id := strings.TrimPrefix(req.URL.Path, "/api/buddy/jobs/")
 	if id == "" || strings.Contains(id, "/") {
 		writeError(w, http.StatusBadRequest, "job id is required")

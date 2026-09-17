@@ -63,6 +63,25 @@ func (s *Server) handleZFSPools(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("unsupported topology %q (supported: single, mirror, raidz1, raidz2, raidz3)", req.Topology))
 			return
 		}
+		// Check the disks against the node before creating anything: a bad,
+		// duplicated or already-attached disk must be a fast 400 rather than a
+		// rejected agent call (the agent validates too - defense in depth).
+		if err := s.validateAddDisks(req.Topology, req.Disks); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if req.Cache != "" {
+			if err := s.validateAddDisks("single", []string{req.Cache}); err != nil {
+				writeError(w, http.StatusBadRequest, "cache device: "+err.Error())
+				return
+			}
+			for _, disk := range req.Disks {
+				if strings.TrimSpace(disk) == strings.TrimSpace(req.Cache) {
+					writeError(w, http.StatusBadRequest, "the cache device cannot also be a data disk")
+					return
+				}
+			}
+		}
 		if err := s.agent.CreatePool(agent.CreatePoolRequest{
 			Name:     req.Name,
 			Topology: req.Topology,
@@ -98,6 +117,12 @@ func (s *Server) handleZFSImport(w http.ResponseWriter, r *http.Request) {
 			Name string `json:"name"`
 		}
 		json.NewDecoder(r.Body).Decode(&req)
+		// An empty name means "import everything"; a named pool must be a real
+		// pool name before it reaches the agent.
+		if req.Name != "" && !poolNamePattern.MatchString(req.Name) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pool name %q", req.Name))
+			return
+		}
 		if err := s.agent.ImportPool(req.Name); err != nil {
 			writeAgentError(w, err)
 			return
@@ -134,6 +159,12 @@ func (s *Server) handleZFSPoolDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.Contains(name, "/") {
 		writeError(w, http.StatusBadRequest, "pool name required")
+		return
+	}
+	// Mirror the agent's own check so a malformed name is a 400 here rather than
+	// a rejected agent call (the agent validates too - this is defense in depth).
+	if !poolNamePattern.MatchString(name) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pool name %q", name))
 		return
 	}
 	switch r.Method {
@@ -456,6 +487,12 @@ func (s *Server) validateAddDisks(topology string, disks []string) error {
 		}
 	}
 
+	return validateDiskSelection(disks, usable, inPool)
+}
+
+// validateDiskSelection is the pure part of the disk check: absolute /dev paths,
+// no duplicates, no disk another pool owns, and only disks the node can use.
+func validateDiskSelection(disks []string, usable map[string]bool, inPool map[string]string) error {
 	seen := map[string]bool{}
 	for _, disk := range disks {
 		dev := strings.TrimSpace(disk)
