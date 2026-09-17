@@ -78,12 +78,15 @@ func keyDir(fingerprint string) string {
 	return "k" + hex.EncodeToString(sum[:16])
 }
 
-// sourcesIn lists the logical sources stored under a key directory (sources may be
-// nested, so one level is walked).
+// sourcesIn lists the logical sources stored under a key directory.
+//
+// A source may be nested (`naslos-a/media/films`), so the walk is recursive: any
+// directory holding a current.json is a source, and its path relative to the key
+// directory is its name. The previous two-level walk hid a three-level source
+// from listings while the quota still counted its bytes (NAS-021).
 func (s *Store) sourcesIn(keyDirName string) ([]string, error) {
 	root := filepath.Join(s.root, keyDirName)
-	entries, err := os.ReadDir(root)
-	if err != nil {
+	if _, err := os.Stat(root); err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
@@ -91,24 +94,30 @@ func (s *Store) sourcesIn(keyDirName string) ([]string, error) {
 	}
 
 	var sources []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(root, entry.Name(), "current.json")); err == nil {
-			sources = append(sources, entry.Name())
-			continue
-		}
-		nested, _ := os.ReadDir(filepath.Join(root, entry.Name()))
-		for _, child := range nested {
-			if !child.IsDir() {
-				continue
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			// A source that vanished mid-walk is not an error for a listing.
+			if os.IsNotExist(err) {
+				return nil
 			}
-			candidate := entry.Name() + "/" + child.Name()
-			if _, err := os.Stat(filepath.Join(root, candidate, "current.json")); err == nil {
-				sources = append(sources, candidate)
-			}
+			return err
 		}
+		if !info.IsDir() || path == root {
+			return nil
+		}
+		if _, err := os.Stat(filepath.Join(path, "current.json")); err != nil {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil
+		}
+		sources = append(sources, filepath.ToSlash(relative))
+		// A source's own tree holds no nested sources.
+		return filepath.SkipDir
+	})
+	if err != nil {
+		return nil, err
 	}
 	sort.Strings(sources)
 	return sources, nil
