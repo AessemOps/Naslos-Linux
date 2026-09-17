@@ -101,7 +101,7 @@
   });
 </script>
 
-<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" on:click|self={() => dispatch('close')}>
+<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" role="presentation" on:click|self={() => dispatch('close')}>
   <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
     <div class="p-6 border-b border-naslos-border flex items-center justify-between">
       <h2 class="text-xl font-bold">{user ? 'Edit User' : 'New User'}</h2>
@@ -110,34 +110,34 @@
 
     <div class="flex-1 overflow-y-auto p-6 space-y-4">
       <div>
-        <label class="label">Username *</label>
-        <input type="text" bind:value={uid} placeholder="e.g. john" class="input w-full" disabled={!!user} />
+        <label class="label" for="user-field-1">Username *</label>
+        <input id="user-field-1" type="text" bind:value={uid} placeholder="e.g. john" class="input w-full" disabled={!!user} />
       </div>
 
       <div class="grid grid-cols-2 gap-4">
         <div>
-          <label class="label">First Name</label>
-          <input type="text" bind:value={firstName} class="input w-full" />
+          <label class="label" for="user-field-2">First Name</label>
+          <input id="user-field-2" type="text" bind:value={firstName} class="input w-full" />
         </div>
         <div>
-          <label class="label">Last Name *</label>
-          <input type="text" bind:value={lastName} class="input w-full" />
+          <label class="label" for="user-field-3">Last Name *</label>
+          <input id="user-field-3" type="text" bind:value={lastName} class="input w-full" />
         </div>
       </div>
 
       <div>
-        <label class="label">Display Name</label>
-        <input type="text" bind:value={displayName} class="input w-full" />
+        <label class="label" for="user-field-4">Display Name</label>
+        <input id="user-field-4" type="text" bind:value={displayName} class="input w-full" />
       </div>
 
       <div>
-        <label class="label">Email</label>
-        <input type="email" bind:value={email} class="input w-full" />
+        <label class="label" for="user-field-5">Email</label>
+        <input id="user-field-5" type="email" bind:value={email} class="input w-full" />
       </div>
 
       <div>
-        <label class="label">{user ? 'New Password (leave blank to keep current)' : 'Password'}</label>
-        <input type="password" bind:value={password} class="input w-full" />
+        <label class="label" for="user-field-6">{user ? 'New Password (leave blank to keep current)' : 'Password'}</label>
+        <input id="user-field-6" type="password" bind:value={password} class="input w-full" />
         <p class="text-xs text-gray-500 mt-1">This password is used for both web login and file shares (SMB).</p>
         <div class="mt-2 p-3 rounded-lg bg-naslos-dark border border-naslos-border text-xs text-gray-400 space-y-1">
           <p class="font-medium text-gray-300">Applying a password to file shares takes a moment</p>
@@ -151,8 +151,8 @@
       </div>
 
       <div>
-        <label class="label">Groups</label>
-        <div class="space-y-2">
+        <div class="label" id="user-groups-label">Groups</div>
+        <div class="space-y-2" role="group" aria-labelledby="user-groups-label">
           {#each availableGroups as group}
             <label class="flex items-center gap-3 p-2 rounded hover:bg-naslos-dark cursor-pointer">
               <input type="checkbox" checked={groups.includes(group)} on:change={() => toggleGroup(group)} class="w-4 h-4 rounded" />
