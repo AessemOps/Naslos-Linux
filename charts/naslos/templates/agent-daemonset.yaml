@@ -27,7 +27,7 @@ spec:
       hostNetwork: true
       containers:
         - name: agent
-          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
+          image: {{ include "naslos.image" .Values.agent.image }}
           imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
           securityContext:
             privileged: {{ .Values.agent.privileged }}

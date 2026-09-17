@@ -1,5 +1,33 @@
 # AI Handoff — Naslos
 
+## Ops: image digests (`feature/image-digests`)
+
+Branched from master `42df19e` (PR #14 merged). Chart-only change; no image
+rebuild was needed.
+
+**NAS-022 — digest pinning.** Every `<component>.image` block gained a `digest`
+field, and a new `naslos.image` helper renders `repository@sha256:…` when it is
+set (accepting the value with or without the `sha256:` prefix) and
+`repository:tag` otherwise. `make image-digests` prints each built image's digest
+to paste in. `openldap.image` is already a full image reference, so it is pinned
+directly. VER-2 in `docs/spec.md` and `docs/deployment.md` now document the rule,
+including the trap that **a stored digest wins over a new tag on the next
+`--reuse-values` upgrade**, so switching back needs an explicit
+`--set api.image.digest=`.
+
+Live: upgraded with `api`/`ui` pinned to their `sha256:` digests — both
+Deployments rendered `repo@sha256:…`, `/api/ready` 200, Playwright **30 passed / 2
+skipped / 0 failed** — then reverted to tags (revision 80) to keep the dev VM
+simple for drills. `helm lint` clean and `helm upgrade --dry-run` against the live
+release values renders.
+
+**Still open (low priority)**
+
+- NAS-021's bounded FS walks (pagination of long chain listings) — an availability
+  note, not a vulnerability.
+- NAS-014's optional nonce-cache persistence (only if a restart-window replay is
+  judged to matter after the idempotency analysis above).
+
 ## Polish: interface addresses + accessibility (`feature/dashboard-network`)
 
 Branched from master `65e212e` (PR #13 merged). Deployed: api `0.1.0-b20`,

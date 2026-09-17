@@ -46,7 +46,7 @@ spec:
       # The shell must survive between exec sessions, so the container idles.
       containers:
         - name: shell
-          image: "{{ .Values.terminal.image.repository }}:{{ .Values.terminal.image.tag }}"
+          image: {{ include "naslos.image" .Values.terminal.image }}
           imagePullPolicy: {{ .Values.terminal.image.pullPolicy }}
           command: ["sleep", "infinity"]
           stdin: true

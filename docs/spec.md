@@ -715,7 +715,11 @@ corresponding test in the same PR.
 - **VER-2** — Deployed images carry build suffixes (`naslos-api:0.1.0-12`,
   `naslos-ui:0.1.0-7`) because the registry reuses tags with
   `imagePullPolicy: IfNotPresent`; each deploy MUST retag to a fresh suffix
-  and `kubectl set image` (container names are `api` and `ui`).
+  and `kubectl set image` (container names are `api` and `ui`). Where a digest is
+  configured (`<component>.image.digest`, `make image-digests` prints them) the
+  chart renders `repository@sha256:…` instead, which is immutable: a pinned
+  release MUST NOT also rely on a tag, and a component with no digest keeps the
+  retag rule above.
 - **VER-3** — API additions SHOULD be backward compatible; breaking changes
   to §4/§5 contracts require a minor version bump and an update to
   `docs/api.md`.

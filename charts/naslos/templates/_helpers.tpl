@@ -44,3 +44,24 @@ ingress off).
 {{- $ingress := get .Values "ingress" -}}
 {{- if and $ingress (index $ingress "enabled") -}}true{{- else -}}false{{- end -}}
 {{- end -}}
+
+{{/*
+Render an image reference (NAS-022). A digest wins when set, because a tag is
+mutable: `helm upgrade` with the same tag and `IfNotPresent` can silently keep
+running old code after a retag, while `repo@sha256:...` is what was verified.
+The digest may be given with or without the `sha256:` prefix.
+
+Usage: {{ include "naslos.image" .Values.api.image }}
+*/}}
+{{- define "naslos.image" -}}
+{{- $digest := .digest | default "" -}}
+{{- if $digest -}}
+{{- $normalized := $digest -}}
+{{- if not (hasPrefix "sha256:" $digest) -}}
+{{- $normalized = printf "sha256:%s" $digest -}}
+{{- end -}}
+{{- printf "%s@%s" .repository $normalized -}}
+{{- else -}}
+{{- printf "%s:%s" .repository (.tag | default "0.1.0") -}}
+{{- end -}}
+{{- end -}}

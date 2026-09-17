@@ -6,6 +6,11 @@ api:
   image:
     repository: 192.168.1.2:30095/naslos-api
     tag: "0.1.0"
+    # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
+    # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
+    # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
+    # or `make image-digests`. Empty means "use the tag".
+    digest: ""
     pullPolicy: IfNotPresent
   replicas: 1
   service:
@@ -71,6 +76,11 @@ ui:
   image:
     repository: 192.168.1.2:30095/naslos-ui
     tag: "0.1.0"
+    # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
+    # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
+    # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
+    # or `make image-digests`. Empty means "use the tag".
+    digest: ""
     pullPolicy: IfNotPresent
   replicas: 1
   service:
@@ -102,6 +112,11 @@ agent:
   image:
     repository: 192.168.1.2:30095/naslos-agent
     tag: "0.1.0"
+    # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
+    # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
+    # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
+    # or `make image-digests`. Empty means "use the tag".
+    digest: ""
     pullPolicy: IfNotPresent
   # Privileged is required for chroot /host zpool/zfs operations
   privileged: true
@@ -145,6 +160,11 @@ shares:
     image:
       repository: 192.168.1.2:30095/naslos-samba
       tag: "0.1.0"
+      # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
+      # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
+      # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
+      # or `make image-digests`. Empty means "use the tag".
+      digest: ""
       pullPolicy: IfNotPresent
     resources:
       requests:
@@ -174,6 +194,11 @@ shares:
     image:
       repository: 192.168.1.2:30095/naslos-nfs
       tag: "0.1.0"
+      # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
+      # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
+      # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
+      # or `make image-digests`. Empty means "use the tag".
+      digest: ""
       pullPolicy: IfNotPresent
     resources:
       requests:
@@ -297,6 +322,8 @@ openldap:
   serviceName: naslos-openldap
   # Custom Naslos OpenLDAP image (in the chart authelia only needs host/baseDN;
   # deploy-vm.sh overrides this for the standalone manifests).
+  # A full image reference, so a digest can be pinned directly here:
+  #   192.168.1.2:30095/naslos-openldap@sha256:<digest>
   image: 192.168.1.2:30095/naslos-openldap:0.1.0
   host: ldap.naslos.local
   baseDN: "dc=naslos,dc=local"
@@ -350,7 +377,8 @@ terminal:
   enabled: true
   # The terminal's endpoints are owner routes like any other, so they are gated
   # by `auth` above (previously a separate terminal.requireAuth switch).
-  image: { repository: 192.168.1.2:30095/naslos-terminal, tag: "0.1.0" }
+  # digest (NAS-022): pin the exact image; empty means "use the tag".
+  image: { repository: 192.168.1.2:30095/naslos-terminal, tag: "0.1.0", digest: "" }
   resources:
     requests:
       cpu: 10m
