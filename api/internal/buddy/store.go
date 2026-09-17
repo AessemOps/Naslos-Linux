@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -193,6 +194,18 @@ func chunkName(index int) string {
 // replaced, so a peer can never mix two versions of the data into one chain by
 // rewriting something that already has successors.
 func (s *Store) PutChunk(keyID, source, chain string, index int, sealed []byte) error {
+	return s.PutChunkWithin(keyID, source, chain, index, sealed, 0)
+}
+
+// PutChunkWithin is PutChunk with a per-key quota (0 = unlimited).
+//
+// The quota is enforced atomically with the accounting: the bytes are reserved
+// under the store lock *before* they are written, so two concurrent uploads
+// cannot both pass a check that was true only before either of them wrote
+// (NAS-013). A chunk that is already stored with the same digest is a no-op that
+// costs nothing, which is what lets a sender resume a chain that already fills
+// the quota - the old pre-check charged it again and answered 413.
+func (s *Store) PutChunkWithin(keyID, source, chain string, index int, sealed []byte, quota int64) error {
 	if index < 0 {
 		return fmt.Errorf("invalid chunk index %d", index)
 	}
@@ -224,6 +237,20 @@ func (s *Store) PutChunk(keyID, source, chain string, index int, sealed []byte) 
 		replaced = int64(len(existing))
 	}
 
+	// Reserve before creating anything. The usage baseline is computed from disk
+	// the first time a key is seen, so a temp file that exists at that moment
+	// would be counted as already-stored bytes and then charged again.
+	delta := int64(len(sealed)) - replaced
+	if err := s.reserveUsage(keyID, delta, quota); err != nil {
+		return err
+	}
+	stored := false
+	defer func() {
+		if !stored {
+			s.releaseUsage(keyID, delta)
+		}
+	}()
+
 	tmp, err := os.CreateTemp(dir, ".chunk-*.tmp")
 	if err != nil {
 		return err
@@ -245,8 +272,60 @@ func (s *Store) PutChunk(keyID, source, chain string, index int, sealed []byte) 
 	if err := os.Rename(tmpName, target); err != nil {
 		return err
 	}
-	s.addUsage(keyID, int64(len(sealed))-replaced)
+	stored = true
 	return nil
+}
+
+// QuotaError reports that a write would push a key past its quota.
+type QuotaError struct {
+	Used   int64
+	Quota  int64
+	Needed int64
+}
+
+func (e *QuotaError) Error() string {
+	return fmt.Sprintf("quota exceeded: %d of %d bytes are already stored for this key", e.Used, e.Quota)
+}
+
+// Is lets callers match a quota refusal with errors.Is.
+func (e *QuotaError) Is(target error) bool { return target == ErrQuotaExceeded }
+
+// ErrQuotaExceeded is the sentinel for a quota refusal.
+var ErrQuotaExceeded = errors.New("quota exceeded")
+
+// reserveUsage charges delta against a key's usage, refusing the charge when it
+// would exceed quota (0 = unlimited). Under the store lock, so concurrent writers
+// serialize here rather than both reading a stale usage.
+func (s *Store) reserveUsage(keyID string, delta, quota int64) error {
+	if delta == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	used, err := s.usageLocked(keyID)
+	if err != nil {
+		return err
+	}
+	if quota > 0 && delta > 0 && used+delta > quota {
+		return &QuotaError{Used: used, Quota: quota, Needed: delta}
+	}
+	if _, tracked := s.usage[keyID]; tracked || s.loaded[keyID] {
+		s.usage[keyID] += delta
+	}
+	return nil
+}
+
+// releaseUsage returns a reservation after a failed write.
+func (s *Store) releaseUsage(keyID string, delta int64) {
+	if delta == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, tracked := s.usage[keyID]; tracked || s.loaded[keyID] {
+		s.usage[keyID] -= delta
+	}
 }
 
 // mayReplace reports whether a chunk of an unfinished chain can be rewritten: only
@@ -592,15 +671,10 @@ func (s *Store) uncachedUsage() (int64, error) {
 	return size, nil
 }
 
-// addUsage accounts for newly stored bytes.
-func (s *Store) addUsage(keyID string, delta int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.usage[keyID]; ok || s.loaded[keyID] {
-		s.usage[keyID] += delta
-	}
-}
+// InvalidateUsage forgets a key's cached usage so the next read recomputes it
+// from disk. Called after a prune and after a manifest write (the manifest is
+// stored bytes the running total did not include).
+func (s *Store) InvalidateUsage(keyID string) { s.invalidateUsage(keyID) }
 
 // invalidateUsage forgets a key's cached usage after a prune.
 func (s *Store) invalidateUsage(keyID string) {
@@ -754,16 +828,20 @@ func (s *Store) Prune(keyID, source string, keep int) (int, error) {
 	return removed, nil
 }
 
-// dirSize sums the size of every regular file under dir.
+// dirSize sums the size of every regular file under dir, ignoring the store's own
+// temporary artifacts (they are dot-prefixed and must never count towards usage:
+// a stray temp file from a crashed write used to inflate a key's usage until the
+// process restarted).
 func dirSize(dir string) (int64, error) {
 	var total int64
-	err := filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if info.Mode().IsRegular() {
+		if info.Mode().IsRegular() && !strings.HasPrefix(info.Name(), ".") {
 			total += info.Size()
 		}
+		_ = path
 		return nil
 	})
 	return total, err
