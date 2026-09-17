@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -1033,5 +1034,193 @@ func TestPushAbortsWhenTheContextIsCancelled(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Errorf("Push took %s to abort, want it bounded by the cancellation, not by the receiver", elapsed)
+	}
+}
+
+// TestManifestShapeValidation pins the receiver-side checks on sender-controlled
+// metadata (NAS-012): the receiver cannot decrypt, so refusing a malformed or
+// self-inconsistent manifest is the only protection it has.
+func TestManifestShapeValidation(t *testing.T) {
+	valid := func() *Manifest {
+		return &Manifest{
+			Version:        EnvelopeVersion,
+			Source:         "naslos-a/data",
+			Chain:          "abcdef0123456789",
+			Kind:           "zfs-send",
+			CreatedAt:      time.Now().UTC(),
+			StreamPrefix:   base64.StdEncoding.EncodeToString(randomBytes(t, 8)),
+			ChunkPlainSize: ChunkPlainSize,
+			DEKWrapped:     base64.StdEncoding.EncodeToString(randomBytes(t, 60)),
+			Chunks: []ManifestChunk{
+				{Index: 0, PlainBytes: ChunkPlainSize, SealedBytes: ChunkPlainSize + 28, Sha256Plain: strings.Repeat("a", 64)},
+				{Index: 1, PlainBytes: 1024, SealedBytes: 1024 + 28, Sha256Plain: strings.Repeat("b", 64)},
+			},
+		}
+	}
+	if err := validateManifestShape(valid()); err != nil {
+		t.Fatalf("validateManifestShape(valid) = %v, want nil", err)
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*Manifest)
+		want   string
+	}{
+		{"unknown kind", func(m *Manifest) { m.Kind = "exec" }, "unsupported payload kind"},
+		{"no creation time", func(m *Manifest) { m.CreatedAt = time.Time{} }, "creation time"},
+		{"wrong chunk size", func(m *Manifest) { m.ChunkPlainSize = 4096 }, "chunk plain size"},
+		{"bad stream prefix", func(m *Manifest) { m.StreamPrefix = "not-base64!!" }, "stream prefix"},
+		{"missing data key", func(m *Manifest) { m.DEKWrapped = "" }, "wrapped data key"},
+		{"bad data key", func(m *Manifest) { m.DEKWrapped = "!!!" }, "base64"},
+		{"duplicate index", func(m *Manifest) { m.Chunks[1].Index = 0 }, "out of order"},
+		{"gap in indices", func(m *Manifest) { m.Chunks[1].Index = 5 }, "out of order"},
+		{"oversized chunk", func(m *Manifest) { m.Chunks[0].PlainBytes = ChunkPlainSize + 1 }, "outside"},
+		{"zero plain bytes", func(m *Manifest) { m.Chunks[0].PlainBytes = 0 }, "outside"},
+		{"sealed smaller than plain", func(m *Manifest) { m.Chunks[0].SealedBytes = 10 }, "cannot hold"},
+		{"digest not hex", func(m *Manifest) { m.Chunks[0].Sha256Plain = strings.Repeat("z", 64) }, "digest"},
+		{"digest too short", func(m *Manifest) { m.Chunks[0].Sha256Plain = "abcd" }, "digest"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := valid()
+			tc.mutate(m)
+			err := validateManifestShape(m)
+			if err == nil {
+				t.Fatal("validateManifestShape accepted a malformed manifest")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestReceiverRefusesChainRollback is the NAS-012 regression: once a newer chain
+// is current, re-publishing an older stored chain must not move the pointer back.
+func TestReceiverRefusesChainRollback(t *testing.T) {
+	receiver := newTestReceiver(t, "")
+	sender := newTestIdentity(t, "naslos-a")
+	receiver.authorize(t, sender, nil, 0)
+	client := receiver.client(sender)
+
+	source := "naslos-a/rollback"
+	data := randomBytes(t, 4096)
+
+	first, err := client.Push(PushOptions{
+		Source: source, Reader: bytes.NewReader(data), ToSnapshot: "s1", ToGUID: "1000",
+	})
+	if err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	second, err := client.Push(PushOptions{
+		Source: source, Reader: bytes.NewReader(data),
+		FromSnapshot: "s1", ToSnapshot: "s2", FromGUID: "1000", ToGUID: "2000",
+	})
+	if err != nil {
+		t.Fatalf("second push: %v", err)
+	}
+
+	current, err := client.Manifest(source, "")
+	if err != nil {
+		t.Fatalf("reading the current manifest: %v", err)
+	}
+	if current.Chain != second.Chain {
+		t.Fatalf("current chain = %s, want the second push %s", current.Chain, second.Chain)
+	}
+
+	// Re-publish the first (older) chain's manifest: a rollback attempt.
+	older, err := client.Manifest(source, first.Chain)
+	if err != nil {
+		t.Fatalf("reading the older manifest: %v", err)
+	}
+	fingerprint, err := sender.Fingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	if err := receiver.store.PutManifest(fingerprint, source, older); err == nil {
+		t.Fatal("the receiver accepted a rollback of the current chain")
+	} else if !strings.Contains(err.Error(), "rollback") {
+		t.Errorf("error = %q, want it to explain the rollback", err)
+	}
+
+	// The current pointer is unchanged and the backup still restores.
+	after, err := client.Manifest(source, "")
+	if err != nil {
+		t.Fatalf("re-reading the current manifest: %v", err)
+	}
+	if after.Chain != second.Chain {
+		t.Errorf("current chain = %s, want it still %s", after.Chain, second.Chain)
+	}
+	var restored bytes.Buffer
+	if _, err := client.Restore(RestoreOptions{Source: source, Out: &restored}); err != nil {
+		t.Fatalf("restore after the refused rollback: %v", err)
+	}
+	if !bytes.Equal(restored.Bytes(), data) {
+		t.Error("restored data differs")
+	}
+}
+
+// TestPruneSurvivesAForgedTimestamp keeps pruning honest about which chain is
+// live: survivorship follows the receiver's current pointer, not the sender's
+// CreatedAt, so a rewritten timestamp cannot get the live chain pruned (NAS-012).
+func TestPruneSurvivesAForgedTimestamp(t *testing.T) {
+	receiver := newTestReceiver(t, "")
+	sender := newTestIdentity(t, "naslos-a")
+	receiver.authorize(t, sender, nil, 0)
+	client := receiver.client(sender)
+
+	source := "naslos-a/forged-time"
+	data := randomBytes(t, 4096)
+
+	first, err := client.Push(PushOptions{
+		Source: source, Reader: bytes.NewReader(data), ToSnapshot: "s1", ToGUID: "1000",
+	})
+	if err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	if _, err := client.Push(PushOptions{
+		Source: source, Reader: bytes.NewReader(data),
+		FromSnapshot: "s1", ToSnapshot: "s2", FromGUID: "1000", ToGUID: "2000",
+	}); err != nil {
+		t.Fatalf("second push: %v", err)
+	}
+
+	// Rewrite the *older* chain's manifest so it claims to be the newest. The
+	// signature no longer verifies, which is exactly the point: survivorship must
+	// not depend on this value at all.
+	fingerprint, err := sender.Fingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	older, err := client.Manifest(source, first.Chain)
+	if err != nil {
+		t.Fatalf("reading the older manifest: %v", err)
+	}
+	forged := *older
+	forged.CreatedAt = time.Now().UTC().Add(24 * time.Hour)
+	raw, err := json.MarshalIndent(&forged, "", "  ")
+	if err != nil {
+		t.Fatalf("encoding the forged manifest: %v", err)
+	}
+	chainDir, err := receiver.store.chainDir(fingerprint, source, first.Chain)
+	if err != nil {
+		t.Fatalf("chain dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(chainDir, "manifest.json"), raw, 0o644); err != nil {
+		t.Fatalf("rewriting the manifest: %v", err)
+	}
+
+	// keep=1 with the current chain being an incremental: the live chain and its
+	// base must both survive.
+	if _, err := client.Prune(source, 1); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	var restored bytes.Buffer
+	if _, err := client.Restore(RestoreOptions{Source: source, Out: &restored}); err != nil {
+		t.Fatalf("restore after prune with a forged timestamp: %v", err)
+	}
+	if !bytes.Equal(restored.Bytes(), data) {
+		t.Error("restored data differs after prune")
 	}
 }
