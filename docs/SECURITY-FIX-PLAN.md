@@ -1,5 +1,31 @@
 # Critical Security Fixes — Naslos (NAS-001/002/003 + coupled auth Highs)
 
+## Status: implemented (2026-09-17, branch `feature/security-fixes`)
+
+Tasks 1–9 are implemented; the deviations from this plan and the pieces left open
+are listed here so the next session does not re-derive them.
+
+- Done: proxy-secret middleware (constant-time, fail closed), owner/public route
+  composition, per-handler switches removed, agent bearer token (transport-level
+  on the API side so the streaming paths are covered), agent validation at every
+  destructive sink, API-side pool/disk/import validation, chart Secret +
+  `proxy-identity` Middleware + env, unit tests (auth middleware, route table,
+  agent token, agent validation, API disk selection), docs.
+- Deviation 1: the chart's ingress templates were gated on `traefik.enabled`,
+  which the Traefik subchart's values schema **rejects** (`additional properties
+  'enabled' not allowed`) - so `.Values.traefik.enabled` could never be true and
+  no IngressRoute/Middleware had ever been deployed. They are now gated on a new
+  `ingress.enabled` (default `false`). This is what makes the documented
+  production posture (Traefik + Authelia) deployable at all.
+- Deviation 2: the plan's `auth.proxySecret`/`proxySecretName` and
+  `agent.tokenSecret` are implemented as specified, but the generated values are
+  produced in a single template per Secret (`proxy-secret.yaml` also renders the
+  `proxy-identity` Middleware, `agent-token.yaml` the agent token), because
+  computing a random in two templates generates different values on first install.
+- Not done (deliberately): dropping the agent's `hostNetwork`. `hostPID` is gone;
+  `hostNetwork` is kept with a comment - changing it needs a live multi-node check.
+- Not done (out of scope per this plan): NAS-006/007 injections and NAS-009+.
+
 ## Goal
 Close the three Critical findings from `docs/SECURITY-AUDIT.md` and the auth Highs they are tangled with, so that:
 - the API authenticates every owner request and fails closed;

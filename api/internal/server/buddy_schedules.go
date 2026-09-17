@@ -330,9 +330,6 @@ func (s *Server) validateSchedule(e *buddyScheduleEntry) error {
 //	POST   /api/buddy/schedules {id?,dataset,source,receiver,cadence,runAt,pruneKeep,enabled}
 //	DELETE /api/buddy/schedules?id=…
 func (s *Server) handleBuddySchedules(w http.ResponseWriter, req *http.Request) {
-	if !s.requireBuddyAdminAuth(w, req) {
-		return
-	}
 	store := s.ensureBuddySchedules()
 	switch req.Method {
 	case http.MethodGet:
