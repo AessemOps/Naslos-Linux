@@ -77,8 +77,11 @@ func New(addr string, tc *talos.Client) *Server {
 	// Initialize metrics manager
 	metricsManager := metrics.NewManager()
 
-	// Initialize notification manager
-	notifManager := notifications.NewManager("")
+	// Initialize notification manager. The settings live on the persistent volume
+	// beside the other state files: an empty path means "memory only", which is
+	// what this used to be, so every restart silently reset the operator's
+	// topic/token/event choices.
+	notifManager := notifications.NewManager(getEnv("NOTIFICATIONS_CONFIG", "/var/lib/naslos/notifications.json"))
 
 	// Initialize identity client (LDAP)
 	identityClient, err := identity.NewClient(identity.Config{

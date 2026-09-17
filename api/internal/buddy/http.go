@@ -543,6 +543,13 @@ func (r *Receiver) handleManifest(w http.ResponseWriter, req *http.Request) {
 			writeError(w, http.StatusForbidden, err.Error())
 			return
 		}
+		// Shape first: the manifest is sender-controlled metadata that later
+		// drives restores and pruning, so its formats, sizes and indices are
+		// checked before anything is stored (NAS-012).
+		if err := validateManifestShape(&manifest); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 
 		stored, err := r.Store.ListChunks(peer.Fingerprint, source, manifest.Chain)
 		if err != nil {

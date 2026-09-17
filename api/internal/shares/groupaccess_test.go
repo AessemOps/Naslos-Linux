@@ -16,7 +16,7 @@ func TestRenderGroupIncludesLDAPGroups(t *testing.T) {
 		{UID: "alice", UIDNum: 10001, GIDNum: 10000},
 		{UID: "bob", UIDNum: 10002, GIDNum: 10000},
 	} {
-		if err := store.Upsert(u, "AABB"); err != nil {
+		if err := store.Upsert(u, "AABBCCDDEEFF00112233445566778899"); err != nil {
 			t.Fatalf("Upsert(%s): %v", u.UID, err)
 		}
 	}

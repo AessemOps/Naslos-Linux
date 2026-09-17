@@ -13,7 +13,10 @@ import (
 // UpdatePerson updates person attributes.
 func (c *Client) UpdatePerson(uid, displayName, email, firstName, lastName string) error {
 	uid = normalizeUID(uid)
-	dn := fmt.Sprintf("uid=%s,ou=people,%s", uid, c.baseDN)
+	if err := validateIdentityName("username", uid); err != nil {
+		return err
+	}
+	dn := fmt.Sprintf("uid=%s,ou=people,%s", escapeDNComponent(uid), c.baseDN)
 
 	modReq := ldap.NewModifyRequest(dn, nil)
 	if displayName != "" {
@@ -38,7 +41,10 @@ func (c *Client) UpdatePerson(uid, displayName, email, firstName, lastName strin
 // DeletePerson removes a person.
 func (c *Client) DeletePerson(uid string) error {
 	uid = normalizeUID(uid)
-	dn := fmt.Sprintf("uid=%s,ou=people,%s", uid, c.baseDN)
+	if err := validateIdentityName("username", uid); err != nil {
+		return err
+	}
+	dn := fmt.Sprintf("uid=%s,ou=people,%s", escapeDNComponent(uid), c.baseDN)
 
 	delReq := ldap.NewDelRequest(dn, nil)
 	return c.do(func(conn *ldap.Conn) error {
@@ -49,7 +55,10 @@ func (c *Client) DeletePerson(uid string) error {
 // SetPassword sets the password for a person and returns the NT hash for SMB sync.
 func (c *Client) SetPassword(uid, password string) (string, error) {
 	uid = normalizeUID(uid)
-	dn := fmt.Sprintf("uid=%s,ou=people,%s", uid, c.baseDN)
+	if err := validateIdentityName("username", uid); err != nil {
+		return "", err
+	}
+	dn := fmt.Sprintf("uid=%s,ou=people,%s", escapeDNComponent(uid), c.baseDN)
 
 	// Use LDAP Password Modify extended operation (RFC 3062)
 	passwordModify := ldap.NewPasswordModifyRequest(dn, "", password)
@@ -70,7 +79,10 @@ func (c *Client) SetPassword(uid, password string) (string, error) {
 // both values are mirrored to the serving node alongside the NT hash.
 func (c *Client) GetPosixIDs(uid string) (uidNumber, gidNumber int, err error) {
 	uid = normalizeUID(uid)
-	filter := fmt.Sprintf("(uid=%s)", uid)
+	if err := validateIdentityName("username", uid); err != nil {
+		return 0, 0, err
+	}
+	filter := fmt.Sprintf("(uid=%s)", escapeFilter(uid))
 	searchBase := fmt.Sprintf("ou=people,%s", c.baseDN)
 
 	searchReq := ldap.NewSearchRequest(
@@ -127,7 +139,10 @@ func (c *Client) GetUIDNumber(uid string) (int, error) {
 // EnablePerson enables a person account.
 func (c *Client) EnablePerson(uid string) error {
 	uid = normalizeUID(uid)
-	dn := fmt.Sprintf("uid=%s,ou=people,%s", uid, c.baseDN)
+	if err := validateIdentityName("username", uid); err != nil {
+		return err
+	}
+	dn := fmt.Sprintf("uid=%s,ou=people,%s", escapeDNComponent(uid), c.baseDN)
 
 	modReq := ldap.NewModifyRequest(dn, nil)
 	modReq.Replace("shadowExpire", []string{"-1"})
@@ -139,7 +154,10 @@ func (c *Client) EnablePerson(uid string) error {
 // DisablePerson disables a person account.
 func (c *Client) DisablePerson(uid string) error {
 	uid = normalizeUID(uid)
-	dn := fmt.Sprintf("uid=%s,ou=people,%s", uid, c.baseDN)
+	if err := validateIdentityName("username", uid); err != nil {
+		return err
+	}
+	dn := fmt.Sprintf("uid=%s,ou=people,%s", escapeDNComponent(uid), c.baseDN)
 
 	modReq := ldap.NewModifyRequest(dn, nil)
 	modReq.Replace("shadowExpire", []string{"1"})

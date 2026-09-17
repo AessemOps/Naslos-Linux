@@ -36,6 +36,11 @@ func (m *Manager) load() {
 		s.AllowedHosts = normalizeList(s.AllowedHosts)
 		s.ValidUsers = normalizeList(s.ValidUsers)
 		s.ValidGroups = normalizeList(s.ValidGroups)
+		// The config file is editable by hand: never load a share whose fields
+		// would render into directives (NAS-007).
+		if err := validateShareFields(s); err != nil {
+			continue
+		}
 		m.shares[s.Name] = s
 	}
 }
@@ -162,6 +167,9 @@ func (m *Manager) Create(req CreateShareRequest) (*Share, error) {
 		CreatedAt:    time.Now().UTC(),
 		Enabled:      enabled,
 	}
+	if err := validateShareFields(share); err != nil {
+		return nil, err
+	}
 
 	m.shares[share.Name] = share
 
@@ -213,6 +221,11 @@ func (m *Manager) Update(name string, req UpdateShareRequest) (*Share, error) {
 	}
 	if req.Enabled != nil {
 		share.Enabled = *req.Enabled
+	}
+
+	if err := validateShareFields(share); err != nil {
+		*share = previous
+		return nil, err
 	}
 
 	if err := m.save(); err != nil {
@@ -318,8 +331,55 @@ func validateShareName(name string) error {
 	if strings.ContainsAny(name, "/\\[]\"':*?<>=+;,") {
 		return fmt.Errorf("share name must not contain any of / \\ [ ] \" ' : * ? < > = + ; ,")
 	}
+	// A newline or tab in the name would start a new smb.conf section (NAS-007).
+	if strings.ContainsAny(name, "\n\r\x00\t") {
+		return fmt.Errorf("share name must not contain control characters")
+	}
 	if strings.TrimSpace(name) != name {
 		return fmt.Errorf("share name must not start or end with whitespace")
+	}
+	return nil
+}
+
+// validateShareFields rejects the characters that would let a share field start a
+// new directive in smb.conf or a new statement/block in ganesha.conf. The
+// renderers interpolate these values verbatim, so a newline in a description or a
+// semicolon in an export list would otherwise become configuration (NAS-007).
+func validateShareFields(share *Share) error {
+	if err := validateNoControlChars("description", share.Description); err != nil {
+		return err
+	}
+	if err := validateNoControlChars("path", share.Path); err != nil {
+		return err
+	}
+	for _, group := range []struct {
+		kind    string
+		entries []string
+	}{
+		{"allowed host", share.AllowedHosts},
+		{"valid user", share.ValidUsers},
+		{"valid group", share.ValidGroups},
+	} {
+		for _, entry := range group.entries {
+			if err := validateNoControlChars(group.kind, entry); err != nil {
+				return err
+			}
+			// These lists are rendered space-separated into smb.conf and
+			// comma/space separated into ganesha.conf, where `;` ends a statement
+			// and `"` opens a string.
+			if strings.ContainsAny(entry, ";\"") {
+				return fmt.Errorf("%s %q must not contain ';' or '\"'", group.kind, entry)
+			}
+		}
+	}
+	return nil
+}
+
+// validateNoControlChars rejects newline, carriage return, NUL and tab: every one
+// of them can end the current line and let the rest be read as configuration.
+func validateNoControlChars(kind, value string) error {
+	if strings.ContainsAny(value, "\n\r\x00\t") {
+		return fmt.Errorf("%s must not contain control characters (newline, tab or NUL)", kind)
 	}
 	return nil
 }

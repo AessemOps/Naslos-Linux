@@ -147,6 +147,23 @@ type PosixIdentity struct {
 	Shell   string
 }
 
+// normalizeNTHash validates and canonicalises an NT hash. Samba expects exactly
+// 32 hexadecimal digits; anything else (a short hash, a stray character, an
+// injected line) must never reach smbpasswd, where it would corrupt the record
+// (NAS-007).
+func normalizeNTHash(ntHash string) (string, error) {
+	trimmed := strings.TrimSpace(ntHash)
+	if len(trimmed) != 32 {
+		return "", fmt.Errorf("NT hash must be 32 hexadecimal characters, got %d", len(trimmed))
+	}
+	for _, r := range trimmed {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return "", fmt.Errorf("NT hash must be hexadecimal, found %q", r)
+		}
+	}
+	return strings.ToUpper(trimmed), nil
+}
+
 // Upsert records the account's NT hash and POSIX identity. A zero uidNumber or
 // gidNumber leaves any previously known value untouched.
 func (s *SambaUserStore) Upsert(id PosixIdentity, ntHash string) error {
@@ -154,9 +171,28 @@ func (s *SambaUserStore) Upsert(id PosixIdentity, ntHash string) error {
 	if uid == "" {
 		return fmt.Errorf("uid is required")
 	}
-	if ntHash == "" {
-		return fmt.Errorf("NT hash is required for %s", uid)
+	// These values are written into passwd/smbpasswd/group records, which are
+	// colon-separated lines: a ':' or a newline in any field would forge an entry
+	// (NAS-007).
+	if strings.ContainsAny(uid, ":\n\r\x00\t") {
+		return fmt.Errorf("uid %q must not contain ':' or control characters", uid)
 	}
+	if err := validateNoControlChars("gecos", id.Gecos); err != nil {
+		return err
+	}
+	if strings.Contains(id.Gecos, ":") {
+		return fmt.Errorf("gecos must not contain ':'")
+	}
+	if err := validateNoControlChars("home directory", id.HomeDir); err != nil {
+		return err
+	}
+
+	normalized, err := normalizeNTHash(ntHash)
+	if err != nil {
+		return err
+	}
+	ntHash = normalized
+
 	if id.HomeDir == "" {
 		id.HomeDir = "/home/" + uid
 	}
@@ -168,7 +204,7 @@ func (s *SambaUserStore) Upsert(id PosixIdentity, ntHash string) error {
 	}
 
 	if existing, ok := s.users[uid]; ok {
-		existing.NTHash = strings.ToUpper(ntHash)
+		existing.NTHash = ntHash
 		existing.PasswordSetAt = time.Now().UTC()
 		if id.UIDNum > 0 {
 			existing.UIDNumber = id.UIDNum
@@ -185,7 +221,7 @@ func (s *SambaUserStore) Upsert(id PosixIdentity, ntHash string) error {
 			UIDNumber:     id.UIDNum,
 			GIDNumber:     id.GIDNum,
 			Gecos:         id.Gecos,
-			NTHash:        strings.ToUpper(ntHash),
+			NTHash:        ntHash,
 			PasswordSetAt: time.Now().UTC(),
 			Enabled:       true,
 		}

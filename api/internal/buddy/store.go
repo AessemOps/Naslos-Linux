@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -353,6 +354,12 @@ func (s *Store) ChunkDigests(keyID, source, chain string) (map[int]string, error
 
 // PutManifest stores a chain's manifest and points "current" at it, which is what
 // the receiver reports as the latest backup for a source.
+//
+// It refuses to move "current" backwards: pointing the pointer at a chain that is
+// already stored is a rollback (a compromised or stale sender key replaying an
+// older manifest to make an old backup look like the latest one), and the
+// receiver is the only party that can notice it - it cannot decrypt, so it
+// enforces pointer monotonicity itself (NAS-012).
 func (s *Store) PutManifest(keyID, source string, m *Manifest) error {
 	dir, err := s.chainDir(keyID, source, m.Chain)
 	if err != nil {
@@ -365,6 +372,22 @@ func (s *Store) PutManifest(keyID, source string, m *Manifest) error {
 	if err != nil {
 		return err
 	}
+
+	previous := ""
+	current, currentErr := s.Manifest(keyID, source)
+	if currentErr == nil {
+		previous = current.Chain
+	}
+
+	// A chain that is already stored and is not the current one must not become
+	// current again. Re-publishing the *current* chain is legitimate: that is what
+	// a resumed (or retried) push does, with a fresh creation time.
+	if previous != "" && previous != m.Chain {
+		if _, err := os.Stat(filepath.Join(filepath.Dir(dir), m.Chain, "manifest.json")); err == nil {
+			return fmt.Errorf("refusing to move %s back to the already-stored chain %s (rollback)", source, m.Chain)
+		}
+	}
+
 	if err := writeFileAtomic(filepath.Join(dir, "manifest.json"), data); err != nil {
 		return err
 	}
@@ -376,7 +399,18 @@ func (s *Store) PutManifest(keyID, source string, m *Manifest) error {
 	if err := os.MkdirAll(sourceDir, 0755); err != nil {
 		return err
 	}
+	if previous != m.Chain {
+		log.Printf("buddy receiver: %s current chain %s -> %s (%s)", source, orNone(previous), m.Chain, m.Kind)
+	}
 	return writeFileAtomic(filepath.Join(sourceDir, "current.json"), data)
+}
+
+// orNone renders an empty chain id for a log line.
+func orNone(chain string) string {
+	if chain == "" {
+		return "(none)"
+	}
+	return chain
 }
 
 // Manifest returns the current manifest of a source (what a restore reads first).
@@ -654,18 +688,43 @@ func (s *Store) Prune(keyID, source string, keep int) (int, error) {
 	}
 	sort.Slice(chains, func(i, j int) bool { return chains[i].when.After(chains[j].when) })
 
-	// Walk the dependency chain of the newest backup: the newest chain, then the
-	// chain whose ToGUID is its FromGUID, and so on.
+	// Survivorship follows the receiver's own current pointer, not the sender's
+	// timestamps: a rewritten CreatedAt must not be able to make the live chain
+	// look like the oldest one and get it pruned (NAS-012).
+	currentChain := ""
+	if raw, err := os.ReadFile(filepath.Join(dir, "current.json")); err == nil {
+		var current Manifest
+		if json.Unmarshal(raw, &current) == nil {
+			currentChain = current.Chain
+		}
+	}
+
+	// Walk the dependency chain of the current backup: the current chain, then
+	// the chain whose ToGUID is its FromGUID, and so on.
 	required := map[string]bool{}
-	if len(chains) > 0 {
-		required[chains[0].name] = true
-		baseGUID := chains[0].fromGUID
-		for baseGUID != "" {
+	newest := ""
+	if currentChain != "" {
+		newest = currentChain
+	} else if len(chains) > 0 {
+		// No current pointer yet (an interrupted first push): fall back to the
+		// newest by creation time.
+		newest = chains[0].name
+	}
+	if newest != "" {
+		required[newest] = true
+		fromGUID := ""
+		for _, chain := range chains {
+			if chain.name == newest {
+				fromGUID = chain.fromGUID
+				break
+			}
+		}
+		for fromGUID != "" {
 			next := ""
 			for _, candidate := range chains {
-				if candidate.toGUID == baseGUID && !required[candidate.name] {
+				if candidate.toGUID == fromGUID && !required[candidate.name] {
 					next = candidate.name
-					baseGUID = candidate.fromGUID
+					fromGUID = candidate.fromGUID
 					break
 				}
 			}
@@ -676,13 +735,17 @@ func (s *Store) Prune(keyID, source string, keep int) (int, error) {
 		}
 	}
 
-	removed := 0
-	for i, chain := range chains {
-		if i < keep || required[chain.name] {
+	// Delete oldest-first until only `keep` chains remain, never touching a chain
+	// the current backup descends from.
+	remaining, removed := len(chains), 0
+	for i := len(chains) - 1; i >= 0 && remaining > keep; i-- {
+		chain := chains[i]
+		if required[chain.name] {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(chainsDir, chain.name)); err == nil {
 			removed++
+			remaining--
 		}
 	}
 	if removed > 0 {

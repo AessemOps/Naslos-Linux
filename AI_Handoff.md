@@ -1,5 +1,115 @@
 # AI Handoff — Naslos
 
+## Phase 2 hardening: injection + receiver integrity (`feature/polish-gaps`)
+
+Deployed: api `0.1.0-b16` (helm revision 72), agent `0.1.0-b6`, ui `0.1.0-b6`.
+
+**NAS-006 — LDAP filter/DN injection (High).** Every uid/cn is now validated
+against an allowlist (`^[a-z0-9][a-z0-9._-]{0,63}$`, the appliance's own
+convention) *and* escaped: filters through `ldap.EscapeFilter`, DN components
+through `ldap.EscapeDN` (`api/internal/identity/escape.go`). All 16 interpolation
+sites in `persons.go`, `persons_extra.go` and `groups.go` go through the
+helpers, so a `*`, `(`, NUL, `,` or space can neither alter a search nor break out
+of a DN. Group names are normalized (lowercased) so creation and lookup agree.
+Tests: `TestValidateIdentityNameRejectsMetacharacters`,
+`TestGroupNamesAreNormalizedAndValidated`, `TestSearchValuesAreEscaped`.
+Live: `POST /api/users {"uid":"*)(uid=*"}` → 400, `POST /api/groups
+{"cn":"evil,ou=admin"}` → 400.
+
+**NAS-007 — smb.conf / Ganesha config injection (High).** Share text fields
+(description, path, allowed hosts, valid users/groups) reject newline/CR/NUL/tab,
+and the list fields also reject `;` and `"` (a Ganesha statement terminator and
+string delimiter). Share *names* reject control characters too. `validateShareFields`
+runs on create, on update (rolling the in-memory share back on failure) and on
+**load** — the config file is hand-editable, so an already-stored share whose
+fields would render into directives is skipped rather than served. `smbusers.go`
+now enforces `^[0-9A-F]{32}$` for NT hashes, and rejects `:`/control characters in
+the uid, gecos and home directory (those files are colon-separated records).
+Tests: `api/internal/shares/injection_test.go`.
+Live: a description with `\n` → 400 `description must not contain control
+characters`; `validUsers: ["alice; rm -rf"]` → 400; a clean share still creates
+(201) and deletes.
+
+**NAS-012 — receiver integrity (Medium).** Three changes, all receiver-side, since
+the receiver cannot decrypt and must not trust sender metadata:
+
+- `validateManifestShape` checks the sender-controlled manifest before storing it:
+  known payload kind, non-zero creation time, `chunkPlainSize` equal to the stored
+  chunk size, base64 stream prefix of 8 bytes, a decodable wrapped data key, and
+  chunks with strictly ascending indices from 0, sane plain/sealed sizes and
+  64-hex plaintext digests.
+- `Store.PutManifest` refuses to move `current` back to a chain that is already
+  stored (a rollback: a compromised or stale key replaying an older manifest).
+  Re-publishing the *current* chain stays allowed — that is what a resumed push
+  does — and rotations are logged.
+- `Store.Prune` bases survivorship on the receiver's own `current.json` pointer,
+  not on the sender's `CreatedAt`, and never prunes a chain the current backup
+  descends from. A rewritten timestamp can no longer make the live chain look
+  oldest. Tests: `TestManifestShapeValidation`,
+  `TestReceiverRefusesChainRollback`, `TestPruneSurvivesAForgedTimestamp`.
+- Live regression on the normal path: two sends (second incremental) with
+  `pruneKeep: 1` kept both chains (`prunedChains` absent) and `verify` walked the
+  sequence.
+
+Playwright **29 passed / 2 skipped / 0 failed**; `api` Go suite green; the VM is
+back to its baseline (test share, directory, chains and `.enroll-used` removed).
+
+**Still open**
+
+- NAS-013 (quota check-then-act race, manifest-byte undercount, `QuotaBytes`
+  validation), NAS-014's remaining half (persist the nonce cache across restarts,
+  cap its growth; the 128-bit job ids landed in Phase 2), NAS-021's cosmetic items
+  (stream-counter overflow refusal, 2-level source walk, `LimitReader` truncation
+  error, bounded FS walks).
+- FR-MET-10 per-interface IPs `[OPEN]`; 45 `svelte-check` warnings; image tags are
+  still reused (`0.1.0` + `IfNotPresent`) — always bump the suffix per deploy.
+
+## Phase 3 start: product gaps (`feature/polish-gaps`, implemented)
+
+Branched from `feature/buddy-fanout` (still open), so the PR carries both until
+fan-out merges. Deployed: api `0.1.0-b15` (helm revision 71), agent `0.1.0-b6`, ui
+`0.1.0-b6`.
+
+**Notification settings persist.** They were constructed with an empty path
+(`notifications.NewManager("")`), which the manager treats as memory-only, so every
+API restart silently reset the operator's topic, token, event list and severity.
+The manager now reads `NOTIFICATIONS_CONFIG` (chart value `api.notificationsFile`,
+default `/var/lib/naslos/notifications.json`, i.e. the same volume as the share
+config). Verified live: set a distinctive config, `rollout restart`, and the
+settings came back unchanged — then the defaults were restored and are also
+persisted. Unit test: `TestSettingsSurviveARestart`, plus
+`TestMemoryOnlyManagerStillWorks` to keep the empty-path mode intentional.
+
+**Never-run schedules no longer report a year-1 timestamp.** `omitempty` does
+nothing for `time.Time`, so a fresh schedule serialised
+`"lastRun":"0001-01-01T00:00:00Z"`. `buddyScheduleEntry` now marshals those two
+timestamps as pointers (omitted when zero, present once a run happens). Test:
+`TestBuddyScheduleJSONOmitsUnsetTimestamps`.
+
+**OpenLDAP backup CronJob repaired** (`openldap/manifests/backup-cronjob.yaml`).
+It mounted the config PVC at `/var/lib/ldap/backups` — *inside* the data PVC's
+read-only mount — which the runtime cannot create, so every run died with
+`RunContainerError` and nothing was ever backed up. It now mounts both PVCs at
+their real paths (`/var/lib/ldap`, `/etc/ldap/slapd.d`) plus the config volume
+again at `/backups` as the destination, read-write on both (the mdb backend maps a
+lock file next to the database, so a read-only mount fails even for a pure read),
+uses `slapcat -F /etc/ldap/slapd.d` for both databases, and prunes to the newest 7
+of each. Verified live with `kubectl create job --from=cronjob/…`: the job
+completed and the volume holds `config_*.ldif` (12 entries) and `data_*.ldif`
+(8 entries). The drill job and the stale failed job were deleted.
+
+**Stale note corrected:** the `/api/shares/status` "empty values" gap from the
+earlier roadmap no longer exists — the API's `SharesConfigStatus` matches the
+agent's JSON and the live response reports `smbShareCount: 3, nfsExportCount: 1`.
+Do not re-investigate it.
+
+**Still open**
+
+- Hardening: NAS-012 (manifest rollback protection), NAS-013 (quota
+  race/undercount), NAS-021 (counter overflow, FS walks), NAS-006/007 (injections).
+- FR-MET-10 per-interface IPs `[OPEN]`; 45 `svelte-check` warnings (a11y); image
+  tags are still reused (`0.1.0` + `IfNotPresent`), so always retag per deploy.
+
 ## Phase 2 continued: fan-out + peer exposure (`feature/buddy-fanout`, implemented)
 
 Branched from `master` at `8cd75b8` (both earlier PRs merged: #9 buddy, #10
