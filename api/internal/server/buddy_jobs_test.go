@@ -96,14 +96,17 @@ func TestBuddySendConflictsWhileRunning(t *testing.T) {
 		t.Errorf("conflict does not say a backup is already running: %s", rec.Body.String())
 	}
 
-	// Same dataset under another source: also refused (snapshot races).
+	// The same dataset under another source is allowed while one runs: each job
+	// snapshots under its own name, and a fan-out sends the same dataset to
+	// several buddies at once (FR-BUD-15). Only the (receiver, source) pair is
+	// exclusive, because that pair shares one resume-state file.
 	rec = harness.call(t, http.MethodPost, "/api/buddy/send", map[string]any{
 		"dataset":  "test/data",
 		"source":   "naslos-test/other",
 		"receiver": harness.receiverURL,
 	})
-	if rec.Code != http.StatusConflict {
-		t.Errorf("same-dataset send = %d, want 409 (%s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Errorf("same-dataset send = %d, want 202 (%s)", rec.Code, rec.Body.String())
 	}
 
 	job := waitSend(t, harness, jobID)

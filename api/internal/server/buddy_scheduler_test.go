@@ -372,3 +372,111 @@ func TestScheduleStoreRoundTrip(t *testing.T) {
 		t.Errorf("receiver = %q mangled by the round trip", got.Receiver)
 	}
 }
+
+// TestBuddyScheduleFanOutToSeveralBuddies pins FR-BUD-15's fan-out: one entry can
+// name several receivers, each gets its own job and chain, and a dead destination
+// fails only itself (the entry reports the aggregate).
+func TestBuddyScheduleFanOutToSeveralBuddies(t *testing.T) {
+	harness := newSenderHarness(t, []byte("payload"))
+	store := useTempSchedules(t, harness)
+
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"boom"}`))
+	}))
+	defer dead.Close()
+
+	id := createSchedule(t, harness, map[string]any{
+		"dataset":   "test/data",
+		"source":    "naslos-test/fanout",
+		"receivers": []string{harness.receiverURL, dead.URL},
+		"cadence":   "hourly",
+	})
+	forceDue(t, store, id)
+	harness.server.runDueSchedules(time.Now().UTC())
+
+	// Both destinations got a job: one per receiver.
+	if got := countScheduleJobs(harness, id); got != 2 {
+		t.Fatalf("jobs = %d, want one per receiver", got)
+	}
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if store.get(id).LastResult == "failed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	entry := store.get(id)
+	if entry.LastResult != "failed" {
+		t.Errorf("lastResult = %q, want failed (one destination is dead)", entry.LastResult)
+	}
+	if !strings.Contains(entry.LastError, dead.URL) {
+		t.Errorf("lastError = %q, want it to name the failing buddy", entry.LastError)
+	}
+	// The reason must survive the other destination's later success: the first
+	// version blanked it because the aggregate recomputed from the newest result.
+	if reason := strings.TrimSpace(strings.TrimPrefix(entry.LastError, "backup to "+dead.URL+" failed:")); reason == "" {
+		t.Errorf("lastError = %q, want the underlying failure reason to be kept", entry.LastError)
+	}
+	if entry.ReceiverResults[harness.receiverURL] != "ok" {
+		t.Errorf("receiverResults = %v, want the live buddy to be ok", entry.ReceiverResults)
+	}
+	if entry.ReceiverResults[dead.URL] != "failed" {
+		t.Errorf("receiverResults = %v, want the dead buddy to be failed", entry.ReceiverResults)
+	}
+
+	// The live destination stored a chain despite the other one failing.
+	client := buddy.NewClient(harness.receiverURL, harness.identity)
+	chains, err := client.Chains("naslos-test/fanout")
+	if err != nil {
+		t.Fatalf("listing chains: %v", err)
+	}
+	if len(chains) != 1 {
+		t.Errorf("chains = %d, want the live buddy to have stored the run", len(chains))
+	}
+
+	// The legacy single field tracks the first receiver, and both are reported.
+	rec := harness.call(t, http.MethodGet, "/api/buddy/schedules", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), dead.URL) {
+		t.Errorf("schedule list does not mention every receiver: %s", rec.Body.String())
+	}
+}
+
+// TestBuddyScheduleReceiversValidation keeps a fan-out list honest: at least one
+// receiver, every URL valid, duplicates collapsed.
+func TestBuddyScheduleReceiversValidation(t *testing.T) {
+	harness := newSenderHarness(t, []byte("payload"))
+	useTempSchedules(t, harness)
+
+	// No receiver at all.
+	rec := harness.call(t, http.MethodPost, "/api/buddy/schedules", map[string]any{
+		"dataset": "test/data", "source": "naslos-test/none", "cadence": "hourly",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("no receiver: status = %d, want 400", rec.Code)
+	}
+
+	// One bad URL in an otherwise valid list.
+	rec = harness.call(t, http.MethodPost, "/api/buddy/schedules", map[string]any{
+		"dataset": "test/data", "source": "naslos-test/mixed", "cadence": "hourly",
+		"receivers": []string{harness.receiverURL, "ftp://nope"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("bad URL in list: status = %d, want 400 (%s)", rec.Code, rec.Body.String())
+	}
+
+	// Duplicates collapse, and the first one is mirrored into `receiver`.
+	id := createSchedule(t, harness, map[string]any{
+		"dataset": "test/data", "source": "naslos-test/dupes", "cadence": "hourly",
+		"receivers": []string{harness.receiverURL, harness.receiverURL},
+	})
+	entry := harness.server.buddySchedules.get(id)
+	if len(entry.Receivers) != 1 || entry.Receiver != harness.receiverURL {
+		t.Errorf("entry = %+v, want one deduplicated receiver mirrored into the single field", entry)
+	}
+}

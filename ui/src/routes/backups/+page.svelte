@@ -17,6 +17,10 @@
     dataset: string;
     source: string;
     receiver: string;
+    /** Fan-out targets; `receiver` mirrors the first one. */
+    receivers?: string[];
+    /** Per-buddy outcome of the last run. */
+    receiverResults?: Record<string, string>;
     cadence: string;
     runAt?: string;
     pruneKeep?: number;
@@ -72,7 +76,7 @@
   // A send streams one dataset: the agent refuses the pool root itself
   // ("dataset must be <pool>/<name>"), so only child datasets are offered.
   $: sendableDatasets = datasets.filter((d) => d.name.includes('/'));
-  let newSchedule = { dataset: '', receiver: '', source: '', cadence: 'daily', runAt: '02:30', pruneKeep: 7 };
+  let newSchedule = { dataset: '', receivers: '', source: '', cadence: 'daily', runAt: '02:30', pruneKeep: 7 };
   let savingSchedule = false;
 
   let adhoc = { dataset: '', receiver: '', source: '' };
@@ -175,13 +179,20 @@
   async function createSchedule() {
     savingSchedule = true;
     error = '';
+    // One buddy per line (or comma separated): every one of them gets its own
+    // backup run, so a dead buddy fails only itself.
+    const receivers = newSchedule.receivers
+      .split(/[\n,]+/)
+      .map((r) => r.trim())
+      .filter((r) => r.length > 0);
     try {
       const res = await fetch('/api/buddy/schedules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           dataset: newSchedule.dataset,
-          receiver: newSchedule.receiver,
+          receiver: receivers[0] ?? '',
+          receivers,
           source: newSchedule.source,
           cadence: newSchedule.cadence,
           runAt: newSchedule.cadence === 'hourly' ? '' : newSchedule.runAt,
@@ -189,7 +200,7 @@
         })
       });
       if (!res.ok) throw new Error(await res.text());
-      newSchedule = { dataset: '', receiver: '', source: '', cadence: 'daily', runAt: '02:30', pruneKeep: 7 };
+      newSchedule = { dataset: '', receivers: '', source: '', cadence: 'daily', runAt: '02:30', pruneKeep: 7 };
       await loadSchedules();
     } catch (e) {
       error = 'Saving the schedule failed: ' + e;
@@ -247,10 +258,9 @@
     }
   }
 
-  async function startSend(dataset: string, receiverUrl: string, source: string) {
-    jobError = '';
-    activeJob = null;
-    stopPoll();
+  // startSendJob posts one send and returns its job id (null when the request was
+  // refused for a reason the UI can explain).
+  async function startSendJob(dataset: string, receiverUrl: string, source: string): Promise<string | null> {
     try {
       const res = await fetch('/api/buddy/send', {
         method: 'POST',
@@ -259,23 +269,47 @@
       });
       if (res.status === 409) {
         jobError = 'A backup of this source is already running. Wait for it to finish, or cancel it first.';
-        return;
+        return null;
       }
       if (res.status === 412) {
         jobError = 'This instance has no backup identity yet — create one above first.';
-        return;
+        return null;
       }
       if (!res.ok) throw new Error(await res.text());
       const started = await res.json();
-      await pollJob(started.jobId);
-      pollTimer = setInterval(() => pollJob(started.jobId), 1000);
+      return started.jobId;
     } catch (e) {
       jobError = 'Starting the backup failed: ' + e;
+      return null;
     }
   }
 
-  function backupNow(s: Schedule) {
-    startSend(s.dataset, s.receiver, s.source);
+  function trackJob(jobId: string) {
+    void pollJob(jobId);
+    pollTimer = setInterval(() => pollJob(jobId), 1000);
+  }
+
+  async function startSend(dataset: string, receiverUrl: string, source: string) {
+    jobError = '';
+    activeJob = null;
+    stopPoll();
+    const jobId = await startSendJob(dataset, receiverUrl, source);
+    if (jobId) trackJob(jobId);
+  }
+
+  async function backupNow(s: Schedule) {
+    // Fan out exactly like the schedule does; the progress panel follows the
+    // first destination and the rest run in the background.
+    jobError = '';
+    activeJob = null;
+    stopPoll();
+    const receivers = s.receivers && s.receivers.length > 0 ? s.receivers : [s.receiver];
+    const started: string[] = [];
+    for (const receiver of receivers) {
+      const jobId = await startSendJob(s.dataset, receiver, s.source);
+      if (jobId) started.push(jobId);
+    }
+    if (started.length > 0) trackJob(started[0]);
   }
 
   async function cancelJob() {
@@ -395,7 +429,16 @@
               <tr class="border-t border-naslos-border">
                 <td class="py-2 pr-2 align-top truncate" title={s.dataset}>{s.dataset}</td>
                 <td class="py-2 pr-2 align-top truncate" title={s.source}>{s.source}</td>
-                <td class="py-2 pr-2 align-top truncate" title={s.receiver}>{s.receiver}</td>
+                <td class="py-2 pr-2 align-top truncate" title={(s.receivers ?? [s.receiver]).join('\n')}>
+                  {s.receivers && s.receivers.length > 1 ? `${s.receivers.length} buddies` : s.receiver}
+                  {#if s.receiverResults}
+                    <span class="block text-xs text-gray-500">
+                      {#each Object.entries(s.receiverResults) as [url, outcome]}
+                        <span class="mr-2" title={url}>{outcome === 'ok' ? '✓' : '✗'} {new URL(url).host}</span>
+                      {/each}
+                    </span>
+                  {/if}
+                </td>
                 <td class="py-2 pr-2 align-top whitespace-nowrap">{s.cadence}{s.runAt ? ` ${s.runAt}` : ''}</td>
                 <td class="py-2 pr-2 align-top">{s.lastResult ? `${s.lastResult} (${fmtTime(s.lastRun)})` : 'never'}</td>
                 <td class="py-2 pr-2 align-top">{s.enabled ? fmtTime(s.nextRun) : 'disabled'}</td>
@@ -416,7 +459,7 @@
           <option value="">Dataset…</option>
           {#each sendableDatasets as d}<option value={d.name}>{d.name}</option>{/each}
         </select>
-        <input type="text" bind:value={newSchedule.receiver} placeholder="Buddy URL https://…" class="input" />
+        <textarea bind:value={newSchedule.receivers} placeholder="Buddy URLs, one per line (https://…)" rows="2" class="input"></textarea>
         <input type="text" bind:value={newSchedule.source} placeholder="Source name naslos-a/data" class="input" />
         <select bind:value={newSchedule.cadence} class="input">
           <option value="hourly">Hourly</option>
