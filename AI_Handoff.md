@@ -1,5 +1,51 @@
 # AI Handoff — Naslos
 
+## Phase 3 start: product gaps (`feature/polish-gaps`, implemented)
+
+Branched from `feature/buddy-fanout` (still open), so the PR carries both until
+fan-out merges. Deployed: api `0.1.0-b15` (helm revision 71), agent `0.1.0-b6`, ui
+`0.1.0-b6`.
+
+**Notification settings persist.** They were constructed with an empty path
+(`notifications.NewManager("")`), which the manager treats as memory-only, so every
+API restart silently reset the operator's topic, token, event list and severity.
+The manager now reads `NOTIFICATIONS_CONFIG` (chart value `api.notificationsFile`,
+default `/var/lib/naslos/notifications.json`, i.e. the same volume as the share
+config). Verified live: set a distinctive config, `rollout restart`, and the
+settings came back unchanged — then the defaults were restored and are also
+persisted. Unit test: `TestSettingsSurviveARestart`, plus
+`TestMemoryOnlyManagerStillWorks` to keep the empty-path mode intentional.
+
+**Never-run schedules no longer report a year-1 timestamp.** `omitempty` does
+nothing for `time.Time`, so a fresh schedule serialised
+`"lastRun":"0001-01-01T00:00:00Z"`. `buddyScheduleEntry` now marshals those two
+timestamps as pointers (omitted when zero, present once a run happens). Test:
+`TestBuddyScheduleJSONOmitsUnsetTimestamps`.
+
+**OpenLDAP backup CronJob repaired** (`openldap/manifests/backup-cronjob.yaml`).
+It mounted the config PVC at `/var/lib/ldap/backups` — *inside* the data PVC's
+read-only mount — which the runtime cannot create, so every run died with
+`RunContainerError` and nothing was ever backed up. It now mounts both PVCs at
+their real paths (`/var/lib/ldap`, `/etc/ldap/slapd.d`) plus the config volume
+again at `/backups` as the destination, read-write on both (the mdb backend maps a
+lock file next to the database, so a read-only mount fails even for a pure read),
+uses `slapcat -F /etc/ldap/slapd.d` for both databases, and prunes to the newest 7
+of each. Verified live with `kubectl create job --from=cronjob/…`: the job
+completed and the volume holds `config_*.ldif` (12 entries) and `data_*.ldif`
+(8 entries). The drill job and the stale failed job were deleted.
+
+**Stale note corrected:** the `/api/shares/status` "empty values" gap from the
+earlier roadmap no longer exists — the API's `SharesConfigStatus` matches the
+agent's JSON and the live response reports `smbShareCount: 3, nfsExportCount: 1`.
+Do not re-investigate it.
+
+**Still open**
+
+- Hardening: NAS-012 (manifest rollback protection), NAS-013 (quota
+  race/undercount), NAS-021 (counter overflow, FS walks), NAS-006/007 (injections).
+- FR-MET-10 per-interface IPs `[OPEN]`; 45 `svelte-check` warnings (a11y); image
+  tags are still reused (`0.1.0` + `IfNotPresent`), so always retag per deploy.
+
 ## Phase 2 continued: fan-out + peer exposure (`feature/buddy-fanout`, implemented)
 
 Branched from `master` at `8cd75b8` (both earlier PRs merged: #9 buddy, #10
