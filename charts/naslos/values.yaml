@@ -46,6 +46,11 @@ api:
     # Size of the PersistentVolumeClaim holding SHARES_CONFIG.
     size: 64Mi
     storageClassName: ""
+  # Where notification settings (topic, token, enabled events, severity) are
+  # persisted. They share the volume above, so they survive API restarts; with no
+  # writable path the notification manager is memory-only and every restart
+  # resets the configuration.
+  notificationsFile: /var/lib/naslos/notifications.json
   # LDAP CA certificate Secret (key ca.crt) used to verify the OpenLDAP TLS
   # certificate. The API mounts it and sets LDAP_CA_CERT. Defaults to the
   # secret created by openldap/generate-secrets.sh.

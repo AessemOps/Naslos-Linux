@@ -480,3 +480,46 @@ func TestBuddyScheduleReceiversValidation(t *testing.T) {
 		t.Errorf("entry = %+v, want one deduplicated receiver mirrored into the single field", entry)
 	}
 }
+
+// TestBuddyScheduleJSONOmitsUnsetTimestamps pins the serialisation fix: a
+// never-run schedule must not report a year-1 lastRun, while a real one is
+// unchanged (and the store round-trip still works).
+func TestBuddyScheduleJSONOmitsUnsetTimestamps(t *testing.T) {
+	harness := newSenderHarness(t, []byte("payload"))
+	useTempSchedules(t, harness)
+
+	id := createSchedule(t, harness, map[string]any{
+		"dataset":  "test/data",
+		"source":   "naslos-test/json",
+		"receiver": harness.receiverURL,
+		"cadence":  "hourly",
+	})
+
+	rec := harness.call(t, http.MethodGet, "/api/buddy/schedules", nil)
+	body := rec.Body.String()
+	if strings.Contains(body, "0001-01-01") {
+		t.Errorf("schedule list still serialises a zero timestamp: %s", body)
+	}
+	if !strings.Contains(body, `"nextRun"`) {
+		t.Errorf("schedule list should still carry the next run: %s", body)
+	}
+
+	// A run sets lastRun, which must then appear.
+	entry := harness.server.buddySchedules.get(id)
+	harness.server.buddySchedules.recordResult(id, harness.receiverURL, true, "")
+	if !entry.LastRun.IsZero() {
+		rec = harness.call(t, http.MethodGet, "/api/buddy/schedules", nil)
+		if !strings.Contains(rec.Body.String(), `"lastRun"`) {
+			t.Errorf("a completed schedule should report lastRun: %s", rec.Body.String())
+		}
+	}
+
+	// The persisted store still round-trips (a zero NextRun stays zero).
+	reloaded := newBuddyScheduleStore(harness.server.buddySchedules.path)
+	if err := reloaded.load(); err != nil {
+		t.Fatalf("reloading the store: %v", err)
+	}
+	if got := reloaded.get(id); got == nil || got.Source != "naslos-test/json" {
+		t.Errorf("reloaded entry = %+v, want the stored schedule", got)
+	}
+}
