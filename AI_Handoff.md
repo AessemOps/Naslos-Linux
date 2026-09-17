@@ -1,6 +1,64 @@
 # AI Handoff — Naslos
 
-## Current branch: `master`
+## Phase 1: security fixes (`feature/security-fixes`, implemented, not merged)
+
+The security batch from `docs/SECURITY-FIX-PLAN.md` is implemented and live-verified
+on the VM; it is **not merged yet** (two commits on `feature/security-fixes`).
+`master` is at `0f1068a` (the buddy merge + handoff).
+
+**Deployed to the VM for the validation (helm revision 64 at the end):** api
+`0.1.0-b10`, agent `0.1.0-b5`, ui `0.1.0-b5`, with `auth.disabled=true` restored
+afterwards (the VM has no reachable Traefik, so the chart's `ingress.enabled=false`
+means the proxy secret would never be injected).
+
+**What the batch changes**
+
+- **NAS-001** — every owner route now lives on an `owner` mux behind
+  `auth.RequireAuth`, which requires the proxy-issued `X-Naslos-Proxy-Secret`
+  (constant time) *and* the identity header, in addition to the trusted CIDR. Only
+  `/api/health`, `/api/ready`, the buddy peer API (`/api/buddy/v1/*`, its own
+  Ed25519 auth) and the static UI are public. The API refuses to start without
+  `PROXY_SHARED_SECRET` unless `AUTH_DISABLED=true` (then it logs a loud warning).
+- **NAS-004/005** — the per-handler switches are gone (`requireTerminalAuth`,
+  `requireBuddyAdminAuth`, the `Remote-User` reads in `handleAuthMe`); `/api/ws/logs`
+  is authenticated by construction.
+- **NAS-002** — the agent requires `Authorization: Bearer <AGENT_TOKEN>` on
+  everything but `/health` (constant time) and refuses to start without a token
+  (`AGENT_AUTH_DISABLED=true` is the logged dev opt-out). The API injects the token
+  in a transport, so the streaming send/receive requests are covered too.
+- **NAS-003** — every destructive sink validates first (pool name, topology, disks
+  via `normalizeDiskPath` + duplicate + pool-member checks, cache device, dataset
+  options, dataset paths, snapshot names). Caller-fixable input is now a **400**
+  (`zfs.ValidationError` → `writeClientError`), node failures stay 500. The API
+  mirrors the pool-name and disk checks (fast 400) and no longer offers the pool
+  root as a send source.
+- Chart: `naslos-proxy`/`secret` and `naslos-agent`/`token` Secrets (generated once,
+  `lookup`-preserved, or `auth.proxySecretName`/`agent.tokenSecret`), the
+  `proxy-identity` Traefik Middleware, `PROXY_SHARED_SECRET`/`AGENT_TOKEN`/
+  `TRAEFIK_CIDR`/`AUTH_DISABLED` env, and the new `auth.*` values. Also: the ingress
+  templates were dead — they were gated on `traefik.enabled`, which the Traefik
+  subchart's schema **rejects**, so no IngressRoute/Middleware had ever been
+  deployed; they are now gated on `ingress.enabled` (default false).
+
+**Live validation (2026-09-17, VM, chart-generated Secrets, gate armed)**
+
+- Armed (`auth.disabled=false`): `/api/users` → **401** with no headers, **401** with
+  a forged `Remote-User`, **401** with a wrong secret, **200** with the generated
+  secret + user; `/api/ws/logs` → **401**; `/api/volumes/zfs` with the secret → **200**
+  (proves the API→agent token reaches the agent); a typo'd header name is rejected.
+- Agent: `/health` → 200; `/api/v1/pools` without/with a wrong token → **401**; with
+  the generated token → 200. Negative checks (`-x` name, unknown topology, absent
+  disk, member disk) → **400** with the right message and no state change; a
+  traversal path never reached the handler.
+- Dev posture restored (`auth.disabled=true`): the startup warning is logged, owner
+  routes are served, and the full Playwright suite passes: **29 passed / 2 skipped /
+  0 failed**.
+- Local: `api` + `agent` `go build`/`vet`/`test` clean; `helm lint` passes;
+  `svelte-check` 0 errors.
+- Left open deliberately: dropping the agent's `hostNetwork` (hostPID removed);
+  NAS-006/007 and NAS-009+ are out of this batch.
+
+## Current branch: `master` (integration)
 
 The integration branch is `master`. The Buddy Backup work (and the security audit +
 remediation plan) landed from `feature/buddy-backup` via **PR #9**, merge commit
