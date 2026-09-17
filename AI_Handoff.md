@@ -1,5 +1,69 @@
 # AI Handoff — Naslos
 
+## Phase 2 hardening: injection + receiver integrity (`feature/polish-gaps`)
+
+Deployed: api `0.1.0-b16` (helm revision 72), agent `0.1.0-b6`, ui `0.1.0-b6`.
+
+**NAS-006 — LDAP filter/DN injection (High).** Every uid/cn is now validated
+against an allowlist (`^[a-z0-9][a-z0-9._-]{0,63}$`, the appliance's own
+convention) *and* escaped: filters through `ldap.EscapeFilter`, DN components
+through `ldap.EscapeDN` (`api/internal/identity/escape.go`). All 16 interpolation
+sites in `persons.go`, `persons_extra.go` and `groups.go` go through the
+helpers, so a `*`, `(`, NUL, `,` or space can neither alter a search nor break out
+of a DN. Group names are normalized (lowercased) so creation and lookup agree.
+Tests: `TestValidateIdentityNameRejectsMetacharacters`,
+`TestGroupNamesAreNormalizedAndValidated`, `TestSearchValuesAreEscaped`.
+Live: `POST /api/users {"uid":"*)(uid=*"}` → 400, `POST /api/groups
+{"cn":"evil,ou=admin"}` → 400.
+
+**NAS-007 — smb.conf / Ganesha config injection (High).** Share text fields
+(description, path, allowed hosts, valid users/groups) reject newline/CR/NUL/tab,
+and the list fields also reject `;` and `"` (a Ganesha statement terminator and
+string delimiter). Share *names* reject control characters too. `validateShareFields`
+runs on create, on update (rolling the in-memory share back on failure) and on
+**load** — the config file is hand-editable, so an already-stored share whose
+fields would render into directives is skipped rather than served. `smbusers.go`
+now enforces `^[0-9A-F]{32}$` for NT hashes, and rejects `:`/control characters in
+the uid, gecos and home directory (those files are colon-separated records).
+Tests: `api/internal/shares/injection_test.go`.
+Live: a description with `\n` → 400 `description must not contain control
+characters`; `validUsers: ["alice; rm -rf"]` → 400; a clean share still creates
+(201) and deletes.
+
+**NAS-012 — receiver integrity (Medium).** Three changes, all receiver-side, since
+the receiver cannot decrypt and must not trust sender metadata:
+
+- `validateManifestShape` checks the sender-controlled manifest before storing it:
+  known payload kind, non-zero creation time, `chunkPlainSize` equal to the stored
+  chunk size, base64 stream prefix of 8 bytes, a decodable wrapped data key, and
+  chunks with strictly ascending indices from 0, sane plain/sealed sizes and
+  64-hex plaintext digests.
+- `Store.PutManifest` refuses to move `current` back to a chain that is already
+  stored (a rollback: a compromised or stale key replaying an older manifest).
+  Re-publishing the *current* chain stays allowed — that is what a resumed push
+  does — and rotations are logged.
+- `Store.Prune` bases survivorship on the receiver's own `current.json` pointer,
+  not on the sender's `CreatedAt`, and never prunes a chain the current backup
+  descends from. A rewritten timestamp can no longer make the live chain look
+  oldest. Tests: `TestManifestShapeValidation`,
+  `TestReceiverRefusesChainRollback`, `TestPruneSurvivesAForgedTimestamp`.
+- Live regression on the normal path: two sends (second incremental) with
+  `pruneKeep: 1` kept both chains (`prunedChains` absent) and `verify` walked the
+  sequence.
+
+Playwright **29 passed / 2 skipped / 0 failed**; `api` Go suite green; the VM is
+back to its baseline (test share, directory, chains and `.enroll-used` removed).
+
+**Still open**
+
+- NAS-013 (quota check-then-act race, manifest-byte undercount, `QuotaBytes`
+  validation), NAS-014's remaining half (persist the nonce cache across restarts,
+  cap its growth; the 128-bit job ids landed in Phase 2), NAS-021's cosmetic items
+  (stream-counter overflow refusal, 2-level source walk, `LimitReader` truncation
+  error, bounded FS walks).
+- FR-MET-10 per-interface IPs `[OPEN]`; 45 `svelte-check` warnings; image tags are
+  still reused (`0.1.0` + `IfNotPresent`) — always bump the suffix per deploy.
+
 ## Phase 3 start: product gaps (`feature/polish-gaps`, implemented)
 
 Branched from `feature/buddy-fanout` (still open), so the PR carries both until
