@@ -1,4 +1,5 @@
 .PHONY: all api agent ui images push-images \
+        buddyctl buddy-receiver-image \
         bootstrap bootstrap-vm dev-cluster crds \
         install install-vm uninstall clean
 
@@ -20,6 +21,7 @@ OPENLDAP_IMAGE := $(REGISTRY)/naslos-openldap:$(IMAGE_TAG)
 SAMBA_IMAGE := $(REGISTRY)/naslos-samba:$(IMAGE_TAG)
 NFS_IMAGE := $(REGISTRY)/naslos-nfs:$(IMAGE_TAG)
 TERMINAL_IMAGE := $(REGISTRY)/naslos-terminal:$(IMAGE_TAG)
+BUDDY_RECEIVER_IMAGE := $(REGISTRY)/naslos-buddy-receiver:$(IMAGE_TAG)
 
 # Extra flags passed through to helm upgrade (e.g. image registry overrides).
 HELM_FLAGS :=
@@ -42,8 +44,12 @@ agent:
 ui:
 	cd ui && npm install && npm run build
 
+# Buddy Backup client: the sender an operator runs (docs/buddy-backup.md).
+buddyctl:
+	cd api && $(GO) build -o ../bin/buddyctl ./cmd/buddyctl
+
 # Build all Naslos container images locally.
-images: api-image agent-image ui-image openldap-image samba-image nfs-image terminal-image
+images: api-image agent-image ui-image openldap-image samba-image nfs-image terminal-image buddy-receiver-image
 
 api-image:
 	$(DOCKER) build -t $(API_IMAGE) -f api/Dockerfile .
@@ -68,6 +74,11 @@ nfs-image:
 terminal-image:
 	$(DOCKER) build -t $(TERMINAL_IMAGE) -f terminal/image/Dockerfile terminal/image
 
+# The standalone Buddy Backup receiver: a two-volume container that stores
+# encrypted backups it cannot read (docs/buddy-backup.md).
+buddy-receiver-image:
+	$(DOCKER) build -t $(BUDDY_RECEIVER_IMAGE) --build-arg VERSION=$(IMAGE_TAG) -f api/Dockerfile.receiver .
+
 # Push all Naslos container images to REGISTRY (requires docker login / insecure-registry config for HTTP registries).
 push-images: images
 	$(DOCKER) push $(API_IMAGE)
@@ -76,6 +87,8 @@ push-images: images
 	$(DOCKER) push $(OPENLDAP_IMAGE)
 	$(DOCKER) push $(SAMBA_IMAGE)
 	$(DOCKER) push $(NFS_IMAGE)
+	$(DOCKER) push $(TERMINAL_IMAGE)
+	$(DOCKER) push $(BUDDY_RECEIVER_IMAGE)
 
 bootstrap:
 	$(TALOSCTL) image factory schematic bundle \

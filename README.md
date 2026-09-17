@@ -62,6 +62,8 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [deployment](docs/deployment.md) | Prerequisites, Make targets, Helm values |
 | [operations](docs/operations.md) | Backups, restore, troubleshooting |
 | [development](docs/development.md) | Layout, builds, extending the catalog |
+| [security-audit](docs/SECURITY-AUDIT.md) | Static security audit + findings |
+| [security-fix-plan](docs/SECURITY-FIX-PLAN.md) | Fix plan for the critical findings |
 
 ## Requirements
 
