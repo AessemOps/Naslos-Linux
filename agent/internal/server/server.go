@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -155,7 +156,7 @@ func (s *Server) handlePools(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		pools, err := s.zfs.Pools()
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, pools)
@@ -166,7 +167,7 @@ func (s *Server) handlePools(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.zfs.CreatePool(cfg); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, map[string]string{"status": "pool created", "name": cfg.Name})
@@ -184,7 +185,7 @@ func (s *Server) handlePoolImport(w http.ResponseWriter, r *http.Request) {
 		// List pools available for import.
 		pools, err := s.zfs.ListImportable()
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, pools)
@@ -195,7 +196,7 @@ func (s *Server) handlePoolImport(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewDecoder(r.Body).Decode(&req)
 		if err := s.zfs.ImportPool(req.Name); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		if req.Name == "" {
@@ -224,13 +225,13 @@ func (s *Server) handlePoolDetail(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		health, err := s.zfs.PoolHealth(pool)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, health)
 	case http.MethodDelete:
 		if err := s.zfs.DestroyPool(pool); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "pool destroyed", "name": pool})
@@ -259,7 +260,7 @@ func (s *Server) handlePoolDevices(w http.ResponseWriter, r *http.Request, pool 
 	case http.MethodGet:
 		free, err := s.zfs.FreeDisks()
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"pool": pool, "disks": free})
@@ -310,7 +311,7 @@ func (s *Server) handleDatasets(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		datasets, err := s.zfs.Datasets(rest)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, datasets)
@@ -356,7 +357,7 @@ func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		snaps, err := s.zfs.Snapshots(dataset)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, snaps)
@@ -369,7 +370,7 @@ func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.zfs.Snapshot(dataset, req.Name); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeClientError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, map[string]string{"status": "snapshot created"})
@@ -386,6 +387,18 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeClientError answers a backend client error with the right status: input
+// the caller can fix (a bad name, disk, topology or option) is a 400, anything
+// else is a node-side failure and stays a 500 (NAS-003).
+func writeClientError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	var invalid *zfs.ValidationError
+	if errors.As(err, &invalid) {
+		status = http.StatusBadRequest
+	}
+	writeError(w, status, err.Error())
 }
 
 var _ = log.Printf // suppress unused import

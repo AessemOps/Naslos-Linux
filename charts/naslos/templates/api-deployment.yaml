@@ -87,20 +87,20 @@ spec:
             # that Traefik's proxy-identity middleware injects; the API logs a
             # warning at startup when the check is off.
             - name: AUTH_DISABLED
-              value: {{ .Values.auth.disabled | toString | quote }}
+              value: {{ include "naslos.authDisabled" . | quote }}
             - name: TRAEFIK_CIDR
-              value: {{ .Values.auth.traefikCIDR | default "10.0.0.0/8" | quote }}
-            {{- if not .Values.auth.disabled }}
+              value: {{ include "naslos.authTraefikCIDR" . | quote }}
+            {{- if eq (include "naslos.authEnabled" .) "true" }}
             - name: PROXY_SHARED_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.auth.proxySecretName | default "naslos-proxy" }}
+                  name: {{ include "naslos.authProxySecretName" . | default "naslos-proxy" }}
                   key: secret
             # The bearer token the agent requires on every request but /health.
             - name: AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.agent.tokenSecret | default "naslos-agent" }}
+                  name: {{ include "naslos.agentTokenSecret" . | default "naslos-agent" }}
                   key: token
             {{- end }}
             {{- if .Values.api.talosConfigSecret }}

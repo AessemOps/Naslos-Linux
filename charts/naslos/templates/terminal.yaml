@@ -135,7 +135,7 @@ subjects:
   - kind: ServiceAccount
     name: naslos-api
     namespace: {{ .Values.namespace }}
-{{- if .Values.ingress.enabled }}
+{{- if eq (include "naslos.ingressEnabled" .) "true" }}
 ---
 # The terminal's own route: straight from Traefik to the API, behind Authelia.
 #
@@ -157,7 +157,7 @@ spec:
       kind: Rule
       middlewares:
         - name: forwardauth-authelia
-        {{- if not .Values.auth.disabled }}
+        {{- if eq (include "naslos.authEnabled" .) "true" }}
         # The API requires the shared secret on the terminal paths too, so the
         # route that bypasses nginx supplies it like the UI route does.
         - name: proxy-identity

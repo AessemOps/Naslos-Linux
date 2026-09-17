@@ -1,4 +1,4 @@
-{{- if .Values.ingress.enabled }}
+{{- if eq (include "naslos.ingressEnabled" .) "true" }}
 ---
 # Naslos UI IngressRoute
 apiVersion: traefik.io/v1alpha1
@@ -14,7 +14,7 @@ spec:
       kind: Rule
       middlewares:
         - name: forwardauth-authelia
-        {{- if not .Values.auth.disabled }}
+        {{- if eq (include "naslos.authEnabled" .) "true" }}
         # Proves the request came through this proxy: the API rejects owner
         # routes without the shared secret it sets (NAS-001).
         - name: proxy-identity

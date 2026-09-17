@@ -27,16 +27,16 @@ var snapshotNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.:+-]+$`)
 // that reaches a command line.
 func ValidateSnapshotName(name string) error {
 	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("snapshot name is required")
+		return invalidf("snapshot name is required")
 	}
 	if strings.HasPrefix(name, "-") {
-		return fmt.Errorf("snapshot name %q must not start with '-'", name)
+		return invalidf("snapshot name %q must not start with '-'", name)
 	}
 	if strings.ContainsAny(name, "@ /\\") {
-		return fmt.Errorf("snapshot name %q must not contain '@', '/', '\\' or spaces", name)
+		return invalidf("snapshot name %q must not contain '@', '/', '\\' or spaces", name)
 	}
 	if !snapshotNamePattern.MatchString(name) {
-		return fmt.Errorf("snapshot name %q must be letters, digits, '.', '_', ':', '+' or '-'", name)
+		return invalidf("snapshot name %q must be letters, digits, '.', '_', ':', '+' or '-'", name)
 	}
 	return nil
 }
@@ -74,7 +74,7 @@ func SendCommandLine(opts SendStreamOptions) ([]string, error) {
 			return nil, fmt.Errorf("from: %w", err)
 		}
 		if opts.From == opts.To {
-			return nil, fmt.Errorf("base and target are the same snapshot (%s): an incremental send needs two", opts.To)
+			return nil, invalidf("base and target are the same snapshot (%s): an incremental send needs two", opts.To)
 		}
 		args = append(args, "-i", opts.Dataset+"@"+opts.From)
 	}

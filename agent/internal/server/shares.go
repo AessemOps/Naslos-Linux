@@ -42,7 +42,7 @@ func (s *Server) handleSharesConfig(w http.ResponseWriter, r *http.Request) {
 		ShareCount:  req.ShareCount,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeClientError(w, err)
 		return
 	}
 
@@ -66,7 +66,7 @@ func (s *Server) handleSharesStatus(w http.ResponseWriter, r *http.Request) {
 
 	status, err := s.shares.Status()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeClientError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, status)

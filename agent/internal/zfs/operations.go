@@ -120,15 +120,15 @@ func (c *Client) CreatePool(cfg PoolConfig) error {
 		return err
 	}
 	if len(cfg.Disks) < 1 {
-		return fmt.Errorf("at least one disk is required")
+		return invalidf("at least one disk is required")
 	}
 	if min := vdevMinimumDisks(topology); len(cfg.Disks) < min {
-		return fmt.Errorf("creating %s needs at least %d disks, got %d", vdevLabel(topology), min, len(cfg.Disks))
+		return invalidf("creating %s needs at least %d disks, got %d", vdevLabel(topology), min, len(cfg.Disks))
 	}
 
 	// Check if pool already exists
 	if _, err := c.hostExec(zpoolBin, "list", cfg.Name); err == nil {
-		return fmt.Errorf("pool %q already exists", cfg.Name)
+		return invalidf("pool %q already exists", cfg.Name)
 	}
 
 	// A disk that belongs to another pool must never be accepted: `zpool create
@@ -150,7 +150,7 @@ func (c *Client) CreatePool(cfg PoolConfig) error {
 		cache = normalized[0]
 		for _, disk := range disks {
 			if disk == cache {
-				return fmt.Errorf("disk %s cannot be both a data disk and the cache device", cache)
+				return invalidf("disk %s cannot be both a data disk and the cache device", cache)
 			}
 		}
 	}
