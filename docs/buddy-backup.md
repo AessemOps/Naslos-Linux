@@ -492,11 +492,26 @@ Next, in the order the plan calls for:
 2. ~~**Scheduler + retention** — per-source schedule, `prune` after success, ntfy
    notification on failure.~~ **Done**: `hourly|daily|weekly` schedules with
    catch-up, `pruneKeep` on success and ntfy on success *and* failure.
-3. **Multi-buddy fan-out** — the same chain pushed to several receivers, with the
-   last successful destination surfaced per buddy.
-4. **Peer exposure** — decide between a dedicated listener and Traefik + Authelia
+3. ~~**Multi-buddy fan-out** — the same chain pushed to several receivers, with the
+   last successful destination surfaced per buddy.~~
+   **Done**: a schedule (or "Back up now") takes several receivers. Each destination
+   gets its own job, chain and resume state, so a dead or busy buddy fails only
+   itself; the entry stores the per-buddy outcome (`receiverResults`) and reports
+   `ok` only when every destination stored the run. `pruneKeep` applies per
+   destination, and each job sends its own notification.
+4. ~~**Peer exposure** — decide between a dedicated listener and Traefik + Authelia
    for letting a peer reach `/api/buddy/v1/*` across networks (`SEC-9` keeps the
-   agent's streaming endpoints in-cluster regardless).
+   agent's streaming endpoints in-cluster regardless).~~
+   **Decided and verified: no dedicated listener.** The peer API rides the same
+   ingress (or node port) the UI already uses. `/api/buddy/v1/*` stays public
+   because a peer authenticates with its own Ed25519 key and cannot complete an
+   interactive login; every owner-facing buddy route goes through the shared owner
+   gate (SEC-10), so the same entry point serves both without weakening either.
+   Live check with the gate armed: `/api/users` → `401` without the proxy secret,
+   while `buddyctl enroll` + `push` through that same `:30080` listener succeeded
+   (enrolled, then `backed up exposure-test/data to chain 2b36eeb7…`). `SEC-9`'s
+   constraint still holds: the agent's `/api/v1/zfs/*` streaming endpoints remain
+   ClusterIP-only and never appear on the UI's nginx.
 
 
 
