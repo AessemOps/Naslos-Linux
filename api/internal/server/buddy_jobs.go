@@ -129,18 +129,20 @@ func randomJobID() string {
 	return hex.EncodeToString(buf)
 }
 
-// conflicting returns a running job that shares the resume-state file
-// (same receiver+source) or the dataset (snapshot races), if any.
-func (m *buddyJobManager) conflicting(receiver, source, dataset string) *buddyJob {
+// conflicting returns a running job that shares the resume-state file (same
+// receiver+source). Two jobs may target the same dataset, which is what lets one
+// fan-out run back the same dataset up to several buddies at once: each job
+// snapshots under its own unique name and streams that snapshot, so they do not
+// race on the snapshot itself.
+func (m *buddyJobManager) conflicting(receiver, source string) *buddyJob {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, job := range m.jobs {
 		job.mu.Lock()
 		running := job.State == buddyJobRunning
 		samePair := job.Receiver == receiver && job.Source == source
-		sameDataset := job.Dataset == dataset
 		job.mu.Unlock()
-		if running && (samePair || sameDataset) {
+		if running && samePair {
 			return job
 		}
 	}
@@ -277,7 +279,7 @@ func (s *Server) handleBuddySend(w http.ResponseWriter, req *http.Request) {
 	}
 
 	jobs := s.ensureBuddyJobs()
-	if conflict := jobs.conflicting(receiverURL, source, dataset); conflict != nil {
+	if conflict := jobs.conflicting(receiverURL, source); conflict != nil {
 		c := conflict.snapshot()
 		writeError(w, http.StatusConflict, fmt.Sprintf(
 			"a backup of this source is already running (job %s, started %s)",
@@ -543,7 +545,7 @@ func (s *Server) runBuddySendJob(job *buddyJob) {
 func (s *Server) afterBuddyJob(job *buddyJob) {
 	snap := job.snapshot()
 	if s.buddySchedules != nil && snap.ScheduleID != "" {
-		s.buddySchedules.recordResult(snap.ScheduleID, snap.State == buddyJobSucceeded, snap.Error)
+		s.buddySchedules.recordResult(snap.ScheduleID, snap.Receiver, snap.State == buddyJobSucceeded, snap.Error)
 	}
 	s.notifyBuddyJob(snap)
 }

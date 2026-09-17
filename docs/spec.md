@@ -464,9 +464,12 @@ See `docs/buddy-backup.md`.
 - **FR-BUD-15** — Scheduled backups: an instance MUST be able to back its datasets
   up on an interval cadence (hourly / daily / weekly with a run-at time in UTC),
   persisted across restarts. A run missed while the API was down MUST fire once on
-  startup (catch-up). A scheduled run MUST apply the entry's retention
-  (`pruneKeep`) on success and MUST notify via ntfy on success
-  (`backup_success`) and on failure (`backup_failure`), gated on the
+  startup (catch-up). A run MUST be able to target several buddies at once: each
+  destination is an independent chain with its own resume state, a failure at one
+  MUST NOT prevent or fail the others, and the entry MUST record the outcome per
+  destination (overall `ok` only when every destination succeeded). A scheduled run
+  MUST apply the entry's retention (`pruneKeep`) on success and MUST notify via
+  ntfy on success (`backup_success`) and on failure (`backup_failure`), gated on the
   notification settings' enabled events.
 - **FR-BUD-16** — Owner UI: the `/backups` page MUST show the instance identity,
   the schedules, live progress of a manual send, the receiver status and a
@@ -647,6 +650,8 @@ real receiver over HTTP (an `httptest` server) against the real client:
 | `TestPruneKeepsNewestChains` | FR-BUD-09 (prune removes the old chains, keeps the current one restorable) |
 | `TestPruneNeverOrphansAnIncremental` | FR-BUD-09 (keep=1 on an incremental keeps its base; the sequence still restores) |
 | `TestPushAbortsWhenTheContextIsCancelled` | FR-BUD-16 (cancelling aborts an in-flight chunk instead of waiting for the receiver) |
+| `TestBuddyScheduleFanOutToSeveralBuddies` | FR-BUD-15 (two destinations get a job each, a dead one fails only itself, per-destination results recorded) |
+| `TestBuddyScheduleReceiversValidation` | FR-BUD-15 (at least one receiver, every URL valid, duplicates collapsed) |
 | `TestBuddySendRefusesADatasetTheHostCannotSee` / `TestBuddySendAllowsADatasetWithNoMountpoint` | FR-BUD-11 (a dataset mounted only inside a pod is refused before any snapshot; mountpoint none stays sendable) |
 
 Verified on the live VM (192.168.1.96) through the UI's NodePort, i.e. peer →
