@@ -13,6 +13,7 @@ import (
 
 	"github.com/AessemOps/Naslos-Linux/api/internal/agent"
 	"github.com/AessemOps/Naslos-Linux/api/internal/auth"
+	"github.com/AessemOps/Naslos-Linux/api/internal/buddy"
 	"github.com/AessemOps/Naslos-Linux/api/internal/catalog"
 	"github.com/AessemOps/Naslos-Linux/api/internal/helm"
 	"github.com/AessemOps/Naslos-Linux/api/internal/identity"
@@ -39,6 +40,18 @@ type Server struct {
 	// namespace is where Naslos runs; it is the terminal's default namespace and
 	// the scope the API's exec permission is limited to.
 	namespace string
+	// buddy is the receive side of Buddy Backup: peers push encrypted chunks that
+	// this instance stores but cannot read (docs/buddy-backup.md).
+	buddy *buddy.Receiver
+	// buddyJobs tracks async instance-side sends (POST /api/buddy/send → 202).
+	buddyJobs *buddyJobManager
+	// buddySchedules persists scheduled backups and drives the runner.
+	buddySchedules *buddyScheduleStore
+	// schedulerStop stops the backup scheduler; nil until started.
+	schedulerStop chan struct{}
+	// buddyRequireAuth gates the endpoints that authorize or revoke peers, the
+	// same way terminalRequireAuth gates the terminal.
+	buddyRequireAuth bool
 	// terminalRequireAuth gates the terminal on an authenticated session, and
 	// terminalAuthHeader is the header the authenticated proxy injects
 	// (Authelia's Remote-User by default). See requireTerminalAuth.
@@ -103,6 +116,23 @@ func New(addr string, tc *talos.Client) *Server {
 	agentBaseURL := getEnv("AGENT_BASE_URL", fmt.Sprintf(agent.DefaultBaseURLPattern, namespace))
 	agentClient := agent.NewClient(agentBaseURL)
 
+	// Buddy Backup, receive side. The peer registry lives with the other state
+	// files; the chunks live on the backup dataset (BUDDY_RECEIVE_PATH), which is
+	// mounted read-write into the API precisely because this is the one place a
+	// non-owner may write, and it can only ever write opaque ciphertext.
+	buddyPeers := buddy.NewPeerStore(getEnv("BUDDY_PEERS", "/var/lib/naslos/buddy-peers.json"))
+	if err := buddyPeers.Load(); err != nil {
+		log.Printf("Warning: could not load the buddy peer registry: %v", err)
+	}
+	buddyReceiver := &buddy.Receiver{
+		Store:       buddy.NewStore(getEnv("BUDDY_RECEIVE_PATH", "/var/lib/naslos/buddy")),
+		Peers:       buddyPeers,
+		Auth:        buddy.NewAuthenticator(buddyPeers),
+		Name:        getEnv("BUDDY_NAME", "naslos"),
+		Version:     getEnv("BUDDY_VERSION", "1"),
+		EnrollToken: getEnv("BUDDY_ENROLL_TOKEN", ""),
+	}
+
 	s := &Server{
 		addr:          addr,
 		talos:         tc,
@@ -116,6 +146,10 @@ func New(addr string, tc *talos.Client) *Server {
 		identity:      identityClient,
 		auth:          authMiddleware,
 		namespace:     namespace,
+		buddy:         buddyReceiver,
+		// Authorizing a peer grants storage access, so it is gated on an
+		// authenticated session for the same reason the terminal is.
+		buddyRequireAuth: getEnv("BUDDY_REQUIRE_AUTH", "true") != "false",
 		// The terminal reaches a root shell, so it is protected by default: only
 		// requests carrying the proxy's identity header are served. Turning this
 		// off is a development convenience and is logged as such.
@@ -190,6 +224,24 @@ func (s *Server) routes() {
 	s.router.HandleFunc("/api/notifications", s.handleNotifications)
 	s.router.HandleFunc("/api/notifications/test", s.handleNotificationTest)
 
+	// Buddy Backup. The peer-facing API is authenticated by the peers' own keys
+	// (never by the proxy: a peer cannot complete an interactive login), while the
+	// owner-facing endpoints follow the terminal's rule and require a proxied
+	// identity unless buddy.requireAuth=false.
+	if s.buddy != nil {
+		s.router.Handle(buddy.PathPrefix+"/", s.buddy.Handler())
+		s.router.HandleFunc("/api/buddy/status", s.handleBuddyStatus)
+		s.router.HandleFunc("/api/buddy/peers", s.handleBuddyPeers)
+		// Sender side: this instance backing *itself* (and its datasets) up to a
+		// buddy, using the agent's streaming `zfs send`/`zfs receive`.
+		s.router.HandleFunc("/api/buddy/identity", s.handleBuddyIdentity)
+		s.router.HandleFunc("/api/buddy/send", s.handleBuddySend)
+		s.router.HandleFunc("/api/buddy/restore", s.handleBuddyRestore)
+		s.router.HandleFunc("/api/buddy/jobs", s.handleBuddyJobs)
+		s.router.HandleFunc("/api/buddy/jobs/", s.handleBuddyJobDetail)
+		s.router.HandleFunc("/api/buddy/schedules", s.handleBuddySchedules)
+	}
+
 	// Metrics & Dashboard
 	s.router.HandleFunc("/api/metrics", s.handleMetrics)
 	s.router.HandleFunc("/api/dashboard", s.handleDashboard)
@@ -229,6 +281,11 @@ func (s *Server) Start() error {
 	// as soon as the server comes up.
 	s.startMetricsCollector()
 
+	// Async buddy sends and the backup scheduler (FR-BUD-15/16).
+	s.ensureBuddyJobs()
+	s.ensureBuddySchedules()
+	s.startBuddyScheduler()
+
 	// Converge the node's share services with the persisted share definitions.
 	// This covers first boot, chart upgrades and node reboots: the host's
 	// config directory may be empty or stale, and the API is the source of
@@ -249,6 +306,13 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.stopBuddyScheduler()
+	if s.buddyJobs != nil {
+		s.buddyJobs.cancelAll()
+	}
+	if s.server == nil {
+		return nil
+	}
 	return s.server.Shutdown(ctx)
 }
 
