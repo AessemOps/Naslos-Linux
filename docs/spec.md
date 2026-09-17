@@ -118,6 +118,12 @@ unmodified Talos installation, administered through a web UI.
   on every endpoint except its health probe, MUST compare it in constant time,
   MUST refuse to start without one, and MUST expose only an explicit development
   opt-out (`auth.disabled`, logged loudly) to turn the check off.
+- **SEC-12** — A one-time enrollment token MUST be single use across restarts (the
+  record MUST survive a process restart), and an existing peer's name MUST NOT be
+  re-keyed without an explicit revoke: otherwise a leaked token could substitute a
+  peer's key while the owner's peer list looked unchanged.
+- **SEC-13** — Owner-facing job identifiers MUST be unguessable (at least 128 bits):
+  they are the handle for inspecting and cancelling a running transfer.
 
 ### 2.3 Request flow (normative)
 
@@ -427,7 +433,10 @@ See `docs/buddy-backup.md`.
   refuse a chunk that would exceed it.
 - **FR-BUD-09** — The owner MUST be able to prune a source to the newest N chains
   and to revoke a key. Revoking MUST stop new pushes immediately and MUST NOT be
-  presented as a deletion of existing backups.
+  presented as a deletion of existing backups. Pruning MUST NOT orphan a chain the
+  newest backup descends from: keeping a few more chains than requested is correct,
+  leaving an incremental without its base is not (the send and the schedule would
+  report success while the backup could no longer be restored).
 - **FR-BUD-10** — Unknown keys, unsigned requests, stale timestamps, replayed
   requests, out-of-scope sources, tampered chunks and tampered manifests MUST each
   fail with an explicit error; a restore MUST never write unverified data.
@@ -435,7 +444,10 @@ See `docs/buddy-backup.md`.
   external tool: the API MUST drive the node's `zfs send` through the agent, stream
   it (never buffering a whole dataset in memory) into the encrypted push, and MUST
   send incrementally whenever the receiver already holds the base snapshot,
-  identified by its ZFS GUID rather than by name.
+  identified by its ZFS GUID rather than by name. It MUST refuse to send a dataset
+  that is not mounted in the node's own mount namespace, because such a send
+  captures an empty filesystem while reporting success (the pod mount-propagation
+  trap).
 - **FR-BUD-12** — The agent MUST expose `zfs send`/`zfs receive` as streams, and MUST
   validate every dataset and snapshot name it is given before it reaches a command
   line (`SEC-1`). Streaming calls MUST NOT be bound by the control-plane client's
@@ -460,8 +472,13 @@ See `docs/buddy-backup.md`.
   the schedules, live progress of a manual send, the receiver status and a
   verify view. A manual send MUST run as an async job (`202` + pollable
   progress + cancellation) and MUST refuse a second send for the same
-  (receiver, source) or dataset while one runs. A restore from the UI MUST
-  require an explicit confirmation naming the destination dataset.
+  (receiver, source) or dataset while one runs. Cancelling MUST abort an
+  in-flight transfer promptly rather than waiting for the current chunk request
+  to return. A restore from the UI MUST require an explicit confirmation naming
+  the destination dataset.
+- **FR-BUD-17** — A schedule MUST only reference a dataset that exists on the node
+  when it is created (an exact match, not a pool-prefix guess), so a typo fails at
+  creation rather than at the first run.
 
 ---
 
@@ -628,6 +645,9 @@ real receiver over HTTP (an `httptest` server) against the real client:
 | `TestRequestAuthentication` | FR-BUD-03 (unsigned 401, unknown key 401, stale timestamp 401, replayed nonce 401) |
 | `TestEnrollAuthorizesTheFirstKey` | FR-BUD-03 (single-use token; closed receivers refuse enrollment) |
 | `TestPruneKeepsNewestChains` | FR-BUD-09 (prune removes the old chains, keeps the current one restorable) |
+| `TestPruneNeverOrphansAnIncremental` | FR-BUD-09 (keep=1 on an incremental keeps its base; the sequence still restores) |
+| `TestPushAbortsWhenTheContextIsCancelled` | FR-BUD-16 (cancelling aborts an in-flight chunk instead of waiting for the receiver) |
+| `TestBuddySendRefusesADatasetTheHostCannotSee` / `TestBuddySendAllowsADatasetWithNoMountpoint` | FR-BUD-11 (a dataset mounted only inside a pod is refused before any snapshot; mountpoint none stays sendable) |
 
 Verified on the live VM (192.168.1.96) through the UI's NodePort, i.e. peer →
 nginx → API, with the chart's `buddy` values enabled:
@@ -653,7 +673,7 @@ nginx → API, with the chart's `buddy` values enabled:
 | Live: with the gate armed (`AUTH_DISABLED=false`), a NodePort request to `/api/*` with or without a forged `Remote-User` → 401; with the dev opt-out → served | SEC-10 |
 | `POST /api/buddy/send` → `202 {jobId}`; `GET /api/buddy/jobs/{id}` reaches `succeeded` with the sync-era result fields | FR-BUD-16 (async jobs) |
 | second send for the same (receiver, source) or dataset while running → 409; `DELETE` mid-send → `cancelled`, resume state kept, retry `resumed: true` | FR-BUD-16 |
-| schedule due → job runs, `lastResult: ok`, `pruneKeep` leaves one chain, one `backup_success` ntfy post | FR-BUD-15 |
+| schedule due → job runs, `lastResult: ok`, `pruneKeep` keeps the restorable sequence, one `backup_success` ntfy post | FR-BUD-15 |
 | schedule against a dead receiver → job `failed`, `lastResult: failed`, one `backup_failure` ntfy post | FR-BUD-15 |
 | `ui/tests/backups.spec.ts` — identity card, schedule create/delete, receiver free space, manual send to `succeeded` | FR-BUD-16 |
 

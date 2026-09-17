@@ -45,6 +45,13 @@ type Dataset struct {
 	Avail      string `json:"avail"`
 	Refer      string `json:"refer"`
 	Mountpoint string `json:"mountpoint"`
+	// Mounted is the dataset's mount state in *this* process's mount namespace.
+	// The agent runs in the host's, which is what `zfs send` and the on-disk
+	// data live in: a dataset created from inside a pod can be mounted in that
+	// pod's namespace only, in which case a send from here captures an empty
+	// dataset while the data sits on the parent. Callers refuse to back such a
+	// dataset up (see the instance's send path).
+	Mounted bool `json:"mounted"`
 }
 
 // PoolConfig is the configuration for creating a new pool.
