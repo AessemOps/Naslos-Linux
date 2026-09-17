@@ -27,7 +27,7 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       containers:
         - name: nfs
-          image: "{{ .Values.shares.nfs.image.repository }}:{{ .Values.shares.nfs.image.tag }}"
+          image: {{ include "naslos.image" .Values.shares.nfs.image }}
           imagePullPolicy: {{ .Values.shares.nfs.image.pullPolicy }}
           # Ganesha runs as root to bind the privileged port and to read/write
           # the datasets. DAC_READ_SEARCH is required, not optional: the VFS

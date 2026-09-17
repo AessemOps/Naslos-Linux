@@ -28,7 +28,7 @@ spec:
         # Best-effort: after the retries we start anyway rather than block
         # forever, since Kubernetes will restart us if nginx still cannot start.
         - name: wait-for-api
-          image: "{{ .Values.ui.image.repository }}:{{ .Values.ui.image.tag }}"
+          image: {{ include "naslos.image" .Values.ui.image }}
           imagePullPolicy: {{ .Values.ui.image.pullPolicy }}
           command:
             - sh
@@ -49,7 +49,7 @@ spec:
               exit 0
       containers:
         - name: ui
-          image: "{{ .Values.ui.image.repository }}:{{ .Values.ui.image.tag }}"
+          image: {{ include "naslos.image" .Values.ui.image }}
           imagePullPolicy: {{ .Values.ui.image.pullPolicy }}
           ports:
             - containerPort: 80

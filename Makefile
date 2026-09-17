@@ -90,6 +90,16 @@ push-images: images
 	$(DOCKER) push $(TERMINAL_IMAGE)
 	$(DOCKER) push $(BUDDY_RECEIVER_IMAGE)
 
+# Print the digests of the images built for IMAGE_TAG, for pinning them in
+# values (NAS-022: a tag is mutable, a digest is not).
+image-digests:
+	@for image in $(API_IMAGE) $(AGENT_IMAGE) $(UI_IMAGE) $(OPENLDAP_IMAGE) \
+	              $(SAMBA_IMAGE) $(NFS_IMAGE) $(TERMINAL_IMAGE) $(BUDDY_RECEIVER_IMAGE); do \
+		digest=$$($(DOCKER) inspect --format '{{index .RepoDigests 0}}' $$image 2>/dev/null); \
+		if [ -n "$$digest" ]; then echo "$$image -> $$digest"; \
+		else echo "$$image -> (not pushed yet: push first, a digest only exists remotely)"; fi; \
+	done
+
 bootstrap:
 	$(TALOSCTL) image factory schematic bundle \
 		--schematic $(SCHEMATIC) \
