@@ -137,10 +137,16 @@ func New(addr string, tc *talos.Client) *Server {
 	if err := buddyPeers.Load(); err != nil {
 		log.Printf("Warning: could not load the buddy peer registry: %v", err)
 	}
+	buddyStorePath := getEnv("BUDDY_RECEIVE_PATH", "/var/lib/naslos/buddy")
+	buddyAuth := buddy.NewAuthenticator(buddyPeers)
+	// Keep the replay cache across restarts: a request captured just before a
+	// restart could otherwise be replayed inside the clock-skew window (NAS-014).
+	buddyAuth.PersistNonces(buddyStorePath)
+
 	buddyReceiver := &buddy.Receiver{
-		Store:       buddy.NewStore(getEnv("BUDDY_RECEIVE_PATH", "/var/lib/naslos/buddy")),
+		Store:       buddy.NewStore(buddyStorePath),
 		Peers:       buddyPeers,
-		Auth:        buddy.NewAuthenticator(buddyPeers),
+		Auth:        buddyAuth,
 		Name:        getEnv("BUDDY_NAME", "naslos"),
 		Version:     getEnv("BUDDY_VERSION", "1"),
 		EnrollToken: getEnv("BUDDY_ENROLL_TOKEN", ""),

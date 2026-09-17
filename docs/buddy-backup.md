@@ -96,6 +96,9 @@ PUT
 
 Because the method, the full URI (query string and mount prefix included), the body
 digest, the timestamp and the nonce are all inside it, a captured request cannot be
+replayed twice inside the clock-skew window: the receiver records each nonce it has
+seen, per key, bounded in memory and persisted next to its store (`.nonces`) so a
+restart cannot re-arm the window. A captured request cannot be
 pointed at another path, another body, or replayed later. The receiver additionally:
 
 - rejects a timestamp more than **5 minutes** from its own clock;
@@ -113,6 +116,8 @@ that rewrites the path — an error nobody can debug otherwise.
 | POST | `/enroll` | Bootstrap: a peer presents the receiver's one-time token and its public key. The only unsigned call. |
 | GET | `/status` | Free space, bytes stored for this key, quota, sources, last backup, current chain per source |
 | GET | `/backups` | Rows: source, chain, kind, created, chunks, stored bytes |
+| GET | `/chains/{source}` | Chain list (newest first) with GUIDs, for showing a source's history. Bounded to the newest 500 chains and reports `truncated`/`total` |
+| GET | `/sequence/{source}?chain=` | The chains a restore must apply, oldest first, followed through the receiver's GUID index. This is what a restore uses, so its work is proportional to the sequence rather than to the source's whole history |
 | GET | `/chunks/{source}?chain=` | Chunk list: index + digest of each stored sealed chunk |
 | GET | `/chunks/{source}?chain=&index=` | One sealed chunk (raw bytes) |
 | PUT | `/chunks/{source}?chain=&index=` | Upload one sealed chunk (idempotent) |

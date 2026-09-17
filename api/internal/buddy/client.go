@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -252,6 +253,39 @@ func (c *Client) ChainsContext(ctx context.Context, source string) ([]ChainSumma
 	return response.Chains, nil
 }
 
+// sequence asks the receiver for the chains a restore must apply (oldest first).
+func (c *Client) sequence(ctx context.Context, source, chain string) ([]ChainSummary, error) {
+	if err := ValidateSource(source); err != nil {
+		return nil, err
+	}
+	path := "/sequence/" + source
+	if chain != "" {
+		path += "?chain=" + chain
+	}
+	data, status, err := c.do(ctx, http.MethodGet, path, nil)
+	// An older receiver has no /sequence route: 404 means "walk the listing
+	// yourself", not "the backup is missing".
+	if status == http.StatusNotFound {
+		return nil, errSequenceUnsupported
+	}
+	if err != nil {
+		return nil, err
+	}
+	var response struct {
+		Chains []ChainSummary `json:"chains"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, fmt.Errorf("parsing the restore sequence: %w", err)
+	}
+	if len(response.Chains) == 0 {
+		return nil, fmt.Errorf("no backup of %s is stored here", source)
+	}
+	return response.Chains, nil
+}
+
+// errSequenceUnsupported marks a receiver without the /sequence endpoint.
+var errSequenceUnsupported = errors.New("this receiver does not offer the restore sequence endpoint")
+
 // RestoreSequence returns the chains needed to rebuild a source from scratch, oldest
 // first: the last full send plus every incremental that follows it. A restore cannot
 // skip a link - `zfs receive` refuses an incremental stream whose base is missing -
@@ -262,6 +296,16 @@ func (c *Client) RestoreSequence(source, chain string) ([]ChainSummary, error) {
 
 // restoreSequence is RestoreSequence with a caller context.
 func (c *Client) RestoreSequenceContext(ctx context.Context, source, chain string) ([]ChainSummary, error) {
+	// Ask the receiver for the sequence directly: it follows its own GUID index, so
+	// the work is proportional to the sequence instead of to every chain the source
+	// ever stored (NAS-021). A receiver that predates the endpoint answers 404 and
+	// we fall back to listing and walking here.
+	if sequences, err := c.sequence(ctx, source, chain); err == nil {
+		return sequences, nil
+	} else if !errors.Is(err, errSequenceUnsupported) {
+		return nil, err
+	}
+
 	chains, err := c.ChainsContext(ctx, source)
 	if err != nil {
 		return nil, err
