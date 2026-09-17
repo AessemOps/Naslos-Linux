@@ -6,7 +6,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,11 +89,116 @@ type Authenticator struct {
 	// seen maps a key to the nonces it has used and when they expire. Per-key
 	// nesting bounds one key's memory without letting it evict another's entries.
 	seen map[string]map[string]time.Time
+	// nonceFile is the append-only replay cache on disk (empty = memory only).
+	nonceFile        string
+	warnedNonceWrite bool
 }
 
 // NewAuthenticator creates an authenticator backed by the given peer store.
 func NewAuthenticator(peers *PeerStore) *Authenticator {
 	return &Authenticator{peers: peers, seen: make(map[string]map[string]time.Time)}
+}
+
+// PersistNonces makes the replay cache survive a restart by recording each used
+// nonce under dir (.nonces). Without it, a request captured just before a restart
+// could be replayed within the clock-skew window once the process came back with
+// an empty cache (NAS-014). Persistence is best effort: a failure to read or write
+// the file logs once and leaves the in-memory cache doing its job.
+func (a *Authenticator) PersistNonces(dir string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if dir == "" {
+		return
+	}
+	a.nonceFile = filepath.Join(dir, ".nonces")
+	a.loadNoncesLocked(time.Now())
+}
+
+// nonceLine renders one persisted nonce: expiry, key, nonce.
+func nonceLine(keyID, nonce string, expiry time.Time) string {
+	return strconv.FormatInt(expiry.UnixNano(), 10) + " " + keyID + " " + nonce + "\n"
+}
+
+// loadNoncesLocked restores unexpired nonces from the file.
+func (a *Authenticator) loadNoncesLocked(now time.Time) {
+	if a.nonceFile == "" {
+		return
+	}
+	raw, err := os.ReadFile(a.nonceFile)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("buddy auth: cannot read the nonce cache (%v); replay protection restarts from memory", err)
+		}
+		return
+	}
+	if a.seen == nil {
+		a.seen = make(map[string]map[string]time.Time)
+	}
+	restored := 0
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.SplitN(line, " ", 3)
+		if len(fields) != 3 {
+			continue
+		}
+		expiryNanos, err := strconv.ParseInt(fields[0], 10, 64)
+		if err != nil {
+			continue
+		}
+		expiry := time.Unix(0, expiryNanos)
+		if expiry.Before(now) {
+			continue
+		}
+		keyID, nonce := fields[1], fields[2]
+		nonces := a.seen[keyID]
+		if nonces == nil {
+			nonces = make(map[string]time.Time)
+			a.seen[keyID] = nonces
+		}
+		nonces[nonce] = expiry
+		restored++
+	}
+	if restored > 0 {
+		log.Printf("buddy auth: restored %d unexpired nonces from %s", restored, a.nonceFile)
+	}
+}
+
+// persistNonceLocked appends one nonce and compacts the file when it grows past
+// the bound.
+func (a *Authenticator) persistNonceLocked(keyID, nonce string, expiry time.Time) {
+	if a.nonceFile == "" {
+		return
+	}
+	file, err := os.OpenFile(a.nonceFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err == nil {
+		if _, writeErr := file.WriteString(nonceLine(keyID, nonce, expiry)); writeErr != nil && !a.warnedNonceWrite {
+			a.warnedNonceWrite = true
+			log.Printf("buddy auth: cannot persist nonces (%v); a restart would re-arm them within the skew window", writeErr)
+		}
+		_ = file.Close()
+	} else if !a.warnedNonceWrite {
+		a.warnedNonceWrite = true
+		log.Printf("buddy auth: cannot persist nonces (%v); a restart would re-arm them within the skew window", err)
+	}
+
+	entries := 0
+	for _, nonces := range a.seen {
+		entries += len(nonces)
+	}
+	if entries < nonceFileCompactThreshold {
+		return
+	}
+	// Rewrite with what is still live: the file would otherwise grow forever.
+	var builder strings.Builder
+	for usedKey, nonces := range a.seen {
+		for used, usedExpiry := range nonces {
+			builder.WriteString(nonceLine(usedKey, used, usedExpiry))
+		}
+	}
+	if err := writeFileAtomic(a.nonceFile, []byte(builder.String())); err != nil && !a.warnedNonceWrite {
+		a.warnedNonceWrite = true
+		log.Printf("buddy auth: cannot compact the nonce cache (%v)", err)
+	}
 }
 
 // Verify authenticates a request. bodyDigest is the digest of the body the caller
@@ -211,9 +319,15 @@ func (a *Authenticator) replay(keyID, nonce string, now time.Time) bool {
 			delete(nonces, soonest)
 		}
 	}
-	nonces[nonce] = now.Add(nonceTTL)
+	expiry := now.Add(nonceTTL)
+	nonces[nonce] = expiry
+	a.persistNonceLocked(keyID, nonce, expiry)
 	return false
 }
+
+// nonceFileCompactThreshold is how many live nonces trigger a rewrite of the
+// cache file: below it, appending is cheaper than rewriting.
+const nonceFileCompactThreshold = 1024
 
 // randomNonce returns a 128-bit random nonce, base64-encoded.
 func randomNonce() (string, error) {

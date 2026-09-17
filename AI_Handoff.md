@@ -1,5 +1,46 @@
 # AI Handoff — Naslos
 
+## Final hardening: bounded walks + persisted replay cache (`feature/buddy-walk-bounds`)
+
+Branched from master `2f3ece0` (PR #16 merged). Deployed: api `0.1.0-b21`
+(helm revision 82), agent `0.1.0-b6`, ui `0.1.0-b9`.
+
+**NAS-021 — bounded filesystem walks.** Two changes, closing the last audit item:
+
+- The receiver keeps a per-source GUID index (`chains/links.json`, maintained on
+  publish and rebuilt after a prune) and gained
+  `GET /sequence/{source}?chain=`, which follows a backup's history backwards one
+  manifest read per step. A restore uses it, so its work is proportional to the
+  sequence rather than to everything the source ever stored. The index is a cache:
+  a missing or stale one falls back to a scan and rewrites itself. The walk
+  refuses a loop and refuses a missing base — the test for that caught a real bug
+  where a missing base manifest ended the walk quietly and returned a *partial*
+  sequence.
+- `GET /chains/{source}` (the history a UI shows) is capped to the newest
+  `MaxListedChains` (500) and reports `total`/`truncated`, so one request cannot
+  walk an unbounded tree. `ChainCount` gives the real total without reading
+  manifests.
+- The client keeps a fallback for receivers that predate `/sequence`: it lists and
+  walks locally, so the two flavours stay compatible in both directions.
+- Live: `verify` on the VM walked the sequence and returned the chain digest;
+  Playwright **30 passed / 2 skipped / 0 failed**.
+
+**NAS-014 — persisted replay cache.** The nonce cache is written next to the
+receiver's store (`.nonces`, mode 0600, dot-prefixed so the usage accounting
+ignores it), loaded on startup and compacted once it passes 1024 live entries.
+The per-key bound from the previous batch still applies, and a write failure logs
+once and leaves the in-memory cache working. This closes the window where a
+request captured just before a restart could be replayed inside the 5-minute
+clock skew. Both receivers wire it up (`<store>/.nonces`).
+Live: after a push and a `rollout restart`, the API logged
+`buddy auth: restored 7 unexpired nonces from /var/lib/naslos/buddy/.nonces`.
+Spec: **SEC-14**; tests `TestNoncesSurviveARestart`, `TestNonceFileIsCompacted`,
+`TestPersistNoncesWithoutAPathStaysInMemory`.
+
+With these two, every item in the security audit that this project set out to fix
+is either implemented or explicitly accepted, and the roadmap's Phase 0–3 items
+are all merged and live-verified. Nothing is outstanding.
+
 ## Deploy toil: automatic receive-dataset ownership (`feature/buddy-dataset-init`)
 
 Branched from master `0967803` (PR #15 merged). Chart + docs only.

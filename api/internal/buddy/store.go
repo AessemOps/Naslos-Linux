@@ -487,6 +487,19 @@ func (s *Store) PutManifest(keyID, source string, m *Manifest) error {
 	if err := os.MkdirAll(sourceDir, 0755); err != nil {
 		return err
 	}
+	// Keep the GUID index current so a restore can follow the history without
+	// reading every manifest (NAS-021).
+	if m.ToGUID != "" {
+		links := s.readLinks(keyID, source)
+		if links == nil {
+			links = map[string]string{}
+		}
+		if links[m.ToGUID] != m.Chain {
+			links[m.ToGUID] = m.Chain
+			s.writeLinks(keyID, source, links)
+		}
+	}
+
 	if previous != m.Chain {
 		log.Printf("buddy receiver: %s current chain %s -> %s (%s)", source, orNone(previous), m.Chain, m.Kind)
 	}
@@ -556,10 +569,201 @@ func (s *Store) ManifestForChain(keyID, source, chain string) (*Manifest, error)
 	return &manifest, nil
 }
 
+// MaxListedChains bounds a chain listing: a source that has grown for years must
+// not make one request walk an unbounded directory tree (NAS-021). The listing
+// reports `truncated` when it hit the cap; a restore does not use it (see
+// Sequence), so nothing that needs the whole history is cut off by it.
+const MaxListedChains = 500
+
+// linksFile maps a chain's ToGUID to the chain that produced it, so a restore can
+// follow a source's history backwards by reading one manifest per step instead of
+// every manifest stored (NAS-021). It is a cache: a missing or stale entry falls
+// back to a scan, which rewrites the index.
+const linksFile = "links.json"
+
+// readLinks loads the GUID index of a source (ToGUID -> chain).
+func (s *Store) readLinks(keyID, source string) map[string]string {
+	dir, err := s.sourceDir(keyID, source)
+	if err != nil {
+		return nil
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "chains", linksFile))
+	if err != nil {
+		return nil
+	}
+	links := map[string]string{}
+	if err := json.Unmarshal(raw, &links); err != nil {
+		return nil
+	}
+	return links
+}
+
+// writeLinks persists the GUID index, best effort: losing it only costs a scan.
+func (s *Store) writeLinks(keyID, source string, links map[string]string) {
+	dir, err := s.sourceDir(keyID, source)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "chains"), 0o755); err != nil {
+		return
+	}
+	data, err := json.MarshalIndent(links, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = writeFileAtomic(filepath.Join(dir, "chains", linksFile), data)
+}
+
+// ChainCount counts a source's stored chains without reading their manifests, so
+// a truncated listing can still report the real total cheaply.
+func (s *Store) ChainCount(keyID, source string) (int, error) {
+	dir, err := s.sourceDir(keyID, source)
+	if err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "chains"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// Sequence returns the chains needed to rebuild a source, oldest first: the last
+// full send plus every incremental that follows it. It follows the FromGUID links
+// from the requested chain (or the current one) backwards, so the work is
+// proportional to the sequence rather than to the source's whole history.
+func (s *Store) Sequence(keyID, source, chain string) ([]Manifest, error) {
+	target, err := s.manifestFor(keyID, source, chain)
+	if err != nil {
+		return nil, err
+	}
+	if target == nil {
+		return nil, fmt.Errorf("no backup of %s is stored here", source)
+	}
+
+	links := s.readLinks(keyID, source)
+	needsScan := links == nil
+	byToGUID := map[string]Manifest{}
+
+	load := func(chainID string) (*Manifest, error) {
+		if manifest, ok := byToGUID[chainID]; ok {
+			return &manifest, nil
+		}
+		return s.manifestFor(keyID, source, chainID)
+	}
+
+	sequence := make([]Manifest, 0, 8)
+	current := target
+	seen := map[string]bool{}
+	for current != nil {
+		if seen[current.Chain] {
+			return nil, fmt.Errorf("the chain history of %s contains a loop at %s", source, current.Chain)
+		}
+		seen[current.Chain] = true
+		sequence = append(sequence, *current)
+
+		if current.FromGUID == "" {
+			break
+		}
+		next := ""
+		if !needsScan {
+			next = links[current.FromGUID]
+		}
+		if next == "" {
+			// No index (or a stale entry): find the chain that produced the base
+			// GUID, rebuild the index from what is stored, and continue.
+			all, err := s.Chains(keyID, source)
+			if err != nil {
+				return nil, err
+			}
+			rebuilt := make(map[string]string, len(all))
+			for _, candidate := range all {
+				if candidate.ToGUID != "" {
+					rebuilt[candidate.ToGUID] = candidate.Chain
+					byToGUID[candidate.Chain] = candidate
+				}
+			}
+			links = rebuilt
+			needsScan = false
+			s.writeLinks(keyID, source, rebuilt)
+			next = links[current.FromGUID]
+		}
+		if next == "" {
+			// The base is not stored: the sequence cannot be rebuilt from here.
+			// Restore refuses up front rather than applying a partial stream.
+			return nil, fmt.Errorf("the chain %s needs the chain that produced GUID %s, which is not stored here",
+				current.Chain, current.FromGUID)
+		}
+		base, err := load(next)
+		if err != nil {
+			return nil, err
+		}
+		if base == nil {
+			// The index named a chain whose manifest is gone: refuse rather than
+			// return a partial sequence.
+			return nil, fmt.Errorf("the chain %s needs the chain that produced GUID %s, which is not stored here",
+				current.Chain, current.FromGUID)
+		}
+		current = base
+	}
+
+	// Reverse: oldest first.
+	for i, j := 0, len(sequence)-1; i < j; i, j = i+1, j-1 {
+		sequence[i], sequence[j] = sequence[j], sequence[i]
+	}
+	return sequence, nil
+}
+
+// manifestFor reads one manifest: the current one when chain is empty, else that
+// chain's. It returns (nil, nil) when the source has no current manifest.
+func (s *Store) manifestFor(keyID, source, chain string) (*Manifest, error) {
+	if chain == "" {
+		manifest, err := s.Manifest(keyID, source)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		return manifest, nil
+	}
+	dir, err := s.chainDir(keyID, source, chain)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return nil, err
+	}
+	return &manifest, nil
+}
+
 // Chains returns every chain manifest stored for a source, newest first. A restore
 // needs the whole chain, not just the current one: an incremental stream can only be
 // applied on top of the chain it was taken from.
 func (s *Store) Chains(keyID, source string) ([]Manifest, error) {
+	return s.ChainsLimited(keyID, source, MaxListedChains)
+}
+
+// ChainsLimited is Chains with an explicit cap (0 means no cap). It exists so the
+// HTTP layer can report truncation, and so tests can stay small.
+func (s *Store) ChainsLimited(keyID, source string, limit int) ([]Manifest, error) {
 	dir, err := s.sourceDir(keyID, source)
 	if err != nil {
 		return nil, err
@@ -588,6 +792,9 @@ func (s *Store) Chains(keyID, source string) ([]Manifest, error) {
 		manifests = append(manifests, manifest)
 	}
 	sort.Slice(manifests, func(i, j int) bool { return manifests[i].CreatedAt.After(manifests[j].CreatedAt) })
+	if limit > 0 && len(manifests) > limit {
+		manifests = manifests[:limit]
+	}
 	return manifests, nil
 }
 func (s *Store) Summary(keyID string) ([]Backups, error) {
@@ -833,6 +1040,18 @@ func (s *Store) Prune(keyID, source string, keep int) (int, error) {
 	}
 	if removed > 0 {
 		s.invalidateUsage(keyID)
+		// The index pointed at chains that no longer exist: rebuild it from what
+		// survived.
+		links := make(map[string]string, len(chains))
+		for _, chain := range chains {
+			if chain.toGUID == "" {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(chainsDir, chain.name)); err == nil {
+				links[chain.toGUID] = chain.name
+			}
+		}
+		s.writeLinks(keyID, source, links)
 	}
 	return removed, nil
 }
