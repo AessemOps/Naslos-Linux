@@ -259,3 +259,57 @@ func (m *Manifest) VerifySignature(authorizedKey string) error {
 	}
 	return Verify(authorizedKey, canonical, sig)
 }
+
+// validateManifestShape checks the sender-controlled parts of a manifest that
+// later drive restores and pruning. The receiver cannot decrypt, so this is the
+// only place it can refuse metadata that is malformed or self-inconsistent
+// (NAS-012): a duplicate or out-of-order index, an impossible chunk size, a
+// missing stream prefix or key, or an unknown payload kind.
+func validateManifestShape(m *Manifest) error {
+	if m.Kind != "zfs-send" && m.Kind != "tar" {
+		return fmt.Errorf("unsupported payload kind %q", m.Kind)
+	}
+	if m.CreatedAt.IsZero() {
+		return fmt.Errorf("manifest has no creation time")
+	}
+	if m.ChunkPlainSize != ChunkPlainSize {
+		return fmt.Errorf("chunk plain size is %d, this receiver stores %d-byte chunks", m.ChunkPlainSize, ChunkPlainSize)
+	}
+	prefix, err := base64.StdEncoding.DecodeString(m.StreamPrefix)
+	if err != nil || len(prefix) != 8 {
+		return fmt.Errorf("stream prefix must be base64 for 8 bytes")
+	}
+	if m.DEKWrapped == "" {
+		return fmt.Errorf("manifest carries no wrapped data key")
+	}
+	if _, err := base64.StdEncoding.DecodeString(m.DEKWrapped); err != nil {
+		return fmt.Errorf("wrapped data key is not valid base64")
+	}
+
+	for i, chunk := range m.Chunks {
+		if chunk.Index != i {
+			return fmt.Errorf("chunk %d is out of order (index %d): the manifest must list chunks 0..n-1 exactly once", i, chunk.Index)
+		}
+		if chunk.PlainBytes <= 0 || chunk.PlainBytes > ChunkPlainSize {
+			return fmt.Errorf("chunk %d declares %d plain bytes, outside (0, %d]", i, chunk.PlainBytes, ChunkPlainSize)
+		}
+		if chunk.SealedBytes <= chunk.PlainBytes || chunk.SealedBytes > MaxSealedChunkSize {
+			return fmt.Errorf("chunk %d declares %d sealed bytes, which cannot hold %d plain bytes",
+				i, chunk.SealedBytes, chunk.PlainBytes)
+		}
+		if len(chunk.Sha256Plain) != 64 || !isHex(chunk.Sha256Plain) {
+			return fmt.Errorf("chunk %d has an invalid plaintext digest", i)
+		}
+	}
+	return nil
+}
+
+// isHex reports whether s is entirely hexadecimal characters.
+func isHex(s string) bool {
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
+}
