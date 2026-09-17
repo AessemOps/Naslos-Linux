@@ -343,8 +343,13 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-MET-09** — The UI MUST display a visible error message when the
   dashboard API is unreachable, and MUST NOT render the Go zero-time
   (`0001-01-01…`) as a timestamp.
-- **FR-MET-10** — Per-interface IP addresses in the UI and multi-node metric
-  aggregation are **[OPEN]** (interface names are collected; IPs are not yet).
+- **FR-MET-10** — The dashboard MUST show each network interface with its address:
+  the routable IPv4 where there is one (otherwise the routable IPv6), never the
+  loopback or a link-local address, and the interface name alone when no address
+  can be determined. Interface names and counters come from `/proc/net/dev`;
+  addresses come from the node's Talos `AddressStatus` resources, and a failure to
+  read them MUST NOT hide the rest of the metrics. Multi-node metric aggregation
+  remains **[OPEN]** (this is a single-node product).
 
 ### 3.6 Logs & terminal (`FR-LOG`)
 
@@ -602,6 +607,8 @@ The authoritative executable acceptance suite is the Playwright suite in
 | `dashboard.spec.ts` — live node metrics | FR-MET-03/04/05, FR-IDN-08 (live values, non-zero memory/cores, no zero-time) |
 | `dashboard.spec.ts` — zfs pools | FR-STO-06, FR-MET-07 |
 | `dashboard.spec.ts` — auto-refresh | FR-MET-08 (5 s re-render without reload) |
+| `TestAddressesByLink`, `TestAddressesByLinkPrefersIPv4OverIPv6` | FR-MET-10 (routable IPv4 over IPv6, no loopback/link-local, no address for an unnamed link) |
+| Live dashboard shows each interface with its IP (`eth0` → the node's address) | FR-MET-10 |
 | `users.spec.ts` | FR-IDN-02, FR-IDN-08, **FR-IDN-14** (the edit dialog states the share timing and the stale-session caveat) |
 | `groups.spec.ts` (both) | FR-IDN-06, FR-IDN-08 |
 | `e2e.spec.ts` — full lifecycle | FR-IDN-01…05, FR-STO-07 (group add-member), delete paths |

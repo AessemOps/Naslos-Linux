@@ -146,7 +146,7 @@
 
 <!-- Import Modal -->
 {#if showImportModal}
-  <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" on:click|self={() => showImportModal = false}>
+  <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" role="presentation" on:click|self={() => showImportModal = false}>
     <div class="bg-naslos-card border border-naslos-border rounded-xl p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-xl font-bold">Import Existing Pool</h2>

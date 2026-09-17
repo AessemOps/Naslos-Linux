@@ -35,6 +35,31 @@ test('dashboard shows live node metrics', async ({ page }) => {
   await expect(updatedValue).not.toContainText('0001-01-01');
 });
 
+test('dashboard shows each network interface with its address', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByText('Loading dashboard...')).toBeHidden({ timeout: 10_000 });
+
+  // --- API: the collector resolved at least one routable address ---
+  const res = await page.request.get('/api/dashboard');
+  expect(res.ok()).toBeTruthy();
+  const dashboard = await res.json();
+  const interfaces: Array<{ name: string; ipAddress?: string }> = dashboard.network?.interfaces ?? [];
+  const addressed = interfaces.filter((i) => i.ipAddress);
+  expect(addressed.length, 'at least one interface has an address').toBeGreaterThan(0);
+
+  // --- UI: the Network line lists that interface with that address ---
+  const card = page.locator('.card').filter({ hasText: 'System Information' });
+  await expect(card.getByText('Network')).toBeVisible();
+  const first = addressed[0];
+  const entry = card.locator('span').filter({ hasText: first.name }).first();
+  await expect(entry).toContainText(first.ipAddress!);
+  // Interfaces without an address stay out of the card (a node has dozens of veths).
+  const unnamed = interfaces.find((i) => !i.ipAddress);
+  if (unnamed) {
+    await expect(card.getByText(unnamed.name, { exact: true })).toHaveCount(0);
+  }
+});
+
 test('dashboard shows zfs pools from the agent', async ({ page }) => {
   await page.goto('/');
 

@@ -124,22 +124,22 @@
       <div class="card space-y-4">
         <h2 class="text-lg font-bold">Server Settings</h2>
         <div>
-          <label class="label">ntfy Server URL</label>
-          <input type="text" bind:value={settings.serverUrl} class="input w-full" placeholder="https://ntfy.sh" />
+          <label class="label" for="notify-field-1">ntfy Server URL</label>
+          <input id="notify-field-1" type="text" bind:value={settings.serverUrl} class="input w-full" placeholder="https://ntfy.sh" />
           <p class="text-xs text-gray-500 mt-1">Use https://ntfy.sh for the public server, or self-host your own.</p>
         </div>
         <div>
-          <label class="label">Topic</label>
-          <input type="text" bind:value={settings.topic} class="input w-full" placeholder="naslos-alerts" />
+          <label class="label" for="notify-field-2">Topic</label>
+          <input id="notify-field-2" type="text" bind:value={settings.topic} class="input w-full" placeholder="naslos-alerts" />
           <p class="text-xs text-gray-500 mt-1">Subscribe to this topic in the ntfy app to receive notifications.</p>
         </div>
         <div>
-          <label class="label">Auth Token (optional)</label>
-          <input type="password" bind:value={settings.authToken} class="input w-full" />
+          <label class="label" for="notify-field-3">Auth Token (optional)</label>
+          <input id="notify-field-3" type="password" bind:value={settings.authToken} class="input w-full" />
         </div>
         <div>
-          <label class="label">Email (optional)</label>
-          <input type="email" bind:value={settings.email} class="input w-full" placeholder="your@email.com" />
+          <label class="label" for="notify-field-4">Email (optional)</label>
+          <input id="notify-field-4" type="email" bind:value={settings.email} class="input w-full" placeholder="your@email.com" />
         </div>
       </div>
 

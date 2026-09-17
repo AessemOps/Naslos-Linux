@@ -81,7 +81,19 @@
   {:else}
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       {#each filteredApps as app}
-        <div class="card hover:border-naslos-accent transition-colors cursor-pointer" on:click={() => openInstall(app.name)}>
+        <div
+          class="card hover:border-naslos-accent transition-colors cursor-pointer"
+          role="button"
+          tabindex="0"
+          aria-label={`Install ${app.displayName}`}
+          on:click={() => openInstall(app.name)}
+          on:keydown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              openInstall(app.name);
+            }
+          }}
+        >
           <div class="flex items-start gap-4">
             <div class="text-4xl">{app.icon}</div>
             <div class="flex-1 min-w-0">

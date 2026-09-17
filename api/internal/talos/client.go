@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
+	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
+	"github.com/siderolabs/talos/pkg/machinery/resources/network"
 )
 
 // Client wraps the Talos API client.
@@ -117,6 +120,54 @@ type SystemInfo struct {
 	OS           string `json:"os"`
 	Kernel       string `json:"kernel"`
 	TalosVersion string `json:"talosVersion"`
+}
+
+// getInterfaceAddresses maps each link to its primary address. /proc/net/dev has
+// the counters but no addresses, so this reads the node's AddressStatus resources
+// through the Talos API - the same data `talosctl get addresses` shows. A failure
+// is not fatal: the dashboard shows interface names without addresses rather than
+// no metrics at all (FR-MET-10).
+func (c *Client) getInterfaceAddresses() map[string]string {
+	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+	defer cancel()
+
+	list, err := safe.StateListAll[*network.AddressStatus](ctx, c.client.COSI)
+	if err != nil {
+		return nil
+	}
+
+	specs := make([]*network.AddressStatusSpec, 0, list.Len())
+	for status := range list.All() {
+		specs = append(specs, status.TypedSpec())
+	}
+	return addressesByLink(specs)
+}
+
+// addressesByLink picks one address per link: IPv4 over IPv6 (what an operator
+// types to reach the node), routable over link-local, and no loopback.
+func addressesByLink(specs []*network.AddressStatusSpec) map[string]string {
+	out := make(map[string]string, len(specs))
+	best := make(map[string]int, len(specs))
+
+	for _, spec := range specs {
+		if spec == nil || spec.LinkName == "" {
+			continue
+		}
+		addr := spec.Address.Addr()
+		if !addr.IsValid() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsMulticast() {
+			continue
+		}
+		score := 0
+		if addr.Is4() || addr.Is4In6() {
+			score = 1
+		}
+		if current, seen := best[spec.LinkName]; seen && current >= score {
+			continue
+		}
+		out[spec.LinkName] = addr.Unmap().String()
+		best[spec.LinkName] = score
+	}
+	return out
 }
 
 // GetSystemMetrics collects CPU, memory, disk, network, and system info
@@ -316,6 +367,7 @@ func (c *Client) getDiskMetrics() (DiskMetrics, error) {
 // getNetworkMetrics collects network interface stats from the Talos node.
 func (c *Client) getNetworkMetrics() (NetworkMetrics, error) {
 	nm := NetworkMetrics{}
+	addresses := c.getInterfaceAddresses()
 
 	if r, err := c.client.Read(c.ctx, "proc/net/dev"); err == nil {
 		data, _ := io.ReadAll(r)
@@ -335,7 +387,7 @@ func (c *Client) getNetworkMetrics() (NetworkMetrics, error) {
 			if ifname == "lo" {
 				continue
 			}
-			nm.Interfaces = append(nm.Interfaces, NetworkInterface{Name: ifname})
+			nm.Interfaces = append(nm.Interfaces, NetworkInterface{Name: ifname, IPAddress: addresses[ifname]})
 			// proc/net/dev layout: iface: rbytes rpackets rerrs rdrop rfifo
 			// rframe rcompressed rmulticast | tbytes tpackets ...
 			if v, err := parseFloat(f[1]); err == nil {

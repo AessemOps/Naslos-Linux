@@ -1,5 +1,49 @@
 # AI Handoff — Naslos
 
+## Polish: interface addresses + accessibility (`feature/dashboard-network`)
+
+Branched from master `65e212e` (PR #13 merged). Deployed: api `0.1.0-b20`,
+ui `0.1.0-b9` (helm revision 78), agent `0.1.0-b6`.
+
+**FR-MET-10 — per-interface addresses (was `[OPEN]`).** `/proc/net/dev` carries
+per-interface counters but no addresses, so the Talos client now reads the node's
+`AddressStatus` resources (COSI, the same data `talosctl get addresses` shows) and
+fills `NetworkInterface.IPAddress`. The selection is deterministic: routable IPv4
+over IPv6, never loopback, link-local or multicast, and a link with no usable
+address simply has none. A failure to read them is not fatal — the dashboard still
+shows names and totals. The dashboard view model never carried `network` at all,
+so that was added too (it is what the UI reads). The UI shows one line per
+*addressed* interface (a node has dozens of veth/pseudo interfaces with none,
+which would drown the card) plus received/sent totals.
+Live: `enp1s0 → 192.168.1.96`, `cni0 → 10.244.0.1`, `flannel.1 → 10.244.0.0`.
+Tests: `TestAddressesByLink`, `TestAddressesByLinkPrefersIPv4OverIPv6`, and a
+Playwright case in `dashboard.spec.ts`. Multi-node aggregation stays `[OPEN]`
+(single-node product), and FR-MET-10 in `docs/spec.md` now documents the rule.
+
+**Accessibility: 45 `svelte-check` warnings → 0.** Form labels are associated with
+their controls (`for`/`id`) in `UserForm`, `ShareForm`, `GroupForm`, the
+notifications page, the pool detail page and the terminal page; the checkbox
+groups (Groups/Members/Allowed Groups) and the dataset picker are labelled with
+`role="group" aria-labelledby` (a plain label cannot name a group of controls);
+modal backdrops are `role="presentation"` (they dismiss on an outside click, which
+is decorative — Escape and the close button remain the keyboard paths); and the
+catalog cards are keyboard-reachable (`role="button"`, `tabindex="0"`,
+Enter/Space). No test selectors depended on the old markup: Playwright **30 passed
+/ 2 skipped / 0 failed** after the change.
+
+Note: these two commits were briefly committed on `master` by mistake and moved to
+this branch before pushing; `master` is untouched at `65e212e`.
+
+**Still open**
+
+- NAS-021's bounded FS walks (pagination of long chain listings) — an availability
+  note, not a vulnerability.
+- Image tags are still reused (`0.1.0` + `IfNotPresent`) and the chart has no
+  digest pinning (NAS-022): always bump the suffix per deploy, or add
+  `image.digest` support.
+- NAS-014's optional nonce-cache persistence (only if a restart-window replay is
+  judged to matter after the idempotency analysis in the previous section).
+
 ## Phase 2 hardening, part 2: quota, replay cache, envelope bounds
 ## (`feature/buddy-hardening`)
 
