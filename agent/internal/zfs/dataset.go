@@ -91,23 +91,23 @@ var datasetOptionKeys = map[string]bool{
 func ValidateDatasetName(name string) error {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
-		return fmt.Errorf("dataset name is required")
+		return invalidf("dataset name is required")
 	}
 	if trimmed != name {
-		return fmt.Errorf("dataset name must not start or end with whitespace")
+		return invalidf("dataset name must not start or end with whitespace")
 	}
 	if len(trimmed) > 200 {
-		return fmt.Errorf("dataset name must be 200 characters or fewer")
+		return invalidf("dataset name must be 200 characters or fewer")
 	}
 	if strings.HasPrefix(trimmed, "/") {
-		return fmt.Errorf("dataset name must be relative to its pool, not a path")
+		return invalidf("dataset name must be relative to its pool, not a path")
 	}
 	if strings.Contains(trimmed, "@") {
-		return fmt.Errorf("dataset name must not contain '@' (that is a snapshot)")
+		return invalidf("dataset name must not contain '@' (that is a snapshot)")
 	}
 	for _, part := range strings.Split(trimmed, "/") {
 		if !datasetNamePattern.MatchString(part) {
-			return fmt.Errorf("invalid dataset name %q: each part must start with a letter or digit and contain only letters, digits, '.', '_' or '-'", trimmed)
+			return invalidf("invalid dataset name %q: each part must start with a letter or digit and contain only letters, digits, '.', '_' or '-'", trimmed)
 		}
 	}
 	return nil
@@ -118,28 +118,28 @@ func ValidateDatasetOptions(options map[string]string) error {
 	for key, value := range options {
 		value = strings.TrimSpace(value)
 		if !datasetOptionKeys[key] {
-			return fmt.Errorf("unsupported dataset option %q", key)
+			return invalidf("unsupported dataset option %q", key)
 		}
 		switch key {
 		case "compression":
 			if !validCompression[value] {
-				return fmt.Errorf("unsupported compression %q", value)
+				return invalidf("unsupported compression %q", value)
 			}
 		case "quota":
 			if value != "" && value != "none" && !sizePattern.MatchString(value) {
-				return fmt.Errorf("invalid quota %q: use a size such as 500G, or none to remove it", value)
+				return invalidf("invalid quota %q: use a size such as 500G, or none to remove it", value)
 			}
 		case "recordsize":
 			if !sizePattern.MatchString(value) {
-				return fmt.Errorf("invalid recordsize %q", value)
+				return invalidf("invalid recordsize %q", value)
 			}
 		case "atime", "readonly":
 			if value != "on" && value != "off" {
-				return fmt.Errorf("%s must be on or off", key)
+				return invalidf("%s must be on or off", key)
 			}
 		case "copies":
 			if value != "1" && value != "2" && value != "3" {
-				return fmt.Errorf("copies must be 1, 2 or 3")
+				return invalidf("copies must be 1, 2 or 3")
 			}
 		}
 	}
@@ -186,14 +186,14 @@ func (c *Client) CreateDataset(name string, options map[string]string) error {
 func validateDatasetPath(name string) error {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
-		return fmt.Errorf("dataset name is required")
+		return invalidf("dataset name is required")
 	}
 	if strings.HasPrefix(trimmed, "/") {
-		return fmt.Errorf("dataset %q must be relative to its pool, not an absolute path", name)
+		return invalidf("dataset %q must be relative to its pool, not an absolute path", name)
 	}
 	parts := strings.Split(trimmed, "/")
 	if len(parts) < 2 {
-		return fmt.Errorf("dataset %q must be <pool>/<name>", name)
+		return invalidf("dataset %q must be <pool>/<name>", name)
 	}
 	if err := ValidatePoolName(parts[0]); err != nil {
 		return err

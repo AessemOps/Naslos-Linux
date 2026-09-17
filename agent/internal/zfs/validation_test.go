@@ -2,6 +2,7 @@ package zfs
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -19,6 +20,36 @@ func ranCommand(calls []string, substr string) bool {
 		}
 	}
 	return false
+}
+
+// The HTTP layer answers 400 for these: a caller-fixable input must be
+// distinguishable from a node failure (NAS-003), so the validators classify
+// themselves as ValidationError rather than a bare error.
+func TestValidatorsClassifyAsValidationErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"pool name", ValidatePoolName("-f")},
+		{"dataset name", ValidateDatasetName("../etc")},
+		{"dataset path", validateDatasetPath("data")},
+		{"snapshot name", ValidateSnapshotName("a/b")},
+		{"dataset options", ValidateDatasetOptions(map[string]string{"mountpoint": "/"})},
+		{"topology", func() error { _, err := NormalizeVDevTopology("raidz9"); return err }()},
+		{"disk path", func() error { _, err := normalizeDiskPath("sdb"); return err }()},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.err == nil {
+				t.Fatal("validator accepted invalid input")
+			}
+			var invalid *ValidationError
+			if !errors.As(tc.err, &invalid) {
+				t.Errorf("error %v is not a *ValidationError, so the HTTP layer would answer 500", tc.err)
+			}
+		})
+	}
 }
 
 func TestCreatePoolRefusalsBeforeAnyHostCall(t *testing.T) {
