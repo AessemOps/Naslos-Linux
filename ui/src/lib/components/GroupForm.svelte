@@ -79,7 +79,7 @@
   onMount(init);
 </script>
 
-<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" on:click|self={() => dispatch('close')}>
+<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" role="presentation" on:click|self={() => dispatch('close')}>
   <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
     <div class="p-6 border-b border-naslos-border flex items-center justify-between">
       <h2 class="text-xl font-bold">{group ? 'Edit Group' : 'New Group'}</h2>
@@ -89,20 +89,21 @@
     <div class="flex-1 overflow-y-auto p-6 space-y-4">
       {#if !group}
         <div>
-          <label class="label">Group Name *</label>
-          <input type="text" bind:value={cn} class="input w-full" placeholder="e.g. naslos_users" />
+          <label class="label" for="group-field-1">Group Name *</label>
+          <input id="group-field-1" type="text" bind:value={cn} class="input w-full" placeholder="e.g. naslos_users" />
         </div>
         <div>
-          <label class="label">Description</label>
-          <input type="text" bind:value={description} class="input w-full" placeholder="e.g. Standard users" />
+          <label class="label" for="group-field-2">Description</label>
+          <input id="group-field-2" type="text" bind:value={description} class="input w-full" placeholder="e.g. Standard users" />
         </div>
       {:else}
         <p class="text-gray-400 text-sm">Editing members of <strong>{group.cn}</strong>.</p>
       {/if}
 
       <div>
-        <label class="label">Members</label>
-        <div class="space-y-2 max-h-60 overflow-y-auto border border-naslos-border rounded-lg p-2">
+        <div class="label" id="group-members-label">Members</div>
+        <div class="space-y-2 max-h-60 overflow-y-auto border border-naslos-border rounded-lg p-2"
+             role="group" aria-labelledby="group-members-label">
           {#each users as user}
             <label class="flex items-center gap-3 p-2 rounded hover:bg-naslos-dark cursor-pointer">
               <input type="checkbox" checked={selectedMembers.includes(user.uid)} on:change={() => toggleMember(user.uid)} class="w-4 h-4 rounded" />

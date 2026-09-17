@@ -7,8 +7,17 @@
     disk?: { usage: number; total: number; used: number; free: number };
     zfs?: { poolCount: number; pools: any[] };
     system?: { hostname: string; uptime: number; os: string };
+    network?: {
+      bytesSent?: number;
+      bytesRecv?: number;
+      interfaces?: Array<{ name: string; ipAddress?: string }>;
+    };
     updatedAt?: string;
   }
+
+  // Interfaces with an address are the ones an operator can use; a node also has
+  // dozens of veth/pseudo interfaces with none.
+  $: addressedInterfaces = (data.network?.interfaces ?? []).filter((i) => i.ipAddress);
 
   let data: DashboardData = {};
   let loading = true;
@@ -223,6 +232,25 @@
           <div class="font-medium">{formatUpdatedAt(data.updatedAt)}</div>
         </div>
       </div>
+
+      <!-- Per-interface addresses (FR-MET-10): the IP an operator types to reach
+           this node. -->
+      {#if data.network?.interfaces?.length}
+        <div class="mt-4 pt-4 border-t border-naslos-border">
+          <div class="text-sm text-gray-400 mb-2">
+            Network
+            <span class="ml-2 text-xs">
+              ↓ {formatBytes(data.network.bytesRecv || 0)} · ↑ {formatBytes(data.network.bytesSent || 0)}
+            </span>
+          </div>
+          {#each addressedInterfaces as iface}
+            <span class="inline-block mr-4 mb-1">
+              <span class="font-mono text-sm">{iface.name}</span>
+              <span class="text-sm text-gray-400 ml-1">{iface.ipAddress}</span>
+            </span>
+          {/each}
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
