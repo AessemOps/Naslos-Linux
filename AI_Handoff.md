@@ -1,5 +1,35 @@
 # AI Handoff — Naslos
 
+## Deploy toil: automatic receive-dataset ownership (`feature/buddy-dataset-init`)
+
+Branched from master `0967803` (PR #15 merged). Chart + docs only.
+
+**The manual step that broke two drills is gone.** The receive dataset is created
+by `zfs create` and owned by root, but the API runs as uid 65532, so the documented
+`chown 65532:65532` had to be applied by hand; when it was missed (twice in this
+project's drills) every push failed with `mkdir …: permission denied` while the UI
+looked healthy. The API deployment now runs a `fix-receive-dataset-ownership`
+init container that does it: it runs as root, reuses the Debian-based OpenLDAP
+image (the API image is distroless — no shell), chowns only the dataset *root*
+(the per-key trees are created by the API, so a recursive walk would be wasted
+work), and skips when the ownership is already right. A failure is loud: the pod
+does not start, with the same message the first push would have produced, and the
+docs keep the manual command as the fallback (hostPath volumes ignore `fsGroup`).
+
+Live: with the dataset forced back to `root:root`, an upgrade brought the pod up
+and the init log read `Receive dataset /var/lib/naslos/buddy chowned to
+65532:65532 (was 0:0)`; the host directory is `65532:65532`; a second rollout said
+`Receive dataset already owned by 65532.` (idempotent). Playwright **30 passed / 2
+skipped / 0 failed**, including the self-send that would previously have failed.
+`docs/buddy-backup.md` §5.1 and its troubleshooting table now describe this
+instead of the manual step.
+
+**Still open (low priority)**
+
+- NAS-021's bounded FS walks (pagination of long chain listings) — an availability
+  note, needs a paginated receiver API plus a link-following restore path.
+- NAS-014's optional nonce-cache persistence.
+
 ## Ops: image digests (`feature/image-digests`)
 
 Branched from master `42df19e` (PR #14 merged). Chart-only change; no image
