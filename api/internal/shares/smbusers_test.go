@@ -60,7 +60,7 @@ func TestRenderSMBPasswdFormat(t *testing.T) {
 // NT hash (so re-enabling needs no new password) and sets the disabled flag.
 func TestDisabledAccountKeepsHash(t *testing.T) {
 	store := NewSambaUserStore("")
-	if err := store.Upsert(PosixIdentity{UID: "jdoe", UIDNum: 10123, GIDNum: 10000}, "AABB"); err != nil {
+	if err := store.Upsert(PosixIdentity{UID: "jdoe", UIDNum: 10123, GIDNum: 10000}, "AABBCCDDEEFF00112233445566778899"); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	if err := store.SetEnabled("jdoe", false); err != nil {
@@ -71,7 +71,7 @@ func TestDisabledAccountKeepsHash(t *testing.T) {
 	if !strings.Contains(out, "[DU         ]") {
 		t.Fatalf("disabled flag missing:\n%s", out)
 	}
-	if !strings.Contains(out, "AABB") {
+	if !strings.Contains(out, "AABBCCDDEEFF00112233445566778899") {
 		t.Fatalf("hash dropped when disabling:\n%s", out)
 	}
 }
@@ -83,7 +83,7 @@ func TestStorePersistsAcrossReload(t *testing.T) {
 	path := filepath.Join(dir, "smbusers.json")
 
 	store := NewSambaUserStore(path)
-	if err := store.Upsert(PosixIdentity{UID: "jdoe", UIDNum: 10123, GIDNum: 10000}, "AABBCC"); err != nil {
+	if err := store.Upsert(PosixIdentity{UID: "jdoe", UIDNum: 10123, GIDNum: 10000}, "AABBCCDDEEFF00112233445566778899"); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -95,7 +95,7 @@ func TestStorePersistsAcrossReload(t *testing.T) {
 	if !ok {
 		t.Fatal("account lost after reload")
 	}
-	if got.NTHash != "AABBCC" || got.UIDNumber != 10123 {
+	if got.NTHash != "AABBCCDDEEFF00112233445566778899" || got.UIDNumber != 10123 {
 		t.Fatalf("account not restored: %+v", got)
 	}
 }
@@ -132,7 +132,7 @@ func TestRenderNSSFiles(t *testing.T) {
 // because Samba would store uid 4294967295 and deny the login.
 func TestRenderPasswdSkipsAccountsWithoutUid(t *testing.T) {
 	store := NewSambaUserStore("")
-	if err := store.Upsert(PosixIdentity{UID: "nouid"}, "AABB"); err != nil {
+	if err := store.Upsert(PosixIdentity{UID: "nouid"}, "AABBCCDDEEFF00112233445566778899"); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	if out := store.RenderPasswd(); strings.Contains(out, "nouid") {
@@ -146,7 +146,7 @@ func TestRenderPasswdSkipsAccountsWithoutUid(t *testing.T) {
 }
 func TestRemoveDeletesAccount(t *testing.T) {
 	store := NewSambaUserStore("")
-	if err := store.Upsert(PosixIdentity{UID: "jdoe", UIDNum: 1, GIDNum: 10000}, "AABB"); err != nil {
+	if err := store.Upsert(PosixIdentity{UID: "jdoe", UIDNum: 1, GIDNum: 10000}, "AABBCCDDEEFF00112233445566778899"); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	if err := store.Remove("jdoe"); err != nil {

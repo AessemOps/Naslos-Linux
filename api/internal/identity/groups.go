@@ -10,7 +10,12 @@ import (
 // CreateGroup creates a new group. The description attribute is optional
 // and omitted when empty (OpenLDAP rejects empty string values).
 func (c *Client) CreateGroup(cn, description string) (*Group, error) {
-	dn := fmt.Sprintf("cn=%s,ou=groups,%s", cn, c.baseDN)
+	normalized, err := normalizeGroupName(cn)
+	if err != nil {
+		return nil, err
+	}
+	cn = normalized
+	dn := fmt.Sprintf("cn=%s,ou=groups,%s", escapeDNComponent(cn), c.baseDN)
 
 	addReq := ldap.NewAddRequest(dn, nil)
 	addReq.Attribute("objectClass", []string{"groupOfNames"})
@@ -51,7 +56,12 @@ func (c *Client) filterPlaceholderMembers(members []string) []string {
 
 // GetGroup retrieves a group by CN.
 func (c *Client) GetGroup(cn string) (*Group, error) {
-	filter := fmt.Sprintf("(cn=%s)", cn)
+	normalized, err := normalizeGroupName(cn)
+	if err != nil {
+		return nil, err
+	}
+	cn = normalized
+	filter := fmt.Sprintf("(cn=%s)", escapeFilter(cn))
 	searchBase := fmt.Sprintf("ou=groups,%s", c.baseDN)
 
 	searchReq := ldap.NewSearchRequest(
@@ -121,8 +131,16 @@ func (c *Client) ListGroups() ([]Group, error) {
 
 // AddMember adds a person to a group.
 func (c *Client) AddMember(groupCN, personUID string) error {
-	dn := fmt.Sprintf("cn=%s,ou=groups,%s", groupCN, c.baseDN)
-	personDN := fmt.Sprintf("uid=%s,ou=people,%s", normalizeUID(personUID), c.baseDN)
+	normalizedGroup, err := normalizeGroupName(groupCN)
+	if err != nil {
+		return err
+	}
+	uid := normalizeUID(personUID)
+	if err := validateIdentityName("username", uid); err != nil {
+		return err
+	}
+	dn := fmt.Sprintf("cn=%s,ou=groups,%s", escapeDNComponent(normalizedGroup), c.baseDN)
+	personDN := fmt.Sprintf("uid=%s,ou=people,%s", escapeDNComponent(uid), c.baseDN)
 
 	modReq := ldap.NewModifyRequest(dn, nil)
 	modReq.Add("member", []string{personDN})
@@ -133,8 +151,16 @@ func (c *Client) AddMember(groupCN, personUID string) error {
 
 // RemoveMember removes a person from a group.
 func (c *Client) RemoveMember(groupCN, personUID string) error {
-	dn := fmt.Sprintf("cn=%s,ou=groups,%s", groupCN, c.baseDN)
-	personDN := fmt.Sprintf("uid=%s,ou=people,%s", normalizeUID(personUID), c.baseDN)
+	normalizedGroup, err := normalizeGroupName(groupCN)
+	if err != nil {
+		return err
+	}
+	uid := normalizeUID(personUID)
+	if err := validateIdentityName("username", uid); err != nil {
+		return err
+	}
+	dn := fmt.Sprintf("cn=%s,ou=groups,%s", escapeDNComponent(normalizedGroup), c.baseDN)
+	personDN := fmt.Sprintf("uid=%s,ou=people,%s", escapeDNComponent(uid), c.baseDN)
 
 	modReq := ldap.NewModifyRequest(dn, nil)
 	modReq.Delete("member", []string{personDN})
@@ -145,7 +171,11 @@ func (c *Client) RemoveMember(groupCN, personUID string) error {
 
 // DeleteGroup removes a group.
 func (c *Client) DeleteGroup(cn string) error {
-	dn := fmt.Sprintf("cn=%s,ou=groups,%s", cn, c.baseDN)
+	normalized, err := normalizeGroupName(cn)
+	if err != nil {
+		return err
+	}
+	dn := fmt.Sprintf("cn=%s,ou=groups,%s", escapeDNComponent(normalized), c.baseDN)
 	delReq := ldap.NewDelRequest(dn, nil)
 	return c.do(func(conn *ldap.Conn) error {
 		return conn.Del(delReq)
@@ -161,7 +191,10 @@ func (c *Client) GetPersonGroups(uid string) ([]string, error) {
 
 	var memberships []string
 	uid = normalizeUID(uid)
-	personDN := fmt.Sprintf("uid=%s,ou=people,%s", uid, c.baseDN)
+	if err := validateIdentityName("username", uid); err != nil {
+		return nil, err
+	}
+	personDN := fmt.Sprintf("uid=%s,ou=people,%s", escapeDNComponent(uid), c.baseDN)
 
 	for _, g := range groups {
 		for _, member := range g.Members {

@@ -10,7 +10,10 @@ import (
 // CreatePerson creates a new person in LDAP.
 func (c *Client) CreatePerson(uid, displayName, email, firstName, lastName string) (*Person, error) {
 	uid = normalizeUID(uid)
-	dn := fmt.Sprintf("uid=%s,ou=people,%s", uid, c.baseDN)
+	if err := validateIdentityName("username", uid); err != nil {
+		return nil, err
+	}
+	dn := fmt.Sprintf("uid=%s,ou=people,%s", escapeDNComponent(uid), c.baseDN)
 
 	if _, err := c.GetPerson(uid); err == nil {
 		return nil, fmt.Errorf("person %q already exists", uid)
@@ -43,7 +46,10 @@ func (c *Client) CreatePerson(uid, displayName, email, firstName, lastName strin
 // GetPerson retrieves a person by UID.
 func (c *Client) GetPerson(uid string) (*Person, error) {
 	uid = normalizeUID(uid)
-	filter := fmt.Sprintf("(uid=%s)", uid)
+	if err := validateIdentityName("username", uid); err != nil {
+		return nil, err
+	}
+	filter := fmt.Sprintf("(uid=%s)", escapeFilter(uid))
 	searchBase := fmt.Sprintf("ou=people,%s", c.baseDN)
 
 	searchReq := ldap.NewSearchRequest(

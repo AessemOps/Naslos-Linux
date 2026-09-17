@@ -1,5 +1,11 @@
 # Naslos — project status and continuation plan (2026-09-17)
 
+> **Status update (2026-09-17 evening).** Phase 0 (consolidation), Phase 1 (security
+> gate) and Phase 2 (buddy completion, fan-out, peer-exposure decision) are done and
+> live-verified; the product-gap batch is in progress. The authoritative, current
+> record is the top of `AI_Handoff.md` — this document keeps the original roadmap and
+> its rationale.
+
 ## Repo facts (verified in git this session)
 
 - Canonical branch is `origin/master` (`origin/HEAD → origin/master`); `origin/main`
