@@ -1,6 +1,60 @@
 # AI Handoff — Naslos
 
-## Phase 2: buddy completion (`feature/buddy-completion`, implemented, not merged)
+## Phase 2 continued: fan-out + peer exposure (`feature/buddy-fanout`, implemented)
+
+Branched from `master` at `8cd75b8` (both earlier PRs merged: #9 buddy, #10
+Phase 2). Deployed for the validation: api `0.1.0-b14`, ui `0.1.0-b6`, agent
+`0.1.0-b6` (helm revision 70), `auth.disabled=true` (the VM's dev posture).
+
+**Peer-exposure decision — taken, and verified live.** No dedicated listener: the
+peer API rides the same ingress/node port the UI uses. `/api/buddy/v1/*` stays
+public (a peer authenticates with its own Ed25519 key and cannot complete an
+interactive login) while every owner-facing buddy route goes through the shared
+owner gate. With the gate armed, `/api/users` → 401 without the proxy secret while
+`buddyctl enroll` + `push` through that same `:30080` listener succeeded; SEC-9
+still holds (the agent's streaming endpoints stay ClusterIP-only and are not
+proxied by the UI's nginx). Recorded in `docs/buddy-backup.md` §9.
+
+**Fan-out (FR-BUD-15).** A schedule (or "Back up now") can name several buddies:
+
+- The entry gained `receivers []string` (with `receiver` still mirroring the first,
+  for compatibility) and `receiverResults map[receiver]ok|failed`. Validation
+  normalizes every URL, requires at least one, and collapses duplicates.
+- The runner enqueues one job per destination, each an independent chain with its
+  own resume state, so a dead or busy buddy fails only itself. `lastResult` is `ok`
+  only when every destination stored the run; `lastError` names the failing buddy
+  and keeps the underlying reason even when another destination succeeds afterwards
+  (the first version blanked it — caught by the strengthened test and re-verified
+  live).
+- The job-level exclusion was relaxed from (receiver, source, **dataset**) to
+  (receiver, source): concurrent fan-out jobs share one dataset by design, and each
+  snapshots under its own unique name, so the dataset exclusion was both
+  unnecessary and blocking. The manual-send 409 for a duplicate (receiver, source)
+  is unchanged.
+- UI: the schedule form takes one buddy URL per line; the table shows "N buddies"
+  with a per-destination ✓/✗ from the last run; "Back up now" fans out too and
+  tracks the first destination's progress.
+
+**Live validation (VM, 2026-09-17).** A `daily` schedule with
+`receivers=[self, http://127.0.0.1:1]` fired: the self job `succeeded` with a stored
+chain, the dead job `failed` with the connection-refused error, the entry reported
+`lastResult: failed`, `receiverResults {self: ok, dead: failed}` and
+`lastError: backup to http://127.0.0.1:1 failed: … connection refused`. Playwright
+**29 passed / 2 skipped / 0 failed**; `api` Go suite green; `vite`/`svelte-check`
+0 errors. The schedule, the test chains, the test peer and the `.enroll-used`
+marker were removed afterwards, so the VM is back to its baseline.
+
+**Still open**
+
+- Hardening: NAS-012 (manifest rollback protection), NAS-013 (quota
+  race/undercount), NAS-021 (counter overflow, FS walks), NAS-006/007 (injections).
+- Phase 3 product gaps: notification settings are still in memory
+  (`notifications.NewManager("")`); `/api/shares/status` still returns empty values
+  (agent field-name mismatch); `naslos-openldap-backup` CronJob in CrashLoopBackOff;
+  FR-MET-10 per-interface IPs `[OPEN]`; 45 `svelte-check` warnings; `lastRun`
+  serialises `0001-01-01T00:00:00Z` for a never-run schedule.
+
+## Phase 2: buddy completion (`feature/buddy-completion`, merged via PR #10)
 
 Stacked on `feature/security-fixes` (Phase 1, still unmerged), because the
 peer-exposure decision and the owner gate belong together. Commits: the
