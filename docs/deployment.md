@@ -20,6 +20,25 @@
 | `192.168.1.2:30095/naslos-agent` | `make agent` + container build |
 | `192.168.1.2:30095/naslos-openldap` | `openldap/image/Dockerfile` |
 
+### Pinning a digest (recommended for a real release)
+
+A tag is mutable. The registry reuses `0.1.0` and the chart pulls with
+`IfNotPresent`, so `helm upgrade` after a retag can keep running old code
+(NAS-022). Pin the exact image instead:
+
+```bash
+make image-digests                      # prints "image -> repo@sha256:…" per component
+helm upgrade naslos charts/naslos -n naslos --reuse-values \
+  --set api.image.digest=sha256:… --set ui.image.digest=sha256:…
+```
+
+`<component>.image.digest` accepts the value with or without the `sha256:`
+prefix and takes precedence over `tag`; leave it empty to keep the tag behaviour
+(and therefore the "always retag" rule). **A pinned digest wins over a tag on the
+next upgrade too** — with `--reuse-values` the stored digest is kept, so switching
+back to tags needs an explicit `--set api.image.digest=` (empty). `openldap.image` is a full image
+reference, so pin it there directly (`repo@sha256:…`).
+
 ## Make targets
 
 | Target | What it does |
@@ -30,6 +49,7 @@
 | `make ui` | `npm install && npm run build` (ui dir) |
 | `make images` | Build all Naslos container images locally |
 | `make push-images` | Push all Naslos container images to `REGISTRY` |
+| `make image-digests` | Print each image's digest, for pinning with `*.image.digest` |
 | `make bootstrap` | Bundle installer ISO/schematic tar |
 | `make bootstrap-vm` | Generate the single-node VM Talos config |
 | `make crds` | Apply Traefik CRDs from `helm show crds traefik/traefik` |

@@ -29,7 +29,7 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       containers:
         - name: samba
-          image: "{{ .Values.shares.smb.image.repository }}:{{ .Values.shares.smb.image.tag }}"
+          image: {{ include "naslos.image" .Values.shares.smb.image }}
           imagePullPolicy: {{ .Values.shares.smb.image.pullPolicy }}
           # smbd must be able to setuid to the configured share users, and to
           # read/write datasets owned by root on the host, but it does not need
