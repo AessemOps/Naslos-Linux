@@ -1,5 +1,29 @@
 # AI Handoff — Naslos
 
+## Full code review (2026-09-17) — see `docs/CODE-REVIEW.md`
+
+A full-depth review of `master` `6227595` (Go api+agent, Svelte UI, chart/images/
+scripts, docs, tests) is complete: 45 findings, each with `file:line` evidence and a
+verified/judgement label, plus the status of all 22 NAS findings. **Report only —
+nothing was changed.**
+
+**Three blocking findings** (fix order and rationale in the report):
+1. **CR-01** the chart's Authelia policy (`authelia-config.yaml:126-127`) bypasses
+   authentication for the whole domain, so the 2FA/one-factor rules are unreachable —
+   broken rather than open, because the API still requires the proxy secret.
+2. **CR-02** `helm uninstall` deletes the chart-created namespace, cascading into the
+   OpenLDAP StatefulSet/PVCs and the state volume holding `buddy-identity.json` — a
+   data-loss path that makes every stored backup unreadable.
+3. **CR-03** `RequireAdmin`/`IsAdmin` are never wired: once authentication works, any
+   authenticated user has full admin, including the root terminal.
+
+Also worth reading first: CR-05 (18 reachable Go vulnerabilities, `helm`/`containerd`
+chain), CR-06 (`go test -race` fails in the repo's own suite), CR-07 (ntfy token
+returned to the browser), CR-15 (`0644` shadow-hash file), CR-23 (the UI suite can
+pass while the feature is broken), and CR-26 — this file is a 1 227-line
+contradictory log and should be replaced by a short current-state summary plus an
+archive.
+
 ## Final hardening: bounded walks + persisted replay cache (`feature/buddy-walk-bounds`)
 
 Branched from master `2f3ece0` (PR #16 merged). Deployed: api `0.1.0-b21`
