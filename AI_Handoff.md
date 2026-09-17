@@ -1,5 +1,83 @@
 # AI Handoff — Naslos
 
+## Phase 2: buddy completion (`feature/buddy-completion`, implemented, not merged)
+
+Stacked on `feature/security-fixes` (Phase 1, still unmerged), because the
+peer-exposure decision and the owner gate belong together. Commits: the
+correctness batch and the cancel follow-up.
+
+**Deployed for the validation:** api `0.1.0-b12`, agent `0.1.0-b6`, ui `0.1.0-b5`
+(helm revision 66), `auth.disabled=true` (the VM's documented dev posture).
+
+**What changed**
+
+- **Prompt cancel (FR-BUD-16).** `PushOptions`/`RestoreOptions` carry a context, the
+  client's requests use `http.NewRequestWithContext`, and the loops check it between
+  chunks. The base-manifest lookup needed the same treatment: the first live check
+  still waited out the receiver's stall there, so `ManifestContext` /
+  `ChainsContext` / `RestoreSequenceContext` exist for the API's job paths.
+- **Refuse an unmounted dataset (FR-BUD-11).** The agent reports each dataset's
+  `mounted` state (host mount namespace, where `zfs send` runs); a send refuses a
+  dataset whose mountpoint is a path but is not mounted, with the fix in the
+  message. This is the mount-propagation trap: a dataset created from inside a pod
+  lives in that pod's namespace, so a send captured an empty filesystem and still
+  reported success (observed as a 44 KB "backup" of a 2 GiB dataset).
+  Deliberately conservative: an unmounted dataset with a real mountpoint is refused
+  even though it may hold its own data; mount it (or set mountpoint `none`) first.
+- **Retention never orphans an incremental (FR-BUD-09).** `Store.Prune` walks the
+  newest chain's `FromGUID` links and keeps every chain it descends from, even when
+  `keep` is smaller. Keeping more chains than asked is correct; an incremental
+  without its base reported success and only failed at verify/restore time.
+- **Single-use enrollment across restarts (SEC-12).** The receiver records the spent
+  token in the store (`.enroll-used`), so a restart cannot re-arm it as it did
+  before. `PeerStore.Add` also refuses to replace an existing name with a different
+  key (a leaked token could otherwise substitute a peer's key invisibly).
+- **Job ids are 128-bit (SEC-13)**, up from 32 bits.
+- **Schedules only accept a dataset that exists (FR-BUD-17)**: an exact match
+  against the agent's list instead of a pool-prefix guess (NAS-018).
+- Chart: `BUDDY_SCHEDULES` and `BUDDY_SCHEDULER_INTERVAL_MS` are passed explicitly
+  (`buddy.schedulesFile`, `buddy.schedulerIntervalMs`) instead of relying on the
+  compiled-in defaults.
+- The dead pre-jobs synchronous send (`handleBuddySendSyncLegacy`, never routed) is
+  deleted: it was a second, unguarded copy of the send path.
+
+**Live validation (VM, 2026-09-17)**
+
+- Unmounted refusal: a dataset created from inside the terminal pod reported
+  `mounted:false` (its 64 MiB had gone to the parent), the send failed in 8 ms with
+  `refusing to back up: dataset test/trapcheck is not mounted on the node …`, no
+  snapshot was created and nothing was stored. The other test datasets all report
+  `mounted:true`, so the rule does not over-refuse in practice.
+- Retention: a full send (106 chunks) plus an incremental with `pruneKeep:1` kept
+  **both** chains (pruned 0) and `verify` walked the sequence successfully —
+  previously that drill left one chain and verify failed with the missing-base
+  error.
+- Cancel: with a receiver stalling 30 s per request, `DELETE` reached `cancelled` in
+  ~4 s wall clock (the DELETE round trip), against the full 30 s before the fix.
+- Enrollment: first enroll 201; a second attempt 403 in the same process and
+  **still 403 after an API restart** (the marker is on the PVC). Re-keying
+  `enroll-a` through `POST /api/buddy/peers` → 400 `already exists with a different
+  key`.
+- Job ids in the responses are 32 hex characters.
+- Playwright: **29 passed / 2 skipped / 0 failed**. Go suites green for `api` and
+  `agent`; `helm lint` clean.
+- Cleanup afterwards: the test peer revoked, the receiver store emptied, the
+  listener removed, the trap dataset destroyed, and the `.enroll-used` marker
+  deleted so the VM's enrollment token works again for the next drill (that file is
+  the only place the "token spent" state lives; delete it to re-arm the token).
+
+**Still open in Phase 2**
+
+- **Multi-buddy fan-out** (one source → several receivers): not started; the
+  schedule entry still holds a single receiver.
+- **Peer-exposure decision**: recommended (and now unblocked) — keep the existing
+  Traefik + Authelia path with the `proxy-identity` secret; no dedicated listener.
+  Needs a decision + a doc paragraph, not code.
+- Hardening still open: NAS-012 (manifest rollback protection), NAS-013 (quota
+  race/undercount), NAS-021 (counter overflow, FS walks).
+- Polish: notification settings are still in memory (`notifications.NewManager("")`);
+  a never-run schedule still serialises `lastRun` as `0001-01-01T00:00:00Z`.
+
 ## Phase 1: security fixes (`feature/security-fixes`, implemented, not merged)
 
 The security batch from `docs/SECURITY-FIX-PLAN.md` is implemented and live-verified
