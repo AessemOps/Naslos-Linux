@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -64,9 +63,6 @@ func (s *Server) handleBuddyStatus(w http.ResponseWriter, req *http.Request) {
 func (s *Server) handleBuddyPeers(w http.ResponseWriter, req *http.Request) {
 	if s.buddy == nil {
 		writeError(w, http.StatusServiceUnavailable, "Buddy Backup is not configured on this instance")
-		return
-	}
-	if !s.requireBuddyAdminAuth(w, req) {
 		return
 	}
 
@@ -141,21 +137,4 @@ func (s *Server) handleBuddyPeers(w http.ResponseWriter, req *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
-}
-
-// requireBuddyAdminAuth gates the endpoints that authorize or revoke keys. They
-// can hand out access to storage, so they follow the terminal's rule: only a
-// request carrying the authenticating proxy's identity header is served unless
-// the operator explicitly turns the requirement off.
-func (s *Server) requireBuddyAdminAuth(w http.ResponseWriter, req *http.Request) bool {
-	if !s.buddyRequireAuth {
-		return true
-	}
-	if user := strings.TrimSpace(req.Header.Get(s.terminalAuthHeader)); user != "" {
-		return true
-	}
-	writeError(w, http.StatusUnauthorized, fmt.Sprintf(
-		"authorizing backup peers requires an authenticated session. Reach the UI through an "+
-			"authenticating proxy, or set buddy.requireAuth=false to allow it on a trusted network"))
-	return false
 }

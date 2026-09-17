@@ -21,7 +21,7 @@ func (s *Server) handleDatasetsAll(w http.ResponseWriter, r *http.Request) {
 
 	datasets, err := s.zfs.AllDatasets()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeClientError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, datasets)

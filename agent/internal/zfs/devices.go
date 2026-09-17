@@ -15,10 +15,10 @@ var poolNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
 // confused with a path.
 func ValidatePoolName(name string) error {
 	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("pool name is required")
+		return invalidf("pool name is required")
 	}
 	if !poolNamePattern.MatchString(name) {
-		return fmt.Errorf("invalid pool name %q: must start with a letter or digit and contain only letters, digits, '.', '_', ':' or '-'", name)
+		return invalidf("invalid pool name %q: must start with a letter or digit and contain only letters, digits, '.', '_', ':' or '-'", name)
 	}
 	return nil
 }
@@ -43,7 +43,7 @@ func normalizeTopology(topology string) string {
 func NormalizeVDevTopology(topology string) (string, error) {
 	norm := strings.ToLower(strings.TrimSpace(topology))
 	if !vdevTopologies[norm] {
-		return "", fmt.Errorf("unsupported topology %q (supported: single, mirror, raidz1, raidz2, raidz3)", topology)
+		return "", invalidf("unsupported topology %q (supported: single, mirror, raidz1, raidz2, raidz3)", topology)
 	}
 	// "" and "stripe" both mean one vdev per disk. Normalizing here keeps an
 	// empty argument out of the `zpool add` command line, where it would be read
@@ -87,16 +87,16 @@ func vdevLabel(topology string) string {
 func normalizeDiskPath(disk string) (string, error) {
 	dev := strings.TrimSpace(disk)
 	if dev == "" {
-		return "", fmt.Errorf("disk path is required")
+		return "", invalidf("disk path is required")
 	}
 	if !strings.HasPrefix(dev, "/dev/") {
-		return "", fmt.Errorf("disk %q must be an absolute path under /dev", disk)
+		return "", invalidf("disk %q must be an absolute path under /dev", disk)
 	}
 	if strings.Contains(dev, "..") || strings.ContainsAny(dev, "\n\r\t") {
-		return "", fmt.Errorf("invalid disk path %q", disk)
+		return "", invalidf("invalid disk path %q", disk)
 	}
 	if _, err := os.Stat(hostRoot + dev); err != nil {
-		return "", fmt.Errorf("disk %s not found on the node", dev)
+		return "", invalidf("disk %s not found on the node", dev)
 	}
 	return dev, nil
 }
@@ -166,6 +166,30 @@ func isWholeDisk(name string) bool {
 	}
 }
 
+// normalizeDiskSet validates a set of disks for a destructive ZFS operation:
+// each must be an existing absolute /dev path, none may be repeated, and none may
+// already belong to a pool - `zpool create`/`add` would otherwise overwrite that
+// pool's label. members comes from PoolMembers.
+func normalizeDiskSet(disks []string, members map[string]string) ([]string, error) {
+	clean := make([]string, 0, len(disks))
+	seen := make(map[string]bool, len(disks))
+	for _, disk := range disks {
+		dev, err := normalizeDiskPath(disk)
+		if err != nil {
+			return nil, err
+		}
+		if seen[dev] {
+			return nil, invalidf("disk %s was given more than once", dev)
+		}
+		seen[dev] = true
+		if owner, inUse := members[dev]; inUse {
+			return nil, invalidf("disk %s already belongs to pool %q", dev, owner)
+		}
+		clean = append(clean, dev)
+	}
+	return clean, nil
+}
+
 // AddVDev attaches one vdev (a group of disks in a topology) to an existing
 // pool, e.g. `zpool add tank mirror /dev/sdb /dev/sdc`.
 //
@@ -185,16 +209,16 @@ func (c *Client) AddVDev(pool, topology string, disks []string, force bool) erro
 		return err
 	}
 	if len(disks) == 0 {
-		return fmt.Errorf("at least one disk is required")
+		return invalidf("at least one disk is required")
 	}
 	if min := vdevMinimumDisks(norm); len(disks) < min {
-		return fmt.Errorf("adding %s needs at least %d disks, got %d", vdevLabel(norm), min, len(disks))
+		return invalidf("adding %s needs at least %d disks, got %d", vdevLabel(norm), min, len(disks))
 	}
 
 	// The pool has to exist first, otherwise `zpool add` reports a confusing
 	// "no such pool" after we have already validated the disks.
 	if _, err := c.hostExec(zpoolBin, "list", pool); err != nil {
-		return fmt.Errorf("pool %q not found", pool)
+		return invalidf("pool %q not found", pool)
 	}
 
 	// A disk that is already a pool member is either refused by ZFS or, with
@@ -204,21 +228,9 @@ func (c *Client) AddVDev(pool, topology string, disks []string, force bool) erro
 		return err
 	}
 
-	clean := make([]string, 0, len(disks))
-	seen := make(map[string]bool, len(disks))
-	for _, disk := range disks {
-		dev, err := normalizeDiskPath(disk)
-		if err != nil {
-			return err
-		}
-		if seen[dev] {
-			return fmt.Errorf("disk %s was given more than once", dev)
-		}
-		seen[dev] = true
-		if owner, inUse := members[dev]; inUse {
-			return fmt.Errorf("disk %s already belongs to pool %q", dev, owner)
-		}
-		clean = append(clean, dev)
+	clean, err := normalizeDiskSet(disks, members)
+	if err != nil {
+		return err
 	}
 
 	args := []string{"add"}

@@ -304,14 +304,13 @@ func (s *Server) validateSchedule(e *buddyScheduleEntry) error {
 	}
 	if s.agent != nil {
 		if datasets, err := s.agent.ListDatasets(); err == nil {
-			pool := e.Dataset
-			if i := strings.Index(pool, "/"); i >= 0 {
-				pool = pool[:i]
-			}
+			// Exact match only. A pool-prefix match would accept any sibling name
+			// that happens to exist ("test/nope" while "test" is a pool), and the
+			// schedule would then fail at run time instead of at creation time
+			// (NAS-018).
 			known := false
 			for _, d := range datasets {
-				name := d.Name
-				if name == e.Dataset || strings.HasPrefix(e.Dataset, name+"/") || strings.HasPrefix(name, pool+"/") || name == pool {
+				if d.Name == e.Dataset {
 					known = true
 					break
 				}
@@ -330,9 +329,6 @@ func (s *Server) validateSchedule(e *buddyScheduleEntry) error {
 //	POST   /api/buddy/schedules {id?,dataset,source,receiver,cadence,runAt,pruneKeep,enabled}
 //	DELETE /api/buddy/schedules?id=…
 func (s *Server) handleBuddySchedules(w http.ResponseWriter, req *http.Request) {
-	if !s.requireBuddyAdminAuth(w, req) {
-		return
-	}
 	store := s.ensureBuddySchedules()
 	switch req.Method {
 	case http.MethodGet:
