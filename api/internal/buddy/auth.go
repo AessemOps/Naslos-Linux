@@ -82,13 +82,15 @@ func SignRequest(id *Identity, req *http.Request, bodyDigest string) error {
 type Authenticator struct {
 	peers *PeerStore
 
-	mu   sync.Mutex
-	seen map[string]time.Time
+	mu sync.Mutex
+	// seen maps a key to the nonces it has used and when they expire. Per-key
+	// nesting bounds one key's memory without letting it evict another's entries.
+	seen map[string]map[string]time.Time
 }
 
 // NewAuthenticator creates an authenticator backed by the given peer store.
 func NewAuthenticator(peers *PeerStore) *Authenticator {
-	return &Authenticator{peers: peers, seen: make(map[string]time.Time)}
+	return &Authenticator{peers: peers, seen: make(map[string]map[string]time.Time)}
 }
 
 // Verify authenticates a request. bodyDigest is the digest of the body the caller
@@ -139,6 +141,9 @@ func (a *Authenticator) Verify(req *http.Request, bodyDigest, path string, now t
 
 	// Only burn the nonce once the signature proved the caller owns the key:
 	// otherwise anyone could exhaust a peer's nonces with junk.
+	if err := validateNonce(nonce); err != nil {
+		return nil, err
+	}
 	if a.replay(keyID, nonce, now) {
 		return nil, fmt.Errorf("this request was already used (nonce replay)")
 	}
@@ -146,23 +151,67 @@ func (a *Authenticator) Verify(req *http.Request, bodyDigest, path string, now t
 	return peer, nil
 }
 
+// maxNoncesPerKey bounds one key's replay cache. A key that sends more requests
+// than this within the TTL evicts its own soonest-to-expire entries, which is the
+// residual risk of a bound: replaying an evicted nonce inside the clock-skew
+// window. Every operation a replay could repeat is idempotent (a chunk write is
+// digest-checked, a manifest cannot roll the pointer back), so the bound is worth
+// the memory it saves (NAS-014).
+const maxNoncesPerKey = 4096
+
+// validateNonce bound-checks a nonce before it is stored: without this a key could
+// insert megabyte-long entries and grow the cache without limit (NAS-014).
+func validateNonce(nonce string) error {
+	if len(nonce) > 128 {
+		return fmt.Errorf("nonce is too long")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(nonce)
+	if err != nil {
+		return fmt.Errorf("nonce is not valid base64")
+	}
+	if len(decoded) < 16 || len(decoded) > 64 {
+		return fmt.Errorf("nonce must decode to between 16 and 64 bytes")
+	}
+	return nil
+}
+
 // replay records a nonce and reports whether it had been seen before.
 func (a *Authenticator) replay(keyID, nonce string, now time.Time) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Opportunistic cleanup keeps the map bounded without a background goroutine.
-	for k, expiry := range a.seen {
+	if a.seen == nil {
+		a.seen = make(map[string]map[string]time.Time)
+	}
+	nonces := a.seen[keyID]
+	if nonces == nil {
+		nonces = make(map[string]time.Time)
+		a.seen[keyID] = nonces
+	}
+
+	// Opportunistic cleanup of this key's expired nonces keeps the cache bounded
+	// without a background goroutine.
+	for used, expiry := range nonces {
 		if expiry.Before(now) {
-			delete(a.seen, k)
+			delete(nonces, used)
 		}
 	}
 
-	key := keyID + "|" + nonce
-	if _, used := a.seen[key]; used {
+	if _, used := nonces[nonce]; used {
 		return true
 	}
-	a.seen[key] = now.Add(nonceTTL)
+	if len(nonces) >= maxNoncesPerKey {
+		soonest, soonestExpiry := "", time.Time{}
+		for used, expiry := range nonces {
+			if soonest == "" || expiry.Before(soonestExpiry) {
+				soonest, soonestExpiry = used, expiry
+			}
+		}
+		if soonest != "" {
+			delete(nonces, soonest)
+		}
+	}
+	nonces[nonce] = now.Add(nonceTTL)
 	return false
 }
 

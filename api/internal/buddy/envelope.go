@@ -82,6 +82,20 @@ func chunkNonce(prefix []byte, index int) []byte {
 	return nonce
 }
 
+// MaxChunkIndex is the largest chunk index the 32-bit nonce counter can carry.
+// Beyond it the counter would wrap and two chunks would share a nonce, which is
+// fatal for GCM - so an index past the limit is refused rather than truncated
+// (NAS-021). At the 1 MiB chunk size this bounds one chain at 4 PiB.
+const MaxChunkIndex = int64(1)<<32 - 1
+
+// validateChunkIndex refuses an index the envelope cannot represent.
+func validateChunkIndex(index int) error {
+	if index < 0 || int64(index) > MaxChunkIndex {
+		return fmt.Errorf("chunk index %d is outside 0..%d", index, MaxChunkIndex)
+	}
+	return nil
+}
+
 // chunkAAD binds a chunk to its position in the chain, so chunks cannot be
 // reordered, swapped between chains, or truncated without detection.
 func chunkAAD(source, chain string, index, plainLen int) []byte {
@@ -120,6 +134,9 @@ func digestOf(data []byte) string {
 //
 // Layout: magic(4) | plainLen(4, BE) | nonce(12) | ciphertext+tag(16).
 func SealChunk(dek, prefix []byte, source, chain string, index int, plain []byte) ([]byte, string, error) {
+	if err := validateChunkIndex(index); err != nil {
+		return nil, "", err
+	}
 	aead, err := aeadFor(dek)
 	if err != nil {
 		return nil, "", err
@@ -140,6 +157,9 @@ func SealChunk(dek, prefix []byte, source, chain string, index int, plain []byte
 // OpenChunk decrypts a sealed blob, failing on tampering, on a chunk stored under
 // the wrong index, and on truncation.
 func OpenChunk(dek []byte, source, chain string, index int, sealed []byte) ([]byte, error) {
+	if err := validateChunkIndex(index); err != nil {
+		return nil, err
+	}
 	if len(sealed) < len(chunkMagic)+4+12 {
 		return nil, fmt.Errorf("chunk is too short to be a valid envelope")
 	}
@@ -195,7 +215,7 @@ func UnwrapDEK(kek []byte, wrapped, source, chain string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decoding wrapped key: %w", err)
 	}
-	if len(raw) < 12+32 {
+	if len(raw) < 12+32+16 {
 		return nil, fmt.Errorf("wrapped key is too short")
 	}
 	aead, err := aeadFor(kek)

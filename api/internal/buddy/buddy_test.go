@@ -577,7 +577,11 @@ func TestRequestAuthentication(t *testing.T) {
 
 	t.Run("unknown key", func(t *testing.T) {
 		stranger := newTestIdentity(t, "not-authorized")
-		req := signedRequest(t, stranger, statusURL, http.MethodGet, nil, time.Now().Unix(), "nonce-unknown")
+		nonce, err := randomNonce()
+		if err != nil {
+			t.Fatalf("generating nonce: %v", err)
+		}
+		req := signedRequest(t, stranger, statusURL, http.MethodGet, nil, time.Now().Unix(), nonce)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("request: %v", err)
@@ -591,7 +595,11 @@ func TestRequestAuthentication(t *testing.T) {
 	t.Run("stale timestamp", func(t *testing.T) {
 		// Signed correctly, but an hour old: a captured request must not stay
 		// valid forever.
-		req := signedRequest(t, sender, statusURL, http.MethodGet, nil, time.Now().Add(-time.Hour).Unix(), "nonce-stale")
+		nonce, err := randomNonce()
+		if err != nil {
+			t.Fatalf("generating nonce: %v", err)
+		}
+		req := signedRequest(t, sender, statusURL, http.MethodGet, nil, time.Now().Add(-time.Hour).Unix(), nonce)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("request: %v", err)
@@ -604,7 +612,11 @@ func TestRequestAuthentication(t *testing.T) {
 
 	t.Run("replay", func(t *testing.T) {
 		timestamp := time.Now().Unix()
-		first := signedRequest(t, sender, statusURL, http.MethodGet, nil, timestamp, "nonce-replayed")
+		nonce, err := randomNonce()
+		if err != nil {
+			t.Fatalf("generating nonce: %v", err)
+		}
+		first := signedRequest(t, sender, statusURL, http.MethodGet, nil, timestamp, nonce)
 		resp, err := http.DefaultClient.Do(first)
 		if err != nil {
 			t.Fatalf("first request: %v", err)
@@ -614,7 +626,7 @@ func TestRequestAuthentication(t *testing.T) {
 			t.Fatalf("first request got %d, want 200", resp.StatusCode)
 		}
 
-		second := signedRequest(t, sender, statusURL, http.MethodGet, nil, timestamp, "nonce-replayed")
+		second := signedRequest(t, sender, statusURL, http.MethodGet, nil, timestamp, nonce)
 		resp2, err := http.DefaultClient.Do(second)
 		if err != nil {
 			t.Fatalf("second request: %v", err)

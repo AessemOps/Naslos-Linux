@@ -3,6 +3,7 @@ package buddy
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -396,19 +397,17 @@ func (r *Receiver) handleChunks(w http.ResponseWriter, req *http.Request) {
 			writeError(w, http.StatusBadRequest, "chain is required")
 			return
 		}
-		if peer.QuotaBytes > 0 {
-			used, err := r.Store.Usage(peer.Fingerprint)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+		// The quota is enforced inside the store, under the same lock that charges
+		// the bytes: a check here followed by a write there let two concurrent
+		// uploads both pass (NAS-013). A digest-identical re-upload is free, so
+		// resuming a chain that already fills the quota still works.
+		err = r.Store.PutChunkWithin(peer.Fingerprint, source, chain, index, body, peer.QuotaBytes)
+		if err != nil {
+			var quotaErr *QuotaError
+			if errors.As(err, &quotaErr) {
+				writeError(w, http.StatusRequestEntityTooLarge, quotaErr.Error())
 				return
 			}
-			if used+int64(len(body)) > peer.QuotaBytes {
-				writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf(
-					"quota exceeded: %d of %d bytes are already stored for this key", used, peer.QuotaBytes))
-				return
-			}
-		}
-		if err := r.Store.PutChunk(peer.Fingerprint, source, chain, index, body); err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -568,6 +567,9 @@ func (r *Receiver) handleManifest(w http.ResponseWriter, req *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// The manifest is stored bytes too: forget the cached usage so the next
+		// quota check counts it (NAS-013).
+		r.Store.InvalidateUsage(peer.Fingerprint)
 
 		var sealed int64
 		for _, chunk := range manifest.Chunks {

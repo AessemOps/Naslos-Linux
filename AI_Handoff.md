@@ -1,5 +1,58 @@
 # AI Handoff — Naslos
 
+## Phase 2 hardening, part 2: quota, replay cache, envelope bounds
+## (`feature/buddy-hardening`)
+
+Branched from master `aaaf95f` (PRs #11/#12 merged). Deployed: api `0.1.0-b18`
+(helm revision 74), agent `0.1.0-b6`, ui `0.1.0-b6`.
+
+**NAS-013 — quota.** The check and the charge now happen under the store lock,
+before the bytes are written (`Store.PutChunkWithin` + `reserveUsage`, released on
+a failed write), so two concurrent uploads cannot both pass a stale check. A
+chunk that is already stored with the same digest is a free no-op, so resuming a
+chain that fills the quota works. Manifest bytes are counted (the cached usage is
+invalidated after a manifest write) and `dirSize` now ignores the store's own
+dot-prefixed temp artifacts — a stray temp file from a crashed write used to
+inflate a key's usage until restart. `ValidateQuota` rejects a negative quota, one
+smaller than a single *sealed* chunk (`MinPeerQuota = MaxSealedChunkSize`) and an
+implausibly large one; 0 stays the documented "unlimited".
+Live: after the key filled up, a further chunk → `413 quota exceeded: 1052672 of
+1052672 …`; a quota of 1024 → `400 quota must be at least 1052672 bytes (one
+chunk), or 0 for unlimited`; a 1 MiB chunk stored and the source listed.
+Note: the usage cache is in-memory, so deleting files outside the API does not
+invalidate it (pre-existing; a pod restart recomputes).
+
+**NAS-014 — replay cache.** It is now per key (`map[keyID]map[nonce]expiry`) with
+a `maxNoncesPerKey` bound, so one key can neither grow the cache without limit nor
+evict another key's entries; expired nonces are dropped as that key is used. Nonces
+are format-checked (base64 decoding to 16..64 bytes, ≤128 chars) before they enter
+the cache, so a peer cannot store megabyte-long keys. Residual risk, documented:
+a nonce evicted under the bound, or the cache itself across a restart, could allow
+a replay inside the 5-minute skew window — every operation a replay could repeat is
+idempotent (chunk writes are digest-checked, a manifest cannot roll the pointer
+back), which is why the bound was preferred to persistence. Tests:
+`TestNonceFormatIsValidated`, `TestReplayCacheIsBoundedPerKey`.
+
+**NAS-021 — envelope and store bounds.** The 32-bit nonce counter is guarded
+(`MaxChunkIndex`, refused in `SealChunk`/`OpenChunk`) so an index cannot wrap and
+reuse a nonce; `UnwrapDEK`'s length floor now includes the GCM tag (12+32+16);
+and `sourcesIn` walks recursively, so a three-level source is listed instead of
+being hidden while the quota counted its bytes. Tests:
+`TestChunkIndexOverflowIsRefused`, `TestSourcesInFindsNestedSources`.
+Live: `quota-test/nested/deep` appeared in `/api/buddy/status`.
+
+Playwright **29 passed / 2 skipped / 0 failed**; `api` suite green; the VM is back
+to baseline (test peer revoked, store emptied, `.enroll-used` removed).
+
+**Still open**
+
+- NAS-014's persistence option (only if a restart-window replay is judged to matter
+  after the idempotency analysis above).
+- NAS-021's bounded FS walks (pagination of long chain listings) — an availability
+  note, not a vulnerability.
+- Low-priority polish: FR-MET-10 per-interface IPs `[OPEN]`; 45 `svelte-check`
+  warnings; image tags reused (`0.1.0` + `IfNotPresent`) — always bump the suffix.
+
 ## Phase 2 hardening: injection + receiver integrity (`feature/polish-gaps`)
 
 Deployed: api `0.1.0-b16` (helm revision 72), agent `0.1.0-b6`, ui `0.1.0-b6`.
