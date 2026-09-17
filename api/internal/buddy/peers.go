@@ -171,6 +171,9 @@ func (s *PeerStore) Add(p *Peer) error {
 	if err != nil {
 		return err
 	}
+	if err := ValidateQuota(p.QuotaBytes); err != nil {
+		return err
+	}
 	p.Fingerprint = fingerprint
 	if p.CreatedAt.IsZero() {
 		p.CreatedAt = time.Now().UTC()
@@ -257,4 +260,33 @@ func (s *PeerStore) TouchSeen(name string, t time.Time) {
 		p.LastSeenAt = t.UTC()
 		_ = s.save()
 	}
+}
+
+// MinPeerQuota is the smallest quota that is useful rather than a trap: it has to
+// cover one *sealed* chunk (the envelope adds its header and GCM tag), otherwise
+// the very first upload could never succeed.
+const MinPeerQuota = int64(MaxSealedChunkSize)
+
+// MaxPeerQuota bounds a quota so a fat-fingered value (bytes given in KB, say)
+// cannot look like "unlimited".
+const MaxPeerQuota = int64(1) << 60
+
+// ValidateQuota checks a peer's quota: 0 means unlimited (the documented
+// default), anything else must be a plausible byte count. Without this a negative
+// quota silently meant "unlimited" and a small one made the peer unusable
+// (NAS-013).
+func ValidateQuota(quota int64) error {
+	if quota < 0 {
+		return fmt.Errorf("quota must not be negative (0 means unlimited)")
+	}
+	if quota == 0 {
+		return nil
+	}
+	if quota < MinPeerQuota {
+		return fmt.Errorf("quota must be at least %d bytes (one chunk), or 0 for unlimited", MinPeerQuota)
+	}
+	if quota > MaxPeerQuota {
+		return fmt.Errorf("quota %d is implausibly large (maximum %d)", quota, MaxPeerQuota)
+	}
+	return nil
 }
