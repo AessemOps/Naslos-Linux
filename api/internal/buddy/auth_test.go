@@ -2,6 +2,7 @@ package buddy
 
 import (
 	"encoding/base64"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -73,5 +74,99 @@ func TestReplayCacheIsBoundedPerKey(t *testing.T) {
 	a.mu.Unlock()
 	if live != 1 {
 		t.Errorf("key-4 has %d live nonces, want the expired one dropped", live)
+	}
+}
+
+// TestNoncesSurviveARestart is the NAS-014 fix: a request captured just before a
+// restart could otherwise be replayed inside the clock-skew window, because the
+// cache used to be memory-only.
+func TestNoncesSurviveARestart(t *testing.T) {
+	dir := t.TempDir()
+	peers := NewPeerStore(filepath.Join(dir, "peers.json"))
+	now := time.Now()
+	nonce := base64.StdEncoding.EncodeToString(randomBytes(t, 16))
+
+	first := NewAuthenticator(peers)
+	first.PersistNonces(dir)
+	if first.replay("key-1", nonce, now) {
+		t.Fatal("a fresh nonce was reported as a replay")
+	}
+
+	// A new authenticator on the same directory is what a restart looks like.
+	restarted := NewAuthenticator(peers)
+	restarted.PersistNonces(dir)
+	if !restarted.replay("key-1", nonce, now) {
+		t.Error("the nonce was accepted after a restart")
+	}
+
+	// An expired entry is not restored, so it cannot block a legitimate request.
+	old := time.Now().Add(-nonceTTL - time.Hour)
+	expiredNonce := base64.StdEncoding.EncodeToString(randomBytes(t, 16))
+	first.replay("key-1", expiredNonce, old)
+
+	after := NewAuthenticator(peers)
+	after.PersistNonces(dir)
+	if after.replay("key-1", expiredNonce, now) {
+		t.Error("an expired nonce was restored and treated as a replay")
+	}
+}
+
+// TestNonceFileIsCompacted keeps the cache file bounded: it is rewritten once the
+// number of live nonces passes the threshold.
+func TestNonceFileIsCompacted(t *testing.T) {
+	dir := t.TempDir()
+	a := NewAuthenticator(NewPeerStore(filepath.Join(dir, "peers.json")))
+	a.PersistNonces(dir)
+
+	now := time.Now()
+	for i := 0; i < nonceFileCompactThreshold+50; i++ {
+		a.replay("key-1", base64.StdEncoding.EncodeToString(randomBytes(t, 16)), now)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, ".nonces"))
+	if err != nil {
+		t.Fatalf("reading the cache: %v", err)
+	}
+	lines := 0
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines++
+		}
+	}
+	// After compaction the file holds roughly the live entries, not every append.
+	if lines > nonceFileCompactThreshold+200 {
+		t.Errorf("cache file has %d lines, want it compacted near %d", lines, nonceFileCompactThreshold)
+	}
+
+	// The live entries are still there: a restart still detects the newest replay.
+	restarted := NewAuthenticator(NewPeerStore(filepath.Join(dir, "peers.json")))
+	restarted.PersistNonces(dir)
+	a.mu.Lock()
+	var last string
+	for nonce := range a.seen["key-1"] {
+		last = nonce
+		break
+	}
+	a.mu.Unlock()
+	if last == "" {
+		t.Fatal("no nonce was recorded")
+	}
+	if !restarted.replay("key-1", last, now) {
+		t.Error("a live nonce was lost by compaction")
+	}
+}
+
+// TestPersistNoncesWithoutAPathStaysInMemory keeps the standalone behaviour
+// explicit: no path means no file, and no error.
+func TestPersistNoncesWithoutAPathStaysInMemory(t *testing.T) {
+	a := NewAuthenticator(NewPeerStore(filepath.Join(t.TempDir(), "peers.json")))
+	a.PersistNonces("")
+
+	nonce := base64.StdEncoding.EncodeToString(randomBytes(t, 16))
+	if a.replay("key-1", nonce, time.Now()) {
+		t.Fatal("a fresh nonce was reported as a replay")
+	}
+	if !a.replay("key-1", nonce, time.Now()) {
+		t.Error("the second use of a nonce was not detected")
 	}
 }

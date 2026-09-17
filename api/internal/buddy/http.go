@@ -97,6 +97,7 @@ func (r *Receiver) Handler() http.Handler {
 	mux.HandleFunc("/backups", r.handleBackups)
 	mux.HandleFunc("/chunks/", r.handleChunks)
 	mux.HandleFunc("/chains/", r.handleChains)
+	mux.HandleFunc("/sequence/", r.handleSequence)
 	mux.HandleFunc("/manifest/", r.handleManifest)
 	mux.HandleFunc("/prune/", r.handlePrune)
 	return http.StripPrefix(PathPrefix, mux)
@@ -440,12 +441,57 @@ func (r *Receiver) handleChains(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	manifests, err := r.Store.Chains(peer.Fingerprint, source)
+	// The listing is bounded: a source that has grown for years must not make one
+	// request walk an unbounded tree. A restore does not use this endpoint (it
+	// asks for the sequence), so nothing that needs the whole history is cut off
+	// (NAS-021).
+	manifests, err := r.Store.ChainsLimited(peer.Fingerprint, source, MaxListedChains)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	total, err := r.Store.ChainCount(peer.Fingerprint, source)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
+	writeJSON(w, http.StatusOK, map[string]any{
+		"source":    source,
+		"chains":    chainSummaries(manifests),
+		"total":     total,
+		"truncated": total > len(manifests),
+	})
+}
+
+// handleSequence serves the chains a restore must apply, oldest first:
+//
+//	GET PathPrefix/sequence/<source>?chain=<id>
+//
+// Unlike the listing this follows the chain history from the current (or
+// requested) backup, so its work is proportional to the sequence and not to how
+// many chains the source has accumulated (NAS-021).
+func (r *Receiver) handleSequence(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	source := strings.TrimPrefix(req.URL.Path, "/sequence/")
+	peer, ok := r.peerFor(w, req, BodyDigest(nil), source)
+	if !ok {
+		return
+	}
+
+	manifests, err := r.Store.Sequence(peer.Fingerprint, source, req.URL.Query().Get("chain"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"source": source, "chains": chainSummaries(manifests)})
+}
+
+// chainSummaries renders manifests for the wire.
+func chainSummaries(manifests []Manifest) []map[string]any {
 	chains := make([]map[string]any, 0, len(manifests))
 	for _, manifest := range manifests {
 		chains = append(chains, map[string]any{
@@ -459,7 +505,7 @@ func (r *Receiver) handleChains(w http.ResponseWriter, req *http.Request) {
 			"chunks":       len(manifest.Chunks),
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"source": source, "chains": chains})
+	return chains
 }
 
 // handleManifest serves the manifest endpoints:

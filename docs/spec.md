@@ -124,6 +124,10 @@ unmodified Talos installation, administered through a web UI.
   peer's key while the owner's peer list looked unchanged.
 - **SEC-13** — Owner-facing job identifiers MUST be unguessable (at least 128 bits):
   they are the handle for inspecting and cancelling a running transfer.
+- **SEC-14** — A receiver's replay cache MUST survive a process restart (a request
+  captured just before a restart MUST NOT be replayable inside the clock-skew
+  window), MUST be bounded in memory per key, and MUST reject a nonce that is not
+  the expected shape before storing it.
 
 ### 2.3 Request flow (normative)
 
@@ -681,6 +685,8 @@ nginx → API, with the chart's `buddy` values enabled:
 | `TestPublicRoutesStayPublic` (`/api/health`, `/api/ready`, and the peer API answering its own JSON 401) | SEC-10 (explicit allow-list) |
 | `TestRequireAuthFailsClosedWithoutAConfiguredSecret` (no secret → nothing is authorized) | SEC-10 |
 | `TestRequireAuth` on the agent: `/health` public, every `/api/v1/*` behind `Authorization: Bearer`, wrong/missing/partial token → 401 | SEC-11 |
+| `TestNoncesSurviveARestart`, `TestNonceFileIsCompacted`, `TestPersistNoncesWithoutAPathStaysInMemory` | SEC-14 |
+| `TestSequenceFollowsTheGuidIndex`, `TestSequenceRefusesWhenTheBaseIsGone`, `TestChainsListingIsCapped`, `TestRestoreSequenceFallsBackToTheListing` | FR-BUD-14, NAS-021 (bounded walks) |
 | Agent refusal tests (`TestCreatePoolRefusals…`, `TestCreatePoolRefusesBadDisks`, `TestPoolSinksRefuseInvalidNames`, `TestSnapshotRefusesInvalidArguments`) assert no command ran at all | SEC-9/SEC-11 |
 | Live: with the gate armed (`AUTH_DISABLED=false`), a NodePort request to `/api/*` with or without a forged `Remote-User` → 401; with the dev opt-out → served | SEC-10 |
 | `POST /api/buddy/send` → `202 {jobId}`; `GET /api/buddy/jobs/{id}` reaches `succeeded` with the sync-era result fields | FR-BUD-16 (async jobs) |
