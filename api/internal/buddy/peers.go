@@ -262,9 +262,10 @@ func (s *PeerStore) TouchSeen(name string, t time.Time) {
 	}
 }
 
-// MinPeerQuota is the smallest quota that is useful rather than a trap: below one
-// chunk the first upload can never succeed.
-const MinPeerQuota = int64(ChunkPlainSize)
+// MinPeerQuota is the smallest quota that is useful rather than a trap: it has to
+// cover one *sealed* chunk (the envelope adds its header and GCM tag), otherwise
+// the very first upload could never succeed.
+const MinPeerQuota = int64(MaxSealedChunkSize)
 
 // MaxPeerQuota bounds a quota so a fat-fingered value (bytes given in KB, say)
 // cannot look like "unlimited".
