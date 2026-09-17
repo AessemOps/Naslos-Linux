@@ -1,192 +1,219 @@
-# Buddy Backup UI + scheduler (FR-BUD-15/16): VM verification plan
+# Naslos — project status and continuation plan (2026-09-17)
 
-## Status
+## Repo facts (verified in git this session)
 
-The implementation plan that used to live here has **landed** on
-`feature/buddy-backup`:
+- Canonical branch is `origin/master` (`origin/HEAD → origin/master`); `origin/main`
+  is a stale branch (68 behind master).
+- **Already in master**: storage/ZFS (FR-STO), shares SMB+NFS (FR-SHR), users/groups +
+  LDAP (FR-IDN), dashboard + metrics (FR-MET), terminal (FR-LOG), app catalog
+  (FR-APP), SSO, zfs-host-support. `feature/users`, `feature/dashboard-and-metrics`,
+  `feature/zfs-host-support`, `stage-6-sso` are 0 commits ahead of master (merged);
+  `feature/web-terminal` was merged on the remote via PR #8.
+- **Local master is 3 commits behind** `origin/master` (the PR #8 merge `3e454bc` and
+  its two parents) — a plain fast-forward.
+- **Only `feature/buddy-backup` is outstanding**: 10 commits ahead / 1 behind
+  `origin/master` (the 1 behind is the #8 merge commit, so it merges cleanly). It is
+  stacked on the terminal commits. Its 2 newest commits (`a5406f2`, `642df00`) are
+  **not pushed** (`origin/feature/buddy-backup` is at `4ffeab7`).
+- A linked worktree exists for `rural-drill` — leave it untouched.
+- The live VM state could not be re-checked this session (plan mode restricts bash to
+  the read-only allowlist). Last recorded deploy: api `0.1.0-b8`, ui `0.1.0-b4`
+  (built from the buddy branch tip); re-verify pods and tags before the next deploy.
+- Leftover VM test artifacts (optional cleanup): empty `test/docker-restored` (busy in
+  the agent's mount namespace), `buddy-*` snapshots on `test/Backup`,
+  `test/drill-restored`, and the standalone receiver's volumes at `~/buddy-standalone`.
 
-- `11b9dff` — `feat(buddy): async send jobs, scheduler and backups UI (FR-BUD-15/16)`
-  (17 files, +2592/−99: `buddy_jobs.go`, `buddy_schedules.go`, jobs/scheduler
-  tests, `/backups` Svelte page, `ui/tests/backups.spec.ts`, spec §3.8
-  FR-BUD-15/16, docs, notifications events `backup_success`/`backup_failure`).
-- `4ffeab7` — security-audit docs only (`docs/SECURITY-AUDIT.md`,
-  `docs/SECURITY-FIX-PLAN.md`), **no code**; nothing to test from it here.
+## What works (and how it was verified)
 
-It is **not deployed**: live tags per `AI_Handoff.md` are api `0.1.0-b7`, ui
-`0.1.0-b1`, agent `0.1.0-b2`. The agreed scope is to **deploy the update to the
-VM and run the full drill**, then record findings.
+| Area | State | Evidence |
+| --- | --- | --- |
+| Storage / ZFS | Merged; pools, datasets, add drives, import | PR #7 merge; `pools.spec.ts`; spec §7 live checks |
+| Shares | Merged; SMB + NFSv4 via Ganesha, LDAP account mirror, group access, dataset-path enforcement, mDNS/WSD | PR #6; `shares.spec.ts`; live SMB login/group drills in `AI_Handoff.md` |
+| Users / groups / LDAP | Merged; CRUD, NT hash, password-change timing, lazy reconnect, `/api/ready` | `users.spec.ts`, `groups.spec.ts`, `e2e.spec.ts`, identity Go tests, LDAP-outage drill |
+| Dashboard / metrics | Merged; 5 s collector (`METRICS_INTERVAL_SECONDS`), live snapshot, auto-refresh | `dashboard.spec.ts`; spec FR-MET-02/03/08 |
+| Terminal / logs | Merged; auth-gated exec, pod logs | `terminal.spec.ts` (exec tests skip without an interactive session) |
+| App catalog | Merged; catalog entries, JSON-Schema forms, helm install/upgrade, start/stop | `/api/catalog`, `/api/apps`, `/apps` page; spec FR-APP-01…04 |
+| Buddy Backup | Complete on the branch: sender, receiver, `buddyctl`, standalone container, async jobs, scheduler, `/backups` UI | 11 Go tests; 6 Playwright tests; VM drills + cross-flavour drill (VM ↔ container) recorded in `AI_Handoff.md` |
+| Test suites | Green as of the last session | Go: `api`, `agent` build/vet/test clean; `svelte-check` 0 errors; Playwright **29 passed / 2 skipped / 0 failed** |
 
-VM: `192.168.1.96`, UI via NodePort `http://192.168.1.96:30080`, registry
-`192.168.1.2:30095`, `TALOSCONFIG=bootstrap/vm/talosconfig`. All owner-facing
-buddy endpoints sit behind `requireBuddyAdminAuth`, so curl needs
-`-H 'Remote-User: admin'` (`BUDDY_REQUIRE_AUTH=true`).
+## What does not work / is open
 
-## Known preconditions / traps (confirmed in code)
+**Security — the biggest gap (22 findings: 3 Critical, 5 High, 10 Medium, 4 Low/Info),**
+plan written but **not implemented**: `docs/SECURITY-FIX-PLAN.md`
+(`.kilo/plans/1789421985000-critical-security-fixes.md`). The three Criticals:
 
-1. **Chart does not pass `BUDDY_SCHEDULES`** (or `BUDDY_SCHEDULER_INTERVAL_MS`):
-   the implicit default `/var/lib/naslos/buddy-schedules.json` is used, which is
-   on the `naslos-shares-config` PVC (`api.sharesConfig.enabled: true`,
-   mountPath `/var/lib/naslos`, values.yaml:42) — so schedules persist. Record
-   the missing explicit chart env as a finding (same for the interval override).
-2. **Re-apply the `--set buddy.*` flags on upgrade.** `values-vm.yaml` does not
-   set `buddy.*`; the release only has it enabled from the original
-   `--set buddy.enabled=true --set buddy.receivePath=/var/mnt/test/naslos-buddy
-   --set buddy.name=naslos-b`. A plain `-f values.yaml -f values-vm.yaml`
-   upgrade would disable the receiver.
-3. **Self-send needs the instance's own key authorized on its own receiver.**
-   `ui/tests/backups.spec.ts` tolerates an `unknown key` failure by skipping, so
-   the manual drill must add the instance key to `/api/buddy/peers` first,
-   otherwise "succeeded" is never actually exercised.
-4. **Notifications are in-memory.** `notifications.NewManager("")` (server.go:85)
-   → settings reset to `Enabled:false` on every pod restart, and
-   `MinSeverity` defaults to `warning`, so `backup_success` (Info) is filtered:
-   set `minSeverity:"info"` for the success check. Pre-existing gap, note it.
-5. **409 needs a send that lasts.** The conflict window is the run time, so use a
-   large dataset (e.g. a ~0.5–1 GiB test dataset) and issue the second POST
-   immediately.
-6. **Catch-up cannot be triggered through the API** (every POST recomputes a
-   future `nextRun`) and the API image is distroless (no shell in
-   `kubectl exec`). Patch the PVC from a throwaway busybox pod (pattern already
-   used in the handoff for `df`), then restart the API. To exercise the *real*
-   runner without patching, use a `daily` schedule with `runAt` = now+2 min UTC
-   and `kubectl set env deployment/naslos-api BUDDY_SCHEDULER_INTERVAL_MS=5000`.
-7. **Restore confirmation is client-side only**: the page refuses unless the
-   typed destination equals the dataset (backups/+page.svelte:312); the API
-   accepts `restore` with no `confirm` field. Test the UI refusal, don't expect
-   an API-level guard.
+- NAS-001 — `RequireAuth`/`RequireAdmin` are dead code; most owner routes are
+  unauthenticated at the API layer and security rests on the Traefik path alone.
+- NAS-002 — the privileged agent has **no auth** at all (`:9090`, privileged,
+  `hostPath /`); anyone in-cluster can destroy pools or wipe disks.
+- NAS-003 — agent validation gaps: unvalidated pool names, disks, datasets, snapshots
+  reach `zpool`/`zfs`/`wipefs` argv.
 
-## Task list
+Coupled auth Highs: NAS-004 (terminal), NAS-005 (`/api/ws/logs` unauthenticated),
+NAS-008 (NodePort proxies nearly all `/api/` and trusts a client header).
 
-### 0. Pre-flight (local, before touching the VM)
+**Buddy (branch) — remaining work and defects found in the drills**
+(`AI_Handoff.md` → "Findings to follow up", `docs/buddy-backup.md`):
 
-- `cd api && go build ./... && go vet ./... && go test ./...` — expect green,
-  including `buddy_jobs_test.go` and `buddy_scheduler_test.go`.
-- `cd ui && npm run check` — expect 0 errors.
+1. **Cancel is not prompt**: `buddy.Client` HTTP calls are not context-bound, so
+   `DELETE /api/buddy/jobs/{id}` only takes effect when the next stream read fails
+   (observed 30 s against a stalled receiver).
+2. **A send of a dataset not mounted in the host namespace reports `succeeded` while
+   storing nothing** (the `mountPropagation: HostToContainer` trap on the send path —
+   an empty 44 KB backup over a green result).
+3. **`pruneKeep` can leave only unrestorable incrementals**: the send and the schedule
+   report success, and only verify/restore later refuses (missing base chain).
+4. Multi-buddy **fan-out** (one source → several receivers) is not implemented.
+5. **Peer-exposure decision** still to be taken (dedicated listener vs Traefik +
+   Authelia).
+6. Medium/Low hardening still open for buddy: NAS-011 (enroll replayable across
+   restarts, same-name key overwrite), NAS-012 (no manifest rollback protection),
+   NAS-013 (quota race/undercount), NAS-014 + NAS-018 (32-bit job IDs, state-file
+   races, loose schedule dataset match), NAS-021 (counter overflow, FS walks).
+7. Deploy ergonomics: the chart passes neither `BUDDY_SCHEDULES` nor
+   `BUDDY_SCHEDULER_INTERVAL_MS`; `buddy.*` is not in `values-vm.yaml` so upgrades
+   must use `--reuse-values` or repeat the `--set` flags; the `chown 65532:65532`
+   receive-dataset step is manual; a job can report a snapshot name it never created;
+   a never-run schedule serialises `lastRun` as `0001-01-01T00:00:00Z`.
 
-### 1. Build, push, deploy
+**Other product gaps**
 
-- Fresh tag suffixes per the handoff (`always retag`; registry serves
-  `IfNotPresent`): `make api-image IMAGE_TAG=0.1.0-b8`, `make ui-image
-  IMAGE_TAG=0.1.0-b2`, then `docker push` both. Do **not** parallelise build and
-  push.
-- `helm upgrade naslos charts/naslos -n naslos -f charts/naslos/values.yaml
-  -f charts/naslos/values-vm.yaml --set api.image.tag=0.1.0-b8
-  --set ui.image.tag=0.1.0-b2 --set buddy.enabled=true
-  --set buddy.receivePath=/var/mnt/test/naslos-buddy --set buddy.name=naslos-b`
-  with `TALOSCONFIG=bootstrap/vm/talosconfig`, adding `--force-conflicts` if the
-  image field is owned by an earlier `kubectl set image`.
-- Confirm: `kubectl -n naslos get pods`, the api/ui images show the new tags,
-  `/api/ready` is 200, `http://192.168.1.96:30080/backups` renders "Backups".
-- Note the release revision and tags in the findings.
+- Notification settings are **in-memory only** (`notifications.NewManager("")` in
+  `server.go`) — they reset on every API restart; no persistence path is wired.
+- `/api/shares/status` returns empty values: the API's `AgentSharesStatus` struct
+  still names the old agent fields (`sambaRunning`, …) while the agent reports
+  `smbShareCount`/`nfsExportCount`.
+- `naslos-openldap-backup` CronJob is in CrashLoopBackOff
+  (`openldap/manifests/backup-cronjob.yaml`) — LDAP backups are failing.
+- FR-MET-10 **[OPEN]**: per-interface IPs are not collected (interface names are);
+  multi-node metric aggregation is explicitly out of the current single-node scope.
+- NFS is NFSv4-only with AUTH_SYS (documented, by design given Talos).
+- `svelte-check` reports 45 warnings (mostly a11y) — acceptable but worth clearing.
+- Deploy fragility: reused `0.1.0` tags with `IfNotPresent` (NAS-022) can run stale
+  images after a retag.
 
-### 2. Automated suites against the live VM
+---
 
-- `cd ui && npx playwright test` — full suite (9 specs incl.
-  `backups.spec.ts`); expect the pre-existing 8 topics still pass.
-- If `backups.spec.ts` skips the send (unknown key) or the schedule (no
-  dataset), treat it as a setup gap and re-run after step 3.1's peer enrollment.
+## Plan
 
-### 3. API drills through the NodePort (nginx path + `Remote-User`)
+Order: **Phase 0 consolidate → Phase 1 security gate → Phase 2 buddy completion →
+Phase 3 product gaps.** Phase 0 is the agreed lead; Phase 1 gates any exposure beyond
+the current dev-only VM posture.
 
-1. **Self-enrollment**: `POST /api/buddy/peers` with this instance's `name` and
-   `publicKey` from `GET /api/buddy/identity` (scoped to the test source), so a
-   self-send can succeed.
-2. **Auth**: `GET /api/buddy/jobs`, `GET /api/buddy/schedules`,
-   `POST /api/buddy/send` without `Remote-User` → 401 (SEC-7).
-3. **Async happy path**: `POST /api/buddy/send {dataset,source,receiver}` → 202
-   `{jobId}`; poll `GET /api/buddy/jobs/{id}`: `running` with `progress` ticks,
-   then `succeeded` with the sync-era fields (`chunks>0`, `chain`,
-   `plainBytes`, `incremental`, `resumed`, `durationSeconds`); the job appears in
-   `GET /api/buddy/jobs`. Compare the reported `plainBytes`/digest against the
-   node's own `zfs send -w | sha256sum` for that snapshot (as the earlier drills
-   did).
-4. **409 conflict**: with the large dataset from precondition 5, POST twice in a
-   row → second is 409 naming the running job; also confirm a *different*
-   dataset is still accepted in parallel.
-5. **Cancel + resume**: start a large send, `DELETE /api/buddy/jobs/{id}` after
-   ~1 s → `{"status":"cancelling"}`; GET reaches `cancelled`. Check the resume
-   state file exists (`/var/lib/naslos/buddy-sends/*.json`) — read it from the
-   busybox PVC pod or `kubectl cp` is unavailable, so list via the pod. Re-POST
-   the same request → `resumed: true`, `skipped > 0`, and it completes.
-6. **Validate + job list/404**: bad schedule cadence, bad `runAt`
-   (`"25:00"`, `"Mon"` for weekly), absolute/`..` source, unknown dataset,
-   bad receiver URL → 400 each; unknown job id → 404; `DELETE` of a finished
-   job → 409.
+### Phase 0 — Consolidate the mainline (do first)
 
-### 4. Scheduler + retention + catch-up
+1. `git fetch --all --prune`; confirm `origin/master` tip is `3e454bc` (#8).
+2. On `master`: `git merge --ff-only origin/master` (3 commits, the PR #8 merge).
+3. On `feature/buddy-backup`: push the two local commits
+   (`git push origin feature/buddy-backup`).
+4. Open **PR #9** `feature/buddy-backup → master` (`gh pr create`), title in the repo
+   style, e.g. `feat(buddy): Buddy Backup — sender, receiver, scheduler and UI`;
+   body summarising: buddy feature set, the security audit + fix plan docs, the VM and
+   cross-flavour drill results, and the known follow-ups. Expect 10 commits; the 1
+   merge-commit divergence resolves as a normal PR merge (history shape matches
+   #6/#7/#8).
+5. Merge the PR on GitHub; then `git checkout master && git pull --ff-only`.
+6. Confirm consolidation: `git rev-list --count master..feature/buddy-backup` → `0`,
+   and that `git branch --list` shows no branch ahead of master.
+7. Verify the merged tree exactly as the repo expects: `cd api && go build ./... &&
+   go vet ./... && go test ./...`; same for `agent/`; `cd ui && npm run check &&
+   npx playwright test` (29 passing / 2 skipped baseline).
+8. Deploy **from master** with fresh tags (api/ui, and agent if it changed) using
+   `--reuse-values` or the full `--set` list; confirm pods, `/api/ready`, and re-run
+   the buddy smoke: one `/api/buddy/send`, one scheduled run, `/backups` loads.
+9. Update `AI_Handoff.md`: change the "current branch" line to `master`, record the PR
+   number/merge commit, and move the buddy section from "delivered on a branch" to
+   "in master".
+10. Optional cleanup (decide, don't block): delete the merged local (and remote)
+    branches `users`, `dashboard-and-metrics`, `zfs-host-support`, `stage-6-sso`,
+    `web-terminal`, `feature/buddy-backup`. Do **not** touch the `rural-drill`
+    worktree.
 
-1. **Due run (shell-free)**: `kubectl -n naslos set env deployment/naslos-api
-   BUDDY_SCHEDULER_INTERVAL_MS=5000`; create a `daily` schedule with `runAt`
-   ≈ now+2 min UTC and `pruneKeep:1`; watch `GET /api/buddy/schedules` move
-   `lastRun`/`lastResult:"ok"`/`nextRun` and a job with `scheduleId` appear in
-   `/api/buddy/jobs`; then `kubectl set env deployment/naslos-api
-   BUDDY_SCHEDULER_INTERVAL_MS-` to restore the 1-minute default.
-2. **Retention**: let that schedule run twice (second is incremental) with
-   `pruneKeep:1` → the receiver's chain list for the source (owner
-   `GET /api/buddy/status` or `buddyctl backups`) holds only the newest chain,
-   and a verify still passes.
-3. **Catch-up**: stop the API (`kubectl scale deploy/naslos-api --replicas=0` or
-   `rollout restart`), rewrite that schedule's `nextRun` to a past timestamp in
-   `/var/lib/naslos/buddy-schedules.json` from a busybox pod mounting the
-   `naslos-shares-config` PVC, restart the API → exactly one job fires on
-   startup (restart again → no second fire).
-4. **Failure path**: schedule/manual send to a dead receiver
-   (`http://192.168.1.96:1` or an unresolvable host) → job `failed`,
-   `lastResult:"failed"` + `lastError` persisted, entry's `nextRun` advanced.
+### Phase 1 — Security gate (execute `docs/SECURITY-FIX-PLAN.md`)
 
-### 5. Notifications (ntfy)
+Use that document as the task list (tasks 1–9, rollout, validation) — do not
+re-plan it here. Sequencing notes:
 
-- Run a capture listener reachable from the pod (small python HTTP server on the
-  VM host; fallback: a throwaway public ntfy topic subscribed to
-  `https://ntfy.sh/<topic>/json`).
-- `PUT /api/notifications` with `enabled:true`, `serverURL` = capture base,
-  `topic`, `minSeverity:"info"`, `enabledEvents` including `backup_success` and
-  `backup_failure`.
-- Trigger one success and one failure → exactly one POST each; then remove
-  `backup_success` from `enabledEvents` and confirm a success produces **no**
-  POST; re-check that a failure still does (gate behaviour, FR-BUD-15).
-- Note the in-memory settings + restart reset (precondition 4) in findings.
+- API auth (NAS-001/004/005/008) + proxy secret + agent bearer token (NAS-002) + agent
+  validation (NAS-003) land as one change with the API and agent deployed **together**
+  (a new agent rejects an old API).
+- The VM has no reachable Traefik, so `values-vm.yaml` must set `auth.disabled: true`
+  with the loud warning; document that this keeps the NodePort a dev-only listener.
+- NAS-008 and the buddy **peer-exposure** decision (Phase 2) are the same boundary:
+  decide them together once the proxy secret exists.
+- After the batch, take the remaining findings in risk order (NAS-006/007 injections,
+  then NAS-010, 011–018, 019–022).
 
-### 6. UI / browser drill (Playwright + manual click-through)
+### Phase 2 — Buddy completion
 
-- Identity card: fingerprint + public key match `GET /api/buddy/identity`; the
-  `exists:false` → "Create identity" path if the VM has no identity.
-- Schedules table: create via the form, see it rendered, delete with the
-  confirmation dialog; corrupting the form (bad cadence/runAt) surfaces the 400.
-- **Back up now**: progress bar advances (chunks/bytes), incremental/resumed
-  badges, cancel button cancels, final result renders; a second concurrent start
-  surfaces the 409 message.
-- **Verify**: per-schedule Verify shows chain digests; compare with step 3.3's
-  digest.
-- **Restore**: the typed-confirmation gate refuses a wrong dataset (no API call),
-  and a real restore of a test source into a throwaway dataset lands (check
-  `zfs list` on the node), following the existing restore drill.
-- Receiver half: free/used space, peers, stored backups + last-backup columns;
-  the not-configured 503 state renders the docs pointer.
+1. **Peer-exposure decision** (recommended: keep the existing Traefik + Authelia path
+   and the new proxy secret; no dedicated listener — it reuses the auth model Phase 1
+   establishes, exposes no new port, and the peer `/api/buddy/v1/*` routes stay public
+   by design).
+2. **Fan-out** (one source → several receivers): schedule/job model takes a list of
+   receivers or a named group; jobs fan out with per-receiver chains, per-receiver
+   result state, failure isolation (one dead receiver must not fail the others), and an
+   aggregate `lastResult`; UI shows each receiver independently.
+3. **Cancel is prompt**: add a context to the buddy client
+   (`PushOptions`/`RestoreOptions` + `http.NewRequestWithContext`) and thread the job
+   context through so `DELETE` aborts an in-flight request; test with a deliberately
+   slow receiver.
+4. **Refuse to back up an unmounted dataset**: agent reports per-dataset mount state;
+   the send returns a clear error when the dataset is not mounted in the host namespace
+   (turns the silent empty backup into a fast failure); keep the documented pre-flight
+   and add it to the chart as a check/job if practical.
+5. **Retention correctness with incrementals**: retention counts the sequence depth (or
+   refuses a keep-count that would orphan a base), and `/api/buddy/status` shows whether
+   a source's stored chain set is restorable.
+6. **Buddy hardening batch**: NAS-011/012/013/014/018/021 (persist `enrollUsed`,
+   monotonic manifests, quota under lock, 128-bit job IDs + ownership, strict schedule
+   dataset allowlist, state-file locking + fsync, counter-overflow refusal).
+7. **Polish**: chart passes `BUDDY_SCHEDULES`/`BUDDY_SCHEDULER_INTERVAL_MS`; fix the
+   reported-snapshot-before-creation and zero-value `lastRun`; persist notification
+   settings (shared with Phase 3).
+8. Spec/test updates in the same change (FR-BUD-15/16 rows + `backups.spec.ts`, plus a
+   new `ui/tests/` case for fan-out).
 
-### 7. Persistence & regression
+### Phase 3 — Product gaps
 
-- `kubectl -n naslos rollout restart deployment/naslos-api` → schedules and
-  identity survive (PVC); jobs list is empty (in-memory, expected); a retry of an
-  interrupted send still resumes.
-- Receive-side regression: `buddyctl enroll`/`push`/`status`/restore for one
-  source, plus `/api/buddy/status` and `/api/buddy/peers` 401/200 — the receiver
-  code is untouched but the deploy is the risk.
-- `ui/tests/*` and the dashboard/shares/terminal smoke checks to catch UI
-  regressions from the sidebar/notifications edits.
+- Notification settings persistence + any additional event sources the spec lists.
+- Fix `AgentSharesStatus` so `/api/shares/status` reports the agent's real fields
+  (`smbShareCount`/`nfsExportCount`).
+- `naslos-openldap-backup` CronJob CrashLoopBackOff: root-cause and fix.
+- FR-MET-10 per-interface IPs (multi-node remains out of scope).
+- Clear the 45 `svelte-check` warnings (a11y), and bump the vulnerable/fixed
+  dependencies (NAS-020) as a separately tested change.
+- Pin image digests instead of reusing `0.1.0` tags (NAS-022) — or at least document
+  the always-retag rule and add a guard.
 
-## Deliverable / findings
+## Validation (every phase)
 
-- Test report appended to `AI_Handoff.md` (buddy section): deployed tags +
-  revision, which checks passed, any defects with the exact failing command and
-  response.
-- Defects found get fixed in the same branch (implementation agent), with the
-  spec/test updated together if a MUST changed.
-- Record these gaps even if everything passes: `BUDDY_SCHEDULES` /
-  `BUDDY_SCHEDULER_INTERVAL_MS` not wired in the chart; notifications settings
-  not persisted; the `--set buddy.*` flags not captured in `values-vm.yaml`.
+- `api/` and `agent/`: `go build ./... && go vet ./... && go test ./...`; `gofmt` clean.
+- `ui/`: `npm run check` 0 errors; `npx playwright test` against the live VM with the
+  spec §7 mapping kept in sync.
+- Live drill on the VM for anything touching the node (shares, LDAP, ZFS, buddy send →
+  restore → verify), recorded in `AI_Handoff.md` with the deployed tags.
+- Spec rule: a change that alters a MUST updates `docs/spec.md` and its test in the same
+  change; `[OPEN]` items are removed only when verified.
 
-## Out of scope
+## Risks
 
-Multi-buddy fan-out; the peer-exposure decision; `buddyctl` changes; the
-security-audit *fixes* (that repo change is docs-only).
+- Phase 1 touches every route: without `auth.disabled=true` on the VM (or a reachable
+  Traefik) the UI returns 401 everywhere. Deploy API + agent together.
+- The buddy PR is large (~3.5k lines) but was live-verified twice; re-run the suites on
+  the merged tree before deploying.
+- Tag reuse (`0.1.0` + `IfNotPresent`) can silently serve stale images; bump the suffix
+  on every deploy.
+- The agent's mount-namespace behaviour is the root of several buddy and share gotchas;
+  any fix that assumes host-visible mounts must be verified with a fresh pod.
+- The `rural-drill` linked worktree must not be disturbed by branch cleanup.
+
+## Open questions
+
+- Release tagging: introduce `v*` tags at the Phase 1 boundary, or keep branch-based
+  deploys only?
+- Does the NodePort (`:30080`) stay as an explicitly documented dev listener after
+  NAS-008, or get removed from non-dev values?
+- Delete the merged feature branches (local + remote) or keep them as history?
+- Which agent/samba/nfs tags are live on the VM right now (needs a read-only cluster
+  check before the next deploy)?
