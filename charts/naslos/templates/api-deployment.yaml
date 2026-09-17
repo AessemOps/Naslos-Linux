@@ -128,6 +128,11 @@ spec:
             - name: SHARES_CONFIG
               value: {{ .Values.api.sharesConfig.file | default "/var/lib/naslos/shares.json" }}
             {{- end }}
+            # Notification settings: kept on the same volume as the other state
+            # files so an operator's topic, token and enabled events survive a
+            # restart (they used to be in-memory only).
+            - name: NOTIFICATIONS_CONFIG
+              value: {{ .Values.api.notificationsFile | default "/var/lib/naslos/notifications.json" | quote }}
             {{- if .Values.buddy.enabled }}
             # Buddy Backup receive side (docs/buddy-backup.md): peers push
             # encrypted chunks that this instance stores but cannot read. The

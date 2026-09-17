@@ -56,6 +56,25 @@ type buddyScheduleEntry struct {
 	NextRun    time.Time `json:"nextRun"`
 }
 
+// MarshalJSON omits timestamps that were never set. `omitempty` does nothing for
+// time.Time, so a never-run schedule serialised `"lastRun":"0001-01-01T00:00:00Z"`
+// and the API's consumers had to know to ignore it.
+func (e *buddyScheduleEntry) MarshalJSON() ([]byte, error) {
+	type entry buddyScheduleEntry
+	out := struct {
+		*entry
+		LastRun *time.Time `json:"lastRun,omitempty"`
+		NextRun *time.Time `json:"nextRun,omitempty"`
+	}{entry: (*entry)(e)}
+	if !e.LastRun.IsZero() {
+		out.LastRun = &e.LastRun
+	}
+	if !e.NextRun.IsZero() {
+		out.NextRun = &e.NextRun
+	}
+	return json.Marshal(out)
+}
+
 // receiverList returns the buddies this entry backs up to: the explicit list when
 // set, otherwise the single `receiver`. Duplicates are dropped, order is kept.
 func (e *buddyScheduleEntry) receiverList() []string {
