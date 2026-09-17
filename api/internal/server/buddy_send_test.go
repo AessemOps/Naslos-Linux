@@ -47,12 +47,25 @@ type fakeAgent struct {
 	// sendDelay, when set, stalls the send stream (a slow `zfs send`), so a
 	// test can hold a job in running state and exercise the 409 path.
 	sendDelay time.Duration
+	// datasets is what the agent reports for GET /api/v1/datasets; the send path
+	// consults it to refuse a dataset that is not mounted in the host namespace.
+	datasets []agent.Dataset
 }
 
 func newFakeAgent(t *testing.T, payload []byte) *fakeAgent {
 	t.Helper()
 
-	fake := &fakeAgent{payload: payload}
+	// A realistic node view: the pool plus the datasets the tests use, all mounted
+	// at their own paths. Tests that need a different view (an unmounted dataset,
+	// say) replace this slice.
+	fake := &fakeAgent{
+		payload: payload,
+		datasets: []agent.Dataset{
+			{Name: "test", Mountpoint: "/var/mnt/test", Mounted: true},
+			{Name: "test/data", Mountpoint: "/var/mnt/test/data", Mounted: true},
+			{Name: "test/Backup", Mountpoint: "/var/mnt/test/Backup", Mounted: true},
+		},
+	}
 	mux := http.NewServeMux()
 
 	// Snapshot creation (POST /api/v1/snapshots/{dataset}).
@@ -86,6 +99,18 @@ func newFakeAgent(t *testing.T, payload []byte) *fakeAgent {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(snapshots)
+	})
+
+	// Dataset listing (GET /api/v1/datasets), used by the send path to refuse a
+	// dataset that is not mounted in the host namespace. Default: mounted at its
+	// own path, which is the normal case.
+	mux.HandleFunc("/api/v1/datasets", func(w http.ResponseWriter, _ *http.Request) {
+		fake.mu.Lock()
+		datasets := append([]agent.Dataset(nil), fake.datasets...)
+		fake.mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(datasets)
 	})
 
 	// Send and estimate (GET /api/v1/zfs/send/{dataset}).
@@ -344,6 +369,55 @@ func TestBuddyIdentityLifecycle(t *testing.T) {
 // must answer 401 without the proxy secret. These handler tests run with the
 // same AUTH_DISABLED opt-out the operator can set, so they exercise the handlers
 // themselves rather than the gate.
+
+// TestBuddySendRefusesADatasetTheHostCannotSee pins the fix for the silent empty
+// backup: a dataset mounted only inside a pod (the mount-propagation trap) must be
+// refused before any snapshot is taken, instead of producing a 44 KB "successful"
+// backup of a multi-gigabyte dataset.
+func TestBuddySendRefusesADatasetTheHostCannotSee(t *testing.T) {
+	harness := newSenderHarness(t, []byte("payload"))
+	harness.agent.datasets = []agent.Dataset{
+		{Name: "test/Backup", Mountpoint: "/var/mnt/test/Backup", Mounted: false},
+	}
+
+	jobID := startSend(t, harness, map[string]any{
+		"dataset":  "test/Backup",
+		"source":   "naslos-test/unmounted",
+		"receiver": harness.receiverURL,
+	})
+	job := waitSend(t, harness, jobID)
+
+	if job.State != buddyJobFailed {
+		t.Fatalf("job state = %s, want failed (%+v)", job.State, job)
+	}
+	if !strings.Contains(job.Error, "not mounted") {
+		t.Errorf("job error = %q, want it to explain the mount problem", job.Error)
+	}
+
+	harness.agent.mu.Lock()
+	snapshots, sends := len(harness.agent.snapshots), len(harness.agent.sendCalls)
+	harness.agent.mu.Unlock()
+	if snapshots != 0 {
+		t.Errorf("a refused send created %d snapshot(s)", snapshots)
+	}
+	if sends != 0 {
+		t.Errorf("a refused send started %d zfs send stream(s)", sends)
+	}
+}
+
+// A dataset whose mountpoint is "none" or "legacy" has no directory to shadow it,
+// so it stays sendable even though it is not mounted.
+func TestBuddySendAllowsADatasetWithNoMountpoint(t *testing.T) {
+	harness := newSenderHarness(t, []byte("payload"))
+	harness.agent.datasets = []agent.Dataset{
+		{Name: "test/Backup", Mountpoint: "none", Mounted: false},
+	}
+
+	result := sendAndWait(t, harness, "test/Backup", "naslos-test/nomount")
+	if result.Status != "backed up" {
+		t.Errorf("status = %q, want backed up", result.Status)
+	}
+}
 
 func TestBuddySendFullThenIncremental(t *testing.T) {
 	// Not a whole number of chunks: the tail is the case a naive sender gets wrong.
