@@ -6,6 +6,8 @@ metadata:
 spec:
   schedule: "0 3 * * *"
   concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
       template:
@@ -20,31 +22,41 @@ spec:
                 - -c
                 - |
                   set -e
-                  BACKUP_DIR="/var/lib/ldap/backups"
+                  # Backups go on the config volume (mounted at /backups here).
+                  BACKUP_DIR="/backups/ldap"
+                  mkdir -p "${BACKUP_DIR}"
                   TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
-                  # Backup config
-                  slapcat -n 0 -l "${BACKUP_DIR}/config_${TIMESTAMP}.ldif"
+                  # slapcat needs the *configuration* directory (-F) to know the
+                  # databases; both commands read the live databases through it.
+                  slapcat -F /etc/ldap/slapd.d -n 0 -l "${BACKUP_DIR}/config_${TIMESTAMP}.ldif"
+                  slapcat -F /etc/ldap/slapd.d -n 1 -l "${BACKUP_DIR}/data_${TIMESTAMP}.ldif"
 
-                  # Backup data
-                  slapcat -n 1 -l "${BACKUP_DIR}/data_${TIMESTAMP}.ldif"
-
-                  # Keep only last 7 backups
-                  ls -t ${BACKUP_DIR}/config_*.ldif 2>/dev/null | tail -n +8 | xargs rm -f
-                  ls -t ${BACKUP_DIR}/data_*.ldif 2>/dev/null | tail -n +8 | xargs rm -f
+                  # Keep only the last 7 of each.
+                  ls -t "${BACKUP_DIR}"/config_*.ldif 2>/dev/null | tail -n +8 | xargs -r rm -f
+                  ls -t "${BACKUP_DIR}"/data_*.ldif 2>/dev/null | tail -n +8 | xargs -r rm -f
 
                   echo "Backup completed: ${TIMESTAMP}"
               volumeMounts:
+                # Both volumes are read-write: the mdb backend maps a lock file
+                # next to the database, so a read-only mount fails with
+                # "unable to open database" even though slapcat only reads.
                 - name: data
                   mountPath: /var/lib/ldap
-                  readOnly: true
-                - name: backup
-                  mountPath: /var/lib/ldap/backups
+                - name: config
+                  mountPath: /etc/ldap/slapd.d
+                # The same config volume, mounted a second time as the backup
+                # destination. It used to be mounted at /var/lib/ldap/backups,
+                # i.e. *inside* the data mount, which the container runtime
+                # cannot create when that mount is read-only - the pod never
+                # started (RunContainerError).
+                - name: config
+                  mountPath: /backups
           volumes:
             - name: data
               persistentVolumeClaim:
                 claimName: data-naslos-openldap-0
-            - name: backup
+            - name: config
               persistentVolumeClaim:
                 claimName: config-naslos-openldap-0
 ---
