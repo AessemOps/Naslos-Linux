@@ -35,19 +35,48 @@ const (
 
 // buddyScheduleEntry is one scheduled backup.
 type buddyScheduleEntry struct {
-	ID        string       `json:"id"`
-	Dataset   string       `json:"dataset"`
-	Source    string       `json:"source"`
-	Receiver  string       `json:"receiver"`
-	Cadence   buddyCadence `json:"cadence"`
-	RunAt     string       `json:"runAt,omitempty"`
-	PruneKeep int          `json:"pruneKeep,omitempty"`
-	Enabled   bool         `json:"enabled"`
-	LastRun   time.Time    `json:"lastRun,omitempty"`
-	// LastResult is "" (never), "ok" or "failed".
+	ID       string `json:"id"`
+	Dataset  string `json:"dataset"`
+	Source   string `json:"source"`
+	Receiver string `json:"receiver"`
+	// Receivers fans one run out to several buddies. `Receiver` stays the first
+	// entry so older clients (and the single-buddy UI) keep working.
+	Receivers []string `json:"receivers,omitempty"`
+	// ReceiverResults is the per-buddy outcome of the last run ("ok"/"failed"),
+	// so a fan-out that half-failed is visible per destination.
+	ReceiverResults map[string]string `json:"receiverResults,omitempty"`
+	Cadence         buddyCadence      `json:"cadence"`
+	RunAt           string            `json:"runAt,omitempty"`
+	PruneKeep       int               `json:"pruneKeep,omitempty"`
+	Enabled         bool              `json:"enabled"`
+	LastRun         time.Time         `json:"lastRun,omitempty"`
+	// LastResult is "" (never), "ok" (every buddy stored it) or "failed".
 	LastResult string    `json:"lastResult,omitempty"`
 	LastError  string    `json:"lastError,omitempty"`
 	NextRun    time.Time `json:"nextRun"`
+}
+
+// receiverList returns the buddies this entry backs up to: the explicit list when
+// set, otherwise the single `receiver`. Duplicates are dropped, order is kept.
+func (e *buddyScheduleEntry) receiverList() []string {
+	sources := e.Receivers
+	if len(sources) == 0 {
+		if strings.TrimSpace(e.Receiver) == "" {
+			return nil
+		}
+		return []string{e.Receiver}
+	}
+	seen := make(map[string]bool, len(sources))
+	list := make([]string, 0, len(sources))
+	for _, receiver := range sources {
+		trimmed := strings.TrimSpace(receiver)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		list = append(list, trimmed)
+	}
+	return list
 }
 
 // buddyScheduleStore persists entries as JSON, modeled on buddy.NewPeerStore.
@@ -174,9 +203,10 @@ func (s *buddyScheduleStore) remove(id string) error {
 	return s.saveLocked()
 }
 
-// recordResult stores the outcome of a job started for a schedule and advances
-// nextRun from completion time.
-func (s *buddyScheduleStore) recordResult(id string, ok bool, jobErr string) {
+// recordResult stores the outcome of one job started for a schedule. A fan-out
+// reports once per buddy: the entry is "ok" only when every destination has
+// succeeded, and the per-buddy map keeps which one lagged behind.
+func (s *buddyScheduleStore) recordResult(id, receiver string, ok bool, jobErr string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, found := s.entries[id]
@@ -185,12 +215,39 @@ func (s *buddyScheduleStore) recordResult(id string, ok bool, jobErr string) {
 	}
 	now := time.Now().UTC()
 	e.LastRun = now
+	if e.ReceiverResults == nil {
+		e.ReceiverResults = make(map[string]string)
+	}
+	if receiver == "" {
+		receiver = e.Receiver
+	}
 	if ok {
+		e.ReceiverResults[receiver] = "ok"
+	} else {
+		e.ReceiverResults[receiver] = "failed"
+	}
+
+	failed := ""
+	for _, dest := range e.receiverList() {
+		if e.ReceiverResults[dest] == "failed" {
+			failed = dest
+			break
+		}
+	}
+	if failed == "" {
 		e.LastResult = "ok"
 		e.LastError = ""
-	} else {
-		e.LastResult = "failed"
-		e.LastError = jobErr
+		e.NextRun = computeNextRun(e, now)
+		_ = s.saveLocked()
+		return
+	}
+	e.LastResult = "failed"
+	// Keep the specific reason: a destination that succeeds afterwards must not
+	// blank the failure that is still true for another one.
+	if !ok && strings.TrimSpace(jobErr) != "" {
+		e.LastError = fmt.Sprintf("backup to %s failed: %s", receiver, jobErr)
+	} else if strings.TrimSpace(e.LastError) == "" {
+		e.LastError = fmt.Sprintf("backup to %s failed", failed)
 	}
 	e.NextRun = computeNextRun(e, now)
 	_ = s.saveLocked()
@@ -288,9 +345,22 @@ func (s *Server) validateSchedule(e *buddyScheduleEntry) error {
 	if err := buddy.ValidateSource(strings.TrimSpace(e.Source)); err != nil {
 		return err
 	}
-	if _, err := normalizeReceiverURL(e.Receiver); err != nil {
-		return err
+	// One or many buddies: normalize every URL and keep the list (and the
+	// legacy single field) in sync.
+	receivers := e.receiverList()
+	if len(receivers) == 0 {
+		return fmt.Errorf("at least one buddy (receiver) is required")
 	}
+	normalized := make([]string, 0, len(receivers))
+	for _, receiver := range receivers {
+		url, err := normalizeReceiverURL(receiver)
+		if err != nil {
+			return err
+		}
+		normalized = append(normalized, url)
+	}
+	e.Receivers = normalized
+	e.Receiver = normalized[0]
 	switch e.Cadence {
 	case buddyCadenceHourly, buddyCadenceDaily, buddyCadenceWeekly:
 	default:
@@ -340,10 +410,13 @@ func (s *Server) handleBuddySchedules(w http.ResponseWriter, req *http.Request) 
 
 	case http.MethodPost:
 		var request struct {
-			ID        string       `json:"id"`
-			Dataset   string       `json:"dataset"`
-			Source    string       `json:"source"`
-			Receiver  string       `json:"receiver"`
+			ID       string `json:"id"`
+			Dataset  string `json:"dataset"`
+			Source   string `json:"source"`
+			Receiver string `json:"receiver"`
+			// Receivers is the fan-out form: one backup run per buddy. `receiver`
+			// still works for a single destination.
+			Receivers []string     `json:"receivers"`
 			Cadence   buddyCadence `json:"cadence"`
 			RunAt     string       `json:"runAt"`
 			PruneKeep int          `json:"pruneKeep"`
@@ -357,16 +430,12 @@ func (s *Server) handleBuddySchedules(w http.ResponseWriter, req *http.Request) 
 			ID:        strings.TrimSpace(request.ID),
 			Dataset:   strings.TrimSpace(request.Dataset),
 			Source:    strings.TrimSpace(request.Source),
+			Receiver:  strings.TrimSpace(request.Receiver),
+			Receivers: request.Receivers,
 			Cadence:   request.Cadence,
 			RunAt:     strings.TrimSpace(request.RunAt),
 			PruneKeep: request.PruneKeep,
 			Enabled:   true,
-		}
-		if receiver, err := normalizeReceiverURL(request.Receiver); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		} else {
-			entry.Receiver = receiver
 		}
 		if request.Enabled != nil {
 			entry.Enabled = *request.Enabled
@@ -375,6 +444,7 @@ func (s *Server) handleBuddySchedules(w http.ResponseWriter, req *http.Request) 
 			entry.ID = randomJobID()
 		} else if existing := store.get(entry.ID); existing != nil {
 			entry.LastRun, entry.LastResult, entry.LastError = existing.LastRun, existing.LastResult, existing.LastError
+			entry.ReceiverResults = existing.ReceiverResults
 		}
 		if err := s.validateSchedule(entry); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -469,7 +539,9 @@ func (s *Server) runDueSchedules(now time.Time) {
 	}
 }
 
-// startScheduleJob enqueues a send for one schedule entry.
+// startScheduleJob enqueues one send per buddy in the entry. Each destination is
+// an independent chain with its own resume state, so a dead or busy one neither
+// blocks nor fails the others; the entry's result aggregates them.
 func (s *Server) startScheduleJob(entry *buddyScheduleEntry) {
 	if s.agent == nil {
 		log.Printf("buddy scheduler: skipping %s: no agent client", entry.ID)
@@ -479,10 +551,40 @@ func (s *Server) startScheduleJob(entry *buddyScheduleEntry) {
 		log.Printf("buddy scheduler: skipping %s: %v", entry.ID, err)
 		return
 	}
-	if conflict := s.buddyJobs.conflicting(entry.Receiver, entry.Source, entry.Dataset); conflict != nil {
-		log.Printf("buddy scheduler: skipping %s: job %s already running", entry.ID, conflict.snapshot().ID)
+
+	receivers := entry.receiverList()
+	if len(receivers) == 0 {
+		log.Printf("buddy scheduler: skipping %s: no receiver configured", entry.ID)
 		return
 	}
+
+	started := 0
+	for _, receiver := range receivers {
+		if conflict := s.buddyJobs.conflicting(receiver, entry.Source); conflict != nil {
+			log.Printf("buddy scheduler: %s: buddy %s already has job %s running", entry.ID, receiver, conflict.snapshot().ID)
+			continue
+		}
+		s.enqueueScheduledSend(entry, receiver)
+		started++
+	}
+	if started == 0 {
+		return
+	}
+
+	// Advance nextRun once, at start, so a long fan-out cannot fire twice; the
+	// per-buddy results are recorded on completion.
+	func() {
+		s.buddySchedules.mu.Lock()
+		defer s.buddySchedules.mu.Unlock()
+		if e, ok := s.buddySchedules.entries[entry.ID]; ok {
+			e.NextRun = computeNextRun(e, time.Now().UTC())
+			_ = s.buddySchedules.saveLocked()
+		}
+	}()
+}
+
+// enqueueScheduledSend adds one job for one destination of a scheduled entry.
+func (s *Server) enqueueScheduledSend(entry *buddyScheduleEntry, receiver string) {
 	raw := true
 	ctx, cancel := context.WithCancel(context.Background())
 	job := &buddyJob{
@@ -490,7 +592,7 @@ func (s *Server) startScheduleJob(entry *buddyScheduleEntry) {
 			ID:         randomJobID(),
 			Dataset:    entry.Dataset,
 			Source:     entry.Source,
-			Receiver:   entry.Receiver,
+			Receiver:   receiver,
 			PruneKeep:  entry.PruneKeep,
 			Raw:        raw,
 			ScheduleID: entry.ID,
@@ -501,18 +603,8 @@ func (s *Server) startScheduleJob(entry *buddyScheduleEntry) {
 		cancel: cancel,
 		done:   make(chan struct{}),
 	}
-	// Advance nextRun at start so a long run cannot fire twice; the result is
-	// recorded on completion.
-	func() {
-		s.buddySchedules.mu.Lock()
-		defer s.buddySchedules.mu.Unlock()
-		if e, ok := s.buddySchedules.entries[entry.ID]; ok {
-			e.NextRun = computeNextRun(e, time.Now().UTC())
-			_ = s.buddySchedules.saveLocked()
-		}
-	}()
 	s.buddyJobs.add(job)
 	go s.runBuddySendJob(job)
 	log.Printf("buddy scheduler: started job %s for schedule %s (%s → %s)",
-		job.ID, entry.ID, entry.Dataset, entry.Receiver)
+		job.ID, entry.ID, entry.Dataset, receiver)
 }
