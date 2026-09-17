@@ -501,6 +501,15 @@ adjacent sections. Verified by reading.
 **Fix:** replace it with a ≤1-page current-state summary plus a dated archive of the
 old log. Effort S.
 
+> **Resolved in this change.** `AI_Handoff.md` is now 115 lines of current state
+> (what the system is, where it stands, how to run it, the hard-won operational
+> gotchas, the conventions), and the old log is preserved verbatim at
+> `docs/archive/ai-handoff-log-2026-09.md`. The stale facts cited above
+> (`0001-01-01`, `terminal.requireAuth=false`, "8 tests", obsolete tags, the dead
+> branch) are gone, and `docs/spec.md` now points at both this report and the
+> handoff for `[OPEN]` tracking — so the line references above apply to the archive,
+> not to the new file.
+
 ### Optional
 
 | ID | Finding | Evidence | Fix |
@@ -558,7 +567,7 @@ old log. Effort S.
 | No `values.schema.json` | CR-38 | add types + required |
 | Race detection unusable | CR-06 | fix the test race, then gate on `-race` |
 | Dependency scanning not routine | CR-05, CR-08 were found only because this review ran the tools | run `govulncheck` and `npm audit` in CI |
-| Docs hygiene | CR-24, CR-25, CR-26, CR-42, CR-44 | a focused docs pass, and treat `spec.md` as the gate |
+| Docs hygiene | CR-24, CR-25, CR-42, CR-44 (CR-26 resolved in this change) | a focused docs pass, and treat `spec.md` as the gate |
 
 ---
 
@@ -625,7 +634,7 @@ than re-litigating them.
 6. CR-05 dependency bump + CR-08 UI dependency bump, with CI scanning (CR-09).
 7. CR-06 fix the test race and adopt `-race`; CR-23 remove the suite's tolerance.
 8. CR-10 `.dockerignore`; CR-11 duplicate YAML keys; CR-38 chart hardening.
-9. CR-24/CR-25/CR-26 docs truth-up; CR-16 observability wiring.
+9. CR-24/CR-25 docs truth-up (CR-26 done); CR-16 observability wiring.
 10. CR-04/CR-12/CR-13/CR-14 agent refinements.
 
 **Structural (plan deliberately):** CR-03's authorization model, CR-16's metrics
