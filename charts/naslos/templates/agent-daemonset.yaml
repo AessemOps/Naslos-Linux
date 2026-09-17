@@ -41,12 +41,12 @@ spec:
             # carry the shared bearer token (NAS-002). auth.disabled is the
             # development opt-out; the agent warns loudly when it is set.
             - name: AGENT_AUTH_DISABLED
-              value: {{ .Values.auth.disabled | toString | quote }}
-            {{- if not .Values.auth.disabled }}
+              value: {{ include "naslos.authDisabled" . | quote }}
+            {{- if eq (include "naslos.authEnabled" .) "true" }}
             - name: AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.agent.tokenSecret | default "naslos-agent" }}
+                  name: {{ include "naslos.agentTokenSecret" . | default "naslos-agent" }}
                   key: token
             {{- end }}
           volumeMounts:

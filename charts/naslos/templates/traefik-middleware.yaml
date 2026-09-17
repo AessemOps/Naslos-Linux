@@ -1,4 +1,4 @@
-{{- if .Values.ingress.enabled }}
+{{- if eq (include "naslos.ingressEnabled" .) "true" }}
 ---
 # Authelia forwardAuth middleware
 apiVersion: traefik.io/v1alpha1
