@@ -12,6 +12,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/AessemOps/Naslos-Linux/api/internal/auth"
 )
 
 // Kubernetes access for the terminal's pickers and exec sessions. The API speaks
@@ -54,39 +56,13 @@ type podInfo struct {
 	Terminal bool `json:"terminal"`
 }
 
-// requireTerminalAuth gates the terminal endpoints (target discovery and exec) on
-// evidence of an authenticated session, and fails closed.
-//
-// The evidence is the identity header the authenticated proxy injects -
-// Authelia's Remote-User, forwarded by the Traefik forwardAuth middleware, which
-// *replaces* any value a client sent. That replacement is what makes the header
-// trustworthy; it also means the terminal must be reached through that proxy:
-// the chart routes these paths from Traefik straight to the API, and the UI's
-// nginx refuses them outright, so the unauthenticated NodePort cannot reach them
-// even by sending the header itself.
-//
-// Set TERMINAL_REQUIRE_AUTH=false for local development (the API then allows
-// anonymous terminal access and says so at startup).
-func (s *Server) requireTerminalAuth(w http.ResponseWriter, r *http.Request) bool {
-	if !s.terminalRequireAuth {
-		return true
-	}
-
-	if user := strings.TrimSpace(r.Header.Get(s.terminalAuthHeader)); user != "" {
-		return true
-	}
-
-	writeError(w, http.StatusUnauthorized,
-		"the terminal requires an authenticated session. Reach the UI through an authenticating "+
-			"proxy (the chart routes these paths from Traefik + Authelia straight to the API), or "+
-			"set terminal.requireAuth=false to allow unauthenticated access on a trusted network")
-	return false
-}
-
 // terminalUsername returns the authenticated user behind the request, for logs.
+// The request reached this point through the owner auth middleware (proxy secret
+// + identity header), or through the AUTH_DISABLED dev opt-out - in which case
+// there is no user and the caller is logged as anonymous.
 func (s *Server) terminalUsername(r *http.Request) string {
-	if user := strings.TrimSpace(r.Header.Get(s.terminalAuthHeader)); user != "" {
-		return user
+	if user := auth.UserFromContext(r.Context()); user != nil && strings.TrimSpace(user.Username) != "" {
+		return strings.TrimSpace(user.Username)
 	}
 	return "anonymous"
 }
@@ -95,9 +71,6 @@ func (s *Server) terminalUsername(r *http.Request) string {
 func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if !s.requireTerminalAuth(w, r) {
 		return
 	}
 
@@ -129,9 +102,6 @@ func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePods(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if !s.requireTerminalAuth(w, r) {
 		return
 	}
 

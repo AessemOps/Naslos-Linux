@@ -49,16 +49,12 @@ type Server struct {
 	buddySchedules *buddyScheduleStore
 	// schedulerStop stops the backup scheduler; nil until started.
 	schedulerStop chan struct{}
-	// buddyRequireAuth gates the endpoints that authorize or revoke peers, the
-	// same way terminalRequireAuth gates the terminal.
-	buddyRequireAuth bool
-	// terminalRequireAuth gates the terminal on an authenticated session, and
-	// terminalAuthHeader is the header the authenticated proxy injects
-	// (Authelia's Remote-User by default). See requireTerminalAuth.
-	terminalRequireAuth bool
-	terminalAuthHeader  string
-	router              *http.ServeMux
-	server              *http.Server
+	// authDisabled is the explicit development opt-out (AUTH_DISABLED=true):
+	// every owner route is served without the proxy secret. Logged loudly at
+	// startup because it opens the API to anyone who can reach it.
+	authDisabled bool
+	router       *http.ServeMux
+	server       *http.Server
 }
 
 // New creates a new server.
@@ -100,12 +96,24 @@ func New(addr string, tc *talos.Client) *Server {
 		identityClient = nil
 	}
 
-	// Initialize auth middleware
+	// Initialize auth middleware. PROXY_SHARED_SECRET is the value Traefik's
+	// proxy-identity middleware injects on every request it forwards. Without it
+	// (and without the explicit AUTH_DISABLED dev opt-out) the API refuses to
+	// start rather than serve owner routes whose identity header anyone in the
+	// trusted CIDR could forge.
+	authDisabled := getEnv("AUTH_DISABLED", "false") == "true"
+	proxySecret := getEnv("PROXY_SHARED_SECRET", "")
+	if !authDisabled && proxySecret == "" {
+		log.Fatalf("PROXY_SHARED_SECRET is required; set it from the naslos-proxy Secret, or set AUTH_DISABLED=true for local development only")
+	}
 	authMiddleware, err := auth.NewMiddleware([]string{
 		getEnv("TRAEFIK_CIDR", "10.0.0.0/8"),
-	})
+	}, proxySecret)
 	if err != nil {
 		log.Fatalf("Failed to create auth middleware: %v", err)
+	}
+	if authDisabled {
+		log.Printf("WARNING: AUTH_DISABLED=true - every owner API route is served without authentication; do not expose this instance")
 	}
 
 	// Agent client for ZFS pool operations. The agent DaemonSet is fronted by
@@ -114,7 +122,9 @@ func New(addr string, tc *talos.Client) *Server {
 	// AGENT_BASE_URL for local dev (e.g. with a kubectl port-forward).
 	namespace := getEnv("NASLOS_NAMESPACE", "naslos")
 	agentBaseURL := getEnv("AGENT_BASE_URL", fmt.Sprintf(agent.DefaultBaseURLPattern, namespace))
-	agentClient := agent.NewClient(agentBaseURL)
+	// The agent requires the shared token on every request but /health; the same
+	// value is mounted into both workloads from the naslos-agent-auth Secret.
+	agentClient := agent.NewClient(agentBaseURL, getEnv("AGENT_TOKEN", ""))
 
 	// Buddy Backup, receive side. The peer registry lives with the other state
 	// files; the chunks live on the backup dataset (BUDDY_RECEIVE_PATH), which is
@@ -147,15 +157,10 @@ func New(addr string, tc *talos.Client) *Server {
 		auth:          authMiddleware,
 		namespace:     namespace,
 		buddy:         buddyReceiver,
-		// Authorizing a peer grants storage access, so it is gated on an
-		// authenticated session for the same reason the terminal is.
-		buddyRequireAuth: getEnv("BUDDY_REQUIRE_AUTH", "true") != "false",
-		// The terminal reaches a root shell, so it is protected by default: only
-		// requests carrying the proxy's identity header are served. Turning this
-		// off is a development convenience and is logged as such.
-		terminalRequireAuth: getEnv("TERMINAL_REQUIRE_AUTH", "true") != "false",
-		terminalAuthHeader:  getEnv("TERMINAL_AUTH_HEADER", "Remote-User"),
-		router:              http.NewServeMux(),
+		// Owner routes are gated on the proxy secret by the composed router in
+		// routes(); AUTH_DISABLED turns that gate off for local development.
+		authDisabled: authDisabled,
+		router:       http.NewServeMux(),
 	}
 	s.routes()
 	return s
@@ -180,81 +185,104 @@ func getEnvInt(key string, defaultValue int) int {
 }
 
 // routes registers all API routes.
+//
+// Every owner-facing route lives on the `owner` mux, which is wrapped in the
+// auth middleware (proxy secret + trusted source + identity header) unless the
+// explicit AUTH_DISABLED dev opt-out is set. Only the health probes, the buddy
+// peer API (authenticated by the peers' own Ed25519 keys) and the static UI are
+// public; ServeMux's longest-pattern match makes those beat the "/api/"
+// catch-all, so a new owner endpoint cannot be added unauthenticated by
+// accident - it goes on `owner`.
 func (s *Server) routes() {
-	// Health
+	owner := http.NewServeMux()
+
+	// Health: public so liveness/readiness probes keep working even when
+	// authentication is misconfigured.
 	s.router.HandleFunc("/api/health", s.handleHealth)
 	s.router.HandleFunc("/api/ready", s.handleReady)
 
 	// Catalog (app store)
-	s.router.HandleFunc("/api/catalog", s.handleCatalog)
-	s.router.HandleFunc("/api/catalog/", s.handleCatalogApp)
+	owner.HandleFunc("/api/catalog", s.handleCatalog)
+	owner.HandleFunc("/api/catalog/", s.handleCatalogApp)
 
 	// Apps (installed)
-	s.router.HandleFunc("/api/apps", s.handleApps)
-	s.router.HandleFunc("/api/apps/", s.handleAppDetail)
+	owner.HandleFunc("/api/apps", s.handleApps)
+	owner.HandleFunc("/api/apps/", s.handleAppDetail)
 
 	// Disks
-	s.router.HandleFunc("/api/disks", s.handleDisks)
-	s.router.HandleFunc("/api/disks/recommend", s.handleDiskRecommend)
+	owner.HandleFunc("/api/disks", s.handleDisks)
+	owner.HandleFunc("/api/disks/recommend", s.handleDiskRecommend)
 
 	// Volumes
-	s.router.HandleFunc("/api/volumes", s.handleVolumes)
-	s.router.HandleFunc("/api/volumes/zfs", s.handleZFSPools)
-	s.router.HandleFunc("/api/volumes/zfs/import", s.handleZFSImport)
-	s.router.HandleFunc("/api/volumes/zfs/", s.handleZFSPoolDetail)
-	s.router.HandleFunc("/api/datasets", s.handleDatasets)
+	owner.HandleFunc("/api/volumes", s.handleVolumes)
+	owner.HandleFunc("/api/volumes/zfs", s.handleZFSPools)
+	owner.HandleFunc("/api/volumes/zfs/import", s.handleZFSImport)
+	owner.HandleFunc("/api/volumes/zfs/", s.handleZFSPoolDetail)
+	owner.HandleFunc("/api/datasets", s.handleDatasets)
 
 	// Logs & terminal (WebSocket)
-	s.router.HandleFunc("/api/ws/logs", s.handleLogsWS)
-	s.router.HandleFunc("/api/pods", s.handlePods)
-	s.router.HandleFunc("/api/namespaces", s.handleNamespaces)
-	s.router.HandleFunc("/api/ws/exec", s.handleExecWS)
+	owner.HandleFunc("/api/ws/logs", s.handleLogsWS)
+	owner.HandleFunc("/api/pods", s.handlePods)
+	owner.HandleFunc("/api/namespaces", s.handleNamespaces)
+	owner.HandleFunc("/api/ws/exec", s.handleExecWS)
 
 	// Shares
-	s.router.HandleFunc("/api/shares", s.handleShares)
-	s.router.HandleFunc("/api/shares/paths", s.handleSharePaths)
-	s.router.HandleFunc("/api/shares/folders", s.handleShareFolders)
-	s.router.HandleFunc("/api/shares/status", s.handleSharesStatus)
-	s.router.HandleFunc("/api/shares/apply", s.handleSharesApply)
-	s.router.HandleFunc("/api/shares/config/samba", s.handleSambaConfig)
-	s.router.HandleFunc("/api/shares/config/nfs", s.handleNFSConfig)
-	s.router.HandleFunc("/api/shares/", s.handleShareDetail)
+	owner.HandleFunc("/api/shares", s.handleShares)
+	owner.HandleFunc("/api/shares/paths", s.handleSharePaths)
+	owner.HandleFunc("/api/shares/folders", s.handleShareFolders)
+	owner.HandleFunc("/api/shares/status", s.handleSharesStatus)
+	owner.HandleFunc("/api/shares/apply", s.handleSharesApply)
+	owner.HandleFunc("/api/shares/config/samba", s.handleSambaConfig)
+	owner.HandleFunc("/api/shares/config/nfs", s.handleNFSConfig)
+	owner.HandleFunc("/api/shares/", s.handleShareDetail)
 
 	// Notifications
-	s.router.HandleFunc("/api/notifications", s.handleNotifications)
-	s.router.HandleFunc("/api/notifications/test", s.handleNotificationTest)
+	owner.HandleFunc("/api/notifications", s.handleNotifications)
+	owner.HandleFunc("/api/notifications/test", s.handleNotificationTest)
 
 	// Buddy Backup. The peer-facing API is authenticated by the peers' own keys
-	// (never by the proxy: a peer cannot complete an interactive login), while the
-	// owner-facing endpoints follow the terminal's rule and require a proxied
-	// identity unless buddy.requireAuth=false.
+	// (a peer cannot complete an interactive login), so it stays public; every
+	// owner-facing endpoint is on the owner mux like any other owner route.
 	if s.buddy != nil {
 		s.router.Handle(buddy.PathPrefix+"/", s.buddy.Handler())
-		s.router.HandleFunc("/api/buddy/status", s.handleBuddyStatus)
-		s.router.HandleFunc("/api/buddy/peers", s.handleBuddyPeers)
+		owner.HandleFunc("/api/buddy/status", s.handleBuddyStatus)
+		owner.HandleFunc("/api/buddy/peers", s.handleBuddyPeers)
 		// Sender side: this instance backing *itself* (and its datasets) up to a
 		// buddy, using the agent's streaming `zfs send`/`zfs receive`.
-		s.router.HandleFunc("/api/buddy/identity", s.handleBuddyIdentity)
-		s.router.HandleFunc("/api/buddy/send", s.handleBuddySend)
-		s.router.HandleFunc("/api/buddy/restore", s.handleBuddyRestore)
-		s.router.HandleFunc("/api/buddy/jobs", s.handleBuddyJobs)
-		s.router.HandleFunc("/api/buddy/jobs/", s.handleBuddyJobDetail)
-		s.router.HandleFunc("/api/buddy/schedules", s.handleBuddySchedules)
+		owner.HandleFunc("/api/buddy/identity", s.handleBuddyIdentity)
+		owner.HandleFunc("/api/buddy/send", s.handleBuddySend)
+		owner.HandleFunc("/api/buddy/restore", s.handleBuddyRestore)
+		owner.HandleFunc("/api/buddy/jobs", s.handleBuddyJobs)
+		owner.HandleFunc("/api/buddy/jobs/", s.handleBuddyJobDetail)
+		owner.HandleFunc("/api/buddy/schedules", s.handleBuddySchedules)
 	}
 
 	// Metrics & Dashboard
-	s.router.HandleFunc("/api/metrics", s.handleMetrics)
-	s.router.HandleFunc("/api/dashboard", s.handleDashboard)
+	owner.HandleFunc("/api/metrics", s.handleMetrics)
+	owner.HandleFunc("/api/dashboard", s.handleDashboard)
 
 	// Users & Groups (identity management)
-	s.router.HandleFunc("/api/users", s.handleUsers)
-	s.router.HandleFunc("/api/users/", s.handleUserPath)
-	s.router.HandleFunc("/api/groups", s.handleGroups)
-	s.router.HandleFunc("/api/groups/", s.handleGroupDetail)
-	s.router.HandleFunc("/api/auth/me", s.handleAuthMe)
+	owner.HandleFunc("/api/users", s.handleUsers)
+	owner.HandleFunc("/api/users/", s.handleUserPath)
+	owner.HandleFunc("/api/groups", s.handleGroups)
+	owner.HandleFunc("/api/groups/", s.handleGroupDetail)
+	owner.HandleFunc("/api/auth/me", s.handleAuthMe)
+
+	// Everything else under /api/ is owner-only.
+	s.router.Handle("/api/", s.requireOwnerAuth(owner))
 
 	// Serve UI static files
 	s.router.Handle("/", http.FileServer(http.Dir("/var/naslos/ui")))
+}
+
+// requireOwnerAuth wraps the owner route mux in the authentication middleware,
+// or serves it bare when the AUTH_DISABLED development opt-out is set (logged
+// loudly at startup).
+func (s *Server) requireOwnerAuth(next http.Handler) http.Handler {
+	if s.authDisabled {
+		return next
+	}
+	return s.auth.RequireAuth(next)
 }
 
 // handleUserPath routes user sub-paths (password, enable, disable).

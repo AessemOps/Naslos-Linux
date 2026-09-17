@@ -191,12 +191,13 @@ func newSenderHarness(t *testing.T, payload []byte) *senderHarness {
 	t.Cleanup(receiverServer.Close)
 
 	fake := newFakeAgent(t, payload)
+	// authDisabled is the same development opt-out the operator can set; the
+	// owner auth gate itself is covered by routes_test.go.
 	server := &Server{
-		agent:              agent.NewClient(fake.server.URL),
-		buddy:              receiver,
-		buddyRequireAuth:   true,
-		terminalAuthHeader: "Remote-User",
-		router:             http.NewServeMux(),
+		agent:        agent.NewClient(fake.server.URL, ""),
+		buddy:        receiver,
+		authDisabled: true,
+		router:       http.NewServeMux(),
 	}
 	server.routes()
 
@@ -209,8 +210,8 @@ func newSenderHarness(t *testing.T, payload []byte) *senderHarness {
 	}
 }
 
-// call performs an authenticated request against the harness (the proxy identity
-// header is what buddyRequireAuth looks for).
+// call performs a request against the harness (the auth gate is off in these
+// tests, so the handler sees it directly).
 func (h *senderHarness) call(t *testing.T, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 
@@ -223,7 +224,6 @@ func (h *senderHarness) call(t *testing.T, method, path string, body any) *httpt
 		reader = bytes.NewReader(encoded)
 	}
 	req := httptest.NewRequest(method, path, reader)
-	req.Header.Set("Remote-User", "admin@test")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -339,17 +339,11 @@ func TestBuddyIdentityLifecycle(t *testing.T) {
 	}
 }
 
-func TestBuddyIdentityRequiresAnAuthenticatedSession(t *testing.T) {
-	harness := newSenderHarness(t, []byte("payload"))
-
-	req := httptest.NewRequest(http.MethodGet, "/api/buddy/identity", nil)
-	rec := httptest.NewRecorder()
-	harness.server.router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want 401 without the proxy identity", rec.Code)
-	}
-}
+// The owner gate on /api/buddy/* (identity, send, restore, jobs, schedules,
+// peers, status) is asserted exhaustively in routes_test.go: every owner path
+// must answer 401 without the proxy secret. These handler tests run with the
+// same AUTH_DISABLED opt-out the operator can set, so they exercise the handlers
+// themselves rather than the gate.
 
 func TestBuddySendFullThenIncremental(t *testing.T) {
 	// Not a whole number of chunks: the tail is the case a naive sender gets wrong.
