@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -224,8 +225,19 @@ func TestBuddySchedulerFiresDueEntryAndPrunes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listing chains: %v", err)
 	}
-	if len(chains) != 1 {
-		t.Errorf("chains = %d, want pruneKeep=1 to leave exactly one", len(chains))
+	// pruneKeep=1 cannot leave exactly one chain here: the scheduled run is
+	// incremental off the manual one, so dropping the base would leave a backup
+	// that only fails later at verify/restore time. Retention keeps the whole
+	// sequence instead (FR-BUD-09).
+	if len(chains) != 2 {
+		t.Errorf("chains = %d, want the incremental plus the base it descends from", len(chains))
+	}
+	var restored bytes.Buffer
+	if _, err := client.Restore(buddy.RestoreOptions{Source: "naslos-test/sched-prune", Out: &restored}); err != nil {
+		t.Errorf("restore after the scheduled prune: %v", err)
+	}
+	if restored.Len() == 0 {
+		t.Error("the restored stream is empty")
 	}
 
 	if ntfy.count() != 1 {

@@ -10,7 +10,7 @@ import (
 // AllDatasets lists every dataset on the node with its mountpoint and space, so
 // callers can tell which paths are actually ZFS-backed (and how full they are).
 func (c *Client) AllDatasets() ([]Dataset, error) {
-	out, err := c.hostExec(zfsBin, "list", "-H", "-o", "name,used,avail,refer,mountpoint", "-t", "filesystem", "-r")
+	out, err := c.hostExec(zfsBin, "list", "-H", "-o", "name,used,avail,refer,mountpoint,mounted", "-t", "filesystem", "-r")
 	if err != nil {
 		return nil, fmt.Errorf("listing datasets: %w", err)
 	}
@@ -30,6 +30,7 @@ func (c *Client) AllDatasets() ([]Dataset, error) {
 			Avail:      fields[2],
 			Refer:      fields[3],
 			Mountpoint: fields[4],
+			Mounted:    len(fields) > 5 && fields[5] == "yes",
 		})
 	}
 	return datasets, nil
@@ -40,7 +41,7 @@ func (c *Client) Datasets(pool string) ([]Dataset, error) {
 	if err := ValidatePoolName(pool); err != nil {
 		return nil, err
 	}
-	out, err := c.hostExec(zfsBin, "list", "-H", "-o", "name,used,avail,refer,mountpoint", "-r", pool)
+	out, err := c.hostExec(zfsBin, "list", "-H", "-o", "name,used,avail,refer,mountpoint,mounted", "-r", pool)
 	if err != nil {
 		return nil, fmt.Errorf("listing datasets: %w", err)
 	}
@@ -60,6 +61,7 @@ func (c *Client) Datasets(pool string) ([]Dataset, error) {
 			Avail:      fields[2],
 			Refer:      fields[3],
 			Mountpoint: fields[4],
+			Mounted:    len(fields) > 5 && fields[5] == "yes",
 		})
 	}
 	return datasets, nil

@@ -139,6 +139,12 @@ spec:
               value: {{ .Values.buddy.receivePath | default "/var/lib/naslos/buddy" | quote }}
             - name: BUDDY_PEERS
               value: {{ .Values.buddy.peersFile | default "/var/lib/naslos/buddy-peers.json" | quote }}
+            # Scheduled backups: the store beside the other state files, and the
+            # runner's tick. Both used to rely on the compiled-in defaults.
+            - name: BUDDY_SCHEDULES
+              value: {{ .Values.buddy.schedulesFile | default "/var/lib/naslos/buddy-schedules.json" | quote }}
+            - name: BUDDY_SCHEDULER_INTERVAL_MS
+              value: {{ .Values.buddy.schedulerIntervalMs | default 60000 | quote }}
             {{- if or .Values.buddy.enrollToken .Values.buddy.enrollTokenSecret }}
             - name: BUDDY_ENROLL_TOKEN
               valueFrom:

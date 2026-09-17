@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AessemOps/Naslos-Linux/api/internal/agent"
 	"github.com/AessemOps/Naslos-Linux/api/internal/buddy"
 )
 
@@ -293,223 +292,39 @@ func normalizeReceiverURL(raw string) (string, error) {
 	return strings.TrimRight(trimmed, "/"), nil
 }
 
-// handleBuddySendSyncLegacy is the pre-jobs synchronous send, kept for reference
-// during the async migration. It is no longer routed; POST /api/buddy/send is
-// served by handleBuddySend in buddy_jobs.go.
-func (s *Server) handleBuddySendSyncLegacy(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
+// requireMountedDataset refuses to back up a dataset whose contents `zfs send`
+// cannot see. A dataset created from inside a pod is mounted in that pod's mount
+// namespace only: in the host namespace its mountpoint is an ordinary directory
+// on the parent dataset, so a send captures an empty filesystem while reporting
+// success (the mount-propagation trap, seen live as a 44 KB "backup" of a 2 GiB
+// dataset). The agent's view is authoritative because that is where `zfs send`
+// runs.
+//
+// A dataset with mountpoint "none"/"legacy" is not affected - there is no
+// directory to shadow it - so it stays sendable.
+func (s *Server) requireMountedDataset(dataset string) error {
 	if s.agent == nil {
-		writeError(w, http.StatusServiceUnavailable, "the API has no agent client, so it cannot stream ZFS data")
-		return
+		return nil
 	}
-
-	var request buddySendRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 64<<10)).Decode(&request); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
-		return
-	}
-
-	dataset := strings.TrimSpace(request.Dataset)
-	source := strings.TrimSpace(request.Source)
-	if dataset == "" || source == "" {
-		writeError(w, http.StatusBadRequest, "dataset and source are required")
-		return
-	}
-	if err := buddy.ValidateSource(source); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	receiverURL, err := normalizeReceiverURL(request.Receiver)
+	datasets, err := s.agent.ListDatasets()
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		// A listing failure must not become a refusal: the send reports the real
+		// problem if there is one.
+		log.Printf("buddy send: cannot check the mount state of %s (%v)", dataset, err)
+		return nil
 	}
-
-	identity, err := loadBuddyIdentity()
-	if err != nil {
-		writeError(w, http.StatusPreconditionFailed, err.Error())
-		return
-	}
-	client := buddy.NewClient(receiverURL, identity)
-
-	// The request context bounds the whole send: if the operator's client goes
-	// away, the agent's `zfs send` is killed with it instead of running on.
-	ctx := req.Context()
-
-	raw := true
-	if request.Raw != nil {
-		raw = *request.Raw
-	}
-
-	// Find the base: the buddy's manifest records the GUID of the snapshot it was
-	// given, so an incremental send is possible even if that snapshot was renamed
-	// since. Without a match this is a full send.
-	//
-	// An interrupted send is different: it must repeat the *same* stream, so its
-	// base and snapshot come from its own state file rather than from a fresh
-	// decision about what to send.
-	statePath := filepath.Join(sendStateDir(), sendStateName(receiverURL, source))
-	var state *instanceSendState
-	wasResume := false
-	if !request.Force {
-		if loaded, err := loadSendState(statePath); err == nil &&
-			loaded.Receiver == receiverURL && loaded.Source == source && loaded.Dataset == dataset {
-			if snapshots, err := s.agent.SnapshotsWithGUID(ctx, dataset); err == nil {
-				for _, snapshot := range snapshots {
-					if snapshot.Name == loaded.ToSnapshot {
-						state = loaded
-						wasResume = true
-						break
-					}
-				}
-			}
-			if state == nil {
-				// The snapshot the stream was made from is gone (someone destroyed
-				// it): that state cannot be continued.
-				log.Printf("buddy send: discarding the resume state for %s: snapshot %s no longer exists", source, loaded.ToSnapshot)
-				_ = os.Remove(statePath)
-			}
+	for _, d := range datasets {
+		if d.Name != dataset {
+			continue
 		}
-	}
-
-	base, baseGUID := "", ""
-	if state != nil {
-		base, baseGUID = state.FromSnapshot, state.FromGUID
-	} else if !request.Force {
-		previous, err := client.Manifest(source, "")
-		if err == nil && previous.Kind == "zfs-send" && previous.ToGUID != "" {
-			if snapshots, err := s.agent.SnapshotsWithGUID(ctx, dataset); err == nil {
-				for _, snapshot := range snapshots {
-					if snapshot.GUID == previous.ToGUID {
-						base, baseGUID = snapshot.Name, snapshot.GUID
-						break
-					}
-				}
-			}
-		} else if err != nil {
-			log.Printf("buddy send: no previous backup of %s on %s (%v): sending a full stream", source, receiverURL, err)
+		if !d.Mounted && strings.HasPrefix(d.Mountpoint, "/") {
+			return fmt.Errorf("dataset %s is not mounted on the node (mountpoint %s), so zfs send would "+
+				"capture an empty filesystem; mount it in the host namespace (reboot the node, or run "+
+				"`zfs mount %s` there) and retry", dataset, d.Mountpoint, dataset)
 		}
+		return nil
 	}
-
-	// A fresh attempt snapshots now; a resumed one reuses the snapshot it started
-	// with, which is what makes the stream identical.
-	// A second-granular name collided when two sends started within the same second
-	// (`zfs snapshot` refuses a name that already exists), so each attempt gets a
-	// short random suffix as well.
-	snapshot := "buddy-" + time.Now().UTC().Format("20060102T150405Z") + "-" + randomSuffix()
-	targetGUID := ""
-	if state != nil {
-		snapshot, targetGUID = state.ToSnapshot, state.ToGUID
-	}
-	if state == nil {
-		if err := s.agent.CreateSnapshot(ctx, dataset, snapshot); err != nil {
-			writeError(w, http.StatusBadGateway, "snapshotting "+dataset+": "+err.Error())
-			return
-		}
-		// The new snapshot's GUID goes into the manifest so the *next* send can find
-		// it again and stay incremental.
-		if snapshots, err := s.agent.SnapshotsWithGUID(ctx, dataset); err == nil {
-			for _, info := range snapshots {
-				if info.Name == snapshot {
-					targetGUID = info.GUID
-				}
-			}
-		}
-		state = &instanceSendState{
-			Receiver:     receiverURL,
-			Source:       source,
-			Dataset:      dataset,
-			ToSnapshot:   snapshot,
-			FromSnapshot: base,
-			FromGUID:     baseGUID,
-			ToGUID:       targetGUID,
-		}
-		if chain, err := buddy.NewChainState(source, "zfs-send"); err != nil {
-			writeError(w, http.StatusInternalServerError, "creating the chain state: "+err.Error())
-			return
-		} else {
-			state.Chain = *chain
-		}
-	}
-	// The state is written before the first chunk leaves: a crash, a disconnect or
-	// a killed send must still be resumable, and the file carries the chain's data
-	// key, so it is written 0600 beside the identity.
-	if err := saveSendState(statePath, state); err != nil {
-		writeError(w, http.StatusInternalServerError, "saving the resume state: "+err.Error())
-		return
-	}
-
-	sendOptions := agent.SendStreamOptions{Dataset: dataset, To: snapshot, From: base, Raw: raw}
-	expected, err := s.agent.EstimateSend(ctx, sendOptions)
-	if err != nil {
-		// An estimate is a nicety, not a requirement: without it the send still
-		// works, there is just no number to check completeness against.
-		log.Printf("buddy send: could not estimate %s@%s: %v", dataset, snapshot, err)
-	}
-
-	stream, err := s.agent.SendStream(ctx, sendOptions)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "starting zfs send: "+err.Error())
-		return
-	}
-	defer stream.Close()
-
-	started := time.Now()
-	chainState := state.Chain
-	result, err := client.Push(buddy.PushOptions{
-		Source:       source,
-		Kind:         "zfs-send",
-		Reader:       stream,
-		State:        &chainState,
-		FromSnapshot: base,
-		ToSnapshot:   snapshot,
-		FromGUID:     baseGUID,
-		ToGUID:       targetGUID,
-		PruneKeep:    request.PruneKeep,
-		BeforePublish: func(pushed *buddy.PushResult) error {
-			if expected > 0 && pushed.PlainBytes+sendShortfallAllowance(expected) < expected {
-				return fmt.Errorf("the send stream ended early (%d of at least %d bytes), so nothing was published. "+
-					"Retry the same send to continue chain %s: the buddy skips the chunks it already has",
-					pushed.PlainBytes, expected, chainState.Chain)
-			}
-			return nil
-		},
-	})
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-
-	// Published: the chain is complete and resumable no longer means anything.
-	_ = os.Remove(statePath)
-
-	log.Printf("buddy send: %s@%s -> %s %s (%d chunks, %d bytes, incremental=%v, resumed=%v)",
-		dataset, snapshot, receiverURL, source, result.Chunks, result.PlainBytes, base != "", wasResume)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":          "backed up",
-		"dataset":         dataset,
-		"source":          source,
-		"receiver":        receiverURL,
-		"snapshot":        snapshot,
-		"base":            base,
-		"baseGUID":        baseGUID,
-		"toGUID":          targetGUID,
-		"incremental":     base != "",
-		"resumed":         wasResume,
-		"raw":             raw,
-		"chain":           result.Chain,
-		"chunks":          result.Chunks,
-		"uploaded":        result.Uploaded,
-		"skipped":         result.Skipped,
-		"plainBytes":      result.PlainBytes,
-		"sealedBytes":     result.SealedBytes,
-		"estimatedBytes":  expected,
-		"prunedChains":    result.PrunedChains,
-		"durationSeconds": time.Since(started).Seconds(),
-	})
+	return nil
 }
 
 // buddyRestoreRequest is a restore back onto this instance's own ZFS.
@@ -537,13 +352,13 @@ type streamDigest struct {
 	Bytes  int64  `json:"bytes"`
 }
 
-// handleBuddyRestore pulls a backup back and writes it into ZFS:
+// handleBuddyRestore restores a stored backup onto this instance's node.
 //
 //	POST /api/buddy/restore {"source":"naslos-a/test","receiver":"https://buddy","dataset":"test/restored"}
 //
 // The stream is authenticated before ZFS sees it: the buddy client verifies the
-// manifest signature, the chain's contiguity and every chunk's digest, and ZFS then
-// refuses anything truncated. A restore either lands whole or fails loudly.
+// manifest signature, the chain's contiguity and every chunk's digest, and ZFS
+// then refuses anything truncated. A restore either lands whole or fails loudly.
 func (s *Server) handleBuddyRestore(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -609,9 +424,10 @@ func (s *Server) handleBuddyRestore(w http.ResponseWriter, req *http.Request) {
 		for _, chain := range sequence {
 			hasher := sha256.New()
 			result, err := client.Restore(buddy.RestoreOptions{
-				Source: source,
-				Chain:  chain.Chain,
-				Out:    hasher,
+				Context: ctx,
+				Source:  source,
+				Chain:   chain.Chain,
+				Out:     hasher,
 			})
 			if err != nil {
 				writeError(w, http.StatusBadGateway, err.Error())
@@ -653,9 +469,10 @@ func (s *Server) handleBuddyRestore(w http.ResponseWriter, req *http.Request) {
 		}
 
 		result, err := client.Restore(buddy.RestoreOptions{
-			Source: source,
-			Chain:  chain.Chain,
-			Out:    writer,
+			Context: ctx,
+			Source:  source,
+			Chain:   chain.Chain,
+			Out:     writer,
 		})
 		if err != nil {
 			// Close the agent's stream and collect whatever ZFS said about the

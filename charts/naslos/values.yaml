@@ -375,6 +375,10 @@ buddy:
   receivePath: /var/lib/naslos/buddy
   # The authorized-keys registry, kept with the other Naslos state files.
   peersFile: /var/lib/naslos/buddy-peers.json
+  # Scheduled backups (docs/buddy-backup.md): where the schedule entries live and
+  # how often the runner checks for due ones. Defaults match the API's.
+  schedulesFile: /var/lib/naslos/buddy-schedules.json
+  schedulerIntervalMs: 60000
   # A one-time token that lets a peer authorize its own key (buddyctl enroll).
   # Empty means every key must be authorized explicitly. Either set it in values
   # (rendered into the naslos-buddy Secret) or point enrollTokenSecret at a

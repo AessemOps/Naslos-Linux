@@ -214,6 +214,10 @@ type Dataset struct {
 	Avail      string `json:"avail,omitempty"`
 	Refer      string `json:"refer,omitempty"`
 	Mountpoint string `json:"mountpoint"`
+	// Mounted is the mount state as the *agent* sees it (host mount namespace),
+	// which is where `zfs send` runs. A dataset mounted only inside a pod shows
+	// false here, and sending it would capture an empty dataset.
+	Mounted bool `json:"mounted"`
 }
 
 // ListDatasets returns every dataset on the node with its mountpoint.

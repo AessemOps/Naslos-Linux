@@ -118,7 +118,7 @@ that rewrites the path — an error nobody can debug otherwise.
 | PUT | `/chunks/{source}?chain=&index=` | Upload one sealed chunk (idempotent) |
 | GET | `/manifest/{source}?chain=` | A manifest (`chain` omitted = current chain) |
 | PUT | `/manifest/{source}` | Publish a signed manifest; refused unless every chunk it lists is present |
-| POST | `/prune/{source}` | `{"keep": N}` — keep the newest N chains, delete the rest |
+| POST | `/prune/{source}` | `{"keep": N}` — keep the newest N chains, delete the rest. Never deletes a chain the newest one descends from: an incremental without its base is not a backup, so a keep-count may retain more chains than asked |
 
 The index travels as a **query parameter** rather than a path segment because a
 source can itself contain slashes (`naslos-a/tank/data`); guessing where the source
@@ -421,6 +421,24 @@ error instead of writing damaged data. `TestReceiverRefusesTamperedChunk` in
   on success and notify via ntfy (`backup_success` / `backup_failure`). The
   `/backups` page manages them, starts manual sends with live progress and
   verifies restores.
+- **Retention never breaks a sequence.** `pruneKeep` counts *chains*, but an
+  incremental chain needs every chain below it, so the receiver always keeps the
+  dependency chain of the newest backup. Asking for `keep=1` on an incremental
+  therefore keeps the incremental **and** its base; that is deliberate, because the
+  alternative is a backup that verifies as unrestorable long after the schedule
+  reported success.
+- **A send refuses a dataset the node cannot see.** `zfs send` runs in the host's
+  mount namespace; a dataset created from inside a pod is mounted in that pod's
+  namespace only, so sending it would capture an empty filesystem and still report
+  success. The send checks the agent's `mounted` state first and refuses with the
+  fix (`zfs mount <dataset>` on the node, or a reboot) rather than storing a
+  worthless chain. Datasets whose mountpoint is `none`/`legacy` are unaffected.
+- **Cancelling a send is prompt.** A cancelled job aborts the in-flight chunk
+  request (the buddy client's calls are context-bound) and stops between chunks, so
+  `DELETE /api/buddy/jobs/{id}` does not wait for a stalled receiver.
+- **Enrollment is single use across restarts.** The receiver records the spent
+  token in its store (`.enroll-used`), and a peer name cannot be re-keyed without an
+  explicit revoke, so a leaked token cannot substitute a key after a restart.
 - **tar payloads lose symlinks, devices and xattrs** in v1, and only regular files
   and directories are archived. For filesystems that need all of it, send a ZFS
   stream (`--kind zfs-send`), which preserves everything by construction.
