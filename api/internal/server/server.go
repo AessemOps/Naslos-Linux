@@ -266,19 +266,31 @@ func (s *Server) routes() {
 		owner.HandleFunc("/api/buddy/schedules", s.handleBuddySchedules)
 	}
 
-	// Metrics & Dashboard
-	owner.HandleFunc("/api/metrics", s.handleMetrics)
-	owner.HandleFunc("/api/dashboard", s.handleDashboard)
+	// Metrics & Dashboard are registered below on the outer router: any
+	// authenticated user may see them (see the allow-list comment there).
 
 	// Users & Groups (identity management)
 	owner.HandleFunc("/api/users", s.handleUsers)
 	owner.HandleFunc("/api/users/", s.handleUserPath)
 	owner.HandleFunc("/api/groups", s.handleGroups)
 	owner.HandleFunc("/api/groups/", s.handleGroupDetail)
-	owner.HandleFunc("/api/auth/me", s.handleAuthMe)
 
-	// Everything else under /api/ is owner-only.
-	s.router.Handle("/api/", s.requireOwnerAuth(owner))
+	// What any *authenticated* user may reach: their own identity and the
+	// read-only dashboard. Everything else is administrator-only (CR-03).
+	//
+	// The allow-list is deliberately explicit and small: the owner mux below is
+	// mounted behind RequireAdmin, so a route added there is admin by default and
+	// cannot be exposed by accident.
+	s.router.Handle("/api/auth/me", s.requireOwnerAuth(http.HandlerFunc(s.handleAuthMe)))
+	s.router.Handle("/api/dashboard", s.requireOwnerAuth(http.HandlerFunc(s.handleDashboard)))
+	s.router.Handle("/api/metrics", s.requireOwnerAuth(http.HandlerFunc(s.handleMetrics)))
+
+	// Everything else under /api/ requires an authenticated *administrator*.
+	// `naslos_admins` is the group Authelia forwards; without this gate any
+	// authenticated account could manage users, wipe disks or open the root
+	// terminal (CR-03). With AUTH_DISABLED set (development only) both wrappers
+	// pass through.
+	s.router.Handle("/api/", s.requireOwnerAuth(s.requireAdmin(owner)))
 
 	// Serve UI static files
 	s.router.Handle("/", http.FileServer(http.Dir("/var/naslos/ui")))
@@ -292,6 +304,17 @@ func (s *Server) requireOwnerAuth(next http.Handler) http.Handler {
 		return next
 	}
 	return s.auth.RequireAuth(next)
+}
+
+// requireAdmin additionally requires the authenticated user to be a Naslos
+// administrator (the `naslos_admins` group). It runs after RequireAuth, so the
+// user is already in the request context; with AUTH_DISABLED it passes through
+// like the rest of the chain.
+func (s *Server) requireAdmin(next http.Handler) http.Handler {
+	if s.authDisabled {
+		return next
+	}
+	return s.auth.RequireAdmin(next)
 }
 
 // handleUserPath routes user sub-paths (password, enable, disable).

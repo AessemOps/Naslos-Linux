@@ -120,3 +120,46 @@ func TestNewMiddlewareRejectsBadCIDR(t *testing.T) {
 		t.Error("NewMiddleware(bad CIDR) = nil error, want a rejection")
 	}
 }
+
+// TestRequireAdminRequiresTheAdminGroup pins the second half of the owner gate
+// (CR-03): authentication alone is not enough for the administrator surface, and
+// the check reads the groups the auth middleware put in the context.
+func TestRequireAdminRequiresTheAdminGroup(t *testing.T) {
+	m, err := NewMiddleware([]string{"192.0.2.0/24"}, "proxy-secret")
+	if err != nil {
+		t.Fatalf("NewMiddleware: %v", err)
+	}
+
+	reached := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+	chain := m.RequireAuth(m.RequireAdmin(next))
+
+	call := func(groups string) int {
+		reached = false
+		req := httptest.NewRequest(http.MethodGet, "/api/users", nil)
+		req.Header.Set(ProxySecretHeader, "proxy-secret")
+		req.Header.Set("Remote-User", "someone")
+		if groups != "" {
+			req.Header.Set("Remote-Groups", groups)
+		}
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if code := call("naslos_users"); code != http.StatusForbidden || reached {
+		t.Errorf("plain user: status = %d, reached = %v, want 403 without reaching the handler", code, reached)
+	}
+	if code := call(""); code != http.StatusForbidden {
+		t.Errorf("no groups: status = %d, want 403", code)
+	}
+	if code := call("naslos_admins"); code != http.StatusOK || !reached {
+		t.Errorf("admin: status = %d, reached = %v, want 200 and the handler", code, reached)
+	}
+	if code := call("users, NASLOS_ADMINS"); code != http.StatusOK {
+		t.Errorf("admin among several groups (case-insensitive): status = %d, want 200", code)
+	}
+}
