@@ -187,7 +187,11 @@ if APPLY_OUT="$(talosctl apply-config --insecure --nodes "$VM_IP" --file "$CONTR
     echo "$APPLY_OUT"
 else
     echo "$APPLY_OUT" >&2
-    if echo "$APPLY_OUT" | grep -qiE "connection refused|Unavailable|transport"; then
+    # `certificate required` is the installed-node case: the insecure (no client
+    # cert) apply is refused, so fall back to the authenticated one. `unknown
+    # authority` appears when the node still carries a different PKI than the
+    # talosconfig, which is what the fallback is for as well.
+    if echo "$APPLY_OUT" | grep -qiE "connection refused|Unavailable|transport|certificate required|unknown authority"; then
         echo "Insecure apply failed (node likely already installed); retrying with authenticated apply-config..."
         if ! APPLY_OUT="$(talosctl apply-config --nodes "$VM_IP" --endpoints "$VM_IP" --file "$CONTROLPLANE" 2>&1)"; then
             echo "$APPLY_OUT" >&2
@@ -350,6 +354,10 @@ done
 kubectl apply -f "$LDAP_MANIFEST_DIR"
 
 # --- install Naslos Helm chart ---
+# Every image the chart references needs the tag override, not just api/agent/ui:
+# samba, nfs and terminal come from values-vm.yaml and the API's LDAP wait init
+# container uses openldap.image, so a fresh tag suffix otherwise leaves them
+# pulling a tag that no longer exists (ErrImagePull on a fresh install).
 echo "=== Installing Naslos on the VM ==="
 make install-vm VM_IP="$VM_IP" HELM_FLAGS="$HELM_FLAGS \
   --set api.image.repository=$REGISTRY/naslos-api \
@@ -357,7 +365,14 @@ make install-vm VM_IP="$VM_IP" HELM_FLAGS="$HELM_FLAGS \
   --set agent.image.repository=$REGISTRY/naslos-agent \
   --set agent.image.tag=$IMAGE_TAG \
   --set ui.image.repository=$REGISTRY/naslos-ui \
-  --set ui.image.tag=$IMAGE_TAG"
+  --set ui.image.tag=$IMAGE_TAG \
+  --set shares.smb.image.repository=$REGISTRY/naslos-samba \
+  --set shares.smb.image.tag=$IMAGE_TAG \
+  --set shares.nfs.image.repository=$REGISTRY/naslos-nfs \
+  --set shares.nfs.image.tag=$IMAGE_TAG \
+  --set terminal.image.repository=$REGISTRY/naslos-terminal \
+  --set terminal.image.tag=$IMAGE_TAG \
+  --set openldap.image=$REGISTRY/naslos-openldap:$IMAGE_TAG"
 
 echo ""
 echo "=== Deployment complete ==="
