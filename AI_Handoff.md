@@ -1,5 +1,48 @@
 # AI Handoff — Naslos
 
+## Fresh install on 192.168.1.117 (2026-09-19, `fix/chart-auth-and-admin`)
+
+**The instance now runs on the new VM.** Everything was installed from scratch on
+192.168.1.117 (the old 192.168.1.96 VM is powered off): Talos v1.14.0 from the
+Naslos ISO, etcd bootstrapped, local-path provisioner, OpenLDAP + its bootstrap,
+then the chart at **revision 2**. Deployed images: api/agent/ui/samba/nfs/terminal
+and the OpenLDAP manifests all at **`0.1.0-r1`**. All pods Running; `/api/ready`
+200; `/api/users` 200 (LDAP bind works); `/api/dashboard` reports CPU/memory/disk
+and `ens3 → 192.168.1.117` (FR-MET-10); Playwright against the new VM: **16 passed
+/ 5 skipped** — the skips are the bare-install gaps (no ZFS pool or users yet; the
+suite tolerates missing setup, CR-23).
+
+**Fixes that came out of this install** (in `fix/chart-auth-and-admin`):
+
+- **Fresh PKI.** `scripts/deploy-vm.sh` *reuses* `bootstrap/vm/talosconfig` when it
+  exists, which for a brand-new VM meant installing with the **old cluster's CA and
+  cluster secret** (same discovery identity as .96 — a footgun if that VM ever came
+  back). The PKI was regenerated for the new node, the new config applied with the
+  old credentials as client, then bootstrap. If you re-image the VM, move
+  `bootstrap/vm/talosconfig*` aside first so a fresh PKI is generated.
+- **Apply-config fallback.** The script's authenticated-apply retry only matched
+  `connection refused|Unavailable|transport`, so against an installed node (which
+  answers the insecure apply with `tls: certificate required`) it gave up. The
+  pattern now covers that case and `unknown authority`.
+- **Image tags.** The script overrode only api/agent/ui; samba, nfs, terminal and
+  the API's LDAP-wait init container (openldap.image) still referenced `:0.1.0`,
+  which no longer exists, giving `ErrImagePull` for samba/nfs/terminal on a fresh
+  tag. All of them are now passed explicitly (fresh installs must still bump the
+  suffix; never reuse a tag).
+- CR-01/CR-02/CR-03 are fixed on this branch too (Authelia rule order, namespace
+  `keep` annotation, admin-only owner routes) — see `docs/CODE-REVIEW.md`.
+
+**Not done on the new VM, by design or decision:** no ZFS pool yet (two spare 40 GB
+disks are visible to the API), so datasets/shares need a pool first; **Buddy is
+disabled** (`buddy.enabled` is not set by the deploy script); and the authentication
+posture is the **dev one** (`auth.disabled=true`, UI on the NodePort) because the
+proxy-protected path still needs its missing pieces (Authelia portal route,
+`naslos-tls`, Traefik LAN exposure, an LDAP operator account and a peer-API bypass)
+— that is the scoped follow-up, not a switch.
+
+> The one-page rewrite of this handoff (CR-26) lives on the `docs/code-review`
+> branch; merge that branch to replace the long log below.
+
 ## Final hardening: bounded walks + persisted replay cache (`feature/buddy-walk-bounds`)
 
 Branched from master `2f3ece0` (PR #16 merged). Deployed: api `0.1.0-b21`
