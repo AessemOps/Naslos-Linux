@@ -8,7 +8,10 @@ export default defineConfig({
   workers: 1,
   reporter: 'list',
   use: {
-    baseURL: 'http://192.168.1.96:30080',
+    // Point the suite at whichever instance is under test, e.g.
+    //   PLAYWRIGHT_BASE_URL=http://192.168.1.117:30080 npx playwright test
+    // The default is the long-standing single-node VM.
+    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://192.168.1.96:30080',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
