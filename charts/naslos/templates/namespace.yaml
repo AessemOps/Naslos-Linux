@@ -6,3 +6,11 @@ metadata:
     app.kubernetes.io/name: naslos
     app.kubernetes.io/part-of: naslos
     pod-security.kubernetes.io/enforce: privileged
+  annotations:
+    # Keep the namespace when the release is uninstalled. OpenLDAP (its
+    # StatefulSet and PVCs) and the shares/state volume are applied outside this
+    # chart, and the state volume holds buddy-identity.json — losing that file
+    # makes every stored backup unreadable. Without this annotation
+    # `helm uninstall naslos` deletes the namespace and cascades into all of it.
+    # Deleting the namespace is then a deliberate, separate action.
+    helm.sh/resource-policy: keep
