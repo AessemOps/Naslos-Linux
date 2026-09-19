@@ -18,7 +18,7 @@
 > | NAS-004 terminal unauthenticated, NAS-005 `/api/ws/logs` unauthenticated | **Fixed** — owner gate; the nginx 403 path is gone with the NodePort |
 > | NAS-008 NodePort exposes the API | **Fixed** — the listener and the whole dev posture were removed |
 > | NAS-009 `X-Forwarded-Host` trust | **Fixed** — `trustForwardHeader` removed from the forwardAuth middleware |
-> | NAS-010 default credentials | **Partial** — Grafana removed; the LDAP service password, `TempPass123!` initial passwords and the registry `secret` remain (AUDIT-H1/M14) |
+> | NAS-010 default credentials | **Partial** — Grafana removed; the LDAP **service** password is rotated and no longer committed (AUDIT-H1 fixed). Still open: the OpenLDAP **admin** default `naslos-admin`, `TempPass123!` initial user passwords, the registry `secret` |
 > | NAS-014 jwt regenerated per render, NAS-017 agent client token | **Fixed** — jwt secret persisted; streaming client carries the token |
 > | everything else | historical; see the status table in `docs/CODE-REVIEW.md` |
 

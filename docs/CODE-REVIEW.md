@@ -26,7 +26,7 @@ Helm chart and images, scripts, docs, tests. **Mode:** report only; nothing chan
 > | CR-31 xterm deprecation, CR-32/33/34/35/36 UI typing/size/a11y/timers, CR-41 monitoring limits, CR-42 spec §7 mapping, CR-44 doc drift, CR-45 unused logger | **Open** |
 > | CR-37 probes/PDBs/NetworkPolicy/PSA/RBAC | **Partial** — unused agent ClusterRole removed (`8555925`); probes, PDBs, NetworkPolicy, PSA scoping open (AUDIT-M4/M6) |
 > | CR-38 Helm hardening | **Partial** — `trustForwardHeader` removed; `values.schema.json`, `.Release.Namespace`, `LDAPTLS_REQCERT` and digests open (AUDIT-L9/M10) |
-> | CR-39 jwt churn / argv secrets / image default | **Partial** — jwt secret persisted (`421711a`); the live LDAP credential is AUDIT-H1 (open) |
+> | CR-39 jwt churn / argv secrets / image default | **Partial** — jwt secret persisted (`421711a`, `naslos-authelia-jwt`); the LDAP bind password is no longer committed (Authelia reads it from the `naslos-openldap` Secret, AUDIT-H1 fixed); the OpenLDAP image's default admin password and argv-passed passwords remain |
 > | CR-40 image pinning / root nginx | **Partial** — digest pinning excluded by request (AUDIT-M10); nginx non-root open (AUDIT-L2) |
 > | CR-43 missing tests | **Partial** — `api/internal/agent/client_test.go`; auth-aware Playwright suite |
 
