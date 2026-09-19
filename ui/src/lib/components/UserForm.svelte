@@ -60,32 +60,54 @@
     saving = true;
     error = '';
 
-    const body: any = {
-      uid,
-      displayName,
-      email,
-      firstName,
-      lastName,
-      groups,
-      password,
-    };
+    // A password is not part of the update endpoint: PUT /api/users/{uid}
+    // handles attributes and group membership only, and the create endpoint
+    // takes the password inline. Sending it in the PUT body (as this form used
+    // to) was a silent no-op - "Update" reported success and changed nothing.
+    // Editing now calls POST /api/users/{uid}/password, which updates LDAP and
+    // the Samba NT hash (FR-IDN-09).
+    const body: any = { uid, displayName, email, firstName, lastName, groups };
 
-    // Remove empty password for edits (don't change if not provided)
-    if (user && !password) {
-      delete body.password;
+    async function failMessage(res: Response, fallback: string): Promise<string> {
+      try {
+        const data = await res.json();
+        return data.error || fallback;
+      } catch {
+        return fallback;
+      }
     }
 
     try {
-      const url = user ? `/api/users/${user.uid}` : '/api/users';
-      const method = user ? 'PUT' : 'POST';
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to save user');
+      if (!user) {
+        body.password = password;
+        const res = await fetch('/api/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+          throw new Error(await failMessage(res, 'Failed to create user'));
+        }
+      } else {
+        const res = await fetch(`/api/users/${user.uid}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+          throw new Error(await failMessage(res, 'Failed to save user'));
+        }
+
+        if (password) {
+          const pwRes = await fetch(`/api/users/${user.uid}/password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password })
+          });
+          if (!pwRes.ok) {
+            throw new Error(await failMessage(pwRes, 'User saved, but the password change failed'));
+          }
+        }
       }
       dispatch('close');
     } catch (e: any) {
