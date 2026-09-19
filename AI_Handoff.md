@@ -24,18 +24,19 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
 
 ## Where things stand (2026-09-19)
 
-- **`master` = `4feb048`**; PRs #9–#19 merged (buddy, security fixes, fan-out,
+- **`master` = `90d4351`**; PRs #9–#20 merged (buddy, security fixes, fan-out,
   hardening batches, product gaps, a11y/interface IPs, digests, receive-dataset
-  init container, walk bounds, the code review and the handoff rewrite).
+  init container, walk bounds, the code review, the handoff rewrite, and the
+  namespace/Authelia/admin-gating fixes).
 - **The instance now runs on the new VM: `192.168.1.117`** — see the section below.
   The old `192.168.1.96` VM is powered off.
-- **Open work is in `docs/CODE-REVIEW.md`**: three blocking findings — CR-01 (the
-  chart's Authelia policy bypasses the whole domain), CR-02 (`helm uninstall`
-  deletes the namespace and the state volume holding the buddy identity), CR-03
-  (`RequireAdmin`/`IsAdmin` are never wired) — then the important list (dependency
-  bumps, `-race`, token exposure, UI silent failures, observability, docs).
-  **CR-01/CR-02/CR-03 are fixed** on `fix/chart-auth-and-admin` (PR #20), not yet
-  merged.
+- **Open work is in `docs/CODE-REVIEW.md`**: the three blocking findings — CR-01
+  (the chart's Authelia policy bypassed the whole domain), CR-02 (`helm uninstall`
+  deleted the namespace and the state volume holding the buddy identity) and CR-03
+  (`RequireAdmin`/`IsAdmin` were never wired) — are **fixed and merged** (PR #20).
+  The important list is still open: dependency bumps (18 reachable Go vulns via
+  Helm, 11 npm advisories), `-race` (the suite fails under it), the ntfy token in
+  the API response, UI silent failures, observability, docs.
 - **Security audit status**: 22 NAS findings, each fixed, accepted or open per
   `docs/CODE-REVIEW.md` §6.
 
@@ -69,11 +70,21 @@ under "Not done" below.
   Playwright **16 passed / 5 skipped** (same baseline; the skips are the bare-install
   gaps, CR-23). The local `talosctl` client is v1.14.0 against a v1.14.1 server —
   fine within the minor, upgrade when convenient.
-- **Not done yet**: no ZFS pool (two spare 40 GB disks visible) so datasets/shares
-  and the pool re-import path are untested; Buddy is disabled (no receive dataset);
-  and the real posture still needs Authelia portal routing, the `naslos-tls` secret,
-  Traefik exposed on the LAN, an LDAP operator in `naslos_admins` with TOTP, and a
-  peer-API bypass.
+- **Storage is in place**: pool **`test`** = stripe of `/dev/vdb`+`/dev/vdc`
+  (79 G usable), dataset `test/drill` (the Playwright suite uses the first child
+  dataset, so a child dataset should exist for it). Created through the API
+  (`POST /api/volumes/zfs`), so the agent's `zpool create`/`zfs set` path is the one
+  exercised. **Re-import verified**: with the pool and datasets present the node was
+  rebooted, `ext-zfs-service` imported the pool automatically, `zpool status`
+  came back ONLINE with both vdevs and the datasets reported `mounted: true` by the
+  agent — this closes the gap the Talos upgrade test left open. The suite then ran
+  **28 passed / 4 skipped** (up from 16/5): the extra passes are the shares/pools
+  specs that were skipping for lack of storage.
+- **Not done yet**: Buddy is disabled (no receive dataset, and 2 of the 4 remaining
+  suite skips are its send/verify tests); 2 others are terminal exec over the
+  NodePort, refused by design. The real posture still needs Authelia portal routing,
+  the `naslos-tls` secret, Traefik exposed on the LAN, an LDAP operator in
+  `naslos_admins` with TOTP, and a peer-API bypass.
 
 ## How to run it
 
@@ -93,9 +104,10 @@ curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.96:30080/api/ready
 
 VM facts: node `192.168.1.117`, UI on NodePort `:30080`, private registry
 `192.168.1.2:30095`, namespace `naslos`, `TALOSCONFIG=bootstrap/vm/talosconfig`.
-Buddy is **disabled** on this VM and there is **no ZFS pool yet**: create one
-(two spare 40 GB disks) before datasets/shares/buddy; the receive dataset would be
-`<pool>/naslos-buddy` (`buddy.receivePath` `/var/lib/naslos/buddy`).
+Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with dataset `test/drill`;
+**Buddy is disabled** — enabling it needs `zfs create test/naslos-buddy` plus
+`--set buddy.enabled=true --set buddy.receiveHostPath=/var/mnt/test/naslos-buddy
+--set buddy.receivePath=/var/lib/naslos/buddy`.
 
 ## Operational gotchas (hard-won — read before drilling)
 
@@ -151,6 +163,6 @@ Buddy is **disabled** on this VM and there is **no ZFS pool yet**: create one
 
 On `192.168.1.117`: `naslos-api`, `naslos-ui`, `naslos-agent`, `naslos-samba`,
 `naslos-nfs`, `naslos-terminal` and the OpenLDAP manifests all at **`0.1.0-r1`**,
-chart `naslos-0.1.0`, helm revision **2**, Talos **v1.14.1** (kernel 6.18.51-talos).
-The old VM's tags (`api 0.1.0-b21`, `agent 0.1.0-b6`, `ui 0.1.0-b9`, revision 82)
-are retired with it.
+chart `naslos-0.1.0`, helm revision **2**, Talos **v1.14.1** (kernel 6.18.51-talos),
+ZFS pool `test` (stripe, 79 G) + dataset `test/drill`. The old VM's tags
+(`api 0.1.0-b21`, `agent 0.1.0-b6`, `ui 0.1.0-b9`, revision 82) are retired with it.
