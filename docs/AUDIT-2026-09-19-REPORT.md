@@ -29,8 +29,8 @@ Remediation then closed **all four Highs and every Medium except four**:
 | High closed | 4 of 4 |
 | Medium closed / no-change-needed / excluded | 8 + 1 + 1 |
 | Medium deferred (with reason) | 4 |
-| Low closed / accepted | 5 + 1 |
-| Low deferred | 3 (L2, L3, L8) |
+| Low closed / accepted | 6 + 1 |
+| Low deferred | 2 (L2, L3) |
 | Findings not yet run (Batch 6) | image/SBOM scan, SAST breadth, 8 active tests, buddy crypto deep-dive, `.118` |
 
 The instance now has a single authenticated entry point, no default or committed
@@ -93,7 +93,7 @@ secret, and a runnable (if not yet wired) audit sweep.
 | L5 | Log-injection findings | **Fixed** — `internal/logsafe.Field` sanitises every request/peer-derived value before it reaches a log line (rev 27) |
 | L6 | Integer-conversion findings | **Fixed** — buddy free-space clamps instead of overflowing, `SealChunk` bounds the length field, tar modes are masked (rev 27) |
 | L7 | `md4` for the Samba NT hash | **Accepted** — protocol requirement |
-| L8 | `go test -race` fails (CR-06) | **Open** — CI keeps it opt-in |
+| L8 | `go test -race` fails (CR-06) | **Fixed** — the buddy scheduler's notification race is gone (`notificationsMu` guard); `go test -race ./...` passes in both modules and the sweep runs it unconditionally (rev 27) |
 | L9 | CR-38 remainder | **Fixed** — `LDAPTLS_REQCERT=never` replaced with CA verification (`d2f891a`, rev 24); all 44 `.Values.namespace` references migrated to `.Release.Namespace`, the value removed, and `values.schema.json` added (rev 25) |
 | L10 | gitleaks false positives | **Informational** |
 
@@ -192,6 +192,12 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 - Buddy receive dataset mounted and verified.
 - CI sweep written (`scripts/audit.sh`); the GitHub Actions workflow was added
   and then removed at the operator's request, so the sweep is manual for now.
+- **Race fix (CR-06, rev 27):** the buddy scheduler test swapped
+  `Server.notifications` while a finishing job goroutine read it. The field is
+  now guarded (`notificationsMu` + `notificationManager()` /
+  `setNotificationManager()`), every reader uses the accessor, and
+  `go test -race ./...` passes in both modules; `scripts/audit.sh` runs it
+  unconditionally. This was the last blocker to a clean race sweep.
 - **Log safety and conversions (rev 27):** new `api/internal/logsafe` package
   (`Field`, with tests) strips control characters and caps length; every
   request/peer-derived value in a `log.Printf` now goes through it, and gosec
@@ -240,7 +246,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | AUDIT-L2 — nginx non-root | Low | Image change + rebuild; watch file-permission needs | Non-root user, read-only rootfs, tmpfs cache |
 | ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
 | ~~AUDIT-L5/L6~~ — **fixed at revision 27**: `logsafe.Field` sanitises log arguments and the conversions are bounded/clamped | Low | — | — |
-| AUDIT-L8 / CR-06 — `go test -race` | Low | Known failing scheduler race | Fix the race; enable `NASLOS_AUDIT_RACE=1` in CI |
+| ~~AUDIT-L8 / CR-06~~ — **fixed at revision 27**: the scheduler race is gone and the sweep runs `go test -race` | Low | — | — |
 | Batch 6 — image/SBOM scan, semgrep/staticcheck, AV-5…AV-12, buddy crypto deep-dive, `.118` | Coverage | Time-boxed session | Run `trivy`, `semgrep`, `staticcheck`, the bounded active tests, and the `.118` read-only checks |
 | AUDIT-M10 — digests / registry TLS | Medium | Excluded by request | Revisit when wanted |
 

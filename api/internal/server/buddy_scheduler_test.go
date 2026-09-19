@@ -59,7 +59,7 @@ func enableBackupNotifications(t *testing.T, h *senderHarness, c *ntfyCapture) {
 	}, nil); err != nil {
 		t.Fatalf("enabling notifications: %v", err)
 	}
-	h.server.notifications = mgr
+	h.server.setNotificationManager(mgr)
 }
 
 // useTempSchedules points the harness at an isolated schedule store.
