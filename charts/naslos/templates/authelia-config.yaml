@@ -23,7 +23,12 @@ data:
     server:
       host: 0.0.0.0
       port: 9091
-      path: ""
+      # The portal is served at https://<domain>/authelia and Traefik routes
+      # that prefix to this service without forwardAuth. Authelia also keeps
+      # serving the root path, which is why the forwardAuth address in
+      # traefik-middleware.yaml stays /api/authz/forward-auth (the handler
+      # listens on both) — see the Authelia docs' subpath guidance.
+      path: /authelia
       # No asset_path: Authelia 4.39 validates the directory exists at
       # startup ("error occurred reading the '/srv/' directory: the
       # directory does not exist") — this image doesn't ship custom
@@ -133,16 +138,18 @@ data:
           policy: bypass
           resources:
             - "^/api/buddy/v1/"
-        # Authelia's own API, for the case where the portal is routed through
-        # this same chain. NOTE: routing the portal itself (its page and
-        # assets) is a separate decision — see docs/CODE-REVIEW.md CR-01 and
-        # the fresh-install plan — so this list deliberately covers the API
-        # only and does not pretend to make the portal reachable.
+        # The portal (page, assets and its own /authelia/api/* XHR calls) is
+        # routed to Authelia by its own IngressRoute with no forwardAuth, so it
+        # never reaches these rules. The bypass is defensive only.
         - domain: {{ .Values.authelia.domain | quote }}
           policy: bypass
           resources:
-            - "^/api/(verify|authz|health|state|configuration|firstfactor|secondfactor|reset-password|logout|user/info|consent)(/.*)?$"
-        # The admin surface needs a second factor, and these rules must come
+            - "^/authelia(/.*)?$"
+        # Every admin-only surface needs a second factor. This list mirrors the
+        # API's RequireAdmin gates (CR-03): if a prefix is missing here an
+        # operator could open a one-factor session and still reach the
+        # privileged route (the terminal, the ZFS operations) because the API
+        # only checks group membership, not the factor. These rules must come
         # before the generic one below or they would never match.
         - domain: "*"
           policy: two_factor
@@ -151,7 +158,17 @@ data:
             - "^/api/groups"
             - "^/api/apps"
             - "^/api/volumes"
+            - "^/api/datasets"
+            - "^/api/disks"
             - "^/api/shares"
+            - "^/api/notifications"
+            - "^/api/pods"
+            - "^/api/namespaces"
+            - "^/api/ws"
+            # Owner buddy routes; the peer API (^/api/buddy/v1/) is bypassed by
+            # its own earlier rule. /api/auth/me, /api/dashboard and
+            # /api/metrics stay one_factor: any authenticated user may read them.
+            - "^/api/buddy/"
         # Everything else the proxy forwards needs at least a session.
         - domain: "*"
           policy: one_factor

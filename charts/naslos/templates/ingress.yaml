@@ -10,7 +10,10 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`{{ .Values.authelia.domain }}`)
+    # The API and the Authelia portal have their own IngressRoutes
+    # (ingress-api.yaml); excluding those prefixes here means this route only
+    # ever serves the SPA, without relying on Traefik's rule-length priority.
+    - match: Host(`{{ .Values.authelia.domain }}`) && !PathPrefix(`/api`) && !PathPrefix(`/authelia`)
       kind: Rule
       middlewares:
         - name: forwardauth-authelia
@@ -24,7 +27,7 @@ spec:
         - name: naslos-ui
           port: {{ .Values.ui.service.port }}
   tls:
-    secretName: naslos-tls
+    secretName: {{ .Values.ingress.tls.secretName | default "naslos-tls" }}
 ---
 # HTTP to HTTPS redirect
 apiVersion: traefik.io/v1alpha1

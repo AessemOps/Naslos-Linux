@@ -112,6 +112,12 @@ first-match ordering is Authelia's documented behaviour.
 (`^/api/(verify|authz|firstfactor|secondfactor|reset-password|logout).*$`) and order
 the specific `two_factor` rules before the generic `one_factor`. Effort S.
 
+> **Resolved across PR #20 and this change.** PR #20 scoped the bypass rules and
+> put the 2FA rules first. This change routes the Authelia portal at `/authelia`
+> on its own IngressRoute without forwardAuth, extends `two_factor` to every
+> admin-only prefix, and adds the production profile (`values-prod.yaml`). The
+> cutover/verification list is in docs/deployment.md.
+
 #### CR-02 — `helm uninstall` deletes the namespace and data Helm does not own 🔴
 
 **Evidence:** `charts/naslos/templates/namespace.yaml:1-12` creates the namespace
@@ -560,7 +566,7 @@ old log. Effort S.
 | CR-35 | No `aria-live` for polled data; validation feedback is only a disabled button | `Dashboard.svelte:118-154`, `backups/+page.svelte:500-516`, `UserForm.svelte:171` | `role="status" aria-live="polite"` for updates; inline field messages |
 | CR-36 | `setTimeout` reset flags never cleared; pool-detail param not reactive | `backups/+page.svelte:173`, `shares/+page.svelte:64`, `pools/[name]/+page.svelte:62` | Clear on destroy; make the param reactive |
 | CR-37 | Agent/UI have no probes; no PDBs; no NetworkPolicy; namespace-wide `privileged` PSA; over-broad RBAC (agent ClusterRole and bootstrap exec Role are unused) | `agent-daemonset.yaml:29-67`, `ui-deployment.yaml:51-58`, `namespace.yaml:8`, `agent-daemonset.yaml:111-119`, `openldap/manifests/bootstrap-job.yaml:98-109` | Add probes/PDBs; scope PSA; drop unused RBAC |
-| CR-38 | Helm hardening gaps: no `values.schema.json`; mutable tags with `IfNotPresent`; hardcoded cluster-scoped names break multi-release; `.Values.namespace` instead of `.Release.Namespace`; `trustForwardHeader: true`; `LDAPTLS_REQCERT=never` | `values.yaml` (no schema), `_helpers.tpl:48-67`, `agent-daemonset.yaml:114,123`, `traefik-middleware.yaml:12`, `api-deployment.yaml:32-34` | Add a schema; prefer digests (already supported); prefix names; scope trust |
+| CR-38 | Helm hardening gaps: no `values.schema.json`; mutable tags with `IfNotPresent`; hardcoded cluster-scoped names break multi-release; `.Values.namespace` instead of `.Release.Namespace`; `trustForwardHeader: true`; `LDAPTLS_REQCERT=never` | `values.yaml` (no schema), `_helpers.tpl:48-67`, `agent-daemonset.yaml:114,123`, `traefik-middleware.yaml:12`, `api-deployment.yaml:32-34` | Add a schema; prefer digests (already supported); prefix names; scope trust. **`trustForwardHeader` removed** in the production-posture change (see CR-01); the rest stays open |
 | CR-39 | Authelia JWT regenerates on every render; LDAP bind password and passwords travel via argv; `LDAP_ADMIN_PASSWORD=admin` is baked into the image ENV | `authelia-config.yaml:15,91`, `openldap/generate-secrets.sh:19-21`, `openldap/manifests/bootstrap-job.yaml:70,74`, `openldap/image/Dockerfile:13` | Generate-once via `lookup`; `--from-env-file`; `-y <file>`; remove the default |
 | CR-40 | Container images are tag-pinned, the UI nginx runs as root with no healthcheck, and `go.sum` is not copied before `go mod download` | `api/Dockerfile:4,9-10,17`, `ui/Dockerfile:17-27`, all Dockerfiles | Pin digests; non-root nginx; copy `go.sum` first |
 | CR-41 | Prometheus/Grafana ship without limits or retention sizing; no log rotation for the in-container service logs | `values.yaml:277-306`, `nfs/image/entrypoint.sh:15` | Set limits/retention; ship logs to stdout or cap |
@@ -638,7 +644,7 @@ than re-litigating them.
 | NAS-006 | LDAP filter/DN injection | **Fixed** (escaping + allowlist + tests) |
 | NAS-007 | smb.conf/Ganesha injection | **Fixed** (field validation + tests); CR-15 is the sibling issue |
 | NAS-008 | NodePort exposes the API | **Accepted/documented** (dev posture; `auth.disabled` warns) — still open in a real deployment |
-| NAS-009 | WebSocket origin check trusts `X-Forwarded-Host` | **Not addressed** — see CR-38 (`trustForwardHeader`) |
+| NAS-009 | WebSocket origin check trusts `X-Forwarded-Host` | **Fixed in the proxy posture** — `trustForwardHeader` removed, so Traefik sets X-Forwarded-* itself (CR-38) |
 | NAS-010 | Default/hardcoded credentials | **Partially** — placeholders remain (CR-39) |
 | NAS-011 | Enrollment replayable across restarts | **Fixed** (persisted marker + no re-keying) |
 | NAS-012 | Manifest rollback protection | **Fixed** (shape validation, rollback refusal, receiver-owned prune) |

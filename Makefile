@@ -1,7 +1,7 @@
 .PHONY: all api agent ui images push-images \
         buddyctl buddy-receiver-image \
         bootstrap bootstrap-vm dev-cluster crds \
-        install install-vm uninstall clean
+        install install-vm install-prod uninstall clean
 
 GO := go
 DOCKER := docker
@@ -158,6 +158,19 @@ install-vm: crds
 	$(HELM) upgrade --install naslos $(CHART_DIR) -n naslos --create-namespace \
 		-f $(CHART_DIR)/values.yaml \
 		-f $(CHART_DIR)/values-vm.yaml \
+		--skip-crds \
+		$(HELM_FLAGS)
+
+# Install the production posture on the single-node VM: Traefik on the node's
+# 80/443 with Authelia forwardAuth (https://naslos.local). values-vm.yaml keeps
+# the VM specifics and values-prod.yaml overrides its dev posture. `install-vm`
+# stays the dev profile used by the Playwright suite, and is the rollback.
+install-prod: crds
+	$(HELM) dependency update $(CHART_DIR)
+	$(HELM) upgrade --install naslos $(CHART_DIR) -n naslos --create-namespace \
+		-f $(CHART_DIR)/values.yaml \
+		-f $(CHART_DIR)/values-vm.yaml \
+		-f $(CHART_DIR)/values-prod.yaml \
 		--skip-crds \
 		$(HELM_FLAGS)
 
