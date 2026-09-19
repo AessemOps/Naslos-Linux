@@ -135,38 +135,12 @@ subjects:
   - kind: ServiceAccount
     name: naslos-api
     namespace: {{ .Values.namespace }}
-{{- if eq (include "naslos.ingressEnabled" .) "true" }}
----
-# The terminal's own route: straight from Traefik to the API, behind Authelia.
-#
-# It bypasses the UI's nginx on purpose. nginx refuses these paths (an
-# unauthenticated listener must not be able to reach a root shell), and routing
-# them here is what makes the forwardAuth middleware's identity header the only
-# way in - Traefik replaces any value a client sent for Remote-User, so the
-# header the API trusts cannot be forged.
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: naslos-terminal
-  namespace: {{ .Values.namespace }}
-spec:
-  entryPoints:
-    - websecure
-  routes:
-    - match: Host(`{{ .Values.authelia.domain }}`) && (PathPrefix(`/api/ws/exec`) || PathPrefix(`/api/pods`) || PathPrefix(`/api/namespaces`))
-      kind: Rule
-      middlewares:
-        - name: forwardauth-authelia
-        {{- if eq (include "naslos.authEnabled" .) "true" }}
-        # The API requires the shared secret on the terminal paths too, so the
-        # route that bypasses nginx supplies it like the UI route does.
-        - name: proxy-identity
-        {{- end }}
-        - name: security-headers
-      services:
-        - name: naslos-api
-          port: {{ .Values.api.service.port }}
-  tls:
-    secretName: naslos-tls
-{{- end }}
+{{- /*
+The terminal paths (/api/pods, /api/namespaces, /api/ws/*) are served by the
+naslos-api IngressRoute in ingress-api.yaml, which routes all of /api straight
+to the API behind forwardAuth + proxy-identity — exactly what this dedicated
+route used to do, and why the UI's nginx (which refuses those paths) is out of
+the authenticated data path. Keeping one route avoids two places to update when
+the middlewares or the TLS secret name change.
+*/}}
 {{- end }}

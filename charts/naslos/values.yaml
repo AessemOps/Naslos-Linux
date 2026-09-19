@@ -228,8 +228,22 @@ traefik:
         default: true
   service:
     type: LoadBalancer
-  additionalArguments:
-    - "--api.dashboard=false"
+  # Traefik's own dashboard, served under https://<domain>/traefik by the
+  # naslos-traefik-dashboard IngressRoute (ingress-api.yaml). `api.insecure`
+  # stays false, so the API is only reachable through that route, and basePath
+  # is what makes the dashboard frontend call /traefik/api/* instead of /api/*
+  # (which the Naslos API owns).
+  api:
+    dashboard: true
+    basePath: /traefik
+  # hostPort 80/443 can only be held by one pod on this single node, so the
+  # chart default (maxSurge 1, maxUnavailable 0) deadlocks: the new pod never
+  # becomes Ready because the old one still owns the ports. terminate the old
+  # pod first; the proxy is briefly unavailable during an upgrade.
+  updateStrategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   logs:
     general:
       level: INFO
@@ -369,6 +383,21 @@ auth:
 # auth.disabled to match.
 ingress:
   enabled: false
+  # The Authelia Service that the forwardAuth middleware and the portal
+  # IngressRoute point at. The subchart names it <release>-authelia (release
+  # `naslos` -> `naslos-authelia`) and exposes port 80, targeting the
+  # container's 9091. Override the name if you install the release under a
+  # different name.
+  authelia:
+    serviceName: naslos-authelia
+    port: 80
+  # TLS for the IngressRoutes. Leave existingSecret empty to let the chart
+  # generate a self-signed certificate for authelia.domain once and reuse it
+  # across upgrades (templates/tls-secret.yaml); point it at a Secret you manage
+  # (keys tls.crt/tls.key) to serve a real CA certificate instead.
+  tls:
+    secretName: naslos-tls
+    existingSecret: ""
 
 # Web terminal (spec FR-LOG-02). `enabled` controls the privileged shell
 # container and the API's exec RBAC together: with it off, /api/ws/exec has no

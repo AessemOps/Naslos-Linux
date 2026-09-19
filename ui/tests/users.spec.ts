@@ -54,6 +54,46 @@ test('edit user dialog warns about share timing and stale sessions', async ({ pa
   }
 });
 
+// PUT /api/users/{uid} updates attributes and group membership only, so the
+// edit form must call the dedicated password endpoint. It used to put
+// `password` in the PUT body, which the API ignored: "Update" reported success
+// and the password never changed.
+test('editing a user with a password calls the password endpoint', async ({ page, request }) => {
+  const uid = 'pwchange' + Math.random().toString(36).slice(2, 8);
+  const created = await request.post('/api/users', {
+    data: {
+      uid,
+      displayName: 'Password Change',
+      firstName: 'Password',
+      lastName: 'Change',
+      email: `${uid}@naslos.local`,
+      password: 'InitialPass123!',
+      groups: [],
+    },
+  });
+  expect(created.status(), await created.text()).toBe(201);
+
+  try {
+    await page.goto('/users');
+    await expect(page.getByText('Loading users...')).toBeHidden({ timeout: 10_000 });
+
+    const row = page.locator('tr').filter({ hasText: uid });
+    await row.getByRole('button', { name: 'Edit' }).click();
+    await expect(page.getByRole('heading', { name: 'Edit User' })).toBeVisible();
+
+    await page.fill('#user-field-6', 'ChangedPass456!');
+
+    const passwordCall = page.waitForRequest(
+      (r) => r.method() === 'POST' && r.url().endsWith(`/api/users/${uid}/password`)
+    );
+    await page.getByRole('button', { name: 'Update' }).click();
+    // Fails on timeout when the form never calls the endpoint.
+    await passwordCall;
+  } finally {
+    await request.delete(`/api/users/${uid}`);
+  }
+});
+
 // The stale-session note is irrelevant for a brand new account, so it is only
 // shown when editing an existing user.
 test('new user dialog states the timing but not stale sessions', async ({ page }) => {

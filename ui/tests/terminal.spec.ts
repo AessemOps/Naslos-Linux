@@ -1,23 +1,39 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, request as playwrightRequest } from '@playwright/test';
 
 // The terminal reaches a root shell in a privileged container, so it must not be
-// usable from an unauthenticated entry point. Reaching the UI on a node port
-// (this suite's default baseURL) is exactly that case: the terminal endpoints are
-// refused there, and the chart routes them from Traefik straight to the API so
-// that only the authenticated proxy can supply the identity header the API
-// trusts.
+// usable from an unauthenticated entry point. What that refusal looks like
+// depends on the posture: through Traefik it is a 302 to the Authelia portal;
+// on the dev NodePort it is nginx's 403 (which is also why the interactive tests
+// below skip there). Either way it must never be a 200.
 const TERMINAL_PATHS = [
   '/api/pods?namespace=naslos',
   '/api/namespaces',
   '/api/ws/exec?namespace=naslos&pod=whatever&shell=sh'
 ];
 
-test('the terminal is refused without an authenticated session', async ({ request }) => {
-  for (const path of TERMINAL_PATHS) {
-    const res = await request.get(path);
-    expect([401, 403], `${path} answered ${res.status()}`).toContain(res.status());
-    // The refusal must be understandable (the UI shows this text).
-    expect(await res.text()).toContain('authenticated');
+test('the terminal is refused without an authenticated session', async () => {
+  // A context with no storage state, i.e. exactly what an anonymous caller has:
+  // the `request` fixture is authenticated by the setup project's session.
+  // maxRedirects: 0 is what makes the refusal observable - otherwise the
+  // forwardAuth 302 to the portal is followed and the portal page answers 200.
+  const anon = await playwrightRequest.newContext({
+    baseURL: test.info().project.use.baseURL as string,
+    ignoreHTTPSErrors: true,
+    maxRedirects: 0,
+    // Needed: newContext() otherwise inherits this project's storageState, and
+    // the "anonymous" caller would carry the admin session.
+    storageState: { cookies: [], origins: [] }
+  });
+
+  try {
+    for (const path of TERMINAL_PATHS) {
+      const res = await anon.get(path);
+      const status = res.status();
+      expect(status, `${path} answered ${status}`).not.toBe(200);
+      expect([302, 401, 403], `${path} answered ${status}`).toContain(status);
+    }
+  } finally {
+    await anon.dispose();
   }
 });
 

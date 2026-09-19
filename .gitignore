@@ -19,6 +19,10 @@ dist/
 # Playwright
 ui/test-results/
 ui/playwright-report/
+# Session cookies captured by the auth setup project, and the local credentials
+# used to obtain them (admin password + TOTP secret).
+ui/tests/.auth/
+ui/.env.playwright.local
 
 # IDE
 .vscode/

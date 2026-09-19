@@ -84,15 +84,24 @@ format and for the two pitfalls that silently break SMB logins
 ## Header Trust
 
 Authelia sets `Remote-User`, `Remote-Groups`, `Remote-Email`, `Remote-Name`
-headers. The Naslos API **trusts these only from Traefik's pod CIDR**
-(`TRAEFIK_CIDR` env var; default `10.0.0.0/8` — **tighten this in production**).
+headers. The Naslos API trusts them only when **both** hold (NAS-001):
 
-> This is the most critical security boundary. An attacker who can reach the
-> API directly (bypassing Traefik) cannot spoof auth headers.
+1. the request comes from Traefik's pod CIDR (`TRAEFIK_CIDR`, default
+   `10.0.0.0/8`), and
+2. it carries the shared secret that Traefik's `proxy-identity` middleware
+   injects (`X-Naslos-Proxy-Secret`, generated once into the `naslos-proxy`
+   Secret). A client that reaches the API another way — the NodePort, another
+   pod — cannot supply it, so spoofing `Remote-User` alone is not enough.
+
+Traefik's forwardAuth middleware does **not** set `trustForwardHeader`: a client
+must not be able to forge `X-Forwarded-*` and influence the auth decision or the
+API's websocket origin check (NAS-009). `authelia_url` is pinned in the middleware
+address so the portal redirect does not depend on `X-Forwarded-Host`.
 
 AuthZ is enforced by `auth.Middleware`:
 
-- `RequireAuth` — source IP ∈ `TRAEFIK_CIDR` **and** a `Remote-User` present.
+- `RequireAuth` — source IP ∈ `TRAEFIK_CIDR` **and** the proxy secret **and** a
+  `Remote-User` present.
 - `RequireAdmin` — additionally the user must be in group `naslos_admins`.
 
 ## Access control
@@ -109,9 +118,19 @@ Authelia rules (`charts/naslos/templates/authelia-config.yaml`):
 | Resource | Policy |
 | --- | --- |
 | `/api/health` | bypass (health checks) |
-| Authelia's own endpoints | bypass |
-| everything else | one_factor (authenticated) |
-| `/api/users`, `/api/groups`, `/api/apps`, `/api/volumes`, `/api/shares` | two_factor (admin; requires 2FA) |
+| `/api/buddy/v1/` | bypass (peers authenticate with their own keys, not a session) |
+| `/authelia` | bypass (the portal route has no forwardAuth) |
+| every path, for a user in `group:naslos_admins` | two_factor (2FA on the whole surface, so the portal prompts enrolment during the first login — not just on the API prefixes, which would let the SPA open on a one-factor session) |
+| `/traefik` for `group:naslos_users` | deny (the Traefik dashboard is operator-only; admins matched the rule above and keep 2FA) |
+| everything else | one_factor (authenticated; the API's `RequireAdmin` group check still gates admin-only routes) |
+
+The admin rule is subject-based (`group:naslos_admins`) rather than a list of
+paths. The API checks group membership, not the factor, so if only some paths
+were two_factor an admin could open a one-factor session and reach the rest —
+including the terminal. Applying two_factor to the whole surface for admins also
+means the portal asks for the second factor at first login, instead of letting
+the SPA load and then bouncing the admin API calls (which reads as a JSON error
+in the page).
 
 ## 2FA & sessions
 
@@ -121,13 +140,38 @@ Authelia rules (`charts/naslos/templates/authelia-config.yaml`):
 - Regulation: 3 retries → 2 min window → 5 min ban.
 - Password policy: ≥8 chars ≤72, upper + lower + number required.
 - Authelia's own password reset is disabled; resets happen in the Naslos UI → LDAP.
+- **Elevated session / identity verification.** Registering or removing a second
+  factor is a credential-management action, so Authelia requires an elevated
+  session whose one-time code is delivered by the notifier. There is no mail
+  relay on the appliance, so the notifier is `filesystem`
+  (`/config/notification.txt`, 0600 on the Authelia volume) and the code has a
+  1 h lifespan. Set the account's `mail` attribute first (Authelia addresses the
+  code to it) — `admin` uses `admin@naslos.local`. During the one-time
+  enrolment, read the code with
+  `kubectl -n naslos exec daemonset/naslos-authelia -- cat /config/notification.txt`.
+  `skip_second_factor: true` means that once an operator has a second factor,
+  later credential changes only need that factor, not another code. Configure
+  `notifier.smtp` instead if a relay exists.
 
 ## TLS
 
 - LDAPS (:636) with an internal CA; the CA is provided to the API
   (`LDAP_CA_CERT`) and to Authelia via the config map and secrets.
-- HTTPS terminated by Traefik (`websecure` :443, HTTP→HTTPS redirect).
-- Security headers: XSS filter, nosniff, frame deny, HSTS, referrer policy.
+- HTTPS terminated by Traefik (`websecure` :443, HTTP→HTTPS redirect), exposed on
+  the node's 80/443 (`values-prod.yaml` sets `traefik.ports.*.hostPort`).
+- The certificate is chart-generated, self-signed for `authelia.domain`
+  (`naslos-tls`, generated once and reused across upgrades). Point
+  `ingress.tls.existingSecret` at a real certificate to remove the browser
+  warning, or import the generated `tls.crt` on the client.
+- The Authelia portal is served at `https://naslos.local/authelia`; the
+  forwardAuth authz URL stays at the root (`/api/authz/forward-auth`) as
+  Authelia serves both paths.
+- Traefik's own dashboard is served at `https://naslos.local/traefik/dashboard/`
+  (`api.basePath: /traefik`, `api.insecure` off, so the IngressRoute is the only
+  way in) and is admin-only — the sidebar shows the link only to `naslos_admins`.
+- Security headers: XSS filter, nosniff, frame deny, HSTS, referrer policy (no
+  `preload`: a `.local` self-signed host cannot earn it and it would remove the
+  "proceed anyway" path).
 
 ## Third-party apps & LDAP
 

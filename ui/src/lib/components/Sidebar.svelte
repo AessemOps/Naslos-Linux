@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { onMount } from 'svelte';
 
   interface NavItem {
     name: string;
@@ -20,6 +21,25 @@
     { name: 'Notifications', path: '/notifications', icon: '🔔' },
     { name: 'Settings', path: '/settings', icon: '⚙️' }
   ];
+
+  // Administrative views are operator-only. The API reports the proxy-injected
+  // groups on /api/auth/me; when it cannot be read (anonymous, or the dev
+  // posture with auth off) the extra link simply stays hidden.
+  let isAdmin = false;
+
+  onMount(async () => {
+    try {
+      const res = await fetch('/api/auth/me');
+      if (!res.ok) return;
+      const data = await res.json();
+      const groups = String(data.groups ?? '')
+        .split(',')
+        .map((g) => g.trim());
+      isAdmin = groups.includes('naslos_admins');
+    } catch {
+      // Hidden when the identity cannot be read.
+    }
+  });
 </script>
 
 <aside class="fixed left-0 top-0 h-screen w-64 bg-naslos-surface border-r border-naslos-border flex flex-col">
@@ -47,6 +67,19 @@
         <span class="font-medium">{item.name}</span>
       </a>
     {/each}
+
+    {#if isAdmin}
+      <a
+        href="/traefik/dashboard/"
+        target="_blank"
+        rel="noreferrer"
+        class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-gray-400 hover:bg-naslos-border"
+      >
+        <span class="text-lg">🧭</span>
+        <span class="font-medium">Traefik</span>
+        <span class="ml-auto text-xs text-gray-600">↗</span>
+      </a>
+    {/if}
   </nav>
 
   <div class="p-4 border-t border-naslos-border">

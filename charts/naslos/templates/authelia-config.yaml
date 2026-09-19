@@ -23,7 +23,12 @@ data:
     server:
       host: 0.0.0.0
       port: 9091
-      path: ""
+      # The portal is served at https://<domain>/authelia and Traefik routes
+      # that prefix to this service without forwardAuth. Authelia also keeps
+      # serving the root path, which is why the forwardAuth address in
+      # traefik-middleware.yaml stays /api/authz/forward-auth (the handler
+      # listens on both) — see the Authelia docs' subpath guidance.
+      path: /authelia
       # No asset_path: Authelia 4.39 validates the directory exists at
       # startup ("error occurred reading the '/srv/' directory: the
       # directory does not exist") — this image doesn't ship custom
@@ -119,10 +124,16 @@ data:
       # matches the whole domain and silently voids every rule below it. The
       # previous configuration had exactly that (`domain: <host>` + bypass),
       # which meant no request was ever challenged. Keep the bypasses scoped.
+      #
+      # `domain` must be the real host: a bare `"*"` is not an any-domain
+      # matcher in Authelia, so `domain: "*"` rules never match and every
+      # request falls through to default_policy deny (403). That is what made
+      # /api/health and the admin routes fail while the explicit-domain buddy
+      # bypass worked.
       default_policy: deny
       rules:
         # The health probe answers before the proxy is in the path.
-        - domain: "*"
+        - domain: {{ .Values.authelia.domain | quote }}
           policy: bypass
           resources:
             - "^/api/health$"
@@ -133,33 +144,59 @@ data:
           policy: bypass
           resources:
             - "^/api/buddy/v1/"
-        # Authelia's own API, for the case where the portal is routed through
-        # this same chain. NOTE: routing the portal itself (its page and
-        # assets) is a separate decision — see docs/CODE-REVIEW.md CR-01 and
-        # the fresh-install plan — so this list deliberately covers the API
-        # only and does not pretend to make the portal reachable.
+        # The portal (page, assets and its own /authelia/api/* XHR calls) is
+        # routed to Authelia by its own IngressRoute with no forwardAuth, so it
+        # never reaches these rules. The bypass is defensive only.
         - domain: {{ .Values.authelia.domain | quote }}
           policy: bypass
           resources:
-            - "^/api/(verify|authz|health|state|configuration|firstfactor|secondfactor|reset-password|logout|user/info|consent)(/.*)?$"
-        # The admin surface needs a second factor, and these rules must come
-        # before the generic one below or they would never match.
-        - domain: "*"
+            - "^/authelia(/.*)?$"
+        # Administrators must present a second factor on every path, not only on
+        # the admin API prefixes. Matching by subject is what makes the portal
+        # prompt TOTP/WebAuthn enrolment during the first login: with only the
+        # API prefixes marked two_factor, the SPA itself opened on a one-factor
+        # session and its admin calls bounced to the portal, which the page
+        # showed as "Failed to connect to API" instead of a 2FA prompt.
+        #
+        # Any other authenticated account stays one_factor; the API's
+        # RequireAdmin group check still gates it (CR-03).
+        - domain: {{ .Values.authelia.domain | quote }}
+          subject:
+            - "group:naslos_admins"
           policy: two_factor
+        # The Traefik dashboard exposes every router, service and middleware, so
+        # it is operator-only. Admins already matched the subject rule above
+        # (with 2FA); a non-admin account is denied outright rather than being
+        # let in on one_factor. First match wins, so an account in both groups
+        # is still allowed by the rule above.
+        - domain: {{ .Values.authelia.domain | quote }}
+          subject:
+            - "group:naslos_users"
+          policy: deny
           resources:
-            - "^/api/users"
-            - "^/api/groups"
-            - "^/api/apps"
-            - "^/api/volumes"
-            - "^/api/shares"
+            - "^/traefik"
         # Everything else the proxy forwards needs at least a session.
-        - domain: "*"
+        - domain: {{ .Values.authelia.domain | quote }}
           policy: one_factor
 
     notifier:
       disable_startup_check: false
       filesystem:
         filename: /config/notification.txt
+
+    # Registering the first second-factor device is a "credential management"
+    # action, so Authelia requires an elevated session whose one-time code is
+    # delivered by the notifier above. There is no mail relay here, so the code
+    # is only written to /config/notification.txt: the operator has to read it
+    # out for the one-time enrolment, hence the generous lifespan.
+    identity_validation:
+      elevated_session:
+        code_lifespan: '1 hour'
+        elevation_lifespan: '30 minutes'
+        characters: 8
+        # Once an operator has a second factor, managing credentials needs only
+        # that factor — not another notifier code.
+        skip_second_factor: true
 
     password_policy:
       standard:
