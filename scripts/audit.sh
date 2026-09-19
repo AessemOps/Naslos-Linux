@@ -74,8 +74,12 @@ fi
 # --- Chart and secrets ------------------------------------------------------
 cd "$root" || exit 1
 if have helm; then
+  # --set openldap.bindPassword: the chart intentionally fails closed when the
+  # naslos-openldap Secret cannot be looked up (helm template/lint have no
+  # cluster), so a throwaway value lets the render proceed (AUDIT-H1).
   run "helm lint" helm lint charts/naslos \
-    -f charts/naslos/values.yaml -f charts/naslos/values-vm.yaml
+    -f charts/naslos/values.yaml -f charts/naslos/values-vm.yaml \
+    --set openldap.bindPassword=lint-only
 else
   skip "helm lint" "helm is not installed"
 fi

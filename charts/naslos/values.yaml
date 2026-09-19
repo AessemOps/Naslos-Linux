@@ -339,7 +339,11 @@ openldap:
   host: ldap.naslos.local
   baseDN: "dc=naslos,dc=local"
   bindDN: "cn=naslos-service,ou=services,dc=naslos,dc=local"
-  bindPassword: "CHANGE_ME_SERVICE_PASSWORD"
+  # Leave empty: the chart reads the password from the naslos-openldap Secret
+  # (key service-password), so no credential is committed. Set it only for a
+  # dry run where `helm template` has no cluster to look the Secret up in
+  # (AUDIT-H1). Never commit a real value here.
+  bindPassword: ""
 
 # Namespace for all Naslos components
 namespace: naslos

@@ -103,8 +103,11 @@ Done and deployed at helm revision 18 (api `0.1.0-r5`), suite still 35 passed:
 | **AUDIT-M12** `scripts/audit.sh` (runnable by hand). The `.github/workflows/audit.yml` added alongside it was **removed at the operator's request**; wiring it back into CI is left open | `421711a`, workflow removed |
 | **AUDIT-M14** superseded banner + operator-lockout runbook | `421711a` |
 | **AUDIT-H2** buddy receive dataset mounted (`buddy.enabled=true`, `receiveHostPath`) — verified: chunks on `test/naslos-buddy`, backups suite green | revision 21 |
+| **AUDIT-H1** LDAP service credential rotated and de-committed: Authelia reads it from the `naslos-openldap` Secret via `lookup` (values empty + fail-closed guard); new value binds, old value rejected, suite 35 passed | revision 22 |
 
-**Still open:** H1 (rotate the live LDAP bind credential), M3's residual (Authelia's config is a ConfigMap, so
+**Still open:** the LDAP **admin** credential (`openldap/generate-secrets.sh`
+still defaults it to `naslos-admin`) and the other NAS-010 items — `TempPass123!`
+initial user passwords and the registry `secret`; M3's residual (Authelia's config is a ConfigMap, so
 its `jwt_secret` and the LDAP bind password stay readable there until the config
 moves into a Secret), M4 (network policy / enforcing CNI), M6 (PSA scoping), M10
 (excluded by request), M11 (Svelte/Vite bump), L2 (nginx non-root), the

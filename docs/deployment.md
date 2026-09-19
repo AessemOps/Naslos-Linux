@@ -401,9 +401,15 @@ NASLOS_RECEIVER_URL=http://naslos-api.naslos.svc.cluster.local:8080 \
 
 ## Secrets to rotate before production
 
-- `openldap.bindPassword` / `admin-password` + `service-password`
-  (`kubectl create secret generic naslos-openldap …`) — **currently the committed
-  placeholder, AUDIT-H1**
+- LDAP credentials live only in the `naslos-openldap` Secret (`admin-password`,
+  `service-password`) and are no longer in values (AUDIT-H1 fixed). To rotate the
+  service password: patch the Secret, re-run the bootstrap Job
+  (`kubectl apply -f openldap/manifests/bootstrap-job.yaml` after deleting the
+  completed one) so the directory entry gets the new SSHA, then `make install-vm`
+  to roll the pods.
+- The OpenLDAP **admin** password still defaults to `naslos-admin` in
+  `openldap/generate-secrets.sh` (NAS-010, open): pass `ADMIN_PASSWORD` on a fresh
+  install, and rotate the Secret + bootstrap if a deployment used the default.
 - `authelia-config` `jwt_secret` (generated once into the `naslos-authelia-jwt`
   Secret since 2026-09-19, so it survives upgrades; rotate if it shows up in
   git/diffs)

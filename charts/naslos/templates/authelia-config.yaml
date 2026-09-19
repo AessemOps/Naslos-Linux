@@ -13,6 +13,24 @@ TLS certificate are persisted: generate once, then read the existing Secret back
 {{- else }}
 {{- $jwtSecret = randAlphaNum 32 }}
 {{- end }}
+{{- /*
+The LDAP service password comes from the naslos-openldap Secret (key
+service-password), which openldap/generate-secrets.sh creates and the bootstrap
+Job applies to the directory. Reading it here means the credential is not
+committed in values and rotation only touches the Secret (AUDIT-H1). The
+`bindPassword` value is an escape hatch for `helm template`/dry runs, where
+lookup returns nothing; a real install must have the Secret, or a fail message
+tells the operator to run generate-secrets.sh first.
+*/}}
+{{- $ldapSecret := lookup "v1" "Secret" .Values.namespace "naslos-openldap" }}
+{{- $ldapBindPassword := "" }}
+{{- if and $ldapSecret (index $ldapSecret.data "service-password") }}
+{{- $ldapBindPassword = index $ldapSecret.data "service-password" | b64dec }}
+{{- else if .Values.openldap.bindPassword }}
+{{- $ldapBindPassword = .Values.openldap.bindPassword }}
+{{- else }}
+{{- fail "openldap service password unavailable: create the naslos-openldap Secret (openldap/generate-secrets.sh) before installing, or set openldap.bindPassword for a dry run" }}
+{{- end }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -119,7 +137,7 @@ data:
         mail_attribute: mail
         display_name_attribute: displayName
         user: {{ .Values.openldap.bindDN | default "cn=naslos-service,ou=services,dc=naslos,dc=local" }}
-        password: {{ .Values.openldap.bindPassword | default "CHANGE_ME" | quote }}
+        password: {{ $ldapBindPassword | quote }}
 
     session:
       name: authelia_session
