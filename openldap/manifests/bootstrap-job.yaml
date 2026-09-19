@@ -23,8 +23,14 @@ spec:
         - name: wait-for-ldap
           image: 192.168.1.2:30095/naslos-openldap:0.1.0
           env:
-            - name: LDAPTLS_REQCERT
-              value: never
+            # Verify the server certificate against the Naslos CA rather than
+            # disabling verification (AUDIT-L9).
+            - name: LDAPTLS_CACERT
+              value: /ldap-ca/ca.crt
+          volumeMounts:
+            - name: ldap-ca
+              mountPath: /ldap-ca
+              readOnly: true
           command:
             - sh
             - -c
@@ -38,8 +44,8 @@ spec:
         - name: bootstrap
           image: 192.168.1.2:30095/naslos-openldap:0.1.0
           env:
-            - name: LDAPTLS_REQCERT
-              value: never
+            - name: LDAPTLS_CACERT
+              value: /ldap-ca/ca.crt
           command:
             - /bin/sh
             - -c
@@ -79,6 +85,9 @@ spec:
             - name: secrets
               mountPath: /run/secrets
               readOnly: true
+            - name: ldap-ca
+              mountPath: /ldap-ca
+              readOnly: true
       volumes:
         - name: secrets
           secret:
@@ -88,6 +97,12 @@ spec:
                 path: admin-password
               - key: service-password
                 path: service-password
+        - name: ldap-ca
+          secret:
+            secretName: naslos-openldap-tls
+            items:
+              - key: ca.crt
+                path: ca.crt
 ---
 apiVersion: v1
 kind: ServiceAccount
