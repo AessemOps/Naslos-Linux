@@ -217,9 +217,10 @@ REGISTRY=docker.io/myuser REGISTRY_HTTP_SECRET=mypassword IMAGE_TAG=latest \
   ./scripts/deploy-vm.sh
 ```
 
-> Note: The default passwords are unchanged (`grafana.adminPassword: naslos-admin`,
-> `openldap.bindPassword: CHANGE_ME_SERVICE_PASSWORD`). Rotate them before any
-> real use.
+> Grafana was **removed** on 2026-09-19 (AUDIT-H4: it shipped a committed default
+> admin password and was unused). The OpenLDAP service credential is still the
+> committed placeholder `CHANGE_ME_SERVICE_PASSWORD` in `values-vm.yaml` — that is
+> AUDIT-H1 and **must be rotated** before real use (see the fix plan).
 
 ### Files added for the VM
 
@@ -393,18 +394,19 @@ NASLOS_RECEIVER_URL=http://naslos-api.naslos.svc.cluster.local:8080 \
 | `auth.*` | generated shared secret | owner-route gate (NAS-001); no `disabled` switch exists |
 | `ntfy.server.url` | empty ⇒ bundled ntfy | see [notifications.md](notifications.md) |
 | `prometheus.*` | 30d retention | see [monitoring.md](monitoring.md) |
-| `grafana.*` | adminPassword `naslos-admin` | **change** |
-| `storage.*` | localPath + ZFS LocalPV | see [storage-zfs.md](storage-zfs.md) |
+| `grafana.*` | disabled | removed 2026-09-19 (AUDIT-H4); re-enabling needs a credential from a Secret |
+| `storage.*` | localPath only | see [storage-zfs.md](storage-zfs.md) |
 | `openldap.*` | bind DN/password | **change** the default secret |
 | `namespace` | `naslos` | everything deploys here |
 
 ## Secrets to rotate before production
 
 - `openldap.bindPassword` / `admin-password` + `service-password`
-  (`kubectl create secret generic naslos-openldap …`)
-- `grafana.adminPassword`
-- `authelia-config` `jwt_secret` (generated at install — rotate if it shows up
-  in git/diffs)
+  (`kubectl create secret generic naslos-openldap …`) — **currently the committed
+  placeholder, AUDIT-H1**
+- `authelia-config` `jwt_secret` (generated once into the `naslos-authelia-jwt`
+  Secret since 2026-09-19, so it survives upgrades; rotate if it shows up in
+  git/diffs)
 - Internal CA (`naslos-openldap-tls` secret) — replace with a real CA if you
   want browser-trusted HTTPS.
 - `naslos-tls` (the ingress certificate) is chart-generated and self-signed for

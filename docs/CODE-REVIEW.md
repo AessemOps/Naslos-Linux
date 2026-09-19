@@ -4,6 +4,32 @@
 **Date:** 2026-09-17. **Scope:** whole repository — Go API, Go agent, Svelte UI,
 Helm chart and images, scripts, docs, tests. **Mode:** report only; nothing changed.
 
+> ## Status at 2026-09-19 — read this before the findings below
+>
+> The findings from §2 onward describe the **2026-09-17 baseline**. The tree has
+> since moved to `master` `85ae874` (PRs #21–#23): the dev endpoint was removed
+> entirely (no NodePort, no `auth.disabled`/`AUTH_DISABLED`/`AGENT_AUTH_DISABLED`,
+> no `values-prod.yaml`), Grafana was removed, and a separate audit ran
+> (`docs/AUDIT-2026-09-19.md` + `-FIXPLAN.md`). Line numbers and posture
+> statements in the body are therefore historical; **anything below that mentions
+> a NodePort or `auth.disabled` describes a configuration that no longer exists.**
+> The table here is the current status.
+>
+> | CR | Status at 2026-09-19 |
+> |---|---|
+> | CR-01 Authelia domain-wide bypass, CR-02 `helm uninstall` data loss, CR-03 `RequireAdmin` unwired | **Fixed** (PR #20) |
+> | CR-05 dependency exposure | **Fixed** — `23bca3a`; govulncheck 18 → 4, all `Fixed in: N/A` and unexercised |
+> | CR-06 `-race` fails | **Open** — CI keeps it opt-in (`NASLOS_AUDIT_RACE=1`) until fixed |
+> | CR-07 ntfy token in the response, CR-15 world-readable shadow mirror, CR-18/19/22 UI silent failures | **Fixed** — `261aa3e` |
+> | CR-09 no CI | **Fixed** — `421711a` (`scripts/audit.sh` + `.github/workflows/audit.yml`) |
+> | CR-10 no `.dockerignore` | **Fixed** — `8555925` |
+> | CR-31 xterm deprecation, CR-32/33/34/35/36 UI typing/size/a11y/timers, CR-41 monitoring limits, CR-42 spec §7 mapping, CR-44 doc drift, CR-45 unused logger | **Open** |
+> | CR-37 probes/PDBs/NetworkPolicy/PSA/RBAC | **Partial** — unused agent ClusterRole removed (`8555925`); probes, PDBs, NetworkPolicy, PSA scoping open (AUDIT-M4/M6) |
+> | CR-38 Helm hardening | **Partial** — `trustForwardHeader` removed; `values.schema.json`, `.Release.Namespace`, `LDAPTLS_REQCERT` and digests open (AUDIT-L9/M10) |
+> | CR-39 jwt churn / argv secrets / image default | **Partial** — jwt secret persisted (`421711a`); the live LDAP credential is AUDIT-H1 (open) |
+> | CR-40 image pinning / root nginx | **Partial** — digest pinning excluded by request (AUDIT-M10); nginx non-root open (AUDIT-L2) |
+> | CR-43 missing tests | **Partial** — `api/internal/agent/client_test.go`; auth-aware Playwright suite |
+
 Severity policy used below: 🔴 **blocking** = security/privacy defect, a data-loss
 path, or a documented feature that is broken or unsafe; 🟡 **important** =
 correctness/reliability/maintainability defect that will bite; 🟢 **optional** =
@@ -13,6 +39,10 @@ or traced) or is **judgement**.
 ---
 
 ## 1. Executive summary
+
+> **Historical.** The three "blocking" items below (CR-01/02/03) are all
+> **fixed**; see the status table at the top of this document. This section is
+> the 2026-09-17 assessment, kept as the record.
 
 The code is in good shape for what this is: a single-node NAS appliance with two
 unusual properties — a privileged host agent, and a zero-knowledge backup feature —

@@ -219,13 +219,11 @@ shell, never an arbitrary command.
 | `NASLOS_NAMESPACE` | — | Namespace injected by the Helm chart |
 | `KUBECONFIG` | — | Path to kubeconfig (default: in-cluster) |
 | `BUDDY_NAME` | `naslos` | Name this instance reports to backup peers |
-| `BUDDY_RECEIVE_PATH` | `/var/lib/naslos/buddy` | Dataset (mounted read-write) that stores received sealed chunks |
+| `BUDDY_RECEIVE_PATH` | `/var/lib/naslos/buddy` | Dataset (mounted read-write) that stores received sealed chunks. The live release runs `buddy.enabled=false`, so this is unset and the code default lands on the 64 MiB shares PVC — see AUDIT-H2 |
 | `BUDDY_PEERS` | `/var/lib/naslos/buddy-peers.json` | Authorized-keys registry for backup peers |
 | `BUDDY_ENROLL_TOKEN` | — | One-time token that lets a peer authorize its own key (from the `naslos-buddy` Secret) |
-| `AUTH_DISABLED` | `false` | Serve every owner route without the proxy secret (development only; logged at startup) |
-| `PROXY_SHARED_SECRET` | — | Shared secret Traefik's `proxy-identity` middleware injects; required unless `AUTH_DISABLED=true` (from the `naslos-internal-auth` Secret) |
-| `AGENT_TOKEN` | — | Bearer token sent to the agent on every request but `/health` (from the `naslos-internal-auth` Secret) |
-| `AGENT_AUTH_DISABLED` | `false` | Agent-side equivalent of `AUTH_DISABLED` (set on the agent, not the API) |
+| `PROXY_SHARED_SECRET` | — | **Required.** Shared secret Traefik's `proxy-identity` middleware injects; the API refuses to start without it (from the `naslos-proxy` Secret, key `secret`). There is no opt-out |
+| `AGENT_TOKEN` | — | **Required.** Bearer token sent to the agent on every request but `/health` (from the `naslos-agent` Secret, key `token`) |
 | `BUDDY_IDENTITY` | `/var/lib/naslos/buddy-identity.json` | This instance's key material (private key + KEK); created on demand |
 | `BUDDY_SCHEDULES` | `/var/lib/naslos/buddy-schedules.json` | Scheduled backups (interval cadence, catch-up on startup) |
 
