@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AessemOps/Naslos-Linux/api/internal/agent"
@@ -52,6 +53,24 @@ type Server struct {
 	schedulerStop chan struct{}
 	router        *http.ServeMux
 	server        *http.Server
+	// notificationsMu guards `notifications`. Production sets it once at
+	// startup, but job goroutines read it and tests swap it, which was a real
+	// data race (CR-06) - so every read goes through notificationManager().
+	notificationsMu sync.RWMutex
+}
+
+// notificationManager returns the ntfy manager under the read lock.
+func (s *Server) notificationManager() *notifications.Manager {
+	s.notificationsMu.RLock()
+	defer s.notificationsMu.RUnlock()
+	return s.notifications
+}
+
+// setNotificationManager swaps the ntfy manager under the write lock.
+func (s *Server) setNotificationManager(m *notifications.Manager) {
+	s.notificationsMu.Lock()
+	defer s.notificationsMu.Unlock()
+	s.notifications = m
 }
 
 // New creates a new server.

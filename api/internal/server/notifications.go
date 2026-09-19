@@ -24,7 +24,7 @@ type notificationSettingsResponse struct {
 func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		settings := s.notifications.GetSettings()
+		settings := s.notificationManager().GetSettings()
 		writeJSON(w, http.StatusOK, notificationSettingsResponse{
 			Enabled:       settings.Enabled,
 			ServerURL:     settings.ServerURL,
@@ -59,7 +59,7 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 			EnabledEvents: req.EnabledEvents,
 			MinSeverity:   req.MinSeverity,
 		}
-		if err := s.notifications.UpdateSettings(settings, req.AuthToken); err != nil {
+		if err := s.notificationManager().UpdateSettings(settings, req.AuthToken); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -77,7 +77,7 @@ func (s *Server) handleNotificationTest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := s.notifications.SendTest(); err != nil {
+	if err := s.notificationManager().SendTest(); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
