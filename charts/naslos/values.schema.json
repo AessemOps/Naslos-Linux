@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Naslos Helm values",
+  "description": "Type checks for the Naslos umbrella chart's own values. Subchart keys (traefik.*, authelia.*, prometheus.*) are validated by their own charts, so additional properties are allowed throughout.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "api": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "image": { "$ref": "#/definitions/image" },
+        "replicas": { "type": "integer", "minimum": 0 },
+        "service": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": { "port": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+        },
+        "resources": { "type": "object" },
+        "waitForLdap": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "retries": { "type": "integer", "minimum": 0 },
+            "intervalSeconds": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "ldapCA": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "secretName": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "image": { "$ref": "#/definitions/image" },
+        "service": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": { "port": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+        },
+        "resources": { "type": "object" }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "image": { "$ref": "#/definitions/image" },
+        "resources": { "type": "object" },
+        "tokenSecret": { "type": "string" }
+      }
+    },
+    "zfs": { "type": "object", "additionalProperties": true },
+    "shares": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "smb": { "$ref": "#/definitions/component" },
+        "nfs": { "$ref": "#/definitions/component" }
+      }
+    },
+    "traefik": { "type": "object", "additionalProperties": true },
+    "authelia": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "domain": { "type": "string", "minLength": 1 },
+        "certificates": { "type": "object" }
+      }
+    },
+    "ntfy": { "type": "object", "additionalProperties": true },
+    "prometheus": { "type": "object", "additionalProperties": true },
+    "grafana": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "localPath": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "path": { "type": "string" }
+          }
+        }
+      }
+    },
+    "openldap": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "image": { "type": "string" },
+        "host": { "type": "string" },
+        "serviceName": { "type": "string" },
+        "baseDN": { "type": "string" },
+        "bindDN": { "type": "string" },
+        "bindPassword": { "type": "string" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "proxySecret": { "type": "string" },
+        "proxySecretName": { "type": "string" },
+        "traefikCIDR": { "type": "string" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "authelia": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "serviceName": { "type": "string" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        },
+        "tls": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "secretName": { "type": "string" },
+            "existingSecret": { "type": "string" }
+          }
+        }
+      }
+    },
+    "terminal": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "$ref": "#/definitions/image" }
+      }
+    },
+    "buddy": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "receiveHostPath": { "type": "string" },
+        "enrollTokenSecret": { "type": "string" }
+      }
+    }
+  },
+  "definitions": {
+    "image": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "digest": { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "$ref": "#/definitions/image" }
+      }
+    }
+  }
+}

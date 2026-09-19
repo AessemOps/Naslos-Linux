@@ -397,7 +397,7 @@ NASLOS_RECEIVER_URL=http://naslos-api.naslos.svc.cluster.local:8080 \
 | `grafana.*` | disabled | removed 2026-09-19 (AUDIT-H4); re-enabling needs a credential from a Secret |
 | `storage.*` | localPath only | see [storage-zfs.md](storage-zfs.md) |
 | `openldap.*` | bind DN/password | **change** the default secret |
-| `namespace` | `naslos` | everything deploys here |
+| `namespace` | (removed) | every template uses `.Release.Namespace`, so `helm -n <ns>` decides it (AUDIT-L9) |
 
 ## Secrets to rotate before production
 
