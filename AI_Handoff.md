@@ -32,6 +32,34 @@ suite tolerates missing setup, CR-23).
 - CR-01/CR-02/CR-03 are fixed on this branch too (Authelia rule order, namespace
   `keep` annotation, admin-only owner routes) — see `docs/CODE-REVIEW.md`.
 
+**Talos upgrade tested: v1.14.0 → v1.14.1 (2026-09-19).** Same pinned schematic
+(`4dd8e3a8…`, extension-only so it builds for any 1.x), executed with
+`--drain=false` because a single-node appliance reboots all workloads anyway and
+draining a one-node control plane only adds churn:
+
+```
+talosctl upgrade --nodes 192.168.1.117 --endpoints 192.168.1.117 \
+  --image factory.talos.dev/installer/4dd8e3a8…:v1.14.1 --drain=false --wait
+```
+
+- Installer pulled, pre-flight passed, installed to `/dev/vda`, rebooted, node came
+  back: **Talos v1.14.1**, kernel **6.18.51-talos**, containerd **2.3.5**, k8s
+  v1.37.0 unchanged, `talosctl health` all green.
+- **ZFS survived**: `talosctl get extensions` → `zfs 2.4.4-v1.14.1` (same schematic)
+  and the boot log shows `ext-zfs-service` starting on the new boot.
+- Workloads all returned: api/ui/agent/samba/nfs/terminal/openldap/traefik/
+  authelia/prometheus/grafana/alertmanager. During the reboot the node carried the
+  transient `not-ready` taint, which the DaemonSets tolerate and the Deployments do
+  not — they sat Pending and scheduled themselves as soon as the node was Ready
+  (no manual action). Pre-reboot pods showed `Completed`/`Error` and were deleted.
+- Functional checks after: `/api/ready` 200, `/api/users` 200 (LDAP bind), `/api/volumes/zfs`
+  200 (agent + ZFS endpoints), dashboard reports the node and `ens3 → 192.168.1.117`,
+  Playwright **16 passed / 5 skipped** — identical to the pre-upgrade baseline.
+- Notes: the local `talosctl` client is still v1.14.0 (server v1.14.1; harmless within
+  the minor, upgrade when convenient). **There is still no ZFS pool**, so the
+  *pool re-import* path is not exercised by this upgrade — creating a pool and then
+  rebooting the node would cover it, and is the natural next step.
+
 **Not done on the new VM, by design or decision:** no ZFS pool yet (two spare 40 GB
 disks are visible to the API), so datasets/shares need a pool first; **Buddy is
 disabled** (`buddy.enabled` is not set by the deploy script); and the authentication
