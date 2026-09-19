@@ -283,6 +283,9 @@ https://naslos.local
 - **The NodePort is disabled**: it cannot carry the proxy secret the API needs,
   and it would expose every route unauthenticated if the API's check were ever
   off.
+- **Traefik dashboard**: `https://naslos.local/traefik/dashboard/`, linked from
+  the sidebar for administrators only. The API is not exposed on any port
+  (`api.insecure` off) and Authelia denies non-admin accounts on `/traefik`.
 
 ### Cutover
 

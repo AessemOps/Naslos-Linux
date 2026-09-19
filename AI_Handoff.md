@@ -100,7 +100,10 @@ install-prod` for this one.
 - **Production posture is live (helm revision 9).** Traefik hostPort 80/443,
   `https://naslos.local` (mDNS via the Samba container's Avahi record), Authelia
   forwardAuth, portal at `/authelia`, a chart-generated `naslos-tls` cert, `/api`
-  routed straight to the API, NodePort off. Verified unauthenticated:
+  routed straight to the API, NodePort off. The Traefik dashboard is at
+  `/traefik/dashboard/` (admin-only, linked from the sidebar for
+  `naslos_admins`; `api.basePath=/traefik`, `api.insecure` off). Verified
+  unauthenticated:
   `/api/health` 200, `/` and `/api/users` 302 to the portal, `/api/buddy/v1/`
   bypass reaches the API, a pod calling the API without the proxy secret gets
   401, and `:30080` refuses. `two_factor` is applied per **subject**
