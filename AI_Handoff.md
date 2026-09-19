@@ -2,8 +2,11 @@
 
 **This file is the project's current state, kept to about a page.** The detailed
 per-session narrative (1250 lines, 2026-09-17 snapshot) is archived at
-`docs/archive/ai-handoff-log-2026-09.md`. Open quality findings are in
-`docs/CODE-REVIEW.md`. Normative requirements are in `docs/spec.md`.
+`docs/archive/ai-handoff-log-2026-09.md`. The audit and fix report — the only
+current audit document — is `docs/AUDIT-2026-09-19-REPORT.md`; the detailed
+working papers (audit findings, fix plan, code-review list, the superseded
+2026-09-14 audit) are archived in `docs/archive/`. Normative requirements are in
+`docs/spec.md`.
 
 ## What this is
 
@@ -24,25 +27,24 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
 
 ## Where things stand (2026-09-19)
 
-- **`master` = `90d4351`**; PRs #9–#20 merged (buddy, security fixes, fan-out,
-  hardening batches, product gaps, a11y/interface IPs, digests, receive-dataset
-  init container, walk bounds, the code review, the handoff rewrite, and the
-  namespace/Authelia/admin-gating fixes).
-- **The instance now runs on the new VM: `192.168.1.117`** — see the section below.
-  The old `192.168.1.96` VM is powered off.
-- **Open work is in `docs/CODE-REVIEW.md`**: the three blocking findings — CR-01
-  (the chart's Authelia policy bypassed the whole domain), CR-02 (`helm uninstall`
-  deleted the namespace and the state volume holding the buddy identity) and CR-03
-  (`RequireAdmin`/`IsAdmin` were never wired) — are **fixed and merged** (PR #20).
-  The important list is still open: dependency bumps (18 reachable Go vulns via
-  Helm, 11 npm advisories), `-race` (the suite fails under it), observability,
-  docs. The **correctness/secret-leak batch is fixed on a local branch (not yet
-  merged/pushed)**: CR-07 (the ntfy token is no longer returned; `hasAuthToken`
-  replaces it), CR-15 (the NSS `shadow` mirror is `0600`), CR-18 (a user edit now
-  applies group changes), CR-19/CR-22 (the UI checks `res.ok` and surfaces
-  failures instead of parsing error bodies or looking successful).
-- **Security audit status**: 22 NAS findings, each fixed, accepted or open per
-  `docs/CODE-REVIEW.md` §6.
+- **`master` = `85ae874`**; PRs #9–#23 merged (buddy, security fixes, the
+  authenticated-only removal of the dev endpoint, namespace/Authelia/admin
+  gating). The audit branch `audit/full-2026-09-19` carries the remediation up to
+  `555c51c` and **is not merged yet**.
+- **The instance runs on `192.168.1.117`** — see the section below. The old
+  `192.168.1.96` VM is powered off.
+- **The full audit and its fixes are in `docs/AUDIT-2026-09-19-REPORT.md`.**
+  All four Highs are fixed (LDAP service credential rotated/de-committed, backup
+  chunks on their own dataset, Go vulnerabilities 18 → 4 with no fix available
+  for the rest, Grafana removed) and most Mediums; the NAS-010 default-credential
+  work is closed, *including* the live LDAP admin rotation. The remaining work is
+  §8 of the report: NetworkPolicy/a policy CNI, PSA scoping, Svelte/Vite bumps,
+  Authelia's config off the ConfigMap, nginx non-root, `values.schema.json` +
+  `.Release.Namespace`, `go test -race`, and the not-yet-run Batch 6 (image/SBOM
+  scan, semgrep/staticcheck, the bounded active tests, buddy crypto deep-dive,
+  `.118`).
+- **The detailed audit, fix plan and code-review list are archived** in
+  `docs/archive/`; the report supersedes them.
 
 ## Current instance: 192.168.1.117 (2026-09-19)
 
@@ -229,20 +231,21 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
 
 ## Audit (2026-09-19)
 
-A full audit of `master` @ `85ae874` — code quality, security, secret use — is in
-`docs/AUDIT-2026-09-19.md`, with its remediation plan in
-`docs/AUDIT-2026-09-19-FIXPLAN.md`. Headline: 4 High, 14 Medium, 10 Low. The auth
-model verifies sound (anonymous 302, pod without the secret 401, agent without
-the token 401, no NodePort, no bypass). The top risks are a **live LDAP bind
-password committed in `values-vm.yaml`**, **received backup chunks landing on the
-64 MiB shares PVC** because the release runs `buddy.enabled=false`, **18 reachable
-Go vulnerabilities** (helm 3.16 / spdystream / containerd / docker), and the
-absence of any network policy with the privileged hostNetwork agent open on
-`:9090` to every pod. No secret values are in the report; the repo is private
-(unauth GitHub API 404), so the committed credentials are insider-exposure, not
-internet-exposure. Batch 1 of the fix plan needs a maintenance window and the
-operator's go-ahead to rotate the LDAP credential. **Grafana has been removed**
-(`grafana.enabled: false`, hardcoded admin password deleted) — AUDIT-H4 closed.
+The full audit of `master` @ `85ae874` — code quality, security, secret use — and
+everything fixed since is in **`docs/AUDIT-2026-09-19-REPORT.md`** (the detailed
+findings, fix plan and code-review list are in `docs/archive/`). Headline: 0
+Critical, 4 High, 14 Medium, 10 Low; **all four Highs are fixed** and the
+NAS-010 default-credential work is closed, including the live LDAP service and
+admin rotations. The auth model verifies sound (anonymous 302, pod without the
+secret 401, agent without the token 401, no NodePort, no bypass). The report's §8
+lists what remains: NetworkPolicy/a policy CNI (the privileged hostNetwork agent
+`:9090` is still reachable from every pod — the highest residual), PSA scoping,
+Svelte/Vite bumps, Authelia's config off the ConfigMap, nginx non-root, the
+schema/`.Release.Namespace` pair, `go test -race`, and the not-yet-run Batch 6
+(image/SBOM scan, semgrep/staticcheck, the bounded active tests, buddy crypto
+deep-dive, `.118`). No secret values are in the report; the repository is private
+(unauthenticated GitHub API returns 404), so the committed credentials that were
+found were insider-exposure, not internet-exposure.
 
 ## Deployed right now (2026-09-19)
 

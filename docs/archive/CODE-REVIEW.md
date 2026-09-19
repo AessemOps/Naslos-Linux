@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-09-19.** Superseded by `docs/AUDIT-2026-09-19-REPORT.md`. Kept
+> as the per-finding record of the 2026-09-17 review; paths inside refer to the
+> repository layout at that date.
+
 # Naslos — full code review
 
 **Baseline:** `master` `6227595` (PRs #9–#16 merged, buddy walk-bounds included).

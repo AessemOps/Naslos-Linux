@@ -1,6 +1,10 @@
+> **ARCHIVED 2026-09-19.** Superseded by `docs/AUDIT-2026-09-19-REPORT.md`. Kept
+> as the batch-by-batch remediation record; paths inside refer to the repository
+> layout at that date.
+
 # Fix plan — audit of 2026-09-19 (`master` @ `85ae874`)
 
-Companion to `docs/AUDIT-2026-09-19.md`. Findings are fixed in batches; each
+Companion to `AUDIT-2026-09-19.md` (same directory). Findings are fixed in batches; each
 batch is one branch/PR and ends with its verification. Items that touch the live
 cluster need a maintenance window and explicit sign-off. Nothing here is applied
 by the audit itself.
