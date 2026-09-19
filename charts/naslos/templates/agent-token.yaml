@@ -9,7 +9,6 @@ The privileged, host-networked agent only serves requests carrying this token
 Set `agent.tokenSecret` to use a Secret you manage out of band instead; it must
 have a `token` key.
 */}}
-{{- if eq (include "naslos.authEnabled" .) "true" }}
 {{- $secretName := include "naslos.agentTokenSecret" . | default "naslos-agent" }}
 {{- $agentToken := "" }}
 {{- $existing := lookup "v1" "Secret" .Values.namespace $secretName }}
@@ -30,5 +29,4 @@ metadata:
 type: Opaque
 stringData:
   token: {{ required "agent token could not be resolved (set agent.tokenSecret to an existing Secret with a 'token' key)" $agentToken | quote }}
-{{- end }}
 {{- end }}

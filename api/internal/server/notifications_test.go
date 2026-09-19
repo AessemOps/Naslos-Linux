@@ -9,12 +9,15 @@ import (
 	"github.com/AessemOps/Naslos-Linux/api/internal/notifications"
 )
 
-// doNotifications issues a request straight at the composed router. The server
-// is built with AUTH_DISABLED so the test targets the handler, not the gate
-// (the gate is covered by routes_test.go).
+// doNotifications issues a request straight at the composed router. It carries
+// the proxy secret and an admin identity, because the owner gate has no opt-out
+// (the gate itself is covered by routes_test.go).
 func doNotifications(t *testing.T, s *Server, method, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, "/api/notifications", strings.NewReader(body))
+	req.Header.Set("X-Naslos-Proxy-Secret", "test-proxy-secret")
+	req.Header.Set("Remote-User", "admin")
+	req.Header.Set("Remote-Groups", "naslos_admins")
 	rec := httptest.NewRecorder()
 	s.router.ServeHTTP(rec, req)
 	return rec
@@ -24,7 +27,7 @@ func doNotifications(t *testing.T, s *Server, method, body string) *httptest.Res
 // browser sees only `hasAuthToken`, never the credential, and an ordinary save
 // that omits the field does not wipe the stored token.
 func TestNotificationsNeverReturnTheAuthToken(t *testing.T) {
-	s := newTestServer(t, true)
+	s := newTestServer(t)
 
 	token := "tk_super_secret"
 	if err := s.notifications.UpdateSettings(notifications.Settings{

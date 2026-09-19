@@ -2,22 +2,12 @@
 Shared template helpers.
 
 The auth/ingress values are read through these helpers rather than as
-`.Values.auth.disabled`: a release installed before those sections existed (and
+`.Values.auth.<key>`: a release installed before those sections existed (and
 upgraded with `helm upgrade --reuse-values`) has no `auth`/`ingress` map at all,
-and evaluating `.Values.auth.disabled` on it aborts the upgrade with
-"nil pointer evaluating interface {}.disabled". `get`/`index` tolerate the
-missing map, and every helper defaults to the secure posture (auth enabled,
-ingress off).
+and evaluating a missing key on it aborts the upgrade with
+"nil pointer evaluating interface {}.<key>". `get`/`index` tolerate the missing
+map. Authentication has no opt-out, so there is no `auth.disabled` helper.
 */}}
-{{- define "naslos.authDisabled" -}}
-{{- $auth := get .Values "auth" -}}
-{{- if and $auth (index $auth "disabled") -}}true{{- else -}}false{{- end -}}
-{{- end -}}
-
-{{- define "naslos.authEnabled" -}}
-{{- if eq (include "naslos.authDisabled" .) "false" -}}true{{- else -}}false{{- end -}}
-{{- end -}}
-
 {{- define "naslos.authProxySecret" -}}
 {{- $auth := get .Values "auth" -}}
 {{- if $auth -}}{{ index $auth "proxySecret" | default "" }}{{- end -}}
