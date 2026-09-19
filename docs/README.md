@@ -26,8 +26,12 @@ read them in order for the full picture, or jump straight to a topic.
 | [deployment.md](deployment.md) | Prerequisites, Make targets, Helm values walkthrough | New |
 | [operations.md](operations.md) | Day-2: LDAP backup/restore, troubleshooting | New |
 | [development.md](development.md) | Repo layout, how to build, extend the catalog/shares | New |
-| [SECURITY-AUDIT.md](SECURITY-AUDIT.md) | Full static security audit (2026-09-14): findings NAS-001…022, severity, evidence, remediation checklist | New |
-| [SECURITY-FIX-PLAN.md](SECURITY-FIX-PLAN.md) | Implementation plan for the Critical findings (NAS-001/002/003) + coupled auth Highs | New |
+| [AUDIT-2026-09-19-REPORT.md](AUDIT-2026-09-19-REPORT.md) | **Current audit and fix report**: findings, every fix with commit/revision, verification, remaining work | Current |
+| [AUDIT-2026-09-19.md](AUDIT-2026-09-19.md) | The 2026-09-19 audit findings in full (AUDIT-H/M/L IDs) | Current |
+| [AUDIT-2026-09-19-FIXPLAN.md](AUDIT-2026-09-19-FIXPLAN.md) | Remediation batches and their progress | Current |
+| [CODE-REVIEW.md](CODE-REVIEW.md) | Living per-finding review list (CR-01…45) with a dated status table | Current |
+| [SECURITY-AUDIT.md](SECURITY-AUDIT.md) | Static security audit (2026-09-14): NAS-001…022. **Superseded** — kept for traceability | Historical |
+| [SECURITY-FIX-PLAN.md](SECURITY-FIX-PLAN.md) | Implementation plan for NAS-001/002/003. **Superseded** | Historical |
 
 ## Reading order
 
