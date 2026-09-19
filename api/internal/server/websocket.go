@@ -20,6 +20,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
+
+	"github.com/AessemOps/Naslos-Linux/api/internal/logsafe"
 )
 
 // upgrader accepts same-origin upgrades. The browser's Origin must match the host
@@ -266,7 +268,7 @@ func (s *Server) handleLogsWS(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("logs: websocket upgrade failed for %s/%s: %v", namespace, podName, err)
+		log.Printf("logs: websocket upgrade failed for %s/%s: %v", logsafe.Field(namespace), logsafe.Field(podName), err) // #nosec G706 -- sanitised by logsafe.Field
 		return
 	}
 	ws := &wsClient{conn: conn}
@@ -394,7 +396,7 @@ func (s *Server) handleExecWS(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("terminal: websocket upgrade failed for %s/%s: %v", namespace, podName, err)
+		log.Printf("terminal: websocket upgrade failed for %s/%s: %v", logsafe.Field(namespace), logsafe.Field(podName), err) // #nosec G706 -- sanitised by logsafe.Field
 		return
 	}
 	ws := &wsClient{conn: conn}
@@ -425,8 +427,9 @@ func (s *Server) handleExecWS(w http.ResponseWriter, r *http.Request) {
 	go stdin.run()
 	defer stdin.close()
 
-	log.Printf("terminal: session opened %s/%s (container %s, shell %s, user %s)",
-		namespace, podName, container, strings.Join(command, " "), s.terminalUsername(r))
+	log.Printf("terminal: session opened %s/%s (container %s, shell %s, user %s)", // #nosec G706 -- arguments sanitised by logsafe.Field
+		logsafe.Field(namespace), logsafe.Field(podName), logsafe.Field(container),
+		logsafe.Field(strings.Join(command, " ")), logsafe.Field(s.terminalUsername(r)))
 
 	err = executor.StreamWithContext(r.Context(), remotecommand.StreamOptions{
 		Stdin:             stdin,
@@ -440,9 +443,9 @@ func (s *Server) handleExecWS(w http.ResponseWriter, r *http.Request) {
 	// pressed); only a real failure is worth reporting in the terminal.
 	if err != nil && !stdin.closed() {
 		ws.write([]byte("\r\n\x1b[31mSession ended: " + err.Error() + "\x1b[0m\r\n"))
-		log.Printf("terminal: session %s/%s ended: %v", namespace, podName, err)
+		log.Printf("terminal: session %s/%s ended: %v", logsafe.Field(namespace), logsafe.Field(podName), err) // #nosec G706 -- sanitised by logsafe.Field
 	}
-	log.Printf("terminal: session closed %s/%s", namespace, podName)
+	log.Printf("terminal: session closed %s/%s", logsafe.Field(namespace), logsafe.Field(podName)) // #nosec G706 -- sanitised by logsafe.Field
 }
 
 // wsWriter writes to a WebSocket client.
