@@ -56,7 +56,7 @@ func enableBackupNotifications(t *testing.T, h *senderHarness, c *ntfyCapture) {
 		Topic:         "naslos-test",
 		EnabledEvents: []notifications.EventType{notifications.EventBackupFailure, notifications.EventBackupSuccess},
 		MinSeverity:   notifications.SeverityInfo,
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("enabling notifications: %v", err)
 	}
 	h.server.notifications = mgr

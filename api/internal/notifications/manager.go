@@ -77,11 +77,20 @@ func (m *Manager) GetSettings() Settings {
 	return m.settings
 }
 
-// UpdateSettings updates the notification settings.
-func (m *Manager) UpdateSettings(settings Settings) error {
+// UpdateSettings updates the notification settings. The stored auth token is
+// only touched when authToken is non-nil: a nil pointer keeps the existing
+// token, an empty string clears it, and any other value replaces it. The API
+// layer never returns the token, so a normal settings save omits the field and
+// must not wipe the operator's token.
+func (m *Manager) UpdateSettings(settings Settings, authToken *string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if authToken != nil {
+		settings.AuthToken = *authToken
+	} else {
+		settings.AuthToken = m.settings.AuthToken
+	}
 	m.settings = settings
 	return m.save()
 }

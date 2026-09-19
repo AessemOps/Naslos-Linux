@@ -45,3 +45,10 @@ func normalizeGroupName(cn string) (string, error) {
 	}
 	return normalized, nil
 }
+
+// NormalizeGroupName exposes the canonical group-name rule so callers that
+// compare or accept group names use the same spelling and allowlist the
+// AddMember/RemoveMember path enforces, instead of re-deriving one.
+func NormalizeGroupName(cn string) (string, error) {
+	return normalizeGroupName(cn)
+}

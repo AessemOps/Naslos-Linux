@@ -515,7 +515,7 @@ See `docs/buddy-backup.md`.
 | `/api/ready` | GET | Readiness; always 200, reports `{"status","ldap":"up"\|"down"}` |
 | `/api/auth/me` | GET | Authenticated user from trusted headers |
 | `/api/users` | GET, POST | List (array) / create |
-| `/api/users/{uid}` | GET, DELETE | Detail / delete |
+| `/api/users/{uid}` | GET, PUT, DELETE | Detail / update fields and group membership / delete |
 | `/api/users/{uid}/password` | PUT | Change password (updates Samba hash too) |
 | `/api/users/{uid}/enable` `/disable` | POST | `shadowExpire` toggling |
 | `/api/groups` | GET, POST | List (array) / create (description optional) |
@@ -641,7 +641,10 @@ are additionally verified against the live VM (not by Playwright):
 Go tests cover the parts that need no node: `api/internal/shares`
 (`TestComputeNTHashKnownVector` against OpenSSL-computed vectors, smbpasswd and
 extrausers rendering, `TestGroupGIDIsStable`, `TestAccessListRendersGroups`,
-`TestNetBIOSNameSanitised`).
+`TestNetBIOSNameSanitised`); `api/internal/server` (`TestGroupDelta` for the
+user-edit membership diff, FR-IDN-04; `TestNotificationsNeverReturnTheAuthToken`
+for the write-only ntfy token); and `agent/internal/shares`
+(`TestApplyRestrictsSecretMirrors` for the 0600 passdb/shadow mirrors, FR-IDN-13).
 
 Buddy Backup is verified by `api/internal/buddy/buddy_test.go`, which runs the
 real receiver over HTTP (an `httptest` server) against the real client:
