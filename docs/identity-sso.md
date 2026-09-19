@@ -159,7 +159,7 @@ in the page).
   (`LDAP_CA_CERT`) and to Authelia via the config map and secrets.
 - HTTPS terminated by Traefik (`websecure` :443, HTTP→HTTPS redirect), exposed on
   the node's 80/443 (`values-vm.yaml` sets `traefik.ports.*.hostPort`).
-- The certificate is chart-generated, self-signed for `authelia.domain`
+- The certificate is chart-generated, self-signed for the `domain` value
   (`naslos-tls`, generated once and reused across upgrades). Point
   `ingress.tls.existingSecret` at a real certificate to remove the browser
   warning, or import the generated `tls.crt` on the client.

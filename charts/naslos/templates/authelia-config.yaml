@@ -55,7 +55,7 @@ data:
     ##################################
 
     theme: dark
-    default_redirection_url: https://{{ .Values.authelia.domain }}/
+    default_redirection_url: https://{{ .Values.domain }}/
     jwt_secret: {{ $jwtSecret | quote }}
     # Trust the openldap self-signed CA (mounted at /certificates from the
     # naslos-openldap-tls secret via authelia.certificates.existingSecret in
@@ -86,7 +86,7 @@ data:
 
     totp:
       disable: false
-      issuer: {{ .Values.authelia.domain }}
+      issuer: {{ .Values.domain }}
       algorithm: sha1
       digits: 6
       period: 30
@@ -94,7 +94,7 @@ data:
 
     webauthn:
       disable: false
-      display_name: {{ .Values.authelia.domain }}
+      display_name: {{ .Values.domain }}
       attestation_conveyance_preference: indirect
       user_verification: preferred
       timeout: 60s
@@ -141,7 +141,7 @@ data:
 
     session:
       name: authelia_session
-      domain: {{ .Values.authelia.domain }}
+      domain: {{ .Values.domain }}
       same_site: lax
       expiration: 1h
       inactivity: 5m
@@ -177,21 +177,21 @@ data:
       default_policy: deny
       rules:
         # The health probe answers before the proxy is in the path.
-        - domain: {{ .Values.authelia.domain | quote }}
+        - domain: {{ .Values.domain | quote }}
           policy: bypass
           resources:
             - "^/api/health$"
         # The buddy peer API authenticates with the peers' own Ed25519 keys (a
         # peer cannot complete an interactive login), so it must not enter the
         # login flow.
-        - domain: {{ .Values.authelia.domain | quote }}
+        - domain: {{ .Values.domain | quote }}
           policy: bypass
           resources:
             - "^/api/buddy/v1/"
         # The portal (page, assets and its own /authelia/api/* XHR calls) is
         # routed to Authelia by its own IngressRoute with no forwardAuth, so it
         # never reaches these rules. The bypass is defensive only.
-        - domain: {{ .Values.authelia.domain | quote }}
+        - domain: {{ .Values.domain | quote }}
           policy: bypass
           resources:
             - "^/authelia(/.*)?$"
@@ -204,7 +204,7 @@ data:
         #
         # Any other authenticated account stays one_factor; the API's
         # RequireAdmin group check still gates it (CR-03).
-        - domain: {{ .Values.authelia.domain | quote }}
+        - domain: {{ .Values.domain | quote }}
           subject:
             - "group:naslos_admins"
           policy: two_factor
@@ -213,14 +213,14 @@ data:
         # (with 2FA); a non-admin account is denied outright rather than being
         # let in on one_factor. First match wins, so an account in both groups
         # is still allowed by the rule above.
-        - domain: {{ .Values.authelia.domain | quote }}
+        - domain: {{ .Values.domain | quote }}
           subject:
             - "group:naslos_users"
           policy: deny
           resources:
             - "^/traefik"
         # Everything else the proxy forwards needs at least a session.
-        - domain: {{ .Values.authelia.domain | quote }}
+        - domain: {{ .Values.domain | quote }}
           policy: one_factor
 
     notifier:
