@@ -65,12 +65,12 @@ type fakeError struct{ msg string }
 
 func (e *fakeError) Error() string { return e.msg }
 
-// newTestServer builds a server with the fake streaming client wired in. A nil
-// client means a degraded agent (no ZFS on the host). The token check is off:
-// these tests exercise the handlers, and the gate itself is covered by
-// TestRequireAuth.
+// newTestServer builds a server with the fake streaming client wired in and a
+// token configured. A nil client means a degraded agent (no ZFS on the host).
+// doRequest presents the token, so these tests exercise the handlers; the gate
+// itself is covered by TestRequireAuth.
 func newTestServer(backup backupZFS) *Server {
-	s := &Server{router: http.NewServeMux(), authDisabled: true}
+	s := &Server{router: http.NewServeMux(), authToken: "test-token"}
 	if backup != nil {
 		s.backup = backup
 		s.zfs = &zfs.Client{}
@@ -83,6 +83,7 @@ func doRequest(t *testing.T, s *Server, method, path string, body io.Reader) *ht
 	t.Helper()
 
 	req := httptest.NewRequest(method, path, body)
+	req.Header.Set("Authorization", "Bearer test-token")
 	rec := httptest.NewRecorder()
 	s.router.ServeHTTP(rec, req)
 	return rec

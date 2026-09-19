@@ -7,9 +7,9 @@
 # the terminal.
 #
 # Security: this container is root and privileged by necessity. It is reachable
-# only through the API's exec endpoint, which the chart scopes to this namespace,
-# but that makes the UI's authentication the real boundary - see docs/terminal.md
-# (notably: the UI NodePort bypasses Authelia, so it must not be exposed).
+# only through the API's exec endpoint, which the chart scopes to this namespace;
+# the API's owner gate (proxy secret + admin identity) is the boundary, and the
+# only listener is the Authelia-protected proxy - see docs/terminal.md.
 {{- if and .Values.ui.enabled .Values.terminal.enabled }}
 apiVersion: v1
 kind: ServiceAccount

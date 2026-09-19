@@ -17,11 +17,9 @@ spec:
       kind: Rule
       middlewares:
         - name: forwardauth-authelia
-        {{- if eq (include "naslos.authEnabled" .) "true" }}
         # Proves the request came through this proxy: the API rejects owner
         # routes without the shared secret it sets (NAS-001).
         - name: proxy-identity
-        {{- end }}
         - name: security-headers
       services:
         - name: naslos-ui

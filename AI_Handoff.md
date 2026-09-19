@@ -48,13 +48,15 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
 
 Fresh install from scratch (the old .96 VM is off): Talos from the Naslos ISO,
 etcd bootstrapped, local-path provisioner, OpenLDAP + bootstrap. The instance is
-now on the **production posture** (helm revision 9): Traefik on hostPort 80/443,
-Authelia forwardAuth with the portal at `https://naslos.local/authelia`, 2FA on
-every admin prefix, `/api` routed straight to the API, and the UI NodePort gone.
-The first admin (`admin` in `naslos_admins`) was created before the flip. Use
-`make install-vm` for the dev posture (NodePort, auth off) and
-`make install-prod` for this one; the Playwright suite now runs against both
-(see "Running the E2E suite" in `docs/deployment.md`).
+now on the **only posture** (`make install-vm`): Traefik on hostPort 80/443,
+Authelia forwardAuth with the portal at `https://naslos.local/authelia`, 2FA for
+`naslos_admins` on every path, `/api` routed straight to the API. The dev posture
+was **removed entirely** — no UI NodePort, no `auth.disabled`, no
+`AUTH_DISABLED`/`AGENT_AUTH_DISABLED`; the API and agent refuse to start without
+their credential. The first admin (`admin` in `naslos_admins`) predates the
+removal. Recovery is `helm rollback` / `git revert` + redeploy, not a bypass. The
+Playwright suite authenticates through Authelia (see "Running the E2E suite" in
+`docs/deployment.md`).
 
 - **Fresh PKI.** `scripts/deploy-vm.sh` *reuses* `bootstrap/vm/talosconfig` when it
   exists, so a brand-new VM would have been installed with the **old cluster's CA
@@ -96,9 +98,9 @@ The first admin (`admin` in `naslos_admins`) was created before the flip. Use
   restore all passed: chain `ad1aa6ecd3d59a99`, 1 chunk / 44 376 B, verify digest
   `e29d09f2…`, and the restore landed `test/drill-buddy-restored` identical to the
   source (96K/96K, 1.00x) carrying its `buddy-20260919T002521Z-3aa5` snapshot.
-- **Suite baseline now `30 passed / 2 skipped`** — the two Buddy tests run, and the
-  only skips left are terminal exec over the NodePort (refused by nginx, by design).
-- **Production posture is live (helm revision 9).** Traefik hostPort 80/443,
+- **Suite: `35 passed` against the proxy posture** (setup + 34 tests), including
+  the interactive terminal tests that used to skip on the NodePort. See below.
+- **The authenticated posture is live (helm revision 16).** Traefik hostPort 80/443,
   `https://naslos.local` (mDNS via the Samba container's Avahi record), Authelia
   forwardAuth, portal at `/authelia`, a chart-generated `naslos-tls` cert, `/api`
   routed straight to the API, NodePort off. The Traefik dashboard is at
@@ -122,21 +124,21 @@ The first admin (`admin` in `naslos_admins`) was created before the flip. Use
   serializes `lastSeenAt` as `0001-01-01T00:00:00Z` (the schedule equivalent was fixed;
   the peer struct was not).
 - **The Playwright suite now runs against the production posture, 35 passed on
-  two consecutive runs** (helm revision 15, api `0.1.0-r3`, ui `0.1.0-r4`). It
+  two consecutive runs** (helm revision 15; re-verified `35 passed` at revision
+  16 with api `0.1.0-r4`, agent `0.1.0-r3`, ui `0.1.0-r5`). It
   logs into Authelia once in a setup project (`ui/tests/auth.setup.ts`, password
   + TOTP generated from the secret in the gitignored `ui/.env.playwright.local`)
-  and reuses the session via `storageState`; on the dev NodePort it writes an
-  empty state and behaves as before. See `docs/deployment.md` "Running the E2E
-  suite" for the env file and `NASLOS_RECEIVER_URL`. Running it found two real
-  production bugs, both fixed:
+  and reuses the session via `storageState`. See `docs/deployment.md` "Running
+  the E2E suite" for the env file and `NASLOS_RECEIVER_URL`. Running it found two
+  real production bugs, both fixed:
   - **Agent streaming token (NAS-002 gap).** `api/internal/agent/backup.go` used
     a package-level `&http.Client{}` for the streaming send/receive paths, so
     those requests carried no `Authorization` header and every backup failed
     with the agent's 401 once auth was on. The client now has a dedicated
     `stream` client built from the same token transport
-    (`api/internal/agent/client_test.go` pins it). In the dev posture the agent
-    opted out with `AGENT_AUTH_DISABLED=true`, which is why this only surfaced
-    after the cutover.
+    (`api/internal/agent/client_test.go` pins it). It stayed hidden while the
+    agent ran with the (now removed) `AGENT_AUTH_DISABLED=true` opt-out, which is
+    why it only surfaced once auth was enforced.
   - **Password changes were a silent no-op.** The user-edit form put `password`
     in the `PUT /api/users/{uid}` body, which ignores it; the dialog still closed
     as if saved. It now calls `POST /api/users/{uid}/password`. `docs/spec.md`
@@ -158,11 +160,12 @@ helm lint charts/naslos -f charts/naslos/values.yaml
 make api-image IMAGE_TAG=0.1.0-b22 && docker push 192.168.1.2:30095/naslos-api:0.1.0-b22
 helm upgrade naslos charts/naslos -n naslos --reuse-values \
   --set api.image.tag=0.1.0-b22 --wait
-curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.117:30080/api/ready
+curl -sk -o /dev/null -w '%{http_code}\n' https://naslos.local/api/health
 ```
 
-VM facts: node `192.168.1.117`, UI on NodePort `:30080`, private registry
-`192.168.1.2:30095`, namespace `naslos`, `TALOSCONFIG=bootstrap/vm/talosconfig`.
+VM facts: node `192.168.1.117`, UI at `https://naslos.local` (the only listener;
+no NodePort), private registry `192.168.1.2:30095`, namespace `naslos`,
+`TALOSCONFIG=bootstrap/vm/talosconfig`.
 Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` and
 `test/naslos-buddy` (the buddy receive dataset); **Buddy is enabled** with
 `buddy.name=naslos-vm` and `peersFile`/`schedulesFile` on the state PVC.
@@ -174,13 +177,12 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
    Digests are supported (`api.image.digest`, `make image-digests`); a stored digest
    wins over a new tag until you clear it (`--set api.image.digest=`).
 2. **`helm upgrade --reuse-values` ignores `-f` files.** Anything new must be passed
-   with `--set` (e.g. `auth.disabled`, `ingress.enabled`), or the release keeps old
-   values and templates that dereference new keys can fail to render.
-3. **The VM runs the production posture** (Traefik hostPort 80/443 + Authelia,
-   NodePort off). `make install-vm` (values-vm.yaml alone) reverts it to the dev
-   posture where every owner route is open on the NodePort (NAS-008) — that is
-   the rollback and the only posture the Playwright suite can run against, so
-   never leave it up on an untrusted network.
+   with `--set` (e.g. `ingress.enabled`), or the release keeps old values and
+   templates that dereference new keys can fail to render.
+3. **There is one posture and it is authenticated.** Traefik on hostPort 80/443
+   with Authelia forwardAuth; no NodePort and no auth bypass exist. `make
+   install-vm` installs it, `helm rollback`/`git revert` undoes it, and there is
+   no unauthenticated listener to fall back to (NAS-008 resolved).
 4. **The buddy identity is the KEK.** `/var/lib/naslos/buddy-identity.json` holds the
    private key and the key-encryption key: losing it makes every stored backup
    unreadable, and `helm uninstall` would delete it (CR-02). Back it up separately.
@@ -201,8 +203,8 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
    chunk (`MaxSealedChunkSize`), not one plain chunk.
 9. **The Playwright suite runs against the live VM and can skip** when the identity,
    a dataset or a peer scope is missing: treat a skip as a setup gap, not a pass
-   (CR-23). Terminal exec tests always skip over the NodePort (nginx refuses those
-   paths by design).
+   (CR-23). It authenticates through Authelia (credentials in the gitignored
+   `ui/.env.playwright.local`) and runs against `https://naslos.local`.
 10. **A restored dataset cannot be destroyed until the agent restarts.** `zfs receive`
    runs through the privileged agent, so the destination stays mounted in the
    **agent's** mount namespace and `zfs destroy` answers `dataset is busy` (the
@@ -227,13 +229,12 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
 
 ## Deployed right now (2026-09-19)
 
-On `192.168.1.117`: `naslos-api`, `naslos-ui` and `naslos-agent` are at
-**`0.1.0-r2`** (the CR-07/15/18/19/22 batch); `naslos-samba`, `naslos-nfs`,
-`naslos-terminal` and the OpenLDAP manifests stay at **`0.1.0-r1`**; chart
-`naslos-0.1.0`, helm revision **9**, Talos **v1.14.1** (kernel 6.18.51-talos),
-ZFS pool `test` (stripe, 79 G) + dataset `test/drill`. The posture is the
-**production one** (Traefik hostPort 80/443, Authelia at
-`https://naslos.local/authelia`, NodePort off) with `admin` in
-`naslos_admins`; TOTP/WebAuthn enrollment is the one remaining human step. The
-old VM's tags (`api 0.1.0-b21`, `agent 0.1.0-b6`, `ui 0.1.0-b9`, revision 82)
-are retired with it.
+On `192.168.1.117`: `naslos-api` **`0.1.0-r4`**, `naslos-ui` **`0.1.0-r5`**,
+`naslos-agent` **`0.1.0-r3`** (the authenticated-only change); `naslos-samba`,
+`naslos-nfs`, `naslos-terminal` and the OpenLDAP manifests stay at
+**`0.1.0-r1`**; chart `naslos-0.1.0`, helm revision **16**, Talos **v1.14.1**
+(kernel 6.18.51-talos), ZFS pool `test` (stripe, 79 G) + dataset `test/drill`.
+The posture is the **only one**: Traefik hostPort 80/443, Authelia at
+`https://naslos.local/authelia`, no NodePort and no auth bypass, with `admin` in
+`naslos_admins` (TOTP/WebAuthn enrolled). The old VM's tags (`api 0.1.0-b21`,
+`agent 0.1.0-b6`, `ui 0.1.0-b9`, revision 82) are retired with it.

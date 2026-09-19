@@ -23,9 +23,9 @@ import (
 )
 
 // upgrader accepts same-origin upgrades. The browser's Origin must match the host
-// it is talking to; the comparison ignores ports, because the request arrives
-// through the UI's nginx (which forwards `Host` without the port while the
-// Origin keeps the NodePort) and the API itself only ever sees the proxy.
+// it is talking to; the comparison ignores ports, because the Host header and the
+// Origin can differ in port depending on the hop the request took (the UI's nginx
+// forwards `Host` without the port it was reached on).
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
@@ -314,8 +314,7 @@ func (s *Server) handleLogsWS(w http.ResponseWriter, r *http.Request) {
 // the UI can show properly rather than text inside a terminal that just opened.
 //
 // The session is authenticated by the owner auth middleware: the terminal runs a
-// root shell, so it is only reachable through the proxy (or with AUTH_DISABLED,
-// which is a development-only posture).
+// root shell, so it is only reachable through the proxy.
 func (s *Server) handleExecWS(w http.ResponseWriter, r *http.Request) {
 	namespace := r.URL.Query().Get("namespace")
 	if namespace == "" {

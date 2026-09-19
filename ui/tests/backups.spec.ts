@@ -5,7 +5,7 @@ import { test, expect } from '@playwright/test';
 // against the API rather than placeholders.
 //
 // Identity comes from the session captured by tests/auth.setup.ts (the Authelia
-// cookie, or nothing on the dev posture where auth is disabled). The old
+// cookie). The old
 // explicit `Remote-User` header is gone: through Traefik forwardAuth sets it from
 // the session, and trustForwardHeader is off, so a client-supplied value is
 // ignored anyway.

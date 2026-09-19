@@ -86,11 +86,6 @@ ui:
   service:
     type: ClusterIP
     port: 80
-  # Optional NodePort for environments without a LoadBalancer (e.g. single-node VM).
-  # See charts/naslos/values-vm.yaml for an example override.
-  nodePort:
-    enabled: false
-    port: 30080
   # Startup guard: nginx resolves the API host name at startup and refuses to
   # boot if it is not in DNS yet, which is the case right after a node reboot
   # (the UI comes up before the API Service). The UI pod waits for the name -
@@ -354,14 +349,10 @@ namespace: naslos
 # the privileged agent requires a bearer token (Secret `naslos-agent`, key
 # `token`). Both are generated once at install and preserved across upgrades.
 #
-# `disabled: true` turns both checks off - a development-only posture for
-# instances that are not behind the proxy (for example the single-node VM reached
-# over its NodePort). The API and the agent log a warning at startup when it is
-# set, and the NodePort then reaches every route unauthenticated: never set it on
-# an exposed instance.
+# There is deliberately no `disabled` switch: the API and agent refuse to start
+# without their credential, and every request is authenticated.
 auth:
-  disabled: false
-  # Use this value verbatim instead of generating one (dry runs, development).
+  # Supply this value verbatim instead of generating one (dry runs only).
   # Never commit a value here: prefer the generated Secret or proxySecretName.
   proxySecret: ""
   # Authorize with a Secret you manage out of band. It must have a `secret` key;
@@ -379,8 +370,9 @@ auth:
 # `.Values.traefik.enabled` can never be true and the templates would never
 # render. The subchart itself installs regardless (a missing condition value
 # means "enabled"); these objects are what put the API behind the authenticating
-# proxy. Leave it off when the UI is reached over the NodePort, and set
-# auth.disabled to match.
+# proxy. This is the only listener: there is no NodePort or any other
+# unauthenticated path, so a release installed without ingress has no way in.
+# charts/naslos/values-vm.yaml is the reference profile (it enables ingress).
 ingress:
   enabled: false
   # The Authelia Service that the forwardAuth middleware and the portal
@@ -422,8 +414,9 @@ terminal:
 # a key only the sender holds, so this instance stores bytes it cannot read.
 buddy:
   # Serve /api/buddy/v1/* on this instance. Peers reach it the same way the UI
-  # does: through the NodePort/ingress you already expose, via /api/. Enabling it
-  # needs receiveHostPath, so leave this off until the dataset exists.
+  # does: through the ingress, via /api/buddy/v1/ (Authelia bypasses that prefix;
+  # peers authenticate with their own keys). Enabling it needs receiveHostPath,
+  # so leave this off until the dataset exists.
   enabled: false
   # Name this instance reports to peers ("naslos-a", "backup-nas").
   name: naslos
