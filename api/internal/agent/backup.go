@@ -38,9 +38,6 @@ type SnapshotInfo struct {
 	Created string `json:"created"`
 }
 
-// streamClient has no total timeout: streaming calls are bounded by their context.
-var streamClient = &http.Client{}
-
 // SendStream starts a `zfs send` on the node and returns its stdout as an
 // io.ReadCloser, which the caller must close. A send that dies in the middle cannot
 // change an already-sent status code, so completeness is established the same way
@@ -53,7 +50,9 @@ func (c *Client) SendStream(ctx context.Context, opts SendStreamOptions) (io.Rea
 		return nil, fmt.Errorf("creating send request: %w", err)
 	}
 
-	resp, err := streamClient.Do(req)
+	// The timeout-free client still carries the agent token (it is the id at the
+	// same endpoint), it simply has no total timeout.
+	resp, err := c.stream.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("contacting agent at %s: %w", c.baseURL, err)
 	}
@@ -115,7 +114,7 @@ func (c *Client) ReceiveStream(ctx context.Context, dataset string, force bool) 
 
 	done := make(chan error, 1)
 	go func() {
-		resp, err := streamClient.Do(req)
+		resp, err := c.stream.Do(req)
 		if err != nil {
 			done <- fmt.Errorf("contacting agent at %s: %w", c.baseURL, err)
 			return

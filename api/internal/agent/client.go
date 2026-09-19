@@ -61,6 +61,12 @@ func (e *Error) Error() string {
 type Client struct {
 	baseURL string
 	http    *http.Client
+	// stream is the same client without a total timeout, for `zfs send`/`receive`
+	// which run far longer than a control-plane call. It carries the token
+	// transport too: a package-level client with a default transport was used
+	// here once, which silently sent no Authorization header and made every
+	// backup fail with the agent's 401 under auth.
+	stream *http.Client
 }
 
 // authTransport injects the shared agent bearer token on every request. Doing it
@@ -94,6 +100,9 @@ func NewClient(baseURL, token string) *Client {
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		http: &http.Client{
 			Timeout:   DefaultTimeout,
+			Transport: &authTransport{token: token},
+		},
+		stream: &http.Client{
 			Transport: &authTransport{token: token},
 		},
 	}
