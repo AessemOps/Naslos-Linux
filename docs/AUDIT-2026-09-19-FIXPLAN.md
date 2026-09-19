@@ -97,15 +97,20 @@ Done and deployed at helm revision 18 (api `0.1.0-r5`), suite still 35 passed:
 | **AUDIT-M5** agent ClusterRole + binding removed | `8555925` |
 | **AUDIT-M13** dead `storage.zfsLocalPV` removed | `8555925` |
 | **AUDIT-L1** `.dockerignore` (UI context 96 MB → 717 kB API) | `8555925` |
+| **AUDIT-M1** 104 checkpoint refs pruned; gitleaks 89 → 4 (all documented false positives) | `421711a` |
+| **AUDIT-M2** local secrets `chmod 600`; `auth.setup.ts` chmods the captured session itself | `421711a` |
+| **AUDIT-M3** jwt secret persisted in `naslos-authelia-jwt` — **proven to survive an upgrade** | `421711a` |
+| **AUDIT-M12** `scripts/audit.sh` + `.github/workflows/audit.yml` (gitleaks over full history) | `421711a` |
+| **AUDIT-M14** superseded banner + operator-lockout runbook | `421711a` |
 
 **Still open:** H1 (rotate the live LDAP bind credential), H2 (buddy receive path
-off the 64 MiB shares PVC), M1/M2 (prune checkpoint refs, chmod local secrets),
-M3 (jwt_secret persistence + secrets out of the ConfigMap), M4 (network policy /
-enforcing CNI), M6 (PSA scoping), M10 (excluded by request), M11 (Svelte/Vite
-bump), M12 (`scripts/audit.sh` + CI), M14 (docs banner + lockout runbook), L2
-(nginx non-root), the `.Release.Namespace` and `values.schema.json` parts of L9,
-and all of Batch 6 (image/SBOM scan, semgrep/staticcheck, AV-5…AV-12, buddy
-crypto deep-dive, `.118`).
+off the 64 MiB shares PVC), M3's residual (Authelia's config is a ConfigMap, so
+its `jwt_secret` and the LDAP bind password stay readable there until the config
+moves into a Secret), M4 (network policy / enforcing CNI), M6 (PSA scoping), M10
+(excluded by request), M11 (Svelte/Vite bump), L2 (nginx non-root), the
+`.Release.Namespace` and `values.schema.json` parts of L9, and all of Batch 6
+(image/SBOM scan, semgrep/staticcheck, AV-5…AV-12, buddy crypto deep-dive,
+`.118`).
 
 ## Definition of done
 
