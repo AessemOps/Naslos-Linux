@@ -102,9 +102,9 @@ Done and deployed at helm revision 18 (api `0.1.0-r5`), suite still 35 passed:
 | **AUDIT-M3** jwt secret persisted in `naslos-authelia-jwt` — **proven to survive an upgrade** | `421711a` |
 | **AUDIT-M12** `scripts/audit.sh` + `.github/workflows/audit.yml` (gitleaks over full history) | `421711a` |
 | **AUDIT-M14** superseded banner + operator-lockout runbook | `421711a` |
+| **AUDIT-H2** buddy receive dataset mounted (`buddy.enabled=true`, `receiveHostPath`) — verified: chunks on `test/naslos-buddy`, backups suite green | revision 21 |
 
-**Still open:** H1 (rotate the live LDAP bind credential), H2 (buddy receive path
-off the 64 MiB shares PVC), M3's residual (Authelia's config is a ConfigMap, so
+**Still open:** H1 (rotate the live LDAP bind credential), M3's residual (Authelia's config is a ConfigMap, so
 its `jwt_secret` and the LDAP bind password stay readable there until the config
 moves into a Secret), M4 (network policy / enforcing CNI), M6 (PSA scoping), M10
 (excluded by request), M11 (Svelte/Vite bump), L2 (nginx non-root), the
