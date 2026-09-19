@@ -1,0 +1,85 @@
+{{- if eq (include "naslos.ingressEnabled" .) "true" }}
+---
+# API IngressRoute.
+#
+# The UI is a static SPA; its relative /api/* calls therefore arrive at this
+# host and are routed straight to the API rather than through the UI's nginx.
+# Two reasons: the API is the only thing that can answer them, and nginx
+# deliberately refuses /api/pods, /api/namespaces and /api/ws/exec (the
+# unauthenticated NodePort path), which made the web terminal unreachable in
+# the proxy posture. PathPrefix(/api) also carries the WebSocket upgrades.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: naslos-api
+  namespace: {{ .Values.namespace }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{ .Values.authelia.domain }}`) && PathPrefix(`/api`)
+      kind: Rule
+      middlewares:
+        - name: forwardauth-authelia
+        {{- if eq (include "naslos.authEnabled" .) "true" }}
+        - name: proxy-identity
+        {{- end }}
+        - name: security-headers
+      services:
+        - name: naslos-api
+          port: {{ .Values.api.service.port }}
+  tls:
+    secretName: {{ .Values.ingress.tls.secretName | default "naslos-tls" }}
+---
+# Authelia portal IngressRoute.
+#
+# Must NOT have the forwardAuth middleware or the portal would challenge
+# itself. Authelia serves the portal, its assets and its own /authelia/api/*
+# XHR endpoints; the path prefix keeps it off the app route (which excludes
+# /authelia), so no priority ordering is needed.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: naslos-authelia-portal
+  namespace: {{ .Values.namespace }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{ .Values.authelia.domain }}`) && PathPrefix(`/authelia`)
+      kind: Rule
+      middlewares:
+        - name: security-headers
+      services:
+        - name: {{ .Values.ingress.authelia.serviceName | default "naslos-authelia" }}
+          port: {{ .Values.ingress.authelia.port | default 80 }}
+  tls:
+    secretName: {{ .Values.ingress.tls.secretName | default "naslos-tls" }}
+---
+# Traefik's own dashboard, under https://<domain>/traefik.
+#
+# The Traefik API is not exposed on any port (api.insecure stays false), so this
+# route is the only way in. Authelia allows only naslos_admins (with 2FA); see
+# the subject/deny rules in authelia-config.yaml. No proxy-identity middleware:
+# that shared secret proves a request came through this proxy for the *Naslos*
+# API's benefit, and Traefik's dashboard does not read it.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: naslos-traefik-dashboard
+  namespace: {{ .Values.namespace }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{ .Values.authelia.domain }}`) && PathPrefix(`/traefik`)
+      kind: Rule
+      middlewares:
+        - name: forwardauth-authelia
+        - name: security-headers
+      services:
+        - name: api@internal
+          kind: TraefikService
+  tls:
+    secretName: {{ .Values.ingress.tls.secretName | default "naslos-tls" }}
+{{- end }}
