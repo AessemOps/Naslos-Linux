@@ -293,9 +293,11 @@ prometheus:
           cpu: 200m
           memory: 512Mi
 
+# Grafana is disabled for now: it is not part of the current surface, and the
+# static admin password it shipped with was a finding (AUDIT-H4). Enabling it
+# again needs a credential from a Secret, never a literal here.
 grafana:
-  enabled: true
-  adminPassword: "naslos-admin"
+  enabled: false
   dashboardProviders:
     dashboardproviders.yaml:
       apiVersion: 1
