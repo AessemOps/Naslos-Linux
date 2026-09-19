@@ -1,4 +1,30 @@
 {{- if .Values.authelia.enabled }}
+{{- /*
+jwt_secret must be stable across upgrades. `randAlphaNum` alone regenerates it on
+every render, which invalidates every session (and rewrites the ConfigMap) on
+each `helm upgrade` (AUDIT-M3). Persist it the same way the proxy secret and the
+TLS certificate are persisted: generate once, then read the existing Secret back.
+*/}}
+{{- $jwtSecretName := "naslos-authelia-jwt" }}
+{{- $existingJWT := lookup "v1" "Secret" .Values.namespace $jwtSecretName }}
+{{- $jwtSecret := "" }}
+{{- if and $existingJWT (index $existingJWT.data "jwt-secret") }}
+{{- $jwtSecret = index $existingJWT.data "jwt-secret" | b64dec }}
+{{- else }}
+{{- $jwtSecret = randAlphaNum 32 }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $jwtSecretName }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: authelia
+type: Opaque
+stringData:
+  jwt-secret: {{ $jwtSecret | quote }}
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -12,7 +38,7 @@ data:
 
     theme: dark
     default_redirection_url: https://{{ .Values.authelia.domain }}/
-    jwt_secret: {{ randAlphaNum 32 | quote }}
+    jwt_secret: {{ $jwtSecret | quote }}
     # Trust the openldap self-signed CA (mounted at /certificates from the
     # naslos-openldap-tls secret via authelia.certificates.existingSecret in
     # values.yaml) for the ldaps:// connection below. Without this, startup
