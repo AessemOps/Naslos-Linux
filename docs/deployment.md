@@ -325,9 +325,44 @@ helm upgrade --install naslos charts/naslos -n naslos \
 Pools, datasets and the state PVC (shares, buddy identity, notifications) are
 untouched by either posture.
 
-> The Playwright suite authenticates by sending the identity headers directly, so
-> it can only run against the **dev** posture. Run it before the cutover, or
-> roll back to `values-vm.yaml` to run it.
+### Running the E2E suite
+
+The Playwright suite runs against **both** postures. A `setup` project logs into
+the Authelia portal once (password + a TOTP generated from the shared secret) and
+every test reuses that session through `storageState`; when the target has no
+portal (the dev NodePort) it writes an empty state and behaves as before.
+
+```bash
+cd ui
+# credentials, once (never committed - ui/.env.playwright.local is gitignored)
+printf 'NASLOS_ADMIN_USER=admin\nNASLOS_ADMIN_PASSWORD=%s\nNASLOS_TOTP_SECRET=%s\n' \
+  '<password>' '<base32 secret>' > .env.playwright.local
+chmod 600 .env.playwright.local
+
+# production (Traefik + Authelia)
+PLAYWRIGHT_BASE_URL=https://naslos.local \
+NASLOS_RECEIVER_URL=http://naslos-api.naslos.svc.cluster.local:8080 \
+  npx playwright test
+
+# dev (NodePort, auth off)
+PLAYWRIGHT_BASE_URL=http://192.168.1.117:30080 npx playwright test
+```
+
+- `NASLOS_TOTP_SECRET` is the base32 secret behind the enrolment QR; without it
+  the suite cannot authenticate. `NASLOS_TOTP_CODE` works for a single run only.
+  Authelia refuses a code it has already accepted, so a second run inside the
+  same 30 s window waits for the next one and retries.
+- `NASLOS_RECEIVER_URL` matters for the two self-send tests: a page-driven send
+  targets the browser origin, and the API pod cannot resolve `naslos.local`
+  (mDNS is not in cluster DNS), so point it at the in-cluster API. On a network
+  with a real DNS record for the appliance it can be omitted.
+- The suite **mutates the live instance**: it creates and deletes users, groups,
+  shares and datasets, writes and removes buddy schedules, and performs real
+  self-sends. Run it on a maintenance window, not on a system you cannot afford
+  to see churned.
+- Interactive terminal tests execute on the authenticated posture and skip on the
+  NodePort (which refuses those paths by design), so a production run covers more
+  than a dev run.
 
 ## Helm values walkthrough (`charts/naslos/values.yaml`)
 

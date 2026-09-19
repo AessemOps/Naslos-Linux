@@ -10,6 +10,16 @@ import { test, expect } from '@playwright/test';
 // the session, and trustForwardHeader is off, so a client-supplied value is
 // ignored anyway.
 
+// The receiver a page-driven send targets is the browser's origin. The API pod
+// cannot always resolve that name: the appliance publishes naslos.local over
+// mDNS, which cluster DNS does not answer, so a self-send fails with "lookup
+// naslos.local: no such host". A production run can point the self-send tests at
+// the in-cluster API with NASLOS_RECEIVER_URL (the peer protocol and the stored
+// chains are identical either way).
+function receiverURL(page: import('@playwright/test').Page): string {
+  return process.env.NASLOS_RECEIVER_URL ?? new URL(page.url()).origin;
+}
+
 async function buddyIdentity(request: any): Promise<any> {
   const res = await request.get('/api/buddy/identity');
   expect(res.ok(), await res.text()).toBeTruthy();
@@ -51,7 +61,7 @@ test('schedules can be created and deleted', async ({ page, request }) => {
 
   await page.goto('/backups');
   await expect(page.getByRole('heading', { name: 'Backups', exact: true })).toBeVisible();
-  const receiver = new URL(page.url()).origin;
+  const receiver = receiverURL(page);
   const identity = await buddyIdentity(request);
   const source = `${identity.name ?? 'uitest'}/uitest-sched${Date.now().toString().slice(-6)}`;
 
@@ -101,7 +111,7 @@ test('a manual send reaches succeeded with chunks', async ({ page, request }) =>
   test.skip(dataset === null, 'no ZFS dataset available for a send');
 
   await page.goto('/backups');
-  const receiver = new URL(page.url()).origin;
+  const receiver = receiverURL(page);
   // The receiver only accepts sources inside the authorized peer's scope, so use
   // this instance's own name as the prefix: that is what a self-enrolled peer
   // allows, and what a user of the page would pick too.
@@ -138,7 +148,7 @@ test('Back up now drives a job from the page and Verify reads it back', async ({
   test.skip(dataset === null, 'no ZFS dataset available for a send');
 
   await page.goto('/backups');
-  const receiver = new URL(page.url()).origin;
+  const receiver = receiverURL(page);
   const source = `${identity.name ?? 'uitest'}/uitest-now${Date.now().toString().slice(-6)}`;
 
   const created = await request.post('/api/buddy/schedules', {
