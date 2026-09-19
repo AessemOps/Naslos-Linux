@@ -159,7 +159,9 @@
 
       <div>
         <label class="label" for="user-field-6">{user ? 'New Password (leave blank to keep current)' : 'Password'}</label>
-        <input id="user-field-6" type="password" bind:value={password} class="input w-full" />
+        <!-- required on create only: the API rejects a passwordless new account
+             (NAS-010), and editing leaves it blank to keep the current one. -->
+        <input id="user-field-6" type="password" bind:value={password} required={!user} class="input w-full" />
         <p class="text-xs text-gray-500 mt-1">This password is used for both web login and file shares (SMB).</p>
         <div class="mt-2 p-3 rounded-lg bg-naslos-dark border border-naslos-border text-xs text-gray-400 space-y-1">
           <p class="font-medium text-gray-300">Applying a password to file shares takes a moment</p>
