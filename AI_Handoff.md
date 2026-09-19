@@ -241,7 +241,8 @@ absence of any network policy with the privileged hostNetwork agent open on
 `:9090` to every pod. No secret values are in the report; the repo is private
 (unauth GitHub API 404), so the committed credentials are insider-exposure, not
 internet-exposure. Batch 1 of the fix plan needs a maintenance window and the
-operator's go-ahead to rotate the LDAP credential.
+operator's go-ahead to rotate the LDAP credential. **Grafana has been removed**
+(`grafana.enabled: false`, hardcoded admin password deleted) — AUDIT-H4 closed.
 
 ## Deployed right now (2026-09-19)
 
