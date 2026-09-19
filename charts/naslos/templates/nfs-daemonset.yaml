@@ -9,7 +9,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: naslos-nfs
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: naslos-nfs
     app.kubernetes.io/component: shares
