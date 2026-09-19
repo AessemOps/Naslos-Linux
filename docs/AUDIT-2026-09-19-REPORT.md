@@ -93,7 +93,7 @@ secret, and a runnable (if not yet wired) audit sweep.
 | L5 | Log-injection findings | **Fixed** — `internal/logsafe.Field` sanitises every request/peer-derived value before it reaches a log line (rev 27) |
 | L6 | Integer-conversion findings | **Fixed** — buddy free-space clamps instead of overflowing, `SealChunk` bounds the length field, tar modes are masked (rev 27) |
 | L7 | `md4` for the Samba NT hash | **Accepted** — protocol requirement |
-| L8 | `go test -race` fails (CR-06) | **Fixed** — the buddy scheduler's notification race is gone (`notificationsMu` guard); `go test -race ./...` passes in both modules and the sweep runs it unconditionally (rev 27) |
+| L8 | `go test -race` fails (CR-06) | **Fixed** — the buddy scheduler's notification race is gone (`notificationsMu` guard); `go test -race ./...` passes in both modules, the sweep runs it unconditionally, and api `0.1.0-r8` is live at revision 28 |
 | L9 | CR-38 remainder | **Fixed** — `LDAPTLS_REQCERT=never` replaced with CA verification (`d2f891a`, rev 24); all 44 `.Values.namespace` references migrated to `.Release.Namespace`, the value removed, and `values.schema.json` added (rev 25) |
 | L10 | gitleaks false positives | **Informational** |
 
@@ -197,7 +197,8 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
   now guarded (`notificationsMu` + `notificationManager()` /
   `setNotificationManager()`), every reader uses the accessor, and
   `go test -race ./...` passes in both modules; `scripts/audit.sh` runs it
-  unconditionally. This was the last blocker to a clean race sweep.
+  unconditionally. This was the last blocker to a clean race sweep. Deployed as
+  api `0.1.0-r8` at helm revision 28.
 - **Log safety and conversions (rev 27):** new `api/internal/logsafe` package
   (`Field`, with tests) strips control characters and caps length; every
   request/peer-derived value in a `log.Printf` now goes through it, and gosec
