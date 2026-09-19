@@ -120,15 +120,11 @@ spec:
             # (e.g. AGENT_BASE_URL=http://127.0.0.1:9090 with a port-forward).
             - name: AGENT_BASE_URL
               value: {{ .Values.api.agentBaseURL | default (printf "http://naslos-agent.%s.svc.cluster.local:9090" .Values.namespace) | quote }}
-            # Owner-route authentication (NAS-001). Unless auth.disabled is set,
-            # the API serves /api/* only to requests carrying the shared secret
-            # that Traefik's proxy-identity middleware injects; the API logs a
-            # warning at startup when the check is off.
-            - name: AUTH_DISABLED
-              value: {{ include "naslos.authDisabled" . | quote }}
+            # Owner-route authentication (NAS-001). The API serves /api/* only to
+            # requests carrying the shared secret that Traefik's proxy-identity
+            # middleware injects; it refuses to start without it. No opt-out.
             - name: TRAEFIK_CIDR
               value: {{ include "naslos.authTraefikCIDR" . | quote }}
-            {{- if eq (include "naslos.authEnabled" .) "true" }}
             - name: PROXY_SHARED_SECRET
               valueFrom:
                 secretKeyRef:
@@ -140,7 +136,6 @@ spec:
                 secretKeyRef:
                   name: {{ include "naslos.agentTokenSecret" . | default "naslos-agent" }}
                   key: token
-            {{- end }}
             {{- if .Values.api.talosConfigSecret }}
             # The talos machinery client library (api/internal/talos/client.go)
             # resolves its config via the TALOSCONFIG env var pointing at a

@@ -38,17 +38,12 @@ spec:
                   fieldPath: spec.nodeName
             # The agent is privileged and host-networked, so it only serves
             # callers proving they are the API: every request but /health must
-            # carry the shared bearer token (NAS-002). auth.disabled is the
-            # development opt-out; the agent warns loudly when it is set.
-            - name: AGENT_AUTH_DISABLED
-              value: {{ include "naslos.authDisabled" . | quote }}
-            {{- if eq (include "naslos.authEnabled" .) "true" }}
+            # carry the shared bearer token (NAS-002). No opt-out.
             - name: AGENT_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "naslos.agentTokenSecret" . | default "naslos-agent" }}
                   key: token
-            {{- end }}
           volumeMounts:
             # Host root for chroot /host zpool/zfs operations
             - name: host-root

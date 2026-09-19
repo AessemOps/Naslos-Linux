@@ -8,26 +8,19 @@ import (
 )
 
 // newTestServer builds a Server the way main does, with the owner auth gate armed
-// and every state file pointed at a temp dir so the test never touches the host.
-// The trusted CIDR covers httptest's synthetic client address (192.0.2.1), which
-// is how TRAEFIK_CIDR covers the real proxy.
-func newTestServer(t *testing.T, authDisabled bool) *Server {
+// (there is no opt-out any more) and every state file pointed at a temp dir so the
+// test never touches the host. The trusted CIDR covers httptest's synthetic client
+// address (192.0.2.1), which is how TRAEFIK_CIDR covers the real proxy.
+func newTestServer(t *testing.T) *Server {
 	t.Helper()
 
 	t.Setenv("TRAEFIK_CIDR", "192.0.2.0/24")
+	t.Setenv("PROXY_SHARED_SECRET", "test-proxy-secret")
 	t.Setenv("BUDDY_PEERS", filepath.Join(t.TempDir(), "peers.json"))
 	t.Setenv("BUDDY_RECEIVE_PATH", filepath.Join(t.TempDir(), "buddy"))
 	t.Setenv("SHARES_CONFIG", filepath.Join(t.TempDir(), "shares.json"))
 	t.Setenv("SMB_USERS_CONFIG", filepath.Join(t.TempDir(), "smbusers.json"))
 	t.Setenv("NOTIFICATIONS_CONFIG", filepath.Join(t.TempDir(), "notifications.json"))
-
-	if authDisabled {
-		t.Setenv("AUTH_DISABLED", "true")
-		t.Setenv("PROXY_SHARED_SECRET", "")
-	} else {
-		t.Setenv("AUTH_DISABLED", "false")
-		t.Setenv("PROXY_SHARED_SECRET", "test-proxy-secret")
-	}
 
 	return New("127.0.0.1:0", nil)
 }
@@ -53,9 +46,9 @@ var ownerPaths = []string{
 
 // TestOwnerRoutesRequireAuth is the regression test for NAS-001/NAS-004/NAS-005:
 // no owner route may be reachable without the proxy secret, and the identity
-// header alone (the NodePort forgery) must not be enough.
+// header alone (a forged identity header) must not be enough.
 func TestOwnerRoutesRequireAuth(t *testing.T) {
-	s := newTestServer(t, false)
+	s := newTestServer(t)
 
 	for _, path := range ownerPaths {
 		for _, headers := range []map[string]string{
@@ -92,7 +85,7 @@ func TestOwnerRoutesRequireAuth(t *testing.T) {
 // secret and an identity the request reaches the handler (a non-401 then depends
 // on the handler and its dependencies, which is not what this test is about).
 func TestOwnerRoutesPassWithTheProxySecret(t *testing.T) {
-	s := newTestServer(t, false)
+	s := newTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/pods", nil)
 	req.Header.Set("Remote-User", "admin")
@@ -109,7 +102,7 @@ func TestOwnerRoutesPassWithTheProxySecret(t *testing.T) {
 // the buddy peer API is authenticated by the peers' own keys (a peer cannot
 // complete an interactive login), and the static UI is served as-is.
 func TestPublicRoutesStayPublic(t *testing.T) {
-	s := newTestServer(t, false)
+	s := newTestServer(t)
 
 	for _, path := range []string{"/api/health", "/api/ready"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -131,33 +124,12 @@ func TestPublicRoutesStayPublic(t *testing.T) {
 	}
 }
 
-// TestAuthDisabledPassthrough covers the explicit development opt-out.
-func TestAuthDisabledPassthrough(t *testing.T) {
-	s := newTestServer(t, true)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
-	rec := httptest.NewRecorder()
-	s.router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Errorf("AUTH_DISABLED health: status = %d, want 200", rec.Code)
-	}
-
-	// No headers, no secret: the owner route is served anyway (and the handler
-	// answers for itself - what matters is that it is not the auth gate).
-	req = httptest.NewRequest(http.MethodGet, "/api/pods", nil)
-	rec = httptest.NewRecorder()
-	s.router.ServeHTTP(rec, req)
-	if rec.Code == http.StatusUnauthorized {
-		t.Errorf("AUTH_DISABLED owner route: status = 401, want the auth gate bypassed")
-	}
-}
-
 // TestNonAdminMayOnlyReachTheirIdentityAndDashboard pins CR-03 at the router
 // level: an authenticated user without `naslos_admins` keeps the three routes the
 // UI needs to render, and every administrator route answers 403 rather than
 // letting any signed-in account manage users, wipe disks or open the terminal.
 func TestNonAdminMayOnlyReachTheirIdentityAndDashboard(t *testing.T) {
-	s := newTestServer(t, false)
+	s := newTestServer(t)
 
 	call := func(path, groups string) int {
 		req := httptest.NewRequest(http.MethodGet, path, nil)

@@ -1,10 +1,9 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test';
 
 // The terminal reaches a root shell in a privileged container, so it must not be
-// usable from an unauthenticated entry point. What that refusal looks like
-// depends on the posture: through Traefik it is a 302 to the Authelia portal;
-// on the dev NodePort it is nginx's 403 (which is also why the interactive tests
-// below skip there). Either way it must never be a 200.
+// usable without a session. The only listener is Traefik, which answers an
+// unauthenticated request with a 302 to the Authelia portal; it must never be a
+// 200 (the interactive tests below use the authenticated session).
 const TERMINAL_PATHS = [
   '/api/pods?namespace=naslos',
   '/api/namespaces',
@@ -37,9 +36,9 @@ test('the terminal is refused without an authenticated session', async () => {
   }
 });
 
-// Whether the authenticated entry point is reachable from this run. Through the
-// node port it is not, so the interactive test below is skipped rather than
-// failing: that refusal is the assertion above.
+// Whether the terminal is reachable with the authenticated session. It is not
+// when the terminal component is disabled (terminal.enabled=false), in which case
+// the interactive tests skip rather than fail.
 async function terminalReachable(request: any): Promise<boolean> {
   const res = await request.get('/api/pods?namespace=naslos');
   return res.status() === 200;

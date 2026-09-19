@@ -49,12 +49,8 @@ type Server struct {
 	buddySchedules *buddyScheduleStore
 	// schedulerStop stops the backup scheduler; nil until started.
 	schedulerStop chan struct{}
-	// authDisabled is the explicit development opt-out (AUTH_DISABLED=true):
-	// every owner route is served without the proxy secret. Logged loudly at
-	// startup because it opens the API to anyone who can reach it.
-	authDisabled bool
-	router       *http.ServeMux
-	server       *http.Server
+	router        *http.ServeMux
+	server        *http.Server
 }
 
 // New creates a new server.
@@ -100,23 +96,18 @@ func New(addr string, tc *talos.Client) *Server {
 	}
 
 	// Initialize auth middleware. PROXY_SHARED_SECRET is the value Traefik's
-	// proxy-identity middleware injects on every request it forwards. Without it
-	// (and without the explicit AUTH_DISABLED dev opt-out) the API refuses to
-	// start rather than serve owner routes whose identity header anyone in the
-	// trusted CIDR could forge.
-	authDisabled := getEnv("AUTH_DISABLED", "false") == "true"
+	// proxy-identity middleware injects on every request it forwards. There is
+	// no opt-out: without it the API refuses to start rather than serve owner
+	// routes whose identity header anyone in the trusted CIDR could forge.
 	proxySecret := getEnv("PROXY_SHARED_SECRET", "")
-	if !authDisabled && proxySecret == "" {
-		log.Fatalf("PROXY_SHARED_SECRET is required; set it from the naslos-proxy Secret, or set AUTH_DISABLED=true for local development only")
+	if proxySecret == "" {
+		log.Fatalf("PROXY_SHARED_SECRET is required; set it from the naslos-proxy Secret")
 	}
 	authMiddleware, err := auth.NewMiddleware([]string{
 		getEnv("TRAEFIK_CIDR", "10.0.0.0/8"),
 	}, proxySecret)
 	if err != nil {
 		log.Fatalf("Failed to create auth middleware: %v", err)
-	}
-	if authDisabled {
-		log.Printf("WARNING: AUTH_DISABLED=true - every owner API route is served without authentication; do not expose this instance")
 	}
 
 	// Agent client for ZFS pool operations. The agent DaemonSet is fronted by
@@ -167,9 +158,8 @@ func New(addr string, tc *talos.Client) *Server {
 		namespace:     namespace,
 		buddy:         buddyReceiver,
 		// Owner routes are gated on the proxy secret by the composed router in
-		// routes(); AUTH_DISABLED turns that gate off for local development.
-		authDisabled: authDisabled,
-		router:       http.NewServeMux(),
+		// routes().
+		router: http.NewServeMux(),
 	}
 	s.routes()
 	return s
@@ -196,8 +186,8 @@ func getEnvInt(key string, defaultValue int) int {
 // routes registers all API routes.
 //
 // Every owner-facing route lives on the `owner` mux, which is wrapped in the
-// auth middleware (proxy secret + trusted source + identity header) unless the
-// explicit AUTH_DISABLED dev opt-out is set. Only the health probes, the buddy
+// auth middleware (proxy secret + trusted source + identity header). Only the
+// health probes, the buddy
 // peer API (authenticated by the peers' own Ed25519 keys) and the static UI are
 // public; ServeMux's longest-pattern match makes those beat the "/api/"
 // catch-all, so a new owner endpoint cannot be added unauthenticated by
@@ -288,32 +278,23 @@ func (s *Server) routes() {
 	// Everything else under /api/ requires an authenticated *administrator*.
 	// `naslos_admins` is the group Authelia forwards; without this gate any
 	// authenticated account could manage users, wipe disks or open the root
-	// terminal (CR-03). With AUTH_DISABLED set (development only) both wrappers
-	// pass through.
+	// terminal (CR-03). There is no bypass.
 	s.router.Handle("/api/", s.requireOwnerAuth(s.requireAdmin(owner)))
 
 	// Serve UI static files
 	s.router.Handle("/", http.FileServer(http.Dir("/var/naslos/ui")))
 }
 
-// requireOwnerAuth wraps the owner route mux in the authentication middleware,
-// or serves it bare when the AUTH_DISABLED development opt-out is set (logged
-// loudly at startup).
+// requireOwnerAuth wraps the owner route mux in the authentication middleware.
+// There is no opt-out: a request without the proxy secret is always rejected.
 func (s *Server) requireOwnerAuth(next http.Handler) http.Handler {
-	if s.authDisabled {
-		return next
-	}
 	return s.auth.RequireAuth(next)
 }
 
 // requireAdmin additionally requires the authenticated user to be a Naslos
 // administrator (the `naslos_admins` group). It runs after RequireAuth, so the
-// user is already in the request context; with AUTH_DISABLED it passes through
-// like the rest of the chain.
+// user is already in the request context.
 func (s *Server) requireAdmin(next http.Handler) http.Handler {
-	if s.authDisabled {
-		return next
-	}
 	return s.auth.RequireAdmin(next)
 }
 
