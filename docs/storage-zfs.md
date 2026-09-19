@@ -161,15 +161,15 @@ storage:
   localPath:
     enabled: true
     path: /var/mnt/local-path-provisioner
-  zfsLocalPV:
-    enabled: true
-    poolName: "naslos-pool"
 ```
 
-- **local-path-provisioner** gives apps cheap host-path storage.
-- **ZFS LocalPV CSI / `naslos-zfs`** gives apps ZFS-backed PVCs (used by the
-  OpenLDAP StatefulSet and by catalog apps that request `storageClass:
-  naslos-zfs`).
+- **local-path-provisioner** is the only provisioner deployed; every PVC
+  (OpenLDAP, shares, buddy) binds through it.
+- **ZFS LocalPV is not installed.** A `storage.zfsLocalPV` block used to sit here
+  but no template consumed it, the provisioner was never deployed and its pool
+  name did not exist on the node; the block was removed on 2026-09-19
+  (AUDIT-M13). Install the provisioner and add a `naslos-zfs` StorageClass first
+  if ZFS-backed PVCs are wanted.
 
 ## Lifecycle & gotchas
 

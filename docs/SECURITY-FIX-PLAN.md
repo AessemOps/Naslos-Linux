@@ -1,6 +1,13 @@
 # Critical Security Fixes — Naslos (NAS-001/002/003 + coupled auth Highs)
 
-## Status: implemented (2026-09-17, branch `feature/security-fixes`)
+## Status: implemented then superseded (2026-09-19)
+
+> **Superseded.** The mechanism this plan is built around — the `AUTH_DISABLED`
+> development opt-out and the UI NodePort it exists for — was **removed** on
+> 2026-09-19. The API and agent now always require their credential, the only
+> listener is the Authelia-protected proxy, and the remaining work lives in
+> `docs/AUDIT-2026-09-19-FIXPLAN.md`. Everything below is the record of how the
+> NAS-001/002/003 batch was implemented; do not follow the `auth.disabled` steps.
 
 Tasks 1–9 are implemented; the deviations from this plan and the pieces left open
 are listed here so the next session does not re-derive them.

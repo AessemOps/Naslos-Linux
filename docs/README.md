@@ -21,7 +21,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [identity-sso.md](identity-sso.md) | Single sign-on: Authelia, OpenLDAP, Samba hash sync, RBAC groups, 2FA | Rebuilt (replaces `authentication.md`) |
 | [shares.md](shares.md) | SMB / NFS / Time-Machine share model, generated configs | New |
 | [app-catalog.md](app-catalog.md) | App catalog, JSON-Schema-driven forms, Helm lifecycle, start/stop | New |
-| [monitoring.md](monitoring.md) | Metrics API, Prometheus + Grafana dashboard | New |
+| [monitoring.md](monitoring.md) | Metrics API, Prometheus + Alertmanager (Grafana removed) | New |
 | [notifications.md](notifications.md) | ntfy alerting: topics, severities, defaults | New |
 | [deployment.md](deployment.md) | Prerequisites, Make targets, Helm values walkthrough | New |
 | [operations.md](operations.md) | Day-2: LDAP backup/restore, troubleshooting | New |

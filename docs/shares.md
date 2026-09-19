@@ -222,7 +222,7 @@ smb://192.168.1.96/test                  [Copy]
 - The host is taken from the address the operator is browsing the UI on
   (`window.location.hostname`). SMB and NFS are both served by `hostNetwork`
   pods on that same node, so the UI host *is* the file server; the port is
-  deliberately not included (SMB uses 445, NFS 2049 — not the UI's NodePort).
+  deliberately not included (SMB uses 445, NFS 2049 — not the UI's HTTPS port).
 - SMB shares show `smb://<host>/<name>`; NFS shares show `nfs://<host>/<name>`,
   which is the NFSv4 pseudo path, i.e. exactly the source that
   `mount -t nfs4` takes (`mount -t nfs4 <host>:/<name> /mnt`).
