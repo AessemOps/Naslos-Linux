@@ -18,7 +18,7 @@
 > | NAS-004 terminal unauthenticated, NAS-005 `/api/ws/logs` unauthenticated | **Fixed** — owner gate; the nginx 403 path is gone with the NodePort |
 > | NAS-008 NodePort exposes the API | **Fixed** — the listener and the whole dev posture were removed |
 > | NAS-009 `X-Forwarded-Host` trust | **Fixed** — `trustForwardHeader` removed from the forwardAuth middleware |
-> | NAS-010 default credentials | **Partial** — Grafana removed; the LDAP **service** password is rotated and no longer committed (AUDIT-H1 fixed). Still open: the OpenLDAP **admin** default `naslos-admin`, `TempPass123!` initial user passwords, the registry `secret` |
+> | NAS-010 default credentials | **Mostly fixed** — Grafana removed; the LDAP service password rotated and de-committed (AUDIT-H1); `generate-secrets.sh` now generates random admin/service passwords instead of `naslos-admin`/`CHANGE_ME_*`; the OpenLDAP entrypoint no longer defaults `LDAP_ADMIN_PASSWORD` to `admin`; new users get an unguessable random placeholder instead of `TempPass123!` and the API rejects a passwordless create (400); `deploy-vm.sh` requires `REGISTRY_HTTP_SECRET`. **Residual:** the *running* instance's LDAP admin password is still `naslos-admin` (it was initialised with it) — rotating it means modifying `olcRootPW` in the `cn=config` database, so it is a deliberate, separate operation |
 > | NAS-014 jwt regenerated per render, NAS-017 agent client token | **Fixed** — jwt secret persisted; streaming client carries the token |
 > | everything else | historical; see the status table in `docs/CODE-REVIEW.md` |
 

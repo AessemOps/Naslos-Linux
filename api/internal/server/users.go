@@ -42,6 +42,13 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "uid and lastName are required")
 			return
 		}
+		// A password is required: without one the account would fall back to a
+		// placeholder, and a silent default credential is exactly what NAS-010
+		// flagged (the old placeholder was the documented "TempPass123!").
+		if req.Password == "" {
+			writeError(w, http.StatusBadRequest, "password is required")
+			return
+		}
 
 		person, err := s.identity.CreatePerson(req.UID, req.DisplayName, req.Email, req.FirstName, req.LastName)
 		if err != nil {

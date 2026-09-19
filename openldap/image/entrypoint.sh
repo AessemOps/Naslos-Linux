@@ -9,7 +9,11 @@ SLAPD_DATA_DIR="/var/lib/ldap"
 CERT_DIR="/container/service/slapd/assets/certs"
 LDAP_DOMAIN="${LDAP_DOMAIN:-naslos.local}"
 LDAP_ORGANISATION="${LDAP_ORGANISATION:-Naslos}"
-LDAP_ADMIN_PASSWORD="${LDAP_ADMIN_PASSWORD:-admin}"
+# No default (NAS-010): the manifests always inject this from the
+# naslos-openldap Secret (key admin-password). A fallback of "admin" meant a
+# standalone `docker run` of this image initialised the directory with a
+# documented root password.
+LDAP_ADMIN_PASSWORD="${LDAP_ADMIN_PASSWORD:?LDAP_ADMIN_PASSWORD must be set (from the naslos-openldap Secret)}"
 LDAP_TLS="${LDAP_TLS:-true}"
 
 # Generate domain components from LDAP_DOMAIN (e.g. naslos.local -> dc=naslos,dc=local)
