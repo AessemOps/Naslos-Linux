@@ -57,9 +57,8 @@ in three places so that no single mistake opens it:
 
 | Layer | Behaviour |
 | --- | --- |
-| `naslos-ui` nginx | **Refuses** `/api/ws/exec`, `/api/pods`, `/api/namespaces` outright (403, JSON body). This listener is the node-port one, where nothing proves who is asking - so it never forwards these paths, and a client cannot smuggle the identity header through it |
-| Traefik (`ingress.enabled`) | Routes those paths **straight to the API** (not through nginx) behind the `forwardauth-authelia` and `proxy-identity` middlewares. `forwardauth-authelia` declares `authResponseHeaders`, so Traefik *replaces* any `Remote-User` a client sent with Authelia's answer; `proxy-identity` adds the shared secret from the `naslos-internal-auth` Secret |
-| `naslos-api` | Requires the proxy-issued shared secret **and** a non-empty identity header on every terminal endpoint, and fails closed: missing/absent/wrong secret → 401. The API refuses to start without `PROXY_SHARED_SECRET` unless `auth.disabled: true` is set (development only, logged loudly) |
+| Traefik | Routes every `/api` path **straight to the API** behind the `forwardauth-authelia` and `proxy-identity` middlewares. `forwardauth-authelia` declares `authResponseHeaders`, so Traefik *replaces* any `Remote-User` a client sent with Authelia's answer; `proxy-identity` adds the shared secret from the `naslos-proxy` Secret. There is no other listener: the UI NodePort and the nginx refusal block were removed on 2026-09-19 |
+| `naslos-api` | Requires the proxy-issued shared secret **and** a non-empty identity header on every terminal endpoint, and fails closed: missing/absent/wrong secret → 401. The API refuses to start without `PROXY_SHARED_SECRET`; there is no opt-out |
 
 The shared secret is what closes the forgery hole: an identity header alone proves
 nothing when a client can reach the API directly (for example over the node port),
@@ -74,32 +73,15 @@ host (ports ignored). Sessions are logged with the authenticated user.
 
 ### Current state of this installation
 
-There are **no `IngressRoute`/`Middleware` resources in the cluster** -
-`ingress.enabled` is `false` in `values-vm.yaml`, so the chart's Traefik routes
-(including the terminal's) are not rendered, and the node port is the only way to
-reach the UI. The node port still refuses the three terminal paths in nginx, so
-**the terminal is refused everywhere** - the intended behaviour for an
-unauthenticated entry point.
+The instance runs the **only** posture: `ingress.enabled=true` in
+`values-vm.yaml`, so the chart's IngressRoutes put every `/api` path behind
+Traefik + Authelia and the API requires the proxy secret. The UI NodePort and the
+`auth.disabled` opt-out were removed on 2026-09-19, so the terminal has exactly
+one, authenticated way in.
 
-Two ways forward:
-
-```bash
-# 1. Give the terminal its authenticated entry point (the intended shape):
-#    deploys the chart's IngressRoutes + Authelia + proxy-identity middlewares
-#    for <authelia.domain>, and keeps auth.disabled=false so the API requires
-#    the proxy secret.
-helm upgrade ... --set ingress.enabled=true
-
-# 2. Or accept unauthenticated access on a trusted network (development only):
-#    auth.disabled=true serves every owner API route without the proxy secret.
-#    Note this does NOT open the terminal: nginx still refuses its paths on the
-#    node port, so a terminal needs option 1.
-helm upgrade ... --set auth.disabled=true
-```
-
-Option 1 is what the interactive Playwright test needs (reached through Traefik
-with Authelia), which is why that test skips when the chart's ingress is not
-deployed.
+The interactive Playwright test therefore runs rather than skips: it
+authenticates through Authelia (see "Running the E2E suite" in
+`docs/deployment.md`).
 
 The terminal container itself exposes nothing: it runs no server, listens on no
 port, and is reachable only through the API's exec endpoint. If the terminal is
@@ -119,5 +101,6 @@ RBAC together.
   URL: the API answers with the resolved target, or the reason it cannot attach.
   A browser cannot read the status of a failed handshake, so this is the only way
   to show "pod not found" or "pick a container" properly.
-- An idle session is kept open by nginx's `proxy_read_timeout 3600s` on
-  `/api/ws/`; closing the tab, or Disconnect, ends the exec session.
+- An idle session stays open because the API's `WriteTimeout` is deliberately 0
+  for the websocket routes (the read/idle timeouts still bound a slow client);
+  closing the tab, or Disconnect, ends the exec session.

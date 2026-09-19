@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/AessemOps/Naslos-Linux/api/internal/agent"
 	"github.com/AessemOps/Naslos-Linux/api/internal/auth"
@@ -340,6 +341,13 @@ func (s *Server) Start() error {
 	s.server = &http.Server{
 		Addr:    s.addr,
 		Handler: s.router,
+		// Bound slow clients (gosec G112 / Slowloris): without
+		// ReadHeaderTimeout one connection can hold a worker open indefinitely.
+		// WriteTimeout stays 0 on purpose - the terminal and log streams are
+		// long-lived websockets that a write deadline would cut.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	log.Printf("Naslos API listening on %s", s.addr)
 	return s.server.ListenAndServe()

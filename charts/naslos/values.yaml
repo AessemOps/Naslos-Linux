@@ -293,9 +293,11 @@ prometheus:
           cpu: 200m
           memory: 512Mi
 
+# Grafana is disabled for now: it is not part of the current surface, and the
+# static admin password it shipped with was a finding (AUDIT-H4). Enabling it
+# again needs a credential from a Secret, never a literal here.
 grafana:
-  enabled: true
-  adminPassword: "naslos-admin"
+  enabled: false
   dashboardProviders:
     dashboardproviders.yaml:
       apiVersion: 1
@@ -320,10 +322,10 @@ storage:
   localPath:
     enabled: true
     path: /var/mnt/local-path-provisioner
-  # ZFS LocalPV CSI for ZFS-backed volumes
-  zfsLocalPV:
-    enabled: true
-    poolName: "naslos-pool"
+  # No zfsLocalPV block: no template consumed it, the ZFS LocalPV provisioner
+  # is not installed, and its pool name did not exist on the node (AUDIT-M13).
+  # Every volume binds through local-path above. Add the provisioner first if
+  # ZFS-backed PVCs are ever wanted.
 
 # OpenLDAP configuration
 openldap:

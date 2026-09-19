@@ -74,7 +74,7 @@ unmodified Talos installation, administered through a web UI.
 | `naslos-traefik` | DaemonSet | Ingress (IngressRoutes), TLS termination, forwardAuth to Authelia |
 | Authelia | Deployment | Web SSO / 2FA against OpenLDAP |
 | ntfy | Deployment | Push notifications for system events |
-| Prometheus + Grafana | Deployments | Long-term metrics and dashboards |
+| Prometheus + Alertmanager | Deployments | Long-term metrics and alert routing (Grafana removed 2026-09-19) |
 | `zfs-service` | Talos system service | Auto-imports pools at boot (`zpool import -fal`) |
 
 ### 2.2 Trust boundaries and security requirements
@@ -665,8 +665,9 @@ real receiver over HTTP (an `httptest` server) against the real client:
 | `TestBuddyScheduleReceiversValidation` | FR-BUD-15 (at least one receiver, every URL valid, duplicates collapsed) |
 | `TestBuddySendRefusesADatasetTheHostCannotSee` / `TestBuddySendAllowsADatasetWithNoMountpoint` | FR-BUD-11 (a dataset mounted only inside a pod is refused before any snapshot; mountpoint none stays sendable) |
 
-Verified on the live VM (192.168.1.96) through the UI's NodePort, i.e. peer →
-nginx → API, with the chart's `buddy` values enabled:
+Historical verification (2026-09-14, retired .96 VM, through its UI NodePort —
+that listener was removed on 2026-09-19, and the same checks now run through the
+ingress): peer → nginx → API, with the chart's `buddy` values enabled:
 
 | Check | Verifies |
 | --- | --- |

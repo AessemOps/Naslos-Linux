@@ -77,8 +77,9 @@ transient by design.
 1. Check LDAP is actually up: `kubectl -n naslos get pods,svc naslos-openldap`
    and `kubectl -n naslos get endpoints naslos-openldap` (a Service with no
    endpoints means the pod is not ready).
-2. Check what the API thinks: `curl -s localhost:8080/api/ready` (via the
-   NodePort or a port-forward) → `{"status":"ok","ldap":"up"|"down"}`.
+2. Check what the API thinks: `curl -s localhost:8080/api/ready` (via a
+   `kubectl port-forward`, or through the ingress with a session —
+   `/api/ready` is behind the 2FA gate) → `{"status":"ok","ldap":"up"|"down"}`.
 3. The error body names the underlying cause (e.g. `dial tcp …: connect:
    connection refused`, or `no such host`).
 4. **No API restart is required** — the next request after LDAP returns will
