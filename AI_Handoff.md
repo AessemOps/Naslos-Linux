@@ -94,11 +94,19 @@ under "Not done" below.
   source (96K/96K, 1.00x) carrying its `buddy-20260919T002521Z-3aa5` snapshot.
 - **Suite baseline now `30 passed / 2 skipped`** — the two Buddy tests run, and the
   only skips left are terminal exec over the NodePort (refused by nginx, by design).
-- **Not done yet**: the real posture still needs Authelia portal routing, the
-  `naslos-tls` secret, Traefik exposed on the LAN, an LDAP operator in
-  `naslos_admins` with TOTP, and a peer-API bypass. Cosmetic residual: the peer
-  JSON still serializes `lastSeenAt` as `0001-01-01T00:00:00Z` (the schedule
-  equivalent was fixed; the peer struct was not).
+- **Production posture is charted but not cut over yet.** `values-prod.yaml` +
+  `make install-prod` turn on the proxy path: Traefik hostPort 80/443,
+  `https://naslos.local`, Authelia forwardAuth with the portal at `/authelia`
+  and 2FA on every admin prefix, a chart-generated `naslos-tls` cert, `/api`
+  routed straight to the API, and the NodePort off. The `naslos.local` name
+  already resolves via the Samba container's mDNS record. Remaining before/at
+  cutover: create the `admin` account in `naslos_admins` while auth is still
+  off, run `make install-prod`, then verify and enroll TOTP — the full
+  step list, rollback and the reason the Playwright suite can only run on the
+  dev posture are in `docs/deployment.md`. The peer-API bypass is already in
+  the Authelia config. Cosmetic residual: the peer JSON still serializes
+  `lastSeenAt` as `0001-01-01T00:00:00Z` (the schedule equivalent was fixed;
+  the peer struct was not).
 
 ## How to run it
 
@@ -131,9 +139,11 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
 2. **`helm upgrade --reuse-values` ignores `-f` files.** Anything new must be passed
    with `--set` (e.g. `auth.disabled`, `ingress.enabled`), or the release keeps old
    values and templates that dereference new keys can fail to render.
-3. **The VM runs `auth.disabled=true`** because it has no reachable Traefik: every
-   owner route is open on the NodePort (NAS-008). Never expose it. A real deployment
-   runs with the default `auth.disabled=false` behind the proxy secret.
+3. **The VM currently runs the dev posture (`auth.disabled=true`)** with the UI on
+   the NodePort: every owner route is open (NAS-008). Never expose it. The
+   production posture is `values-prod.yaml` + `make install-prod` (Traefik
+   hostPort 80/443, Authelia forwardAuth, NodePort off) and is the intended end
+   state; `install-vm` remains the dev profile the Playwright suite needs.
 4. **The buddy identity is the KEK.** `/var/lib/naslos/buddy-identity.json` holds the
    private key and the key-encryption key: losing it makes every stored backup
    unreadable, and `helm uninstall` would delete it (CR-02). Back it up separately.
@@ -184,5 +194,7 @@ On `192.168.1.117`: `naslos-api`, `naslos-ui` and `naslos-agent` are at
 **`0.1.0-r2`** (the CR-07/15/18/19/22 batch); `naslos-samba`, `naslos-nfs`,
 `naslos-terminal` and the OpenLDAP manifests stay at **`0.1.0-r1`**; chart
 `naslos-0.1.0`, helm revision **4**, Talos **v1.14.1** (kernel 6.18.51-talos),
-ZFS pool `test` (stripe, 79 G) + dataset `test/drill`. The old VM's tags
-(`api 0.1.0-b21`, `agent 0.1.0-b6`, `ui 0.1.0-b9`, revision 82) are retired with it.
+ZFS pool `test` (stripe, 79 G) + dataset `test/drill`. The posture is still the
+**dev one** (NodePort, auth off); the production cutover (`make install-prod`) has
+not been run yet. The old VM's tags (`api 0.1.0-b21`, `agent 0.1.0-b6`,
+`ui 0.1.0-b9`, revision 82) are retired with it.
