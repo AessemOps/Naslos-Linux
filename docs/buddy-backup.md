@@ -239,9 +239,10 @@ kubectl -n naslos create secret generic naslos-buddy \
 helm upgrade … --set buddy.enrollTokenSecret=naslos-buddy
 ```
 
-Peers reach this API the same way the UI does — through the NodePort or ingress you
-already expose, on the `/api/` path. **No new port and no Traefik requirement**;
-nothing else about the deployment changes.
+Peers reach this API the same way the UI does — through the ingress, on the
+`/api/buddy/v1/` path (Authelia bypasses that prefix; peers authenticate with
+their own Ed25519 keys). **No new port and no separate listener**; nothing else
+about the deployment changes.
 
 The nginx in front of the UI raises `client_max_body_size` to 8 MB for
 `/api/buddy/` specifically, because its default of 1 MB would reject every 1 MiB

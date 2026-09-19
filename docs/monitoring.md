@@ -4,8 +4,9 @@ Naslos ships two monitoring layers:
 
 1. A **live metrics API** (`GET /api/metrics`, `GET /api/dashboard`) served by
    `naslos-api` from the `metrics` package.
-2. **Prometheus + Grafana** (Helm dependencies) with a 30-day retention and a
-   preloaded `Naslos Overview` dashboard.
+2. **Prometheus + Alertmanager** (Helm dependencies) with a 30-day retention.
+   Grafana was removed on 2026-09-19 (AUDIT-H4); the metrics API plus Prometheus
+   are the current story.
 
 ## Metrics model
 
@@ -30,7 +31,7 @@ SystemMetrics
 The manager is intentionally a pass-through: a collector process fills the
 snapshot; the API serves it under a mutex.
 
-## Prometheus & Grafana
+## Prometheus & Alertmanager
 
 Wired through `charts/naslos/values.yaml`:
 
@@ -43,34 +44,22 @@ prometheus:
       resources:
         requests: { cpu: 200m, memory: 512Mi }
 
-grafana:
-  enabled: true
-  adminPassword: "naslos-admin"     # CHANGE ME
-  dashboardProviders:
-    dashboardproviders.yaml:
-      providers:
-        - name: naslos
-          orgId: 1
-          folder: Naslos
-          type: file
-          options:
-            path: /var/lib/grafana/dashboards/naslos
-  dashboards:
-    naslos:
-      naslos-overview:
-        json: '{ "title": "Naslos Overview", "uid": "naslos-home" }'
+# Grafana is NOT deployed: it was removed on 2026-09-19 (AUDIT-H4) because it
+# shipped a committed default admin password and was unused (ClusterIP, no
+# IngressRoute). Re-enabling it requires a credential from a Secret.
+# See docs/AUDIT-2026-09-19.md.
 ```
 
 - Prometheus scrapes Kubernetes metrics; retention is 30 days.
-- Grafana reads a `Naslos Overview` dashboard from the provided JSON (extend
-  `dashboards.naslos` with real panels).
-- Both are Helm dependencies of the umbrella chart, enabled by default.
+- Alertmanager routes alerts; it is a Helm dependency of the umbrella chart.
+- Grafana is **not deployed** (removed 2026-09-19). Re-enabling it needs a
+  credential from a Secret, never the old committed default.
 
 ## Relating to the dashboard UI
 
 The SvelteKit home screen (`ui/src/lib/components/Dashboard.svelte`) renders
-`GET /api/dashboard` data; the Grafana dashboard is the deeper, long-term view
-and can be linked from the UI.
+`GET /api/dashboard` data; Prometheus is the deeper, long-term view (query it
+directly or through the API; there is no Grafana dashboard to link to).
 
 See [api.md](api.md) for the exact routes and [deployment.md](deployment.md)
 for Helm values that control these components.

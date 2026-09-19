@@ -69,7 +69,7 @@ see the [document index](README.md).
 | OpenLDAP :636 | LDAPS | users, groups, password modify |
 | Samba container | kubectl exec + `pdbedit` | NT-hash sync |
 | Helm SDK | in-process | app install / upgrade / uninstall |
-| Prometheus / Grafana | HTTP | metrics, dashboards |
+| Prometheus | HTTP | metrics (Grafana removed 2026-09-19) |
 | ntfy (owned or ntfy.sh) | HTTPS | push notifications |
 
 ## Layer 2 — Deployment Topology (namespace `naslos`)
@@ -104,8 +104,8 @@ see the [document index](README.md).
                   │  │  cmd: chroot /host zpool|zfs|wipefs           │ │
                   │  └───────────────────────────────────────────────┘ │
                   │  ┌────────────┐  ┌────────────┐  ┌─────────────┐  │
-                  │  │ ntfy       │  │ prometheus │  │ grafana     │  │
-                  │  │  (Helm dep)│  │ ret. 30d   │  │  dashboards │  │
+                  │  │ ntfy       │  │ prometheus │  │ alertmgr    │  │
+                  │  │  (Helm dep)│  │ ret. 30d   │  │  routing    │  │
                   │  └────────────┘  └────────────┘  └─────────────┘  │
                   └────────────────────────────────────────────────────┘
 ```
