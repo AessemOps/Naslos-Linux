@@ -118,6 +118,8 @@ LDAP **admin** password was rotated on 2026-09-19 (`olcRootPW` replaced in both
 `naslos-openldap` Secret, bootstrap re-run green; the new value binds and
 `naslos-admin` is rejected).
 
+| **AUDIT-L9 (part)** `LDAPTLS_REQCERT=never` replaced with CA verification in the API wait init and the bootstrap job; `.Release.Namespace` and `values.schema.json` still open | revision 24 |
+
 **Still open:** M3's residual (Authelia's config is a ConfigMap, so
 its `jwt_secret` and the LDAP bind password stay readable there until the config
 moves into a Secret), M4 (network policy / enforcing CNI), M6 (PSA scoping), M10
