@@ -1,0 +1,56 @@
+name: audit
+
+# AUDIT-M12: nothing ran these checks automatically, so regressions like a
+# committed credential or a vulnerable dependency could land silently. Every PR
+# now runs the same sweep as `sh scripts/audit.sh`.
+#
+# `go test -race` is deliberately not enabled yet: CR-06 (the buddy scheduler
+# race) is still open. Flip NASLOS_AUDIT_RACE to 1 here once it is fixed.
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks needs the history
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: |
+            api/go.sum
+            agent/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - uses: azure/setup-helm@v4
+
+      - name: Install Go scanners
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Install gitleaks
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+
+      - name: Install UI dependencies
+        run: npm ci
+        working-directory: ui
+
+      - name: Run the audit sweep
+        run: sh scripts/audit.sh
