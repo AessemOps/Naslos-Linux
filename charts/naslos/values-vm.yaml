@@ -52,7 +52,7 @@ agent:
 ui:
   image:
     repository: 192.168.1.2:30095/naslos-ui
-    tag: "0.1.0-r2"
+    tag: "0.1.0-r3"
   # Expose the UI directly via NodePort on 192.168.1.117:30080.
   # Traefik is still installed but the IngressRoute expects the authelia.domain,
   # which is the VM IP; browsers can reach the NodePort without a LoadBalancer.

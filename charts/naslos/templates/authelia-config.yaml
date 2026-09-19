@@ -164,6 +164,17 @@ data:
           subject:
             - "group:naslos_admins"
           policy: two_factor
+        # The Traefik dashboard exposes every router, service and middleware, so
+        # it is operator-only. Admins already matched the subject rule above
+        # (with 2FA); a non-admin account is denied outright rather than being
+        # let in on one_factor. First match wins, so an account in both groups
+        # is still allowed by the rule above.
+        - domain: {{ .Values.authelia.domain | quote }}
+          subject:
+            - "group:naslos_users"
+          policy: deny
+          resources:
+            - "^/traefik"
         # Everything else the proxy forwards needs at least a session.
         - domain: {{ .Values.authelia.domain | quote }}
           policy: one_factor

@@ -13,7 +13,7 @@ spec:
     # The API and the Authelia portal have their own IngressRoutes
     # (ingress-api.yaml); excluding those prefixes here means this route only
     # ever serves the SPA, without relying on Traefik's rule-length priority.
-    - match: Host(`{{ .Values.authelia.domain }}`) && !PathPrefix(`/api`) && !PathPrefix(`/authelia`)
+    - match: Host(`{{ .Values.authelia.domain }}`) && !PathPrefix(`/api`) && !PathPrefix(`/authelia`) && !PathPrefix(`/traefik`)
       kind: Rule
       middlewares:
         - name: forwardauth-authelia
