@@ -80,11 +80,21 @@ under "Not done" below.
   agent — this closes the gap the Talos upgrade test left open. The suite then ran
   **28 passed / 4 skipped** (up from 16/5): the extra passes are the shares/pools
   specs that were skipping for lack of storage.
-- **Not done yet**: Buddy is disabled (no receive dataset, and 2 of the 4 remaining
-  suite skips are its send/verify tests); 2 others are terminal exec over the
-  NodePort, refused by design. The real posture still needs Authelia portal routing,
-  the `naslos-tls` secret, Traefik exposed on the LAN, an LDAP operator in
-  `naslos_admins` with TOTP, and a peer-API bypass.
+- **Buddy is enabled and drilled** (chart revision 3, `buddy.name=naslos-vm`,
+  receive dataset `test/naslos-buddy`): the ownership init container chowned the
+  freshly created dataset by itself (`was 0:0`), the identity was created
+  (`naslos-vm`, fp `SHA256:R0SKyVd…`), and the instance was authorized on its own
+  receiver as `self-loopback` (`allowedSources: [naslos-vm/]`). Send → verify →
+  restore all passed: chain `ad1aa6ecd3d59a99`, 1 chunk / 44 376 B, verify digest
+  `e29d09f2…`, and the restore landed `test/drill-buddy-restored` identical to the
+  source (96K/96K, 1.00x) carrying its `buddy-20260919T002521Z-3aa5` snapshot.
+- **Suite baseline now `30 passed / 2 skipped`** — the two Buddy tests run, and the
+  only skips left are terminal exec over the NodePort (refused by nginx, by design).
+- **Not done yet**: the real posture still needs Authelia portal routing, the
+  `naslos-tls` secret, Traefik exposed on the LAN, an LDAP operator in
+  `naslos_admins` with TOTP, and a peer-API bypass. Cosmetic residual: the peer
+  JSON still serializes `lastSeenAt` as `0001-01-01T00:00:00Z` (the schedule
+  equivalent was fixed; the peer struct was not).
 
 ## How to run it
 
@@ -99,15 +109,14 @@ helm lint charts/naslos -f charts/naslos/values.yaml
 make api-image IMAGE_TAG=0.1.0-b22 && docker push 192.168.1.2:30095/naslos-api:0.1.0-b22
 helm upgrade naslos charts/naslos -n naslos --reuse-values \
   --set api.image.tag=0.1.0-b22 --wait
-curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.96:30080/api/ready
+curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.117:30080/api/ready
 ```
 
 VM facts: node `192.168.1.117`, UI on NodePort `:30080`, private registry
 `192.168.1.2:30095`, namespace `naslos`, `TALOSCONFIG=bootstrap/vm/talosconfig`.
-Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with dataset `test/drill`;
-**Buddy is disabled** — enabling it needs `zfs create test/naslos-buddy` plus
-`--set buddy.enabled=true --set buddy.receiveHostPath=/var/mnt/test/naslos-buddy
---set buddy.receivePath=/var/lib/naslos/buddy`.
+Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` and
+`test/naslos-buddy` (the buddy receive dataset); **Buddy is enabled** with
+`buddy.name=naslos-vm` and `peersFile`/`schedulesFile` on the state PVC.
 
 ## Operational gotchas (hard-won — read before drilling)
 
@@ -143,6 +152,12 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with dataset `test/drill`;
    a dataset or a peer scope is missing: treat a skip as a setup gap, not a pass
    (CR-23). Terminal exec tests always skip over the NodePort (nginx refuses those
    paths by design).
+10. **A restored dataset cannot be destroyed until the agent restarts.** `zfs receive`
+   runs through the privileged agent, so the destination stays mounted in the
+   **agent's** mount namespace and `zfs destroy` answers `dataset is busy` (the
+   terminal pod's namespace does not see that mount). Remedy:
+   `kubectl -n naslos rollout restart ds/naslos-agent`, then destroy — verified on
+   .117 with the drill's `test/drill-buddy-restored`.
 
 ## Conventions
 
