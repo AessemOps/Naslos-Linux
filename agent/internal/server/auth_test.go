@@ -59,13 +59,4 @@ func TestRequireAuth(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("unconfigured token: status = %d, want 401", rec.Code)
 	}
-
-	// The explicit development opt-out.
-	open := &Server{router: http.NewServeMux(), authDisabled: true}
-	open.routes()
-	rec = httptest.NewRecorder()
-	open.router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pools", nil))
-	if rec.Code == http.StatusUnauthorized {
-		t.Error("AGENT_AUTH_DISABLED: status = 401, want the gate bypassed")
-	}
 }

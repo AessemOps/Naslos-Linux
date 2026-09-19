@@ -116,9 +116,9 @@ the specific `two_factor` rules before the generic `one_factor`. Effort S.
 > put the 2FA rules first. This change routes the Authelia portal at `/authelia`
 > on its own IngressRoute without forwardAuth, requires `two_factor` for
 > `group:naslos_admins` on every path (so the portal prompts enrolment at first
-> login rather than opening the SPA on a one-factor session), and adds the
-> production profile (`values-prod.yaml`). The cutover/verification list is in
-> docs/deployment.md.
+> login rather than opening the SPA on a one-factor session), and removed the
+> NodePort/`auth.disabled` dev posture entirely, so the proxy path is the only
+> one. The install/verification list is in docs/deployment.md.
 
 #### CR-02 — `helm uninstall` deletes the namespace and data Helm does not own 🔴
 
@@ -477,9 +477,12 @@ banner). Effort S.
 **Evidence:** `ui/tests/backups.spec.ts:131` **skips** when the send failed with
 `unknown key|not authorized|not configured|out of scope` — a regression matching
 those words is reported as skipped; blanket skips for a missing identity/dataset at
-`:53,102,104,139,141`; `ui/tests/terminal.spec.ts:38,87` self-skip in the default
-NodePort posture so the terminal has no active coverage; `ui/playwright.config.ts:11`
-hardcodes the VM base URL.
+`:53,102,104,139,141`.
+
+> **Partly addressed**: the suite now authenticates through Authelia and runs
+> against the only (proxy) posture, so the terminal interactive tests execute
+> instead of self-skipping on the NodePort, and `playwright.config.ts` defaults to
+> `https://naslos.local`. The targeted skip in `backups.spec.ts` remains.
 
 **Impact:** the suite's green tick is weaker than it looks, and CI (once added) would
 inherit that. Verified by reading the specs.
@@ -520,8 +523,8 @@ still describes the `kubectl exec … pdbedit` NT-hash sync, while the live path
 agent-pushed `smbusers` mirror and the old path is dead code
 (`api/internal/identity/samba.go` — `NewSMBManager` is never called, like
 `RequireAdmin`); `docs/deployment.md:247` credits `TALOS_ENDPOINTS` while the chart
-sets `TALOSCONFIG`; `ui/nginx.conf:65-73` tells operators to set
-`terminal.requireAuth=false`, a key that no longer exists (now `auth.disabled`);
+sets `TALOSCONFIG`; `ui/nginx.conf` once told operators to set
+`terminal.requireAuth=false` (that refusal block and the key are now gone);
 `docs/notifications.md:21-28` omits the `backup_success`/`backup_failure` events;
 `docs/deployment.md:11` and `docs/development.md:48` say "go 1.22+" while both
 modules require **1.26.5**.
@@ -624,11 +627,11 @@ than re-litigating them.
 | Single-node product; multi-node aggregation out of scope | `docs/spec.md` §6, FR-MET-10 | Accepted; still consistent |
 | NFSv4-only with AUTH_SYS | `docs/shares.md` | Accepted, documented |
 | Distroless API/agent images (no shell) | Dockerfiles | Accepted; the OpenLDAP image is reused where a shell is needed |
-| Privileged terminal container with `/host` | `terminal.yaml`, spec FR-LOG-02 | Accepted; gated by the owner gate, refused by nginx on the NodePort |
+| Privileged terminal container with `/host` | `terminal.yaml`, spec FR-LOG-02 | Accepted; gated by the owner gate (the only listener is the proxy) |
 | Agent keeps `hostNetwork` (hostPID removed) | `agent-daemonset.yaml:29-33` | Accepted; needs a live multi-node check to change |
 | In-memory job history | `buddy_jobs.go` | Accepted; the receiver's manifests are the durable record |
 | Retention keeps a chain's dependencies | `buddy/store.go` | Accepted and tested |
-| `auth.disabled` for the VM | `values-vm.yaml` | Accepted as a dev posture; the NAS-008 NodePort exposure is documented, not fixed (CR-03/CR-38) |
+| ~~`auth.disabled` for the VM~~ | `values-vm.yaml` | **Removed**: the NodePort, `auth.disabled` and the `AUTH_DISABLED`/`AGENT_AUTH_DISABLED` bypasses are gone; every route is authenticated |
 | Static UI build (no SSR server) | `svelte.config.js` | Accepted; reduces CR-08's impact |
 | Live-VM Playwright suite | `playwright.config.ts` | Accepted for now; hermetic seeding would be better (CR-23) |
 
@@ -645,7 +648,7 @@ than re-litigating them.
 | NAS-005 | `/api/ws/logs` unauthenticated | **Fixed** (route composition) |
 | NAS-006 | LDAP filter/DN injection | **Fixed** (escaping + allowlist + tests) |
 | NAS-007 | smb.conf/Ganesha injection | **Fixed** (field validation + tests); CR-15 is the sibling issue |
-| NAS-008 | NodePort exposes the API | **Accepted/documented** (dev posture; `auth.disabled` warns) — still open in a real deployment |
+| NAS-008 | NodePort exposes the API | **Fixed**: the UI NodePort and the whole dev posture were removed; the only listener is the authenticating proxy |
 | NAS-009 | WebSocket origin check trusts `X-Forwarded-Host` | **Fixed in the proxy posture** — `trustForwardHeader` removed, so Traefik sets X-Forwarded-* itself (CR-38) |
 | NAS-010 | Default/hardcoded credentials | **Partially** — placeholders remain (CR-39) |
 | NAS-011 | Enrollment replayable across restarts | **Fixed** (persisted marker + no re-keying) |

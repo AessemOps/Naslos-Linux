@@ -13,9 +13,9 @@ func remotecommandSize(cols, rows uint16) remotecommand.TerminalSize {
 }
 
 // TestSameHostname pins the origin check that a browser's websocket handshake
-// depends on. nginx forwards `Host` without the UI's NodePort while the browser's
-// Origin keeps it, so the comparison must ignore ports - a port-sensitive check
-// rejected the terminal's own UI during development.
+// depends on. The Host header and the Origin can carry different ports depending
+// on the proxy hop, so the comparison must ignore them - a port-sensitive check
+// rejected the terminal's own UI in practice.
 func TestSameHostname(t *testing.T) {
 	ok := []struct{ a, b string }{
 		{"192.168.1.96:30080", "192.168.1.96"},

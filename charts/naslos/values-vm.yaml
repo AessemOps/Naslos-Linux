@@ -1,4 +1,9 @@
-# Naslos Helm values override for the single-node VM (192.168.1.117).
+# Naslos Helm values for the single-node VM (192.168.1.117).
+#
+# This is the production posture: Traefik on the node's 80/443 with Authelia
+# forwardAuth, the portal at https://naslos.local/authelia, and no
+# unauthenticated listener anywhere. There is no dev/NodePort profile.
+#
 # Usage:
 #   make install-vm
 # or manually:
@@ -9,28 +14,16 @@
 # scripts/deploy-vm.sh passes explicit --set overrides as well, so these
 # values mainly serve direct `make install-vm` / `helm` invocations.
 
-# Internal auth is OFF on the VM: the UI is reached over its NodePort and there
-# is no Traefik/Authelia in front of it, so the proxy secret that the API
-# requires on every owner route would never be injected. This is a
-# development-only posture - the NodePort reaches every API route, including the
-# terminal, unauthenticated. Never use these values on a reachable instance.
-# The proxy-protected posture (auth.disabled=false + ingress.enabled=true) needs
-# pieces that do not exist yet — Authelia portal routing, the `naslos-tls`
-# secret, Traefik LAN exposure, an LDAP operator account and peer-API bypass —
-# see `docs/CODE-REVIEW.md` CR-01 and the fresh-install plan.
-auth:
-  disabled: true
-
 # The tags below are the ones actually deployed on the VM. `scripts/deploy-vm.sh`
 # overrides them with its IMAGE_TAG at install time, but a bare `make install-vm`
-# or `make install-prod` uses these — leaving them at a tag that does not exist
-# is what produced ErrImagePull on the samba/nfs/terminal DaemonSets (the
-# registry has no plain `0.1.0` for those, only for api/agent/ui/openldap, which
-# would silently roll the API back to old code).
+# uses these — leaving them at a tag that does not exist is what produced
+# ErrImagePull on the samba/nfs/terminal DaemonSets (the registry has no plain
+# `0.1.0` for those, only for api/agent/ui/openldap, which would silently roll
+# the API back to old code).
 api:
   image:
     repository: 192.168.1.2:30095/naslos-api
-    tag: "0.1.0-r3"
+    tag: "0.1.0-r4"
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -48,17 +41,11 @@ api:
 agent:
   image:
     repository: 192.168.1.2:30095/naslos-agent
-    tag: "0.1.0-r2"
+    tag: "0.1.0-r3"
 ui:
   image:
     repository: 192.168.1.2:30095/naslos-ui
-    tag: "0.1.0-r4"
-  # Expose the UI directly via NodePort on 192.168.1.117:30080.
-  # Traefik is still installed but the IngressRoute expects the authelia.domain,
-  # which is the VM IP; browsers can reach the NodePort without a LoadBalancer.
-  nodePort:
-    enabled: true
-    port: 30080
+    tag: "0.1.0-r5"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
@@ -87,17 +74,29 @@ openldap:
   # keep them in sync.
   bindPassword: "CHANGE_ME_SERVICE_PASSWORD"
 
-# Use the VM IP as the Authelia domain (self-signed TLS). Only meaningful once
-# the ingress path exists; see the header note.
+# The public name: session cookie domain, TOTP issuer and TLS SAN. It resolves
+# through the mDNS record the Samba container advertises; add a router A record
+# (naslos.local -> the VM IP) for clients without mDNS (Windows).
 authelia:
-  domain: 192.168.1.117
+  domain: naslos.local
 
-# Traefik: keep it enabled but use ClusterIP by default on the VM.
-# If your VM environment provides a LoadBalancer (e.g. MetalLB), set
-# traefik.service.type back to LoadBalancer.
+# Traefik is the only listener: it binds the node's 80/443 (hostPort) so URLs
+# carry no port, and the Service stays ClusterIP. If your environment provides a
+# LoadBalancer (e.g. MetalLB), drop the hostPorts and set the service type back
+# to LoadBalancer.
 traefik:
+  ports:
+    web:
+      hostPort: 80
+    websecure:
+      hostPort: 443
   service:
     type: ClusterIP
+
+# IngressRoutes + Authelia forwardAuth. This is what makes every request
+# authenticated; there is no other entry point.
+ingress:
+  enabled: true
 
 # Grafana admin password — change in production.
 grafana:

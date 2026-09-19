@@ -21,9 +21,7 @@ spec:
       kind: Rule
       middlewares:
         - name: forwardauth-authelia
-        {{- if eq (include "naslos.authEnabled" .) "true" }}
         - name: proxy-identity
-        {{- end }}
         - name: security-headers
       services:
         - name: naslos-api
