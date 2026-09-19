@@ -26,6 +26,7 @@
   // onMount because it reads `window` (this component is pre-rendered).
   let host = '';
   let copied = '';
+  let error = '';
 
   async function loadShares() {
     loading = true;
@@ -79,11 +80,15 @@
 
   async function deleteShare(name: string) {
     if (!confirm(`Delete share "${name}"?`)) return;
+    error = '';
     try {
-      await fetch(`/api/shares/${name}`, { method: 'DELETE' });
+      const res = await fetch(`/api/shares/${name}`, { method: 'DELETE' });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
       loadShares();
     } catch (e) {
-      console.error('Failed to delete share:', e);
+      error = `Failed to delete ${name}: ` + e;
     }
   }
 
@@ -119,6 +124,10 @@
     </div>
     <button class="btn btn-primary" on:click={newShare}>+ New Share</button>
   </div>
+
+  {#if error}
+    <div class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
+  {/if}
 
   {#if loading}
     <p class="text-gray-400">Loading shares...</p>
