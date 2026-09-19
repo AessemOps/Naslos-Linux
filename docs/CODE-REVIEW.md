@@ -114,9 +114,11 @@ the specific `two_factor` rules before the generic `one_factor`. Effort S.
 
 > **Resolved across PR #20 and this change.** PR #20 scoped the bypass rules and
 > put the 2FA rules first. This change routes the Authelia portal at `/authelia`
-> on its own IngressRoute without forwardAuth, extends `two_factor` to every
-> admin-only prefix, and adds the production profile (`values-prod.yaml`). The
-> cutover/verification list is in docs/deployment.md.
+> on its own IngressRoute without forwardAuth, requires `two_factor` for
+> `group:naslos_admins` on every path (so the portal prompts enrolment at first
+> login rather than opening the SPA on a one-factor session), and adds the
+> production profile (`values-prod.yaml`). The cutover/verification list is in
+> docs/deployment.md.
 
 #### CR-02 — `helm uninstall` deletes the namespace and data Helm does not own 🔴
 

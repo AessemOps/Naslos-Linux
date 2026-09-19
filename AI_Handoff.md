@@ -103,11 +103,16 @@ install-prod` for this one.
   routed straight to the API, NodePort off. Verified unauthenticated:
   `/api/health` 200, `/` and `/api/users` 302 to the portal, `/api/buddy/v1/`
   bypass reaches the API, a pod calling the API without the proxy secret gets
-  401, and `:30080` refuses. Still to do by a human: log in once as `admin` at
-  `https://naslos.local` and enroll TOTP/WebAuthn. Gotchas found doing the
-  cutover, now encoded in the chart: the Authelia Service is `<release>-authelia`
+  401, and `:30080` refuses. `two_factor` is applied per **subject**
+  (`group:naslos_admins`) on every path, so the portal starts TOTP/WebAuthn
+  enrolment at the first login; a path-list version let the SPA open on a
+  one-factor session and the admin API calls bounced, which the UI showed as
+  "Failed to connect to API". Still to do by a human: log in once as `admin` at
+  `https://naslos.local` and finish enrolment. Gotchas found doing the cutover,
+  now encoded in the chart: the Authelia Service is `<release>-authelia`
   (port 80), a bare `domain: "*"` never matches in Authelia (use the real host),
-  the forwardAuth `authelia_url` needs a trailing slash, and the Makefile now
+  the forwardAuth `authelia_url` needs a trailing slash, subject-based
+  two_factor beats a path list for an all-admin appliance, and the Makefile now
   passes a config checksum so editing `authelia-config.yaml` rolls the Authelia
   pod. Rollback, and the reason the Playwright suite only runs on the dev
   posture, are in `docs/deployment.md`. Cosmetic residual: the peer JSON still

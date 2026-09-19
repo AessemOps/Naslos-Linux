@@ -151,30 +151,19 @@ data:
           policy: bypass
           resources:
             - "^/authelia(/.*)?$"
-        # Every admin-only surface needs a second factor. This list mirrors the
-        # API's RequireAdmin gates (CR-03): if a prefix is missing here an
-        # operator could open a one-factor session and still reach the
-        # privileged route (the terminal, the ZFS operations) because the API
-        # only checks group membership, not the factor. These rules must come
-        # before the generic one below or they would never match.
+        # Administrators must present a second factor on every path, not only on
+        # the admin API prefixes. Matching by subject is what makes the portal
+        # prompt TOTP/WebAuthn enrolment during the first login: with only the
+        # API prefixes marked two_factor, the SPA itself opened on a one-factor
+        # session and its admin calls bounced to the portal, which the page
+        # showed as "Failed to connect to API" instead of a 2FA prompt.
+        #
+        # Any other authenticated account stays one_factor; the API's
+        # RequireAdmin group check still gates it (CR-03).
         - domain: {{ .Values.authelia.domain | quote }}
+          subject:
+            - "group:naslos_admins"
           policy: two_factor
-          resources:
-            - "^/api/users"
-            - "^/api/groups"
-            - "^/api/apps"
-            - "^/api/volumes"
-            - "^/api/datasets"
-            - "^/api/disks"
-            - "^/api/shares"
-            - "^/api/notifications"
-            - "^/api/pods"
-            - "^/api/namespaces"
-            - "^/api/ws"
-            # Owner buddy routes; the peer API (^/api/buddy/v1/) is bypassed by
-            # its own earlier rule. /api/auth/me, /api/dashboard and
-            # /api/metrics stay one_factor: any authenticated user may read them.
-            - "^/api/buddy/"
         # Everything else the proxy forwards needs at least a session.
         - domain: {{ .Values.authelia.domain | quote }}
           policy: one_factor
