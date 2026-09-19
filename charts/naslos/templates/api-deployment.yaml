@@ -30,8 +30,23 @@ spec:
           image: "{{ .Values.openldap.image }}"
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
           env:
+            {{- if .Values.api.ldapCA.secretName }}
+            # Verify the server certificate against the Naslos CA instead of
+            # disabling verification (AUDIT-L9). The CA is the self-signed cert
+            # from naslos-openldap-tls, whose SAN includes naslos-openldap - the
+            # host in the ldaps:// URI below.
+            - name: LDAPTLS_CACERT
+              value: /var/run/secrets/ldap.ca/ca.crt
+            {{- else }}
             - name: LDAPTLS_REQCERT
               value: never
+            {{- end }}
+          {{- if .Values.api.ldapCA.secretName }}
+          volumeMounts:
+            - name: ldap-ca
+              mountPath: /var/run/secrets/ldap.ca
+              readOnly: true
+          {{- end }}
           command:
             - sh
             - -c
