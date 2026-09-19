@@ -14,7 +14,9 @@ spec:
     # redirects do not depend on any client-supplied X-Forwarded-Host.
     # The trailing slash matters: Authelia on a subpath redirects to `//?rd=…`
     # (which 404s) when authelia_url has no trailing slash.
-    address: http://authelia.{{ .Values.namespace }}.svc.cluster.local:9091/api/authz/forward-auth?authelia_url={{ printf "https://%s/authelia/" .Values.authelia.domain | urlquery }}
+    # The Service is the subchart's <release>-authelia (port 80 -> 9091); a
+    # bare "authelia" name does not exist and Traefik 500s every route.
+    address: http://{{ .Values.ingress.authelia.serviceName | default "naslos-authelia" }}.{{ .Values.namespace }}.svc.cluster.local:{{ .Values.ingress.authelia.port | default 80 }}/api/authz/forward-auth?authelia_url={{ printf "https://%s/authelia/" .Values.authelia.domain | urlquery }}
     # No trustForwardHeader (defaults to false): a client must not be able to
     # forge X-Forwarded-* and influence the auth decision or the API's
     # websocket origin check (NAS-009). Traefik sets those headers itself.

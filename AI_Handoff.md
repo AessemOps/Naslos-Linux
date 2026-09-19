@@ -47,10 +47,13 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
 ## Current instance: 192.168.1.117 (2026-09-19)
 
 Fresh install from scratch (the old .96 VM is off): Talos from the Naslos ISO,
-etcd bootstrapped, local-path provisioner, OpenLDAP + bootstrap, chart revision
-**2**, every image at **`0.1.0-r1`**. Posture is still the **dev one**
-(`auth.disabled=true`, UI on the NodePort) — the proxy path needs the pieces listed
-under "Not done" below.
+etcd bootstrapped, local-path provisioner, OpenLDAP + bootstrap. The instance is
+now on the **production posture** (helm revision 9): Traefik on hostPort 80/443,
+Authelia forwardAuth with the portal at `https://naslos.local/authelia`, 2FA on
+every admin prefix, `/api` routed straight to the API, and the UI NodePort gone.
+The first admin (`admin` in `naslos_admins`) was created before the flip. Use
+`make install-vm` for the dev posture the Playwright suite needs, `make
+install-prod` for this one.
 
 - **Fresh PKI.** `scripts/deploy-vm.sh` *reuses* `bootstrap/vm/talosconfig` when it
   exists, so a brand-new VM would have been installed with the **old cluster's CA
@@ -94,18 +97,21 @@ under "Not done" below.
   source (96K/96K, 1.00x) carrying its `buddy-20260919T002521Z-3aa5` snapshot.
 - **Suite baseline now `30 passed / 2 skipped`** — the two Buddy tests run, and the
   only skips left are terminal exec over the NodePort (refused by nginx, by design).
-- **Production posture is charted but not cut over yet.** `values-prod.yaml` +
-  `make install-prod` turn on the proxy path: Traefik hostPort 80/443,
-  `https://naslos.local`, Authelia forwardAuth with the portal at `/authelia`
-  and 2FA on every admin prefix, a chart-generated `naslos-tls` cert, `/api`
-  routed straight to the API, and the NodePort off. The `naslos.local` name
-  already resolves via the Samba container's mDNS record. Remaining before/at
-  cutover: create the `admin` account in `naslos_admins` while auth is still
-  off, run `make install-prod`, then verify and enroll TOTP — the full
-  step list, rollback and the reason the Playwright suite can only run on the
-  dev posture are in `docs/deployment.md`. The peer-API bypass is already in
-  the Authelia config. Cosmetic residual: the peer JSON still serializes
-  `lastSeenAt` as `0001-01-01T00:00:00Z` (the schedule equivalent was fixed;
+- **Production posture is live (helm revision 9).** Traefik hostPort 80/443,
+  `https://naslos.local` (mDNS via the Samba container's Avahi record), Authelia
+  forwardAuth, portal at `/authelia`, a chart-generated `naslos-tls` cert, `/api`
+  routed straight to the API, NodePort off. Verified unauthenticated:
+  `/api/health` 200, `/` and `/api/users` 302 to the portal, `/api/buddy/v1/`
+  bypass reaches the API, a pod calling the API without the proxy secret gets
+  401, and `:30080` refuses. Still to do by a human: log in once as `admin` at
+  `https://naslos.local` and enroll TOTP/WebAuthn. Gotchas found doing the
+  cutover, now encoded in the chart: the Authelia Service is `<release>-authelia`
+  (port 80), a bare `domain: "*"` never matches in Authelia (use the real host),
+  the forwardAuth `authelia_url` needs a trailing slash, and the Makefile now
+  passes a config checksum so editing `authelia-config.yaml` rolls the Authelia
+  pod. Rollback, and the reason the Playwright suite only runs on the dev
+  posture, are in `docs/deployment.md`. Cosmetic residual: the peer JSON still
+  serializes `lastSeenAt` as `0001-01-01T00:00:00Z` (the schedule equivalent was fixed;
   the peer struct was not).
 
 ## How to run it
@@ -139,11 +145,11 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
 2. **`helm upgrade --reuse-values` ignores `-f` files.** Anything new must be passed
    with `--set` (e.g. `auth.disabled`, `ingress.enabled`), or the release keeps old
    values and templates that dereference new keys can fail to render.
-3. **The VM currently runs the dev posture (`auth.disabled=true`)** with the UI on
-   the NodePort: every owner route is open (NAS-008). Never expose it. The
-   production posture is `values-prod.yaml` + `make install-prod` (Traefik
-   hostPort 80/443, Authelia forwardAuth, NodePort off) and is the intended end
-   state; `install-vm` remains the dev profile the Playwright suite needs.
+3. **The VM runs the production posture** (Traefik hostPort 80/443 + Authelia,
+   NodePort off). `make install-vm` (values-vm.yaml alone) reverts it to the dev
+   posture where every owner route is open on the NodePort (NAS-008) — that is
+   the rollback and the only posture the Playwright suite can run against, so
+   never leave it up on an untrusted network.
 4. **The buddy identity is the KEK.** `/var/lib/naslos/buddy-identity.json` holds the
    private key and the key-encryption key: losing it makes every stored backup
    unreadable, and `helm uninstall` would delete it (CR-02). Back it up separately.
@@ -193,8 +199,10 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
 On `192.168.1.117`: `naslos-api`, `naslos-ui` and `naslos-agent` are at
 **`0.1.0-r2`** (the CR-07/15/18/19/22 batch); `naslos-samba`, `naslos-nfs`,
 `naslos-terminal` and the OpenLDAP manifests stay at **`0.1.0-r1`**; chart
-`naslos-0.1.0`, helm revision **4**, Talos **v1.14.1** (kernel 6.18.51-talos),
-ZFS pool `test` (stripe, 79 G) + dataset `test/drill`. The posture is still the
-**dev one** (NodePort, auth off); the production cutover (`make install-prod`) has
-not been run yet. The old VM's tags (`api 0.1.0-b21`, `agent 0.1.0-b6`,
-`ui 0.1.0-b9`, revision 82) are retired with it.
+`naslos-0.1.0`, helm revision **9**, Talos **v1.14.1** (kernel 6.18.51-talos),
+ZFS pool `test` (stripe, 79 G) + dataset `test/drill`. The posture is the
+**production one** (Traefik hostPort 80/443, Authelia at
+`https://naslos.local/authelia`, NodePort off) with `admin` in
+`naslos_admins`; TOTP/WebAuthn enrollment is the one remaining human step. The
+old VM's tags (`api 0.1.0-b21`, `agent 0.1.0-b6`, `ui 0.1.0-b9`, revision 82)
+are retired with it.

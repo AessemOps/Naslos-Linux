@@ -369,6 +369,14 @@ auth:
 # auth.disabled to match.
 ingress:
   enabled: false
+  # The Authelia Service that the forwardAuth middleware and the portal
+  # IngressRoute point at. The subchart names it <release>-authelia (release
+  # `naslos` -> `naslos-authelia`) and exposes port 80, targeting the
+  # container's 9091. Override the name if you install the release under a
+  # different name.
+  authelia:
+    serviceName: naslos-authelia
+    port: 80
   # TLS for the IngressRoutes. Leave existingSecret empty to let the chart
   # generate a self-signed certificate for authelia.domain once and reuse it
   # across upgrades (templates/tls-secret.yaml); point it at a Secret you manage

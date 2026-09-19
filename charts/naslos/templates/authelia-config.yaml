@@ -124,10 +124,16 @@ data:
       # matches the whole domain and silently voids every rule below it. The
       # previous configuration had exactly that (`domain: <host>` + bypass),
       # which meant no request was ever challenged. Keep the bypasses scoped.
+      #
+      # `domain` must be the real host: a bare `"*"` is not an any-domain
+      # matcher in Authelia, so `domain: "*"` rules never match and every
+      # request falls through to default_policy deny (403). That is what made
+      # /api/health and the admin routes fail while the explicit-domain buddy
+      # bypass worked.
       default_policy: deny
       rules:
         # The health probe answers before the proxy is in the path.
-        - domain: "*"
+        - domain: {{ .Values.authelia.domain | quote }}
           policy: bypass
           resources:
             - "^/api/health$"
@@ -151,7 +157,7 @@ data:
         # privileged route (the terminal, the ZFS operations) because the API
         # only checks group membership, not the factor. These rules must come
         # before the generic one below or they would never match.
-        - domain: "*"
+        - domain: {{ .Values.authelia.domain | quote }}
           policy: two_factor
           resources:
             - "^/api/users"
@@ -170,7 +176,7 @@ data:
             # /api/metrics stay one_factor: any authenticated user may read them.
             - "^/api/buddy/"
         # Everything else the proxy forwards needs at least a session.
-        - domain: "*"
+        - domain: {{ .Values.authelia.domain | quote }}
           policy: one_factor
 
     notifier:
