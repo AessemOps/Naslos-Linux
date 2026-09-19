@@ -33,6 +33,15 @@ CHART_DIR := charts/naslos
 VM_PATCH := $(if $(wildcard $(VM_CONFIG_DIR)/naslos-vm.yaml),$(VM_CONFIG_DIR)/naslos-vm.yaml)
 SCHEMATIC := $(if $(wildcard bootstrap/schematic/naslos.yaml),bootstrap/schematic/naslos.yaml)
 
+# Authelia's pod template never references our ConfigMap, so editing
+# templates/authelia-config.yaml alone would not roll its DaemonSet (the running
+# pod keeps the old portal path and access rules). Pass a checksum as a pod
+# annotation so the pod template changes and Helm restarts it. Defined after
+# CHART_DIR: with := the $(shell) runs immediately, so an earlier definition
+# would hash an empty path and the flag would silently expand to nothing.
+AUTHELIA_CONFIG_SHA := $(shell sha256sum $(CHART_DIR)/templates/authelia-config.yaml 2>/dev/null | cut -c1-64)
+AUTHELIA_CONFIG_FLAG := $(if $(AUTHELIA_CONFIG_SHA),--set authelia.pod.annotations.checksum-config=$(AUTHELIA_CONFIG_SHA))
+
 all: api agent ui
 
 api:
@@ -150,7 +159,8 @@ crds:
 install: crds
 	$(HELM) dependency update $(CHART_DIR)
 	$(HELM) upgrade --install naslos $(CHART_DIR) -n naslos --create-namespace \
-		--skip-crds
+		--skip-crds \
+		$(AUTHELIA_CONFIG_FLAG)
 
 # Install Naslos on the single-node VM using the VM-specific values override.
 install-vm: crds
@@ -159,6 +169,7 @@ install-vm: crds
 		-f $(CHART_DIR)/values.yaml \
 		-f $(CHART_DIR)/values-vm.yaml \
 		--skip-crds \
+		$(AUTHELIA_CONFIG_FLAG) \
 		$(HELM_FLAGS)
 
 # Install the production posture on the single-node VM: Traefik on the node's
@@ -172,6 +183,7 @@ install-prod: crds
 		-f $(CHART_DIR)/values-vm.yaml \
 		-f $(CHART_DIR)/values-prod.yaml \
 		--skip-crds \
+		$(AUTHELIA_CONFIG_FLAG) \
 		$(HELM_FLAGS)
 
 # Uninstall Naslos
