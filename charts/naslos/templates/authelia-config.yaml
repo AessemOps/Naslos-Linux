@@ -6,7 +6,7 @@ each `helm upgrade` (AUDIT-M3). Persist it the same way the proxy secret and the
 TLS certificate are persisted: generate once, then read the existing Secret back.
 */}}
 {{- $jwtSecretName := "naslos-authelia-jwt" }}
-{{- $existingJWT := lookup "v1" "Secret" .Values.namespace $jwtSecretName }}
+{{- $existingJWT := lookup "v1" "Secret" .Release.Namespace $jwtSecretName }}
 {{- $jwtSecret := "" }}
 {{- if and $existingJWT (index $existingJWT.data "jwt-secret") }}
 {{- $jwtSecret = index $existingJWT.data "jwt-secret" | b64dec }}
@@ -22,7 +22,7 @@ committed in values and rotation only touches the Secret (AUDIT-H1). The
 lookup returns nothing; a real install must have the Secret, or a fail message
 tells the operator to run generate-secrets.sh first.
 */}}
-{{- $ldapSecret := lookup "v1" "Secret" .Values.namespace "naslos-openldap" }}
+{{- $ldapSecret := lookup "v1" "Secret" .Release.Namespace "naslos-openldap" }}
 {{- $ldapBindPassword := "" }}
 {{- if and $ldapSecret (index $ldapSecret.data "service-password") }}
 {{- $ldapBindPassword = index $ldapSecret.data "service-password" | b64dec }}
@@ -35,7 +35,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: {{ $jwtSecretName }}
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: naslos
     app.kubernetes.io/component: authelia
@@ -47,7 +47,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: authelia-config
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
 data:
   configuration.yml: |
     ##################################
@@ -112,7 +112,7 @@ data:
         disable: true
       ldap:
         implementation: custom
-        url: ldaps://{{ .Values.openldap.serviceName | default "naslos-openldap" }}.{{ .Values.namespace }}.svc.cluster.local:636
+        url: ldaps://{{ .Values.openldap.serviceName | default "naslos-openldap" }}.{{ .Release.Namespace }}.svc.cluster.local:636
         timeout: 5s
         start_tls: false
         tls:

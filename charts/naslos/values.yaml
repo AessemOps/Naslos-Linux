@@ -345,8 +345,10 @@ openldap:
   # (AUDIT-H1). Never commit a real value here.
   bindPassword: ""
 
-# Namespace for all Naslos components
-namespace: naslos
+# No `namespace` value: every template uses `.Release.Namespace`, so the chart
+# installs under any release namespace (`helm -n <ns>`), which is what multi-
+# release installs need (AUDIT-L9). The namespace object is still created, under
+# the release namespace.
 
 # Internal authentication between components (NAS-001/NAS-002).
 #

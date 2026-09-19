@@ -29,7 +29,7 @@ Remediation then closed **all four Highs and every Medium except four**:
 | Medium closed / no-change-needed / excluded | 8 + 1 + 1 |
 | Medium deferred (with reason) | 4 |
 | Low closed / accepted | 3 + 1 |
-| Low deferred | 4 |
+| Low deferred | 5 (L2, L3, L5, L6, L8) |
 | Findings not yet run (Batch 6) | image/SBOM scan, SAST breadth, 8 active tests, buddy crypto deep-dive, `.118` |
 
 The instance now has a single authenticated entry point, no default or committed
@@ -93,7 +93,7 @@ secret, and a runnable (if not yet wired) audit sweep.
 | L6 | Integer-conversion findings | **Open** |
 | L7 | `md4` for the Samba NT hash | **Accepted** — protocol requirement |
 | L8 | `go test -race` fails (CR-06) | **Open** — CI keeps it opt-in |
-| L9 | CR-38 remainder | **Partial** — `LDAPTLS_REQCERT=never` replaced with CA verification (`d2f891a`, rev 24); `values.schema.json` and `.Release.Namespace` open |
+| L9 | CR-38 remainder | **Fixed** — `LDAPTLS_REQCERT=never` replaced with CA verification (`d2f891a`, rev 24); all 44 `.Values.namespace` references migrated to `.Release.Namespace`, the value removed, and `values.schema.json` added (rev 25) |
 | L10 | gitleaks false positives | **Informational** |
 
 ### NAS-010 (default credentials) — **closed**
@@ -150,10 +150,16 @@ upgrade).
 read timeouts added; secret-bearing files 0600; chain ids validated with a single
 allowlist; dead ZFS LocalPV config removed.
 
-**L9 — LDAP TLS.** The API `wait-for-ldap` init and both bootstrap containers now
-mount the `naslos-openldap-tls` CA and set `LDAPTLS_CACERT`; `REQCERT=never` only
-remains when no CA secret is configured. Verified: init logs "OpenLDAP is
-reachable." and a full bootstrap completes.
+**L9 — LDAP TLS and chart portability.** The API `wait-for-ldap` init and both
+bootstrap containers now mount the `naslos-openldap-tls` CA and set
+`LDAPTLS_CACERT`; `REQCERT=never` only remains when no CA secret is configured.
+Verified: init logs "OpenLDAP is reachable." and a full bootstrap completes. The
+44 `.Values.namespace` references were also migrated to `.Release.Namespace`
+(the value removed), so the chart installs under any release namespace — a
+render with `-n other` produces `other.svc.cluster.local` everywhere and no
+`naslos.` DNS — and `charts/naslos/values.schema.json` now type-checks the
+chart's own values (without blocking subchart keys). Live at revision 25: E2E
+35 passed.
 
 **NAS-010 — live rotation.** Service password (rev 22) and admin `olcRootPW`
 (rev 23+) rotated; old values rejected by `ldapwhoami`.
@@ -213,7 +219,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | AUDIT-M11 — Svelte/Vite dev advisories | Medium | Breaking major bumps; needs a tested UI upgrade | Bump and re-run `npm audit` + the suite (CR-08/CR-31) |
 | AUDIT-M3 residual — Authelia config in a ConfigMap | Medium | Requires subchart support to mount a Secret-based config | Move `configuration.yml` to a Secret |
 | AUDIT-L2 — nginx non-root | Low | Image change + rebuild; watch file-permission needs | Non-root user, read-only rootfs, tmpfs cache |
-| AUDIT-L9 remainder — `values.schema.json`, `.Release.Namespace` | Low | Broad template rename; best with a schema | Add the schema; migrate namespace references |
+| ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
 | AUDIT-L5/L6 — log injection, int conversions | Low | Noise reduction | Sanitise log fields; bound conversions |
 | AUDIT-L8 / CR-06 — `go test -race` | Low | Known failing scheduler race | Fix the race; enable `NASLOS_AUDIT_RACE=1` in CI |
 | Batch 6 — image/SBOM scan, semgrep/staticcheck, AV-5…AV-12, buddy crypto deep-dive, `.118` | Coverage | Time-boxed session | Run `trivy`, `semgrep`, `staticcheck`, the bounded active tests, and the `.118` read-only checks |

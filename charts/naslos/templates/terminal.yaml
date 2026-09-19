@@ -15,7 +15,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: naslos-terminal
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: naslos-terminal
 ---
@@ -23,7 +23,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: naslos-terminal
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: naslos-terminal
     app.kubernetes.io/component: terminal
@@ -89,7 +89,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: naslos-api-terminal
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
 rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
@@ -102,7 +102,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: naslos-api-terminal
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -110,7 +110,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: naslos-api
-    namespace: {{ .Values.namespace }}
+    namespace: {{ .Release.Namespace }}
 ---
 # Namespaces are cluster-scoped, so the picker needs one narrow ClusterRole (a
 # Role cannot grant them). Read-only, nothing else.
@@ -134,7 +134,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: naslos-api
-    namespace: {{ .Values.namespace }}
+    namespace: {{ .Release.Namespace }}
 {{- /*
 The terminal paths (/api/pods, /api/namespaces, /api/ws/*) are served by the
 naslos-api IngressRoute in ingress-api.yaml, which routes all of /api straight
