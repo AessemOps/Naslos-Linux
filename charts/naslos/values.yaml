@@ -322,10 +322,10 @@ storage:
   localPath:
     enabled: true
     path: /var/mnt/local-path-provisioner
-  # ZFS LocalPV CSI for ZFS-backed volumes
-  zfsLocalPV:
-    enabled: true
-    poolName: "naslos-pool"
+  # No zfsLocalPV block: no template consumed it, the ZFS LocalPV provisioner
+  # is not installed, and its pool name did not exist on the node (AUDIT-M13).
+  # Every volume binds through local-path above. Add the provisioner first if
+  # ZFS-backed PVCs are ever wanted.
 
 # OpenLDAP configuration
 openldap:

@@ -102,26 +102,8 @@ kind: ServiceAccount
 metadata:
   name: naslos-agent
   namespace: {{ .Values.namespace }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: naslos-agent
-rules:
-  - apiGroups: [""]
-    resources: ["nodes", "pods", "pods/log"]
-    verbs: ["get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: naslos-agent
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: naslos-agent
-subjects:
-  - kind: ServiceAccount
-    name: naslos-agent
-    namespace: {{ .Values.namespace }}
+# No ClusterRole/ClusterRoleBinding: the agent never calls the Kubernetes API -
+# it chroots into /host and runs zpool/zfs directly, and the API reaches it over
+# its headless Service. The previous Role granted get/list/watch on every node,
+# pod and pod log cluster-wide for nothing (AUDIT-M5).
 {{- end }}
