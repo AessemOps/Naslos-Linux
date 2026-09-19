@@ -121,6 +121,7 @@ Authelia rules (`charts/naslos/templates/authelia-config.yaml`):
 | `/api/buddy/v1/` | bypass (peers authenticate with their own keys, not a session) |
 | `/authelia` | bypass (the portal route has no forwardAuth) |
 | every path, for a user in `group:naslos_admins` | two_factor (2FA on the whole surface, so the portal prompts enrolment during the first login — not just on the API prefixes, which would let the SPA open on a one-factor session) |
+| `/traefik` for `group:naslos_users` | deny (the Traefik dashboard is operator-only; admins matched the rule above and keep 2FA) |
 | everything else | one_factor (authenticated; the API's `RequireAdmin` group check still gates admin-only routes) |
 
 The admin rule is subject-based (`group:naslos_admins`) rather than a list of
@@ -165,6 +166,9 @@ in the page).
 - The Authelia portal is served at `https://naslos.local/authelia`; the
   forwardAuth authz URL stays at the root (`/api/authz/forward-auth`) as
   Authelia serves both paths.
+- Traefik's own dashboard is served at `https://naslos.local/traefik/dashboard/`
+  (`api.basePath: /traefik`, `api.insecure` off, so the IngressRoute is the only
+  way in) and is admin-only — the sidebar shows the link only to `naslos_admins`.
 - Security headers: XSS filter, nosniff, frame deny, HSTS, referrer policy (no
   `preload`: a `.local` self-signed host cannot earn it and it would remove the
   "proceed anyway" path).
