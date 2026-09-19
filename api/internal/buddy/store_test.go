@@ -1,6 +1,7 @@
 package buddy
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,6 +50,28 @@ func TestSourcesInFindsNestedSources(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("summary = %+v, want it to list the nested source %q", summary, nested)
+	}
+}
+
+// TestValidateChainNameBoundsFilesystemPaths is the AUDIT-M9 regression: a chain
+// id is joined into the store path, so it must never traverse or carry a
+// separator, while still accepting the ids earlier senders produced.
+func TestValidateChainNameBoundsFilesystemPaths(t *testing.T) {
+	bad := []string{
+		"", ".", "..", "../etc", "a/b", `a\b`, "a..b", "chain id", "chain\n",
+		strings.Repeat("a", 129),
+	}
+	for _, chain := range bad {
+		if err := validateChainName(chain); err == nil {
+			t.Errorf("validateChainName(%q) = nil, want an error", chain)
+		}
+	}
+
+	good := []string{"chain1", "uitest-manual792935", "02f99b4ff6c85ce6", "a_b.c"}
+	for _, chain := range good {
+		if err := validateChainName(chain); err != nil {
+			t.Errorf("validateChainName(%q) = %v, want nil", chain, err)
+		}
 	}
 }
 
