@@ -52,8 +52,9 @@ now on the **production posture** (helm revision 9): Traefik on hostPort 80/443,
 Authelia forwardAuth with the portal at `https://naslos.local/authelia`, 2FA on
 every admin prefix, `/api` routed straight to the API, and the UI NodePort gone.
 The first admin (`admin` in `naslos_admins`) was created before the flip. Use
-`make install-vm` for the dev posture the Playwright suite needs, `make
-install-prod` for this one.
+`make install-vm` for the dev posture (NodePort, auth off) and
+`make install-prod` for this one; the Playwright suite now runs against both
+(see "Running the E2E suite" in `docs/deployment.md`).
 
 - **Fresh PKI.** `scripts/deploy-vm.sh` *reuses* `bootstrap/vm/talosconfig` when it
   exists, so a brand-new VM would have been installed with the **old cluster's CA
@@ -117,10 +118,32 @@ install-prod` for this one.
   the forwardAuth `authelia_url` needs a trailing slash, subject-based
   two_factor beats a path list for an all-admin appliance, and the Makefile now
   passes a config checksum so editing `authelia-config.yaml` rolls the Authelia
-  pod. Rollback, and the reason the Playwright suite only runs on the dev
-  posture, are in `docs/deployment.md`. Cosmetic residual: the peer JSON still
+  pod. Rollback is in `docs/deployment.md`. Cosmetic residual: the peer JSON still
   serializes `lastSeenAt` as `0001-01-01T00:00:00Z` (the schedule equivalent was fixed;
   the peer struct was not).
+- **The Playwright suite now runs against the production posture, 35 passed on
+  two consecutive runs** (helm revision 15, api `0.1.0-r3`, ui `0.1.0-r4`). It
+  logs into Authelia once in a setup project (`ui/tests/auth.setup.ts`, password
+  + TOTP generated from the secret in the gitignored `ui/.env.playwright.local`)
+  and reuses the session via `storageState`; on the dev NodePort it writes an
+  empty state and behaves as before. See `docs/deployment.md` "Running the E2E
+  suite" for the env file and `NASLOS_RECEIVER_URL`. Running it found two real
+  production bugs, both fixed:
+  - **Agent streaming token (NAS-002 gap).** `api/internal/agent/backup.go` used
+    a package-level `&http.Client{}` for the streaming send/receive paths, so
+    those requests carried no `Authorization` header and every backup failed
+    with the agent's 401 once auth was on. The client now has a dedicated
+    `stream` client built from the same token transport
+    (`api/internal/agent/client_test.go` pins it). In the dev posture the agent
+    opted out with `AGENT_AUTH_DISABLED=true`, which is why this only surfaced
+    after the cutover.
+  - **Password changes were a silent no-op.** The user-edit form put `password`
+    in the `PUT /api/users/{uid}` body, which ignores it; the dialog still closed
+    as if saved. It now calls `POST /api/users/{uid}/password`. `docs/spec.md`
+    had that route as PUT, which the handler rejects.
+  The suite also needs `NASLOS_RECEIVER_URL` for its two self-send tests: a
+  page-driven send targets the browser origin, and the API pod cannot resolve
+  `naslos.local` (mDNS is not in cluster DNS).
 
 ## How to run it
 

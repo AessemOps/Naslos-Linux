@@ -14,9 +14,15 @@ const TERMINAL_PATHS = [
 test('the terminal is refused without an authenticated session', async () => {
   // A context with no storage state, i.e. exactly what an anonymous caller has:
   // the `request` fixture is authenticated by the setup project's session.
+  // maxRedirects: 0 is what makes the refusal observable - otherwise the
+  // forwardAuth 302 to the portal is followed and the portal page answers 200.
   const anon = await playwrightRequest.newContext({
     baseURL: test.info().project.use.baseURL as string,
-    ignoreHTTPSErrors: true
+    ignoreHTTPSErrors: true,
+    maxRedirects: 0,
+    // Needed: newContext() otherwise inherits this project's storageState, and
+    // the "anonymous" caller would carry the admin session.
+    storageState: { cookies: [], origins: [] }
   });
 
   try {
