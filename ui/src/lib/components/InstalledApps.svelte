@@ -13,14 +13,21 @@
 
   let apps: App[] = [];
   let loading = true;
+  let error = '';
 
   async function loadApps() {
     loading = true;
+    error = '';
     try {
       const res = await fetch('/api/apps');
-      apps = await res.json();
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      apps = Array.isArray(data) ? data : [];
     } catch (e) {
-      console.error('Failed to load apps:', e);
+      error = 'Failed to load installed apps: ' + e;
+      apps = [];
     } finally {
       loading = false;
     }
@@ -30,11 +37,15 @@
     if (!confirm(`Are you sure you want to uninstall ${name}? This will remove all app data.`)) {
       return;
     }
+    error = '';
     try {
-      await fetch(`/api/apps/${name}`, { method: 'DELETE' });
+      const res = await fetch(`/api/apps/${name}`, { method: 'DELETE' });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
       loadApps();
     } catch (e) {
-      console.error('Failed to uninstall:', e);
+      error = `Failed to uninstall ${name}: ` + e;
     }
   }
 
@@ -52,9 +63,13 @@
 </script>
 
 <div>
+  {#if error}
+    <div class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
+  {/if}
+
   {#if loading}
     <p class="text-gray-400">Loading installed apps...</p>
-  {:else if apps.length === 0}
+  {:else if apps.length === 0 && !error}
     <div class="card text-center py-12">
       <div class="text-5xl mb-4">📦</div>
       <h2 class="text-xl font-bold mb-2">No Apps Installed</h2>

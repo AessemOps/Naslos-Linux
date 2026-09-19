@@ -14,6 +14,7 @@
 
   let apps: CatalogEntry[] = [];
   let loading = true;
+  let loadError = '';
   let selectedApp: string | null = null;
   let filterCategory = 'all';
   let searchQuery = '';
@@ -28,11 +29,20 @@
   ];
 
   async function loadCatalog() {
+    loadError = '';
     try {
       const res = await fetch('/api/catalog');
-      apps = await res.json();
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (!Array.isArray(data)) {
+        throw new Error('unexpected catalog response');
+      }
+      apps = data;
     } catch (e) {
-      console.error('Failed to load catalog:', e);
+      loadError = 'Failed to load the catalog: ' + e;
+      apps = [];
     } finally {
       loading = false;
     }
@@ -76,6 +86,8 @@
   <!-- App grid -->
   {#if loading}
     <p class="text-gray-400">Loading catalog...</p>
+  {:else if loadError}
+    <div class="card border-red-700 bg-red-900/30 text-red-300 p-4">{loadError}</div>
   {:else if filteredApps.length === 0}
     <p class="text-gray-400">No apps found.</p>
   {:else}
