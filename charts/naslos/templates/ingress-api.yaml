@@ -17,7 +17,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`{{ .Values.authelia.domain }}`) && PathPrefix(`/api`)
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/api`)
       kind: Rule
       middlewares:
         - name: forwardauth-authelia
@@ -44,7 +44,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`{{ .Values.authelia.domain }}`) && PathPrefix(`/authelia`)
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/authelia`)
       kind: Rule
       middlewares:
         - name: security-headers
@@ -70,7 +70,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`{{ .Values.authelia.domain }}`) && PathPrefix(`/traefik`)
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/traefik`)
       kind: Rule
       middlewares:
         - name: forwardauth-authelia

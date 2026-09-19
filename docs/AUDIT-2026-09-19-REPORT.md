@@ -12,7 +12,8 @@ superseded `SECURITY-AUDIT.md` + `SECURITY-FIX-PLAN.md` (2026-09-14).
   pushed. `master` was never pushed to directly.
 - **Live target:** `192.168.1.117`, helm revision **24** — `naslos-api`
   `0.1.0-r6`, `naslos-agent` `0.1.0-r3`, `naslos-ui` `0.1.0-r6`, Traefik
-  hostPort 80/443, Authelia 4.39, `naslos.local`.
+  hostPort 80/443, Traefik v3.7.13 (chart 41.6.0) and Authelia 4.39.24 (chart
+  0.11.22), `naslos.local`.
 - **No secret values appear in this report or in any committed artefact.**
 
 ## 1. Executive summary
@@ -191,6 +192,15 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 - Buddy receive dataset mounted and verified.
 - CI sweep written (`scripts/audit.sh`); the GitHub Actions workflow was added
   and then removed at the operator's request, so the sweep is manual for now.
+- **Subchart upgrades (2026-09-19, rev 26):** Traefik chart 39.0.0 → **41.6.0**
+  (app **v3.7.13**) and Authelia chart 0.10.0 → **0.11.22** (app **4.39.24**).
+  The tightened schemas forced two value migrations: Traefik's logging key
+  `logs` → `log`, and our custom `authelia.domain`/`authelia.server` moved out of
+  the subchart's namespace to a top-level `domain` (the 0.11 schema rejects
+  unknown keys under `authelia`). Authelia migrated its SQLite schema (20 → 29)
+  on start. The Playwright setup needed one selector fix: Authelia now labels the
+  six OTP boxes "Enter One-Time Password" instead of "Digit N". Verified: both
+  pods on the new versions, anonymous `/api/*` → 302, and the suite 35 passed.
 - Docs reconciled: the archived `CODE-REVIEW.md` and `SECURITY-AUDIT.md` carry
   dated status tables and `SECURITY-FIX-PLAN.md` is marked superseded; live docs
   no longer describe the NodePort, `auth.disabled`, Grafana or `zfsLocalPV`.

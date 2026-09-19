@@ -62,13 +62,13 @@ setup('authenticate', async ({ page, context }) => {
   await page.locator('#password-textfield').fill(password);
   await submit(page);
 
-  // Second factor. Authelia 4.39 renders six single-digit inputs (aria labels
-  // "Digit 1".."Digit 6") and submits when the last one is filled; older builds,
-  // and the single-field variant their tests reference, use
-  // #one-time-code-textfield. With WebAuthn as well, a method picker comes
-  // first.
+  // Second factor. Authelia renders six single-digit inputs and submits when the
+  // last one is filled; recent builds label every box "Enter One-Time Password",
+  // earlier ones used "Digit 1".."Digit 6", and the single-field variant their
+  // own tests reference uses #one-time-code-textfield. With WebAuthn as well, a
+  // method picker comes first.
   const otp = page.locator('#one-time-code-textfield');
-  const otpDigits = page.getByRole('textbox', { name: /Digit \d/ });
+  const otpDigits = page.getByRole('textbox', { name: /one-time (password|code)|digit \d/i });
   const picker = page.getByRole('button', { name: /one[- ]time password/i });
   const alert = page.getByRole('alert');
 
@@ -103,7 +103,7 @@ setup('authenticate', async ({ page, context }) => {
       return;
     }
     // Six single-digit inputs; the form submits itself once the last is filled.
-    const digits = page.getByRole('textbox', { name: /Digit \d/ });
+    const digits = page.getByRole('textbox', { name: /one-time (password|code)|digit \d/i });
     const count = Math.min(6, await digits.count());
     for (let i = 0; i < count; i++) {
       await digits.nth(i).fill(code[i]);

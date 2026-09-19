@@ -66,13 +66,13 @@
         "nfs": { "$ref": "#/definitions/component" }
       }
     },
+    "domain": { "type": "string", "minLength": 1 },
     "traefik": { "type": "object", "additionalProperties": true },
     "authelia": {
       "type": "object",
       "additionalProperties": true,
       "properties": {
         "enabled": { "type": "boolean" },
-        "domain": { "type": "string", "minLength": 1 },
         "certificates": { "type": "object" }
       }
     },
