@@ -1,0 +1,26 @@
+# Keep the build context small and never ship local state into an image
+# (AUDIT-L1). The UI build context was ~96 MB because ui/node_modules was sent
+# to the daemon even though the Dockerfile installs its own dependencies.
+.git
+.gitignore
+.kilo
+.github
+docs
+*.md
+
+# Build outputs and local tooling state
+bin
+**/node_modules
+ui/dist
+ui/.svelte-kit
+ui/test-results
+ui/playwright-report
+ui/tests/.auth
+ui/.env.playwright.local
+
+# Local cluster material: never in an image
+bootstrap/out
+bootstrap/vm
+support-naslos-vm.zip.age
+test-results
+playwright-report
