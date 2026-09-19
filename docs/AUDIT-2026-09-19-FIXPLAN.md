@@ -27,7 +27,7 @@ commit, the report or a PR description.
 | **AUDIT-M10** tags vs digests, HTTP registry | Set `image.digest` for the deployed images (the chart already supports it), keep tags for readability, and enable TLS/auth on `192.168.1.2:30095` (or document the isolated-network assumption) | Node pulls by digest; retagging an image no longer changes what runs |
 | **AUDIT-M11** dev npm advisories | Upgrade Svelte 5 and Vite (CR-08/CR-31), re-run `npm audit` + full Playwright suite | `npm audit` 0 (or only accepted build-time advisories); suite 35 passed |
 | **AUDIT-L1/L2** images | Add `.dockerignore`; run the UI nginx as non-root with a read-only rootfs and tmpfs for `/var/cache/nginx` | Image builds; `kubectl get pod` shows the non-root UID; UI serves |
-| **AUDIT-M12** no CI | Write `scripts/audit.sh` (the sweep from the report), then a GitHub Actions workflow on PRs: `go vet`/`go test -race`, `govulncheck`, `npm audit`, `svelte-check`, `helm lint`, `gitleaks` | A PR shows the checks; a seeded fake secret fails the build |
+| **AUDIT-M12** no CI | `scripts/audit.sh` done (`421711a`). The GitHub Actions workflow was added then **removed at the operator's request**; re-add when wanted | Script runs by hand and reports skips; a workflow would make a seeded secret fail a PR |
 
 ## Batch 3 — Kubernetes hardening
 
@@ -100,7 +100,7 @@ Done and deployed at helm revision 18 (api `0.1.0-r5`), suite still 35 passed:
 | **AUDIT-M1** 104 checkpoint refs pruned; gitleaks 89 → 4 (all documented false positives) | `421711a` |
 | **AUDIT-M2** local secrets `chmod 600`; `auth.setup.ts` chmods the captured session itself | `421711a` |
 | **AUDIT-M3** jwt secret persisted in `naslos-authelia-jwt` — **proven to survive an upgrade** | `421711a` |
-| **AUDIT-M12** `scripts/audit.sh` + `.github/workflows/audit.yml` (gitleaks over full history) | `421711a` |
+| **AUDIT-M12** `scripts/audit.sh` (runnable by hand). The `.github/workflows/audit.yml` added alongside it was **removed at the operator's request**; wiring it back into CI is left open | `421711a`, workflow removed |
 | **AUDIT-M14** superseded banner + operator-lockout runbook | `421711a` |
 | **AUDIT-H2** buddy receive dataset mounted (`buddy.enabled=true`, `receiveHostPath`) — verified: chunks on `test/naslos-buddy`, backups suite green | revision 21 |
 
