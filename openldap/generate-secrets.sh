@@ -10,8 +10,16 @@ set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-naslos}"
 LDAP_DOMAIN="${LDAP_DOMAIN:-naslos.local}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-naslos-admin}"
-SERVICE_PASSWORD="${SERVICE_PASSWORD:-CHANGE_ME_SERVICE_PASSWORD}"
+
+# No default credentials (NAS-010): generate random ones when the caller does
+# not supply them, so a fresh install never ships a documented value. Neither is
+# printed - read them back from the naslos-openldap Secret.
+if ! command -v openssl >/dev/null 2>&1; then
+    echo "ERROR: openssl is required to generate the OpenLDAP secrets" >&2
+    exit 1
+fi
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -hex 24)}"
+SERVICE_PASSWORD="${SERVICE_PASSWORD:-$(openssl rand -hex 24)}"
 
 echo "Generating OpenLDAP secrets in namespace '$NAMESPACE'..."
 
@@ -22,11 +30,6 @@ kubectl create secret generic naslos-openldap \
     -n "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 
 # --- self-signed TLS secret ---
-if ! command -v openssl >/dev/null 2>&1; then
-    echo "ERROR: openssl is required to generate the LDAP TLS secret" >&2
-    exit 1
-fi
-
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
