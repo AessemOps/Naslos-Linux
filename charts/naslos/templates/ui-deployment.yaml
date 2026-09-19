@@ -51,8 +51,19 @@ spec:
         - name: ui
           image: {{ include "naslos.image" .Values.ui.image }}
           imagePullPolicy: {{ .Values.ui.image.pullPolicy }}
+          # nginx serves static files only and needs no privilege (AUDIT-L2).
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+            runAsUser: 101
+            seccompProfile:
+              type: RuntimeDefault
           ports:
-            - containerPort: 80
+            # 8080: the image runs nginx unprivileged (uid 101) and cannot bind
+            # 80 (AUDIT-L2).
+            - containerPort: 8080
               name: http
           resources:
             {{- toYaml .Values.ui.resources | nindent 12 }}
@@ -68,5 +79,5 @@ spec:
     app.kubernetes.io/name: naslos-ui
   ports:
     - port: {{ .Values.ui.service.port }}
-      targetPort: 80
+      targetPort: 8080
 {{- end }}

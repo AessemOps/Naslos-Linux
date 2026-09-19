@@ -29,8 +29,8 @@ Remediation then closed **all four Highs and every Medium except four**:
 | High closed | 4 of 4 |
 | Medium closed / no-change-needed / excluded | 8 + 1 + 1 |
 | Medium deferred (with reason) | 4 |
-| Low closed / accepted | 6 + 1 |
-| Low deferred | 2 (L2, L3) |
+| Low closed / accepted | 7 + 1 |
+| Low deferred | 1 (L3) |
 | Findings not yet run (Batch 6) | image/SBOM scan, SAST breadth, 8 active tests, buddy crypto deep-dive, `.118` |
 
 The instance now has a single authenticated entry point, no default or committed
@@ -87,7 +87,7 @@ secret, and a runnable (if not yet wired) audit sweep.
 | ID | Finding | Status |
 |---|---|---|
 | L1 | No `.dockerignore` | **Fixed** — `8555925` (UI context 96 MB → API 717 kB) |
-| L2 | UI nginx runs root, writable rootfs | **Open** |
+| L2 | UI nginx runs root, writable rootfs | **Fixed** — the UI image is `nginxinc/nginx-unprivileged` (uid 101, listens on 8080) and the pod drops all capabilities with `runAsNonRoot` (rev 29) |
 | L3 | privileged/hostPath justification only in comments | **Open** (documented) |
 | L4 | Swallowed apply errors | **No change needed** — `applySharesConfig` already logs (`shares.go:370`) |
 | L5 | Log-injection findings | **Fixed** — `internal/logsafe.Field` sanitises every request/peer-derived value before it reaches a log line (rev 27) |
@@ -244,7 +244,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | AUDIT-M6 — PSA `privileged` namespace | Medium | Changes scheduling/security context of live workloads | Split namespaces or label only agent/terminal privileged |
 | AUDIT-M11 — Svelte/Vite dev advisories | Medium | Breaking major bumps; needs a tested UI upgrade | Bump and re-run `npm audit` + the suite (CR-08/CR-31) |
 | AUDIT-M3 residual — Authelia config in a ConfigMap | Medium | Requires subchart support to mount a Secret-based config | Move `configuration.yml` to a Secret |
-| AUDIT-L2 — nginx non-root | Low | Image change + rebuild; watch file-permission needs | Non-root user, read-only rootfs, tmpfs cache |
+| ~~AUDIT-L2~~ — **fixed at revision 29**: unprivileged nginx (uid 101, port 8080), all capabilities dropped, `runAsNonRoot` | Low | — | — |
 | ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
 | ~~AUDIT-L5/L6~~ — **fixed at revision 27**: `logsafe.Field` sanitises log arguments and the conversions are bounded/clamped | Low | — | — |
 | ~~AUDIT-L8 / CR-06~~ — **fixed at revision 27**: the scheduler race is gone and the sweep runs `go test -race` | Low | — | — |
