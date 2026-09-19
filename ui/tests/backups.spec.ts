@@ -4,14 +4,11 @@ import { test, expect } from '@playwright/test';
 // receiver report all come from /api/buddy/*. Tests assert rendered values
 // against the API rather than placeholders.
 //
-// The sender half is gated the same way the terminal is (SEC-7): with
-// buddy.requireAuth=true every owner-facing /api/buddy/* call must carry the
-// identity header the authenticating proxy injects. The suite reaches the VM
-// through the NodePort, where no proxy runs, so the header is set here - it is
-// exactly what Traefik's forwardAuth adds in production. (On this listener the
-// header is also client-controlled, which is NAS-008; that is a deployment
-// posture question, not a page defect.)
-test.use({ extraHTTPHeaders: { 'Remote-User': 'admin' } });
+// Identity comes from the session captured by tests/auth.setup.ts (the Authelia
+// cookie, or nothing on the dev posture where auth is disabled). The old
+// explicit `Remote-User` header is gone: through Traefik forwardAuth sets it from
+// the session, and trustForwardHeader is off, so a client-supplied value is
+// ignored anyway.
 
 async function buddyIdentity(request: any): Promise<any> {
   const res = await request.get('/api/buddy/identity');
