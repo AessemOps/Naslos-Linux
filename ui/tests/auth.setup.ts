@@ -1,4 +1,5 @@
 import { test as setup, expect } from '@playwright/test';
+import { chmodSync } from 'node:fs';
 import { totp } from './totp';
 
 // Session captured here is reused by every test (playwright.config.ts sets it as
@@ -150,6 +151,9 @@ setup('authenticate', async ({ page, context }) => {
 
   await page.waitForURL(leftPortal, { timeout: 30_000 });
   await context.storageState({ path: STATE });
+  // The state file holds a live admin session cookie: keep it owner-only
+  // (AUDIT-M2), rather than leaving whatever the process umask produces.
+  chmodSync(STATE, 0o600);
 
   // Fail here, with a readable reason, if the session is not an administrator:
   // otherwise every later test 403s and the cause is buried.

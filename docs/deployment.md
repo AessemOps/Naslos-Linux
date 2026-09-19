@@ -320,6 +320,30 @@ git revert <sha> && make install-vm
 Pools, datasets and the state PVC (shares, buddy identity, notifications) are
 untouched by a rollback.
 
+**Operator locked out (lost the TOTP device, Authelia DB corruption, portal
+loop).** In order, least destructive first:
+
+1. **Another factor still works?** Log in with a registered WebAuthn device, or
+   the recovery/one-time codes if they were saved. The elevated-session one-time
+   code is written to the Authelia volume and can be read with
+   `kubectl -n naslos exec daemonset/naslos-authelia -- cat /config/notification.txt`.
+2. **Session/identity checks.** Confirm the Authelia pod is running and can bind
+   LDAP: its logs show `LDAP Result Code 49` when the bind password and the
+   `naslos-openldap` Secret's `service-password` disagree. Fix by aligning the
+   Secret (never by committing a literal).
+3. **Reset the second factor from the DB.** Stop Authelia
+   (`kubectl -n naslos scale daemonset/naslos-authelia --replicas=0`), then either
+   restore `/config/db.sqlite3` from a backup on the PVC, or delete the affected
+   rows in `totp_devices` / `webauthn_devices` with `sqlite3` in a throwaway pod
+   that mounts the same PVC. Scale back up and enrol again at first login.
+4. **Last resort: `helm -n naslos rollback naslos`** (or `git revert` + `make
+   install-vm`). The Authelia PVC, pools and the shares/buddy/notifications PVCs
+   are not part of the rollback, so nothing is lost; the proxy posture is simply
+   restored to the last working revision.
+
+Never re-introduce a bypass to recover: the removed NodePort / `AUTH_DISABLED`
+paths are gone for a reason, and cluster access is always available.
+
 ### Running the E2E suite
 
 The Playwright suite authenticates like a person: a `setup` project logs into the
