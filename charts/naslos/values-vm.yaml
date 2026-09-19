@@ -64,15 +64,11 @@ openldap:
   image: 192.168.1.2:30095/naslos-openldap:0.1.0-r1
   # OpenLDAP host is the service name for internal cluster references.
   host: naslos-openldap
-  # Must match the naslos-openldap secret's "service-password" key (set by
-  # openldap/generate-secrets.sh, default SERVICE_PASSWORD env var) — this
-  # is what the naslos-openldap-bootstrap Job writes as the naslos-service
-  # account's real userPassword. If they don't match, Authelia's LDAP bind
-  # fails at startup with "LDAP Result Code 49 \"Invalid Credentials\"".
-  # Override SERVICE_PASSWORD when running generate-secrets.sh and update
-  # this value (or pass --set openldap.bindPassword=... at install time) to
-  # keep them in sync.
-  bindPassword: "CHANGE_ME_SERVICE_PASSWORD"
+  # No bindPassword here. The chart reads the service password from the
+  # naslos-openldap Secret (key service-password), which
+  # openldap/generate-secrets.sh creates and the naslos-openldap-bootstrap Job
+  # applies to the directory; rotating it is a Secret patch plus a bootstrap
+  # re-run, and nothing lands in git (AUDIT-H1).
 
 # The public name: session cookie domain, TOTP issuer and TLS SAN. It resolves
 # through the mDNS record the Samba container advertises; add a router A record
