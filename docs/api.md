@@ -219,7 +219,7 @@ shell, never an arbitrary command.
 | `NASLOS_NAMESPACE` | — | Namespace injected by the Helm chart |
 | `KUBECONFIG` | — | Path to kubeconfig (default: in-cluster) |
 | `BUDDY_NAME` | `naslos` | Name this instance reports to backup peers |
-| `BUDDY_RECEIVE_PATH` | `/var/lib/naslos/buddy` | Dataset (mounted read-write) that stores received sealed chunks. The live release runs `buddy.enabled=false`, so this is unset and the code default lands on the 64 MiB shares PVC — see AUDIT-H2 |
+| `BUDDY_RECEIVE_PATH` | `/var/lib/naslos/buddy` | Dataset (mounted read-write) that stores received sealed chunks. The VM profile sets `buddy.enabled=true` + `receiveHostPath: /var/mnt/test/naslos-buddy`, so chunks land on their own dataset (AUDIT-H2) |
 | `BUDDY_PEERS` | `/var/lib/naslos/buddy-peers.json` | Authorized-keys registry for backup peers |
 | `BUDDY_ENROLL_TOKEN` | — | One-time token that lets a peer authorize its own key (from the `naslos-buddy` Secret) |
 | `PROXY_SHARED_SECRET` | — | **Required.** Shared secret Traefik's `proxy-identity` middleware injects; the API refuses to start without it (from the `naslos-proxy` Secret, key `secret`). There is no opt-out |
