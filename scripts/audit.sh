@@ -1,9 +1,9 @@
 #!/bin/sh
 # Naslos audit sweep (see docs/AUDIT-2026-09-19.md).
 #
-# Reproducible checks that are fast enough for a pre-PR run and for CI. Missing
-# tools are reported as "skipped" rather than failing, so the same script works
-# on a laptop and in Actions; the workflow installs them.
+# Reproducible checks that are fast enough for a pre-PR run. Missing tools are
+# reported as "skipped" rather than failing, so it runs anywhere. There is no CI
+# workflow wired to it for now - run it by hand, or add a workflow later.
 #
 # Usage:  sh scripts/audit.sh
 #         NASLOS_AUDIT_RACE=1 sh scripts/audit.sh   # adds go test -race (CR-06)

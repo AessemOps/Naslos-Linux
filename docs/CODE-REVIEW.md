@@ -21,7 +21,7 @@ Helm chart and images, scripts, docs, tests. **Mode:** report only; nothing chan
 > | CR-05 dependency exposure | **Fixed** — `23bca3a`; govulncheck 18 → 4, all `Fixed in: N/A` and unexercised |
 > | CR-06 `-race` fails | **Open** — CI keeps it opt-in (`NASLOS_AUDIT_RACE=1`) until fixed |
 > | CR-07 ntfy token in the response, CR-15 world-readable shadow mirror, CR-18/19/22 UI silent failures | **Fixed** — `261aa3e` |
-> | CR-09 no CI | **Fixed** — `421711a` (`scripts/audit.sh` + `.github/workflows/audit.yml`) |
+> | CR-09 no CI | **Partial** — `scripts/audit.sh` packages the sweep (`421711a`); the GitHub Actions workflow added with it was removed at the operator's request, so it is manual for now |
 > | CR-10 no `.dockerignore` | **Fixed** — `8555925` |
 > | CR-31 xterm deprecation, CR-32/33/34/35/36 UI typing/size/a11y/timers, CR-41 monitoring limits, CR-42 spec §7 mapping, CR-44 doc drift, CR-45 unused logger | **Open** |
 > | CR-37 probes/PDBs/NetworkPolicy/PSA/RBAC | **Partial** — unused agent ClusterRole removed (`8555925`); probes, PDBs, NetworkPolicy, PSA scoping open (AUDIT-M4/M6) |
