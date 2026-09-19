@@ -11,7 +11,8 @@ UI (or via `GET/PUT /api/notifications`).
 | `enabled` | `false` | Master on/off switch |
 | `serverUrl` | `https://ntfy.sh` | ntfy server; empty = bundled ntfy (`values.yaml: ntfy.server.url`) |
 | `topic` | `naslos-alerts` | Topic to publish to |
-| `authToken` | — | Bearer token when the server requires auth |
+| `hasAuthToken` | `false` | **Read-only.** Whether a bearer token is stored; the token itself is never returned |
+| `authToken` | — | **Write-only.** Omitted on save keeps the stored token; `""` clears it; any other value replaces it |
 | `email` | — | `X-Email` header (server-side email sending) |
 | `enabledEvents` | `[zfs_health, app_status, disk_failure]` | Which event types fire |
 | `minSeverity` | `warning` | Only send at/above this severity |

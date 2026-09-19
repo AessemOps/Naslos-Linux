@@ -19,6 +19,7 @@ func newTestServer(t *testing.T, authDisabled bool) *Server {
 	t.Setenv("BUDDY_RECEIVE_PATH", filepath.Join(t.TempDir(), "buddy"))
 	t.Setenv("SHARES_CONFIG", filepath.Join(t.TempDir(), "shares.json"))
 	t.Setenv("SMB_USERS_CONFIG", filepath.Join(t.TempDir(), "smbusers.json"))
+	t.Setenv("NOTIFICATIONS_CONFIG", filepath.Join(t.TempDir(), "notifications.json"))
 
 	if authDisabled {
 		t.Setenv("AUTH_DISABLED", "true")

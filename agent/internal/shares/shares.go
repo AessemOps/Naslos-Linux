@@ -180,10 +180,19 @@ func (c *Client) Apply(cfg Config) (*Status, error) {
 	}{
 		{"passwd", cfg.NSSPasswd, 0644},
 		{"group", cfg.NSSGroup, 0644},
-		{"shadow", cfg.NSSShadow, 0644},
+		// 0600: the shadow mirror carries password hashes, like smbusers.
+		{"shadow", cfg.NSSShadow, 0600},
 	} {
 		path := NSSDir + "/" + f.name
 		if readHostFile(path) == f.content {
+			// The content is current, but an upgrade may have changed the
+			// desired mode (the shadow mirror moved 0644 -> 0600): apply it
+			// without rewriting the file.
+			if info, err := os.Stat(hostPath(path)); err == nil && info.Mode().Perm() != f.mode {
+				if err := os.Chmod(hostPath(path), f.mode); err != nil {
+					return nil, fmt.Errorf("chmod %s: %w", path, err)
+				}
+			}
 			continue
 		}
 		if err := writeAtomic(path, f.content, f.mode); err != nil {

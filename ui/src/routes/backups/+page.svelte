@@ -224,7 +224,10 @@
   async function deleteSchedule(id: string) {
     if (!confirm('Delete this schedule? Already-stored backups are kept.')) return;
     try {
-      await fetch(`/api/buddy/schedules?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/buddy/schedules?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
       await loadSchedules();
     } catch (e) {
       error = 'Deleting the schedule failed: ' + e;
@@ -315,7 +318,10 @@
   async function cancelJob() {
     if (!activeJob) return;
     try {
-      await fetch(`/api/buddy/jobs/${encodeURIComponent(activeJob.id)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/buddy/jobs/${encodeURIComponent(activeJob.id)}`, { method: 'DELETE' });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
       await pollJob(activeJob.id);
     } catch (e) {
       jobError = 'Cancelling failed: ' + e;
