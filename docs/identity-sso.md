@@ -139,6 +139,18 @@ in the page).
 - Regulation: 3 retries → 2 min window → 5 min ban.
 - Password policy: ≥8 chars ≤72, upper + lower + number required.
 - Authelia's own password reset is disabled; resets happen in the Naslos UI → LDAP.
+- **Elevated session / identity verification.** Registering or removing a second
+  factor is a credential-management action, so Authelia requires an elevated
+  session whose one-time code is delivered by the notifier. There is no mail
+  relay on the appliance, so the notifier is `filesystem`
+  (`/config/notification.txt`, 0600 on the Authelia volume) and the code has a
+  1 h lifespan. Set the account's `mail` attribute first (Authelia addresses the
+  code to it) — `admin` uses `admin@naslos.local`. During the one-time
+  enrolment, read the code with
+  `kubectl -n naslos exec daemonset/naslos-authelia -- cat /config/notification.txt`.
+  `skip_second_factor: true` means that once an operator has a second factor,
+  later credential changes only need that factor, not another code. Configure
+  `notifier.smtp` instead if a relay exists.
 
 ## TLS
 
