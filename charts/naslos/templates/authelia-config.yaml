@@ -173,6 +173,20 @@ data:
       filesystem:
         filename: /config/notification.txt
 
+    # Registering the first second-factor device is a "credential management"
+    # action, so Authelia requires an elevated session whose one-time code is
+    # delivered by the notifier above. There is no mail relay here, so the code
+    # is only written to /config/notification.txt: the operator has to read it
+    # out for the one-time enrolment, hence the generous lifespan.
+    identity_validation:
+      elevated_session:
+        code_lifespan: '1 hour'
+        elevation_lifespan: '30 minutes'
+        characters: 8
+        # Once an operator has a second factor, managing credentials needs only
+        # that factor — not another notifier code.
+        skip_second_factor: true
+
     password_policy:
       standard:
         enabled: true
