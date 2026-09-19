@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/AessemOps/Naslos-Linux/api/internal/agent"
+	"github.com/AessemOps/Naslos-Linux/api/internal/logsafe"
 )
 
 // ZFS Pool API handlers.
@@ -271,7 +272,7 @@ func (s *Server) handleDatasets(w http.ResponseWriter, r *http.Request) {
 			writeAgentError(w, err)
 			return
 		}
-		log.Printf("destroyed dataset %s (recursive=%v)", name, recursive)
+		log.Printf("destroyed dataset %s (recursive=%v)", logsafe.Field(name), recursive) // #nosec G706 -- sanitised by logsafe.Field
 		writeJSON(w, http.StatusOK, map[string]string{"status": "dataset destroyed", "name": name})
 
 	default:
@@ -438,8 +439,8 @@ func (s *Server) handleZFSPoolDevices(w http.ResponseWriter, r *http.Request, po
 		writeAgentError(w, err)
 		return
 	}
-	log.Printf("attached %d disk(s) to pool %s (topology %q, force %v)",
-		len(req.Disks), pool, req.Topology, req.Force)
+	log.Printf("attached %d disk(s) to pool %s (topology %q, force %v)", // #nosec G706 -- arguments sanitised by logsafe.Field
+		len(req.Disks), logsafe.Field(pool), logsafe.Field(req.Topology), req.Force)
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"status":   "vdev added",
 		"pool":     pool,

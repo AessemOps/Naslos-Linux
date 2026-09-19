@@ -15,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/AessemOps/Naslos-Linux/api/internal/logsafe"
 )
 
 // Store is the receiver-side storage: opaque sealed chunks plus signed manifests,
@@ -526,7 +528,8 @@ func (s *Store) PutManifest(keyID, source string, m *Manifest) error {
 	}
 
 	if previous != m.Chain {
-		log.Printf("buddy receiver: %s current chain %s -> %s (%s)", source, orNone(previous), m.Chain, m.Kind)
+		log.Printf("buddy receiver: %s current chain %s -> %s (%s)", // #nosec G706 -- arguments sanitised by logsafe.Field
+			logsafe.Field(source), logsafe.Field(orNone(previous)), logsafe.Field(m.Chain), logsafe.Field(m.Kind))
 	}
 	return writeFileAtomic(filepath.Join(sourceDir, "current.json"), data)
 }
@@ -936,7 +939,14 @@ func (s *Store) FreeSpace() (int64, error) {
 	if err := syscall.Statfs(s.root, &stat); err != nil {
 		return 0, err
 	}
-	return int64(stat.Bavail) * int64(stat.Bsize), nil
+	// Bavail is uint64 and Bsize int64. Clamp rather than overflow: a free-space
+	// figure beyond int64 is not meaningful, and this is where gosec G115 fires
+	// (AUDIT-L6).
+	const maxInt64 = uint64(1<<63 - 1)
+	if stat.Bsize > 0 && stat.Bavail > maxInt64/uint64(stat.Bsize) {
+		return int64(maxInt64), nil
+	}
+	return int64(stat.Bavail) * stat.Bsize, nil // #nosec G115 -- clamped above
 }
 
 // LastBackup is the newest stored backup time for a key (zero when none).
