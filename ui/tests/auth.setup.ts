@@ -1,18 +1,12 @@
 import { test as setup, expect } from '@playwright/test';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
 import { totp } from './totp';
 
 // Session captured here is reused by every test (playwright.config.ts sets it as
 // the chromium project's storageState). Playwright's `request` fixture shares
 // the browser context's cookies, so both page.goto and request.get('/api/…')
-// are authenticated by it.
+// are authenticated by it. There is no unauthenticated target any more, so a
+// missing credential or a non-challenged response is an error, not a fallback.
 export const STATE = 'tests/.auth/admin.json';
-
-function writeEmptyState(): void {
-  mkdirSync(dirname(resolve(STATE)), { recursive: true });
-  writeFileSync(STATE, JSON.stringify({ cookies: [], origins: [] }, null, 2));
-}
 
 function currentCode(): string {
   if (process.env.NASLOS_TOTP_CODE) {
@@ -38,9 +32,9 @@ async function submit(page: import('@playwright/test').Page): Promise<void> {
   await page.getByRole('button', { name: /sign in|authenticate/i }).first().click();
 }
 
-// Log in once through the Authelia portal and persist the session. The setup is
-// posture-aware: when the target has no auth in the path (the dev NodePort
-// posture) it writes an empty state and the suite runs exactly as before.
+// Log in once through the Authelia portal and persist the session. Every route
+// is authenticated now, so credentials are mandatory and a target that does not
+// challenge is an error.
 setup('authenticate', async ({ page, context }) => {
   // Waiting out a TOTP window on a rejected-but-already-used code can take up to
   // 30 s per attempt, well past the default test timeout.
@@ -50,16 +44,17 @@ setup('authenticate', async ({ page, context }) => {
   const password = process.env.NASLOS_ADMIN_PASSWORD;
 
   if (!password) {
-    writeEmptyState();
-    return;
+    throw new Error(
+      'NASLOS_ADMIN_PASSWORD is required: the appliance only serves the authenticated proxy. Put it (and NASLOS_TOTP_SECRET) in ui/.env.playwright.local.',
+    );
   }
 
   await page.goto('/');
 
   if (!page.url().includes('/authelia/')) {
-    // Served the app without a challenge: no proxy auth on this target.
-    writeEmptyState();
-    return;
+    // The target served the app without a challenge, which the production
+    // posture never does: fail loudly rather than run the suite anonymously.
+    throw new Error(`expected the Authelia portal, landed on ${page.url()}`);
   }
 
   await page.locator('#username-textfield').fill(user);

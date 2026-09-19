@@ -90,8 +90,8 @@ headers. The Naslos API trusts them only when **both** hold (NAS-001):
    `10.0.0.0/8`), and
 2. it carries the shared secret that Traefik's `proxy-identity` middleware
    injects (`X-Naslos-Proxy-Secret`, generated once into the `naslos-proxy`
-   Secret). A client that reaches the API another way — the NodePort, another
-   pod — cannot supply it, so spoofing `Remote-User` alone is not enough.
+   Secret). A client that reaches the API another way — another pod, a stale
+   listener — cannot supply it, so spoofing `Remote-User` alone is not enough.
 
 Traefik's forwardAuth middleware does **not** set `trustForwardHeader`: a client
 must not be able to forge `X-Forwarded-*` and influence the auth decision or the
@@ -158,7 +158,7 @@ in the page).
 - LDAPS (:636) with an internal CA; the CA is provided to the API
   (`LDAP_CA_CERT`) and to Authelia via the config map and secrets.
 - HTTPS terminated by Traefik (`websecure` :443, HTTP→HTTPS redirect), exposed on
-  the node's 80/443 (`values-prod.yaml` sets `traefik.ports.*.hostPort`).
+  the node's 80/443 (`values-vm.yaml` sets `traefik.ports.*.hostPort`).
 - The certificate is chart-generated, self-signed for `authelia.domain`
   (`naslos-tls`, generated once and reused across upgrades). Point
   `ingress.tls.existingSecret` at a real certificate to remove the browser

@@ -58,8 +58,8 @@ type podInfo struct {
 
 // terminalUsername returns the authenticated user behind the request, for logs.
 // The request reached this point through the owner auth middleware (proxy secret
-// + identity header), or through the AUTH_DISABLED dev opt-out - in which case
-// there is no user and the caller is logged as anonymous.
+// + identity header), so a user is normally present; anything else is logged as
+// anonymous rather than guessed.
 func (s *Server) terminalUsername(r *http.Request) string {
 	if user := auth.UserFromContext(r.Context()); user != nil && strings.TrimSpace(user.Username) != "" {
 		return strings.TrimSpace(user.Username)

@@ -22,9 +22,6 @@ type Options struct {
 	// AuthToken is the shared bearer token every request except /health must
 	// present. The API reads the same value from the same Secret.
 	AuthToken string
-	// AuthDisabled is the explicit development opt-out
-	// (AGENT_AUTH_DISABLED=true). It must never be used on a real node.
-	AuthDisabled bool
 }
 
 // Server is the agent's HTTP server.
@@ -35,22 +32,20 @@ type Server struct {
 	// backup is the streaming slice of the ZFS client (send/receive/estimate).
 	// Nil when the agent runs degraded (no ZFS on the host).
 	backup backupZFS
-	// authToken is the shared API token; authDisabled is the dev opt-out.
-	authToken    string
-	authDisabled bool
-	router       *http.ServeMux
-	server       *http.Server
+	// authToken is the shared API token the API presents; there is no opt-out.
+	authToken string
+	router    *http.ServeMux
+	server    *http.Server
 }
 
 // New creates a new agent server.
 func New(addr string, zfsClient *zfs.Client, sharesClient *shares.Client, opts Options) *Server {
 	s := &Server{
-		addr:         addr,
-		zfs:          zfsClient,
-		shares:       sharesClient,
-		authToken:    opts.AuthToken,
-		authDisabled: opts.AuthDisabled,
-		router:       http.NewServeMux(),
+		addr:      addr,
+		zfs:       zfsClient,
+		shares:    sharesClient,
+		authToken: opts.AuthToken,
+		router:    http.NewServeMux(),
 	}
 	if zfsClient != nil {
 		s.backup = zfsClient
@@ -64,10 +59,6 @@ func New(addr string, zfsClient *zfs.Client, sharesClient *shares.Client, opts O
 // start in that case, this is the belt to that braces).
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.authDisabled {
-			next.ServeHTTP(w, r)
-			return
-		}
 		const prefix = "Bearer "
 		header := r.Header.Get("Authorization")
 		if s.authToken == "" || !strings.HasPrefix(header, prefix) ||

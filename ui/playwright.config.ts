@@ -24,11 +24,10 @@ export default defineConfig({
   workers: 1,
   reporter: 'list',
   use: {
-    // Point the suite at whichever instance is under test, e.g.
-    //   PLAYWRIGHT_BASE_URL=https://naslos.local npx playwright test
-    //   PLAYWRIGHT_BASE_URL=http://192.168.1.117:30080 npx playwright test
-    // The default is the long-standing single-node VM.
-    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://192.168.1.96:30080',
+    // The appliance is only reachable through the authenticated proxy, so the
+    // suite must use the public name (the session cookie is bound to it).
+    // Override with PLAYWRIGHT_BASE_URL for another instance.
+    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'https://naslos.local',
     // The production posture serves the chart's self-signed certificate.
     ignoreHTTPSErrors: true,
     trace: 'on-first-retry',

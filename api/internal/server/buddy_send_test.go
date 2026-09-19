@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/AessemOps/Naslos-Linux/api/internal/agent"
+	"github.com/AessemOps/Naslos-Linux/api/internal/auth"
 	"github.com/AessemOps/Naslos-Linux/api/internal/buddy"
 )
 
@@ -216,13 +217,18 @@ func newSenderHarness(t *testing.T, payload []byte) *senderHarness {
 	t.Cleanup(receiverServer.Close)
 
 	fake := newFakeAgent(t, payload)
-	// authDisabled is the same development opt-out the operator can set; the
-	// owner auth gate itself is covered by routes_test.go.
+	// The owner auth gate has no opt-out, so the harness runs the real
+	// middleware and call() presents the secret and an admin identity. The gate
+	// itself is covered by routes_test.go.
+	authMiddleware, err := auth.NewMiddleware([]string{"192.0.2.0/24"}, "test-proxy-secret")
+	if err != nil {
+		t.Fatalf("building auth middleware: %v", err)
+	}
 	server := &Server{
-		agent:        agent.NewClient(fake.server.URL, ""),
-		buddy:        receiver,
-		authDisabled: true,
-		router:       http.NewServeMux(),
+		agent:  agent.NewClient(fake.server.URL, ""),
+		buddy:  receiver,
+		auth:   authMiddleware,
+		router: http.NewServeMux(),
 	}
 	server.routes()
 
@@ -235,8 +241,9 @@ func newSenderHarness(t *testing.T, payload []byte) *senderHarness {
 	}
 }
 
-// call performs a request against the harness (the auth gate is off in these
-// tests, so the handler sees it directly).
+// call performs a request against the harness, authenticated the way Traefik
+// would: the proxy secret proves the request came through the proxy, and the
+// identity headers say who it is for.
 func (h *senderHarness) call(t *testing.T, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 
@@ -249,6 +256,9 @@ func (h *senderHarness) call(t *testing.T, method, path string, body any) *httpt
 		reader = bytes.NewReader(encoded)
 	}
 	req := httptest.NewRequest(method, path, reader)
+	req.Header.Set("X-Naslos-Proxy-Secret", "test-proxy-secret")
+	req.Header.Set("Remote-User", "admin")
+	req.Header.Set("Remote-Groups", "naslos_admins")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -366,9 +376,9 @@ func TestBuddyIdentityLifecycle(t *testing.T) {
 
 // The owner gate on /api/buddy/* (identity, send, restore, jobs, schedules,
 // peers, status) is asserted exhaustively in routes_test.go: every owner path
-// must answer 401 without the proxy secret. These handler tests run with the
-// same AUTH_DISABLED opt-out the operator can set, so they exercise the handlers
-// themselves rather than the gate.
+// must answer 401 without the proxy secret. These handler tests authenticate
+// every call (see call()), so they exercise the handlers themselves rather than
+// the gate.
 
 // TestBuddySendRefusesADatasetTheHostCannotSee pins the fix for the silent empty
 // backup: a dataset mounted only inside a pod (the mount-propagation trap) must be

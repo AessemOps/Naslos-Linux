@@ -84,7 +84,7 @@ func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
 		}
 
 		// ...and only when the unforgeable proxy secret proves the request came
-		// through the proxy. This is what a NodePort client cannot supply.
+		// through the proxy. This is what a request from any other source cannot supply.
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get(ProxySecretHeader)), []byte(m.proxySecret)) != 1 {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
