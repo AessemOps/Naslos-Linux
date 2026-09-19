@@ -269,7 +269,7 @@ https://naslos.local
 - **Hostname** `naslos.local`: already resolvable through the mDNS record the
   Samba container advertises (`host-name=naslos`). Add a router/local-DNS A
   record `naslos.local -> <VM IP>` for clients without mDNS (Windows).
-- **TLS**: the chart generates a self-signed certificate for `authelia.domain`
+- **TLS**: the chart generates a self-signed certificate for the `domain` value
   on first install and reuses it across upgrades
   (`templates/tls-secret.yaml`, `lookup`-guarded). Import the `naslos-tls`
   Secret's `tls.crt` on a client to remove the browser warning, or point
@@ -416,7 +416,7 @@ NASLOS_RECEIVER_URL=http://naslos-api.naslos.svc.cluster.local:8080 \
 - Internal CA (`naslos-openldap-tls` secret) — replace with a real CA if you
   want browser-trusted HTTPS.
 - `naslos-tls` (the ingress certificate) is chart-generated and self-signed for
-  `authelia.domain`; trust it per client, or set `ingress.tls.existingSecret`
+  the `domain` value; trust it per client, or set `ingress.tls.existingSecret`
   to a real certificate. To force renewal, delete the Secret and re-run the
   upgrade.
 

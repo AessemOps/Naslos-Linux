@@ -239,17 +239,21 @@ traefik:
     rollingUpdate:
       maxSurge: 0
       maxUnavailable: 1
-  logs:
+  # Traefik 41 renamed the logging key from `logs` to `log`; its chart schema
+  # rejects the old one.
+  log:
     general:
       level: INFO
+
+# Public hostname the appliance answers on: the ingress Host match, the Authelia
+# session cookie domain, the TOTP issuer/WebAuthn display name and the TLS SAN.
+# It cannot live under `authelia:` — the Authelia 0.11.22 chart schema rejects
+# unknown keys there (the 0.10 keys `domain`/`server` are gone).
+domain: naslos.local
 
 # Authelia authentication
 authelia:
   enabled: true
-  domain: naslos.local
-  server:
-    host: 0.0.0.0
-    port: 9091
   configMap:
     # Use our own ConfigMap (charts/naslos/templates/authelia-config.yaml,
     # wired up with the LDAP backend) instead of the authelia subchart's
@@ -392,7 +396,7 @@ ingress:
     serviceName: naslos-authelia
     port: 80
   # TLS for the IngressRoutes. Leave existingSecret empty to let the chart
-  # generate a self-signed certificate for authelia.domain once and reuse it
+  # generate a self-signed certificate for the `domain` value once and reuse it
   # across upgrades (templates/tls-secret.yaml); point it at a Secret you manage
   # (keys tls.crt/tls.key) to serve a real CA certificate instead.
   tls:
