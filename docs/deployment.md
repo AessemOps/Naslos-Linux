@@ -217,9 +217,10 @@ REGISTRY=docker.io/myuser REGISTRY_HTTP_SECRET=mypassword IMAGE_TAG=latest \
   ./scripts/deploy-vm.sh
 ```
 
-> Note: The default passwords are unchanged (`grafana.adminPassword: naslos-admin`,
-> `openldap.bindPassword: CHANGE_ME_SERVICE_PASSWORD`). Rotate them before any
-> real use.
+> Grafana was **removed** on 2026-09-19 (AUDIT-H4: it shipped a committed default
+> admin password and was unused). The OpenLDAP service credential is still the
+> committed placeholder `CHANGE_ME_SERVICE_PASSWORD` in `values-vm.yaml` — that is
+> AUDIT-H1 and **must be rotated** before real use (see the fix plan).
 
 ### Files added for the VM
 
@@ -320,6 +321,30 @@ git revert <sha> && make install-vm
 Pools, datasets and the state PVC (shares, buddy identity, notifications) are
 untouched by a rollback.
 
+**Operator locked out (lost the TOTP device, Authelia DB corruption, portal
+loop).** In order, least destructive first:
+
+1. **Another factor still works?** Log in with a registered WebAuthn device, or
+   the recovery/one-time codes if they were saved. The elevated-session one-time
+   code is written to the Authelia volume and can be read with
+   `kubectl -n naslos exec daemonset/naslos-authelia -- cat /config/notification.txt`.
+2. **Session/identity checks.** Confirm the Authelia pod is running and can bind
+   LDAP: its logs show `LDAP Result Code 49` when the bind password and the
+   `naslos-openldap` Secret's `service-password` disagree. Fix by aligning the
+   Secret (never by committing a literal).
+3. **Reset the second factor from the DB.** Stop Authelia
+   (`kubectl -n naslos scale daemonset/naslos-authelia --replicas=0`), then either
+   restore `/config/db.sqlite3` from a backup on the PVC, or delete the affected
+   rows in `totp_devices` / `webauthn_devices` with `sqlite3` in a throwaway pod
+   that mounts the same PVC. Scale back up and enrol again at first login.
+4. **Last resort: `helm -n naslos rollback naslos`** (or `git revert` + `make
+   install-vm`). The Authelia PVC, pools and the shares/buddy/notifications PVCs
+   are not part of the rollback, so nothing is lost; the proxy posture is simply
+   restored to the last working revision.
+
+Never re-introduce a bypass to recover: the removed NodePort / `AUTH_DISABLED`
+paths are gone for a reason, and cluster access is always available.
+
 ### Running the E2E suite
 
 The Playwright suite authenticates like a person: a `setup` project logs into the
@@ -369,18 +394,19 @@ NASLOS_RECEIVER_URL=http://naslos-api.naslos.svc.cluster.local:8080 \
 | `auth.*` | generated shared secret | owner-route gate (NAS-001); no `disabled` switch exists |
 | `ntfy.server.url` | empty ⇒ bundled ntfy | see [notifications.md](notifications.md) |
 | `prometheus.*` | 30d retention | see [monitoring.md](monitoring.md) |
-| `grafana.*` | adminPassword `naslos-admin` | **change** |
-| `storage.*` | localPath + ZFS LocalPV | see [storage-zfs.md](storage-zfs.md) |
+| `grafana.*` | disabled | removed 2026-09-19 (AUDIT-H4); re-enabling needs a credential from a Secret |
+| `storage.*` | localPath only | see [storage-zfs.md](storage-zfs.md) |
 | `openldap.*` | bind DN/password | **change** the default secret |
 | `namespace` | `naslos` | everything deploys here |
 
 ## Secrets to rotate before production
 
 - `openldap.bindPassword` / `admin-password` + `service-password`
-  (`kubectl create secret generic naslos-openldap …`)
-- `grafana.adminPassword`
-- `authelia-config` `jwt_secret` (generated at install — rotate if it shows up
-  in git/diffs)
+  (`kubectl create secret generic naslos-openldap …`) — **currently the committed
+  placeholder, AUDIT-H1**
+- `authelia-config` `jwt_secret` (generated once into the `naslos-authelia-jwt`
+  Secret since 2026-09-19, so it survives upgrades; rotate if it shows up in
+  git/diffs)
 - Internal CA (`naslos-openldap-tls` secret) — replace with a real CA if you
   want browser-trusted HTTPS.
 - `naslos-tls` (the ingress certificate) is chart-generated and self-signed for

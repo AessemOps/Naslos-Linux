@@ -1,5 +1,27 @@
 # Naslos Security Audit — 2026-09-14
 
+> **SUPERSEDED (2026-09-19).** This audit predates the fix batch and the
+> authenticated-only change; several findings below are already closed (agent
+> token enforcement, the NodePort/auth bypass removal, the streaming-client
+> token, CR-01). Read it for history, not for current risk. The current picture
+> is in `docs/AUDIT-2026-09-19.md`, with its remediation in
+> `docs/AUDIT-2026-09-19-FIXPLAN.md`; the living per-finding list is
+> `docs/CODE-REVIEW.md`. The NAS-* IDs here are kept for traceability.
+>
+> **Status of the headline findings at 2026-09-19:**
+>
+> | Finding | Status |
+> |---|---|
+> | NAS-001 API trusts whoever can reach it | **Fixed** — the owner gate is wired to the router; `TestOwnerRoutesRequireAuth` covers it |
+> | NAS-002 unauthenticated agent | **Fixed** — bearer token required and compared in constant time; `api/internal/agent/client_test.go` pins both clients (it found the streaming-client gap) |
+> | NAS-003 agent validation gaps | **Partial** — escaping/validation batches landed; CR-27/28/29 remain open |
+> | NAS-004 terminal unauthenticated, NAS-005 `/api/ws/logs` unauthenticated | **Fixed** — owner gate; the nginx 403 path is gone with the NodePort |
+> | NAS-008 NodePort exposes the API | **Fixed** — the listener and the whole dev posture were removed |
+> | NAS-009 `X-Forwarded-Host` trust | **Fixed** — `trustForwardHeader` removed from the forwardAuth middleware |
+> | NAS-010 default credentials | **Partial** — Grafana removed; the LDAP service password, `TempPass123!` initial passwords and the registry `secret` remain (AUDIT-H1/M14) |
+> | NAS-014 jwt regenerated per render, NAS-017 agent client token | **Fixed** — jwt secret persisted; streaming client carries the token |
+> | everything else | historical; see the status table in `docs/CODE-REVIEW.md` |
+
 - **Branch:** `feature/buddy-backup`
 - **Commit:** `11b9dffa65cefc27cf95f6b6d9c4f9cc64d8df2f`
 - **Scope:** Full codebase — `api/`, `agent/`, `api/internal/buddy/`, `ui/`, `charts/naslos/`, `samba/`, `nfs/`, `openldap/`, `terminal/`, `bootstrap/`, plus Go deps (`api/go.mod`) and UI deps (`ui/package.json`).
