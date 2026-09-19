@@ -164,37 +164,17 @@ func (s *Server) handleGroupDetail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		requested := make(map[string]struct{}, len(req.Members))
-		for _, member := range req.Members {
-			if uid := extractUID(member); uid != "" {
-				requested[uid] = struct{}{}
-			}
-		}
-		current := make(map[string]struct{}, len(group.Members))
-		for _, member := range group.Members {
-			if uid := extractUID(member); uid != "" {
-				current[uid] = struct{}{}
-			}
-		}
-
 		// Both sides are compared as uids. GET returns member DNs while
 		// Add/RemoveMember take uids, so normalising here means a client can
 		// safely PUT back exactly what it read - otherwise a DN would be
 		// treated as a uid and stored as a malformed member
 		// ("uid=uid=alice,ou=people,...").
-		for uid := range current {
-			if _, keep := requested[uid]; !keep {
-				if err := s.identity.RemoveMember(cn, uid); err != nil {
-					log.Printf("Warning: could not remove %s from %s: %v", uid, cn, err)
-				}
-			}
-		}
-		for uid := range requested {
-			if _, already := current[uid]; !already {
-				if err := s.identity.AddMember(cn, uid); err != nil {
-					log.Printf("Warning: could not add %s to %s: %v", uid, cn, err)
-				}
-			}
+		add, remove := membershipDelta(group.Members, req.Members, extractUID)
+		if err := applyMembershipChanges(add, remove,
+			func(uid string) error { return s.identity.AddMember(cn, uid) },
+			func(uid string) error { return s.identity.RemoveMember(cn, uid) },
+		); err != nil {
+			log.Printf("Warning: group %s updated with errors: %v", cn, err)
 		}
 		// Share access is evaluated by Samba against the group membership
 		// mirrored on the node, so a membership change must re-push it -

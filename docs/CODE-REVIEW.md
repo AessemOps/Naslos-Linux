@@ -213,6 +213,14 @@ to the operator's topic. Verified by reading.
 **Fix:** return `hasAuthToken: true/false` instead of the value, and only accept a
 replacement when the operator types one. Effort S.
 
+> **Resolved in this change.** `GET /api/notifications` returns a view struct with
+> `hasAuthToken` and never the token; `PUT` treats an omitted `authToken` as
+> "keep", `""` as "clear" and a value as "replace" (`UpdateSettings` now takes a
+> `*string`). The UI keeps a local replacement input plus an explicit clear
+> checkbox. Tests: `TestNotificationsNeverReturnTheAuthToken`,
+> `TestUpdateSettingsTokenSemantics`; `docs/notifications.md` records the
+> read/write asymmetry.
+
 #### CR-08 — UI dependency advisories: 11 (1 high, 6 moderate, 4 low) 🟡
 
 **Evidence (executed):** `npm audit` — `cookie <0.7.0` (high) via
@@ -328,6 +336,13 @@ reading the mode literal.
 
 **Fix:** write the hidden hash files `0600`. Effort S.
 
+> **Resolved in this change.** The NSS `shadow` mirror is written `0600`
+> (`agent/internal/shares/shares.go`), and `Apply` now re-applies the mode even
+> when the content is unchanged, so an upgrade hardens an existing node instead
+> of waiting for the next rewrite. `agent/internal/shares/shares_test.go`
+> (`TestApplyRestrictsSecretMirrors`) pins the modes and the content-identical
+> upgrade path.
+
 #### CR-16 — Observability is deployed but nothing scrapes it 🟡
 
 **Evidence (verified):** no `ServiceMonitor`, `PodMonitor`, `prometheus.io/scrape`
@@ -372,6 +387,16 @@ Verified by tracing both sides.
 **Fix:** apply membership deltas in the PUT path, or remove `groups` from the edit
 form and point at the Groups page. Effort S.
 
+> **Resolved in this change.** `PUT /api/users/{uid}` decodes `groups` as a
+> pointer (`null`/absent = leave membership alone), validates names with
+> `identity.NormalizeGroupName`, computes the delta with the shared
+> `membershipDelta` helper (also used by the group-detail path, so normalization
+> and the apply-every-change policy are defined once), and pushes the
+> share-access mirror only when membership actually changed. Tests:
+> `TestGroupDelta`, `TestMembershipDeltaSharedNormalizer`,
+> `TestApplyMembershipChangesAttemptsEveryChange`. The spec's route table now
+> lists PUT on `/api/users/{uid}`.
+
 #### CR-19 — The UI parses error bodies as if they were data 🟡
 
 **Evidence:** unchecked `res.ok` before `res.json()` in
@@ -386,6 +411,11 @@ tracing each path.
 
 **Fix:** check `res.ok`/`Array.isArray` before using the payload, as the other pages
 already do. Effort S.
+
+> **Resolved in this change.** `notifications/+page.svelte`,
+> `CatalogBrowser.svelte`, `InstalledApps.svelte` and `AppInstallModal.svelte`
+> now check `res.ok` (and `Array.isArray` where a list is expected) before using
+> the payload, and show the failure instead of throwing during render.
 
 #### CR-20 — The terminal page can open a socket after it is disposed 🟡
 
@@ -428,6 +458,11 @@ tracing.
 
 **Fix:** check `res.ok` and surface the error (the pages already have an error
 banner). Effort S.
+
+> **Resolved in this change.** Delete/enable/disable/uninstall/delete-schedule/
+> cancel-job now check `res.ok` and set the page's error state
+> (`users/+page.svelte` gained one; `shares/+page.svelte` gained one;
+> `InstalledApps.svelte`, `backups/+page.svelte` reuse theirs).
 
 #### CR-23 — The test suite can pass while the feature is broken 🟡
 

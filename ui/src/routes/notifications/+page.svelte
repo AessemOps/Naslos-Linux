@@ -5,7 +5,7 @@
     enabled: boolean;
     serverUrl: string;
     topic: string;
-    authToken: string;
+    hasAuthToken: boolean;
     email: string;
     enabledEvents: string[];
     minSeverity: string;
@@ -15,11 +15,15 @@
     enabled: false,
     serverUrl: 'https://ntfy.sh',
     topic: 'naslos-alerts',
-    authToken: '',
+    hasAuthToken: false,
     email: '',
     enabledEvents: ['zfs_health', 'app_status', 'disk_failure'],
     minSeverity: 'warning'
   };
+  // The stored token is never sent back to the browser; this holds a replacement
+  // the operator types, and clearAuthToken is the explicit request to erase it.
+  let authToken = '';
+  let clearAuthToken = false;
   let loading = true;
   let saving = false;
   let message = '';
@@ -46,9 +50,15 @@
   async function loadSettings() {
     try {
       const res = await fetch('/api/notifications');
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
       settings = await res.json();
+      authToken = '';
+      clearAuthToken = false;
     } catch (e) {
-      console.error('Failed to load settings:', e);
+      message = 'Failed to load notification settings: ' + e;
+      messageType = 'error';
     } finally {
       loading = false;
     }
@@ -58,17 +68,25 @@
     saving = true;
     message = '';
     try {
+      // Omit authToken entirely to keep the stored one; send "" only when the
+      // operator explicitly asks to clear it.
+      const payload: Record<string, unknown> = { ...settings };
+      if (authToken.trim() !== '') {
+        payload.authToken = authToken.trim();
+      } else if (clearAuthToken) {
+        payload.authToken = '';
+      }
       const res = await fetch('/api/notifications', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings)
+        body: JSON.stringify(payload)
       });
-      if (res.ok) {
-        message = 'Settings saved successfully!';
-        messageType = 'success';
-      } else {
-        throw new Error('Failed to save');
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
+      message = 'Settings saved successfully!';
+      messageType = 'success';
+      await loadSettings();
     } catch (e) {
       message = 'Error: ' + e;
       messageType = 'error';
@@ -135,7 +153,20 @@
         </div>
         <div>
           <label class="label" for="notify-field-3">Auth Token (optional)</label>
-          <input id="notify-field-3" type="password" bind:value={settings.authToken} class="input w-full" />
+          <input
+            id="notify-field-3"
+            type="password"
+            bind:value={authToken}
+            class="input w-full"
+            placeholder={settings.hasAuthToken ? 'Stored — leave blank to keep' : 'Bearer token'}
+          />
+          {#if settings.hasAuthToken}
+            <label class="flex items-center gap-2 mt-2 text-sm text-gray-400">
+              <input type="checkbox" bind:checked={clearAuthToken} class="w-4 h-4 rounded" />
+              Clear the stored token
+            </label>
+          {/if}
+          <p class="text-xs text-gray-500 mt-1">The stored token is never shown. Leave this blank to keep it, or type a new one to replace it.</p>
         </div>
         <div>
           <label class="label" for="notify-field-4">Email (optional)</label>

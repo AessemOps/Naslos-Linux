@@ -20,7 +20,7 @@ func TestSettingsSurviveARestart(t *testing.T) {
 		EnabledEvents: []EventType{EventBackupFailure, EventDiskFailure},
 		MinSeverity:   SeverityError,
 	}
-	if err := first.UpdateSettings(want); err != nil {
+	if err := first.UpdateSettings(want, &want.AuthToken); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
 	}
 
@@ -43,7 +43,7 @@ func TestSettingsSurviveARestart(t *testing.T) {
 // manager with no path must not write anything, and must fall back to defaults.
 func TestMemoryOnlyManagerStillWorks(t *testing.T) {
 	m := NewManager("")
-	if err := m.UpdateSettings(Settings{Enabled: true, Topic: "x"}); err != nil {
+	if err := m.UpdateSettings(Settings{Enabled: true, Topic: "x"}, nil); err != nil {
 		t.Fatalf("UpdateSettings with no path: %v", err)
 	}
 	if got := m.GetSettings(); !got.Enabled || got.Topic != "x" {
@@ -53,5 +53,42 @@ func TestMemoryOnlyManagerStillWorks(t *testing.T) {
 	fresh := NewManager("")
 	if got := fresh.GetSettings(); got.Enabled {
 		t.Errorf("a memory-only manager should start from defaults, got %+v", got)
+	}
+}
+
+// TestUpdateSettingsTokenSemantics pins CR-07's write side: a nil token keeps
+// the stored one (an ordinary settings save omits it), an empty string clears
+// it, and a value replaces it.
+func TestUpdateSettingsTokenSemantics(t *testing.T) {
+	m := NewManager("")
+	token := "tk_secret"
+	if err := m.UpdateSettings(Settings{Enabled: true, Topic: "a"}, &token); err != nil {
+		t.Fatalf("setting the token: %v", err)
+	}
+
+	// nil keeps it.
+	if err := m.UpdateSettings(Settings{Enabled: true, Topic: "b"}, nil); err != nil {
+		t.Fatalf("keeping the token: %v", err)
+	}
+	if got := m.GetSettings(); got.AuthToken != token || got.Topic != "b" {
+		t.Errorf("after a nil token: %+v, want topic b and the stored token", got)
+	}
+
+	// A value replaces it.
+	replacement := "tk_new"
+	if err := m.UpdateSettings(Settings{Enabled: true, Topic: "c"}, &replacement); err != nil {
+		t.Fatalf("replacing the token: %v", err)
+	}
+	if got := m.GetSettings(); got.AuthToken != replacement {
+		t.Errorf("after a replacement: token = %q, want %q", got.AuthToken, replacement)
+	}
+
+	// An explicit empty string clears it.
+	empty := ""
+	if err := m.UpdateSettings(Settings{Enabled: true, Topic: "d"}, &empty); err != nil {
+		t.Fatalf("clearing the token: %v", err)
+	}
+	if got := m.GetSettings(); got.AuthToken != "" {
+		t.Errorf("after clearing: token = %q, want empty", got.AuthToken)
 	}
 }

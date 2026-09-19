@@ -14,6 +14,7 @@
 
   let users: User[] = [];
   let loading = true;
+  let error = '';
   let showForm = false;
   let editingUser: User | null = null;
 
@@ -48,21 +49,29 @@
 
   async function deleteUser(uid: string) {
     if (!confirm(`Delete user "${uid}"? This will also remove their SMB access.`)) return;
+    error = '';
     try {
-      await fetch(`/api/users/${uid}`, { method: 'DELETE' });
+      const res = await fetch(`/api/users/${uid}`, { method: 'DELETE' });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
       loadUsers();
     } catch (e) {
-      console.error('Failed to delete user:', e);
+      error = `Failed to delete ${uid}: ` + e;
     }
   }
 
   async function toggleUser(user: User) {
     const action = user.enabled ? 'disable' : 'enable';
+    error = '';
     try {
-      await fetch(`/api/users/${user.uid}/${action}`, { method: 'POST' });
+      const res = await fetch(`/api/users/${user.uid}/${action}`, { method: 'POST' });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
       loadUsers();
     } catch (e) {
-      console.error('Failed to toggle user:', e);
+      error = `Failed to ${action} ${user.uid}: ` + e;
     }
   }
 
@@ -77,6 +86,10 @@
     </div>
     <button class="btn btn-primary" on:click={newUser}>+ New User</button>
   </div>
+
+  {#if error}
+    <div class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
+  {/if}
 
   {#if loading}
     <p class="text-gray-400">Loading users...</p>
