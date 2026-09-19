@@ -39,7 +39,7 @@ func (m *Manager) save() error {
 	}
 
 	dir := filepath.Dir(m.configPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return fmt.Errorf("creating config dir: %w", err)
 	}
 
@@ -48,7 +48,9 @@ func (m *Manager) save() error {
 		return fmt.Errorf("marshaling settings: %w", err)
 	}
 
-	if err := os.WriteFile(m.configPath, data, 0644); err != nil {
+	// 0600: this file holds the ntfy auth token. The container runs as a single
+	// dedicated user, so nothing else needs to read it.
+	if err := os.WriteFile(m.configPath, data, 0600); err != nil {
 		return fmt.Errorf("writing settings: %w", err)
 	}
 

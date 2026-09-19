@@ -144,10 +144,35 @@ func (s *Store) sourceDir(keyID, source string) (string, error) {
 	return s.sourceDirIn(keyDir(keyID), source)
 }
 
+// validateChainName bounds a chain id before it is joined into a filesystem
+// path. It is deliberately a little looser than validChainID (client.go), which
+// only the sender needs: a received chain may carry dots, dashes or underscores
+// from an older sender, but must stay within a small character set, a length
+// bound, and never traverse (AUDIT-M9).
+func validateChainName(chain string) error {
+	if chain == "" || len(chain) > 128 || chain == "." || chain == ".." {
+		return fmt.Errorf("invalid chain id %q", chain)
+	}
+	for _, r := range chain {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '-', r == '_':
+		default:
+			return fmt.Errorf("invalid chain id %q", chain)
+		}
+	}
+	// A run of dots cannot appear except as the single "." / ".." already
+	// rejected, so "a..b" is refused too rather than relied on to be harmless.
+	if strings.Contains(chain, "..") {
+		return fmt.Errorf("invalid chain id %q", chain)
+	}
+	return nil
+}
+
 // chainDirIn is the directory holding one chain's chunks, by key directory name.
 func (s *Store) chainDirIn(keyDirName, source, chain string) (string, error) {
-	if chain == "" || strings.ContainsAny(chain, "/\\") || strings.Contains(chain, "..") {
-		return "", fmt.Errorf("invalid chain id %q", chain)
+	if err := validateChainName(chain); err != nil {
+		return "", err
 	}
 	dir, err := s.sourceDirIn(keyDirName, source)
 	if err != nil {
@@ -178,8 +203,8 @@ func (s *Store) manifestIn(keyDirName, source string) (*Manifest, error) {
 
 // chainDir is the directory holding one chain's chunks.
 func (s *Store) chainDir(keyID, source, chain string) (string, error) {
-	if chain == "" || strings.ContainsAny(chain, "/\\") || strings.Contains(chain, "..") {
-		return "", fmt.Errorf("invalid chain id %q", chain)
+	if err := validateChainName(chain); err != nil {
+		return "", err
 	}
 	dir, err := s.sourceDir(keyID, source)
 	if err != nil {
@@ -1092,7 +1117,7 @@ func writeFileAtomic(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmpName, 0644); err != nil {
+	if err := os.Chmod(tmpName, 0600); err != nil {
 		return err
 	}
 	return os.Rename(tmpName, path)

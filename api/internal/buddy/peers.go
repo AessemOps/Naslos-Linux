@@ -137,7 +137,7 @@ func (s *PeerStore) save() error {
 	data = append(data, '\n')
 
 	if dir := filepath.Dir(s.path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0750); err != nil {
 			return err
 		}
 	}
@@ -155,7 +155,7 @@ func (s *PeerStore) save() error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmpName, 0644); err != nil {
+	if err := os.Chmod(tmpName, 0600); err != nil {
 		return err
 	}
 	return os.Rename(tmpName, s.path)

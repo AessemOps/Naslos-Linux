@@ -61,7 +61,7 @@ func (m *Manager) save() error {
 	data = append(data, '\n')
 
 	if dir := filepath.Dir(m.configPath); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0750); err != nil {
 			return fmt.Errorf("creating shares config directory: %w", err)
 		}
 	}
@@ -84,7 +84,7 @@ func (m *Manager) save() error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("closing shares config: %w", err)
 	}
-	if err := os.Chmod(tmpName, 0644); err != nil {
+	if err := os.Chmod(tmpName, 0600); err != nil {
 		return fmt.Errorf("setting shares config mode: %w", err)
 	}
 	if err := os.Rename(tmpName, m.configPath); err != nil {
