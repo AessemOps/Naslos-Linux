@@ -516,7 +516,7 @@ See `docs/buddy-backup.md`.
 | `/api/auth/me` | GET | Authenticated user from trusted headers |
 | `/api/users` | GET, POST | List (array) / create |
 | `/api/users/{uid}` | GET, PUT, DELETE | Detail / update fields and group membership / delete |
-| `/api/users/{uid}/password` | PUT | Change password (updates Samba hash too) |
+| `/api/users/{uid}/password` | POST | Change password (updates Samba hash too) |
 | `/api/users/{uid}/enable` `/disable` | POST | `shadowExpire` toggling |
 | `/api/groups` | GET, POST | List (array) / create (description optional) |
 | `/api/groups/{cn}` | GET, PUT, DELETE | Detail / update members / delete |
