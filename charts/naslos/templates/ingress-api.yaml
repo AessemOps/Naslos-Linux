@@ -51,8 +51,8 @@ spec:
       middlewares:
         - name: security-headers
       services:
-        - name: authelia
-          port: 9091
+        - name: {{ .Values.ingress.authelia.serviceName | default "naslos-authelia" }}
+          port: {{ .Values.ingress.authelia.port | default 80 }}
   tls:
     secretName: {{ .Values.ingress.tls.secretName | default "naslos-tls" }}
 {{- end }}
