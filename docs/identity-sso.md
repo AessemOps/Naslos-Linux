@@ -120,13 +120,16 @@ Authelia rules (`charts/naslos/templates/authelia-config.yaml`):
 | `/api/health` | bypass (health checks) |
 | `/api/buddy/v1/` | bypass (peers authenticate with their own keys, not a session) |
 | `/authelia` | bypass (the portal route has no forwardAuth) |
-| `/api/users`, `/api/groups`, `/api/apps`, `/api/volumes`, `/api/datasets`, `/api/disks`, `/api/shares`, `/api/notifications`, `/api/pods`, `/api/namespaces`, `/api/ws`, `/api/buddy/` (owner routes; the `v1` peer API is bypassed above) | two_factor (admin; requires 2FA) |
-| `/api/auth/me`, `/api/dashboard`, `/api/metrics` | one_factor (any authenticated user) |
-| everything else | one_factor (authenticated) |
+| every path, for a user in `group:naslos_admins` | two_factor (2FA on the whole surface, so the portal prompts enrolment during the first login — not just on the API prefixes, which would let the SPA open on a one-factor session) |
+| everything else | one_factor (authenticated; the API's `RequireAdmin` group check still gates admin-only routes) |
 
-The two_factor list mirrors the API's `RequireAdmin` gates: the API checks group
-membership, not the factor, so a prefix left out here could be reached from a
-one-factor admin session (the privileged terminal in particular).
+The admin rule is subject-based (`group:naslos_admins`) rather than a list of
+paths. The API checks group membership, not the factor, so if only some paths
+were two_factor an admin could open a one-factor session and reach the rest —
+including the terminal. Applying two_factor to the whole surface for admins also
+means the portal asks for the second factor at first login, instead of letting
+the SPA load and then bouncing the admin API calls (which reads as a JSON error
+in the page).
 
 ## 2FA & sessions
 
