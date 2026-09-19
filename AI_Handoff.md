@@ -227,6 +227,22 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
 - **Record the deployed tags** below whenever they change, and keep this file short:
   new session narratives belong in the archive, not here.
 
+## Audit (2026-09-19)
+
+A full audit of `master` @ `85ae874` — code quality, security, secret use — is in
+`docs/AUDIT-2026-09-19.md`, with its remediation plan in
+`docs/AUDIT-2026-09-19-FIXPLAN.md`. Headline: 4 High, 14 Medium, 10 Low. The auth
+model verifies sound (anonymous 302, pod without the secret 401, agent without
+the token 401, no NodePort, no bypass). The top risks are a **live LDAP bind
+password committed in `values-vm.yaml`**, **received backup chunks landing on the
+64 MiB shares PVC** because the release runs `buddy.enabled=false`, **18 reachable
+Go vulnerabilities** (helm 3.16 / spdystream / containerd / docker), and the
+absence of any network policy with the privileged hostNetwork agent open on
+`:9090` to every pod. No secret values are in the report; the repo is private
+(unauth GitHub API 404), so the committed credentials are insider-exposure, not
+internet-exposure. Batch 1 of the fix plan needs a maintenance window and the
+operator's go-ahead to rotate the LDAP credential.
+
 ## Deployed right now (2026-09-19)
 
 On `192.168.1.117`: `naslos-api` **`0.1.0-r4`**, `naslos-ui` **`0.1.0-r5`**,
