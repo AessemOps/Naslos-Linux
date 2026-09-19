@@ -82,6 +82,31 @@ Execute what the report lists as not run, then update the report:
 4. Batch 5 should follow Batch 1 (both touch the credential layout).
 5. Batch 6 is read-only except the `audit-` datasets it creates and deletes.
 
+## Progress (2026-09-19, branch `audit/full-2026-09-19`)
+
+Done and deployed at helm revision 18 (api `0.1.0-r5`), suite still 35 passed:
+
+| Finding | Commit |
+|---|---|
+| **AUDIT-H4** Grafana removed | `6b25c1a` |
+| **AUDIT-H3** Go vulns 18 → 4 (all `Fixed in: N/A`, none on an exercised path) | `23bca3a` |
+| **AUDIT-M7** `ReadHeaderTimeout`/`ReadTimeout`/`IdleTimeout` | `3b2a65b` |
+| **AUDIT-M8** secrets-bearing files 0600 in 0750 dirs | `3b2a65b` |
+| **AUDIT-M9** `validateChainName` + traversal regression test | `3b2a65b` |
+| **AUDIT-L4** no change needed — `applySharesConfig` already logs (shares.go:370) | — |
+| **AUDIT-M5** agent ClusterRole + binding removed | `8555925` |
+| **AUDIT-M13** dead `storage.zfsLocalPV` removed | `8555925` |
+| **AUDIT-L1** `.dockerignore` (UI context 96 MB → 717 kB API) | `8555925` |
+
+**Still open:** H1 (rotate the live LDAP bind credential), H2 (buddy receive path
+off the 64 MiB shares PVC), M1/M2 (prune checkpoint refs, chmod local secrets),
+M3 (jwt_secret persistence + secrets out of the ConfigMap), M4 (network policy /
+enforcing CNI), M6 (PSA scoping), M10 (excluded by request), M11 (Svelte/Vite
+bump), M12 (`scripts/audit.sh` + CI), M14 (docs banner + lockout runbook), L2
+(nginx non-root), the `.Release.Namespace` and `values.schema.json` parts of L9,
+and all of Batch 6 (image/SBOM scan, semgrep/staticcheck, AV-5…AV-12, buddy
+crypto deep-dive, `.118`).
+
 ## Definition of done
 
 - Every High finding fixed with a merged PR and a verification note in this file.
