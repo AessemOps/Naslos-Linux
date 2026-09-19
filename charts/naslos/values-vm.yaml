@@ -98,6 +98,14 @@ traefik:
 ingress:
   enabled: true
 
+# Buddy Backup receive side (AUDIT-H2). The dataset exists on the node; before
+# this was set the release ran buddy.enabled=false while the peer API was live,
+# so BUDDY_RECEIVE_PATH was unset and received chunks landed on the 64 MiB
+# shares PVC instead of here (lost when that PVC was recreated).
+buddy:
+  enabled: true
+  receiveHostPath: /var/mnt/test/naslos-buddy
+
 # Grafana admin password — change in production.
 grafana:
   adminPassword: naslos-admin
