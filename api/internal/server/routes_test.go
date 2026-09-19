@@ -150,3 +150,59 @@ func TestAuthDisabledPassthrough(t *testing.T) {
 		t.Errorf("AUTH_DISABLED owner route: status = 401, want the auth gate bypassed")
 	}
 }
+
+// TestNonAdminMayOnlyReachTheirIdentityAndDashboard pins CR-03 at the router
+// level: an authenticated user without `naslos_admins` keeps the three routes the
+// UI needs to render, and every administrator route answers 403 rather than
+// letting any signed-in account manage users, wipe disks or open the terminal.
+func TestNonAdminMayOnlyReachTheirIdentityAndDashboard(t *testing.T) {
+	s := newTestServer(t, false)
+
+	call := func(path, groups string) int {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Remote-User", "someone")
+		req.Header.Set("X-Naslos-Proxy-Secret", "test-proxy-secret")
+		if groups != "" {
+			req.Header.Set("Remote-Groups", groups)
+		}
+		rec := httptest.NewRecorder()
+		s.router.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// `/api/auth/me` is registered in the same allow-list block, but calling it
+	// here would drag in LDAP (the handler checks the identity backend), which is
+	// slow and irrelevant to the gate.
+	for _, path := range []string{"/api/dashboard", "/api/metrics"} {
+		if code := call(path, "naslos_users"); code != http.StatusOK {
+			t.Errorf("%s as a plain user: status = %d, want 200", path, code)
+		}
+	}
+
+	adminOnly := []string{
+		"/api/users", "/api/users/admin", "/api/groups", "/api/groups/admins",
+		"/api/volumes", "/api/volumes/zfs", "/api/volumes/zfs/import", "/api/datasets",
+		"/api/disks", "/api/disks/recommend",
+		"/api/shares", "/api/shares/paths", "/api/shares/folders", "/api/shares/status",
+		"/api/shares/apply", "/api/shares/config/samba", "/api/shares/config/nfs",
+		"/api/notifications", "/api/notifications/test",
+		"/api/apps", "/api/apps/nginx", "/api/catalog", "/api/catalog/nginx",
+		"/api/pods", "/api/namespaces", "/api/ws/logs", "/api/ws/exec",
+		"/api/buddy/status", "/api/buddy/peers", "/api/buddy/identity", "/api/buddy/send",
+		"/api/buddy/restore", "/api/buddy/jobs", "/api/buddy/jobs/abc123", "/api/buddy/schedules",
+	}
+	for _, path := range adminOnly {
+		if code := call(path, "naslos_users"); code != http.StatusForbidden {
+			t.Errorf("%s as a plain user: status = %d, want 403", path, code)
+		}
+	}
+
+	// An administrator passes the gate. Only the gate is asserted: the handler's
+	// own status depends on its dependencies (no LDAP or cluster in this test),
+	// and the routes chosen here are the cheap ones for that reason.
+	for _, path := range []string{"/api/catalog", "/api/buddy/peers", "/api/pods"} {
+		if code := call(path, "naslos_admins"); code == http.StatusForbidden || code == http.StatusUnauthorized {
+			t.Errorf("%s as an admin: status = %d, want the request to reach the handler", path, code)
+		}
+	}
+}

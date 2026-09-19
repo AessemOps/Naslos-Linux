@@ -115,20 +115,35 @@ data:
       ban_time: 5m
 
     access_control:
+      # Authelia applies the FIRST matching rule, so a rule without `resources`
+      # matches the whole domain and silently voids every rule below it. The
+      # previous configuration had exactly that (`domain: <host>` + bypass),
+      # which meant no request was ever challenged. Keep the bypasses scoped.
       default_policy: deny
       rules:
-        # Public health check
+        # The health probe answers before the proxy is in the path.
         - domain: "*"
           policy: bypass
           resources:
             - "^/api/health$"
-        # Authelia's own endpoints
+        # The buddy peer API authenticates with the peers' own Ed25519 keys (a
+        # peer cannot complete an interactive login), so it must not enter the
+        # login flow.
         - domain: {{ .Values.authelia.domain | quote }}
           policy: bypass
-        # Authenticated users for API
-        - domain: "*"
-          policy: one_factor
-        # Admin-only endpoints
+          resources:
+            - "^/api/buddy/v1/"
+        # Authelia's own API, for the case where the portal is routed through
+        # this same chain. NOTE: routing the portal itself (its page and
+        # assets) is a separate decision — see docs/CODE-REVIEW.md CR-01 and
+        # the fresh-install plan — so this list deliberately covers the API
+        # only and does not pretend to make the portal reachable.
+        - domain: {{ .Values.authelia.domain | quote }}
+          policy: bypass
+          resources:
+            - "^/api/(verify|authz|health|state|configuration|firstfactor|secondfactor|reset-password|logout|user/info|consent)(/.*)?$"
+        # The admin surface needs a second factor, and these rules must come
+        # before the generic one below or they would never match.
         - domain: "*"
           policy: two_factor
           resources:
@@ -137,6 +152,9 @@ data:
             - "^/api/apps"
             - "^/api/volumes"
             - "^/api/shares"
+        # Everything else the proxy forwards needs at least a session.
+        - domain: "*"
+          policy: one_factor
 
     notifier:
       disable_startup_check: false
