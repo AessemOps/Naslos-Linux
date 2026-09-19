@@ -22,22 +22,58 @@ Features: ZFS pools/datasets, SMB + NFSv4 shares with LDAP identities, dashboard
 metrics, web terminal, app catalog, notifications, and zero-knowledge peer backups
 ("Buddy").
 
-## Where things stand (2026-09-17)
+## Where things stand (2026-09-19)
 
-- **`master` = `6227595`**; all feature work is merged (PRs #9–#16: buddy, security
-  fixes, fan-out, hardening batches, product gaps, a11y/interface IPs, digests,
-  receive-dataset init container, walk bounds).
-- **Verified on the live VM**: api/ui/agent tests, `svelte-check` (0 errors,
-  0 warnings), `helm lint` (both value sets), Playwright **30 passed / 2 skipped**,
-  and the buddy drills (send → verify → restore, cancel/resume, scheduler, ntfy,
-  retention, cross-flavour against the Docker receiver).
+- **`master` = `4feb048`**; PRs #9–#19 merged (buddy, security fixes, fan-out,
+  hardening batches, product gaps, a11y/interface IPs, digests, receive-dataset
+  init container, walk bounds, the code review and the handoff rewrite).
+- **The instance now runs on the new VM: `192.168.1.117`** — see the section below.
+  The old `192.168.1.96` VM is powered off.
 - **Open work is in `docs/CODE-REVIEW.md`**: three blocking findings — CR-01 (the
   chart's Authelia policy bypasses the whole domain), CR-02 (`helm uninstall`
   deletes the namespace and the state volume holding the buddy identity), CR-03
   (`RequireAdmin`/`IsAdmin` are never wired) — then the important list (dependency
   bumps, `-race`, token exposure, UI silent failures, observability, docs).
+  **CR-01/CR-02/CR-03 are fixed** on `fix/chart-auth-and-admin` (PR #20), not yet
+  merged.
 - **Security audit status**: 22 NAS findings, each fixed, accepted or open per
   `docs/CODE-REVIEW.md` §6.
+
+## Current instance: 192.168.1.117 (2026-09-19)
+
+Fresh install from scratch (the old .96 VM is off): Talos from the Naslos ISO,
+etcd bootstrapped, local-path provisioner, OpenLDAP + bootstrap, chart revision
+**2**, every image at **`0.1.0-r1`**. Posture is still the **dev one**
+(`auth.disabled=true`, UI on the NodePort) — the proxy path needs the pieces listed
+under "Not done" below.
+
+- **Fresh PKI.** `scripts/deploy-vm.sh` *reuses* `bootstrap/vm/talosconfig` when it
+  exists, so a brand-new VM would have been installed with the **old cluster's CA
+  and cluster secret** (the same discovery identity as .96). The PKI was regenerated
+  for this node, the new config applied using the old credentials as client, then
+  bootstrapped. When re-imaging, move `bootstrap/vm/talosconfig*` aside first.
+- **Deploy fixes found by doing it** (PR #20): the authenticated-apply fallback now
+  matches `tls: certificate required` / `unknown authority` (against an installed
+  node the insecure apply is refused, and the script used to give up); and the Helm
+  install now overrides **every** image tag (samba, nfs, terminal and the API's
+  LDAP-wait `openldap.image` were left on `:0.1.0`, which no longer exists →
+  `ErrImagePull` on a fresh tag).
+- **Talos upgraded v1.14.0 → v1.14.1** with the same pinned schematic
+  (`--drain=false`: single node, everything reboots anyway). Result: kernel
+  **6.18.51-talos**, containerd **2.3.5**, `zfs 2.4.4-v1.14.1`, `ext-zfs-service`
+  up on the new boot, `talosctl health` green, all workloads back. During the
+  reboot the transient `not-ready` taint held the Deployments Pending (DaemonSets
+  tolerate it) until the node was Ready — no intervention needed.
+- **Verified after**: `/api/ready` 200, `/api/users` 200 (LDAP bind),
+  `/api/volumes/zfs` 200 (agent + ZFS), dashboard with `ens3 → 192.168.1.117`,
+  Playwright **16 passed / 5 skipped** (same baseline; the skips are the bare-install
+  gaps, CR-23). The local `talosctl` client is v1.14.0 against a v1.14.1 server —
+  fine within the minor, upgrade when convenient.
+- **Not done yet**: no ZFS pool (two spare 40 GB disks visible) so datasets/shares
+  and the pool re-import path are untested; Buddy is disabled (no receive dataset);
+  and the real posture still needs Authelia portal routing, the `naslos-tls` secret,
+  Traefik exposed on the LAN, an LDAP operator in `naslos_admins` with TOTP, and a
+  peer-API bypass.
 
 ## How to run it
 
@@ -55,9 +91,11 @@ helm upgrade naslos charts/naslos -n naslos --reuse-values \
 curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.96:30080/api/ready
 ```
 
-VM facts: node `192.168.1.96`, UI on NodePort `:30080`, private registry
-`192.168.1.2:30095`, namespace `naslos`, receive dataset `/var/mnt/test/naslos-buddy`
-(container path `/var/lib/naslos/buddy`), `TALOSCONFIG=bootstrap/vm/talosconfig`.
+VM facts: node `192.168.1.117`, UI on NodePort `:30080`, private registry
+`192.168.1.2:30095`, namespace `naslos`, `TALOSCONFIG=bootstrap/vm/talosconfig`.
+Buddy is **disabled** on this VM and there is **no ZFS pool yet**: create one
+(two spare 40 GB disks) before datasets/shares/buddy; the receive dataset would be
+`<pool>/naslos-buddy` (`buddy.receivePath` `/var/lib/naslos/buddy`).
 
 ## Operational gotchas (hard-won — read before drilling)
 
@@ -109,7 +147,10 @@ VM facts: node `192.168.1.96`, UI on NodePort `:30080`, private registry
 - **Record the deployed tags** below whenever they change, and keep this file short:
   new session narratives belong in the archive, not here.
 
-## Deployed right now (2026-09-17)
+## Deployed right now (2026-09-19)
 
-`naslos-api:0.1.0-b21`, `naslos-agent:0.1.0-b6`, `naslos-ui:0.1.0-b9`, chart
-`naslos-0.1.0`, helm revision **82**.
+On `192.168.1.117`: `naslos-api`, `naslos-ui`, `naslos-agent`, `naslos-samba`,
+`naslos-nfs`, `naslos-terminal` and the OpenLDAP manifests all at **`0.1.0-r1`**,
+chart `naslos-0.1.0`, helm revision **2**, Talos **v1.14.1** (kernel 6.18.51-talos).
+The old VM's tags (`api 0.1.0-b21`, `agent 0.1.0-b6`, `ui 0.1.0-b9`, revision 82)
+are retired with it.
