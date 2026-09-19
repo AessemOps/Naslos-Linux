@@ -35,8 +35,12 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
   deleted the namespace and the state volume holding the buddy identity) and CR-03
   (`RequireAdmin`/`IsAdmin` were never wired) — are **fixed and merged** (PR #20).
   The important list is still open: dependency bumps (18 reachable Go vulns via
-  Helm, 11 npm advisories), `-race` (the suite fails under it), the ntfy token in
-  the API response, UI silent failures, observability, docs.
+  Helm, 11 npm advisories), `-race` (the suite fails under it), observability,
+  docs. The **correctness/secret-leak batch is fixed on a local branch (not yet
+  merged/pushed)**: CR-07 (the ntfy token is no longer returned; `hasAuthToken`
+  replaces it), CR-15 (the NSS `shadow` mirror is `0600`), CR-18 (a user edit now
+  applies group changes), CR-19/CR-22 (the UI checks `res.ok` and surfaces
+  failures instead of parsing error bodies or looking successful).
 - **Security audit status**: 22 NAS findings, each fixed, accepted or open per
   `docs/CODE-REVIEW.md` §6.
 
@@ -176,8 +180,9 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
 
 ## Deployed right now (2026-09-19)
 
-On `192.168.1.117`: `naslos-api`, `naslos-ui`, `naslos-agent`, `naslos-samba`,
-`naslos-nfs`, `naslos-terminal` and the OpenLDAP manifests all at **`0.1.0-r1`**,
-chart `naslos-0.1.0`, helm revision **2**, Talos **v1.14.1** (kernel 6.18.51-talos),
+On `192.168.1.117`: `naslos-api`, `naslos-ui` and `naslos-agent` are at
+**`0.1.0-r2`** (the CR-07/15/18/19/22 batch); `naslos-samba`, `naslos-nfs`,
+`naslos-terminal` and the OpenLDAP manifests stay at **`0.1.0-r1`**; chart
+`naslos-0.1.0`, helm revision **4**, Talos **v1.14.1** (kernel 6.18.51-talos),
 ZFS pool `test` (stripe, 79 G) + dataset `test/drill`. The old VM's tags
 (`api 0.1.0-b21`, `agent 0.1.0-b6`, `ui 0.1.0-b9`, revision 82) are retired with it.

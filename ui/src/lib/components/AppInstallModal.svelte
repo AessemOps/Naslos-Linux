@@ -27,10 +27,13 @@
   async function loadApp() {
     try {
       const res = await fetch(`/api/catalog/${appName}`);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
       app = await res.json();
       if (app) values = { ...app.defaultValues };
     } catch (e) {
-      error = 'Failed to load app details';
+      error = 'Failed to load app details: ' + e;
     } finally {
       loading = false;
     }
