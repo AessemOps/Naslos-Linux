@@ -112,9 +112,13 @@ instead of `naslos-admin`/`CHANGE_ME_*`; the OpenLDAP entrypoint requires
 of `TempPass123!` and the API rejects a passwordless create (verified: 400);
 `deploy-vm.sh` requires `REGISTRY_HTTP_SECRET`.
 
-**Still open:** rotate the *running* instance's LDAP **admin** password (still
-`naslos-admin`, initialised with it; needs an `olcRootPW` replace in `cn=config`);
-M3's residual (Authelia's config is a ConfigMap, so
+**NAS-010 is closed, including the live credential:** the running instance's
+LDAP **admin** password was rotated on 2026-09-19 (`olcRootPW` replaced in both
+`cn=config` databases over `ldapi://`/SASL EXTERNAL, new value in the
+`naslos-openldap` Secret, bootstrap re-run green; the new value binds and
+`naslos-admin` is rejected).
+
+**Still open:** M3's residual (Authelia's config is a ConfigMap, so
 its `jwt_secret` and the LDAP bind password stay readable there until the config
 moves into a Secret), M4 (network policy / enforcing CNI), M6 (PSA scoping), M10
 (excluded by request), M11 (Svelte/Vite bump), L2 (nginx non-root), the
