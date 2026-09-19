@@ -1,5 +1,5 @@
 #!/bin/sh
-# Naslos audit sweep (see docs/AUDIT-2026-09-19.md).
+# Naslos audit sweep (see docs/AUDIT-2026-09-19-REPORT.md).
 #
 # Reproducible checks that are fast enough for a pre-PR run. Missing tools are
 # reported as "skipped" rather than failing, so it runs anywhere. There is no CI

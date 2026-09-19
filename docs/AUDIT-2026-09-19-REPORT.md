@@ -1,12 +1,13 @@
 # Naslos — audit and fix report (2026-09-19)
 
-This is the consolidated record of the audit and the remediation. The
-per-finding working documents remain `docs/AUDIT-2026-09-19.md` (findings),
-`docs/AUDIT-2026-09-19-FIXPLAN.md` (batches and progress) and
-`docs/CODE-REVIEW.md` (the living CR list).
+This is the consolidated record of the audit and the remediation, and the only
+current audit document. The detailed working papers are archived under
+`docs/archive/`: `AUDIT-2026-09-19.md` (findings), `AUDIT-2026-09-19-FIXPLAN.md`
+(batches and progress), `CODE-REVIEW.md` (per-finding review list) and the
+superseded `SECURITY-AUDIT.md` + `SECURITY-FIX-PLAN.md` (2026-09-14).
 
 - **Audit baseline:** `master` = `85ae874` (PR #23; the dev endpoint had just
-  been removed). `docs/SECURITY-AUDIT.md` (2026-09-14) is superseded.
+  been removed). The 2026-09-14 audit is superseded and archived.
 - **Fix branch:** `audit/full-2026-09-19`, 16 commits `1e4ae2b` → `d2f891a`,
   pushed. `master` was never pushed to directly.
 - **Live target:** `192.168.1.117`, helm revision **24** — `naslos-api`
@@ -184,9 +185,11 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 - Buddy receive dataset mounted and verified.
 - CI sweep written (`scripts/audit.sh`); the GitHub Actions workflow was added
   and then removed at the operator's request, so the sweep is manual for now.
-- Docs reconciled: `CODE-REVIEW.md` and `SECURITY-AUDIT.md` carry dated status
-  tables; `SECURITY-FIX-PLAN.md` is marked superseded; live docs no longer
-  describe the NodePort, `auth.disabled`, Grafana or `zfsLocalPV`.
+- Docs reconciled: the archived `CODE-REVIEW.md` and `SECURITY-AUDIT.md` carry
+  dated status tables and `SECURITY-FIX-PLAN.md` is marked superseded; live docs
+  no longer describe the NodePort, `auth.disabled`, Grafana or `zfsLocalPV`.
+  The working papers now live under `docs/archive/`, leaving this report as the
+  single current audit document.
 
 ## 7. Verification
 
