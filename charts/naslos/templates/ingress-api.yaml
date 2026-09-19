@@ -1,0 +1,58 @@
+{{- if eq (include "naslos.ingressEnabled" .) "true" }}
+---
+# API IngressRoute.
+#
+# The UI is a static SPA; its relative /api/* calls therefore arrive at this
+# host and are routed straight to the API rather than through the UI's nginx.
+# Two reasons: the API is the only thing that can answer them, and nginx
+# deliberately refuses /api/pods, /api/namespaces and /api/ws/exec (the
+# unauthenticated NodePort path), which made the web terminal unreachable in
+# the proxy posture. PathPrefix(/api) also carries the WebSocket upgrades.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: naslos-api
+  namespace: {{ .Values.namespace }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{ .Values.authelia.domain }}`) && PathPrefix(`/api`)
+      kind: Rule
+      middlewares:
+        - name: forwardauth-authelia
+        {{- if eq (include "naslos.authEnabled" .) "true" }}
+        - name: proxy-identity
+        {{- end }}
+        - name: security-headers
+      services:
+        - name: naslos-api
+          port: {{ .Values.api.service.port }}
+  tls:
+    secretName: {{ .Values.ingress.tls.secretName | default "naslos-tls" }}
+---
+# Authelia portal IngressRoute.
+#
+# Must NOT have the forwardAuth middleware or the portal would challenge
+# itself. Authelia serves the portal, its assets and its own /authelia/api/*
+# XHR endpoints; the path prefix keeps it off the app route (which excludes
+# /authelia), so no priority ordering is needed.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: naslos-authelia-portal
+  namespace: {{ .Values.namespace }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{ .Values.authelia.domain }}`) && PathPrefix(`/authelia`)
+      kind: Rule
+      middlewares:
+        - name: security-headers
+      services:
+        - name: authelia
+          port: 9091
+  tls:
+    secretName: {{ .Values.ingress.tls.secretName | default "naslos-tls" }}
+{{- end }}
