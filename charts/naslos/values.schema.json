@@ -163,7 +163,8 @@
       "additionalProperties": true,
       "properties": {
         "enabled": { "type": "boolean" },
-        "clusterCIDR": { "type": "string" },
+        "nodeCIDR": { "type": "string" },
+        "serviceCIDR": { "type": "string" },
         "ingressPluginsCIDR": { "type": "string" },
         "probeCIDR": { "type": "string" },
         "dnsCIDR": { "type": "string" },
