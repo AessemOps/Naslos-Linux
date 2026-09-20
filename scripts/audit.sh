@@ -57,6 +57,30 @@ check_authelia_ldap_secret() {
   [ "$ok" -eq 1 ]
 }
 
+# AUDIT-M4 guard: the namespace must render the default-deny and the per-workload
+# allow policies, and the agent port must only be open to the API. Inert under
+# flannel, but the intent must not silently disappear before a policy CNI lands.
+check_network_policies() {
+  f=$(mktemp) || return 1
+  if ! helm template naslos "$root/charts/naslos" -n naslos \
+    -f "$root/charts/naslos/values.yaml" -f "$root/charts/naslos/values-vm.yaml" \
+    --set openldap.bindPassword=lint-only >"$f" 2>/dev/null; then
+    rm -f "$f"
+    return 1
+  fi
+  ok=1
+  grep -q 'name: naslos-default-deny' "$f" || ok=0
+  grep -q 'name: naslos-agent-ingress' "$f" || ok=0
+  grep -q 'name: naslos-workload-egress' "$f" || ok=0
+  # The agent policy exists and selects the API as its only pod peer.
+  if ! sed -n '/name: naslos-agent-ingress$/,/^---$/p' "$f" \
+    | grep -q "app.kubernetes.io/name: naslos-api"; then
+    ok=0
+  fi
+  rm -f "$f"
+  [ "$ok" -eq 1 ]
+}
+
 # --- Go ---------------------------------------------------------------------
 cd "$root/api" || exit 1
 run "go vet (api)" go vet ./...
@@ -106,6 +130,7 @@ if have helm; then
     -f charts/naslos/values.yaml -f charts/naslos/values-vm.yaml \
     --set openldap.bindPassword=lint-only
   run "authelia ldap password is a Secret file (AUDIT-M3)" check_authelia_ldap_secret
+  run "network policy intent (AUDIT-M4)" check_network_policies
 else
   skip "helm lint" "helm is not installed"
 fi
