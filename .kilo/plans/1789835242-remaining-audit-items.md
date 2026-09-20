@@ -118,11 +118,17 @@ the key policies and the agent's API-only selector.
 
 **Enforcement still open — this is what closes M4.** The policies are inert under
 flannel (no policy controller), so the privileged hostNetwork agent `:9090` still
-answers every pod. Two options, both a window:
+answers every pod. Note the agent/samba/nfs are **hostNetwork**, and policy CNIs
+do not apply pod-level NetworkPolicy to host-network pods, so `naslos-agent-ingress`
+cannot restrict `:9090` by itself. Options, both a window:
 
 - **Enforcement:** install Cilium or Calico (replacing flannel on Talos means
-  `cluster.network.cni.name: none` + a reboot), or add a Talos host firewall /
-  `nftables` rule allowing only the API pod's IP to `:9090`.
+  `cluster.network.cni.name: none` + a reboot) **and** add a node-level rule
+  (Talos/nftables or a Cilium host firewall policy keyed to the API pod IP)
+  allowing only the API pod to `:9090`; or just the host firewall rule without
+  the CNI swap.
+- Set `networkPolicy.nodeCIDR`/`ingressPluginsCIDR`/`probeCIDR` (values-vm.yaml
+  already sets `192.168.1.0/24`) before enforcing.
 - Verification once enforced: from the terminal pod `curl naslos-agent:9090` times
   out; from the API pod it still 401s/works; ingress and DNS unaffected.
 

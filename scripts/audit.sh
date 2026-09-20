@@ -58,8 +58,10 @@ check_authelia_ldap_secret() {
 }
 
 # AUDIT-M4 guard: the namespace must render the default-deny and the per-workload
-# allow policies, and the agent port must only be open to the API. Inert under
-# flannel, but the intent must not silently disappear before a policy CNI lands.
+# allow policies, and the agent port must be open to the API as its ONLY pod
+# peer. Inert under flannel, but the intent must not silently disappear or be
+# widened before a policy CNI lands. Parses the rendered manifests with python
+# (a plain grep passes if the policy is inverted or a permissive peer is added).
 check_network_policies() {
   f=$(mktemp) || return 1
   if ! helm template naslos "$root/charts/naslos" -n naslos \
@@ -68,17 +70,43 @@ check_network_policies() {
     rm -f "$f"
     return 1
   fi
-  ok=1
-  grep -q 'name: naslos-default-deny' "$f" || ok=0
-  grep -q 'name: naslos-agent-ingress' "$f" || ok=0
-  grep -q 'name: naslos-workload-egress' "$f" || ok=0
-  # The agent policy exists and selects the API as its only pod peer.
-  if ! sed -n '/name: naslos-agent-ingress$/,/^---$/p' "$f" \
-    | grep -q "app.kubernetes.io/name: naslos-api"; then
-    ok=0
-  fi
+  python3 - "$f" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+nps = {d["metadata"]["name"]: d for d in docs if d.get("kind") == "NetworkPolicy"}
+required = ["naslos-default-deny", "naslos-agent-ingress", "naslos-workload-egress"]
+for name in required:
+    assert name in nps, f"missing policy {name}"
+
+agent = nps["naslos-agent-ingress"]
+assert agent["spec"]["podSelector"]["matchLabels"] == {
+    "app.kubernetes.io/name": "naslos-agent"
+}, "agent policy selects the wrong pods"
+
+ingress = agent["spec"]["ingress"]
+assert len(ingress) == 1, "agent policy must have exactly one ingress rule"
+rule = ingress[0]
+peers = rule.get("from", [])
+assert len(peers) == 1, f"agent policy must have exactly one peer, got {peers!r}"
+assert peers[0].get("podSelector", {}).get("matchLabels") == {
+    "app.kubernetes.io/name": "naslos-api"
+}, f"agent policy peer is not the API alone: {peers!r}"
+assert {p.get("port") for p in rule.get("ports", [])} == {9090}, "agent policy must allow only :9090"
+
+# No ingress ipBlock on the agent: any CIDR there would reopen it broadly.
+assert all("ipBlock" not in p for p in peers), "agent policy must not allow a CIDR peer"
+
+# The pod CIDR must never appear as an ingress source (it would admit every pod).
+for name, d in nps.items():
+    for r in d["spec"].get("ingress", []):
+        for p in r.get("from", []):
+            cidr = p.get("ipBlock", {}).get("cidr", "")
+            assert cidr != "10.244.0.0/16", f"{name} admits the whole pod CIDR"
+print("network policy intent ok")
+PY
+  rc=$?
   rm -f "$f"
-  [ "$ok" -eq 1 ]
+  [ "$rc" -eq 0 ]
 }
 
 # --- Go ---------------------------------------------------------------------
