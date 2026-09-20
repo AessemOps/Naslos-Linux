@@ -51,7 +51,7 @@ shares:
   smb:
     image:
       repository: 192.168.1.2:30095/naslos-samba
-      tag: "0.1.0-r1"
+      tag: "0.1.0-r3"
   nfs:
     image:
       repository: 192.168.1.2:30095/naslos-nfs

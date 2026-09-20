@@ -330,24 +330,28 @@ zlib), none in our own content. Two things matter here:
    - The `util-linux` HIGHs (`mount` TOCTOU, `nsenter`, `X-mount.*`) need
      privileged mount operations, which this container does not perform.
 
-**Debian 13 (trixie) attempt — blocked on packaging, not on the base tag.** With
-the owner's go-ahead I switched `samba/image/Dockerfile` to
-`debian:trixie-slim` and rebuilt. It fails at the first layer:
+**Debian 13 (trixie) migration — done for samba, rev 34.** Trixie dropped the
+Python `wsdd` package, so the jump needed more than a base tag:
 
-```
-Package wsdd is not available, but is referred to by another package.
-E: Package 'wsdd' has no installation candidate
-```
+- `samba/image/Dockerfile` moves to `debian:trixie-slim` and installs **`wsdd2`**
+  (the C implementation of the same WSD daemon, `wsdd2 1.8.7`).
+- `entrypoint.sh` picks the binary and its flags per base — `wsdd2 -n … -w …`
+  (no `-4`/`-s`) or `wsdd -n … -w … -4 -s` — so the same source still runs on
+  bookworm if anyone reverts the base.
+- The image now carries **Samba 4.22.11** (from 4.17.12).
 
-Trixie no longer ships **`wsdd`**, the Web Service Discovery daemon this image
-uses to advertise shares to Windows clients (mDNS/Avahi covers Apple/Linux, not
-Windows Explorer). So the jump is not a base-tag change: it needs the wsdd
-dependency replaced (upstream binary or the `wsdd` pip package), the entrypoint's
-launch of it guarded, then a Samba 4.17 → 4.2x config review, then the
-share/mDNS/browse smoke tests. The Dockerfile is reverted to bookworm so nothing
-broken ships. Expect the same shape of surprise (renamed/removed packages) in
-`terminal`, `nfs` and `openldap`, which is why this is scoped as its own change
-rather than a rebuild.
+**Verified live at revision 34:** the DaemonSet rolled out, the logs show the
+full startup (`imported SMB accounts`, `all 1 mirrored accounts resolve through
+NSS`, `starting smbd`, `advertising _smb._tcp as naslos.local (mDNS)`,
+`advertising via WSD (wsdd2)`), and `smbclient -L localhost -N` lists `IPC$`
+with "SMB1 disabled" (expected; shares are created per-share by the API).
+
+**Security outcome, `trivy` HIGH/CRITICAL: 146 → 62** (137 HIGH + 9 CRITICAL →
+**58 HIGH + 4 CRITICAL**), the remainder being findings that Debian 13 still
+marks `affected`/`fix_deferred` (notably inside Samba 4.22 itself). The AD-DC
+triage above still applies to most of those. The same migration is now a known
+recipe (base + any removed package + a flag review) for `terminal`, `nfs` and
+`openldap`.
 
 **Remaining image scans:** `naslos-terminal`
 (`0.1.0-r1`), `naslos-samba` (`0.1.0-r1`), `naslos-nfs` (`0.1.0-r1`) and
