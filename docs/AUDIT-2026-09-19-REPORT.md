@@ -263,6 +263,19 @@ now resolved and the scan is clean:**
 | `identity/persons_extra.go` `md4` deprecated (`SA1019`) | **Annotated** with `//lint:ignore SA1019` and the reason: MD4 is required by the SMB NT-hash protocol (L7), not used for security. |
 
 `go build`/`vet`/`test` and `staticcheck` are all green.
+
+#### Batch 6 — trivy (API image), results
+
+`trivy image --severity HIGH,CRITICAL naslos-api:0.1.0-r8`:
+
+- **Debian base (`debian 12.15`): 0 vulnerabilities.**
+- **`app/naslos-api` (Go binary): 2 HIGH, 0 CRITICAL** — both in
+  `oras.land/oras-go/v2 v2.6.1` (CVE-2026-50163, CVE-2026-85731: crafted-tarball
+  hardlink information disclosure / arbitrary file access), **fixed in 2.6.2**.
+  `govulncheck` had not flagged these (no reachable call path), which is why the
+  image scan matters.
+- **Fixed:** the dependency is bumped to **v2.6.2**; `go build/vet/test` pass. The
+  image must be rebuilt (`0.1.0-r9`) for the fix to reach production.
 | AUDIT-M10 — digests / registry TLS | Medium | Excluded by request | Revisit when wanted |
 
 ## 9. Reproducing the audit and fixes
