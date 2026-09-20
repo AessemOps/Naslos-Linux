@@ -261,6 +261,13 @@ authelia:
     # / `configMap.key` / `configMap.disabled` — NOT `configMap.enabled`/`name`.
     existingConfigMap: authelia-config
     key: configuration.yml
+    # AUDIT-M3 attempt, reverted: setting
+    # authentication_backend.ldap.password.{secret_name,path} here (with the
+    # secret also listed under secret.additionalSecrets, which the chart's
+    # validation demands) renders no AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE
+    # on the DaemonSet, so Authelia lost its LDAP password and every forwarded
+    # request 500'd. See the report; the config keeps the password until that is
+    # understood.
   # Trust the openldap self-signed CA for the ldaps:// connection — the
   # secret (created by openldap/generate-secrets.sh) already has a ca.crt
   # key; the authelia chart mounts every key of this secret at /certificates

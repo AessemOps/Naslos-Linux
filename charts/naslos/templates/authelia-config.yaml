@@ -137,6 +137,11 @@ data:
         mail_attribute: mail
         display_name_attribute: displayName
         user: {{ .Values.openldap.bindDN | default "cn=naslos-service,ou=services,dc=naslos,dc=local" }}
+        # AUDIT-M3: this is the residual - the LDAP bind password is here rather
+        # than in a Secret because the subchart's file-based mechanism
+        # (configMap.authentication_backend.ldap.password.secret_name) rendered
+        # no password-file env var for this DaemonSet. Revisit when that is
+        # understood.
         password: {{ $ldapBindPassword | quote }}
 
     session:
