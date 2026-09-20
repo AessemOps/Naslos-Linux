@@ -313,7 +313,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
 | ~~AUDIT-L5/L6~~ — **fixed at revision 27**: `logsafe.Field` sanitises log arguments and the conversions are bounded/clamped | Low | — | — |
 | ~~AUDIT-L8 / CR-06~~ — **fixed at revision 27**: the scheduler race is gone and the sweep runs `go test -race` | Low | — | — |
-| Batch 6 — **staticcheck, the `trivy` image + config scan, `semgrep`, the AV-5…AV-7/AV-9/AV-10 active tests and the buddy crypto deep-dive all done; two config findings fixed (DS-0031, KSV-0053)** | Coverage | Time-boxed session | Still to run: the AV-8 end-to-end buddy drill and AV-11/AV-12 as a live window; the trixie base-CVE backlog is upstream (no Debian fix) |
+| Batch 6 — **staticcheck, the `trivy` image + config scan, `semgrep`, the AV-5…AV-12 active tests and the buddy crypto deep-dive all done; two config findings fixed (DS-0031, KSV-0053)** | Coverage | Time-boxed session | Remaining is unchanged and unrelated to Batch 6: M4 enforcement, the M6 split and the M3 residual; the trixie base-CVE backlog is upstream (no Debian fix) |
 
 ### Batch 6 — staticcheck (API), results
 
@@ -487,11 +487,44 @@ VM. All pass, and each guard was mutation-tested to confirm it is not vacuous.
 | AV-9 — terminal scoping | `/api/ws/exec` with no namespace uses the API's own namespace and refuses a missing pod; a different namespace never resolves to 200 | pass |
 | AV-10 — secret leakage | The proxy secret, agent token and LDAP password never appear in the reachable bodies (`/api/buddy/status`, `/api/notifications`, `/api/shares/config/samba`, `/api/health`); live anonymous probes of `/api/health`, `/api/ready`, `/api/buddy/v1/status` and the 302 error bodies are clean | pass |
 
-**AV-8 (buddy replay/tamper/nonce/quota/restore), AV-11 (TLS/session) and AV-12
-(rolling restart) are not covered here:** AV-8's crypto replay/nonce paths and
-quota limits already have unit coverage in `internal/buddy` (see the deep-dive
-below), but the end-to-end drill on an `audit-` dataset and the AV-11/AV-12 live
-drills belong in a window.
+**AV-8 (buddy) — live drill.** Driven against the running VM through the API
+(terminal pod → API with the proxy secret, the same stack a page send uses):
+
+- The **send → verify → read-back** path passes live: all 7 of
+  `ui/tests/backups.spec.ts` pass with `NASLOS_RECEIVER_URL=http://naslos-api:8080`
+  — a manual send reaches `succeeded` with stored chunks, and "Back up now"
+  drives a job the Verify step reads back. (Without that env var the two
+  self-send specs fail on `lookup naslos.local on 10.96.0.10:53: no such host`,
+  the documented mDNS limitation — the API pod cannot resolve the mDNS name, not
+  a code fault.)
+- The **replay / tamper / oversize / nonce / quota** protections are unit-covered
+  in `internal/buddy` and were reviewed in the deep-dive below
+  (`TestEnvelopeRejectsTampering`, `TestReceiverRefusesTamperedChunk`,
+  `TestReceiverRefusesChainRollback`, `TestNoncesSurviveARestart`,
+  `TestQuotaIsAtomicUnderConcurrentWrites`).
+- The drill also **proved the mount-propagation guard fires correctly**: a
+  dataset created from inside a pod (`test/audit-av8`) is offered by the agent as
+  `mounted=false`, and `requireMountedDataset` refused the send with the
+  documented message rather than capturing an empty filesystem. The dataset was
+  destroyed afterwards and no orphan chain was stored. A send cannot be run on
+  such a dataset without a node reboot (the documented remedy), which was not
+  worth a disruptive step for a test-only dataset.
+
+**AV-11 (TLS/session) — live, pass.** TLS 1.3 is the only protocol offered
+(`-tls1`/`-tls1_1` are refused); the cert is the `naslos-local-ca`-issued
+`CN=naslos.local` with the matching SAN (valid to 2036); `Strict-Transport-Security:
+max-age=31536000; includeSubDomains`, `X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff` and `Referrer-Policy: strict-origin-when-cross-origin`
+are set; HTTP 301-redirects to HTTPS; and a forged `X-Forwarded-Host` or a
+client-supplied `Remote-User`/`Remote-Groups` still gets 302 (the proxy secret
+is the only trust proof — NAS-009 holds).
+
+**AV-12 (rolling restart) — live, pass.** `kubectl rollout restart
+deploy/naslos-api` rolled out cleanly; continuous `/api/health` polling showed a
+single ~1s gap during the pod swap and 200s on either side, with no crash-loop or
+stuck rollout. The new pod (0 restarts) serves `/api/health` 200, and the
+LDAP-backed Playwright specs (`auth.setup` + `users.spec`, 5 passed) still log in
+and edit users afterwards, so the restart did not break identity.
 
 #### Batch 6 — buddy crypto deep-dive (`envelope.go`, `keys.go`, `auth.go`, `store.go`)
 
