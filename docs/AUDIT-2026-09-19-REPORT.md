@@ -763,6 +763,33 @@ endpoint, and set `hostFirewallAdminCIDR` so the operator's 50000/6443 path
 survives a mistake. A safer alternative not yet tried is a **Talos host rule**,
 which does not depend on Cilium's label propagation.
 
+**Second attempt (same day) — got further, still did not attach.** Retried
+without the lockout this time (no CCNP existed when the agent restarted, and
+`hostFirewallAdminCIDR` kept `kubectl`/`talosctl` alive throughout; the revert
+was a clean one-liner with no console needed). Findings:
+
+- **`enable-node-selector-labels: true` is required** for node labels to reach
+  the host endpoint; with it off (the default) the endpoint shows only the Talos
+  extension labels, which is why the first attempt's selector never matched.
+- The label then appears on the `reserved:host` endpoint, but **only after an
+  agent restart** (the `CiliumNode` carries it; the endpoint derives it on
+  restart).
+- **The remaining blocker is a label-source mismatch**: the endpoint label is
+  `k8s:naslos.io/host-firewall=true`, while Cilium stores the policy's
+  `nodeSelector` as `any:naslos.io/host-firewall` (`cilium-dbg policy get`), so
+  the host endpoint still matches nothing (`ingress: {}`) even with the label
+  present. Neither `naslos.io/host-firewall` nor `k8s:naslos.io/host-firewall`
+  as the selector matched. Resolving this needs Cilium's node-selector
+  label-source semantics, which the docs do not spell out — the next attempt
+  should start there rather than re-running the rollout.
+- **No Talos fallback exists:** Talos v1.14.1 exposes no `HostFirewallConfig`,
+  `IngressFirewallConfig` or `NetworkRuleConfig` resource, so the "Talos host
+  rule" alternative is unavailable on this version.
+
+State after the second attempt is the known-good one: no CCNP, host firewall and
+node-selector-labels both `false`, node label removed, `/` → 302 and
+`/api/health` → 200.
+
 **Fresh-install parity.** The CNI change lives in the machine config, which
 `talosctl gen config` regenerates and which is gitignored, so it was landed where
 a fresh install actually reads it:
