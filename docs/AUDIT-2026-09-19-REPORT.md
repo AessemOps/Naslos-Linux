@@ -296,7 +296,12 @@ now resolved and the scan is clean:**
   libxml2, musl, nghttp2 and zlib in one step. `trivy` on the rebuilt image:
   **0 HIGH/CRITICAL**.
 
-**Remaining image scans:** `naslos-agent` (`0.1.0-r3`), `naslos-terminal`
+**`naslos-agent` (fixed, rev 33, `0.1.0-r4`):** the final stage moved from
+`alpine:3.21` (the same generation as the old UI base) to **`alpine:3.24`**;
+`trivy` on the rebuilt image reports **0 HIGH/CRITICAL** on both the base and the
+Go binary. The DaemonSet rolled out cleanly on the privileged hostNetwork agent.
+
+**Remaining image scans:** `naslos-terminal`
 (`0.1.0-r1`), `naslos-samba` (`0.1.0-r1`), `naslos-nfs` (`0.1.0-r1`) and
 `naslos-openldap` (`0.1.0-r1`). `trivy image` accepts one target per run, so run
 it per image:
