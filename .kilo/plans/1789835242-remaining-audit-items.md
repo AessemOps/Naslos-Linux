@@ -140,11 +140,18 @@ re-added later, in the workflow.
 
 ## 9. Batch 6 — coverage still not run
 
-- **Images/SBOM:** `trivy image` for `naslos-{api,agent,ui,terminal,samba,nfs,openldap}`
-  and `trivy config` for the chart/Dockerfiles. **Not runnable here:** `trivy` is
-  not installed on this host (the `.118` work server is deleted); install it first.
-- **SAST breadth:** `semgrep --config=auto` — **not installed** here. `staticcheck`
-  (API) is done.
+- **Images/SBOM: done.** `trivy image` on all seven live tags: api/ui/agent are
+  **0 HIGH/CRITICAL**; the four trixie images carry 219 base-library findings,
+  **all with no Debian fix** (`Fixed in: None`) and none in a service package. The
+  trixie Dockerfiles now `apt-get dist-upgrade` so a future security pocket is
+  picked up on rebuild. `trivy config` found two real issues, both fixed:
+  **DS-0031** (`LDAP_ADMIN_PASSWORD="admin"` baked into the openldap image —
+  removed, fails closed) and **KSV-0053** (unused `pods/exec` Role on the
+  openldap bootstrap SA — Role/RoleBinding deleted).
+- **SAST breadth: done.** `semgrep --config=auto` → 4 findings, all verified
+  false positives. `govulncheck` → the 4 accepted AUDIT-H3 advisories; `gosec`
+  excludes the two reviewed false-positive rules. `scripts/audit.sh` gates on
+  both, failing only on a *new* advisory/rule.
 - **Active tests: AV-5/AV-6/AV-7/AV-9/AV-10 done** as Go tests in
   `api/internal/server/active_tests_test.go` (+ live read-only probes); see the
   report's Batch 6 active-tests section. Still to run: **AV-8** end-to-end buddy

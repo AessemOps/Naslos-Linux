@@ -17,7 +17,10 @@ import (
 // ProxySecretHeader is the header Traefik's `proxy-identity` middleware injects
 // with the shared value. A request without it (or with the wrong value) is not
 // trusted, no matter where it comes from.
-const ProxySecretHeader = "X-Naslos-Proxy-Secret"
+//
+// The value is the header NAME, not a credential (gosec G101 false positive:
+// the constant it flags contains "Secret" in the name).
+const ProxySecretHeader = "X-Naslos-Proxy-Secret" // #nosec G101 -- a header name, not a credential
 
 // Middleware provides authentication and authorization.
 type Middleware struct {

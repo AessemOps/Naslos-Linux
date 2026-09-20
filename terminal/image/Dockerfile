@@ -19,7 +19,14 @@ FROM debian:trixie-slim
 LABEL maintainer="Naslos <team@naslos.dev>"
 LABEL description="Administrative shell for the Naslos web terminal"
 
+# dist-upgrade pulls the current Debian security pocket over the base image:
+# `trixie-slim` ships whatever versions were current when the tag was pushed,
+# and the trivy scan found base-library HIGHs (util-linux, systemd, ncurses,
+# perl, curl, expat) that Debian marks as having no fix yet. Without this step
+# the image pins the base lag; with it, a rebuild picks up a fix the moment the
+# security pocket publishes one.
 RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         bash \
         e2fsprogs \

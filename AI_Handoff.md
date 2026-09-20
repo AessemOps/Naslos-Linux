@@ -45,16 +45,17 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
   closing it needs the CNI swap plus a node-level rule), PSA scoping (**M6**,
   needs the privileged workloads split into their own namespace), Authelia's
   `jwt_secret` off the ConfigMap (**M3 residual** — the LDAP bind password was
-  moved to a Secret mount at revision 41), and the rest of Batch 6 (the
-  `trivy` image/SBOM scan and `semgrep`, both needing tools not installed on this
-  host; the AV-8 end-to-end buddy drill, AV-11 TLS/session and AV-12 rolling
-  restart). The Batch 6 active tests AV-5, AV-6, AV-7, AV-9 and AV-10 are
-  **done** (`api/internal/server/active_tests_test.go` plus live read-only
-  probes), and the **buddy crypto deep-dive is done with no findings** (envelope,
-  keys, auth and store reviewed; see the report). Everything else — the
-  dependency bumps, nginx non-root, `values.schema.json`/`.Release.Namespace`,
-  `go test -race`, the log/conversion hardening and the dead-code cleanup — is
-  done and deployed.
+  moved to a Secret mount at revision 41), and the rest of Batch 6 (the AV-8
+  end-to-end buddy drill and AV-11 TLS/session, AV-12 rolling restart, both live
+  drills for a window). Batch 6 is otherwise **done**: the `trivy` image scan
+  (api/ui/agent 0 HIGH; the four trixie images' 219 findings are all
+  no-Debian-fix base libraries), the `trivy config` scan (fixed DS-0031 baked
+  `LDAP_ADMIN_PASSWORD`, removed unused `pods/exec` Role KSV-0053), `semgrep`
+  (4 false positives, verified by hand), the AV-5…AV-7/AV-9/AV-10 active tests,
+  and the buddy crypto deep-dive (no findings). The audit sweep gates on
+  govulncheck and gosec again. Everything else — the dependency bumps, nginx
+  non-root, `values.schema.json`/`.Release.Namespace`, `go test -race`, the
+  log/conversion hardening and the dead-code cleanup — is done and deployed.
 - **The detailed audit, fix plan and code-review list are archived** in
   `docs/archive/`; the report supersedes them.
 
