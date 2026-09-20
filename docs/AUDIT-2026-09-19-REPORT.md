@@ -310,9 +310,9 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 
 | Item | Severity | Why deferred | Next step |
 |---|---|---|---|
-| AUDIT-M4 — ~~unenforced CNI~~ **flannel replaced by Cilium; NetworkPolicy enforced**; agent `:9090` hostNetwork rule still open | Low (was Medium) | Cilium **v1.20.2** replaced flannel (Talos `KubeFlannelCNIConfig` deleted, Cilium embedded as a `KubeInlineManifestConfig`, kube-proxy also replaced). Enforcement is live and proven: the terminal pod is now denied at `:8080`/`:9091`/`:9100` by the cilium monitor, while all 7 auth/LDAP Playwright specs pass. **What enforcement exposed and this fixed:** the NetworkPolicy set had no way to allow pods to reach the node/API server (Cilium uses the reserved `host` identity, which `ipBlock` cannot match), so enforcement initially broke every pod — Authelia, Traefik, CoreDNS all failed on `-> <node>:6443 policy denied`; a `CiliumNetworkPolicy` (`naslos-allow-host`, `toEntities: host`/`kube-apiserver`) now covers it. **The one residual:** the agent (and samba/nfs) are `hostNetwork`, and pod-level policy does not cover host-network pods, so `:9090` is still reachable from other pods (~1.5 ms) | Close the hostNetwork gap with Cilium's **host firewall** (`enable-host-firewall=true` + a `CiliumClusterwideNetworkPolicy` with a `nodeSelector`) or a Talos host rule limiting the API pod → `:9090` |
+| AUDIT-M4 — ~~unenforced CNI~~ **flannel replaced by Cilium; NetworkPolicy enforced**; agent `:9090` hostNetwork rule still open | Low (was Medium) | Cilium **v1.20.2** replaced flannel (Talos `KubeFlannelCNIConfig` deleted, Cilium embedded as a `KubeInlineManifestConfig`, kube-proxy also replaced). Enforcement is live and proven: the terminal pod is now denied at `:8080`/`:9091`/`:9100` by the cilium monitor, while all 7 auth/LDAP Playwright specs pass. **What enforcement exposed and this fixed:** the NetworkPolicy set had no way to allow pods to reach the node/API server (Cilium uses the reserved `host` identity, which `ipBlock` cannot match), so enforcement initially broke every pod — Authelia, Traefik, CoreDNS all failed on `-> <node>:6443 policy denied`; a `CiliumNetworkPolicy` (`naslos-allow-host`, `toEntities: host`/`kube-apiserver`) now covers it. **The one residual:** the agent (and samba/nfs) are `hostNetwork`, and pod-level policy does not cover host-network pods, so `:9090` is still reachable from other pods (~1.5 ms) | **Attempted and rolled back** (see below): a `CiliumClusterwideNetworkPolicy` + `enable-host-firewall` locks the node out if the selector or allow-list is wrong, and recovering needed console access. The template is fixed and **off by default**; do it with console access, in audit mode, and with `hostFirewallAdminCIDR` set |
 | AUDIT-M6 — PSA `privileged` namespace | Medium | Changes scheduling/security context of live workloads | Split namespaces or label only agent/terminal privileged |
-| ~~AUDIT-M11~~ — **fixed at revision 30**: Svelte 5 + svelte-check 4 + vite-plugin-svelte 4 (`npm audit` 11 → 4, the rest dev-server only); xterm → `@xterm` (CR-31) still open | Medium | — | — |
+| ~~AUDIT-M11~~ — **fixed**: Svelte 5 + svelte-check 4 + vite-plugin-svelte 4 (`npm audit` 11 → 4, the rest dev-server only), and the xterm → `@xterm` migration (CR-31) is **also done** (`@xterm/xterm ^6.0.0` in `ui/package.json`) | Medium | — | — |
 | AUDIT-M3 residual — `jwt_secret` still in the `authelia-config` ConfigMap | Low | The Authelia subchart only mounts a ConfigMap for `configuration.yml` (no Secret equivalent); the LDAP bind password was moved to a Secret at revision 41 | If the chart gains a Secret-backed config mount, move the whole file; otherwise template the pod from the naslos chart |
 | AV-8 finding — `zfs send` captures only the agent's mount namespace | Low | Data written from a terminal-pod namespace is invisible to the agent's `zfs snapshot`, so a "successful" backup can be metadata-only; the send/verify path reports success regardless | Document, or add a content/byte sanity check against the holding dataset; the supported flow (writes through the agent/Samba path) is unaffected |
 | AV-8 finding — a dataset once mounted in a pod namespace can become undestroyable | Low | `zfs destroy` reports `dataset is busy` with `mounted=false`, no snapshots, no children and no share, and it survives a node reboot; the API/agent expose no `zfs unmount`/`-f` path, so it cannot be cleared through the product | Add a force/`-f` destroy (or an unmount endpoint) to the agent; a stray stub dataset is the only impact |
@@ -727,9 +727,41 @@ enforcement. `scripts/audit.sh` asserts the `CiliumNetworkPolicy` and its
 
 **Residual (Low):** the agent, samba and nfs are `hostNetwork`, and pod-level
 policy does not apply to host-network pods, so the agent's `:9090` is still
-reachable from other pods (~1.5 ms). Closing that needs Cilium's host firewall
-(`enable-host-firewall=true` + a `CiliumClusterwideNetworkPolicy` with a
-`nodeSelector`) or a Talos host rule.
+reachable from other pods (~1.5 ms).
+
+**Host-firewall attempt — FAILED and rolled back (2026-09-20).** The documented
+way to restrict a hostNetwork pod is Cilium's host firewall
+(`enable-host-firewall`) plus a `CiliumClusterwideNetworkPolicy` with a
+`nodeSelector`. It was attempted live and **locked the node out**:
+
+- The host firewall was enabled and the policy validated in audit mode, which
+  showed **zero** would-be denials for ingress, DNS, LDAP, the agent, kubelet
+  and the SMB/NFS/443 LAN probes.
+- But the `nodeSelector` (`kubernetes.io/os: linux`) **matched no host
+  endpoint**: Cilium derives only a subset of node labels onto the
+  `reserved:host` endpoint, and the well-known `kubernetes.io/*` labels are not
+  among them (`cilium-dbg endpoint list` showed only the Talos extension labels
+  and `node-role.../control-plane`).
+- The Cilium agent was then restarted to pick up a new node label — and this is
+  the trap: **audit mode does not survive an agent restart** (the Cilium docs
+  warn about exactly this), so the policy began enforcing immediately. With the
+  selector unmatched, node ingress became default-deny, dropping the **Talos API
+  (50000)** and the **k8s API (6443)** and locking out both `talosctl` and
+  `kubectl`.
+
+Recovery needed out-of-band console access (VNC): the VM had also rebooted from
+the attached installer ISO rather than its disk, so it had to boot from
+`/dev/vda`, after which the CCNP was deleted, `enable-host-firewall` set back to
+`false`, and the node label removed. The cluster recovered fully (all workloads
+1/1, `/` → 302, `/api/health` → 200, the auth/LDAP specs pass) and `:9090` is
+back to the documented Low residual.
+
+The template is kept (it is the right construct) but **defaults to off**, with
+the two lessons encoded: select a **dedicated** node label (not
+`kubernetes.io/os`) and verify `POLICY (ingress) Enabled` on the `reserved:host`
+endpoint, and set `hostFirewallAdminCIDR` so the operator's 50000/6443 path
+survives a mistake. A safer alternative not yet tried is a **Talos host rule**,
+which does not depend on Cilium's label propagation.
 
 **Fresh-install parity.** The CNI change lives in the machine config, which
 `talosctl gen config` regenerates and which is gitignored, so it was landed where
