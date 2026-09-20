@@ -360,9 +360,29 @@ run; the difference is the runtime:
 
 - **`terminal` — fine.** The shell image runs on trixie (e2fsprogs 1.47, curl
   8.14, bind9-dnsutils) and is live at `r3`.
-- **`nfs` — fails.** `nfs-ganesha` jumps 4.x → **6.5**, and Ganesha does not
-  start with the currently rendered `ganesha.conf` (CrashLoopBackOff). Rolled
-  back to `r1`; the config needs the 6.x migration before the base moves.
+- **`nfs` — root-caused and fixed (`0.1.0-r3`, rev 37).** Ganesha 6.5 was not a
+  config problem: it refuses to start because of a startup `prctl`, and like
+  slapd it hides the reason in syslog. Running it against the real config with
+  `-F -L /dev/stdout` showed:
+
+  ```
+  FATAL :Failed to PR_SET_IO_FLUSHER with EPERM. Take a look at config option
+  allow_set_io_flusher_fail to see if you should allow it
+  ```
+
+  Ganesha 6.x marks itself an IO flusher at startup; `PR_SET_IO_FLUSHER` needs
+  **`CAP_SYS_RESOURCE`**, which the container did not have (the bookworm image's
+  Ganesha 4.x never called it, which is why this only appeared now). The
+  DaemonSet adds that capability, and Ganesha 6.5 then starts with the *same*
+  rendered `ganesha.conf` — no config migration needed. Verified live: the
+  rollout completed and the logs show `ganesha.nfsd running (pid 9), NFSv4 on
+  :2049`.
+
+  The honest caveat: raising a capability is a real (if small) privilege change
+  for a container that already runs hostNetwork with several file-ownership
+  capabilities, and it is the alternative to Ganesha's own
+  `allow_set_io_flusher_fail` option (which is not portable back to 4.x, which is
+  why the capability was chosen).
 - **`openldap` — root-caused and fixed in the image (`0.1.0-r4`).** The failure
   was **not** the PVC data: a fresh pod with no volumes failed identically.
   Debian's slapd logs to syslog, so the container showed only `Starting slapd...`
