@@ -21,7 +21,7 @@ spec:
         # Wait for OpenLDAP to be ready (uses ldapsearch from the Naslos
         # OpenLDAP image so the VM does not need to pull busybox externally).
         - name: wait-for-ldap
-          image: 192.168.1.2:30095/naslos-openldap:0.1.0
+          image: 192.168.1.2:30095/naslos-openldap:0.1.0-r1
           env:
             # Verify the server certificate against the Naslos CA rather than
             # disabling verification (AUDIT-L9).
@@ -42,7 +42,7 @@ spec:
               echo "OpenLDAP is ready"
       containers:
         - name: bootstrap
-          image: 192.168.1.2:30095/naslos-openldap:0.1.0
+          image: 192.168.1.2:30095/naslos-openldap:0.1.0-r1
           env:
             - name: LDAPTLS_CACERT
               value: /ldap-ca/ca.crt

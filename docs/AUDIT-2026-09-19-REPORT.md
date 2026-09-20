@@ -353,22 +353,31 @@ triage above still applies to most of those. The same migration is now a known
 recipe (base + any removed package + a flag review) for `terminal`, `nfs` and
 `openldap`.
 
-**The other three Debian images: built and pushed, deliberately not rolled yet.**
-`terminal`, `nfs` and `openldap` now have `debian:trixie-slim` Dockerfiles and
-`0.1.0-r3` images in the registry (terminal 1.47 e2fsprogs + curl 8.14; **nfs**
-moves to **nfs-ganesha 6.5** from 4.x; **openldap** to **slapd 2.6.10**). Nothing
-is deployed: `values-vm.yaml` still points at `r1` for all three, so production
-keeps running bookworm. Each needs its own verification before the tags move:
+**The other three Debian images: `terminal` rolled, `nfs` and `openldap`
+rolled back — Debian 13 does not work for them as-is (rev 35).** All three
+Dockerfiles built on `debian:trixie-slim` and their `0.1.0-r3` images push and
+run; the difference is the runtime:
 
-- `openldap` is the riskiest — slapd 2.6.10 backs the entire identity stack
-  (API + Authelia bind, user/group edits, the bootstrap job), so it wants a
-  window with the `ldapwhoami` and portal-login checks.
-- `nfs` jumps a Ganesha major version (4.x → 6.5); the rendered `ganesha.conf`
-  and export loading need the share/mount smoke test.
-- `terminal` is the benign one (a shell image) and can roll with the others.
+- **`terminal` — fine.** The shell image runs on trixie (e2fsprogs 1.47, curl
+  8.14, bind9-dnsutils) and is live at `r3`.
+- **`nfs` — fails.** `nfs-ganesha` jumps 4.x → **6.5**, and Ganesha does not
+  start with the currently rendered `ganesha.conf` (CrashLoopBackOff). Rolled
+  back to `r1`; the config needs the 6.x migration before the base moves.
+- **`openldap` — fails, and this one touched identity.** `slapd 2.6.10` exits 1
+  right after `Starting slapd...` against the existing PVC state, so the whole
+  LDAP-backed stack degrades (API/Authelia binds, user/group pages). Recovery,
+  for the record: `rollout undo` alone did **not** help because the StatefulSet
+  is `kubectl apply`-managed (its revision history has no usable prior image);
+  the working sequence was `kubectl set image` back to `r1`, then **delete the
+  stale crash-looping pod** — with `podManagementPolicy: OrderedReady` the
+  controller will not replace it on its own while it is not Ready. slapd is
+  Ready on `r1` again (0 restarts), and `values-vm.yaml` plus the three
+  `openldap/manifests` files are reverted to `r1` so no re-apply reintroduces it.
 
-Deploying all three at once with the tags bumped is the next step when there is
-room to verify, exactly as samba was done.
+Lesson for the remaining migration: the base bump is not the risk, the
+**daemon's config/data compatibility** is. samba was cheap (one removed
+package + a flag), nfs and openldap need their own config/state migration and a
+window each, exactly as feared.
 
 **Remaining image scans:** `naslos-terminal`
 (`0.1.0-r1`), `naslos-samba` (`0.1.0-r1`), `naslos-nfs` (`0.1.0-r1`) and
