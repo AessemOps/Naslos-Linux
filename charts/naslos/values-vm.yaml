@@ -55,10 +55,10 @@ shares:
   nfs:
     image:
       repository: 192.168.1.2:30095/naslos-nfs
-      # r3 (Debian 13, ganesha 6.5) does NOT start with the rendered
-      # ganesha.conf - see the audit report; bookworm r1 stays until the config
-      # is migrated.
-      tag: "0.1.0-r1"
+      # r3 = Debian 13 / Ganesha 6.5. It needs CAP_SYS_RESOURCE for
+      # PR_SET_IO_FLUSHER (added in nfs-daemonset.yaml); with that, Ganesha 6.5
+      # starts with the same rendered ganesha.conf as 4.x.
+      tag: "0.1.0-r3"
 terminal:
   image:
     repository: 192.168.1.2:30095/naslos-terminal
