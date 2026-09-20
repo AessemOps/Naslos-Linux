@@ -8,12 +8,13 @@ superseded `SECURITY-AUDIT.md` + `SECURITY-FIX-PLAN.md` (2026-09-14).
 
 - **Audit baseline:** `master` = `85ae874` (PR #23; the dev endpoint had just
   been removed). The 2026-09-14 audit is superseded and archived.
-- **Fix branch:** `audit/full-2026-09-19`, 16 commits `1e4ae2b` → `d2f891a`,
+- **Fix branch:** `audit/full-2026-09-19`, 43 commits `4e47884` → `77cdf4a`,
   pushed. `master` was never pushed to directly.
-- **Live target:** `192.168.1.117`, helm revision **24** — `naslos-api`
-  `0.1.0-r6`, `naslos-agent` `0.1.0-r3`, `naslos-ui` `0.1.0-r6`, Traefik
-  hostPort 80/443, Traefik v3.7.13 (chart 41.6.0) and Authelia 4.39.24 (chart
-  0.11.22), `naslos.local`.
+- **Live target:** `192.168.1.117`, helm revision **41** — `naslos-api`
+  `0.1.0-r9`, `naslos-agent` `0.1.0-r4`, `naslos-ui` `0.1.0-r10`; samba/nfs/
+  terminal `0.1.0-r3`, openldap `0.1.0-r4` (all Debian 13). Traefik hostPort
+  80/443, Traefik v3.7.13 (chart 41.6.0) and Authelia 4.39.24 (chart 0.11.22),
+  `naslos.local`.
 - **No secret values appear in this report or in any committed artefact.**
 
 ## 1. Executive summary
@@ -31,20 +32,22 @@ Remediation then closed **all four Highs and every Medium except four**:
 | Medium deferred (with reason) | 4 |
 | Low closed / accepted | 8 + 1 |
 | Low deferred | 0 |
-| Findings not yet run (Batch 6) | image/SBOM scan (`trivy`), `semgrep`, 8 active tests, buddy crypto deep-dive |
+| Batch 6 coverage | **done** — `trivy` image (all 7 tags) + config, `semgrep`, AV-5…AV-12 active tests, buddy crypto deep-dive; 2 config findings fixed (DS-0031, KSV-0053), 2 low AV-8 findings recorded |
 
 The instance now has a single authenticated entry point, no default or committed
 credentials, verified LDAP TLS, backups on their own dataset, a persisted session
-secret, and a runnable (if not yet wired) audit sweep.
+secret, and an audit sweep (`scripts/audit.sh`) that runs the Go/UI/chart checks
+and gates on `govulncheck`, `gosec` and `staticcheck`.
 
 ## 2. Method
 
 - **Static review** with the `code-review-skill` references (Go, Svelte,
   Security, Architecture, Universal quality) and `security-best-practices`.
-- **Scanners**, none of which were installed, run via Docker or `go run`:
-  `gitleaks detect` (full history + tree), `trufflehog git --only-verified`,
-  `go run golang.org/x/vuln/cmd/govulncheck@latest`, `go run
-  github.com/securego/gosec/v2/cmd/gosec@latest`, `npm audit` (prod and full).
+- **Scanners.** `gitleaks detect` (full history + tree) and `trufflehog git
+  --only-verified`; `govulncheck`, `gosec`, `staticcheck`, `npm audit` (prod and
+  full). For Batch 6, `trivy` (image and config), `semgrep --config=auto` and the
+  Go SAST tools were installed and run directly; the audit sweep re-runs
+  `govulncheck`/`gosec`/`staticcheck` when present.
 - **Live inspection**, read-only: services, RBAC, PSA labels, Secrets (names
   only), pod specs, rendered args, and targeted probes (`curl`, `ldapwhoami`).
 - **Constraints honoured:** non-destructive; no credential values printed or
@@ -475,11 +478,12 @@ run; the difference is the runtime:
   a Job's `spec.template` is immutable, so the bootstrap Job must be deleted
   before re-applying it (it is recreated by `deploy-vm.sh`).
 
-#### Batch 6 — active tests (AV-5, AV-6, AV-7, AV-9, AV-10), results
+#### Batch 6 — active tests (AV-5…AV-12), results
 
-Run as Go tests against the real router with the owner auth gate armed
-(`api/internal/server/active_tests_test.go`), plus read-only probes of the live
-VM. All pass, and each guard was mutation-tested to confirm it is not vacuous.
+AV-5/AV-6/AV-7/AV-9/AV-10 run as Go tests against the real router with the owner
+auth gate armed (`api/internal/server/active_tests_test.go`); AV-7 also has a
+live check, AV-8/AV-11/AV-12 are live drills (driven against the running VM).
+All pass, and each unit guard was mutation-tested to confirm it is not vacuous.
 
 | Test | What it pins | Result |
 |---|---|---|
