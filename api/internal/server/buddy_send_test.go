@@ -764,3 +764,91 @@ func TestBuddySendValidatesInput(t *testing.T) {
 		t.Errorf("the error does not tell the operator how to create an identity: %s", rec.Body.String())
 	}
 }
+
+// TestBuddySendRefusesAContentlessStream covers AV-8a. requireMountedDataset
+// catches a dataset the agent cannot see at all; this is the subtler case the
+// live drill produced - the dataset reads as mounted, so the snapshot and send
+// are internally consistent, but its files were written somewhere the agent's
+// mount namespace cannot observe and the stream carries almost nothing. The
+// dataset's own used figure is the signal: it counts the blocks that exist
+// whatever the mount view shows.
+func TestBuddySendRefusesAContentlessStream(t *testing.T) {
+	// The stream is tiny (a few bytes) while the dataset reports 2 GiB used.
+	harness := newSenderHarness(t, []byte("x"))
+	harness.agent.datasets = []agent.Dataset{
+		{
+			Name:       "test/shadows",
+			Mountpoint: "/var/mnt/test/shadows",
+			Mounted:    true,
+			UsedBytes:  2 << 30,
+		},
+	}
+
+	jobID := startSend(t, harness, map[string]any{
+		"dataset":  "test/shadows",
+		"source":   "naslos-test/shadows",
+		"receiver": harness.receiverURL,
+	})
+	job := waitSend(t, harness, jobID)
+
+	if job.State != buddyJobFailed {
+		t.Fatalf("job state = %s, want failed (%+v)", job.State, job)
+	}
+	if !strings.Contains(job.Error, "were not included") {
+		t.Errorf("job error = %q, want it to explain the missing contents", job.Error)
+	}
+
+	// Nothing may be published, or "the latest backup" would point at a stream
+	// that does not hold the dataset.
+	client := buddy.NewClient(harness.receiverURL, harness.identity)
+	if _, err := client.Manifest("naslos-test/shadows", ""); err == nil {
+		t.Error("a contentless chain was published as the current backup")
+	}
+}
+
+// TestBuddySendAllowsASmallDataset: the content check must not flag a dataset
+// that is genuinely small. Below the floor the used figure is mostly metadata,
+// so a small stream is expected and the send goes through.
+func TestBuddySendAllowsASmallDataset(t *testing.T) {
+	harness := newSenderHarness(t, []byte("small dataset"))
+	harness.agent.datasets = []agent.Dataset{
+		{
+			Name:       "test/small",
+			Mountpoint: "/var/mnt/test/small",
+			Mounted:    true,
+			UsedBytes:  4096, // 4 KiB: well below the 1 MiB floor
+		},
+	}
+
+	result := sendAndWait(t, harness, "test/small", "naslos-test/small")
+	if result.Status != "backed up" {
+		t.Errorf("status = %q, want backed up", result.Status)
+	}
+}
+
+// TestRequireStreamMatchesDataset pins the threshold behaviour directly, so the
+// constants cannot drift silently.
+func TestRequireStreamMatchesDataset(t *testing.T) {
+	const mib = 1 << 20
+	cases := []struct {
+		name                 string
+		used, plain          int64
+		wantErr              bool
+	}{
+		{"empty dataset", 0, 100, false},
+		{"sub-floor dataset", mib - 1, 100, false},
+		{"plausible stream", 100 * mib, 80 * mib, false},
+		{"exactly at the ratio", 100 * mib, 5 * mib, false},
+		{"contentless stream", 2 << 30, 44_376, true},
+		{"no bytes sent", 2 << 30, 0, false}, // a 0-byte result is the estimate guard's job
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireStreamMatchesDataset("test/x", tc.used, tc.plain)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("requireStreamMatchesDataset(used=%d, plain=%d) = %v, wantErr=%v",
+					tc.used, tc.plain, err, tc.wantErr)
+			}
+		})
+	}
+}
