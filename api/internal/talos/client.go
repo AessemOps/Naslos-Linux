@@ -211,14 +211,16 @@ func (c *Client) getSystemInfo() (SystemInfo, error) {
 	if err != nil {
 		return info, fmt.Errorf("getting version: %w", err)
 	}
-	for _, m := range ver.Messages {
+	// Only the first message carries the node's version/platform, so read it
+	// directly instead of looping and breaking (staticcheck SA4004).
+	if len(ver.Messages) > 0 {
+		m := ver.Messages[0]
 		if m.GetVersion() != nil {
 			info.TalosVersion = m.GetVersion().GetTag()
 		}
 		if m.GetPlatform() != nil {
 			info.OS = m.GetPlatform().GetName()
 		}
-		break
 	}
 
 	if r, err := c.client.Read(c.ctx, "proc/uptime"); err == nil {
@@ -254,8 +256,10 @@ func (c *Client) getMemoryMetrics() (MemoryMetrics, error) {
 	if err != nil {
 		return mm, fmt.Errorf("getting memory: %w", err)
 	}
-	for _, m := range resp.Messages {
-		if mi := m.GetMeminfo(); mi != nil {
+	// Only the first message carries the node's meminfo, so read it directly
+	// instead of looping and breaking (staticcheck SA4004).
+	if len(resp.Messages) > 0 {
+		if mi := resp.Messages[0].GetMeminfo(); mi != nil {
 			// MemInfo values mirror /proc/meminfo and are reported in KB;
 			// convert to bytes so all API quantities are byte-denominated.
 			const kb = 1024
@@ -269,7 +273,6 @@ func (c *Client) getMemoryMetrics() (MemoryMetrics, error) {
 				mm.SwapUsed = mm.SwapTotal - swapFree
 			}
 		}
-		break
 	}
 	if mm.Total > 0 {
 		mm.UsagePercent = float64(mm.Used) / float64(mm.Total) * 100
