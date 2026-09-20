@@ -731,6 +731,32 @@ reachable from other pods (~1.5 ms). Closing that needs Cilium's host firewall
 (`enable-host-firewall=true` + a `CiliumClusterwideNetworkPolicy` with a
 `nodeSelector`) or a Talos host rule.
 
+**Fresh-install parity.** The CNI change lives in the machine config, which
+`talosctl gen config` regenerates and which is gitignored, so it was landed where
+a fresh install actually reads it:
+
+- `bootstrap/vm/naslos-vm.yaml` (tracked) is the `--config-patch` `make
+  bootstrap-vm` applies. It now carries the `KubeFlannelCNIConfig` `$patch:
+  delete`, `KubeProxyConfig.enabled: false`, `ResolverConfig.hostDNS.
+  forwardKubeDNSToHost: false`, and the `KubeInlineManifestConfig` for Cilium.
+- `bootstrap/cilium/cilium.yaml` (tracked) is the pinned Cilium v1.20.2 manifest
+  (KPR, KubePrism `localhost:7445`, kube-proxy-replacement).
+- `scripts/render-cilium.sh` splices that manifest into the patch as the inline
+  document; `make bootstrap-vm` runs it first, so a fresh install ships Cilium
+  with no manual step. It is idempotent and has a `--check` mode.
+- `scripts/deploy-vm.sh` waits for the `cilium` DaemonSet to be Ready before the
+  first `kubectl`/`helm` call (flannel is gone, so there is no pod network until
+  Cilium starts).
+- The installer is pinned to **v1.14.1**, matching the node the swap was
+  validated on.
+
+Verified by simulating a fresh generation (`talosctl gen config … --config-patch
+@bootstrap/vm/naslos-vm.yaml`): the result has **no** `KubeFlannelCNIConfig`,
+kube-proxy disabled, host DNS forwarding off, and all **25** Cilium objects
+embedded. `scripts/audit.sh` asserts the patch carries all of these and is
+current with `cilium.yaml`, so a regression fails the sweep rather than silently
+producing a stock flannel cluster.
+
 ### Debian 13 migration complete — all four images live
 
 `terminal r3`, `samba r3`, `nfs r3` and `openldap r4` are all on
