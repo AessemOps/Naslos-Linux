@@ -248,7 +248,18 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
 | ~~AUDIT-L5/L6~~ — **fixed at revision 27**: `logsafe.Field` sanitises log arguments and the conversions are bounded/clamped | Low | — | — |
 | ~~AUDIT-L8 / CR-06~~ — **fixed at revision 27**: the scheduler race is gone and the sweep runs `go test -race` | Low | — | — |
-| Batch 6 — image/SBOM scan, semgrep/staticcheck, AV-5…AV-12, buddy crypto deep-dive, `.118` | Coverage | Time-boxed session | Run `trivy`, `semgrep`, `staticcheck`, the bounded active tests, and the `.118` read-only checks |
+| Batch 6 — **staticcheck done (API); the rest open** | Coverage | Time-boxed session | See the staticcheck results below; still to run: `trivy` image/SBOM scan, `semgrep`, AV-5…AV-12, buddy crypto deep-dive, `.118` |
+
+### Batch 6 — staticcheck (API), results
+
+`staticcheck ./...` on the API returned 7 findings, no high severity:
+
+| Finding | Triage |
+|---|---|
+| `server/apps.go:152` `handleAppStartStop` is unused (`U1000`) | **Real gap**: the handler exists but **no route registers it**, so an app start/stop request has nowhere to land. Either wire it (`POST /api/apps/{name}/start|stop`, matching the UI's buttons) or delete it — needs a decision, so it is listed rather than changed here. |
+| `identity/client.go:279` `base64Encode` unused, `server/users_extra.go:232` `contains` unused, `users_extra.go:267` `smbUsers` unused | Dead code (`U1000`), safe to delete in a follow-up. |
+| `internal/talos/client.go:221,272` loop unconditionally terminated (`SA4004`) | Not a bug: both loops read only the first message and `break`. Rewrite as `if len(...) > 0 { … }` for clarity. |
+| `identity/persons_extra.go:10` `md4` deprecated (`SA1019`) | Accepted (L7): MD4 is required by the SMB NT-hash protocol, not used for security. |
 | AUDIT-M10 — digests / registry TLS | Medium | Excluded by request | Revisit when wanted |
 
 ## 9. Reproducing the audit and fixes
