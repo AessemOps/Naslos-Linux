@@ -444,6 +444,25 @@ networkPolicy:
   # cluster where the CRD is absent so the release does not carry a failed object.
   cilium:
     enabled: true
+    # CiliumClusterwideNetworkPolicy that turns on the Cilium HOST FIREWALL and
+    # restricts the hostNetwork agent's :9090 (AUDIT-M4 residual). OFF by
+    # default on purpose: a host policy makes ALL node ingress default-deny, so
+    # a wrong rule locks out the API server/kubelet/Talos API/LAN and recovery
+    # can need console access. This was attempted live on 2026-09-20 and DID
+    # lock the node out (see the template header and the report). Turn it on
+    # only with console access available, after validating in audit mode.
+    # Requires the cluster's Cilium to run with enable-host-firewall=true.
+    hostFirewall: false
+    # The node label the host policy selects. It must be applied to the node
+    # (`kubectl label node <n> naslos.io/host-firewall=true`) AND must be one
+    # Cilium propagates to the `reserved:host` endpoint - verify with
+    # `cilium-dbg endpoint list` that POLICY (ingress) shows Enabled. The
+    # well-known `kubernetes.io/os` label is NOT propagated and selects nothing.
+    hostFirewallNodeLabel: naslos.io/host-firewall
+    # Admin CIDR allowed to reach the node's Talos API (50000) and k8s API
+    # (6443). Leave empty ONLY if the operator can reach the node console;
+    # setting it is what keeps a bad host policy recoverable.
+    hostFirewallAdminCIDR: ""
 
 # Traefik IngressRoute + middlewares (Authelia forwardAuth, security headers and
 # the proxy-identity secret). Gated on this flag rather than `traefik.enabled`:

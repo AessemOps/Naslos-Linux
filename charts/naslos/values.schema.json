@@ -177,7 +177,10 @@
           "type": "object",
           "additionalProperties": true,
           "properties": {
-            "enabled": { "type": "boolean" }
+            "enabled": { "type": "boolean" },
+            "hostFirewall": { "type": "boolean" },
+            "hostFirewallNodeLabel": { "type": "string" },
+            "hostFirewallAdminCIDR": { "type": "string" }
           }
         }
       }
