@@ -133,6 +133,76 @@ for r in cnps["naslos-allow-host"]["spec"].get("egress", []):
     entities.update(r.get("toEntities", []))
 assert "host" in entities, "allow-host must permit the host entity (API server/kubelet)"
 assert "kube-apiserver" in entities, "allow-host must permit the kube-apiserver entity"
+
+# AUDIT-M6: the privileged workloads must be in their own namespace, the API
+# must point at the agent in the new namespace, and the API's exec RBAC must
+# live where the terminal does. A regression here silently re-merges the split.
+# NOTE: the release namespace stays PSA `privileged` on purpose - the API mounts
+# hostPath volumes (shares view + buddy receive) and `baseline` forbids them, so
+# `naslos` would not schedule its own API pod (verified live).
+nss = {d["metadata"]["name"]: d for d in docs if d.get("kind") == "Namespace"}
+priv = nss.get("naslos-privileged")
+assert priv is not None, "missing naslos-privileged namespace"
+assert priv["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "privileged", \
+    "naslos-privileged must enforce privileged"
+
+def ns_of(d):
+    return (d.get("metadata") or {}).get("namespace")
+
+priv_workloads = {
+    (d["kind"], d["metadata"]["name"])
+    for d in docs
+    if d.get("kind") in ("DaemonSet", "Deployment") and ns_of(d) == "naslos-privileged"
+}
+for kind, name in [
+    ("DaemonSet", "naslos-agent"), ("DaemonSet", "naslos-samba"),
+    ("DaemonSet", "naslos-nfs"), ("Deployment", "naslos-terminal"),
+]:
+    assert (kind, name) in priv_workloads, f"{name} is not in naslos-privileged"
+
+# The release namespace must NOT still run OUR hostNetwork/privileged workloads.
+# Scoped to this chart's own names (naslos-*) and skips the monitoring subchart:
+# prometheus-node-exporter is hostNetwork by design (it reads host metrics) and
+# is not one of the workloads the split moves.
+split_names = {"naslos-agent", "naslos-samba", "naslos-nfs", "naslos-terminal"}
+for d in docs:
+    name = d["metadata"]["name"]
+    if (
+        d.get("kind") in ("DaemonSet", "Deployment")
+        and ns_of(d) == "naslos"
+        and name in split_names
+    ):
+        raise AssertionError(f"{name} must not remain in the release namespace")
+
+# The API must reach the agent in the privileged namespace.
+api_env = {}
+for d in docs:
+    if d.get("kind") == "Deployment" and d["metadata"]["name"] == "naslos-api":
+        for e in d["spec"]["template"]["spec"]["containers"][0].get("env", []):
+            api_env[e["name"]] = e.get("value")
+assert "naslos-privileged.svc" in api_env.get("AGENT_BASE_URL", ""), \
+    f"AGENT_BASE_URL does not target the privileged namespace: {api_env.get('AGENT_BASE_URL')!r}"
+
+# The exec Role/RoleBinding must sit where the terminal pod does, with the API
+# (in the release namespace) as the subject.
+roles = {(d["kind"], d["metadata"]["name"], ns_of(d)) for d in docs}
+assert ("Role", "naslos-api-terminal", "naslos-privileged") in roles, \
+    "exec Role must be in naslos-privileged (where the terminal runs)"
+assert ("RoleBinding", "naslos-api-terminal", "naslos-privileged") in roles, \
+    "exec RoleBinding must be in naslos-privileged"
+for d in docs:
+    if d.get("kind") == "RoleBinding" and d["metadata"]["name"] == "naslos-api-terminal":
+        subjects = d.get("subjects", [])
+        assert any(s.get("namespace") == "naslos" for s in subjects), \
+            "the RoleBinding subject must be the API in the release namespace"
+
+# Both agent-token Secret copies must exist (secretKeyRef cannot cross namespaces).
+secret_ns = {
+    ns_of(d) for d in docs
+    if d.get("kind") == "Secret" and d["metadata"]["name"] == "naslos-agent"
+}
+assert secret_ns == {"naslos", "naslos-privileged"}, \
+    f"the naslos-agent Secret must exist in both namespaces, got {secret_ns}"
 print("network policy intent ok")
 PY
   rc=$?

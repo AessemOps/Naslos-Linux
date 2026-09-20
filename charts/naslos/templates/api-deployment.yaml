@@ -133,8 +133,10 @@ spec:
             # Base URL of the naslos-agent Service (headless, one endpoint per
             # node) used for ZFS pool operations. Overridable for local dev
             # (e.g. AGENT_BASE_URL=http://127.0.0.1:9090 with a port-forward).
+            # AUDIT-M6: the agent lives in the privileged namespace, not the
+            # release namespace, so the default targets that.
             - name: AGENT_BASE_URL
-              value: {{ .Values.api.agentBaseURL | default (printf "http://naslos-agent.%s.svc.cluster.local:9090" .Release.Namespace) | quote }}
+              value: {{ .Values.api.agentBaseURL | default (printf "http://naslos-agent.%s.svc.cluster.local:9090" (include "naslos.workloadNamespace" .)) | quote }}
             # Owner-route authentication (NAS-001). The API serves /api/* only to
             # requests carrying the shared secret that Traefik's proxy-identity
             # middleware injects; it refuses to start without it. No opt-out.
