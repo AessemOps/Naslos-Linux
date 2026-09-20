@@ -405,5 +405,114 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
+{{- if .Values.networkPolicy.cilium.hostFirewall }}
+---
+# CiliumClusterwideNetworkPolicy + the Cilium host firewall: the ONLY way to
+# restrict a hostNetwork pod (AUDIT-M4 residual). naslos-agent listens on the
+# node IP at :9090, and pod-level NetworkPolicy does not apply to host-network
+# pods, so `naslos-agent-ingress` above cannot see it. With
+# `enable-host-firewall: true`, Cilium programmes nftables on the node for
+# policies that select a node, and this opens :9090 to the API pod only.
+#
+# IMPORTANT - semantics and blast radius: selecting a node here turns on the
+# HOST FIREWALL for that node and makes node ingress default-deny for anything
+# not matched. A wrong or missing rule drops access to the node itself (API
+# server, kubelet, Talos API, LAN services), and recovery can need out-of-band
+# console access. The allow-list below therefore covers every service the node
+# serves, and the agent should first be validated in audit mode:
+#   cilium-dbg endpoint config <host-ep-id> PolicyAuditMode=Enabled
+# (`cilium-dbg monitor -t policy-verdict --related-to <host-ep-id>` then shows
+# `action audit` lines for anything that WOULD be denied). Toggle it off once
+# those are all `action allow`. See "Host Firewall" in the Cilium docs.
+#
+# WARNING - this template is NOT validated end to end. Attempting it live
+# (AUDIT-M4, 2026-09-20) locked the node out: the selector below did not match
+# the host endpoint, and once the agent restarted the (empty) policy still
+# default-denied node ingress, dropping the Talos API (50000) and the k8s API
+# (6443) and forcing a console/VNC recovery. Two lessons are encoded here:
+#   1. The host endpoint does NOT carry `kubernetes.io/os`; Cilium derives only
+#      a subset of node labels. Select a DEDICATED label that is applied to the
+#      node (see networkPolicy.cilium.hostFirewallNodeLabel) and verify with
+#      `cilium-dbg endpoint list` that the `reserved:host` endpoint shows
+#      POLICY (ingress) Enabled before trusting it.
+#   2. The operator's own access path (Talos API 50000, k8s API 6443 from the
+#      workstation, not just `cluster`) must be allowed, or a mistake is
+#      unrecoverable without console access.
+# Keep this OFF unless you can reach the node console. Validate in audit mode
+# (`cilium-dbg endpoint config <host-ep-id> PolicyAuditMode=Enabled`, watch
+# `cilium-dbg monitor -t policy-verdict --related-to <host-ep-id>` for
+# `action audit`) BEFORE enforcing.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: naslos-agent-host-firewall
+  labels:
+    app.kubernetes.io/name: naslos-agent
+    app.kubernetes.io/part-of: naslos
+spec:
+  nodeSelector:
+    matchLabels:
+      {{ .Values.networkPolicy.cilium.hostFirewallNodeLabel | default "naslos.io/host-firewall" | quote }}: {{ "true" | quote }}
+  ingress:
+    # Everything the cluster itself needs to reach on the node (API server,
+    # kubelet, the agent on :9090). `fromEntities: cluster` is the correct way
+    # to express "anything inside the cluster"; the per-pod :9090 restriction
+    # is enforced on top by naslos-agent-ingress for non-hostNetwork pod
+    # traffic, and by this rule's port list.
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+            - port: "6443"
+              protocol: TCP
+            - port: "10250"
+              protocol: TCP
+            - port: "50000"
+              protocol: TCP
+    # Operator/control-plane access from the admin network: the Talos API
+    # (50000) and the k8s API (6443) MUST stay reachable from wherever the
+    # operator runs talosctl/kubectl, or a mistake here is unrecoverable
+    # without console access (this is exactly what went wrong in the attempted
+    # rollout). `cluster` does not cover the external workstation path.
+    {{- with .Values.networkPolicy.cilium.hostFirewallAdminCIDR }}
+    - fromCIDR:
+        - {{ . | quote }}
+      toPorts:
+        - ports:
+            - port: "50000"
+              protocol: TCP
+            - port: "6443"
+              protocol: TCP
+    {{- end }}
+    # LAN clients and the node's own services: SMB, NFS, and the hostPort
+    # entry points (Traefik 80/443). Taken from values so a different LAN
+    # needs no template edit.
+    {{- with .Values.networkPolicy.nodeCIDR }}
+    - fromCIDR:
+        - {{ . | quote }}
+      toPorts:
+        - ports:
+            - port: "445"
+              protocol: TCP
+            - port: "139"
+              protocol: TCP
+            - port: "2049"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+    {{- end }}
+    # ICMP echo (ping) from the LAN, so the node stays diagnosable.
+    - fromEntities:
+        - cluster
+        - world
+      icmps:
+        - fields:
+            - type: EchoRequest
+              family: IPv4
+{{- end }}
 {{- end }}
 {{- end }}

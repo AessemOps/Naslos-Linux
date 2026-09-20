@@ -127,9 +127,18 @@ Enforcement proven: terminal denied at `:8080`/`:9091`/`:9100`, ingress 302/200,
 all 7 auth+LDAP specs pass. `scripts/audit.sh` guards the new policy.
 
 **Residual (Low):** the agent/samba/nfs are `hostNetwork`, which pod-level policy
-does not cover, so the agent `:9090` is still reachable from other pods. Close it
-with Cilium's host firewall (`enable-host-firewall=true` +
-`CiliumClusterwideNetworkPolicy` with a `nodeSelector`) or a Talos host rule.
+does not cover, so the agent `:9090` is still reachable from other pods. The
+Cilium **host firewall** route (`enable-host-firewall` + a
+`CiliumClusterwideNetworkPolicy` with a `nodeSelector`) was **attempted on
+2026-09-20 and rolled back**: the `kubernetes.io/os` selector matched no host
+endpoint (Cilium propagates only a subset of node labels), and restarting the
+agent to apply a new label re-armed the policy out of audit mode, dropping the
+Talos API (50000) and k8s API (6443) and forcing a VNC/console recovery. The
+template is kept but **off by default**, with a dedicated-label selector and a
+`hostFirewallAdminCIDR` so the operator path survives a mistake. A **Talos host
+rule** is the safer alternative still to try, since it does not depend on
+Cilium's label propagation. Retry only with console access, in audit mode, and
+with the admin CIDR set.
 
 **Fresh install:** the change is landed in the tracked machine-config patch
 `bootstrap/vm/naslos-vm.yaml` (flannel `$patch: delete`, kube-proxy disabled,
