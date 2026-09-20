@@ -438,6 +438,12 @@ networkPolicy:
   # Extra egress CIDRs. No workload here has a documented outbound-Internet
   # dependency; add one only if that changes.
   extraEgressCIDRs: []
+  # CiliumNetworkPolicy for what upstream NetworkPolicy cannot express: allowing
+  # pods to reach the node host / API server. Only rendered when the CNI is
+  # Cilium; harmless (an unused CR) elsewhere, but set false on a non-Cilium
+  # cluster where the CRD is absent so the release does not carry a failed object.
+  cilium:
+    enabled: true
 
 # Traefik IngressRoute + middlewares (Authelia forwardAuth, security headers and
 # the proxy-identity secret). Gated on this flag rather than `traefik.enabled`:

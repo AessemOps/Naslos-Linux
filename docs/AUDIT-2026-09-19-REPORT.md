@@ -14,8 +14,9 @@ superseded `SECURITY-AUDIT.md` + `SECURITY-FIX-PLAN.md` (2026-09-14).
   `0.1.0-r9`, `naslos-agent` `0.1.0-r4`, `naslos-ui` `0.1.0-r10`; samba/nfs/
   terminal `0.1.0-r3`, openldap `0.1.0-r4` (all Debian 13). Traefik hostPort
   80/443, Traefik v3.7.13 (chart 41.6.0) and Authelia 4.39.24 (chart 0.11.22),
-  `naslos.local`. Node: Talos **v1.14.1** (kernel 6.18.51-talos), flannel CNI
-  with the 10 `NetworkPolicy` objects deployed but inert (see M4 below).
+  `naslos.local`. Node: Talos **v1.14.1** (kernel 6.18.51-talos), **Cilium
+  v1.20.2** replacing flannel and kube-proxy, with the NetworkPolicy set
+  **enforced** (see M4 below).
 - **No secret values appear in this report or in any committed artefact.**
 
 ## 1. Executive summary
@@ -309,7 +310,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 
 | Item | Severity | Why deferred | Next step |
 |---|---|---|---|
-| AUDIT-M4 — unenforced CNI; agent `:9090` open to every pod | Medium | The 10 `NetworkPolicy` objects render and are deployed, but flannel has no policy controller, so they are inert (re-verified live: the terminal pod still reaches the agent `:9090` in ~1.5 ms). Flannel's own `kubeNetworkPoliciesEnabled` was tried and **does not work on this Talos v1.14.1**: the config is accepted, but Talos renders `05-flannel` without the `kube-network-policies` companion and the node's image list carries no such image (`talosctl image list`: flannel only), so nothing enforces. The agent/samba/nfs are also hostNetwork, which pod-level policy cannot cover | Replace the CNI with **Cilium or Calico** (Talos `KubeFlannelCNIConfig` `$patch: delete` + reboot) **plus** a node-level rule for the hostNetwork agent (Cilium host firewall, or a Talos host firewall limiting API→`:9090`); the `networkPolicy.*` values already encode the target call graph |
+| AUDIT-M4 — ~~unenforced CNI~~ **flannel replaced by Cilium; NetworkPolicy enforced**; agent `:9090` hostNetwork rule still open | Low (was Medium) | Cilium **v1.20.2** replaced flannel (Talos `KubeFlannelCNIConfig` deleted, Cilium embedded as a `KubeInlineManifestConfig`, kube-proxy also replaced). Enforcement is live and proven: the terminal pod is now denied at `:8080`/`:9091`/`:9100` by the cilium monitor, while all 7 auth/LDAP Playwright specs pass. **What enforcement exposed and this fixed:** the NetworkPolicy set had no way to allow pods to reach the node/API server (Cilium uses the reserved `host` identity, which `ipBlock` cannot match), so enforcement initially broke every pod — Authelia, Traefik, CoreDNS all failed on `-> <node>:6443 policy denied`; a `CiliumNetworkPolicy` (`naslos-allow-host`, `toEntities: host`/`kube-apiserver`) now covers it. **The one residual:** the agent (and samba/nfs) are `hostNetwork`, and pod-level policy does not cover host-network pods, so `:9090` is still reachable from other pods (~1.5 ms) | Close the hostNetwork gap with Cilium's **host firewall** (`enable-host-firewall=true` + a `CiliumClusterwideNetworkPolicy` with a `nodeSelector`) or a Talos host rule limiting the API pod → `:9090` |
 | AUDIT-M6 — PSA `privileged` namespace | Medium | Changes scheduling/security context of live workloads | Split namespaces or label only agent/terminal privileged |
 | ~~AUDIT-M11~~ — **fixed at revision 30**: Svelte 5 + svelte-check 4 + vite-plugin-svelte 4 (`npm audit` 11 → 4, the rest dev-server only); xterm → `@xterm` (CR-31) still open | Medium | — | — |
 | AUDIT-M3 residual — `jwt_secret` still in the `authelia-config` ConfigMap | Low | The Authelia subchart only mounts a ConfigMap for `configuration.yml` (no Secret equivalent); the LDAP bind password was moved to a Secret at revision 41 | If the chart gains a Secret-backed config mount, move the whole file; otherwise template the pod from the naslos chart |
@@ -688,6 +689,47 @@ or Calico swap (or a Talos build whose bundle ships the companion), plus a
 node-level rule for the hostNetwork agent. This is the documented outcome of the
 enforcement attempt, not a regression — the 10 policies remain deployed and
 correct, and enforce the moment a policy-capable CNI lands.
+
+#### AUDIT-M4 — flannel replaced by Cilium (enforced, verified live)
+
+Following that failed flannel-policy attempt, the CNI was replaced. The Talos
+`KubeFlannelCNIConfig` document was deleted, `forwardKubeDNSToHost` set to
+`false` (the documented Cilium+masquerade CoreDNS issue), and **Cilium v1.20.2**
+embedded as a `KubeInlineManifestConfig` so it is re-applied on every control
+plane boot; kube-proxy was replaced too (`kubeProxyReplacement: true`, after
+kube-proxy looped on stale nftables chains once flannel was removed).
+
+Two things had to be cleaned up that a config-only change does not cover:
+
+- **Stale flannel datapath.** `flannel.1` and `cni0` (`10.244.0.1/24`) survived
+  the CNI switch and shadowed Cilium's `cilium_host` routing. They are in-kernel
+  state, not config, so they were deleted from the host network namespace (via a
+  privileged `hostPID` pod); after that the node had the single correct route
+  `10.244.0.0/24 via cilium_host`.
+- **The policies did not allow the node.** This is the substantive finding.
+  Plain Kubernetes `NetworkPolicy` **cannot** allow pods to reach the node /
+  API server: Cilium classifies that traffic with the reserved `host` identity,
+  which an `ipBlock` does not match, and `toEntities` is not in the upstream API.
+  Turning enforcement on therefore blocked every pod from `https://<node>:6443`
+  — Authelia, Traefik, CoreDNS and the operators all failed, and the cilium
+  monitor showed `Policy denied ... -> 192.168.1.117:6443 tcp SYN` repeatedly.
+  A `CiliumNetworkPolicy` (`naslos-allow-host`: `toEntities: [host,
+  kube-apiserver, remote-node]` plus the CoreDNS entity) fixes it; the upstream
+  egress rule for DNS was also widened from the link-local CIDR to a
+  namespaceSelector on kube-system, because under Direct Routing an `ipBlock`
+  alone does not match CoreDNS.
+
+**Verified live, enforced:** `/` → 302, `/api/users` → 302, `/api/health` → 200;
+the terminal pod is now denied at `:8080`/`:9091`/`:9100` in the cilium monitor
+(previously reachable); all 7 auth + LDAP Playwright specs pass under
+enforcement. `scripts/audit.sh` asserts the `CiliumNetworkPolicy` and its
+`host`/`kube-apiserver` entities so the allow cannot silently disappear.
+
+**Residual (Low):** the agent, samba and nfs are `hostNetwork`, and pod-level
+policy does not apply to host-network pods, so the agent's `:9090` is still
+reachable from other pods (~1.5 ms). Closing that needs Cilium's host firewall
+(`enable-host-firewall=true` + a `CiliumClusterwideNetworkPolicy` with a
+`nodeSelector`) or a Talos host rule.
 
 ### Debian 13 migration complete — all four images live
 

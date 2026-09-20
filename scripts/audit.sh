@@ -102,6 +102,18 @@ for name, d in nps.items():
         for p in r.get("from", []):
             cidr = p.get("ipBlock", {}).get("cidr", "")
             assert cidr != "10.244.0.0/16", f"{name} admits the whole pod CIDR"
+
+# AUDIT-M4 (enforcement): the CiliumNetworkPolicy must exist and allow pods to
+# reach the node/API server, or turning enforcement on blocks every pod from
+# https://<node>:6443 (verified live). Upstream NetworkPolicy cannot express
+# this - Cilium classifies it with the reserved `host` identity.
+cnps = {d["metadata"]["name"]: d for d in docs if d.get("kind") == "CiliumNetworkPolicy"}
+assert "naslos-allow-host" in cnps, "missing CiliumNetworkPolicy naslos-allow-host"
+entities = set()
+for r in cnps["naslos-allow-host"]["spec"].get("egress", []):
+    entities.update(r.get("toEntities", []))
+assert "host" in entities, "allow-host must permit the host entity (API server/kubelet)"
+assert "kube-apiserver" in entities, "allow-host must permit the kube-apiserver entity"
 print("network policy intent ok")
 PY
   rc=$?
