@@ -56,7 +56,7 @@ unmodified Talos installation, administered through a web UI.
 | Constraint | Requirement |
 | --- | --- |
 | OS | Stock Talos Linux with the official `siderolabs/zfs` Image Factory extension |
-| Cluster | Kubernetes ≥ 1.30 in the `naslos` namespace |
+| Cluster | Kubernetes ≥ 1.30 across the `naslos` and `naslos-privileged` namespaces |
 | Architecture | amd64 |
 | Deployment | Helm umbrella chart `charts/naslos` |
 
@@ -72,10 +72,10 @@ unmodified Talos installation, administered through a web UI.
 | `naslos-agent` | privileged DaemonSet (hostNetwork) | Executes `zpool`/`zfs` via `chroot /host`, and is the only writer of the rendered share configuration on the host (`/var/lib/naslos/shares`) |
 | `naslos-ui` | Deployment (nginx, static SvelteKit) | Dashboard, wizards, terminal, admin pages |
 | `naslos-samba` | DaemonSet (hostNetwork) | Serves SMB on the node's :445, reloads on config change, imports the account mirror, advertises via mDNS/WSD |
-| `naslos-openldap` | Deployment | Identity store (users, groups, password hashes) |
-| `naslos-traefik` | DaemonSet | Ingress (IngressRoutes), TLS termination, forwardAuth to Authelia |
-| Authelia | Deployment | Web SSO / 2FA against OpenLDAP |
-| ntfy | Deployment | Push notifications for system events |
+| `naslos-openldap` | StatefulSet | Identity store (users, groups, password hashes) |
+| `naslos-traefik` | Deployment | Ingress (IngressRoutes), TLS termination, forwardAuth to Authelia |
+| Authelia | DaemonSet | Web SSO / 2FA against OpenLDAP |
+| ntfy | (external server, no bundled chart) | Push notifications for system events (`ntfy.sh` or self-hosted) |
 | Prometheus + Alertmanager | Deployments | Long-term metrics and alert routing (Grafana removed 2026-09-19) |
 | `zfs-service` | Talos system service | Auto-imports pools at boot (`zpool import -fal`) |
 
@@ -327,7 +327,7 @@ Requirement IDs are stable: never renumber, only deprecate.
     "zfs":     { "pools": [ { "name": "tank", "size": 0, "alloc": 0, "free": 0,
                               "usagePercent": 0.0, "health": "ONLINE" } ] },
     "system":  { "hostname": "talos-…", "uptime": 18654, "os": "Talos Linux",
-                 "kernel": "6.12.8-talos", "talosVersion": "v1.10.x" },
+                 "kernel": "6.18.51-talos", "talosVersion": "v1.14.1" },
     "updatedAt": "2026-09-12T01:30:00Z"
   }
   ```
@@ -587,7 +587,7 @@ See `docs/buddy-backup.md`.
   (FR-MET-02/08). UI auto-refresh MUST NOT stack requests.
 - **NFR-2 Talos compatibility** — Talos upgrades MUST remain clean; Naslos
   MUST NOT modify the Talos base image.
-- **NFR-3 Security** — see §2.2 (SEC-1…SEC-5).
+- **NFR-3 Security** — see §2.2 (SEC-1…SEC-14).
 - **NFR-4 Resilience** — The API MUST return usable (non-crashing) responses
   when a dependency is down: LDAP failures yield `503` with the underlying
   cause (FR-IDN-11) while non-identity features keep working (FR-IDN-12); the
@@ -637,8 +637,9 @@ are additionally verified against the live VM (not by Playwright):
 | `avahi-browse -rt _smb._tcp` lists the server at the LAN address | FR-SHR-08 |
 | `netbios name` in `smb.conf` equals the advertised discovery name | FR-SHR-10 |
 
-Go tests cover the parts that need no node: `api/internal/shares`
-(`TestComputeNTHashKnownVector` against OpenSSL-computed vectors, smbpasswd and
+Go tests cover the parts that need no node: `api/internal/identity`
+(`TestComputeNTHashKnownVector` against OpenSSL-computed vectors);
+`api/internal/shares` (smbpasswd and
 extrausers rendering, `TestGroupGIDIsStable`, `TestAccessListRendersGroups`,
 `TestNetBIOSNameSanitised`); `api/internal/server` (`TestGroupDelta` for the
 user-edit membership diff, FR-IDN-04; `TestNotificationsNeverReturnTheAuthToken`
@@ -721,8 +722,8 @@ corresponding test in the same PR.
 
 - **VER-1** — The spec version matches the product version in `charts/naslos`
   values (`0.1.0` at time of writing).
-- **VER-2** — Deployed images carry build suffixes (`naslos-api:0.1.0-12`,
-  `naslos-ui:0.1.0-7`) because the registry reuses tags with
+- **VER-2** — Deployed images carry build suffixes (`naslos-api:0.1.0-r10`,
+  `naslos-ui:0.1.0-r11`) because the registry reuses tags with
   `imagePullPolicy: IfNotPresent`; each deploy MUST retag to a fresh suffix
   and `kubectl set image` (container names are `api` and `ui`). Where a digest is
   configured (`<component>.image.digest`, `make image-digests` prints them) the

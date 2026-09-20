@@ -20,7 +20,9 @@ read them in order for the full picture, or jump straight to a topic.
 | [storage-zfs.md](storage-zfs.md) | ZFS pools, datasets, snapshots, topology advisor, Talos gotchas | New |
 | [identity-sso.md](identity-sso.md) | Single sign-on: Authelia, OpenLDAP, Samba hash sync, RBAC groups, 2FA | Rebuilt (replaces `authentication.md`) |
 | [shares.md](shares.md) | SMB / NFS / Time-Machine share model, generated configs | New |
-| [app-catalog.md](app-catalog.md) | App catalog, JSON-Schema-driven forms, Helm lifecycle, start/stop | New |
+| [terminal.md](terminal.md) | Web terminal: exec scoping, RBAC, terminal namespace | New |
+| [buddy-backup.md](buddy-backup.md) | Buddy Backup: owner-to-owner encrypted backup, enrollment, verify/restore | New |
+| [app-catalog.md](app-catalog.md) | App catalog, JSON-Schema-driven forms, Helm lifecycle | New |
 | [monitoring.md](monitoring.md) | Metrics API, Prometheus + Alertmanager (Grafana removed) | New |
 | [notifications.md](notifications.md) | ntfy alerting: topics, severities, defaults | New |
 | [deployment.md](deployment.md) | Prerequisites, Make targets, Helm values walkthrough | New |
@@ -32,7 +34,8 @@ The detailed working documents behind the report — the audit findings
 (`AUDIT-2026-09-19.md`), its fix plan (`AUDIT-2026-09-19-FIXPLAN.md`), the
 code-review list (`CODE-REVIEW.md`) and the superseded 2026-09-14 audit
 (`SECURITY-AUDIT.md`, `SECURITY-FIX-PLAN.md`) — are archived under
-[`archive/`](archive/) and kept for traceability.
+[`archive/`](archive/) and kept for traceability. Historical implementation
+plans live in [`plans/`](plans/).
 
 ## Reading order
 
@@ -48,6 +51,8 @@ code-review list (`CODE-REVIEW.md`) and the superseded 2026-09-14 audit
 - All diagrams are ASCII and render in any Markdown viewer.
 - “Talos” always refers to stock Talos Linux; “Naslos” is the integration layer
   on top (schematic, chart, agents).
-- All components run in the `naslos` Kubernetes namespace unless noted.
+- The authenticated services run in the `naslos` namespace; the
+  hostNetwork/privileged workloads (agent, samba, nfs, terminal) run in
+  `naslos-privileged` (AUDIT-M6). Documents name the namespace where it matters.
 - Command examples assume `kubectl`/`talosctl`/`helm` are available and pointed
   at the right cluster.

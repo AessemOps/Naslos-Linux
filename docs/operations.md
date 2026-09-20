@@ -7,21 +7,24 @@ Day-2 topics: backups, restore, common failures.
 `naslos-openldap-backup` CronJob:
 
 - Runs daily at **03:00 UTC**.
-- Exports config (`slapcat -n 0`) and data (`slapcat -n 1`) to
-  `/var/lib/ldap/backups` (ZFS-backed PVC → snapshots give point-in-time).
+- Exports config (`slapcat -F /etc/ldap/slapd.d -n 0`) and data (`… -n 1`) to
+  `/backups/ldap` on the config PVC (a `local-path` volume — there is no ZFS
+  snapshot layer for it).
 - Retains the last **7** backups.
 
 ### Manual backup
 
 ```bash
-kubectl exec -n naslos deploy/naslos-openldap -- slapcat -n 1 > backup.ldif
+kubectl exec -n naslos statefulset/naslos-openldap -- \
+  slapcat -F /etc/ldap/slapd.d -n 1 > backup.ldif
 ```
 
 ### Restore
 
 ```bash
 # Stop writes, restore, restart
-kubectl exec -n naslos deploy/naslos-openldap -- slapadd -n 1 -l backup.ldif
+kubectl exec -n naslos statefulset/naslos-openldap -- \
+  slapadd -F /etc/ldap/slapd.d -n 1 -l backup.ldif
 ```
 
 (Stop the API or put LDAP in read-only mode first; the API reconnects
@@ -32,8 +35,10 @@ automatically on the next operation.)
 ### Cannot log in via web
 
 1. Check Authelia logs: `kubectl logs -n naslos daemonset/naslos-authelia`.
-2. Verify `LDAP_HOST`, `LDAP_BIND_PASS`, and the Authelia LDAP config map
-   (`LDAP_BIND_DN`/`LDAP_BIND_PASS` under `authentication_backend.ldap`).
+2. Verify `LDAP_HOST` and that the Authelia bind password comes from the
+   `naslos-openldap` Secret key `service-password` via
+   `AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE`; the `authelia-config`
+   ConfigMap no longer holds it.
 3. Test a bind directly:
    ```bash
    ldapwhoami -H ldaps://naslos-openldap:636 \
@@ -44,8 +49,14 @@ automatically on the next operation.)
 
 ### Cannot access SMB shares
 
-1. Check Samba logs (`/var/log/samba/%m.log`).
-2. Verify NT-hash sync: API logs should show "Syncing SMB password for …".
+1. Check the Samba logs
+   (`kubectl -n naslos-privileged logs ds/naslos-samba`; file logs under
+   `/var/log/samba/%m.log`).
+2. Verify the account mirror reached the node: the agent writes
+   `/var/lib/naslos/shares/smbusers` (read it with
+   `talosctl -n <node> read /var/lib/naslos/shares/smbusers`) and the Samba
+   entrypoint logs "resolve through NSS" for each account. `GET
+   /api/shares/status` reports whether the rendered config was applied.
 3. Test: `smbclient //naslos/share -U user`.
 4. Ensure the share path exists under `/var/mnt` and the ZFS dataset is
    mounted (`zpool status`, `zfs list`).
@@ -54,10 +65,14 @@ automatically on the next operation.)
 
 1. Check both stores:
    - LDAP: `ldapsearch … uid=<user> userPassword` (hash changed?)
-   - Samba: `kubectl exec … pdbedit --list` (NT hash changed?)
-2. Confirm the API can reach LDAP and can exec into the Samba container
-   (`kubectl exec` RBAC — the API's service account must have `pods/exec`).
-3. Look for sync errors in API logs.
+   - Samba: the `smbusers` mirror on the node (above), or
+     `kubectl -n naslos-privileged exec ds/naslos-samba -- pdbedit --list`
+     (NT hash changed?)
+2. Confirm the API reached the agent so the mirror was re-rendered: check the
+   API/agent logs and
+   `curl -s https://naslos.local/api/shares/status`; the agent must be
+   reachable at `naslos-agent.naslos-privileged:9090`.
+3. Look for render/apply errors in the API and agent logs.
 
 ### ZFS pool not imported after reboot
 
@@ -97,32 +112,39 @@ transient by design.
 
 ### Agent unreachable
 
-- Agent runs as DaemonSet `hostNetwork`; confirm it's on the same host as the
-  pool: `kubectl get daemonsets -n naslos`.
-- API reaches the agent via the node address (`:9090`); there is **no
-  NetworkPolicy** today (flannel does not enforce them), so the shared bearer
-  token is the only control on that port (AUDIT-M4). The agent's old ClusterRole
-  was removed (AUDIT-M5) — it has no Kubernetes API permissions at all.
+- Agent runs as a DaemonSet in `naslos-privileged`:
+  `kubectl get daemonsets -n naslos-privileged`; confirm it is on the same host
+  as the pool.
+- API reaches the agent through the agent Service in that namespace
+  (`naslos-agent.naslos-privileged.svc.cluster.local:9090`). NetworkPolicy is
+  **enforced** (Cilium, AUDIT-M4), but the agent is `hostNetwork`, so pod-level
+  policy does not cover `:9090` and the shared bearer token remains the control
+  on that port (the open M4 residual). The agent's old ClusterRole was removed
+  (AUDIT-M5) — it has no Kubernetes API permissions at all.
 
 ## Privileged workloads and why (AUDIT-L3)
 
-The namespace enforces PSA `privileged` because the storage and terminal
-workloads genuinely need host access. Each privileged workload, and the reason
-it cannot be less:
+There are two namespaces, separated by AUDIT-M6: the hostNetwork/privileged
+workloads (agent, samba, nfs, terminal) live in **`naslos-privileged`**, while
+`naslos` holds the authenticated services. `naslos` still enforces PSA
+`privileged` **by necessity** because the API mounts hostPath volumes, which
+`baseline` forbids. Each privileged workload, and the reason it cannot be less:
 
 | Workload | Privilege | Why |
 |---|---|---|
-| `naslos-agent` (DaemonSet) | `hostNetwork`, `hostPID`, `privileged`, hostPaths `/`, `/dev`, `/run`, `/var` | runs `zpool`/`zfs` against the node's pools and `chroot /host` for the extrausers/smb.conf mirrors; `/dev` and `/run` carry the ZFS and udev state |
+| `naslos-agent` (DaemonSet) | `hostNetwork`, `privileged`, hostPaths `/`, `/dev`, `/run`, `/var` | runs `zpool`/`zfs` against the node's pools and `chroot /host` for the extrausers/smb.conf mirrors; `/dev` and `/run` carry the ZFS and udev state |
 | `naslos-samba` (DaemonSet) | `hostNetwork`, `CHOWN`/`DAC_OVERRIDE`/`FOWNER`/`FSETID`/`SETGID`/`SETUID`, hostPaths share-config/extrausers/datasets | SMB must bind 445 on the node and chown files it creates inside the datasets it serves |
 | `naslos-nfs` (DaemonSet) | `hostNetwork`, same capability set, hostPaths share-config/datasets | NFS must bind 2049 and hand out the datasets' real UIDs |
 | `naslos-terminal` (Deployment) | `privileged`, hostPaths `/`, `/var/mnt`, `/dev` | the operator's root shell inside `chroot /host`; gated by the API's owner auth (proxy secret + admin) and it never listens on a port itself |
 | `naslos-traefik` | `hostPort` 80/443 | it is the LAN entry point, so it binds the node's ports directly |
 | API `fix-receive-dataset-ownership` init | `runAsUser: 0` | one-shot `chown` of the Buddy receive dataset to the API's uid (65532); the API container itself runs non-root |
 
-Everything else — `naslos-api`, `naslos-ui`, `naslos-authelia`, Prometheus,
-Alertmanager — runs non-root with capabilities dropped and needs no hostPath.
-Any future change that adds a privileged workload should add it to this table in
-the same change.
+Everything else — `naslos-ui`, `naslos-authelia`, Prometheus and Alertmanager —
+runs non-root with capabilities dropped and needs no hostPath. `naslos-api` runs
+non-root too, but mounts hostPath volumes for the shares view and the buddy
+receive dataset, which is why its namespace must stay `privileged`. Any future
+change that adds a privileged workload should add it to this table in the same
+change.
 
 ## Reference
 

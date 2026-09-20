@@ -5,9 +5,11 @@
 > **Superseded.** The mechanism this plan is built around — the `AUTH_DISABLED`
 > development opt-out and the UI NodePort it exists for — was **removed** on
 > 2026-09-19. The API and agent now always require their credential, the only
-> listener is the Authelia-protected proxy, and the remaining work lives in
-> `docs/AUDIT-2026-09-19-FIXPLAN.md`. Everything below is the record of how the
-> NAS-001/002/003 batch was implemented; do not follow the `auth.disabled` steps.
+> listener is the Authelia-protected proxy, and the current record (including
+> the remaining work) is `docs/AUDIT-2026-09-19-REPORT.md`; the 2026-09-19
+> working papers are archived beside this file. Everything below is the record
+> of how the NAS-001/002/003 batch was implemented; do not follow the
+> `auth.disabled` steps.
 
 Tasks 1–9 are implemented; the deviations from this plan and the pieces left open
 are listed here so the next session does not re-derive them.

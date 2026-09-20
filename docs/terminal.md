@@ -9,7 +9,7 @@ inside it.
 
 ```
 browser (xterm.js)
-   │  wss://<host>/api/ws/exec?namespace=naslos&pod=naslos-terminal-…&shell=bash
+   │  wss://<host>/api/ws/exec?namespace=naslos-privileged&pod=naslos-terminal-…&shell=bash
    ▼
 naslos-ui (nginx)          ← WebSocket upgrade headers (location /api/ws/)
    ▼
@@ -23,7 +23,7 @@ Components:
 
 | Piece | Where | Notes |
 | --- | --- | --- |
-| `naslos-terminal` Deployment | `charts/naslos/templates/terminal.yaml` | One idle container (`sleep infinity`); exec sessions attach to it. `terminal.enabled=false` removes it and the API's RBAC together |
+| `naslos-terminal` Deployment | `charts/naslos/templates/terminal.yaml` | Runs in `naslos-privileged`; one idle container (`sleep infinity`); exec sessions attach to it. The UI discovers the namespace rather than assuming one. `terminal.enabled=false` removes it and the API's RBAC together |
 | exec + pickers | `api/internal/server/websocket.go`, `pods.go` | Pod/namespace listing, target validation, SPDY exec, resize queue |
 | terminal page | `ui/src/routes/terminal/+page.svelte` | Namespace/pod/container pickers, shell picker, toasts for errors |
 | shell setup | `terminal/image/naslos-shell.sh` | `zpool`/`zfs`/`wipefs` wrappers that chroot into the host |
@@ -65,9 +65,9 @@ nothing when a client can reach the API directly (for example over the node port
 because anyone can send `Remote-User: admin`. Only the proxy knows the secret, and
 the API never reads the identity header without it.
 
-The API's exec permission is a namespaced `Role` (pods, pods/log, pods/exec) plus
-a `ClusterRole` for namespace listing only, so it cannot exec into anything outside
-Naslos. Shells are limited to `bash`/`sh`/`ash`/`zsh` - the endpoint runs a shell,
+The API's exec permission is a namespaced `Role` (pods, pods/log, pods/exec)
+**in `naslos-privileged`**, where the terminal runs, plus a `ClusterRole` for
+namespace listing only, so it cannot exec into anything outside Naslos. Shells are limited to `bash`/`sh`/`ash`/`zsh` - the endpoint runs a shell,
 never an arbitrary command. Websocket upgrades are accepted only from the same
 host (ports ignored). Sessions are logged with the authenticated user.
 
