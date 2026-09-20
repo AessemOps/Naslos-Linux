@@ -31,7 +31,7 @@ Remediation then closed **all four Highs and every Medium except four**:
 | Medium deferred (with reason) | 4 |
 | Low closed / accepted | 8 + 1 |
 | Low deferred | 0 |
-| Findings not yet run (Batch 6) | image/SBOM scan, SAST breadth, 8 active tests, buddy crypto deep-dive, `.118` |
+| Findings not yet run (Batch 6) | image/SBOM scan (`trivy`), `semgrep`, 8 active tests, buddy crypto deep-dive |
 
 The instance now has a single authenticated entry point, no default or committed
 credentials, verified LDAP TLS, backups on their own dataset, a persisted session
@@ -248,21 +248,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
 | ~~AUDIT-L5/L6~~ — **fixed at revision 27**: `logsafe.Field` sanitises log arguments and the conversions are bounded/clamped | Low | — | — |
 | ~~AUDIT-L8 / CR-06~~ — **fixed at revision 27**: the scheduler race is gone and the sweep runs `go test -race` | Low | — | — |
-| Batch 6 — **staticcheck and `.118` done**; the rest open | Coverage | Time-boxed session | See the staticcheck and `.118` results below; still to run: `trivy` image/SBOM scan, `semgrep`, AV-5…AV-12, buddy crypto deep-dive |
-
-#### Batch 6 — work server `.118` (read-only)
-
-Two findings, both handled:
-
-- **`bootstrap/vm/controlplane.yaml` was mode `0644`** (world-readable) on
-  `/srv/work/Naslos-Linux` — the transferred copy predates the local AUDIT-M2
-  `chmod`. Fixed in place: it is now `0600`, matching `talosconfig` and
-  `talosconfig-pod`, which the transfer already carried as `0600`.
-- **The `.118` copy is stale**: it sits at `3821204`, i.e. before PRs #21–#23 and
-  the whole audit branch (traefik/authelia upgrades, the credential rotations,
-  the UI/Svelte work). Re-syncing it is a deliberate follow-up, not part of the
-  audit: the local working tree is what the fixes live in, and the transfer would
-  need the same exclusion list plus the current `.env`/secret hygiene.
+| Batch 6 — **staticcheck done (API)**; the rest open | Coverage | Time-boxed session | See the staticcheck results below; still to run: `trivy` image/SBOM scan, `semgrep`, AV-5…AV-12, buddy crypto deep-dive |
 
 ### Batch 6 — staticcheck (API), results
 
