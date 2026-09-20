@@ -290,10 +290,11 @@ now resolved and the scan is clean:**
   expat/libpng/libxml2 are not on its request path (it neither decodes images
   nor parses XML). The CRITICAL OpenSSL issue is a 32-bit-only heap overflow and
   we run x86_64.
-- **Fix (pending):** move the base to a current
-  `nginxinc/nginx-unprivileged` tag (newer Alpine) and re-scan; that carries the
-  patched openssl/expat/png/xml2/musl/nghttp2/zlib in one step. Tracked here
-  rather than done in this pass because it needs a rebuild plus the UI smoke run.
+- **Fixed and re-scanned (rev 32, ui `0.1.0-r10`):** the base moves from
+  `nginx-unprivileged:1.27-alpine` (alpine 3.21.3) to **`1.30.5-alpine` (alpine
+  3.24.1)**, which carries the patched openssl/libcrypto3, libexpat, libpng,
+  libxml2, musl, nghttp2 and zlib in one step. `trivy` on the rebuilt image:
+  **0 HIGH/CRITICAL**.
 
 **Remaining image scans:** `naslos-agent`, `naslos-terminal`, `naslos-samba`,
 `naslos-nfs`, `naslos-openldap` still to scan (the API image is clean apart from
