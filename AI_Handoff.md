@@ -40,8 +40,9 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
   work is closed, *including* the live LDAP admin rotation. The remaining work is
   §8 of the report: NetworkPolicy/a policy CNI (**M4**, the highest residual — the
   privileged hostNetwork agent `:9090` still answers every pod, because the
-  `NetworkPolicy` set the chart now renders is **inert under flannel**; only the
-  CNI swap or a Talos host rule closes it), PSA scoping (**M6**,
+  `NetworkPolicy` set the chart now renders is **inert under flannel**, and
+  hostNetwork pods (agent/samba/nfs) are not covered by pod-level policy at all;
+  closing it needs the CNI swap plus a node-level rule), PSA scoping (**M6**,
   needs the privileged workloads split into their own namespace), Authelia's
   `jwt_secret` off the ConfigMap (**M3 residual** — the LDAP bind password was
   moved to a Secret mount at revision 41), and the rest of Batch 6 (the

@@ -99,6 +99,16 @@ traefik:
 ingress:
   enabled: true
 
+# NetworkPolicy CIDRs for this node (AUDIT-M4). These are inert under flannel but
+# must be right before a policy CNI is installed: the agent, samba, nfs and the
+# Talos API are hostNetwork at the node IP 192.168.1.117, and Traefik's hostPort
+# entry traffic also arrives from the node address. `nodeCIDR` is what lets the
+# API reach the agent (:9090) and the Talos API (:50000) once enforced.
+networkPolicy:
+  nodeCIDR: 192.168.1.0/24
+  ingressPluginsCIDR: 192.168.1.0/24
+  nfsClientCIDR: 192.168.1.0/24
+
 # Buddy Backup receive side (AUDIT-H2). The dataset exists on the node; before
 # this was set the release ran buddy.enabled=false while the peer API was live,
 # so BUDDY_RECEIVE_PATH was unset and received chunks landed on the 64 MiB
