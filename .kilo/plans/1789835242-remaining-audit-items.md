@@ -116,25 +116,20 @@ API, UI, Authelia, OpenLDAP `636`, Samba, NFS) and a namespace egress policy
 `networkPolicy.enabled`; CIDRs in `networkPolicy.*`. `scripts/audit.sh` asserts
 the key policies and the agent's API-only selector.
 
-**Enforcement still open — this is what closes M4.** The policies are inert under
-flannel (no policy controller), so the privileged hostNetwork agent `:9090` still
-answers every pod. Flannel's own `kubeNetworkPoliciesEnabled` was **tried and
-does not work on Talos v1.14.1**: the config is accepted, but Talos renders
-`05-flannel` without the `kube-network-policies` companion and the node's image
-bundle has no such image (`talosctl image list`: flannel only). The setting was
-removed from `bootstrap/vm/controlplane.yaml` (reason in a comment). Note the
-agent/samba/nfs are **hostNetwork**, and policy CNIs do not apply pod-level
-NetworkPolicy to host-network pods, so `naslos-agent-ingress` cannot restrict
-`:9090` by itself. Options, both a window:
+**DONE — flannel replaced by Cilium v1.20.2; NetworkPolicy enforced live.**
+`KubeFlannelCNIConfig` deleted, Cilium embedded as a `KubeInlineManifestConfig`,
+kube-proxy replaced (`kubeProxyReplacement: true`), `forwardKubeDNSToHost: false`.
+Two cleanups were required that config alone did not cover: the stale
+`flannel.1`/`cni0` interfaces (deleted from the host netns) and a missing
+allow-rule for the node/API server (plain NetworkPolicy can't express Cilium's
+reserved `host` identity — added `naslos-allow-host` CiliumNetworkPolicy).
+Enforcement proven: terminal denied at `:8080`/`:9091`/`:9100`, ingress 302/200,
+all 7 auth+LDAP specs pass. `scripts/audit.sh` guards the new policy.
 
-- **Enforcement:** replace the CNI with Cilium or Calico (Talos: `$patch: delete`
-  the `KubeFlannelCNIConfig` document + reboot) **and** add a node-level rule
-  (Cilium host firewall, or Talos/nftables) allowing only the API pod's IP to
-  `:9090`.
-- Set `networkPolicy.nodeCIDR`/`ingressPluginsCIDR`/`probeCIDR` (values-vm.yaml
-  already sets `192.168.1.0/24`) before enforcing.
-- Verification once enforced: from the terminal pod `curl naslos-agent:9090` times
-  out; from the API pod it still 401s/works; ingress and DNS unaffected.
+**Residual (Low):** the agent/samba/nfs are `hostNetwork`, which pod-level policy
+does not cover, so the agent `:9090` is still reachable from other pods. Close it
+with Cilium's host firewall (`enable-host-firewall=true` +
+`CiliumClusterwideNetworkPolicy` with a `nodeSelector`) or a Talos host rule.
 
 ## 8. AUDIT-L8 / CR-06 — `go test -race`
 
