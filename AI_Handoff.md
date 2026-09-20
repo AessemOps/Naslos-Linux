@@ -38,11 +38,14 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
   chunks on their own dataset, Go vulnerabilities 18 → 4 with no fix available
   for the rest, Grafana removed) and most Mediums; the NAS-010 default-credential
   work is closed, *including* the live LDAP admin rotation. The remaining work is
-  §8 of the report: NetworkPolicy/a policy CNI, PSA scoping, Svelte/Vite bumps,
-  Authelia's config off the ConfigMap, nginx non-root, `values.schema.json` +
-  `.Release.Namespace`, `go test -race`, and the not-yet-run Batch 6 (image/SBOM
-  scan, semgrep/staticcheck, the bounded active tests, buddy crypto deep-dive,
-  `.118`).
+  §8 of the report: NetworkPolicy/a policy CNI (**M4**, the highest residual — the
+  privileged hostNetwork agent `:9090` answers every pod), PSA scoping (**M6**,
+  needs the privileged workloads split into their own namespace), Authelia's
+  config off the ConfigMap (**M3 residual**), and the rest of Batch 6 (the
+  `trivy` image/SBOM scan, `semgrep`, the bounded active tests, the buddy crypto
+  deep-dive). Everything else — the dependency bumps, nginx non-root,
+  `values.schema.json`/`.Release.Namespace`, `go test -race`, the log/conversion
+  hardening and the dead-code cleanup — is done and deployed.
 - **The detailed audit, fix plan and code-review list are archived** in
   `docs/archive/`; the report supersedes them.
 
@@ -240,21 +243,23 @@ admin rotations. The auth model verifies sound (anonymous 302, pod without the
 secret 401, agent without the token 401, no NodePort, no bypass). The report's §8
 lists what remains: NetworkPolicy/a policy CNI (the privileged hostNetwork agent
 `:9090` is still reachable from every pod — the highest residual), PSA scoping,
-Svelte/Vite bumps, Authelia's config off the ConfigMap, nginx non-root, the
-schema/`.Release.Namespace` pair, `go test -race`, and the not-yet-run Batch 6
-(image/SBOM scan, semgrep/staticcheck, the bounded active tests, buddy crypto
-deep-dive, `.118`). No secret values are in the report; the repository is private
+Authelia's config off the ConfigMap, and the rest of Batch 6 (the `trivy`
+image/SBOM scan, `semgrep`, the bounded active tests, the buddy crypto
+deep-dive). No secret values are in the report; the repository is private
 (unauthenticated GitHub API returns 404), so the committed credentials that were
 found were insider-exposure, not internet-exposure.
 
 ## Deployed right now (2026-09-19)
 
-On `192.168.1.117`: `naslos-api` **`0.1.0-r4`**, `naslos-ui` **`0.1.0-r5`**,
-`naslos-agent` **`0.1.0-r3`** (the authenticated-only change); `naslos-samba`,
-`naslos-nfs`, `naslos-terminal` and the OpenLDAP manifests stay at
-**`0.1.0-r1`**; chart `naslos-0.1.0`, helm revision **16**, Talos **v1.14.1**
-(kernel 6.18.51-talos), ZFS pool `test` (stripe, 79 G) + dataset `test/drill`.
-The posture is the **only one**: Traefik hostPort 80/443, Authelia at
-`https://naslos.local/authelia`, no NodePort and no auth bypass, with `admin` in
-`naslos_admins` (TOTP/WebAuthn enrolled). The old VM's tags (`api 0.1.0-b21`,
-`agent 0.1.0-b6`, `ui 0.1.0-b9`, revision 82) are retired with it.
+On `192.168.1.117`: `naslos-api` **`0.1.0-r8`**, `naslos-ui` **`0.1.0-r9`**
+(Svelte 5 + `@xterm`, unprivileged nginx), `naslos-agent` **`0.1.0-r3`**;
+`naslos-samba`, `naslos-nfs`, `naslos-terminal` and the OpenLDAP manifests stay
+at **`0.1.0-r1`**; chart `naslos-0.1.0`, helm revision **31**, Talos
+**v1.14.1** (kernel 6.18.51-talos), ZFS pool `test` (stripe, 79 G) + dataset
+`test/drill` (plus `test/naslos-buddy` as the Buddy receive dataset). The posture
+is the **only one**: Traefik **v3.7.13** (chart 41.6.0) on hostPort 80/443,
+Authelia **4.39.24** (chart 0.11.22) at `https://naslos.local/authelia`, no
+NodePort and no auth bypass, with `admin` in `naslos_admins` (TOTP/WebAuthn
+enrolled). The old VM's tags (`api 0.1.0-b21`, `agent 0.1.0-b6`, `ui 0.1.0-b9`,
+revision 82) are retired with it, and the `.118` work server has been deleted, so
+only this instance exists.
