@@ -101,7 +101,7 @@ have caught both bugs above. Live at revision 41: Authelia rolled out Ready with
 the env var and mount, the ConfigMap no longer contains the bind password,
 anonymous requests still 302 to the portal (`/api/health` 200), and
 `auth.setup` plus the LDAP-backed users/groups specs pass (8 passed).
-| M4 | No NetworkPolicy; flannel does not enforce one; privileged hostNetwork agent `:9090` open to every pod | **Open** | Needs a policy CNI or host firewall — its own window |
+| M4 | No NetworkPolicy; flannel does not enforce one; privileged hostNetwork agent `:9090` open to every pod | **Partial** — `charts/naslos/templates/networkpolicy.yaml` records the intent (default-deny + per-workload allow policies, agent `:9090` API-only); **unenforced until a policy CNI is installed** | Enforcement (Cilium/Calico swap or a Talos host rule on `:9090`) still needs its own window |
 | M5 | Unused agent ClusterRole (nodes/pods/pods-log cluster-wide) | **Fixed** — `8555925` | ClusterRole + binding removed; the agent has no client-go |
 | M6 | Namespace PSA `enforce: privileged` cluster-wide | **Open** | Scope per-workload or split namespaces |
 | M7 | API server had no `ReadHeaderTimeout` (Slowloris) | **Fixed** — `3b2a65b` | ReadHeaderTimeout 10 s, ReadTimeout 30 s, IdleTimeout 120 s; `WriteTimeout` 0 for WS |
@@ -182,6 +182,27 @@ revision 41 (see the follow-up above); only `jwt_secret` remains there.
 **M5/M7/M8/M9/M13 — chart and API hardening.** Unused agent RBAC dropped; API
 read timeouts added; secret-bearing files 0600; chain ids validated with a single
 allowlist; dead ZFS LocalPV config removed.
+
+**M4 — NetworkPolicy intent recorded (enforcement still open).** The chart now
+renders nine `NetworkPolicy` objects in `charts/naslos/templates/networkpolicy.yaml`:
+a namespace default-deny (ingress + egress) plus per-workload ingress allows for
+the agent (TCP 9090, **API pod only** — the finding), API, UI, Authelia, OpenLDAP
+(636, API/Authelia/Samba), Samba and NFS, and one namespace-wide egress policy
+(cluster DNS and the cluster/service CIDR only; no blanket `0.0.0.0/0`, since no
+workload here has a documented outbound-Internet need). Enabled by default, gated
+on `networkPolicy.enabled`, with the non-pod source CIDRs
+(`clusterCIDR`/`ingressPluginsCIDR`/`probeCIDR`/`dnsCIDR`) and an optional
+`nfsClientCIDR` in values.
+
+**These are inert on the current flannel install** — flannel ships no policy
+controller, so the API server accepts the objects and nothing is enforced. They
+were verified to render as valid YAML with the selectors matching the live pod
+labels (a `-n other` render keeps every policy in the release namespace), and
+`scripts/audit.sh` now asserts the default-deny, the agent policy and its
+API-only selector so the intent cannot silently regress before the CNI changes.
+Closing M4 needs the enforcement layer — a Cilium/Calico swap (its own window and
+node reboot) or a Talos host firewall rule allowing only the API pod's IP to
+`:9090` — not more YAML.
 
 **L9 — LDAP TLS and chart portability.** The API `wait-for-ldap` init and both
 bootstrap containers now mount the `naslos-openldap-tls` CA and set
@@ -264,6 +285,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | `svelte-check` | 0 errors, 0 warnings |
 | `helm lint` (+ `helm template`) | clean (rendering needs `--set openldap.bindPassword=…` only because the chart now fails closed without the Secret) |
 | Authelia LDAP password is a Secret mount (M3 follow-up) | `scripts/audit.sh` renders the chart and asserts the `AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE` env var, its `/secrets/naslos-openldap/service-password` value, the matching mount, and no inline `password:` in `authelia-config`; live at revision 41 |
+| NetworkPolicy intent (M4) | `scripts/audit.sh` asserts the default-deny, the agent policy and its API-only selector; 9 policies render as valid YAML with selectors matching the live pod labels; **not enforced under flannel** |
 | Playwright vs `https://naslos.local` | **35 passed** (repeatedly; Authelia login + 2FA, terminal interactive, backups self-send, users/groups/shares/pools) |
 | Live unauthenticated | `/api/*` → 302 to the portal; `/api/health` 200; `:30080` refuses; pod without the proxy secret 401; agent without the token 401 |
 | Credentials | new LDAP service and admin bind; old service value and `naslos-admin` rejected |
@@ -273,7 +295,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 
 | Item | Severity | Why deferred | Next step |
 |---|---|---|---|
-| AUDIT-M4 — no NetworkPolicy / unenforced CNI | Medium | Replacing the CNI or adding host firewall rules on a single-node appliance needs a window | Install Cilium/Calico or a host rule limiting API→agent `:9090`; then NetworkPolicies |
+| AUDIT-M4 — unenforced CNI; agent `:9090` open to every pod | Medium | Policy manifests now render, but flannel has no policy controller, so they are inert; replacing the CNI or adding host firewall rules on a single-node appliance needs a window | Install Cilium/Calico (or a Talos host rule) limiting API→agent `:9090`; the `networkPolicy.*` values already encode the target call graph |
 | AUDIT-M6 — PSA `privileged` namespace | Medium | Changes scheduling/security context of live workloads | Split namespaces or label only agent/terminal privileged |
 | ~~AUDIT-M11~~ — **fixed at revision 30**: Svelte 5 + svelte-check 4 + vite-plugin-svelte 4 (`npm audit` 11 → 4, the rest dev-server only); xterm → `@xterm` (CR-31) still open | Medium | — | — |
 | AUDIT-M3 residual — `jwt_secret` still in the `authelia-config` ConfigMap | Low | The Authelia subchart only mounts a ConfigMap for `configuration.yml` (no Secret equivalent); the LDAP bind password was moved to a Secret at revision 41 | If the chart gains a Secret-backed config mount, move the whole file; otherwise template the pod from the naslos chart |
