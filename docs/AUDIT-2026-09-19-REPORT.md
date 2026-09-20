@@ -301,6 +301,28 @@ now resolved and the scan is clean:**
 `trivy` on the rebuilt image reports **0 HIGH/CRITICAL** on both the base and the
 Go binary. The DaemonSet rolled out cleanly on the privileged hostNetwork agent.
 
+**`naslos-samba` (`0.1.0-r1`): 146 findings (137 HIGH, 9 CRITICAL)** — all in
+Debian bookworm packages (samba 4.17.12, python3.11, util-linux, perl, pcre2,
+zlib), none in our own content. Two things matter here:
+
+1. **The image is stale, and the cheap fix is a rebuild.** Most findings are
+   marked `fixed` in a newer bookworm point release (`deb12u5+`), which the
+   current `debian:bookworm-slim` carries — so rebuilding the four Debian images
+   from the current base should clear the bulk of them without a Dockerfile
+   change. That rebuild is the recommended next action.
+2. **Several look scarier than they are here**, and the triage matters before
+   acting:
+   - `CVE-2026-58221` (LDB special DNs → domain takeover), `CVE-2026-58222`
+     (AD LDAP Compare filter injection) and `CVE-2026-6949` (TSIG DNS crash) are
+     **AD-DC** issues. This Samba is a standalone file server (workgroup
+     `NASLOS`): no AD DC role, no internal DNS/TSIG, and LDAP is the API/Authelia
+     identity backend, not a Samba backend.
+   - The CRITICAL `zlib` `CVE-2023-45853` is `will_not_fix` in Debian and affects
+     `zipOpenNewFileInZip4_6`, i.e. the `zip` utility path, not the zlib
+     decompression Samba uses.
+   - The `util-linux` HIGHs (`mount` TOCTOU, `nsenter`, `X-mount.*`) need
+     privileged mount operations, which this container does not perform.
+
 **Remaining image scans:** `naslos-terminal`
 (`0.1.0-r1`), `naslos-samba` (`0.1.0-r1`), `naslos-nfs` (`0.1.0-r1`) and
 `naslos-openldap` (`0.1.0-r1`). `trivy image` accepts one target per run, so run
