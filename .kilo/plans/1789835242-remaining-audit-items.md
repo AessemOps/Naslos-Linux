@@ -150,9 +150,11 @@ re-added later, in the workflow.
   report's Batch 6 active-tests section. Still to run: **AV-8** end-to-end buddy
   drill on an `audit-` dataset (unit-level replay/nonce/quota coverage already
   exists), **AV-11** TLS/session detail and **AV-12** rolling restart, both live
-  drils for a window.
-- **Buddy crypto deep-dive:** `envelope.go`, `keys.go`, `quota`, `store` against
-  the security-review guide.
+  drills for a window.
+- **Buddy crypto deep-dive: done — no findings.** `envelope.go`, `keys.go`,
+  `auth.go` and `store.go` reviewed against the guide; see the report's deep-dive
+  section. The asymmetric split, AEAD+AAD binding, DEK wrap, manifest signature,
+  replay defence and store path safety are all sound.
 - Update the report with a coverage section and fold any new findings in.
 
 ## Definition of done
