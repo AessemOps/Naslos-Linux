@@ -22,7 +22,7 @@ RUN npm run build
 # nginxinc/nginx-unprivileged runs as uid 101, listens on 8080 and keeps its
 # pid/temp files under /tmp, so the container needs no root and no writable
 # rootfs. The Service maps its port 80 to this 8080.
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+FROM nginxinc/nginx-unprivileged:1.30.5-alpine
 
 # Copy the built static assets to nginx's document root
 COPY --from=builder /build/dist /usr/share/nginx/html
