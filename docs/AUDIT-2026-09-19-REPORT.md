@@ -353,6 +353,23 @@ triage above still applies to most of those. The same migration is now a known
 recipe (base + any removed package + a flag review) for `terminal`, `nfs` and
 `openldap`.
 
+**The other three Debian images: built and pushed, deliberately not rolled yet.**
+`terminal`, `nfs` and `openldap` now have `debian:trixie-slim` Dockerfiles and
+`0.1.0-r3` images in the registry (terminal 1.47 e2fsprogs + curl 8.14; **nfs**
+moves to **nfs-ganesha 6.5** from 4.x; **openldap** to **slapd 2.6.10**). Nothing
+is deployed: `values-vm.yaml` still points at `r1` for all three, so production
+keeps running bookworm. Each needs its own verification before the tags move:
+
+- `openldap` is the riskiest — slapd 2.6.10 backs the entire identity stack
+  (API + Authelia bind, user/group edits, the bootstrap job), so it wants a
+  window with the `ldapwhoami` and portal-login checks.
+- `nfs` jumps a Ganesha major version (4.x → 6.5); the rendered `ganesha.conf`
+  and export loading need the share/mount smoke test.
+- `terminal` is the benign one (a shell image) and can roll with the others.
+
+Deploying all three at once with the tags bumped is the next step when there is
+room to verify, exactly as samba was done.
+
 **Remaining image scans:** `naslos-terminal`
 (`0.1.0-r1`), `naslos-samba` (`0.1.0-r1`), `naslos-nfs` (`0.1.0-r1`) and
 `naslos-openldap` (`0.1.0-r1`). `trivy image` accepts one target per run, so run
