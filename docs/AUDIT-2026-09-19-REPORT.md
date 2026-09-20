@@ -309,6 +309,8 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | AUDIT-M6 — PSA `privileged` namespace | Medium | Changes scheduling/security context of live workloads | Split namespaces or label only agent/terminal privileged |
 | ~~AUDIT-M11~~ — **fixed at revision 30**: Svelte 5 + svelte-check 4 + vite-plugin-svelte 4 (`npm audit` 11 → 4, the rest dev-server only); xterm → `@xterm` (CR-31) still open | Medium | — | — |
 | AUDIT-M3 residual — `jwt_secret` still in the `authelia-config` ConfigMap | Low | The Authelia subchart only mounts a ConfigMap for `configuration.yml` (no Secret equivalent); the LDAP bind password was moved to a Secret at revision 41 | If the chart gains a Secret-backed config mount, move the whole file; otherwise template the pod from the naslos chart |
+| AV-8 finding — `zfs send` captures only the agent's mount namespace | Low | Data written from a terminal-pod namespace is invisible to the agent's `zfs snapshot`, so a "successful" backup can be metadata-only; the send/verify path reports success regardless | Document, or add a content/byte sanity check against the holding dataset; the supported flow (writes through the agent/Samba path) is unaffected |
+| AV-8 finding — a dataset once mounted in a pod namespace can become undestroyable | Low | `zfs destroy` reports `dataset is busy` with `mounted=false`, no snapshots, no children and no share, and it survives a node reboot; the API/agent expose no `zfs unmount`/`-f` path, so it cannot be cleared through the product | Add a force/`-f` destroy (or an unmount endpoint) to the agent; a stray stub dataset is the only impact |
 | ~~AUDIT-L2~~ — **fixed at revision 29**: unprivileged nginx (uid 101, port 8080), all capabilities dropped, `runAsNonRoot` | Low | — | — |
 | ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
 | ~~AUDIT-L5/L6~~ — **fixed at revision 27**: `logsafe.Field` sanitises log arguments and the conversions are bounded/clamped | Low | — | — |
@@ -487,28 +489,51 @@ VM. All pass, and each guard was mutation-tested to confirm it is not vacuous.
 | AV-9 — terminal scoping | `/api/ws/exec` with no namespace uses the API's own namespace and refuses a missing pod; a different namespace never resolves to 200 | pass |
 | AV-10 — secret leakage | The proxy secret, agent token and LDAP password never appear in the reachable bodies (`/api/buddy/status`, `/api/notifications`, `/api/shares/config/samba`, `/api/health`); live anonymous probes of `/api/health`, `/api/ready`, `/api/buddy/v1/status` and the 302 error bodies are clean | pass |
 
-**AV-8 (buddy) — live drill.** Driven against the running VM through the API
-(terminal pod → API with the proxy secret, the same stack a page send uses):
+**AV-8 (buddy) — live drill, pass, with two platform findings.** Driven against
+the running VM through the API (terminal pod → API with the proxy secret, the
+same stack a page send uses):
 
-- The **send → verify → read-back** path passes live: all 7 of
-  `ui/tests/backups.spec.ts` pass with `NASLOS_RECEIVER_URL=http://naslos-api:8080`
-  — a manual send reaches `succeeded` with stored chunks, and "Back up now"
-  drives a job the Verify step reads back. (Without that env var the two
-  self-send specs fail on `lookup naslos.local on 10.96.0.10:53: no such host`,
-  the documented mDNS limitation — the API pod cannot resolve the mDNS name, not
-  a code fault.)
+- The **full send → verify → restore → read-back** round-trip passes live. On a
+  dataset whose content is written in the **agent's** mount namespace
+  (`test/audit-av8b` with `probe-dir` created through the agent's shares API),
+  the send succeeded, the verify reported both chains with their SHA-256 digests
+  (`d7f6e516a9bc54af` / `c28056acd496f098`), the restore reported `restored`, and
+  the restored dataset (`test/audit-av8b-restore`) **contains `probe-dir`** —
+  confirmed through the agent's own namespace. All 7 of `ui/tests/backups.spec.ts`
+  also pass with `NASLOS_RECEIVER_URL=http://naslos-api:8080` (without it, the two
+  self-send specs fail on `lookup naslos.local on 10.96.0.10:53: no such host` —
+  the documented mDNS limitation, not a code fault).
 - The **replay / tamper / oversize / nonce / quota** protections are unit-covered
   in `internal/buddy` and were reviewed in the deep-dive below
   (`TestEnvelopeRejectsTampering`, `TestReceiverRefusesTamperedChunk`,
   `TestReceiverRefusesChainRollback`, `TestNoncesSurviveARestart`,
   `TestQuotaIsAtomicUnderConcurrentWrites`).
-- The drill also **proved the mount-propagation guard fires correctly**: a
-  dataset created from inside a pod (`test/audit-av8`) is offered by the agent as
-  `mounted=false`, and `requireMountedDataset` refused the send with the
-  documented message rather than capturing an empty filesystem. The dataset was
-  destroyed afterwards and no orphan chain was stored. A send cannot be run on
-  such a dataset without a node reboot (the documented remedy), which was not
-  worth a disruptive step for a test-only dataset.
+- **The drill proved the mount-propagation guard fires correctly.** A dataset
+  created from inside a pod is offered by the agent as `mounted=false`, and
+  `requireMountedDataset` refused the send with the documented message rather than
+  capturing an empty filesystem. After a node reboot the same dataset reports
+  `mounted=true` and the send proceeds — the documented remedy, verified.
+
+Two findings the drill surfaced (both operational, neither a crypto issue):
+
+1. **`zfs send` snapshots only what the *agent* namespace sees.** Seeding a
+   dataset's content from the terminal pod writes to the terminal's mount
+   namespace; the agent's `zfs snapshot` then captures an empty filesystem and the
+   "backup" is metadata only (44 KB) — while every API call reports success. This
+   is the same trap `requireMountedDataset` guards for the *dataset* but not for
+   the *content*: the guard checks `mounted`, and the dataset can be `mounted` in
+   the agent's view yet still hold files written where the agent cannot see them.
+   Worth a doc note (and, arguably, a content check); recorded here rather than
+   fixed, since writing share data through the agent/Samba path is the supported
+   flow.
+2. **A dataset once mounted inside a pod namespace can become undestroyable.**
+   `test/audit-av8` now reports `mounted=false` with no snapshots, no children and
+   no share referencing it, but `zfs destroy` fails with `dataset is busy` — and
+   it **survives a node reboot** (ZFS replays the stale mount record). The API and
+   agent expose no `zfs unmount`/`-f` path, so it cannot be cleared through the
+   product. Low severity (it leaks a stub dataset, no data, no exposure), but a
+   real gap: there is no supported way to force-destroy a dataset whose mount
+   record outlives its namespace. Candidate residual for a follow-up window.
 
 **AV-11 (TLS/session) — live, pass.** TLS 1.3 is the only protocol offered
 (`-tls1`/`-tls1_1` are refused); the cert is the `naslos-local-ca`-issued

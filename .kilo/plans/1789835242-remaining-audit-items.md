@@ -154,13 +154,18 @@ re-added later, in the workflow.
   both, failing only on a *new* advisory/rule.
 - **Active tests: AV-5…AV-12 all done.** AV-5/AV-6/AV-7/AV-9/AV-10 are Go tests
   in `api/internal/server/active_tests_test.go` (+ live read-only probes).
-  **AV-8** ran live: the send/verify/read-back path passes (all 7
-  `ui/tests/backups.spec.ts` with `NASLOS_RECEIVER_URL=http://naslos-api:8080`),
-  the crypto protections are unit-covered, and the drill proved the
-  mount-propagation guard correctly refuses an unmounted dataset. **AV-11**
-  (TLS 1.3 only, HSTS, header middleware, forged-header 302) and **AV-12**
-  (API rolling restart: one ~1s gap, LDAP login still works) both pass live. See
-  the report's Batch 6 active-tests section.
+  **AV-8** ran live (with an acceptable node reboot): the full
+  send/verify/restore/read-back round-trip passes on a dataset written in the
+  agent's namespace (verify reports both chain digests; the restored dataset
+  contains the same folder), all 7 `ui/tests/backups.spec.ts` pass with
+  `NASLOS_RECEIVER_URL=http://naslos-api:8080`, and the mount-propagation guard
+  correctly refuses an unmounted dataset. Two operational findings surfaced and
+  are recorded in the report (`zfs send` sees only the agent namespace; a dataset
+  once mounted in a pod namespace can become undestroyable, surviving a reboot —
+  `test/audit-av8` is a stray stub). **AV-11** (TLS 1.3 only, HSTS, header
+  middleware, forged-header 302) and **AV-12** (API rolling restart: one ~1s gap,
+  LDAP login still works) both pass live. See the report's Batch 6 active-tests
+  section.
 - **Buddy crypto deep-dive: done — no findings.** `envelope.go`, `keys.go`,
   `auth.go` and `store.go` reviewed against the guide; see the report's deep-dive
   section. The asymmetric split, AEAD+AAD binding, DEK wrap, manifest signature,
