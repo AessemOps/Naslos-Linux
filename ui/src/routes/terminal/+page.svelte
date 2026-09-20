@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { Terminal } from 'xterm';
-  import { FitAddon } from 'xterm-addon-fit';
-  import 'xterm/css/xterm.css';
+  // The xterm packages were deprecated and renamed to the @xterm scope (CR-31).
+  import { Terminal } from '@xterm/xterm';
+  import { FitAddon } from '@xterm/addon-fit';
+  import '@xterm/xterm/css/xterm.css';
 
   // Shell names mirror the API's allowlist (api/internal/server/websocket.go):
   // the terminal cannot run an arbitrary command, only a shell.
