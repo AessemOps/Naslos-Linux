@@ -152,12 +152,15 @@ re-added later, in the workflow.
   false positives. `govulncheck` → the 4 accepted AUDIT-H3 advisories; `gosec`
   excludes the two reviewed false-positive rules. `scripts/audit.sh` gates on
   both, failing only on a *new* advisory/rule.
-- **Active tests: AV-5/AV-6/AV-7/AV-9/AV-10 done** as Go tests in
-  `api/internal/server/active_tests_test.go` (+ live read-only probes); see the
-  report's Batch 6 active-tests section. Still to run: **AV-8** end-to-end buddy
-  drill on an `audit-` dataset (unit-level replay/nonce/quota coverage already
-  exists), **AV-11** TLS/session detail and **AV-12** rolling restart, both live
-  drills for a window.
+- **Active tests: AV-5…AV-12 all done.** AV-5/AV-6/AV-7/AV-9/AV-10 are Go tests
+  in `api/internal/server/active_tests_test.go` (+ live read-only probes).
+  **AV-8** ran live: the send/verify/read-back path passes (all 7
+  `ui/tests/backups.spec.ts` with `NASLOS_RECEIVER_URL=http://naslos-api:8080`),
+  the crypto protections are unit-covered, and the drill proved the
+  mount-propagation guard correctly refuses an unmounted dataset. **AV-11**
+  (TLS 1.3 only, HSTS, header middleware, forged-header 302) and **AV-12**
+  (API rolling restart: one ~1s gap, LDAP login still works) both pass live. See
+  the report's Batch 6 active-tests section.
 - **Buddy crypto deep-dive: done — no findings.** `envelope.go`, `keys.go`,
   `auth.go` and `store.go` reviewed against the guide; see the report's deep-dive
   section. The asymmetric split, AEAD+AAD binding, DEK wrap, manifest signature,
