@@ -5,9 +5,13 @@ FROM node:20-alpine AS builder
 
 WORKDIR /build
 
-# Install dependencies
+# Install dependencies. `npm install` rather than `npm ci`: package-lock.json is
+# generated on the glibc host, and the npm optional-dependency bug
+# (npm/cli#4828) means `npm ci` then misses the musl-only binaries this alpine
+# builder needs (rollup's @rollup/rollup-linux-x64-musl). Resolving in-image is
+# the workaround the error itself recommends; the lock still pins the versions.
 COPY ui/package*.json ./
-RUN npm ci
+RUN rm -f package-lock.json && npm install --no-audit --no-fund
 
 # Copy the UI source and build the static site
 COPY ui/ ./
