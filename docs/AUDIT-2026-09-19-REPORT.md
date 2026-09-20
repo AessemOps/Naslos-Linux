@@ -330,6 +330,25 @@ zlib), none in our own content. Two things matter here:
    - The `util-linux` HIGHs (`mount` TOCTOU, `nsenter`, `X-mount.*`) need
      privileged mount operations, which this container does not perform.
 
+**Debian 13 (trixie) attempt — blocked on packaging, not on the base tag.** With
+the owner's go-ahead I switched `samba/image/Dockerfile` to
+`debian:trixie-slim` and rebuilt. It fails at the first layer:
+
+```
+Package wsdd is not available, but is referred to by another package.
+E: Package 'wsdd' has no installation candidate
+```
+
+Trixie no longer ships **`wsdd`**, the Web Service Discovery daemon this image
+uses to advertise shares to Windows clients (mDNS/Avahi covers Apple/Linux, not
+Windows Explorer). So the jump is not a base-tag change: it needs the wsdd
+dependency replaced (upstream binary or the `wsdd` pip package), the entrypoint's
+launch of it guarded, then a Samba 4.17 → 4.2x config review, then the
+share/mDNS/browse smoke tests. The Dockerfile is reverted to bookworm so nothing
+broken ships. Expect the same shape of surprise (renamed/removed packages) in
+`terminal`, `nfs` and `openldap`, which is why this is scoped as its own change
+rather than a rebuild.
+
 **Remaining image scans:** `naslos-terminal`
 (`0.1.0-r1`), `naslos-samba` (`0.1.0-r1`), `naslos-nfs` (`0.1.0-r1`) and
 `naslos-openldap` (`0.1.0-r1`). `trivy image` accepts one target per run, so run
