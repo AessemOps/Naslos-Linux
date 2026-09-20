@@ -76,14 +76,19 @@ Verification: `helm lint`, `helm template -n naslos` and a second render with
 
 ## 5. AUDIT-M3 residual — Authelia's configuration lives in a ConfigMap
 
-- `authelia-config.yaml` renders `configuration.yml` into a ConfigMap, so the
-  `jwt_secret` and the LDAP bind password are readable by anyone with
-  `get configmap`. Moving the whole configuration to a Secret needs the Authelia
-  subchart to mount a Secret instead of a ConfigMap (it exposes
-  `configMap.existingConfigMap`; check for a secret equivalent).
-- If the subchart supports it: create `naslos-authelia-config` as a Secret, keep
-  the checksum annotation working, and confirm TOTP/sessions survive.
-- If not: document the residual explicitly in the report with the reason.
+**LDAP half done at revision 41.** The subchart has no Secret-backed mount for
+`configuration.yml` (only `configMap.existingConfigMap`), so the whole file
+cannot move. But the LDAP bind password can: values.yaml now sets
+`configMap.authentication_backend.ldap.enabled: true` (the missing piece in the
+reverted attempt — without it no `AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE`
+renders) plus `password.secret_name`/`path`, with the Secret under
+`secret.additionalSecrets` mounted at `path: naslos-openldap` (the mount is
+`/secrets/<path>` while the env var is `/secrets/<secret_name>/<path>`, so they
+only line up when `path` is the Secret name). `authelia-config.yaml` no longer
+writes `password`. `scripts/audit.sh` asserts the env var, the mount and the
+absence of an inline password. The remaining residual (`jwt_secret` in the
+ConfigMap) is documented in the report as Low; it needs a subchart Secret-backed
+config mount or a chart-owned Authelia pod.
 
 ## 6. AUDIT-M6 — namespace Pod Security is `privileged`
 
