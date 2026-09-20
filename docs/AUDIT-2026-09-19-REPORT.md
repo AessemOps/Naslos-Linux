@@ -313,7 +313,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
 | ~~AUDIT-L5/L6~~ — **fixed at revision 27**: `logsafe.Field` sanitises log arguments and the conversions are bounded/clamped | Low | — | — |
 | ~~AUDIT-L8 / CR-06~~ — **fixed at revision 27**: the scheduler race is gone and the sweep runs `go test -race` | Low | — | — |
-| Batch 6 — **staticcheck (API), AV-5…AV-7/AV-9/AV-10 active tests and the buddy crypto deep-dive done (no findings); trivy/semgrep require tools not on this host** | Coverage | Time-boxed session | Still to run: `trivy` image/SBOM scan and `semgrep` (install first — neither is present locally), the AV-8 end-to-end buddy drill, AV-11/AV-12 as a live window |
+| Batch 6 — **staticcheck, the `trivy` image + config scan, `semgrep`, the AV-5…AV-7/AV-9/AV-10 active tests and the buddy crypto deep-dive all done; two config findings fixed (DS-0031, KSV-0053)** | Coverage | Time-boxed session | Still to run: the AV-8 end-to-end buddy drill and AV-11/AV-12 as a live window; the trixie base-CVE backlog is upstream (no Debian fix) |
 
 ### Batch 6 — staticcheck (API), results
 
@@ -517,6 +517,87 @@ Every operation a replay could repeat is idempotent (a chunk write is
 digest-checked; a manifest cannot roll the pointer back — pinned by
 `TestReceiverRefusesChainRollback`), which is why the bound is the right
 trade-off; it is documented in `auth.go` rather than left implicit.
+
+#### Batch 6 — trivy image scan, all seven images (trivy 0.73.0)
+
+`trivy image --scanners vuln --severity HIGH,CRITICAL` against the live tags:
+
+| Image | Base | HIGH/CRITICAL | Where |
+|---|---|---|---|
+| `naslos-api:0.1.0-r9` | debian 12.15 | **0** | base + Go binary clean |
+| `naslos-ui:0.1.0-r10` | alpine 3.24.1 | **0** | base clean |
+| `naslos-agent:0.1.0-r4` | alpine 3.24.2 | **0** | base + Go binary clean |
+| `naslos-terminal:0.1.0-r3` | debian 13.7 | 65 | base libs only |
+| `naslos-samba:0.1.0-r3` | debian 13.7 | 62 | base libs only |
+| `naslos-nfs:0.1.0-r3` | debian 13.7 | 47 | base libs only |
+| `naslos-openldap:0.1.0-r4` | debian 13.7 | 45 | base libs only |
+
+**None of the 219 findings on the four trixie images is in a service package** —
+they are all Debian base libraries (`util-linux`, `systemd`, `ncurses`, `perl`,
+`expat`, `curl`, `libxml2`, `libacl`), and **every one reports `Fixed in: None`**:
+Debian 13 has no published fix yet, so a rebuild cannot reduce the count. This is
+the same shape the report already records for bookworm: the table's "fixed
+version" column is the version in a *newer* Debian release, not a fix in trixie.
+The trixie Dockerfiles now run `apt-get dist-upgrade` before the package install
+so a future security-pocket update is picked up on the next build; today the
+installed versions already equal the newest trixie offers
+(`util-linux 2.41.5-0+deb13u1`, `libsystemd0 257.13-1~deb13u1`).
+
+#### Batch 6 — trivy config scan (chart, Dockerfiles, openldap manifests)
+
+Two genuine findings, both fixed:
+
+- **DS-0031 (CRITICAL) — `ENV LDAP_ADMIN_PASSWORD="admin"` in
+  `openldap/image/Dockerfile`.** A baked default means a deployment that fails
+  to wire the Secret silently runs with a documented credential — the NAS-010
+  class. The StatefulSet supplies it from the `naslos-openldap` Secret and
+  `entrypoint.sh` requires it (`:?`), so the default is removed; the image now
+  fails closed. Verified: the rebuilt image carries no `LDAP_ADMIN_PASSWORD`.
+- **KSV-0053 (HIGH) — the `naslos-openldap-bootstrap` Role granted
+  `get/list pods` and `create pods/exec`.** The Job only runs
+  `ldapmodify`/`ldapsearch` and sets `automountServiceAccountToken: false`, so
+  neither rule was used; `pods/exec` is a known escalation path. The Role and its
+  RoleBinding are deleted, leaving the ServiceAccount with no permissions.
+
+Recorded, not fixed (they need a live window or are inherent):
+
+- **KSV-0014 / KSV-0118 (HIGH) on the openldap workloads** — no
+  `readOnlyRootFilesystem` and a default (root) security context. slapd writes
+  `/var/run/slapd/slapd.pid`, which is not a mounted volume, so
+  `readOnlyRootFilesystem: true` would break it unless an emptyDir is added;
+  openldap/samba are root by design. These belong with the M6 PSA work, where
+  the security contexts are set deliberately.
+- **DS-0002 (HIGH) on every Dockerfile** — the last `USER` is root (or there is
+  none). The agent is privileged, samba needs setuid to map SMB sessions, and the
+  terminal is root by design (documented in AUDIT-L3); the API, UI and buddy
+  receiver already run non-root.
+
+#### Batch 6 — semgrep (`--config=auto`)
+
+Four findings, **all false positives**, each verified by hand:
+
+| Rule | Location | Why it is not a finding |
+|---|---|---|
+| `decompression_bomb` | `api/cmd/buddyctl/main.go:743` (`io.Copy` in the tar restore) | `buddyctl` is a local owner-run tool restoring the owner's own backup; the tar header declares the entry size. Noted as a possible hardening, not a vulnerability |
+| `no-direct-write-to-responsewriter` | `api/internal/buddy/http.go:353` | the body is a sealed ciphertext served as `Content-Type: application/octet-stream`, never HTML |
+| `no-direct-write-to-responsewriter` | `api/internal/server/shares.go:383,393` | both handlers set `Content-Type: text/plain`; the generated samba/ganesha config is not rendered as HTML |
+| `last-user-is-root` | `agent/Dockerfile:23` | inherent: the agent is privileged by design (AUDIT-L3) |
+
+#### Batch 6 — the audit sweep now gates on SAST
+
+`scripts/audit.sh` runs `govulncheck` and `gosec` again (both were installed).
+Two gates were made honest rather than left failing on accepted residuals:
+
+- **govulncheck** reports the four AUDIT-H3 advisories (all `Fixed in: N/A`) and
+  **fails only when the advisory set changes** — a new ID is a new reachable
+  vulnerability. Negative-tested: dropping one accepted ID from the allow-list
+  makes the sweep fail, naming the ID.
+- **gosec** excludes `G101` (flags the `X-Naslos-Proxy-Secret` header *name* as a
+  credential; `#nosec` with the reason is also in the source) and `G703`
+  (path-traversal taint false-positives in `buddy/store.go`: the tainted chain
+  names come from `os.ReadDir`, which cannot yield `/` or `..` components, and
+  peer-supplied names pass `validateChainName` first). A new HIGH rule still
+  fails the gate.
 
 ### Debian 13 migration complete — all four images live
 

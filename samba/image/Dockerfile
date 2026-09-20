@@ -10,7 +10,13 @@ FROM debian:trixie-slim
 LABEL maintainer="Naslos <team@naslos.dev>"
 LABEL description="Samba SMB/Time Machine share server for Naslos"
 
+# dist-upgrade pulls the current Debian security pocket over the base image.
+# trixie-slim ships whatever versions were current when the tag was pushed, and
+# the trivy scan found base-library HIGHs (util-linux, systemd, ncurses, perl)
+# that Debian marks as having no fix yet; this step keeps a rebuild current the
+# moment the security pocket publishes one, rather than pinning the base lag.
 RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         samba \
         samba-common-bin \
