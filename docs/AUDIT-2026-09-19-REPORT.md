@@ -252,14 +252,17 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 
 ### Batch 6 — staticcheck (API), results
 
-`staticcheck ./...` on the API returned 7 findings, no high severity:
+`staticcheck ./...` on the API returned 7 findings, no high severity. **All are
+now resolved and the scan is clean:**
 
-| Finding | Triage |
+| Finding | Resolution |
 |---|---|
-| `server/apps.go:152` `handleAppStartStop` is unused (`U1000`) | **Real gap**: the handler exists but **no route registers it**, so an app start/stop request has nowhere to land. Either wire it (`POST /api/apps/{name}/start|stop`, matching the UI's buttons) or delete it — needs a decision, so it is listed rather than changed here. |
-| `identity/client.go:279` `base64Encode` unused, `server/users_extra.go:232` `contains` unused, `users_extra.go:267` `smbUsers` unused | Dead code (`U1000`), safe to delete in a follow-up. |
-| `internal/talos/client.go:221,272` loop unconditionally terminated (`SA4004`) | Not a bug: both loops read only the first message and `break`. Rewrite as `if len(...) > 0 { … }` for clarity. |
-| `identity/persons_extra.go:10` `md4` deprecated (`SA1019`) | Accepted (L7): MD4 is required by the SMB NT-hash protocol, not used for security. |
+| `server/apps.go:152` `handleAppStartStop` unused (`U1000`) | **Deleted** — it was a "not yet implemented" stub with no route and no UI caller (the UI never requests `/start` or `/stop`). A comment records what a real implementation needs. |
+| `identity/client.go:279` `base64Encode`, `server/users_extra.go:232` `contains`, `users_extra.go:267` `smbUsers` unused (`U1000`) | **Deleted**, along with the now-unused `encoding/base64` import. |
+| `internal/talos/client.go:221,272` loop unconditionally terminated (`SA4004`) | **Rewritten** as `if len(...) > 0 { m := ...[0]; … }`, which says what it means. |
+| `identity/persons_extra.go` `md4` deprecated (`SA1019`) | **Annotated** with `//lint:ignore SA1019` and the reason: MD4 is required by the SMB NT-hash protocol (L7), not used for security. |
+
+`go build`/`vet`/`test` and `staticcheck` are all green.
 | AUDIT-M10 — digests / registry TLS | Medium | Excluded by request | Revisit when wanted |
 
 ## 9. Reproducing the audit and fixes
