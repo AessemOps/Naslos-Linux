@@ -5,7 +5,7 @@ api:
   enabled: true
   image:
     repository: 192.168.1.2:30095/naslos-api
-    tag: "0.1.0"
+    tag: "0.1.0-r9"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -75,7 +75,7 @@ ui:
   enabled: true
   image:
     repository: 192.168.1.2:30095/naslos-ui
-    tag: "0.1.0"
+    tag: "0.1.0-r10"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -106,7 +106,7 @@ agent:
   enabled: true
   image:
     repository: 192.168.1.2:30095/naslos-agent
-    tag: "0.1.0"
+    tag: "0.1.0-r4"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -154,7 +154,7 @@ shares:
     timeMachine: true
     image:
       repository: 192.168.1.2:30095/naslos-samba
-      tag: "0.1.0"
+      tag: "0.1.0-r3"
       # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
       # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
       # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -188,7 +188,7 @@ shares:
     enabled: true
     image:
       repository: 192.168.1.2:30095/naslos-nfs
-      tag: "0.1.0"
+      tag: "0.1.0-r3"
       # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
       # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
       # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -339,7 +339,9 @@ openldap:
   # deploy-vm.sh overrides this for the standalone manifests).
   # A full image reference, so a digest can be pinned directly here:
   #   192.168.1.2:30095/naslos-openldap@sha256:<digest>
-  image: 192.168.1.2:30095/naslos-openldap:0.1.0
+  # Used by the API's wait-for-ldap init container. Keep it in step with the
+  # tag the openldap manifests deploy.
+  image: 192.168.1.2:30095/naslos-openldap:0.1.0-r4
   host: ldap.naslos.local
   baseDN: "dc=naslos,dc=local"
   bindDN: "cn=naslos-service,ou=services,dc=naslos,dc=local"
@@ -411,7 +413,7 @@ terminal:
   # The terminal's endpoints are owner routes like any other, so they are gated
   # by `auth` above (previously a separate terminal.requireAuth switch).
   # digest (NAS-022): pin the exact image; empty means "use the tag".
-  image: { repository: 192.168.1.2:30095/naslos-terminal, tag: "0.1.0", digest: "" }
+  image: { repository: 192.168.1.2:30095/naslos-terminal, tag: "0.1.0-r3", digest: "" }
   resources:
     requests:
       cpu: 10m

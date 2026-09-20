@@ -399,12 +399,29 @@ run; the difference is the runtime:
   (that is what creates the user — the first attempt failed with
   `chown: invalid user`). Verified: a fresh `r4` pod becomes **Ready** with no
   volumes. It is pushed; the live StatefulSet still runs `r1`.
-  **Still to do before flipping it:** the migration must be tested against the
-  existing PVC in a window — scale slapd to 0, snapshot the `data-…`/`config-…`
-  PVCs (the backup CronJob writes LDIF onto the PVC), set the image, verify with
-  `ldapwhoami` plus a portal login, and be ready to set it back to `r1`. Two
-  slapds must never open the same LMDB directory, so the scratch test above
-  deliberately used no volumes.
+  **Flipped live (rev 38).** The StatefulSet, the bootstrap Job and the backup
+  CronJob now pin `r4`, the pod is **Ready against the existing PVC with 0
+  restarts**, and the LDAP-backed specs pass (users, groups, password change:
+  7 passed). Two slapds must never open the same LMDB directory, which is why
+  the pre-flip probe deliberately used no volumes; the rollback path is
+  re-applying the `r1` manifest and deleting the pod. Note for future Job edits:
+  a Job's `spec.template` is immutable, so the bootstrap Job must be deleted
+  before re-applying it (it is recreated by `deploy-vm.sh`).
+
+### Debian 13 migration complete — all four images live
+
+`terminal r3`, `samba r3`, `nfs r3` and `openldap r4` are all on
+`debian:trixie-slim` at revision 38, and **the chart defaults were moved to the
+live tags** (api `r9`, agent `r4`, ui `r10`, samba/nfs/terminal `r3`, openldap
+`r4`) so a fresh `helm install`/`make install-vm` — not just this release —
+picks up the migrated images instead of the stale `0.1.0` placeholders.
+
+Two findings from the migration are worth carrying into any future base bump:
+slapd and Ganesha both **log to syslog**, so a container that exits silently must
+be run with debug (`slapd -d 1`, `ganesha.nfsd -F -L /dev/stdout`); and the
+failure is usually a **startup assumption the package's systemd/tmpfiles would
+have satisfied**, not the app config (`/var/run/slapd` for slapd,
+`CAP_SYS_RESOURCE` for Ganesha's `PR_SET_IO_FLUSHER`).
   The earlier recovery sequence, for the record:
   for the record: `rollout undo` alone did **not** help because the StatefulSet
   is `kubectl apply`-managed (its revision history has no usable prior image);
