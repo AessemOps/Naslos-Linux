@@ -322,19 +322,28 @@ kubectl patch storageclass local-path \
 # --- create OpenLDAP secrets and deploy OpenLDAP ---
 echo "=== Creating OpenLDAP secrets ==="
 kubectl create namespace naslos --dry-run=client -o yaml | kubectl apply -f -
-# PodSecurity: this namespace runs privileged workloads (naslos-agent mounts
-# host devices) — relax admission from the default baseline/restricted.
+# PodSecurity (AUDIT-M6): `naslos` holds only the unprivileged workloads now
+# (api, ui, traefik, authelia, openldap), so it enforces `baseline`. The
+# privileged workloads (agent, samba, nfs, terminal) live in the separate
+# naslos-privileged namespace below. `baseline` still permits the hostPath the
+# API mounts for the shares UI, which `restricted` would refuse.
 kubectl label namespace naslos \
+    pod-security.kubernetes.io/enforce=baseline \
+    pod-security.kubernetes.io/enforce-version=latest --overwrite || true
+# AUDIT-M6: the privileged namespace. agent mounts host devices and samba/nfs
+# are hostNetwork, so this one needs `privileged`.
+kubectl create namespace naslos-privileged --dry-run=client -o yaml | kubectl apply -f -
+kubectl label namespace naslos-privileged \
     pod-security.kubernetes.io/enforce=privileged \
     pod-security.kubernetes.io/enforce-version=latest --overwrite || true
-# Adopt the namespace for Helm so `helm upgrade --install ... --create-namespace`
-# doesn't fail with "invalid ownership metadata" on the already-existing ns.
-for label in "app.kubernetes.io/managed-by=Helm"; do
-    kubectl label namespace naslos "$label" --overwrite 2>/dev/null \
-        || kubectl label --overwrite namespace naslos "$label"
+# Adopt the namespaces for Helm so `helm upgrade --install ... --create-namespace`
+# doesn't fail with "invalid ownership metadata" on an already-existing ns.
+for ns in naslos naslos-privileged; do
+    kubectl label namespace "$ns" "app.kubernetes.io/managed-by=Helm" --overwrite 2>/dev/null \
+        || kubectl label --overwrite namespace "$ns" "app.kubernetes.io/managed-by=Helm"
+    kubectl annotate namespace "$ns" "meta.helm.sh/release-name=naslos" --overwrite 2>/dev/null || true
+    kubectl annotate namespace "$ns" "meta.helm.sh/release-namespace=naslos" --overwrite 2>/dev/null || true
 done
-kubectl annotate namespace naslos "meta.helm.sh/release-name=naslos" --overwrite 2>/dev/null || true
-kubectl annotate namespace naslos "meta.helm.sh/release-namespace=naslos" --overwrite 2>/dev/null || true
 LDAP_IMAGE="$REGISTRY/naslos-openldap:$IMAGE_TAG" ./openldap/generate-secrets.sh
 
 # --- create the talosconfig secret the API pod needs to manage the node ---

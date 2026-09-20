@@ -5,6 +5,7 @@
   "type": "object",
   "additionalProperties": true,
   "properties": {
+    "workloadNamespace": { "type": "string" },
     "api": {
       "type": "object",
       "additionalProperties": true,

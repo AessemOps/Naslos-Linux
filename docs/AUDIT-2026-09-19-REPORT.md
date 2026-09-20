@@ -188,6 +188,46 @@ revision 41 (see the follow-up above); only `jwt_secret` remains there.
 read timeouts added; secret-bearing files 0600; chain ids validated with a single
 allowlist; dead ZFS LocalPV config removed.
 
+**M6 — Pod Security: the privileged workloads were split out.** Live at revision
+55. `naslos-privileged` now holds **naslos-agent** (hostNetwork + hostPath),
+**naslos-samba** and **naslos-nfs** (hostNetwork) and **naslos-terminal**
+(`privileged: true`); these were previously co-resident with the authenticated
+services. The win is isolation: a compromise of api/ui/traefik/authelia no longer
+shares a namespace with host-network pods, and the namespace boundary is now a
+real one enforced by the default-deny policies rather than a label.
+
+Moving them needed more than a namespace field:
+
+- **Services move with the workloads**, and the API reaches the agent through the
+  new namespace: `AGENT_BASE_URL` is now
+  `http://naslos-agent.naslos-privileged.svc.cluster.local:9090`.
+- **The exec RBAC moves to where the terminal is** — a secretKeyRef cannot cross
+  namespaces, so the `naslos-api-terminal` Role/RoleBinding moved to
+  `naslos-privileged` with the API (in `naslos`) as the subject. Verified with
+  `kubectl auth can-i`: yes for `--subresource=exec` in the privileged namespace
+  and **no** in kube-system (least privilege holds).
+- **The agent-token Secret is now rendered in both namespaces** from one resolved
+  value (the agent reads it beside itself; the API reads its copy beside itself).
+  Without this the agent pod crash-looped with `secret "naslos-agent" not found`.
+- **The NetworkPolicies were split too**: the privileged namespace gets its own
+  default-deny, egress policy and CiliumNetworkPolicy, and the API's ingress
+  peers into it became `namespaceSelector` peers. Without the egress copy the
+  moved workloads would have lost DNS, LDAP and node access.
+- **The UI hardcoded a preference for `naslos`** in the terminal's namespace
+  picker, so it landed on a namespace with no shell pod and showed "No pods".
+  It now probes the candidates and selects the one that actually holds the
+  terminal container (UI rebuilt as `0.1.0-r11`).
+- **`naslos` keeps `privileged`**: the API mounts hostPath volumes for the shares
+  view and buddy receive, and `baseline` forbids hostPath — the API pod failed
+  admission with `FailedCreate: violates PodSecurity baseline: hostPath volumes`
+  and the rollout deadlocked. So the split is what M6 actually buys: the
+  privileged/hostNetwork set is isolated, not eliminated.
+
+`scripts/audit.sh` now asserts the split (namespace, the four workloads in it,
+both Secret copies, the exec Role/RoleBinding placement and subject, and the API
+URL) so it cannot silently re-merge. All **35** Playwright specs pass under it,
+including the interactive terminal exec into the privileged namespace.
+
 **M4 — NetworkPolicy intent recorded (enforcement still open).** The chart now
 renders ten `NetworkPolicy` objects in `charts/naslos/templates/networkpolicy.yaml`:
 a namespace default-deny (ingress + egress), per-workload ingress allows for
@@ -311,7 +351,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | Item | Severity | Why deferred | Next step |
 |---|---|---|---|
 | AUDIT-M4 — ~~unenforced CNI~~ **flannel replaced by Cilium; NetworkPolicy enforced**; agent `:9090` hostNetwork rule still open | Low (was Medium) | Cilium **v1.20.2** replaced flannel (Talos `KubeFlannelCNIConfig` deleted, Cilium embedded as a `KubeInlineManifestConfig`, kube-proxy also replaced). Enforcement is live and proven: the terminal pod is now denied at `:8080`/`:9091`/`:9100` by the cilium monitor, while all 7 auth/LDAP Playwright specs pass. **What enforcement exposed and this fixed:** the NetworkPolicy set had no way to allow pods to reach the node/API server (Cilium uses the reserved `host` identity, which `ipBlock` cannot match), so enforcement initially broke every pod — Authelia, Traefik, CoreDNS all failed on `-> <node>:6443 policy denied`; a `CiliumNetworkPolicy` (`naslos-allow-host`, `toEntities: host`/`kube-apiserver`) now covers it. **The one residual:** the agent (and samba/nfs) are `hostNetwork`, and pod-level policy does not cover host-network pods, so `:9090` is still reachable from other pods (~1.5 ms) | **Attempted and rolled back** (see below): a `CiliumClusterwideNetworkPolicy` + `enable-host-firewall` locks the node out if the selector or allow-list is wrong, and recovering needed console access. The template is fixed and **off by default**; do it with console access, in audit mode, and with `hostFirewallAdminCIDR` set |
-| AUDIT-M6 — PSA `privileged` namespace | Medium | Changes scheduling/security context of live workloads | Split namespaces or label only agent/terminal privileged |
+| AUDIT-M6 — PSA `privileged` namespace | **Fixed** — the hostNetwork/privileged workloads (agent, samba, nfs, terminal) moved to a dedicated `naslos-privileged` namespace; `naslos` still enforces `privileged` **by necessity** (the API mounts hostPath volumes, which `baseline` forbids — verified live), but is no longer co-resident with host-network pods | — | — |
 | ~~AUDIT-M11~~ — **fixed**: Svelte 5 + svelte-check 4 + vite-plugin-svelte 4 (`npm audit` 11 → 4, the rest dev-server only), and the xterm → `@xterm` migration (CR-31) is **also done** (`@xterm/xterm ^6.0.0` in `ui/package.json`) | Medium | — | — |
 | AUDIT-M3 residual — `jwt_secret` still in the `authelia-config` ConfigMap | Low | The Authelia subchart only mounts a ConfigMap for `configuration.yml` (no Secret equivalent); the LDAP bind password was moved to a Secret at revision 41 | If the chart gains a Secret-backed config mount, move the whole file; otherwise template the pod from the naslos chart |
 | AV-8 finding — `zfs send` captures only the agent's mount namespace | Low | Data written from a terminal-pod namespace is invisible to the agent's `zfs snapshot`, so a "successful" backup can be metadata-only; the send/verify path reports success regardless | Document, or add a content/byte sanity check against the holding dataset; the supported flow (writes through the agent/Samba path) is unaffected |

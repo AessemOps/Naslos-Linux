@@ -30,6 +30,22 @@ map. Authentication has no opt-out, so there is no `auth.disabled` helper.
 {{- if $agent -}}{{ index $agent "tokenSecret" | default "" }}{{- end -}}
 {{- end -}}
 
+{{/*
+The namespace the privileged workloads live in (AUDIT-M6): agent, samba, nfs and
+terminal need hostNetwork/hostPath/privileged, and putting them in the same
+namespace as api/ui/traefik/authelia/openldap forces that whole namespace to
+PSA `privileged`. Splitting lets `naslos` drop to `baseline` while only the
+second namespace stays privileged.
+
+Defaults to "naslos-privileged" when unset, so an existing release picks it up
+without a values change; set `workloadNamespace` to override (it must be a
+different namespace from the release namespace for the split to mean anything).
+*/}}
+{{- define "naslos.workloadNamespace" -}}
+{{- $v := get .Values "workloadNamespace" | default "" -}}
+{{- if $v -}}{{ $v }}{{- else -}}naslos-privileged{{- end -}}
+{{- end -}}
+
 {{- define "naslos.ingressEnabled" -}}
 {{- $ingress := get .Values "ingress" -}}
 {{- if and $ingress (index $ingress "enabled") -}}true{{- else -}}false{{- end -}}

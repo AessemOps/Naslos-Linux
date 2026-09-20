@@ -90,22 +90,16 @@ absence of an inline password. The remaining residual (`jwt_secret` in the
 ConfigMap) is documented in the report as Low; it needs a subchart Secret-backed
 config mount or a chart-owned Authelia pod.
 
-## 6. AUDIT-M6 — namespace Pod Security is `privileged`
+## 6. AUDIT-M6 — namespace Pod Security is `privileged` — DONE
 
-Needs a design decision, not a one-liner. Options, cheapest first:
-
-1. **Split:** move `agent`, `samba`, `nfs`, `terminal` (the hostNetwork/hostPath/
-   privileged workloads) to a `naslos-privileged` namespace; set `naslos` to
-   `baseline`. Requires the Services the API/UI use to be cross-namespace
-   (`naslos-agent.naslos-privileged.svc`, etc.) and the IngressRoutes updated.
-2. **Keep one namespace, tighten what can be tightened:** set the namespace to
-   `baseline` and give only the four privileged pods explicit
-   `pod-security.kubernetes.io/enforce=privileged` labels — but PSA labels are
-   namespace-scoped, so this only works per-namespace; the four would need their
-   own namespace anyway (option 1).
-3. **Document and accept**, with the privileged set enumerated.
-
-Recommend option 1 in a dedicated window; it is the largest remaining change.
+Fixed live at revision 55 by splitting the four privileged/hostNetwork workloads
+(agent, samba, nfs, terminal) into a dedicated `naslos-privileged` namespace;
+`naslos` keeps `privileged` because the API mounts hostPath volumes and
+`baseline` forbids them (verified live). Services, the agent-token Secret (both
+namespaces), the exec Role/RoleBinding and the NetworkPolicies moved with them,
+and the terminal UI now discovers the namespace instead of assuming `naslos`.
+See the report's M6 section. All 35 Playwright specs pass; `scripts/audit.sh`
+asserts the split.
 
 ## 7. AUDIT-M4 — no NetworkPolicy, and flannel does not enforce one
 
