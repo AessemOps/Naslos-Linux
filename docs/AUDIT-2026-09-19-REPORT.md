@@ -363,9 +363,29 @@ run; the difference is the runtime:
 - **`nfs` — fails.** `nfs-ganesha` jumps 4.x → **6.5**, and Ganesha does not
   start with the currently rendered `ganesha.conf` (CrashLoopBackOff). Rolled
   back to `r1`; the config needs the 6.x migration before the base moves.
-- **`openldap` — fails, and this one touched identity.** `slapd 2.6.10` exits 1
-  right after `Starting slapd...` against the existing PVC state, so the whole
-  LDAP-backed stack degrades (API/Authelia binds, user/group pages). Recovery,
+- **`openldap` — root-caused and fixed in the image (`0.1.0-r4`).** The failure
+  was **not** the PVC data: a fresh pod with no volumes failed identically.
+  Debian's slapd logs to syslog, so the container showed only `Starting slapd...`
+  and exit 1; running it with `slapd -d 1` revealed the cause:
+
+  ```
+  unable to open pid file "/var/run/slapd/slapd.pid": 2 (No such file or directory)
+  ```
+
+  Debian 13's slapd defaults `olcPidFile` to `/var/run/slapd/slapd.pid` and relies
+  on `systemd-tmpfiles` to create the directory — which never runs in a
+  container. Bookworm did not need it. The Dockerfile now creates
+  `/var/run/slapd` (owned by `openldap`) **after** the `slapd` package install
+  (that is what creates the user — the first attempt failed with
+  `chown: invalid user`). Verified: a fresh `r4` pod becomes **Ready** with no
+  volumes. It is pushed; the live StatefulSet still runs `r1`.
+  **Still to do before flipping it:** the migration must be tested against the
+  existing PVC in a window — scale slapd to 0, snapshot the `data-…`/`config-…`
+  PVCs (the backup CronJob writes LDIF onto the PVC), set the image, verify with
+  `ldapwhoami` plus a portal login, and be ready to set it back to `r1`. Two
+  slapds must never open the same LMDB directory, so the scratch test above
+  deliberately used no volumes.
+  The earlier recovery sequence, for the record:
   for the record: `rollout undo` alone did **not** help because the StatefulSet
   is `kubectl apply`-managed (its revision history has no usable prior image);
   the working sequence was `kubectl set image` back to `r1`, then **delete the
