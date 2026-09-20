@@ -313,7 +313,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
 | ~~AUDIT-L5/L6~~ — **fixed at revision 27**: `logsafe.Field` sanitises log arguments and the conversions are bounded/clamped | Low | — | — |
 | ~~AUDIT-L8 / CR-06~~ — **fixed at revision 27**: the scheduler race is gone and the sweep runs `go test -race` | Low | — | — |
-| Batch 6 — **staticcheck done (API)**; the rest open | Coverage | Time-boxed session | See the staticcheck results below; still to run: `trivy` image/SBOM scan, `semgrep`, AV-5…AV-12, buddy crypto deep-dive |
+| Batch 6 — **staticcheck (API) done; AV-5/AV-6/AV-7/AV-9/AV-10 done; trivy/semgrep require tools not on this host** | Coverage | Time-boxed session | Still to run: `trivy` image/SBOM scan and `semgrep` (install first — neither is present locally), AV-8 buddy drill, AV-11/AV-12 as a live window, buddy crypto deep-dive |
 
 ### Batch 6 — staticcheck (API), results
 
@@ -472,6 +472,26 @@ run; the difference is the runtime:
   re-applying the `r1` manifest and deleting the pod. Note for future Job edits:
   a Job's `spec.template` is immutable, so the bootstrap Job must be deleted
   before re-applying it (it is recreated by `deploy-vm.sh`).
+
+#### Batch 6 — active tests (AV-5, AV-6, AV-7, AV-9, AV-10), results
+
+Run as Go tests against the real router with the owner auth gate armed
+(`api/internal/server/active_tests_test.go`), plus read-only probes of the live
+VM. All pass, and each guard was mutation-tested to confirm it is not vacuous.
+
+| Test | What it pins | Result |
+|---|---|---|
+| AV-5 — IDOR / path traversal | A caller-supplied object name on a path route (`/api/shares/`, `/api/apps/`, `/api/catalog/`, `/api/volumes/zfs/`) with `../`, encoded slashes and double-encoding never returns 2xx | pass (10 payloads × 4 routes) |
+| AV-6 — injection into Kube params | `namespace`/`pod` on `/api/pods` and `/api/ws/exec` carrying a slash, whitespace or shell metacharacters is refused with an early **400**; loosening `validateKubeName` makes it fail | pass; mutation-confirmed |
+| AV-7 — WebSocket origin spoof | `sameHostname` rejects a foreign Origin and accepts the proxy-hop port differences (existing `TestSameHostname`); live, the proxy answers 302 to a forged-origin upgrade before any handshake | pass |
+| AV-9 — terminal scoping | `/api/ws/exec` with no namespace uses the API's own namespace and refuses a missing pod; a different namespace never resolves to 200 | pass |
+| AV-10 — secret leakage | The proxy secret, agent token and LDAP password never appear in the reachable bodies (`/api/buddy/status`, `/api/notifications`, `/api/shares/config/samba`, `/api/health`); live anonymous probes of `/api/health`, `/api/ready`, `/api/buddy/v1/status` and the 302 error bodies are clean | pass |
+
+**AV-8 (buddy replay/tamper/nonce/quota/restore), AV-11 (TLS/session) and AV-12
+(rolling restart) are not covered here:** AV-8's crypto replay/nonce paths and
+quota limits already have unit coverage in `internal/buddy`, but the end-to-end
+drill on an `audit-` dataset and the AV-11/AV-12 live drills belong in a window
+next to the buddy crypto deep-dive.
 
 ### Debian 13 migration complete — all four images live
 

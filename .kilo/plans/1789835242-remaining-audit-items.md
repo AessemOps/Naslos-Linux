@@ -141,16 +141,18 @@ re-added later, in the workflow.
 ## 9. Batch 6 — coverage still not run
 
 - **Images/SBOM:** `trivy image` for `naslos-{api,agent,ui,terminal,samba,nfs,openldap}`
-  and `trivy config` for the chart/Dockerfiles.
-- **SAST breadth:** `semgrep --config=auto` and `staticcheck`.
-- **Active tests (bounded, non-destructive):** AV-5 IDOR, AV-6 injection matrix
-  (pool/dataset/share/LDAP, plus the agent's `chroot` args), AV-7 WebSocket
-  origin spoof, AV-8 buddy replay/tamper/oversize/nonce/quota/restore on an
-  `audit-` dataset, AV-9 terminal scoping, AV-10 secret leakage in
-  logs/metrics/responses, AV-11 TLS/session detail, AV-12 rolling restart.
+  and `trivy config` for the chart/Dockerfiles. **Not runnable here:** `trivy` is
+  not installed on this host (the `.118` work server is deleted); install it first.
+- **SAST breadth:** `semgrep --config=auto` — **not installed** here. `staticcheck`
+  (API) is done.
+- **Active tests: AV-5/AV-6/AV-7/AV-9/AV-10 done** as Go tests in
+  `api/internal/server/active_tests_test.go` (+ live read-only probes); see the
+  report's Batch 6 active-tests section. Still to run: **AV-8** end-to-end buddy
+  drill on an `audit-` dataset (unit-level replay/nonce/quota coverage already
+  exists), **AV-11** TLS/session detail and **AV-12** rolling restart, both live
+  drils for a window.
 - **Buddy crypto deep-dive:** `envelope.go`, `keys.go`, `quota`, `store` against
   the security-review guide.
-- **`.118`:** read-only checks on the work server and the `rural-drill` worktree.
 - Update the report with a coverage section and fold any new findings in.
 
 ## Definition of done
