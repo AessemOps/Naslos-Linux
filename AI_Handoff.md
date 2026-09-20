@@ -45,14 +45,12 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
   closing it needs the CNI swap plus a node-level rule), PSA scoping (**M6**,
   needs the privileged workloads split into their own namespace), Authelia's
   `jwt_secret` off the ConfigMap (**M3 residual** — the LDAP bind password was
-  moved to a Secret mount at revision 41), and the rest of Batch 6 (the AV-8
-  end-to-end buddy drill and AV-11 TLS/session, AV-12 rolling restart, both live
-  drills for a window). Batch 6 is otherwise **done**: the `trivy` image scan
-  (api/ui/agent 0 HIGH; the four trixie images' 219 findings are all
+  moved to a Secret mount at revision 41). Batch 6 is **done**: the `trivy`
+  image scan (api/ui/agent 0 HIGH; the four trixie images' 219 findings are all
   no-Debian-fix base libraries), the `trivy config` scan (fixed DS-0031 baked
   `LDAP_ADMIN_PASSWORD`, removed unused `pods/exec` Role KSV-0053), `semgrep`
-  (4 false positives, verified by hand), the AV-5…AV-7/AV-9/AV-10 active tests,
-  and the buddy crypto deep-dive (no findings). The audit sweep gates on
+  (4 false positives, verified by hand), the AV-5…AV-12 active tests (AV-8/11/12
+  live), and the buddy crypto deep-dive (no findings). The audit sweep gates on
   govulncheck and gosec again. Everything else — the dependency bumps, nginx
   non-root, `values.schema.json`/`.Release.Namespace`, `go test -race`, the
   log/conversion hardening and the dead-code cleanup — is done and deployed.
