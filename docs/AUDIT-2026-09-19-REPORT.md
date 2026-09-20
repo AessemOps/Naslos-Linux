@@ -69,7 +69,30 @@ secret, and a runnable (if not yet wired) audit sweep.
 |---|---|---|---|
 | M1 | Talos machine configs + `talosconfig` (private keys) in local `refs/cline/checkpoints/*` | **Fixed** — `421711a` | 104 refs deleted + gc; gitleaks 89 → 4 (documented false positives); never on a branch or remote |
 | M2 | Local secret files world-readable | **Fixed** — `421711a` | `bootstrap/vm/*` and the captured session `chmod 600`; `auth.setup.ts` enforces 0600 itself |
-| M3 | `jwt_secret` regenerated every render; secrets in a ConfigMap | **Partial** — `421711a` | Persisted in `naslos-authelia-jwt` (proven across an upgrade). Residual: Authelia's config is a ConfigMap, so its `jwt_secret`/LDAP password are readable there |
+| M3 | `jwt_secret` regenerated every render; secrets in a ConfigMap | **Partial** — `421711a`; moving the LDAP password out **failed and was reverted** (see below) | Persisted in `naslos-authelia-jwt` (proven across an upgrade). Residual: Authelia's config is a ConfigMap, so its `jwt_secret`/LDAP password are readable there |
+
+**AUDIT-M3 attempt (failed, reverted at revision 38).** The Authelia chart
+supports taking the LDAP bind password from a Secret
+(`configMap.authentication_backend.ldap.password.secret_name` + `path`, which is
+used as both the Secret key and the mounted filename) and setting
+`AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE` at it. I configured it
+against the existing `naslos-openldap` Secret, removed the password from our
+ConfigMap, and satisfied the chart's validation, which additionally requires the
+Secret to be listed under `secret.additionalSecrets` (it `fail`s otherwise).
+Lint passed, but the deployed **DaemonSet rendered no password-file env var** —
+checked with `kubectl get daemonset naslos-authelia -o
+jsonpath='{...containers[0].env[*].name}'`, which showed only the chart's own
+session/storage/reset secrets — so Authelia lost its LDAP password and every
+forwarded request returned an error, leaving the UI reachable without a
+challenge. `helm rollback naslos 38` restored service (Authelia rolled out,
+login and the LDAP specs pass), and the values/template edits are reverted so a
+future `make install-vm` cannot reintroduce it.
+
+Lesson: this must be proved with a rendered manifest assertion (or a scratch
+release) before it goes near the live authenticator, and the subchart's
+`deployment.yaml` env wiring needs checking against the DaemonSet path it
+actually renders here. Until then M3's LDAP half stays open — the value is in a
+Secret *and* the ConfigMap, not only the ConfigMap.
 | M4 | No NetworkPolicy; flannel does not enforce one; privileged hostNetwork agent `:9090` open to every pod | **Open** | Needs a policy CNI or host firewall — its own window |
 | M5 | Unused agent ClusterRole (nodes/pods/pods-log cluster-wide) | **Fixed** — `8555925` | ClusterRole + binding removed; the agent has no client-go |
 | M6 | Namespace PSA `enforce: privileged` cluster-wide | **Open** | Scope per-workload or split namespaces |
