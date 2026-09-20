@@ -77,7 +77,7 @@ secret, and a runnable (if not yet wired) audit sweep.
 | M8 | Config files carrying secrets were `0644` in `0755` dirs | **Fixed** — `3b2a65b` | `notifications.json` (ntfy token), peers, schedules, shares → 0600 in 0750 |
 | M9 | Buddy store path-taint reports | **Fixed** — `3b2a65b` | One `validateChainName` allowlist + traversal regression test |
 | M10 | Mutable image tags, `IfNotPresent`, no digests, plain-HTTP registry | **Excluded** at the operator's request | — |
-| M11 | 11 dev-only npm advisories (Svelte/Vite/cookie) | **Open** | Build-chain upgrade, needs a tested bump |
+| M11 | 11 dev-only npm advisories (Svelte/Vite/cookie) | **Fixed (mostly)** — Svelte 4 → 5.57, svelte-check 4, vite-plugin-svelte 4; `npm audit` 11 → 4, and the 4 left are the dev-server-only esbuild/vite chain. The Svelte/kit `untrack`/`fork`/`settled` build warnings are gone (rev 30) |
 | M12 | No CI | **Partial** — `421711a`, workflow removed `b1f7365` | `scripts/audit.sh` packages the sweep; nothing runs it automatically yet |
 | M13 | Dead `storage.zfsLocalPV` config | **Fixed** — `8555925` | Block removed; local-path is the only provisioner |
 | M14 | Stale audit docs; no lockout runbook | **Fixed** — `421711a`, `65d9b6d` | Superseded banner, status tables, operator-lockout runbook |
@@ -242,7 +242,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 |---|---|---|---|
 | AUDIT-M4 — no NetworkPolicy / unenforced CNI | Medium | Replacing the CNI or adding host firewall rules on a single-node appliance needs a window | Install Cilium/Calico or a host rule limiting API→agent `:9090`; then NetworkPolicies |
 | AUDIT-M6 — PSA `privileged` namespace | Medium | Changes scheduling/security context of live workloads | Split namespaces or label only agent/terminal privileged |
-| AUDIT-M11 — Svelte/Vite dev advisories | Medium | Breaking major bumps; needs a tested UI upgrade | Bump and re-run `npm audit` + the suite (CR-08/CR-31) |
+| ~~AUDIT-M11~~ — **fixed at revision 30**: Svelte 5 + svelte-check 4 + vite-plugin-svelte 4 (`npm audit` 11 → 4, the rest dev-server only); xterm → `@xterm` (CR-31) still open | Medium | — | — |
 | AUDIT-M3 residual — Authelia config in a ConfigMap | Medium | Requires subchart support to mount a Secret-based config | Move `configuration.yml` to a Secret |
 | ~~AUDIT-L2~~ — **fixed at revision 29**: unprivileged nginx (uid 101, port 8080), all capabilities dropped, `runAsNonRoot` | Low | — | — |
 | ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
