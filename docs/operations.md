@@ -99,8 +99,30 @@ transient by design.
 
 - Agent runs as DaemonSet `hostNetwork`; confirm it's on the same host as the
   pool: `kubectl get daemonsets -n naslos`.
-- API reaches the agent via the node address (`:9090`); check K8s network
-  policy / RBAC (`naslos-agent` ClusterRole grants node/pod read).
+- API reaches the agent via the node address (`:9090`); there is **no
+  NetworkPolicy** today (flannel does not enforce them), so the shared bearer
+  token is the only control on that port (AUDIT-M4). The agent's old ClusterRole
+  was removed (AUDIT-M5) — it has no Kubernetes API permissions at all.
+
+## Privileged workloads and why (AUDIT-L3)
+
+The namespace enforces PSA `privileged` because the storage and terminal
+workloads genuinely need host access. Each privileged workload, and the reason
+it cannot be less:
+
+| Workload | Privilege | Why |
+|---|---|---|
+| `naslos-agent` (DaemonSet) | `hostNetwork`, `hostPID`, `privileged`, hostPaths `/`, `/dev`, `/run`, `/var` | runs `zpool`/`zfs` against the node's pools and `chroot /host` for the extrausers/smb.conf mirrors; `/dev` and `/run` carry the ZFS and udev state |
+| `naslos-samba` (DaemonSet) | `hostNetwork`, `CHOWN`/`DAC_OVERRIDE`/`FOWNER`/`FSETID`/`SETGID`/`SETUID`, hostPaths share-config/extrausers/datasets | SMB must bind 445 on the node and chown files it creates inside the datasets it serves |
+| `naslos-nfs` (DaemonSet) | `hostNetwork`, same capability set, hostPaths share-config/datasets | NFS must bind 2049 and hand out the datasets' real UIDs |
+| `naslos-terminal` (Deployment) | `privileged`, hostPaths `/`, `/var/mnt`, `/dev` | the operator's root shell inside `chroot /host`; gated by the API's owner auth (proxy secret + admin) and it never listens on a port itself |
+| `naslos-traefik` | `hostPort` 80/443 | it is the LAN entry point, so it binds the node's ports directly |
+| API `fix-receive-dataset-ownership` init | `runAsUser: 0` | one-shot `chown` of the Buddy receive dataset to the API's uid (65532); the API container itself runs non-root |
+
+Everything else — `naslos-api`, `naslos-ui`, `naslos-authelia`, Prometheus,
+Alertmanager — runs non-root with capabilities dropped and needs no hostPath.
+Any future change that adds a privileged workload should add it to this table in
+the same change.
 
 ## Reference
 

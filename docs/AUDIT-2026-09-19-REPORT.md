@@ -29,8 +29,8 @@ Remediation then closed **all four Highs and every Medium except four**:
 | High closed | 4 of 4 |
 | Medium closed / no-change-needed / excluded | 8 + 1 + 1 |
 | Medium deferred (with reason) | 4 |
-| Low closed / accepted | 7 + 1 |
-| Low deferred | 1 (L3) |
+| Low closed / accepted | 8 + 1 |
+| Low deferred | 0 |
 | Findings not yet run (Batch 6) | image/SBOM scan, SAST breadth, 8 active tests, buddy crypto deep-dive, `.118` |
 
 The instance now has a single authenticated entry point, no default or committed
@@ -88,7 +88,7 @@ secret, and a runnable (if not yet wired) audit sweep.
 |---|---|---|
 | L1 | No `.dockerignore` | **Fixed** — `8555925` (UI context 96 MB → API 717 kB) |
 | L2 | UI nginx runs root, writable rootfs | **Fixed** — the UI image is `nginxinc/nginx-unprivileged` (uid 101, listens on 8080) and the pod drops all capabilities with `runAsNonRoot` (rev 29) |
-| L3 | privileged/hostPath justification only in comments | **Open** (documented) |
+| L3 | privileged/hostPath justification only in comments | **Fixed** — `docs/operations.md` now has a "Privileged workloads and why" table covering every privileged/hostPath workload, and the stale agent-ClusterRole claim there is corrected |
 | L4 | Swallowed apply errors | **No change needed** — `applySharesConfig` already logs (`shares.go:370`) |
 | L5 | Log-injection findings | **Fixed** — `internal/logsafe.Field` sanitises every request/peer-derived value before it reaches a log line (rev 27) |
 | L6 | Integer-conversion findings | **Fixed** — buddy free-space clamps instead of overflowing, `SealChunk` bounds the length field, tar modes are masked (rev 27) |
