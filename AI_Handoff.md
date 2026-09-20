@@ -48,11 +48,13 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
   moved to a Secret mount at revision 41), and the rest of Batch 6 (the
   `trivy` image/SBOM scan and `semgrep`, both needing tools not installed on this
   host; the AV-8 end-to-end buddy drill, AV-11 TLS/session and AV-12 rolling
-  restart; the buddy crypto deep-dive). The Batch 6 active tests AV-5, AV-6,
-  AV-7, AV-9 and AV-10 are **done** (`api/internal/server/active_tests_test.go`
-  plus live read-only probes). Everything else — the dependency bumps, nginx
-  non-root, `values.schema.json`/`.Release.Namespace`, `go test -race`, the
-  log/conversion hardening and the dead-code cleanup — is done and deployed.
+  restart). The Batch 6 active tests AV-5, AV-6, AV-7, AV-9 and AV-10 are
+  **done** (`api/internal/server/active_tests_test.go` plus live read-only
+  probes), and the **buddy crypto deep-dive is done with no findings** (envelope,
+  keys, auth and store reviewed; see the report). Everything else — the
+  dependency bumps, nginx non-root, `values.schema.json`/`.Release.Namespace`,
+  `go test -race`, the log/conversion hardening and the dead-code cleanup — is
+  done and deployed.
 - **The detailed audit, fix plan and code-review list are archived** in
   `docs/archive/`; the report supersedes them.
 

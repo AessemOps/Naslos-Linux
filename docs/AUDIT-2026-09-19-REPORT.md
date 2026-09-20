@@ -313,7 +313,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
 | ~~AUDIT-L5/L6~~ — **fixed at revision 27**: `logsafe.Field` sanitises log arguments and the conversions are bounded/clamped | Low | — | — |
 | ~~AUDIT-L8 / CR-06~~ — **fixed at revision 27**: the scheduler race is gone and the sweep runs `go test -race` | Low | — | — |
-| Batch 6 — **staticcheck (API) done; AV-5/AV-6/AV-7/AV-9/AV-10 done; trivy/semgrep require tools not on this host** | Coverage | Time-boxed session | Still to run: `trivy` image/SBOM scan and `semgrep` (install first — neither is present locally), AV-8 buddy drill, AV-11/AV-12 as a live window, buddy crypto deep-dive |
+| Batch 6 — **staticcheck (API), AV-5…AV-7/AV-9/AV-10 active tests and the buddy crypto deep-dive done (no findings); trivy/semgrep require tools not on this host** | Coverage | Time-boxed session | Still to run: `trivy` image/SBOM scan and `semgrep` (install first — neither is present locally), the AV-8 end-to-end buddy drill, AV-11/AV-12 as a live window |
 
 ### Batch 6 — staticcheck (API), results
 
@@ -489,9 +489,34 @@ VM. All pass, and each guard was mutation-tested to confirm it is not vacuous.
 
 **AV-8 (buddy replay/tamper/nonce/quota/restore), AV-11 (TLS/session) and AV-12
 (rolling restart) are not covered here:** AV-8's crypto replay/nonce paths and
-quota limits already have unit coverage in `internal/buddy`, but the end-to-end
-drill on an `audit-` dataset and the AV-11/AV-12 live drills belong in a window
-next to the buddy crypto deep-dive.
+quota limits already have unit coverage in `internal/buddy` (see the deep-dive
+below), but the end-to-end drill on an `audit-` dataset and the AV-11/AV-12 live
+drills belong in a window.
+
+#### Batch 6 — buddy crypto deep-dive (`envelope.go`, `keys.go`, `auth.go`, `store.go`)
+
+A line-by-line review of the Buddy Backup crypto and storage layers against the
+security-review guide, plus the existing `-race` test suite. **No findings.**
+The design is sound and the asymmetric trust model holds.
+
+| Area | What was checked | Assessment |
+|---|---|---|
+| Chunk confidentiality | AES-256-GCM (`aeadFor` refuses any key that is not 32 bytes); nonce is `prefix(8)‖counter(4)` so it is unique per (DEK, index); `validateChunkIndex` refuses index ≥ 2³² with the counter-wrap named as the reason (NAS-021) | sound |
+| Chunk integrity / binding | AAD is `NB1\|source\|chain\|index\|plainLen`, so a chunk cannot be reordered, moved between sources or chains, or have its declared length changed; `OpenChunk` also checks the nonce matches the index, the magic, the declared length ≤ `ChunkPlainSize`, and the decrypted length. Cross-source, cross-chain and wrong-index swaps are pinned by `TestEnvelopeRejectsTampering` | sound |
+| Data-key wrapping | `WrapDEK`/`UnwrapDEK` seal the per-segment DEK under the owner's KEK with AAD bound to source+chain; the receiver holds no KEK, and `TestDEKWrapNeedsTheOwnersKEK` proves a stranger's key (and a different chain) cannot unwrap it — the zero-knowledge property | sound |
+| Manifest authenticity | `Sign`/`VerifySignature` over the canonical form (signature blanked), Ed25519; the verifier checks the manifest's `keyId` equals the fingerprint of the authorized key, so a manifest cannot claim another key. `validateManifestShape` refuses a duplicate/out-of-order index, an impossible chunk size, a missing/mis-encoded prefix or wrapped key, and an unknown kind (NAS-012) | sound |
+| Identity at rest | Ed25519 in OpenSSH form; `Save` writes 0600 atomically via a temp file + rename; `KEKBytes` enforces 32 bytes | sound |
+| Request authentication | Ed25519 over `BUDDY1\nMETHOD\npath\ndigest\ntimestamp\nnonce` — method, path, body digest, timestamp and nonce are all signed, so a captured request cannot be retargeted; ±5 min clock skew; the receiver rebuilds `path` from the mount prefix rather than trusting the request line | sound |
+| Replay defence | Nonce is burned only *after* the signature verifies (so junk cannot exhaust a peer's cache); format bounded (16–64 decoded bytes, ≤128 chars); per-key cap of 4096 with soonest-expiry eviction; persisted to `.nonces` and reloaded unexpired on restart (NAS-014) | sound |
+| Storage / path safety | Key directories are `sha256(fingerprint)` (not the raw fingerprint, whose `/` once created nested dirs); `ValidateSource` and `validateChainName` reject traversal, absolute paths and a `..` run (AUDIT-M9, NAS-021); quota is reserved under the store lock before the write, so concurrent uploads cannot both pass a pre-write check | sound |
+
+Residual noted, not a finding: the per-key nonce cap means a peer that sends more
+than 4096 requests inside the 10-minute TTL evicts its own soonest-to-expire
+nonces, so a replay of an evicted nonce is theoretically possible in that window.
+Every operation a replay could repeat is idempotent (a chunk write is
+digest-checked; a manifest cannot roll the pointer back — pinned by
+`TestReceiverRefusesChainRollback`), which is why the bound is the right
+trade-off; it is documented in `auth.go` rather than left implicit.
 
 ### Debian 13 migration complete — all four images live
 
