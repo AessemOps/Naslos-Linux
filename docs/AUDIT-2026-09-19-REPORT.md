@@ -354,8 +354,8 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | AUDIT-M6 — PSA `privileged` namespace | **Fixed** — the hostNetwork/privileged workloads (agent, samba, nfs, terminal) moved to a dedicated `naslos-privileged` namespace; `naslos` still enforces `privileged` **by necessity** (the API mounts hostPath volumes, which `baseline` forbids — verified live), but is no longer co-resident with host-network pods | — | — |
 | ~~AUDIT-M11~~ — **fixed**: Svelte 5 + svelte-check 4 + vite-plugin-svelte 4 (`npm audit` 11 → 4, the rest dev-server only), and the xterm → `@xterm` migration (CR-31) is **also done** (`@xterm/xterm ^6.0.0` in `ui/package.json`) | Medium | — | — |
 | AUDIT-M3 residual — `jwt_secret` still in the `authelia-config` ConfigMap | Low | The Authelia subchart only mounts a ConfigMap for `configuration.yml` (no Secret equivalent); the LDAP bind password was moved to a Secret at revision 41 | If the chart gains a Secret-backed config mount, move the whole file; otherwise template the pod from the naslos chart |
-| AV-8 finding — `zfs send` captures only the agent's mount namespace | Low | Data written from a terminal-pod namespace is invisible to the agent's `zfs snapshot`, so a "successful" backup can be metadata-only; the send/verify path reports success regardless | Document, or add a content/byte sanity check against the holding dataset; the supported flow (writes through the agent/Samba path) is unaffected |
-| AV-8 finding — a dataset once mounted in a pod namespace can become undestroyable | Low | `zfs destroy` reports `dataset is busy` with `mounted=false`, no snapshots, no children and no share, and it survives a node reboot; the API/agent expose no `zfs unmount`/`-f` path, so it cannot be cleared through the product | Add a force/`-f` destroy (or an unmount endpoint) to the agent; a stray stub dataset is the only impact |
+| AV-8 finding — `zfs send` captures only the agent's mount namespace | **Fixed** | The estimate-based shortfall guard came from the same agent view as the send, so it could not catch a contentless stream. The agent now reports exact `UsedBytes` (`zfs list -p`) and the send refuses to publish when the stream is a small fraction of the dataset's used space (with a 1 MiB floor so genuinely-empty datasets are not flagged) | — |
+| AV-8 finding — a dataset once mounted in a pod namespace can become undestroyable | **Mitigated** | `DestroyDataset` now recovers: on `dataset is busy` it forces an unmount, then clears `mountpoint=none,canmount=off` and retries, so the stale-record case (which survived reboots) is cleared without console access. A residual leaked-kernel-reference variant is named in the error with its documented remedy (pool export/import) | Agent does not export the pool - that would take every share offline; the error names the state so an operator can choose it |
 | ~~AUDIT-L2~~ — **fixed at revision 29**: unprivileged nginx (uid 101, port 8080), all capabilities dropped, `runAsNonRoot` | Low | — | — |
 | ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
 | ~~AUDIT-L5/L6~~ — **fixed at revision 27**: `logsafe.Field` sanitises log arguments and the conversions are bounded/clamped | Low | — | — |
@@ -560,7 +560,8 @@ same stack a page send uses):
   capturing an empty filesystem. After a node reboot the same dataset reports
   `mounted=true` and the send proceeds — the documented remedy, verified.
 
-Two findings the drill surfaced (both operational, neither a crypto issue):
+Two findings the drill surfaced (both operational, neither a crypto issue) —
+**both addressed afterwards:**
 
 1. **`zfs send` snapshots only what the *agent* namespace sees.** Seeding a
    dataset's content from the terminal pod writes to the terminal's mount
@@ -569,17 +570,28 @@ Two findings the drill surfaced (both operational, neither a crypto issue):
    is the same trap `requireMountedDataset` guards for the *dataset* but not for
    the *content*: the guard checks `mounted`, and the dataset can be `mounted` in
    the agent's view yet still hold files written where the agent cannot see them.
-   Worth a doc note (and, arguably, a content check); recorded here rather than
-   fixed, since writing share data through the agent/Samba path is the supported
-   flow.
+   **Fixed:** the agent now reports exact `UsedBytes` (`zfs list -p`), and the
+   send's `BeforePublish` refuses a stream that is a small fraction of the
+   dataset's used space (5%, with a 1 MiB floor so a genuinely-small dataset is
+   not flagged). The check runs before anything is published, so "the latest
+   backup" never points at a contentless stream. Pinned by
+   `TestBuddySendRefusesAContentlessStream` and `TestRequireStreamMatchesDataset`
+   (mutation-tested: removing the check fails the test).
 2. **A dataset once mounted inside a pod namespace can become undestroyable.**
-   `test/audit-av8` now reports `mounted=false` with no snapshots, no children and
-   no share referencing it, but `zfs destroy` fails with `dataset is busy` — and
-   it **survives a node reboot** (ZFS replays the stale mount record). The API and
-   agent expose no `zfs unmount`/`-f` path, so it cannot be cleared through the
-   product. Low severity (it leaks a stub dataset, no data, no exposure), but a
-   real gap: there is no supported way to force-destroy a dataset whose mount
-   record outlives its namespace. Candidate residual for a follow-up window.
+   `zfs destroy` reported `dataset is busy` with no snapshots, children or share,
+   and it survived node reboots. **Mitigated:** `DestroyDataset` now recovers
+   through a documented ladder — on a busy failure it forces `zfs unmount -f`,
+   and if that reports "not currently mounted" it sets `mountpoint=none
+   canmount=off` and retries (the fix recorded in the openzfs tracker for exactly
+   this signature). Only a busy failure enters the path, so a genuinely in-use
+   dataset is still refused. The live `test/audit-av8` stub advanced through the
+   ladder (its mountpoint is now cleared and `mounted=no`, where before it was
+   contradictory) but hit a residual **leaked kernel reference** — no mounts in
+   `/proc/*/mounts`, no holds, no snapshots — which the tracker says needs a pool
+   export/import. The agent deliberately does **not** export the pool (that would
+   take every share offline); the error now names that state and remedy instead of
+   a bare "busy". Pinned by five destroy tests including
+   `TestDestroyDatasetClearsStaleMountpoint`.
 
 **AV-11 (TLS/session) — live, pass.** TLS 1.3 is the only protocol offered
 (`-tls1`/`-tls1_1` are refused); the cert is the `naslos-local-ca`-issued

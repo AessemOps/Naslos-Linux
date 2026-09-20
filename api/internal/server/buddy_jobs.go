@@ -493,6 +493,16 @@ func (s *Server) runBuddySendJob(job *buddyJob) {
 					"Retry the same send to continue chain %s: the buddy skips the chunks it already has",
 					pushed.PlainBytes, expected, chainState.Chain)
 			}
+			// AV-8: the estimate above comes from the same agent view as the
+			// send, so it cannot catch a dataset whose contents are invisible to
+			// `zfs send` (both are small and consistent). Compare against the
+			// dataset's own used space instead, which counts the blocks that
+			// exist whatever the mount namespace shows.
+			if d := s.datasetMountState(dataset); d != nil {
+				if err := requireStreamMatchesDataset(dataset, d.UsedBytes, pushed.PlainBytes); err != nil {
+					return err
+				}
+			}
 			return nil
 		},
 		Progress: setProgress,
