@@ -109,30 +109,9 @@ kind: ServiceAccount
 metadata:
   name: naslos-openldap-bootstrap
   namespace: naslos
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: naslos-openldap-bootstrap
-  namespace: naslos
-rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: naslos-openldap-bootstrap
-  namespace: naslos
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: naslos-openldap-bootstrap
-subjects:
-  - kind: ServiceAccount
-    name: naslos-openldap-bootstrap
-    namespace: naslos
+# No Role/RoleBinding: the Job only runs ldapmodify/ldapsearch over the network
+# (ldaps://naslos-openldap:636) and never calls the Kubernetes API - it even
+# sets automountServiceAccountToken: false. The Role previously granted
+# get/list on pods and create on pods/exec (trivy KSV-0053), which is a known
+# escalation path and was entirely unused. Removing it leaves the SA with no
+# permissions, which is what the workload needs.
