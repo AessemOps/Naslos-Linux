@@ -39,7 +39,9 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
   for the rest, Grafana removed) and most Mediums; the NAS-010 default-credential
   work is closed, *including* the live LDAP admin rotation. The remaining work is
   §8 of the report: NetworkPolicy/a policy CNI (**M4**, the highest residual — the
-  privileged hostNetwork agent `:9090` answers every pod), PSA scoping (**M6**,
+  privileged hostNetwork agent `:9090` still answers every pod, because the
+  `NetworkPolicy` set the chart now renders is **inert under flannel**; only the
+  CNI swap or a Talos host rule closes it), PSA scoping (**M6**,
   needs the privileged workloads split into their own namespace), Authelia's
   `jwt_secret` off the ConfigMap (**M3 residual** — the LDAP bind password was
   moved to a Secret mount at revision 41), and the rest of Batch 6 (the
@@ -243,7 +245,8 @@ NAS-010 default-credential work is closed, including the live LDAP service and
 admin rotations. The auth model verifies sound (anonymous 302, pod without the
 secret 401, agent without the token 401, no NodePort, no bypass). The report's §8
 lists what remains: NetworkPolicy/a policy CNI (the privileged hostNetwork agent
-`:9090` is still reachable from every pod — the highest residual), PSA scoping,
+`:9090` is still reachable from every pod — the highest residual; the chart now
+renders the policy intent but flannel does not enforce it), PSA scoping,
 Authelia's `jwt_secret` off the ConfigMap (the LDAP bind password moved to a
 Secret mount at revision 41), and the rest of Batch 6 (the `trivy`
 image/SBOM scan, `semgrep`, the bounded active tests, the buddy crypto

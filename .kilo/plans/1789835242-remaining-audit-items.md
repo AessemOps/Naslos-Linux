@@ -109,16 +109,22 @@ Recommend option 1 in a dedicated window; it is the largest remaining change.
 
 ## 7. AUDIT-M4 — no NetworkPolicy, and flannel does not enforce one
 
-The privileged hostNetwork agent `:9090` answers every pod. Two layers:
+**Policy layer done.** `charts/naslos/templates/networkpolicy.yaml` renders a
+namespace default-deny plus per-workload ingress allows (agent `:9090` API-only,
+API, UI, Authelia, OpenLDAP `636`, Samba, NFS) and a namespace egress policy
+(cluster DNS + cluster CIDR, no blanket Internet). Gated on
+`networkPolicy.enabled`; CIDRs in `networkPolicy.*`. `scripts/audit.sh` asserts
+the key policies and the agent's API-only selector.
+
+**Enforcement still open — this is what closes M4.** The policies are inert under
+flannel (no policy controller), so the privileged hostNetwork agent `:9090` still
+answers every pod. Two options, both a window:
 
 - **Enforcement:** install Cilium or Calico (replacing flannel on Talos means
-  `cluster.network.cni.name: none` + a reboot, its own window), or add a Talos
-  host firewall / `nftables` rule allowing only the API pod's IP to `:9090`.
-- **Policy objects:** add `NetworkPolicy` manifests for the namespace (API→agent,
-  API→LDAP, ingress→UI/API, DNS egress) so the intent is recorded and enforced
-  the moment a policy CNI is present.
-- Verification: from the terminal pod `curl naslos-agent:9090` times out; from the
-  API pod it still 401s/works; ingress and DNS unaffected.
+  `cluster.network.cni.name: none` + a reboot), or add a Talos host firewall /
+  `nftables` rule allowing only the API pod's IP to `:9090`.
+- Verification once enforced: from the terminal pod `curl naslos-agent:9090` times
+  out; from the API pod it still 401s/works; ingress and DNS unaffected.
 
 ## 8. AUDIT-L8 / CR-06 — `go test -race`
 

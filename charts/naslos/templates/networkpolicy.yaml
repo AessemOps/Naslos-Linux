@@ -1,0 +1,281 @@
+{{- /*
+NetworkPolicy intent for the Naslos namespace (AUDIT-M4).
+
+These objects record the intended call graph and enforce it the moment a
+policy-capable CNI is installed. **They are inert on the current flannel
+install**: flannel has no policy controller, so `NetworkPolicy` resources are
+accepted by the API server and silently do nothing (verified with a default-deny
+policy + `kubectl exec` before this chart owned them). Enabling the manifests
+here is still worth it - intent is reviewable, and Cilium/Calico then enforces
+it with no further change - but the residual that matters is the CNI, not the
+policies. Until then the privileged hostNetwork agent on :9090 still answers
+every pod, which is the finding.
+
+Multi-node clusters behind a routed external load balancer are also**not** covered:
+the cluster CIDR below only matches in-cluster source IPs, so an external
+IngressRoute client would need its own CIDR from values (see networkPolicy.*).
+
+Enabled by default: a no-op under flannel, and a latent protection when the CNI
+changes. Set networkPolicy.enabled=false to skip rendering entirely.
+*/}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $ns := .Release.Namespace }}
+{{- $ingressCIDR := .Values.networkPolicy.ingressPluginsCIDR | default "10.244.0.0/16" }}
+{{- $probeCIDR := .Values.networkPolicy.probeCIDR | default $ingressCIDR }}
+{{- $dnsCIDR := .Values.networkPolicy.dnsCIDR | default "169.254.0.0/16" }}
+---
+# Default deny for every pod in the namespace. Every rule below is an additive
+# allow; a pod with no matching policy is confined to its own namespace peers,
+# which is a small blast radius but still not the intent.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-default-deny
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Agent: privileged, host-network, the only path to ZFS. Reachable on :9090 by
+# the API alone (traefik does not talk to it - the API does, over the headless
+# Service). This single rule is the heart of AUDIT-M4: it narrows "every pod can
+# reach the ZFS control plane" to "the API can".
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-agent-ingress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-agent
+    app.kubernetes.io/component: agent
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-agent
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-api
+      ports:
+        - protocol: TCP
+          port: 9090
+---
+# API: proxied by Traefik, and reached by the UI's nginx as the upstream for the
+# relative /api/* calls (a second path that bypasses the proxy for static-asset
+# serving; the API's own proxy-identity check still guards it). The kubelet
+# probes hit the same port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-api-ingress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-api
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-ui
+        # Kubelet probes originate from outside the pod network, so they match
+        # this CIDR. Widen networkPolicy.probeCIDR for clusters that use a
+        # different node/service address family.
+        - ipBlock:
+            cidr: {{ $probeCIDR | quote }}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# UI: proxied by Traefik; kubelet probes (nginx has no probes today but this
+# keeps a future one working) from the node CIDR.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-ui-ingress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-ui
+    app.kubernetes.io/component: ui
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-ui
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+        - ipBlock:
+            cidr: {{ $probeCIDR | quote }}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# Authelia: the only consumer is Traefik, for both the forwardAuth subrequest and
+# the portal route. Nothing else in the namespace has any business authenticating
+# against it directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-authelia-ingress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-authelia
+    app.kubernetes.io/component: authelia
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: authelia
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+        - ipBlock:
+            cidr: {{ $probeCIDR | quote }}
+      ports:
+        - protocol: TCP
+          port: 9091
+---
+# OpenLDAP: the API (identity), Authelia (authn backend) and Traefik (nothing
+# today, kept explicit) hold credentials; the samba container authenticates
+# share users through NSS/LDAP. All over ldaps:636 only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-openldap-ingress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-openldap
+    app.kubernetes.io/component: identity
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-openldap
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: authelia
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-samba
+      ports:
+        - protocol: TCP
+          port: 636
+---
+# Samba: host-network and bound to the SMB ports; the only in-cluster caller is
+# the API (share/config reload and NSS reads). `users` DNS (445 is a service
+# name the container publishes) is not needed by peers, so it stays closed here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-samba-ingress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-samba
+    app.kubernetes.io/component: shares
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-samba
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-api
+---
+# NFS: host-network. Clients are LAN hosts outside the cluster, so policy cannot
+# express them as a pod selector; the intent here is only to keep the port
+# closed to unrelated pods. External clients are allowed by an ipBlock if the
+# operator sets networkPolicy.nfsClientCIDR.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-nfs-ingress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-nfs
+    app.kubernetes.io/component: shares
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-nfs
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-api
+        {{- with .Values.networkPolicy.nfsClientCIDR }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 2049
+---
+# Egress for every workload: cluster DNS (Cilium forwards from 169.254.0.0/16
+# regardless of the cluster CIDR) plus the pod/Service network the workloads
+# actually call. No workload in this namespace has a documented outbound
+# Internet dependency, so a broad 0.0.0.0/0 rule is deliberately absent; add a
+# dedicated CIDR (values networkPolicy.extraEgressCIDRs) if one appears.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-workload-egress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ $dnsCIDR | quote }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.clusterCIDR | default "10.0.0.0/8" | quote }}
+    {{- range .Values.networkPolicy.extraEgressCIDRs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+    {{- end }}
+{{- end }}

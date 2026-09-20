@@ -157,6 +157,22 @@
         "receiveHostPath": { "type": "string" },
         "enrollTokenSecret": { "type": "string" }
       }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "clusterCIDR": { "type": "string" },
+        "ingressPluginsCIDR": { "type": "string" },
+        "probeCIDR": { "type": "string" },
+        "dnsCIDR": { "type": "string" },
+        "nfsClientCIDR": { "type": "string" },
+        "extraEgressCIDRs": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
     }
   },
   "definitions": {
