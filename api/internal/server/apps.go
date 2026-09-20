@@ -146,17 +146,10 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAppStartStop handles starting/stopping an app by scaling replicas.
-// POST /api/apps/:name/start
-// POST /api/apps/:name/stop
-func (s *Server) handleAppStartStop(w http.ResponseWriter, r *http.Request) {
-	// This is a simplified start/stop that scales the deployment to 0
-	// In production, use Helm hooks or a custom suspend value
-	writeJSON(w, http.StatusOK, map[string]string{
-		"status": "not yet implemented",
-		"note":   "use Helm upgrade with replicaCount value",
-	})
-}
+// Removed: handleAppStartStop was a stub that returned "not yet implemented",
+// had no route registered and no caller in the UI (staticcheck U1000, Batch 6).
+// App start/stop would be a real feature (scale replicas or a Helm suspend
+// value) and should be added with its route and a test when it is built.
 
 // ensure helm import is used
 var _ = helm.ReleaseStatus
