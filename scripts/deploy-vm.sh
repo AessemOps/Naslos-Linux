@@ -274,6 +274,26 @@ fi
 echo "=== Waiting for Talos node health ==="
 talosctl --nodes "$VM_IP" --endpoints "$VM_IP" health || true
 
+# --- wait for the CNI (AUDIT-M4: Cilium, applied as a Talos inline manifest) ---
+# Flannel is disabled and Cilium now ships in the machine config, so the node
+# has NO pod networking until Cilium's DaemonSet is running. Talos applies the
+# inline manifest during bootstrap, but the workloads and the Helm install below
+# will fail (DNS, Services) if we race it. Wait for the cilium DaemonSet to be
+# ready before touching kubectl/helm.
+echo "=== Waiting for Cilium (CNI) to become ready ==="
+for i in $(seq 1 60); do
+    ready="$(kubectl -n kube-system get ds cilium -o jsonpath='{.status.numberReady}' 2>/dev/null || true)"
+    if [ "$ready" = "1" ]; then
+        echo "Cilium is ready."
+        break
+    fi
+    if [ "$i" -eq 60 ]; then
+        echo "WARN: cilium not ready after ~5 min; continuing anyway." >&2
+        echo "      Check: kubectl -n kube-system get pods -l k8s-app=cilium" >&2
+    fi
+    sleep 5
+done
+
 # --- retrieve Kubernetes credentials ---
 echo "=== Fetching Kubernetes kubeconfig ==="
 talosctl kubeconfig --nodes "$VM_IP" --endpoints "$VM_IP" -f "$HOME/.kube/config" || true

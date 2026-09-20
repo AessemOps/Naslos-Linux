@@ -131,6 +131,14 @@ does not cover, so the agent `:9090` is still reachable from other pods. Close i
 with Cilium's host firewall (`enable-host-firewall=true` +
 `CiliumClusterwideNetworkPolicy` with a `nodeSelector`) or a Talos host rule.
 
+**Fresh install:** the change is landed in the tracked machine-config patch
+`bootstrap/vm/naslos-vm.yaml` (flannel `$patch: delete`, kube-proxy disabled,
+host DNS forwarding off, Cilium `KubeInlineManifestConfig`), the pinned manifest
+`bootstrap/cilium/cilium.yaml`, and `scripts/render-cilium.sh` (run by `make
+bootstrap-vm`); `scripts/deploy-vm.sh` waits for the cilium DaemonSet before the
+first kubectl/helm call, and the installer is pinned to v1.14.1. Simulated a
+fresh `gen config` to confirm, and `scripts/audit.sh` guards it.
+
 ## 8. AUDIT-L8 / CR-06 — `go test -race`
 
 The buddy scheduler test races. Fix it, then flip `NASLOS_AUDIT_RACE=1` in
