@@ -276,6 +276,28 @@ now resolved and the scan is clean:**
   image scan matters.
 - **Fixed:** the dependency is bumped to **v2.6.2**; `go build/vet/test` pass. The
   image must be rebuilt (`0.1.0-r9`) for the fix to reach production.
+
+`trivy image --severity HIGH,CRITICAL naslos-ui:0.1.0-r9` reports **37 (35 HIGH,
+2 CRITICAL)** — all in the **alpine 3.21.3 base** of
+`nginxinc/nginx-unprivileged:1.27-alpine`, none in our own content:
+
+- OpenSSL `3.3.3-r0` (including CVE-2026-31789, the CRITICAL), libexpat 2.7.0,
+  libpng 1.6.47, libxml2 2.13.4, musl 1.2.5-r9, nghttp2 1.64.0, zlib 1.3.1-r2,
+  c-ares 1.34.5 — all `fixed` by newer Alpine packages.
+- **Practical exposure is low**, which is why this is recorded rather than
+  hot-fixed: this nginx serves static files over **plain HTTP inside the
+  cluster** (Traefik terminates TLS, so nginx never parses certificates), and
+  expat/libpng/libxml2 are not on its request path (it neither decodes images
+  nor parses XML). The CRITICAL OpenSSL issue is a 32-bit-only heap overflow and
+  we run x86_64.
+- **Fix (pending):** move the base to a current
+  `nginxinc/nginx-unprivileged` tag (newer Alpine) and re-scan; that carries the
+  patched openssl/expat/png/xml2/musl/nghttp2/zlib in one step. Tracked here
+  rather than done in this pass because it needs a rebuild plus the UI smoke run.
+
+**Remaining image scans:** `naslos-agent`, `naslos-terminal`, `naslos-samba`,
+`naslos-nfs`, `naslos-openldap` still to scan (the API image is clean apart from
+the fixed oras-go pair).
 | AUDIT-M10 — digests / registry TLS | Medium | Excluded by request | Revisit when wanted |
 
 ## 9. Reproducing the audit and fixes
