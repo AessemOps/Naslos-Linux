@@ -296,9 +296,22 @@ now resolved and the scan is clean:**
   libxml2, musl, nghttp2 and zlib in one step. `trivy` on the rebuilt image:
   **0 HIGH/CRITICAL**.
 
-**Remaining image scans:** `naslos-agent`, `naslos-terminal`, `naslos-samba`,
-`naslos-nfs`, `naslos-openldap` still to scan (the API image is clean apart from
-the fixed oras-go pair).
+**Remaining image scans:** `naslos-agent` (`0.1.0-r3`), `naslos-terminal`
+(`0.1.0-r1`), `naslos-samba` (`0.1.0-r1`), `naslos-nfs` (`0.1.0-r1`) and
+`naslos-openldap` (`0.1.0-r1`). `trivy image` accepts one target per run, so run
+it per image:
+
+```bash
+for img in agent:0.1.0-r3 terminal:0.1.0-r1 samba:0.1.0-r1 nfs:0.1.0-r1 openldap:0.1.0-r1; do
+  docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest \
+    image --quiet --no-progress --severity HIGH,CRITICAL "192.168.1.2:30095/naslos-${img}"
+done
+```
+
+They are the custom images built from `terminal/`, `samba/`, `nfs/` and
+`openldap/`; the API image is clean apart from the fixed oras-go pair and the UI
+image is now clean, so the expectation is base-image findings of the same shape
+(fixable by bumping the base tag, as the UI showed).
 | AUDIT-M10 — digests / registry TLS | Medium | Excluded by request | Revisit when wanted |
 
 ## 9. Reproducing the audit and fixes
