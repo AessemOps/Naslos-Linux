@@ -25,6 +25,14 @@ RUN apt-get update && \
         ca-certificates \
         && rm -rf /var/lib/apt/lists/*
 
+# Debian 13's slapd defaults olcPidFile to /var/run/slapd/slapd.pid and relies on
+# systemd-tmpfiles to create that directory. Containers never run tmpfiles.d, so
+# slapd exits 1 before it binds with:
+#   unable to open pid file "/var/run/slapd/slapd.pid": 2 (No such file or directory)
+# Bookworm did not need this. It must come after the slapd package is installed,
+# which is what creates the openldap user.
+RUN mkdir -p /var/run/slapd && chown openldap:openldap /var/run/slapd
+
 # Create directories for TLS and bootstrap
 RUN mkdir -p /container/service/slapd/assets/certs \
              /container/service/slapd/assets/config/bootstrap \
