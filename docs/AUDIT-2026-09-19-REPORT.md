@@ -305,11 +305,18 @@ Go binary. The DaemonSet rolled out cleanly on the privileged hostNetwork agent.
 Debian bookworm packages (samba 4.17.12, python3.11, util-linux, perl, pcre2,
 zlib), none in our own content. Two things matter here:
 
-1. **The image is stale, and the cheap fix is a rebuild.** Most findings are
-   marked `fixed` in a newer bookworm point release (`deb12u5+`), which the
-   current `debian:bookworm-slim` carries — so rebuilding the four Debian images
-   from the current base should clear the bulk of them without a Dockerfile
-   change. That rebuild is the recommended next action.
+1. **The rebuild does not help, and the earlier "stale image" reading was
+   wrong.** I rebuilt `0.1.0-r2` with `--no-cache` (so `apt-get update` fetched
+   the current bookworm lists and pulled the newest point releases — libssl3
+   `3.0.20-1~deb12u2`, libexpat1 `deb12u3`, libxml2 `deb12u6`, python3.11
+   `deb12u8`, krb5 `deb12u5`, libarchive13 `deb12u5`) and re-scanned: **the
+   counts are unchanged at 137 HIGH / 9 CRITICAL**. Trivy's `fixed` value means a
+   fix exists in a **newer Debian release**, not that bookworm has one; Debian 12
+   is still carrying these. So `r2` was not deployed (no benefit), and the real
+   options are a **distro jump to Debian 13 (trixie)** — which brings Samba
+   4.17 → 4.22/4.23 and needs its own validation, not a drop-in — or accepting
+   the set with the triage below. The base image itself (`debian 12.15`) is
+   current, so there is no staleness to fix.
 2. **Several look scarier than they are here**, and the triage matters before
    acting:
    - `CVE-2026-58221` (LDB special DNs → domain takeover), `CVE-2026-58222`
