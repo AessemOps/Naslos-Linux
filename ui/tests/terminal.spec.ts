@@ -6,6 +6,7 @@ import { test, expect, request as playwrightRequest } from '@playwright/test';
 // 200 (the interactive tests below use the authenticated session).
 const TERMINAL_PATHS = [
   '/api/pods?namespace=naslos',
+  '/api/pods?namespace=naslos-privileged',
   '/api/namespaces',
   '/api/ws/exec?namespace=naslos&pod=whatever&shell=sh'
 ];
@@ -36,11 +37,29 @@ test('the terminal is refused without an authenticated session', async () => {
   }
 });
 
+// AUDIT-M6: the privileged workloads (agent, samba, nfs, terminal) live in
+// their own namespace, so the shell pod is discovered by scanning the candidate
+// namespaces rather than assuming `naslos`.
+const NS_CANDIDATES = ['naslos-privileged', 'naslos'];
+
+// Find the shell pod across the candidate namespaces. Returns the pod and the
+// namespace it was found in, so the exec assertions target the right one.
+async function findShellPod(request: any): Promise<{ pod: any; namespace: string } | null> {
+  for (const namespace of NS_CANDIDATES) {
+    const res = await request.get(`/api/pods?namespace=${namespace}`);
+    if (res.status() !== 200) continue;
+    const pods = await res.json();
+    const shell = (pods as any[]).find(p => p.terminal);
+    if (shell) return { pod: shell, namespace };
+  }
+  return null;
+}
+
 // Whether the terminal is reachable with the authenticated session. It is not
 // when the terminal component is disabled (terminal.enabled=false), in which case
 // the interactive tests skip rather than fail.
 async function terminalReachable(request: any): Promise<boolean> {
-  const res = await request.get('/api/pods?namespace=naslos');
+  const res = await request.get('/api/namespaces');
   return res.status() === 200;
 }
 
@@ -53,16 +72,18 @@ test('the terminal lists pods, preselects the shell container and runs commands'
   test.skip(!(await terminalReachable(request)),
     'run this against the authenticated entry point (Authelia) to exercise the terminal');
 
-  const pods = await (await request.get('/api/pods?namespace=naslos')).json();
-  const shellPod = (pods as any[]).find(p => p.terminal);
-  test.skip(!shellPod, 'no terminal pod deployed (terminal.enabled=false)');
+  const found = await findShellPod(request);
+  test.skip(!found, 'no terminal pod deployed (terminal.enabled=false)');
+  const { pod: shellPod, namespace } = found!;
 
   await page.goto('/terminal');
   await expect(page.getByRole('heading', { name: 'Terminal' })).toBeVisible();
 
-  // Targets are discovered, not typed: the shell container is preselected.
+  // Targets are discovered, not typed: the shell container is preselected. The
+  // namespace field shows whichever namespace holds the shell pod (AUDIT-M6:
+  // that is the privileged one).
   const selects = page.locator('select');
-  await expect(selects.nth(0)).toContainText('naslos');  // namespace
+  await expect(selects.nth(0)).toContainText(namespace);  // namespace
   await expect(selects.nth(1)).toContainText('— shell'); // pod, marked
   await expect(selects.nth(1)).toHaveValue((shellPod as any).name);
   await expect(selects.nth(2)).toHaveValue('shell');     // container
@@ -102,12 +123,13 @@ test('the exec preflight reports what would go wrong, before the socket opens', 
   test.skip(!(await terminalReachable(request)),
     'run this against the authenticated entry point (Authelia) to exercise the preflight');
 
-  const pods = await (await request.get('/api/pods?namespace=naslos')).json();
-  const shellPod = (pods as any[]).find(p => p.terminal);
+  const found = await findShellPod(request);
+  const shellPod = found?.pod;
+  const ns = found?.namespace ?? 'naslos';
 
   // A misspelled pod is a 404 the UI can show, instead of a failed handshake
   // with no explanation.
-  const missing = await request.get('/api/ws/exec?namespace=naslos&pod=nosuchpod123&shell=bash');
+  const missing = await request.get(`/api/ws/exec?namespace=${ns}&pod=nosuchpod123&shell=bash`);
   expect(missing.status()).toBe(404);
   expect(await missing.text()).toContain('cannot find pod');
 
@@ -117,13 +139,13 @@ test('the exec preflight reports what would go wrong, before the socket opens', 
   if (!shellPod) return;
 
   // Only shells are allowed: the endpoint must not become "run anything as root".
-  const badShell = await request.get(`/api/ws/exec?namespace=naslos&pod=${shellPod.name}&shell=rm`);
+  const badShell = await request.get(`/api/ws/exec?namespace=${ns}&pod=${shellPod.name}&shell=rm`);
   expect(badShell.status()).toBe(400);
   expect(await badShell.text()).toContain('unsupported shell');
 
   // The preflight answers with the container it resolved, so the UI can show
   // what it is about to attach to.
-  const ok = await request.get(`/api/ws/exec?namespace=naslos&pod=${shellPod.name}&shell=bash`);
+  const ok = await request.get(`/api/ws/exec?namespace=${ns}&pod=${shellPod.name}&shell=bash`);
   expect(ok.status(), await ok.text()).toBe(200);
   const resolved = await ok.json();
   expect(resolved.container).toBe('shell');

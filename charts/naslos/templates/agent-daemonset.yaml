@@ -3,7 +3,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: naslos-agent
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "naslos.workloadNamespace" . }}
   labels:
     app.kubernetes.io/name: naslos-agent
     app.kubernetes.io/component: agent
@@ -83,7 +83,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: naslos-agent
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "naslos.workloadNamespace" . }}
   labels:
     app.kubernetes.io/name: naslos-agent
     app.kubernetes.io/component: agent
@@ -101,7 +101,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: naslos-agent
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "naslos.workloadNamespace" . }}
 # No ClusterRole/ClusterRoleBinding: the agent never calls the Kubernetes API -
 # it chroots into /host and runs zpool/zfs directly, and the API reaches it over
 # its headless Service. The previous Role granted get/list/watch on every node,

@@ -24,6 +24,8 @@ changes. Set networkPolicy.enabled=false to skip rendering entirely.
 */}}
 {{- if .Values.networkPolicy.enabled }}
 {{- $ns := .Release.Namespace }}
+{{- $wns := include "naslos.workloadNamespace" . }}
+{{- $split := ne $wns $ns }}
 {{- $ingressCIDR := .Values.networkPolicy.ingressPluginsCIDR | default "10.244.0.0/16" }}
 {{- $probeCIDR := .Values.networkPolicy.probeCIDR | default "" }}
 {{- $dnsCIDR := .Values.networkPolicy.dnsCIDR | default "169.254.0.0/16" }}
@@ -46,6 +48,24 @@ spec:
   policyTypes:
     - Ingress
     - Egress
+{{- if $split }}
+---
+# AUDIT-M6: the privileged namespace gets its own default-deny, or the workloads
+# moved there would be unprotected the moment they leave `naslos`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-default-deny
+  namespace: {{ $wns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+{{- end }}
 ---
 # Agent: privileged, host-network, the only path to ZFS. The intent is :9090
 # reachable by the API alone (traefik does not talk to it - the API does, over
@@ -59,7 +79,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: naslos-agent-ingress
-  namespace: {{ $ns }}
+  namespace: {{ $wns }}
   labels:
     app.kubernetes.io/name: naslos-agent
     app.kubernetes.io/component: agent
@@ -71,7 +91,12 @@ spec:
     - Ingress
   ingress:
     - from:
-        - podSelector:
+        # AUDIT-M6: the API stays in the release namespace, so the peer is a
+        # namespace+pod selector rather than a bare podSelector.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+          podSelector:
             matchLabels:
               app.kubernetes.io/name: naslos-api
       ports:
@@ -231,9 +256,19 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: authelia
+        # AUDIT-M6: samba moved to the privileged namespace.
+        {{- if $split }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $wns }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-samba
+        {{- else }}
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: naslos-samba
+        {{- end }}
       ports:
         - protocol: TCP
           port: 636
@@ -245,7 +280,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: naslos-samba-ingress
-  namespace: {{ $ns }}
+  namespace: {{ $wns }}
   labels:
     app.kubernetes.io/name: naslos-samba
     app.kubernetes.io/component: shares
@@ -257,7 +292,11 @@ spec:
     - Ingress
   ingress:
     - from:
-        - podSelector:
+        # AUDIT-M6: API stays in the release namespace.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+          podSelector:
             matchLabels:
               app.kubernetes.io/name: naslos-api
 ---
@@ -269,7 +308,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: naslos-nfs-ingress
-  namespace: {{ $ns }}
+  namespace: {{ $wns }}
   labels:
     app.kubernetes.io/name: naslos-nfs
     app.kubernetes.io/component: shares
@@ -281,7 +320,11 @@ spec:
     - Ingress
   ingress:
     - from:
-        - podSelector:
+        # AUDIT-M6: API stays in the release namespace.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+          podSelector:
             matchLabels:
               app.kubernetes.io/name: naslos-api
         {{- with .Values.networkPolicy.nfsClientCIDR }}
@@ -339,11 +382,20 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # In-cluster peers by identity: any pod in this namespace (API, Authelia,
-    # Samba, OpenLDAP, UI, Traefik, Terminal) on any port, so the pod-to-pod
-    # call graph is not re-encoded here and cannot drift from the platform.
+    # In-cluster peers by identity. AUDIT-M6: the privileged workloads live in a
+    # separate namespace, so pods must be able to reach peers in BOTH naslos and
+    # the privileged namespace (the API calls the agent; authelia/samba call
+    # openldap). One namespaceSelector per namespace keeps this explicit.
     - to:
         - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+        {{- if $split }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $wns }}
+        {{- end }}
     # Service ClusterIPs (the API resolves naslos-openldap and the agent through
     # Services; some clients dial the ClusterIP rather than a Pod IP).
     {{- with $serviceCIDR }}
@@ -363,6 +415,62 @@ spec:
         - ipBlock:
             cidr: {{ . | quote }}
     {{- end }}
+{{- if $split }}
+---
+# AUDIT-M6: the same egress policy for the privileged namespace. Without it the
+# moved workloads would fall under its default-deny with no egress at all
+# (no DNS, no LDAP, no node access) the moment they left `naslos`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-workload-egress
+  namespace: {{ $wns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - ipBlock:
+            cidr: {{ $dnsCIDR | quote }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $wns }}
+    {{- with $serviceCIDR }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+    {{- end }}
+    {{- with $nodeCIDR }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+    {{- end }}
+    {{- range .Values.networkPolicy.extraEgressCIDRs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+    {{- end }}
+{{- end }}
 {{- if .Values.networkPolicy.cilium.enabled }}
 ---
 # CiliumNetworkPolicy: the rules plain NetworkPolicy cannot express (AUDIT-M4).
@@ -405,6 +513,37 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
+{{- if $split }}
+---
+# AUDIT-M6: the privileged namespace needs the same host/API-server and DNS
+# egress, or the agent/samba/nfs/terminal cannot reach kubelet, the API server or
+# CoreDNS once its default-deny applies.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: naslos-allow-host
+  namespace: {{ $wns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+spec:
+  endpointSelector: {}
+  egress:
+    - toEntities:
+        - host
+        - kube-apiserver
+        - remote-node
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+{{- end }}
 {{- if .Values.networkPolicy.cilium.hostFirewall }}
 ---
 # CiliumClusterwideNetworkPolicy + the Cilium host firewall: the ONLY way to

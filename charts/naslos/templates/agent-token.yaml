@@ -3,21 +3,46 @@ Agent bearer token (NAS-002).
 
 The privileged, host-networked agent only serves requests carrying this token
 (except its /health probe). Resolution order:
-  1. the existing `naslos-agent` Secret's `token` key (upgrades) via lookup;
+  1. an existing `naslos-agent` Secret's `token` key (upgrades) via lookup, in the
+     workload namespace first (AUDIT-M6: that is where the agent now runs) then
+     the release namespace (pre-split upgrades);
   2. a fresh random value (first install).
+
+The Secret is rendered in BOTH namespaces: the agent pod reads it beside itself
+in the workload namespace, and the API pod reads it beside itself in the release
+namespace. A secretKeyRef cannot cross namespaces, so the two copies are
+required; they carry the same value, and the lookup above is what keeps them in
+sync across upgrades.
 
 Set `agent.tokenSecret` to use a Secret you manage out of band instead; it must
 have a `token` key.
 */}}
 {{- $secretName := include "naslos.agentTokenSecret" . | default "naslos-agent" }}
+{{- $wns := include "naslos.workloadNamespace" . }}
 {{- $agentToken := "" }}
-{{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName }}
-{{- if and $existing (index $existing.data "token") }}
-{{- $agentToken = index $existing.data "token" | b64dec }}
+{{- $inWorkloadNs := lookup "v1" "Secret" $wns $secretName }}
+{{- $inReleaseNs := lookup "v1" "Secret" .Release.Namespace $secretName }}
+{{- if and $inWorkloadNs (index $inWorkloadNs.data "token") }}
+{{- $agentToken = index $inWorkloadNs.data "token" | b64dec }}
+{{- else if and $inReleaseNs (index $inReleaseNs.data "token") }}
+{{- $agentToken = index $inReleaseNs.data "token" | b64dec }}
 {{- else if not (include "naslos.agentTokenSecret" .) }}
 {{- $agentToken = randAlphaNum 48 }}
 {{- end }}
 {{- if not (include "naslos.agentTokenSecret" .) }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: naslos-agent
+  namespace: {{ $wns }}
+  labels:
+    app.kubernetes.io/name: naslos-agent
+    app.kubernetes.io/component: auth
+type: Opaque
+stringData:
+  token: {{ required "agent token could not be resolved (set agent.tokenSecret to an existing Secret with a 'token' key)" $agentToken | quote }}
+{{- if ne $wns .Release.Namespace }}
+---
 apiVersion: v1
 kind: Secret
 metadata:
@@ -29,4 +54,5 @@ metadata:
 type: Opaque
 stringData:
   token: {{ required "agent token could not be resolved (set agent.tokenSecret to an existing Secret with a 'token' key)" $agentToken | quote }}
+{{- end }}
 {{- end }}

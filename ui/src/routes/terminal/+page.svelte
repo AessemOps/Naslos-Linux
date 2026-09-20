@@ -52,7 +52,32 @@
       if (!res.ok) return;
       const data = await res.json();
       namespaces = Array.isArray(data) ? data : [];
-      // Prefer the namespace Naslos runs in when it is among them.
+      // Prefer the namespace that actually hosts the terminal container. Since
+      // the privileged workloads moved to their own namespace (AUDIT-M6), the
+      // old hardcoded preference for "naslos" landed the picker on a namespace
+      // with no terminal pod. Probe each candidate (the likely one first) and
+      // keep the first that has a terminal pod; fall back to the release
+      // namespace, then the first listed.
+      const preferred = ['naslos-privileged', 'naslos'];
+      const ordered = [
+        ...preferred.filter(ns => namespaces.includes(ns)),
+        ...namespaces.filter(ns => !preferred.includes(ns))
+      ];
+      for (const ns of ordered) {
+        try {
+          const pr = await fetch(`/api/pods?namespace=${encodeURIComponent(ns)}`);
+          if (!pr.ok) continue;
+          const pods = await pr.json();
+          if (Array.isArray(pods) && pods.some(p => p.terminal)) {
+            namespace = ns;
+            return;
+          }
+        } catch {
+          // Try the next candidate.
+        }
+      }
+      // No terminal pod found anywhere: keep something valid so Connect can
+      // explain the situation.
       if (namespaces.includes('naslos')) namespace = 'naslos';
       else if (namespaces.length > 0 && !namespaces.includes(namespace)) namespace = namespaces[0];
     } catch (e) {
