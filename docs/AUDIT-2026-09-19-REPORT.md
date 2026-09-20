@@ -69,30 +69,38 @@ secret, and a runnable (if not yet wired) audit sweep.
 |---|---|---|---|
 | M1 | Talos machine configs + `talosconfig` (private keys) in local `refs/cline/checkpoints/*` | **Fixed** — `421711a` | 104 refs deleted + gc; gitleaks 89 → 4 (documented false positives); never on a branch or remote |
 | M2 | Local secret files world-readable | **Fixed** — `421711a` | `bootstrap/vm/*` and the captured session `chmod 600`; `auth.setup.ts` enforces 0600 itself |
-| M3 | `jwt_secret` regenerated every render; secrets in a ConfigMap | **Partial** — `421711a`; moving the LDAP password out **failed and was reverted** (see below) | Persisted in `naslos-authelia-jwt` (proven across an upgrade). Residual: Authelia's config is a ConfigMap, so its `jwt_secret`/LDAP password are readable there |
+| M3 | `jwt_secret` regenerated every render; secrets in a ConfigMap | **Partial** — `421711a`; the LDAP bind password moved out of the ConfigMap at revision 41 (see below) | Persisted in `naslos-authelia-jwt` (proven across an upgrade). The LDAP bind password now reaches Authelia from the `naslos-openldap` Secret via `AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE`. Residual: `jwt_secret` still sits in the ConfigMap because the subchart has no Secret-backed config mount |
 
-**AUDIT-M3 attempt (failed, reverted at revision 38).** The Authelia chart
-supports taking the LDAP bind password from a Secret
-(`configMap.authentication_backend.ldap.password.secret_name` + `path`, which is
-used as both the Secret key and the mounted filename) and setting
-`AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE` at it. I configured it
-against the existing `naslos-openldap` Secret, removed the password from our
-ConfigMap, and satisfied the chart's validation, which additionally requires the
-Secret to be listed under `secret.additionalSecrets` (it `fail`s otherwise).
-Lint passed, but the deployed **DaemonSet rendered no password-file env var** —
-checked with `kubectl get daemonset naslos-authelia -o
-jsonpath='{...containers[0].env[*].name}'`, which showed only the chart's own
-session/storage/reset secrets — so Authelia lost its LDAP password and every
-forwarded request returned an error, leaving the UI reachable without a
-challenge. `helm rollback naslos 38` restored service (Authelia rolled out,
-login and the LDAP specs pass), and the values/template edits are reverted so a
-future `make install-vm` cannot reintroduce it.
+**AUDIT-M3 follow-up — the LDAP password now comes from a Secret (revision 41).**
+The revision-38 attempt was reverted; the follow-up found *two* independent
+reasons it could never have worked:
 
-Lesson: this must be proved with a rendered manifest assertion (or a scratch
-release) before it goes near the live authenticator, and the subchart's
-`deployment.yaml` env wiring needs checking against the DaemonSet path it
-actually renders here. Until then M3's LDAP half stays open — the value is in a
-Secret *and* the ConfigMap, not only the ConfigMap.
+1. The subchart only renders `AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE`
+   when `configMap.authentication_backend.ldap.enabled` is true (its default is
+   false). The attempt set only `password.secret_name`, so no env var rendered
+   and Authelia started without a bind password.
+2. The mount and the env path are built independently: the volume mounts at
+   `/secrets/<additionalSecrets[key].path>`, while the env helper builds
+   `/secrets/<password.secret_name>/<password.path>`. With
+   `path: service-password` the file landed at
+   `/secrets/service-password/service-password`, not at the env path. Setting
+   the mount `path` to the Secret **name** makes the two coincide.
+
+The fix in `values.yaml` sets `authentication_backend.ldap.enabled: true`,
+`password.secret_name: naslos-openldap` + `path: service-password`, and lists the
+Secret under `secret.additionalSecrets` with `path: naslos-openldap` and an
+`items` entry that mounts only the `service-password` key. `authelia-config.yaml`
+no longer writes `password` at all; the `lookup` stays only as a fail-early
+presence check.
+
+This time it was proved on the rendered manifest **before** the live upgrade:
+`scripts/audit.sh` now asserts the env var, its
+`/secrets/naslos-openldap/service-password` value, the matching `mountPath`, and
+the absence of an inline `password:` in `authelia-config` — that one check would
+have caught both bugs above. Live at revision 41: Authelia rolled out Ready with
+the env var and mount, the ConfigMap no longer contains the bind password,
+anonymous requests still 302 to the portal (`/api/health` 200), and
+`auth.setup` plus the LDAP-backed users/groups specs pass (8 passed).
 | M4 | No NetworkPolicy; flannel does not enforce one; privileged hostNetwork agent `:9090` open to every pod | **Open** | Needs a policy CNI or host firewall — its own window |
 | M5 | Unused agent ClusterRole (nodes/pods/pods-log cluster-wide) | **Fixed** — `8555925` | ClusterRole + binding removed; the agent has no client-go |
 | M6 | Namespace PSA `enforce: privileged` cluster-wide | **Open** | Scope per-workload or split namespaces |
@@ -168,7 +176,8 @@ Local secret files are 0600.
 **M3 — session stability.** `jwt_secret` is generated once into
 `naslos-authelia-jwt` and read back with `lookup`; an upgrade no longer
 invalidates every session (verified by comparing the value across a full
-upgrade).
+upgrade). The LDAP bind password was also moved out of the ConfigMap at
+revision 41 (see the follow-up above); only `jwt_secret` remains there.
 
 **M5/M7/M8/M9/M13 — chart and API hardening.** Unused agent RBAC dropped; API
 read timeouts added; secret-bearing files 0600; chain ids validated with a single
@@ -254,6 +263,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | `go build`/`go vet`/`go test` (agent) | clean, including the shadow-mode test |
 | `svelte-check` | 0 errors, 0 warnings |
 | `helm lint` (+ `helm template`) | clean (rendering needs `--set openldap.bindPassword=…` only because the chart now fails closed without the Secret) |
+| Authelia LDAP password is a Secret mount (M3 follow-up) | `scripts/audit.sh` renders the chart and asserts the `AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE` env var, its `/secrets/naslos-openldap/service-password` value, the matching mount, and no inline `password:` in `authelia-config`; live at revision 41 |
 | Playwright vs `https://naslos.local` | **35 passed** (repeatedly; Authelia login + 2FA, terminal interactive, backups self-send, users/groups/shares/pools) |
 | Live unauthenticated | `/api/*` → 302 to the portal; `/api/health` 200; `:30080` refuses; pod without the proxy secret 401; agent without the token 401 |
 | Credentials | new LDAP service and admin bind; old service value and `naslos-admin` rejected |
@@ -266,7 +276,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | AUDIT-M4 — no NetworkPolicy / unenforced CNI | Medium | Replacing the CNI or adding host firewall rules on a single-node appliance needs a window | Install Cilium/Calico or a host rule limiting API→agent `:9090`; then NetworkPolicies |
 | AUDIT-M6 — PSA `privileged` namespace | Medium | Changes scheduling/security context of live workloads | Split namespaces or label only agent/terminal privileged |
 | ~~AUDIT-M11~~ — **fixed at revision 30**: Svelte 5 + svelte-check 4 + vite-plugin-svelte 4 (`npm audit` 11 → 4, the rest dev-server only); xterm → `@xterm` (CR-31) still open | Medium | — | — |
-| AUDIT-M3 residual — Authelia config in a ConfigMap | Medium | Requires subchart support to mount a Secret-based config | Move `configuration.yml` to a Secret |
+| AUDIT-M3 residual — `jwt_secret` still in the `authelia-config` ConfigMap | Low | The Authelia subchart only mounts a ConfigMap for `configuration.yml` (no Secret equivalent); the LDAP bind password was moved to a Secret at revision 41 | If the chart gains a Secret-backed config mount, move the whole file; otherwise template the pod from the naslos chart |
 | ~~AUDIT-L2~~ — **fixed at revision 29**: unprivileged nginx (uid 101, port 8080), all capabilities dropped, `runAsNonRoot` | Low | — | — |
 | ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
 | ~~AUDIT-L5/L6~~ — **fixed at revision 27**: `logsafe.Field` sanitises log arguments and the conversions are bounded/clamped | Low | — | — |

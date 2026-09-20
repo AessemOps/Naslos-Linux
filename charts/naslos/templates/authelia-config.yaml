@@ -14,20 +14,19 @@ TLS certificate are persisted: generate once, then read the existing Secret back
 {{- $jwtSecret = randAlphaNum 32 }}
 {{- end }}
 {{- /*
-The LDAP service password comes from the naslos-openldap Secret (key
-service-password), which openldap/generate-secrets.sh creates and the bootstrap
-Job applies to the directory. Reading it here means the credential is not
-committed in values and rotation only touches the Secret (AUDIT-H1). The
-`bindPassword` value is an escape hatch for `helm template`/dry runs, where
-lookup returns nothing; a real install must have the Secret, or a fail message
-tells the operator to run generate-secrets.sh first.
+The LDAP service password is NOT written into this ConfigMap (AUDIT-M3). The
+Authelia subchart mounts the naslos-openldap Secret (key service-password,
+created by openldap/generate-secrets.sh and applied by the bootstrap Job) and
+points AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE at it through
+authelia.configMap.authentication_backend.ldap.password and
+authelia.secret.additionalSecrets in values.yaml. The lookup below is only a
+presence check so a real install fails early when the Secret is missing;
+`openldap.bindPassword` is the escape hatch for `helm template`/dry runs, where
+lookup returns nothing, and is never rendered.
 */}}
 {{- $ldapSecret := lookup "v1" "Secret" .Release.Namespace "naslos-openldap" }}
-{{- $ldapBindPassword := "" }}
 {{- if and $ldapSecret (index $ldapSecret.data "service-password") }}
-{{- $ldapBindPassword = index $ldapSecret.data "service-password" | b64dec }}
 {{- else if .Values.openldap.bindPassword }}
-{{- $ldapBindPassword = .Values.openldap.bindPassword }}
 {{- else }}
 {{- fail "openldap service password unavailable: create the naslos-openldap Secret (openldap/generate-secrets.sh) before installing, or set openldap.bindPassword for a dry run" }}
 {{- end }}
@@ -137,12 +136,9 @@ data:
         mail_attribute: mail
         display_name_attribute: displayName
         user: {{ .Values.openldap.bindDN | default "cn=naslos-service,ou=services,dc=naslos,dc=local" }}
-        # AUDIT-M3: this is the residual - the LDAP bind password is here rather
-        # than in a Secret because the subchart's file-based mechanism
-        # (configMap.authentication_backend.ldap.password.secret_name) rendered
-        # no password-file env var for this DaemonSet. Revisit when that is
-        # understood.
-        password: {{ $ldapBindPassword | quote }}
+        # AUDIT-M3: no `password` key here — Authelia reads the bind password
+        # from AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE, the mounted
+        # naslos-openldap Secret (see values.yaml). Never put it back.
 
     session:
       name: authelia_session

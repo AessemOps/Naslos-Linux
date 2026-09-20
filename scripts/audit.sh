@@ -30,6 +30,33 @@ skip() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# AUDIT-M3 regression guard: the LDAP bind password must reach Authelia as an
+# env-pointed mounted Secret file, never inline in the authelia-config ConfigMap.
+# This is the assertion the revision-38 attempt lacked: it would have failed on
+# the missing AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE env var and on
+# the additionalSecrets mount path not matching the env path.
+check_authelia_ldap_secret() {
+  f=$(mktemp) || return 1
+  if ! helm template naslos "$root/charts/naslos" -n naslos \
+    -f "$root/charts/naslos/values.yaml" -f "$root/charts/naslos/values-vm.yaml" \
+    --set openldap.bindPassword=lint-only >"$f" 2>/dev/null; then
+    rm -f "$f"
+    return 1
+  fi
+  ok=1
+  grep -q 'name: AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE' "$f" || ok=0
+  grep -q "value: '/secrets/naslos-openldap/service-password'" "$f" || ok=0
+  grep -q 'mountPath: /secrets/naslos-openldap' "$f" || ok=0
+  # No inline bind password in the authelia-config ConfigMap. Anchor on the
+  # ConfigMap's metadata name (two-space indent): the DaemonSet also has a
+  # `name: authelia-config` volume reference at a deeper indent.
+  if sed -n '/^  name: authelia-config$/,/^---$/p' "$f" | grep -qE '^[[:space:]]+password:'; then
+    ok=0
+  fi
+  rm -f "$f"
+  [ "$ok" -eq 1 ]
+}
+
 # --- Go ---------------------------------------------------------------------
 cd "$root/api" || exit 1
 run "go vet (api)" go vet ./...
@@ -78,6 +105,7 @@ if have helm; then
   run "helm lint" helm lint charts/naslos \
     -f charts/naslos/values.yaml -f charts/naslos/values-vm.yaml \
     --set openldap.bindPassword=lint-only
+  run "authelia ldap password is a Secret file (AUDIT-M3)" check_authelia_ldap_secret
 else
   skip "helm lint" "helm is not installed"
 fi

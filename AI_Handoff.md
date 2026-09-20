@@ -41,7 +41,8 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
   §8 of the report: NetworkPolicy/a policy CNI (**M4**, the highest residual — the
   privileged hostNetwork agent `:9090` answers every pod), PSA scoping (**M6**,
   needs the privileged workloads split into their own namespace), Authelia's
-  config off the ConfigMap (**M3 residual**), and the rest of Batch 6 (the
+  `jwt_secret` off the ConfigMap (**M3 residual** — the LDAP bind password was
+  moved to a Secret mount at revision 41), and the rest of Batch 6 (the
   `trivy` image/SBOM scan, `semgrep`, the bounded active tests, the buddy crypto
   deep-dive). Everything else — the dependency bumps, nginx non-root,
   `values.schema.json`/`.Release.Namespace`, `go test -race`, the log/conversion
@@ -243,7 +244,8 @@ admin rotations. The auth model verifies sound (anonymous 302, pod without the
 secret 401, agent without the token 401, no NodePort, no bypass). The report's §8
 lists what remains: NetworkPolicy/a policy CNI (the privileged hostNetwork agent
 `:9090` is still reachable from every pod — the highest residual), PSA scoping,
-Authelia's config off the ConfigMap, and the rest of Batch 6 (the `trivy`
+Authelia's `jwt_secret` off the ConfigMap (the LDAP bind password moved to a
+Secret mount at revision 41), and the rest of Batch 6 (the `trivy`
 image/SBOM scan, `semgrep`, the bounded active tests, the buddy crypto
 deep-dive). No secret values are in the report; the repository is private
 (unauthenticated GitHub API returns 404), so the committed credentials that were
@@ -251,15 +253,18 @@ found were insider-exposure, not internet-exposure.
 
 ## Deployed right now (2026-09-19)
 
-On `192.168.1.117`: `naslos-api` **`0.1.0-r8`**, `naslos-ui` **`0.1.0-r9`**
-(Svelte 5 + `@xterm`, unprivileged nginx), `naslos-agent` **`0.1.0-r3`**;
-`naslos-samba`, `naslos-nfs`, `naslos-terminal` and the OpenLDAP manifests stay
-at **`0.1.0-r1`**; chart `naslos-0.1.0`, helm revision **31**, Talos
-**v1.14.1** (kernel 6.18.51-talos), ZFS pool `test` (stripe, 79 G) + dataset
-`test/drill` (plus `test/naslos-buddy` as the Buddy receive dataset). The posture
-is the **only one**: Traefik **v3.7.13** (chart 41.6.0) on hostPort 80/443,
-Authelia **4.39.24** (chart 0.11.22) at `https://naslos.local/authelia`, no
-NodePort and no auth bypass, with `admin` in `naslos_admins` (TOTP/WebAuthn
-enrolled). The old VM's tags (`api 0.1.0-b21`, `agent 0.1.0-b6`, `ui 0.1.0-b9`,
-revision 82) are retired with it, and the `.118` work server has been deleted, so
-only this instance exists.
+On `192.168.1.117`: `naslos-api` **`0.1.0-r9`**, `naslos-ui` **`0.1.0-r10`**
+(Svelte 5 + `@xterm`, unprivileged nginx), `naslos-agent` **`0.1.0-r4`**;
+`naslos-samba`, `naslos-nfs` and `naslos-terminal` are **`0.1.0-r3`** (all on
+Debian 13 / trixie) and OpenLDAP is **`0.1.0-r4`**; chart `naslos-0.1.0`, helm
+revision **41**, Talos **v1.14.1** (kernel 6.18.51-talos), ZFS pool `test`
+(stripe, 79 G) + dataset `test/drill` (plus `test/naslos-buddy` as the Buddy
+receive dataset). The posture is the **only one**: Traefik **v3.7.13** (chart
+41.6.0) on hostPort 80/443, Authelia **4.39.24** (chart 0.11.22) at
+`https://naslos.local/authelia`, no NodePort and no auth bypass, with `admin` in
+`naslos_admins` (TOTP/WebAuthn enrolled). At revision 41 the Authelia LDAP bind
+password comes from the `naslos-openldap` Secret via
+`AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE` (AUDIT-M3 follow-up), so
+`kubectl get cm authelia-config` no longer carries it. The old VM's tags
+(`api 0.1.0-b21`, `agent 0.1.0-b6`, `ui 0.1.0-b9`, revision 82) are retired with
+it, and the `.118` work server has been deleted, so only this instance exists.
