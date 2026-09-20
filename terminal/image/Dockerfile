@@ -14,7 +14,7 @@
 # This is intentionally a powerful container: it is gated by the UI's auth
 # (Authelia forwardAuth) and documented as such in docs/terminal.md.
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 LABEL maintainer="Naslos <team@naslos.dev>"
 LABEL description="Administrative shell for the Naslos web terminal"

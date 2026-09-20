@@ -2,7 +2,7 @@
 # Debian bookworm slapd with memberOf overlay, LDAPS, and bootstrap support.
 # Designed to run on Talos Linux with ZFS-backed persistence.
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 LABEL maintainer="Naslos <team@naslos.dev>"
 LABEL description="OpenLDAP server for Naslos identity management"
