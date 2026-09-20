@@ -216,7 +216,7 @@ Each share card shows the address a client should use, with a copy button:
 ```
 test            [SMB/CIFS]                      Edit  Delete
 /var/mnt/test
-smb://192.168.1.96/test                  [Copy]
+smb://naslos.local/test                  [Copy]
 ```
 
 - The host is taken from the address the operator is browsing the UI on
@@ -351,13 +351,13 @@ of being reachable only by typing its address:
 $ avahi-browse -rt _smb._tcp
 + enp1s0 IPv4 naslos     Microsoft Windows Network local
    hostname = [naslos.local]
-   address  = [192.168.1.96]
+   address  = [<node-ip>]
    port     = [445]
 ```
 
 ### Advertising on the right interface
 
-The node also has `cni0`, `flannel.1` and a veth pair per pod. Left alone,
+The node also has `cilium_host`, `lxc*` and a veth pair per pod. Left alone,
 Avahi enumerates all of them and advertises the server at pod-network (10.x)
 addresses too, which clients cannot reach. The entrypoint therefore pins
 discovery to the **default-route interface**, auto-detected by parsing
@@ -368,11 +368,11 @@ interface to `wsdd -i`. Override it with `shares.discovery.interface`.
 
 ```bash
 # What the network advertises (run from the samba pod, or any Avahi host)
-kubectl -n naslos exec ds/naslos-samba -- avahi-browse -rt _smb._tcp
-kubectl -n naslos exec ds/naslos-samba -- avahi-resolve -n naslos.local
+kubectl -n naslos-privileged exec ds/naslos-samba -- avahi-browse -rt _smb._tcp
+kubectl -n naslos-privileged exec ds/naslos-samba -- avahi-resolve -n naslos.local
 
 # The daemons and their sockets
-kubectl -n naslos exec ds/naslos-samba -- ps -eo pid,args | grep -E 'avahi|wsdd'
+kubectl -n naslos-privileged exec ds/naslos-samba -- ps -eo pid,args | grep -E 'avahi|wsdd'
 ```
 
 Discovery is **best-effort**: if Avahi or wsdd cannot start (no multicast, port
@@ -418,7 +418,7 @@ one that works, while intermediate and initial passwords are rejected.
 
 - `[global]` workgroup `NASLOS`, `security = user`, fruit VFS enabled
   (`fruit:time machine = yes`, `fruit:model = MacSamba`, …) for macOS interop.
-- One `[share]` stanza per enabled `smb`/`afp` share:
+- One `[share]` stanza per enabled `smb` share (AFP is not served):
   `path`, `comment`, `read only`, `browseable`, `hosts allow/deny`,
   `valid users`, and `fruit:time machine` when `timeMachine` is set.
 - `force user = root`, `force group = root`, masks `0664`/`0775`.
@@ -498,9 +498,9 @@ missed:
 
 ```bash
 # Linux
-sudo mount -t nfs4 192.168.1.96:/test /mnt/nas
+sudo mount -t nfs4 <node-ip>:/test /mnt/nas
 # macOS
-mount_nfs -o vers=4 192.168.1.96:/test /Volumes/nas
+mount_nfs -o vers=4 <node-ip>:/test /Volumes/nas
 ```
 
 Client notes:
@@ -544,7 +544,7 @@ shares:
     enabled: true
     workgroup: "NASLOS"
     timeMachine: true
-    image: { repository: 192.168.1.2:30095/naslos-samba, tag: "0.1.0" }
+    image: { repository: 192.168.1.2:30095/naslos-samba, tag: "0.1.0-r3" }
   # Network advertisement (mDNS + WSD) so the server shows up when browsing.
   discovery:
     enabled: true
@@ -555,7 +555,7 @@ shares:
   confCheckInterval: 3
   nfs:
     enabled: true
-    image: { repository: 192.168.1.2:30095/naslos-nfs,   tag: "0.1.0" }
+    image: { repository: 192.168.1.2:30095/naslos-nfs,   tag: "0.1.0-r3" }
   afp:
     enabled: false      # deprecated in favor of SMB Time Machine
 ```
@@ -580,18 +580,18 @@ talosctl -n "$VM" read /var/lib/naslos/shares/smb.conf
 talosctl -n "$VM" read /var/lib/naslos/shares/smbusers
 
 # An LDAP user's password works over SMB (no node account is created)
-kubectl -n naslos exec ds/naslos-samba -- sh -c \
+kubectl -n naslos-privileged exec ds/naslos-samba -- sh -c \
   "export SMB_CONF_PATH=/etc/naslos/shares/smb.conf; \
    getent passwd '<uid>'; \
    smbclient //127.0.0.1/<share> -U '<uid>%<password>' -c 'ls; put /etc/hostname probe.txt'"
 
 # The account mirror resolves, or the entrypoint says which user does not
-kubectl -n naslos logs ds/naslos-samba | grep -i 'resolve through NSS'
+kubectl -n naslos-privileged logs ds/naslos-samba | grep -i 'resolve through NSS'
 
 # NFS: the rendered config reached the node and Ganesha loaded every export
 talosctl -n "$VM" read /var/lib/naslos/shares/ganesha.conf
-kubectl -n naslos logs ds/naslos-nfs | grep -E 'ganesha.nfsd running|export path'
-kubectl -n naslos exec ds/naslos-nfs -- \
+kubectl -n naslos-privileged logs ds/naslos-nfs | grep -E 'ganesha.nfsd running|export path'
+kubectl -n naslos-privileged exec ds/naslos-nfs -- \
   grep -icE 'Could not create export|NFS4ERR_PERM' /var/log/ganesha/ganesha.log   # 0
 
 # NFS: a real client mounts, reads, writes and unmounts (run on the LAN, not in
@@ -614,5 +614,5 @@ curl -s -X POST "$API/api/shares/folders" -d '{"path":"/etc","name":"evil"}'
 curl -s -X POST "$API/api/shares/folders" -d '{"path":"/var/mnt/test/../../etc","name":"evil"}'
 
 # NFS: a share change is reloaded in place (mounts are not interrupted)
-kubectl -n naslos logs ds/naslos-nfs | grep 'reloading exports'
+kubectl -n naslos-privileged logs ds/naslos-nfs | grep 'reloading exports'
 ```

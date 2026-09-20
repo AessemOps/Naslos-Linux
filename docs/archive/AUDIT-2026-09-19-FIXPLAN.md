@@ -122,9 +122,15 @@ LDAP **admin** password was rotated on 2026-09-19 (`olcRootPW` replaced in both
 `naslos-openldap` Secret, bootstrap re-run green; the new value binds and
 `naslos-admin` is rejected).
 
-| **AUDIT-L9 (part)** `LDAPTLS_REQCERT=never` replaced with CA verification in the API wait init and the bootstrap job; `.Release.Namespace` and `values.schema.json` still open | revision 24 |
+| **AUDIT-L9 (part)** `LDAPTLS_REQCERT=never` replaced with CA verification in the API wait init and the bootstrap job; `.Release.Namespace` and `values.schema.json` **also since fixed** (`0f558ab`, revision 25) | revision 24 |
 
-**Still open:** M3's residual (Authelia's config is a ConfigMap, so
+> **Superseded by `docs/AUDIT-2026-09-19-REPORT.md`.** The "still open" list
+> below is the state at this point in the batch history, not now: L9 is fixed
+> (rev 25), M11 fixed, L2 fixed (rev 29), M6 fixed (rev 55), M4 enforced by
+> Cilium with only the hostNetwork `:9090` residual, M3 reduced to the
+> `jwt_secret` ConfigMap residual, M10 excluded, and Batch 6 completed.
+
+**Still open at that point:** M3's residual (Authelia's config is a ConfigMap, so
 its `jwt_secret` and the LDAP bind password stay readable there until the config
 moves into a Secret), M4 (network policy / enforcing CNI), M6 (PSA scoping), M10
 (excluded by request), M11 (Svelte/Vite bump), L2 (nginx non-root), the

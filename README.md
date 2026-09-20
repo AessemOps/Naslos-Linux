@@ -25,10 +25,11 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 - **Import existing pools** — discover and import pools already on disk via `zpool import`
 - **App catalog** — deploy and configure apps via Helm with schema-driven forms
 - **Logs & terminal** — stream logs and open a zsh shell to any pod from the UI
-- **Start/stop apps** — scale replicas 0↔N, preserving PVCs
-- **Shares** — SMB, NFS, and Time Machine (AFP) over ZFS datasets
-- **ntfy notifications** — push alerts on Talos / Kubernetes / ZFS events
-- **Monitoring dashboard** — Prometheus + Grafana home screen
+- **Apps** — deploy/upgrade/uninstall from the catalog with PVCs preserved (a
+  start/stop stub is not yet wired to a route)
+- **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served)
+- **ntfy notifications** — push alerts on Talos / Kubernetes / ZFS / backup events
+- **Monitoring dashboard** — Prometheus + Alertmanager (Grafana was removed)
 
 ## Architecture
 
@@ -36,12 +37,14 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 api/         Go — Talos API + K8s API + ZFS orchestration (the brain)
 agent/       Go DaemonSet, privileged — executes zpool/zfs via chroot /host
 ui/          SvelteKit + Tailwind — dashboard, wizards, terminal
-catalog/     Helm chart repo — the app store
-charts/      naslos umbrella chart (api, ui, agent, ntfy, shares, monitoring)
-shares/      Samba + NFS-Ganesha + Avahi images/config
+charts/      naslos umbrella chart (api, ui, agent, openldap, monitoring, shares)
+samba/       Samba image + config
+nfs/         NFS-Ganesha image + config
+terminal/    web-terminal image (+ zsh-terminal/)
 openldap/    OpenLDAP SSO image + manifests (identity store)
-bootstrap/   schematic + ISO generator, first-boot wizard
-docs/        architecture, API, storage, identity, catalog, ops docs
+bootstrap/   schematic + ISO generator, Cilium manifest, first-boot wizard
+scripts/     deploy-vm.sh, render-cilium.sh, audit.sh
+docs/        architecture, spec, API, storage, identity, catalog, ops docs
 ```
 
 ## Documentation
@@ -57,7 +60,7 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [identity-sso](docs/identity-sso.md) | Authelia + OpenLDAP + Samba single sign-on |
 | [shares](docs/shares.md) | SMB / NFS / Time-Machine shares |
 | [app-catalog](docs/app-catalog.md) | Catalog, schema-driven forms, Helm lifecycle |
-| [monitoring](docs/monitoring.md) | Metrics API + Prometheus/Grafana |
+| [monitoring](docs/monitoring.md) | Metrics API + Prometheus/Alertmanager (Grafana removed) |
 | [notifications](docs/notifications.md) | ntfy alerts |
 | [deployment](docs/deployment.md) | Prerequisites, Make targets, Helm values |
 | [operations](docs/operations.md) | Backups, restore, troubleshooting |
@@ -70,7 +73,7 @@ The full documentation set lives in [`docs/`](docs/README.md):
 - [kubectl](https://kubernetes.io/docs/tasks/tools/)
 - [helm](https://helm.sh/docs/intro/install/)
 - [docker](https://docs.docker.com/get-docker/) or [podman](https://podman.io/)
-- [go](https://go.dev/) 1.22+ (for building api/agent)
+- [go](https://go.dev/) 1.26.5+ (for building api/agent)
 - [node](https://nodejs.org/) 20+ (for building ui)
 
 ## Quick start

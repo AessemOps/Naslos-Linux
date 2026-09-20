@@ -9,7 +9,7 @@ UI (or via `GET/PUT /api/notifications`).
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | Master on/off switch |
-| `serverUrl` | `https://ntfy.sh` | ntfy server; empty = bundled ntfy (`values.yaml: ntfy.server.url`) |
+| `serverUrl` | `https://ntfy.sh` | ntfy server URL; empty falls back to the public `https://ntfy.sh` (there is no bundled ntfy chart) |
 | `topic` | `naslos-alerts` | Topic to publish to |
 | `hasAuthToken` | `false` | **Read-only.** Whether a bearer token is stored; the token itself is never returned |
 | `authToken` | — | **Write-only.** Omitted on save keeps the stored token; `""` clears it; any other value replaces it |
@@ -27,6 +27,8 @@ UI (or via `GET/PUT /api/notifications`).
 | `disk_failure` | Disk health alarms |
 | `system_update` | Talos/Naslos update availability |
 | `share_access` | Share-level access events |
+| `backup_success` | Buddy Backup run completed |
+| `backup_failure` | Buddy Backup run failed |
 
 ## Severity → priority mapping
 
@@ -54,14 +56,16 @@ Otherwise it POSTs to `{serverUrl}/{topic}` with headers:
 
 HTTP client timeout is 10 s.
 
-## Bundle vs external
+## External server
 
-`values.yaml: ntfy.server.url` decides the topology:
+There is **no bundled ntfy**: the ntfy subchart dependency was intentionally
+dropped (see the comment in `charts/naslos/Chart.yaml`). Notifications go to an
+external ntfy server:
 
-| Value | Behavior |
+| `serverUrl` | Behavior |
 | --- | --- |
-| empty | Use the bundled `ntfy` Helm chart (same cluster) |
-| `https://ntfy.sh` (or any URL) | Publish to an external server / topic |
+| empty | Falls back to `https://ntfy.sh` in code |
+| `https://ntfy.sh` (or any URL) | Publish to that server / topic |
 
 Default setting in code is `https://ntfy.sh` with topic `naslos-alerts`.
 

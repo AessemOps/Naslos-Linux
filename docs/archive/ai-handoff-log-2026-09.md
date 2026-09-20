@@ -1,6 +1,11 @@
 # AI Handoff — Naslos
 
-## Full code review (2026-09-17) — see `docs/CODE-REVIEW.md`
+> **ARCHIVED.** Historical handoff log from 2026-09. Everything below —
+> branches, live image tags and "still open" notes — is the state at that time.
+> The current branch (`audit/full-2026-09-19`), status and remaining work are in
+> `docs/AUDIT-2026-09-19-REPORT.md`.
+
+## Full code review (2026-09-17) — see `docs/archive/CODE-REVIEW.md`
 
 A full-depth review of `master` `6227595` (Go api+agent, Svelte UI, chart/images/
 scripts, docs, tests) is complete: 45 findings, each with `file:line` evidence and a
@@ -464,7 +469,7 @@ correctness batch and the cancel follow-up.
 
 ## Phase 1: security fixes (`feature/security-fixes`, implemented, not merged)
 
-The security batch from `docs/SECURITY-FIX-PLAN.md` is implemented and live-verified
+The security batch from `docs/archive/SECURITY-FIX-PLAN.md` is implemented and live-verified
 on the VM; it is **not merged yet** (two commits on `feature/security-fixes`).
 `master` is at `0f1068a` (the buddy merge + handoff).
 

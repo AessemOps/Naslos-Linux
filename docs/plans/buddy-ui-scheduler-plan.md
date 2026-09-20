@@ -1,5 +1,10 @@
 # Buddy Backup: UI page + scheduler (plan-order items 1–2)
 
+> **Historical plan — implemented.** Both items (the UI backup page and the
+> scheduler with retention + ntfy) landed; see [buddy-backup.md](../buddy-backup.md)
+> §9 and the AUDIT report. The branch/URLs below are the state at planning time
+> (the UI NodePort no longer exists; use `https://naslos.local`).
+
 Branch: `feature/buddy-backup` (clean). The receiver, `buddyctl`, the standalone
 receiver and the instance-side send/restore (FR-BUD-01…14) are delivered and
 drilled live. This plan covers the two next items from `docs/buddy-backup.md` §9
@@ -121,7 +126,7 @@ ntfy notifications**. Multi-buddy fan-out and the peer-exposure decision are
     - **Verify** — a Verify button per schedule/source driving
       `POST /api/buddy/restore {verify:true}`, showing the chain digests.
       No restore form in this round.
-12. Playwright `ui/tests/backups.spec.ts` against the VM (192.168.1.96:30080),
+12. Playwright `ui/tests/backups.spec.ts` against the VM (https://naslos.local),
     asserting API-backed values (not placeholders), following the existing
     specs: page loads with identity card; create a schedule on a test dataset;
     Back up now → job reaches succeeded with chunks > 0; receiver section shows

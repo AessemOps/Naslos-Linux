@@ -8,15 +8,20 @@ superseded `SECURITY-AUDIT.md` + `SECURITY-FIX-PLAN.md` (2026-09-14).
 
 - **Audit baseline:** `master` = `85ae874` (PR #23; the dev endpoint had just
   been removed). The 2026-09-14 audit is superseded and archived.
-- **Fix branch:** `audit/full-2026-09-19`, 43 commits `4e47884` → `77cdf4a`,
+- **Fix branch:** `audit/full-2026-09-19`, 50 commits `4e47884` → `b985e03`,
   pushed. `master` was never pushed to directly.
-- **Live target:** `192.168.1.117`, helm revision **42** — `naslos-api`
-  `0.1.0-r9`, `naslos-agent` `0.1.0-r4`, `naslos-ui` `0.1.0-r10`; samba/nfs/
-  terminal `0.1.0-r3`, openldap `0.1.0-r4` (all Debian 13). Traefik hostPort
-  80/443, Traefik v3.7.13 (chart 41.6.0) and Authelia 4.39.24 (chart 0.11.22),
-  `naslos.local`. Node: Talos **v1.14.1** (kernel 6.18.51-talos), **Cilium
-  v1.20.2** replacing flannel and kube-proxy, with the NetworkPolicy set
-  **enforced** (see M4 below).
+- **Live target:** `192.168.1.117`, helm revision **55** at the AUDIT-M6 split
+  (the later AV-8 fix, `b985e03`, builds api `0.1.0-r10` / agent `0.1.0-r7`).
+  There are now **two namespaces**: `naslos` holds the authenticated services
+  (Traefik, Authelia, API, UI, OpenLDAP, Prometheus, Alertmanager) and
+  `naslos-privileged` holds the hostNetwork/privileged workloads (agent, samba,
+  nfs, terminal). Chart image tags: `naslos-api` `0.1.0-r10`, `naslos-ui`
+  `0.1.0-r11`, `naslos-agent` `0.1.0-r7`; samba/nfs/terminal `0.1.0-r3` and
+  openldap `0.1.0-r4` (the last four on Debian 13; the API is Debian 12 and the
+  UI/agent Alpine 3.24). Traefik hostPort 80/443, Traefik v3.7.13 (chart
+  41.6.0) and Authelia 4.39.24 (chart 0.11.22), `naslos.local`. Node: Talos
+  **v1.14.1** (kernel 6.18.51-talos), **Cilium v1.20.2** replacing flannel and
+  kube-proxy, with the NetworkPolicy set **enforced** (see M4 below).
 - **No secret values appear in this report or in any committed artefact.**
 
 ## 1. Executive summary
@@ -25,13 +30,17 @@ A full audit of the mainline covered code quality, security and secret use, usin
 static review plus `gitleaks`, `trufflehog`, `govulncheck`, `gosec`, `npm audit`
 and read-only live inspection. It found **0 Critical, 4 High, 14 Medium, 10 Low**.
 
-Remediation then closed **all four Highs and every Medium except four**:
+Remediation then closed **all four Highs and 10 of the 14 Mediums outright**;
+two more (M3, M4) are reduced to a documented Low residual, one (M10) is
+excluded by request, and one (M12) remains a deliberate manual process:
 
 | Status at 2026-09-19 | Count |
 |---|---|
 | High closed | 4 of 4 |
-| Medium closed / no-change-needed / excluded | 8 + 1 + 1 |
-| Medium deferred (with reason) | 4 |
+| Medium closed | 10 |
+| Medium reduced to a Low residual | 2 (M3, M4) |
+| Medium excluded by request | 1 (M10) |
+| Medium remaining | 1 (M12 — no CI; the sweep is manual) |
 | Low closed / accepted | 8 + 1 |
 | Low deferred | 0 |
 | Batch 6 coverage | **done** — `trivy` image (all 7 tags) + config, `semgrep`, AV-5…AV-12 active tests, buddy crypto deep-dive; 2 config findings fixed (DS-0031, KSV-0053), 2 low AV-8 findings recorded |
@@ -74,7 +83,7 @@ and gates on `govulncheck`, `gosec` and `staticcheck`.
 |---|---|---|---|
 | M1 | Talos machine configs + `talosconfig` (private keys) in local `refs/cline/checkpoints/*` | **Fixed** — `421711a` | 104 refs deleted + gc; gitleaks 89 → 4 (documented false positives); never on a branch or remote |
 | M2 | Local secret files world-readable | **Fixed** — `421711a` | `bootstrap/vm/*` and the captured session `chmod 600`; `auth.setup.ts` enforces 0600 itself |
-| M3 | `jwt_secret` regenerated every render; secrets in a ConfigMap | **Partial** — `421711a`; the LDAP bind password moved out of the ConfigMap at revision 41 (see below) | Persisted in `naslos-authelia-jwt` (proven across an upgrade). The LDAP bind password now reaches Authelia from the `naslos-openldap` Secret via `AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE`. Residual: `jwt_secret` still sits in the ConfigMap because the subchart has no Secret-backed config mount |
+| M3 | `jwt_secret` regenerated every render; secrets in a ConfigMap | **Resolved to a Low residual** — `421711a`; the LDAP bind password moved out of the ConfigMap at revision 41 (see below) | Persisted in `naslos-authelia-jwt` (proven across an upgrade). The LDAP bind password now reaches Authelia from the `naslos-openldap` Secret via `AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE`. Residual (Low): `jwt_secret` still sits in the ConfigMap because the subchart has no Secret-backed config mount |
 
 **AUDIT-M3 follow-up — the LDAP password now comes from a Secret (revision 41).**
 The revision-38 attempt was reverted; the follow-up found *two* independent
@@ -106,9 +115,9 @@ have caught both bugs above. Live at revision 41: Authelia rolled out Ready with
 the env var and mount, the ConfigMap no longer contains the bind password,
 anonymous requests still 302 to the portal (`/api/health` 200), and
 `auth.setup` plus the LDAP-backed users/groups specs pass (8 passed).
-| M4 | No NetworkPolicy; flannel does not enforce one; privileged hostNetwork agent `:9090` open to every pod | **Partial** — `charts/naslos/templates/networkpolicy.yaml` records the intent (default-deny + per-workload allow policies, agent `:9090` API-only); **unenforced until a policy CNI is installed**, and the agent/samba/nfs are hostNetwork, which pod-level policy cannot cover | Enforcement needs a node-level rule for hostNetwork pods (Talos/nftables or a Cilium host firewall keyed to the API pod IP), plus the CNI swap |
+| M4 | No NetworkPolicy; flannel does not enforce one; privileged hostNetwork agent `:9090` open to every pod | **Resolved to a Low residual** — flannel and kube-proxy were replaced by Cilium **v1.20.2**; the chart's default-deny + per-workload policies plus the `naslos-allow-host` CiliumNetworkPolicy are **enforced live**. Residual: the agent/samba/nfs are `hostNetwork`, so pod-level policy cannot cover the agent's `:9090`; the host-firewall template is off by default | Host-firewall attempt needs console access, a dedicated node label and `hostFirewallAdminCIDR`; a Talos host rule is the untried alternative (see §8) |
 | M5 | Unused agent ClusterRole (nodes/pods/pods-log cluster-wide) | **Fixed** — `8555925` | ClusterRole + binding removed; the agent has no client-go |
-| M6 | Namespace PSA `enforce: privileged` cluster-wide | **Open** | Scope per-workload or split namespaces |
+| M6 | Namespace PSA `enforce: privileged` cluster-wide | **Fixed** — the hostNetwork/privileged workloads (agent, samba, nfs, terminal) moved to a dedicated `naslos-privileged` namespace; `naslos` keeps `privileged` by necessity because the API mounts hostPath volumes (verified live) | See §4 and §8 |
 | M7 | API server had no `ReadHeaderTimeout` (Slowloris) | **Fixed** — `3b2a65b` | ReadHeaderTimeout 10 s, ReadTimeout 30 s, IdleTimeout 120 s; `WriteTimeout` 0 for WS |
 | M8 | Config files carrying secrets were `0644` in `0755` dirs | **Fixed** — `3b2a65b` | `notifications.json` (ntfy token), peers, schedules, shares → 0600 in 0750 |
 | M9 | Buddy store path-taint reports | **Fixed** — `3b2a65b` | One `validateChainName` allowlist + traversal regression test |
@@ -228,7 +237,8 @@ both Secret copies, the exec Role/RoleBinding placement and subject, and the API
 URL) so it cannot silently re-merge. All **35** Playwright specs pass under it,
 including the interactive terminal exec into the privileged namespace.
 
-**M4 — NetworkPolicy intent recorded (enforcement still open).** The chart now
+**M4 — NetworkPolicy intent recorded (enforcement has since landed; see the
+Cilium sections below).** The chart now
 renders ten `NetworkPolicy` objects in `charts/naslos/templates/networkpolicy.yaml`:
 a namespace default-deny (ingress + egress), per-workload ingress allows for
 Traefik (the entry point, hostPort 80/443), API, UI, Authelia, OpenLDAP (636,
@@ -248,12 +258,14 @@ Pod/Service identities); and `probeCIDR` defaulted to the pod CIDR, which would
 have admitted **every pod** to the API/UI/Authelia — it now defaults to empty and
 is set explicitly per profile.
 
-**These are inert on the current flannel install** (no policy controller), and
-**not a complete fix even after a CNI swap**: the agent, samba and nfs are
-`hostNetwork`, and policy CNIs do not apply pod-level NetworkPolicy to
-host-network pods, so `naslos-agent-ingress` cannot by itself restrict `:9090`.
-Closing M4 needs a node-level rule (Talos/nftables or a Cilium host firewall keyed
-to the API pod IP). The policies were verified to render as valid YAML with
+**At the time this section was written these were inert** (the then-current
+flannel had no policy controller). The CNI was subsequently replaced by Cilium
+and the policies are now **enforced** (see the M4 enforcement sections below);
+the remaining gap is narrower than originally stated, but still real: the agent,
+samba and nfs are `hostNetwork`, and policy CNIs do not apply pod-level
+NetworkPolicy to host-network pods, so `naslos-agent-ingress` cannot by itself
+restrict `:9090`. Closing that needs a node-level rule (Talos/nftables or a
+Cilium host firewall keyed to the API pod IP). The policies were verified to render as valid YAML with
 selectors matching the live pod labels, and `scripts/audit.sh` now parses the
 rendered agent policy and asserts the pod selector, the single API peer, the
 `:9090` port, no CIDR peer, and that no policy admits the pod CIDR — a grep-level
@@ -340,7 +352,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | `svelte-check` | 0 errors, 0 warnings |
 | `helm lint` (+ `helm template`) | clean (rendering needs `--set openldap.bindPassword=…` only because the chart now fails closed without the Secret) |
 | Authelia LDAP password is a Secret mount (M3 follow-up) | `scripts/audit.sh` renders the chart and asserts the `AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE` env var, its `/secrets/naslos-openldap/service-password` value, the matching mount, and no inline `password:` in `authelia-config`; live at revision 41 |
-| NetworkPolicy intent (M4) | `scripts/audit.sh` parses the rendered agent policy and asserts pod selector, single API peer, `:9090` only, no CIDR peer, and that no policy admits the pod CIDR; 10 policies render as valid YAML with selectors matching the live pod labels; **not enforced under flannel, and hostNetwork pods need a node-level rule** |
+| NetworkPolicy (M4) | `scripts/audit.sh` parses the rendered agent policy and asserts pod selector, single API peer, `:9090` only, no CIDR peer, and that no policy admits the pod CIDR; 10 policies render as valid YAML with selectors matching the live pod labels, and Cilium **enforces** them. Residual: hostNetwork pods (agent/samba/nfs) need a node-level rule |
 | Playwright vs `https://naslos.local` | **35 passed** (repeatedly; Authelia login + 2FA, terminal interactive, backups self-send, users/groups/shares/pools) |
 | Live unauthenticated | `/api/*` → 302 to the portal; `/api/health` 200; `:30080` refuses; pod without the proxy secret 401; agent without the token 401 |
 | Credentials | new LDAP service and admin bind; old service value and `naslos-admin` rejected |
@@ -350,7 +362,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 
 | Item | Severity | Why deferred | Next step |
 |---|---|---|---|
-| AUDIT-M4 — ~~unenforced CNI~~ **flannel replaced by Cilium; NetworkPolicy enforced**; agent `:9090` hostNetwork rule still open | Low (was Medium) | Cilium **v1.20.2** replaced flannel (Talos `KubeFlannelCNIConfig` deleted, Cilium embedded as a `KubeInlineManifestConfig`, kube-proxy also replaced). Enforcement is live and proven: the terminal pod is now denied at `:8080`/`:9091`/`:9100` by the cilium monitor, while all 7 auth/LDAP Playwright specs pass. **What enforcement exposed and this fixed:** the NetworkPolicy set had no way to allow pods to reach the node/API server (Cilium uses the reserved `host` identity, which `ipBlock` cannot match), so enforcement initially broke every pod — Authelia, Traefik, CoreDNS all failed on `-> <node>:6443 policy denied`; a `CiliumNetworkPolicy` (`naslos-allow-host`, `toEntities: host`/`kube-apiserver`) now covers it. **The one residual:** the agent (and samba/nfs) are `hostNetwork`, and pod-level policy does not cover host-network pods, so `:9090` is still reachable from other pods (~1.5 ms) | **Attempted and rolled back** (see below): a `CiliumClusterwideNetworkPolicy` + `enable-host-firewall` locks the node out if the selector or allow-list is wrong, and recovering needed console access. The template is fixed and **off by default**; do it with console access, in audit mode, and with `hostFirewallAdminCIDR` set |
+| AUDIT-M4 — ~~unenforced CNI~~ **flannel replaced by Cilium; NetworkPolicy enforced**; agent `:9090` hostNetwork rule still open | Low (was Medium) | Cilium **v1.20.2** replaced flannel (Talos `KubeFlannelCNIConfig` deleted, Cilium embedded as a `KubeInlineManifestConfig`, kube-proxy also replaced). Enforcement is live and proven: the terminal pod is now denied at `:8080`/`:9091`/`:9100` by the cilium monitor, while all 7 auth/LDAP Playwright specs pass. **What enforcement exposed and this fixed:** the NetworkPolicy set had no way to allow pods to reach the node/API server (Cilium uses the reserved `host` identity, which `ipBlock` cannot match), so enforcement initially broke every pod — Authelia, Traefik, CoreDNS all failed on `-> <node>:6443 policy denied`; a `CiliumNetworkPolicy` (`naslos-allow-host`, `toEntities: host`/`kube-apiserver`) now covers it. **The one residual:** the agent (and samba/nfs) are `hostNetwork`, and pod-level policy does not cover host-network pods, so `:9090` is still reachable from other pods (~1.5 ms) | **Attempted twice and rolled back** (see below). The second, safe attempt proved `enable-node-selector-labels: true` is required and that the label reaches `reserved:host` only after an agent restart, but the policy `nodeSelector` still matches nothing (`k8s:` endpoint label vs `any:` selector). Next step: start from Cilium's node-selector label-source semantics, with console access, in audit mode, and with `hostFirewallAdminCIDR` set; a Talos host rule is unavailable on v1.14.1 |
 | AUDIT-M6 — PSA `privileged` namespace | **Fixed** — the hostNetwork/privileged workloads (agent, samba, nfs, terminal) moved to a dedicated `naslos-privileged` namespace; `naslos` still enforces `privileged` **by necessity** (the API mounts hostPath volumes, which `baseline` forbids — verified live), but is no longer co-resident with host-network pods | — | — |
 | ~~AUDIT-M11~~ — **fixed**: Svelte 5 + svelte-check 4 + vite-plugin-svelte 4 (`npm audit` 11 → 4, the rest dev-server only), and the xterm → `@xterm` migration (CR-31) is **also done** (`@xterm/xterm ^6.0.0` in `ui/package.json`) | Medium | — | — |
 | AUDIT-M3 residual — `jwt_secret` still in the `authelia-config` ConfigMap | Low | The Authelia subchart only mounts a ConfigMap for `configuration.yml` (no Secret equivalent); the LDAP bind password was moved to a Secret at revision 41 | If the chart gains a Secret-backed config mount, move the whole file; otherwise template the pod from the naslos chart |
@@ -360,7 +372,10 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 | ~~AUDIT-L9 remainder~~ — **fixed at revision 25**: `.Release.Namespace` migration + `values.schema.json` | Low | — | — |
 | ~~AUDIT-L5/L6~~ — **fixed at revision 27**: `logsafe.Field` sanitises log arguments and the conversions are bounded/clamped | Low | — | — |
 | ~~AUDIT-L8 / CR-06~~ — **fixed at revision 27**: the scheduler race is gone and the sweep runs `go test -race` | Low | — | — |
-| Batch 6 — **staticcheck, the `trivy` image + config scan, `semgrep`, the AV-5…AV-12 active tests and the buddy crypto deep-dive all done; two config findings fixed (DS-0031, KSV-0053)** | Coverage | Time-boxed session | Remaining is unchanged and unrelated to Batch 6: M4 enforcement, the M6 split and the M3 residual; the trixie base-CVE backlog is upstream (no Debian fix) |
+| Batch 6 — **staticcheck, the `trivy` image + config scan, `semgrep`, the AV-5…AV-12 active tests and the buddy crypto deep-dive all done; two config findings fixed (DS-0031, KSV-0053)** | Coverage | Time-boxed session | Remaining is unrelated to Batch 6 and is now only the M4 `:9090` residual, the M3 `jwt_secret` residual, the open `trivy config` items below, and the upstream trixie base-CVE backlog (no Debian fix) |
+| AUDIT-M10 — mutable image tags / no digests / plain-HTTP registry | Medium | **Excluded by the operator's request** | Revisit when wanted; `*.image.digest` is already supported (`docs/deployment.md`) |
+| AUDIT-M12 — no CI for the audit sweep | Low | The GitHub Actions workflow was added and then removed at the operator's request | Run `scripts/audit.sh` manually, or re-add the workflow if CI is wanted |
+| `trivy config` residuals (KSV-0014 / KSV-0118 / DS-0002) | Low | Recorded, not fixed: openldap has no `readOnlyRootFilesystem` and a root security context (`slapd` writes `/var/run/slapd/slapd.pid`, not a mounted volume); several images end with `USER root` by design (agent privileged, samba setuid, terminal root) | Add an emptyDir for the slapd pid file and set the security contexts deliberately as part of any further M6/PSA work |
 
 ### Batch 6 — staticcheck (API), results
 
@@ -387,7 +402,8 @@ now resolved and the scan is clean:**
   `govulncheck` had not flagged these (no reachable call path), which is why the
   image scan matters.
 - **Fixed:** the dependency is bumped to **v2.6.2**; `go build/vet/test` pass. The
-  image must be rebuilt (`0.1.0-r9`) for the fix to reach production.
+  image was rebuilt as `0.1.0-r9` (and has since been rebuilt again as
+  `0.1.0-r10` for the AV-8 fix), so the fix is in production.
 
 `trivy image --severity HIGH,CRITICAL naslos-ui:0.1.0-r9` reports **37 (35 HIGH,
 2 CRITICAL)** — all in the **alpine 3.21.3 base** of
@@ -636,7 +652,8 @@ trade-off; it is documented in `auth.go` rather than left implicit.
 
 #### Batch 6 — trivy image scan, all seven images (trivy 0.73.0)
 
-`trivy image --scanners vuln --severity HIGH,CRITICAL` against the live tags:
+`trivy image --scanners vuln --severity HIGH,CRITICAL` against the tags that
+were live **at the time of Batch 6**:
 
 | Image | Base | HIGH/CRITICAL | Where |
 |---|---|---|---|
@@ -647,6 +664,12 @@ trade-off; it is documented in `auth.go` rather than left implicit.
 | `naslos-samba:0.1.0-r3` | debian 13.7 | 62 | base libs only |
 | `naslos-nfs:0.1.0-r3` | debian 13.7 | 47 | base libs only |
 | `naslos-openldap:0.1.0-r4` | debian 13.7 | 45 | base libs only |
+
+Since this scan the UI was rebuilt as `0.1.0-r11` (terminal namespace picker),
+the API as `0.1.0-r10` and the agent as `0.1.0-r7` (AV-8 guards). Those are
+source-only rebuilds on the same bases that each scanned **0** here (their
+previous builds); they have **not** been re-scanned, so the "0" should be
+re-confirmed with `trivy` against the current tags before quoting it.
 
 **None of the 219 findings on the four trixie images is in a service package** —
 they are all Debian base libraries (`util-linux`, `systemd`, `ncurses`, `perl`,
@@ -872,9 +895,11 @@ producing a stock flannel cluster.
 
 `terminal r3`, `samba r3`, `nfs r3` and `openldap r4` are all on
 `debian:trixie-slim` at revision 38, and **the chart defaults were moved to the
-live tags** (api `r9`, agent `r4`, ui `r10`, samba/nfs/terminal `r3`, openldap
-`r4`) so a fresh `helm install`/`make install-vm` — not just this release —
-picks up the migrated images instead of the stale `0.1.0` placeholders.
+then-live tags** (at that point api `r9`, agent `r4`, ui `r10`, samba/nfs/
+terminal `r3`, openldap `r4`) so a fresh `helm install`/`make install-vm` — not
+just that release — picks up the migrated images instead of the stale `0.1.0`
+placeholders. Later work bumped the API to `r10`, the agent to `r7` and the UI
+to `r11`; those are the current chart defaults (see the header).
 
 Two findings from the migration are worth carrying into any future base bump:
 slapd and Ganesha both **log to syslog**, so a container that exits silently must
@@ -882,37 +907,18 @@ be run with debug (`slapd -d 1`, `ganesha.nfsd -F -L /dev/stdout`); and the
 failure is usually a **startup assumption the package's systemd/tmpfiles would
 have satisfied**, not the app config (`/var/run/slapd` for slapd,
 `CAP_SYS_RESOURCE` for Ganesha's `PR_SET_IO_FLUSHER`).
-  The earlier recovery sequence, for the record:
-  for the record: `rollout undo` alone did **not** help because the StatefulSet
-  is `kubectl apply`-managed (its revision history has no usable prior image);
-  the working sequence was `kubectl set image` back to `r1`, then **delete the
-  stale crash-looping pod** — with `podManagementPolicy: OrderedReady` the
-  controller will not replace it on its own while it is not Ready. slapd is
-  Ready on `r1` again (0 restarts), and `values-vm.yaml` plus the three
-  `openldap/manifests` files are reverted to `r1` so no re-apply reintroduces it.
+  The earlier recovery sequence, for the record: `rollout undo` alone did **not**
+  help because the StatefulSet is `kubectl apply`-managed (its revision history
+  has no usable prior image); the working sequence was `kubectl set image` back
+  to `r1`, then **delete the stale crash-looping pod** — with
+  `podManagementPolicy: OrderedReady` the controller will not replace it on its
+  own while it is not Ready. slapd came Ready on `r1` again (0 restarts), and
+  `values-vm.yaml` plus the three `openldap/manifests` files were reverted to
+  `r1`; the later `r4` flip (described above) is the final state.
 
-Lesson for the remaining migration: the base bump is not the risk, the
-**daemon's config/data compatibility** is. samba was cheap (one removed
-package + a flag), nfs and openldap need their own config/state migration and a
-window each, exactly as feared.
-
-**Remaining image scans:** `naslos-terminal`
-(`0.1.0-r1`), `naslos-samba` (`0.1.0-r1`), `naslos-nfs` (`0.1.0-r1`) and
-`naslos-openldap` (`0.1.0-r1`). `trivy image` accepts one target per run, so run
-it per image:
-
-```bash
-for img in agent:0.1.0-r3 terminal:0.1.0-r1 samba:0.1.0-r1 nfs:0.1.0-r1 openldap:0.1.0-r1; do
-  docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest \
-    image --quiet --no-progress --severity HIGH,CRITICAL "192.168.1.2:30095/naslos-${img}"
-done
-```
-
-They are the custom images built from `terminal/`, `samba/`, `nfs/` and
-`openldap/`; the API image is clean apart from the fixed oras-go pair and the UI
-image is now clean, so the expectation is base-image findings of the same shape
-(fixable by bumping the base tag, as the UI showed).
-| AUDIT-M10 — digests / registry TLS | Medium | Excluded by request | Revisit when wanted |
+Lesson for any future base bump: the base bump is not the risk, the **daemon's
+config/data compatibility** is. samba was cheap (one removed package + a flag);
+nfs and openldap each needed their own config/state fix and a window.
 
 ## 9. Reproducing the audit and fixes
 
@@ -950,3 +956,27 @@ NASLOS_RECEIVER_URL=http://naslos-api.naslos.svc.cluster.local:8080 \
 | `7a9eb3a` | NAS-010 defaults removed (code) | 23 |
 | `71c6d5a` | LDAP admin password rotated (live) | 23 |
 | `d2f891a` | LDAP TLS verification (L9 part) | 24 |
+| `555c51c`, `016683b` | Consolidated report; working papers archived | — |
+| `0f558ab` | `.Release.Namespace` + `values.schema.json` (L9 remainder) | 25 |
+| `f965ace` | Traefik 41.6.0 / Authelia 0.11.22 | 26 |
+| `70f30f4`, `3f620dd` | Log safety + conversions (L5/L6); scheduler race (L8/CR-06) | 27 |
+| `3004113` | api `0.1.0-r8` deployed | 28 |
+| `edf7162` | Unprivileged nginx (L2) | 29 |
+| `db78fc1`, `a0e0797` | Svelte 5 / build-chain advisories (M11); `@xterm` (CR-31) | 31 |
+| `463fa00`, `09bcd90` | Privileged-workload docs (L3); staticcheck results | — |
+| `a691ed7`, `5a4c149` | Staticcheck cleanups (Batch 6) | — |
+| `dbe09f5`, `bccb846` | `.118` work-server checks; deployed-state refresh | — |
+| `4a4836f` | oras-go 2.6.2 (trivy CVE fix) | — |
+| `6c03d2e`, `db7d76f` | UI rescanned/rebuilt as `0.1.0-r10` | 32 |
+| `92925fa`, `f2c2d83` | Image-scan tracking; agent on alpine 3.24 | 33 |
+| `cc626af`, `820a6c3`, `f271285`, `ca4bee4` | Samba trivy triage; Debian 13 (trixie) migration | 34 |
+| `2c7c987`, `e987a4a`, `996f531`, `abbf9fa` | terminal/nfs/openldap trixie; Ganesha/slapd fixes | 35–37 |
+| `23a8bd9` | Debian 13 complete; chart defaults on live tags (M10 excluded) | 38 |
+| `b687a26`, `30946ca` | Authelia LDAP password from a Secret (M3 follow-up) | 38 / 41 |
+| `1a183c1`, `464e3c8` | NetworkPolicy intent + review corrections (M4) | — |
+| `69b3018`, `2adc891`, `798bd0c` | Batch 6 active tests; buddy crypto deep-dive; SAST/trivy sweep | — |
+| `96d5978`, `77cdf4a`, `45fd1a7` | AV-8/AV-11/AV-12 live drills; report refresh | — |
+| `673439a`, `74a8a55`, `dc62d07` | Cilium replaces flannel; NetworkPolicy enforced; fresh-install parity | — |
+| `9abb9ed`, `f35527a` | M4 host-firewall attempts (off by default) | — |
+| `87fbaea` | Privileged workloads split into `naslos-privileged` (M6) | 55 |
+| `b985e03` | Contentless-backup guard + stale-mount destroy recovery (AV-8) | — |
