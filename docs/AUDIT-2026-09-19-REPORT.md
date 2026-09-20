@@ -10,11 +10,12 @@ superseded `SECURITY-AUDIT.md` + `SECURITY-FIX-PLAN.md` (2026-09-14).
   been removed). The 2026-09-14 audit is superseded and archived.
 - **Fix branch:** `audit/full-2026-09-19`, 43 commits `4e47884` → `77cdf4a`,
   pushed. `master` was never pushed to directly.
-- **Live target:** `192.168.1.117`, helm revision **41** — `naslos-api`
+- **Live target:** `192.168.1.117`, helm revision **42** — `naslos-api`
   `0.1.0-r9`, `naslos-agent` `0.1.0-r4`, `naslos-ui` `0.1.0-r10`; samba/nfs/
   terminal `0.1.0-r3`, openldap `0.1.0-r4` (all Debian 13). Traefik hostPort
   80/443, Traefik v3.7.13 (chart 41.6.0) and Authelia 4.39.24 (chart 0.11.22),
-  `naslos.local`.
+  `naslos.local`. Node: Talos **v1.14.1** (kernel 6.18.51-talos), flannel CNI
+  with the 10 `NetworkPolicy` objects deployed but inert (see M4 below).
 - **No secret values appear in this report or in any committed artefact.**
 
 ## 1. Executive summary
@@ -308,7 +309,7 @@ From the pre-audit correctness batch (commit `261aa3e`, PR #21) and the audit:
 
 | Item | Severity | Why deferred | Next step |
 |---|---|---|---|
-| AUDIT-M4 — unenforced CNI; agent `:9090` open to every pod | Medium | Policy manifests now render, but flannel has no policy controller, so they are inert; and the agent/samba/nfs are hostNetwork, so pod-level policy cannot cover them. Replacing the CNI or adding host firewall rules on a single-node appliance needs a window | Install Cilium/Calico **plus** a node-level rule for the hostNetwork agent (or a Talos host firewall limiting API→`:9090`); the `networkPolicy.*` values already encode the target call graph |
+| AUDIT-M4 — unenforced CNI; agent `:9090` open to every pod | Medium | The 10 `NetworkPolicy` objects render and are deployed, but flannel has no policy controller, so they are inert (re-verified live: the terminal pod still reaches the agent `:9090` in ~1.5 ms). Flannel's own `kubeNetworkPoliciesEnabled` was tried and **does not work on this Talos v1.14.1**: the config is accepted, but Talos renders `05-flannel` without the `kube-network-policies` companion and the node's image list carries no such image (`talosctl image list`: flannel only), so nothing enforces. The agent/samba/nfs are also hostNetwork, which pod-level policy cannot cover | Replace the CNI with **Cilium or Calico** (Talos `KubeFlannelCNIConfig` `$patch: delete` + reboot) **plus** a node-level rule for the hostNetwork agent (Cilium host firewall, or a Talos host firewall limiting API→`:9090`); the `networkPolicy.*` values already encode the target call graph |
 | AUDIT-M6 — PSA `privileged` namespace | Medium | Changes scheduling/security context of live workloads | Split namespaces or label only agent/terminal privileged |
 | ~~AUDIT-M11~~ — **fixed at revision 30**: Svelte 5 + svelte-check 4 + vite-plugin-svelte 4 (`npm audit` 11 → 4, the rest dev-server only); xterm → `@xterm` (CR-31) still open | Medium | — | — |
 | AUDIT-M3 residual — `jwt_secret` still in the `authelia-config` ConfigMap | Low | The Authelia subchart only mounts a ConfigMap for `configuration.yml` (no Secret equivalent); the LDAP bind password was moved to a Secret at revision 41 | If the chart gains a Secret-backed config mount, move the whole file; otherwise template the pod from the naslos chart |
@@ -660,6 +661,33 @@ Two gates were made honest rather than left failing on accepted residuals:
   names come from `os.ReadDir`, which cannot yield `/` or `..` components, and
   peer-supplied names pass `validateChainName` first). A new HIGH rule still
   fails the gate.
+
+#### AUDIT-M4 — the flannel network-policy path was tried and does not work on this build
+
+Aimed at closing M4 without a CNI swap, `kubeNetworkPoliciesEnabled: true` was
+added to the `KubeFlannelCNIConfig` document (Talos 1.13+ documents this as
+enabling NetworkPolicy enforcement for flannel). It was applied live, the node
+was rebooted, and the Talos installer was upgraded v1.14.0 → v1.14.1 with the
+same schematic. Result: **no enforcement.** The evidence, each checked directly:
+
+- The setting is accepted and persisted (`talosctl get machineconfig` shows
+  `kubeNetworkPoliciesEnabled: true`), and the node reports Talos **v1.14.1**.
+- The applied `05-flannel` manifest renders only five objects
+  (`ClusterRole`/`ClusterRoleBinding`/`ServiceAccount`/`ConfigMap`/`DaemonSet`
+  flannel) — **no `kube-network-policies` DaemonSet**.
+- The node's image bundle carries no companion image (`talosctl image list`
+  shows `ghcr.io/siderolabs/flannel` only; a grep for `network` is empty), so
+  even a rendered companion could not start.
+- Live probe: the terminal pod reaches the agent `:9090` in ~1.5 ms with the
+  policies deployed, i.e. still inert.
+
+So on this Talos build the flannel policy feature is a no-op, and the setting was
+removed from `bootstrap/vm/controlplane.yaml` (with the reason in a comment) so
+the repo does not claim enforcement it does not get. Closing M4 needs the Cilium
+or Calico swap (or a Talos build whose bundle ships the companion), plus a
+node-level rule for the hostNetwork agent. This is the documented outcome of the
+enforcement attempt, not a regression — the 10 policies remain deployed and
+correct, and enforce the moment a policy-capable CNI lands.
 
 ### Debian 13 migration complete — all four images live
 
