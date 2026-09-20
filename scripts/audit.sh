@@ -30,7 +30,7 @@ skip() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# AUDIT-M3 regression guard: the LDAP bind password must reach Authelia as an
+# AUDIT-M4 regression guard: the LDAP bind password must reach Authelia as an
 # env-pointed mounted Secret file, never inline in the authelia-config ConfigMap.
 # This is the assertion the revision-38 attempt lacked: it would have failed on
 # the missing AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE env var and on
@@ -56,6 +56,25 @@ check_authelia_ldap_secret() {
   rm -f "$f"
   [ "$ok" -eq 1 ]
 }
+
+# AUDIT-M4 (fresh install) guard: the shipped Talos patch must carry Cilium and
+# the flannel/kube-proxy/DNS changes, and match bootstrap/cilium/cilium.yaml.
+# A fresh `make bootstrap-vm` renders this file, so a regression here silently
+# produces a stock flannel cluster with inert policies.
+check_talos_patch() {
+  p="$root/bootstrap/vm/naslos-vm.yaml"
+  [ -f "$p" ] || return 1
+  grep -q 'kind: KubeFlannelCNIConfig' "$p" || return 1
+  grep -q '\$patch: delete' "$p" || return 1
+  grep -q 'kind: KubeProxyConfig' "$p" || return 1
+  grep -q 'forwardKubeDNSToHost: false' "$p" || return 1
+  grep -q 'kind: KubeInlineManifestConfig' "$p" || return 1
+  grep -q 'name: cilium' "$p" || return 1
+  # The spliced block must be exactly current with the checked-in manifest.
+  "$root/scripts/render-cilium.sh" --check >/dev/null 2>&1 || return 1
+  return 0
+}
+
 
 # AUDIT-M4 guard: the namespace must render the default-deny and the per-workload
 # allow policies, and the agent port must be open to the API as its ONLY pod
@@ -196,6 +215,11 @@ if have helm; then
     --set openldap.bindPassword=lint-only
   run "authelia ldap password is a Secret file (AUDIT-M3)" check_authelia_ldap_secret
   run "network policy intent (AUDIT-M4)" check_network_policies
+  # AUDIT-M4 (fresh install): bootstrap/vm/naslos-vm.yaml must carry the Cilium
+  # inline manifest, flannel deletion, kube-proxy disable and DNS fix, and must
+  # be current with bootstrap/cilium/cilium.yaml. Without this a fresh install
+  # silently generates stock Talos + flannel (the patch file is what ships).
+  run "talos patch ships cilium (AUDIT-M4)" check_talos_patch
 else
   skip "helm lint" "helm is not installed"
 fi
