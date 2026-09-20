@@ -86,5 +86,6 @@ chart repository file, so each API pod resolves charts independently.
 
 ## Storage for apps
 
-Apps request `storageClass: naslos-zfs` (ZFS LocalPV) or use
-`local-path-provisioner` — see [storage-zfs.md](storage-zfs.md#storage-classes--app-data).
+Apps use `local-path-provisioner`, the only provisioner installed; the
+`naslos-zfs` ZFS LocalPV storage class was removed (AUDIT-M13) — see
+[storage-zfs.md](storage-zfs.md#storage-classes--app-data).

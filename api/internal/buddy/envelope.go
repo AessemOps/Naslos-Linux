@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -78,7 +79,9 @@ func newStreamPrefix() ([]byte, error) {
 func chunkNonce(prefix []byte, index int) []byte {
 	nonce := make([]byte, 12)
 	copy(nonce[:8], prefix)
-	binary.BigEndian.PutUint32(nonce[8:], uint32(index))
+	// Every caller runs validateChunkIndex first, so index <= MaxChunkIndex and
+	// the narrowing cannot wrap (gosec G115).
+	binary.BigEndian.PutUint32(nonce[8:], uint32(index)) // #nosec G115 -- bounded by validateChunkIndex
 	return nonce
 }
 
@@ -137,6 +140,11 @@ func SealChunk(dek, prefix []byte, source, chain string, index int, plain []byte
 	if err := validateChunkIndex(index); err != nil {
 		return nil, "", err
 	}
+	// The envelope stores plainLen as a uint32; refuse anything that cannot be
+	// represented instead of truncating it (gosec G115, AUDIT-L6).
+	if uint64(len(plain)) > math.MaxUint32 {
+		return nil, "", fmt.Errorf("chunk too large to seal: %d bytes", len(plain))
+	}
 	aead, err := aeadFor(dek)
 	if err != nil {
 		return nil, "", err
@@ -147,7 +155,7 @@ func SealChunk(dek, prefix []byte, source, chain string, index int, plain []byte
 
 	var buf bytes.Buffer
 	buf.WriteString(chunkMagic)
-	_ = binary.Write(&buf, binary.BigEndian, uint32(len(plain)))
+	_ = binary.Write(&buf, binary.BigEndian, uint32(len(plain))) // #nosec G115 -- bounded above by math.MaxUint32
 	buf.Write(nonce)
 	buf.Write(sealed)
 

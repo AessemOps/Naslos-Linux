@@ -5,7 +5,7 @@ apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
   name: forwardauth-authelia
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
 spec:
   forwardAuth:
     # The authz path stays at the root even though the portal lives at
@@ -16,7 +16,7 @@ spec:
     # (which 404s) when authelia_url has no trailing slash.
     # The Service is the subchart's <release>-authelia (port 80 -> 9091); a
     # bare "authelia" name does not exist and Traefik 500s every route.
-    address: http://{{ .Values.ingress.authelia.serviceName | default "naslos-authelia" }}.{{ .Values.namespace }}.svc.cluster.local:{{ .Values.ingress.authelia.port | default 80 }}/api/authz/forward-auth?authelia_url={{ printf "https://%s/authelia/" .Values.authelia.domain | urlquery }}
+    address: http://{{ .Values.ingress.authelia.serviceName | default "naslos-authelia" }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.ingress.authelia.port | default 80 }}/api/authz/forward-auth?authelia_url={{ printf "https://%s/authelia/" .Values.domain | urlquery }}
     # No trustForwardHeader (defaults to false): a client must not be able to
     # forge X-Forwarded-* and influence the auth decision or the API's
     # websocket origin check (NAS-009). Traefik sets those headers itself.
@@ -32,7 +32,7 @@ apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
   name: security-headers
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
 spec:
   headers:
     browserXssFilter: true

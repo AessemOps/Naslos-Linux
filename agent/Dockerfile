@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o naslos-agent ./cmd
 # Alpine (not distroless): the agent calls `chroot /host <bin>` to run
 # zpool/zfs/wipefs on the Talos host, and distroless ships no chroot binary.
 # Alpine's busybox provides chroot and the static Go binary runs unchanged.
-FROM alpine:3.21
+FROM alpine:3.24
 
 WORKDIR /app
 COPY --from=builder /build/naslos-agent /app/naslos-agent

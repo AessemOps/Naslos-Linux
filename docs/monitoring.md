@@ -47,7 +47,7 @@ prometheus:
 # Grafana is NOT deployed: it was removed on 2026-09-19 (AUDIT-H4) because it
 # shipped a committed default admin password and was unused (ClusterIP, no
 # IngressRoute). Re-enabling it requires a credential from a Secret.
-# See docs/AUDIT-2026-09-19.md.
+# See docs/AUDIT-2026-09-19-REPORT.md.
 ```
 
 - Prometheus scrapes Kubernetes metrics; retention is 30 days.

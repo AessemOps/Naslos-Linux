@@ -6,18 +6,35 @@ each `helm upgrade` (AUDIT-M3). Persist it the same way the proxy secret and the
 TLS certificate are persisted: generate once, then read the existing Secret back.
 */}}
 {{- $jwtSecretName := "naslos-authelia-jwt" }}
-{{- $existingJWT := lookup "v1" "Secret" .Values.namespace $jwtSecretName }}
+{{- $existingJWT := lookup "v1" "Secret" .Release.Namespace $jwtSecretName }}
 {{- $jwtSecret := "" }}
 {{- if and $existingJWT (index $existingJWT.data "jwt-secret") }}
 {{- $jwtSecret = index $existingJWT.data "jwt-secret" | b64dec }}
 {{- else }}
 {{- $jwtSecret = randAlphaNum 32 }}
 {{- end }}
+{{- /*
+The LDAP service password is NOT written into this ConfigMap (AUDIT-M3). The
+Authelia subchart mounts the naslos-openldap Secret (key service-password,
+created by openldap/generate-secrets.sh and applied by the bootstrap Job) and
+points AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE at it through
+authelia.configMap.authentication_backend.ldap.password and
+authelia.secret.additionalSecrets in values.yaml. The lookup below is only a
+presence check so a real install fails early when the Secret is missing;
+`openldap.bindPassword` is the escape hatch for `helm template`/dry runs, where
+lookup returns nothing, and is never rendered.
+*/}}
+{{- $ldapSecret := lookup "v1" "Secret" .Release.Namespace "naslos-openldap" }}
+{{- if and $ldapSecret (index $ldapSecret.data "service-password") }}
+{{- else if .Values.openldap.bindPassword }}
+{{- else }}
+{{- fail "openldap service password unavailable: create the naslos-openldap Secret (openldap/generate-secrets.sh) before installing, or set openldap.bindPassword for a dry run" }}
+{{- end }}
 apiVersion: v1
 kind: Secret
 metadata:
   name: {{ $jwtSecretName }}
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: naslos
     app.kubernetes.io/component: authelia
@@ -29,7 +46,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: authelia-config
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
 data:
   configuration.yml: |
     ##################################
@@ -37,7 +54,7 @@ data:
     ##################################
 
     theme: dark
-    default_redirection_url: https://{{ .Values.authelia.domain }}/
+    default_redirection_url: https://{{ .Values.domain }}/
     jwt_secret: {{ $jwtSecret | quote }}
     # Trust the openldap self-signed CA (mounted at /certificates from the
     # naslos-openldap-tls secret via authelia.certificates.existingSecret in
@@ -68,7 +85,7 @@ data:
 
     totp:
       disable: false
-      issuer: {{ .Values.authelia.domain }}
+      issuer: {{ .Values.domain }}
       algorithm: sha1
       digits: 6
       period: 30
@@ -76,7 +93,7 @@ data:
 
     webauthn:
       disable: false
-      display_name: {{ .Values.authelia.domain }}
+      display_name: {{ .Values.domain }}
       attestation_conveyance_preference: indirect
       user_verification: preferred
       timeout: 60s
@@ -94,7 +111,7 @@ data:
         disable: true
       ldap:
         implementation: custom
-        url: ldaps://{{ .Values.openldap.serviceName | default "naslos-openldap" }}.{{ .Values.namespace }}.svc.cluster.local:636
+        url: ldaps://{{ .Values.openldap.serviceName | default "naslos-openldap" }}.{{ .Release.Namespace }}.svc.cluster.local:636
         timeout: 5s
         start_tls: false
         tls:
@@ -119,11 +136,13 @@ data:
         mail_attribute: mail
         display_name_attribute: displayName
         user: {{ .Values.openldap.bindDN | default "cn=naslos-service,ou=services,dc=naslos,dc=local" }}
-        password: {{ .Values.openldap.bindPassword | default "CHANGE_ME" | quote }}
+        # AUDIT-M3: no `password` key here — Authelia reads the bind password
+        # from AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE, the mounted
+        # naslos-openldap Secret (see values.yaml). Never put it back.
 
     session:
       name: authelia_session
-      domain: {{ .Values.authelia.domain }}
+      domain: {{ .Values.domain }}
       same_site: lax
       expiration: 1h
       inactivity: 5m
@@ -159,21 +178,21 @@ data:
       default_policy: deny
       rules:
         # The health probe answers before the proxy is in the path.
-        - domain: {{ .Values.authelia.domain | quote }}
+        - domain: {{ .Values.domain | quote }}
           policy: bypass
           resources:
             - "^/api/health$"
         # The buddy peer API authenticates with the peers' own Ed25519 keys (a
         # peer cannot complete an interactive login), so it must not enter the
         # login flow.
-        - domain: {{ .Values.authelia.domain | quote }}
+        - domain: {{ .Values.domain | quote }}
           policy: bypass
           resources:
             - "^/api/buddy/v1/"
         # The portal (page, assets and its own /authelia/api/* XHR calls) is
         # routed to Authelia by its own IngressRoute with no forwardAuth, so it
         # never reaches these rules. The bypass is defensive only.
-        - domain: {{ .Values.authelia.domain | quote }}
+        - domain: {{ .Values.domain | quote }}
           policy: bypass
           resources:
             - "^/authelia(/.*)?$"
@@ -186,7 +205,7 @@ data:
         #
         # Any other authenticated account stays one_factor; the API's
         # RequireAdmin group check still gates it (CR-03).
-        - domain: {{ .Values.authelia.domain | quote }}
+        - domain: {{ .Values.domain | quote }}
           subject:
             - "group:naslos_admins"
           policy: two_factor
@@ -195,14 +214,14 @@ data:
         # (with 2FA); a non-admin account is denied outright rather than being
         # let in on one_factor. First match wins, so an account in both groups
         # is still allowed by the rule above.
-        - domain: {{ .Values.authelia.domain | quote }}
+        - domain: {{ .Values.domain | quote }}
           subject:
             - "group:naslos_users"
           policy: deny
           resources:
             - "^/traefik"
         # Everything else the proxy forwards needs at least a session.
-        - domain: {{ .Values.authelia.domain | quote }}
+        - domain: {{ .Values.domain | quote }}
           policy: one_factor
 
     notifier:

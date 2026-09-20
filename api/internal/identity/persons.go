@@ -1,11 +1,27 @@
 package identity
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/go-ldap/ldap/v3"
 )
+
+// randomPlaceholder returns an unguessable placeholder password. A brand-new
+// entry needs a userPassword before the caller's SetPassword runs; it used to be
+// the constant "TempPass123!", which meant an account created without a password
+// was reachable with a documented value (NAS-010). Anything that cannot be
+// guessed is enough here because the real password replaces it immediately.
+func randomPlaceholder() string {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("unusable-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
+}
 
 // CreatePerson creates a new person in LDAP.
 func (c *Client) CreatePerson(uid, displayName, email, firstName, lastName string) (*Person, error) {
@@ -31,7 +47,7 @@ func (c *Client) CreatePerson(uid, displayName, email, firstName, lastName strin
 	addReq.Attribute("gidNumber", []string{"10000"})
 	addReq.Attribute("homeDirectory", []string{fmt.Sprintf("/home/%s", uid)})
 	addReq.Attribute("loginShell", []string{"/bin/bash"})
-	addReq.Attribute("userPassword", []string{"TempPass123!"})
+	addReq.Attribute("userPassword", []string{randomPlaceholder()})
 	addReq.Attribute("shadowExpire", []string{"-1"})
 
 	if err := c.do(func(conn *ldap.Conn) error {

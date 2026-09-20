@@ -1,0 +1,666 @@
+{{- /*
+NetworkPolicy intent for the Naslos namespace (AUDIT-M4).
+
+These objects record the intended call graph. **They are inert on the current
+flannel install**: flannel has no policy controller, so `NetworkPolicy` resources
+are accepted by the API server and silently do nothing. They are NOT a complete
+remediation even after a policy-capable CNI is installed, for two reasons the
+operator must handle in the enforcement window:
+
+1. The privileged agent is `hostNetwork` (and so are samba/nfs). Policy CNIs do
+   not apply pod-level NetworkPolicy to host-network pods, so
+   `naslos-agent-ingress` cannot restrict :9090 to the API by itself - that needs
+   a node-level rule (Talos/nftables, or a Cilium host firewall policy keyed to
+   the API pod IP).
+2. Traefik binds hostPort 80/443, so the entry traffic's source is the node
+   address, expressed here via `networkPolicy.ingressPluginsCIDR`.
+
+The host/node CIDRs are configuration, not guesses: `networkPolicy.nodeCIDR`
+defaults to empty because a wrong value silently breaks the enforcement window.
+Set it (e.g. the node subnet) before installing a policy CNI.
+
+Enabled by default: a no-op under flannel, and a latent protection when the CNI
+changes. Set networkPolicy.enabled=false to skip rendering entirely.
+*/}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $ns := .Release.Namespace }}
+{{- $wns := include "naslos.workloadNamespace" . }}
+{{- $split := ne $wns $ns }}
+{{- $ingressCIDR := .Values.networkPolicy.ingressPluginsCIDR | default "10.244.0.0/16" }}
+{{- $probeCIDR := .Values.networkPolicy.probeCIDR | default "" }}
+{{- $dnsCIDR := .Values.networkPolicy.dnsCIDR | default "169.254.0.0/16" }}
+{{- $nodeCIDR := .Values.networkPolicy.nodeCIDR | default "" }}
+{{- $serviceCIDR := .Values.networkPolicy.serviceCIDR | default "10.96.0.0/12" }}
+---
+# Default deny for every pod in the namespace. Every rule below is an additive
+# allow; a pod with no matching policy is confined to its own namespace peers,
+# which is a small blast radius but still not the intent.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-default-deny
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+{{- if $split }}
+---
+# AUDIT-M6: the privileged namespace gets its own default-deny, or the workloads
+# moved there would be unprotected the moment they leave `naslos`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-default-deny
+  namespace: {{ $wns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+{{- end }}
+---
+# Agent: privileged, host-network, the only path to ZFS. The intent is :9090
+# reachable by the API alone (traefik does not talk to it - the API does, over
+# the headless Service). NOTE: this pod is hostNetwork, so a policy CNI will NOT
+# enforce this podSelector (host-network pods carry the host identity and are
+# exempt from pod-level NetworkPolicy). This object records the intent and is
+# correct for the non-hostNetwork case; closing AUDIT-M4 for the real agent needs
+# a node-level rule (Talos/nftables or a Cilium host firewall policy keyed to the
+# API pod IP). Do not read this policy alone as "the API only".
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-agent-ingress
+  namespace: {{ $wns }}
+  labels:
+    app.kubernetes.io/name: naslos-agent
+    app.kubernetes.io/component: agent
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-agent
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # AUDIT-M6: the API stays in the release namespace, so the peer is a
+        # namespace+pod selector rather than a bare podSelector.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-api
+      ports:
+        - protocol: TCP
+          port: 9090
+---
+# Traefik: the single entry point (hostPort 80/443). Under default-deny its own
+# inbound must be allowed or the proxy serves nothing once a policy CNI lands.
+# hostPort traffic arrives from the node address, so that is expressed as the
+# `ingressPluginsCIDR` ipBlock; `probeCIDR` covers the kubelet.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-traefik-ingress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: traefik
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: {{ $ingressCIDR | quote }}
+        {{- with $probeCIDR }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 8080
+---
+# API: proxied by Traefik, and reached by the UI's nginx as the upstream for the
+# relative /api/* calls (a second path that bypasses the proxy for static-asset
+# serving; the API's own proxy-identity check still guards it). Kubelet probes
+# hit the same port from the node address, so they match `probeCIDR` (NOT the pod
+# CIDR - setting probeCIDR to the pod network would admit every pod).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-api-ingress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-api
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-ui
+        # AUDIT-M6: peers in the privileged namespace legitimately call the API
+        # (the terminal documents its browser paths, and the workloads use it for
+        # shares/status). Without this the API answered nothing from there -
+        # verified live as a blocked TCP connect from the terminal pod.
+        {{- if $split }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $wns }}
+        {{- end }}
+        # Kubelet probes originate from the node, not the pod network.
+        {{- with $probeCIDR }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# UI: proxied by Traefik; kubelet probes (nginx has no probes today but this
+# keeps a future one working) from the node address via `probeCIDR`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-ui-ingress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-ui
+    app.kubernetes.io/component: ui
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-ui
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+        {{- with $probeCIDR }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# Authelia: the only consumer is Traefik, for both the forwardAuth subrequest and
+# the portal route. Nothing else in the namespace has any business authenticating
+# against it directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-authelia-ingress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-authelia
+    app.kubernetes.io/component: authelia
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: authelia
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+        {{- with $probeCIDR }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 9091
+---
+# OpenLDAP: the API (identity), Authelia (authn backend) and Traefik (nothing
+# today, kept explicit) hold credentials; the samba container authenticates
+# share users through NSS/LDAP. All over ldaps:636 only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-openldap-ingress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-openldap
+    app.kubernetes.io/component: identity
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-openldap
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: authelia
+        # AUDIT-M6: samba moved to the privileged namespace.
+        {{- if $split }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $wns }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-samba
+        {{- else }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-samba
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 636
+---
+# Samba: host-network and bound to the SMB ports; the only in-cluster caller is
+# the API (share/config reload and NSS reads). `users` DNS (445 is a service
+# name the container publishes) is not needed by peers, so it stays closed here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-samba-ingress
+  namespace: {{ $wns }}
+  labels:
+    app.kubernetes.io/name: naslos-samba
+    app.kubernetes.io/component: shares
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-samba
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # AUDIT-M6: API stays in the release namespace.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-api
+---
+# NFS: host-network. Clients are LAN hosts outside the cluster, so policy cannot
+# express them as a pod selector; the intent here is only to keep the port
+# closed to unrelated pods. External clients are allowed by an ipBlock if the
+# operator sets networkPolicy.nfsClientCIDR.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-nfs-ingress
+  namespace: {{ $wns }}
+  labels:
+    app.kubernetes.io/name: naslos-nfs
+    app.kubernetes.io/component: shares
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-nfs
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # AUDIT-M6: API stays in the release namespace.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-api
+        {{- with .Values.networkPolicy.nfsClientCIDR }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 2049
+---
+# Egress for every workload.
+#
+# In-cluster peers are expressed as podSelectors (NOT ipBlocks): under Cilium an
+# ipBlock rule does not match Pod or Service identities, so relying on the cluster
+# CIDR alone would block LDAP/agent/DNS. The hostNetwork services the API must
+# reach - the agent on :9090, the Talos API on :50000, and the Service ClusterIPs
+# - are addressed by the operator-supplied `nodeCIDR`/`serviceCIDR`. These are
+# deliberately explicit: a wrong guess silently breaks ZFS, shares and identity
+# the moment a policy CNI enforces this, which is exactly what happened live on
+# first enforcement (DNS to the CoreDNS pod was denied) - see the report.
+#
+# Cluster DNS is allowed BOTH ways, because the source address depends on the
+# datapath: a namespaceSelector on kube-system (the CoreDNS pods) works whether
+# Cilium routes pod-to-pod directly or via the link-local forwarder, and the
+# `dnsCIDR` ipBlock covers the host-forwarding case. An ipBlock alone is not
+# enough under Direct Routing, and a podSelector alone is not enough when the
+# node forwards DNS. No blanket 0.0.0.0/0 is present because no workload here has
+# a documented outbound-Internet dependency.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-workload-egress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # Cluster DNS: the CoreDNS pods (by identity) and the host-forwarded CIDR,
+    # both on 53. See the note above on why both are needed.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - ipBlock:
+            cidr: {{ $dnsCIDR | quote }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # In-cluster peers by identity. AUDIT-M6: the privileged workloads live in a
+    # separate namespace, so pods must be able to reach peers in BOTH naslos and
+    # the privileged namespace (the API calls the agent; authelia/samba call
+    # openldap). One namespaceSelector per namespace keeps this explicit.
+    - to:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+        {{- if $split }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $wns }}
+        {{- end }}
+    # Service ClusterIPs (the API resolves naslos-openldap and the agent through
+    # Services; some clients dial the ClusterIP rather than a Pod IP).
+    {{- with $serviceCIDR }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+    {{- end }}
+    # Host/node addresses: hostNetwork services (agent :9090, samba/nfs, the
+    # Talos API :50000) live at the node IP, outside the pod and service CIDRs.
+    {{- with $nodeCIDR }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+    {{- end }}
+    {{- range .Values.networkPolicy.extraEgressCIDRs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+    {{- end }}
+{{- if $split }}
+---
+# AUDIT-M6: the same egress policy for the privileged namespace. Without it the
+# moved workloads would fall under its default-deny with no egress at all
+# (no DNS, no LDAP, no node access) the moment they left `naslos`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-workload-egress
+  namespace: {{ $wns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - ipBlock:
+            cidr: {{ $dnsCIDR | quote }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $wns }}
+    {{- with $serviceCIDR }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+    {{- end }}
+    {{- with $nodeCIDR }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+    {{- end }}
+    {{- range .Values.networkPolicy.extraEgressCIDRs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+    {{- end }}
+{{- end }}
+{{- if .Values.networkPolicy.cilium.enabled }}
+---
+# CiliumNetworkPolicy: the rules plain NetworkPolicy cannot express (AUDIT-M4).
+#
+# The Kubernetes NetworkPolicy above cannot allow traffic to the NODE itself:
+# Cilium classifies pod->local-node traffic with the reserved `host` identity,
+# and `toEntities` is not part of the upstream v1 NetworkPolicy API, while an
+# `ipBlock` does not match the reserved identity either. Without this, turning
+# enforcement on blocked every pod from the API server at
+# https://<node>:6443 and from kubelet - Authelia, Traefik, CoreDNS and the
+# operators all failed (verified live: the cilium monitor showed
+# `Policy denied ... -> <node>:6443`). This policy restores what every pod
+# legitimately needs, while the per-workload ingress policies above still
+# restrict what may reach each service.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: naslos-allow-host
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+spec:
+  endpointSelector: {}
+  egress:
+    # The API server, kubelet, and other node-local services.
+    - toEntities:
+        - host
+        - kube-apiserver
+        - remote-node
+    # Cluster DNS regardless of datapath (the upstream rule above covers the
+    # CIDR/selector cases; this is the entity-based equivalent).
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+{{- if $split }}
+---
+# AUDIT-M6: the privileged namespace needs the same host/API-server and DNS
+# egress, or the agent/samba/nfs/terminal cannot reach kubelet, the API server or
+# CoreDNS once its default-deny applies.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: naslos-allow-host
+  namespace: {{ $wns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+spec:
+  endpointSelector: {}
+  egress:
+    - toEntities:
+        - host
+        - kube-apiserver
+        - remote-node
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+{{- end }}
+{{- if .Values.networkPolicy.cilium.hostFirewall }}
+---
+# CiliumClusterwideNetworkPolicy + the Cilium host firewall: the ONLY way to
+# restrict a hostNetwork pod (AUDIT-M4 residual). naslos-agent listens on the
+# node IP at :9090, and pod-level NetworkPolicy does not apply to host-network
+# pods, so `naslos-agent-ingress` above cannot see it. With
+# `enable-host-firewall: true`, Cilium programmes nftables on the node for
+# policies that select a node, and this opens :9090 to the API pod only.
+#
+# IMPORTANT - semantics and blast radius: selecting a node here turns on the
+# HOST FIREWALL for that node and makes node ingress default-deny for anything
+# not matched. A wrong or missing rule drops access to the node itself (API
+# server, kubelet, Talos API, LAN services), and recovery can need out-of-band
+# console access. The allow-list below therefore covers every service the node
+# serves, and the agent should first be validated in audit mode:
+#   cilium-dbg endpoint config <host-ep-id> PolicyAuditMode=Enabled
+# (`cilium-dbg monitor -t policy-verdict --related-to <host-ep-id>` then shows
+# `action audit` lines for anything that WOULD be denied). Toggle it off once
+# those are all `action allow`. See "Host Firewall" in the Cilium docs.
+#
+# WARNING - this template is NOT validated end to end. Attempting it live
+# (AUDIT-M4, 2026-09-20) locked the node out: the selector below did not match
+# the host endpoint, and once the agent restarted the (empty) policy still
+# default-denied node ingress, dropping the Talos API (50000) and the k8s API
+# (6443) and forcing a console/VNC recovery. Two lessons are encoded here:
+#   1. The host endpoint does NOT carry `kubernetes.io/os`; Cilium derives only
+#      a subset of node labels. Select a DEDICATED label that is applied to the
+#      node (see networkPolicy.cilium.hostFirewallNodeLabel) and verify with
+#      `cilium-dbg endpoint list` that the `reserved:host` endpoint shows
+#      POLICY (ingress) Enabled before trusting it.
+#   2. The operator's own access path (Talos API 50000, k8s API 6443 from the
+#      workstation, not just `cluster`) must be allowed, or a mistake is
+#      unrecoverable without console access.
+# Keep this OFF unless you can reach the node console. Validate in audit mode
+# (`cilium-dbg endpoint config <host-ep-id> PolicyAuditMode=Enabled`, watch
+# `cilium-dbg monitor -t policy-verdict --related-to <host-ep-id>` for
+# `action audit`) BEFORE enforcing.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: naslos-agent-host-firewall
+  labels:
+    app.kubernetes.io/name: naslos-agent
+    app.kubernetes.io/part-of: naslos
+spec:
+  nodeSelector:
+    matchLabels:
+      {{ .Values.networkPolicy.cilium.hostFirewallNodeLabel | default "naslos.io/host-firewall" | quote }}: {{ "true" | quote }}
+  ingress:
+    # Everything the cluster itself needs to reach on the node (API server,
+    # kubelet, the agent on :9090). `fromEntities: cluster` is the correct way
+    # to express "anything inside the cluster"; the per-pod :9090 restriction
+    # is enforced on top by naslos-agent-ingress for non-hostNetwork pod
+    # traffic, and by this rule's port list.
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+            - port: "6443"
+              protocol: TCP
+            - port: "10250"
+              protocol: TCP
+            - port: "50000"
+              protocol: TCP
+    # Operator/control-plane access from the admin network: the Talos API
+    # (50000) and the k8s API (6443) MUST stay reachable from wherever the
+    # operator runs talosctl/kubectl, or a mistake here is unrecoverable
+    # without console access (this is exactly what went wrong in the attempted
+    # rollout). `cluster` does not cover the external workstation path.
+    {{- with .Values.networkPolicy.cilium.hostFirewallAdminCIDR }}
+    - fromCIDR:
+        - {{ . | quote }}
+      toPorts:
+        - ports:
+            - port: "50000"
+              protocol: TCP
+            - port: "6443"
+              protocol: TCP
+    {{- end }}
+    # LAN clients and the node's own services: SMB, NFS, and the hostPort
+    # entry points (Traefik 80/443). Taken from values so a different LAN
+    # needs no template edit.
+    {{- with .Values.networkPolicy.nodeCIDR }}
+    - fromCIDR:
+        - {{ . | quote }}
+      toPorts:
+        - ports:
+            - port: "445"
+              protocol: TCP
+            - port: "139"
+              protocol: TCP
+            - port: "2049"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+    {{- end }}
+    # ICMP echo (ping) from the LAN, so the node stays diagnosable.
+    - fromEntities:
+        - cluster
+        - world
+      icmps:
+        - fields:
+            - type: EchoRequest
+              family: IPv4
+{{- end }}
+{{- end }}
+{{- end }}

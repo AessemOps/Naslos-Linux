@@ -132,6 +132,10 @@ bootstrap-vm:
 		exit 1; \
 	fi
 	@mkdir -p $(VM_CONFIG_DIR)
+	@# AUDIT-M4: splice the pinned Cilium manifest into the machine-config patch
+	@# as a KubeInlineManifestConfig before generating, so a fresh install ships
+	@# Cilium (flannel disabled, kube-proxy replaced) with no manual steps.
+	@scripts/render-cilium.sh
 	$(TALOSCTL) gen config naslos-vm \
 		https://$(VM_IP):6443 \
 		--output-types controlplane,talosconfig \

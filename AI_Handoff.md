@@ -2,8 +2,11 @@
 
 **This file is the project's current state, kept to about a page.** The detailed
 per-session narrative (1250 lines, 2026-09-17 snapshot) is archived at
-`docs/archive/ai-handoff-log-2026-09.md`. Open quality findings are in
-`docs/CODE-REVIEW.md`. Normative requirements are in `docs/spec.md`.
+`docs/archive/ai-handoff-log-2026-09.md`. The audit and fix report — the only
+current audit document — is `docs/AUDIT-2026-09-19-REPORT.md`; the detailed
+working papers (audit findings, fix plan, code-review list, the superseded
+2026-09-14 audit) are archived in `docs/archive/`. Normative requirements are in
+`docs/spec.md`.
 
 ## What this is
 
@@ -13,7 +16,7 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 | --- | --- |
 | `api/` (Go) | UI-facing HTTP API + the buddy sender, scheduler and job runner |
 | `agent/` (Go) | Privileged, host-networked DaemonSet: the only thing that runs `zpool`/`zfs`/`wipefs`; also serves the streaming backup endpoints |
-| `ui/` | Svelte 4 + TS + Tailwind, built statically and served by nginx |
+| `ui/` | Svelte 5 + TS + Tailwind, built statically and served by unprivileged nginx |
 | `charts/naslos` | Helm chart: api, ui, agent, samba, nfs, terminal, openldap, Traefik + Authelia subcharts |
 | `openldap/ samba/ nfs/ terminal/` | Per-service images and config templates |
 | `api/cmd/buddyctl`, `api/cmd/buddy-receiver` | Standalone backup client and Docker receiver (no Kubernetes, no ZFS) |
@@ -24,25 +27,45 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
 
 ## Where things stand (2026-09-19)
 
-- **`master` = `90d4351`**; PRs #9–#20 merged (buddy, security fixes, fan-out,
-  hardening batches, product gaps, a11y/interface IPs, digests, receive-dataset
-  init container, walk bounds, the code review, the handoff rewrite, and the
-  namespace/Authelia/admin-gating fixes).
-- **The instance now runs on the new VM: `192.168.1.117`** — see the section below.
-  The old `192.168.1.96` VM is powered off.
-- **Open work is in `docs/CODE-REVIEW.md`**: the three blocking findings — CR-01
-  (the chart's Authelia policy bypassed the whole domain), CR-02 (`helm uninstall`
-  deleted the namespace and the state volume holding the buddy identity) and CR-03
-  (`RequireAdmin`/`IsAdmin` were never wired) — are **fixed and merged** (PR #20).
-  The important list is still open: dependency bumps (18 reachable Go vulns via
-  Helm, 11 npm advisories), `-race` (the suite fails under it), observability,
-  docs. The **correctness/secret-leak batch is fixed on a local branch (not yet
-  merged/pushed)**: CR-07 (the ntfy token is no longer returned; `hasAuthToken`
-  replaces it), CR-15 (the NSS `shadow` mirror is `0600`), CR-18 (a user edit now
-  applies group changes), CR-19/CR-22 (the UI checks `res.ok` and surfaces
-  failures instead of parsing error bodies or looking successful).
-- **Security audit status**: 22 NAS findings, each fixed, accepted or open per
-  `docs/CODE-REVIEW.md` §6.
+- **`master` = `85ae874`**; PRs #9–#23 merged (buddy, security fixes, the
+  authenticated-only removal of the dev endpoint, namespace/Authelia/admin
+  gating). The audit branch `audit/full-2026-09-19` carries the remediation
+  through `b985e03` (50 commits, 63 ahead of `master`) and **is not merged yet**.
+- **The instance runs on `192.168.1.117`** — see the section below. The old
+  `192.168.1.96` VM is powered off.
+- **The full audit and its fixes are in `docs/AUDIT-2026-09-19-REPORT.md`.**
+  All four Highs are fixed (LDAP service credential rotated/de-committed, backup
+  chunks on their own dataset, Go vulnerabilities 18 → 4 with no fix available
+  for the rest, Grafana removed), 10 of 14 Mediums are closed, and the NAS-010
+  default-credential work is closed, *including* the live LDAP admin rotation.
+  **M4 and M6 are effectively done:** flannel and kube-proxy were replaced by
+  **Cilium v1.20.2**, the chart's default-deny/per-workload policies plus the
+  `naslos-allow-host` `CiliumNetworkPolicy` are **enforced live**, and the four
+  hostNetwork/privileged workloads (agent, samba, nfs, terminal) were split into
+  the **`naslos-privileged`** namespace. The remaining work is §8 of the report:
+  the M4 residual (the hostNetwork agent `:9090` is still reachable from pods —
+  pod-level policy cannot cover host-network pods; the Cilium host-firewall
+  template is off by default and its node-selector semantics are unresolved),
+  Authelia's `jwt_secret` still in the `authelia-config` ConfigMap (**M3
+  residual** — the LDAP bind password moved to a Secret mount at revision 41),
+  the recorded `trivy config` items (openldap root/`readOnlyRootFilesystem`,
+  Dockerfile last-`USER root`), and the upstream trixie base-CVE backlog. Batch 6
+  is **done**: the `trivy` image scan (api/ui/agent 0 HIGH at scan time; the four
+  trixie images' 219 findings are all no-Debian-fix base libraries), the `trivy
+  config` scan (fixed DS-0031 baked `LDAP_ADMIN_PASSWORD`, removed unused
+  `pods/exec` Role KSV-0053), `semgrep` (4 false positives, verified by hand),
+  the AV-5…AV-12 active tests (AV-8/11/12 live), and the buddy crypto deep-dive
+  (no findings). The two AV-8 findings are **fixed**: the agent reports exact
+  `UsedBytes` and the send refuses a contentless stream (a small-fraction guard
+  with a 1 MiB floor), and `DestroyDataset` recovers from a stale-mount
+  `dataset is busy` via `zfs unmount -f` then `mountpoint=none,canmount=off`
+  (a leaked-kernel-reference variant is named with its pool export/import
+  remedy; `test/audit-av8` remains a stray stub). The audit sweep gates on
+  govulncheck and gosec again. Everything else — the dependency bumps, nginx
+  non-root, `values.schema.json`/`.Release.Namespace`, `go test -race`, the
+  log/conversion hardening and the dead-code cleanup — is done and deployed.
+- **The detailed audit, fix plan and code-review list are archived** in
+  `docs/archive/`; the report supersedes them.
 
 ## Current instance: 192.168.1.117 (2026-09-19)
 
@@ -150,21 +173,23 @@ Playwright suite authenticates through Authelia (see "Running the E2E suite" in
 ## How to run it
 
 ```bash
-# Gates (all should pass; -race currently FAILS, see CR-06)
-cd api   && go build ./... && go vet ./... && go test ./...
-cd agent && go build ./... && go vet ./... && go test ./...
+# Gates (all pass; scripts/audit.sh runs the sweep including go test -race)
+sh scripts/audit.sh
+cd api   && go build ./... && go vet ./... && go test -race ./...
+cd agent && go build ./... && go vet ./... && go test -race ./...
 cd ui    && npm run check && npx playwright test      # Playwright needs the VM
 helm lint charts/naslos -f charts/naslos/values.yaml
 
 # Deploy: always with FRESH tag suffixes (a retag can serve stale code)
-make api-image IMAGE_TAG=0.1.0-b22 && docker push 192.168.1.2:30095/naslos-api:0.1.0-b22
+make api-image IMAGE_TAG=0.1.0-r11 && docker push 192.168.1.2:30095/naslos-api:0.1.0-r11
 helm upgrade naslos charts/naslos -n naslos --reuse-values \
-  --set api.image.tag=0.1.0-b22 --wait
+  --set api.image.tag=0.1.0-r11 --wait
 curl -sk -o /dev/null -w '%{http_code}\n' https://naslos.local/api/health
 ```
 
 VM facts: node `192.168.1.117`, UI at `https://naslos.local` (the only listener;
-no NodePort), private registry `192.168.1.2:30095`, namespace `naslos`,
+no NodePort), private registry `192.168.1.2:30095`, namespaces `naslos`
+(authenticated services) and `naslos-privileged` (agent/samba/nfs/terminal),
 `TALOSCONFIG=bootstrap/vm/talosconfig`.
 Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` and
 `test/naslos-buddy` (the buddy receive dataset); **Buddy is enabled** with
@@ -189,9 +214,10 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
 5. **Platform mount-propagation trap.** A dataset created from inside a pod is mounted
    in that pod's namespace only; in the host namespace its mountpoint is a plain
    directory on the parent. `zfs send` of such a dataset captures nothing — the API
-   now refuses it (`requireMountedDataset`) — and the fix is a node reboot (or
-   `zfs mount <dataset>` on the host). Shares have the same trap for newly created
-   datasets.
+   refuses it (`requireMountedDataset`), and the agent's `UsedBytes`-based guard
+   also refuses a published stream that is a small fraction of the dataset's used
+   space. The fix is a node reboot (or `zfs mount <dataset>` on the host). Shares
+   have the same trap for newly created datasets.
 6. **The receive dataset's ownership is fixed by the
    `fix-receive-dataset-ownership` init container** (uid 65532). Manual fallback:
    `chown 65532:65532 /var/mnt/<pool>/naslos-buddy`.
@@ -205,12 +231,16 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
    a dataset or a peer scope is missing: treat a skip as a setup gap, not a pass
    (CR-23). It authenticates through Authelia (credentials in the gitignored
    `ui/.env.playwright.local`) and runs against `https://naslos.local`.
-10. **A restored dataset cannot be destroyed until the agent restarts.** `zfs receive`
-   runs through the privileged agent, so the destination stays mounted in the
-   **agent's** mount namespace and `zfs destroy` answers `dataset is busy` (the
-   terminal pod's namespace does not see that mount). Remedy:
-   `kubectl -n naslos rollout restart ds/naslos-agent`, then destroy — verified on
-   .117 with the drill's `test/drill-buddy-restored`.
+10. **A dataset once mounted in a pod namespace can answer `dataset is busy`.**
+    `zfs receive` runs through the privileged agent, so the destination stays
+    mounted in the **agent's** mount namespace (the terminal pod's namespace does
+    not see that mount). `DestroyDataset` now recovers on its own: on a busy
+    failure it forces `zfs unmount -f`, then clears
+    `mountpoint=none,canmount=off` and retries. Only a residual leaked-kernel
+    reference (no mounts, no holds, no snapshots) still needs a pool
+    export/import, which the agent deliberately does not do; the error names that
+    state. `kubectl -n naslos-privileged rollout restart ds/naslos-agent` remains
+    a manual fallback.
 
 ## Conventions
 
@@ -229,29 +259,38 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
 
 ## Audit (2026-09-19)
 
-A full audit of `master` @ `85ae874` — code quality, security, secret use — is in
-`docs/AUDIT-2026-09-19.md`, with its remediation plan in
-`docs/AUDIT-2026-09-19-FIXPLAN.md`. Headline: 4 High, 14 Medium, 10 Low. The auth
-model verifies sound (anonymous 302, pod without the secret 401, agent without
-the token 401, no NodePort, no bypass). The top risks are a **live LDAP bind
-password committed in `values-vm.yaml`**, **received backup chunks landing on the
-64 MiB shares PVC** because the release runs `buddy.enabled=false`, **18 reachable
-Go vulnerabilities** (helm 3.16 / spdystream / containerd / docker), and the
-absence of any network policy with the privileged hostNetwork agent open on
-`:9090` to every pod. No secret values are in the report; the repo is private
-(unauth GitHub API 404), so the committed credentials are insider-exposure, not
-internet-exposure. Batch 1 of the fix plan needs a maintenance window and the
-operator's go-ahead to rotate the LDAP credential. **Grafana has been removed**
-(`grafana.enabled: false`, hardcoded admin password deleted) — AUDIT-H4 closed.
+The full audit of `master` @ `85ae874` — code quality, security, secret use — and
+everything fixed since is in **`docs/AUDIT-2026-09-19-REPORT.md`** (the detailed
+findings, fix plan and code-review list are in `docs/archive/`). Headline: 0
+Critical, 4 High, 14 Medium, 10 Low; **all four Highs are fixed**, 10 Mediums
+are closed (M4/M6 included: Cilium enforces the policies and the privileged
+workloads are split into `naslos-privileged`), M4/M3 are reduced to documented
+Low residuals, M10 is excluded and M12 (no CI) is a manual sweep, and the
+NAS-010 default-credential work is closed, including the live LDAP service and
+admin rotations. The auth model verifies sound (anonymous 302, pod without the
+secret 401, agent without the token 401, no NodePort, no bypass). The report's §8
+lists what remains: the M4 hostNetwork agent `:9090` residual, Authelia's
+`jwt_secret` in the ConfigMap (the LDAP bind password moved to a Secret mount at
+revision 41), the recorded `trivy config` items, and the upstream trixie
+base-CVE backlog. No secret values are in the report; the repository is private
+(unauthenticated GitHub API returns 404), so the committed credentials that were
+found were insider-exposure, not internet-exposure.
 
 ## Deployed right now (2026-09-19)
 
-On `192.168.1.117`: `naslos-api` **`0.1.0-r4`**, `naslos-ui` **`0.1.0-r5`**,
-`naslos-agent` **`0.1.0-r3`** (the authenticated-only change); `naslos-samba`,
-`naslos-nfs`, `naslos-terminal` and the OpenLDAP manifests stay at
-**`0.1.0-r1`**; chart `naslos-0.1.0`, helm revision **16**, Talos **v1.14.1**
-(kernel 6.18.51-talos), ZFS pool `test` (stripe, 79 G) + dataset `test/drill`.
-The posture is the **only one**: Traefik hostPort 80/443, Authelia at
+On `192.168.1.117`: `naslos-api` **`0.1.0-r10`**, `naslos-ui` **`0.1.0-r11`**
+(Svelte 5 + `@xterm`, unprivileged nginx), `naslos-agent` **`0.1.0-r7`**
+(contentless-backup guard); `naslos-samba`, `naslos-nfs` and `naslos-terminal`
+are **`0.1.0-r3`** (all on Debian 13 / trixie) and OpenLDAP is **`0.1.0-r4`**;
+chart `naslos-0.1.0`, helm revision **55** (the M6 split; the later AV-8 build
+bumps the API/agent tags), Talos **v1.14.1** (kernel 6.18.51-talos), ZFS pool `test`
+(stripe, 79 G) + dataset `test/drill` (plus `test/naslos-buddy` as the Buddy
+receive dataset). The posture is the **only one**: Traefik **v3.7.13** (chart
+41.6.0) on hostPort 80/443, Authelia **4.39.24** (chart 0.11.22) at
 `https://naslos.local/authelia`, no NodePort and no auth bypass, with `admin` in
-`naslos_admins` (TOTP/WebAuthn enrolled). The old VM's tags (`api 0.1.0-b21`,
-`agent 0.1.0-b6`, `ui 0.1.0-b9`, revision 82) are retired with it.
+`naslos_admins` (TOTP/WebAuthn enrolled). At revision 41 the Authelia LDAP bind
+password comes from the `naslos-openldap` Secret via
+`AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE` (AUDIT-M3 follow-up), so
+`kubectl get cm authelia-config` no longer carries it. The old VM's tags
+(`api 0.1.0-b21`, `agent 0.1.0-b6`, `ui 0.1.0-b9`, revision 82) are retired with
+it, and the `.118` work server has been deleted, so only this instance exists.

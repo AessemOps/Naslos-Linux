@@ -45,6 +45,11 @@ type Dataset struct {
 	Avail      string `json:"avail"`
 	Refer      string `json:"refer"`
 	Mountpoint string `json:"mountpoint"`
+	// UsedBytes is the same value as Used, in exact bytes (zfs list -p). The
+	// human-readable string is not parseable enough to compare against a send
+	// result, and that comparison is how a backup that captured nothing gets
+	// caught even when the dataset is mounted in this namespace (AV-8).
+	UsedBytes int64 `json:"usedBytes"`
 	// Mounted is the dataset's mount state in *this* process's mount namespace.
 	// The agent runs in the host's, which is what `zfs send` and the on-disk
 	// data live in: a dataset created from inside a pod can be mounted in that

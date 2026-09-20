@@ -493,6 +493,16 @@ func (s *Server) runBuddySendJob(job *buddyJob) {
 					"Retry the same send to continue chain %s: the buddy skips the chunks it already has",
 					pushed.PlainBytes, expected, chainState.Chain)
 			}
+			// AV-8: the estimate above comes from the same agent view as the
+			// send, so it cannot catch a dataset whose contents are invisible to
+			// `zfs send` (both are small and consistent). Compare against the
+			// dataset's own used space instead, which counts the blocks that
+			// exist whatever the mount namespace shows.
+			if d := s.datasetMountState(dataset); d != nil {
+				if err := requireStreamMatchesDataset(dataset, d.UsedBytes, pushed.PlainBytes); err != nil {
+					return err
+				}
+			}
 			return nil
 		},
 		Progress: setProgress,
@@ -552,10 +562,11 @@ func (s *Server) afterBuddyJob(job *buddyJob) {
 
 // notifyBuddyJob sends ntfy success/failure notes, gated on EnabledEvents.
 func (s *Server) notifyBuddyJob(job buddyJobPublic) {
-	if s.notifications == nil {
+	mgr := s.notificationManager()
+	if mgr == nil {
 		return
 	}
-	settings := s.notifications.GetSettings()
+	settings := mgr.GetSettings()
 	if !settings.Enabled {
 		return
 	}
@@ -576,7 +587,7 @@ func (s *Server) notifyBuddyJob(job buddyJobPublic) {
 		if job.Result != nil {
 			chunks, chain = job.Result.Chunks, job.Result.Chain
 		}
-		_ = s.notifications.Send(notifications.Notification{
+		_ = mgr.Send(notifications.Notification{
 			Title:    fmt.Sprintf("Backup of %s to %s succeeded", job.Dataset, job.Receiver),
 			Message:  fmt.Sprintf("source %s chain %s (%d chunks)", job.Source, chain, chunks),
 			Severity: notifications.SeverityInfo,
@@ -587,7 +598,7 @@ func (s *Server) notifyBuddyJob(job buddyJobPublic) {
 		if !enabled(notifications.EventBackupFailure) {
 			return
 		}
-		_ = s.notifications.Send(notifications.Notification{
+		_ = mgr.Send(notifications.Notification{
 			Title:    fmt.Sprintf("Backup of %s to %s failed", job.Dataset, job.Receiver),
 			Message:  fmt.Sprintf("source %s: %s", job.Source, job.Error),
 			Severity: notifications.SeverityError,

@@ -1,11 +1,18 @@
 # Naslos Helm chart values
 
+# AUDIT-M6: the namespace the privileged workloads live in (agent, samba, nfs,
+# terminal - they need hostNetwork/hostPath/privileged). Splitting them out lets
+# the release namespace enforce PSA `baseline` instead of `privileged`. An empty
+# value falls back to `naslos-privileged` (an existing release picks it up with
+# no values change); set it to the release namespace to keep everything together.
+workloadNamespace: naslos-privileged
+
 # API server configuration
 api:
   enabled: true
   image:
     repository: 192.168.1.2:30095/naslos-api
-    tag: "0.1.0"
+    tag: "0.1.0-r10"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -75,7 +82,7 @@ ui:
   enabled: true
   image:
     repository: 192.168.1.2:30095/naslos-ui
-    tag: "0.1.0"
+    tag: "0.1.0-r11"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -106,7 +113,7 @@ agent:
   enabled: true
   image:
     repository: 192.168.1.2:30095/naslos-agent
-    tag: "0.1.0"
+    tag: "0.1.0-r7"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -154,7 +161,7 @@ shares:
     timeMachine: true
     image:
       repository: 192.168.1.2:30095/naslos-samba
-      tag: "0.1.0"
+      tag: "0.1.0-r3"
       # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
       # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
       # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -188,7 +195,7 @@ shares:
     enabled: true
     image:
       repository: 192.168.1.2:30095/naslos-nfs
-      tag: "0.1.0"
+      tag: "0.1.0-r3"
       # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
       # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
       # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -239,17 +246,21 @@ traefik:
     rollingUpdate:
       maxSurge: 0
       maxUnavailable: 1
-  logs:
+  # Traefik 41 renamed the logging key from `logs` to `log`; its chart schema
+  # rejects the old one.
+  log:
     general:
       level: INFO
+
+# Public hostname the appliance answers on: the ingress Host match, the Authelia
+# session cookie domain, the TOTP issuer/WebAuthn display name and the TLS SAN.
+# It cannot live under `authelia:` — the Authelia 0.11.22 chart schema rejects
+# unknown keys there (the 0.10 keys `domain`/`server` are gone).
+domain: naslos.local
 
 # Authelia authentication
 authelia:
   enabled: true
-  domain: naslos.local
-  server:
-    host: 0.0.0.0
-    port: 9091
   configMap:
     # Use our own ConfigMap (charts/naslos/templates/authelia-config.yaml,
     # wired up with the LDAP backend) instead of the authelia subchart's
@@ -257,6 +268,30 @@ authelia:
     # / `configMap.key` / `configMap.disabled` — NOT `configMap.enabled`/`name`.
     existingConfigMap: authelia-config
     key: configuration.yml
+    # AUDIT-M3: take the LDAP bind password from the naslos-openldap Secret
+    # instead of the ConfigMap. The subchart only renders
+    # AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE when `ldap.enabled` is
+    # true (its default is false) AND password.secret_name is set; the earlier
+    # attempt set only the password, so no env var rendered and Authelia started
+    # without a bind password (reverted at revision 38). See the report.
+    authentication_backend:
+      ldap:
+        enabled: true
+        password:
+          secret_name: naslos-openldap
+          path: service-password
+  # Mount that Secret where the password-file env var points. The subchart
+  # mounts each additionalSecrets entry at /secrets/<path>, and its env helper
+  # builds /secrets/<secret_name>/<password.path>, so `path` here has to be the
+  # Secret name for the two to line up. `items` keeps only the bind password in
+  # the pod — the admin-password key stays out.
+  secret:
+    additionalSecrets:
+      naslos-openldap:
+        path: naslos-openldap
+        items:
+          - key: service-password
+            path: service-password
   # Trust the openldap self-signed CA for the ldaps:// connection — the
   # secret (created by openldap/generate-secrets.sh) already has a ca.crt
   # key; the authelia chart mounts every key of this secret at /certificates
@@ -335,14 +370,22 @@ openldap:
   # deploy-vm.sh overrides this for the standalone manifests).
   # A full image reference, so a digest can be pinned directly here:
   #   192.168.1.2:30095/naslos-openldap@sha256:<digest>
-  image: 192.168.1.2:30095/naslos-openldap:0.1.0
+  # Used by the API's wait-for-ldap init container. Keep it in step with the
+  # tag the openldap manifests deploy.
+  image: 192.168.1.2:30095/naslos-openldap:0.1.0-r4
   host: ldap.naslos.local
   baseDN: "dc=naslos,dc=local"
   bindDN: "cn=naslos-service,ou=services,dc=naslos,dc=local"
-  bindPassword: "CHANGE_ME_SERVICE_PASSWORD"
+  # Leave empty: the chart reads the password from the naslos-openldap Secret
+  # (key service-password), so no credential is committed. Set it only for a
+  # dry run where `helm template` has no cluster to look the Secret up in
+  # (AUDIT-H1). Never commit a real value here.
+  bindPassword: ""
 
-# Namespace for all Naslos components
-namespace: naslos
+# No `namespace` value: every template uses `.Release.Namespace`, so the chart
+# installs under any release namespace (`helm -n <ns>`), which is what multi-
+# release installs need (AUDIT-L9). The namespace object is still created, under
+# the release namespace.
 
 # Internal authentication between components (NAS-001/NAS-002).
 #
@@ -365,6 +408,69 @@ auth:
   # secret above is the actual proof).
   traefikCIDR: 10.0.0.0/8
 
+# NetworkPolicy intent (AUDIT-M4). These objects are recorded and reviewable but
+# *inert* on the current flannel install: flannel ships no policy controller, so
+# they only take effect once Cilium/Calico (or another policy-capable CNI) is
+# installed. The enforcement change is what closes AUDIT-M4; this chart only
+# makes the intent explicit ahead of it.
+networkPolicy:
+  enabled: true
+  # Non-pod source/destination CIDRs. These are configuration, not guesses, and
+  # they only matter once a policy-capable CNI enforces the policies (flannel
+  # ignores them). Defaults match the Talos VM layout; a value that is left empty
+  # omits that ipBlock entirely rather than emitting an invalid empty CIDR.
+  #
+  # `ingressPluginsCIDR`: where the entry traffic reaches Traefik from. Traefik
+  #   binds hostPort 80/443, so this is the node/LAN address family, NOT the pod
+  #   CIDR.
+  # `probeCIDR`: where kubelet probes originate (the node). Leaving this empty
+  #   emits no probe ipBlock; do NOT set it to the pod CIDR (10.244.0.0/16) -
+  #   that would admit every pod in the cluster.
+  # `nodeCIDR`: host/node addresses for hostNetwork services (agent :9090, the
+  #   Talos API :50000, samba/nfs). Required for egress to those once enforced.
+  # `serviceCIDR`: the Service ClusterIP range (Talos default 10.96.0.0/12).
+  # `dnsCIDR`: cluster DNS; Cilium forwards from link-local regardless of CIDR.
+  #
+  # Set nodeCIDR/ingressPluginsCIDR/probeCIDR to the node subnet before
+  # installing a policy CNI. The VM's node is 192.168.1.117 (so 192.168.1.0/24).
+  nodeCIDR: ""
+  ingressPluginsCIDR: "192.168.1.0/24"
+  probeCIDR: ""
+  serviceCIDR: 10.96.0.0/12
+  dnsCIDR: 169.254.0.0/16
+  # NFS/SMB are host-network and serve LAN clients the pod selector cannot
+  # express. Set the LAN CIDR here (e.g. 192.168.1.0/24) or leave empty to keep
+  # the ports closed to everything but the API.
+  nfsClientCIDR: ""
+  # Extra egress CIDRs. No workload here has a documented outbound-Internet
+  # dependency; add one only if that changes.
+  extraEgressCIDRs: []
+  # CiliumNetworkPolicy for what upstream NetworkPolicy cannot express: allowing
+  # pods to reach the node host / API server. Only rendered when the CNI is
+  # Cilium; harmless (an unused CR) elsewhere, but set false on a non-Cilium
+  # cluster where the CRD is absent so the release does not carry a failed object.
+  cilium:
+    enabled: true
+    # CiliumClusterwideNetworkPolicy that turns on the Cilium HOST FIREWALL and
+    # restricts the hostNetwork agent's :9090 (AUDIT-M4 residual). OFF by
+    # default on purpose: a host policy makes ALL node ingress default-deny, so
+    # a wrong rule locks out the API server/kubelet/Talos API/LAN and recovery
+    # can need console access. This was attempted live on 2026-09-20 and DID
+    # lock the node out (see the template header and the report). Turn it on
+    # only with console access available, after validating in audit mode.
+    # Requires the cluster's Cilium to run with enable-host-firewall=true.
+    hostFirewall: false
+    # The node label the host policy selects. It must be applied to the node
+    # (`kubectl label node <n> naslos.io/host-firewall=true`) AND must be one
+    # Cilium propagates to the `reserved:host` endpoint - verify with
+    # `cilium-dbg endpoint list` that POLICY (ingress) shows Enabled. The
+    # well-known `kubernetes.io/os` label is NOT propagated and selects nothing.
+    hostFirewallNodeLabel: naslos.io/host-firewall
+    # Admin CIDR allowed to reach the node's Talos API (50000) and k8s API
+    # (6443). Leave empty ONLY if the operator can reach the node console;
+    # setting it is what keeps a bad host policy recoverable.
+    hostFirewallAdminCIDR: ""
+
 # Traefik IngressRoute + middlewares (Authelia forwardAuth, security headers and
 # the proxy-identity secret). Gated on this flag rather than `traefik.enabled`:
 # that key is the subchart dependency's condition, and the Traefik subchart's
@@ -386,7 +492,7 @@ ingress:
     serviceName: naslos-authelia
     port: 80
   # TLS for the IngressRoutes. Leave existingSecret empty to let the chart
-  # generate a self-signed certificate for authelia.domain once and reuse it
+  # generate a self-signed certificate for the `domain` value once and reuse it
   # across upgrades (templates/tls-secret.yaml); point it at a Secret you manage
   # (keys tls.crt/tls.key) to serve a real CA certificate instead.
   tls:
@@ -401,7 +507,7 @@ terminal:
   # The terminal's endpoints are owner routes like any other, so they are gated
   # by `auth` above (previously a separate terminal.requireAuth switch).
   # digest (NAS-022): pin the exact image; empty means "use the tag".
-  image: { repository: 192.168.1.2:30095/naslos-terminal, tag: "0.1.0", digest: "" }
+  image: { repository: 192.168.1.2:30095/naslos-terminal, tag: "0.1.0-r3", digest: "" }
   resources:
     requests:
       cpu: 10m

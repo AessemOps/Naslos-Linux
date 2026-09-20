@@ -23,7 +23,7 @@
 api:
   image:
     repository: 192.168.1.2:30095/naslos-api
-    tag: "0.1.0-r5"
+    tag: "0.1.0-r10"
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -41,44 +41,45 @@ api:
 agent:
   image:
     repository: 192.168.1.2:30095/naslos-agent
-    tag: "0.1.0-r3"
+    tag: "0.1.0-r7"
 ui:
   image:
     repository: 192.168.1.2:30095/naslos-ui
-    tag: "0.1.0-r5"
+    tag: "0.1.0-r11"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
     image:
       repository: 192.168.1.2:30095/naslos-samba
-      tag: "0.1.0-r1"
+      tag: "0.1.0-r3"
   nfs:
     image:
       repository: 192.168.1.2:30095/naslos-nfs
-      tag: "0.1.0-r1"
+      # r3 = Debian 13 / Ganesha 6.5. It needs CAP_SYS_RESOURCE for
+      # PR_SET_IO_FLUSHER (added in nfs-daemonset.yaml); with that, Ganesha 6.5
+      # starts with the same rendered ganesha.conf as 4.x.
+      tag: "0.1.0-r3"
 terminal:
   image:
     repository: 192.168.1.2:30095/naslos-terminal
-    tag: "0.1.0-r1"
+    tag: "0.1.0-r3"
 openldap:
-  image: 192.168.1.2:30095/naslos-openldap:0.1.0-r1
+  # r4 = Debian 13 / slapd 2.6.10, with /var/run/slapd created in the image
+  # (Debian 13's slapd needs it for its pid file; tmpfiles.d never runs in a
+  # container). Fresh installs verified; the existing PVC flip is next.
+  image: 192.168.1.2:30095/naslos-openldap:0.1.0-r4
   # OpenLDAP host is the service name for internal cluster references.
   host: naslos-openldap
-  # Must match the naslos-openldap secret's "service-password" key (set by
-  # openldap/generate-secrets.sh, default SERVICE_PASSWORD env var) — this
-  # is what the naslos-openldap-bootstrap Job writes as the naslos-service
-  # account's real userPassword. If they don't match, Authelia's LDAP bind
-  # fails at startup with "LDAP Result Code 49 \"Invalid Credentials\"".
-  # Override SERVICE_PASSWORD when running generate-secrets.sh and update
-  # this value (or pass --set openldap.bindPassword=... at install time) to
-  # keep them in sync.
-  bindPassword: "CHANGE_ME_SERVICE_PASSWORD"
+  # No bindPassword here. The chart reads the service password from the
+  # naslos-openldap Secret (key service-password), which
+  # openldap/generate-secrets.sh creates and the naslos-openldap-bootstrap Job
+  # applies to the directory; rotating it is a Secret patch plus a bootstrap
+  # re-run, and nothing lands in git (AUDIT-H1).
 
 # The public name: session cookie domain, TOTP issuer and TLS SAN. It resolves
 # through the mDNS record the Samba container advertises; add a router A record
 # (naslos.local -> the VM IP) for clients without mDNS (Windows).
-authelia:
-  domain: naslos.local
+domain: naslos.local
 
 # Traefik is the only listener: it binds the node's 80/443 (hostPort) so URLs
 # carry no port, and the Service stays ClusterIP. If your environment provides a
@@ -97,6 +98,16 @@ traefik:
 # authenticated; there is no other entry point.
 ingress:
   enabled: true
+
+# NetworkPolicy CIDRs for this node (AUDIT-M4). These are inert under flannel but
+# must be right before a policy CNI is installed: the agent, samba, nfs and the
+# Talos API are hostNetwork at the node IP 192.168.1.117, and Traefik's hostPort
+# entry traffic also arrives from the node address. `nodeCIDR` is what lets the
+# API reach the agent (:9090) and the Talos API (:50000) once enforced.
+networkPolicy:
+  nodeCIDR: 192.168.1.0/24
+  ingressPluginsCIDR: 192.168.1.0/24
+  nfsClientCIDR: 192.168.1.0/24
 
 # Buddy Backup receive side (AUDIT-H2). The dataset exists on the node; before
 # this was set the release ran buddy.enabled=false while the peer API was live,

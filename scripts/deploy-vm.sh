@@ -8,7 +8,7 @@
 # Environment variables:
 #   VM_IP          Target Talos node IP (default: 192.168.1.96)
 #   REGISTRY       Container registry for Naslos images (default: 192.168.1.2:30095)
-#   REGISTRY_HTTP_SECRET  HTTP basic-auth password for the registry (default: secret)
+#   REGISTRY_HTTP_SECRET  HTTP basic-auth password for the registry (required; no default)
 #   IMAGE_TAG      Image tag (default: 0.1.0)
 #   SKIP_BOOTSTRAP Set to "1" to skip talosctl bootstrap (default: 0)
 #   SKIP_IMAGES    Set to "1" to skip docker build/push (images already in registry)
@@ -20,7 +20,8 @@ set -euo pipefail
 
 VM_IP="${VM_IP:-192.168.1.96}"
 REGISTRY="${REGISTRY:-192.168.1.2:30095}"
-REGISTRY_HTTP_SECRET="${REGISTRY_HTTP_SECRET:-secret}"
+# No default (NAS-010): the previous fallback was the literal "secret".
+REGISTRY_HTTP_SECRET="${REGISTRY_HTTP_SECRET:?set REGISTRY_HTTP_SECRET to the registry password - there is no default}"
 IMAGE_TAG="${IMAGE_TAG:-0.1.0}"
 SKIP_BOOTSTRAP="${SKIP_BOOTSTRAP:-0}"
 SKIP_IMAGES="${SKIP_IMAGES:-0}"
@@ -273,6 +274,26 @@ fi
 echo "=== Waiting for Talos node health ==="
 talosctl --nodes "$VM_IP" --endpoints "$VM_IP" health || true
 
+# --- wait for the CNI (AUDIT-M4: Cilium, applied as a Talos inline manifest) ---
+# Flannel is disabled and Cilium now ships in the machine config, so the node
+# has NO pod networking until Cilium's DaemonSet is running. Talos applies the
+# inline manifest during bootstrap, but the workloads and the Helm install below
+# will fail (DNS, Services) if we race it. Wait for the cilium DaemonSet to be
+# ready before touching kubectl/helm.
+echo "=== Waiting for Cilium (CNI) to become ready ==="
+for i in $(seq 1 60); do
+    ready="$(kubectl -n kube-system get ds cilium -o jsonpath='{.status.numberReady}' 2>/dev/null || true)"
+    if [ "$ready" = "1" ]; then
+        echo "Cilium is ready."
+        break
+    fi
+    if [ "$i" -eq 60 ]; then
+        echo "WARN: cilium not ready after ~5 min; continuing anyway." >&2
+        echo "      Check: kubectl -n kube-system get pods -l k8s-app=cilium" >&2
+    fi
+    sleep 5
+done
+
 # --- retrieve Kubernetes credentials ---
 echo "=== Fetching Kubernetes kubeconfig ==="
 talosctl kubeconfig --nodes "$VM_IP" --endpoints "$VM_IP" -f "$HOME/.kube/config" || true
@@ -301,19 +322,28 @@ kubectl patch storageclass local-path \
 # --- create OpenLDAP secrets and deploy OpenLDAP ---
 echo "=== Creating OpenLDAP secrets ==="
 kubectl create namespace naslos --dry-run=client -o yaml | kubectl apply -f -
-# PodSecurity: this namespace runs privileged workloads (naslos-agent mounts
-# host devices) — relax admission from the default baseline/restricted.
+# PodSecurity (AUDIT-M6): `naslos` holds only the unprivileged workloads now
+# (api, ui, traefik, authelia, openldap), so it enforces `baseline`. The
+# privileged workloads (agent, samba, nfs, terminal) live in the separate
+# naslos-privileged namespace below. `baseline` still permits the hostPath the
+# API mounts for the shares UI, which `restricted` would refuse.
 kubectl label namespace naslos \
+    pod-security.kubernetes.io/enforce=baseline \
+    pod-security.kubernetes.io/enforce-version=latest --overwrite || true
+# AUDIT-M6: the privileged namespace. agent mounts host devices and samba/nfs
+# are hostNetwork, so this one needs `privileged`.
+kubectl create namespace naslos-privileged --dry-run=client -o yaml | kubectl apply -f -
+kubectl label namespace naslos-privileged \
     pod-security.kubernetes.io/enforce=privileged \
     pod-security.kubernetes.io/enforce-version=latest --overwrite || true
-# Adopt the namespace for Helm so `helm upgrade --install ... --create-namespace`
-# doesn't fail with "invalid ownership metadata" on the already-existing ns.
-for label in "app.kubernetes.io/managed-by=Helm"; do
-    kubectl label namespace naslos "$label" --overwrite 2>/dev/null \
-        || kubectl label --overwrite namespace naslos "$label"
+# Adopt the namespaces for Helm so `helm upgrade --install ... --create-namespace`
+# doesn't fail with "invalid ownership metadata" on an already-existing ns.
+for ns in naslos naslos-privileged; do
+    kubectl label namespace "$ns" "app.kubernetes.io/managed-by=Helm" --overwrite 2>/dev/null \
+        || kubectl label --overwrite namespace "$ns" "app.kubernetes.io/managed-by=Helm"
+    kubectl annotate namespace "$ns" "meta.helm.sh/release-name=naslos" --overwrite 2>/dev/null || true
+    kubectl annotate namespace "$ns" "meta.helm.sh/release-namespace=naslos" --overwrite 2>/dev/null || true
 done
-kubectl annotate namespace naslos "meta.helm.sh/release-name=naslos" --overwrite 2>/dev/null || true
-kubectl annotate namespace naslos "meta.helm.sh/release-namespace=naslos" --overwrite 2>/dev/null || true
 LDAP_IMAGE="$REGISTRY/naslos-openldap:$IMAGE_TAG" ./openldap/generate-secrets.sh
 
 # --- create the talosconfig secret the API pod needs to manage the node ---

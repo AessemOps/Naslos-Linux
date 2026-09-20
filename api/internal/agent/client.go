@@ -223,6 +223,12 @@ type Dataset struct {
 	Avail      string `json:"avail,omitempty"`
 	Refer      string `json:"refer,omitempty"`
 	Mountpoint string `json:"mountpoint"`
+	// UsedBytes is the dataset's used space in exact bytes. It is what the buddy
+	// send path compares a stream against to catch a backup that captured nothing
+	// (AV-8): a dataset the agent's mount namespace cannot see still reports its
+	// real UsedBytes, so a stream far smaller than that is a red flag even though
+	// the dataset reads as mounted.
+	UsedBytes int64 `json:"usedBytes"`
 	// Mounted is the mount state as the *agent* sees it (host mount namespace),
 	// which is where `zfs send` runs. A dataset mounted only inside a pod shows
 	// false here, and sending it would capture an empty dataset.
