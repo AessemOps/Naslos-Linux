@@ -229,15 +229,6 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
-}
-
 // extractUID reduces a member reference to a bare uid. It accepts both a
 // person DN ("uid=alice,ou=people,dc=naslos,dc=local") and a plain uid, because
 // GET returns DNs and PUT is documented to take uids.
@@ -260,12 +251,6 @@ func extractUID(dn string) string {
 		value = value[idx+len("uid="):]
 	}
 	return strings.TrimSpace(value)
-}
-
-// Store accessor for the SMB account mirror. The store is created alongside
-// the share manager; tests may construct a Server without one.
-func (s *Server) smbUsers() *shares.SambaUserStore {
-	return s.sambaUsers
 }
 
 // refreshShareAccess re-renders and pushes the share configuration plus the
