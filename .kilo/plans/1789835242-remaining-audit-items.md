@@ -140,6 +140,24 @@ rule** is the safer alternative still to try, since it does not depend on
 Cilium's label propagation. Retry only with console access, in audit mode, and
 with the admin CIDR set.
 
+**Second attempt (2026-09-20, no lockout):** retried safely — no CCNP existed
+when the agent restarted, the admin CIDR kept kubectl/talosctl alive, and the
+revert needed no console. Progress and blocker:
+
+- `enable-node-selector-labels: true` **is required** (off by default); without
+  it node labels never reach the host endpoint.
+- With it on, the label reaches `reserved:host` **only after an agent restart**.
+- **Blocker:** the endpoint label is `k8s:naslos.io/host-firewall=true` while
+  Cilium stores the policy `nodeSelector` as `any:naslos.io/host-firewall`, so
+  it still matches nothing (`ingress: {}`). Neither the bare nor the `k8s:`
+  selector matched. Start the next attempt from Cilium's node-selector
+  label-source semantics.
+- **No Talos fallback:** Talos v1.14.1 has no host-firewall / network-rule
+  resource, so that alternative is unavailable on this version.
+
+End state is the known-good one: no CCNP, both flags `false`, label removed,
+`/` → 302, `/api/health` → 200.
+
 **Fresh install:** the change is landed in the tracked machine-config patch
 `bootstrap/vm/naslos-vm.yaml` (flannel `$patch: delete`, kube-proxy disabled,
 host DNS forwarding off, Cilium `KubeInlineManifestConfig`), the pinned manifest
