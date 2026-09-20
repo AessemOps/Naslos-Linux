@@ -56,8 +56,10 @@ schematic is the only thing that changes the OS image.
 
 - **Talos**: `talosctl upgrade` upgrades the OS. The extension is re-imported
   from the Image Factory; pools are re-imported by `zfs-service` on the new boot.
-- **Naslos**: Helm chart upgrades (`helm upgrade … charts/naslos`) redeploy API/UI
-  and agent workloads; machine-config patches are reapplied by the API.
+- **Naslos**: Helm chart upgrades (`helm upgrade … charts/naslos`) redeploy the
+  API/UI and agent workloads; machine-config patches are applied out-of-band with
+  `talosctl apply-config` / `scripts/deploy-vm.sh` (the API does not reapply
+  them).
 
 ## Where it lives
 

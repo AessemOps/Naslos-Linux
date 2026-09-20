@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/AessemOps/Naslos-Linux/api/internal/auth"
+	"github.com/AessemOps/Naslos-Linux/api/internal/logsafe"
 	"github.com/AessemOps/Naslos-Linux/api/internal/shares"
 )
 
@@ -91,7 +92,7 @@ func (s *Server) handleUserEnable(w http.ResponseWriter, r *http.Request) {
 	// Keep SMB access in step with the LDAP account state: a disabled user
 	// must not keep authenticating over SMB.
 	if err := s.setSMBUserEnabled(uid, enabled); err != nil {
-		log.Printf("Warning: could not mirror SMB account state for %s: %v", uid, err)
+		log.Printf("Warning: could not mirror SMB account state for %s: %v", logsafe.Field(uid), err) // #nosec G706 -- sanitised by logsafe.Field
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "user " + action + "d"})
@@ -174,7 +175,7 @@ func (s *Server) handleGroupDetail(w http.ResponseWriter, r *http.Request) {
 			func(uid string) error { return s.identity.AddMember(cn, uid) },
 			func(uid string) error { return s.identity.RemoveMember(cn, uid) },
 		); err != nil {
-			log.Printf("Warning: group %s updated with errors: %v", cn, err)
+			log.Printf("Warning: group %s updated with errors: %v", logsafe.Field(cn), err) // #nosec G706 -- sanitised by logsafe.Field
 		}
 		// Share access is evaluated by Samba against the group membership
 		// mirrored on the node, so a membership change must re-push it -
@@ -228,15 +229,6 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
-}
-
 // extractUID reduces a member reference to a bare uid. It accepts both a
 // person DN ("uid=alice,ou=people,dc=naslos,dc=local") and a plain uid, because
 // GET returns DNs and PUT is documented to take uids.
@@ -259,12 +251,6 @@ func extractUID(dn string) string {
 		value = value[idx+len("uid="):]
 	}
 	return strings.TrimSpace(value)
-}
-
-// Store accessor for the SMB account mirror. The store is created alongside
-// the share manager; tests may construct a Server without one.
-func (s *Server) smbUsers() *shares.SambaUserStore {
-	return s.sambaUsers
 }
 
 // refreshShareAccess re-renders and pushes the share configuration plus the
@@ -295,7 +281,7 @@ func (s *Server) syncSMBPassword(uid, ntHash string) error {
 		if err == nil {
 			uidNumber, gidNumber = u, g
 		} else {
-			log.Printf("Warning: could not read POSIX ids for %s (SMB login will need a local account): %v", uid, err)
+			log.Printf("Warning: could not read POSIX ids for %s (SMB login will need a local account): %v", logsafe.Field(uid), err) // #nosec G706 -- sanitised by logsafe.Field
 		}
 	}
 

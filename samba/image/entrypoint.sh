@@ -159,13 +159,23 @@ start_discovery() {
 
   # Web Service Discovery: what Windows Explorer's Network view uses now that
   # SMBv1 browsing is gone.
-  if command -v wsdd >/dev/null 2>&1; then
+  # Debian 12 ships the Python `wsdd`, Debian 13 ships `wsdd2` (C). The flags
+  # differ: wsdd uses -n/-w, wsdd2 uses -N (netbiosname) / -G (workgroup), and
+  # wsdd2's -w means "respond only to WSDD" (a mode flag, not a workgroup).
+  if command -v wsdd2 >/dev/null 2>&1; then
+    if [ -n "$iface" ]; then
+      wsdd2 -i "$iface" -N "$name" -G "$workgroup" >/tmp/wsdd.out 2>&1 &
+    else
+      wsdd2 -N "$name" -G "$workgroup" >/tmp/wsdd.out 2>&1 &
+    fi
+    log "advertising via WSD (wsdd2) as $name (workgroup $workgroup)"
+  elif command -v wsdd >/dev/null 2>&1; then
     if [ -n "$iface" ]; then
       wsdd -n "$name" -w "$workgroup" -4 -s -i "$iface" >/tmp/wsdd.out 2>&1 &
     else
       wsdd -n "$name" -w "$workgroup" -4 -s >/tmp/wsdd.out 2>&1 &
     fi
-    log "advertising via WSD as $name (workgroup $workgroup)"
+    log "advertising via WSD (wsdd) as $name (workgroup $workgroup)"
   fi
 
   return 0

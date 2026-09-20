@@ -727,14 +727,16 @@ func extractTar(reader io.Reader, dest string) error {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, os.FileMode(header.Mode)&os.ModePerm); err != nil {
+			// Mask to the permission bits before narrowing, so the value is <= 0777
+			// and cannot overflow (gosec G115, AUDIT-L6).
+			if err := os.MkdirAll(target, os.FileMode(header.Mode&int64(os.ModePerm))); err != nil { // #nosec G115 -- masked to 0777
 				return err
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return err
 			}
-			file, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode)&os.ModePerm)
+			file, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode&int64(os.ModePerm))) // #nosec G115 -- masked to 0777
 			if err != nil {
 				return err
 			}

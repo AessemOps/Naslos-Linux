@@ -5,7 +5,6 @@ package identity
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -273,11 +272,6 @@ type Group struct {
 	CN          string   `json:"cn"`
 	Description string   `json:"description"`
 	Members     []string `json:"members"`
-}
-
-// base64Encode encodes bytes to base64 string.
-func base64Encode(data []byte) string {
-	return base64.StdEncoding.EncodeToString(data)
 }
 
 // normalizeUID normalizes a username for LDAP.

@@ -4,9 +4,9 @@
 > authenticated-only change; several findings below are already closed (agent
 > token enforcement, the NodePort/auth bypass removal, the streaming-client
 > token, CR-01). Read it for history, not for current risk. The current picture
-> is in `docs/AUDIT-2026-09-19.md`, with its remediation in
-> `docs/AUDIT-2026-09-19-FIXPLAN.md`; the living per-finding list is
-> `docs/CODE-REVIEW.md`. The NAS-* IDs here are kept for traceability.
+> is `docs/AUDIT-2026-09-19-REPORT.md`; the 2026-09-19 working papers
+> (`AUDIT-2026-09-19.md`, `AUDIT-2026-09-19-FIXPLAN.md`, `CODE-REVIEW.md`) are
+> archived beside this file. The NAS-* IDs here are kept for traceability.
 >
 > **Status of the headline findings at 2026-09-19:**
 >
@@ -18,7 +18,7 @@
 > | NAS-004 terminal unauthenticated, NAS-005 `/api/ws/logs` unauthenticated | **Fixed** — owner gate; the nginx 403 path is gone with the NodePort |
 > | NAS-008 NodePort exposes the API | **Fixed** — the listener and the whole dev posture were removed |
 > | NAS-009 `X-Forwarded-Host` trust | **Fixed** — `trustForwardHeader` removed from the forwardAuth middleware |
-> | NAS-010 default credentials | **Partial** — Grafana removed; the LDAP service password, `TempPass123!` initial passwords and the registry `secret` remain (AUDIT-H1/M14) |
+> | NAS-010 default credentials | **Mostly fixed** — Grafana removed; the LDAP service password rotated and de-committed (AUDIT-H1); `generate-secrets.sh` now generates random admin/service passwords instead of `naslos-admin`/`CHANGE_ME_*`; the OpenLDAP entrypoint no longer defaults `LDAP_ADMIN_PASSWORD` to `admin`; new users get an unguessable random placeholder instead of `TempPass123!` and the API rejects a passwordless create (400); `deploy-vm.sh` requires `REGISTRY_HTTP_SECRET`. **Residual cleared 2026-09-19:** the running instance's LDAP admin password was rotated too — `olcRootPW` replaced in `olcDatabase={0}config` and `{1}mdb` over `ldapi://` with SASL EXTERNAL, the new value stored in the `naslos-openldap` Secret, and the bootstrap Job re-run successfully. The new admin credential binds and the old `naslos-admin` is rejected |
 > | NAS-014 jwt regenerated per render, NAS-017 agent client token | **Fixed** — jwt secret persisted; streaming client carries the token |
 > | everything else | historical; see the status table in `docs/CODE-REVIEW.md` |
 

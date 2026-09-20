@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-09-19.** Superseded by `docs/AUDIT-2026-09-19-REPORT.md`. Kept
+> as the per-finding record of the 2026-09-17 review; paths inside refer to the
+> repository layout at that date.
+
 # Naslos — full code review
 
 **Baseline:** `master` `6227595` (PRs #9–#16 merged, buddy walk-bounds included).
@@ -7,27 +11,30 @@ Helm chart and images, scripts, docs, tests. **Mode:** report only; nothing chan
 > ## Status at 2026-09-19 — read this before the findings below
 >
 > The findings from §2 onward describe the **2026-09-17 baseline**. The tree has
-> since moved to `master` `85ae874` (PRs #21–#23): the dev endpoint was removed
-> entirely (no NodePort, no `auth.disabled`/`AUTH_DISABLED`/`AGENT_AUTH_DISABLED`,
-> no `values-prod.yaml`), Grafana was removed, and a separate audit ran
-> (`docs/AUDIT-2026-09-19.md` + `-FIXPLAN.md`). Line numbers and posture
-> statements in the body are therefore historical; **anything below that mentions
-> a NodePort or `auth.disabled` describes a configuration that no longer exists.**
-> The table here is the current status.
+> since moved to `master` `85ae874` (PRs #21–#23) and then through the
+> `audit/full-2026-09-19` branch to `b985e03`: the dev endpoint was removed
+> entirely (no NodePort, no
+> `auth.disabled`/`AUTH_DISABLED`/`AGENT_AUTH_DISABLED`, no `values-prod.yaml`),
+> Grafana was removed, flannel was replaced by Cilium (NetworkPolicy enforced),
+> and a separate audit ran. Line numbers and posture statements in the body are
+> therefore historical; **anything below that mentions a NodePort or
+> `auth.disabled` describes a configuration that no longer exists.** The table
+> below is the status **at 2026-09-19**; the current status of every audit item
+> is in `docs/AUDIT-2026-09-19-REPORT.md`.
 >
 > | CR | Status at 2026-09-19 |
 > |---|---|
 > | CR-01 Authelia domain-wide bypass, CR-02 `helm uninstall` data loss, CR-03 `RequireAdmin` unwired | **Fixed** (PR #20) |
 > | CR-05 dependency exposure | **Fixed** — `23bca3a`; govulncheck 18 → 4, all `Fixed in: N/A` and unexercised |
-> | CR-06 `-race` fails | **Open** — CI keeps it opt-in (`NASLOS_AUDIT_RACE=1`) until fixed |
+> | CR-06 `-race` fails | **Fixed** — the scheduler race is gone (`3f620dd`); the sweep runs `go test -race` unconditionally |
 > | CR-07 ntfy token in the response, CR-15 world-readable shadow mirror, CR-18/19/22 UI silent failures | **Fixed** — `261aa3e` |
-> | CR-09 no CI | **Partial** — `scripts/audit.sh` packages the sweep (`421711a`); the GitHub Actions workflow added with it was removed at the operator's request, so it is manual for now |
+> | CR-09 no CI | **Partial** — `scripts/audit.sh` packages the sweep (`421711a`); the GitHub Actions workflow added with it was removed at the operator's request, so it is manual for now (AUDIT-M12) |
 > | CR-10 no `.dockerignore` | **Fixed** — `8555925` |
-> | CR-31 xterm deprecation, CR-32/33/34/35/36 UI typing/size/a11y/timers, CR-41 monitoring limits, CR-42 spec §7 mapping, CR-44 doc drift, CR-45 unused logger | **Open** |
-> | CR-37 probes/PDBs/NetworkPolicy/PSA/RBAC | **Partial** — unused agent ClusterRole removed (`8555925`); probes, PDBs, NetworkPolicy, PSA scoping open (AUDIT-M4/M6) |
-> | CR-38 Helm hardening | **Partial** — `trustForwardHeader` removed; `values.schema.json`, `.Release.Namespace`, `LDAPTLS_REQCERT` and digests open (AUDIT-L9/M10) |
-> | CR-39 jwt churn / argv secrets / image default | **Partial** — jwt secret persisted (`421711a`); the live LDAP credential is AUDIT-H1 (open) |
-> | CR-40 image pinning / root nginx | **Partial** — digest pinning excluded by request (AUDIT-M10); nginx non-root open (AUDIT-L2) |
+> | CR-31 xterm deprecation, CR-32/33/34/35/36 UI typing/size/a11y/timers, CR-41 monitoring limits, CR-42 spec §7 mapping, CR-44 doc drift, CR-45 unused logger | **Fixed** — CR-31 via the `@xterm` migration (`a0e0797`), the rest with the UI/spec/staticcheck batches; see the report |
+> | CR-37 probes/PDBs/NetworkPolicy/PSA/RBAC | **Partial** — unused agent ClusterRole removed (`8555925`); Cilium enforces NetworkPolicy and the PSA split is done (`87fbaea`, AUDIT-M4/M6); probes exist on api/samba/nfs, PDBs do not |
+> | CR-38 Helm hardening | **Partial** — `trustForwardHeader` removed and `LDAPTLS_REQCERT=never` replaced with CA verification (the init/bootstrap mount `naslos-openldap-tls`); `values.schema.json` and `.Release.Namespace` are now done (`0f558ab`, AUDIT-L9); image digests remain excluded (AUDIT-M10) |
+> | CR-39 jwt churn / argv secrets / image default | **Partial** — jwt secret persisted (`421711a`, `naslos-authelia-jwt`); the LDAP bind password is no longer committed (AUDIT-H1) and the OpenLDAP image's `admin` default is gone (the entrypoint now requires `LDAP_ADMIN_PASSWORD`); argv-passed passwords in the bootstrap Job remain |
+> | CR-40 image pinning / root nginx | **Partial** — digest pinning excluded by request (AUDIT-M10); nginx is now unprivileged (`edf7162`, AUDIT-L2) |
 > | CR-43 missing tests | **Partial** — `api/internal/agent/client_test.go`; auth-aware Playwright suite |
 
 Severity policy used below: 🔴 **blocking** = security/privacy defect, a data-loss

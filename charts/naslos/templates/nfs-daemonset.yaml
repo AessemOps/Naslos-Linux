@@ -9,7 +9,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: naslos-nfs
-  namespace: {{ .Values.namespace }}
+  namespace: {{ include "naslos.workloadNamespace" . }}
   labels:
     app.kubernetes.io/name: naslos-nfs
     app.kubernetes.io/component: shares
@@ -45,6 +45,12 @@ spec:
                 - FSETID
                 - SETGID
                 - SETUID
+                # Ganesha 6.x calls prctl(PR_SET_IO_FLUSHER) at startup and
+                # aborts on EPERM ("Failed to PR_SET_IO_FLUSHER with EPERM");
+                # that prctl requires CAP_SYS_RESOURCE. Bookworm's Ganesha 4.x
+                # did not call it, which is why this only appeared with the
+                # Debian 13 image (AUDIT: image migration).
+                - SYS_RESOURCE
           # NFSv4 only: no rpcbind (111) and no NLM/statd ports are needed on
           # Talos, which does not ship them.
           ports:

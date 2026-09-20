@@ -15,7 +15,7 @@ is exposed separately via `/api/volumes`.
 | Health monitoring | `naslos-agent` | Parses `zpool status` + `zpool iostat` into structured data |
 | Pool import | `naslos-agent` | `zpool import` (dry-run) to list; `zpool import -f` to import |
 | Boot import | `zfs-service` (Image Factory extension) | `zpool import -fal` at boot |
-| Volumes for K8s | `naslos-zfs` storage class + local-path provisioner | App PVCs |
+| Volumes for K8s | local-path provisioner (only) | App/PVC storage; ZFS LocalPV is not installed |
 
 ## Pool creation (what actually runs)
 

@@ -16,7 +16,7 @@ spec:
           serviceAccountName: naslos-openldap-backup
           containers:
             - name: backup
-              image: 192.168.1.2:30095/naslos-openldap:0.1.0
+              image: 192.168.1.2:30095/naslos-openldap:0.1.0-r4
               command:
                 - /bin/sh
                 - -c

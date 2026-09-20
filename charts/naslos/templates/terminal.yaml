@@ -15,7 +15,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: naslos-terminal
-  namespace: {{ .Values.namespace }}
+  namespace: {{ include "naslos.workloadNamespace" . }}
   labels:
     app.kubernetes.io/name: naslos-terminal
 ---
@@ -23,7 +23,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: naslos-terminal
-  namespace: {{ .Values.namespace }}
+  namespace: {{ include "naslos.workloadNamespace" . }}
   labels:
     app.kubernetes.io/name: naslos-terminal
     app.kubernetes.io/component: terminal
@@ -82,14 +82,15 @@ spec:
             path: /dev
             type: Directory
 ---
-# The API execs into pods in its own namespace and reads their logs. Scoped with
-# a namespaced Role rather than a ClusterRole: the API has no business exec-ing
-# into anything outside Naslos.
+# The API execs into pods and reads their logs (AUDIT-M6: the terminal now lives
+# in the privileged namespace, so the Role is granted THERE, not in the release
+# namespace). Scoped with a namespaced Role rather than a ClusterRole: the API
+# has no business exec-ing into anything outside the Naslos namespaces.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: naslos-api-terminal
-  namespace: {{ .Values.namespace }}
+  namespace: {{ include "naslos.workloadNamespace" . }}
 rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
@@ -102,7 +103,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: naslos-api-terminal
-  namespace: {{ .Values.namespace }}
+  namespace: {{ include "naslos.workloadNamespace" . }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -110,7 +111,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: naslos-api
-    namespace: {{ .Values.namespace }}
+    namespace: {{ .Release.Namespace }}
 ---
 # Namespaces are cluster-scoped, so the picker needs one narrow ClusterRole (a
 # Role cannot grant them). Read-only, nothing else.
@@ -134,7 +135,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: naslos-api
-    namespace: {{ .Values.namespace }}
+    namespace: {{ .Release.Namespace }}
 {{- /*
 The terminal paths (/api/pods, /api/namespaces, /api/ws/*) are served by the
 naslos-api IngressRoute in ingress-api.yaml, which routes all of /api straight

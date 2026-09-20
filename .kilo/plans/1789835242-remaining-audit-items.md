@@ -1,0 +1,215 @@
+# Remaining audit items — plan
+
+All Highs and NAS-010 are closed; these are the open Medium/Low items from
+`docs/AUDIT-2026-09-19-REPORT.md` §8, plus the not-yet-run Batch 6 coverage.
+Baseline: branch `audit/full-2026-09-19` @ `016683b`, live at helm revision 24
+(api/ui `0.1.0-r6`, agent `0.1.0-r3`). One branch, one commit per item, pushed;
+`master` untouched.
+
+Order is by value/risk: L9 and L5/L6 are code-only; L2 and M11 rebuild an image;
+M3/M6/M4 change the live platform; Batch 6 is read-only coverage.
+
+## 1. AUDIT-L9 — `.Release.Namespace` + `values.schema.json`
+
+**1a. Namespace.** 44 references to `.Values.namespace` across 15 templates
+(`grep -rn '\.Values\.namespace' charts/naslos/templates`). Replace every one
+with `.Release.Namespace` so the chart can be installed under any release name
+and namespace, then delete the `namespace: naslos` value.
+
+- Files: `agent-daemonset.yaml`, `agent-token.yaml`, `api-deployment.yaml`,
+  `authelia-config.yaml`, `buddy-secret.yaml`, `ingress.yaml`, `ingress-api.yaml`,
+  `namespace.yaml`, `nfs-daemonset.yaml`, `proxy-secret.yaml`,
+  `samba-daemonset.yaml`, `terminal.yaml`, `tls-secret.yaml`,
+  `traefik-middleware.yaml`, `ui-deployment.yaml`.
+- Watch the non-`metadata.namespace` uses: the forwardAuth address
+  (`traefik-middleware.yaml:19`), the LDAP URL (`authelia-config.yaml:115`), the
+  agent base URL default (`api-deployment.yaml:137`), the UI `wait-for-api`
+  hostname (`ui-deployment.yaml:37`) and the `NASLOS_NAMESPACE` env
+  (`api-deployment.yaml:132`). All become `.Release.Namespace`, which resolves
+  correctly under `helm -n naslos`.
+- `namespace.yaml` still creates the release namespace (adopted by Helm in
+  `deploy-vm.sh`); keep it but name it `.Release.Namespace`.
+- `values.yaml`: delete the `namespace` key; update the Helm-values table in
+  `docs/deployment.md` (the `namespace | naslos` row) to "release namespace
+  (`-n naslos`)".
+
+**1b. Schema.** Add `charts/naslos/values.schema.json`: a JSON Schema for the
+top-level keys (`api`, `agent`, `ui`, `shares`, `openldap`, `authelia`,
+`ingress`, `auth`, `traefik`, `buddy`, `terminal`, `notifications`,
+`storage`, `namespace` removed). Types plus a few enums/patterns (severity
+values, event names, image repository strings). Deliberately **no**
+`additionalProperties: false` — the subcharts add their own keys — so the schema
+validates types without blocking legitimate values. Verify with `helm lint` and a
+negative test (e.g. `--set api.replicas=abc` must fail).
+
+Verification: `helm lint`, `helm template -n naslos` and a second render with
+`-n other` (no `naslos.` DNS strings left), `make install-vm`, E2E 35 passed.
+
+## 2. AUDIT-L5/L6 — log injection and integer conversions
+
+- L5: gosec G706 on user/pod/namespace names in `log.Printf`. Add a small
+  `sanitizeLogField` (strip control characters/newlines, cap length) and use it
+  where request-derived values are logged (`server/users.go`,
+  `server/pods.go`, `server/websocket.go`, `identity/*`).
+- L6: G115 narrow conversions in buddy size/mode math (`buddy/store.go`,
+  `buddy/quota.go`, `cmd/buddyctl`). Bound-check before converting; add table
+  tests for the boundaries.
+- Verification: `go vet`, `go test`, `gosec` count drops, no behaviour change.
+
+## 3. AUDIT-L2 — the UI image runs nginx as root
+
+- Move to a non-root nginx: listen on `8080`, `pid /tmp/nginx.pid`, temp paths in
+  `/tmp`, `runAsUser: 101`, `runAsNonRoot: true`, read-only root filesystem with
+  emptyDir mounts for cache/run. Update the Service `targetPort` and the
+  `wait-for-api` probes accordingly.
+- Verification: image builds, pod starts as 101, UI serves, E2E 35 passed.
+
+## 4. AUDIT-M11 — Svelte/Vite dev advisories
+
+- `npm audit` full reports 11 advisories (1 high) in the build chain: Svelte
+  ≤5.55.6 (SSR/spread XSS), Vite/esbuild, `cookie` via `@sveltejs/kit`.
+  `--omit=dev` is clean, so this is tooling, not the shipped bundle.
+- Bump Svelte and Vite (CR-08/CR-31; the xterm → `@xterm` move can ride along),
+  rebuild the UI, re-run `npm audit`, `svelte-check` and the suite.
+- Note: the current build already warns about a Svelte/kit version mismatch
+  (`untrack`/`fork`/`settled` not exported), so this bump also cleans that up.
+
+## 5. AUDIT-M3 residual — Authelia's configuration lives in a ConfigMap
+
+**LDAP half done at revision 41.** The subchart has no Secret-backed mount for
+`configuration.yml` (only `configMap.existingConfigMap`), so the whole file
+cannot move. But the LDAP bind password can: values.yaml now sets
+`configMap.authentication_backend.ldap.enabled: true` (the missing piece in the
+reverted attempt — without it no `AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE`
+renders) plus `password.secret_name`/`path`, with the Secret under
+`secret.additionalSecrets` mounted at `path: naslos-openldap` (the mount is
+`/secrets/<path>` while the env var is `/secrets/<secret_name>/<path>`, so they
+only line up when `path` is the Secret name). `authelia-config.yaml` no longer
+writes `password`. `scripts/audit.sh` asserts the env var, the mount and the
+absence of an inline password. The remaining residual (`jwt_secret` in the
+ConfigMap) is documented in the report as Low; it needs a subchart Secret-backed
+config mount or a chart-owned Authelia pod.
+
+## 6. AUDIT-M6 — namespace Pod Security is `privileged` — DONE
+
+Fixed live at revision 55 by splitting the four privileged/hostNetwork workloads
+(agent, samba, nfs, terminal) into a dedicated `naslos-privileged` namespace;
+`naslos` keeps `privileged` because the API mounts hostPath volumes and
+`baseline` forbids them (verified live). Services, the agent-token Secret (both
+namespaces), the exec Role/RoleBinding and the NetworkPolicies moved with them,
+and the terminal UI now discovers the namespace instead of assuming `naslos`.
+See the report's M6 section. All 35 Playwright specs pass; `scripts/audit.sh`
+asserts the split.
+
+## 7. AUDIT-M4 — no NetworkPolicy, and flannel does not enforce one
+
+**Policy layer done.** `charts/naslos/templates/networkpolicy.yaml` renders a
+namespace default-deny plus per-workload ingress allows (agent `:9090` API-only,
+API, UI, Authelia, OpenLDAP `636`, Samba, NFS) and a namespace egress policy
+(cluster DNS + cluster CIDR, no blanket Internet). Gated on
+`networkPolicy.enabled`; CIDRs in `networkPolicy.*`. `scripts/audit.sh` asserts
+the key policies and the agent's API-only selector.
+
+**DONE — flannel replaced by Cilium v1.20.2; NetworkPolicy enforced live.**
+`KubeFlannelCNIConfig` deleted, Cilium embedded as a `KubeInlineManifestConfig`,
+kube-proxy replaced (`kubeProxyReplacement: true`), `forwardKubeDNSToHost: false`.
+Two cleanups were required that config alone did not cover: the stale
+`flannel.1`/`cni0` interfaces (deleted from the host netns) and a missing
+allow-rule for the node/API server (plain NetworkPolicy can't express Cilium's
+reserved `host` identity — added `naslos-allow-host` CiliumNetworkPolicy).
+Enforcement proven: terminal denied at `:8080`/`:9091`/`:9100`, ingress 302/200,
+all 7 auth+LDAP specs pass. `scripts/audit.sh` guards the new policy.
+
+**Residual (Low):** the agent/samba/nfs are `hostNetwork`, which pod-level policy
+does not cover, so the agent `:9090` is still reachable from other pods. The
+Cilium **host firewall** route (`enable-host-firewall` + a
+`CiliumClusterwideNetworkPolicy` with a `nodeSelector`) was **attempted on
+2026-09-20 and rolled back**: the `kubernetes.io/os` selector matched no host
+endpoint (Cilium propagates only a subset of node labels), and restarting the
+agent to apply a new label re-armed the policy out of audit mode, dropping the
+Talos API (50000) and k8s API (6443) and forcing a VNC/console recovery. The
+template is kept but **off by default**, with a dedicated-label selector and a
+`hostFirewallAdminCIDR` so the operator path survives a mistake. A **Talos host
+rule** is the safer alternative still to try, since it does not depend on
+Cilium's label propagation. Retry only with console access, in audit mode, and
+with the admin CIDR set.
+
+**Second attempt (2026-09-20, no lockout):** retried safely — no CCNP existed
+when the agent restarted, the admin CIDR kept kubectl/talosctl alive, and the
+revert needed no console. Progress and blocker:
+
+- `enable-node-selector-labels: true` **is required** (off by default); without
+  it node labels never reach the host endpoint.
+- With it on, the label reaches `reserved:host` **only after an agent restart**.
+- **Blocker:** the endpoint label is `k8s:naslos.io/host-firewall=true` while
+  Cilium stores the policy `nodeSelector` as `any:naslos.io/host-firewall`, so
+  it still matches nothing (`ingress: {}`). Neither the bare nor the `k8s:`
+  selector matched. Start the next attempt from Cilium's node-selector
+  label-source semantics.
+- **No Talos fallback:** Talos v1.14.1 has no host-firewall / network-rule
+  resource, so that alternative is unavailable on this version.
+
+End state is the known-good one: no CCNP, both flags `false`, label removed,
+`/` → 302, `/api/health` → 200.
+
+**Fresh install:** the change is landed in the tracked machine-config patch
+`bootstrap/vm/naslos-vm.yaml` (flannel `$patch: delete`, kube-proxy disabled,
+host DNS forwarding off, Cilium `KubeInlineManifestConfig`), the pinned manifest
+`bootstrap/cilium/cilium.yaml`, and `scripts/render-cilium.sh` (run by `make
+bootstrap-vm`); `scripts/deploy-vm.sh` waits for the cilium DaemonSet before the
+first kubectl/helm call, and the installer is pinned to v1.14.1. Simulated a
+fresh `gen config` to confirm, and `scripts/audit.sh` guards it.
+
+## 8. AUDIT-L8 / CR-06 — `go test -race`
+
+The buddy scheduler test races. Fix it, then flip `NASLOS_AUDIT_RACE=1` in
+`scripts/audit.sh`'s invocation (the script already supports it) and, if CI is
+re-added later, in the workflow.
+
+## 9. Batch 6 — coverage still not run
+
+- **Images/SBOM: done.** `trivy image` on all seven live tags: api/ui/agent are
+  **0 HIGH/CRITICAL**; the four trixie images carry 219 base-library findings,
+  **all with no Debian fix** (`Fixed in: None`) and none in a service package. The
+  trixie Dockerfiles now `apt-get dist-upgrade` so a future security pocket is
+  picked up on rebuild. `trivy config` found two real issues, both fixed:
+  **DS-0031** (`LDAP_ADMIN_PASSWORD="admin"` baked into the openldap image —
+  removed, fails closed) and **KSV-0053** (unused `pods/exec` Role on the
+  openldap bootstrap SA — Role/RoleBinding deleted).
+- **SAST breadth: done.** `semgrep --config=auto` → 4 findings, all verified
+  false positives. `govulncheck` → the 4 accepted AUDIT-H3 advisories; `gosec`
+  excludes the two reviewed false-positive rules. `scripts/audit.sh` gates on
+  both, failing only on a *new* advisory/rule.
+- **Active tests: AV-5…AV-12 all done.** AV-5/AV-6/AV-7/AV-9/AV-10 are Go tests
+  in `api/internal/server/active_tests_test.go` (+ live read-only probes).
+  **AV-8** ran live (with an acceptable node reboot): the full
+  send/verify/restore/read-back round-trip passes on a dataset written in the
+  agent's namespace (verify reports both chain digests; the restored dataset
+  contains the same folder), all 7 `ui/tests/backups.spec.ts` pass with
+  `NASLOS_RECEIVER_URL=http://naslos-api:8080`, and the mount-propagation guard
+  correctly refuses an unmounted dataset. Two operational findings surfaced and
+  are recorded in the report (`zfs send` sees only the agent namespace; a dataset
+  once mounted in a pod namespace can become undestroyable, surviving a reboot —
+  `test/audit-av8` is a stray stub). **AV-11** (TLS 1.3 only, HSTS, header
+  middleware, forged-header 302) and **AV-12** (API rolling restart: one ~1s gap,
+  LDAP login still works) both pass live. See the report's Batch 6 active-tests
+  section.
+- **AV-8 findings: fixed.** The agent reports exact `UsedBytes` (`zfs list -p`)
+  and the send refuses a stream that is a small fraction of the dataset's used
+  space (contentless-backup guard, AV-8a); `DestroyDataset` recovers from the
+  stale-mount `dataset is busy` state via `zfs unmount -f` then
+  `mountpoint=none,canmount=off` and retry (AV-8b). A residual leaked-kernel
+  reference variant is named in the error with its documented remedy (pool
+  export/import; the agent does not export, as that takes the shares offline).
+- **Buddy crypto deep-dive: done — no findings.** `envelope.go`, `keys.go`,
+  `auth.go` and `store.go` reviewed against the guide; see the report's deep-dive
+  section. The asymmetric split, AEAD+AAD binding, DEK wrap, manifest signature,
+  replay defence and store path safety are all sound.
+- Update the report with a coverage section and fold any new findings in.
+
+## Definition of done
+
+Each item lands as one PR/commit with its verification recorded in the report's
+remaining-work table (moving it from "open" to "fixed" with the commit and
+revision), and the live instance stays green (`/api/health`, anonymous 302, E2E
+35 passed). M10 stays excluded unless the operator changes their mind.

@@ -1,11 +1,20 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ .Values.namespace }}
+  name: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: naslos
     app.kubernetes.io/part-of: naslos
+    # AUDIT-M6: the hostNetwork/privileged workloads (agent, samba, nfs,
+    # terminal) were split into their own namespace below, which isolates them
+    # (a compromise of api/ui/traefik no longer shares a namespace with
+    # host-network pods, and the boundary is enforced by the policies). This
+    # namespace still needs `privileged` because the API itself mounts hostPath
+    # volumes for the shares view and the buddy receive dataset - `baseline`
+    # forbids hostPath and the API pod would not start (verified live: FailedCreate
+    # "violates PodSecurity baseline: hostPath volumes").
     pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
   annotations:
     # Keep the namespace when the release is uninstalled. OpenLDAP (its
     # StatefulSet and PVCs) and the shares/state volume are applied outside this
@@ -14,3 +23,25 @@ metadata:
     # `helm uninstall naslos` deletes the namespace and cascades into all of it.
     # Deleting the namespace is then a deliberate, separate action.
     helm.sh/resource-policy: keep
+{{- $wns := include "naslos.workloadNamespace" . }}
+{{- if ne $wns .Release.Namespace }}
+---
+# AUDIT-M6: the privileged half of the split. agent (hostNetwork + hostPath),
+# samba/nfs (hostNetwork) and terminal (privileged) need PSA `privileged`; this
+# keeps that label off the namespace the authenticated services live in.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $wns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+    app.kubernetes.io/component: privileged
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+  annotations:
+    # Same reasoning as `naslos`: the agent mounts host paths and holds the ZFS
+    # state; keep the namespace on uninstall so a reinstall does not take the
+    # node's share data with it.
+    helm.sh/resource-policy: keep
+{{- end }}

@@ -256,29 +256,29 @@ shows up on the first real push, so the location exists from the start.
 buddyctl identity --name naslos-a
 
 # authorize that key on a receiver that has a token (the token is single use)
-buddyctl enroll http://192.168.1.96:30080 --token <token> --sources naslos-a/
+buddyctl enroll https://naslos-b --token <token> --sources naslos-a/
 
 # a directory (archived as tar) — no ZFS needed on either side
-buddyctl push http://192.168.1.96:30080 --source naslos-a/data --dir /var/mnt/test/data
+buddyctl push https://naslos-b --source naslos-a/data --dir /var/mnt/test/data
 
 # a ZFS stream, incrementally, resumable
 zfs snapshot test/data@buddy-$(date +%F)
 zfs send -w -i @yesterday test/data@buddy-$(date +%F) \
-  | buddyctl push http://192.168.1.96:30080 --source naslos-a/data --kind zfs-send
+  | buddyctl push https://naslos-b --source naslos-a/data --kind zfs-send
 
 # what the receiver knows: space left, what is stored, when the last backup was
-buddyctl status http://192.168.1.96:30080
-buddyctl backups http://192.168.1.96:30080
+buddyctl status https://naslos-b
+buddyctl backups https://naslos-b
 
 # verify without writing anything, then restore
-buddyctl restore http://192.168.1.96:30080 --source naslos-a/data --verify-only
-buddyctl restore http://192.168.1.96:30080 --source naslos-a/data --dir ./restored
+buddyctl restore https://naslos-b --source naslos-a/data --verify-only
+buddyctl restore https://naslos-b --source naslos-a/data --dir ./restored
 
 # or straight back into ZFS
-buddyctl restore http://192.168.1.96:30080 --source naslos-a/data | zfs recv test/data-restored
+buddyctl restore https://naslos-b --source naslos-a/data | zfs recv test/data-restored
 
 # retention, asked of the receiver
-buddyctl prune http://192.168.1.96:30080 --source naslos-a/data --keep 7
+buddyctl prune https://naslos-b --source naslos-a/data --keep 7
 ```
 
 `buddyctl` is built from the repo (`make buddyctl` → `bin/buddyctl`) and needs only
@@ -297,30 +297,39 @@ An instance can also back *itself* up: the API drives the node's `zfs send`, str
 it into the encrypted push, and can restore it back into ZFS. No `buddyctl`, no
 shell, no operator piping:
 
+The owner-facing buddy routes sit behind the same gate as the UI, so a direct
+call needs the proxy secret and identity headers, from a source the API's
+NetworkPolicy allows (the terminal pod in `naslos-privileged`, or the
+Traefik/UI pods) — the old UI NodePort on `:30080` no longer exists. The
+examples below run from the terminal pod; in the UI, Traefik injects the same
+headers automatically once you are logged in.
+
 ```bash
-BASE=http://naslos-a:30080   # reach the API the way the UI does
+BASE=http://naslos-api.naslos.svc.cluster.local:8080
+SECRET=$(kubectl -n naslos get secret naslos-proxy -o jsonpath='{.data.secret}' | base64 -d)
+AUTH=(-H "X-Naslos-Proxy-Secret: $SECRET" -H 'Remote-User: admin' -H 'Remote-Groups: naslos_admins')
 
 # 1. Create this instance's key (its public key is what the buddy authorizes).
-curl -sX POST -H 'Remote-User: admin' -H 'Content-Type: application/json' \
+curl -sX POST "${AUTH[@]}" -H 'Content-Type: application/json' \
   -d '{"name":"naslos-a"}' $BASE/api/buddy/identity
 
 # 2. Back a dataset up. The API answers 202 with a job id immediately and runs
 #    the send under a server-owned context (a disconnected client no longer
 #    kills it); poll the job for progress and cancel it with DELETE.
-curl -sX POST -H 'Remote-User: admin' -H 'Content-Type: application/json' \
+curl -sX POST "${AUTH[@]}" -H 'Content-Type: application/json' \
   -d '{"dataset":"test/data","source":"naslos-a/test","receiver":"https://naslos-b"}' \
   $BASE/api/buddy/send                       # → {"jobId":"…","status":"started"}
-curl -sH 'Remote-User: admin' $BASE/api/buddy/jobs/<jobId>
-curl -sX DELETE -H 'Remote-User: admin' $BASE/api/buddy/jobs/<jobId>   # cancel
+curl -s "${AUTH[@]}" $BASE/api/buddy/jobs/<jobId>
+curl -sX DELETE "${AUTH[@]}" $BASE/api/buddy/jobs/<jobId>   # cancel
 
 # 3. Prove the backup is intact without touching ZFS: it decrypts the stored
 #    stream and hashes every chain.
-curl -sX POST -H 'Remote-User: admin' -H 'Content-Type: application/json' \
+curl -sX POST "${AUTH[@]}" -H 'Content-Type: application/json' \
   -d '{"source":"naslos-a/test","receiver":"https://naslos-b","verify":true}' \
   $BASE/api/buddy/restore
 
 # 4. Restore it (or an older chain) into a dataset.
-curl -sX POST -H 'Remote-User: admin' -H 'Content-Type: application/json' \
+curl -sX POST "${AUTH[@]}" -H 'Content-Type: application/json' \
   -d '{"source":"naslos-a/test","receiver":"https://naslos-b","dataset":"test/restored"}' \
   $BASE/api/buddy/restore
 ```
@@ -512,15 +521,16 @@ Next, in the order the plan calls for:
    for letting a peer reach `/api/buddy/v1/*` across networks (`SEC-9` keeps the
    agent's streaming endpoints in-cluster regardless).~~
    **Decided and verified: no dedicated listener.** The peer API rides the same
-   ingress (or node port) the UI already uses. `/api/buddy/v1/*` stays public
-   because a peer authenticates with its own Ed25519 key and cannot complete an
-   interactive login; every owner-facing buddy route goes through the shared owner
-   gate (SEC-10), so the same entry point serves both without weakening either.
-   Live check with the gate armed: `/api/users` → `401` without the proxy secret,
-   while `buddyctl enroll` + `push` through that same `:30080` listener succeeded
-   (enrolled, then `backed up exposure-test/data to chain 2b36eeb7…`). `SEC-9`'s
-   constraint still holds: the agent's `/api/v1/zfs/*` streaming endpoints remain
-   ClusterIP-only and never appear on the UI's nginx.
+   Traefik ingress the UI already uses (the old UI NodePort was removed on
+   2026-09-19). `/api/buddy/v1/*` stays public because a peer authenticates with
+   its own Ed25519 key and cannot complete an interactive login; every
+   owner-facing buddy route goes through the shared owner gate (SEC-10), so the
+   same entry point serves both without weakening either. Live check with the
+   gate armed: `/api/users` → `401` without the proxy secret, while `buddyctl
+   enroll` + `push` through the ingress succeeded (enrolled, then `backed up
+   exposure-test/data to chain 2b36eeb7…`). `SEC-9`'s constraint still holds: the
+   agent's `/api/v1/zfs/*` streaming endpoints remain ClusterIP-only and never
+   appear on the UI's nginx.
 
 
 

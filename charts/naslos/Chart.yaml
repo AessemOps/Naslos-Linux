@@ -19,11 +19,11 @@ maintainers:
     email: team@naslos.dev
 dependencies:
   - name: traefik
-    version: "39.0.0"
+    version: "41.6.0"
     repository: https://traefik.github.io/charts
     condition: traefik.enabled
   - name: authelia
-    version: "0.10.0"
+    version: "0.11.22"
     repository: https://charts.authelia.com
     condition: authelia.enabled
   # ntfy chart dependency intentionally omitted: the previous repository

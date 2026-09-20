@@ -7,6 +7,8 @@ import (
 	"unicode/utf16"
 
 	"github.com/go-ldap/ldap/v3"
+	//lint:ignore SA1019 MD4 is required to compute the Samba NT hash (AUDIT-L7);
+	// it is not used for security, and no other hash is accepted by the protocol.
 	"golang.org/x/crypto/md4"
 )
 

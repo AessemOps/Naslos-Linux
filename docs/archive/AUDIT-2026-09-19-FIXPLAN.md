@@ -1,6 +1,10 @@
+> **ARCHIVED 2026-09-19.** Superseded by `docs/AUDIT-2026-09-19-REPORT.md`. Kept
+> as the batch-by-batch remediation record; paths inside refer to the repository
+> layout at that date.
+
 # Fix plan — audit of 2026-09-19 (`master` @ `85ae874`)
 
-Companion to `docs/AUDIT-2026-09-19.md`. Findings are fixed in batches; each
+Companion to `AUDIT-2026-09-19.md` (same directory). Findings are fixed in batches; each
 batch is one branch/PR and ends with its verification. Items that touch the live
 cluster need a maintenance window and explicit sign-off. Nothing here is applied
 by the audit itself.
@@ -103,8 +107,30 @@ Done and deployed at helm revision 18 (api `0.1.0-r5`), suite still 35 passed:
 | **AUDIT-M12** `scripts/audit.sh` (runnable by hand). The `.github/workflows/audit.yml` added alongside it was **removed at the operator's request**; wiring it back into CI is left open | `421711a`, workflow removed |
 | **AUDIT-M14** superseded banner + operator-lockout runbook | `421711a` |
 | **AUDIT-H2** buddy receive dataset mounted (`buddy.enabled=true`, `receiveHostPath`) — verified: chunks on `test/naslos-buddy`, backups suite green | revision 21 |
+| **AUDIT-H1** LDAP service credential rotated and de-committed: Authelia reads it from the `naslos-openldap` Secret via `lookup` (values empty + fail-closed guard); new value binds, old value rejected, suite 35 passed | revision 22 |
 
-**Still open:** H1 (rotate the live LDAP bind credential), M3's residual (Authelia's config is a ConfigMap, so
+**NAS-010 defaults are now handled by code** (api `0.1.0-r6`, ui `0.1.0-r6`,
+revision 23): `generate-secrets.sh` generates random admin/service passwords
+instead of `naslos-admin`/`CHANGE_ME_*`; the OpenLDAP entrypoint requires
+`LDAP_ADMIN_PASSWORD`; a new user gets an unguessable random placeholder instead
+of `TempPass123!` and the API rejects a passwordless create (verified: 400);
+`deploy-vm.sh` requires `REGISTRY_HTTP_SECRET`.
+
+**NAS-010 is closed, including the live credential:** the running instance's
+LDAP **admin** password was rotated on 2026-09-19 (`olcRootPW` replaced in both
+`cn=config` databases over `ldapi://`/SASL EXTERNAL, new value in the
+`naslos-openldap` Secret, bootstrap re-run green; the new value binds and
+`naslos-admin` is rejected).
+
+| **AUDIT-L9 (part)** `LDAPTLS_REQCERT=never` replaced with CA verification in the API wait init and the bootstrap job; `.Release.Namespace` and `values.schema.json` **also since fixed** (`0f558ab`, revision 25) | revision 24 |
+
+> **Superseded by `docs/AUDIT-2026-09-19-REPORT.md`.** The "still open" list
+> below is the state at this point in the batch history, not now: L9 is fixed
+> (rev 25), M11 fixed, L2 fixed (rev 29), M6 fixed (rev 55), M4 enforced by
+> Cilium with only the hostNetwork `:9090` residual, M3 reduced to the
+> `jwt_secret` ConfigMap residual, M10 excluded, and Batch 6 completed.
+
+**Still open at that point:** M3's residual (Authelia's config is a ConfigMap, so
 its `jwt_secret` and the LDAP bind password stay readable there until the config
 moves into a Secret), M4 (network policy / enforcing CNI), M6 (PSA scoping), M10
 (excluded by request), M11 (Svelte/Vite bump), L2 (nginx non-root), the
