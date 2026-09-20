@@ -50,10 +50,16 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
   no-Debian-fix base libraries), the `trivy config` scan (fixed DS-0031 baked
   `LDAP_ADMIN_PASSWORD`, removed unused `pods/exec` Role KSV-0053), `semgrep`
   (4 false positives, verified by hand), the AV-5…AV-12 active tests (AV-8/11/12
-  live), and the buddy crypto deep-dive (no findings). The audit sweep gates on
-  govulncheck and gosec again. Everything else — the dependency bumps, nginx
-  non-root, `values.schema.json`/`.Release.Namespace`, `go test -race`, the
-  log/conversion hardening and the dead-code cleanup — is done and deployed.
+  live), and the buddy crypto deep-dive (no findings). AV-8 surfaced two low
+  operational findings, both in §8: `zfs send` captures only what the **agent's**
+  mount namespace sees (a backup seeded from another namespace can be
+  metadata-only while the API reports success), and a dataset once mounted inside
+  a pod namespace can become undestroyable (`dataset is busy` with
+  `mounted=false`, surviving a reboot; `test/audit-av8` is a stray stub). The
+  audit sweep gates on govulncheck and gosec again. Everything else — the
+  dependency bumps, nginx non-root, `values.schema.json`/`.Release.Namespace`,
+  `go test -race`, the log/conversion hardening and the dead-code cleanup — is
+  done and deployed.
 - **The detailed audit, fix plan and code-review list are archived** in
   `docs/archive/`; the report supersedes them.
 
