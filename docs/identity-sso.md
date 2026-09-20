@@ -182,20 +182,32 @@ OpenLDAP server (`ldaps://naslos-openldap:636`, `dc=naslos,dc=local`) and the
 ## Deployment & first admin
 
 1. Install CRDs, install the chart (see [deployment.md](deployment.md)).
-2. The OpenLDAP bootstrap Job sets the service password + verifies groups.
-3. Create the first admin via the API:
+2. The OpenLDAP bootstrap Job sets the service password + verifies groups. It
+   does **not** create a human user, and `/api/users` is an owner route — so a
+   bare `kubectl port-forward` POST is now rejected with `401`. The request must
+   carry the `X-Naslos-Proxy-Secret` (Secret `naslos-proxy`, key `secret`) and
+   `Remote-User`/`Remote-Groups`, and come from a source the API's
+   NetworkPolicy allows (the Traefik/UI pods, or any pod in
+   `naslos-privileged`). For example, from the terminal pod:
 
 ```bash
-kubectl port-forward -n naslos svc/naslos-api 8080:8080
-curl -X POST http://localhost:8080/api/users \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "uid": "admin", "firstName": "Admin", "lastName": "User",
-    "email": "admin@naslos.local",
-    "password": "SecurePassword123!",
-    "groups": ["naslos_admins"]
-  }'
+SECRET=$(kubectl -n naslos get secret naslos-proxy -o jsonpath='{.data.secret}' | base64 -d)
+kubectl -n naslos-privileged exec deploy/naslos-terminal -- \
+  curl -sS -X POST http://naslos-api.naslos.svc.cluster.local:8080/api/users \
+    -H "X-Naslos-Proxy-Secret: $SECRET" \
+    -H 'Remote-User: admin' -H 'Remote-Groups: naslos_admins' \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "uid": "admin", "firstName": "Admin", "lastName": "User",
+      "email": "admin@naslos.local",
+      "password": "SecurePassword123!",
+      "groups": ["naslos_admins"]
+    }'
 ```
+
+Alternatively, `ldapadd` the person entry directly and add it to
+`cn=naslos_admins` (the API and the Samba mirror pick it up from LDAP). After
+the admin exists, log in normally through `https://naslos.local/authelia`.
 
 ## Backup, restore & troubleshooting
 

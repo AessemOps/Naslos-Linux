@@ -5,7 +5,7 @@ Two HTTP APIs exist:
 | API | Base | Runs as | Port |
 | --- | --- | --- | --- |
 | `naslos-api` | `/api/...` | Deployment in `naslos` namespace | 8080 (ClusterIP) |
-| `naslos-agent` | `/api/v1/...` | DaemonSet on every node (hostNetwork) | 9090 |
+| `naslos-agent` | `/api/v1/...` | DaemonSet on every node (hostNetwork, `naslos-privileged`) | 9090 |
 
 The web UI is served as static files by `naslos-api` (`/var/naslos/ui`) and also by
 the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
@@ -103,9 +103,9 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 
 The actual ZFS work is delegated to `naslos-agent` on each node:
 `chroot /host zpool …` / `chroot /host zfs …`. The API reaches the agent
-through the headless `naslos-agent` Service (`:9090`, one endpoint per node;
-see `charts/naslos/templates/agent-daemonset.yaml`), overridable via the
-`AGENT_BASE_URL` env var.
+through the headless `naslos-agent` Service in `naslos-privileged` (`:9090`, one
+endpoint per node; see `charts/naslos/templates/agent-daemonset.yaml`),
+overridable via the `AGENT_BASE_URL` env var.
 
 Error contract for the ZFS endpoints:
 
@@ -123,12 +123,12 @@ The actual ZFS work is delegated to `naslos-agent` on each node:
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/shares` | List share definitions |
-| POST | `/api/shares` | Create `{name, path, protocol(smb|nfs|afp), …}` |
+| POST | `/api/shares` | Create `{name, path, protocol(smb|nfs), …}` (AFP is rejected) |
 | GET | `/api/shares/{name}` | Share detail |
 | PUT | `/api/shares/{name}` | Update share fields |
 | DELETE | `/api/shares/{name}` | Remove share |
 | GET | `/api/shares/config/samba` | Generated `smb.conf` (text/plain) |
-| GET | `/api/shares/config/nfs` | Generated `/etc/exports` (text/plain) |
+| GET | `/api/shares/config/nfs` | Generated NFS-Ganesha config (text/plain), not `/etc/exports` |
 
 ### Buddy Backup (see also [buddy-backup.md](buddy-backup.md))
 
@@ -158,7 +158,7 @@ The actual ZFS work is delegated to `naslos-agent` on each node:
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/namespaces` | Namespace names, for the terminal's picker |
-| GET | `/api/pods?namespace=naslos` | Pods with their containers, phase, readiness, and a `terminal` flag marking the shell container |
+| GET | `/api/pods?namespace=naslos-privileged` | Pods with their containers, phase, readiness, and a `terminal` flag marking the shell container (the terminal UI probes the candidate namespaces) |
 | GET | `/api/ws/logs?namespace=&pod=&container=&tail=` | Stream a pod's live logs |
 | GET | `/api/ws/exec?namespace=&pod=&container=&shell=` | Interactive exec (xterm). Defaults: namespace = the Naslos namespace, shell = `sh`, container = the pod's only container |
 
@@ -215,7 +215,7 @@ shell, never an arbitrary command.
 | `LDAP_BIND_PASS` | — | Service account password |
 | `LDAP_USE_TLS` | `true` | Use LDAPS |
 | `LDAP_CA_CERT` | — | Path to CA cert for LDAPS verification |
-| `TRAEFIK_CIDR` | `10.0.0.0/8` | Comma-separated CIDRs trusted for auth headers |
+| `TRAEFIK_CIDR` | `10.0.0.0/8` | Comma-separated CIDRs trusted for auth headers; the `X-Naslos-Proxy-Secret` is the actual proof of the proxy hop |
 | `NASLOS_NAMESPACE` | — | Namespace injected by the Helm chart |
 | `KUBECONFIG` | — | Path to kubeconfig (default: in-cluster) |
 | `BUDDY_NAME` | `naslos` | Name this instance reports to backup peers |

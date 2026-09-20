@@ -4,9 +4,9 @@
 > authenticated-only change; several findings below are already closed (agent
 > token enforcement, the NodePort/auth bypass removal, the streaming-client
 > token, CR-01). Read it for history, not for current risk. The current picture
-> is in `docs/AUDIT-2026-09-19.md`, with its remediation in
-> `docs/AUDIT-2026-09-19-FIXPLAN.md`; the living per-finding list is
-> `docs/CODE-REVIEW.md`. The NAS-* IDs here are kept for traceability.
+> is `docs/AUDIT-2026-09-19-REPORT.md`; the 2026-09-19 working papers
+> (`AUDIT-2026-09-19.md`, `AUDIT-2026-09-19-FIXPLAN.md`, `CODE-REVIEW.md`) are
+> archived beside this file. The NAS-* IDs here are kept for traceability.
 >
 > **Status of the headline findings at 2026-09-19:**
 >

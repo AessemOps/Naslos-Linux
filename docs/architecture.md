@@ -63,51 +63,61 @@ see the [document index](README.md).
 
 | Downstream | Protocol / port | Used for |
 | --- | --- | --- |
-| Talos API (each node) | Talos machinery API | disk discovery, machine config |
+| Talos API (each node) | Talos machinery API | disk discovery, `UserVolumeConfig` documents |
 | Kubernetes control plane | K8s API (in-cluster) | pod info, logs, exec |
 | `naslos-agent` :9090 (each node) | HTTP | `zpool`/`zfs` via `chroot /host` |
 | OpenLDAP :636 | LDAPS | users, groups, password modify |
-| Samba container | kubectl exec + `pdbedit` | NT-hash sync |
+| Samba workload | agent-pushed `smbusers` mirror (+ `pdbedit -i smbpasswd:`) | NT-hash sync |
 | Helm SDK | in-process | app install / upgrade / uninstall |
 | Prometheus | HTTP | metrics (Grafana removed 2026-09-19) |
-| ntfy (owned or ntfy.sh) | HTTPS | push notifications |
+| ntfy (external `ntfy.sh` or self-hosted) | HTTPS | push notifications |
 
-## Layer 2 — Deployment Topology (namespace `naslos`)
+## Layer 2 — Deployment Topology (namespaces `naslos` + `naslos-privileged`)
 
 ```
-                  ┌────────────────────────────────────────────────────┐
-                  │                  naslos namespace                    │
-                  │  (pod-security enforce: privileged)                 │
-                  │                                                     │
-                  │  ┌───────────────────┐   ┌───────────────────┐     │
-                  │  │ traefik           │   │ authelia          │     │
-                  │  │  (Helm dep)       │   │  ConfigMap:       │     │
-                  │  │ IngressRoutes:    │   │  authelia-config  │     │
-                  │  │  naslos-ui :443   │   │  (LDAP backend)   │     │
-                  │  │  naslos-redirect  │   └────────┬──────────┘     │
-                  │  │ Middlewares:      │        ┌───▼───────────┐     │
-                  │  │  forwardauth-auth │        │  OpenLDAP    │     │
-                  │  │  authelia         │        │  StatefulSet │     │
-                  │  │  security-headers │        │  PVC:        │     │
-                  │  └────────┬──────────┘        │  naslos-zfs  │     │
-                  │           │                   └──────────────┘     │
-                  │  ┌────────▼─────────┐   ┌────────────────────────┐ │
-                  │  │ naslos-ui        │   │ naslos-api Deployment │ │
-                  │  │  Deployment      │   │  svc ClusterIP :8080   │ │
-                  │  │  svc ClusterIP   │   │  SA: naslos-api       │ │
-                  │  │  :80             │   └───────────┬────────────┘ │
-                  │  └──────────────────┘               │              │
-                  │  ┌──────────────────────────────────▼────────────┐ │
-                  │  │ naslos-agent DaemonSet (per node, hostNetwork) │ │
-                  │  │  privileged · hostPID · hostMounts:           │ │
-                  │  │   /host  /dev  /run  /var                     │ │
-                  │  │  cmd: chroot /host zpool|zfs|wipefs           │ │
-                  │  └───────────────────────────────────────────────┘ │
-                  │  ┌────────────┐  ┌────────────┐  ┌─────────────┐  │
-                  │  │ ntfy       │  │ prometheus │  │ alertmgr    │  │
-                  │  │  (Helm dep)│  │ ret. 30d   │  │  routing    │  │
-                  │  └────────────┘  └────────────┘  └─────────────┘  │
-                  └────────────────────────────────────────────────────┘
+        ┌──────────────────────────────────────────────────────────┐
+        │                  naslos namespace                        │
+        │  (pod-security enforce: privileged)                      │
+        │                                                          │
+        │  ┌───────────────────┐   ┌───────────────────┐           │
+        │  │ traefik           │   │ authelia          │           │
+        │  │  (Helm dep)       │   │  ConfigMap:       │           │
+        │  │ IngressRoutes:    │   │  authelia-config  │           │
+        │  │  naslos-ui :443   │   │  (LDAP backend;   │           │
+        │  │  naslos-redirect  │   │   password from   │           │
+        │  │ Middlewares:      │   │   a Secret)       │           │
+        │  │  forwardauth-auth │   └────────┬──────────┘           │
+        │  │  authelia         │        ┌───▼───────────┐          │
+        │  │  security-headers │        │  OpenLDAP    │          │
+        │  └────────┬──────────┘        │  StatefulSet │          │
+        │           │                   │  PVCs:       │          │
+        │  ┌────────▼─────────┐         │  local-path  │          │
+        │  │ naslos-ui        │         └──────────────┘          │
+        │  │  Deployment      │   ┌────────────────────────┐       │
+        │  │  svc ClusterIP   │   │ naslos-api Deployment  │       │
+        │  │  :80             │   │  svc ClusterIP :8080   │       │
+        │  └──────────────────┘   │  SA: naslos-api        │       │
+        │  ┌────────────┐  ┌──────┴──────┐  ┌─────────────┐       │
+        │  │ prometheus │  │ alertmgr    │  │ (no ntfy    │       │
+        │  │ ret. 30d   │  │  routing    │  │  workload;  │       │
+        │  └────────────┘  └─────────────┘  │  external)  │       │
+        │                                    └─────────────┘       │
+        └──────────────────────────┬───────────────────────────────┘
+                                   │ exec RBAC + agent-token Secret
+        ┌──────────────────────────▼───────────────────────────────┐
+        │              naslos-privileged namespace                  │
+        │  (pod-security enforce: privileged)                       │
+        │  ┌────────────────────────────────────────────────────┐  │
+        │  │ naslos-agent DaemonSet (per node, hostNetwork)     │  │
+        │  │  privileged · hostMounts: /host /dev /run /var     │  │
+        │  │  cmd: chroot /host zpool|zfs|wipefs                 │  │
+        │  └────────────────────────────────────────────────────┘  │
+        │  ┌────────────┐  ┌────────────┐  ┌──────────────────┐    │
+        │  │ naslos-    │  │ naslos-nfs │  │ naslos-terminal  │    │
+        │  │ samba      │  │ (Ganesha)  │  │  (privileged)    │    │
+        │  │ hostNetwork│  │ hostNetwork│  └──────────────────┘    │
+        │  └────────────┘  └────────────┘                          │
+        └──────────────────────────────────────────────────────────┘
 ```
 
 ### Workloads
@@ -117,17 +127,24 @@ see the [document index](README.md).
   work is done by Traefik + Authelia in front.
 - **naslos-api** — stateless Deployment; holds all "brain" logic, the auth
   middleware, and serves UI static files as fallback. Talks to LDAP, Talos,
-  Kubernetes, Helm (in-process), Samba (kubectl exec), and the agent.
-- **naslos-agent** — a **DaemonSet** (one pod per node) with `hostNetwork: true`,
-  `hostPID: true`, and a `privileged` security context. It bind-mounts the host
-  root at `/host` and runs every ZFS command through `chroot /host` — the only
-  way to reach pools outside Talos's volume system.
-- **OpenLDAP** — StatefulSet with two ZFS-backed PVCs (`naslos-zfs` storage
-  class): data under `/var/lib/ldap`, config under `/etc/ldap/slapd.d`. TLS
-  certs come from the `naslos-openldap-tls` secret.
-- **Samba / NFS** — images/config outside the chart proper; they consume
-  generated configs from `/api/shares/config/samba` and
-  `/api/shares/config/nfs` and export ZFS dataset paths under `/var/mnt`.
+  Kubernetes, Helm (in-process) and the agent. It mounts hostPath volumes for
+  the shares view and the buddy receive dataset, which is why its namespace
+  stays `privileged`.
+- **naslos-agent** — a **DaemonSet** (one pod per node) in `naslos-privileged`
+  with `hostNetwork: true` and a `privileged` security context (no `hostPID`).
+  It bind-mounts the host root at `/host` and runs every ZFS command through
+  `chroot /host` — the only way to reach pools outside Talos's volume system.
+- **OpenLDAP** — StatefulSet with two `local-path` PVCs (no ZFS LocalPV
+  provisioner is installed): data under `/var/lib/ldap`, config under
+  `/etc/ldap/slapd.d`. TLS certs come from the `naslos-openldap-tls` secret.
+- **Samba / NFS** — chart DaemonSets
+  (`charts/naslos/templates/samba-daemonset.yaml`, `nfs-daemonset.yaml`) in
+  `naslos-privileged`; their images are built from `samba/image` and
+  `nfs/image`. They consume generated configs from
+  `/api/shares/config/samba` (Samba) and `/api/shares/config/nfs` (the
+  NFS-Ganesha config) and export ZFS dataset paths under `/var/mnt`.
+- **naslos-terminal** — a privileged Deployment in `naslos-privileged`; the UI
+  discovers which namespace holds it rather than assuming one.
 
 ## Layer 3 — Component Model (naslos-api internals)
 
@@ -146,7 +163,9 @@ see the [document index](README.md).
                     │   ┌──────────────▼──────────────────────────┐ │
                     │   │          auth.Middleware                │ │
                     │   │  RequireAuth / RequireAdmin            │ │
-                    │   │  (trusts Remote-* from TRAEFIK_CIDR)    │ │
+                    │   │  (Remote-* from TRAEFIK_CIDR + the      │ │
+                    │   │   X-Naslos-Proxy-Secret injected by      │ │
+                    │   │   Traefik)                               │ │
                     │   └─────────────────────────────────────────┘ │
                     │                                              │
                     │   ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌────┐ │
@@ -159,12 +178,12 @@ see the [document index](README.md).
 
 | Package | Owning directory | Responsibility |
 | --- | --- | --- |
-| `auth` | `api/internal/auth` | Middleware: trusts `Remote-User/-Groups/-Email/-Name` only from `TRAEFIK_CIDR`; `RequireAdmin` checks `naslos_admins` |
+| `auth` | `api/internal/auth` | Middleware: accepts `Remote-User/-Groups/-Email/-Name` only from `TRAEFIK_CIDR` **and** with the `X-Naslos-Proxy-Secret` injected by Traefik; `RequireAdmin` checks `naslos_admins` |
 | `talos` | `api/internal/talos` | Talos machinery client, disk discovery, `VolumeAdvisor`, `UserVolumeConfig` documents |
 | `catalog` | `api/internal/catalog` | Built-in app store + JSON Schema per app; loads external JSON catalog overrides |
 | `helm` | `api/internal/helm` | Helm SDK wrapper: install/upgrade/uninstall/list/get/rollback, chart repo cache |
-| `shares` | `api/internal/shares` | Share CRUD + generated `smb.conf` / `/etc/exports` |
-| `identity` | `api/internal/identity` | OpenLDAP client: persons/groups, SetPassword, NT-hash SMB sync manager |
+| `shares` | `api/internal/shares` | Share CRUD + generated `smb.conf` and NFS-Ganesha config |
+| `identity` | `api/internal/identity` | OpenLDAP client: persons/groups, SetPassword; NT-hash computed for the agent-pushed `smbusers` mirror |
 | `metrics` | `api/internal/metrics` | SystemMetrics snapshot + dashboard projection |
 | `notifications` | `api/internal/notifications` | ntfy settings + push delivery |
 | `server` | `api/internal/server` | HTTP routing, WebSocket log/exec, Samba sync glue |
@@ -177,8 +196,9 @@ see the [document index](README.md).
             │ :80→443   │   │   :9091      │──▶│   :636     │
             └─────┬─────┘   └──────────────┘   └────────────┘
                   │           │ trust header boundary:
-                  │           │ Remote-* headers only accepted
-                  │           │ from TRAEFIK_CIDR (default 10/8)
+                  │           │ Remote-* headers + X-Naslos-
+                  │           │ Proxy-Secret, and only from
+                  │           │ TRAEFIK_CIDR (default 10/8)
                   ▼
             ┌──────────────┐    ┌─────────────────────────────┐
             │  naslos-ui  │    │   naslos-api :8080          │
@@ -189,17 +209,21 @@ see the [document index](README.md).
 **Trust boundaries (most critical first)**
 
 1. **Traefik ⇄ API header trust.** The API accepts `Remote-User/Remote-Groups`
-   only from the configured Traefik pod CIDR. An attacker who can reach the API
-   directly (bypassing Traefik/Authelia) cannot spoof authentication headers.
-   Default `TRAEFIK_CIDR` is `10.0.0.0/8` — **narrow it to the real pod CIDR**.
+   only from the configured Traefik pod CIDR **and** only when the request
+   carries the `X-Naslos-Proxy-Secret` that Traefik injects. An attacker who can
+   reach the API directly (bypassing Traefik/Authelia) can neither spoof the
+   headers nor replay them. Default `TRAEFIK_CIDR` is `10.0.0.0/8` — **narrow
+   it to the real pod CIDR**.
 2. **Agent privilege.** `naslos-agent` runs privileged with host mounts. It
-   exposes a local HTTP port (`:9090`) and must not be reachable from outside;
-   the chart places it in the trusted path only.
+   exposes a local HTTP port (`:9090`) and must not be reachable from outside.
+   Cilium NetworkPolicies are enforced, but because the agent is `hostNetwork`
+   pod-level policy does not cover it; see the AUDIT-M4 residual.
 3. **Authelia ⇄ LDAP.** All directory access is LDAPS (`:636`) with the CA from
-   the `naslos-openldap-tls` secret; Authelia verifies the server name.
-4. **Samba NT-hash sync.** The API shells out to `kubectl exec … pdbedit`; the
-   Samba container must constrain `root` usage and should enforce host allow
-   lists on exports.
+   the `naslos-openldap-tls` secret; Authelia verifies the server name. The bind
+   password comes from the `naslos-openldap` Secret, not the ConfigMap.
+4. **Samba NT-hash sync.** The agent pushes a `smbusers` mirror which the Samba
+   container imports with `pdbedit -i smbpasswd:`; the Samba container must
+   constrain `root` usage and should enforce host allow lists on exports.
 
 ## Layer 5 — Key Data Flows
 
@@ -240,8 +264,8 @@ see the [document index](README.md).
 ```
  UI ──▶ POST /api/users/{uid}/password  (plaintext)
    API ──▶ LDAP Password Modify (RFC 3062)  → OpenLDAP hashes + stores
-   API ──▶ compute NT hash (MD4 of UTF-16LE)  → Samba passdb
-   API ──▶ kubectl exec samba pdbedit --set-nt-hash <uid> <hash>
+   API ──▶ compute NT hash (MD4 of UTF-16LE), write the smbusers mirror
+   agent ──▶ renders smbusers to the node; samba imports it (`pdbedit -i smbpasswd:`)
    OK ──▶ both stores match; web login + SMB login use the same password
 ```
 
@@ -290,7 +314,9 @@ Pools built by the wizard use the option set in `zfs.DefaultOptions` plus
 
 ## Security Model
 
-- API server runs with Talos ServiceAccount (`os:reader` role).
+- The API authenticates to the Talos API with the mounted `talosconfig` Secret
+  (`TALOSCONFIG`); it is currently full admin credentials, not an `os:reader`
+  Talos ServiceAccount.
 - Agent runs privileged but only for ZFS operations.
 - Web terminal is ephemeral — no persistent state.
 - All operations are auditable via Kubernetes events.
@@ -303,4 +329,5 @@ Talos upgrades are unaffected because:
 - The ZFS extension is in the Image Factory schematic.
 - Naslos components are Kubernetes workloads (survive node reboots).
 - ZFS pools are not in Talos's volume system.
-- Machine-config patches are reapplied by the API after upgrade.
+- Machine-config patches are applied out-of-band with `talosctl apply-config` /
+  `scripts/deploy-vm.sh`; the API does not reapply them.
