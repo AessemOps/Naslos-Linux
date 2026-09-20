@@ -300,10 +300,16 @@ spec:
 # reach - the agent on :9090, the Talos API on :50000, and the Service ClusterIPs
 # - are addressed by the operator-supplied `nodeCIDR`/`serviceCIDR`. These are
 # deliberately explicit: a wrong guess silently breaks ZFS, shares and identity
-# the moment a policy CNI enforces this. Cluster DNS is additionally allowed
-# (Cilium forwards from 169.254.0.0/16 regardless of the cluster CIDR), and no
-# blanket 0.0.0.0/0 is present because no workload has a documented outbound
-# Internet dependency.
+# the moment a policy CNI enforces this, which is exactly what happened live on
+# first enforcement (DNS to the CoreDNS pod was denied) - see the report.
+#
+# Cluster DNS is allowed BOTH ways, because the source address depends on the
+# datapath: a namespaceSelector on kube-system (the CoreDNS pods) works whether
+# Cilium routes pod-to-pod directly or via the link-local forwarder, and the
+# `dnsCIDR` ipBlock covers the host-forwarding case. An ipBlock alone is not
+# enough under Direct Routing, and a podSelector alone is not enough when the
+# node forwards DNS. No blanket 0.0.0.0/0 is present because no workload here has
+# a documented outbound-Internet dependency.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -317,8 +323,15 @@ spec:
   policyTypes:
     - Egress
   egress:
-    # Cluster DNS.
+    # Cluster DNS: the CoreDNS pods (by identity) and the host-forwarded CIDR,
+    # both on 53. See the note above on why both are needed.
     - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
         - ipBlock:
             cidr: {{ $dnsCIDR | quote }}
       ports:
@@ -350,4 +363,47 @@ spec:
         - ipBlock:
             cidr: {{ . | quote }}
     {{- end }}
+{{- if .Values.networkPolicy.cilium.enabled }}
+---
+# CiliumNetworkPolicy: the rules plain NetworkPolicy cannot express (AUDIT-M4).
+#
+# The Kubernetes NetworkPolicy above cannot allow traffic to the NODE itself:
+# Cilium classifies pod->local-node traffic with the reserved `host` identity,
+# and `toEntities` is not part of the upstream v1 NetworkPolicy API, while an
+# `ipBlock` does not match the reserved identity either. Without this, turning
+# enforcement on blocked every pod from the API server at
+# https://<node>:6443 and from kubelet - Authelia, Traefik, CoreDNS and the
+# operators all failed (verified live: the cilium monitor showed
+# `Policy denied ... -> <node>:6443`). This policy restores what every pod
+# legitimately needs, while the per-workload ingress policies above still
+# restrict what may reach each service.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: naslos-allow-host
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+spec:
+  endpointSelector: {}
+  egress:
+    # The API server, kubelet, and other node-local services.
+    - toEntities:
+        - host
+        - kube-apiserver
+        - remote-node
+    # Cluster DNS regardless of datapath (the upstream rule above covers the
+    # CIDR/selector cases; this is the entity-based equivalent).
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+{{- end }}
 {{- end }}

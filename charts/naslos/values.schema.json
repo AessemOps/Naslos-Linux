@@ -172,6 +172,13 @@
         "extraEgressCIDRs": {
           "type": "array",
           "items": { "type": "string" }
+        },
+        "cilium": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean" }
+          }
         }
       }
     }
