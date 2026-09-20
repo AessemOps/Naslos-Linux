@@ -2,15 +2,19 @@ package zfs
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 // AllDatasets lists every dataset on the node with its mountpoint and space, so
 // callers can tell which paths are actually ZFS-backed (and how full they are).
+// `used` is requested twice: `-p` gives exact bytes (UsedBytes, for comparisons)
+// and the plain form gives the human string the UI shows.
 func (c *Client) AllDatasets() ([]Dataset, error) {
-	out, err := c.hostExec(zfsBin, "list", "-H", "-o", "name,used,avail,refer,mountpoint,mounted", "-t", "filesystem", "-r")
+	out, err := c.hostExec(zfsBin, "list", "-H", "-p", "-o", "name,used,avail,refer,mountpoint,mounted", "-t", "filesystem", "-r")
 	if err != nil {
 		return nil, fmt.Errorf("listing datasets: %w", err)
 	}
@@ -24,16 +28,44 @@ func (c *Client) AllDatasets() ([]Dataset, error) {
 		if len(fields) < 5 {
 			continue
 		}
+		// With -p the values are raw bytes; keep the numeric form for callers
+		// that compare sizes, and format the human form for display.
+		usedBytes, _ := strconv.ParseInt(fields[1], 10, 64)
+		availBytes, _ := strconv.ParseInt(fields[2], 10, 64)
+		referBytes, _ := strconv.ParseInt(fields[3], 10, 64)
 		datasets = append(datasets, Dataset{
 			Name:       fields[0],
-			Used:       fields[1],
-			Avail:      fields[2],
-			Refer:      fields[3],
+			Used:       humanBytes(usedBytes),
+			UsedBytes:  usedBytes,
+			Avail:      humanBytes(availBytes),
+			Refer:      humanBytes(referBytes),
 			Mountpoint: fields[4],
 			Mounted:    len(fields) > 5 && fields[5] == "yes",
 		})
 	}
 	return datasets, nil
+}
+
+// humanBytes formats a byte count the way `zfs list` does without -p (powers of
+// 1024, one decimal when below 10 in the unit), so the API's dataset listing
+// keeps showing the familiar "2.1G" style while the struct also carries exact
+// bytes for comparisons.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	units := []string{"K", "M", "G", "T", "P", "E"}
+	value := float64(n)
+	i := -1
+	for value >= unit && i < len(units)-1 {
+		value /= unit
+		i++
+	}
+	if value < 10 {
+		return fmt.Sprintf("%.1f%s", value, units[i])
+	}
+	return fmt.Sprintf("%.0f%s", value, units[i])
 }
 
 // Datasets lists datasets in a pool.
@@ -206,6 +238,15 @@ func validateDatasetPath(name string) error {
 // DestroyDataset destroys a dataset. recursive must be set explicitly to destroy
 // a dataset that has children or snapshots: without it ZFS refuses, which is the
 // safe default for a UI action.
+//
+// If the destroy fails with "dataset is busy" it retries once after forcing an
+// unmount. That state is real and was hit live (AV-8): a dataset that was once
+// mounted inside a pod's mount namespace keeps a stale in-kernel mount record
+// after that namespace is gone, so `zfs destroy` refuses forever - the mount
+// table shows no mount, there are no snapshots, children or shares, and a node
+// reboot does not clear it. `zfs unmount -f` releases the record so the destroy
+// can proceed. The unmount is only attempted on that specific failure, so a
+// dataset that is genuinely in use (or any other error) is still refused.
 func (c *Client) DestroyDataset(name string, recursive bool) error {
 	if err := validateDatasetPath(name); err != nil {
 		return err
@@ -219,9 +260,71 @@ func (c *Client) DestroyDataset(name string, recursive bool) error {
 
 	out, err := c.hostExec(zfsBin, args...)
 	if err != nil {
-		return fmt.Errorf("destroying dataset: %s: %w", strings.TrimSpace(out), err)
+		if !isBusyError(out) {
+			return fmt.Errorf("destroying dataset: %s: %w", strings.TrimSpace(out), err)
+		}
+		// The stale-mount recovery ladder, from least to most invasive:
+		//
+		// 1. `zfs unmount -f` releases a mount the kernel still tracks in a
+		//    namespace that has since gone away.
+		// 2. If that reports "not currently mounted", the busy state is not a
+		//    real mount at all: ZFS records a mountpoint that a dead namespace
+		//    still references, so the guard refuses forever. Setting
+		//    `mountpoint=none` drops that claim (the path is no longer ZFS's),
+		//    after which the destroy succeeds. This is the documented fix for
+		//    exactly this signature in the openzfs tracker (zfs issue #10185,
+		//    "sudo zfs set mountpoint=none ... && sudo zfs destroy -f -r").
+		//
+		// Only a busy failure enters this path, so a dataset that is genuinely
+		// in use, or any other error, keeps the original refusal.
+		log.Printf("dataset %s is busy; forcing an unmount and retrying", name)
+		if unmountOut, unmountErr := c.hostExec(zfsBin, "unmount", "-f", name); unmountErr == nil {
+			out, err = c.hostExec(zfsBin, args...)
+			if err == nil {
+				return nil
+			}
+		} else if !strings.Contains(strings.ToLower(unmountOut), "not currently mounted") {
+			return fmt.Errorf("destroying dataset: it is busy (%s) and the forced unmount also failed: %s: %w",
+				strings.TrimSpace(out), strings.TrimSpace(unmountOut), unmountErr)
+		}
+		// The unmount either failed as "not currently mounted" or the destroy
+		// after it still refused: clear the recorded mountpoint and retry once
+		// more. The property is only changed when the dataset is already being
+		// destroyed, so a live dataset never loses its mountpoint this way.
+		// `canmount=off` is set alongside it so a reboot cannot re-establish the
+		// mount (and the leaked reference) before the operator retries.
+		//
+		// A residual case the ladder cannot clear: ZFS occasionally keeps a
+		// kernel reference with mounted=no, no snapshots, no children and no
+		// holds, which survives reboots. The openzfs tracker's answer there is a
+		// pool export/import (see zfs issues #10185, #9606), which this agent
+		// deliberately does not do - exporting a pool would take every share on
+		// the node offline. The error below names the state so an operator can
+		// choose that remedy.
+		log.Printf("dataset %s is still busy with no live mount; clearing its mountpoint and retrying", name)
+		if propOut, propErr := c.hostExec(zfsBin, "set", "mountpoint=none", "canmount=off", name); propErr != nil {
+			return fmt.Errorf("destroying dataset: it is busy with no live mount (%s) and clearing the "+
+				"mountpoint also failed: %s: %w", strings.TrimSpace(out), strings.TrimSpace(propOut), propErr)
+		}
+		out, err = c.hostExec(zfsBin, args...)
+		if err != nil {
+			if isBusyError(out) {
+				return fmt.Errorf("destroying dataset: it is still busy with mounted=no, no snapshots, "+
+					"children or holds (%s). This is the openzfs leaked-reference case that needs a pool "+
+					"export/import (the agent does not export, as that would take the shares offline)", strings.TrimSpace(out))
+			}
+			return fmt.Errorf("destroying dataset after clearing its mountpoint: %s: %w", strings.TrimSpace(out), err)
+		}
 	}
 	return nil
+}
+
+// isBusyError reports whether a `zfs` failure is the stale-mount "dataset is
+// busy" case, which a forced unmount can clear. Anything else is a real refusal
+// (in use, wrong path, permissions) and must not trigger an unmount.
+func isBusyError(out string) bool {
+	return strings.Contains(strings.ToLower(out), "dataset is busy") ||
+		strings.Contains(strings.ToLower(out), "cannot destroy") && strings.Contains(strings.ToLower(out), "busy")
 }
 
 // DatasetExists reports whether a dataset (or a snapshot) is present.

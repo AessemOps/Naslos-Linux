@@ -142,3 +142,126 @@ func TestValidateDatasetName(t *testing.T) {
 		}
 	}
 }
+
+// TestDestroyDatasetRecoversFromStaleMount covers AV-8b: a dataset that was once
+// mounted inside a pod's mount namespace keeps a stale in-kernel mount record, so
+// `zfs destroy` reports "dataset is busy" forever even though nothing is mounted,
+// the dataset has no snapshots or children, and a reboot does not clear it. The
+// destroy must force an unmount and retry rather than leaving the dataset
+// undestroyable.
+func TestDestroyDatasetRecoversFromStaleMount(t *testing.T) {
+	calls := captureRun(t,
+		"ERR:cannot destroy 'tank/stale': dataset is busy\n",
+		"", // zfs unmount -f
+		"", // zfs destroy (retry)
+	)
+	c := NewClient(context.Background())
+
+	if err := c.DestroyDataset("tank/stale", true); err != nil {
+		t.Fatalf("DestroyDataset should recover from a stale mount, got: %v", err)
+	}
+	got := *calls
+	if len(got) != 3 {
+		t.Fatalf("expected destroy, unmount, destroy; got %v", got)
+	}
+	if want := "/usr/local/sbin/zfs destroy -r tank/stale"; got[0] != want {
+		t.Errorf("first command = %q, want %q", got[0], want)
+	}
+	if want := "/usr/local/sbin/zfs unmount -f tank/stale"; got[1] != want {
+		t.Errorf("recovery command = %q, want %q", got[1], want)
+	}
+	if got[2] != got[0] {
+		t.Errorf("retry command = %q, want the original %q", got[2], got[0])
+	}
+}
+
+// TestDestroyDatasetDoesNotUnmountOnOtherErrors: only the stale-mount case earns
+// an unmount. A genuine refusal (in use, permissions) must surface as-is, or an
+// unrelated error would silently unmount a live dataset.
+func TestDestroyDatasetDoesNotUnmountOnOtherErrors(t *testing.T) {
+	calls := captureRun(t, "ERR:cannot destroy 'tank/live': dataset is in use\n")
+	c := NewClient(context.Background())
+
+	if err := c.DestroyDataset("tank/live", false); err == nil {
+		t.Fatal("DestroyDataset = nil, want the original error")
+	}
+	if len(*calls) != 1 {
+		t.Errorf("a non-busy error must not trigger an unmount, ran %v", *calls)
+	}
+}
+
+// TestDestroyDatasetReportsUnmountFailure keeps the failure legible: if the
+// forced unmount fails for a reason OTHER than "not currently mounted", the
+// error must say so rather than looking like the original busy refusal - a
+// genuinely in-use dataset must not have its mountpoint cleared.
+func TestDestroyDatasetReportsUnmountFailure(t *testing.T) {
+	calls := captureRun(t,
+		"ERR:dataset is busy\n",
+		"ERR:dataset is in use\n",
+	)
+	c := NewClient(context.Background())
+
+	err := c.DestroyDataset("tank/stale", false)
+	if err == nil {
+		t.Fatal("DestroyDataset = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "forced unmount") {
+		t.Errorf("error = %v, want it to mention the forced unmount", err)
+	}
+	if len(*calls) != 2 {
+		t.Errorf("a non-'not mounted' unmount failure must not clear the mountpoint, ran %v", *calls)
+	}
+}
+
+// TestDestroyDatasetClearsStaleMountpoint covers the second rung of the AV-8b
+// ladder: when `zfs unmount -f` reports "not currently mounted", the dataset is
+// busy with no live mount at all (a dead namespace still references the path),
+// and the documented fix is to clear the recorded mountpoint and retry. This is
+// the state the live test/audit-av8 dataset was stuck in.
+func TestDestroyDatasetClearsStaleMountpoint(t *testing.T) {
+	calls := captureRun(t,
+		"ERR:cannot destroy 'tank/stale': dataset is busy\n",
+		"ERR:cannot unmount 'tank/stale': not currently mounted\n",
+		"", // zfs set mountpoint=none
+		"", // zfs destroy (retry)
+	)
+	c := NewClient(context.Background())
+
+	if err := c.DestroyDataset("tank/stale", true); err != nil {
+		t.Fatalf("DestroyDataset should clear the stale mountpoint and succeed, got: %v", err)
+	}
+	got := *calls
+	if len(got) != 4 {
+		t.Fatalf("expected destroy, unmount, set mountpoint=none, destroy; got %v", got)
+	}
+	if want := "/usr/local/sbin/zfs unmount -f tank/stale"; got[1] != want {
+		t.Errorf("unmount command = %q, want %q", got[1], want)
+	}
+	if want := "/usr/local/sbin/zfs set mountpoint=none canmount=off tank/stale"; got[2] != want {
+		t.Errorf("mountpoint command = %q, want %q", got[2], want)
+	}
+	if want := "/usr/local/sbin/zfs destroy -r tank/stale"; got[3] != want {
+		t.Errorf("final destroy = %q, want %q", got[3], want)
+	}
+}
+
+// TestHumanBytes covers the display formatter that replaced the raw `zfs list`
+// column once -p was added for exact bytes (AV-8a).
+func TestHumanBytes(t *testing.T) {
+	cases := []struct {
+		n    int64
+		want string
+	}{
+		{0, "0B"},
+		{512, "512B"},
+		{1024, "1.0K"},
+		{1536, "1.5K"},
+		{10 * 1024, "10K"},
+		{2 * 1024 * 1024 * 1024, "2.0G"},
+	}
+	for _, tc := range cases {
+		if got := humanBytes(tc.n); got != tc.want {
+			t.Errorf("humanBytes(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+	}
+}

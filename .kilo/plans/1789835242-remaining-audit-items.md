@@ -194,6 +194,13 @@ re-added later, in the workflow.
   middleware, forged-header 302) and **AV-12** (API rolling restart: one ~1s gap,
   LDAP login still works) both pass live. See the report's Batch 6 active-tests
   section.
+- **AV-8 findings: fixed.** The agent reports exact `UsedBytes` (`zfs list -p`)
+  and the send refuses a stream that is a small fraction of the dataset's used
+  space (contentless-backup guard, AV-8a); `DestroyDataset` recovers from the
+  stale-mount `dataset is busy` state via `zfs unmount -f` then
+  `mountpoint=none,canmount=off` and retry (AV-8b). A residual leaked-kernel
+  reference variant is named in the error with its documented remedy (pool
+  export/import; the agent does not export, as that takes the shares offline).
 - **Buddy crypto deep-dive: done — no findings.** `envelope.go`, `keys.go`,
   `auth.go` and `store.go` reviewed against the guide; see the report's deep-dive
   section. The asymmetric split, AEAD+AAD binding, DEK wrap, manifest signature,

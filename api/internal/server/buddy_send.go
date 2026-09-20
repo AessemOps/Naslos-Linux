@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AessemOps/Naslos-Linux/api/internal/agent"
 	"github.com/AessemOps/Naslos-Linux/api/internal/buddy"
 )
 
@@ -292,6 +293,26 @@ func normalizeReceiverURL(raw string) (string, error) {
 	return strings.TrimRight(trimmed, "/"), nil
 }
 
+// datasetMountState reports what the agent knows about a dataset, or nil when it
+// cannot be looked up (a listing failure must not become a refusal - the send
+// reports the real problem if there is one).
+func (s *Server) datasetMountState(dataset string) *agent.Dataset {
+	if s.agent == nil {
+		return nil
+	}
+	datasets, err := s.agent.ListDatasets()
+	if err != nil {
+		log.Printf("buddy send: cannot check the mount state of %s (%v)", dataset, err)
+		return nil
+	}
+	for i := range datasets {
+		if datasets[i].Name == dataset {
+			return &datasets[i]
+		}
+	}
+	return nil
+}
+
 // requireMountedDataset refuses to back up a dataset whose contents `zfs send`
 // cannot see. A dataset created from inside a pod is mounted in that pod's mount
 // namespace only: in the host namespace its mountpoint is an ordinary directory
@@ -303,26 +324,49 @@ func normalizeReceiverURL(raw string) (string, error) {
 // A dataset with mountpoint "none"/"legacy" is not affected - there is no
 // directory to shadow it - so it stays sendable.
 func (s *Server) requireMountedDataset(dataset string) error {
-	if s.agent == nil {
+	d := s.datasetMountState(dataset)
+	if d == nil {
 		return nil
 	}
-	datasets, err := s.agent.ListDatasets()
-	if err != nil {
-		// A listing failure must not become a refusal: the send reports the real
-		// problem if there is one.
-		log.Printf("buddy send: cannot check the mount state of %s (%v)", dataset, err)
+	if !d.Mounted && strings.HasPrefix(d.Mountpoint, "/") {
+		return fmt.Errorf("dataset %s is not mounted on the node (mountpoint %s), so zfs send would "+
+			"capture an empty filesystem; mount it in the host namespace (reboot the node, or run "+
+			"`zfs mount %s` there) and retry", dataset, d.Mountpoint, dataset)
+	}
+	return nil
+}
+
+// requireStreamMatchesDataset is the second half of the mount-propagation guard
+// (AV-8). requireMountedDataset catches a dataset the agent cannot see at all;
+// this catches the subtler case the drill produced: a dataset that IS mounted in
+// the agent's namespace but whose files were written somewhere that namespace
+// cannot observe, so the snapshot, the send and the stored stream are all
+// internally consistent and tiny.
+//
+// The signal is the dataset's own reported used space: it counts the blocks that
+// exist regardless of who can see the mount, so a stream that is a small
+// fraction of it did not capture the contents. A dataset that legitimately
+// compresses heavily, or that is genuinely nearly empty, is not flagged because
+// the check only fires when the dataset reports substantially more used space
+// than the stream carried AND that used space is large enough to be real data
+// (below the floor, metadata dominates and the ratio is meaningless).
+func requireStreamMatchesDataset(dataset string, usedBytes, plainBytes int64) error {
+	const (
+		// Below this the dataset is effectively empty and the used figure is
+		// almost all metadata, so a small stream is expected.
+		emptyFloor = 1 << 20 // 1 MiB
+		// A stream smaller than this fraction of the dataset's used space means
+		// the contents did not make it into the stream.
+		minRatio = 0.05 // 5%
+	)
+	if usedBytes < emptyFloor || plainBytes <= 0 {
 		return nil
 	}
-	for _, d := range datasets {
-		if d.Name != dataset {
-			continue
-		}
-		if !d.Mounted && strings.HasPrefix(d.Mountpoint, "/") {
-			return fmt.Errorf("dataset %s is not mounted on the node (mountpoint %s), so zfs send would "+
-				"capture an empty filesystem; mount it in the host namespace (reboot the node, or run "+
-				"`zfs mount %s` there) and retry", dataset, d.Mountpoint, dataset)
-		}
-		return nil
+	if float64(plainBytes) < float64(usedBytes)*minRatio {
+		return fmt.Errorf("the send captured %d bytes but %s reports %d bytes used, so its contents "+
+			"were not included (the dataset is not visible to zfs send in the host mount namespace); "+
+			"the backup was not published. Mount the dataset where the agent can see it (reboot the "+
+			"node, or `zfs mount` there) and retry", plainBytes, dataset, usedBytes)
 	}
 	return nil
 }
