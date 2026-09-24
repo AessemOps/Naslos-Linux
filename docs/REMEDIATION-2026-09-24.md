@@ -62,6 +62,14 @@ on `master`).
     (PF-H1). It now sets `hubble.tls.auto.method=cronJob`, so the
     `hubble-generate-certs` job creates `cilium-ca` and `hubble-server-certs`
     in-cluster. A header comment documents the exact regeneration command.
+11. **Images rebuilt and retagged.** The code changes ship in new images —
+    `naslos-api:0.1.0-r11`, `naslos-agent:0.1.0-r8`, `naslos-ui:0.1.0-r12`,
+    `naslos-openldap:0.1.0-r5`, `naslos-buddy-receiver:0.1.0` — pushed to the
+    registry, with the plain `0.1.0` tag refreshed for **every** image (including
+    samba/nfs/terminal, which previously had none) so the default
+    `deploy-vm.sh` / `SKIP_IMAGES=1` path is consistent. `values.yaml` and
+    `values-vm.yaml` point at the new tags. `pullPolicy: IfNotPresent` means an
+    existing node must actually pull the new tags, hence the suffix bump.
 
 ## 2. Finding status
 
