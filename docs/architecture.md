@@ -212,8 +212,8 @@ see the [document index](README.md).
    only from the configured Traefik pod CIDR **and** only when the request
    carries the `X-Naslos-Proxy-Secret` that Traefik injects. An attacker who can
    reach the API directly (bypassing Traefik/Authelia) can neither spoof the
-   headers nor replay them. Default `TRAEFIK_CIDR` is `10.0.0.0/8` — **narrow
-   it to the real pod CIDR**.
+   headers nor replay them. Default `TRAEFIK_CIDR` is `10.244.0.0/16` (the
+   cluster pod CIDR Traefik actually sources from).
 2. **Agent privilege.** `naslos-agent` runs privileged with host mounts. It
    exposes a local HTTP port (`:9090`) and must not be reachable from outside.
    Cilium NetworkPolicies are enforced, but because the agent is `hostNetwork`

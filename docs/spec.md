@@ -88,7 +88,7 @@ unmodified Talos installation, administered through a web UI.
   (`LDAP_USE_TLS=true` default).
 - **SEC-3** — `naslos-api` MUST only honor Traefik-injected authentication
   headers (`Remote-User` etc.) from requests originating in `TRAEFIK_CIDR`
-  (default `10.0.0.0/8`).
+  (default `10.244.0.0/16`).
 - **SEC-4** — The user's LDAP password MUST be mirrored to Samba's passdb as
   an NT hash at password-change time; plaintext passwords MUST NOT be stored
   anywhere.
@@ -296,6 +296,12 @@ Requirement IDs are stable: never renumber, only deprecate.
   definitions read back from disk (FR-IDN-08's rule applies to shares too).
 
 ### 3.4 App catalog (`FR-APP`)
+
+> **Status: not implemented.** These requirements describe the target design.
+> No chart repository is wired into the API and the API has no RBAC to create
+> Helm releases, so install/upgrade/uninstall cannot succeed; start/stop has no
+> route at all. The UI install action is disabled until the catalog refactor
+> lands (post-fix audit PF-H5).
 
 - **FR-APP-01** — Apps MUST be defined as catalog entries (name, description,
   Helm chart, JSON-Schema form).
@@ -525,7 +531,6 @@ See `docs/buddy-backup.md`.
 | `/api/apps/{app}` | GET, PUT, DELETE | Detail / configure / uninstall |
 | `/api/disks` | GET | Node disks |
 | `/api/disks/recommend` | POST | Topology advisor |
-| `/api/volumes` | GET | Volumes overview |
 | `/api/volumes/zfs` | GET | Pools (live via agent) |
 | `/api/volumes/zfs/import` | POST | Import existing pool |
 | `/api/volumes/zfs/{pool}` | GET, DELETE | Pool health / destroy |
