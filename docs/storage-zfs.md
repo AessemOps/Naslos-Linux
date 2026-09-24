@@ -3,7 +3,8 @@
 ZFS is Naslos's primary filesystem. Pools are created and managed by the
 privileged **naslos-agent** (a DaemonSet) because they live outside Talos's
 volume system. Talos's own `UserVolumeConfig` only supports ext4/xfs/btrfs and
-is exposed separately via `/api/volumes`.
+has no apply path in Naslos today, so it is not exposed (the `/api/volumes`
+stub was removed in PF-M8).
 
 ## Who does what
 
