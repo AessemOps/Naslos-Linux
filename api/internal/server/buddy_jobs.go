@@ -355,7 +355,7 @@ func (s *Server) runBuddySendJob(job *buddyJob) {
 		fail(err.Error())
 		return
 	}
-	client := buddy.NewClient(receiverURL, identity)
+	client := newBuddyClient(receiverURL, identity)
 
 	statePath := filepath.Join(sendStateDir(), sendStateName(receiverURL, source))
 	var state *instanceSendState
@@ -488,6 +488,15 @@ func (s *Server) runBuddySendJob(job *buddyJob) {
 		ToGUID:       targetGUID,
 		PruneKeep:    pruneKeep,
 		BeforePublish: func(pushed *buddy.PushResult) error {
+			// Fail closed (PF-M11): without an estimate we cannot tell a complete
+			// stream from a truncated one, so refuse to publish unless the
+			// operator forced it. Publishing a short stream would make "the
+			// latest backup" point at data that is missing.
+			if expected <= 0 && !force {
+				return fmt.Errorf("refusing to publish chain %s: the agent could not estimate %s@%s, so a truncated send would go unnoticed. "+
+					"Retry when the agent is healthy, or force to publish without the size check",
+					chainState.Chain, dataset, snapshot)
+			}
 			if expected > 0 && pushed.PlainBytes+sendShortfallAllowance(expected) < expected {
 				return fmt.Errorf("the send stream ended early (%d of at least %d bytes), so nothing was published. "+
 					"Retry the same send to continue chain %s: the buddy skips the chunks it already has",
@@ -497,17 +506,29 @@ func (s *Server) runBuddySendJob(job *buddyJob) {
 			// send, so it cannot catch a dataset whose contents are invisible to
 			// `zfs send` (both are small and consistent). Compare against the
 			// dataset's own used space instead, which counts the blocks that
-			// exist whatever the mount namespace shows.
-			if d := s.datasetMountState(dataset); d != nil {
-				if err := requireStreamMatchesDataset(dataset, d.UsedBytes, pushed.PlainBytes); err != nil {
-					return err
+			// exist whatever the mount namespace shows. Its absence is also fail
+			// closed: not knowing the used space means the check cannot run.
+			d := s.datasetMountState(dataset)
+			if d == nil {
+				if !force {
+					return fmt.Errorf("refusing to publish chain %s: the dataset's used space could not be read, so the content check cannot run. "+
+						"Retry when the agent is healthy, or force to publish without the content check", chainState.Chain)
 				}
+			} else if err := requireStreamMatchesDataset(dataset, d.UsedBytes, pushed.PlainBytes); err != nil {
+				return err
 			}
 			return nil
 		},
 		Progress: setProgress,
 	})
+	// Push may have bumped the chain's nonce generation (a resumed tail). Persist
+	// it either way so a retry resumes above everything already uploaded instead
+	// of reusing a nonce (PF-H2).
+	state.Chain = chainState
 	if err != nil {
+		if saveErr := saveSendState(statePath, state); saveErr != nil {
+			log.Printf("buddy send: could not persist the resume state for %s: %v", source, saveErr)
+		}
 		if ctx.Err() == context.Canceled {
 			fail("cancelled")
 			return

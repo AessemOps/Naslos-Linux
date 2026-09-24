@@ -34,12 +34,18 @@ const MaxClockSkew = 5 * time.Minute
 const nonceTTL = 2 * MaxClockSkew
 
 // CanonicalRequest is the exact string a sender signs and a receiver rebuilds.
-// Everything that changes the meaning of the request is in it - method, path,
-// body digest, timestamp, nonce - so a captured request cannot be moved to
-// another path or replayed later.
-func CanonicalRequest(method, path, bodyDigest, timestamp, nonce string) string {
+// Everything that changes the meaning of the request is in it - audience,
+// method, path, body digest, timestamp, nonce - so a captured request cannot be
+// moved to another path, replayed later, or replayed to a different receiver
+// (PF-M13).
+//
+// The audience is the receiver's identity (its Name), so a request signed for
+// buddy A does not verify at buddy B even though both authorize the same sender
+// key. The tag is BUDDY2: v1 signatures lacked the audience.
+func CanonicalRequest(audience, method, path, bodyDigest, timestamp, nonce string) string {
 	return strings.Join([]string{
-		"BUDDY1",
+		"BUDDY2",
+		audience,
 		strings.ToUpper(method),
 		path,
 		bodyDigest,
@@ -55,9 +61,16 @@ func BodyDigest(body []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// SignRequest authenticates an outgoing request. bodyDigest must be BodyDigest of
-// exactly the bytes that will be sent.
+// SignRequest authenticates an outgoing request with an empty audience. Callers
+// that know the receiver's identity should use SignRequestFor instead.
 func SignRequest(id *Identity, req *http.Request, bodyDigest string) error {
+	return SignRequestFor(id, req, bodyDigest, "")
+}
+
+// SignRequestFor authenticates an outgoing request, binding the signature to the
+// receiver identified by audience. bodyDigest must be BodyDigest of exactly the
+// bytes that will be sent.
+func SignRequestFor(id *Identity, req *http.Request, bodyDigest, audience string) error {
 	keyID, err := id.Fingerprint()
 	if err != nil {
 		return err
@@ -68,7 +81,7 @@ func SignRequest(id *Identity, req *http.Request, bodyDigest string) error {
 	}
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 
-	sig, err := id.Sign([]byte(CanonicalRequest(req.Method, req.URL.RequestURI(), bodyDigest, timestamp, nonce)))
+	sig, err := id.Sign([]byte(CanonicalRequest(audience, req.Method, req.URL.RequestURI(), bodyDigest, timestamp, nonce)))
 	if err != nil {
 		return err
 	}
@@ -202,11 +215,16 @@ func (a *Authenticator) persistNonceLocked(keyID, nonce string, expiry time.Time
 }
 
 // Verify authenticates a request. bodyDigest is the digest of the body the caller
-// actually received, and path is the request URI exactly as the sender signed it
-// (mount prefix included). The receiver recomputes that path instead of trusting
-// the request line, so a prefix-stripping proxy cannot change what a signature
-// means.
-func (a *Authenticator) Verify(req *http.Request, bodyDigest, path string, now time.Time) (*Peer, error) {
+// actually received, path is the request URI exactly as the sender signed it
+// (mount prefix included), and audience is this receiver's own identity (its
+// Name). The receiver recomputes that path instead of trusting the request line,
+// so a prefix-stripping proxy cannot change what a signature means.
+//
+// The signature must match this receiver's audience. A sender that does not yet
+// know it signs with an empty audience, which is only acceptable on /status -
+// the read-only discovery call - so a request captured for another receiver
+// cannot be replayed here (PF-M13).
+func (a *Authenticator) Verify(req *http.Request, bodyDigest, path, audience string, now time.Time) (*Peer, error) {
 	keyID := req.Header.Get(HeaderKeyID)
 	timestamp := req.Header.Get(HeaderTimestamp)
 	nonce := req.Header.Get(HeaderNonce)
@@ -240,11 +258,25 @@ func (a *Authenticator) Verify(req *http.Request, bodyDigest, path string, now t
 	if err != nil {
 		return nil, fmt.Errorf("decoding signature: %w", err)
 	}
-	canonical := CanonicalRequest(req.Method, path, bodyDigest, timestamp, nonce)
-	if err := Verify(peer.PublicKey, []byte(canonical), sig); err != nil {
+
+	// Accept only this receiver's audience; the empty audience is accepted for
+	// the discovery call, where the sender cannot know it yet.
+	audiences := []string{audience}
+	if audience != "" && path == PathPrefix+"/status" {
+		audiences = append(audiences, "")
+	}
+	verified := false
+	for _, candidate := range audiences {
+		canonical := CanonicalRequest(candidate, req.Method, path, bodyDigest, timestamp, nonce)
+		if err := Verify(peer.PublicKey, []byte(canonical), sig); err == nil {
+			verified = true
+			break
+		}
+	}
+	if !verified {
 		// Include what was signed: a URL prefix or proxy rewrite mismatch is the
 		// usual cause, and without this the error is impossible to diagnose.
-		return nil, fmt.Errorf("%w (signed request: %s %s)", err, req.Method, path)
+		return nil, fmt.Errorf("signature verification failed (signed request: %s %s)", req.Method, path)
 	}
 
 	// Only burn the nonce once the signature proved the caller owns the key:

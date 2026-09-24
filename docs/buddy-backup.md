@@ -67,6 +67,18 @@ use by `buddyctl identity`:
   unwrap. Back the identity file up like the data itself — ideally somewhere the
   receiver is not, because a receiver holding both the ciphertext and the KEK is
   just a receiver holding the plaintext.
+- **The identity file is not encrypted at rest.** It holds the signing key and,
+  unless you move it, the KEK. Anyone who can read it (a snapshot of the state
+  volume, an arbitrary-file-read in the API, the admin terminal) can both
+  impersonate the sender to every buddy *and* decrypt every backup. File
+  permissions are `0600`, which is not the same as at-rest encryption.
+- **Move the KEK into a Secret.** Set `buddy.kekSecret` (Helm) or `BUDDY_KEK`
+  (base64, 32 bytes) and the KEK is read from the environment instead of the
+  file; the identity file then exposes only the signing key. The environment
+  value takes precedence when both are present, so migrating does not lose access
+  to existing backups, and the file's `kek` should be deleted once the Secret is
+  in place (the resume state still holds each in-flight chain's DEK in plaintext
+  until that push finishes).
 - The receiver never sees this file. It stores an authorized-keys line per sender
   and nothing else secret.
 
@@ -86,7 +98,8 @@ Every request carries four headers:
 The signature covers this exact string, newline-separated:
 
 ```
-BUDDY1
+BUDDY2
+<receiver identity>
 PUT
 /api/buddy/v1/chunks/naslos-a/data?chain=1f3c&index=7
 <sha256 hex of the request body>
@@ -94,9 +107,19 @@ PUT
 5c2nQw==
 ```
 
-Because the method, the full URI (query string and mount prefix included), the body
-digest, the timestamp and the nonce are all inside it, a captured request cannot be
-replayed twice inside the clock-skew window: the receiver records each nonce it has
+The second line is the **audience**: the receiver's own identity (`BUDDY_NAME`).
+A sender learns it from the read-only `/status` call and signs every later
+request with it, so a request captured for buddy A does not verify at buddy B
+even if both authorize the same sender key — the cross-receiver replay that
+`BUDDY1` allowed. `/status` is the one call a sender may sign with an empty
+audience (it cannot know the name yet); the receiver accepts that only there.
+Give each receiver a distinct `BUDDY_NAME` (`naslos-a`, `naslos-b`, …): the
+default `naslos` is identical everywhere and weakens this binding.
+
+Because the audience, method, full URI (query string and mount prefix included),
+body digest, timestamp and nonce are all inside it, a captured request cannot be
+replayed twice inside the clock-skew window — nor at a different receiver: the
+receiver records each nonce it has
 seen, per key, bounded in memory and persisted next to its store (`.nonces`) so a
 restart cannot re-arm the window. A captured request cannot be
 pointed at another path, another body, or replayed later. The receiver additionally:
@@ -168,24 +191,40 @@ The plaintext stream is cut into fixed 1 MiB chunks; each chunk is sealed on its
 own. One sealed chunk on disk:
 
 ```
-" NBC1 " magic(4) | plainLen(4, big-endian) | nonce(12) | AES-256-GCM ciphertext + tag
+"NBC2" magic(4) | plainLen(4, big-endian) | nonce(12) | AES-256-GCM ciphertext + tag
 ```
 
 - **Key** — a fresh 256-bit data key (DEK) per chain segment.
-- **Nonce** — `streamPrefix(8 random bytes) || chunkIndex(4, big-endian)`, unique
-  per (key, index) by construction, which is the property GCM depends on.
-- **AAD** — `NB1|<source>|<chain>|<index>|<plainLen>`, so chunks cannot be
-  reordered, swapped between chains, moved between sources, or truncated
-  undetected.
+- **Nonce** — `streamPrefix(6 random bytes) || generation(2, big-endian) ||
+  chunkIndex(4, big-endian)`, unique per (key, generation, index) by construction,
+  which is the property GCM depends on. The **generation** is bumped whenever a
+  resumed push has to re-seal the interrupted tail, so the replacement never
+  reuses the partial chunk's `(key, nonce)` pair — the fix for the nonce-reuse
+  found in the 2026-09-21 audit (PF-H2). Each chunk's generation is recorded in
+  the signed manifest and bound into its AAD.
+- **AAD** — `NB2|<source>|<chain>|<generation>|<index>|<plainLen>`, so chunks
+  cannot be reordered, swapped between chains, moved between sources, or
+  truncated undetected.
 - **DEK wrapping** — the DEK is sealed with the owner's KEK and travels in the
-  manifest (`AAD: NB1|dek|<source>|<chain>`), so a restore needs the owner's KEK
+  manifest (`AAD: NB2|dek|<source>|<chain>`), so a restore needs the owner's KEK
   and nothing from the receiver.
 
-The manifest carries the chain's metadata, the chunk list (`index`, plain bytes,
-sealed bytes, SHA-256 of the **plaintext**), the wrapped DEK, the sender's key id,
+The manifest carries the chain's metadata, a monotonic **sequence** per
+`(receiver, source)`, the chunk list (`index`, plain bytes, sealed bytes, nonce
+generation, SHA-256 of the **plaintext**), the wrapped DEK, the sender's key id,
 and an Ed25519 signature over all of it. The receiver can verify the signature and
 the presence of every chunk; only the owner can check the plaintext digests — which
 is exactly the intended asymmetry.
+
+Owners verify the manifest is the one they asked for: a restore binds it to the
+requested source (and chain, when one is named) and refuses a sequence older than
+the last one this sender published, so a hostile buddy cannot answer with another
+source's or a stale but validly signed backup (PF-H3).
+
+> **Protocol version.** The envelope is **v2** (`NBC2`/`NB2`). A v2 sender and a v2
+> receiver are required on both ends: an in-flight chain created by an earlier v1
+> sender will not verify against a v2 receiver, and vice versa. Finish or discard
+> pre-upgrade chains before upgrading a peer, and start a new chain after.
 
 ## 5. Operating it
 

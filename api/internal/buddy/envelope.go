@@ -20,21 +20,45 @@ import (
 // its own) and keeps memory bounded on both sides.
 const (
 	// EnvelopeVersion is the wire/format version.
-	EnvelopeVersion = 1
+	//
+	// v2 (PF-H2/PF-L12): the chunk nonce gained a generation field so a resumed
+	// push can re-seal an interrupted tail without ever repeating a
+	// (key, nonce) pair, and OpenChunk now takes the stream prefix from the
+	// signed manifest instead of trusting the chunk's own bytes.
+	EnvelopeVersion = 2
 	// ChunkPlainSize is the plaintext size of one sealed chunk.
 	ChunkPlainSize = 1 << 20
 	// MaxSealedChunkSize is what a receiver will accept for one chunk.
 	MaxSealedChunkSize = ChunkPlainSize + 4096
 
-	chunkMagic = "NBC1"
-	aeadLabel  = "NB1"
+	// streamPrefixLen is how many random bytes a chain's stream prefix carries.
+	// The nonce is prefix || generation || index (12 bytes), so the prefix no
+	// longer needs to fill the whole first half.
+	streamPrefixLen = 6
+	// MaxGeneration is the largest generation the 16-bit nonce field can carry.
+	// A chain that would need a 65536th generation is refused rather than
+	// wrapping the counter back onto a used nonce.
+	MaxGeneration = int(1)<<16 - 1
+
+	chunkMagic = "NBC2"
+	aeadLabel  = "NB2"
 )
+
+// nonceSize is the AES-GCM nonce length.
+const nonceSize = 12
 
 // ManifestChunk is one sealed chunk as recorded in the manifest.
 type ManifestChunk struct {
 	Index       int `json:"index"`
 	PlainBytes  int `json:"plainBytes"`
 	SealedBytes int `json:"sealedBytes"`
+	// Generation is the nonce generation this chunk was sealed under. A chain
+	// can legitimately mix generations: a resumed push re-seals only the
+	// interrupted tail under a fresh generation, leaving the completed prefix in
+	// the generation it was first uploaded with (PF-H2). Pinning it in the
+	// signed manifest lets a restore reject a chunk swapped for an equally-valid
+	// blob from a different generation.
+	Generation uint16 `json:"generation"`
 	// Sha256Plain lets the owner verify the data after decryption. The receiver
 	// cannot check it (it has no key) - the intended asymmetry.
 	Sha256Plain string `json:"sha256Plain"`
@@ -45,16 +69,24 @@ type ManifestChunk struct {
 // the owner can verify provenance long after the push, and a receiver tampering
 // with metadata is detectable.
 type Manifest struct {
-	Version        int             `json:"version"`
-	Source         string          `json:"source"`
-	Chain          string          `json:"chain"`
-	Kind           string          `json:"kind"` // "zfs-send" | "tar"
-	FromSnapshot   string          `json:"fromSnapshot,omitempty"`
-	ToSnapshot     string          `json:"toSnapshot,omitempty"`
-	FromGUID       string          `json:"fromGUID,omitempty"`
-	ToGUID         string          `json:"toGUID,omitempty"`
-	CreatedAt      time.Time       `json:"createdAt"`
-	KeyID          string          `json:"keyId"`
+	Version      int       `json:"version"`
+	Source       string    `json:"source"`
+	Chain        string    `json:"chain"`
+	Kind         string    `json:"kind"` // "zfs-send" | "tar"
+	FromSnapshot string    `json:"fromSnapshot,omitempty"`
+	ToSnapshot   string    `json:"toSnapshot,omitempty"`
+	FromGUID     string    `json:"fromGUID,omitempty"`
+	ToGUID       string    `json:"toGUID,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
+	KeyID        string    `json:"keyId"`
+	// Sequence is a monotonic, sender-assigned publish counter for a
+	// (receiver, source) pair. Restore refuses a manifest whose sequence is
+	// older than the last one this sender published, so a receiver cannot
+	// answer a restore with a stale (but validly signed) backup (PF-H3).
+	Sequence uint64 `json:"sequence"`
+	// Generation is the newest nonce generation in the chain; no chunk may
+	// exceed it.
+	Generation     uint16          `json:"generation"`
 	StreamPrefix   string          `json:"streamPrefix"`
 	ChunkPlainSize int             `json:"chunkPlainSize"`
 	Chunks         []ManifestChunk `json:"chunks"`
@@ -64,24 +96,27 @@ type Manifest struct {
 	Signature  string `json:"signature,omitempty"`
 }
 
-// newStreamPrefix returns the 8-byte random prefix that keeps a chain's nonces
-// unique even if the same DEK were ever reused.
+// newStreamPrefix returns the random prefix that keeps a chain's nonces unique
+// even if the same DEK were ever reused.
 func newStreamPrefix() ([]byte, error) {
-	prefix := make([]byte, 8)
+	prefix := make([]byte, streamPrefixLen)
 	if _, err := rand.Read(prefix); err != nil {
 		return nil, fmt.Errorf("generating stream prefix: %w", err)
 	}
 	return prefix, nil
 }
 
-// chunkNonce is prefix || counter: unique per (DEK, index) by construction, which
-// is the property AES-GCM needs for confidentiality.
-func chunkNonce(prefix []byte, index int) []byte {
-	nonce := make([]byte, 12)
-	copy(nonce[:8], prefix)
+// chunkNonce is prefix || generation || index: unique by construction for a
+// given DEK, which is the property AES-GCM needs for confidentiality. The
+// generation makes a re-sealed chunk (a resumed tail) use a fresh nonce even at
+// the same index under the same key.
+func chunkNonce(prefix []byte, generation uint16, index int) []byte {
+	nonce := make([]byte, nonceSize)
+	copy(nonce[:streamPrefixLen], prefix)
+	binary.BigEndian.PutUint16(nonce[streamPrefixLen:streamPrefixLen+2], generation)
 	// Every caller runs validateChunkIndex first, so index <= MaxChunkIndex and
 	// the narrowing cannot wrap (gosec G115).
-	binary.BigEndian.PutUint32(nonce[8:], uint32(index)) // #nosec G115 -- bounded by validateChunkIndex
+	binary.BigEndian.PutUint32(nonce[streamPrefixLen+2:], uint32(index)) // #nosec G115 -- bounded by validateChunkIndex
 	return nonce
 }
 
@@ -100,9 +135,29 @@ func validateChunkIndex(index int) error {
 }
 
 // chunkAAD binds a chunk to its position in the chain, so chunks cannot be
-// reordered, swapped between chains, or truncated without detection.
-func chunkAAD(source, chain string, index, plainLen int) []byte {
-	return []byte(fmt.Sprintf("%s|%s|%s|%d|%d", aeadLabel, source, chain, index, plainLen))
+// reordered, swapped between chains, or truncated without detection. The
+// generation is included so a blob from another generation is not accepted in
+// place of the one the manifest names.
+func chunkAAD(source, chain string, generation uint16, index, plainLen int) []byte {
+	return []byte(fmt.Sprintf("%s|%s|%s|%d|%d|%d", aeadLabel, source, chain, generation, index, plainLen))
+}
+
+// sealPrefix validates a stream prefix and, on failure, explains why.
+func sealPrefix(prefix []byte) error {
+	if len(prefix) != streamPrefixLen {
+		return fmt.Errorf("stream prefix must be %d bytes, got %d", streamPrefixLen, len(prefix))
+	}
+	return nil
+}
+
+// chunkPlainLen reads the plaintext length a sealed blob declares, and reports
+// whether the blob is a plausible envelope at all. Used by the receiver to
+// recognise an interrupted (short) tail without a key.
+func chunkPlainLen(sealed []byte) (int, bool) {
+	if len(sealed) < len(chunkMagic)+4+nonceSize || string(sealed[:4]) != chunkMagic {
+		return 0, false
+	}
+	return int(binary.BigEndian.Uint32(sealed[4:8])), true
 }
 
 // newDEK returns a fresh 256-bit data key for one chain segment.
@@ -136,8 +191,11 @@ func digestOf(data []byte) string {
 // SHA-256 of the plaintext (recorded in the manifest for later verification).
 //
 // Layout: magic(4) | plainLen(4, BE) | nonce(12) | ciphertext+tag(16).
-func SealChunk(dek, prefix []byte, source, chain string, index int, plain []byte) ([]byte, string, error) {
+func SealChunk(dek, prefix []byte, generation uint16, source, chain string, index int, plain []byte) ([]byte, string, error) {
 	if err := validateChunkIndex(index); err != nil {
+		return nil, "", err
+	}
+	if err := sealPrefix(prefix); err != nil {
 		return nil, "", err
 	}
 	// The envelope stores plainLen as a uint32; refuse anything that cannot be
@@ -150,8 +208,8 @@ func SealChunk(dek, prefix []byte, source, chain string, index int, plain []byte
 		return nil, "", err
 	}
 
-	nonce := chunkNonce(prefix, index)
-	sealed := aead.Seal(nil, nonce, plain, chunkAAD(source, chain, index, len(plain)))
+	nonce := chunkNonce(prefix, generation, index)
+	sealed := aead.Seal(nil, nonce, plain, chunkAAD(source, chain, generation, index, len(plain)))
 
 	var buf bytes.Buffer
 	buf.WriteString(chunkMagic)
@@ -163,12 +221,19 @@ func SealChunk(dek, prefix []byte, source, chain string, index int, plain []byte
 }
 
 // OpenChunk decrypts a sealed blob, failing on tampering, on a chunk stored under
-// the wrong index, and on truncation.
-func OpenChunk(dek []byte, source, chain string, index int, sealed []byte) ([]byte, error) {
+// the wrong index or generation, and on truncation.
+//
+// The prefix and generation are inputs from the caller - the signed manifest
+// (PF-L12), not the blob's own bytes: otherwise the blob would be its own
+// witness and a substituted chunk from another chain would verify.
+func OpenChunk(dek, prefix []byte, generation uint16, source, chain string, index int, sealed []byte) ([]byte, error) {
 	if err := validateChunkIndex(index); err != nil {
 		return nil, err
 	}
-	if len(sealed) < len(chunkMagic)+4+12 {
+	if err := sealPrefix(prefix); err != nil {
+		return nil, err
+	}
+	if len(sealed) < len(chunkMagic)+4+nonceSize {
 		return nil, fmt.Errorf("chunk is too short to be a valid envelope")
 	}
 	if string(sealed[:4]) != chunkMagic {
@@ -180,18 +245,21 @@ func OpenChunk(dek []byte, source, chain string, index int, sealed []byte) ([]by
 		return nil, fmt.Errorf("chunk declares an impossible plaintext size (%d)", plainLen)
 	}
 
-	// The nonce must be exactly the one this index would produce: that catches a
-	// chunk filed under the wrong index or moved between chains.
-	prefix := sealed[8:16]
-	if !bytes.Equal(sealed[8:20], chunkNonce(prefix, index)) {
-		return nil, fmt.Errorf("chunk %d carries a mismatched nonce: it belongs to another index or chain", index)
+	// The EMBEDDED nonce must be exactly the one the manifest's prefix,
+	// generation and index produce: that catches a chunk filed under the wrong
+	// index, moved between chains, or swapped for another generation's blob.
+	if !bytes.Equal(sealed[8:8+nonceSize], chunkNonce(prefix, generation, index)) {
+		if !bytes.Equal(sealed[8:8+streamPrefixLen], prefix[:streamPrefixLen]) {
+			return nil, fmt.Errorf("chunk %d carries a different stream prefix than the manifest", index)
+		}
+		return nil, fmt.Errorf("chunk %d carries a mismatched nonce: it belongs to another index or generation", index)
 	}
 
 	aead, err := aeadFor(dek)
 	if err != nil {
 		return nil, err
 	}
-	plain, err := aead.Open(nil, sealed[8:20], sealed[20:], chunkAAD(source, chain, index, plainLen))
+	plain, err := aead.Open(nil, sealed[8:8+nonceSize], sealed[8+nonceSize:], chunkAAD(source, chain, generation, index, plainLen))
 	if err != nil {
 		return nil, fmt.Errorf("chunk %d failed authentication (wrong key, or the data was altered): %w", index, err)
 	}
@@ -235,6 +303,20 @@ func UnwrapDEK(kek []byte, wrapped, source, chain string) ([]byte, error) {
 		return nil, fmt.Errorf("cannot unwrap the data key: this backup was not made with this key (%w)", err)
 	}
 	return dek, nil
+}
+
+// streamPrefix decodes and validates the manifest's stream prefix, which the
+// owner passes to OpenChunk so the blob is checked against the signed manifest
+// rather than against its own bytes (PF-L12).
+func (m *Manifest) streamPrefix() ([]byte, error) {
+	prefix, err := base64.StdEncoding.DecodeString(m.StreamPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("decoding stream prefix: %w", err)
+	}
+	if err := sealPrefix(prefix); err != nil {
+		return nil, err
+	}
+	return prefix, nil
 }
 
 // canonical is the manifest's signed form: everything except the signature.
@@ -304,8 +386,8 @@ func validateManifestShape(m *Manifest) error {
 		return fmt.Errorf("chunk plain size is %d, this receiver stores %d-byte chunks", m.ChunkPlainSize, ChunkPlainSize)
 	}
 	prefix, err := base64.StdEncoding.DecodeString(m.StreamPrefix)
-	if err != nil || len(prefix) != 8 {
-		return fmt.Errorf("stream prefix must be base64 for 8 bytes")
+	if err != nil || len(prefix) != streamPrefixLen {
+		return fmt.Errorf("stream prefix must be base64 for %d bytes", streamPrefixLen)
 	}
 	if m.DEKWrapped == "" {
 		return fmt.Errorf("manifest carries no wrapped data key")
@@ -317,6 +399,9 @@ func validateManifestShape(m *Manifest) error {
 	for i, chunk := range m.Chunks {
 		if chunk.Index != i {
 			return fmt.Errorf("chunk %d is out of order (index %d): the manifest must list chunks 0..n-1 exactly once", i, chunk.Index)
+		}
+		if chunk.Generation > m.Generation {
+			return fmt.Errorf("chunk %d declares generation %d, above the manifest's %d", i, chunk.Generation, m.Generation)
 		}
 		if chunk.PlainBytes <= 0 || chunk.PlainBytes > ChunkPlainSize {
 			return fmt.Errorf("chunk %d declares %d plain bytes, outside (0, %d]", i, chunk.PlainBytes, ChunkPlainSize)
