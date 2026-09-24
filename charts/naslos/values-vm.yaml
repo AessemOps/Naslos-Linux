@@ -116,7 +116,3 @@ networkPolicy:
 buddy:
   enabled: true
   receiveHostPath: /var/mnt/test/naslos-buddy
-
-# Grafana admin password — change in production.
-grafana:
-  adminPassword: naslos-admin

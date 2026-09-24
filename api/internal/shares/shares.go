@@ -31,10 +31,14 @@ type Share struct {
 	// ValidGroups lists LDAP groups allowed to use the share, rendered into
 	// smb.conf as `@group` entries. Kept separate from ValidUsers so a name is
 	// never ambiguous between a user and a group.
-	ValidGroups []string  `json:"validGroups"`
-	TimeMachine bool      `json:"timeMachine"`
-	CreatedAt   time.Time `json:"createdAt"`
-	Enabled     bool      `json:"enabled"`
+	ValidGroups []string `json:"validGroups"`
+	TimeMachine bool     `json:"timeMachine"`
+	// NoRootSquash disables NFS root squashing for this share. Off by default:
+	// a root client is mapped to nobody unless an operator opts out, and the UI
+	// warns when they do (PF-H4).
+	NoRootSquash bool      `json:"noRootSquash,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
+	Enabled      bool      `json:"enabled"`
 }
 
 // CreateShareRequest is the request to create a new share.
@@ -52,7 +56,10 @@ type CreateShareRequest struct {
 	ValidUsers   []string `json:"validUsers"`
 	ValidGroups  []string `json:"validGroups"`
 	TimeMachine  bool     `json:"timeMachine"`
-	Enabled      *bool    `json:"enabled,omitempty"`
+	// NoRootSquash opts this share out of NFS root squashing; the UI warns
+	// because it lets a root client write as root (PF-H4).
+	NoRootSquash bool  `json:"noRootSquash,omitempty"`
+	Enabled      *bool `json:"enabled,omitempty"`
 }
 
 // UpdateShareRequest is the request to update a share. Pointer fields are
@@ -69,6 +76,7 @@ type UpdateShareRequest struct {
 	ValidUsers   []string `json:"validUsers,omitempty"`
 	ValidGroups  []string `json:"validGroups,omitempty"`
 	TimeMachine  *bool    `json:"timeMachine,omitempty"`
+	NoRootSquash *bool    `json:"noRootSquash,omitempty"`
 	Enabled      *bool    `json:"enabled,omitempty"`
 }
 

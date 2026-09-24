@@ -66,8 +66,20 @@ func main() {
 		log.Fatalf("AGENT_TOKEN is required; mount it from the naslos-agent Secret")
 	}
 
+	// TLS (PF-M5): the agent is hostNetwork, so the bearer token must not cross
+	// the LAN in cleartext. The chart mounts a cert/key pair and sets both vars;
+	// if only one is set the configuration is wrong and we refuse to start
+	// rather than silently serving plaintext.
+	tlsCert := os.Getenv("AGENT_TLS_CERT")
+	tlsKey := os.Getenv("AGENT_TLS_KEY")
+	if (tlsCert == "") != (tlsKey == "") {
+		log.Fatalf("AGENT_TLS_CERT and AGENT_TLS_KEY must be set together")
+	}
+
 	srv := server.New(listen, zfsClient, sharesClient, server.Options{
-		AuthToken: authToken,
+		AuthToken:   authToken,
+		TLSCertFile: tlsCert,
+		TLSKeyFile:  tlsKey,
 	})
 	go func() {
 		if err := srv.Start(); err != nil && err != http.ErrServerClosed {

@@ -79,11 +79,6 @@
     },
     "ntfy": { "type": "object", "additionalProperties": true },
     "prometheus": { "type": "object", "additionalProperties": true },
-    "grafana": {
-      "type": "object",
-      "additionalProperties": true,
-      "properties": { "enabled": { "type": "boolean" } }
-    },
     "storage": {
       "type": "object",
       "additionalProperties": true,

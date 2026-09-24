@@ -10,9 +10,18 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/AessemOps/Naslos-Linux/agent/internal/shares"
 	"github.com/AessemOps/Naslos-Linux/agent/internal/zfs"
+)
+
+// Body caps (PF-M6). A JSON control request is tiny; a `zfs receive` stream is
+// the only large body and gets a high but finite cap so one request cannot fill
+// the node's disk through the agent.
+const (
+	maxJSONBodyBytes   = 1 << 20 // 1 MiB
+	maxStreamBodyBytes = 1 << 40 // 1 TiB
 )
 
 // Options configure the agent's authentication. The agent is a privileged,
@@ -22,6 +31,11 @@ type Options struct {
 	// AuthToken is the shared bearer token every request except /health must
 	// present. The API reads the same value from the same Secret.
 	AuthToken string
+	// TLSCertFile / TLSKeyFile, when both set, make the agent serve HTTPS. The
+	// agent is hostNetwork and the bearer token would otherwise cross the LAN in
+	// cleartext (PF-M5). Leave empty for plain HTTP (local development).
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
 // Server is the agent's HTTP server.
@@ -34,18 +48,23 @@ type Server struct {
 	backup backupZFS
 	// authToken is the shared API token the API presents; there is no opt-out.
 	authToken string
-	router    *http.ServeMux
-	server    *http.Server
+	// tlsCertFile / tlsKeyFile make the agent serve HTTPS when both are set.
+	tlsCertFile string
+	tlsKeyFile  string
+	router      *http.ServeMux
+	server      *http.Server
 }
 
 // New creates a new agent server.
 func New(addr string, zfsClient *zfs.Client, sharesClient *shares.Client, opts Options) *Server {
 	s := &Server{
-		addr:      addr,
-		zfs:       zfsClient,
-		shares:    sharesClient,
-		authToken: opts.AuthToken,
-		router:    http.NewServeMux(),
+		addr:        addr,
+		zfs:         zfsClient,
+		shares:      sharesClient,
+		authToken:   opts.AuthToken,
+		tlsCertFile: opts.TLSCertFile,
+		tlsKeyFile:  opts.TLSKeyFile,
+		router:      http.NewServeMux(),
 	}
 	if zfsClient != nil {
 		s.backup = zfsClient
@@ -66,6 +85,14 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing or invalid agent token")
 			return
 		}
+		// Cap the body here so every authenticated route is covered (PF-M6).
+		// The receive stream is the one large body; everything else is JSON and
+		// is capped hard.
+		limit := int64(maxJSONBodyBytes)
+		if strings.HasPrefix(r.URL.Path, "/api/v1/zfs/receive/") {
+			limit = maxStreamBodyBytes
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -126,6 +153,17 @@ func (s *Server) Start() error {
 	s.server = &http.Server{
 		Addr:    s.addr,
 		Handler: s.router,
+		// Bound slow/silent clients (gosec G112): without a header deadline one
+		// connection can hold a worker open indefinitely.
+		ReadHeaderTimeout: 10 * time.Second,
+		// A control request must not sit half-read forever. The streaming
+		// receive route clears this deadline for its own connection (PF-M6).
+		ReadTimeout: 30 * time.Second,
+		IdleTimeout: 120 * time.Second,
+		// WriteTimeout stays 0: the send stream is a long-lived response.
+	}
+	if s.tlsCertFile != "" && s.tlsKeyFile != "" {
+		return s.server.ListenAndServeTLS(s.tlsCertFile, s.tlsKeyFile)
 	}
 	return s.server.ListenAndServe()
 }
