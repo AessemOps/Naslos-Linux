@@ -17,7 +17,7 @@
     topic: 'naslos-alerts',
     hasAuthToken: false,
     email: '',
-    enabledEvents: ['zfs_health', 'app_status', 'disk_failure'],
+    enabledEvents: ['zfs_health', 'disk_failure'],
     minSeverity: 'warning'
   };
   // The stored token is never sent back to the browser; this holds a replacement
@@ -31,11 +31,7 @@
 
   const eventTypes = [
     { id: 'zfs_health', label: 'ZFS Pool Health' },
-    { id: 'zfs_scrub', label: 'ZFS Scrub Complete' },
-    { id: 'app_status', label: 'App Status Change' },
     { id: 'disk_failure', label: 'Disk Failure' },
-    { id: 'system_update', label: 'System Update' },
-    { id: 'share_access', label: 'Share Access' },
     { id: 'backup_failure', label: 'Backup Failure' },
     { id: 'backup_success', label: 'Backup Success' }
   ];
