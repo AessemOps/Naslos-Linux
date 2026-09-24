@@ -111,7 +111,7 @@ func TestManifestBytesCountTowardUsage(t *testing.T) {
 		Chain:          "chain1",
 		Kind:           "tar",
 		CreatedAt:      time.Now().UTC(),
-		StreamPrefix:   "AAAAAAAAAAA=",
+		StreamPrefix:   "AAAAAAAA",
 		ChunkPlainSize: ChunkPlainSize,
 		DEKWrapped:     "AAAA",
 		Chunks:         []ManifestChunk{{Index: 0, PlainBytes: len(payload), SealedBytes: len(payload), Sha256Plain: "aa"}},
