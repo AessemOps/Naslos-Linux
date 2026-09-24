@@ -19,6 +19,12 @@
   let filterCategory = 'all';
   let searchQuery = '';
 
+  // PF-H5: installing cannot work yet - no chart repository is wired into the
+  // API and it has no RBAC to create a Helm release. Keep the catalog visible
+  // for reference but disable the install action until the catalog refactor
+  // lands. Flip this to true together with that refactor.
+  const INSTALL_ENABLED = false;
+
   const categories = [
     { id: 'all', name: 'All' },
     { id: 'media', name: 'Media' },
@@ -49,6 +55,9 @@
   }
 
   function openInstall(name: string) {
+    if (!INSTALL_ENABLED) {
+      return;
+    }
     selectedApp = name;
   }
 
@@ -68,6 +77,13 @@
 </script>
 
 <div>
+  {#if !INSTALL_ENABLED}
+    <div class="card border-amber-700 bg-amber-900/30 text-amber-200 p-4 mb-6" role="status">
+      App installation is not available yet: no chart repository is configured and
+      the API cannot create Helm releases. The catalog is shown for reference only.
+    </div>
+  {/if}
+
   <!-- Filters -->
   <div class="flex gap-4 mb-6">
     <input
@@ -94,10 +110,11 @@
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       {#each filteredApps as app}
         <div
-          class="card hover:border-naslos-accent transition-colors cursor-pointer"
+          class="card {INSTALL_ENABLED ? 'hover:border-naslos-accent transition-colors cursor-pointer' : 'opacity-80'}"
           role="button"
           tabindex="0"
-          aria-label={`Install ${app.displayName}`}
+          aria-disabled={!INSTALL_ENABLED}
+          aria-label={INSTALL_ENABLED ? `Install ${app.displayName}` : `${app.displayName} (installation disabled)`}
           on:click={() => openInstall(app.name)}
           on:keydown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
@@ -123,7 +140,7 @@
   {/if}
 
   <!-- Install modal -->
-  {#if selectedApp}
+  {#if INSTALL_ENABLED && selectedApp}
     <AppInstallModal appName={selectedApp} on:close={closeInstall} />
   {/if}
 </div>

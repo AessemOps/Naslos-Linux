@@ -106,12 +106,58 @@ func (c *Catalog) List() []CatalogEntry {
 }
 
 // Get returns a full app definition by name.
+//
+// It returns a deep copy: callers merge install-time values into
+// DefaultValues, and returning the shared entry let one request's merge leak
+// into another request's view of the catalog (PF-M7).
 func (c *Catalog) Get(name string) (*App, error) {
 	app, ok := c.apps[name]
 	if !ok {
 		return nil, fmt.Errorf("app %q not found in catalog", name)
 	}
-	return app, nil
+	return cloneApp(app), nil
+}
+
+// cloneApp deep-copies a catalog entry.
+func cloneApp(app *App) *App {
+	dup := *app
+	if app.DefaultValues != nil {
+		dup.DefaultValues = make(map[string]interface{}, len(app.DefaultValues))
+		for k, v := range app.DefaultValues {
+			dup.DefaultValues[k] = deepCopyValue(v)
+		}
+	}
+	if app.Schema != nil {
+		dup.Schema = append(json.RawMessage(nil), app.Schema...)
+	}
+	if app.Ports != nil {
+		dup.Ports = append([]int(nil), app.Ports...)
+	}
+	if app.Tags != nil {
+		dup.Tags = append([]string(nil), app.Tags...)
+	}
+	return &dup
+}
+
+// deepCopyValue copies the JSON-decoded containers that can appear in
+// DefaultValues, so nested defaults are not shared either.
+func deepCopyValue(v interface{}) interface{} {
+	switch value := v.(type) {
+	case map[string]interface{}:
+		dup := make(map[string]interface{}, len(value))
+		for k, item := range value {
+			dup[k] = deepCopyValue(item)
+		}
+		return dup
+	case []interface{}:
+		dup := make([]interface{}, len(value))
+		for i, item := range value {
+			dup[i] = deepCopyValue(item)
+		}
+		return dup
+	default:
+		return value
+	}
 }
 
 // Schema returns the JSON schema for an app's config form.

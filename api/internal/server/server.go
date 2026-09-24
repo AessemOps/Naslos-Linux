@@ -138,7 +138,13 @@ func New(addr string, tc *talos.Client) *Server {
 	agentBaseURL := getEnv("AGENT_BASE_URL", fmt.Sprintf(agent.DefaultBaseURLPattern, namespace))
 	// The agent requires the shared token on every request but /health; the same
 	// value is mounted into both workloads from the naslos-agent-auth Secret.
-	agentClient := agent.NewClient(agentBaseURL, getEnv("AGENT_TOKEN", ""))
+	// When the chart serves the agent over TLS it also sets AGENT_CA_FILE, and
+	// the certificate is pinned to that CA (PF-M5). A configured-but-broken CA
+	// is fatal rather than a silent downgrade to cleartext.
+	agentClient, err := agent.NewClientWithCA(agentBaseURL, getEnv("AGENT_TOKEN", ""), getEnv("AGENT_CA_FILE", ""))
+	if err != nil {
+		log.Fatalf("Agent TLS configuration: %v", err)
+	}
 
 	// Buddy Backup, receive side. The peer registry lives with the other state
 	// files; the chunks live on the backup dataset (BUDDY_RECEIVE_PATH), which is
@@ -232,8 +238,9 @@ func (s *Server) routes() {
 	owner.HandleFunc("/api/disks", s.handleDisks)
 	owner.HandleFunc("/api/disks/recommend", s.handleDiskRecommend)
 
-	// Volumes
-	owner.HandleFunc("/api/volumes", s.handleVolumes)
+	// Volumes. There is deliberately no bare /api/volumes route: it was a stub
+	// that answered 201 without applying anything (PF-M8). UserVolumeConfig
+	// documents are not wired to a Talos apply path yet.
 	owner.HandleFunc("/api/volumes/zfs", s.handleZFSPools)
 	owner.HandleFunc("/api/volumes/zfs/import", s.handleZFSImport)
 	owner.HandleFunc("/api/volumes/zfs/", s.handleZFSPoolDetail)
@@ -346,6 +353,10 @@ func (s *Server) Start() error {
 	s.ensureBuddyJobs()
 	s.ensureBuddySchedules()
 	s.startBuddyScheduler()
+
+	// ZFS health and disk-presence notifications (PF-M9). No-op unless the
+	// operator enabled the matching events.
+	s.startHealthNotifier()
 
 	// Converge the node's share services with the persisted share definitions.
 	// This covers first boot, chart upgrades and node reboots: the host's
