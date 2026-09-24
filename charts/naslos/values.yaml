@@ -122,6 +122,12 @@ agent:
     pullPolicy: IfNotPresent
   # Privileged is required for chroot /host zpool/zfs operations
   privileged: true
+  # Serve the agent over TLS (PF-M5). The agent is hostNetwork, so the shared
+  # bearer token would otherwise cross the LAN in cleartext. The chart generates
+  # a CA + server certificate into the naslos-agent-tls Secret and pins it in the
+  # API client. Set false only for local development.
+  tls:
+    enabled: true
   # Use a Secret you manage out of band for the agent bearer token; it must have
   # a `token` key. Empty means the chart generates `naslos-agent`/`token`.
   tokenSecret: ""
@@ -328,29 +334,6 @@ prometheus:
           cpu: 200m
           memory: 512Mi
 
-# Grafana is disabled for now: it is not part of the current surface, and the
-# static admin password it shipped with was a finding (AUDIT-H4). Enabling it
-# again needs a credential from a Secret, never a literal here.
-grafana:
-  enabled: false
-  dashboardProviders:
-    dashboardproviders.yaml:
-      apiVersion: 1
-      providers:
-        - name: naslos
-          orgId: 1
-          folder: Naslos
-          type: file
-          disableDeletion: false
-          editable: true
-          options:
-            path: /var/lib/grafana/dashboards/naslos
-  dashboards:
-    naslos:
-      naslos-overview:
-        json: |
-          {"title": "Naslos Overview", "uid": "naslos-home"}
-
 # Storage classes
 storage:
   # Local path provisioner for app data
@@ -405,8 +388,10 @@ auth:
   # against the cluster.
   proxySecretName: ""
   # Networks allowed to present the identity headers (defense in depth: the
-  # secret above is the actual proof).
-  traefikCIDR: 10.0.0.0/8
+  # secret above is the actual proof). This must be the network Traefik's pods
+  # actually source from - the cluster pod CIDR - not a broad 10.0.0.0/8 that
+  # would also admit unrelated private hosts (PF-M4).
+  traefikCIDR: 10.244.0.0/16
 
 # NetworkPolicy intent (AUDIT-M4). These objects are recorded and reviewable but
 # *inert* on the current flannel install: flannel ships no policy controller, so

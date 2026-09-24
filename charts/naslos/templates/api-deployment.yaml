@@ -38,8 +38,12 @@ spec:
             - name: LDAPTLS_CACERT
               value: /var/run/secrets/ldap.ca/ca.crt
             {{- else }}
+            # PF-L9: no CA configured, so demand verification (the OpenLDAP
+            # client default) instead of silently accepting any certificate.
+            # The probe only waits, then starts anyway, so a verification
+            # failure delays the API by the retry budget rather than blocking it.
             - name: LDAPTLS_REQCERT
-              value: never
+              value: demand
             {{- end }}
           {{- if .Values.api.ldapCA.secretName }}
           volumeMounts:
@@ -105,6 +109,21 @@ spec:
         - name: api
           image: {{ include "naslos.image" .Values.api.image }}
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          # PF-L3: the API needs no privilege (it is not hostNetwork and only
+          # mounts hostPaths read-only or pre-chowned). The release namespace
+          # enforces PSA `privileged`, so nothing else constrains it; state the
+          # posture here. The image already runs as nonroot (65532).
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           ports:
             - containerPort: 8080
               name: http
@@ -136,7 +155,14 @@ spec:
             # AUDIT-M6: the agent lives in the privileged namespace, not the
             # release namespace, so the default targets that.
             - name: AGENT_BASE_URL
-              value: {{ .Values.api.agentBaseURL | default (printf "http://naslos-agent.%s.svc.cluster.local:9090" (include "naslos.workloadNamespace" .)) | quote }}
+              value: {{ .Values.api.agentBaseURL | default (printf "%s://naslos-agent.%s.svc.cluster.local:9090" (ternary "https" "http" .Values.agent.tls.enabled) (include "naslos.workloadNamespace" .)) | quote }}
+            {{- if .Values.agent.tls.enabled }}
+            # PF-M5: pin the chart-generated agent CA so the TLS channel is
+            # verified rather than opportunistic; the bearer token no longer
+            # crosses the LAN in cleartext.
+            - name: AGENT_CA_FILE
+              value: /etc/naslos/agent-tls/ca.crt
+            {{- end }}
             # Owner-route authentication (NAS-001). The API serves /api/* only to
             # requests carrying the shared secret that Traefik's proxy-identity
             # middleware injects; it refuses to start without it. No opt-out.
@@ -173,6 +199,12 @@ spec:
             # and direct connections see one identity.
             - name: SMB_NETBIOS_NAME
               value: {{ .Values.shares.discovery.name | quote }}
+            # PF-H4: the LAN allowed to reach the NAS. Used as the default client
+            # restriction for a share that names none, so shares are never
+            # exported to the world by omission. Explicit "*" in a share's
+            # allowedHosts is the only way to widen it.
+            - name: NASLOS_LAN_CIDR
+              value: {{ .Values.networkPolicy.nfsClientCIDR | default "" | quote }}
             {{- if .Values.api.sharesConfig.enabled }}
             # Where share definitions are persisted (see api/internal/shares).
             - name: SHARES_CONFIG
@@ -207,13 +239,28 @@ spec:
                   name: {{ .Values.buddy.enrollTokenSecret | default "naslos-buddy" }}
                   key: enrollToken
             {{- end }}
+            {{- if .Values.buddy.kekSecret }}
+            # PF-M14: take the key-encryption key from a Secret instead of the
+            # identity file, so a read of that file does not also yield the key
+            # that unwraps every backup. Key must be `kek` (base64, 32 bytes).
+            - name: BUDDY_KEK
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.buddy.kekSecret }}
+                  key: {{ .Values.buddy.kekSecretKey | default "kek" }}
+            {{- end }}
             {{- end }}
             {{- if .Values.api.ldapCA.secretName }}
             - name: LDAP_CA_CERT
               value: /var/run/secrets/ldap.ca/ca.crt
             {{- end }}
-          {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath .Values.buddy.enabled }}
+          {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath .Values.buddy.enabled .Values.agent.tls.enabled }}
           volumeMounts:
+            {{- if .Values.agent.tls.enabled }}
+            - name: agent-tls
+              mountPath: /etc/naslos/agent-tls
+              readOnly: true
+            {{- end }}
             {{- if .Values.api.talosConfigSecret }}
             - name: talosconfig
               mountPath: /var/run/secrets/talos.dev
@@ -251,8 +298,16 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
-      {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath .Values.buddy.enabled }}
+      {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath .Values.buddy.enabled .Values.agent.tls.enabled }}
       volumes:
+        {{- if .Values.agent.tls.enabled }}
+        - name: agent-tls
+          secret:
+            secretName: {{ .Values.agent.tls.secretName | default "naslos-agent-tls" }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
         {{- if .Values.api.talosConfigSecret }}
         - name: talosconfig
           secret:

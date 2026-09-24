@@ -16,7 +16,12 @@ ENV LDAP_BASE_DN="dc=naslos,dc=local"
 # (`:?`), and openldap/manifests/statefulset.yaml supplies it from the
 # naslos-openldap Secret, so removing the default fails closed.
 ENV LDAP_TLS="true"
-ENV LDAP_TLS_ENFORCE="false"
+# PF-L9: LDAPS is the only network listener (see CMD below); plaintext ldap://
+# is not bound, so credentials cannot be sent in the clear. ldapi:/// stays for
+# local admin operations (ldapadd via EXTERNAL), and LDAP_TLS_VERIFY_CLIENT
+# stays "never" because requiring client certificates would break ordinary
+# SASL-simple binds.
+ENV LDAP_TLS_ENFORCE="true"
 ENV LDAP_TLS_VERIFY_CLIENT="never"
 ENV LDAP_REPLICATION="false"
 
@@ -63,4 +68,7 @@ EXPOSE 636
 VOLUME ["/var/lib/ldap", "/etc/ldap/slapd.d", "/container/service/slapd/assets/certs"]
 
 ENTRYPOINT ["/container/entrypoint.sh"]
-CMD ["/usr/sbin/slapd", "-h", "ldap:/// ldapi:/// ldaps:///", "-u", "openldap", "-g", "openldap", "-d", "0"]
+# PF-L9: no plaintext ldap:/// listener - LDAPS on 636 plus the local ldapi
+# socket only. Every consumer (API, Authelia, bootstrap job) already uses
+# ldaps://636 or ldapi:///.
+CMD ["/usr/sbin/slapd", "-h", "ldapi:/// ldaps:///", "-u", "openldap", "-g", "openldap", "-d", "0"]

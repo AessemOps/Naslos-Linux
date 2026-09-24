@@ -12,6 +12,7 @@
     validUsers: string[];
     validGroups: string[];
     timeMachine: boolean;
+    noRootSquash?: boolean;
     enabled: boolean;
   }
 
@@ -26,6 +27,7 @@
   let readOnly = false;
   let browseable = true;
   let timeMachine = false;
+  let noRootSquash = false;
   let allowedHostsStr = '';
   let validUsersStr = '';
   let validGroups: string[] = [];
@@ -185,6 +187,7 @@
       readOnly = share.readOnly;
       browseable = share.browseable;
       timeMachine = share.timeMachine;
+      noRootSquash = share.noRootSquash ?? false;
       allowedHostsStr = share.allowedHosts?.join(', ') || '';
       validUsersStr = share.validUsers?.join(', ') || '';
       validGroups = [...(share.validGroups || [])];
@@ -203,6 +206,7 @@
       readOnly,
       browseable,
       timeMachine,
+      noRootSquash,
       allowedHosts: allowedHostsStr ? allowedHostsStr.split(',').map(s => s.trim()) : [],
       validUsers: validUsersStr ? validUsersStr.split(',').map(s => s.trim()) : [],
       validGroups
@@ -354,9 +358,25 @@
         </label>
       {/if}
 
+      {#if protocol === 'nfs'}
+        <div>
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" bind:checked={noRootSquash} class="w-5 h-5 rounded" />
+            <span class="text-gray-300">Allow root clients to write as root (disable root squash)</span>
+          </label>
+          {#if noRootSquash}
+            <p class="text-xs text-amber-400 mt-1">
+              Warning: a root client on an allowed host can read and write every file as root.
+              Leave this off unless the share's data is root-owned and an admin client must write it.
+            </p>
+          {/if}
+        </div>
+      {/if}
+
       <div>
         <label class="label" for="share-field-4">Allowed Hosts</label>
-        <input id="share-field-4" type="text" bind:value={allowedHostsStr} placeholder="e.g. 192.168.1.0/24, 10.0.0.5 (empty = all)" class="input w-full" />
+        <input id="share-field-4" type="text" bind:value={allowedHostsStr} placeholder="e.g. 192.168.1.0/24, 10.0.0.5 (empty = this node's LAN only)" class="input w-full" />
+        <p class="text-xs text-gray-500 mt-1">Use * to allow every host (not recommended).</p>
       </div>
 
       <div>

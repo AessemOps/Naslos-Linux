@@ -50,6 +50,42 @@ func TestCleanFolderPath(t *testing.T) {
 	}
 }
 
+// TestCleanFolderPathRejectsSymlinkEscape is the PF-L5 guard: a symlink inside
+// the datasets base must not let a folder operation escape it. A string-prefix
+// check alone passes here because the kernel follows the link.
+func TestCleanFolderPathRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	previous := hostRoot
+	hostRoot = root
+	t.Cleanup(func() { hostRoot = previous })
+
+	base := filepath.Join(root, "var/mnt")
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("setting up base: %v", err)
+	}
+	outside := filepath.Join(root, "etc")
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatalf("setting up outside: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(base, "escape")); err != nil {
+		t.Fatalf("creating escape symlink: %v", err)
+	}
+	// A symlink that stays inside the base is fine.
+	if err := os.MkdirAll(filepath.Join(base, "real"), 0755); err != nil {
+		t.Fatalf("setting up real dir: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(base, "real"), filepath.Join(base, "alias")); err != nil {
+		t.Fatalf("creating internal symlink: %v", err)
+	}
+
+	if _, err := CleanFolderPath("/var/mnt/escape"); err == nil {
+		t.Error("CleanFolderPath followed a symlink out of the datasets base")
+	}
+	if got, err := CleanFolderPath("/var/mnt/alias"); err != nil || got != "/var/mnt/alias" {
+		t.Errorf("CleanFolderPath(internal symlink) = (%q, %v), want it allowed", got, err)
+	}
+}
+
 // TestValidateFolderName rejects names that would escape the folder, break the
 // config files, or collide with ZFS internals.
 func TestValidateFolderName(t *testing.T) {

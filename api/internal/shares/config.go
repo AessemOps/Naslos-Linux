@@ -22,7 +22,9 @@ func (m *Manager) GenerateSambaConfig() string {
 	if name := m.NetBIOSName(); name != "" {
 		sb.WriteString(fmt.Sprintf("   netbios name = %s\n", name))
 	}
-	sb.WriteString("   map to guest = Bad User\n")
+	sb.WriteString("   map to guest = Never\n")
+	sb.WriteString("   server min protocol = SMB3\n")
+	sb.WriteString("   smb encrypt = desired\n")
 	sb.WriteString("   log file = /var/log/samba/%m.log\n")
 	sb.WriteString("   max log size = 1000\n")
 	sb.WriteString("   dns proxy = no\n")
@@ -67,8 +69,12 @@ func (m *Manager) GenerateSambaConfig() string {
 			sb.WriteString("   browseable = no\n")
 		}
 
-		if len(share.AllowedHosts) > 0 {
-			sb.WriteString(fmt.Sprintf("   hosts allow = %s\n", strings.Join(share.AllowedHosts, " ")))
+		// Client restriction (PF-H4): a share that names no hosts gets the node's
+		// LAN CIDR, never "*". An operator opts into "*" explicitly by putting it
+		// in allowedHosts.
+		clients := effectiveClients(share)
+		if !hasWildcard(clients) {
+			sb.WriteString(fmt.Sprintf("   hosts allow = %s\n", strings.Join(clients, " ")))
 			sb.WriteString("   hosts deny = all\n")
 		}
 
@@ -81,13 +87,45 @@ func (m *Manager) GenerateSambaConfig() string {
 			sb.WriteString("   fruit:time machine max size = 1T\n")
 		}
 
-		sb.WriteString("   create mask = 0664\n")
-		sb.WriteString("   directory mask = 0775\n")
-		sb.WriteString("   force user = root\n")
-		sb.WriteString("   force group = root\n\n")
+		// The session runs as the authenticated user's mapped uid (NSS/extrausers
+		// maps the LDAP account), not as root: `force user = root` made every
+		// write root-owned and defeated per-user access control (PF-H4).
+		sb.WriteString("   create mask = 0660\n")
+		sb.WriteString("   directory mask = 0770\n\n")
 	}
 
 	return sb.String()
+}
+
+// clientCIDR is the LAN the chart lets reach the NAS (networkPolicy.
+// nfsClientCIDR, passed in as NASLOS_LAN_CIDR). It is the default client
+// restriction for a share that names none.
+func clientCIDR() string {
+	return strings.TrimSpace(os.Getenv("NASLOS_LAN_CIDR"))
+}
+
+// effectiveClients returns the client list to render for a share: the share's own
+// allowedHosts when it has any (which is the only place "*" can be opted into),
+// otherwise the node's LAN CIDR, otherwise localhost only - fail closed rather
+// than export to everyone (PF-H4).
+func effectiveClients(share *Share) []string {
+	if hosts := normalizeList(share.AllowedHosts); len(hosts) > 0 {
+		return hosts
+	}
+	if cidr := clientCIDR(); cidr != "" {
+		return []string{cidr}
+	}
+	return []string{"127.0.0.1/32"}
+}
+
+// hasWildcard reports whether a client list includes the explicit any-host entry.
+func hasWildcard(clients []string) bool {
+	for _, c := range clients {
+		if strings.TrimSpace(c) == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 // GenerateGaneshaConfig renders an NFS-Ganesha configuration for all enabled
@@ -142,6 +180,14 @@ func ganeshaExport(share *Share) string {
 	if share.ReadOnly {
 		access = "RO"
 	}
+	// Root_Squash by default: an admin client's root is mapped to nobody, which
+	// is the standard NFS posture. A share can opt out per-share when its data
+	// is root-owned and an admin client legitimately needs to write it (PF-H4).
+	squash := "Root_Squash"
+	if share.NoRootSquash {
+		squash = "No_Root_Squash"
+	}
+	clients := effectiveClients(share)
 
 	var sb strings.Builder
 	sb.WriteString("EXPORT {\n")
@@ -150,11 +196,7 @@ func ganeshaExport(share *Share) string {
 	// The exported name clients mount: host:/<share name>.
 	sb.WriteString(fmt.Sprintf("    Pseudo = /%s;\n", share.Name))
 	sb.WriteString(fmt.Sprintf("    Access_Type = %s;\n", access))
-	// No_Root_Squash matches the SMB side (which runs shares with force user =
-	// root): the datasets are root-owned, so squashing root would make them
-	// unwritable for an admin client. Tighten here if the deployment prefers
-	// root_squash semantics.
-	sb.WriteString("    Squash = No_Root_Squash;\n")
+	sb.WriteString(fmt.Sprintf("    Squash = %s;\n", squash))
 	// AUTH_SYS: numeric uid/gid, the norm for a NAS. Deployments that need
 	// Kerberos would add krb5 here.
 	sb.WriteString("    SecType = sys;\n")
@@ -164,26 +206,18 @@ func ganeshaExport(share *Share) string {
 	sb.WriteString("        Name = VFS;\n")
 	sb.WriteString("    }\n")
 
-	if len(share.AllowedHosts) > 0 {
-		for _, host := range share.AllowedHosts {
-			host = strings.TrimSpace(host)
-			if host == "" {
-				continue
-			}
-			sb.WriteString("    CLIENT {\n")
-			sb.WriteString(fmt.Sprintf("        Clients = %s;\n", host))
-			sb.WriteString(fmt.Sprintf("        Access_Type = %s;\n", access))
-			// Ganesha warns when a CLIENT block restricts protocols that are
-			// not enabled globally, so state it explicitly here too.
-			sb.WriteString("        Protocols = 4;\n")
-			sb.WriteString("        Squash = No_Root_Squash;\n")
-			sb.WriteString("    }\n")
+	for _, host := range clients {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
 		}
-	} else {
 		sb.WriteString("    CLIENT {\n")
-		sb.WriteString("        Clients = *;\n")
+		sb.WriteString(fmt.Sprintf("        Clients = %s;\n", host))
 		sb.WriteString(fmt.Sprintf("        Access_Type = %s;\n", access))
+		// Ganesha warns when a CLIENT block restricts protocols that are
+		// not enabled globally, so state it explicitly here too.
 		sb.WriteString("        Protocols = 4;\n")
+		sb.WriteString(fmt.Sprintf("        Squash = %s;\n", squash))
 		sb.WriteString("    }\n")
 	}
 
@@ -334,9 +368,9 @@ func (m *Manager) RenderConfigBundle() ConfigBundle {
 func (m *Manager) revision() string {
 	h := sha256.New()
 	for _, s := range m.List() {
-		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%t\x00%t\x00%t\x00%t\x00%s\x00%s\n",
+		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%t\x00%t\x00%t\x00%t\x00%t\x00%s\x00%s\n",
 			s.Name, s.Path, s.Protocol, s.Enabled, s.ReadOnly, s.Browseable,
-			s.TimeMachine, strings.Join(s.AllowedHosts, ","), strings.Join(s.ValidUsers, ","))
+			s.TimeMachine, s.NoRootSquash, strings.Join(s.AllowedHosts, ","), strings.Join(s.ValidUsers, ","))
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
