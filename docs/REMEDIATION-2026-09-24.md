@@ -8,10 +8,13 @@ the deliberate behaviour changes.
 The work landed on branch `remediation/postfix-audit-2026-09-21` (never directly
 on `master`).
 
-> **One step is still gated.** The `git filter-repo` history purge of the
-> committed Cilium keys (PF-H1) requires explicit approval before it runs. Until
-> then, `scripts/audit.sh`'s `gitleaks (git history)` check fails by design: it is
-> the honest signal that the keys are still in history. `gitleaks dir .` is clean.
+> **History was purged.** The Cilium CA/Hubble keys and the historical
+> OpenLDAP password were removed from every ref with `git filter-repo`, and
+> `master`, `audit/full-2026-09-19`, `refactor/remove-dev-endpoint` and this
+> branch were force-pushed. `gitleaks dir .` and `gitleaks git .` are clean
+> (the fresh-clone scan reports only the test/plan fixtures allowlisted in
+> `.gitleaks.toml`). A rollback bundle of the pre-purge history is kept outside
+> the repository at `/tmp/kilo/pre-purge-backup.bundle`.
 
 ---
 
@@ -64,7 +67,7 @@ on `master`).
 
 | Finding | Status | Where |
 |---|---|---|
-| PF-H1 committed Cilium keys | **Code fixed** (secrets removed, cronJob certgen, manifest re-rendered). **History purge gated**; **CA rotation pending on the live VM** | `bootstrap/cilium/cilium.yaml`, `scripts/render-cilium.sh` |
+| PF-H1 committed Cilium keys | **Done**: secrets removed, cronJob certgen, manifest re-rendered, history purged across all refs and force-pushed. **CA rotation pending on the live VM** | `bootstrap/cilium/cilium.yaml`, `scripts/render-cilium.sh` |
 | PF-H2 AES-GCM nonce reuse | Fixed: generation domain, per-chunk generation in manifest+AAD, resume re-seals the tail under a fresh generation | `envelope.go`, `client.go`, `store.go` |
 | PF-H3 Restore not bound | Fixed: version/source/chain binding + monotonic publish sequence | `client.go` |
 | PF-H4 NFS/SMB posture | Fixed: LAN-CIDR/`*`-opt-in default, Root_Squash default + toggle, no root forcing, tighter masks, SMB hardening | `shares/config.go`, chart, UI |
@@ -109,11 +112,12 @@ accessibility appendix — see the plan §6.
 
 ## 4. Pending live steps (need the VM / approval)
 
-1. **Approve and run the history purge** (`git filter-repo` + force-push) with a
-   clean tree and a safety tag; also scrub the historical
-   `openldap/manifests/secrets.yaml` blob that `gitleaks git` reports.
-2. **Rotate the Cilium CA** on any deployed cluster (the redacted Cilium key and
-   the live Hubble listener it backed).
+1. ~~Approve and run the history purge~~ — **done** (see the note at the top).
+   The three residual `gitleaks git` findings on a bare clone are intentional
+   test fixtures and a plan example, allowlisted in `.gitleaks.toml`.
+2. **Rotate the Cilium CA** on any deployed cluster. The purge removes the keys
+   from this repository, but they were exposed while committed, so rotation is
+   what actually closes the exposure (all clones/forks keep the old objects).
 3. **Redeploy to the VM** and confirm Cilium comes up with generated certs, the
    Hubble TLS listener works, the agent serves HTTPS, and existing mounts still
    connect (or are reconfigured for the new defaults).
