@@ -63,7 +63,7 @@ func newTestManager(t *testing.T, storePath string) *Manager {
 
 func TestRefreshClonesAndListsApps(t *testing.T) {
 	origin := newOriginRepo(t, map[string]string{
-		"apps/jellyfin/Chart.yaml":     "name: jellyfin\nversion: 1.0.0\n",
+		"apps/jellyfin/Chart.yaml":      "name: jellyfin\nversion: 1.0.0\n",
 		"apps/jellyfin/naslos-app.yaml": "name: jellyfin\n",
 	})
 	m := newTestManager(t, "")

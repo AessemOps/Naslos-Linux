@@ -236,12 +236,12 @@ func (s *Server) setupChartRepos(appsHelmClient *helm.Client) {
 	if url := getEnv("SOURCES_OFFICIAL_URL", ""); url != "" {
 		if _, err := sources.Get(getEnv("SOURCES_OFFICIAL_NAME", "naslos")); err != nil {
 			official := &chartsrepo.Source{
-				Name:        getEnv("SOURCES_OFFICIAL_NAME", "naslos"),
-				DisplayName: getEnv("SOURCES_OFFICIAL_DISPLAY", "NaslosCharts"),
-				URL:         url,
-				Auth:        chartsrepo.AuthType(getEnv("SOURCES_OFFICIAL_AUTH", string(chartsrepo.AuthPublic))),
+				Name:              getEnv("SOURCES_OFFICIAL_NAME", "naslos"),
+				DisplayName:       getEnv("SOURCES_OFFICIAL_DISPLAY", "NaslosCharts"),
+				URL:               url,
+				Auth:              chartsrepo.AuthType(getEnv("SOURCES_OFFICIAL_AUTH", string(chartsrepo.AuthPublic))),
 				CredentialsSecret: getEnv("SOURCES_OFFICIAL_SECRET", ""),
-				Official:    true,
+				Official:          true,
 			}
 			if _, err := s.charts.AddSource(official); err != nil {
 				log.Printf("Warning: could not seed the official chart source: %v", err)

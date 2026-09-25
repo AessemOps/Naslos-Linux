@@ -179,7 +179,7 @@ func TestGetReturnsDeepCopy(t *testing.T) {
 
 func TestValidServiceNameTemplate(t *testing.T) {
 	cases := map[string]bool{
-		"{{ .Release.Name }}":   true,
+		"{{ .Release.Name }}":    true,
 		"my-app":                 true,
 		"my-{{ .Release.Name }}": false,
 		"{{ .Values.foo }}":      false,
