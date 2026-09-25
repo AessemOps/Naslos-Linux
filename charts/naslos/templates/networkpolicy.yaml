@@ -265,6 +265,13 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: authelia
+        # The bootstrap Job seeds the directory over ldaps:636. It carries no
+        # app label, and on any install where this policy already exists (a
+        # re-run, or the job recreated on upgrade) it would otherwise be denied
+        # and hang in wait-for-ldap.
+        - podSelector:
+            matchLabels:
+              job-name: naslos-openldap-bootstrap
         # AUDIT-M6: samba moved to the privileged namespace.
         {{- if $split }}
         - namespaceSelector:

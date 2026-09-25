@@ -159,11 +159,15 @@ crds:
 	$(HELM) repo update traefik
 	$(HELM) show crds traefik/traefik | $(KUBECTL) apply --server-side --force-conflicts -f -
 
-# Install Naslos Helm chart
+# Install Naslos Helm chart.
+# --force-conflicts: Helm 4 applies server-side, and the namespaces are
+# pre-created and PSA-labelled by deploy-vm.sh with kubectl; without this the
+# install aborts with "conflict with kubectl-label ... pod-security.../enforce".
 install: crds
 	$(HELM) dependency update $(CHART_DIR)
 	$(HELM) upgrade --install naslos $(CHART_DIR) -n naslos --create-namespace \
 		--skip-crds \
+		--force-conflicts \
 		$(AUTHELIA_CONFIG_FLAG)
 
 # Install Naslos on the single-node VM: Traefik on the node's 80/443 with
@@ -176,6 +180,7 @@ install-vm: crds
 		-f $(CHART_DIR)/values.yaml \
 		-f $(CHART_DIR)/values-vm.yaml \
 		--skip-crds \
+		--force-conflicts \
 		$(AUTHELIA_CONFIG_FLAG) \
 		$(HELM_FLAGS)
 

@@ -106,28 +106,77 @@ accessibility appendix — see the plan §6.
 
 ## 3. Verification performed
 
-- `bash scripts/audit.sh` reaches the end; the only failure is
-  `gitleaks (git history)` (PF-H1, pending the gated purge).
+- `bash scripts/audit.sh` — **all checks pass** (including `gitleaks dir .` and
+  `gitleaks git .` after the history purge).
 - `go build`/`go vet`/`go test`/`go test -race`/`staticcheck` on both modules;
   `govulncheck` reports only the four accepted `Fixed in: N/A` advisories; `gosec`
   high severity clean; `helm lint`/`helm template` for both values files;
   `npm audit` and `svelte-check` clean.
+- **Fresh-install validation (2026-09-25, VM 192.168.1.117, node wiped).** A
+  full `deploy-vm.sh` run (`WIPE_STATE=1`, images rebuilt and pushed) was driven
+  to a working cluster. Three bugs only a real install surfaces were found and
+  fixed in `6633381`:
+  1. **Helm 4 SSA conflict.** Helm 4.3 applies server-side and aborted on the
+     pre-created, PSA-labelled namespace (`conflict with "kubectl-label" ...
+     pod-security.kubernetes.io/enforce`). Added `--force-conflicts` to the
+     `install`/`install-vm` targets.
+  2. **Cross-namespace agent CA.** The agent TLS Secret was only created in the
+     privileged namespace, but a pod can only mount a Secret from its own
+     namespace; the API pod hung on `FailedMount`. The chart now emits the
+     cert+key Secret in the workload namespace and a CA-only copy in the release
+     namespace, and the API mounts the latter. The looked-up path also had to
+     emit base64 `data` (re-emitting a looked-up Secret through `stringData`
+     double-encoded the CA).
+  3. **OpenLDAP bootstrap Job denied.** The `naslos-openldap-ingress` policy
+     allowed only api/authelia/samba on `:636`, so the bootstrap Job could not
+     seed the directory and hung in `wait-for-ldap`. The policy now allows the
+     `naslos-openldap-bootstrap` job.
+  Post-fix the cluster is healthy: node Ready, all `naslos`/`naslos-privileged`
+  pods Running/Completed, `cilium-ca` + `hubble-server-certs` generated
+  in-cluster, the agent serving TLS on `:9090` with the API pinned to the
+  chart-generated CA (the API pushed the shares config to the agent over TLS),
+  and Traefik routing `naslos.local` → UI/Authelia (`https://192.168.1.117/`
+  redirects to the Authelia portal; `/api/*` is forward-auth protected). One
+  `cilium-operator` replica stays Pending — expected, it is the redundant second
+  replica on a single node.
+- **Buddy v2 validated live.** With a temporary enroll token, a fresh `buddyctl`
+  identity enrolled, pushed a tar chain over the new `NBC2`/`NB2` envelope and
+  the `BUDDY2` signature (audience-bound), listed it, and restored it byte-for-
+  byte (`hello buddy v2`). The peer came back with the finite 1 TiB default
+  quota (PF-M10). The token was then removed (enrollment closed again) and the
+  test peer revoked; only the 2.7 KiB test chain remains, because `prune --keep`
+  floors at 1 (the six pre-existing chains in the receive dataset predate the
+  reset and are v1, so they cannot be restored under v2).
+- **PF-H4 validated live.** Creating an SMB and an NFS share through the API and
+  reading the generated configs on the host confirmed the new defaults: smb.conf
+  has `map to guest = Never`, `server min protocol = SMB3`, `smb encrypt =
+  desired`, `hosts allow = 192.168.1.0/24` + `hosts deny = all`, masks
+  `0660`/`0770`, and no `force user = root`; ganesha.conf has `Squash =
+  Root_Squash` and `Clients = 192.168.1.0/24` (not `*`). Both shares were then
+  deleted and the configs reverted.
 - New negative tests that fail against the old code: nonce-generation change vs
   unchanged ciphertext, restore source/chain/stale-manifest rejection, resumed
   tail restore, signature audience binding, KEK from the environment, default
   enrollment quota, short-tail flagging, catalog deep-copy, symlink escape,
   notification URL hardening, SMB hardening defaults.
 
-## 4. Pending live steps (need the VM / approval)
+## 4. Pending live steps
 
 1. ~~Approve and run the history purge~~ — **done** (see the note at the top).
    The three residual `gitleaks git` findings on a bare clone are intentional
    test fixtures and a plan example, allowlisted in `.gitleaks.toml`.
-2. **Rotate the Cilium CA** on any deployed cluster. The purge removes the keys
-   from this repository, but they were exposed while committed, so rotation is
-   what actually closes the exposure (all clones/forks keep the old objects).
-3. **Redeploy to the VM** and confirm Cilium comes up with generated certs, the
-   Hubble TLS listener works, the agent serves HTTPS, and existing mounts still
-   connect (or are reconfigured for the new defaults).
-4. **Run the Playwright suite** (not run here) and update any spec that assumed
+2. **Rotate the Cilium CA** on any *other* deployed cluster. The purge removes
+   the keys from this repository, but they were exposed while committed, so
+   rotation is what actually closes the exposure (all clones/forks keep the old
+   objects). The VM at 192.168.1.117 was wiped and reinstalled, so it has a fresh
+   CA.
+3. ~~Redeploy to the VM~~ — **done** (see the fresh-install validation above):
+   Cilium comes up with in-cluster certs, the agent serves HTTPS, and Traefik
+   routes the UI/API through Authelia.
+4. **Exercise the remaining app surface by hand** (log in through Authelia in a
+   browser, add a share, run a buddy sender from a second host). The buddy v2
+   receive path is already validated live (above); the SMB/NFS share and WebUI
+   flows still want a human pass. Any *additional* buddy peer must be v2 before
+   use; the wiped VM has none enrolled.
+5. **Run the Playwright suite** (not run here) and update any spec that assumed
    a working catalog install or `*` NFS exports.
