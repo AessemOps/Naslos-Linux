@@ -3,38 +3,24 @@ package helm
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"helm.sh/helm/v3/pkg/action"
-	"helm.sh/helm/v3/pkg/cli"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
 
-// Client provides Helm operations for app management.
+// Client provides Helm operations for app management, scoped to one namespace.
 type Client struct {
-	settings  *cli.EnvSettings
 	namespace string
-	cacheDir  string
 }
 
-// NewClient creates a new Helm client.
+// NewClient creates a new Helm client for a namespace.
 func NewClient(namespace string) *Client {
-	settings := cli.New()
-	settings.SetNamespace(namespace)
-
-	cacheDir := filepath.Join(os.TempDir(), "naslos-helm-cache")
-	os.MkdirAll(cacheDir, 0755)
-	settings.RepositoryConfig = filepath.Join(cacheDir, "repositories.yaml")
-	settings.RepositoryCache = filepath.Join(cacheDir, "repository")
-
-	return &Client{
-		settings:  settings,
-		namespace: namespace,
-		cacheDir:  cacheDir,
-	}
+	return &Client{namespace: namespace}
 }
+
+// Namespace returns the namespace the client operates in.
+func (c *Client) Namespace() string { return c.namespace }
 
 // getActionConfig creates an action.Configuration for the given namespace.
 func (c *Client) getActionConfig(namespace string) (*action.Configuration, error) {
