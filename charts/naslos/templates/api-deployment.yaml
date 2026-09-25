@@ -303,7 +303,10 @@ spec:
         {{- if .Values.agent.tls.enabled }}
         - name: agent-tls
           secret:
-            secretName: {{ .Values.agent.tls.secretName | default "naslos-agent-tls" }}
+            # CA-only copy in the API namespace (the agent's Secret, with the
+            # server key, lives in the privileged namespace and cannot be
+            # mounted across namespaces).
+            secretName: {{ .Values.agent.tls.secretName | default "naslos-agent-tls" }}-ca
             items:
               - key: ca.crt
                 path: ca.crt
