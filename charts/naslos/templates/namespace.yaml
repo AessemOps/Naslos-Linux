@@ -45,3 +45,24 @@ metadata:
     # node's share data with it.
     helm.sh/resource-policy: keep
 {{- end }}
+{{- $ans := .Values.apps.namespace | default "naslos-apps" }}
+{{- if and (ne $ans .Release.Namespace) (ne $ans $wns) }}
+---
+# User-installed apps run here, isolated from both the platform namespace and
+# the privileged workloads. PSA `baseline` is the most these third-party charts
+# get: enough for ordinary pods, no hostPath/privileged.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ans }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+    app.kubernetes.io/component: apps
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+  annotations:
+    # App data (PVCs) lives here; keep it across a release uninstall so a
+    # reinstall does not destroy the apps' volumes.
+    helm.sh/resource-policy: keep
+{{- end }}

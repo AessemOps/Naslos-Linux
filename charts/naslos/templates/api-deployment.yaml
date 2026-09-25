@@ -210,6 +210,52 @@ spec:
             - name: SHARES_CONFIG
               value: {{ .Values.api.sharesConfig.file | default "/var/lib/naslos/shares.json" }}
             {{- end }}
+            # ---- App install subsystem (docs/app-catalog.md) ----
+            # Apps run in their own namespace; sources, records and domains are
+            # persisted beside the other state files, and repositories are
+            # cloned into a cache on the same volume.
+            - name: APPS_NAMESPACE
+              value: {{ .Values.apps.namespace | default "naslos-apps" | quote }}
+            - name: APPS_CONFIG
+              value: {{ .Values.api.appsFile | default "/var/lib/naslos/apps.json" | quote }}
+            - name: SOURCES_CONFIG
+              value: {{ .Values.api.sourcesFile | default "/var/lib/naslos/sources.json" | quote }}
+            - name: DOMAINS_CONFIG
+              value: {{ .Values.api.domainsFile | default "/var/lib/naslos/domains.json" | quote }}
+            - name: CHARTS_CACHE_DIR
+              value: {{ .Values.api.chartsCacheDir | default "/var/lib/naslos/charts" | quote }}
+            - name: CHARTS_TTL
+              value: {{ .Values.apps.refreshTTL | default "15m" | quote }}
+            - name: PLATFORM_RELEASE
+              value: {{ .Release.Name | quote }}
+            # Apps hang off the primary domain; SSO_DOMAINS is the list Authelia
+            # protects (a base domain outside it can never use auth).
+            - name: NASLOS_DOMAIN
+              value: {{ .Values.domain | quote }}
+            - name: SSO_DOMAINS
+              value: {{ join "," (.Values.sso.domains | default (list .Values.domain)) | quote }}
+            - name: APPS_TLS_SECRET
+              value: {{ .Values.apps.tlsSecret | default "naslos-apps-tls" | quote }}
+            - name: AUTHELIA_SERVICE
+              value: {{ .Values.ingress.authelia.serviceName | default "naslos-authelia" | quote }}
+            - name: AUTHELIA_PORT
+              value: {{ .Values.ingress.authelia.port | default 80 | quote }}
+            - name: EXPOSURE_LOCAL_ONLY_CIDR
+              value: {{ .Values.apps.localOnlyCIDR | default .Values.networkPolicy.nfsClientCIDR | default "" | quote }}
+            {{- if .Values.apps.officialSource.url }}
+            - name: SOURCES_OFFICIAL_URL
+              value: {{ .Values.apps.officialSource.url | quote }}
+            - name: SOURCES_OFFICIAL_NAME
+              value: {{ .Values.apps.officialSource.name | default "naslos" | quote }}
+            - name: SOURCES_OFFICIAL_DISPLAY
+              value: {{ .Values.apps.officialSource.displayName | default "NaslosCharts" | quote }}
+            - name: SOURCES_OFFICIAL_AUTH
+              value: {{ .Values.apps.officialSource.auth | default "public" | quote }}
+            {{- if .Values.apps.officialSource.credentialsSecret }}
+            - name: SOURCES_OFFICIAL_SECRET
+              value: {{ .Values.apps.officialSource.credentialsSecret | quote }}
+            {{- end }}
+            {{- end }}
             # Notification settings: kept on the same volume as the other state
             # files so an operator's topic, token and enabled events survive a
             # restart (they used to be in-memory only).

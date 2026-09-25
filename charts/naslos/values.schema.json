@@ -6,6 +6,39 @@
   "additionalProperties": true,
   "properties": {
     "workloadNamespace": { "type": "string" },
+    "apps": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "namespace": { "type": "string" },
+        "refreshTTL": { "type": "string" },
+        "tlsSecret": { "type": "string" },
+        "localOnlyCIDR": { "type": "string" },
+        "officialSource": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "name": { "type": "string" },
+            "displayName": { "type": "string" },
+            "url": { "type": "string" },
+            "auth": { "type": "string", "enum": ["public", "token", "ssh"] },
+            "credentialsSecret": { "type": "string" }
+          }
+        }
+      }
+    },
+    "sso": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "domains": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "certManager": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": { "enabled": { "type": "boolean" } }
+    },
     "api": {
       "type": "object",
       "additionalProperties": true,

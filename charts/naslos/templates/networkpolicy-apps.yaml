@@ -1,0 +1,65 @@
+# Network policies for the apps namespace. Third-party charts are a privileged
+# trust boundary, so app pods get default-deny plus the minimum they need: DNS,
+# and east-west with the platform namespaces that front or depend on them.
+{{- if .Values.networkPolicy.enabled }}
+{{- $ans := .Values.apps.namespace | default "naslos-apps" }}
+{{- $ns := .Release.Namespace }}
+{{- $wns := include "naslos.workloadNamespace" . }}
+{{- if and (ne $ans $ns) (ne $ans $wns) }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-apps-default-deny
+  namespace: {{ $ans }}
+  labels:
+    app.kubernetes.io/name: naslos
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-apps-allow
+  namespace: {{ $ans }}
+  labels:
+    app.kubernetes.io/name: naslos
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Traefik and the API front and manage these apps.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $wns }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $wns }}
+    # Cluster DNS.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- with .Values.networkPolicy.serviceCIDR }}
+    - to:
+        - ipBlock:
+            cidr: {{ . }}
+    {{- end }}
+{{- end }}
+{{- end }}

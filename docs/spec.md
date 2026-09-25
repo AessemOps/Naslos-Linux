@@ -295,21 +295,57 @@ Requirement IDs are stable: never renumber, only deprecate.
   `validGroups`) MUST be served as arrays, never `null`, including for
   definitions read back from disk (FR-IDN-08's rule applies to shares too).
 
-### 3.4 App catalog (`FR-APP`)
+### 3.4 App catalog & install (`FR-APP`)
 
-> **Status: not implemented.** These requirements describe the target design.
-> No chart repository is wired into the API and the API has no RBAC to create
-> Helm releases, so install/upgrade/uninstall cannot succeed; start/stop has no
-> route at all. The UI install action is disabled until the catalog refactor
-> lands (post-fix audit PF-H5).
+Apps come from **git-based chart repositories** (an official repository plus
+admin-added ones) rather than a compiled-in list; each app is a chart directory
+with a sibling `naslos-app.yaml` install-config. See
+[app-catalog.md](app-catalog.md).
 
-- **FR-APP-01** — Apps MUST be defined as catalog entries (name, description,
-  Helm chart, JSON-Schema form).
+- **FR-APP-01** — Apps MUST be defined as entries discovered from configured
+  chart repositories, each with display metadata, a Helm chart and a
+  JSON-Schema config form. *(catalog_test.go)*
 - **FR-APP-02** — App configuration forms MUST be generated from the app's
   JSON Schema.
-- **FR-APP-03** — Installing/upgrading an app MUST be a Helm operation in
-  the `naslos` namespace.
+- **FR-APP-03** — Installing/upgrading an app MUST be a Helm operation **from the
+  cloned local chart path** in the `naslos-apps` namespace; the API MUST NOT
+  require a `git` or `helm` binary at runtime. *(apps_test.go, chartsrepo tests)*
 - **FR-APP-04** — Start/stop MUST scale replicas 0↔N and MUST preserve PVCs.
+  **[OPEN]** — no route exists yet; uninstall/install is the supported path.
+- **FR-APP-05** — A source MUST declare public, HTTPS-token or SSH-deploy-key
+  authentication; credentials MUST come from Kubernetes Secrets and MUST NOT be
+  returned by the API. *(chartsrepo tests)*
+- **FR-APP-06** — Repository ingestion MUST resist path traversal and symlink
+  escapes, and MUST refuse pathological repositories (size/file-count guard).
+  *(chartsrepo tests)*
+- **FR-APP-07** — Sources MUST map channels to git branches; an unknown channel
+  MUST be rejected rather than silently falling back. Each app exposes the
+  channels it is available in, and a **user source overrides the official source
+  on name collision**. *(catalog tests)*
+- **FR-APP-08** — `naslos-app.yaml` MUST validate: the name MUST equal the folder
+  name and be a DNS-1123 label, service ports MUST be in range, and service-name
+  templating MUST be limited to the release name. *(catalog tests)*
+- **FR-APP-09** — Catalog refresh MUST use a cached clone with a TTL and MUST
+  fall back to the stale clone when the remote is unreachable. *(chartsrepo
+  tests)*
+- **FR-APP-10** — Exposure MUST be orthogonal toggles: `subdomain`, `tls`,
+  `auth`, `localOnly`. Turning `tls` off MUST NOT inherit subdomain HSTS; an
+  empty `subdomain` MUST remove the route (cluster-internal only); `auth` MUST be
+  offered only on a base domain in the SSO list. *(routing tests, apps tests)*
+- **FR-APP-11** — The API MUST own one Traefik `IngressRoute` per app plus its
+  middlewares in `naslos-apps`, and MUST reconcile them on startup and delete
+  them on uninstall. *(routing tests)*
+- **FR-APP-12** — Installing a third-party chart MUST require an explicit
+  confirmation in the request (`confirmed: true`). *(server tests)*
+- **FR-APP-13** — Base domains and their cert-manager ACME DNS-01 certificates
+  MUST be manageable (Cloudflare, RFC2136, raw solver passthrough) with
+  staging/production environments; the wildcard Certificate MUST cover the
+  domain and `*.<domain>`. *(certs tests)*
+- **FR-APP-14** — A release found in the cluster without a catalog match MUST be
+  surfaced as **orphaned** rather than silently uninstallable. *(apps tests)*
+- **FR-APP-15** — Authelia MUST protect every base domain in the chart-declared
+  SSO domain list, including app subdomains. *(chart render: authelia-config)*
+
 
 ### 3.5 Dashboard & metrics (`FR-MET`)
 

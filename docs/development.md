@@ -69,16 +69,19 @@ For a live smoke test: `make dev-cluster && make crds && make install`, then
 
 ## Extending — add a catalog app
 
-1. Pick a Nest chart + repo (see existing `builtin*` entries for the pattern).
-2. Add an entry to `api/internal/catalog/builtin_extra.go` (or a JSON file in
-   the configured `catalogPath` — it overrides same-named built-ins).
-3. Fill `schema` (JSON Schema — drives `SchemaForm`) and `defaultValues`.
-4. Build: `make api`; test install in dev cluster:
-   ```bash
-   helm repo add <repo> <url> && helm install <name> <repo>/<chart> -n naslos
-   POST /api/apps { "name": "<name>", "values": {} }
-   ```
-5. Wire anything extra (ingress, storage) via chart `values`.
+Apps now live in the **NaslosCharts** git repository (see
+[app-catalog.md](app-catalog.md) for the repository contract), not in Go source.
+
+1. Create `apps/<name>/` in the chart repository with `Chart.yaml`,
+   `values.yaml`, `templates/` and a `naslos-app.yaml` install-config.
+2. Set `name` equal to the folder name (DNS-1123 label); declare `services[]`
+   (the route target, port, scheme) and `exposure` defaults, and a JSON Schema
+   under `schema` — it drives `SchemaForm`.
+3. Commit to the appropriate channel branch (`Prod` for stable) and refresh:
+   `POST /api/sources/refresh` (or the Sources tab), then install from the UI.
+4. To test a local change without the git remote, add a source pointing at a
+   local file path or a temporary branch and refresh that source only
+   (`POST /api/sources/refresh?name=<source>`).
 
 ## Adding a share protocol
 

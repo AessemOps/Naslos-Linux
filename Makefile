@@ -153,11 +153,16 @@ bootstrap-vm:
 	@echo "  talosctl apply-config --insecure --nodes $(VM_IP) --file $(VM_CONFIG_DIR)/controlplane.yaml"
 	@echo "  talosctl bootstrap --nodes $(VM_IP) --endpoints $(VM_IP)"
 
-# Install Traefik CRDs (required before first Helm install)
+# Install Traefik and cert-manager CRDs (required before first Helm install).
+# cert-manager itself is optional (apps.certManager.enabled): the SSL page gates
+# on the CRDs being present, and an unset cert-manager leaves the rest working.
 crds:
 	$(HELM) repo add traefik https://traefik.github.io/charts --force-update
 	$(HELM) repo update traefik
 	$(HELM) show crds traefik/traefik | $(KUBECTL) apply --server-side --force-conflicts -f -
+	$(HELM) repo add jetstack https://charts.jetstack.io --force-update
+	$(HELM) repo update jetstack
+	$(HELM) show crds jetstack/cert-manager | $(KUBECTL) apply --server-side --force-conflicts -f -
 
 # Install Naslos Helm chart.
 # --force-conflicts: Helm 4 applies server-side, and the namespaces are
