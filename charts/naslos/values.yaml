@@ -63,6 +63,13 @@ api:
   # writable path the notification manager is memory-only and every restart
   # resets the configuration.
   notificationsFile: /var/lib/naslos/notifications.json
+  # App-install subsystem state (docs/app-catalog.md): installed-app records,
+  # configured chart sources and base domains, plus the git clone cache. All live
+  # on the state volume beside shares.json.
+  appsFile: /var/lib/naslos/apps.json
+  sourcesFile: /var/lib/naslos/sources.json
+  domainsFile: /var/lib/naslos/domains.json
+  chartsCacheDir: /var/lib/naslos/charts
   # LDAP CA certificate Secret (key ca.crt) used to verify the OpenLDAP TLS
   # certificate. The API mounts it and sets LDAP_CA_CERT. Defaults to the
   # secret created by openldap/generate-secrets.sh.
@@ -263,6 +270,43 @@ traefik:
 # It cannot live under `authelia:` — the Authelia 0.11.22 chart schema rejects
 # unknown keys there (the 0.10 keys `domain`/`server` are gone).
 domain: naslos.local
+
+# App install subsystem (docs/app-catalog.md). Apps are installed from git-based
+# chart repositories into their own namespace; exposure (subdomain/TLS/auth/
+# local-only) is rendered by the API as Traefik IngressRoutes.
+apps:
+  # Namespace user-installed apps run in.
+  namespace: naslos-apps
+  # TTL after which a cached repository clone is refreshed.
+  refreshTTL: 15m
+  # TLS Secret the app IngressRoutes reference (written by the app-domain
+  # cert-manager Certificate). TLS apps need this Secret to exist.
+  tlsSecret: naslos-apps-tls
+  # LAN CIDR allowed to reach a local-only app. Falls back to
+  # networkPolicy.nfsClientCIDR when empty.
+  localOnlyCIDR: ""
+  # Official chart repository, cloned by the API on startup. Empty url disables
+  # the seed (an admin can add sources through the UI instead).
+  officialSource:
+    name: naslos
+    displayName: NaslosCharts
+    url: ""
+    # public | token | ssh
+    auth: public
+    # Secret (in the release namespace) holding the token or SSH private key.
+    credentialsSecret: ""
+
+# Domains Authelia protects. The first entry is the primary domain serving the
+# UI and the portal; extra entries add a session cookie and wildcard rules so
+# apps on those domains can use auth. Domains outside this list can only be
+# exposed with TLS off, or without auth.
+sso:
+  domains: []
+
+# cert-manager is optional: enabling the subchart installs it, and the SSL page
+# gates on the CRDs being present. Its CRDs are installed by `make crds`.
+certManager:
+  enabled: false
 
 # Authelia authentication
 authelia:

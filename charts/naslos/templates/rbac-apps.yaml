@@ -1,0 +1,79 @@
+# RBAC for the app-install subsystem.
+#
+# The Helm SDK stores releases as Secrets, so the API needs Secret CRUD in the
+# apps namespace; installing a chart also needs to create the workloads it
+# renders, plus the API-owned IngressRoutes/middlewares and cert-manager CRs.
+# This is a namespaced Role: the API gets no cluster-scoped write, no
+# pods/exec, no node or proxy-secret access here.
+{{- $ans := .Values.apps.namespace | default "naslos-apps" }}
+{{- if and .Values.ui.enabled (ne $ans .Release.Namespace) (ne $ans (include "naslos.workloadNamespace" .)) }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: naslos-api-apps
+  namespace: {{ $ans }}
+  labels:
+    app.kubernetes.io/name: naslos
+rules:
+  - apiGroups: [""]
+    resources:
+      ["services", "configmaps", "secrets", "persistentvolumeclaims",
+       "serviceaccounts", "pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["traefik.io"]
+    resources: ["ingressroutes", "middlewares"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates", "issuers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-api-apps
+  namespace: {{ $ans }}
+  labels:
+    app.kubernetes.io/name: naslos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: naslos-api-apps
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ .Release.Namespace }}
+---
+# ClusterIssuers are cluster-scoped, so the read-only access the SSL UI needs
+# cannot be granted by the Role above. Nothing here is writable.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: naslos-api-clusterissuers
+  labels:
+    app.kubernetes.io/name: naslos
+rules:
+  - apiGroups: ["cert-manager.io"]
+    resources: ["clusterissuers"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: naslos-api-clusterissuers
+  labels:
+    app.kubernetes.io/name: naslos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: naslos-api-clusterissuers
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ .Release.Namespace }}
+{{- end }}

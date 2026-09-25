@@ -222,6 +222,31 @@ secret_ns = {
 }
 assert secret_ns == {"naslos", "naslos-privileged"}, \
     f"the naslos-agent Secret must exist in both namespaces, got {secret_ns}"
+
+# App-install subsystem: apps get their own namespace (PSA baseline) and the API
+# gets a namespaced Role there; the env must be wired for it to work at all.
+apps_ns = nss.get("naslos-apps")
+assert apps_ns is not None, "missing naslos-apps namespace"
+assert apps_ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "baseline", \
+    "naslos-apps must enforce baseline"
+assert ("Role", "naslos-api-apps", "naslos-apps") in roles, \
+    "the API must have a namespaced Role in naslos-apps"
+assert ("RoleBinding", "naslos-api-apps", "naslos-apps") in roles, \
+    "the API RoleBinding must be in naslos-apps"
+for d in docs:
+    if d.get("kind") == "RoleBinding" and d["metadata"]["name"] == "naslos-api-apps":
+        assert any(s.get("namespace") == "naslos" for s in d.get("subjects", [])), \
+            "the naslos-api-apps binding must target the API in the release namespace"
+assert api_env.get("APPS_NAMESPACE") == "naslos-apps", "the API must know the apps namespace"
+assert api_env.get("SOURCES_CONFIG"), "the API must get a sources state path"
+assert api_env.get("DOMAINS_CONFIG"), "the API must get a domains state path"
+
+# The security-headers middleware must NOT pin HSTS for subdomains: an app
+# subdomain can serve a TLS-off route that HSTS would make unreachable.
+for d in docs:
+    if d.get("kind") == "Middleware" and d["metadata"]["name"] == "security-headers":
+        assert "stsIncludeSubdomains" not in d["spec"]["headers"], \
+            "security-headers must not set stsIncludeSubdomains"
 print("network policy intent ok")
 PY
   rc=$?

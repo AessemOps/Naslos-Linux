@@ -82,6 +82,26 @@ openldap:
 # (naslos.local -> the VM IP) for clients without mDNS (Windows).
 domain: naslos.local
 
+# App install subsystem: the official chart repository is the NaslosCharts git
+# repo, cloned over SSH with a deploy key held in a Secret (create it with
+# `kubectl -n naslos create secret generic naslos-charts-deploy-key
+#  --from-file=ssh-private-key=...`). localOnlyCIDR defaults to nfsClientCIDR
+# when unset.
+apps:
+  namespace: naslos-apps
+  officialSource:
+    name: naslos
+    displayName: NaslosCharts
+    url: git@github.com:AessemOps/NaslosCharts.git
+    auth: ssh
+    credentialsSecret: naslos-charts-deploy-key
+
+# Domains Authelia protects. App subdomains under these can use auth; a base
+# domain outside the list is limited to TLS-off or no-auth exposure.
+sso:
+  domains:
+    - naslos.local
+
 # Traefik is the only listener: it binds the node's 80/443 (hostPort) so URLs
 # carry no port, and the Service stays ClusterIP. If your environment provides a
 # LoadBalancer (e.g. MetalLB), drop the hostPorts and set the service type back

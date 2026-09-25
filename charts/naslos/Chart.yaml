@@ -36,3 +36,10 @@ dependencies:
     version: "25.0.0"
     repository: https://prometheus-community.github.io/helm-charts
     condition: prometheus.enabled
+  # Optional: the SSL page renders cert-manager Issuer/Certificate CRs and
+  # gates on the CRDs being installed. Enabling this subchart installs
+  # cert-manager itself; the CRDs come from `make crds` either way.
+  - name: cert-manager
+    version: "v1.18.2"
+    repository: https://charts.jetstack.io
+    condition: certManager.enabled

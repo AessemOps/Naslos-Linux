@@ -11,6 +11,22 @@
 | go | 1.26.5+ (build api/agent; see `api/go.mod`) |
 | node | 20+ (build ui) |
 
+### App install prerequisites
+
+- **`make crds`** installs both the Traefik and the cert-manager CRDs. The app
+  routing layer needs the Traefik CRDs; the SSL page is gated on the
+  cert-manager CRDs.
+- **cert-manager is optional.** Set `certManager.enabled=true` to install the
+  subchart, or install cert-manager yourself. Without it, apps still install and
+  route; only ACME certificates are unavailable.
+- **Wildcard DNS** for app subdomains: point `*.<domain>` at the node
+  (router/dnsmasq/registrar). Without it, `<app>.<domain>` does not resolve.
+- **A chart repository** with `apps/<name>/` entries (see
+  [app-catalog.md](app-catalog.md)). Seed the official one with
+  `apps.officialSource.url`; for SSH, create the deploy-key Secret first
+  (see the Operational notes in [app-catalog.md](app-catalog.md)).
+
+
 ## Images
 
 | Image | Where it comes from |
