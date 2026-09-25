@@ -23,7 +23,26 @@ func randomPlaceholder() string {
 	return hex.EncodeToString(buf)
 }
 
+// personCN picks a non-empty common name for a person entry. LDAP rejects a
+// zero-length value ("cn: value #0 invalid per syntax"), and the API does not
+// require displayName, so an omitted one is derived from the name parts and
+// finally the uid.
+func personCN(displayName, firstName, lastName, uid string) string {
+	if cn := strings.TrimSpace(displayName); cn != "" {
+		return cn
+	}
+	if cn := strings.TrimSpace(strings.TrimSpace(firstName) + " " + strings.TrimSpace(lastName)); cn != "" {
+		return cn
+	}
+	return uid
+}
+
 // CreatePerson creates a new person in LDAP.
+//
+// Only uid, cn and sn are mandatory in inetOrgPerson; the optional attributes
+// are set only when a value is given. Writing an empty givenName/mail was
+// another way for a create to fail with "invalid attribute syntax" when the
+// caller left them out.
 func (c *Client) CreatePerson(uid, displayName, email, firstName, lastName string) (*Person, error) {
 	uid = normalizeUID(uid)
 	if err := validateIdentityName("username", uid); err != nil {
@@ -35,14 +54,24 @@ func (c *Client) CreatePerson(uid, displayName, email, firstName, lastName strin
 		return nil, fmt.Errorf("person %q already exists", uid)
 	}
 
+	cn := personCN(displayName, firstName, lastName, uid)
+	sn := strings.TrimSpace(lastName)
+	if sn == "" {
+		sn = cn
+	}
+
 	addReq := ldap.NewAddRequest(dn, nil)
 	addReq.Attribute("objectClass", []string{"inetOrgPerson", "posixAccount", "shadowAccount"})
 	addReq.Attribute("uid", []string{uid})
-	addReq.Attribute("cn", []string{displayName})
-	addReq.Attribute("sn", []string{lastName})
-	addReq.Attribute("givenName", []string{firstName})
-	addReq.Attribute("displayName", []string{displayName})
-	addReq.Attribute("mail", []string{email})
+	addReq.Attribute("cn", []string{cn})
+	addReq.Attribute("sn", []string{sn})
+	if given := strings.TrimSpace(firstName); given != "" {
+		addReq.Attribute("givenName", []string{given})
+	}
+	addReq.Attribute("displayName", []string{cn})
+	if mail := strings.TrimSpace(email); mail != "" {
+		addReq.Attribute("mail", []string{mail})
+	}
 	addReq.Attribute("uidNumber", []string{fmt.Sprintf("%d", 10000+hashUID(uid))})
 	addReq.Attribute("gidNumber", []string{"10000"})
 	addReq.Attribute("homeDirectory", []string{fmt.Sprintf("/home/%s", uid)})
