@@ -9,26 +9,28 @@ UI (or via `GET/PUT /api/notifications`).
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | Master on/off switch |
-| `serverUrl` | `https://ntfy.sh` | ntfy server URL; empty falls back to the public `https://ntfy.sh` (there is no bundled ntfy chart) |
-| `topic` | `naslos-alerts` | Topic to publish to |
+| `serverUrl` | `https://ntfy.sh` | ntfy server URL; empty falls back to the public `https://ntfy.sh` (there is no bundled ntfy chart). Only `http`/`https` are accepted, and link-local/metadata addresses are refused |
+| `topic` | `naslos-alerts` | Topic to publish to (path-escaped when sent) |
 | `hasAuthToken` | `false` | **Read-only.** Whether a bearer token is stored; the token itself is never returned |
 | `authToken` | — | **Write-only.** Omitted on save keeps the stored token; `""` clears it; any other value replaces it |
 | `email` | — | `X-Email` header (server-side email sending) |
-| `enabledEvents` | `[zfs_health, app_status, disk_failure]` | Which event types fire |
+| `enabledEvents` | `[zfs_health, disk_failure]` | Which event types fire |
 | `minSeverity` | `warning` | Only send at/above this severity |
 
 ## Event types
 
+Only the events below are implemented; the manager rejects nothing but the UI
+offers exactly these, and the API only emits these.
+
 | Event | Meaning |
 | --- | --- |
-| `zfs_health` | Pool health changes / scrub events |
-| `zfs_scrub` | Scrub start/stop |
-| `app_status` | App install/upgrade/uninstall transitions |
-| `disk_failure` | Disk health alarms |
-| `system_update` | Talos/Naslos update availability |
-| `share_access` | Share-level access events |
+| `zfs_health` | A pool's health leaves `ONLINE` (and once when it recovers). Polled every 5 minutes by the API health watcher |
+| `disk_failure` | A disk that was present disappears from the node's inventory. Polled every 5 minutes |
 | `backup_success` | Buddy Backup run completed |
 | `backup_failure` | Buddy Backup run failed |
+
+The watcher interval is `HEALTH_NOTIFY_INTERVAL_SECONDS` (default 300). A pool or
+disk transition is reported once, not on every poll.
 
 ## Severity → priority mapping
 

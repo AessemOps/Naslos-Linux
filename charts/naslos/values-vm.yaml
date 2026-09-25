@@ -23,7 +23,7 @@
 api:
   image:
     repository: 192.168.1.2:30095/naslos-api
-    tag: "0.1.0-r10"
+    tag: "0.1.0-r11"
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -41,11 +41,11 @@ api:
 agent:
   image:
     repository: 192.168.1.2:30095/naslos-agent
-    tag: "0.1.0-r7"
+    tag: "0.1.0-r8"
 ui:
   image:
     repository: 192.168.1.2:30095/naslos-ui
-    tag: "0.1.0-r11"
+    tag: "0.1.0-r12"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
@@ -64,10 +64,11 @@ terminal:
     repository: 192.168.1.2:30095/naslos-terminal
     tag: "0.1.0-r3"
 openldap:
-  # r4 = Debian 13 / slapd 2.6.10, with /var/run/slapd created in the image
+  # r5 = Debian 13 / slapd 2.6.10, with /var/run/slapd created in the image
   # (Debian 13's slapd needs it for its pid file; tmpfiles.d never runs in a
-  # container). Fresh installs verified; the existing PVC flip is next.
-  image: 192.168.1.2:30095/naslos-openldap:0.1.0-r4
+  # container) and LDAPS-only listening (LDAP_TLS_ENFORCE; no plaintext
+  # ldap:///). r4 was the previous tag.
+  image: 192.168.1.2:30095/naslos-openldap:0.1.0-r5
   # OpenLDAP host is the service name for internal cluster references.
   host: naslos-openldap
   # No bindPassword here. The chart reads the service password from the
@@ -116,7 +117,3 @@ networkPolicy:
 buddy:
   enabled: true
   receiveHostPath: /var/mnt/test/naslos-buddy
-
-# Grafana admin password — change in production.
-grafana:
-  adminPassword: naslos-admin

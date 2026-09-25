@@ -153,30 +153,7 @@ func (s *Server) handleDiskRecommend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rec)
 }
 
-// handleVolumes handles UserVolumeConfig operations.
-func (s *Server) handleVolumes(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		// List volumes
-		writeJSON(w, http.StatusOK, map[string]string{"status": "listing volumes"})
-	case http.MethodPost:
-		// Create volume
-		var req struct {
-			Name    string `json:"name"`
-			FSType  string `json:"fsType"`
-			MinSize string `json:"minSize"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		_, err := talos.UserVolumeConfig(req.Name, req.FSType, req.MinSize)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusCreated, map[string]string{"status": "volume created"})
-	default:
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-	}
-}
+// handleVolumes was removed (PF-M8): it accepted a UserVolumeConfig request and
+// answered 201 without applying anything to the node. The Talos apply path for
+// UserVolumeConfig is not wired, and a stub that reports success is worse than a
+// 404. Re-add it only together with a real `talosctl apply` path and a test.

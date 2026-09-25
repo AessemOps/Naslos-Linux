@@ -160,7 +160,7 @@ func TestChainsListingIsCapped(t *testing.T) {
 			Chain:          "chain" + string(rune('a'+i)),
 			Kind:           "tar",
 			CreatedAt:      time.Now().UTC().Add(time.Duration(i) * time.Minute),
-			StreamPrefix:   "AAAAAAAAAAA=",
+			StreamPrefix:   "AAAAAAAA",
 			ChunkPlainSize: ChunkPlainSize,
 			DEKWrapped:     "AAAA",
 			ToGUID:         "guid" + string(rune('a'+i)),

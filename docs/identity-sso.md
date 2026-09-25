@@ -87,7 +87,7 @@ Authelia sets `Remote-User`, `Remote-Groups`, `Remote-Email`, `Remote-Name`
 headers. The Naslos API trusts them only when **both** hold (NAS-001):
 
 1. the request comes from Traefik's pod CIDR (`TRAEFIK_CIDR`, default
-   `10.0.0.0/8`), and
+   `10.244.0.0/16`), and
 2. it carries the shared secret that Traefik's `proxy-identity` middleware
    injects (`X-Naslos-Proxy-Secret`, generated once into the `naslos-proxy`
    Secret). A client that reaches the API another way — another pod, a stale

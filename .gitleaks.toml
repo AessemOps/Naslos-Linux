@@ -1,0 +1,27 @@
+# gitleaks configuration (scripts/audit.sh runs `gitleaks dir .` and
+# `gitleaks git .`).
+#
+# Extend the default rule set; only add allowlists, never remove rules.
+[extend]
+useDefault = true
+
+# Local, never-committed material. `gitleaks dir` scans the whole working tree,
+# including gitignored files, so the generated Talos PKI (bootstrap/vm/
+# controlplane.yaml, talosconfig) and the agent workspace (.kilo/) would
+# otherwise fail the sweep. Nothing here is product code; a committed copy is
+# still caught by `gitleaks git .`, which never sees ignored paths.
+[[allowlists]]
+description = "generated/local state that is never committed"
+paths = [
+  '''^bootstrap/vm/''',
+  '''^\.kilo/''',
+  '''^ui/\.env''',
+]
+
+# Intentional test fixtures that look like secrets.
+[[allowlists]]
+description = "test fixtures"
+paths = [
+  '''^api/internal/identity/nthash_test\.go$''',
+  '''^ui/tests/totp\.spec\.ts$''',
+]

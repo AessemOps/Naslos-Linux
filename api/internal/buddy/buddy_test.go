@@ -147,10 +147,10 @@ func TestIdentityRoundTrip(t *testing.T) {
 
 func TestEnvelopeRejectsTampering(t *testing.T) {
 	dek := randomBytes(t, 32)
-	prefix := randomBytes(t, 8)
+	prefix := randomBytes(t, streamPrefixLen)
 	plain := []byte("the quick brown fox jumps over the lazy dog")
 
-	sealed, sha, err := SealChunk(dek, prefix, "naslos-a/data", "chain1", 0, plain)
+	sealed, sha, err := SealChunk(dek, prefix, 0, "naslos-a/data", "chain1", 0, plain)
 	if err != nil {
 		t.Fatalf("sealing: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestEnvelopeRejectsTampering(t *testing.T) {
 		t.Error("seal returned the wrong plaintext digest")
 	}
 
-	opened, err := OpenChunk(dek, "naslos-a/data", "chain1", 0, sealed)
+	opened, err := OpenChunk(dek, prefix, 0, "naslos-a/data", "chain1", 0, sealed)
 	if err != nil {
 		t.Fatalf("opening: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestEnvelopeRejectsTampering(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := OpenChunk(dek, "naslos-a/data", "chain1", tc.atIndex, tc.mutate(sealed)); err == nil {
+			if _, err := OpenChunk(dek, prefix, 0, "naslos-a/data", "chain1", tc.atIndex, tc.mutate(sealed)); err == nil {
 				t.Error("tampered chunk opened without error")
 			}
 		})
@@ -194,11 +194,175 @@ func TestEnvelopeRejectsTampering(t *testing.T) {
 
 	// A chunk moved to another source or chain must not open either: the AAD
 	// binds it to its position.
-	if _, err := OpenChunk(dek, "naslos-b/data", "chain1", 0, sealed); err == nil {
+	if _, err := OpenChunk(dek, prefix, 0, "naslos-b/data", "chain1", 0, sealed); err == nil {
 		t.Error("chunk opened under a different source")
 	}
-	if _, err := OpenChunk(dek, "naslos-a/data", "chain2", 0, sealed); err == nil {
+	if _, err := OpenChunk(dek, prefix, 0, "naslos-a/data", "chain2", 0, sealed); err == nil {
 		t.Error("chunk opened under a different chain")
+	}
+	// PF-L12: the prefix comes from the signed manifest, not the blob, so a blob
+	// sealed under another prefix must be refused even though it is internally
+	// consistent.
+	if _, err := OpenChunk(dek, randomBytes(t, streamPrefixLen), 0, "naslos-a/data", "chain1", 0, sealed); err == nil {
+		t.Error("chunk opened under a different manifest prefix")
+	}
+	// And the generation is bound too: an equally valid blob from another
+	// generation must not open in place of this one (PF-H2).
+	if _, err := OpenChunk(dek, prefix, 1, "naslos-a/data", "chain1", 0, sealed); err == nil {
+		t.Error("chunk opened under a different generation")
+	}
+}
+
+// TestChunkGenerationChangesTheNonce is the negative test for PF-H2: re-sealing
+// the same index and plaintext under a new generation must produce different
+// bytes, which is what a resumed push relies on to avoid (key, nonce) reuse.
+func TestChunkGenerationChangesTheNonce(t *testing.T) {
+	dek := randomBytes(t, 32)
+	prefix := randomBytes(t, streamPrefixLen)
+	plain := []byte("interrupted tail of a zfs send stream")
+
+	first, _, err := SealChunk(dek, prefix, 0, "naslos-a/data", "chain1", 3, plain)
+	if err != nil {
+		t.Fatalf("sealing generation 0: %v", err)
+	}
+	second, _, err := SealChunk(dek, prefix, 1, "naslos-a/data", "chain1", 3, plain)
+	if err != nil {
+		t.Fatalf("sealing generation 1: %v", err)
+	}
+	if bytes.Equal(first, second) {
+		t.Fatal("re-sealing under a new generation reused the nonce: ciphertext is unchanged")
+	}
+	// The stored generation must be readable without a key so a resuming sender
+	// can reproduce the exact nonce it used.
+	if got, ok := chunkPlainLen(first); !ok || got != len(plain) {
+		t.Fatalf("chunkPlainLen = (%d, %v), want (%d, true)", got, ok, len(plain))
+	}
+}
+
+// errReader yields a fixed error, standing in for a stream that dies mid-chunk.
+type errReader struct{ err error }
+
+func (e errReader) Read([]byte) (int, error) { return 0, e.err }
+
+// manifestServer answers any request with one fixed manifest, standing in for a
+// hostile buddy that returns a different (validly signed) manifest to a restore.
+func manifestServer(t *testing.T, m *Manifest) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(m)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// signedManifest builds a minimally valid, properly signed manifest.
+func signedManifest(t *testing.T, id *Identity, source, chain string, sequence uint64) *Manifest {
+	t.Helper()
+	m := &Manifest{
+		Version:        EnvelopeVersion,
+		Source:         source,
+		Chain:          chain,
+		Kind:           "tar",
+		CreatedAt:      time.Now().UTC(),
+		Sequence:       sequence,
+		StreamPrefix:   base64.StdEncoding.EncodeToString(randomBytes(t, streamPrefixLen)),
+		ChunkPlainSize: ChunkPlainSize,
+		Chunks:         []ManifestChunk{{Index: 0, PlainBytes: 1, SealedBytes: 1 + sealedOverhead, Sha256Plain: digestOf([]byte("x"))}},
+	}
+	if err := m.Sign(id); err != nil {
+		t.Fatalf("signing manifest: %v", err)
+	}
+	return m
+}
+
+// TestRestoreRejectsAManifestForAnotherSource is the PF-H3 negative test: a
+// validly signed manifest for a different source must be refused even though its
+// signature, shape and chunks are all internally consistent.
+func TestRestoreRejectsAManifestForAnotherSource(t *testing.T) {
+	owner := newTestIdentity(t, "naslos-a")
+	server := manifestServer(t, signedManifest(t, owner, "naslos-a/other", "chain-x", 1))
+	c := NewClient(server.URL, owner)
+
+	_, err := c.Restore(RestoreOptions{Source: "naslos-a/data", Out: io.Discard})
+	if err == nil || !strings.Contains(err.Error(), "returned a manifest for") {
+		t.Fatalf("Restore error = %v, want a source-binding rejection", err)
+	}
+}
+
+// TestRestoreRejectsAManifestForAnotherChain covers the explicit-chain case.
+func TestRestoreRejectsAManifestForAnotherChain(t *testing.T) {
+	owner := newTestIdentity(t, "naslos-a")
+	server := manifestServer(t, signedManifest(t, owner, "naslos-a/data", "chain-other", 1))
+	c := NewClient(server.URL, owner)
+
+	_, err := c.Restore(RestoreOptions{Source: "naslos-a/data", Chain: "chain-wanted", Out: io.Discard})
+	if err == nil || !strings.Contains(err.Error(), "not the requested") {
+		t.Fatalf("Restore error = %v, want a chain-binding rejection", err)
+	}
+}
+
+// TestRestoreRejectsAStaleManifest covers the freshness half of PF-H3: once a
+// sequence has been published, an older one must be refused.
+func TestRestoreRejectsAStaleManifest(t *testing.T) {
+	owner := newTestIdentity(t, "naslos-a")
+	server := manifestServer(t, signedManifest(t, owner, "naslos-a/data", "chain-current", 4))
+	c := NewClient(server.URL, owner)
+	c.SequenceDir = t.TempDir()
+	if err := c.recordPublishedSequence("naslos-a/data", 5); err != nil {
+		t.Fatalf("recording sequence: %v", err)
+	}
+
+	_, err := c.Restore(RestoreOptions{Source: "naslos-a/data", Out: io.Discard})
+	if err == nil || !strings.Contains(err.Error(), "stale manifest") {
+		t.Fatalf("Restore error = %v, want a freshness rejection", err)
+	}
+}
+
+// TestResumeReSealsTheTailUnderANewGeneration drives the full PF-H2 path over
+// HTTP: an interrupted push leaves a short tail, and the resume replaces it
+// under a fresh nonce generation, after which the chain restores exactly.
+func TestResumeReSealsTheTailUnderANewGeneration(t *testing.T) {
+	receiver := newTestReceiver(t, "")
+	owner := newTestIdentity(t, "naslos-a")
+	receiver.authorize(t, owner, []string{"naslos-a/data"}, 0)
+	c := receiver.client(owner)
+
+	full := bytes.Repeat([]byte("abcdefgh"), 200000) // ~1.5 MiB: one full chunk + a partial tail
+	short := full[:len(full)-1000]
+
+	state, err := NewChainState("naslos-a/data", "tar")
+	if err != nil {
+		t.Fatalf("chain state: %v", err)
+	}
+	// Attempt 1: a stream that dies mid-tail, vetoed before publication so the
+	// chain stays resumable.
+	interrupted := io.MultiReader(bytes.NewReader(short), errReader{io.ErrUnexpectedEOF})
+	if _, err := c.Push(PushOptions{
+		Source: "naslos-a/data", Kind: "tar", Reader: interrupted, State: state,
+		BeforePublish: func(*PushResult) error { return errors.New("ended early") },
+	}); err == nil {
+		t.Fatal("the interrupted push was published")
+	}
+	if state.Generation != 0 {
+		t.Fatalf("generation after an interrupted push = %d, want 0", state.Generation)
+	}
+
+	// Attempt 2: the complete stream resumes and replaces the partial tail.
+	if _, err := c.Push(PushOptions{
+		Source: "naslos-a/data", Kind: "tar", Reader: bytes.NewReader(full), State: state,
+	}); err != nil {
+		t.Fatalf("resume push: %v", err)
+	}
+	if state.Generation != 1 {
+		t.Fatalf("generation after a resumed push = %d, want 1 (the tail was re-sealed)", state.Generation)
+	}
+
+	var out bytes.Buffer
+	if _, err := c.Restore(RestoreOptions{Source: "naslos-a/data", Out: &out}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if !bytes.Equal(out.Bytes(), full) {
+		t.Fatal("the restored stream does not match the source after a resumed push")
 	}
 }
 
@@ -249,7 +413,7 @@ func TestManifestSignature(t *testing.T) {
 		CreatedAt:    time.Now().UTC(),
 		Chunks:       []ManifestChunk{{Index: 0, PlainBytes: 10, SealedBytes: 46, Sha256Plain: digestOf([]byte("0123456789"))}},
 		DEKWrapped:   base64.StdEncoding.EncodeToString(randomBytes(t, 60)),
-		StreamPrefix: base64.StdEncoding.EncodeToString(randomBytes(t, 8)),
+		StreamPrefix: base64.StdEncoding.EncodeToString(randomBytes(t, streamPrefixLen)),
 	}
 	if err := manifest.Sign(id); err != nil {
 		t.Fatalf("signing manifest: %v", err)
@@ -407,7 +571,9 @@ func signedRequest(t *testing.T, id *Identity, url, method string, body []byte, 
 		t.Fatalf("building request: %v", err)
 	}
 	stamp := strconv.FormatInt(timestamp, 10)
-	canonical := CanonicalRequest(method, req.URL.RequestURI(), BodyDigest(body), stamp, nonce)
+	// These helpers sign /status, the one endpoint a sender may sign with an
+	// empty audience (it has not learned the receiver identity yet).
+	canonical := CanonicalRequest("", method, req.URL.RequestURI(), BodyDigest(body), stamp, nonce)
 	sig, err := id.Sign([]byte(canonical))
 	if err != nil {
 		t.Fatalf("signing: %v", err)
@@ -1060,7 +1226,7 @@ func TestManifestShapeValidation(t *testing.T) {
 			Chain:          "abcdef0123456789",
 			Kind:           "zfs-send",
 			CreatedAt:      time.Now().UTC(),
-			StreamPrefix:   base64.StdEncoding.EncodeToString(randomBytes(t, 8)),
+			StreamPrefix:   base64.StdEncoding.EncodeToString(randomBytes(t, streamPrefixLen)),
 			ChunkPlainSize: ChunkPlainSize,
 			DEKWrapped:     base64.StdEncoding.EncodeToString(randomBytes(t, 60)),
 			Chunks: []ManifestChunk{
@@ -1234,5 +1400,112 @@ func TestPruneSurvivesAForgedTimestamp(t *testing.T) {
 	}
 	if !bytes.Equal(restored.Bytes(), data) {
 		t.Error("restored data differs after prune")
+	}
+}
+
+// TestSignatureIsBoundToTheReceiverAudience is the PF-M13 guard: with fan-out
+// schedules one sender key is authorized on several receivers, so a request
+// signed for buddy-a must not verify at buddy-b.
+func TestSignatureIsBoundToTheReceiverAudience(t *testing.T) {
+	sender := newTestIdentity(t, "naslos-a")
+	peers := NewPeerStore(filepath.Join(t.TempDir(), "peers.json"))
+	if err := peers.Load(); err != nil {
+		t.Fatalf("loading peers: %v", err)
+	}
+	if err := peers.Add(&Peer{
+		Name: "naslos-a", PublicKey: sender.PublicKey,
+		AllowedSources: []string{"naslos-a/data"}, Enabled: true,
+	}); err != nil {
+		t.Fatalf("authorizing peer: %v", err)
+	}
+	auth := NewAuthenticator(peers)
+
+	path := PathPrefix + "/manifest/naslos-a/data"
+	signed := func(audience string) *http.Request {
+		req, err := http.NewRequest(http.MethodPut, "https://buddy"+path, bytes.NewReader(nil))
+		if err != nil {
+			t.Fatalf("building request: %v", err)
+		}
+		if err := SignRequestFor(sender, req, BodyDigest(nil), audience); err != nil {
+			t.Fatalf("signing: %v", err)
+		}
+		return req
+	}
+
+	if _, err := auth.Verify(signed("buddy-a"), BodyDigest(nil), path, "buddy-a", time.Now()); err != nil {
+		t.Fatalf("a request for buddy-a did not verify at buddy-a: %v", err)
+	}
+	if _, err := auth.Verify(signed("buddy-a"), BodyDigest(nil), path, "buddy-b", time.Now()); err == nil {
+		t.Fatal("a request signed for buddy-a verified at buddy-b")
+	}
+}
+
+// TestKEKCanComeFromTheEnvironment covers PF-M14: the KEK may be supplied from a
+// Secret via BUDDY_KEK, so the identity file need not hold it.
+func TestKEKCanComeFromTheEnvironment(t *testing.T) {
+	id := newTestIdentity(t, "naslos-a")
+	want := bytes.Repeat([]byte{7}, 32)
+	t.Setenv(EnvKEK, base64.StdEncoding.EncodeToString(want))
+
+	got, err := id.KEKBytes()
+	if err != nil {
+		t.Fatalf("KEKBytes with the env set: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Error("the environment KEK was not used")
+	}
+
+	t.Setenv(EnvKEK, "not base64!")
+	if _, err := id.KEKBytes(); err == nil {
+		t.Error("a malformed environment KEK was accepted")
+	}
+}
+
+// TestPushReportsAShortTail covers PF-M11: a stream that ends inside a chunk is
+// flagged, so a caller with an expected size can refuse to publish.
+func TestPushReportsAShortTail(t *testing.T) {
+	receiver := newTestReceiver(t, "")
+	owner := newTestIdentity(t, "naslos-a")
+	receiver.authorize(t, owner, []string{"naslos-a/data"}, 0)
+	c := receiver.client(owner)
+
+	full := bytes.Repeat([]byte("abcdefgh"), 200000)
+	short := full[:len(full)-1000]
+
+	state, err := NewChainState("naslos-a/data", "tar")
+	if err != nil {
+		t.Fatalf("chain state: %v", err)
+	}
+	res, err := c.Push(PushOptions{
+		Source: "naslos-a/data", Kind: "tar", State: state,
+		Reader: io.MultiReader(bytes.NewReader(short), errReader{io.ErrUnexpectedEOF}),
+	})
+	if err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if !res.ShortTail {
+		t.Error("ShortTail was not set for a stream that ended inside a chunk")
+	}
+}
+
+// TestEnrollAssignsADefaultQuota covers PF-M10: enrolling without a quota must
+// assign the finite default, not unlimited.
+func TestEnrollAssignsADefaultQuota(t *testing.T) {
+	receiver := newTestReceiver(t, "enroll-token")
+	owner := newTestIdentity(t, "naslos-a")
+
+	fingerprint, err := owner.Fingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	if _, err := receiver.client(owner).Enroll("enroll-token", "naslos-a", []string{"naslos-a/data"}); err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	peer := receiver.peers.ByFingerprint(fingerprint)
+	if peer == nil {
+		t.Fatal("the enrolled key was not authorized")
+	}
+	if peer.QuotaBytes != DefaultEnrollQuotaBytes {
+		t.Errorf("enrolled quota = %d, want the finite default %d", peer.QuotaBytes, DefaultEnrollQuotaBytes)
 	}
 }

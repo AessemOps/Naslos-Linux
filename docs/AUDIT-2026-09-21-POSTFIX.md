@@ -106,6 +106,15 @@ deployment. It also invalidates two explicit prior-audit claims: *"No secret
 values appear … in any committed artefact"* (§ preamble) and AUDIT-M2
 (*"`bootstrap/vm/*` chmod 600"*).
 
+> **Correction (2026-09-24, hand-reverified).** The commit is genuine and the
+> TLS listener is live (`hubble-disable-tls: "false"`), so rotating and purging
+> is required. But this report overstates the blast radius: the chart's
+> `cilium-ca`/`hubble-server-certs` templates carry
+> `cilium.io/helm-template-non-idempotent: "true"`, so a **fresh** install
+> regenerates both certificates instead of ingesting the committed ones. The
+> exposure is the committed private keys themselves (and the live Hubble
+> listener they back), not "MITM on every deployment".
+
 **Fix.**
 1. Treat both keys as compromised: rotate the Cilium CA on any deployed cluster.
 2. Purge the material from history (`git filter-repo`), then force-push.
@@ -420,6 +429,12 @@ where available, or have the API accept a *signed* short-lived proxy assertion
 instead of a static shared secret. Narrow `TRAEFIK_CIDR` to Traefik's actual pod
 CIDR, and narrow the API's NetworkPolicy to the specific pods in
 `naslos-privileged` that need it rather than the whole namespace.
+
+> **Correction (2026-09-24, hand-reverified).** The broad `namespaceSelector` on
+> `naslos-privileged` was added deliberately in `b985e03` as the M6 ingress
+> correction, not introduced by accident; treat narrowing it as a **hardening
+> suggestion**, not a regression. The `TRAEFIK_CIDR` and proxy-secret parts of
+> this finding stand.
 
 ### PF-M5 — The privileged agent serves plaintext HTTP on the node's :9090
 

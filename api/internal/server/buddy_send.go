@@ -206,6 +206,21 @@ func sendStateDir() string {
 	return filepath.Join(filepath.Dir(buddyIdentityPath()), "buddy-sends")
 }
 
+// buddySequenceDir is where the last published manifest sequence per source is
+// kept, so a restore can refuse a stale manifest (PF-H3).
+func buddySequenceDir() string {
+	return filepath.Join(filepath.Dir(buddyIdentityPath()), "buddy-sequences")
+}
+
+// newBuddyClient builds a sender wired to this instance's persistent state: its
+// identity and the per-source publish sequence used to detect a replayed
+// manifest on restore.
+func newBuddyClient(receiverURL string, identity *buddy.Identity) *buddy.Client {
+	client := buddy.NewClient(receiverURL, identity)
+	client.SequenceDir = buddySequenceDir()
+	return client
+}
+
 // sendStateName names the state file for a (buddy, source) pair.
 func sendStateName(receiverURL, source string) string {
 	sum := sha256.Sum256([]byte(receiverURL + "|" + source))
@@ -444,7 +459,7 @@ func (s *Server) handleBuddyRestore(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusPreconditionFailed, err.Error())
 		return
 	}
-	client := buddy.NewClient(receiverURL, identity)
+	client := newBuddyClient(receiverURL, identity)
 	ctx := req.Context()
 
 	// A restore is usually a *sequence*: the newest backup is normally an

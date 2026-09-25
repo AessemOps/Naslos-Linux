@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,7 +67,6 @@ func defaultSettings() Settings {
 		Topic:     "naslos-alerts",
 		EnabledEvents: []EventType{
 			EventZFSHealth,
-			EventAppStatus,
 			EventDiskFailure,
 		},
 		MinSeverity: SeverityWarning,
@@ -97,6 +98,18 @@ func (m *Manager) UpdateSettings(settings Settings, authToken *string) error {
 	return m.save()
 }
 
+// EventEnabled reports whether an event type is one the operator subscribes to.
+func (m *Manager) EventEnabled(event EventType) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range m.settings.EnabledEvents {
+		if e == event {
+			return true
+		}
+	}
+	return false
+}
+
 // Send sends a notification via ntfy.
 func (m *Manager) Send(notif Notification) error {
 	m.mu.Lock()
@@ -110,13 +123,12 @@ func (m *Manager) Send(notif Notification) error {
 		return nil
 	}
 
-	serverURL := m.settings.ServerURL
-	if serverURL == "" {
-		serverURL = "https://ntfy.sh"
+	target, err := notificationURL(m.settings.ServerURL, m.settings.Topic)
+	if err != nil {
+		return err
 	}
-	url := fmt.Sprintf("%s/%s", strings.TrimSuffix(serverURL, "/"), m.settings.Topic)
 
-	req, err := http.NewRequest("POST", url, bytes.NewBufferString(notif.Message))
+	req, err := http.NewRequest("POST", target, bytes.NewBufferString(notif.Message))
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
 	}
@@ -158,6 +170,53 @@ func (m *Manager) SendTest() error {
 		Tags:     []string{"white_check_mark", "naslos"},
 		Time:     time.Now(),
 	})
+}
+
+// notificationURL validates the operator-configured ntfy target and renders the
+// publish URL. The scheme is restricted to http/https and link-local addresses
+// (the cloud-metadata range) are refused, so a mistyped or tricked server URL
+// cannot be used to reach a metadata endpoint (PF-L8). RFC1918 and loopback stay
+// allowed on purpose: a self-hosted ntfy on the LAN is a supported deployment.
+// The topic is path-escaped so it cannot climb out of the publish path.
+func notificationURL(serverURL, topic string) (string, error) {
+	if strings.TrimSpace(serverURL) == "" {
+		serverURL = "https://ntfy.sh"
+	}
+	parsed, err := url.Parse(strings.TrimSpace(serverURL))
+	if err != nil {
+		return "", fmt.Errorf("invalid ntfy server URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("ntfy server URL must use http or https, got %q", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("ntfy server URL has no host")
+	}
+	if ip := net.ParseIP(parsed.Hostname()); ip != nil && (ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()) {
+		return "", fmt.Errorf("refusing to send notifications to a link-local address (%s)", parsed.Hostname())
+	}
+	if topic == "" {
+		return "", fmt.Errorf("ntfy topic is empty")
+	}
+	if !validTopic(topic) {
+		return "", fmt.Errorf("ntfy topic %q may only contain letters, digits, '-' and '_'", topic)
+	}
+	parsed.RawPath = ""
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/") + "/" + topic
+	return parsed.String(), nil
+}
+
+// validTopic enforces ntfy's topic charset, which also keeps a crafted topic
+// from climbing out of the publish path.
+func validTopic(topic string) bool {
+	for _, r := range topic {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // severityMeetsThreshold checks if the notification severity meets the minimum threshold.
