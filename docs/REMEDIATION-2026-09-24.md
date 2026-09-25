@@ -139,6 +139,14 @@ accessibility appendix — see the plan §6.
   redirects to the Authelia portal; `/api/*` is forward-auth protected). One
   `cilium-operator` replica stays Pending — expected, it is the redundant second
   replica on a single node.
+- **Buddy v2 validated live.** With a temporary enroll token, a fresh `buddyctl`
+  identity enrolled, pushed a tar chain over the new `NBC2`/`NB2` envelope and
+  the `BUDDY2` signature (audience-bound), listed it, and restored it byte-for-
+  byte (`hello buddy v2`). The peer came back with the finite 1 TiB default
+  quota (PF-M10). The token was then removed (enrollment closed again) and the
+  test peer revoked; only the 2.7 KiB test chain remains, because `prune --keep`
+  floors at 1 (the six pre-existing chains in the receive dataset predate the
+  reset and are v1, so they cannot be restored under v2).
 - New negative tests that fail against the old code: nonce-generation change vs
   unchanged ciphertext, restore source/chain/stale-manifest rejection, resumed
   tail restore, signature audience binding, KEK from the environment, default
@@ -158,8 +166,10 @@ accessibility appendix — see the plan §6.
 3. ~~Redeploy to the VM~~ — **done** (see the fresh-install validation above):
    Cilium comes up with in-cluster certs, the agent serves HTTPS, and Traefik
    routes the UI/API through Authelia.
-4. **Exercise the app end to end** (log in through Authelia, add a share, enroll
-   a buddy peer). The v2 buddy protocol means any *additional* peer must be
-   upgraded before use; the wiped VM has none yet.
+4. **Exercise the remaining app surface by hand** (log in through Authelia in a
+   browser, add a share, run a buddy sender from a second host). The buddy v2
+   receive path is already validated live (above); the SMB/NFS share and WebUI
+   flows still want a human pass. Any *additional* buddy peer must be v2 before
+   use; the wiped VM has none enrolled.
 5. **Run the Playwright suite** (not run here) and update any spec that assumed
    a working catalog install or `*` NFS exports.
