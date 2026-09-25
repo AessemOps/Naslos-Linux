@@ -96,8 +96,8 @@ func TestBackfillSkipsPlatformAndExisting(t *testing.T) {
 	m := &Manager{store: store, helm: helm.NewClient("naslos")}
 
 	releases := []helm.App{
-		{Name: "naslos"},     // platform release: skipped
-		{Name: "existing"},   // already recorded: skipped
+		{Name: "naslos"},   // platform release: skipped
+		{Name: "existing"}, // already recorded: skipped
 		{Name: "legacy-app", Version: "1.2.3"},
 	}
 	if err := m.Backfill(context.Background(), "naslos", releases); err != nil {
