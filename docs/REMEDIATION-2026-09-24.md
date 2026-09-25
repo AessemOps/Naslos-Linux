@@ -147,6 +147,13 @@ accessibility appendix — see the plan §6.
   test peer revoked; only the 2.7 KiB test chain remains, because `prune --keep`
   floors at 1 (the six pre-existing chains in the receive dataset predate the
   reset and are v1, so they cannot be restored under v2).
+- **PF-H4 validated live.** Creating an SMB and an NFS share through the API and
+  reading the generated configs on the host confirmed the new defaults: smb.conf
+  has `map to guest = Never`, `server min protocol = SMB3`, `smb encrypt =
+  desired`, `hosts allow = 192.168.1.0/24` + `hosts deny = all`, masks
+  `0660`/`0770`, and no `force user = root`; ganesha.conf has `Squash =
+  Root_Squash` and `Clients = 192.168.1.0/24` (not `*`). Both shares were then
+  deleted and the configs reverted.
 - New negative tests that fail against the old code: nonce-generation change vs
   unchanged ciphertext, restore source/chain/stale-manifest rejection, resumed
   tail restore, signature audience binding, KEK from the environment, default
