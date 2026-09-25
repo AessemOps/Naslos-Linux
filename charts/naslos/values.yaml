@@ -12,7 +12,7 @@ api:
   enabled: true
   image:
     repository: 192.168.1.2:30095/naslos-api
-    tag: "0.1.0-r11"
+    tag: "0.1.0-r12"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
