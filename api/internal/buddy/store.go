@@ -2,6 +2,7 @@ package buddy
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -263,7 +264,7 @@ func (s *Store) PutChunkWithin(keyID, source, chain string, index int, sealed []
 		if digestOf(existing) == digestOf(sealed) {
 			return nil // already stored by an earlier attempt
 		}
-		allowed, err := s.mayReplace(keyID, source, chain, index)
+		allowed, err := s.mayReplace(keyID, source, chain, index, existing)
 		if err != nil {
 			return err
 		}
@@ -329,6 +330,23 @@ func (e *QuotaError) Is(target error) bool { return target == ErrQuotaExceeded }
 // ErrQuotaExceeded is the sentinel for a quota refusal.
 var ErrQuotaExceeded = errors.New("quota exceeded")
 
+// ErrNoSpace is the sentinel for a write refused because it would leave the
+// receiver's filesystem below its free-space reserve. It is separate from a
+// per-peer quota: it protects the whole pool, including its metadata and the
+// other peers (PF-M10).
+var ErrNoSpace = errors.New("not enough free space on the receiver")
+
+// freeSpaceReserve is how many bytes must remain free after a write. Overridable
+// via BUDDY_RESERVE_BYTES; defaults to 1 GiB.
+func freeSpaceReserve() int64 {
+	if v := os.Getenv("BUDDY_RESERVE_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return 1 << 30
+}
+
 // reserveUsage charges delta against a key's usage, refusing the charge when it
 // would exceed quota (0 = unlimited). Under the store lock, so concurrent writers
 // serialize here rather than both reading a stale usage.
@@ -346,10 +364,32 @@ func (s *Store) reserveUsage(keyID string, delta, quota int64) error {
 	if quota > 0 && delta > 0 && used+delta > quota {
 		return &QuotaError{Used: used, Quota: quota, Needed: delta}
 	}
+	// Protect the whole pool, not just this peer: a write that would leave the
+	// filesystem below its reserve is refused (PF-M10). A statfs failure is not
+	// fatal to the write (the quota above still applied).
+	if delta > 0 {
+		if free, err := s.freeSpaceLocked(); err == nil && free-delta < freeSpaceReserve() {
+			return ErrNoSpace
+		}
+	}
 	if _, tracked := s.usage[keyID]; tracked || s.loaded[keyID] {
 		s.usage[keyID] += delta
 	}
 	return nil
+}
+
+// freeSpaceLocked is FreeSpace without the MkdirAll, for use under the store
+// lock (the directory already exists once a chunk is being written).
+func (s *Store) freeSpaceLocked() (int64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(s.root, &stat); err != nil {
+		return 0, err
+	}
+	const maxInt64 = uint64(1<<63 - 1)
+	if stat.Bsize > 0 && stat.Bavail > maxInt64/uint64(stat.Bsize) {
+		return int64(maxInt64), nil
+	}
+	return int64(stat.Bavail) * stat.Bsize, nil // #nosec G115 -- clamped above
 }
 
 // releaseUsage returns a reservation after a failed write.
@@ -364,9 +404,15 @@ func (s *Store) releaseUsage(keyID string, delta int64) {
 	}
 }
 
-// mayReplace reports whether a chunk of an unfinished chain can be rewritten: only
-// the highest index of a chain that has no manifest yet.
-func (s *Store) mayReplace(keyID, source, chain string, index int) (bool, error) {
+// mayReplace reports whether a chunk of an unfinished chain can be rewritten.
+// Only one case is legitimate: the interrupted *tail* - the highest index of a
+// chain that has no manifest yet, whose stored chunk is a short (partial) chunk
+// left behind by a stream that died mid-chunk. A full-size stored chunk is
+// complete, so replacing it means the source changed under the same chain, which
+// must start a new chain rather than mix two versions. The rewrite itself is
+// nonce-safe because the replacement is re-sealed under a fresh generation
+// (PF-H2).
+func (s *Store) mayReplace(keyID, source, chain string, index int, existing []byte) (bool, error) {
 	published, err := s.chainPublished(keyID, source, chain)
 	if err != nil {
 		return false, err
@@ -379,10 +425,16 @@ func (s *Store) mayReplace(keyID, source, chain string, index int) (bool, error)
 	if err != nil {
 		return false, err
 	}
-	if len(indices) == 0 {
+	// The chain must be a contiguous prefix ending at this index: a hole would
+	// let a rewrite stitch together chunks that never belonged to one stream.
+	if len(indices) != index+1 || indices[len(indices)-1] != index {
 		return false, nil
 	}
-	return indices[len(indices)-1] == index, nil
+	// And the stored tail must be the short partial chunk, not a completed one.
+	if plainLen, ok := chunkPlainLen(existing); !ok || plainLen >= ChunkPlainSize {
+		return false, nil
+	}
+	return true, nil
 }
 
 // chainPublished reports whether a chain has a manifest, i.e. whether it is a
@@ -447,24 +499,43 @@ func (s *Store) ListChunks(keyID, source, chain string) ([]int, error) {
 	return indices, nil
 }
 
-// ChunkDigests returns the SHA-256 of every sealed chunk stored for a chain. A
-// sender uses it to prove that the bytes it is about to skip are the bytes it
-// sent: resuming with a changed source must fail loudly instead of quietly mixing
-// two versions of the data into one chain.
-func (s *Store) ChunkDigests(keyID, source, chain string) (map[int]string, error) {
+// StoredChunk is what a resuming sender needs to know about a chunk already on
+// the receiver: the digest of the sealed bytes, and the nonce generation they
+// were sealed under (parsed from the blob, without a key).
+type StoredChunk struct {
+	Digest     string
+	Generation uint16
+}
+
+// ChunkDigests returns the SHA-256 (and nonce generation) of every sealed chunk
+// stored for a chain. A sender uses it to prove that the bytes it is about to
+// skip are the bytes it sent: resuming with a changed source must fail loudly
+// instead of quietly mixing two versions of the data into one chain.
+func (s *Store) ChunkDigests(keyID, source, chain string) (map[int]StoredChunk, error) {
 	indices, err := s.ListChunks(keyID, source, chain)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[int]string, len(indices))
+	out := make(map[int]StoredChunk, len(indices))
 	for _, index := range indices {
 		sealed, err := s.Chunk(keyID, source, chain, index)
 		if err != nil {
 			return nil, err
 		}
-		out[index] = digestOf(sealed)
+		out[index] = StoredChunk{Digest: digestOf(sealed), Generation: sealedChunkGeneration(sealed)}
 	}
 	return out, nil
+}
+
+// sealedChunkGeneration reads the nonce generation out of a sealed blob. It is a
+// best-effort parse of the receiver's own stored bytes (which the sender
+// authored); a blob that is not a recognised envelope reports generation 0, and
+// the sender will refuse to resume it rather than reuse a nonce.
+func sealedChunkGeneration(sealed []byte) uint16 {
+	if len(sealed) < len(chunkMagic)+4+nonceSize || string(sealed[:4]) != chunkMagic {
+		return 0
+	}
+	return binary.BigEndian.Uint16(sealed[4+4+streamPrefixLen : 4+4+streamPrefixLen+2])
 }
 
 // PutManifest stores a chain's manifest and points "current" at it, which is what

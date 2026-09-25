@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 
 	"github.com/AessemOps/Naslos-Linux/api/internal/helm"
@@ -63,8 +64,13 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Merge default values with user values
-		values := catalogApp.DefaultValues
+		// Merge default values with user values. Clone first (nil-safe): writing
+		// straight into the catalog entry aliased the catalog's own map, so one
+		// install's values leaked into every later read of the entry (PF-M7).
+		values := maps.Clone(catalogApp.DefaultValues)
+		if values == nil {
+			values = make(map[string]interface{})
+		}
 		for k, v := range req.Values {
 			values[k] = v
 		}

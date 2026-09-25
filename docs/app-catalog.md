@@ -1,5 +1,12 @@
 # App Catalog & Apps
 
+> **Not yet available.** The catalog data and this document describe the intended
+> design, not a working feature. Today there is no Helm chart repository wired
+> into the API, and the API's ServiceAccount has no RBAC to create the release
+> (see the post-fix audit PF-H5). `POST /api/apps` therefore cannot install
+> anything, and the UI install action is disabled. Treat the tables below as the
+> target shape for the catalog refactor, not as current behaviour.
+
 The catalog turns a Helm chart + a JSON Schema into an installable app with a
 schema-driven form in the UI.
 

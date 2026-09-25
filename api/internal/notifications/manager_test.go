@@ -92,3 +92,47 @@ func TestUpdateSettingsTokenSemantics(t *testing.T) {
 		t.Errorf("after clearing: token = %q, want empty", got.AuthToken)
 	}
 }
+
+// TestNotificationURLHardening is the PF-L8 guard: only http/https is accepted,
+// metadata/link-local targets are refused, and the topic is escaped.
+func TestNotificationURLHardening(t *testing.T) {
+	good := []struct {
+		server, topic, want string
+	}{
+		{"https://ntfy.sh", "naslos-alerts", "https://ntfy.sh/naslos-alerts"},
+		// A self-hosted ntfy on the LAN is a supported deployment.
+		{"http://192.168.1.10:8080", "alerts", "http://192.168.1.10:8080/alerts"},
+		// A base path is preserved.
+		{"https://example.com/ntfy", "a-b", "https://example.com/ntfy/a-b"},
+	}
+	for _, tc := range good {
+		got, err := notificationURL(tc.server, tc.topic)
+		if err != nil {
+			t.Errorf("notificationURL(%q, %q) = %v, want nil", tc.server, tc.topic, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("notificationURL(%q, %q) = %q, want %q", tc.server, tc.topic, got, tc.want)
+		}
+	}
+
+	bad := []string{
+		"file:///etc/passwd",
+		"gopher://ntfy.sh",
+		"http://169.254.169.254", // cloud metadata
+		"http://[fe80::1]",       // link-local
+	}
+	for _, server := range bad {
+		if _, err := notificationURL(server, "topic"); err == nil {
+			t.Errorf("notificationURL(%q) = nil error, want a rejection", server)
+		}
+	}
+
+	// The topic cannot climb out of the publish path: only ntfy's charset is
+	// accepted.
+	for _, topic := range []string{"../admin", "a/b", "a b", ""} {
+		if _, err := notificationURL("https://ntfy.sh", topic); err == nil {
+			t.Errorf("notificationURL(topic=%q) = nil error, want a rejection", topic)
+		}
+	}
+}

@@ -122,9 +122,12 @@ func loadIdentity(path, name string) (*buddy.Identity, error) {
 	return buddy.LoadIdentity(path)
 }
 
-// client builds a sender for a receiver URL.
+// client builds a sender for a receiver URL, wired to this machine's persistent
+// state so a restore can refuse a stale manifest (PF-H3).
 func client(receiverURL string, identity *buddy.Identity) *buddy.Client {
-	return buddy.NewClient(receiverURL, identity)
+	c := buddy.NewClient(receiverURL, identity)
+	c.SequenceDir = filepath.Join(defaultStateDir(), "buddy-sequences")
+	return c
 }
 
 // printJSON writes an indented JSON document to stdout.
@@ -404,6 +407,12 @@ func cmdPush(args []string) error {
 		Progress:  progress,
 	})
 	if err != nil {
+		// Push may have bumped the chain's nonce generation; keep it so a retry
+		// resumes above everything already uploaded instead of reusing a nonce
+		// (PF-H2).
+		if saveErr := state.Save(statePath); saveErr != nil {
+			fmt.Fprintf(os.Stderr, "could not persist the resume state: %v\n", saveErr)
+		}
 		fmt.Fprintf(os.Stderr, "\nthe push did not finish. Re-run with --resume to continue chain %s\n", state.Chain)
 		return err
 	}
@@ -578,14 +587,20 @@ func cmdPrune(args []string) error {
 	return nil
 }
 
-// defaultStatePath is where an interrupted push records how to continue.
-func defaultStatePath(source string) string {
+// defaultStateDir is where buddyctl keeps its local state (identity, resume
+// state, publish sequences).
+func defaultStateDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "."
 	}
+	return filepath.Join(home, ".naslos")
+}
+
+// defaultStatePath is where an interrupted push records how to continue.
+func defaultStatePath(source string) string {
 	name := strings.NewReplacer("/", "_", "\\", "_").Replace(source)
-	return filepath.Join(home, ".naslos", "buddy-state-"+name+".json")
+	return filepath.Join(defaultStateDir(), "buddy-state-"+name+".json")
 }
 
 // tarStream archives a directory as a tar stream. The archiver runs in a

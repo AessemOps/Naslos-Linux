@@ -11,12 +11,12 @@ import (
 type EventType string
 
 const (
-	EventZFSHealth    EventType = "zfs_health"
-	EventZFSScrub     EventType = "zfs_scrub"
-	EventAppStatus    EventType = "app_status"
-	EventDiskFailure  EventType = "disk_failure"
-	EventSystemUpdate EventType = "system_update"
-	EventShareAccess  EventType = "share_access"
+	// EventZFSHealth fires when a pool's health leaves ONLINE (PF-M9, wired by
+	// the server's health watcher).
+	EventZFSHealth EventType = "zfs_health"
+	// EventDiskFailure fires when a disk that was present disappears from the
+	// node's inventory (PF-M9, wired by the server's health watcher).
+	EventDiskFailure EventType = "disk_failure"
 	// EventBackupFailure is a failed scheduled or manual instance-side backup.
 	EventBackupFailure EventType = "backup_failure"
 	// EventBackupSuccess is a completed instance-side backup.

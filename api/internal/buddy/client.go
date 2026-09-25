@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -14,7 +15,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,6 +32,18 @@ type Client struct {
 	// HTTP is the HTTP client: a push is many small requests, not one long one,
 	// so a per-request timeout is the only bound needed.
 	HTTP *http.Client
+	// SequenceDir persists the last manifest sequence published per source so a
+	// restore can refuse a stale (but validly signed) manifest (PF-H3). Empty
+	// disables the freshness check (tests and one-shot tooling); the source/chain
+	// binding is enforced regardless.
+	SequenceDir string
+	// Audience binds this client's request signatures to one receiver (PF-M13).
+	// Empty means "discover it from /status on first use"; the discovery result is
+	// cached here.
+	Audience string
+
+	audienceMu    sync.Mutex
+	audienceKnown bool
 }
 
 // NewClient creates a sender for a receiver.
@@ -40,10 +55,118 @@ func NewClient(baseURL string, id *Identity) *Client {
 	}
 }
 
+// sequencePath names the file that holds the last sequence published for a
+// source (empty when SequenceDir is unset, i.e. freshness tracking is off).
+func (c *Client) sequencePath(source string) string {
+	if c.SequenceDir == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(c.BaseURL + "|" + source))
+	return filepath.Join(c.SequenceDir, hex.EncodeToString(sum[:16])+".seq")
+}
+
+// lastPublishedSequence returns the last sequence this sender published for a
+// source, or 0 when none is recorded (or tracking is disabled).
+func (c *Client) lastPublishedSequence(source string) (uint64, error) {
+	path := c.sequencePath(source)
+	if path == "" {
+		return 0, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	seq, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parsing the stored publish sequence for %s: %w", source, err)
+	}
+	return seq, nil
+}
+
+// recordPublishedSequence persists the sequence once the receiver accepted the
+// manifest, so a later restore can refuse anything older (PF-H3).
+func (c *Client) recordPublishedSequence(source string, seq uint64) error {
+	path := c.sequencePath(source)
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".seq-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.WriteString(strconv.FormatUint(seq, 10) + "\n"); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
 // do signs and sends one request, returning the body and status. ctx bounds the
 // request: cancelling it aborts an in-flight chunk transfer (which is what makes
 // cancelling a backup job prompt rather than waiting for the current 1 MiB chunk).
 func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]byte, int, error) {
+	target, err := c.audienceFor(ctx, path)
+	if err != nil {
+		return nil, 0, err
+	}
+	return c.send(ctx, method, path, body, target)
+}
+
+// audienceFor resolves the receiver identity to sign for. The receiver's own
+// identity is published by the read-only /status endpoint, which is the one call
+// a sender can make before knowing it (PF-M13).
+func (c *Client) audienceFor(ctx context.Context, path string) (string, error) {
+	if c.Audience != "" {
+		return c.Audience, nil
+	}
+	if path == "/status" {
+		return "", nil
+	}
+
+	c.audienceMu.Lock()
+	defer c.audienceMu.Unlock()
+	if c.Audience != "" {
+		return c.Audience, nil
+	}
+	if c.audienceKnown {
+		return c.Audience, nil
+	}
+	data, _, err := c.send(ctx, http.MethodGet, "/status", nil, "")
+	if err != nil {
+		// Best effort: if the receiver does not answer /status we cannot learn its
+		// identity, so sign with an empty audience and let the receiver decide.
+		// A receiver that has a name will reject the request (fail closed); one
+		// that does not (older/embedded) still works.
+		c.audienceKnown = true
+		return "", nil
+	}
+	var status Status
+	if err := json.Unmarshal(data, &status); err != nil {
+		c.audienceKnown = true
+		return "", nil
+	}
+	c.Audience = status.Receiver
+	c.audienceKnown = true
+	return c.Audience, nil
+}
+
+// send signs one request for a specific audience and performs it.
+func (c *Client) send(ctx context.Context, method, path string, body []byte, audience string) ([]byte, int, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -54,7 +177,7 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if err := SignRequest(c.Identity, req, BodyDigest(body)); err != nil {
+	if err := SignRequestFor(c.Identity, req, BodyDigest(body), audience); err != nil {
 		return nil, 0, err
 	}
 
@@ -68,9 +191,14 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxManifestBytes))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxManifestBytes+1))
 	if err != nil {
 		return nil, resp.StatusCode, err
+	}
+	// Detect a truncated response rather than let a short read look like a valid
+	// one: the manifest read path relies on this (PF-M12).
+	if int64(len(data)) > maxManifestBytes {
+		return nil, resp.StatusCode, fmt.Errorf("%s %s: response exceeded the %d-byte cap", method, path, maxManifestBytes)
 	}
 	if resp.StatusCode >= 400 {
 		return data, resp.StatusCode, fmt.Errorf("%s %s: %s", method, path, describeError(resp.StatusCode, data))
@@ -107,6 +235,11 @@ func (c *Client) Status() (*Status, error) {
 	if err := json.Unmarshal(data, &status); err != nil {
 		return nil, fmt.Errorf("parsing status: %w", err)
 	}
+	// Cache the receiver identity so later signed requests are bound to it.
+	c.audienceMu.Lock()
+	c.Audience = status.Receiver
+	c.audienceKnown = true
+	c.audienceMu.Unlock()
 	return &status, nil
 }
 
@@ -183,7 +316,7 @@ func (c *Client) ManifestContext(ctx context.Context, source, chain string) (*Ma
 // the digests to prove the chunks it skips are the chunks it sent, and the
 // published flag to know whether the chain is a finished backup (immutable) or still
 // an upload in progress (whose partial tail chunk it may re-send whole).
-func (c *Client) storedChunks(ctx context.Context, source, chain string) (map[int]string, bool, error) {
+func (c *Client) storedChunks(ctx context.Context, source, chain string) (map[int]StoredChunk, bool, error) {
 	if err := ValidateSource(source); err != nil {
 		return nil, false, err
 	}
@@ -198,15 +331,15 @@ func (c *Client) storedChunks(ctx context.Context, source, chain string) (map[in
 	if err := json.Unmarshal(data, &response); err != nil {
 		return nil, false, fmt.Errorf("parsing chunk list: %w", err)
 	}
-	stored := make(map[int]string, len(response.Chunks))
+	stored := make(map[int]StoredChunk, len(response.Chunks))
 	for _, chunk := range response.Chunks {
-		stored[chunk.Index] = chunk.Digest
+		stored[chunk.Index] = StoredChunk{Digest: chunk.Digest, Generation: chunk.Generation}
 	}
 	return stored, response.Published, nil
 }
 
 // highestIndex is the largest stored chunk index (or -1 for an empty chain).
-func highestIndex(stored map[int]string) int {
+func highestIndex(stored map[int]StoredChunk) int {
 	highest := -1
 	for index := range stored {
 		if index > highest {
@@ -408,13 +541,19 @@ const ChainStateVersion = 1
 // chain id, the data key and the nonce prefix. It holds the chain's DEK, so it is
 // as sensitive as the identity itself and must be stored the same way (0600).
 type ChainState struct {
-	Version   int       `json:"version"`
-	Source    string    `json:"source"`
-	Chain     string    `json:"chain"`
-	Kind      string    `json:"kind"`
-	DEK       string    `json:"dek"`
-	Prefix    string    `json:"prefix"`
-	StartedAt time.Time `json:"startedAt"`
+	Version int    `json:"version"`
+	Source  string `json:"source"`
+	Chain   string `json:"chain"`
+	Kind    string `json:"kind"`
+	DEK     string `json:"dek"`
+	Prefix  string `json:"prefix"`
+	// Generation is the nonce generation to use for newly sealed chunks. It is
+	// bumped when an interrupted tail has to be re-sealed, so the replacement
+	// never reuses the (key, nonce) pair of the partial chunk it replaces
+	// (PF-H2). Chunks already stored keep the generation they were sealed with,
+	// which the manifest records per chunk.
+	Generation uint16    `json:"generation"`
+	StartedAt  time.Time `json:"startedAt"`
 }
 
 // NewChainState starts a fresh chain segment for a source.
@@ -511,8 +650,8 @@ func (s *ChainState) prefix() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decoding stream prefix: %w", err)
 	}
-	if len(prefix) != 8 {
-		return nil, fmt.Errorf("stream prefix must be 8 bytes, got %d", len(prefix))
+	if err := sealPrefix(prefix); err != nil {
+		return nil, err
 	}
 	return prefix, nil
 }
@@ -573,16 +712,21 @@ type PushProgress struct {
 
 // PushResult summarises a push.
 type PushResult struct {
-	Source       string      `json:"source"`
-	Chain        string      `json:"chain"`
-	Chunks       int         `json:"chunks"`
-	Uploaded     int         `json:"uploaded"`
-	Skipped      int         `json:"skipped"`
-	PlainBytes   int64       `json:"plainBytes"`
-	SealedBytes  int64       `json:"sealedBytes"`
-	PrunedChains int         `json:"prunedChains,omitempty"`
-	State        *ChainState `json:"-"`
-	Manifest     *Manifest   `json:"-"`
+	Source       string `json:"source"`
+	Chain        string `json:"chain"`
+	Chunks       int    `json:"chunks"`
+	Uploaded     int    `json:"uploaded"`
+	Skipped      int    `json:"skipped"`
+	PlainBytes   int64  `json:"plainBytes"`
+	SealedBytes  int64  `json:"sealedBytes"`
+	PrunedChains int    `json:"prunedChains,omitempty"`
+	// ShortTail is true when the input stream ended part-way through a chunk
+	// (io.ErrUnexpectedEOF). That is normal for a stream whose last chunk is
+	// partial, but it is also what a truncated input looks like, so callers with
+	// an expected size must not treat it as success on its own (PF-M11).
+	ShortTail bool        `json:"shortTail,omitempty"`
+	State     *ChainState `json:"-"`
+	Manifest  *Manifest   `json:"-"`
 }
 
 // Push streams the plaintext, encrypts it chunk by chunk, uploads the chunks the
@@ -637,6 +781,16 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 	}
 	tailIndex := highestIndex(stored)
 
+	// The publish sequence is monotonic per source so a restore can detect a
+	// stale manifest later (PF-H3). Do not record it until the receiver accepts
+	// the manifest, otherwise a failed push would burn a sequence and the next
+	// restore would reject its own fresh manifest.
+	lastSequence, err := c.lastPublishedSequence(opts.Source)
+	if err != nil {
+		return nil, err
+	}
+	sequence := lastSequence + 1
+
 	manifest := &Manifest{
 		Version:        EnvelopeVersion,
 		Source:         opts.Source,
@@ -647,10 +801,18 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 		FromGUID:       opts.FromGUID,
 		ToGUID:         opts.ToGUID,
 		CreatedAt:      time.Now().UTC(),
+		Sequence:       sequence,
+		Generation:     state.Generation,
 		StreamPrefix:   state.Prefix,
 		ChunkPlainSize: ChunkPlainSize,
 	}
 	result := &PushResult{Source: opts.Source, Chain: state.Chain, State: state}
+
+	// generation is the nonce generation for newly sealed chunks; maxGeneration
+	// tracks the highest generation any chunk of the chain ends up with, so the
+	// manifest's chain-level value stays a truthful upper bound.
+	generation := state.Generation
+	maxGeneration := generation
 
 	// Stop between chunks as well as inside a request: the transport aborts an
 	// in-flight chunk, this makes the loop exit before starting the next one, so
@@ -670,9 +832,24 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 		if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
 			return nil, fmt.Errorf("reading input: %w", readErr)
 		}
+		// A final read that stops inside a chunk is the normal end of a stream
+		// whose last chunk is partial, but it is indistinguishable from a
+		// truncated input at this layer: record it so a caller that knows the
+		// expected size can refuse to publish (PF-M11).
+		if readErr == io.ErrUnexpectedEOF && n > 0 {
+			result.ShortTail = true
+		}
 
 		plain := buf[:n]
-		sealed, sha, err := SealChunk(dek, prefix, opts.Source, state.Chain, index, plain)
+		// Seal under the generation the chunk will be stored with: a chunk
+		// already on the receiver keeps its stored generation (so the digest is
+		// reproducible), a fresh chunk uses the chain's current generation.
+		chunkGeneration := generation
+		storedInfo, alreadyStored := stored[index]
+		if alreadyStored {
+			chunkGeneration = storedInfo.Generation
+		}
+		sealed, sha, err := SealChunk(dek, prefix, chunkGeneration, opts.Source, state.Chain, index, plain)
 		if err != nil {
 			return nil, err
 		}
@@ -680,10 +857,11 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 			Index:       index,
 			PlainBytes:  n,
 			SealedBytes: len(sealed),
+			Generation:  chunkGeneration,
 			Sha256Plain: sha,
 		}
 
-		if storedDigest, ok := stored[index]; ok {
+		if alreadyStored {
 			// Already on the receiver: describe it, do not re-upload. The sealed
 			// size is deterministic, so the manifest stays exact.
 			//
@@ -693,15 +871,38 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 			// *tail* of an unpublished chain: a stream that died in the middle left
 			// a partial last chunk behind, and finishing the job means replacing it
 			// with the complete one.
-			if storedDigest != digestOf(sealed) {
+			if storedInfo.Digest != digestOf(sealed) {
 				if published || index != tailIndex {
 					return result, fmt.Errorf(
 						"the receiver already holds different bytes for chunk %d of chain %s: the source changed since the push was interrupted, start a new chain",
 						index, state.Chain)
 				}
-				// Fall through and upload: this is the interrupted tail.
+				// The interrupted tail: re-seal it under a fresh generation so the
+				// replacement never reuses the partial chunk's (key, nonce) pair
+				// (PF-H2).
+				if int(storedInfo.Generation) >= MaxGeneration {
+					return result, fmt.Errorf(
+						"chain %s cannot be resumed: its nonce generation counter is exhausted", state.Chain)
+				}
+				chunkGeneration = storedInfo.Generation + 1
+				sealed, sha, err = SealChunk(dek, prefix, chunkGeneration, opts.Source, state.Chain, index, plain)
+				if err != nil {
+					return nil, err
+				}
+				entry = ManifestChunk{
+					Index:       index,
+					PlainBytes:  n,
+					SealedBytes: len(sealed),
+					Generation:  chunkGeneration,
+					Sha256Plain: sha,
+				}
+				generation = chunkGeneration
+				// Fall through and upload the replacement.
 			} else {
 				entry.SealedBytes = n + sealedOverhead
+				if entry.Generation > maxGeneration {
+					maxGeneration = entry.Generation
+				}
 				result.Skipped++
 				result.Chunks++
 				result.PlainBytes += int64(n)
@@ -723,6 +924,9 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 			}
 		}
 
+		if entry.Generation > maxGeneration {
+			maxGeneration = entry.Generation
+		}
 		{
 			path := fmt.Sprintf("/chunks/%s?chain=%s&index=%d", opts.Source, state.Chain, index)
 			if _, _, err := c.do(ctx, http.MethodPut, path, sealed); err != nil {
@@ -754,6 +958,15 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 		return result, fmt.Errorf("nothing to back up: the input stream produced no data")
 	}
 
+	// Pin the chain-level generation to the highest any chunk uses, and carry it
+	// in the chain state so the next resume starts above everything already
+	// stored.
+	if maxGeneration > generation {
+		generation = maxGeneration
+	}
+	state.Generation = generation
+	manifest.Generation = generation
+
 	// The sender's own veto, used to refuse a stream that ended early: publishing
 	// the manifest is what makes a chain "the latest backup", so this is the last
 	// moment at which an incomplete one can be kept out of the restore path.
@@ -780,7 +993,20 @@ func (c *Client) Push(opts PushOptions) (*PushResult, error) {
 	if err != nil {
 		return result, err
 	}
+	// Refuse before sending a manifest the receiver will reject: otherwise the
+	// chunks are uploaded and the publish fails, leaving an unpublishable chain
+	// (PF-M12).
+	if len(payload) > maxManifestBytes {
+		return result, fmt.Errorf(
+			"chain %s has %d chunks and its manifest is %d bytes, over the %d-byte limit: back up in smaller chains (a smaller --chunk-size or an earlier snapshot), or raise the limit on both ends",
+			state.Chain, len(manifest.Chunks), len(payload), maxManifestBytes)
+	}
 	if _, _, err := c.do(ctx, http.MethodPut, "/manifest/"+opts.Source, payload); err != nil {
+		return result, err
+	}
+	// Only now is the manifest the source of truth: record the sequence so a
+	// restore can refuse an older one (PF-H3).
+	if err := c.recordPublishedSequence(opts.Source, sequence); err != nil {
 		return result, err
 	}
 
@@ -854,10 +1080,42 @@ func (c *Client) Restore(opts RestoreOptions) (*RestoreResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !opts.SkipSignatureCheck {
-		if err := manifest.VerifySignature(c.Identity.PublicKey); err != nil {
-			return nil, fmt.Errorf("refusing to restore: %w", err)
+	// The manifest is what the receiver chose to return: bind it to the request
+	// before trusting anything in it. Without this a hostile buddy can answer
+	// with another source's (or an older) validly signed manifest and every
+	// downstream check, which reads the substituted values, still passes
+	// (PF-H3).
+	if manifest.Version != EnvelopeVersion {
+		return nil, fmt.Errorf("refusing to restore: the receiver returned a v%d manifest, this sender speaks v%d",
+			manifest.Version, EnvelopeVersion)
+	}
+	if manifest.Source != opts.Source {
+		return nil, fmt.Errorf("refusing to restore: the receiver returned a manifest for %q, not %q",
+			manifest.Source, opts.Source)
+	}
+	if opts.Chain != "" && manifest.Chain != opts.Chain {
+		return nil, fmt.Errorf("refusing to restore: the receiver returned chain %q, not the requested %q",
+			manifest.Chain, opts.Chain)
+	}
+	if err := manifest.VerifySignature(c.Identity.PublicKey); err != nil && !opts.SkipSignatureCheck {
+		return nil, fmt.Errorf("refusing to restore: %w", err)
+	}
+	// Freshness: reject a manifest older than the last one this sender published.
+	// Only when restoring "the current chain": an explicit older chain is a
+	// legitimate restore target, so its sequence is expected to be older.
+	if opts.Chain == "" {
+		lastSequence, err := c.lastPublishedSequence(opts.Source)
+		if err != nil {
+			return nil, err
 		}
+		if manifest.Sequence < lastSequence {
+			return nil, fmt.Errorf("refusing to restore: the receiver returned a stale manifest (sequence %d, latest published %d)",
+				manifest.Sequence, lastSequence)
+		}
+	}
+	prefix, err := manifest.streamPrefix()
+	if err != nil {
+		return nil, fmt.Errorf("refusing to restore: %w", err)
 	}
 	kek, err := c.Identity.KEKBytes()
 	if err != nil {
@@ -887,7 +1145,7 @@ func (c *Client) Restore(opts RestoreOptions) (*RestoreResult, error) {
 		if err != nil {
 			return result, err
 		}
-		plain, err := OpenChunk(dek, manifest.Source, manifest.Chain, chunk.Index, sealed)
+		plain, err := OpenChunk(dek, prefix, chunk.Generation, manifest.Source, manifest.Chain, chunk.Index, sealed)
 		if err != nil {
 			return result, err
 		}

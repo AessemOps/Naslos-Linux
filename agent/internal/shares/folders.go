@@ -113,8 +113,14 @@ func (c *Client) DeleteFolder(dirPath string) error {
 }
 
 // CleanFolderPath canonicalises an in-host folder path and requires it to be the
-// datasets base itself or a directory inside it. filepath.Clean resolves ".."
-// before the prefix check, so "/var/mnt/test/../../etc" is rejected.
+// datasets base itself or a directory inside it.
+//
+// filepath.Clean resolves ".." before the prefix check, so "/var/mnt/test/../.."
+// is rejected. A string prefix alone is not enough, though: a symlink inside the
+// base can point outside it, and the kernel follows symlinks on the actual
+// open/mkdir. So an existing path is additionally resolved on the host side and
+// re-checked against the resolved base (PF-L5). The base itself is resolved too,
+// or a symlinked /var/mnt would be compared against the wrong root.
 func CleanFolderPath(path string) (string, error) {
 	trimmed := strings.TrimSpace(path)
 	if trimmed == "" {
@@ -127,6 +133,25 @@ func CleanFolderPath(path string) (string, error) {
 	}
 	if clean != DatasetsBase && !strings.HasPrefix(clean, DatasetsBase+string(filepath.Separator)) {
 		return "", fmt.Errorf("folder path must be inside %s", DatasetsBase)
+	}
+
+	// Resolve symlinks on the host side and re-check containment. A path that
+	// does not exist yet (CreateFolder's parent must exist, so this is a genuine
+	// miss) stays string-checked; the caller reports "does not exist".
+	resolvedBase, err := filepath.EvalSymlinks(hostPath(DatasetsBase))
+	if err != nil {
+		return clean, nil
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(hostPath(clean))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return clean, nil
+		}
+		return "", fmt.Errorf("resolving %s: %w", clean, err)
+	}
+	rel, err := filepath.Rel(resolvedBase, resolvedTarget)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("folder path must resolve inside %s", DatasetsBase)
 	}
 
 	return clean, nil

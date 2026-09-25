@@ -7,18 +7,23 @@ package agent
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
 
 // DefaultBaseURLPattern is used when AGENT_BASE_URL is unset; %s is the
-// namespace (the agent Service lives in the same namespace as the API).
-const DefaultBaseURLPattern = "http://naslos-agent.%s.svc.cluster.local:9090"
+// namespace (the agent Service lives in the same namespace as the API). It is
+// https because the chart serves the agent over TLS by default (PF-M5);
+// AGENT_BASE_URL overrides it for local development.
+const DefaultBaseURLPattern = "https://naslos-agent.%s.svc.cluster.local:9090"
 
 // DefaultTimeout covers slow operations: wipefs + zpool create on real
 // spinning disks can take minutes, and the agent call is synchronous.
@@ -106,6 +111,42 @@ func NewClient(baseURL, token string) *Client {
 			Transport: &authTransport{token: token},
 		},
 	}
+}
+
+// NewClientWithCA is NewClient for an agent that serves TLS. When caFile is set,
+// the agent's certificate is verified against that CA only (PF-M5): the bearer
+// token must not cross the LAN in cleartext, and the agent is hostNetwork so a
+// NetworkPolicy cannot protect it. An unreadable or empty CA file is an error
+// rather than a silent fallback to the system roots - fail closed.
+func NewClientWithCA(baseURL, token, caFile string) (*Client, error) {
+	var base http.RoundTripper
+	if caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading the agent CA %s: %w", caFile, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("the agent CA %s contains no usable certificate", caFile)
+		}
+		base = &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs:    pool,
+				MinVersion: tls.VersionTLS12,
+			},
+			Proxy: http.ProxyFromEnvironment,
+		}
+	}
+	return &Client{
+		baseURL: strings.TrimSuffix(baseURL, "/"),
+		http: &http.Client{
+			Timeout:   DefaultTimeout,
+			Transport: &authTransport{token: token, base: base},
+		},
+		stream: &http.Client{
+			Transport: &authTransport{token: token, base: base},
+		},
+	}, nil
 }
 
 // do performs req and decodes a JSON body into out (if non-nil) on success.

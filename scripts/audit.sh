@@ -1,12 +1,14 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Naslos audit sweep (see docs/AUDIT-2026-09-19-REPORT.md).
 #
 # Reproducible checks that are fast enough for a pre-PR run. Missing tools are
 # reported as "skipped" rather than failing, so it runs anywhere. There is no CI
 # workflow wired to it for now - run it by hand, or add a workflow later.
 #
-# Usage:  sh scripts/audit.sh
-#         NASLOS_AUDIT_RACE=1 sh scripts/audit.sh   # adds go test -race (CR-06)
+# Requires bash: the govulncheck advisory-set diff uses process substitution.
+#
+# Usage:  bash scripts/audit.sh
+#         NASLOS_AUDIT_RACE=1 bash scripts/audit.sh   # adds go test -race (CR-06)
 set -u
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -72,6 +74,19 @@ check_talos_patch() {
   grep -q 'name: cilium' "$p" || return 1
   # The spliced block must be exactly current with the checked-in manifest.
   "$root/scripts/render-cilium.sh" --check >/dev/null 2>&1 || return 1
+  return 0
+}
+
+# PF-M3 guard (also AUDIT-H4): Grafana must stay out of the chart. It shipped a
+# committed static admin password; a single `--set grafana.enabled=true` would
+# deploy it with `admin` / that password. Removing the dependency, the vendored
+# tarball and the values blocks is what makes that impossible.
+check_no_grafana() {
+  grep -q 'name: grafana' "$root/charts/naslos/Chart.yaml" && return 1
+  grep -q 'grafana' "$root/charts/naslos/Chart.lock" && return 1
+  if ls "$root"/charts/naslos/charts/grafana-*.tgz >/dev/null 2>&1; then return 1; fi
+  grep -q 'grafana' "$root/charts/naslos/values.yaml" && return 1
+  grep -q 'grafana' "$root/charts/naslos/values-vm.yaml" && return 1
   return 0
 }
 
@@ -183,6 +198,10 @@ for d in docs:
 assert "naslos-privileged.svc" in api_env.get("AGENT_BASE_URL", ""), \
     f"AGENT_BASE_URL does not target the privileged namespace: {api_env.get('AGENT_BASE_URL')!r}"
 
+# PF-H4: the API must receive the LAN CIDR it uses as the default share client
+# restriction, so shares are never exported to the world by omission.
+assert "NASLOS_LAN_CIDR" in api_env, "the API deployment must set NASLOS_LAN_CIDR (PF-H4)"
+
 # The exec Role/RoleBinding must sit where the terminal pod does, with the API
 # (in the release namespace) as the subject.
 roles = {(d["kind"], d["metadata"]["name"], ns_of(d)) for d in docs}
@@ -218,15 +237,16 @@ run "go test (api)" go test ./...
 # detector runs unconditionally.
 run "go test -race (api)" go test -race ./...
 if have govulncheck; then
-  # govulncheck exits non-zero for ANY findable advisory, including the four
-  # that AUDIT-H3 accepted (all `Fixed in: N/A`, none on an exercised path).
-  # Report them but only fail when the advisory SET changes: a new ID means a
-  # new reachable vulnerability, the four known ones are the recorded residual.
+  # govulncheck exits non-zero for ANY findable advisory. The four AUDIT-H3
+  # ones are `Fixed in: N/A` and not on an exercised path. The six PF-M2 ones
+  # are Go stdlib advisories fixed in 1.26.6, which both go.mod files now
+  # require; they are listed so a build under an older toolchain still reports
+  # them without failing the gate. A genuinely NEW id fails.
   check_govulncheck() {
     f=$(mktemp) || return 1
     govulncheck ./... >"$f" 2>&1
     found=$(grep -oE '^Vulnerability #[0-9]+: GO-[0-9-]+' "$f" | awk '{print $3}' | sort -u)
-    accepted="GO-2026-5064 GO-2026-5338 GO-2026-5622 GO-2026-5932"
+    accepted="GO-2026-5064 GO-2026-5338 GO-2026-5622 GO-2026-5932 GO-2026-5026 GO-2026-5972 GO-2026-6089 GO-2026-6090 GO-2026-6091 GO-2026-6218"
     new=$(comm -23 <(printf '%s\n' $found | sort -u) <(printf '%s\n' $accepted | tr ' ' '\n' | sort -u))
     printf 'govulncheck advisories: %s\n' "$(printf '%s' "$found" | tr '\n' ' ')"
     rm -f "$f"
@@ -290,11 +310,16 @@ if have helm; then
   # be current with bootstrap/cilium/cilium.yaml. Without this a fresh install
   # silently generates stock Talos + flannel (the patch file is what ships).
   run "talos patch ships cilium (AUDIT-M4)" check_talos_patch
+  run "grafana stays removed (AUDIT-H4/PF-M3)" check_no_grafana
 else
   skip "helm lint" "helm is not installed"
 fi
 if have gitleaks; then
-  run "gitleaks (tree + history)" gitleaks detect --source=. --no-banner --redact
+  # `gitleaks detect` is history-only and was mislabeled "tree + history" here,
+  # which let a committed-but-never-committed-later secret slip. Scan both: the
+  # working tree (catches new leaks pre-commit) and git history (PF-H1).
+  run "gitleaks (working tree)" gitleaks dir . --no-banner --redact
+  run "gitleaks (git history)" gitleaks git . --no-banner --redact
 else
   skip "gitleaks" "not installed (CI uses gitleaks/gitleaks-action)"
 fi

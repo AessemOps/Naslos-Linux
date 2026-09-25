@@ -43,6 +43,9 @@ spec:
         app.kubernetes.io/component: terminal
     spec:
       serviceAccountName: naslos-terminal
+      # PF-L4: the terminal never calls the Kubernetes API - the API execs *into*
+      # it - so it must not carry a service-account token that a shell could use.
+      automountServiceAccountToken: false
       # The shell must survive between exec sessions, so the container idles.
       containers:
         - name: shell

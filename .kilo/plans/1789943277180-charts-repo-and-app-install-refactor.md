@@ -284,3 +284,29 @@ Service **FQDN** (no cross-namespace Traefik reference).
 3. **LAN CIDR source for `localOnly`** — reuse `networkPolicy.nfsClientCIDR`
    (`values-vm.yaml:110`) or add `exposure.localOnlyCIDR`. Recommended: a
    dedicated `exposure.localOnlyCIDR` with `nfsClientCIDR` as fallback.
+
+---
+
+## 8. Inputs from the post-fix audit (PF-H5) — do not re-derive
+
+The 2026-09-21 post-fix audit independently confirmed this plan's premise and
+recorded the three concrete breakages plus one follow-on. Treat these as the
+acceptance checklist for the install path (docs/UI were marked "not yet
+available" in the interim; see `docs/AUDIT-2026-09-21-POSTFIX.md` §PF-H5):
+
+1. **No repo is ever added.** `apps.go:73` calls `helm.Install` with a bare ref,
+   but `helm.AddRepo`/`UpdateRepos` (`api/internal/helm/repo.go`) have no callers
+   and `UpdateRepos` is a no-op loop. `LocateChart` cannot resolve the ref.
+2. **No Helm RBAC for `naslos-api`.** The only bindings are the terminal
+   Role/ClusterRole (`terminal.yaml:89-138`); the Helm SDK's `secret` storage
+   driver needs `list secrets`, and `install.CreateNamespace = true` needs
+   cluster-scoped namespace create. Grant a namespaced Role in a dedicated
+   `naslos-apps` namespace (per §2.1) rather than cluster-wide.
+3. **Three catalog entries are not Helm repositories:**
+   `https://github.com/MoJo2600/pihole-kubernetes` (`builtin_extra.go:53`),
+   `https://syncthing.net` (`:115`), `https://immich.app` (`:142`). Point them at
+   real chart repos (or the NaslosCharts repo) when the catalog moves there.
+4. **`helm.List` has no release filter** (`operations.go:94-125`), so once RBAC
+   is granted the `naslos` umbrella release appears in *Installed Apps* with a
+   live Uninstall button. Filter it out when the install path is wired.
+

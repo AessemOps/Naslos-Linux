@@ -19,6 +19,14 @@ func TestGenerateGaneshaConfig(t *testing.T) {
 		Name: "backups", Path: "/var/mnt/test/backups", Protocol: ProtocolNFS,
 		Enabled: true, ReadOnly: true,
 	}
+	m.shares["open"] = &Share{
+		Name: "open", Path: "/var/mnt/test/open", Protocol: ProtocolNFS,
+		Enabled: true, AllowedHosts: []string{"*"},
+	}
+	m.shares["unsquashed"] = &Share{
+		Name: "unsquashed", Path: "/var/mnt/test/unsquashed", Protocol: ProtocolNFS,
+		Enabled: true, AllowedHosts: []string{"192.168.1.0/24"}, NoRootSquash: true,
+	}
 	m.shares["disabled"] = &Share{
 		Name: "disabled", Path: "/var/mnt/test/disabled", Protocol: ProtocolNFS,
 		Enabled: false,
@@ -57,9 +65,21 @@ func TestGenerateGaneshaConfig(t *testing.T) {
 		t.Errorf("read-only export not marked RO:\n%s", conf)
 	}
 
-	// No host restriction means open to any client.
+	// PF-H4: a share that names no hosts defaults to localhost only (with no
+	// NASLOS_LAN_CIDR set here), never "*".
+	if !strings.Contains(conf, "Clients = 127.0.0.1/32;") {
+		t.Errorf("unrestricted export should fail closed to localhost:\n%s", conf)
+	}
+	// Explicit "*" is the only opt-in to an open export.
 	if !strings.Contains(conf, "Clients = *;") {
-		t.Errorf("unrestricted export should use Clients = *:\n%s", conf)
+		t.Errorf("an explicit '*' allowedHosts entry should export to any client:\n%s", conf)
+	}
+	// Root_Squash is the default; a share can opt out.
+	if !strings.Contains(conf, "Squash = Root_Squash;") {
+		t.Errorf("default squash should be Root_Squash:\n%s", conf)
+	}
+	if !strings.Contains(conf, "Squash = No_Root_Squash;") {
+		t.Errorf("the per-share opt-out should render No_Root_Squash:\n%s", conf)
 	}
 
 	// A disabled NFS share and an SMB-only share must not be exported.
@@ -68,6 +88,48 @@ func TestGenerateGaneshaConfig(t *testing.T) {
 	}
 	if strings.Contains(conf, "/var/mnt/test/smb") {
 		t.Errorf("SMB share was exported over NFS:\n%s", conf)
+	}
+}
+
+// TestSambaConfigHardenedDefaults pins the PF-H4 SMB posture: no root-forcing,
+// a fail-closed client default, tighter masks, and the global hardening lines.
+func TestSambaConfigHardenedDefaults(t *testing.T) {
+	t.Setenv("NASLOS_LAN_CIDR", "192.168.1.0/24")
+	m := NewManagerWithBase("", t.TempDir())
+	m.shares["media"] = &Share{
+		Name: "media", Path: "/var/mnt/test/media", Protocol: ProtocolSMB, Enabled: true,
+	}
+	m.shares["guests"] = &Share{
+		Name: "guests", Path: "/var/mnt/test/guests", Protocol: ProtocolSMB, Enabled: true,
+		AllowedHosts: []string{"*"},
+	}
+
+	conf := m.GenerateSambaConfig()
+
+	for _, want := range []string{
+		"map to guest = Never",
+		"server min protocol = SMB3",
+		"smb encrypt = desired",
+		"create mask = 0660",
+		"directory mask = 0770",
+		// A share with no hosts is limited to the configured LAN.
+		"hosts allow = 192.168.1.0/24",
+		"hosts deny = all",
+	} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("smb.conf missing %q:\n%s", want, conf)
+		}
+	}
+	if strings.Contains(conf, "force user") || strings.Contains(conf, "force group") {
+		t.Errorf("smb.conf still forces root:\n%s", conf)
+	}
+	// The explicit-wildcard share must not carry a hosts allow/deny pair.
+	parts := strings.Split(conf, "[guests]")
+	if len(parts) != 2 {
+		t.Fatalf("smb.conf has no [guests] block:\n%s", conf)
+	}
+	if strings.Contains(parts[1], "hosts allow") {
+		t.Errorf("explicit '*' should not be restricted by hosts allow:\n%s", conf)
 	}
 }
 

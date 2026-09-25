@@ -19,10 +19,11 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
   { "error": "message" }
   ```
 - Unsupported methods return `405 Method Not Allowed`.
-- Authentication is **not enforced inside the API router today**: the trust
-  boundary is enforced at the ingress (Authelia forwardAuth) and in the
-  `api/internal/auth` middleware, which only trusts `Remote-*` headers from the
-  Traefik pod CIDR (see [identity-sso.md](identity-sso.md#header-trust)).
+- Authentication **is** enforced: the API is only reachable through Traefik's
+  `proxy-identity` middleware, and `api/internal/auth` independently requires the
+  shared proxy secret plus a `Remote-User` header from the Traefik pod CIDR
+  (see [identity-sso.md](identity-sso.md#header-trust)). The API refuses to start
+  without the secret, so a request that bypasses Traefik cannot authenticate.
 
 ## naslos-api routes
 
@@ -68,6 +69,11 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 
 ### App catalog & installed apps
 
+> **Not yet functional (PF-H5).** The routes below exist, but no Helm repository
+> is configured and the API ServiceAccount has no Helm RBAC, so
+> install/upgrade/uninstall/list cannot succeed. The UI install action is
+> disabled. See [app-catalog.md](app-catalog.md).
+
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/catalog` | List catalog entries (name, displayName, description, category, icon, version, tags) |
@@ -87,8 +93,6 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | --- | --- | --- |
 | GET | `/api/disks` | Discovered disks from Talos (`talosctl get discoveredvolumes`) |
 | POST | `/api/disks/recommend` | `{disks:[...]}` → `VolumeAdvisor` topology recommendation |
-| GET | `/api/volumes` | List Talos user volumes (stub: returns a status message) |
-| POST | `/api/volumes` | Create ext4/xfs/btrfs `UserVolumeConfig` document (ZFS is handled by the agent) |
 | GET | `/api/volumes/zfs` | List ZFS pools via `naslos-agent` (`agent.ListPools`) |
 | POST | `/api/volumes/zfs` | Create pool `{name, topology, disks, options}` via `naslos-agent` (validated: ZFS-safe name, non-empty disks, known topology) |
 | GET | `/api/volumes/zfs/{name}` | Structured health data (device tree, IO stats, scan state, errors) |
@@ -215,7 +219,7 @@ shell, never an arbitrary command.
 | `LDAP_BIND_PASS` | — | Service account password |
 | `LDAP_USE_TLS` | `true` | Use LDAPS |
 | `LDAP_CA_CERT` | — | Path to CA cert for LDAPS verification |
-| `TRAEFIK_CIDR` | `10.0.0.0/8` | Comma-separated CIDRs trusted for auth headers; the `X-Naslos-Proxy-Secret` is the actual proof of the proxy hop |
+| `TRAEFIK_CIDR` | `10.244.0.0/16` | Comma-separated CIDRs trusted for auth headers (the cluster pod CIDR Traefik sources from); the `X-Naslos-Proxy-Secret` is the actual proof of the proxy hop |
 | `NASLOS_NAMESPACE` | — | Namespace injected by the Helm chart |
 | `KUBECONFIG` | — | Path to kubeconfig (default: in-cluster) |
 | `BUDDY_NAME` | `naslos` | Name this instance reports to backup peers |

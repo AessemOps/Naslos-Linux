@@ -22,7 +22,7 @@ func TestSourcesInFindsNestedSources(t *testing.T) {
 		Chain:          "chain1",
 		Kind:           "tar",
 		CreatedAt:      time.Now().UTC(),
-		StreamPrefix:   "AAAAAAAAAAA=",
+		StreamPrefix:   "AAAAAAAA",
 		ChunkPlainSize: ChunkPlainSize,
 		DEKWrapped:     "AAAA",
 	}
@@ -79,15 +79,15 @@ func TestValidateChainNameBoundsFilesystemPaths(t *testing.T) {
 // past it would wrap and reuse a nonce, which GCM must never see.
 func TestChunkIndexOverflowIsRefused(t *testing.T) {
 	dek := randomBytes(t, 32)
-	prefix := randomBytes(t, 8)
+	prefix := randomBytes(t, streamPrefixLen)
 
-	if _, _, err := SealChunk(dek, prefix, "naslos-a/data", "chain1", int(MaxChunkIndex)+1, []byte("x")); err == nil {
+	if _, _, err := SealChunk(dek, prefix, 0, "naslos-a/data", "chain1", int(MaxChunkIndex)+1, []byte("x")); err == nil {
 		t.Error("SealChunk accepted an index past the counter")
 	}
-	if _, err := OpenChunk(dek, "naslos-a/data", "chain1", -1, []byte("not an envelope")); err == nil {
+	if _, err := OpenChunk(dek, prefix, 0, "naslos-a/data", "chain1", -1, []byte("not an envelope")); err == nil {
 		t.Error("OpenChunk accepted a negative index")
 	}
-	if _, _, err := SealChunk(dek, prefix, "naslos-a/data", "chain1", int(MaxChunkIndex), []byte("x")); err != nil {
+	if _, _, err := SealChunk(dek, prefix, 0, "naslos-a/data", "chain1", int(MaxChunkIndex), []byte("x")); err != nil {
 		t.Errorf("SealChunk at the largest index = %v, want it accepted", err)
 	}
 }

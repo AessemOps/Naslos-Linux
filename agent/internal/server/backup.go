@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/AessemOps/Naslos-Linux/agent/internal/zfs"
 )
@@ -113,6 +114,13 @@ func (s *Server) handleReceiveStream(w http.ResponseWriter, r *http.Request) {
 
 	dataset := strings.TrimPrefix(r.URL.Path, "/api/v1/zfs/receive/")
 	force := r.URL.Query().Get("force") == "true"
+
+	// This body is a whole `zfs send` stream and can take minutes, so clear the
+	// server-wide read deadline for this connection (PF-M6). A failure here just
+	// leaves the default deadline in place.
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetReadDeadline(time.Time{})
+	}
 
 	stdin, wait, err := s.backup.ReceiveStream(dataset, force)
 	if err != nil {

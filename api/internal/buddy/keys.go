@@ -172,9 +172,25 @@ func (i *Identity) Fingerprint() (string, error) {
 	return ssh.FingerprintSHA256(pub), nil
 }
 
-// KEKBytes decodes the key encryption key.
+// EnvKEK is the environment variable that, when set, overrides the KEK stored in
+// the identity file. Pointing it at a Kubernetes Secret keeps the data key
+// material out of the identity file, which otherwise holds the signing key and
+// the KEK together (PF-M14). It is base64 for 32 bytes, the same encoding as the
+// file's `kek` field.
+const EnvKEK = "BUDDY_KEK"
+
+// KEKBytes decodes the key encryption key. A KEK in the environment (from a
+// Secret) takes precedence over the one in the file, so an operator can move it
+// out of the identity file without losing access.
 func (i *Identity) KEKBytes() ([]byte, error) {
-	kek, err := base64.StdEncoding.DecodeString(strings.TrimSpace(i.KEK))
+	source := strings.TrimSpace(i.KEK)
+	if env := strings.TrimSpace(os.Getenv(EnvKEK)); env != "" {
+		source = env
+	}
+	if source == "" {
+		return nil, fmt.Errorf("no KEK: set %s (recommended) or restore the identity file's kek field", EnvKEK)
+	}
+	kek, err := base64.StdEncoding.DecodeString(source)
 	if err != nil {
 		return nil, fmt.Errorf("decoding kek: %w", err)
 	}

@@ -20,9 +20,19 @@ import (
 // does not know (or care) which kind of receiver it is talking to.
 const PathPrefix = "/api/buddy/v1"
 
-// maxManifestBytes bounds a manifest: it lists chunks, so it is small even for
-// multi-terabyte chains.
-const maxManifestBytes = 8 << 20
+// maxManifestBytes bounds a manifest: it lists one entry per chunk, so even a
+// multi-terabyte chain's manifest is modest. 8 MiB was too small (a chain of a
+// few tens of GiB already exceeded it and publish failed at the receiver); 64 MiB
+// covers ~500 GiB at the 1 MiB chunk size, and Push refuses up front rather than
+// uploading a manifest the receiver will reject (PF-M12).
+const maxManifestBytes = 64 << 20
+
+// DefaultEnrollQuotaBytes is the quota a peer enrolled through the token flow
+// gets when it asks for none. Unlimited was the old default and let one peer
+// fill the receiver's pool (PF-M10); 1 TiB is generous for a NAS backup target
+// while still finite. Operators can pass quotaBytes at enrollment or set
+// Receiver.DefaultQuotaBytes.
+const DefaultEnrollQuotaBytes = int64(1) << 40
 
 // Receiver is the HTTP surface peers push to. It has no Kubernetes, ZFS or
 // identity dependency: the instance mounts it under PathPrefix, and the
@@ -47,6 +57,10 @@ type Receiver struct {
 	// EnrollOpen keeps the token usable for more than one key. Single use is
 	// the default because a leaked token otherwise authorizes anyone forever.
 	EnrollOpen bool
+	// DefaultQuotaBytes is the quota assigned to a peer enrolled without an
+	// explicit one. Zero falls back to DefaultEnrollQuotaBytes. A finite
+	// default matters: an unlimited peer can fill the pool (PF-M10).
+	DefaultQuotaBytes int64
 
 	mu         sync.Mutex
 	enrollUsed bool
@@ -79,14 +93,19 @@ type EnrollRequest struct {
 	Name      string   `json:"name"`
 	PublicKey string   `json:"publicKey"`
 	Sources   []string `json:"sources,omitempty"`
+	// QuotaBytes optionally caps what this peer may store. Zero means the
+	// receiver's default (a finite 1 TiB), not unlimited (PF-M10).
+	QuotaBytes int64 `json:"quotaBytes,omitempty"`
 }
 
-// chunkListEntry is one row of a chain's chunk list: the index plus the digest of
-// the sealed bytes stored there, which lets a resuming sender prove the chunks it
-// skips are the chunks it sent.
+// chunkListEntry is one row of a chain's chunk list: the index, the digest of the
+// sealed bytes stored there (which lets a resuming sender prove the chunks it
+// skips are the chunks it sent), and the nonce generation those bytes were
+// sealed under (PF-H2: the sender must re-derive the exact nonce it used).
 type chunkListEntry struct {
-	Index  int    `json:"index"`
-	Digest string `json:"digest"`
+	Index      int    `json:"index"`
+	Digest     string `json:"digest"`
+	Generation uint16 `json:"generation"`
 }
 
 // Handler returns the receiver's routes, already stripped of PathPrefix.
@@ -124,7 +143,7 @@ func (r *Receiver) authenticate(req *http.Request, bodyDigest string) (*Peer, er
 	if r.Auth == nil {
 		return nil, fmt.Errorf("receiver has no authenticator")
 	}
-	return r.Auth.Verify(req, bodyDigest, canonicalPath(req), r.clock())
+	return r.Auth.Verify(req, bodyDigest, canonicalPath(req), r.Name, r.clock())
 }
 
 // readBody reads a bounded body and returns it with its digest.
@@ -263,10 +282,18 @@ func (r *Receiver) handleEnroll(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusForbidden, "this enrollment token has already been used")
 		return
 	}
+	quota := enroll.QuotaBytes
+	if quota <= 0 {
+		quota = r.DefaultQuotaBytes
+	}
+	if quota <= 0 {
+		quota = DefaultEnrollQuotaBytes
+	}
 	peer := &Peer{
 		Name:           enroll.Name,
 		PublicKey:      enroll.PublicKey,
 		AllowedSources: enroll.Sources,
+		QuotaBytes:     quota,
 		Enabled:        true,
 	}
 	err = r.Peers.Add(peer)
@@ -353,23 +380,24 @@ func (r *Receiver) handleChunks(w http.ResponseWriter, req *http.Request) {
 			_, _ = w.Write(sealed)
 			return
 		}
-		digests, err := r.Store.ChunkDigests(peer.Fingerprint, source, chain)
+		stored, err := r.Store.ChunkDigests(peer.Fingerprint, source, chain)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		// The digest lets a resuming sender prove the chunks it skips are the
-		// chunks it sent; `published` tells it whether the chain is a finished
-		// backup (immutable) or still an upload in progress, where the partial tail
-		// chunk may legitimately be re-sent whole.
+		// chunks it sent, and the generation lets it re-derive the exact nonce
+		// those bytes were sealed under; `published` tells it whether the chain
+		// is a finished backup (immutable) or still an upload in progress, where
+		// the partial tail chunk may legitimately be re-sent whole.
 		published, err := r.Store.chainPublished(peer.Fingerprint, source, chain)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		chunks := make([]chunkListEntry, 0, len(digests))
-		for index, digest := range digests {
-			chunks = append(chunks, chunkListEntry{Index: index, Digest: digest})
+		chunks := make([]chunkListEntry, 0, len(stored))
+		for index, info := range stored {
+			chunks = append(chunks, chunkListEntry{Index: index, Digest: info.Digest, Generation: info.Generation})
 		}
 		sort.Slice(chunks, func(i, j int) bool { return chunks[i].Index < chunks[j].Index })
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -407,6 +435,10 @@ func (r *Receiver) handleChunks(w http.ResponseWriter, req *http.Request) {
 			var quotaErr *QuotaError
 			if errors.As(err, &quotaErr) {
 				writeError(w, http.StatusRequestEntityTooLarge, quotaErr.Error())
+				return
+			}
+			if errors.Is(err, ErrNoSpace) {
+				writeError(w, http.StatusInsufficientStorage, err.Error())
 				return
 			}
 			writeError(w, http.StatusConflict, err.Error())
