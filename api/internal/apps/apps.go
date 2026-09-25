@@ -46,6 +46,9 @@ type Record struct {
 	ChartVersion string                 `json:"chartVersion"`
 	Values       map[string]interface{} `json:"values"`
 	Exposure     Exposure               `json:"exposure"`
+	// BaseDomain is the domain the exposure subdomain hangs off. It also selects
+	// the TLS certificate Secret the route references.
+	BaseDomain string `json:"baseDomain,omitempty"`
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -175,6 +178,10 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*View, error
 	}
 
 	now := time.Now().UTC()
+	baseDomain := req.BaseDomain
+	if baseDomain == "" {
+		baseDomain = m.baseDomain
+	}
 	rec := Record{
 		Name:         req.Name,
 		Source:       app.Source,
@@ -183,6 +190,7 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*View, error
 		ChartVersion: app.Version,
 		Values:       values,
 		Exposure:     exposure,
+		BaseDomain:   baseDomain,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -247,10 +255,17 @@ func (m *Manager) SetExposure(ctx context.Context, name string, exposure Exposur
 	if err := validateSubdomain(exposure.Subdomain); err != nil {
 		return nil, err
 	}
+	if baseDomain == "" {
+		baseDomain = rec.BaseDomain
+	}
+	if baseDomain == "" {
+		baseDomain = m.baseDomain
+	}
 	if exposure.Auth && !m.authAllowed(baseDomain) {
 		return nil, fmt.Errorf("auth requires the domain to be in the SSO domain list")
 	}
 	rec.Exposure = exposure
+	rec.BaseDomain = baseDomain
 	rec.UpdatedAt = time.Now().UTC()
 	rec.LastError = ""
 	if err := m.store.Upsert(rec); err != nil {
@@ -353,7 +368,11 @@ func (m *Manager) ReconcileRoutes(ctx context.Context) error {
 		if rec.Orphaned {
 			continue
 		}
-		if err := m.router.Apply(ctx, rec, m.baseDomain, m.ssoDomains); err != nil {
+		baseDomain := rec.BaseDomain
+		if baseDomain == "" {
+			baseDomain = m.baseDomain
+		}
+		if err := m.router.Apply(ctx, rec, baseDomain, m.ssoDomains); err != nil {
 			errs = append(errs, fmt.Errorf("app %q: %w", rec.Name, err))
 		}
 	}
@@ -371,6 +390,9 @@ func (m *Manager) BaseDomain() string { return m.baseDomain }
 func (m *Manager) applyRoute(ctx context.Context, rec Record, baseDomain string) {
 	if m.router == nil {
 		return
+	}
+	if baseDomain == "" {
+		baseDomain = rec.BaseDomain
 	}
 	if baseDomain == "" {
 		baseDomain = m.baseDomain

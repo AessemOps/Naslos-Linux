@@ -203,6 +203,7 @@ type Reconciler struct {
 	namespace string
 
 	tlsSecret       string
+	tlsSecretFor    func(baseDomain string) string
 	autheliaService string
 	autheliaPort    int
 	localOnlyCIDR   string
@@ -215,6 +216,9 @@ type Options struct {
 	AutheliaService string
 	AutheliaPort    int
 	LocalOnlyCIDR   string
+	// TLSSecretFor resolves the TLS Secret for a base domain (the wildcard
+	// Certificate's secretName). When nil or empty, TLSSecret is used.
+	TLSSecretFor func(baseDomain string) string
 }
 
 // NewReconciler creates a routing reconciler.
@@ -223,6 +227,7 @@ func NewReconciler(dyn dynamic.Interface, opts Options) *Reconciler {
 		dyn:             dyn,
 		namespace:       opts.Namespace,
 		tlsSecret:       opts.TLSSecret,
+		tlsSecretFor:    opts.TLSSecretFor,
 		autheliaService: opts.AutheliaService,
 		autheliaPort:    opts.AutheliaPort,
 		localOnlyCIDR:   opts.LocalOnlyCIDR,
@@ -231,6 +236,12 @@ func NewReconciler(dyn dynamic.Interface, opts Options) *Reconciler {
 
 // SpecFor builds a routing spec from an app record.
 func (r *Reconciler) SpecFor(rec apps.Record, baseDomain string) Spec {
+	tlsSecret := r.tlsSecret
+	if r.tlsSecretFor != nil {
+		if resolved := r.tlsSecretFor(baseDomain); resolved != "" {
+			tlsSecret = resolved
+		}
+	}
 	return Spec{
 		Name:            rec.Name,
 		Namespace:       r.namespace,
@@ -242,7 +253,7 @@ func (r *Reconciler) SpecFor(rec apps.Record, baseDomain string) Spec {
 		Service:         rec.Exposure.Service,
 		Port:            rec.Exposure.Port,
 		Scheme:          rec.Exposure.Scheme,
-		TLSSecret:       r.tlsSecret,
+		TLSSecret:       tlsSecret,
 		AutheliaService: r.autheliaService,
 		AutheliaPort:    r.autheliaPort,
 		LocalOnlyCIDR:   r.localOnlyCIDR,

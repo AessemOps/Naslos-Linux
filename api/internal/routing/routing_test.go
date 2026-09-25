@@ -2,6 +2,8 @@ package routing
 
 import (
 	"testing"
+
+	"github.com/AessemOps/Naslos-Linux/api/internal/apps"
 )
 
 func baseSpec() Spec {
@@ -124,5 +126,26 @@ func TestRenderMissingTarget(t *testing.T) {
 	spec.Service = ""
 	if _, err := Render(spec); err == nil {
 		t.Fatal("expected an error when the route target is missing")
+	}
+}
+
+func TestSpecForResolvesPerDomainTLSSecret(t *testing.T) {
+	r := NewReconciler(nil, Options{
+		Namespace: "naslos-apps",
+		TLSSecret: "naslos-apps-tls",
+		TLSSecretFor: func(baseDomain string) string {
+			if baseDomain == "example.com" {
+				return "naslos-example-com-tls"
+			}
+			return ""
+		},
+	})
+	rec := apps.Record{Name: "jellyfin", Exposure: apps.Exposure{Subdomain: "jellyfin", TLS: true}}
+
+	if got := r.SpecFor(rec, "example.com").TLSSecret; got != "naslos-example-com-tls" {
+		t.Fatalf("TLS secret = %q, want the per-domain secret", got)
+	}
+	if got := r.SpecFor(rec, "other.example").TLSSecret; got != "naslos-apps-tls" {
+		t.Fatalf("TLS secret fallback = %q, want naslos-apps-tls", got)
 	}
 }

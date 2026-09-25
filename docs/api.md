@@ -261,7 +261,7 @@ shell, never an arbitrary command.
 | `SOURCES_OFFICIAL_NAME` / `_DISPLAY` / `_AUTH` / `_SECRET` | `naslos` / `NaslosCharts` / `public` / — | Official source fields |
 | `NASLOS_DOMAIN` | `naslos.local` | Primary domain app subdomains hang off |
 | `SSO_DOMAINS` | primary domain | Comma-separated domains Authelia protects (auth is only offered there) |
-| `APPS_TLS_SECRET` | `naslos-apps-tls` | TLS Secret app IngressRoutes reference |
+| `APPS_TLS_SECRET` | `naslos-apps-tls` | Fallback TLS Secret when the app's base domain has no domain record |
 | `AUTHELIA_SERVICE` / `AUTHELIA_PORT` | `naslos-authelia` / `80` | Authelia forwardAuth target (FQDN, cross-namespace) |
 | `EXPOSURE_LOCAL_ONLY_CIDR` | — | LAN CIDR an `localOnly` app is restricted to |
 | `PLATFORM_RELEASE` | release name | Release to exclude from the installed-app list/backfill |
