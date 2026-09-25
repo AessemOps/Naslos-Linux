@@ -251,6 +251,14 @@ func (s *Server) setupChartRepos(appsHelmClient *helm.Client) {
 
 	s.catalog.Store(s.buildCatalog())
 
+	// Base domains are loaded before the routing reconciler, whose TLS-secret
+	// resolver reads them.
+	domains := certs.NewStore(getEnv("DOMAINS_CONFIG", "/var/lib/naslos/domains.json"))
+	if err := domains.Load(); err != nil {
+		log.Printf("Warning: could not load domains: %v", err)
+	}
+	s.domains = domains
+
 	// Dynamic client for routing and certificates. A failure here (e.g. no
 	// cluster in a unit test) degrades to no routing rather than a fatal error.
 	var router apps.Router
@@ -261,18 +269,23 @@ func (s *Server) setupChartRepos(appsHelmClient *helm.Client) {
 			AutheliaService: getEnv("AUTHELIA_SERVICE", "naslos-authelia"),
 			AutheliaPort:    getEnvInt("AUTHELIA_PORT", 80),
 			LocalOnlyCIDR:   getEnv("EXPOSURE_LOCAL_ONLY_CIDR", ""),
+			// A domain's wildcard Certificate writes a per-domain Secret; the
+			// route must reference that, not a fixed name.
+			TLSSecretFor: func(baseDomain string) string {
+				if s.domains == nil {
+					return ""
+				}
+				if domain, err := s.domains.Get(baseDomain); err == nil {
+					return domain.SecretName()
+				}
+				return ""
+			},
 		})
 		s.certs = certs.NewReconciler(dyn, s.appsNamespace)
 		router = s.routing
 	} else {
 		log.Printf("Warning: no dynamic client for app routing: %v", err)
 	}
-
-	domains := certs.NewStore(getEnv("DOMAINS_CONFIG", "/var/lib/naslos/domains.json"))
-	if err := domains.Load(); err != nil {
-		log.Printf("Warning: could not load domains: %v", err)
-	}
-	s.domains = domains
 
 	manager, err := apps.NewManager(apps.Config{
 		StorePath:  getEnv("APPS_CONFIG", "/var/lib/naslos/apps.json"),

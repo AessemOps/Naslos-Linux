@@ -159,9 +159,10 @@ Apps use `local-path-provisioner`, the only provisioner installed; the
 
 - **Wildcard DNS is a prerequisite** for app subdomains: point `*.<domain>` at
   the node (router/dnsmasq/registrar). Without it, app hostnames do not resolve.
-- **TLS apps need a certificate Secret** in `naslos-apps` (the wildcard
-  Certificate's `secretName`, default `naslos-apps-tls`). A `.local` domain can
-  never get a public cert — keep TLS off or self-sign for `.local`.
+- **TLS apps need a certificate Secret** in `naslos-apps`. The route references
+  the base domain's wildcard Certificate `secretName` (from its domain record);
+  `APPS_TLS_SECRET` is only the fallback when no domain record exists. A `.local`
+  domain can never get a public cert — keep TLS off or self-sign for `.local`.
 - **Third-party charts are privileged.** Any install runs arbitrary in-cluster
   manifests under the API's namespaced Role. Mitigations: dedicated namespace,
   PSA `baseline`, NetworkPolicy, no proxy-secret/Talos access, admin-only access
