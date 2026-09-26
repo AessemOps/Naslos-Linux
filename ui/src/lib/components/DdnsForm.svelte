@@ -1,18 +1,9 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
+  import ProviderFields from './ProviderFields.svelte';
 
   export let entry: any | null = null;
   export let providers: any[] = [];
-
-  interface ProviderField {
-    key: string;
-    label: string;
-    type: string;
-    default?: string;
-    enum?: string[];
-    required?: boolean;
-    secret?: boolean;
-  }
 
   const ddnsProviders = providers.filter((p) => p.ddns);
 
@@ -37,7 +28,7 @@
     return ddnsProviders.find((p) => p.name === providerName);
   }
 
-  function fields(): ProviderField[] {
+  function fields(): any[] {
     return provider()?.fields ?? [];
   }
 
@@ -150,31 +141,13 @@
 
       <div class="border-t border-naslos-border pt-4 space-y-3">
         <p class="text-xs uppercase tracking-wide text-gray-500">Provider credentials</p>
-        {#each fields() as f (f.key)}
-          <div>
-            <label class="label" for={`ddns-field-${f.key}`}>
-              {f.label || f.key}{#if f.required}<span class="text-red-400"> *</span>{/if}
-            </label>
-            {#if f.type === 'enum'}
-              <select id={`ddns-field-${f.key}`} class="input" bind:value={fieldValues[f.key]}>
-                {#each f.enum || [] as v (v)}
-                  <option value={v}>{v}</option>
-                {/each}
-              </select>
-            {:else if f.secret}
-              <input
-                id={`ddns-field-${f.key}`}
-                class="input"
-                type="password"
-                autocomplete="new-password"
-                bind:value={fieldValues[f.key]}
-                placeholder={entry && entry.credentialFields?.includes(f.key) ? '•••••• (unchanged)' : ''}
-              />
-            {:else}
-              <input id={`ddns-field-${f.key}`} class="input" bind:value={fieldValues[f.key]} />
-            {/if}
-          </div>
-        {/each}
+        <ProviderFields
+          fields={fields()}
+          values={fieldValues}
+          idPrefix="ddns"
+          secretSet={entry?.credentialFields || []}
+          unchangedPlaceholder="•••••• (unchanged)"
+        />
       </div>
 
       {#if notice}<div class="p-3 rounded-lg bg-green-900/30 border border-green-700 text-green-300 text-sm">{notice}</div>{/if}

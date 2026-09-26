@@ -153,6 +153,96 @@ func (p *Provider) WithDefaults(config map[string]string) map[string]string {
 	return out
 }
 
+// ValidateField checks a single field value against its type.
+func ValidateField(f Field, value string) error {
+	if value == "" {
+		return nil
+	}
+	switch f.Type {
+	case FieldBool:
+		if value != "true" && value != "false" {
+			return fmt.Errorf("field %q must be true or false", f.Key)
+		}
+	case FieldEnum:
+		for _, allowed := range f.Enum {
+			if value == allowed {
+				return nil
+			}
+		}
+		return fmt.Errorf("field %q must be one of %s", f.Key, strings.Join(f.Enum, ", "))
+	}
+	return nil
+}
+
+// FieldResolution is the result of splitting a provider's submitted fields into
+// its non-secret config and the secret values to store.
+type FieldResolution struct {
+	// Config is the resolved non-secret provider config (submitted, else the
+	// existing value, else the field default).
+	Config map[string]string
+	// SecretValues are the new secret values to write, keyed by SecretKeyOr.
+	SecretValues map[string]string
+	// CredentialFields names every secret field that is set (existing plus
+	// submitted), never their values.
+	CredentialFields []string
+}
+
+// ResolveFields applies one submission to a provider's field model. It is the
+// single place that decides what is config, what is a Secret, which fields are
+// required and which values are valid, so domains and Dynamic DNS cannot drift.
+//
+// existingConfig and existingCredentialFields carry the persisted state on an
+// update (nil/empty on create); create enables the required-secret check.
+func (p *Provider) ResolveFields(submitted, existingConfig map[string]string, existingCredentialFields []string, create bool) (FieldResolution, error) {
+	out := FieldResolution{
+		Config:       map[string]string{},
+		SecretValues: map[string]string{},
+	}
+	out.CredentialFields = append(out.CredentialFields, existingCredentialFields...)
+
+	for _, f := range p.ConfigFields() {
+		value, ok := submitted[f.Key]
+		switch {
+		case ok:
+			out.Config[f.Key] = value
+		case existingConfig != nil && existingConfig[f.Key] != "":
+			out.Config[f.Key] = existingConfig[f.Key]
+		case f.Default != "":
+			out.Config[f.Key] = f.Default
+		}
+		if f.Required && strings.TrimSpace(out.Config[f.Key]) == "" {
+			return out, fmt.Errorf("field %q is required", f.Key)
+		}
+		if err := ValidateField(f, out.Config[f.Key]); err != nil {
+			return out, err
+		}
+	}
+
+	for _, f := range p.SecretFields() {
+		if value, ok := submitted[f.Key]; ok && strings.TrimSpace(value) != "" {
+			out.SecretValues[f.SecretKeyOr()] = value
+			out.CredentialFields = addUnique(out.CredentialFields, f.Key)
+			continue
+		}
+		if create && f.Required {
+			return out, fmt.Errorf("field %q is required", f.Key)
+		}
+		if err := ValidateField(f, submitted[f.Key]); err != nil {
+			return out, err
+		}
+	}
+	return out, nil
+}
+
+func addUnique(list []string, key string) []string {
+	for _, item := range list {
+		if item == key {
+			return list
+		}
+	}
+	return append(list, key)
+}
+
 var (
 	credPlaceholder   = regexp.MustCompile(`\$\{cred\.([A-Za-z0-9_]+)\}`)
 	secretPlaceholder = regexp.MustCompile(`\$\{secret\}`)

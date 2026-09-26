@@ -550,21 +550,9 @@ spec:
         - protocol: TCP
           port: 9418
     {{- end }}
-    {{- if .Values.networkPolicy.ddnsEgress }}
-    # Dynamic DNS (FR-DNS-03): the API detects the public IP and calls the
-    # provider APIs. Open only HTTP/HTTPS to the configured CIDRs - not a
-    # general all-port Internet opening.
-    - to:
-        {{- range (.Values.networkPolicy.ddnsEgressCIDRs | default (list "0.0.0.0/0")) }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-        {{- end }}
-      ports:
-        - protocol: TCP
-          port: 443
-        - protocol: TCP
-          port: 80
-    {{- end }}
+    # DDNS egress is release-namespace only: the API (the only DDNS client) runs
+    # in the release namespace, so the privileged workloads are deliberately not
+    # granted public HTTP/HTTPS egress.
     {{- $ans := .Values.apps.namespace | default "naslos-apps" }}
     {{- $apriv := .Values.apps.privilegedNamespace | default "naslos-apps-priv" }}
     {{- if ne $ans $ns }}

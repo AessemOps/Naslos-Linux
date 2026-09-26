@@ -276,11 +276,19 @@ for d in docs:
         assert "stsIncludeSubdomains" not in d["spec"]["headers"], \
             "security-headers must not set stsIncludeSubdomains"
 
-# FR-DNS-03: the DDNS egress is port-scoped to HTTP/HTTPS only, and CIDR-scoped.
-egress = nps["naslos-workload-egress"]["spec"]["egress"]
-ddns_rules = [r for r in egress if {p.get("port") for p in r.get("ports", [])} == {443, 80}]
-assert ddns_rules, "the workload egress must include a DDNS rule on 80/443"
-for r in ddns_rules:
+# FR-DNS-03: the DDNS egress is port-scoped to HTTP/HTTPS (80/443), CIDR-scoped,
+# and granted only to the release namespace (the API is the DDNS client).
+egress_policies = [
+    d for d in docs
+    if d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == "naslos-workload-egress"
+]
+def ddns_rules(policy):
+    return [r for r in policy["spec"].get("egress", [])
+            if {p.get("port") for p in r.get("ports", [])} == {443, 80}]
+ddns_namespaces = [p["metadata"].get("namespace") for p in egress_policies if ddns_rules(p)]
+assert ddns_namespaces == ["naslos"], \
+    f"the DDNS egress rule must exist only in the release namespace, got {ddns_namespaces}"
+for r in ddns_rules(next(p for p in egress_policies if p["metadata"].get("namespace") == "naslos")):
     assert all("ipBlock" in p for p in r.get("to", [])), \
         "the DDNS egress rule must be CIDR-scoped, never a pod selector"
 print("network policy intent ok")

@@ -111,6 +111,47 @@ fields:
 	}
 }
 
+func TestResolveFieldsSplitsConfigAndSecrets(t *testing.T) {
+	p, _ := Load("").Get("ovh")
+
+	resolved, err := p.ResolveFields(map[string]string{
+		"applicationKey":    "AK",
+		"applicationSecret": "AS",
+		"consumerKey":       "CK",
+	}, nil, nil, true)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if resolved.Config["endpoint"] != "ovh-eu" || resolved.Config["applicationKey"] != "AK" {
+		t.Fatalf("config = %#v", resolved.Config)
+	}
+	if resolved.SecretValues["applicationSecret"] != "AS" || resolved.SecretValues["consumerKey"] != "CK" {
+		t.Fatalf("secret values = %#v", resolved.SecretValues)
+	}
+	if len(resolved.CredentialFields) != 2 {
+		t.Fatalf("credential fields = %v", resolved.CredentialFields)
+	}
+
+	// A missing required secret on create fails.
+	if _, err := p.ResolveFields(map[string]string{"applicationKey": "AK", "applicationSecret": "AS"}, nil, nil, true); err == nil {
+		t.Fatal("expected a missing required secret to fail on create")
+	}
+
+	// On update, a stored config value is kept when the field is omitted, and an
+	// invalid enum is rejected.
+	existing := map[string]string{"endpoint": "ovh-ca", "applicationKey": "AK"}
+	resolved, err = p.ResolveFields(map[string]string{"consumerKey": "CK"}, existing, []string{"applicationSecret"}, false)
+	if err != nil {
+		t.Fatalf("update resolve: %v", err)
+	}
+	if resolved.Config["endpoint"] != "ovh-ca" {
+		t.Fatalf("existing config not kept: %#v", resolved.Config)
+	}
+	if _, err := p.ResolveFields(map[string]string{"endpoint": "bogus", "applicationKey": "AK"}, existing, []string{"applicationSecret"}, false); err == nil {
+		t.Fatal("expected an invalid enum to be rejected")
+	}
+}
+
 func TestParseRejectsDuplicateFieldsAndBadEnums(t *testing.T) {
 	cases := map[string]string{
 		"duplicate":  "name: x\nfields:\n  - {key: a, label: A, type: string}\n  - {key: a, label: A2, type: string}\n",
