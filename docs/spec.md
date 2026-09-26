@@ -578,8 +578,11 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
 - **FR-DNS-05** — cert-manager DNS-01 solvers MUST be rendered from the
   registry (with `${secret}` / `${cred.<key>}` substitution), OVH MUST be
   supported, and the existing `cloudflare`, `rfc2136` and `passthrough` output
-  MUST be preserved. *(certs tests: `TestSpecOVH`, `TestSpecCloudflareSolverShape`,
-  `TestSpecRFC2136SolverShape`, `TestSpecPassthroughIsUnchanged`)*
+  MUST be preserved. OVH MUST support both its DynHost service
+  (`mode: dynamic`, username/password, the default) and the signed ZoneDNS API
+  (`mode: api`). *(certs tests: `TestSpecOVH`, `TestSpecCloudflareSolverShape`,
+  `TestSpecRFC2136SolverShape`, `TestSpecPassthroughIsUnchanged`;
+  `TestOVHDriverDynHostMode`)*
 - **FR-DNS-06** — A force-run endpoint (`POST /api/ddns/{id}/run`) MUST exist
   and MUST update the record even when the detected IP is unchanged, bypassing
   the DNS pre-check and the cooldown.

@@ -1,8 +1,25 @@
 name: ovh
 displayName: OVH
-description: OVH DNS (ovh-eu / ovh-ca / ovh-us), via the OVH cert-manager webhook.
+description: OVH DynHost (username/password) or ZoneDNS API (application keys).
 icon: "🟦"
 fields:
+  # DynHost mode (scope: ddns) — ddns-updater's default "dynamic" mode.
+  - key: mode
+    label: Mode
+    type: enum
+    default: dynamic
+    enum: [dynamic, api]
+    scope: ddns
+  - key: username
+    label: DynHost username
+    type: string
+    scope: ddns
+  - key: password
+    label: DynHost password
+    type: string
+    secret: true
+    scope: ddns
+  # ZoneDNS API mode (and the cert-manager OVH solver): endpoint + keys.
   - key: endpoint
     label: API endpoint
     type: enum
@@ -11,16 +28,13 @@ fields:
   - key: applicationKey
     label: Application key
     type: string
-    required: true
   - key: applicationSecret
     label: Application secret
     type: string
-    required: true
     secret: true
   - key: consumerKey
     label: Consumer key
     type: string
-    required: true
     secret: true
 certManager:
   solver:
@@ -36,4 +50,5 @@ certManager:
 ddns:
   driver: ovh
   defaults:
+    mode: dynamic
     endpoint: ovh-eu

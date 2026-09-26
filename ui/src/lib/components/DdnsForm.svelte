@@ -28,13 +28,15 @@
   // template, so derive the provider/fields reactively instead.
   $: currentProvider = ddnsProviders.find((p) => p.name === providerName);
   $: currentFields = currentProvider?.fields ?? [];
+  // Hide fields that are certificate-only (e.g. raw solver credentials).
+  $: ddnsFields = currentFields.filter((f: any) => f.scope !== 'cert');
 
   // Switch provider: keep the selection in sync and prefill field defaults.
   function onProviderChange(event: Event) {
     providerName = (event.currentTarget as HTMLSelectElement).value;
     const selected = ddnsProviders.find((p) => p.name === providerName);
     const next: Record<string, string> = {};
-    for (const f of selected?.fields ?? []) {
+    for (const f of (selected?.fields ?? []).filter((x: any) => x.scope !== 'cert')) {
       next[f.key] = f.default ?? '';
     }
     fieldValues = next;
@@ -141,7 +143,7 @@
       <div class="border-t border-naslos-border pt-4 space-y-3">
         <p class="text-xs uppercase tracking-wide text-gray-500">Provider credentials</p>
         <ProviderFields
-          fields={currentFields}
+          fields={ddnsFields}
           values={fieldValues}
           idPrefix="ddns"
           secretSet={entry?.credentialFields || []}

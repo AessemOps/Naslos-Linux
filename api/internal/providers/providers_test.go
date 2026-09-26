@@ -114,7 +114,7 @@ fields:
 func TestResolveFieldsSplitsConfigAndSecrets(t *testing.T) {
 	p, _ := Load("").Get("ovh")
 
-	resolved, err := p.ResolveFields(map[string]string{
+	resolved, err := p.ResolveFields("ddns", map[string]string{
 		"applicationKey":    "AK",
 		"applicationSecret": "AS",
 		"consumerKey":       "CK",
@@ -132,23 +132,44 @@ func TestResolveFieldsSplitsConfigAndSecrets(t *testing.T) {
 		t.Fatalf("credential fields = %v", resolved.CredentialFields)
 	}
 
-	// A missing required secret on create fails.
-	if _, err := p.ResolveFields(map[string]string{"applicationKey": "AK", "applicationSecret": "AS"}, nil, nil, true); err == nil {
-		t.Fatal("expected a missing required secret to fail on create")
+	// A missing required field on create fails (generic requires updateUrl).
+	generic, _ := Load("").Get("generic")
+	if _, err := generic.ResolveFields("ddns", map[string]string{}, nil, nil, true); err == nil {
+		t.Fatal("expected the missing required updateUrl to fail on create")
 	}
 
 	// On update, a stored config value is kept when the field is omitted, and an
 	// invalid enum is rejected.
 	existing := map[string]string{"endpoint": "ovh-ca", "applicationKey": "AK"}
-	resolved, err = p.ResolveFields(map[string]string{"consumerKey": "CK"}, existing, []string{"applicationSecret"}, false)
+	resolved, err = p.ResolveFields("ddns", map[string]string{"consumerKey": "CK"}, existing, []string{"applicationSecret"}, false)
 	if err != nil {
 		t.Fatalf("update resolve: %v", err)
 	}
 	if resolved.Config["endpoint"] != "ovh-ca" {
 		t.Fatalf("existing config not kept: %#v", resolved.Config)
 	}
-	if _, err := p.ResolveFields(map[string]string{"endpoint": "bogus", "applicationKey": "AK"}, existing, []string{"applicationSecret"}, false); err == nil {
+	if _, err := p.ResolveFields("ddns", map[string]string{"endpoint": "bogus", "applicationKey": "AK"}, existing, []string{"applicationSecret"}, false); err == nil {
 		t.Fatal("expected an invalid enum to be rejected")
+	}
+
+	// The DynHost fields are only visible to the DDNS scope.
+	ddnsKeys := map[string]bool{}
+	for _, f := range p.FieldsFor("ddns") {
+		ddnsKeys[f.Key] = true
+	}
+	certKeys := map[string]bool{}
+	for _, f := range p.FieldsFor("cert") {
+		certKeys[f.Key] = true
+	}
+	if !ddnsKeys["mode"] || !ddnsKeys["password"] {
+		t.Fatalf("DDNS scope is missing the DynHost fields: %v", ddnsKeys)
+	}
+	if certKeys["mode"] || certKeys["password"] {
+		t.Fatalf("cert scope leaked DDNS-only fields: %v", certKeys)
+	}
+	// A missing ZoneDNS credential is rejected when rendering the solver.
+	if err := p.ValidateSolver("s", map[string]string{"endpoint": "ovh-eu"}); err == nil {
+		t.Fatal("expected the solver to reject a missing applicationKey")
 	}
 }
 

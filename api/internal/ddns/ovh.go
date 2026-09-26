@@ -10,18 +10,25 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
-// OVHDriver updates a record through the OVH API (/1.0/domain/zone/...).
+// OVHDriver updates a record through OVH. Two modes, matching ddns-updater:
+// "dynamic" (default) uses the DynHost service with username/password, "api"
+// uses the signed ZoneDNS API with an application key/secret and consumer key.
 type OVHDriver struct {
 	Client *http.Client
 	// BaseURL overrides the endpoint-derived API base (tests point it at an
 	// httptest server).
 	BaseURL string
+	// DynHostBase overrides https://www.ovh.com for DynHost (tests).
+	DynHostBase string
 	// Now is a test seam for the request timestamp.
 	Now func() time.Time
 }
+
+const ovhDynHostBase = "https://www.ovh.com"
 
 func (d *OVHDriver) client() *http.Client {
 	if d.Client != nil {
@@ -67,6 +74,62 @@ type ovhRecord struct {
 
 // Update implements Driver.
 func (d *OVHDriver) Update(ctx context.Context, r UpdateRequest) error {
+	if !strings.EqualFold(configValue(r.Config, "mode"), "api") {
+		return d.updateDynHost(ctx, r)
+	}
+	return d.updateZoneDNS(ctx, r)
+}
+
+// updateDynHost uses OVH's DynHost service: GET /nic/update with the DynHost
+// username/password as HTTP Basic auth.
+func (d *OVHDriver) updateDynHost(ctx context.Context, r UpdateRequest) error {
+	username := configValue(r.Config, "username")
+	password := secretValue(r.Secret, "password")
+	if username == "" || password == "" {
+		return fmt.Errorf("OVH DynHost mode requires a username and password (or set mode: api)")
+	}
+	base := d.DynHostBase
+	if base == "" {
+		base = ovhDynHostBase
+	}
+	query := url.Values{}
+	query.Set("system", "dyndns")
+	query.Set("hostname", fqdn(r.Zone, r.Record))
+	query.Set("myip", r.IP)
+	target := strings.TrimSuffix(base, "/") + "/nic/update?" + query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(username, password)
+	req.Header.Set("User-Agent", UserAgent)
+	resp, err := d.client().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := ioReadLimited(resp)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("OVH DynHost returned HTTP %d: %s", resp.StatusCode, truncate(string(body)))
+	}
+	text := strings.ToLower(strings.TrimSpace(string(body)))
+	switch {
+	case strings.HasPrefix(text, "good"), strings.HasPrefix(text, "nochg"):
+		return nil
+	case strings.HasPrefix(text, "nohost"), strings.HasPrefix(text, "notfqdn"):
+		return fmt.Errorf("OVH DynHost: hostname does not exist")
+	case strings.HasPrefix(text, "badrequest"):
+		return fmt.Errorf("OVH DynHost: bad request")
+	case strings.HasPrefix(text, "badauth"):
+		return fmt.Errorf("OVH DynHost: authentication failed")
+	default:
+		return fmt.Errorf("OVH DynHost: unexpected response %q", truncate(string(body)))
+	}
+}
+
+// updateZoneDNS uses the signed OVH API (mode: api).
+func (d *OVHDriver) updateZoneDNS(ctx context.Context, r UpdateRequest) error {
 	endpoint := configValue(r.Config, "endpoint")
 	base := d.BaseURL
 	if base == "" {
