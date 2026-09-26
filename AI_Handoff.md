@@ -418,10 +418,11 @@ found were insider-exposure, not internet-exposure.
 
 ## Deployed right now (2026-09-26)
 
-On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 27**:
-`naslos-api` **`0.1.0-r26`** (git chart repos, privileged-namespace support,
-datasets PV/PVC, declarative DNS providers + Dynamic DNS), `naslos-ui`
-**`0.1.0-r18`** (Sources tab, exposure editor, Domains & SSL, Dynamic DNS),
+On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 28**:
+`naslos-api` **`0.1.0-r27`** (git chart repos, privileged-namespace support,
+datasets PV/PVC, declarative DNS providers + Dynamic DNS, provider `apiRights`),
+`naslos-ui` **`0.1.0-r19`** (Sources tab, exposure editor, Domains & SSL with the
+provider API-rights info bubble, Dynamic DNS),
 `naslos-agent` **`0.1.0-r8`**, `naslos-samba`/`naslos-nfs`/
 `naslos-terminal` **`0.1.0-r3`**, OpenLDAP per `values.yaml`. Talos
 **v1.14.1** (kernel 6.18.51-talos), Cilium v1.20.2, ZFS pool `test` (stripe,
@@ -440,7 +441,10 @@ Sonarr, Seerr, FlareSolverr, Prowlarr, qBittorrent, Audiobookshelf, Calibre-Web,
 SearXNG). **Jellyfin is installed** (`naslos-apps`, `http://jellyfin.naslos.local`,
 served 200 via Traefik, no media configured yet). Merged into `master`: app
 catalog (PR #28), Dynamic DNS + providers (PR #29), third-party credits
-(PR #30). Open: `chore/ddns-updater-credits` (PR #31) — credit ddns-updater for
-the DDNS provider configs and this handoff/credits-rule update. The
-pre-refactor revision 55 narrative is archived at
+(PR #30), ddns-updater credits + credits rule (PR #32). Open:
+`feature/domain-provider-api-rights` (PR #33) — declarative per-provider
+`apiRights` surfaced by `GET /api/providers` and shown as an info bubble next to
+the Domains form's DNS-01 provider selector; live-drilled on revision 28 (the
+four cert providers return rights; Playwright `domains.spec.ts` 6/6 including
+the new bubble test). The pre-refactor revision 55 narrative is archived at
 `docs/archive/ai-handoff-log-2026-09.md`.

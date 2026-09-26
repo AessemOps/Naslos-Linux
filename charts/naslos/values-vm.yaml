@@ -23,7 +23,7 @@
 api:
   image:
     repository: 192.168.1.2:30095/naslos-api
-    tag: "0.1.0-r26"
+    tag: "0.1.0-r27"
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -45,7 +45,7 @@ agent:
 ui:
   image:
     repository: 192.168.1.2:30095/naslos-ui
-    tag: "0.1.0-r18"
+    tag: "0.1.0-r19"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
