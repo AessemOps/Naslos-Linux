@@ -21,13 +21,16 @@ import (
 	"github.com/AessemOps/Naslos-Linux/api/internal/catalog"
 	"github.com/AessemOps/Naslos-Linux/api/internal/certs"
 	"github.com/AessemOps/Naslos-Linux/api/internal/chartsrepo"
+	"github.com/AessemOps/Naslos-Linux/api/internal/ddns"
 	"github.com/AessemOps/Naslos-Linux/api/internal/helm"
 	"github.com/AessemOps/Naslos-Linux/api/internal/identity"
 	"github.com/AessemOps/Naslos-Linux/api/internal/metrics"
 	"github.com/AessemOps/Naslos-Linux/api/internal/notifications"
+	"github.com/AessemOps/Naslos-Linux/api/internal/providers"
 	"github.com/AessemOps/Naslos-Linux/api/internal/routing"
 	"github.com/AessemOps/Naslos-Linux/api/internal/shares"
 	"github.com/AessemOps/Naslos-Linux/api/internal/talos"
+	"k8s.io/client-go/kubernetes"
 )
 
 // Server is the HTTP API server.
@@ -60,6 +63,13 @@ type Server struct {
 	routing    *routing.Reconciler
 	certs      *certs.Reconciler
 	domains    *certs.Store
+	// providers is the declarative DNS provider registry shared by domains and
+	// dynamic DNS (docs/dynamic-dns.md).
+	providers *providers.Registry
+	// ddns keeps A/AAAA records pointed at the public IP; nil when disabled.
+	ddns *ddns.Manager
+	// kubeClient, when set, replaces the cached clientset (tests inject a fake).
+	kubeClient kubernetes.Interface
 	// baseDomain is the primary domain app subdomains hang off; ssoDomains are
 	// the Authelia-protected domains.
 	baseDomain      string
@@ -265,6 +275,35 @@ func (s *Server) setupChartRepos(appsHelmClient *helm.Client) {
 	}
 	s.domains = domains
 
+	// Declarative DNS providers (docs/dynamic-dns.md): embedded definitions plus
+	// an optional mounted override directory. Loading is best-effort; a bad
+	// override is logged and surfaced by GET /api/providers, never fatal.
+	registry := providers.Load(getEnv("DDNS_PROVIDERS_DIR", ""))
+	for _, loadErr := range registry.Errors() {
+		log.Printf("Warning: DNS provider: %s", loadErr)
+	}
+	s.providers = registry
+	certs.ConfigureRegistry(registry)
+
+	// Dynamic DNS: detect the public IP on an interval and update providers only
+	// when it changes. Disabled when DDNS_ENABLED is false; the API still serves
+	// the provider list.
+	if getEnv("DDNS_ENABLED", "true") == "true" {
+		s.ddns = ddns.NewManager(ddns.Options{
+			Registry:      registry,
+			StorePath:     getEnv("DDNS_CONFIG", "/var/lib/naslos/ddns.json"),
+			AppsNamespace: s.appsNamespace,
+			Clientset:     s.kubernetesClient,
+			IPSources:     ddnsSources(getEnv("DDNS_IP_SOURCES", ""), getEnv("DDNS_IP_SOURCE", "https://api.ipify.org")),
+			IPv6Sources:   ddnsSources(getEnv("DDNS_IPV6_SOURCES", ""), getEnv("DDNS_IPV6_SOURCE", "https://api6.ipify.org")),
+			Interval:      time.Duration(getEnvInt("DDNS_INTERVAL_SECONDS", 300)) * time.Second,
+			Cooldown:      time.Duration(getEnvInt("DDNS_UPDATE_COOLDOWN_SECONDS", 300)) * time.Second,
+		})
+		if err := s.ddns.LoadError(); err != nil {
+			log.Printf("Warning: could not load DDNS entries: %v", err)
+		}
+	}
+
 	// Dynamic client for routing and certificates. A failure here (e.g. no
 	// cluster in a unit test) degrades to no routing rather than a fatal error.
 	var router apps.Router
@@ -432,6 +471,11 @@ func (s *Server) routes() {
 	owner.HandleFunc("/api/domains", s.handleDomains)
 	owner.HandleFunc("/api/domains/", s.handleDomainDetail)
 
+	// DNS providers & Dynamic DNS
+	owner.HandleFunc("/api/providers", s.handleProviders)
+	owner.HandleFunc("/api/ddns", s.handleDdns)
+	owner.HandleFunc("/api/ddns/", s.handleDdnsDetail)
+
 	// Disks
 	owner.HandleFunc("/api/disks", s.handleDisks)
 	owner.HandleFunc("/api/disks/recommend", s.handleDiskRecommend)
@@ -557,6 +601,12 @@ func (s *Server) Start() error {
 	s.ensureBuddySchedules()
 	s.startBuddyScheduler()
 
+	// Dynamic DNS: detect the public IP on an interval and keep records
+	// converged (FR-DNS-03).
+	if s.ddns != nil {
+		s.ddns.Start()
+	}
+
 	// ZFS health and disk-presence notifications (PF-M9). No-op unless the
 	// operator enabled the matching events.
 	s.startHealthNotifier()
@@ -589,6 +639,9 @@ func (s *Server) Start() error {
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.stopBuddyScheduler()
+	if s.ddns != nil {
+		s.ddns.Stop()
+	}
 	if s.buddyJobs != nil {
 		s.buddyJobs.cancelAll()
 	}

@@ -1,0 +1,16 @@
+name: porkbun
+displayName: Porkbun
+description: Porkbun DNS API; the record is looked up by name, then created or edited.
+icon: "🐷"
+fields:
+  - key: apiKey
+    label: API key
+    type: string
+    required: true
+  - key: secretApiKey
+    label: Secret API key
+    type: string
+    required: true
+    secret: true
+ddns:
+  driver: porkbun

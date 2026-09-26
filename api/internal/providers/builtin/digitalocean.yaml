@@ -1,0 +1,12 @@
+name: digitalocean
+displayName: DigitalOcean
+description: DigitalOcean DNS; the record must already exist (looked up by name, replaced by id).
+icon: "🔷"
+fields:
+  - key: token
+    label: API token
+    type: string
+    required: true
+    secret: true
+ddns:
+  driver: digitalocean

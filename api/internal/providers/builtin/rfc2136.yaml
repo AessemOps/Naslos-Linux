@@ -1,0 +1,13 @@
+name: rfc2136
+displayName: RFC 2136 (dynamic DNS)
+description: RFC 2136 dynamic DNS updates with TSIG (cert-manager certificates only).
+icon: "📜"
+certManager:
+  solver:
+    rfc2136:
+      nameserver: "${secret}"
+      tsigKeyName: ""
+      tsigAlgorithm: HMACSHA256
+      tsigSecretSecretRef:
+        name: "${secret}"
+        key: tsig-secret

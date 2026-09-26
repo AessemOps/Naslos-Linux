@@ -23,6 +23,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [terminal.md](terminal.md) | Web terminal: exec scoping, RBAC, terminal namespace | New |
 | [buddy-backup.md](buddy-backup.md) | Buddy Backup: owner-to-owner encrypted backup, enrollment, verify/restore | New |
 | [app-catalog.md](app-catalog.md) | App catalog: git chart repositories, `naslos-app.yaml`, install lifecycle, exposure/routing, domains/certs, privileged NS | Rebuilt |
+| [dynamic-dns.md](dynamic-dns.md) | Dynamic DNS + declarative DNS providers: provider YAML, entries, credential Secrets, drivers, egress | New |
 | [monitoring.md](monitoring.md) | Metrics API, Prometheus + Alertmanager (Grafana removed) | New |
 | [notifications.md](notifications.md) | ntfy alerting: topics, severities, defaults | New |
 | [deployment.md](deployment.md) | Prerequisites, Make targets, Helm values walkthrough | New |

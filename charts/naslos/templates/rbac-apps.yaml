@@ -5,6 +5,11 @@
 # renders, plus the API-owned IngressRoutes/middlewares and cert-manager CRs.
 # This is a namespaced Role: the API gets no cluster-scoped write, no
 # pods/exec, no node or proxy-secret access here.
+#
+# Secret CRUD here is also what lets DOMAIN and DYNAMIC-DNS credentials be
+# written to naslos-apps (docs/dynamic-dns.md); no new RBAC is needed and no
+# Secret access is added in the release namespace, so the API still cannot read
+# the proxy / LDAP / Authelia secrets.
 {{- $ans := .Values.apps.namespace | default "naslos-apps" }}
 {{- if and .Values.ui.enabled (ne $ans .Release.Namespace) (ne $ans (include "naslos.workloadNamespace" .)) }}
 apiVersion: rbac.authorization.k8s.io/v1

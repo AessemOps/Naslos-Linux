@@ -84,3 +84,70 @@ func TestStoreRoundTrip(t *testing.T) {
 		t.Fatalf("round trip mismatch: %+v (secret %s)", got, got.SecretName())
 	}
 }
+
+// solverOf extracts dns01 solver from a rendered Issuer.
+func solverOf(t *testing.T, d Domain) map[string]interface{} {
+	t.Helper()
+	issuer, _, err := Spec(d, "naslos-apps")
+	if err != nil {
+		t.Fatalf("spec: %v", err)
+	}
+	acme := issuer.Object["spec"].(map[string]interface{})["acme"].(map[string]interface{})
+	solvers := acme["solvers"].([]interface{})
+	return solvers[0].(map[string]interface{})["dns01"].(map[string]interface{})
+}
+
+// TestSpecCloudflareSolverShape pins the exact solver output the existing
+// deployments rely on (FR-APP-13 regression).
+func TestSpecCloudflareSolverShape(t *testing.T) {
+	solver := solverOf(t, Domain{BaseDomain: "example.com", DNSProvider: ProviderCloudflare, CredentialsSecret: "cf"})
+	ref := solver["cloudflare"].(map[string]interface{})["apiTokenSecretRef"].(map[string]interface{})
+	if ref["name"] != "cf" || ref["key"] != "api-token" {
+		t.Fatalf("cloudflare solver = %#v", solver)
+	}
+}
+
+// TestSpecRFC2136SolverShape pins the RFC2136 solver output.
+func TestSpecRFC2136SolverShape(t *testing.T) {
+	solver := solverOf(t, Domain{BaseDomain: "example.com", DNSProvider: ProviderRFC2136, CredentialsSecret: "rfc"})
+	rfc := solver["rfc2136"].(map[string]interface{})
+	if rfc["nameserver"] != "rfc" || rfc["tsigAlgorithm"] != "HMACSHA256" || rfc["tsigKeyName"] != "" {
+		t.Fatalf("rfc2136 solver = %#v", solver)
+	}
+	ref := rfc["tsigSecretSecretRef"].(map[string]interface{})
+	if ref["name"] != "rfc" || ref["key"] != "tsig-secret" {
+		t.Fatalf("rfc2136 tsig ref = %#v", ref)
+	}
+}
+
+// TestSpecPassthroughIsUnchanged pins the raw-solver passthrough path.
+func TestSpecPassthroughIsUnchanged(t *testing.T) {
+	raw := map[string]interface{}{"acme-dns": map[string]interface{}{"host": "ns.example.com"}}
+	solver := solverOf(t, Domain{BaseDomain: "example.com", DNSProvider: ProviderPassthrough, Solver: raw})
+	if solver["acme-dns"].(map[string]interface{})["host"] != "ns.example.com" {
+		t.Fatalf("passthrough solver = %#v", solver)
+	}
+}
+
+// TestSpecOVH proves OVH is supported through the registry, with its
+// non-secret config substituted and its secret keys read from the Secret.
+func TestSpecOVH(t *testing.T) {
+	d := Domain{
+		BaseDomain:        "example.com",
+		DNSProvider:       ProviderOVH,
+		CredentialsSecret: "naslos-domain-example-com-creds",
+		ProviderConfig:    map[string]string{"endpoint": "ovh-ca", "applicationKey": "AK"},
+	}
+	if err := d.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	solver := solverOf(t, d)
+	ovh := solver["ovh"].(map[string]interface{})
+	if ovh["endpoint"] != "ovh-ca" || ovh["applicationKey"] != "AK" {
+		t.Fatalf("ovh config not substituted: %#v", ovh)
+	}
+	ref := ovh["applicationSecretSecretRef"].(map[string]interface{})
+	if ref["name"] != "naslos-domain-example-com-creds" || ref["key"] != "applicationSecret" {
+		t.Fatalf("ovh secret ref = %#v", ref)
+	}
+}
