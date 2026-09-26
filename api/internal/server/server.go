@@ -294,9 +294,10 @@ func (s *Server) setupChartRepos(appsHelmClient *helm.Client) {
 			StorePath:     getEnv("DDNS_CONFIG", "/var/lib/naslos/ddns.json"),
 			AppsNamespace: s.appsNamespace,
 			Clientset:     s.kubernetesClient,
-			IPSource:      getEnv("DDNS_IP_SOURCE", "https://api.ipify.org"),
-			IPv6Source:    getEnv("DDNS_IPV6_SOURCE", "https://api6.ipify.org"),
+			IPSources:     ddnsSources(getEnv("DDNS_IP_SOURCES", ""), getEnv("DDNS_IP_SOURCE", "https://api.ipify.org")),
+			IPv6Sources:   ddnsSources(getEnv("DDNS_IPV6_SOURCES", ""), getEnv("DDNS_IPV6_SOURCE", "https://api6.ipify.org")),
 			Interval:      time.Duration(getEnvInt("DDNS_INTERVAL_SECONDS", 300)) * time.Second,
+			Cooldown:      time.Duration(getEnvInt("DDNS_UPDATE_COOLDOWN_SECONDS", 300)) * time.Second,
 		})
 		if err := s.ddns.LoadError(); err != nil {
 			log.Printf("Warning: could not load DDNS entries: %v", err)

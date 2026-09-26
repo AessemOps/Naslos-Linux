@@ -1,0 +1,20 @@
+name: duckdns
+displayName: DuckDNS
+description: DuckDNS dynamic DNS (duckdns.org).
+icon: "🦆"
+fields:
+  - key: token
+    label: Token
+    type: string
+    required: true
+    secret: true
+ddns:
+  driver: http
+  defaults:
+    method: GET
+    authType: none
+    successStatus: "200"
+    successContains: OK
+    errorAny: KO
+    updateUrl: >-
+      https://www.duckdns.org/update?verbose=true&domains={{label .record .zone}}&token={{.secret.token}}&{{if eq .type "AAAA"}}ipv6{{else}}ip{{end}}={{.ip}}

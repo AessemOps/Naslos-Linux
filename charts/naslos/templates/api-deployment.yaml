@@ -277,12 +277,14 @@ spec:
               value: {{ $ddns.stateFile | default "/var/lib/naslos/ddns.json" | quote }}
             - name: DDNS_PROVIDERS_DIR
               value: {{ $ddns.providersDir | default "/etc/naslos/ddns-providers" | quote }}
-            - name: DDNS_IP_SOURCE
-              value: {{ $ddns.ipSource | default "https://api.ipify.org" | quote }}
-            - name: DDNS_IPV6_SOURCE
-              value: {{ $ddns.ipv6Source | default "https://api6.ipify.org" | quote }}
+            - name: DDNS_IP_SOURCES
+              value: {{ join "," ($ddns.ipSources | default (list "https://api.ipify.org" "dns:google")) | quote }}
+            - name: DDNS_IPV6_SOURCES
+              value: {{ join "," ($ddns.ipv6Sources | default (list "https://api6.ipify.org" "dns:google")) | quote }}
             - name: DDNS_INTERVAL_SECONDS
               value: {{ $ddns.intervalSeconds | default 300 | quote }}
+            - name: DDNS_UPDATE_COOLDOWN_SECONDS
+              value: {{ $ddns.updateCooldownSeconds | default 300 | quote }}
             # Notification settings: kept on the same volume as the other state
             # files so an operator's topic, token and enabled events survive a
             # restart (they used to be in-memory only).

@@ -195,22 +195,75 @@ func (d *HTTPDriver) Update(ctx context.Context, r UpdateRequest) error {
 	}
 	defer resp.Body.Close()
 
-	want := 200
+	// successStatus may be a single code or a comma-separated list (some
+	// providers answer 204 for "no change").
+	want := []int{http.StatusOK}
 	if raw := configValue(r.Config, "successStatus"); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil {
-			return fmt.Errorf("successStatus %q is not a number", raw)
+		want = nil
+		for _, part := range strings.Split(raw, ",") {
+			parsed, err := strconv.Atoi(strings.TrimSpace(part))
+			if err != nil {
+				return fmt.Errorf("successStatus %q is not a number", raw)
+			}
+			want = append(want, parsed)
 		}
-		want = parsed
 	}
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != want {
-		return fmt.Errorf("update returned HTTP %d (want %d): %s", resp.StatusCode, want, truncate(string(respBody)))
+	respText := string(respBody)
+	statusOK := false
+	for _, code := range want {
+		if resp.StatusCode == code {
+			statusOK = true
+			break
+		}
 	}
-	if contains := configValue(r.Config, "successContains"); contains != "" && !strings.Contains(string(respBody), contains) {
+	if !statusOK {
+		return fmt.Errorf("update returned HTTP %d (want %v): %s", resp.StatusCode, want, truncate(respText))
+	}
+	// 204 No Content is an explicit "no change" from some providers; there is no
+	// body to match against.
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	// errorAny markers win over success markers (NIC providers answer 200 with
+	// an error word such as "badauth").
+	if markers := splitList(configValue(r.Config, "errorAny")); len(markers) > 0 {
+		for _, marker := range markers {
+			if strings.Contains(respText, marker) {
+				return fmt.Errorf("update rejected by the provider: %s", truncate(respText))
+			}
+		}
+	}
+	if markers := splitList(configValue(r.Config, "successAny")); len(markers) > 0 {
+		found := false
+		for _, marker := range markers {
+			if strings.Contains(respText, marker) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("update response did not contain any of %v: %s", markers, truncate(respText))
+		}
+	}
+	if contains := configValue(r.Config, "successContains"); contains != "" && !strings.Contains(respText, contains) {
 		return fmt.Errorf("update response did not contain %q", contains)
 	}
 	return nil
+}
+
+func splitList(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func applyAuth(req *http.Request, r UpdateRequest) error {
@@ -257,7 +310,15 @@ func applyAuth(req *http.Request, r UpdateRequest) error {
 }
 
 func renderTemplate(name, tmpl string, data map[string]interface{}) (string, error) {
-	t, err := template.New(name).Option("missingkey=error").Parse(tmpl)
+	funcs := template.FuncMap{
+		// fqdn builds the record's full name ("home.example.com"); label is the
+		// subdomain label ("" for the apex).
+		"fqdn": func(record, zone string) string { return fqdn(zone, record) },
+		"label": func(record, zone string) string {
+			return zoneLabel(zone, record)
+		},
+	}
+	t, err := template.New(name).Funcs(funcs).Option("missingkey=error").Parse(tmpl)
 	if err != nil {
 		return "", fmt.Errorf("parsing the %s template: %w", name, err)
 	}

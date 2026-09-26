@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AessemOps/Naslos-Linux/api/internal/providers"
 )
 
 func fakeGuard(*url.URL) error { return nil }
@@ -228,6 +230,170 @@ func TestHTTPDriverRejectsNonPublicTargets(t *testing.T) {
 	u, _ := url.Parse("https://203.0.113.5/update")
 	if err := d.guard(u); err != nil {
 		t.Errorf("guard rejected a public IP: %v", err)
+	}
+}
+
+func TestGoDaddyDriverUpdate(t *testing.T) {
+	var path, auth, body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		auth = r.Header.Get("Authorization")
+		buf := make([]byte, 1024)
+		n, _ := r.Body.Read(buf)
+		body = string(buf[:n])
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	d := &GoDaddyDriver{Client: srv.Client(), BaseURL: srv.URL + "/v1"}
+	if err := d.Update(context.Background(), UpdateRequest{
+		Zone: "example.com", Record: "home", RecordType: "A", IP: "203.0.113.5",
+		Config: map[string]string{"apiKey": "K"},
+		Secret: map[string]string{"apiSecret": "S"},
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if path != "/v1/domains/example.com/records/A/home" {
+		t.Errorf("path = %s", path)
+	}
+	if auth != "sso-key K:S" {
+		t.Errorf("auth = %q", auth)
+	}
+	if !strings.Contains(body, `"data":"203.0.113.5"`) {
+		t.Errorf("body = %s", body)
+	}
+}
+
+func TestDigitalOceanDriverLookupAndReplace(t *testing.T) {
+	var getPath, putPath, putBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			getPath = r.URL.Path + "?" + r.URL.RawQuery
+			w.Write([]byte(`{"domain_records":[{"id":7}]}`))
+			return
+		}
+		putPath = r.URL.Path
+		buf := make([]byte, 1024)
+		n, _ := r.Body.Read(buf)
+		putBody = string(buf[:n])
+		w.Write([]byte(`{"domain_record":{"data":"203.0.113.5"}}`))
+	}))
+	defer srv.Close()
+
+	d := &DigitalOceanDriver{Client: srv.Client(), BaseURL: srv.URL + "/v2"}
+	err := d.Update(context.Background(), UpdateRequest{
+		Zone: "example.com", Record: "home", RecordType: "A", IP: "203.0.113.5",
+		Secret: map[string]string{"token": "tok"},
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !strings.Contains(getPath, "/v2/domains/example.com/records") || !strings.Contains(getPath, "name=home.example.com") {
+		t.Errorf("lookup = %s", getPath)
+	}
+	if putPath != "/v2/domains/example.com/records/7" {
+		t.Errorf("put path = %s", putPath)
+	}
+	if !strings.Contains(putBody, `"name":"home"`) || !strings.Contains(putBody, `"data":"203.0.113.5"`) {
+		t.Errorf("put body = %s", putBody)
+	}
+}
+
+func TestPorkbunDriverCreatesThenEdits(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		var posts []string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			posts = append(posts, r.URL.Path)
+			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(r.URL.Path, "/retrieveByNameType/") {
+				if existing {
+					w.Write([]byte(`{"status":"SUCCESS","records":[{"id":"11"}]}`))
+				} else {
+					w.Write([]byte(`{"status":"SUCCESS","records":[]}`))
+				}
+				return
+			}
+			w.Write([]byte(`{"status":"SUCCESS"}`))
+		}))
+		d := &PorkbunDriver{Client: srv.Client(), BaseURL: srv.URL}
+		err := d.Update(context.Background(), UpdateRequest{
+			Zone: "example.com", Record: "home", RecordType: "A", IP: "203.0.113.5",
+			Config: map[string]string{"apiKey": "K"},
+			Secret: map[string]string{"secretApiKey": "S"},
+		})
+		if err != nil {
+			t.Fatalf("update(existing=%v): %v", existing, err)
+		}
+		want := "/dns/create/example.com"
+		if existing {
+			want = "/dns/edit/example.com/11"
+		}
+		found := false
+		for _, p := range posts {
+			if p == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("existing=%v: posts = %v, want %s", existing, posts, want)
+		}
+		srv.Close()
+	}
+}
+
+func TestHTTPDriverSuccessAndErrorMarkers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("mode") == "error" {
+			w.Write([]byte("badauth"))
+			return
+		}
+		w.Write([]byte("good 203.0.113.5"))
+	}))
+	defer srv.Close()
+
+	d := &HTTPDriver{Client: srv.Client(), Guard: fakeGuard, BaseURL: srv.URL}
+	base := map[string]string{
+		"successStatus": "200",
+		"successAny":    "good,nochg",
+		"errorAny":      "badauth,notfqdn",
+	}
+	if err := d.Update(context.Background(), UpdateRequest{Config: mergeConfig(base, map[string]string{"updateUrl": "/update"})}); err != nil {
+		t.Fatalf("good response: %v", err)
+	}
+	if err := d.Update(context.Background(), UpdateRequest{Config: mergeConfig(base, map[string]string{"updateUrl": "/update?mode=error"})}); err == nil {
+		t.Fatal("expected a badauth response to fail")
+	}
+}
+
+func mergeConfig(base, extra map[string]string) map[string]string {
+	out := make(map[string]string, len(base)+len(extra))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
+}
+
+func TestBuiltinProvidersHaveKnownDrivers(t *testing.T) {
+	registry := providers.Load("")
+	if errs := registry.Errors(); len(errs) > 0 {
+		t.Fatalf("provider load errors: %v", errs)
+	}
+	ddnsCount := 0
+	for _, p := range registry.List() {
+		if !p.HasDDNS() {
+			continue
+		}
+		ddnsCount++
+		if _, err := defaultDriver(p.DDNS.Driver, nil); err != nil {
+			t.Errorf("provider %s: %v", p.Name, err)
+		}
+	}
+	if ddnsCount < 15 {
+		t.Fatalf("expected a curated DDNS provider set, got %d", ddnsCount)
 	}
 }
 

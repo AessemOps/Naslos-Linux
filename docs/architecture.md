@@ -72,7 +72,7 @@ see the [document index](README.md).
 | Prometheus | HTTP | metrics (Grafana removed 2026-09-19) |
 | ntfy (external `ntfy.sh` or self-hosted) | HTTPS | push notifications |
 | Git chart hosts | HTTPS 443 / SSH 22 / git 9418 | clone configured chart repositories (`networkPolicy.gitEgress`) |
-| Public-IP sources + DNS provider APIs | HTTPS 443 (HTTP 80 for `http` providers) | Dynamic DNS detection and record updates (`networkPolicy.ddnsEgress`, §3.9) |
+| Public-IP sources + DNS provider APIs | HTTPS 443 (HTTP 80 for `http` providers) + DNS 53 | Dynamic DNS detection (HTTP + `dns:opendns`/`dns:google`) and record updates (`networkPolicy.ddnsEgress`, §3.9) |
 
 ## Layer 2 — Deployment Topology (namespaces `naslos` + `naslos-privileged`)
 

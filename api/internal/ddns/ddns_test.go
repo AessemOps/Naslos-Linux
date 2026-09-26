@@ -3,6 +3,7 @@ package ddns
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -97,7 +98,7 @@ func TestManagerUpdateSkipsUnchangedAndHidesSecrets(t *testing.T) {
 		StorePath:     filepath.Join(t.TempDir(), "ddns.json"),
 		AppsNamespace: "naslos-apps",
 		Clientset:     func() (kubernetes.Interface, error) { return client, nil },
-		IPSource:      ipSrv.URL,
+		IPSources:     []string{ipSrv.URL},
 		Interval:      time.Minute,
 		Client:        ipSrv.Client(),
 	})
@@ -177,7 +178,7 @@ func TestManagerRecordsCredentialErrors(t *testing.T) {
 		StorePath:     filepath.Join(t.TempDir(), "ddns.json"),
 		AppsNamespace: "naslos-apps",
 		Clientset:     func() (kubernetes.Interface, error) { return fake.NewSimpleClientset(), nil },
-		IPSource:      ipSrv.URL,
+		IPSources:     []string{ipSrv.URL},
 		Interval:      time.Minute,
 		Client:        ipSrv.Client(),
 	})
@@ -190,5 +191,153 @@ func TestManagerRecordsCredentialErrors(t *testing.T) {
 	got, _ := m.Store().Get("e2")
 	if got.LastStatus != "error" || got.LastError == "" {
 		t.Fatalf("entry status = %+v", got)
+	}
+}
+
+type fakeResolver struct {
+	ips []string
+	err error
+}
+
+func (f fakeResolver) LookupIPAddr(_ context.Context, _ string) ([]net.IPAddr, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := make([]net.IPAddr, 0, len(f.ips))
+	for _, value := range f.ips {
+		out = append(out, net.IPAddr{IP: net.ParseIP(value)})
+	}
+	return out, nil
+}
+
+func newManagerWithResolver(t *testing.T, resolver Resolver) (*Manager, *fakeDriver, *httptest.Server) {
+	t.Helper()
+	ipSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("203.0.113.7"))
+	}))
+	t.Cleanup(ipSrv.Close)
+	client := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "naslos-ddns-e1", Namespace: "naslos-apps"},
+		Data:       map[string][]byte{"api-token": []byte("tok")},
+	})
+	m := NewManager(Options{
+		Registry:      providers.Load(""),
+		StorePath:     filepath.Join(t.TempDir(), "ddns.json"),
+		AppsNamespace: "naslos-apps",
+		Clientset:     func() (kubernetes.Interface, error) { return client, nil },
+		IPSources:     []string{ipSrv.URL},
+		Interval:      time.Minute,
+		Cooldown:      time.Minute,
+		Client:        ipSrv.Client(),
+		Resolver:      resolver,
+	})
+	driver := &fakeDriver{}
+	m.newDriver = func(string, *http.Client) (Driver, error) { return driver, nil }
+	return m, driver, ipSrv
+}
+
+// TestManagerSkipsWhenDNSAlreadyHoldsTheIP is the ddns-updater detection model:
+// when the record already resolves to the public IP, no provider call is made.
+func TestManagerSkipsWhenDNSAlreadyHoldsTheIP(t *testing.T) {
+	m, driver, _ := newManagerWithResolver(t, fakeResolver{ips: []string{"203.0.113.7"}})
+	_ = m.Store().Put(Entry{ID: "e1", Provider: "cloudflare", Zone: "example.com", Record: "home", RecordType: "A", Enabled: true, CredentialsSecret: "naslos-ddns-e1"})
+
+	if err := m.Run(context.Background(), "e1", false); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if driver.calls != 0 {
+		t.Fatalf("driver calls = %d, want 0 (DNS already correct)", driver.calls)
+	}
+	got, _ := m.Store().Get("e1")
+	if got.LastIP != "203.0.113.7" || got.LastStatus != "ok" {
+		t.Fatalf("entry = %+v", got)
+	}
+}
+
+// TestManagerUpdatesWhenDNSDiffersAndRespectsCooldown covers the update path and
+// the per-record cooldown.
+func TestManagerUpdatesWhenDNSDiffersAndRespectsCooldown(t *testing.T) {
+	m, driver, _ := newManagerWithResolver(t, fakeResolver{ips: []string{"198.51.100.1"}})
+	_ = m.Store().Put(Entry{ID: "e1", Provider: "cloudflare", Zone: "example.com", Record: "home", RecordType: "A", Enabled: true, CredentialsSecret: "naslos-ddns-e1"})
+
+	if err := m.Run(context.Background(), "e1", false); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if driver.calls != 1 {
+		t.Fatalf("driver calls = %d, want 1", driver.calls)
+	}
+	got, _ := m.Store().Get("e1")
+	if got.LastUpdateAt.IsZero() {
+		t.Fatal("LastUpdateAt was not recorded")
+	}
+	// Inside the cooldown, a non-forced run must not call the provider again.
+	if err := m.Run(context.Background(), "e1", false); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if driver.calls != 1 {
+		t.Fatalf("driver calls inside cooldown = %d, want 1", driver.calls)
+	}
+	// A forced run bypasses both the cooldown and the DNS pre-check.
+	if err := m.Run(context.Background(), "e1", true); err != nil {
+		t.Fatalf("forced run: %v", err)
+	}
+	if driver.calls != 2 {
+		t.Fatalf("driver calls after forced run = %d, want 2", driver.calls)
+	}
+}
+
+// TestManagerProxiedUsesStoredIP verifies the Cloudflare-proxied fallback.
+func TestManagerProxiedUsesStoredIP(t *testing.T) {
+	m, driver, _ := newManagerWithResolver(t, fakeResolver{ips: []string{"198.51.100.1"}})
+	_ = m.Store().Put(Entry{
+		ID: "e1", Provider: "cloudflare", Zone: "example.com", Record: "home", RecordType: "A",
+		Enabled: true, CredentialsSecret: "naslos-ddns-e1",
+		ProviderConfig: map[string]string{"proxied": "true"},
+		LastIP:         "203.0.113.7", LastStatus: "ok",
+	})
+
+	if err := m.Run(context.Background(), "e1", false); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if driver.calls != 0 {
+		t.Fatalf("driver calls = %d, want 0 (proxied record already converged)", driver.calls)
+	}
+}
+
+// TestManagerUpdatesWhenDNSLookupFails ensures a failed lookup updates rather
+// than silently skipping.
+func TestManagerUpdatesWhenDNSLookupFails(t *testing.T) {
+	m, driver, _ := newManagerWithResolver(t, fakeResolver{err: &net.DNSError{IsNotFound: true, Err: "no such host"}})
+	_ = m.Store().Put(Entry{ID: "e1", Provider: "cloudflare", Zone: "example.com", Record: "home", RecordType: "A", Enabled: true, CredentialsSecret: "naslos-ddns-e1"})
+
+	if err := m.Run(context.Background(), "e1", false); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if driver.calls != 1 {
+		t.Fatalf("driver calls = %d, want 1 (lookup failure must update)", driver.calls)
+	}
+}
+
+func TestDetectIPAnyCyclesAndChecksFamily(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer bad.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("203.0.113.9"))
+	}))
+	defer good.Close()
+
+	ip, err := DetectIPAny(context.Background(), good.Client(), false, []string{bad.URL, good.URL})
+	if err != nil || ip != "203.0.113.9" {
+		t.Fatalf("DetectIPAny = %q, %v", ip, err)
+	}
+	// A v4 address must be rejected when a v6 address is requested.
+	if _, err := DetectIPAny(context.Background(), good.Client(), true, []string{good.URL}); err == nil {
+		t.Fatal("expected the wrong address family to fail")
+	}
+	// An unknown DNS source is rejected.
+	if _, err := DetectIPAny(context.Background(), good.Client(), false, []string{"dns:nope"}); err == nil {
+		t.Fatal("expected an unknown DNS source to fail")
 	}
 }

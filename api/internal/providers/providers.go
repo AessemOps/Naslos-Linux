@@ -36,9 +36,12 @@ const (
 // knownDrivers are the DDNS drivers compiled into the API. A provider may only
 // name one of these.
 var knownDrivers = map[string]bool{
-	"ovh":        true,
-	"cloudflare": true,
-	"http":       true,
+	"ovh":          true,
+	"cloudflare":   true,
+	"digitalocean": true,
+	"godaddy":      true,
+	"porkbun":      true,
+	"http":         true,
 }
 
 // Field is one provider credential/config field.

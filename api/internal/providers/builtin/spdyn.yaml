@@ -1,0 +1,26 @@
+name: spdyn
+displayName: SPDYN
+description: SPDYN (spdyn.de) dynamic DNS; token or username/password.
+icon: "🟡"
+fields:
+  - key: username
+    label: Username
+    type: string
+  - key: password
+    label: Password
+    type: string
+    secret: true
+  - key: token
+    label: Update token
+    type: string
+    secret: true
+ddns:
+  driver: http
+  defaults:
+    method: GET
+    authType: none
+    successStatus: "200"
+    successAny: good,nochg
+    errorAny: "abuse,numhost,badauth,!yours,notfqdn,nohost,fatal"
+    updateUrl: >-
+      https://update.spdyn.de/nic/update?hostname={{fqdn .record .zone}}&myip={{.ip}}&{{if .secret.token}}user={{fqdn .record .zone}}&pass={{.secret.token}}{{else}}user={{.config.username}}&pass={{.secret.password}}{{end}}

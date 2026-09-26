@@ -128,7 +128,7 @@ func (d *CloudflareDriver) Update(ctx context.Context, r UpdateRequest) error {
 		"name":    name,
 		"content": r.IP,
 		"ttl":     ttl,
-		"proxied": false,
+		"proxied": strings.EqualFold(configValue(r.Config, "proxied"), "true"),
 	})
 	if err != nil {
 		return err

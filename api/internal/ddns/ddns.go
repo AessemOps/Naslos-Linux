@@ -52,6 +52,9 @@ type Entry struct {
 	LastError  string    `json:"lastError,omitempty"`
 	LastRunAt  time.Time `json:"lastRunAt,omitempty"`
 	NextRunAt  time.Time `json:"nextRunAt,omitempty"`
+	// LastUpdateAt is the last successful provider update; it drives the update
+	// cooldown (modeled on ddns-updater's UPDATE_COOLDOWN_PERIOD).
+	LastUpdateAt time.Time `json:"lastUpdateAt,omitempty"`
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -63,14 +66,18 @@ func (e *Entry) MarshalJSON() ([]byte, error) {
 	type entry Entry
 	out := struct {
 		*entry
-		LastRunAt *time.Time `json:"lastRunAt,omitempty"`
-		NextRunAt *time.Time `json:"nextRunAt,omitempty"`
+		LastRunAt    *time.Time `json:"lastRunAt,omitempty"`
+		NextRunAt    *time.Time `json:"nextRunAt,omitempty"`
+		LastUpdateAt *time.Time `json:"lastUpdateAt,omitempty"`
 	}{entry: (*entry)(e)}
 	if !e.LastRunAt.IsZero() {
 		out.LastRunAt = &e.LastRunAt
 	}
 	if !e.NextRunAt.IsZero() {
 		out.NextRunAt = &e.NextRunAt
+	}
+	if !e.LastUpdateAt.IsZero() {
+		out.LastUpdateAt = &e.LastUpdateAt
 	}
 	return json.Marshal(out)
 }
@@ -254,6 +261,94 @@ func DetectIP(ctx context.Context, client *http.Client, source string) (string, 
 	return ip.String(), nil
 }
 
+// DetectIPAny tries each source in order and returns the first valid address of
+// the requested family. A source is an HTTP(S) URL or a DNS fetcher
+// ("dns:opendns", "dns:google"); this mirrors ddns-updater cycling through
+// several public-IP echo services so one being down does not stall detection.
+func DetectIPAny(ctx context.Context, client *http.Client, wantV6 bool, sources []string) (string, error) {
+	if len(sources) == 0 {
+		return "", fmt.Errorf("no public-IP source is configured")
+	}
+	var errs []string
+	for _, source := range sources {
+		source = strings.TrimSpace(source)
+		if source == "" {
+			continue
+		}
+		var (
+			ip  string
+			err error
+		)
+		if name, ok := strings.CutPrefix(source, "dns:"); ok {
+			ip, err = detectDNSIP(ctx, name, wantV6)
+		} else {
+			ip, err = DetectIP(ctx, client, source)
+		}
+		if err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		if !ipMatchesFamily(ip, wantV6) {
+			errs = append(errs, fmt.Sprintf("source %s returned %s, wrong address family", source, ip))
+			continue
+		}
+		return ip, nil
+	}
+	return "", fmt.Errorf("all public-IP sources failed: %s", strings.Join(errs, "; "))
+}
+
+func ipMatchesFamily(ip string, wantV6 bool) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	return wantV6 == (parsed.To4() == nil)
+}
+
+// detectDNSIP resolves the public IP through a well-known DNS echo service,
+// modeled on ddns-updater's DNS public-IP fetchers. The query must go to the
+// service's own resolver, so it is dialed directly.
+func detectDNSIP(ctx context.Context, name string, wantV6 bool) (string, error) {
+	network := "ip4"
+	if wantV6 {
+		network = "ip6"
+	}
+	switch strings.TrimSpace(name) {
+	case "opendns":
+		ips, err := dnsResolver("208.67.222.222:53").LookupIP(ctx, network, "myip.opendns.com")
+		if err != nil {
+			return "", fmt.Errorf("dns:opendns: %w", err)
+		}
+		if len(ips) == 0 {
+			return "", fmt.Errorf("dns:opendns returned no address")
+		}
+		return ips[0].String(), nil
+	case "google":
+		txts, err := dnsResolver("8.8.8.8:53").LookupTXT(ctx, "o-o.myaddr.l.google.com")
+		if err != nil {
+			return "", fmt.Errorf("dns:google: %w", err)
+		}
+		for _, txt := range txts {
+			if ip := net.ParseIP(strings.Trim(strings.TrimSpace(txt), `"`)); ip != nil {
+				return ip.String(), nil
+			}
+		}
+		return "", fmt.Errorf("dns:google returned no address")
+	default:
+		return "", fmt.Errorf("unknown DNS source %q", name)
+	}
+}
+
+func dnsResolver(server string) *net.Resolver {
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			dialer := &net.Dialer{Timeout: 3 * time.Second}
+			return dialer.DialContext(ctx, network, server)
+		},
+	}
+}
+
 // WriteSecret creates or updates a credential Secret. On update the submitted
 // values are merged over the existing keys, so a partial update (one field left
 // blank in the form) never drops the other stored credentials.
@@ -301,6 +396,12 @@ func DeleteSecret(ctx context.Context, client kubernetes.Interface, namespace, n
 	return nil
 }
 
+// Resolver is the DNS lookup seam used for record pre-checks and DNS IP
+// fetchers; production uses net.DefaultResolver.
+type Resolver interface {
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+}
+
 // Options configures a Manager.
 type Options struct {
 	Registry      *providers.Registry
@@ -308,11 +409,18 @@ type Options struct {
 	AppsNamespace string
 	// Clientset resolves the Kubernetes client lazily; a failure is reported per
 	// entry rather than blocking startup.
-	Clientset  func() (kubernetes.Interface, error)
-	IPSource   string
-	IPv6Source string
-	Interval   time.Duration
-	Client     *http.Client
+	Clientset func() (kubernetes.Interface, error)
+	// IPSources / IPv6Sources are tried in order (HTTP URLs or dns:opendns /
+	// dns:google), largest first.
+	IPSources   []string
+	IPv6Sources []string
+	Interval    time.Duration
+	// Cooldown is the minimum time between successful updates of one record,
+	// to avoid provider rate limits. Defaults to 5 minutes.
+	Cooldown time.Duration
+	Client   *http.Client
+	// Resolver overrides DNS lookups (tests).
+	Resolver Resolver
 }
 
 // Manager detects the public IP and keeps entries converged.
@@ -321,10 +429,12 @@ type Manager struct {
 	store         *Store
 	appsNamespace string
 	clientset     func() (kubernetes.Interface, error)
-	ipSource      string
-	ipv6Source    string
+	ipSources     []string
+	ipv6Sources   []string
 	interval      time.Duration
+	cooldown      time.Duration
 	client        *http.Client
+	resolver      Resolver
 	now           func() time.Time
 
 	// newDriver is a test seam; production uses defaultDriver.
@@ -342,19 +452,29 @@ func NewManager(opts Options) *Manager {
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
+	cooldown := opts.Cooldown
+	if cooldown <= 0 {
+		cooldown = 5 * time.Minute
+	}
 	client := opts.Client
 	if client == nil {
 		client = DefaultClient()
+	}
+	resolver := opts.Resolver
+	if resolver == nil {
+		resolver = net.DefaultResolver
 	}
 	m := &Manager{
 		registry:      opts.Registry,
 		store:         NewStore(opts.StorePath),
 		appsNamespace: opts.AppsNamespace,
 		clientset:     opts.Clientset,
-		ipSource:      opts.IPSource,
-		ipv6Source:    opts.IPv6Source,
+		ipSources:     opts.IPSources,
+		ipv6Sources:   opts.IPv6Sources,
 		interval:      interval,
+		cooldown:      cooldown,
 		client:        client,
+		resolver:      resolver,
 		now:           func() time.Time { return time.Now().UTC() },
 	}
 	m.newDriver = defaultDriver
@@ -429,10 +549,10 @@ func (m *Manager) Reconcile(ctx context.Context, force bool) {
 	var v4, v6 string
 	var err4, err6 error
 	if need4 {
-		v4, err4 = DetectIP(ctx, m.client, m.ipSource)
+		v4, err4 = DetectIPAny(ctx, m.client, false, m.ipSources)
 	}
 	if need6 {
-		v6, err6 = DetectIP(ctx, m.client, m.ipv6Source)
+		v6, err6 = DetectIPAny(ctx, m.client, true, m.ipv6Sources)
 	}
 	for _, e := range m.store.List() {
 		if !e.Enabled {
@@ -443,7 +563,7 @@ func (m *Manager) Reconcile(ctx context.Context, force bool) {
 			ip, ipErr = v6, err6
 		}
 		if ipErr != nil {
-			m.record(e.ID, "error", ipErr.Error(), "")
+			m.recordError(e.ID, ipErr.Error())
 			continue
 		}
 		m.runEntry(ctx, e, ip, force)
@@ -456,45 +576,99 @@ func (m *Manager) Run(ctx context.Context, id string, force bool) error {
 	if err != nil {
 		return err
 	}
-	source := m.ipSource
-	if e.RecordType == "AAAA" {
-		source = m.ipv6Source
+	wantV6 := e.RecordType == "AAAA"
+	sources := m.ipSources
+	if wantV6 {
+		sources = m.ipv6Sources
 	}
-	ip, err := DetectIP(ctx, m.client, source)
+	ip, err := DetectIPAny(ctx, m.client, wantV6, sources)
 	if err != nil {
-		m.record(id, "error", err.Error(), "")
+		m.recordError(id, err.Error())
 		return err
 	}
 	return m.runEntry(ctx, e, ip, force)
 }
 
 func (m *Manager) runEntry(ctx context.Context, e Entry, ip string, force bool) error {
-	if !force && e.LastIP == ip && e.LastStatus == "ok" {
-		m.record(e.ID, "ok", "", "")
-		return nil
-	}
-	if err := m.apply(ctx, e, ip); err != nil {
-		m.record(e.ID, "error", err.Error(), "")
+	driver, req, err := m.prepare(ctx, e, ip)
+	if err != nil {
+		m.recordError(e.ID, err.Error())
 		return err
 	}
-	m.record(e.ID, "ok", "", ip)
+	if !force && m.shouldSkip(ctx, e, req, ip) {
+		m.recordSkip(e.ID, ip)
+		return nil
+	}
+	if err := driver.Update(ctx, req); err != nil {
+		// A transport error can embed the full request URL, which for the
+		// generic `query` auth carries a secret. Never persist or return it.
+		safe := sanitizeError(err, req.Secret)
+		m.recordError(e.ID, safe.Error())
+		return safe
+	}
+	m.recordUpdate(e.ID, ip)
 	return nil
 }
 
-func (m *Manager) apply(ctx context.Context, e Entry, ip string) error {
+// shouldSkip decides whether the record already holds the public IP, using a
+// DNS lookup on the record (modeled on ddns-updater): this detects a manual
+// edit and avoids provider rate limits. Proxied records cannot be checked this
+// way (the lookup returns the proxy's address), so they fall back to comparing
+// the stored IP, and a resolution failure updates rather than silently skipping.
+func (m *Manager) shouldSkip(ctx context.Context, e Entry, req UpdateRequest, ip string) bool {
+	now := m.now()
+	if m.cooldown > 0 && !e.LastUpdateAt.IsZero() && now.Sub(e.LastUpdateAt) < m.cooldown {
+		return true
+	}
+	if strings.EqualFold(req.Config["proxied"], "true") {
+		return e.LastIP == ip && e.LastStatus == "ok"
+	}
+	ips, err := m.resolveRecord(ctx, fqdn(req.Zone, req.Record), req.RecordType)
+	if err != nil {
+		return false
+	}
+	for _, recordIP := range ips {
+		if recordIP == ip {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) resolveRecord(ctx context.Context, host, recordType string) ([]string, error) {
+	addrs, err := m.resolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	wantV6 := recordType == "AAAA"
+	out := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		if addr.IP == nil {
+			continue
+		}
+		if value := addr.IP.String(); ipMatchesFamily(value, wantV6) {
+			out = append(out, value)
+		}
+	}
+	return out, nil
+}
+
+// prepare resolves the provider, credentials and config for an entry without
+// applying anything, so the update decision can look at the same request.
+func (m *Manager) prepare(ctx context.Context, e Entry, ip string) (Driver, UpdateRequest, error) {
 	if m.registry == nil {
-		return fmt.Errorf("no provider registry loaded")
+		return nil, UpdateRequest{}, fmt.Errorf("no provider registry loaded")
 	}
 	p, ok := m.registry.Get(e.Provider)
 	if !ok {
-		return fmt.Errorf("unknown provider %q", e.Provider)
+		return nil, UpdateRequest{}, fmt.Errorf("unknown provider %q", e.Provider)
 	}
 	if !p.HasDDNS() {
-		return fmt.Errorf("provider %q does not support dynamic DNS", e.Provider)
+		return nil, UpdateRequest{}, fmt.Errorf("provider %q does not support dynamic DNS", e.Provider)
 	}
 	secret, err := m.readSecret(ctx, e, p)
 	if err != nil {
-		return err
+		return nil, UpdateRequest{}, err
 	}
 	config := make(map[string]string, len(p.DDNS.Defaults)+len(e.ProviderConfig))
 	for k, v := range p.DDNS.Defaults {
@@ -505,7 +679,7 @@ func (m *Manager) apply(ctx context.Context, e Entry, ip string) error {
 	}
 	driver, err := m.newDriver(p.DDNS.Driver, m.client)
 	if err != nil {
-		return err
+		return nil, UpdateRequest{}, err
 	}
 	req := UpdateRequest{
 		Zone:       e.Zone,
@@ -516,12 +690,7 @@ func (m *Manager) apply(ctx context.Context, e Entry, ip string) error {
 		Config:     config,
 		Secret:     secret,
 	}
-	if err := driver.Update(ctx, req); err != nil {
-		// A transport error can embed the full request URL, which for the
-		// generic `query` auth carries a secret. Never persist or return it.
-		return sanitizeError(err, secret)
-	}
-	return nil
+	return driver, req, nil
 }
 
 // sanitizeError redacts any secret value from an error before it is recorded or
@@ -570,6 +739,30 @@ func (m *Manager) readSecret(ctx context.Context, e Entry, p *providers.Provider
 		}
 	}
 	return out, nil
+}
+
+func (m *Manager) recordError(id, message string) {
+	m.record(id, "error", message, "")
+}
+
+func (m *Manager) recordSkip(id, ip string) {
+	m.record(id, "ok", "", ip)
+}
+
+func (m *Manager) recordUpdate(id, ip string) {
+	_, err := m.store.Update(id, func(e *Entry) {
+		now := m.now()
+		e.LastRunAt = now
+		e.NextRunAt = now.Add(m.interval)
+		e.LastUpdateAt = now
+		e.LastStatus = "ok"
+		e.LastError = ""
+		e.LastIP = ip
+	})
+	if err != nil {
+		// The entry was deleted between listing and recording.
+		return
+	}
 }
 
 func (m *Manager) record(id, status, lastErr, ip string) {

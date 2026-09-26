@@ -330,12 +330,24 @@ ddns:
   # A ConfigMap whose keys are provider *.yaml files, mounted read-only at
   # providersDir when set (`kubectl create configmap … --from-file=…`).
   providersConfigMap: ""
-  # Public-IP detection URLs. The reconciler needs egress to these (see
+  # Public-IP detection. Several sources are tried in order (HTTP URL, or a DNS
+  # fetcher `dns:opendns` / `dns:google`) so one being down does not stall
+  # detection. The reconciler needs egress to these (see
   # networkPolicy.ddnsEgress).
-  ipSource: https://api.ipify.org
-  ipv6Source: https://api6.ipify.org
+  ipSources:
+    - https://api.ipify.org
+    - https://ipv4.icanhazip.com
+    - https://ifconfig.io/ip
+    - dns:google
+  ipv6Sources:
+    - https://api6.ipify.org
+    - https://ipv6.icanhazip.com
+    - dns:google
   # How often the reconciler checks the public IP.
   intervalSeconds: 300
+  # Minimum time between successful updates of one record, to avoid provider
+  # rate limits (records whose DNS already holds the IP are skipped regardless).
+  updateCooldownSeconds: 300
 
 # cert-manager is optional: enabling the subchart installs it, and the SSL page
 # gates on the CRDs being present. Its CRDs are installed by `make crds`.
