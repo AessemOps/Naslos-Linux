@@ -115,6 +115,15 @@ The full transitive tree is pinned in
 | --- | --- | --- | --- |
 | ntfy (server) | operator-configured; not a chart dependency | Apache-2.0 (GPL-2.0-only for the Android app) | https://github.com/binwiederhier/ntfy |
 
+## Ported & adapted code
+
+Some Naslos code is ported or adapted from another project. The upstream
+license and copyright notice apply to the derived parts.
+
+| Component | What was used | License (SPDX) | Upstream |
+| --- | --- | --- | --- |
+| ddns-updater | Dynamic DNS provider configurations (`api/internal/providers/builtin/*.yaml` for `duckdns`, `dynu`, `noip`, `freedns`, `namecheap`, `desec`, `spdyn`, `selfhostde`, `dynv6`, `digitalocean`, `godaddy`, `porkbun` and OVH DynHost), the DNS-resolution detection model, and the `digitalocean`/`godaddy`/`porkbun` driver logic | MIT | https://github.com/qdm12/ddns-updater |
+
 ## Bundled OS packages
 
 Debian and Alpine package licenses are governed by each upstream package; the

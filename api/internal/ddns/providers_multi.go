@@ -1,3 +1,5 @@
+// The DigitalOcean, GoDaddy and Porkbun drivers are ported from
+// qdm12/ddns-updater (MIT); see CREDITS.md.
 package ddns
 
 import (
