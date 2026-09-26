@@ -31,6 +31,16 @@ test.describe('domains & SSL', () => {
     await page.getByRole('button', { name: 'Cancel' }).click();
   });
 
+  test('shows the provider API-rights info bubble', async ({ page }) => {
+    await page.goto('/domains');
+    await page.getByRole('button', { name: '+ Add Domain' }).click();
+    const info = page.getByRole('button', { name: 'API rights required' });
+    await expect(info).toBeVisible();
+    await info.click();
+    await expect(page.getByRole('tooltip')).toContainText(/DNS.*Edit/);
+    await page.getByRole('button', { name: 'Cancel' }).click();
+  });
+
   test('validates a malformed domain', async ({ request }) => {
     const res = await request.put('/api/domains/not_a_domain', {
       data: {

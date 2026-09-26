@@ -1,15 +1,19 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
 
   export let domain: string;
 
   let status = 'loading';
   let reason = '';
   let secretName = '';
+  let timer: ReturnType<typeof setInterval> | null = null;
 
   async function load() {
     try {
-      const res = await fetch(`/api/domains/${encodeURIComponent(domain)}/certificate`);
+      const res = await fetch(
+        `/api/domains/${encodeURIComponent(domain)}/certificate`,
+        { cache: 'no-store' }
+      );
       const data = await res.json();
       status = data.status || 'unknown';
       reason = data.reason || '';
@@ -18,7 +22,28 @@
       status = 'error';
       reason = String(e);
     }
+    // A certificate can take a while to issue (ACME order, DNS propagation), so
+    // poll until the status settles instead of showing the initial "pending"
+    // until the operator reloads the page. no-store above keeps a cached
+    // response from pinning a stale badge.
+    if (status !== 'loading' && status !== 'pending') {
+      stop();
+    }
   }
+
+  function stop() {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  }
+
+  onMount(() => {
+    load();
+    timer = setInterval(load, 10_000);
+  });
+
+  onDestroy(stop);
 
   function color(): string {
     switch (status) {
@@ -29,8 +54,6 @@
       default: return 'bg-gray-900/50 text-gray-400';
     }
   }
-
-  onMount(load);
 </script>
 
 <span class={`text-xs px-2 py-0.5 rounded ${color()}`} title={reason || secretName}>

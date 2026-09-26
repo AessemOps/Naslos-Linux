@@ -72,10 +72,13 @@ the detection model are based on
   `ovh`, `cloudflare`, `rfc2136`, `passthrough`. DDNS-only providers: `generic`
   (custom HTTP), `duckdns`, `dynu`, `noip`, `freedns`, `namecheap`, `desec`,
   `spdyn`, `selfhostde`, `dynv6`, `digitalocean`, `godaddy`, `porkbun`. Field
-  model: `secret`, `secretKey`, `scope: cert|ddns`, `showIf: {key,value}`. A bad
+  model: `secret`, `secretKey`, `scope: cert|ddns`, `showIf: {key,value}`. An
+  informational `apiRights` list (DNS-01 permissions) is returned by
+  `GET /api/providers` and shown in the Domains form's info bubble. A bad
   override is skipped, logged and surfaced by `GET /api/providers`.
 - `api/internal/certs` — `Validate`/`solverFor` render through the registry;
-  OVH is supported via the ZoneDNS solver; `cloudflare` / `rfc2136` /
+  OVH certificates go through the **`cert-manager-webhook-ovh` webhook** (OVH is
+  not a cert-manager built-in DNS-01 solver); `cloudflare` / `rfc2136` /
   `passthrough` solver output is pinned byte-identical by tests. `Domain` has
   `providerConfig`; the Domains form fetches the registry and hides
   `scope: ddns` fields.
@@ -416,10 +419,12 @@ found were insider-exposure, not internet-exposure.
 
 ## Deployed right now (2026-09-26)
 
-On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 27**:
-`naslos-api` **`0.1.0-r26`** (git chart repos, privileged-namespace support,
-datasets PV/PVC, declarative DNS providers + Dynamic DNS), `naslos-ui`
-**`0.1.0-r18`** (Sources tab, exposure editor, Domains & SSL, Dynamic DNS),
+On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 32**:
+`naslos-api` **`0.1.0-r29`** (git chart repos, privileged-namespace support,
+datasets PV/PVC, declarative DNS providers + Dynamic DNS, provider `apiRights`,
+OVH webhook solver), `naslos-ui` **`0.1.0-r21`** (Sources tab, exposure editor,
+Domains & SSL with the provider API-rights info bubble and a self-refreshing
+certificate badge, a sidebar sign-out control, Dynamic DNS),
 `naslos-agent` **`0.1.0-r8`**, `naslos-samba`/`naslos-nfs`/
 `naslos-terminal` **`0.1.0-r3`**, OpenLDAP per `values.yaml`. Talos
 **v1.14.1** (kernel 6.18.51-talos), Cilium v1.20.2, ZFS pool `test` (stripe,
@@ -438,7 +443,21 @@ Sonarr, Seerr, FlareSolverr, Prowlarr, qBittorrent, Audiobookshelf, Calibre-Web,
 SearXNG). **Jellyfin is installed** (`naslos-apps`, `http://jellyfin.naslos.local`,
 served 200 via Traefik, no media configured yet). Merged into `master`: app
 catalog (PR #28), Dynamic DNS + providers (PR #29), third-party credits
-(PR #30). Open: `chore/ddns-updater-credits` (PR #31) — credit ddns-updater for
-the DDNS provider configs and this handoff/credits-rule update. The
+(PR #30), ddns-updater credits + credits rule (PR #32). Open:
+`feature/domain-provider-api-rights` (PR #33) — declarative per-provider
+`apiRights` surfaced by `GET /api/providers` and shown as an info bubble next to
+the Domains form's DNS-01 provider selector, plus the fix that makes OVH
+certificates actually issue: cert-manager and the `cert-manager-webhook-ovh`
+webhook are installed as separate releases in the `cert-manager` namespace
+(`make cert-manager`, `make cert-manager-webhook-ovh`), `ovh.yaml` renders the
+`webhook` solver, and every OVH credential (application key/secret/consumer key)
+is a Secret field read by the webhook. **Live-drilled on revision 29**: the OVH
+Issuer is created and `READY=True`, and `florentinrichard.fr` issued a
+production Let's Encrypt certificate (SANs `*.florentinrichard.fr` +
+`florentinrichard.fr`, Secret `naslos-florentinrichard-fr-tls`) once the OVH API
+token covered the zone. Residual: the token still lacks **DELETE** on
+`/domain/zone/florentinrichard.fr/*`, so the webhook's `CleanUp` gets a 403 and
+leaves the `_acme-challenge` TXT record in the zone (issuance is unaffected);
+add DELETE for the four methods on the zone wildcard so cleanup succeeds. The
 pre-refactor revision 55 narrative is archived at
 `docs/archive/ai-handoff-log-2026-09.md`.

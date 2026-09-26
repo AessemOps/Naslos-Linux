@@ -129,25 +129,45 @@ func TestSpecPassthroughIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestSpecOVH proves OVH is supported through the registry, with its
-// non-secret config substituted and its secret keys read from the Secret.
+// TestSpecOVH proves OVH is supported through the registry via the
+// cert-manager-webhook-ovh webhook solver, with the endpoint substituted and
+// every credential referenced as a Secret key selector.
 func TestSpecOVH(t *testing.T) {
 	d := Domain{
 		BaseDomain:        "example.com",
 		DNSProvider:       ProviderOVH,
 		CredentialsSecret: "naslos-domain-example-com-creds",
-		ProviderConfig:    map[string]string{"endpoint": "ovh-ca", "applicationKey": "AK"},
+		ProviderConfig:    map[string]string{"endpoint": "ovh-ca"},
 	}
 	if err := d.Validate(); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 	solver := solverOf(t, d)
-	ovh := solver["ovh"].(map[string]interface{})
-	if ovh["endpoint"] != "ovh-ca" || ovh["applicationKey"] != "AK" {
-		t.Fatalf("ovh config not substituted: %#v", ovh)
+	wh, ok := solver["webhook"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("solver is not a webhook: %#v", solver)
 	}
-	ref := ovh["applicationSecretSecretRef"].(map[string]interface{})
-	if ref["name"] != "naslos-domain-example-com-creds" || ref["key"] != "applicationSecret" {
-		t.Fatalf("ovh secret ref = %#v", ref)
+	if wh["groupName"] != "ovh.naslos.local" || wh["solverName"] != "ovh" {
+		t.Fatalf("webhook identity = %#v", wh)
+	}
+	cfg, ok := wh["config"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("webhook config is not a mapping: %#v", wh["config"])
+	}
+	if cfg["endpoint"] != "ovh-ca" || cfg["authenticationMethod"] != "application" {
+		t.Fatalf("ovh config not substituted: %#v", cfg)
+	}
+	for key, wantKey := range map[string]string{
+		"applicationKeyRef":         "applicationKey",
+		"applicationSecretRef":      "applicationSecret",
+		"applicationConsumerKeyRef": "consumerKey",
+	} {
+		ref, ok := cfg[key].(map[string]interface{})
+		if !ok {
+			t.Fatalf("%s is not a mapping: %#v", key, cfg[key])
+		}
+		if ref["name"] != "naslos-domain-example-com-creds" || ref["key"] != wantKey {
+			t.Fatalf("%s = %#v", key, ref)
+		}
 	}
 }
