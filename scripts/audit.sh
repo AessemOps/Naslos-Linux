@@ -241,6 +241,16 @@ assert api_env.get("APPS_NAMESPACE") == "naslos-apps", "the API must know the ap
 assert api_env.get("SOURCES_CONFIG"), "the API must get a sources state path"
 assert api_env.get("DOMAINS_CONFIG"), "the API must get a domains state path"
 
+# Backfill reads Helm labels from workloads rather than listing Secrets; the
+# platform read Role must exist and must NOT grant secret access.
+assert ("Role", "naslos-api-platform-read", "naslos") in roles, \
+    "the API needs read-only workload access in the release namespace for backfill"
+for d in docs:
+    if d.get("kind") == "Role" and d["metadata"]["name"] == "naslos-api-platform-read":
+        resources = [res for rule in d.get("rules", []) for res in rule.get("resources", [])]
+        assert "secrets" not in resources, \
+            "the platform read Role must not grant secrets (it would expose proxy/LDAP/Authelia secrets)"
+
 # The security-headers middleware must NOT pin HSTS for subdomains: an app
 # subdomain can serve a TLS-off route that HSTS would make unreachable.
 for d in docs:

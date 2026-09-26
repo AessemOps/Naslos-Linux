@@ -6,23 +6,56 @@ system (official repo + user-added repos), a per-app install-config file, and a
 per-app exposure UI (subdomain / TLS / auth / local-only) backed by an
 API-owned Traefik routing layer and a cert-manager ACME DNS-01 certificate UI.
 
-## Implementation status (2026-09-25, branch `feature/charts-repo-and-app-install-refactor`)
+## Implementation status (2026-09-26, branch `feature/charts-repo-and-app-install-refactor`)
 
-Tasks 1–9 are implemented and committed on that branch; all local gates pass
+Tasks 1–9 are implemented and committed; all local gates pass
 (`scripts/audit.sh`, `go test -race ./...` for api and agent, `svelte-check`,
 `helm lint`, `helm template` with `values.yaml`+`values-vm.yaml`).
 
-- Done: `chartsrepo`, `catalog` rewrite, `apps` records + lifecycle + backfill,
-  `routing`, `certs`, server routes + Go tests, chart namespace/RBAC/CRDs/
-  NetworkPolicy/SSO, docs, UI (sources/exposure/domains), Playwright specs.
-- **Not done — Task 10 live drill**: needs the VM (`192.168.1.117`) and the
-  `NaslosCharts` repo/CI; not run. **Not done — Task 11 cutover/live deploy**:
-  requires explicit operator approval; no image was built or deployed.
-- Known gap vs §2.1: the exposure route-target **discovery fallback** (Services
-  from release labels) is not implemented — an app must declare `services[]`;
-  otherwise the route is recorded as `lastError` and no IngressRoute is created.
-- `gh` is not installed, so the PR was not opened programmatically; the branch
-  is pushed and the compare URL is
+**Live drill on 192.168.1.117 (revisions 10–15)** — done against a temporary
+`git://` sample repo (NaslosCharts is an empty placeholder) served from the
+workstation, with cert-manager CRDs installed via `make crds`:
+
+- go-git clone/pull over `git://`, catalog discovery, `naslos-app.yaml` parse ✓
+- install from the local clone into `naslos-apps`, Service `{{ .Release.Name }}`
+  template resolved, record + live status ✓
+- exposure: TLS+auth → `websecure`, Authelia `302` to the portal; auth-off +
+  local-only → `IPAllowList` middleware and no redirect; empty subdomain →
+  IngressRoute deleted (cluster-internal) ✓
+- uninstall removed the release, route and per-app middleware ✓
+- domains: `certManager: true`, Issuer + wildcard Certificate CRs created,
+  status `pending` (no controller) ✓
+- orphan backfill: a stray platform release was discovered via Helm workload
+  labels and surfaced as `orphaned: true` ✓
+
+Bugs the drill found and that are fixed in this branch:
+
+1. `services[].name` `{{ .Release.Name }}` was written to the IngressRoute
+   literally (now rendered).
+2. The forwardAuth address used the apps namespace for the Authelia Service
+   (now a separate `AutheliaNamespace`; the platform namespace).
+3. `PUT /api/apps/{name}/exposure` replaced the whole exposure and dropped the
+   route target (now preserves service/port/scheme).
+4. Backfill used a Helm list, which needs `list secrets` in `naslos` and would
+   expose the proxy/LDAP/Authelia secrets; it now discovers Helm-labeled
+   workloads and Services with a read-only Role (no Secret access).
+5. `make crds`' cert-manager step was empty (`helm show crds` is empty for
+   cert-manager v1.18, whose CRDs live in `templates/crds.yaml`); fixed.
+
+**Not done / environment limits**
+
+- The cluster has **no GitHub egress** (`dial tcp 140.82.121.4:443: i/o
+  timeout`), so the official HTTPS source cannot clone on this instance. The
+  configured URL stays `https://github.com/AessemOps/NaslosCharts.git`; a real
+  deployment needs either cluster egress or a LAN git mirror.
+- **Playwright live run was blocked** by an Authelia TOTP mismatch for the
+  `admin` user on the instance (`ui/.env.playwright.local` secret does not match
+  the enrolled device); the specs themselves ran up to auth. No code fault.
+- Route-target **discovery fallback** (Services from release labels) is still
+  not implemented — an app must declare `services[]`.
+- Task 11 cutover/final deploy is not done; the tag suffixes `api 0.1.0-r19`,
+  `ui 0.1.0-r13` are deployed on the drill instance only.
+- `gh` is not installed; the PR was not opened programmatically. Compare URL:
   `https://github.com/AessemOps/Naslos-Linux/pull/new/feature/charts-repo-and-app-install-refactor`.
 
 ---

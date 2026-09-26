@@ -12,6 +12,25 @@ working papers (audit findings, fix plan, code-review list, the superseded
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
+## App catalog refactor (2026-09-26, branch `feature/charts-repo-and-app-install-refactor`)
+
+The hard-coded Go catalog is replaced by git-based chart repositories. Plan and
+full status: `.kilo/plans/1789943277180-charts-repo-and-app-install-refactor.md`.
+New packages: `api/internal/chartsrepo`, `apps` (records + lifecycle + backfill),
+`routing` (Traefik IngressRoutes/middlewares), `certs` (cert-manager CRs); the
+`catalog` package now loads `apps/<name>/naslos-app.yaml` from cloned repos.
+Apps install into `naslos-apps` (PSA `baseline`) with a namespaced API Role;
+`make crds` now also installs the cert-manager CRDs.
+
+Live-drilled on `192.168.1.117` (drill revisions 10–15; images `naslos-api`
+**`0.1.0-r19`**, `naslos-ui` **`0.1.0-r13`**): clone, install, exposure
+(TLS/auth/local-only/empty), uninstall, domains/certificate CRs and orphan
+backfill all verified. The drill found and fixed five bugs (see the plan).
+Two environment limits: the cluster has **no GitHub egress**, so the official
+`https://github.com/AessemOps/NaslosCharts.git` source cannot clone here (the
+repo is also an empty placeholder), and the Playwright live run was blocked by
+an Authelia TOTP mismatch for `admin`.
+
 | Piece | What it is |
 | --- | --- |
 | `api/` (Go) | UI-facing HTTP API + the buddy sender, scheduler and job runner |

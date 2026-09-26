@@ -23,7 +23,7 @@
 api:
   image:
     repository: 192.168.1.2:30095/naslos-api
-    tag: "0.1.0-r12"
+    tag: "0.1.0-r19"
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -45,7 +45,7 @@ agent:
 ui:
   image:
     repository: 192.168.1.2:30095/naslos-ui
-    tag: "0.1.0-r12"
+    tag: "0.1.0-r13"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
@@ -92,9 +92,12 @@ apps:
   officialSource:
     name: naslos
     displayName: NaslosCharts
-    url: git@github.com:AessemOps/NaslosCharts.git
-    auth: ssh
-    credentialsSecret: naslos-charts-deploy-key
+    # The charts repository is public, so clone it over HTTPS with no
+    # credentials. (SSH with a deploy key is also supported; it needs a
+    # naslos-charts-deploy-key Secret with an `ssh-private-key` key.)
+    url: https://github.com/AessemOps/NaslosCharts.git
+    auth: public
+    credentialsSecret: ""
 
 # Domains Authelia protects. App subdomains under these can use auth; a base
 # domain outside the list is limited to TLS-off or no-auth exposure.

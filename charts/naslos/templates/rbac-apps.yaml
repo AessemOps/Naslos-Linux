@@ -77,3 +77,41 @@ subjects:
     name: naslos-api
     namespace: {{ .Release.Namespace }}
 {{- end }}
+---
+# Read-only workload access in the platform namespace. The app list backfills
+# pre-existing releases from their Helm labels; a Helm list would instead need
+# `list secrets` here, exposing the proxy secret / LDAP password / Authelia keys.
+{{- if .Values.ui.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: naslos-api-platform-read
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "list"]
+  # Services are needed to discover a chart that renders no workload. ConfigMaps
+  # are deliberately not granted: they can carry secrets.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-api-platform-read
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: naslos-api-platform-read
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ .Release.Namespace }}
+{{- end }}

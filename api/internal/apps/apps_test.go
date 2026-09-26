@@ -69,13 +69,13 @@ func TestExposureForUsesCatalogDefaultsAndOverrides(t *testing.T) {
 		Exposure: catalog.ExposureDefaults{Subdomain: "jellyfin", TLS: true, Auth: true},
 		Services: []catalog.Service{{Name: "{{ .Release.Name }}", Port: 8096, Scheme: "http"}},
 	}
-	got := exposureFor(app, nil)
-	if got.Service != "{{ .Release.Name }}" || got.Port != 8096 || !got.TLS || !got.Auth {
+	got := exposureFor(app, nil, "jellyfin")
+	if got.Service != "jellyfin" || got.Port != 8096 || !got.TLS || !got.Auth {
 		t.Fatalf("defaults mismatch: %+v", got)
 	}
 
 	override := &Exposure{Subdomain: "media", TLS: false, Auth: false, LocalOnly: true}
-	got = exposureFor(app, override)
+	got = exposureFor(app, override, "jellyfin")
 	if got.Subdomain != "media" || got.TLS || got.Auth || !got.LocalOnly {
 		t.Fatalf("overrides mismatch: %+v", got)
 	}

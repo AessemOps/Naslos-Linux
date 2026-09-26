@@ -264,11 +264,12 @@ func (s *Server) setupChartRepos(appsHelmClient *helm.Client) {
 	var router apps.Router
 	if dyn, err := s.dynamicKubernetesClient(); err == nil {
 		s.routing = routing.NewReconciler(dyn, routing.Options{
-			Namespace:       s.appsNamespace,
-			TLSSecret:       getEnv("APPS_TLS_SECRET", "naslos-apps-tls"),
-			AutheliaService: getEnv("AUTHELIA_SERVICE", "naslos-authelia"),
-			AutheliaPort:    getEnvInt("AUTHELIA_PORT", 80),
-			LocalOnlyCIDR:   getEnv("EXPOSURE_LOCAL_ONLY_CIDR", ""),
+			Namespace:         s.appsNamespace,
+			TLSSecret:         getEnv("APPS_TLS_SECRET", "naslos-apps-tls"),
+			AutheliaService:   getEnv("AUTHELIA_SERVICE", "naslos-authelia"),
+			AutheliaPort:      getEnvInt("AUTHELIA_PORT", 80),
+			AutheliaNamespace: s.namespace,
+			LocalOnlyCIDR:     getEnv("EXPOSURE_LOCAL_ONLY_CIDR", ""),
 			// A domain's wildcard Certificate writes a per-domain Secret; the
 			// route must reference that, not a fixed name.
 			TLSSecretFor: func(baseDomain string) string {
@@ -338,12 +339,12 @@ func (s *Server) reconcileApps() {
 	if s.appManager == nil {
 		return
 	}
-	if releases, err := s.helm.List(ctx); err == nil {
+	if releases, err := s.discoverPlatformReleases(ctx); err == nil {
 		if err := s.appManager.Backfill(ctx, s.platformRelease, releases); err != nil {
 			log.Printf("Warning: app backfill failed: %v", err)
 		}
 	} else {
-		log.Printf("Warning: could not list platform releases for backfill: %v", err)
+		log.Printf("Warning: could not discover platform releases for backfill: %v", err)
 	}
 	if err := s.appManager.ReconcileRoutes(ctx); err != nil {
 		log.Printf("Warning: app route reconcile failed: %v", err)
