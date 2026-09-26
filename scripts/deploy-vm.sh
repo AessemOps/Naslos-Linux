@@ -406,5 +406,6 @@ make install-vm VM_IP="$VM_IP" HELM_FLAGS="$HELM_FLAGS \
 
 echo ""
 echo "=== Deployment complete ==="
-echo "UI should become available at http://$VM_IP:30080"
+echo "UI: https://naslos.local (Traefik hostPort 80/443; no NodePort)."
 echo "Watch progress with: kubectl get pods -n naslos -w"
+echo "cert-manager + the OVH webhook were installed into the cert-manager namespace by make install-vm."
