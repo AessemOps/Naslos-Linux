@@ -58,33 +58,56 @@ apiRights:
 
 func TestOVHSolverShape(t *testing.T) {
 	p, _ := Load("").Get("ovh")
-	solver, err := p.Solver("naslos-domain-example-com-creds", map[string]string{"applicationKey": "AK"})
+	solver, err := p.Solver("naslos-domain-example-com-creds", map[string]string{})
 	if err != nil {
 		t.Fatalf("solver: %v", err)
 	}
-	ovh, ok := solver["ovh"].(map[string]interface{})
+	wh, ok := solver["webhook"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("solver has no ovh mapping: %#v", solver)
+		t.Fatalf("solver has no webhook mapping: %#v", solver)
 	}
-	if ovh["endpoint"] != "ovh-eu" {
-		t.Errorf("endpoint default not applied: %v", ovh["endpoint"])
+	if wh["groupName"] != "ovh.naslos.local" || wh["solverName"] != "ovh" {
+		t.Fatalf("webhook identity = %#v", wh)
 	}
-	if ovh["applicationKey"] != "AK" {
-		t.Errorf("applicationKey not substituted: %v", ovh["applicationKey"])
+	cfg, ok := wh["config"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("webhook config is not a mapping: %#v", wh["config"])
 	}
-	for _, key := range []string{"applicationSecretSecretRef", "consumerKeySecretRef"} {
-		ref, ok := ovh[key].(map[string]interface{})
+	if cfg["endpoint"] != "ovh-eu" {
+		t.Errorf("endpoint default not applied: %v", cfg["endpoint"])
+	}
+	if cfg["authenticationMethod"] != "application" {
+		t.Errorf("authenticationMethod = %v", cfg["authenticationMethod"])
+	}
+	for key, wantKey := range map[string]string{
+		"applicationKeyRef":         "applicationKey",
+		"applicationSecretRef":      "applicationSecret",
+		"applicationConsumerKeyRef": "consumerKey",
+	} {
+		ref, ok := cfg[key].(map[string]interface{})
 		if !ok {
-			t.Fatalf("%s is not a mapping: %#v", key, ovh[key])
+			t.Fatalf("%s is not a mapping: %#v", key, cfg[key])
 		}
-		if ref["name"] != "naslos-domain-example-com-creds" {
-			t.Errorf("%s name = %v", key, ref["name"])
+		if ref["name"] != "naslos-domain-example-com-creds" || ref["key"] != wantKey {
+			t.Errorf("%s = %#v, want name=secret key=%s", key, ref, wantKey)
 		}
 	}
 }
 
 func TestSolverMissingConfigIsAnError(t *testing.T) {
-	p, _ := Load("").Get("ovh")
+	p, err := Parse([]byte(`name: missing
+displayName: Missing
+certManager:
+  solver:
+    webhook:
+      groupName: g
+      solverName: s
+      config:
+        token: "${cred.token}"
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
 	if _, err := p.Solver("s", map[string]string{}); err == nil {
 		t.Fatal("expected an error when a ${cred.*} placeholder has no value")
 	}
@@ -144,13 +167,18 @@ func TestResolveFieldsSplitsConfigAndSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if resolved.Config["endpoint"] != "ovh-eu" || resolved.Config["applicationKey"] != "AK" {
+	if resolved.Config["endpoint"] != "ovh-eu" {
 		t.Fatalf("config = %#v", resolved.Config)
 	}
-	if resolved.SecretValues["applicationSecret"] != "AS" || resolved.SecretValues["consumerKey"] != "CK" {
-		t.Fatalf("secret values = %#v", resolved.SecretValues)
+	if _, ok := resolved.Config["applicationKey"]; ok {
+		t.Fatalf("applicationKey must be a secret, but it is in config: %#v", resolved.Config)
 	}
-	if len(resolved.CredentialFields) != 2 {
+	for key, want := range map[string]string{"applicationKey": "AK", "applicationSecret": "AS", "consumerKey": "CK"} {
+		if resolved.SecretValues[key] != want {
+			t.Fatalf("secret values = %#v", resolved.SecretValues)
+		}
+	}
+	if len(resolved.CredentialFields) != 3 {
 		t.Fatalf("credential fields = %v", resolved.CredentialFields)
 	}
 
@@ -189,9 +217,10 @@ func TestResolveFieldsSplitsConfigAndSecrets(t *testing.T) {
 	if certKeys["mode"] || certKeys["password"] {
 		t.Fatalf("cert scope leaked DDNS-only fields: %v", certKeys)
 	}
-	// A missing ZoneDNS credential is rejected when rendering the solver.
-	if err := p.ValidateSolver("s", map[string]string{"endpoint": "ovh-eu"}); err == nil {
-		t.Fatal("expected the solver to reject a missing applicationKey")
+	// The OVH webhook solver renders from Secret refs alone (no non-secret
+	// credential values are needed), so a config without them is still valid.
+	if err := p.ValidateSolver("s", map[string]string{"endpoint": "ovh-eu"}); err != nil {
+		t.Fatalf("webhook solver should render without config credentials: %v", err)
 	}
 }
 
@@ -218,11 +247,11 @@ func TestOVHAPIFieldsAreConditionalOnAPIMode(t *testing.T) {
 
 func TestParseRejectsDuplicateFieldsAndBadEnums(t *testing.T) {
 	cases := map[string]string{
-		"duplicate":  "name: x\nfields:\n  - {key: a, label: A, type: string}\n  - {key: a, label: A2, type: string}\n",
-		"bad enum":   "name: x\nfields:\n  - key: a\n    label: A\n    type: enum\n    enum: [one]\n    default: two\n",
-		"bad name":   "name: Bad_Name\n",
-		"bad driver": "name: x\nddns:\n  driver: nope\n",
-		"bad showIf": "name: x\nfields:\n  - key: a\n    label: A\n    type: string\n    showIf: {value: api}\n",
+		"duplicate":   "name: x\nfields:\n  - {key: a, label: A, type: string}\n  - {key: a, label: A2, type: string}\n",
+		"bad enum":    "name: x\nfields:\n  - key: a\n    label: A\n    type: enum\n    enum: [one]\n    default: two\n",
+		"bad name":    "name: Bad_Name\n",
+		"bad driver":  "name: x\nddns:\n  driver: nope\n",
+		"bad showIf":  "name: x\nfields:\n  - key: a\n    label: A\n    type: string\n    showIf: {value: api}\n",
 		"empty right": "name: x\napiRights:\n  - \"\"\n",
 	}
 	for name, doc := range cases {

@@ -77,7 +77,8 @@ the detection model are based on
   `GET /api/providers` and shown in the Domains form's info bubble. A bad
   override is skipped, logged and surfaced by `GET /api/providers`.
 - `api/internal/certs` — `Validate`/`solverFor` render through the registry;
-  OVH is supported via the ZoneDNS solver; `cloudflare` / `rfc2136` /
+  OVH certificates go through the **`cert-manager-webhook-ovh` webhook** (OVH is
+  not a cert-manager built-in DNS-01 solver); `cloudflare` / `rfc2136` /
   `passthrough` solver output is pinned byte-identical by tests. `Domain` has
   `providerConfig`; the Domains form fetches the registry and hides
   `scope: ddns` fields.
@@ -418,11 +419,11 @@ found were insider-exposure, not internet-exposure.
 
 ## Deployed right now (2026-09-26)
 
-On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 28**:
-`naslos-api` **`0.1.0-r27`** (git chart repos, privileged-namespace support,
-datasets PV/PVC, declarative DNS providers + Dynamic DNS, provider `apiRights`),
-`naslos-ui` **`0.1.0-r19`** (Sources tab, exposure editor, Domains & SSL with the
-provider API-rights info bubble, Dynamic DNS),
+On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 29**:
+`naslos-api` **`0.1.0-r28`** (git chart repos, privileged-namespace support,
+datasets PV/PVC, declarative DNS providers + Dynamic DNS, provider `apiRights`,
+OVH webhook solver), `naslos-ui` **`0.1.0-r19`** (Sources tab, exposure editor,
+Domains & SSL with the provider API-rights info bubble, Dynamic DNS),
 `naslos-agent` **`0.1.0-r8`**, `naslos-samba`/`naslos-nfs`/
 `naslos-terminal` **`0.1.0-r3`**, OpenLDAP per `values.yaml`. Talos
 **v1.14.1** (kernel 6.18.51-talos), Cilium v1.20.2, ZFS pool `test` (stripe,
@@ -444,7 +445,15 @@ catalog (PR #28), Dynamic DNS + providers (PR #29), third-party credits
 (PR #30), ddns-updater credits + credits rule (PR #32). Open:
 `feature/domain-provider-api-rights` (PR #33) — declarative per-provider
 `apiRights` surfaced by `GET /api/providers` and shown as an info bubble next to
-the Domains form's DNS-01 provider selector; live-drilled on revision 28 (the
-four cert providers return rights; Playwright `domains.spec.ts` 6/6 including
-the new bubble test). The pre-refactor revision 55 narrative is archived at
-`docs/archive/ai-handoff-log-2026-09.md`.
+the Domains form's DNS-01 provider selector, plus the fix that makes OVH
+certificates actually issue: cert-manager and the `cert-manager-webhook-ovh`
+webhook are installed as separate releases in the `cert-manager` namespace
+(`make cert-manager`, `make cert-manager-webhook-ovh`), `ovh.yaml` renders the
+`webhook` solver, and every OVH credential (application key/secret/consumer key)
+is a Secret field read by the webhook. **Live-drilled on revision 29**: the OVH
+Issuer is created and `READY=True`, cert-manager and the webhook authenticates
+to OVH and reads the Secret, but OVH returns `403 "This call has not been
+granted"` for `GET /domain/zone/florentinrichard.fr/status` — the API token's
+rights must cover `GET/PUT/POST/DELETE /domain/zone/florentinrichard.fr/*` (the
+`/status`, `/record` and `/refresh` subpaths). The pre-refactor revision 55
+narrative is archived at `docs/archive/ai-handoff-log-2026-09.md`.

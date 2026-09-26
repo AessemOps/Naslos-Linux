@@ -1,6 +1,7 @@
 .PHONY: all api agent ui images push-images \
         buddyctl buddy-receiver-image \
         bootstrap bootstrap-vm dev-cluster crds \
+        cert-manager cert-manager-webhook-ovh \
         install install-vm uninstall clean
 
 GO := go
@@ -13,6 +14,16 @@ VM_IP := 192.168.1.96
 VM_CONFIG_DIR := bootstrap/vm
 REGISTRY ?= 192.168.1.2:30095
 IMAGE_TAG ?= 0.1.0
+
+# cert-manager + the OVH DNS-01 webhook (FR-APP-13/FR-DNS-05). OVH is not a
+# cert-manager built-in solver, so it needs aureq/cert-manager-webhook-ovh. Both
+# install into their own `cert-manager` namespace to stay outside the `naslos`
+# default-deny network policies; the naslos chart grants the webhook read access
+# to the domain credential Secrets in the apps namespace.
+CERT_MANAGER_CHART_VERSION ?= v1.18.2
+OVH_WEBHOOK_CHART_VERSION ?= 0.9.17
+OVH_WEBHOOK_GROUP ?= ovh.naslos.local
+CERT_MANAGER_NAMESPACE ?= cert-manager
 
 API_IMAGE := $(REGISTRY)/naslos-api:$(IMAGE_TAG)
 AGENT_IMAGE := $(REGISTRY)/naslos-agent:$(IMAGE_TAG)
@@ -168,6 +179,31 @@ crds:
 		--show-only templates/crds.yaml --set crds.enabled=true \
 		| $(KUBECTL) apply --server-side --force-conflicts -f -
 
+# Install cert-manager and the OVH DNS-01 webhook, each as its own release in
+# the `cert-manager` namespace. CRDs come from `make crds` (crds.enabled=false
+# avoids a second, conflicting CRD install). The webhook's group name must match
+# the `webhook.groupName` in api/internal/providers/builtin/ovh.yaml.
+cert-manager:
+	$(HELM) repo add jetstack https://charts.jetstack.io --force-update
+	$(HELM) repo update jetstack
+	$(HELM) upgrade --install cert-manager jetstack/cert-manager \
+		-n $(CERT_MANAGER_NAMESPACE) --create-namespace \
+		--version $(CERT_MANAGER_CHART_VERSION) \
+		--set crds.enabled=false \
+		--force-conflicts
+
+cert-manager-webhook-ovh:
+	$(HELM) repo add cert-manager-webhook-ovh https://aureq.github.io/cert-manager-webhook-ovh --force-update
+	$(HELM) repo update cert-manager-webhook-ovh
+	$(HELM) upgrade --install cert-manager-webhook-ovh \
+		cert-manager-webhook-ovh/cert-manager-webhook-ovh \
+		-n $(CERT_MANAGER_NAMESPACE) \
+		--version $(OVH_WEBHOOK_CHART_VERSION) \
+		--set groupName=$(OVH_WEBHOOK_GROUP) \
+		--set certManager.namespace=$(CERT_MANAGER_NAMESPACE) \
+		--set certManager.serviceAccountName=cert-manager \
+		--force-conflicts
+
 # Install Naslos Helm chart.
 # --force-conflicts: Helm 4 applies server-side, and the namespaces are
 # pre-created and PSA-labelled by deploy-vm.sh with kubectl; without this the
@@ -182,8 +218,9 @@ install: crds
 # Install Naslos on the single-node VM: Traefik on the node's 80/443 with
 # Authelia forwardAuth (https://naslos.local), and every route authenticated.
 # values-vm.yaml is the only profile; there is no unauthenticated posture to
-# switch to or roll back into.
-install-vm: crds
+# switch to or roll back into. cert-manager and the OVH webhook install first so
+# a Domain's Issuer can be reconciled immediately.
+install-vm: crds cert-manager cert-manager-webhook-ovh
 	$(HELM) dependency update $(CHART_DIR)
 	$(HELM) upgrade --install naslos $(CHART_DIR) -n naslos --create-namespace \
 		-f $(CHART_DIR)/values.yaml \

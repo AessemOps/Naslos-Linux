@@ -123,7 +123,8 @@ license and copyright notice apply to the derived parts.
 | Component | What was used | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
 | ddns-updater | Dynamic DNS provider configurations (`api/internal/providers/builtin/*.yaml` for `duckdns`, `dynu`, `noip`, `freedns`, `namecheap`, `desec`, `spdyn`, `selfhostde`, `dynv6`, `digitalocean`, `godaddy`, `porkbun` and OVH DynHost), the DNS-resolution detection model, and the `digitalocean`/`godaddy`/`porkbun` driver logic | MIT | https://github.com/qdm12/ddns-updater |
-| cert-manager / cert-manager-webhook-ovh | Provider DNS-01 API-permission text (`apiRights` in `api/internal/providers/builtin/cloudflare.yaml`, `ovh.yaml`, `rfc2136.yaml`, `passthrough.yaml`) derived from cert-manager's DNS-01 provider documentation and the OVH webhook README | Apache-2.0 (cert-manager) / MIT (webhook) | https://cert-manager.io/docs/configuration/acme/dns01/ ; https://github.com/baarde/cert-manager-webhook-ovh |
+| cert-manager | ACME DNS-01 certificates and Issuer/Certificate CRs (chart dependency `cert-manager`, Apache-2.0); the OVH provider's `apiRights` and webhook solver are derived from cert-manager's DNS-01 documentation | Apache-2.0 | https://cert-manager.io/docs/configuration/acme/dns01/ |
+| cert-manager-webhook-ovh (aureq) | The OVH DNS-01 webhook (Helm chart + image) that renders the OVH `webhook` solver; `apiRights` text derived from its README | MIT | https://github.com/aureq/cert-manager-webhook-ovh |
 
 ## Bundled OS packages
 

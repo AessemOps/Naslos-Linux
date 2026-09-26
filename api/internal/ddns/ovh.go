@@ -139,7 +139,12 @@ func (d *OVHDriver) updateZoneDNS(ctx context.Context, r UpdateRequest) error {
 			return err
 		}
 	}
-	appKey := configValue(r.Config, "applicationKey")
+	// applicationKey is a secret field for new entries; entries written before
+	// that change kept it in providerConfig, so fall back to config.
+	appKey := secretValue(r.Secret, "applicationKey")
+	if appKey == "" {
+		appKey = configValue(r.Config, "applicationKey")
+	}
 	appSecret := secretValue(r.Secret, "applicationSecret")
 	consumerKey := secretValue(r.Secret, "consumerKey")
 	if appKey == "" || appSecret == "" || consumerKey == "" {
