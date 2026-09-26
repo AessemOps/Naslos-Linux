@@ -23,7 +23,7 @@
 api:
   image:
     repository: 192.168.1.2:30095/naslos-api
-    tag: "0.1.0-r22"
+    tag: "0.1.0-r26"
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -45,7 +45,7 @@ agent:
 ui:
   image:
     repository: 192.168.1.2:30095/naslos-ui
-    tag: "0.1.0-r13"
+    tag: "0.1.0-r18"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
@@ -109,6 +109,12 @@ sso:
   domains:
     - naslos.local
 
+# Dynamic DNS (docs/dynamic-dns.md): providers are declarative; OVH and
+# Cloudflare work out of the box. Credentials written through the UI land in a
+# Secret in naslos-apps (the API already has Secret CRUD there).
+ddns:
+  enabled: true
+
 # Traefik is the only listener: it binds the node's 80/443 (hostPort) so URLs
 # carry no port, and the Service stays ClusterIP. If your environment provides a
 # LoadBalancer (e.g. MetalLB), drop the hostPorts and set the service type back
@@ -140,6 +146,10 @@ networkPolicy:
   # outbound git (HTTPS/SSH/git://) to the Internet. Narrow gitEgressCIDRs to a
   # mirror's range for an air-gapped or egress-restricted network.
   gitEgress: true
+  # Dynamic DNS detects the public IP (api.ipify.org / api6.ipify.org) and
+  # calls the provider APIs (OVH, Cloudflare) from the API pod. Port-scoped to
+  # 80/443; narrow ddnsEgressCIDRs for an egress-restricted network.
+  ddnsEgress: true
 
 # Buddy Backup receive side (AUDIT-H2). The dataset exists on the node; before
 # this was set the release ran buddy.enabled=false while the peer API was live,

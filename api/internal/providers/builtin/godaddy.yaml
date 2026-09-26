@@ -1,0 +1,16 @@
+name: godaddy
+displayName: GoDaddy
+description: GoDaddy Domains API v1 (sso-key key:secret).
+icon: "🟩"
+fields:
+  - key: apiKey
+    label: API key
+    type: string
+    required: true
+  - key: apiSecret
+    label: API secret
+    type: string
+    required: true
+    secret: true
+ddns:
+  driver: godaddy

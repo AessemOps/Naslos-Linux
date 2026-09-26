@@ -71,6 +71,8 @@ see the [document index](README.md).
 | Helm SDK | in-process | app install / upgrade / uninstall |
 | Prometheus | HTTP | metrics (Grafana removed 2026-09-19) |
 | ntfy (external `ntfy.sh` or self-hosted) | HTTPS | push notifications |
+| Git chart hosts | HTTPS 443 / SSH 22 / git 9418 | clone configured chart repositories (`networkPolicy.gitEgress`) |
+| Public-IP sources + DNS provider APIs | HTTPS 443 (HTTP 80 for `http` providers) + DNS 53 | Dynamic DNS detection (HTTP + `dns:opendns`/`dns:google`) and record updates (`networkPolicy.ddnsEgress`, §3.9) |
 
 ## Layer 2 — Deployment Topology (namespaces `naslos` + `naslos-privileged`)
 
@@ -186,6 +188,8 @@ see the [document index](README.md).
 | `identity` | `api/internal/identity` | OpenLDAP client: persons/groups, SetPassword; NT-hash computed for the agent-pushed `smbusers` mirror |
 | `metrics` | `api/internal/metrics` | SystemMetrics snapshot + dashboard projection |
 | `notifications` | `api/internal/notifications` | ntfy settings + push delivery |
+| `providers` | `api/internal/providers` | Declarative DNS providers: embedded YAML + override dir, cert-manager solver rendering |
+| `ddns` | `api/internal/ddns` | Dynamic-DNS entry store, public-IP detection, `ovh`/`cloudflare`/`http` drivers, credential Secrets |
 | `server` | `api/internal/server` | HTTP routing, WebSocket log/exec, Samba sync glue |
 
 ## Layer 4 — Port & Trust Map

@@ -48,6 +48,22 @@
         "domains": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "ddns": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "stateFile": { "type": "string" },
+        "providersDir": { "type": "string" },
+        "providersConfigMap": { "type": "string" },
+        "ipSource": { "type": "string" },
+        "ipv6Source": { "type": "string" },
+        "ipSources": { "type": "array", "items": { "type": "string" } },
+        "ipv6Sources": { "type": "array", "items": { "type": "string" } },
+        "intervalSeconds": { "type": "integer", "minimum": 5 },
+        "updateCooldownSeconds": { "type": "integer", "minimum": 0 }
+      }
+    },
     "certManager": {
       "type": "object",
       "additionalProperties": true,
@@ -218,6 +234,11 @@
         },
         "gitEgress": { "type": "boolean" },
         "gitEgressCIDRs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "ddnsEgress": { "type": "boolean" },
+        "ddnsEgressCIDRs": {
           "type": "array",
           "items": { "type": "string" }
         },

@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, onMount } from 'svelte';
+  import ProviderFields from './ProviderFields.svelte';
+  import { visibleFields } from '$lib/providerFields';
 
   export let domain: any | null = null;
 
@@ -11,8 +13,52 @@
   let solverText = domain?.solver ? JSON.stringify(domain.solver, null, 2) : '';
   let saving = false;
   let error = '';
+  let providers: any[] = [];
+  let fieldValues: Record<string, string> = { ...(domain?.providerConfig || {}) };
 
   const dispatch = createEventDispatcher();
+
+  onMount(async () => {
+    try {
+      const res = await fetch('/api/providers');
+      if (!res.ok) return;
+      const data = await res.json();
+      providers = (Array.isArray(data.providers) ? data.providers : []).filter((p: any) => p.certManager);
+      if (!providers.some((p: any) => p.name === dnsProvider) && providers.length) {
+        dnsProvider = providers[0].name;
+      }
+      fieldValues = defaultsFor(dnsProvider, fieldValues);
+    } catch {
+      // The hardcoded fallbacks below keep the form usable if the API is down.
+    }
+  });
+
+  // Svelte 5 does not track state read inside a function called from the
+  // template, so derive the provider/fields reactively instead.
+  $: currentProvider = providers.find((p) => p.name === dnsProvider);
+  $: currentFields = currentProvider?.fields ?? [];
+  // Hide DDNS-only fields; showIf rules whose controller is absent here (no
+  // `mode` in the cert form) are ignored, so shared fields stay visible.
+  $: certFields = visibleFields(
+    currentFields.filter((f: any) => f.scope !== 'ddns'),
+    fieldValues
+  );
+
+  function defaultsFor(name: string, seed: Record<string, string>): Record<string, string> {
+    const next: Record<string, string> = { ...seed };
+    const selected = providers.find((p) => p.name === name);
+    for (const f of (selected?.fields ?? []).filter((x: any) => x.scope !== 'ddns')) {
+      if (next[f.key] === undefined) {
+        next[f.key] = f.default ?? '';
+      }
+    }
+    return next;
+  }
+
+  function onProviderChange(event: Event) {
+    dnsProvider = (event.currentTarget as HTMLSelectElement).value;
+    fieldValues = defaultsFor(dnsProvider, {});
+  }
 
   async function save() {
     saving = true;
@@ -31,6 +77,8 @@
         } catch {
           throw new Error('Solver must be valid JSON');
         }
+      } else if (certFields.length > 0) {
+        body.fields = fieldValues;
       }
       const res = await fetch(`/api/domains/${encodeURIComponent(baseDomain)}`, {
         method: 'PUT',
@@ -63,23 +111,41 @@
       </div>
       <div>
         <label class="label" for="domain-provider">DNS-01 provider</label>
-        <select id="domain-provider" class="input" bind:value={dnsProvider}>
-          <option value="cloudflare">Cloudflare</option>
-          <option value="rfc2136">RFC2136</option>
-          <option value="passthrough">Passthrough (raw solver)</option>
+        <select id="domain-provider" class="input" value={dnsProvider} on:change={onProviderChange}>
+          {#if providers.length === 0}
+            <option value="cloudflare">Cloudflare</option>
+            <option value="rfc2136">RFC2136</option>
+            <option value="passthrough">Passthrough (raw solver)</option>
+          {:else}
+            {#each providers as p}
+              <option value={p.name}>{p.displayName || p.name}</option>
+            {/each}
+          {/if}
         </select>
+        {#if currentProvider?.description}<p class="text-xs text-gray-500 mt-1">{currentProvider?.description}</p>{/if}
       </div>
-      {#if dnsProvider !== 'passthrough'}
-        <div>
-          <label class="label" for="domain-secret">Credentials Secret</label>
-          <input id="domain-secret" class="input" bind:value={credentialsSecret} placeholder="cloudflare-api-token" />
-        </div>
-      {:else}
+
+      {#if dnsProvider === 'passthrough'}
         <div>
           <label class="label" for="domain-solver">Solver (JSON)</label>
           <textarea id="domain-solver" class="input h-32 font-mono text-sm" bind:value={solverText}></textarea>
         </div>
+      {:else if certFields.length > 0}
+        <ProviderFields
+          fields={certFields}
+          values={fieldValues}
+          idPrefix="domain"
+          secretSet={domain?.credentialsSecret ? certFields.filter((f: any) => f.secret).map((f: any) => f.key) : []}
+          unchangedPlaceholder="•••••• (unchanged)"
+          on:change={() => (fieldValues = { ...fieldValues })}
+        />
+      {:else}
+        <div>
+          <label class="label" for="domain-secret">Credentials Secret</label>
+          <input id="domain-secret" class="input" bind:value={credentialsSecret} placeholder="cloudflare-api-token" />
+        </div>
       {/if}
+
       <div>
         <label class="label" for="domain-email">ACME email</label>
         <input id="domain-email" class="input" bind:value={acmeEmail} />

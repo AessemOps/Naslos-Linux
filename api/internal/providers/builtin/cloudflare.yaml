@@ -1,0 +1,24 @@
+name: cloudflare
+displayName: Cloudflare
+description: Cloudflare DNS (API token).
+icon: "🟧"
+fields:
+  - key: apiToken
+    label: API token
+    type: string
+    required: true
+    secret: true
+    # cert-manager's built-in cloudflare solver reads this key.
+    secretKey: api-token
+  - key: proxied
+    label: Proxied (orange cloud)
+    type: bool
+    default: "false"
+certManager:
+  solver:
+    cloudflare:
+      apiTokenSecretRef:
+        name: "${secret}"
+        key: api-token
+ddns:
+  driver: cloudflare
