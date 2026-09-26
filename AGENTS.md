@@ -106,6 +106,9 @@ via `storageState`; a target that does not challenge is an error.
   PRs, live-drill results); new session narratives belong in `docs/archive/`, not
   there. When a session ends, the handoff reflects what is actually deployed —
   never stale tags or revisions.
+- **README rule**: [`README.md`](README.md) is always kept up to date. A change
+  that alters what the project is, the feature list, the repo layout, the setup
+  commands, or the install/deploy path updates the README **in the same change**.
 - Third-party attribution lives in [`CREDITS.md`](CREDITS.md).
 
 ## Deploying to the VM
