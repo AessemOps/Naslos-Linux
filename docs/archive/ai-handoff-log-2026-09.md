@@ -1254,3 +1254,60 @@ pushed digest matches the local one (`docker images --digests`).
 - The `description` attribute on groups is still returned as `""` when
   unset; consider omitting it from JSON responses for consistency.
 - Add validation feedback in the GroupForm UI when description is optional.
+
+---
+
+# Session — 2026-09-26: App catalog refactor (git chart repositories)
+
+Branch `feature/charts-repo-and-app-install-refactor` (PR #28, open). Plan:
+`.kilo/plans/1789943277180-charts-repo-and-app-install-refactor.md`. Current
+state lives in `AI_Handoff.md`; this is the working narrative.
+
+## What changed
+- New Go packages under `api/internal/`: `chartsrepo` (sources, go-git clone/
+  pull per channel, TTL + stale fallback, Secret credentials, traversal/size
+  guards), `apps` (records, install/upgrade/exposure/uninstall, orphan backfill,
+  route-target discovery), `routing` (Traefik IngressRoute + middlewares),
+  `certs` (cert-manager ACME DNS-01 Issuer/wildcard Certificate).
+- `catalog` rewritten to load `apps/<name>/naslos-app.yaml` from the clones;
+  `builtin*.go` removed.
+- Helm installs from the local clone (`loader.LoadDir`); no `git`/`helm` binary.
+- Server routes: `/api/sources`, `/api/sources/refresh`, `/api/apps/{name}/
+  exposure`, `/api/apps/{name}/services`, `/api/domains`, `/api/domains/{d}/
+  certificate`; installs require `confirmed: true`.
+- Chart: `naslos-apps` (PSA baseline) + opt-in `naslos-apps-priv` (privileged),
+  namespaced API Roles, `naslos-datasets` RWX PV/PVC, `networkPolicy.gitEgress`,
+  `apps.officialSource.channels`, cert-manager CRDs in `make crds`.
+- UI: Sources tab, config→exposure→review→confirm install, exposure editor with
+  route-target picker, Domains & SSL page.
+- NaslosCharts (public) populated: README app-authoring spec + 10 charts.
+
+## Live drill on 192.168.1.117 (helm revisions 10–21; api r19→r22, ui r13)
+- go-git clone/refresh; catalog of 10 apps from GitHub; Jellyfin installed and
+  served `200` via Traefik; exposure toggles verified (TLS+auth → 302 to
+  Authelia; auth-off+local-only → IPAllowList; empty subdomain → no route);
+  uninstall; domain/certificate CRs; orphan backfill; a `privileged: true` chart
+  landed in `naslos-apps-priv` with its route.
+- Playwright `apps.spec.ts` + `domains.spec.ts`: 11 passed live (after the TOTP
+  key in `ui/.env.playwright.local` was corrected).
+- GitHub egress fixed (`networkPolicy.gitEgress`); the official source now
+  clones `https://github.com/AessemOps/NaslosCharts.git` (`{Prod: main}`).
+
+## Bugs found and fixed by the drill
+1. `{{ .Release.Name }}` in `services[].name` written literally into the route.
+2. forwardAuth address used the apps namespace instead of the Authelia
+   (platform) namespace.
+3. `PUT .../exposure` replaced the whole object and dropped the route target.
+4. Backfill used a Helm list (needs `list secrets` in `naslos`, exposing
+   proxy/LDAP/Authelia secrets) → discovers Helm-labeled workloads/Services with
+   a read-only Role.
+5. `make crds`' cert-manager step was a no-op (v1.18 CRDs live in
+   `templates/crds.yaml`, not `crds/`).
+6. `security-headers` pinned HSTS subdomains, breaking TLS-off app subdomains.
+7. **PSA `baseline` forbids `hostPath`**, so media apps could not mount
+   datasets → the platform now publishes them as the `naslos-datasets` PVC.
+
+## Open / next
+- Merge PR #28 (needs approval).
+- Start/stop (`FR-APP-04`) is `[OPEN]`.
+- gluetun charts need the user's VPN provider/key.
