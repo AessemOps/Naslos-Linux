@@ -561,10 +561,15 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   fields submitted through the API MUST be written to a Kubernetes Secret and
   MUST NOT be persisted in the entry store. *(ddns tests, `TestDdnsNeverReturnsCredentialValues`)*
 - **FR-DNS-03** — A background reconciler MUST detect the public IP on an
-  interval (`DDNS_INTERVAL_SECONDS`, default 300) and call the provider only
-  when the IP changed, recording `lastIP`/`lastStatus`/`lastError`/`lastRunAt`/
-  `nextRunAt`. A detection or update failure MUST be recorded, not fatal.
-  *(ddns tests, audit.sh egress assertion)*
+  interval (`DDNS_INTERVAL_SECONDS`, default 300) from an ordered list of
+  sources (HTTP URLs and DNS fetchers `dns:opendns`/`dns:google`), DNS-resolve
+  each enabled record, and call the provider only when the public IP is not
+  already among its resolved addresses; a resolution failure MUST update rather
+  than silently skip. It MUST apply a per-record update cooldown
+  (`DDNS_UPDATE_COOLDOWN_SECONDS`, default 300), and record
+  `lastIP`/`lastStatus`/`lastError`/`lastRunAt`/`nextRunAt`/`lastUpdateAt`. A
+  detection or update failure MUST be recorded, not fatal. *(ddns tests,
+  audit.sh egress assertion)*
 - **FR-DNS-04** — DDNS and domain credentials MUST come from Kubernetes Secrets
   in the apps namespace, where the API already has namespaced Secret CRUD. The
   API MUST NOT be granted Secret access in the release namespace, so
@@ -576,13 +581,20 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   MUST be preserved. *(certs tests: `TestSpecOVH`, `TestSpecCloudflareSolverShape`,
   `TestSpecRFC2136SolverShape`, `TestSpecPassthroughIsUnchanged`)*
 - **FR-DNS-06** — A force-run endpoint (`POST /api/ddns/{id}/run`) MUST exist
-  and MUST update the record even when the detected IP is unchanged.
-  *(ddns tests: `TestManagerUpdateSkipsUnchangedAndHidesSecrets`)*
+  and MUST update the record even when the detected IP is unchanged, bypassing
+  the DNS pre-check and the cooldown.
+  *(ddns tests: `TestManagerUpdatesWhenDNSDiffersAndRespectsCooldown`)*
 - **FR-DNS-07** — The generic `http` driver MUST render operator-supplied
   URL/body templates, apply the configured authentication, and MUST refuse a
   target that is not a public address (loopback, private, link-local or cluster
   service ranges), so an admin-supplied URL cannot be used as an SSRF pivot.
   *(ddns tests: `TestHTTPDriverRejectsNonPublicTargets`)*
+- **FR-DNS-08** — The provider set MUST include, beyond the cert-manager
+  providers, the DDNS providers ported from ddns-updater (`duckdns`, `dynu`,
+  `noip`, `freedns`, `namecheap`, `desec`, `spdyn`, `selfhost.de`, `dynv6`,
+  `digitalocean`, `godaddy`, `porkbun`) plus the generic custom provider, each
+  as YAML where a built-in driver suffices. Every built-in DDNS provider MUST
+  resolve to a known driver. *(ddns test: `TestBuiltinProvidersHaveKnownDrivers`)*
 
 ---
 

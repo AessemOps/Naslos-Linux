@@ -49,6 +49,12 @@ func defaultDriver(driver string, client *http.Client) (Driver, error) {
 		return &OVHDriver{Client: client}, nil
 	case "cloudflare":
 		return &CloudflareDriver{Client: client}, nil
+	case "digitalocean":
+		return &DigitalOceanDriver{Client: client}, nil
+	case "godaddy":
+		return &GoDaddyDriver{Client: client}, nil
+	case "porkbun":
+		return &PorkbunDriver{Client: client}, nil
 	case "http":
 		return &HTTPDriver{Client: client}, nil
 	default:

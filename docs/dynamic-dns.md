@@ -1,11 +1,31 @@
 # Dynamic DNS & DNS providers
 
 Naslos keeps one or more A/AAAA records pointed at the appliance's **public WAN
-IP**. The API detects the IP on an interval, compares it with the last known
-value, and calls the provider only when it changed. The same declarative
-registry also drives the cert-manager DNS-01 solver used by
-[Domains & SSL](app-catalog.md#domains--certificates), so a provider is defined
-once.
+IP**. The detection model follows
+[qdm12/ddns-updater](https://github.com/qdm12/ddns-updater): the API fetches the
+public IP, **resolves each record over DNS**, and calls the provider only when
+the resolved addresses do not contain the public IP. That detects manual edits
+and avoids provider rate limits. The same declarative registry also drives the
+cert-manager DNS-01 solver used by [Domains & SSL](app-catalog.md#domains--certificates),
+so a provider is defined once.
+
+## Detection
+
+Each interval (`ddns.intervalSeconds`, default 300) the reconciler:
+
+1. Fetches the public IP, trying `ddns.ipSources` / `ddns.ipv6Sources` in order.
+   A source is an HTTP(S) URL or a DNS fetcher (`dns:opendns`, `dns:google`).
+2. For each enabled record, resolves its name (A/AAAA) and **skips the update
+   when the public IP is already among the answers**. A resolution failure
+   updates rather than silently skipping.
+3. Applies a per-record **cooldown** (`ddns.updateCooldownSeconds`, default 300)
+   after each successful update.
+4. Proxied records (Cloudflare `proxied: true`) cannot be checked by DNS — the
+   lookup returns the proxy's address — so they compare against the stored
+   `lastIP` instead.
+
+`POST /api/ddns/{id}/run` forces one reconcile, bypassing both the DNS pre-check
+and the cooldown.
 
 ## Provider registry
 
@@ -107,23 +127,54 @@ stored value.
 | Driver | Protocol |
 | --- | --- |
 | `ovh` | Signed OVH API: `GET/PUT` `/1.0/domain/zone/{zone}/record` + `POST …/refresh`; `$1$` + SHA1 signature |
-| `cloudflare` | `GET /zones?name=…` → `GET/PUT/POST …/dns_records`; `Authorization: Bearer <apiToken>` |
+| `cloudflare` | `GET /zones?name=…` → `GET/PUT/POST …/dns_records`; `Authorization: Bearer <apiToken>`; honours `proxied` |
+| `digitalocean` | `GET …/records?name=…` then `PUT …/records/{id}`; Bearer token |
+| `godaddy` | `PUT /v1/domains/{zone}/records/{type}/{owner}`; `Authorization: sso-key key:secret` |
+| `porkbun` | `POST …/retrieveByNameType/…` then `…/create/…` or `…/edit/{id}`; apikey/secretapikey |
 | `http` | Templated generic request (see below) |
+
+### Built-in DDNS providers
+
+The embedded `builtin/` definitions ported from ddns-updater (a provider using
+one of the drivers above is pure YAML — no Go change):
+
+| Provider | Driver | Notes |
+| --- | --- | --- |
+| `cloudflare` | `cloudflare` | API token; optional `proxied` |
+| `ovh` | `ovh` | endpoint + application/consumer keys |
+| `duckdns` | `http` | token; `DUCKDNS` subdomain label |
+| `dynu` | `http` | username/password (+ optional location) |
+| `noip` | `http` | username/password (Basic) |
+| `freedns` | `http` | per-record update token |
+| `namecheap` | `http` | DDNS password (IPv4 only) |
+| `desec` | `http` | token (Basic, hostname:token) |
+| `spdyn` | `http` | token or username/password |
+| `selfhostde` | `http` | username/password (Basic; 204 = no change) |
+| `dynv6` | `http` | token |
+| `digitalocean` | `digitalocean` | token; record must already exist |
+| `godaddy` | `godaddy` | API key + secret |
+| `porkbun` | `porkbun` | API key + secret API key |
+| `generic` | `http` | fully custom template |
 
 ### `http` driver
 
 Fields: `updateUrl` (required), `method`, `contentType`, `body`,
 `authType` (`none|basic|bearer|header|query`), `username`, `headerName`,
-`successStatus` (default `200`), `successContains`; secret fields `token`,
-`password`, `headerValue`.
+`successStatus` (a code or comma list, e.g. `200,204`),
+`successContains`, `successAny`, `errorAny`; secret fields `token`, `password`,
+`headerValue`.
 
 Templates use `{{.zone}}`, `{{.record}}`, `{{.type}}`, `{{.ip}}`, `{{.ttl}}`,
-`{{.secret.<key>}}` and `{{.config.<key>}}`. Example:
+`{{.secret.<key>}}`, `{{.config.<key>}}`, plus the helpers `{{fqdn .record
+.zone}}` (full name) and `{{label .record .zone}}` (label, empty at the apex),
+and Go template control flow (`{{if eq .type "AAAA"}}…{{end}}`). Example:
 
 ```yaml
-updateUrl: "https://api.example.com/update?host={{.record}}.{{.zone}}&ip={{.ip}}"
+updateUrl: "https://api.example.com/update?host={{fqdn .record .zone}}&ip={{.ip}}"
 authType: bearer
 token: <secret>
+successAny: "good,nochg"
+errorAny: "badauth,notfqdn"
 ```
 
 The driver refuses a target that is not a public address (loopback, private,
@@ -138,20 +189,23 @@ an SSRF pivot.
 | `ddns.stateFile` | `/var/lib/naslos/ddns.json` | Entry store (shares-config PVC) |
 | `ddns.providersDir` | `/etc/naslos/ddns-providers` | Override directory |
 | `ddns.providersConfigMap` | `""` | ConfigMap mounted at `providersDir` |
-| `ddns.ipSource` | `https://api.ipify.org` | Public IPv4 source |
-| `ddns.ipv6Source` | `https://api6.ipify.org` | Public IPv6 source |
+| `ddns.ipSources` | ipify, icanhazip, ifconfig.io, `dns:google` | Public IPv4 sources, tried in order |
+| `ddns.ipv6Sources` | api6.ipify, ipv6.icanhazip, `dns:google` | Public IPv6 sources |
 | `ddns.intervalSeconds` | `300` | Reconcile interval |
-| `networkPolicy.ddnsEgress` | `false` | Allow outbound HTTP/HTTPS for DDNS |
+| `ddns.updateCooldownSeconds` | `300` | Minimum time between successful updates of one record |
+| `networkPolicy.ddnsEgress` | `false` | Allow outbound HTTP/HTTPS + DNS for DDNS |
 | `networkPolicy.ddnsEgressCIDRs` | `[]` → `0.0.0.0/0` | Narrow the DDNS egress |
 
 API environment variables: `DDNS_ENABLED`, `DDNS_CONFIG`, `DDNS_PROVIDERS_DIR`,
-`DDNS_IP_SOURCE`, `DDNS_IPV6_SOURCE`, `DDNS_INTERVAL_SECONDS`.
+`DDNS_IP_SOURCES`, `DDNS_IPV6_SOURCES`, `DDNS_INTERVAL_SECONDS`,
+`DDNS_UPDATE_COOLDOWN_SECONDS` (the legacy single `DDNS_IP_SOURCE` /
+`DDNS_IPV6_SOURCE` still work as fallbacks).
 
 ## Operations
 
 - **Egress:** without `networkPolicy.ddnsEgress` (or another rule covering
-  80/443) the reconciler records a detection error instead of silently doing
-  nothing. On the VM profile `ddnsEgress: true`.
+  HTTP/HTTPS and DNS 53) the reconciler records a detection error instead of
+  silently doing nothing. On the VM profile `ddnsEgress: true`.
 - **`.local` domains** can never hold a public certificate or a public DNS
   record; DDNS applies only to real public zones.
 - **OVH certificates** need the OVH cert-manager webhook installed and
@@ -161,3 +215,6 @@ API environment variables: `DDNS_ENABLED`, `DDNS_CONFIG`, `DDNS_PROVIDERS_DIR`,
   unchanged; a failure returns `502` with the entry's `lastError`.
 - **Adding a provider:** drop a `*.yaml` file in the override directory (or a
   ConfigMap key) and restart — no code change for a built-in solver or driver.
+
+*Portions of the provider logic and detection model are ported from
+[qdm12/ddns-updater](https://github.com/qdm12/ddns-updater) (MIT).*

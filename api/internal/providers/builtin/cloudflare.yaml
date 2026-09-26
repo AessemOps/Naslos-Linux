@@ -10,6 +10,10 @@ fields:
     secret: true
     # cert-manager's built-in cloudflare solver reads this key.
     secretKey: api-token
+  - key: proxied
+    label: Proxied (orange cloud)
+    type: bool
+    default: "false"
 certManager:
   solver:
     cloudflare:

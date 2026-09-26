@@ -449,9 +449,10 @@ spec:
           port: 9418
     {{- end }}
     {{- if .Values.networkPolicy.ddnsEgress }}
-    # Dynamic DNS (FR-DNS-03): the API detects the public IP and calls the
-    # provider APIs. Open only HTTP/HTTPS to the configured CIDRs - not a
-    # general all-port Internet opening.
+    # Dynamic DNS (FR-DNS-03): the API detects the public IP over HTTP and DNS
+    # (dns:opendns / dns:google) and calls the provider APIs. Open only
+    # HTTP/HTTPS and DNS to the configured CIDRs - not a general all-port
+    # Internet opening.
     - to:
         {{- range (.Values.networkPolicy.ddnsEgressCIDRs | default (list "0.0.0.0/0")) }}
         - ipBlock:
@@ -462,6 +463,10 @@ spec:
           port: 443
         - protocol: TCP
           port: 80
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
     {{- end }}
     {{- $ans := .Values.apps.namespace | default "naslos-apps" }}
     {{- $apriv := .Values.apps.privilegedNamespace | default "naslos-apps-priv" }}

@@ -58,7 +58,10 @@
         "providersConfigMap": { "type": "string" },
         "ipSource": { "type": "string" },
         "ipv6Source": { "type": "string" },
-        "intervalSeconds": { "type": "integer", "minimum": 5 }
+        "ipSources": { "type": "array", "items": { "type": "string" } },
+        "ipv6Sources": { "type": "array", "items": { "type": "string" } },
+        "intervalSeconds": { "type": "integer", "minimum": 5 },
+        "updateCooldownSeconds": { "type": "integer", "minimum": 0 }
       }
     },
     "certManager": {

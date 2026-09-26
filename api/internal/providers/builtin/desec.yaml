@@ -1,0 +1,20 @@
+name: desec
+displayName: deSEC
+description: deSEC (dedyn.io) dynamic DNS; Basic auth with the hostname and token.
+icon: "🔐"
+fields:
+  - key: token
+    label: Token
+    type: string
+    required: true
+    secret: true
+ddns:
+  driver: http
+  defaults:
+    method: GET
+    authType: none
+    successStatus: "200"
+    successContains: good
+    errorAny: badauth,notfqdn,badrequest
+    updateUrl: >-
+      https://{{fqdn .record .zone}}:{{.secret.token}}@update.dedyn.io/?hostname={{fqdn .record .zone}}&{{if eq .type "AAAA"}}myipv6={{.ip}}&myipv4=preserve{{else}}myipv4={{.ip}}&myipv6=preserve{{end}}

@@ -276,7 +276,9 @@ shell, never an arbitrary command.
 | `DDNS_CONFIG` | `/var/lib/naslos/ddns.json` | Dynamic-DNS entry store |
 | `DDNS_PROVIDERS_DIR` | — | Override directory for provider `*.yaml` files |
 | `DDNS_IP_SOURCE` / `DDNS_IPV6_SOURCE` | `https://api.ipify.org` / `https://api6.ipify.org` | Public-IP detection URLs |
+| `DDNS_IP_SOURCES` / `DDNS_IPV6_SOURCES` | — | Comma-separated source lists (HTTP URLs or `dns:opendns`/`dns:google`) |
 | `DDNS_INTERVAL_SECONDS` | `300` | How often the reconciler checks the public IP |
+| `DDNS_UPDATE_COOLDOWN_SECONDS` | `300` | Minimum time between successful updates of one record |
 | `CHARTS_CACHE_DIR` | `/var/lib/naslos/charts` | Git clone cache (one tree per source/channel) |
 | `CHARTS_TTL` | `15m` | Cache freshness before a refresh |
 | `SOURCES_OFFICIAL_URL` | — | Official chart repository to seed (empty disables) |

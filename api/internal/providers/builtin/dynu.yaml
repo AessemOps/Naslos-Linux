@@ -1,0 +1,27 @@
+name: dynu
+displayName: Dynu
+description: Dynu dynamic DNS (dynu.com).
+icon: "🟣"
+fields:
+  - key: username
+    label: Username
+    type: string
+    required: true
+  - key: password
+    label: Password
+    type: string
+    required: true
+    secret: true
+  - key: location
+    label: Location / group
+    type: string
+ddns:
+  driver: http
+  defaults:
+    method: GET
+    authType: none
+    successStatus: "200"
+    successAny: good,nochg
+    errorAny: badauth,notfqdn,abuse
+    updateUrl: >-
+      https://api.dynu.com/nic/update?hostname={{fqdn .record .zone}}&username={{.config.username}}&password={{.secret.password}}&{{if eq .type "AAAA"}}myipv6{{else}}myip{{end}}={{.ip}}{{if .config.location}}&location={{.config.location}}{{end}}

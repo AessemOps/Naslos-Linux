@@ -37,6 +37,12 @@ fields:
   - key: successContains
     label: Response must contain
     type: string
+  - key: successAny
+    label: Response must contain one of (comma separated)
+    type: string
+  - key: errorAny
+    label: Response fails if it contains any of (comma separated)
+    type: string
   - key: token
     label: Token
     type: string

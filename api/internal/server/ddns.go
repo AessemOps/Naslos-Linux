@@ -345,6 +345,26 @@ func (s *Server) upsertDdns(w http.ResponseWriter, r *http.Request, existing *dd
 	writeJSON(w, status, entry)
 }
 
+// ddnsSources splits a comma-separated public-IP source list, falling back to
+// the legacy single source when the list is empty.
+func ddnsSources(list, fallback string) []string {
+	if strings.TrimSpace(list) != "" {
+		out := make([]string, 0)
+		for _, part := range strings.Split(list, ",") {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if trimmed := strings.TrimSpace(fallback); trimmed != "" {
+		return []string{trimmed}
+	}
+	return nil
+}
+
 // validateRecordLabel checks a subdomain label ("@"/empty = apex).
 func validateRecordLabel(record string) error {
 	if record == "" || record == "@" {

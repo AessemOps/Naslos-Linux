@@ -245,8 +245,9 @@ assert api_env.get("DOMAINS_CONFIG"), "the API must get a domains state path"
 # and the egress rule must stay port-scoped to HTTP/HTTPS (80/443).
 assert api_env.get("DDNS_CONFIG"), "the API must get a DDNS state path"
 assert api_env.get("DDNS_PROVIDERS_DIR"), "the API must get a DDNS provider override directory"
-assert "DDNS_IP_SOURCE" in api_env and "DDNS_IPV6_SOURCE" in api_env, \
-    "the API must get the public-IP detection sources"
+assert api_env.get("DDNS_IP_SOURCES") and api_env.get("DDNS_IPV6_SOURCES"), \
+    "the API must get the public-IP detection source lists"
+assert api_env.get("DDNS_UPDATE_COOLDOWN_SECONDS"), "the API must get the DDNS update cooldown"
 
 # Privileged apps namespace: PSA privileged, with its own API Role, for charts
 # that need NET_ADMIN (VPN sidecars) and cannot run under baseline.
@@ -276,15 +277,16 @@ for d in docs:
         assert "stsIncludeSubdomains" not in d["spec"]["headers"], \
             "security-headers must not set stsIncludeSubdomains"
 
-# FR-DNS-03: the DDNS egress is port-scoped to HTTP/HTTPS (80/443), CIDR-scoped,
-# and granted only to the release namespace (the API is the DDNS client).
+# FR-DNS-03: the DDNS egress is port-scoped to HTTP/HTTPS and DNS (80/443/53),
+# CIDR-scoped, and granted only to the release namespace (the API is the DDNS
+# client).
 egress_policies = [
     d for d in docs
     if d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == "naslos-workload-egress"
 ]
 def ddns_rules(policy):
     return [r for r in policy["spec"].get("egress", [])
-            if {p.get("port") for p in r.get("ports", [])} == {443, 80}]
+            if {p.get("port") for p in r.get("ports", [])} == {443, 80, 53}]
 ddns_namespaces = [p["metadata"].get("namespace") for p in egress_policies if ddns_rules(p)]
 assert ddns_namespaces == ["naslos"], \
     f"the DDNS egress rule must exist only in the release namespace, got {ddns_namespaces}"
