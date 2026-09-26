@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -72,6 +73,10 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 		}
 		if !req.Confirmed {
 			writeError(w, http.StatusBadRequest, "install must be explicitly confirmed")
+			return
+		}
+		if req.BaseDomain != "" && !s.baseDomainSelectable(req.BaseDomain) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("base domain %q is not configured", req.BaseDomain))
 			return
 		}
 		view, err := s.appManager.Install(r.Context(), apps.InstallRequest{
@@ -179,11 +184,18 @@ func (s *Server) handleAppExposure(w http.ResponseWriter, r *http.Request, name 
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
+		baseDomain := rec.BaseDomain
+		if baseDomain == "" {
+			baseDomain = s.baseDomain
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"exposure":    rec.Exposure,
-			"baseDomain":  s.baseDomain,
-			"authAllowed": s.appManager.AuthAllowed(""),
-			"lastError":   rec.LastError,
+			"exposure":          rec.Exposure,
+			"baseDomain":        baseDomain,
+			"primaryDomain":     s.baseDomain,
+			"selectableDomains": s.selectableDomains(),
+			"ssoDomains":        s.effectiveSSODomains(),
+			"authAllowed":       s.appManager.AuthAllowed(rec.BaseDomain),
+			"lastError":         rec.LastError,
 		})
 
 	case http.MethodPut:
@@ -193,6 +205,10 @@ func (s *Server) handleAppExposure(w http.ResponseWriter, r *http.Request, name 
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if req.BaseDomain != "" && !s.baseDomainSelectable(req.BaseDomain) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("base domain %q is not configured", req.BaseDomain))
 			return
 		}
 		view, err := s.appManager.SetExposure(r.Context(), name, req.Exposure, req.BaseDomain)

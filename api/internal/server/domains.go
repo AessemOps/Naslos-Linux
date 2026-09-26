@@ -29,9 +29,11 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"domains":     s.domains.List(),
-			"certManager": s.certs != nil,
-			"baseDomain":  s.baseDomain,
+			"domains":           s.domains.List(),
+			"certManager":       s.certs != nil,
+			"baseDomain":        s.baseDomain,
+			"selectableDomains": s.selectableDomains(),
+			"ssoDomains":        s.effectiveSSODomains(),
 		})
 
 	case http.MethodPost:
@@ -106,6 +108,67 @@ func (s *Server) handleDomainDetail(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// selectableDomains returns the base domains an app exposure may use: the
+// primary domain first, then every registered domain record, de-duplicated and
+// with empties dropped.
+func (s *Server) selectableDomains() []string {
+	out := make([]string, 0, 1)
+	seen := make(map[string]bool)
+	add := func(domain string) {
+		if domain == "" || seen[domain] {
+			return
+		}
+		seen[domain] = true
+		out = append(out, domain)
+	}
+	add(s.baseDomain)
+	if s.domains != nil {
+		for _, d := range s.domains.List() {
+			add(d.BaseDomain)
+		}
+	}
+	return out
+}
+
+// effectiveSSODomains returns the domains Authelia protects: the primary domain
+// plus the chart-declared SSO_DOMAINS env seed and any store domain promoted to
+// SSO, de-duplicated. The chart list is a floor (it cannot be demoted from the
+// UI); store-promoted domains can be toggled live.
+func (s *Server) effectiveSSODomains() []string {
+	out := make([]string, 0, 1)
+	seen := make(map[string]bool)
+	add := func(domain string) {
+		if domain == "" || seen[domain] {
+			return
+		}
+		seen[domain] = true
+		out = append(out, domain)
+	}
+	add(s.baseDomain)
+	for _, d := range s.ssoDomains {
+		add(d)
+	}
+	if s.domains != nil {
+		for _, d := range s.domains.List() {
+			if d.SSO {
+				add(d.BaseDomain)
+			}
+		}
+	}
+	return out
+}
+
+// baseDomainSelectable reports whether a non-empty base domain is one of the
+// configured domains an exposure may point at.
+func (s *Server) baseDomainSelectable(baseDomain string) bool {
+	for _, d := range s.selectableDomains() {
+		if d == baseDomain {
+			return true
+		}
+	}
+	return false
 }
 
 // upsertDomain validates, persists and applies a domain.

@@ -577,10 +577,17 @@ func (m *Manager) view(ctx context.Context, name string) (View, error) {
 
 // urlFor builds the app URL from its exposure.
 func (m *Manager) urlFor(rec Record) string {
-	if rec.Exposure.Subdomain == "" || m.baseDomain == "" {
+	if rec.Exposure.Subdomain == "" {
 		return ""
 	}
-	host := rec.Exposure.Subdomain + "." + m.baseDomain
+	baseDomain := rec.BaseDomain
+	if baseDomain == "" {
+		baseDomain = m.baseDomain
+	}
+	if baseDomain == "" {
+		return ""
+	}
+	host := rec.Exposure.Subdomain + "." + baseDomain
 	if rec.Exposure.TLS {
 		return "https://" + host
 	}

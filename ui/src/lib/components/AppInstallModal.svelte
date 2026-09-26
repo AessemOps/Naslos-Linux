@@ -38,7 +38,8 @@
   let values: Record<string, any> = {};
   let exposure: Exposure = { subdomain: '', tls: true, auth: true, localOnly: false };
   let baseDomain = '';
-  let authAllowed = true;
+  let selectableDomains: string[] = [];
+  let ssoDomains: string[] = [];
   let confirmed = false;
   let activeStep: 'config' | 'exposure' | 'review' | 'confirm' = 'config';
 
@@ -67,8 +68,16 @@
       if (domainRes.ok) {
         const domainData = await domainRes.json();
         baseDomain = domainData.baseDomain || '';
-        // The primary domain is in the chart's SSO list by default.
-        authAllowed = true;
+        const domains = Array.isArray(domainData.domains) ? domainData.domains : [];
+        selectableDomains =
+          Array.isArray(domainData.selectableDomains) && domainData.selectableDomains.length > 0
+            ? domainData.selectableDomains
+            : [baseDomain, ...domains.map((d: any) => d.baseDomain)].filter(Boolean);
+        // Older APIs do not return ssoDomains; the primary is always SSO.
+        ssoDomains =
+          Array.isArray(domainData.ssoDomains) && domainData.ssoDomains.length > 0
+            ? domainData.ssoDomains
+            : [baseDomain].filter(Boolean);
       }
     } catch (e) {
       error = 'Failed to load app details: ' + e;
@@ -127,7 +136,7 @@
         {#if activeStep === 'config'}
           <SchemaForm {app} bind:values />
         {:else if activeStep === 'exposure'}
-          <ExposureForm bind:exposure {baseDomain} {authAllowed} />
+          <ExposureForm bind:exposure bind:baseDomain {selectableDomains} {ssoDomains} />
         {:else if activeStep === 'review'}
           <div class="space-y-3">
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">App</span><span class="font-medium">{app.displayName}</span></div>
