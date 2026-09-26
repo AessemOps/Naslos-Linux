@@ -22,10 +22,11 @@ func TestProvidersListIncludesBuiltins(t *testing.T) {
 	}
 	var payload struct {
 		Providers []struct {
-			Name        string `json:"name"`
-			CertManager bool   `json:"certManager"`
-			DDNS        bool   `json:"ddns"`
-			Driver      string `json:"driver"`
+			Name        string   `json:"name"`
+			CertManager bool     `json:"certManager"`
+			DDNS        bool     `json:"ddns"`
+			Driver      string   `json:"driver"`
+			APIRights   []string `json:"apiRights"`
 		} `json:"providers"`
 		Errors []string `json:"errors"`
 	}
@@ -36,13 +37,15 @@ func TestProvidersListIncludesBuiltins(t *testing.T) {
 		CertManager bool
 		DDNS        bool
 		Driver      string
+		APIRights   []string
 	}{}
 	for _, p := range payload.Providers {
 		byName[p.Name] = struct {
 			CertManager bool
 			DDNS        bool
 			Driver      string
-		}{p.CertManager, p.DDNS, p.Driver}
+			APIRights   []string
+		}{p.CertManager, p.DDNS, p.Driver, p.APIRights}
 	}
 	ovh, ok := byName["ovh"]
 	if !ok || !ovh.CertManager || !ovh.DDNS || ovh.Driver != "ovh" {
@@ -50,6 +53,12 @@ func TestProvidersListIncludesBuiltins(t *testing.T) {
 	}
 	if generic, ok := byName["generic"]; !ok || generic.CertManager || !generic.DDNS || generic.Driver != "http" {
 		t.Fatalf("generic provider view = %+v", generic)
+	}
+	for _, name := range []string{"cloudflare", "ovh", "rfc2136", "passthrough"} {
+		p, ok := byName[name]
+		if !ok || len(p.APIRights) == 0 {
+			t.Fatalf("cert-capable provider %q is missing apiRights: %+v", name, p)
+		}
 	}
 }
 

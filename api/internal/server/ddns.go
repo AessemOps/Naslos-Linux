@@ -27,6 +27,7 @@ type providerView struct {
 	DisplayName string            `json:"displayName"`
 	Description string            `json:"description,omitempty"`
 	Icon        string            `json:"icon,omitempty"`
+	APIRights   []string          `json:"apiRights,omitempty"`
 	Fields      []providers.Field `json:"fields"`
 	CertManager bool              `json:"certManager"`
 	DDNS        bool              `json:"ddns"`
@@ -49,6 +50,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 				DisplayName: p.DisplayName,
 				Description: p.Description,
 				Icon:        p.Icon,
+				APIRights:   p.APIRights,
 				Fields:      p.Fields,
 				CertManager: p.SupportsCertificates(),
 				DDNS:        p.HasDDNS(),

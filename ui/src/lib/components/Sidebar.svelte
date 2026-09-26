@@ -28,12 +28,14 @@
   // groups on /api/auth/me; when it cannot be read (anonymous, or the dev
   // posture with auth off) the extra link simply stays hidden.
   let isAdmin = false;
+  let username = '';
 
   onMount(async () => {
     try {
       const res = await fetch('/api/auth/me');
       if (!res.ok) return;
       const data = await res.json();
+      username = data.username ?? '';
       const groups = String(data.groups ?? '')
         .split(',')
         .map((g) => g.trim());
@@ -42,6 +44,27 @@
       // Hidden when the identity cannot be read.
     }
   });
+
+  // The session belongs to Authelia's forwardAuth portal, so signing out is a
+  // POST to its logout endpoint (same origin, routed straight to the portal).
+  // The redirect then lands on the login portal; if the session was already
+  // dead the POST errors and the redirect is still correct.
+  let loggingOut = false;
+
+  async function logout() {
+    if (loggingOut) return;
+    loggingOut = true;
+    try {
+      await fetch('/authelia/api/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetURL: '/' })
+      });
+    } catch {
+      // Ignore: the redirect below still reaches the login portal.
+    }
+    window.location.assign('/');
+  }
 </script>
 
 <aside class="fixed left-0 top-0 h-screen w-64 bg-naslos-surface border-r border-naslos-border flex flex-col">
@@ -84,7 +107,18 @@
     {/if}
   </nav>
 
-  <div class="p-4 border-t border-naslos-border">
-    <p class="text-xs text-gray-600 text-center">Naslos v0.1.0</p>
+  <div class="p-4 border-t border-naslos-border space-y-3">
+    <button
+      type="button"
+      class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-gray-400 hover:bg-naslos-border hover:text-white disabled:opacity-50"
+      on:click={logout}
+      disabled={loggingOut}
+    >
+      <span class="text-lg" aria-hidden="true">↩</span>
+      <span class="font-medium">{loggingOut ? 'Signing out…' : 'Sign out'}</span>
+    </button>
+    <p class="text-xs text-gray-600 text-center">
+      {#if username}{username} · {/if}Naslos v0.1.0
+    </p>
   </div>
 </aside>

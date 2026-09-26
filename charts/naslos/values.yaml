@@ -354,6 +354,15 @@ ddns:
 certManager:
   enabled: false
 
+# The OVH DNS-01 webhook (aureq/cert-manager-webhook-ovh) is installed as its own
+# release in the cert-manager namespace by `make cert-manager-webhook-ovh`. This
+# only wires the RBAC that lets it read a Domain's credential Secret in the apps
+# namespace. Enable it on any install that offers OVH certificates.
+ovhWebhook:
+  enabled: false
+  serviceAccount: cert-manager-webhook-ovh
+  namespace: cert-manager
+
 # Authelia authentication
 authelia:
   enabled: true

@@ -83,6 +83,11 @@ test('dashboard shows zfs pools from the agent', async ({ page }) => {
   await expect(page.getByText('ONLINE').first()).toBeVisible();
 });
 
+test('sidebar offers a sign-out control', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
+});
+
 test('dashboard auto-refreshes every 5 seconds', async ({ page }) => {
   // Serve incrementing CPU values; the UI must re-render without a reload.
   let call = 0;
