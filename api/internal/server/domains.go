@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,9 +31,11 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"domains":     s.domains.List(),
-			"certManager": s.certs != nil,
-			"baseDomain":  s.baseDomain,
+			"domains":           s.domains.List(),
+			"certManager":       s.certs != nil,
+			"baseDomain":        s.baseDomain,
+			"selectableDomains": s.selectableDomains(),
+			"ssoDomains":        s.effectiveSSODomains(),
 		})
 
 	case http.MethodPost:
@@ -57,6 +61,10 @@ func (s *Server) handleDomainDetail(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/domains/")
 	if strings.HasSuffix(path, "/certificate") {
 		s.handleDomainCertificate(w, r, strings.TrimSuffix(path, "/certificate"))
+		return
+	}
+	if strings.HasSuffix(path, "/sso") {
+		s.handleDomainSSO(w, r, strings.TrimSuffix(path, "/sso"))
 		return
 	}
 	name := path
@@ -101,11 +109,179 @@ func (s *Server) handleDomainDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
+		// A deleted domain drops out of the effective SSO list; reconcile the
+		// fragments so Authelia stops protecting it. Best-effort.
+		if domain.SSO || name == s.baseDomain {
+			if err := s.syncSSOState(r.Context()); err != nil {
+				log.Printf("Warning: Authelia SSO sync after removing %s failed: %v", name, err)
+			}
+		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "domain removed", "name": name})
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// selectableDomains returns the base domains an app exposure may use: the
+// primary domain first, then every registered domain record, de-duplicated and
+// with empties dropped.
+func (s *Server) selectableDomains() []string {
+	out := make([]string, 0, 1)
+	seen := make(map[string]bool)
+	add := func(domain string) {
+		if domain == "" || seen[domain] {
+			return
+		}
+		seen[domain] = true
+		out = append(out, domain)
+	}
+	add(s.baseDomain)
+	if s.domains != nil {
+		for _, d := range s.domains.List() {
+			add(d.BaseDomain)
+		}
+	}
+	return out
+}
+
+// effectiveSSODomains returns the domains Authelia protects: the primary domain
+// plus the chart-declared SSO_DOMAINS env seed and any store domain promoted to
+// SSO, de-duplicated. The chart list is a floor (it cannot be demoted from the
+// UI); store-promoted domains can be toggled live.
+func (s *Server) effectiveSSODomains() []string {
+	out := make([]string, 0, 1)
+	seen := make(map[string]bool)
+	add := func(domain string) {
+		if domain == "" || seen[domain] {
+			return
+		}
+		seen[domain] = true
+		out = append(out, domain)
+	}
+	add(s.baseDomain)
+	for _, d := range s.ssoDomains {
+		add(d)
+	}
+	if s.domains != nil {
+		for _, d := range s.domains.List() {
+			if d.SSO {
+				add(d.BaseDomain)
+			}
+		}
+	}
+	return out
+}
+
+// baseDomainSelectable reports whether a non-empty base domain is one of the
+// configured domains an exposure may point at.
+func (s *Server) baseDomainSelectable(baseDomain string) bool {
+	for _, d := range s.selectableDomains() {
+		if d == baseDomain {
+			return true
+		}
+	}
+	return false
+}
+
+// handleDomainSSO promotes or demotes a registered domain in the effective
+// Authelia SSO list. The primary domain is always SSO; a chart-declared
+// SSO_DOMAINS entry is a floor that cannot be demoted from the UI. Demotion is
+// refused while an installed app still requires auth on the domain, because its
+// route would start failing the SSO gate.
+func (s *Server) handleDomainSSO(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.domains == nil {
+		writeError(w, http.StatusServiceUnavailable, "domain management is not available")
+		return
+	}
+	if name == "" || strings.Contains(name, "/") {
+		writeError(w, http.StatusNotFound, "domain not found")
+		return
+	}
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if name == s.baseDomain {
+		writeError(w, http.StatusBadRequest, "the primary domain is always an SSO domain")
+		return
+	}
+	if _, err := s.domains.Get(name); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if !req.Enabled {
+		if containsDomain(s.ssoDomains, name) {
+			writeError(w, http.StatusConflict,
+				"this domain is declared in the chart's SSO list (SSO_DOMAINS); remove it from values before demoting")
+			return
+		}
+		if apps := s.appsUsingAuth(name); len(apps) > 0 {
+			writeError(w, http.StatusConflict,
+				fmt.Sprintf("cannot disable SSO: installed apps still require auth on %s: %s", name, strings.Join(apps, ", ")))
+			return
+		}
+	}
+	now := time.Now().UTC()
+	domain, err := s.domains.Update(name, func(d *certs.Domain) {
+		d.SSO = req.Enabled
+		d.UpdatedAt = now
+	})
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err := s.syncSSOState(r.Context()); err != nil {
+		// The flag is persisted; the fragments will be reconciled on the next
+		// change (or on startup), so this is not fatal.
+		log.Printf("Warning: Authelia SSO sync failed: %v", err)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"domain":     domain,
+		"domains":    s.domains.List(),
+		"ssoDomains": s.effectiveSSODomains(),
+	})
+}
+
+// appsUsingAuth returns the names of installed apps whose exposure requires
+// Authelia auth on the given base domain (an empty record domain means the
+// primary, which routing falls back to).
+func (s *Server) appsUsingAuth(baseDomain string) []string {
+	if s.appManager == nil {
+		return nil
+	}
+	var names []string
+	for _, rec := range s.appManager.Records() {
+		if !rec.Exposure.Auth {
+			continue
+		}
+		domain := rec.BaseDomain
+		if domain == "" {
+			domain = s.baseDomain
+		}
+		if domain == baseDomain {
+			names = append(names, rec.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// containsDomain reports whether list contains value.
+func containsDomain(list []string, value string) bool {
+	for _, item := range list {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 // upsertDomain validates, persists and applies a domain.
@@ -134,6 +310,10 @@ func (s *Server) upsertDomain(w http.ResponseWriter, r *http.Request, req domain
 	now := time.Now().UTC()
 	if existed {
 		domain.CreatedAt = existing.CreatedAt
+		// The SSO flag is owned by POST /api/domains/{domain}/sso: the Domains
+		// form never sends it, so a plain edit must not silently demote the
+		// domain.
+		domain.SSO = existing.SSO
 	} else {
 		domain.CreatedAt = now
 	}

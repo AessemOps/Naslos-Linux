@@ -130,8 +130,10 @@ type Config struct {
 	Discoverer ServiceDiscoverer
 	// BaseDomain is the primary (Helm-owned) domain app subdomains hang off.
 	BaseDomain string
-	// SSODomains are the Authelia-protected domains; auth is only offered there.
-	SSODomains []string
+	// SSODomains returns the effective Authelia-protected domains. It is called
+	// on every routing decision, so a live SSO promotion is picked up without a
+	// restart; auth is only offered on a domain it reports.
+	SSODomains func() []string
 }
 
 // Manager coordinates records and lifecycle operations.
@@ -146,7 +148,7 @@ type Manager struct {
 	discoverer ServiceDiscoverer
 
 	baseDomain string
-	ssoDomains []string
+	ssoDomains func() []string
 
 	mu sync.Mutex
 }
@@ -475,6 +477,9 @@ func (m *Manager) ReconcileRoutes(ctx context.Context) error {
 		return nil
 	}
 	var errs []error
+	// The effective SSO list is loop-invariant; materialise it once instead of
+	// re-walking the domain store for every record.
+	ssoDomains := m.ssoDomainsList()
 	for _, rec := range m.store.List() {
 		if rec.Orphaned {
 			continue
@@ -483,15 +488,23 @@ func (m *Manager) ReconcileRoutes(ctx context.Context) error {
 		if baseDomain == "" {
 			baseDomain = m.baseDomain
 		}
-		if err := m.router.Apply(ctx, rec, m.targetNamespace(rec), baseDomain, m.ssoDomains); err != nil {
+		if err := m.router.Apply(ctx, rec, m.targetNamespace(rec), baseDomain, ssoDomains); err != nil {
 			errs = append(errs, fmt.Errorf("app %q: %w", rec.Name, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// SSODomains returns the configured SSO domains.
-func (m *Manager) SSODomains() []string { return append([]string(nil), m.ssoDomains...) }
+// ssoDomainsList materialises the effective SSO list from its provider.
+func (m *Manager) ssoDomainsList() []string {
+	if m.ssoDomains == nil {
+		return nil
+	}
+	return m.ssoDomains()
+}
+
+// SSODomains returns the effective SSO domains.
+func (m *Manager) SSODomains() []string { return m.ssoDomainsList() }
 
 // BaseDomain returns the primary base domain.
 func (m *Manager) BaseDomain() string { return m.baseDomain }
@@ -508,7 +521,7 @@ func (m *Manager) applyRoute(ctx context.Context, rec Record, baseDomain string)
 	if baseDomain == "" {
 		baseDomain = m.baseDomain
 	}
-	if err := m.router.Apply(ctx, rec, m.targetNamespace(rec), baseDomain, m.ssoDomains); err != nil {
+	if err := m.router.Apply(ctx, rec, m.targetNamespace(rec), baseDomain, m.ssoDomainsList()); err != nil {
 		_, _ = m.store.Update(rec.Name, func(r *Record) { r.LastError = err.Error() })
 	}
 }
@@ -577,10 +590,17 @@ func (m *Manager) view(ctx context.Context, name string) (View, error) {
 
 // urlFor builds the app URL from its exposure.
 func (m *Manager) urlFor(rec Record) string {
-	if rec.Exposure.Subdomain == "" || m.baseDomain == "" {
+	if rec.Exposure.Subdomain == "" {
 		return ""
 	}
-	host := rec.Exposure.Subdomain + "." + m.baseDomain
+	baseDomain := rec.BaseDomain
+	if baseDomain == "" {
+		baseDomain = m.baseDomain
+	}
+	if baseDomain == "" {
+		return ""
+	}
+	host := rec.Exposure.Subdomain + "." + baseDomain
 	if rec.Exposure.TLS {
 		return "https://" + host
 	}
@@ -595,7 +615,7 @@ func (m *Manager) authAllowed(baseDomain string) bool {
 	if baseDomain == "" {
 		return false
 	}
-	for _, domain := range m.ssoDomains {
+	for _, domain := range m.ssoDomainsList() {
 		if domain == baseDomain {
 			return true
 		}

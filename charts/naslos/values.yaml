@@ -251,6 +251,15 @@ traefik:
   api:
     dashboard: true
     basePath: /traefik
+  # The Authelia portal must be reachable on every SSO domain, not only the
+  # primary (Authelia's session cookie is per domain, so a promoted domain needs
+  # its own portal or the forwardAuth redirect 404s). The API renders those
+  # routes in naslos-apps, where it has IngressRoute/Service rights, pointing at
+  # an ExternalName Service that aliases the Authelia Service in the release
+  # namespace. Traefik refuses ExternalName services unless this is on.
+  providers:
+    kubernetesCRD:
+      allowExternalNameServices: true
   # hostPort 80/443 can only be held by one pod on this single node, so the
   # chart default (maxSurge 1, maxUnavailable 0) deadlocks: the new pod never
   # becomes Ready because the old one still owns the ports. terminate the old
@@ -366,6 +375,25 @@ ovhWebhook:
 # Authelia authentication
 authelia:
   enabled: true
+  # The API restarts Authelia on an SSO promotion by deleting its pod, which
+  # needs a deterministic pod name: naslos-authelia-0. That is only guaranteed
+  # for a StatefulSet. The subchart default is DaemonSet, so this pin is a
+  # deliberate one-time kind change on an existing install: `make install-vm`
+  # deletes the legacy DaemonSet first so the two never share the session PVC.
+  pod:
+    kind: StatefulSet
+    # The SSO fragments (session cookies + access-control rules) rendered from
+    # the runtime SSO domain list by templates/authelia-sso.yaml and rewritten by
+    # the API when a domain is promoted/demoted. Mounted read-only; the config's
+    # Authelia template filter injects them via fileContent.
+    extraVolumes:
+      - name: authelia-sso
+        configMap:
+          name: naslos-authelia-sso
+    extraVolumeMounts:
+      - name: authelia-sso
+        mountPath: /config-sso
+        readOnly: true
   configMap:
     # Use our own ConfigMap (charts/naslos/templates/authelia-config.yaml,
     # wired up with the LDAP backend) instead of the authelia subchart's

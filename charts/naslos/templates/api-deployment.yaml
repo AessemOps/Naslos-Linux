@@ -243,6 +243,16 @@ spec:
               value: {{ .Values.ingress.authelia.serviceName | default "naslos-authelia" | quote }}
             - name: AUTHELIA_PORT
               value: {{ .Values.ingress.authelia.port | default 80 | quote }}
+            # Live SSO promotion (FR-APP-15): where the API writes the SSO
+            # fragments and the Authelia pod it deletes to make Authelia re-read
+            # them. The pod name is the StatefulSet ordinal for the reference
+            # `naslos` release, as ingress.authelia.serviceName already assumes.
+            - name: AUTHELIA_SSO_CONFIGMAP
+              value: "naslos-authelia-sso"
+            - name: AUTHELIA_POD
+              value: "naslos-authelia-0"
+            - name: AUTHELIA_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
             - name: EXPOSURE_LOCAL_ONLY_CIDR
               value: {{ .Values.apps.localOnlyCIDR | default .Values.networkPolicy.nfsClientCIDR | default "" | quote }}
             {{- if .Values.apps.officialSource.url }}

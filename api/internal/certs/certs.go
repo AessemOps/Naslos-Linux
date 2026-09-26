@@ -86,6 +86,9 @@ type Domain struct {
 	Environment string `json:"environment"`
 	// Primary marks the Helm-owned domain serving UI + Authelia.
 	Primary bool `json:"primary,omitempty"`
+	// SSO marks a non-primary domain promoted to the Authelia SSO list at
+	// runtime (the Domains page toggle). The primary domain is always SSO.
+	SSO bool `json:"sso,omitempty"`
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`

@@ -1,11 +1,35 @@
 package routing
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
+
 	"github.com/AessemOps/Naslos-Linux/api/internal/apps"
 )
+
+func newFakeReconciler(t *testing.T) (*Reconciler, *dynamicfake.FakeDynamicClient) {
+	t.Helper()
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		ingressRouteGVR: "IngressRouteList",
+		middlewareGVR:   "MiddlewareList",
+		serviceGVR:      "ServiceList",
+	})
+	r := NewReconciler(client, Options{
+		Namespace:         "naslos-apps",
+		TLSSecret:         "naslos-apps-tls",
+		AutheliaService:   "naslos-authelia",
+		AutheliaPort:      80,
+		AutheliaNamespace: "naslos",
+	})
+	return r, client
+}
 
 func baseSpec() Spec {
 	return Spec{
@@ -135,6 +159,102 @@ func TestRenderMissingTarget(t *testing.T) {
 	spec.Service = ""
 	if _, err := Render(spec); err == nil {
 		t.Fatal("expected an error when the route target is missing")
+	}
+}
+
+func TestPortalDomainsSkipsPrimary(t *testing.T) {
+	got := portalDomains([]string{"naslos.local", "", "media.example.com", "naslos.local"}, "naslos.local")
+	if len(got) != 1 || got[0] != "media.example.com" {
+		t.Fatalf("portalDomains = %v, want [media.example.com]", got)
+	}
+}
+
+func TestPortalObjectsRenderAliasAndRoute(t *testing.T) {
+	r, _ := newFakeReconciler(t)
+	objects := r.portalObjects("media.example.com", "naslos-media-example-com-tls")
+	if len(objects) != 2 {
+		t.Fatalf("expected service + route, got %d", len(objects))
+	}
+	svc, route := objects[0], objects[1]
+	if svc.GetKind() != "Service" || route.GetKind() != "IngressRoute" {
+		t.Fatalf("kinds = %s, %s", svc.GetKind(), route.GetKind())
+	}
+	if got, _, _ := unstructured.NestedString(svc.Object, "spec", "externalName"); got != "naslos-authelia.naslos.svc.cluster.local" {
+		t.Fatalf("externalName = %q", got)
+	}
+	if got, _, _ := unstructured.NestedString(svc.Object, "metadata", "labels", portalLabelKey); got != "true" {
+		t.Fatalf("service label missing: %v", svc.GetLabels())
+	}
+	routes, _, _ := unstructured.NestedSlice(route.Object, "spec", "routes")
+	match, _ := routes[0].(map[string]interface{})["match"].(string)
+	if match != "Host(`media.example.com`) && PathPrefix(`/authelia`)" {
+		t.Fatalf("match = %q", match)
+	}
+	if secret, _, _ := unstructured.NestedString(route.Object, "spec", "tls", "secretName"); secret != "naslos-media-example-com-tls" {
+		t.Fatalf("tls secret = %q", secret)
+	}
+	if entries, _, _ := unstructured.NestedStringSlice(route.Object, "spec", "entryPoints"); len(entries) != 1 || entries[0] != "websecure" {
+		t.Fatalf("entryPoints = %v", entries)
+	}
+}
+
+func TestPortalNameDeterministicAndBounded(t *testing.T) {
+	long := strings.Repeat("a", 80) + ".example.com"
+	name := portalName(long)
+	if len(name) > 63 {
+		t.Fatalf("portal name %q is %d chars, want <= 63", name, len(name))
+	}
+	if name != portalName(long) {
+		t.Fatal("portalName is not deterministic")
+	}
+	// Domains that sanitize to the same label must stay distinct.
+	if portalName("a.b.example") == portalName("a-b.example") {
+		t.Fatal("sanitized label collision produced the same portal name")
+	}
+}
+
+func TestReconcilePortalsDeletesStaleRouteAndAlias(t *testing.T) {
+	r, client := newFakeReconciler(t)
+	ctx := context.Background()
+
+	// Seed a stale portal route and the alias service.
+	stale := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "traefik.io/v1alpha1",
+		"kind":       "IngressRoute",
+		"metadata": map[string]interface{}{
+			"name":      portalName("old.example.com"),
+			"namespace": "naslos-apps",
+			"labels":    map[string]interface{}{portalLabelKey: "true"},
+		},
+	}}
+	if _, err := client.Resource(ingressRouteGVR).Namespace("naslos-apps").Create(ctx, stale, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed route: %v", err)
+	}
+	svc := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "Service",
+		"metadata":   map[string]interface{}{"name": portalExternalServiceName, "namespace": "naslos-apps"},
+	}}
+	if _, err := client.Resource(serviceGVR).Namespace("naslos-apps").Create(ctx, svc, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed service: %v", err)
+	}
+
+	// Only the primary remains SSO: the stale route and the alias must go.
+	if err := r.ReconcilePortals(ctx, []string{"naslos.local"}, "naslos.local", nil); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, err := client.Resource(ingressRouteGVR).Namespace("naslos-apps").Get(ctx, portalName("old.example.com"), metav1.GetOptions{}); err == nil {
+		t.Fatal("stale portal route was not removed")
+	}
+	if _, err := client.Resource(serviceGVR).Namespace("naslos-apps").Get(ctx, portalExternalServiceName, metav1.GetOptions{}); err == nil {
+		t.Fatal("alias service was not removed once no promoted domain remained")
+	}
+}
+
+func TestReconcilePortalsNoopWithoutDynamicClient(t *testing.T) {
+	r := NewReconciler(nil, Options{Namespace: "naslos-apps", AutheliaService: "naslos-authelia"})
+	if err := r.ReconcilePortals(context.Background(), []string{"naslos.local", "x.example.com"}, "naslos.local", nil); err != nil {
+		t.Fatalf("nil client must be a no-op, got %v", err)
 	}
 }
 

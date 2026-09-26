@@ -85,6 +85,30 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 }
 
+// TestStoreRoundTripsSSOFlag proves the runtime SSO promotion survives a restart
+// (it is persisted in domains.json).
+func TestStoreRoundTripsSSOFlag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "domains.json")
+	store := NewStore(path)
+	if err := store.Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := store.Upsert(Domain{BaseDomain: "media.example.com", DNSProvider: ProviderCloudflare, CredentialsSecret: "c", SSO: true}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	reloaded := NewStore(path)
+	if err := reloaded.Load(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got, err := reloaded.Get("media.example.com")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.SSO {
+		t.Fatalf("SSO flag was not persisted: %+v", got)
+	}
+}
+
 // solverOf extracts dns01 solver from a rendered Issuer.
 func solverOf(t *testing.T, d Domain) map[string]interface{} {
 	t.Helper()
