@@ -1,3 +1,6 @@
+# Ported from qdm12/ddns-updater (MIT): https://github.com/qdm12/ddns-updater
+# See CREDITS.md for attribution.
+
 name: digitalocean
 displayName: DigitalOcean
 description: DigitalOcean DNS; the record must already exist (looked up by name, replaced by id).
