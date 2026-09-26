@@ -89,11 +89,11 @@ app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
 | --- | --- | --- |
 | List catalog | `GET /api/catalog` | Source/channel-tagged summaries |
 | Catalog detail | `GET /api/catalog/{name}` | Full entry incl. `schema`, `services`, `exposure` |
-| Install | `POST /api/apps {name, values, exposure, confirmed}` | `confirmed` MUST be `true`; defaults merged, chart loaded from the clone |
+| Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed}` | `confirmed` MUST be `true`; defaults merged, chart loaded from the clone |
 | List installed | `GET /api/apps` | Records + live status, orphan flag, URL |
 | Detail | `GET /api/apps/{name}` | Record + status |
 | Reconfigure | `PUT /api/apps/{name} {values}` | `helm upgrade` with the full value set |
-| Exposure | `GET`/`PUT /api/apps/{name}/exposure` | Orthogonal toggles, re-renders the route |
+| Exposure | `GET`/`PUT /api/apps/{name}/exposure` | Orthogonal toggles + `baseDomain`, re-renders the route |
 | Route targets | `GET /api/apps/{name}/services` | Services the release rendered (discovery fallback / UI picker) |
 | Uninstall | `DELETE /api/apps/{name}` | `helm uninstall` + route delete + record delete |
 
@@ -113,9 +113,10 @@ in `naslos-apps`, and converges them on startup.
 
 | Setting | Effect |
 | --- | --- |
+| `baseDomain` | the domain the route hangs off; selectable among the configured domains (primary first), default the primary |
 | `subdomain` | `Host(<subdomain>.<baseDomain>)`; empty ⇒ no route (cluster-internal only) |
 | `tls` | on ⇒ `websecure` + TLS Secret; off ⇒ `web` (plain HTTP), no redirect |
-| `auth` | on ⇒ Authelia forwardAuth middleware; only allowed on an SSO domain |
+| `auth` | on ⇒ Authelia forwardAuth middleware; only offered when the selected `baseDomain` is in the effective SSO list |
 | `localOnly` | on ⇒ `IPAllowList` limited to `EXPOSURE_LOCAL_ONLY_CIDR` |
 
 The API's `security-headers` middleware deliberately omits
@@ -130,11 +131,12 @@ that points at the Authelia Service FQDN (no cross-namespace Traefik reference).
 | List / add domain | `GET`/`POST /api/domains` |
 | Read / update / delete | `GET`/`PUT`/`DELETE /api/domains/{domain}` |
 | Certificate status | `GET /api/domains/{domain}/certificate` |
+| Promote / demote SSO | `POST /api/domains/{domain}/sso {enabled}` |
 | Providers | `GET /api/providers` |
 
 A domain record is
 `{baseDomain, dnsProvider, credentialsSecret, providerConfig, acmeEmail,
-environment, primary}`. For each non-primary domain the API renders an ACME
+environment, primary, sso}`. For each non-primary domain the API renders an ACME
 DNS-01 `Issuer` and a wildcard `Certificate`
 (`dnsNames: [<domain>, "*.<domain>"]`) into `naslos-apps`. The **provider** and
 its solver come from the declarative registry
@@ -146,6 +148,29 @@ form lists
 the registry's certificate-capable providers and renders each provider's fields;
 secret fields are written to a Secret in `naslos-apps` and never returned. The
 SSL page is gated on the cert-manager CRDs; `make crds` installs them.
+
+### SSO promotion
+
+The effective SSO list is the primary domain plus any registered domain whose
+`sso` flag is set, unioned with the chart's `sso.domains` (`SSO_DOMAINS`) as a
+floor. The chart entry cannot be demoted from the UI (edit values), but a
+store-flagged domain can: `POST /api/domains/{domain}/sso {enabled}` sets the
+flag and takes effect live. The API renders the session cookies and the
+`access_control` rules into the `naslos-authelia-sso` ConfigMap (mounted at
+`/config-sso`, injected by Authelia's `fileContent` template filter) and restarts
+Authelia, which reads its configuration only at startup. The restart is a delete
+of the deterministic `naslos-authelia-0` pod (the StatefulSet recreates it), so
+the API's RBAC never includes workload write. Because Authelia's session cookie
+is scoped per domain, a promoted domain also needs its own portal: the API
+renders an IngressRoute per non-primary SSO domain in `naslos-apps` (where it
+already has Service/IngressRoute rights) targeting an ExternalName Service that
+aliases the Authelia Service in the release namespace, with the domain's wildcard
+TLS Secret. Traefik needs `providers.kubernetesCRD.allowExternalNameServices`
+(the chart sets it). The ConfigMap is
+`helm.sh/resource-policy: keep` and the API reconciles it on startup, so a
+promotion survives an API restart and a `helm upgrade`. Promoting the primary is
+rejected (400 — it is always SSO), and demotion is refused (409, naming the apps)
+while any installed app has `auth` on that domain.
 
 ## Schema-driven forms
 

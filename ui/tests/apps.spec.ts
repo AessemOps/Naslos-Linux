@@ -27,6 +27,10 @@ test.describe('apps', () => {
   });
 
   test('installs and uninstalls an app from the official source', async ({ page, request }) => {
+    // A cold catalog install pulls the app image server-side and the POST is
+    // synchronous, so it can exceed the default 30s test timeout.
+    test.setTimeout(300_000);
+
     const res = await request.get('/api/catalog');
     const catalog = res.ok() ? await res.json() : [];
     test.skip(!Array.isArray(catalog) || catalog.length === 0, 'no catalog entries; add and refresh a source first');
@@ -48,6 +52,12 @@ test.describe('apps', () => {
       await page.getByRole('button', { name: 'Installed', exact: true }).click();
       await expect(page.getByText('Loading installed apps...')).toBeHidden({ timeout: 10_000 });
       await expect(page.getByRole('heading', { name: app.name, exact: true })).toBeVisible();
+
+      // The exposure modal offers a base-domain picker (FR-APP-10); the API
+      // always returns the primary in selectableDomains, so the select renders.
+      await page.getByRole('button', { name: 'Exposure', exact: true }).first().click();
+      await expect(page.locator('#exposure-domain')).toBeVisible();
+      await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     } finally {
       const removed = await request.delete(`/api/apps/${app.name}`);
       expect([200, 500]).toContain(removed.status());

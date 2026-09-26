@@ -120,6 +120,47 @@ subjects:
     name: naslos-api
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- if and .Values.ui.enabled .Values.authelia.enabled }}
+---
+# Live SSO promotion (docs/spec.md FR-APP-15): the API rewrites only the SSO
+# fragment ConfigMap and restarts Authelia by deleting its pod (the StatefulSet
+# controller recreates it against the new fragments). Deleting a pod cannot
+# change the pod spec, so the pod-template secrets (the LDAP bind password and
+# the Authelia session/storage/jwt keys) stay out of the API's reach - unlike a
+# workload patch. resourceNames scopes both rules to the one object each.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: naslos-api-authelia-sso
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["naslos-authelia-sso"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    resourceNames: ["naslos-authelia-0"]
+    verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-api-authelia-sso
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: naslos-api-authelia-sso
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- $apriv := .Values.apps.privilegedNamespace | default "naslos-apps-priv" }}
 {{- if and .Values.ui.enabled (ne $apriv .Release.Namespace) (ne $apriv (include "naslos.workloadNamespace" .)) (ne $apriv (.Values.apps.namespace | default "naslos-apps")) }}
 ---

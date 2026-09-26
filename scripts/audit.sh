@@ -59,6 +59,100 @@ check_authelia_ldap_secret() {
   [ "$ok" -eq 1 ]
 }
 
+# FR-APP-15 regression guard: the SSO domain list is runtime state. The chart
+# must inject it via Authelia's fileContent hooks from a kept seed ConfigMap
+# (never static $ssoDomains loops), and the API's live-promotion RBAC must be
+# scoped by resourceName so it cannot read authelia-config (which holds the jwt
+# secret). Authelia must be a StatefulSet so the API has a deterministic restart
+# target.
+check_authelia_sso_fragments() {
+  f=$(mktemp) || return 1
+  if ! helm template naslos "$root/charts/naslos" -n naslos \
+    -f "$root/charts/naslos/values.yaml" -f "$root/charts/naslos/values-vm.yaml" \
+    --set openldap.bindPassword=lint-only >"$f" 2>/dev/null; then
+    rm -f "$f"
+    return 1
+  fi
+  python3 - "$f" <<'PY'
+import re, sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+def find(kind, name):
+    for d in docs:
+        if d.get("kind") == kind and d["metadata"]["name"] == name:
+            return d
+    return None
+
+seed = find("ConfigMap", "naslos-authelia-sso")
+assert seed is not None, "missing the naslos-authelia-sso seed ConfigMap"
+assert seed["metadata"].get("annotations", {}).get("helm.sh/resource-policy") == "keep", \
+    "the SSO seed ConfigMap must be kept across upgrades"
+assert "cookies.yml" in seed["data"] and "rules.yml" in seed["data"], \
+    "the seed ConfigMap must carry cookies.yml and rules.yml"
+# Seed/Fragments parity tripwire: the chart seed is only adopted because the API
+# renders the same structure, so any drift must fail here. Values are the VM
+# profile's sso.domains (naslos.local).
+assert yaml.safe_load(seed["data"]["cookies.yml"]) == [
+    {
+        "domain": "naslos.local",
+        "authelia_url": "https://naslos.local/authelia/",
+        "default_redirection_url": "https://naslos.local/",
+    },
+], f"seed cookies drifted from the API Fragments output: {seed['data']['cookies.yml']!r}"
+assert yaml.safe_load(seed["data"]["rules.yml"]) == [
+    {"domain": "*.naslos.local", "policy": "one_factor"},
+], f"seed rules drifted from the API Fragments output: {seed['data']['rules.yml']!r}"
+
+cfg = find("ConfigMap", "authelia-config")
+assert cfg is not None, "missing authelia-config"
+configuration = cfg["data"]["configuration.yml"]
+assert 'fileContent "/config-sso/cookies.yml"' in configuration, \
+    "authelia-config must inject cookies.yml via fileContent"
+assert 'fileContent "/config-sso/rules.yml"' in configuration, \
+    "authelia-config must inject rules.yml via fileContent"
+assert "$ssoDomains" not in configuration, \
+    "authelia-config must not render static SSO domain loops"
+# With a cookies list Authelia rejects the legacy global default_redirection_url;
+# the per-cookie value comes from the fragment (checked above).
+body = "\n".join(l for l in configuration.splitlines() if not l.strip().startswith("#"))
+assert not re.search(r"^\s*default_redirection_url\s*:", body, re.M), \
+    "authelia-config must not set the legacy global default_redirection_url"
+
+sts = find("StatefulSet", "naslos-authelia")
+assert sts is not None, "Authelia must be a StatefulSet (a deterministic restart target)"
+mounts = [m["mountPath"] for m in sts["spec"]["template"]["spec"]["containers"][0].get("volumeMounts", [])]
+assert "/config-sso" in mounts, f"Authelia must mount /config-sso, got {mounts}"
+
+# A promoted domain needs its own portal, served by an API-rendered ExternalName
+# route in the apps namespace; Traefik refuses ExternalName services otherwise.
+traefik = find("Deployment", "naslos-traefik")
+assert traefik is not None, "missing the Traefik Deployment"
+args = traefik["spec"]["template"]["spec"]["containers"][0].get("args", [])
+assert "--providers.kubernetescrd.allowExternalNameServices=true" in args, \
+    "Traefik must allow ExternalName services for the per-domain Authelia portal"
+
+role = find("Role", "naslos-api-authelia-sso")
+assert role is not None, "missing the scoped naslos-api-authelia-sso Role"
+scoped = {r["resources"][0]: set(r.get("resourceNames", [])) for r in role["rules"]}
+assert scoped.get("configmaps") == {"naslos-authelia-sso"}, \
+    f"configmaps must be scoped to the fragment ConfigMap: {scoped}"
+# The restart is a pod delete, not a workload patch, so the API cannot change
+# the Authelia pod spec (which mounts the jwt/LDAP secrets).
+assert scoped.get("pods") == {"naslos-authelia-0"}, \
+    f"pods must be scoped to the deterministic Authelia pod: {scoped}"
+assert not any(r["resources"] == ["statefulsets"] for r in role["rules"]), \
+    "the API must not have workload write (a pod-template patch exposes the mounted secrets)"
+
+read = find("Role", "naslos-api-platform-read")
+resources = {res for r in read["rules"] for res in r["resources"]}
+assert "configmaps" not in resources and "secrets" not in resources, \
+    f"platform-read must stay configmap/secret-free: {resources}"
+print("authelia SSO fragments + scoped RBAC ok")
+PY
+  rc=$?
+  rm -f "$f"
+  [ "$rc" -eq 0 ]
+}
+
 # AUDIT-M4 (fresh install) guard: the shipped Talos patch must carry Cilium and
 # the flannel/kube-proxy/DNS changes, and match bootstrap/cilium/cilium.yaml.
 # A fresh `make bootstrap-vm` renders this file, so a regression here silently
@@ -240,6 +334,12 @@ for d in docs:
 assert api_env.get("APPS_NAMESPACE") == "naslos-apps", "the API must know the apps namespace"
 assert api_env.get("SOURCES_CONFIG"), "the API must get a sources state path"
 assert api_env.get("DOMAINS_CONFIG"), "the API must get a domains state path"
+# FR-APP-15: live SSO promotion needs the API pointed at the fragment ConfigMap
+# and the Authelia workload it restarts.
+assert api_env.get("AUTHELIA_SSO_CONFIGMAP") == "naslos-authelia-sso", \
+    "the API must target the SSO fragment ConfigMap"
+assert api_env.get("AUTHELIA_POD") == "naslos-authelia-0", \
+    "the API must target the deterministic Authelia pod to restart"
 
 # Dynamic DNS (FR-DNS): the provider override dir and state path must be wired,
 # and the egress rule must stay port-scoped to HTTP/HTTPS (80/443).
@@ -375,6 +475,7 @@ if have helm; then
     -f charts/naslos/values.yaml -f charts/naslos/values-vm.yaml \
     --set openldap.bindPassword=lint-only
   run "authelia ldap password is a Secret file (AUDIT-M3)" check_authelia_ldap_secret
+  run "authelia SSO fragments + scoped RBAC (FR-APP-15)" check_authelia_sso_fragments
   run "network policy intent (AUDIT-M4)" check_network_policies
   # AUDIT-M4 (fresh install): bootstrap/vm/naslos-vm.yaml must carry the Cilium
   # inline manifest, flannel deletion, kube-proxy disable and DNS fix, and must

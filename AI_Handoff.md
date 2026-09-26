@@ -426,18 +426,55 @@ base-CVE backlog. No secret values are in the report; the repository is private
 (unauthenticated GitHub API returns 404), so the committed credentials that were
 found were insider-exposure, not internet-exposure.
 
-## Deployed right now (2026-09-26)
+## Base-domain choice + runtime SSO promotion (2026-09-27) — branch, live-drilled
 
-On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 33**:
-`naslos-api` **`0.1.0-r29`** (git chart repos, privileged-namespace support,
-datasets PV/PVC, declarative DNS providers + Dynamic DNS, provider `apiRights`,
-OVH webhook solver), `naslos-ui` **`0.1.0-r22`** (Sources tab, exposure editor,
-Domains & SSL with the provider API-rights info bubble and a self-refreshing
-certificate badge, a sidebar sign-out control, Dynamic DNS),
-`naslos-agent` **`0.1.0-r8`**, `naslos-samba`/`naslos-nfs`/
-`naslos-terminal` **`0.1.0-r3`**, OpenLDAP per `values.yaml`. Talos
-**v1.14.1** (kernel 6.18.51-talos), Cilium v1.20.2, ZFS pool `test` (stripe,
-79 G) + `test/drill`, `test/naslos-buddy`.
+Branch `fix/app-base-domain-choice` (PR #35). Plan:
+`.kilo/plans/1790459894361-app-base-domain-choice.md`.
+
+- **Exposure base-domain choice (FR-APP-10).** `GET /api/domains` returns
+  `selectableDomains`/`ssoDomains`; the exposure GET returns the record's own
+  `baseDomain` (was hard-coded to the primary, so saving silently reverted a
+  chosen domain) plus `primaryDomain`, `selectableDomains`, `ssoDomains` and a
+  correct `authAllowed`; install/`PUT exposure` reject an unconfigured
+  `baseDomain`. UI: the exposure form's static suffix is a domain `<select>`.
+- **Runtime SSO promotion (FR-APP-15).** A registered non-primary domain can be
+  promoted from the Domains page: `POST /api/domains/{domain}/sso {enabled}`.
+  `certs.Domain.sso` is persisted; the effective SSO list is primary + store
+  flags + the chart `SSO_DOMAINS` floor. The API renders the session cookies and
+  access-control rules into the `naslos-authelia-sso` ConfigMap (mounted at
+  `/config-sso`, injected via Authelia's `fileContent`) and restarts Authelia by
+  deleting `naslos-authelia-0` (no workload-write RBAC). It also renders a portal
+  IngressRoute per promoted domain in `naslos-apps` (ExternalName alias to the
+  Authelia Service, the domain's wildcard TLS Secret) because Authelia's session
+  cookie is per domain — without it the login redirect to
+  `https://<promoted-domain>/authelia/` 404s. Traefik needs
+  `providers.kubernetesCRD.allowExternalNameServices` (set).
+- **Authelia is now a StatefulSet** (was a DaemonSet) so the restart target is
+  the deterministic `naslos-authelia-0`; `make install-vm` deletes the legacy
+  DaemonSet first so the two never share the session PVC.
+- **Live-drilled on revision 38** (`naslos-api 0.1.0-r32`, `naslos-ui
+  0.1.0-r23`): promoted `florentinrichard.fr`, Authelia restarted, its portal
+  served 200 on the promoted domain, an app installed there with auth got the
+  `302 → https://florentinrichard.fr/authelia/?rd=…` challenge with a
+  `domain=florentinrichard.fr` session cookie; demotion with the app installed
+  was refused 409; a `helm upgrade` and an API restart kept the promoted state
+  (no Authelia restart). Then uninstalled the app, demoted, and confirmed the
+  fragments and portal route were removed. Playwright `apps.spec.ts` +
+  `domains.spec.ts` 14/14 (the install test needed a longer timeout: a cold
+  catalog install is a synchronous image pull).
+
+## Deployed right now (2026-09-27)
+
+On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 38**:
+`naslos-api` **`0.1.0-r32`** (exposure base-domain choice, runtime SSO
+promotion + per-domain Authelia portals, declarative DNS providers + Dynamic
+DNS, OVH webhook solver), `naslos-ui` **`0.1.0-r23`** (domain-select exposure
+form, Domains-page SSO toggle, cert badge, sign-out), `naslos-agent`
+**`0.1.0-r8`**, `naslos-samba`/`naslos-nfs`/`naslos-terminal` **`0.1.0-r3`**,
+OpenLDAP per `values.yaml`. **Authelia is a StatefulSet** (`naslos-authelia-0`)
+and the `naslos-authelia-sso` fragments ConfigMap exists (API-owned,
+`keep`). Talos **v1.14.1** (kernel 6.18.51-talos), Cilium v1.20.2, ZFS pool
+`test` (stripe, 79 G) + `test/drill`, `test/naslos-buddy`.
 
 Namespaces: `naslos` (authenticated services), `naslos-privileged`
 (agent/samba/nfs/terminal), `naslos-apps` (installed apps, PSA baseline,
@@ -456,10 +493,10 @@ certificate (`*.florentinrichard.fr` + apex, Secret
 App catalog: official source `https://github.com/AessemOps/NaslosCharts.git`
 (public, channels `{Prod: main}`) — catalog lists **10 apps** (Jellyfin, Radarr,
 Sonarr, Seerr, FlareSolverr, Prowlarr, qBittorrent, Audiobookshelf, Calibre-Web,
-SearXNG). **Jellyfin is installed** (`naslos-apps`, `http://jellyfin.naslos.local`,
-served 200 via Traefik, no media configured yet). Merged into `master`: app
-catalog (PR #28), Dynamic DNS + providers (PR #29), third-party credits
-(PR #30), ddns-updater credits + credits rule (PR #32). Open:
+SearXNG). **No app is installed** (the SSO drill's Jellyfin was uninstalled).
+Merged into `master`: app catalog (PR #28), Dynamic DNS + providers (PR #29),
+third-party credits (PR #30), ddns-updater credits + credits rule (PR #32).
+Open: `fix/app-base-domain-choice` (PR #35, below). Merged:
 `feature/domain-provider-api-rights` (PR #33) — declarative per-provider
 `apiRights` surfaced by `GET /api/providers` and shown as an info bubble next to
 the Domains form's DNS-01 provider selector, plus the fix that makes OVH

@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -13,21 +14,55 @@ import (
 // address (192.0.2.1), which is how TRAEFIK_CIDR covers the real proxy.
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
+	return newSeededTestServer(t, "", "")
+}
+
+// newSeededTestServer builds a Server with optional apps.json / domains.json
+// content written before New, because the stores load in the constructor: a test
+// that needs a pre-existing record or domain must seed the file, not call the
+// manager afterwards.
+func newSeededTestServer(t *testing.T, appsJSON, domainsJSON string) *Server {
+	t.Helper()
+	return newSeededTestServerSSO(t, appsJSON, domainsJSON, "naslos.local")
+}
+
+// newSeededTestServerSSO is newSeededTestServer with an explicit SSO_DOMAINS env
+// value (the chart-declared SSO seed).
+func newSeededTestServerSSO(t *testing.T, appsJSON, domainsJSON, ssoEnv string) *Server {
+	t.Helper()
+
+	dir := t.TempDir()
+	appsPath := filepath.Join(dir, "apps.json")
+	domainsPath := filepath.Join(dir, "domains.json")
+	if appsJSON != "" {
+		if err := os.WriteFile(appsPath, []byte(appsJSON), 0o600); err != nil {
+			t.Fatalf("seeding apps.json: %v", err)
+		}
+	}
+	if domainsJSON != "" {
+		if err := os.WriteFile(domainsPath, []byte(domainsJSON), 0o600); err != nil {
+			t.Fatalf("seeding domains.json: %v", err)
+		}
+	}
 
 	t.Setenv("TRAEFIK_CIDR", "192.0.2.0/24")
 	t.Setenv("PROXY_SHARED_SECRET", "test-proxy-secret")
-	t.Setenv("BUDDY_PEERS", filepath.Join(t.TempDir(), "peers.json"))
-	t.Setenv("BUDDY_RECEIVE_PATH", filepath.Join(t.TempDir(), "buddy"))
-	t.Setenv("SHARES_CONFIG", filepath.Join(t.TempDir(), "shares.json"))
-	t.Setenv("SMB_USERS_CONFIG", filepath.Join(t.TempDir(), "smbusers.json"))
-	t.Setenv("NOTIFICATIONS_CONFIG", filepath.Join(t.TempDir(), "notifications.json"))
-	t.Setenv("APPS_CONFIG", filepath.Join(t.TempDir(), "apps.json"))
-	t.Setenv("SOURCES_CONFIG", filepath.Join(t.TempDir(), "sources.json"))
-	t.Setenv("DOMAINS_CONFIG", filepath.Join(t.TempDir(), "domains.json"))
-	t.Setenv("CHARTS_CACHE_DIR", filepath.Join(t.TempDir(), "charts"))
-	t.Setenv("DDNS_CONFIG", filepath.Join(t.TempDir(), "ddns.json"))
+	// Pin the primary domain and the chart SSO seed so assertions are stable
+	// regardless of the host environment.
+	t.Setenv("NASLOS_DOMAIN", "naslos.local")
+	t.Setenv("SSO_DOMAINS", ssoEnv)
+	t.Setenv("BUDDY_PEERS", filepath.Join(dir, "peers.json"))
+	t.Setenv("BUDDY_RECEIVE_PATH", filepath.Join(dir, "buddy"))
+	t.Setenv("SHARES_CONFIG", filepath.Join(dir, "shares.json"))
+	t.Setenv("SMB_USERS_CONFIG", filepath.Join(dir, "smbusers.json"))
+	t.Setenv("NOTIFICATIONS_CONFIG", filepath.Join(dir, "notifications.json"))
+	t.Setenv("APPS_CONFIG", appsPath)
+	t.Setenv("SOURCES_CONFIG", filepath.Join(dir, "sources.json"))
+	t.Setenv("DOMAINS_CONFIG", domainsPath)
+	t.Setenv("CHARTS_CACHE_DIR", filepath.Join(dir, "charts"))
+	t.Setenv("DDNS_CONFIG", filepath.Join(dir, "ddns.json"))
 	t.Setenv("DDNS_ENABLED", "true")
-	t.Setenv("DDNS_PROVIDERS_DIR", filepath.Join(t.TempDir(), "ddns-providers"))
+	t.Setenv("DDNS_PROVIDERS_DIR", filepath.Join(dir, "ddns-providers"))
 
 	return New("127.0.0.1:0", nil)
 }
@@ -171,6 +206,7 @@ func TestNonAdminMayOnlyReachTheirIdentityAndDashboard(t *testing.T) {
 		"/api/apps", "/api/apps/nginx", "/api/catalog", "/api/catalog/nginx",
 		"/api/sources", "/api/sources/refresh", "/api/sources/mine",
 		"/api/domains", "/api/domains/example.com", "/api/domains/example.com/certificate",
+		"/api/domains/example.com/sso",
 		"/api/providers", "/api/ddns", "/api/ddns/x", "/api/ddns/x/run",
 		"/api/apps/nginx/exposure",
 		"/api/apps/nginx/services",

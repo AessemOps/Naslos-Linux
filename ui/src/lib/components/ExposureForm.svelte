@@ -17,8 +17,14 @@
 
   export let exposure: Exposure;
   export let baseDomain = '';
-  export let authAllowed = true;
+  export let selectableDomains: string[] = [];
+  export let ssoDomains: string[] = [];
   export let services: ServiceOption[] = [];
+
+  // Auth is only offered when the chosen domain is in the effective SSO list
+  // (FR-APP-10). Derive it rather than reading it in a function called from the
+  // template, which Svelte 5 would not track.
+  $: authAllowed = ssoDomains.includes(baseDomain);
 
   function set<K extends keyof Exposure>(key: K, value: Exposure[K]) {
     exposure = { ...exposure, [key]: value };
@@ -28,6 +34,16 @@
     const svc = services.find((s) => `${s.name}:${s.port}` === value);
     if (svc) {
       exposure = { ...exposure, service: svc.name, port: svc.port, scheme: svc.scheme };
+    }
+  }
+
+  // Changing the domain must clear auth when the new domain is not SSO-protected
+  // (the server rejects auth on a non-SSO domain). Done in the handler, not a
+  // reactive statement, so it never rewrites the caller's exposure on load.
+  function chooseDomain(value: string) {
+    baseDomain = value;
+    if (!ssoDomains.includes(value)) {
+      exposure = { ...exposure, auth: false };
     }
   }
 </script>
@@ -44,7 +60,21 @@
         placeholder="jellyfin"
         on:input={(e) => set('subdomain', (e.currentTarget as HTMLInputElement).value)}
       />
-      <span class="text-gray-400 text-sm whitespace-nowrap">.{baseDomain}</span>
+      {#if selectableDomains.length > 0}
+        <span class="text-gray-400 text-sm">.</span>
+        <select
+          id="exposure-domain"
+          class="input w-auto max-w-[14rem]"
+          value={baseDomain}
+          on:change={(e) => chooseDomain((e.currentTarget as HTMLSelectElement).value)}
+        >
+          {#each selectableDomains as domain}
+            <option value={domain}>{domain}</option>
+          {/each}
+        </select>
+      {:else}
+        <span class="text-gray-400 text-sm whitespace-nowrap">.{baseDomain}</span>
+      {/if}
     </div>
     <p class="text-xs text-gray-500 mt-1">
       Leave empty to keep the app cluster-internal (no route is created).
