@@ -24,18 +24,17 @@
   let error = '';
   let notice = '';
 
-  function provider(): any | undefined {
-    return ddnsProviders.find((p) => p.name === providerName);
-  }
+  // Svelte 5 does not track state read inside a function called from the
+  // template, so derive the provider/fields reactively instead.
+  $: currentProvider = ddnsProviders.find((p) => p.name === providerName);
+  $: currentFields = currentProvider?.fields ?? [];
 
-  function fields(): any[] {
-    return provider()?.fields ?? [];
-  }
-
-  // Reset the rendered fields when the provider changes, prefilling defaults.
-  function onProviderChange() {
+  // Switch provider: keep the selection in sync and prefill field defaults.
+  function onProviderChange(event: Event) {
+    providerName = (event.currentTarget as HTMLSelectElement).value;
+    const selected = ddnsProviders.find((p) => p.name === providerName);
     const next: Record<string, string> = {};
-    for (const f of fields()) {
+    for (const f of selected?.fields ?? []) {
       next[f.key] = f.default ?? '';
     }
     fieldValues = next;
@@ -100,12 +99,12 @@
     <div class="flex-1 overflow-y-auto p-6 space-y-4">
       <div>
         <label class="label" for="ddns-provider">Provider</label>
-        <select id="ddns-provider" class="input" bind:value={providerName} on:change={onProviderChange}>
+        <select id="ddns-provider" class="input" value={providerName} on:change={onProviderChange}>
           {#each ddnsProviders as p}
             <option value={p.name}>{p.displayName || p.name}</option>
           {/each}
         </select>
-        {#if provider()?.description}<p class="text-xs text-gray-500 mt-1">{provider()?.description}</p>{/if}
+        {#if currentProvider?.description}<p class="text-xs text-gray-500 mt-1">{currentProvider?.description}</p>{/if}
       </div>
 
       <div class="grid grid-cols-2 gap-3">
@@ -142,7 +141,7 @@
       <div class="border-t border-naslos-border pt-4 space-y-3">
         <p class="text-xs uppercase tracking-wide text-gray-500">Provider credentials</p>
         <ProviderFields
-          fields={fields()}
+          fields={currentFields}
           values={fieldValues}
           idPrefix="ddns"
           secretSet={entry?.credentialFields || []}

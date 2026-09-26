@@ -26,33 +26,31 @@
       if (!providers.some((p: any) => p.name === dnsProvider) && providers.length) {
         dnsProvider = providers[0].name;
       }
-      applyDefaults();
+      fieldValues = defaultsFor(dnsProvider, fieldValues);
     } catch {
       // The hardcoded fallbacks below keep the form usable if the API is down.
     }
   });
 
-  function provider(): any | undefined {
-    return providers.find((p) => p.name === dnsProvider);
-  }
+  // Svelte 5 does not track state read inside a function called from the
+  // template, so derive the provider/fields reactively instead.
+  $: currentProvider = providers.find((p) => p.name === dnsProvider);
+  $: currentFields = currentProvider?.fields ?? [];
 
-  function fields(): any[] {
-    return provider()?.fields ?? [];
-  }
-
-  function applyDefaults() {
-    const next: Record<string, string> = { ...fieldValues };
-    for (const f of fields()) {
+  function defaultsFor(name: string, seed: Record<string, string>): Record<string, string> {
+    const next: Record<string, string> = { ...seed };
+    const selected = providers.find((p) => p.name === name);
+    for (const f of selected?.fields ?? []) {
       if (next[f.key] === undefined) {
         next[f.key] = f.default ?? '';
       }
     }
-    fieldValues = next;
+    return next;
   }
 
-  function onProviderChange() {
-    fieldValues = {};
-    applyDefaults();
+  function onProviderChange(event: Event) {
+    dnsProvider = (event.currentTarget as HTMLSelectElement).value;
+    fieldValues = defaultsFor(dnsProvider, {});
   }
 
   async function save() {
@@ -72,7 +70,7 @@
         } catch {
           throw new Error('Solver must be valid JSON');
         }
-      } else if (fields().length > 0) {
+      } else if (currentFields.length > 0) {
         body.fields = fieldValues;
       }
       const res = await fetch(`/api/domains/${encodeURIComponent(baseDomain)}`, {
@@ -106,7 +104,7 @@
       </div>
       <div>
         <label class="label" for="domain-provider">DNS-01 provider</label>
-        <select id="domain-provider" class="input" bind:value={dnsProvider} on:change={onProviderChange}>
+        <select id="domain-provider" class="input" value={dnsProvider} on:change={onProviderChange}>
           {#if providers.length === 0}
             <option value="cloudflare">Cloudflare</option>
             <option value="rfc2136">RFC2136</option>
@@ -117,7 +115,7 @@
             {/each}
           {/if}
         </select>
-        {#if provider()?.description}<p class="text-xs text-gray-500 mt-1">{provider()?.description}</p>{/if}
+        {#if currentProvider?.description}<p class="text-xs text-gray-500 mt-1">{currentProvider?.description}</p>{/if}
       </div>
 
       {#if dnsProvider === 'passthrough'}
@@ -125,12 +123,12 @@
           <label class="label" for="domain-solver">Solver (JSON)</label>
           <textarea id="domain-solver" class="input h-32 font-mono text-sm" bind:value={solverText}></textarea>
         </div>
-      {:else if fields().length > 0}
+      {:else if currentFields.length > 0}
         <ProviderFields
-          fields={fields()}
+          fields={currentFields}
           values={fieldValues}
           idPrefix="domain"
-          secretSet={domain?.credentialsSecret ? fields().filter((f) => f.secret).map((f) => f.key) : []}
+          secretSet={domain?.credentialsSecret ? (currentFields as any[]).filter((f: any) => f.secret).map((f: any) => f.key) : []}
           unchangedPlaceholder="•••••• (unchanged)"
         />
       {:else}
