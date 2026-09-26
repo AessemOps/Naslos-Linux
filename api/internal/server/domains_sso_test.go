@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -17,12 +17,16 @@ const seededAppsWithAuth = `[{"name":"jellyfin","exposure":{"subdomain":"jellyfi
 // seededDomainsSSO is one registered secondary domain already promoted to SSO.
 const seededDomainsSSO = `[{"baseDomain":"media.example.com","dnsProvider":"cloudflare","credentialsSecret":"x","environment":"staging","sso":true}]`
 
-// withFakeCluster installs a fake clientset holding the Authelia StatefulSet so
-// the SSO endpoint's restart patch has a target.
+// withFakeCluster installs a fake clientset holding the Authelia pod and the
+// fragment ConfigMap so the SSO endpoint's sync path has targets.
 func withFakeCluster(s *Server) *fake.Clientset {
-	client := fake.NewSimpleClientset(&appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "naslos-authelia", Namespace: "naslos"},
-	})
+	client := fake.NewSimpleClientset(
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "naslos-authelia-0", Namespace: "naslos"}},
+		&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "naslos-authelia-sso", Namespace: "naslos"},
+			Data:       map[string]string{},
+		},
+	)
 	s.kubeClient = client
 	return client
 }

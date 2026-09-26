@@ -288,7 +288,7 @@ shell, never an arbitrary command.
 | `SSO_DOMAINS` | primary domain | Comma-separated domains Authelia protects, seeded by the chart. It is a floor: the effective list is this plus the primary plus domains promoted at runtime, and a chart entry cannot be demoted from the UI |
 | `APPS_TLS_SECRET` | `naslos-apps-tls` | Fallback TLS Secret when the app's base domain has no domain record |
 | `AUTHELIA_SERVICE` / `AUTHELIA_PORT` | `naslos-authelia` / `80` | Authelia forwardAuth target (FQDN, cross-namespace) |
-| `AUTHELIA_SSO_CONFIGMAP` / `AUTHELIA_WORKLOAD` / `AUTHELIA_NAMESPACE` | `naslos-authelia-sso` / `naslos-authelia` / release ns | Where the API writes the SSO fragments and which workload it restarts on a promotion |
+| `AUTHELIA_SSO_CONFIGMAP` / `AUTHELIA_POD` / `AUTHELIA_NAMESPACE` | `naslos-authelia-sso` / `naslos-authelia-0` / release ns | Where the API writes the SSO fragments and the Authelia pod it deletes on a promotion (the StatefulSet recreates it) |
 | `EXPOSURE_LOCAL_ONLY_CIDR` | — | LAN CIDR an `localOnly` app is restricted to |
 | `PLATFORM_RELEASE` | release name | Release to exclude from the installed-app list/backfill |
 

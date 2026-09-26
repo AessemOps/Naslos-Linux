@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -72,12 +71,12 @@ func TestFragmentsAreValidYAMLForZeroDomains(t *testing.T) {
 	}
 }
 
-// syncHarness builds a reconciler over a fake clientset holding an Authelia
-// StatefulSet, so the restart patch has a target.
+// syncHarness builds a reconciler over a fake clientset holding the Authelia
+// pod, so the restart delete has a target.
 func syncHarness(t *testing.T) (*Reconciler, *fake.Clientset) {
 	t.Helper()
-	client := fake.NewSimpleClientset(&appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "naslos-authelia", Namespace: "naslos"},
+	client := fake.NewSimpleClientset(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "naslos-authelia-0", Namespace: "naslos"},
 	})
 	r := NewReconciler(Options{
 		Client:    func() (kubernetes.Interface, error) { return client, nil },
@@ -86,45 +85,59 @@ func syncHarness(t *testing.T) (*Reconciler, *fake.Clientset) {
 	return r, client
 }
 
+// seedFragments writes the fragment ConfigMap with the given content.
+func seedFragments(t *testing.T, client *fake.Clientset, cookies, rules string) {
+	t.Helper()
+	_, err := client.CoreV1().ConfigMaps("naslos").Create(context.Background(), &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "naslos-authelia-sso", Namespace: "naslos"},
+		Data:       map[string]string{CookiesKey: cookies, RulesKey: rules},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("seeding fragments: %v", err)
+	}
+}
+
+func podExists(client *fake.Clientset) bool {
+	_, err := client.CoreV1().Pods("naslos").Get(context.Background(), "naslos-authelia-0", metav1.GetOptions{})
+	return err == nil
+}
+
+// TestSyncMissingConfigMapIsAnError pins the contract: the chart seeds the
+// ConfigMap, and the API must not create it (that would need an unscoped
+// `create` on configmaps).
+func TestSyncMissingConfigMapIsAnError(t *testing.T) {
+	r, client := syncHarness(t)
+
+	if err := r.Sync(context.Background(), []string{"naslos.local"}); err == nil {
+		t.Fatal("expected an error when the fragment ConfigMap is missing")
+	}
+	if !podExists(client) {
+		t.Fatal("a missing ConfigMap must not restart Authelia")
+	}
+}
+
 func TestSyncIsIdempotentWhenUnchanged(t *testing.T) {
 	r, client := syncHarness(t)
-	ctx := context.Background()
+	cookies, rules, _ := Fragments([]string{"naslos.local"})
+	seedFragments(t, client, string(cookies), string(rules))
 
-	if err := r.Sync(ctx, []string{"naslos.local"}); err != nil {
-		t.Fatalf("first sync: %v", err)
+	if err := r.Sync(context.Background(), []string{"naslos.local"}); err != nil {
+		t.Fatalf("sync: %v", err)
 	}
-	ss, err := client.AppsV1().StatefulSets("naslos").Get(ctx, "naslos-authelia", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get sts: %v", err)
-	}
-	first := ss.Spec.Template.Annotations["naslos.local/sso-revision"]
-	if first == "" {
-		t.Fatal("first sync did not annotate the StatefulSet (no restart)")
-	}
-
-	// A second sync with the same list must not rewrite or restart.
-	if err := r.Sync(ctx, []string{"naslos.local"}); err != nil {
-		t.Fatalf("second sync: %v", err)
-	}
-	ss, _ = client.AppsV1().StatefulSets("naslos").Get(ctx, "naslos-authelia", metav1.GetOptions{})
-	if got := ss.Spec.Template.Annotations["naslos.local/sso-revision"]; got != first {
-		t.Fatalf("unchanged sync restarted Authelia again: %q -> %q", first, got)
+	if !podExists(client) {
+		t.Fatal("an unchanged sync restarted Authelia")
 	}
 }
 
 func TestSyncRewritesAndRestartsOnChange(t *testing.T) {
 	r, client := syncHarness(t)
-	ctx := context.Background()
+	cookies, rules, _ := Fragments([]string{"naslos.local"})
+	seedFragments(t, client, string(cookies), string(rules))
 
-	if err := r.Sync(ctx, []string{"naslos.local"}); err != nil {
-		t.Fatalf("first sync: %v", err)
-	}
-	before, _ := client.AppsV1().StatefulSets("naslos").Get(ctx, "naslos-authelia", metav1.GetOptions{})
-
-	if err := r.Sync(ctx, []string{"naslos.local", "media.example.com"}); err != nil {
+	if err := r.Sync(context.Background(), []string{"naslos.local", "media.example.com"}); err != nil {
 		t.Fatalf("promote sync: %v", err)
 	}
-	cm, err := client.CoreV1().ConfigMaps("naslos").Get(ctx, "naslos-authelia-sso", metav1.GetOptions{})
+	cm, err := client.CoreV1().ConfigMaps("naslos").Get(context.Background(), "naslos-authelia-sso", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get cm: %v", err)
 	}
@@ -132,9 +145,8 @@ func TestSyncRewritesAndRestartsOnChange(t *testing.T) {
 		!strings.Contains(cm.Data[RulesKey], "*.media.example.com") {
 		t.Fatalf("fragments were not updated: %+v", cm.Data)
 	}
-	after, _ := client.AppsV1().StatefulSets("naslos").Get(ctx, "naslos-authelia", metav1.GetOptions{})
-	if after.Spec.Template.Annotations["naslos.local/sso-revision"] == before.Spec.Template.Annotations["naslos.local/sso-revision"] {
-		t.Fatal("promotion did not restart Authelia")
+	if podExists(client) {
+		t.Fatal("promotion did not delete the Authelia pod")
 	}
 }
 
@@ -143,25 +155,15 @@ func TestSyncRewritesAndRestartsOnChange(t *testing.T) {
 // needlessly interrupt auth.
 func TestSyncAdoptsSemanticallyEqualSeed(t *testing.T) {
 	r, client := syncHarness(t)
-	ctx := context.Background()
-	seed := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "naslos-authelia-sso", Namespace: "naslos"},
-		Data: map[string]string{
-			CookiesKey: "- domain: \"naslos.local\"\n  authelia_url: \"https://naslos.local/authelia/\"\n",
-			RulesKey:   "- domain: \"*.naslos.local\"\n  policy: \"one_factor\"\n",
-		},
-	}
-	if _, err := client.CoreV1().ConfigMaps("naslos").Create(ctx, seed, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("seed cm: %v", err)
-	}
-	if err := r.Sync(ctx, []string{"naslos.local"}); err != nil {
+	seedFragments(t, client,
+		"- domain: \"naslos.local\"\n  authelia_url: \"https://naslos.local/authelia/\"\n",
+		"- domain: \"*.naslos.local\"\n  policy: \"one_factor\"\n",
+	)
+
+	if err := r.Sync(context.Background(), []string{"naslos.local"}); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	if _, err := client.AppsV1().StatefulSets("naslos").Get(ctx, "naslos-authelia", metav1.GetOptions{}); err != nil {
-		t.Fatalf("get sts: %v", err)
-	}
-	ss, _ := client.AppsV1().StatefulSets("naslos").Get(ctx, "naslos-authelia", metav1.GetOptions{})
-	if ss.Spec.Template.Annotations["naslos.local/sso-revision"] != "" {
+	if !podExists(client) {
 		t.Fatal("an unchanged seed must not restart Authelia")
 	}
 }

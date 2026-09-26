@@ -158,7 +158,9 @@ store-flagged domain can: `POST /api/domains/{domain}/sso {enabled}` sets the
 flag and takes effect live. The API renders the session cookies and the
 `access_control` rules into the `naslos-authelia-sso` ConfigMap (mounted at
 `/config-sso`, injected by Authelia's `fileContent` template filter) and restarts
-Authelia, which reads its configuration only at startup. The ConfigMap is
+Authelia, which reads its configuration only at startup. The restart is a delete
+of the deterministic `naslos-authelia-0` pod (the StatefulSet recreates it), so
+the API's RBAC never includes workload write. The ConfigMap is
 `helm.sh/resource-policy: keep` and the API reconciles it on startup, so a
 promotion survives an API restart and a `helm upgrade`. Promoting the primary is
 rejected (400 — it is always SSO), and demotion is refused (409, naming the apps)

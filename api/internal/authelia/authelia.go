@@ -9,14 +9,10 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"strconv"
-	"time"
 
 	"gopkg.in/yaml.v3"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -72,12 +68,12 @@ func Fragments(domains []string) (cookiesYAML, rulesYAML []byte, err error) {
 	return cookiesYAML, rulesYAML, nil
 }
 
-// Reconciler owns the SSO fragment ConfigMap and the Authelia workload restart.
+// Reconciler owns the SSO fragment ConfigMap and the Authelia pod restart.
 type Reconciler struct {
 	client    func() (kubernetes.Interface, error)
 	namespace string
 	configMap string
-	workload  string
+	pod       string
 }
 
 // Options configures a Reconciler.
@@ -88,8 +84,12 @@ type Options struct {
 	Namespace string
 	// ConfigMap is the fragment ConfigMap name (default naslos-authelia-sso).
 	ConfigMap string
-	// Workload is the StatefulSet/Deployment to restart (default naslos-authelia).
-	Workload string
+	// Pod is the Authelia pod to delete so the controller recreates it with the
+	// new fragments (default naslos-authelia-0, the first StatefulSet ordinal).
+	// Deleting the pod rather than patching the workload keeps the API's write
+	// scope to the fragment ConfigMap: it can restart Authelia but cannot change
+	// the pod spec (which mounts the jwt/LDAP secrets).
+	Pod string
 }
 
 // NewReconciler creates an SSO reconciler.
@@ -98,15 +98,15 @@ func NewReconciler(opts Options) *Reconciler {
 	if configMap == "" {
 		configMap = "naslos-authelia-sso"
 	}
-	workload := opts.Workload
-	if workload == "" {
-		workload = "naslos-authelia"
+	pod := opts.Pod
+	if pod == "" {
+		pod = "naslos-authelia-0"
 	}
 	return &Reconciler{
 		client:    opts.Client,
 		namespace: opts.Namespace,
 		configMap: configMap,
-		workload:  workload,
+		pod:       pod,
 	}
 }
 
@@ -125,14 +125,10 @@ func (r *Reconciler) Sync(ctx context.Context, domains []string) error {
 	configMaps := client.CoreV1().ConfigMaps(r.namespace)
 	current, err := configMaps.Get(ctx, r.configMap, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = configMaps.Create(ctx, &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: r.configMap, Namespace: r.namespace},
-			Data:       map[string]string{CookiesKey: string(cookies), RulesKey: string(rules)},
-		}, metav1.CreateOptions{})
-		if err != nil {
-			return fmt.Errorf("creating SSO ConfigMap: %w", err)
-		}
-		return r.restart(ctx, client)
+		// The chart seeds this ConfigMap; do not create it here. Creating it would
+		// need an unscoped `create` on configmaps (resourceNames does not apply to
+		// create), and Authelia already cannot start without the mounted volume.
+		return fmt.Errorf("SSO ConfigMap %s/%s is missing; reinstall the chart to seed it", r.namespace, r.configMap)
 	}
 	if err != nil {
 		return fmt.Errorf("reading SSO ConfigMap: %w", err)
@@ -152,17 +148,12 @@ func (r *Reconciler) Sync(ctx context.Context, domains []string) error {
 	return r.restart(ctx, client)
 }
 
-// restart rolls the Authelia StatefulSet by patching a pod-template annotation,
-// which is what makes Authelia re-read the mounted configuration.
+// restart deletes the Authelia pod so its controller recreates it against the
+// freshly written fragments. A missing pod is not an error: a concurrent restart
+// already removed it, or the controller has not created it yet.
 func (r *Reconciler) restart(ctx context.Context, client kubernetes.Interface) error {
-	revision := strconv.FormatInt(time.Now().UnixNano(), 10)
-	patch := fmt.Sprintf(
-		`{"spec":{"template":{"metadata":{"annotations":{"naslos.local/sso-revision":%q}}}}}`,
-		revision,
-	)
-	if _, err := client.AppsV1().StatefulSets(r.namespace).Patch(
-		ctx, r.workload, types.StrategicMergePatchType, []byte(patch), metav1.PatchOptions{},
-	); err != nil {
+	err := client.CoreV1().Pods(r.namespace).Delete(ctx, r.pod, metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("restarting Authelia: %w", err)
 	}
 	return nil

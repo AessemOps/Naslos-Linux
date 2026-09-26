@@ -366,10 +366,11 @@ ovhWebhook:
 # Authelia authentication
 authelia:
   enabled: true
-  # A deterministic restart target for the live SSO promotion: the API patches
-  # this workload's pod template so Authelia re-reads the mounted fragments.
-  # Pinning StatefulSet also matches the LDAP-enabled default (the subchart picks
-  # StatefulSet when `authelia.stateful` is true, which LDAP without redis is).
+  # The API restarts Authelia on an SSO promotion by deleting its pod, which
+  # needs a deterministic pod name: naslos-authelia-0. That is only guaranteed
+  # for a StatefulSet. The subchart default is DaemonSet, so this pin is a
+  # deliberate one-time kind change on an existing install: `make install-vm`
+  # deletes the legacy DaemonSet first so the two never share the session PVC.
   pod:
     kind: StatefulSet
     # The SSO fragments (session cookies + access-control rules) rendered from
