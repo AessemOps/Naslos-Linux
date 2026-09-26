@@ -6,6 +6,66 @@ system (official repo + user-added repos), a per-app install-config file, and a
 per-app exposure UI (subdomain / TLS / auth / local-only) backed by an
 API-owned Traefik routing layer and a cert-manager ACME DNS-01 certificate UI.
 
+## Implementation status (2026-09-26, branch `feature/charts-repo-and-app-install-refactor`)
+
+Tasks 1–11 are implemented; all gates pass (`scripts/audit.sh`, `go test -race`
+for api/agent, `svelte-check`, `helm lint`, `helm template` with
+`values.yaml`+`values-vm.yaml`). PR **#28** is open (not merged).
+
+Beyond the original plan, the live work also added: the opt-in **privileged apps
+namespace** (`privileged: true` → `naslos-apps-priv`, for NET_ADMIN/gluetun), the
+**`naslos-datasets` RWX PV/PVC** (PSA `baseline` forbids `hostPath`, so managed
+apps mount a PVC backed by the datasets root), **git egress**
+(`networkPolicy.gitEgress`), configurable **channel mapping**, and the populated
+**NaslosCharts** repository (README app-authoring spec + 10 charts: Jellyfin,
+Radarr, Sonarr, Seerr, FlareSolverr, Prowlarr(+gluetun), qBittorrent(+gluetun),
+Audiobookshelf, Calibre-Web, SearXNG).
+
+**Live drill on 192.168.1.117 (helm revisions 10–21; `naslos-api` r19→r22,
+`naslos-ui` r13)**, first against a temporary `git://` sample repo then against
+the real `https://github.com/AessemOps/NaslosCharts.git` (`{Prod: main}`):
+
+- go-git clone/refresh over `git://` and HTTPS; catalog discovery of all **10
+  apps** from GitHub; `naslos-app.yaml` parse ✓
+- install from the local clone into `naslos-apps`, Service `{{ .Release.Name }}`
+  template resolved, record + live status; **Jellyfin serves `200` via Traefik** ✓
+- a `privileged: true` chart installed into **`naslos-apps-priv`** with its route ✓
+- exposure: TLS+auth → `websecure`, Authelia `302` to the portal; auth-off +
+  local-only → `IPAllowList` and no redirect; empty subdomain → IngressRoute
+  deleted (cluster-internal) ✓
+- uninstall removed the release, route and per-app middleware ✓
+- domains: `certManager: true`, Issuer + wildcard Certificate CRs created,
+  status `pending` (no controller) ✓
+- orphan backfill: a stray platform release was surfaced as `orphaned: true` ✓
+- route-target discovery: a no-services chart auto-filled `service:80` and got a
+  route ✓
+- Playwright `apps.spec.ts` + `domains.spec.ts`: **11 passed live** ✓
+
+Bugs the drill found and that are fixed in this branch:
+
+1. `services[].name` `{{ .Release.Name }}` was written to the IngressRoute
+   literally (now rendered).
+2. The forwardAuth address used the apps namespace for the Authelia Service
+   (now a separate `AutheliaNamespace`; the platform namespace).
+3. `PUT /api/apps/{name}/exposure` replaced the whole exposure and dropped the
+   route target (now preserves service/port/scheme).
+4. Backfill used a Helm list, which needs `list secrets` in `naslos` and would
+   expose the proxy/LDAP/Authelia secrets; it now discovers Helm-labeled
+   workloads and Services with a read-only Role (no Secret access).
+5. `make crds`' cert-manager step was empty (`helm show crds` is empty for
+   cert-manager v1.18, whose CRDs live in `templates/crds.yaml`); fixed.
+6. `security-headers` pinned HSTS subdomains (`stsIncludeSubdomains`), which
+   breaks a TLS-off app subdomain; removed.
+7. PSA `baseline` forbids `hostPath` volumes, so media apps could not mount a
+   dataset; the platform now publishes them as the `naslos-datasets` PVC.
+
+**Not done**
+
+- Merge PR #28 (needs approval).
+- Start/stop (`FR-APP-04`) is `[OPEN]`.
+- gluetun charts need the user's VPN provider/key at install time (the charts
+  ship with the sidecar pattern; the namespace/RBAC/routing are verified).
+
 ---
 
 ## 0. Decisions already made (do not re-litigate)

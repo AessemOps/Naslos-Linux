@@ -3,15 +3,37 @@ package helm
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/release"
 )
 
-// Install installs a Helm chart.
-func (c *Client) Install(ctx context.Context, name, chartRef string, values map[string]interface{}) (*release.Release, error) {
+// InstallDir installs a chart from a local directory. Chart repositories are
+// cloned by the chartsrepo package, so there is no Helm repo index involved.
+func (c *Client) InstallDir(ctx context.Context, name, chartDir string, values map[string]interface{}) (*release.Release, error) {
+	chart, err := loader.LoadDir(chartDir)
+	if err != nil {
+		return nil, fmt.Errorf("loading chart from %s: %w", chartDir, err)
+	}
+	return c.install(ctx, name, chart, values)
+}
+
+// UpgradeDir upgrades a release from a local chart directory. The supplied
+// values replace the previous set (ResetValues) so a reconfigure round-trips
+// exactly what the UI shows.
+func (c *Client) UpgradeDir(ctx context.Context, name, chartDir string, values map[string]interface{}) (*release.Release, error) {
+	chart, err := loader.LoadDir(chartDir)
+	if err != nil {
+		return nil, fmt.Errorf("loading chart from %s: %w", chartDir, err)
+	}
+	return c.upgrade(ctx, name, chart, values)
+}
+
+func (c *Client) install(ctx context.Context, name string, chart *chart.Chart, values map[string]interface{}) (*release.Release, error) {
 	config, err := c.getActionConfig(c.namespace)
 	if err != nil {
 		return nil, err
@@ -20,30 +42,18 @@ func (c *Client) Install(ctx context.Context, name, chartRef string, values map[
 	install := action.NewInstall(config)
 	install.Namespace = c.namespace
 	install.ReleaseName = name
-	install.CreateNamespace = true
+	install.CreateNamespace = false
 	install.Wait = true
 	install.Timeout = 5 * time.Minute
-
-	chartPath, err := install.ChartPathOptions.LocateChart(chartRef, c.settings)
-	if err != nil {
-		return nil, fmt.Errorf("locating chart: %w", err)
-	}
-
-	chart, err := loader.Load(chartPath)
-	if err != nil {
-		return nil, fmt.Errorf("loading chart: %w", err)
-	}
 
 	rel, err := install.RunWithContext(ctx, chart, values)
 	if err != nil {
 		return nil, fmt.Errorf("installing chart: %w", err)
 	}
-
 	return rel, nil
 }
 
-// Upgrade upgrades a Helm release.
-func (c *Client) Upgrade(ctx context.Context, name, chartRef string, values map[string]interface{}) (*release.Release, error) {
+func (c *Client) upgrade(ctx context.Context, name string, chart *chart.Chart, values map[string]interface{}) (*release.Release, error) {
 	config, err := c.getActionConfig(c.namespace)
 	if err != nil {
 		return nil, err
@@ -53,22 +63,12 @@ func (c *Client) Upgrade(ctx context.Context, name, chartRef string, values map[
 	upgrade.Namespace = c.namespace
 	upgrade.Wait = true
 	upgrade.Timeout = 5 * time.Minute
-
-	chartPath, err := upgrade.ChartPathOptions.LocateChart(chartRef, c.settings)
-	if err != nil {
-		return nil, fmt.Errorf("locating chart: %w", err)
-	}
-
-	chart, err := loader.Load(chartPath)
-	if err != nil {
-		return nil, fmt.Errorf("loading chart: %w", err)
-	}
+	upgrade.ResetValues = true
 
 	rel, err := upgrade.RunWithContext(ctx, name, chart, values)
 	if err != nil {
 		return nil, fmt.Errorf("upgrading chart: %w", err)
 	}
-
 	return rel, nil
 }
 
@@ -166,4 +166,22 @@ func (c *Client) Rollback(ctx context.Context, name string, revision int) error 
 	rollback.Timeout = 5 * time.Minute
 
 	return rollback.Run(name)
+}
+
+// ReleaseStatus returns a human-readable status for a release.
+func ReleaseStatus(status string) string {
+	switch strings.ToLower(status) {
+	case "deployed":
+		return "running"
+	case "failed":
+		return "failed"
+	case "pending-install", "pending-upgrade", "pending-rollback":
+		return "pending"
+	case "uninstalled", "uninstalling":
+		return "stopped"
+	case "superseded":
+		return "superseded"
+	default:
+		return status
+	}
 }

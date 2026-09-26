@@ -69,23 +69,45 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 
 ### App catalog & installed apps
 
-> **Not yet functional (PF-H5).** The routes below exist, but no Helm repository
-> is configured and the API ServiceAccount has no Helm RBAC, so
-> install/upgrade/uninstall/list cannot succeed. The UI install action is
-> disabled. See [app-catalog.md](app-catalog.md).
+> Apps come from git-based chart repositories (official + admin-added) and
+> install into `naslos-apps`. See [app-catalog.md](app-catalog.md).
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/catalog` | List catalog entries (name, displayName, description, category, icon, version, tags) |
-| GET | `/api/catalog/{name}` | Full entry incl. JSON Schema + default values |
-| GET | `/api/apps` | Installed Helm releases |
-| POST | `/api/apps` | Install from catalog: `{name, values}` — merges catalog defaults, runs `helm install` |
-| GET | `/api/apps/{name}` | Details incl. `values` and status |
+| GET | `/api/catalog` | List catalog entries (summary incl. `source`, `channel`, `channels`) |
+| GET | `/api/catalog/{name}` | Full entry incl. JSON Schema, `services`, `exposure`, `chartPath` |
+| GET | `/api/apps` | Installed-app records with live status and URL |
+| POST | `/api/apps` | Install: `{name, values, exposure?, baseDomain?, confirmed:true}` (confirmed is required) |
+| GET | `/api/apps/{name}` | Record + release status |
 | PUT | `/api/apps/{name}` | Upgrade/reconfigure: `{values}` |
-| DELETE | `/api/apps/{name}` | Uninstall app |
+| DELETE | `/api/apps/{name}` | Uninstall app, remove its route and record |
+| GET | `/api/apps/{name}/exposure` | Exposure settings + whether auth is allowed |
+| PUT | `/api/apps/{name}/exposure` | Update `{exposure, baseDomain?}`, re-render the route |
+| GET | `/api/apps/{name}/services` | Services the release rendered (route-target discovery/picker) |
 
-> Start/stop is intentionally a stub today: `POST /api/apps/{name}/start|stop`
-> returns a note telling operators to scale via `replicaCount` in values.
+### Chart repositories (sources)
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/sources` | List configured sources |
+| POST | `/api/sources` | Add a source `{name, url, auth, credentialsSecret?, channels?}` |
+| GET | `/api/sources/{name}` | Read one source |
+| DELETE | `/api/sources/{name}` | Remove a source and its cached clones |
+| POST | `/api/sources/refresh` | Refresh all sources, or one with `?name=` |
+
+### Domains & certificates
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/domains` | List domains + cert-manager availability |
+| POST | `/api/domains` | Add a domain `{baseDomain, dnsProvider, credentialsSecret?, acmeEmail, environment}` |
+| GET | `/api/domains/{domain}` | Read one domain |
+| PUT | `/api/domains/{domain}` | Update a domain (re-renders its Issuer/Certificate) |
+| DELETE | `/api/domains/{domain}` | Remove a domain and its CRs |
+| GET | `/api/domains/{domain}/certificate` | Certificate readiness/conditions |
+
+> Start/stop is not implemented; `POST /api/apps/{name}/start|stop` has no route.
+
 
 ### Disks, volumes & ZFS
 
@@ -230,6 +252,21 @@ shell, never an arbitrary command.
 | `AGENT_TOKEN` | — | **Required.** Bearer token sent to the agent on every request but `/health` (from the `naslos-agent` Secret, key `token`) |
 | `BUDDY_IDENTITY` | `/var/lib/naslos/buddy-identity.json` | This instance's key material (private key + KEK); created on demand |
 | `BUDDY_SCHEDULES` | `/var/lib/naslos/buddy-schedules.json` | Scheduled backups (interval cadence, catch-up on startup) |
+| `APPS_NAMESPACE` | `naslos-apps` | Namespace user-installed apps run in |
+| `APPS_PRIVILEGED_NAMESPACE` | `naslos-apps-priv` | Namespace for apps that declare `privileged: true` |
+| `APPS_CONFIG` | `/var/lib/naslos/apps.json` | Installed-app records |
+| `SOURCES_CONFIG` | `/var/lib/naslos/sources.json` | Configured chart repositories |
+| `DOMAINS_CONFIG` | `/var/lib/naslos/domains.json` | Base domains |
+| `CHARTS_CACHE_DIR` | `/var/lib/naslos/charts` | Git clone cache (one tree per source/channel) |
+| `CHARTS_TTL` | `15m` | Cache freshness before a refresh |
+| `SOURCES_OFFICIAL_URL` | — | Official chart repository to seed (empty disables) |
+| `SOURCES_OFFICIAL_NAME` / `_DISPLAY` / `_AUTH` / `_SECRET` | `naslos` / `NaslosCharts` / `public` / — | Official source fields |
+| `NASLOS_DOMAIN` | `naslos.local` | Primary domain app subdomains hang off |
+| `SSO_DOMAINS` | primary domain | Comma-separated domains Authelia protects (auth is only offered there) |
+| `APPS_TLS_SECRET` | `naslos-apps-tls` | Fallback TLS Secret when the app's base domain has no domain record |
+| `AUTHELIA_SERVICE` / `AUTHELIA_PORT` | `naslos-authelia` / `80` | Authelia forwardAuth target (FQDN, cross-namespace) |
+| `EXPOSURE_LOCAL_ONLY_CIDR` | — | LAN CIDR an `localOnly` app is restricted to |
+| `PLATFORM_RELEASE` | release name | Release to exclude from the installed-app list/backfill |
 
 The `naslos-agent` uses `NODE_NAME` (from `spec.nodeName`) and listens on `:9090`.
 

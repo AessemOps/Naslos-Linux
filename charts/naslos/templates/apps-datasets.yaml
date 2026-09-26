@@ -1,0 +1,47 @@
+# Datasets volume for installed apps.
+#
+# PSA `baseline` (the apps namespace) forbids hostPath volumes, but Naslos
+# datasets are host directories. Exposing them as a static PV + PVC lets an app
+# mount its library with a normal persistentVolumeClaim volume (allowed under
+# baseline) instead of a hostPath. The single-node hostPath PV is declared
+# ReadWriteMany because Kubernetes does not enforce access modes for hostPath and
+# every app pod runs on the same node.
+{{- if .Values.apps.datasets.enabled }}
+{{- $ans := .Values.apps.namespace | default "naslos-apps" }}
+{{- $wns := include "naslos.workloadNamespace" . }}
+{{- $size := .Values.apps.datasets.size | default "10Ti" }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: naslos-datasets
+  labels:
+    app.kubernetes.io/name: naslos
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  capacity:
+    storage: {{ $size }}
+  accessModes: [ReadWriteMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: naslos-datasets
+  hostPath:
+    path: {{ .Values.apps.datasets.hostPath | default "/var/mnt" }}
+{{- if and (ne $ans .Release.Namespace) (ne $ans $wns) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: naslos-datasets
+  namespace: {{ $ans }}
+  labels:
+    app.kubernetes.io/name: naslos
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: naslos-datasets
+  resources:
+    requests:
+      storage: {{ $size }}
+{{- end }}
+{{- end }}

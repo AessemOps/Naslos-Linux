@@ -45,3 +45,44 @@ metadata:
     # node's share data with it.
     helm.sh/resource-policy: keep
 {{- end }}
+{{- $ans := .Values.apps.namespace | default "naslos-apps" }}
+{{- if and (ne $ans .Release.Namespace) (ne $ans $wns) }}
+---
+# User-installed apps run here, isolated from both the platform namespace and
+# the privileged workloads. PSA `baseline` covers ordinary charts; a VPN sidecar
+# that needs NET_ADMIN goes to the privileged apps namespace below instead.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ans }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+    app.kubernetes.io/component: apps
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+  annotations:
+    # App data (PVCs) lives here; keep it across a release uninstall so a
+    # reinstall does not destroy the apps' volumes.
+    helm.sh/resource-policy: keep
+{{- end }}
+{{- $apriv := .Values.apps.privilegedNamespace | default "naslos-apps-priv" }}
+{{- if and (ne $apriv .Release.Namespace) (ne $apriv $wns) (ne $apriv $ans) }}
+---
+# Opt-in privileged apps namespace. Some media apps (gluetun VPN sidecars) need
+# NET_ADMIN, which PSA `baseline` forbids; an app declares `privileged: true` in
+# its naslos-app.yaml and the API installs it here. Keeping it separate means
+# only those apps get the relaxed profile.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $apriv }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+    app.kubernetes.io/component: apps-privileged
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+  annotations:
+    helm.sh/resource-policy: keep
+{{- end }}

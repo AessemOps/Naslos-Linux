@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import AppExposureModal from './AppExposureModal.svelte';
+  import AppConfigureModal from './AppConfigureModal.svelte';
 
-  interface App {
+  interface AppView {
     name: string;
     namespace: string;
     chart: string;
@@ -9,11 +11,22 @@
     status: string;
     updatedAt: string;
     description: string;
+    url: string;
+    orphaned: boolean;
+    lastError?: string;
+    exposure: {
+      subdomain: string;
+      tls: boolean;
+      auth: boolean;
+      localOnly: boolean;
+    };
   }
 
-  let apps: App[] = [];
+  let apps: AppView[] = [];
   let loading = true;
   let error = '';
+  let editingExposure: string | null = null;
+  let editingConfig: string | null = null;
 
   async function loadApps() {
     loading = true;
@@ -49,13 +62,13 @@
     }
   }
 
-  function statusColor(status: string): string {
+  function statusClass(status: string): string {
     switch (status) {
-      case 'running': return 'text-green-400 bg-green-900/50';
-      case 'failed': return 'text-red-400 bg-red-900/50';
-      case 'pending': return 'text-yellow-400 bg-yellow-900/50';
-      case 'stopped': return 'text-gray-400 bg-gray-900/50';
-      default: return 'text-gray-400 bg-gray-900/50';
+      case 'running': return 'bg-green-900/50 text-green-400';
+      case 'failed': return 'bg-red-900/50 text-red-400';
+      case 'pending': return 'bg-yellow-900/50 text-yellow-400';
+      case 'missing': return 'bg-amber-900/50 text-amber-400';
+      default: return 'bg-gray-900/50 text-gray-400';
     }
   }
 
@@ -74,28 +87,46 @@
       <div class="text-5xl mb-4">📦</div>
       <h2 class="text-xl font-bold mb-2">No Apps Installed</h2>
       <p class="text-gray-400 mb-4">Browse the catalog to install your first app.</p>
-      <a href="/apps" class="btn btn-primary">Browse Catalog</a>
     </div>
   {:else}
     <div class="space-y-3">
-      {#each apps as app}
+      {#each apps as app (app.name)}
         <div class="card flex items-center gap-4">
-          <div class="flex-1">
+          <div class="flex-1 min-w-0">
             <div class="flex items-center gap-3 mb-1">
               <h3 class="font-bold">{app.name}</h3>
-              <span class={`text-xs px-2 py-0.5 rounded ${app.status === 'running' ? 'bg-green-900/50 text-green-400' : app.status === 'failed' ? 'bg-red-900/50 text-red-400' : app.status === 'pending' ? 'bg-yellow-900/50 text-yellow-400' : 'bg-gray-900/50 text-gray-400'}`}>
-                {app.status}
-              </span>
+              <span class={`text-xs px-2 py-0.5 rounded ${statusClass(app.status)}`}>{app.status}</span>
+              {#if app.orphaned}
+                <span class="text-xs px-2 py-0.5 rounded bg-amber-900/50 text-amber-300" title="Found in the cluster without a catalog entry">orphaned</span>
+              {/if}
             </div>
-            <p class="text-sm text-gray-400">{app.description || app.chart}</p>
-            <p class="text-xs text-gray-500 mt-1">v{app.version} • {app.chart}</p>
+            {#if app.url}
+              <a class="text-sm text-naslos-accent hover:underline" href={app.url} target="_blank" rel="noreferrer">{app.url}</a>
+            {:else}
+              <p class="text-sm text-gray-400">{app.exposure?.subdomain || 'cluster-internal only'}</p>
+            {/if}
+            <p class="text-xs text-gray-500 mt-1">v{app.version} • {app.chart} • {app.namespace}</p>
+            {#if app.lastError}<p class="text-xs text-amber-400 mt-1">{app.lastError}</p>{/if}
           </div>
           <div class="flex gap-2">
-            <button class="btn btn-secondary" disabled>Configure</button>
+            <button class="btn btn-secondary" on:click={() => editingExposure = app.name}>Exposure</button>
+            <button
+              class="btn btn-secondary"
+              disabled={app.orphaned}
+              title={app.orphaned ? 'Orphaned releases cannot be reconfigured' : ''}
+              on:click={() => editingConfig = app.name}
+            >Configure</button>
             <button class="btn btn-danger" on:click={() => uninstallApp(app.name)}>Uninstall</button>
           </div>
         </div>
       {/each}
     </div>
+  {/if}
+
+  {#if editingExposure}
+    <AppExposureModal appName={editingExposure} on:close={() => { editingExposure = null; loadApps(); }} />
+  {/if}
+  {#if editingConfig}
+    <AppConfigureModal appName={editingConfig} on:close={() => { editingConfig = null; loadApps(); }} />
   {/if}
 </div>
