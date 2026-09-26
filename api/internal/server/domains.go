@@ -175,37 +175,17 @@ func (s *Server) applyDomainFields(r *http.Request, domain *certs.Domain, fields
 	}
 	create := existing == nil
 
-	config := map[string]string{}
-	for _, f := range p.ConfigFields() {
-		value, submitted := fields[f.Key]
-		switch {
-		case submitted:
-			config[f.Key] = value
-		case existing != nil && existing.ProviderConfig[f.Key] != "":
-			config[f.Key] = existing.ProviderConfig[f.Key]
-		case f.Default != "":
-			config[f.Key] = f.Default
-		}
-		if f.Required && strings.TrimSpace(config[f.Key]) == "" {
-			return fmt.Errorf("field %q is required", f.Key)
-		}
-		if err := validateFieldValue(f, config[f.Key]); err != nil {
-			return err
-		}
+	var existingConfig map[string]string
+	if existing != nil {
+		existingConfig = existing.ProviderConfig
 	}
-	domain.ProviderConfig = config
+	resolved, err := p.ResolveFields(fields, existingConfig, nil, create)
+	if err != nil {
+		return err
+	}
+	domain.ProviderConfig = resolved.Config
+	secretData := resolved.SecretValues
 
-	secretData := map[string]string{}
-	for _, f := range p.SecretFields() {
-		value, submitted := fields[f.Key]
-		if submitted && strings.TrimSpace(value) != "" {
-			secretData[f.SecretKeyOr()] = value
-			continue
-		}
-		if create && f.Required {
-			return fmt.Errorf("field %q is required", f.Key)
-		}
-	}
 	if len(secretData) == 0 {
 		// Nothing new to store: keep whatever Secret the domain already names.
 		return nil

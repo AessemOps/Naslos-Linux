@@ -255,50 +255,22 @@ func (s *Server) upsertDdns(w http.ResponseWriter, r *http.Request, existing *dd
 		return
 	}
 
-	// Resolve non-secret config: submitted value, else existing, else default.
-	config := map[string]string{}
-	for _, f := range p.ConfigFields() {
-		value, submitted := req.Fields[f.Key]
-		switch {
-		case submitted:
-			config[f.Key] = value
-		case existing != nil && existing.ProviderConfig[f.Key] != "":
-			config[f.Key] = existing.ProviderConfig[f.Key]
-		case f.Default != "":
-			config[f.Key] = f.Default
-		}
-		if f.Required && strings.TrimSpace(config[f.Key]) == "" {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("field %q is required", f.Key))
-			return
-		}
-		if err := validateFieldValue(f, config[f.Key]); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
-
-	// Resolve secret fields. A non-empty submitted value wins; otherwise the
-	// existing Secret is kept (only rewritten when something new is submitted).
-	updates := map[string]string{}
-	credentialFields := []string{}
+	// Split the submitted fields into config and Secret values through the
+	// provider's field model (shared with the domains path).
+	var existingConfig map[string]string
+	var existingFields []string
 	if existing != nil {
-		credentialFields = append(credentialFields, existing.CredentialFields...)
+		existingConfig = existing.ProviderConfig
+		existingFields = existing.CredentialFields
 	}
-	for _, f := range p.SecretFields() {
-		if value, ok := req.Fields[f.Key]; ok && strings.TrimSpace(value) != "" {
-			updates[f.SecretKeyOr()] = value
-			credentialFields = addField(credentialFields, f.Key)
-			continue
-		}
-		if existing == nil && f.Required {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("field %q is required", f.Key))
-			return
-		}
-		if err := validateFieldValue(f, req.Fields[f.Key]); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
+	resolved, err := p.ResolveFields(req.Fields, existingConfig, existingFields, existing == nil)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
+	config := resolved.Config
+	updates := resolved.SecretValues
+	credentialFields := resolved.CredentialFields
 
 	now := time.Now().UTC()
 	entry := ddns.Entry{
@@ -383,33 +355,4 @@ func validateRecordLabel(record string) error {
 		return fmt.Errorf("record %q is not a valid DNS label", record)
 	}
 	return nil
-}
-
-func validateFieldValue(f providers.Field, value string) error {
-	if value == "" {
-		return nil
-	}
-	switch f.Type {
-	case providers.FieldBool:
-		if value != "true" && value != "false" {
-			return fmt.Errorf("field %q must be true or false", f.Key)
-		}
-	case providers.FieldEnum:
-		for _, allowed := range f.Enum {
-			if value == allowed {
-				return nil
-			}
-		}
-		return fmt.Errorf("field %q must be one of %s", f.Key, strings.Join(f.Enum, ", "))
-	}
-	return nil
-}
-
-func addField(list []string, key string) []string {
-	for _, item := range list {
-		if item == key {
-			return list
-		}
-	}
-	return append(list, key)
 }

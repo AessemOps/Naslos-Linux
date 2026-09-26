@@ -1,17 +1,8 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from 'svelte';
+  import ProviderFields from './ProviderFields.svelte';
 
   export let domain: any | null = null;
-
-  interface ProviderField {
-    key: string;
-    label: string;
-    type: string;
-    default?: string;
-    enum?: string[];
-    required?: boolean;
-    secret?: boolean;
-  }
 
   let baseDomain = domain?.baseDomain || '';
   let dnsProvider = domain?.dnsProvider || 'cloudflare';
@@ -45,7 +36,7 @@
     return providers.find((p) => p.name === dnsProvider);
   }
 
-  function fields(): ProviderField[] {
+  function fields(): any[] {
     return provider()?.fields ?? [];
   }
 
@@ -135,31 +126,13 @@
           <textarea id="domain-solver" class="input h-32 font-mono text-sm" bind:value={solverText}></textarea>
         </div>
       {:else if fields().length > 0}
-        {#each fields() as f (f.key)}
-          <div>
-            <label class="label" for={`domain-field-${f.key}`}>
-              {f.label || f.key}{#if f.required}<span class="text-red-400"> *</span>{/if}
-            </label>
-            {#if f.type === 'enum'}
-              <select id={`domain-field-${f.key}`} class="input" bind:value={fieldValues[f.key]}>
-                {#each f.enum || [] as v (v)}
-                  <option value={v}>{v}</option>
-                {/each}
-              </select>
-            {:else if f.secret}
-              <input
-                id={`domain-field-${f.key}`}
-                class="input"
-                type="password"
-                autocomplete="new-password"
-                bind:value={fieldValues[f.key]}
-                placeholder={domain?.credentialsSecret ? '•••••• (unchanged)' : ''}
-              />
-            {:else}
-              <input id={`domain-field-${f.key}`} class="input" bind:value={fieldValues[f.key]} />
-            {/if}
-          </div>
-        {/each}
+        <ProviderFields
+          fields={fields()}
+          values={fieldValues}
+          idPrefix="domain"
+          secretSet={domain?.credentialsSecret ? fields().filter((f) => f.secret).map((f) => f.key) : []}
+          unchangedPlaceholder="•••••• (unchanged)"
+        />
       {:else}
         <div>
           <label class="label" for="domain-secret">Credentials Secret</label>
