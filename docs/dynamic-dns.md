@@ -76,6 +76,9 @@ ddns:                           # optional: DDNS support
   solver comes from the domain record itself.
 - A secret field may set `secretKey:` to write under a different Secret key
   (Cloudflare's solver expects `api-token`).
+- A field may set `scope: cert` or `scope: ddns` to appear only in the Domains
+  form or the Dynamic DNS form (OVH's DynHost `mode`/`username`/`password` are
+  `ddns`-scoped so they do not clutter the certificate form).
 
 ### Where definitions come from
 
@@ -141,7 +144,7 @@ one of the drivers above is pure YAML — no Go change):
 | Provider | Driver | Notes |
 | --- | --- | --- |
 | `cloudflare` | `cloudflare` | API token; optional `proxied` |
-| `ovh` | `ovh` | endpoint + application/consumer keys |
+| `ovh` | `ovh` | DynHost (`mode: dynamic`, username/password — default) or ZoneDNS API (`mode: api`, endpoint + application/consumer keys) |
 | `duckdns` | `http` | token; `DUCKDNS` subdomain label |
 | `dynu` | `http` | username/password (+ optional location) |
 | `noip` | `http` | username/password (Basic) |

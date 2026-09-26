@@ -179,20 +179,25 @@ func (s *Server) applyDomainFields(r *http.Request, domain *certs.Domain, fields
 	if existing != nil {
 		existingConfig = existing.ProviderConfig
 	}
-	resolved, err := p.ResolveFields(fields, existingConfig, nil, create)
+	resolved, err := p.ResolveFields("cert", fields, existingConfig, nil, create)
 	if err != nil {
 		return err
 	}
 	domain.ProviderConfig = resolved.Config
 	secretData := resolved.SecretValues
 
-	if len(secretData) == 0 {
-		// Nothing new to store: keep whatever Secret the domain already names.
-		return nil
-	}
 	secretName := domain.CredentialsSecret
 	if secretName == "" {
 		secretName = "naslos-domain-" + sanitizeName(domain.BaseDomain) + "-creds"
+	}
+	// Reject a domain whose credentials cannot render a solver (a missing
+	// app key, for example) rather than storing one that never issues.
+	if err := p.ValidateSolver(secretName, resolved.Config); err != nil {
+		return err
+	}
+	if len(secretData) == 0 {
+		// Nothing new to store: keep whatever Secret the domain already names.
+		return nil
 	}
 	client, err := s.kubernetesClient()
 	if err != nil {

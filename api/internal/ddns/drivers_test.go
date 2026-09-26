@@ -38,7 +38,7 @@ func TestOVHDriverUpdate(t *testing.T) {
 	d := &OVHDriver{Client: srv.Client(), BaseURL: srv.URL, Now: func() time.Time { return now }}
 	err := d.Update(context.Background(), UpdateRequest{
 		Zone: "example.com", Record: "home", RecordType: "A", IP: "203.0.113.5", TTL: 300,
-		Config: map[string]string{"endpoint": "ovh-eu", "applicationKey": "AK"},
+		Config: map[string]string{"mode": "api", "endpoint": "ovh-eu", "applicationKey": "AK"},
 		Secret: map[string]string{"applicationSecret": "AS", "consumerKey": "CK"},
 	})
 	if err != nil {
@@ -89,7 +89,7 @@ func TestOVHDriverCreatesWhenAbsent(t *testing.T) {
 	d := &OVHDriver{Client: srv.Client(), BaseURL: srv.URL}
 	err := d.Update(context.Background(), UpdateRequest{
 		Zone: "example.com", Record: "@", RecordType: "A", IP: "203.0.113.5",
-		Config: map[string]string{"applicationKey": "AK"},
+		Config: map[string]string{"mode": "api", "applicationKey": "AK"},
 		Secret: map[string]string{"applicationSecret": "AS", "consumerKey": "CK"},
 	})
 	if err != nil {
@@ -144,6 +144,49 @@ func TestCloudflareDriverCreateAndUpdate(t *testing.T) {
 			t.Errorf("existing=%v: body = %s", existing, putBody)
 		}
 		srv.Close()
+	}
+}
+
+func TestOVHDriverDynHostMode(t *testing.T) {
+	var query url.Values
+	var user, pass string
+	var ok bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/nic/update" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		query = r.URL.Query()
+		user, pass, ok = r.BasicAuth()
+		w.Write([]byte("good 203.0.113.5"))
+	}))
+	defer srv.Close()
+
+	// No mode set means the ddns-updater default: DynHost.
+	d := &OVHDriver{Client: srv.Client(), DynHostBase: srv.URL}
+	err := d.Update(context.Background(), UpdateRequest{
+		Zone: "example.com", Record: "home", RecordType: "A", IP: "203.0.113.5",
+		Config: map[string]string{"username": "dynuser"},
+		Secret: map[string]string{"password": "dynpass"},
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if query.Get("system") != "dyndns" || query.Get("hostname") != "home.example.com" || query.Get("myip") != "203.0.113.5" {
+		t.Fatalf("query = %v", query)
+	}
+	if !ok || user != "dynuser" || pass != "dynpass" {
+		t.Fatalf("basic auth = %q/%q (ok=%v)", user, pass, ok)
+	}
+}
+
+func TestOVHDriverDynHostRequiresCredentials(t *testing.T) {
+	d := &OVHDriver{Client: http.DefaultClient}
+	err := d.Update(context.Background(), UpdateRequest{
+		Zone: "example.com", Record: "home", RecordType: "A", IP: "203.0.113.5",
+		Config: map[string]string{"mode": "dynamic"},
+	})
+	if err == nil {
+		t.Fatal("expected DynHost mode without username/password to fail")
 	}
 }
 

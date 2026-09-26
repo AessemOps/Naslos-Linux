@@ -36,11 +36,13 @@
   // template, so derive the provider/fields reactively instead.
   $: currentProvider = providers.find((p) => p.name === dnsProvider);
   $: currentFields = currentProvider?.fields ?? [];
+  // Hide fields that are DDNS-only (e.g. OVH DynHost credentials).
+  $: certFields = currentFields.filter((f: any) => f.scope !== 'ddns');
 
   function defaultsFor(name: string, seed: Record<string, string>): Record<string, string> {
     const next: Record<string, string> = { ...seed };
     const selected = providers.find((p) => p.name === name);
-    for (const f of selected?.fields ?? []) {
+    for (const f of (selected?.fields ?? []).filter((x: any) => x.scope !== 'ddns')) {
       if (next[f.key] === undefined) {
         next[f.key] = f.default ?? '';
       }
@@ -70,7 +72,7 @@
         } catch {
           throw new Error('Solver must be valid JSON');
         }
-      } else if (currentFields.length > 0) {
+      } else if (certFields.length > 0) {
         body.fields = fieldValues;
       }
       const res = await fetch(`/api/domains/${encodeURIComponent(baseDomain)}`, {
@@ -123,12 +125,12 @@
           <label class="label" for="domain-solver">Solver (JSON)</label>
           <textarea id="domain-solver" class="input h-32 font-mono text-sm" bind:value={solverText}></textarea>
         </div>
-      {:else if currentFields.length > 0}
+      {:else if certFields.length > 0}
         <ProviderFields
-          fields={currentFields}
+          fields={certFields}
           values={fieldValues}
           idPrefix="domain"
-          secretSet={domain?.credentialsSecret ? (currentFields as any[]).filter((f: any) => f.secret).map((f: any) => f.key) : []}
+          secretSet={domain?.credentialsSecret ? certFields.filter((f: any) => f.secret).map((f: any) => f.key) : []}
           unchangedPlaceholder="•••••• (unchanged)"
         />
       {:else}

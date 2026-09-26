@@ -59,6 +59,10 @@ type Field struct {
 	// Defaults to Key. Needed when a cert-manager solver expects a key that is
 	// not a valid field identifier (e.g. cloudflare's `api-token`).
 	SecretKey string `yaml:"secretKey,omitempty" json:"secretKey,omitempty"`
+	// Scope limits where the field is shown: "cert" (domains/certificates),
+	// "ddns" (dynamic DNS) or "" for both. It lets a shared provider (e.g. OVH)
+	// expose DynHost credentials to DDNS without cluttering the Domains form.
+	Scope string `yaml:"scope,omitempty" json:"scope,omitempty"`
 }
 
 // SecretKeyOr returns the Secret data key for the field.
@@ -122,8 +126,33 @@ func (p *Provider) SupportsCertificates() bool {
 
 // SecretFields returns the fields whose values live in a Secret.
 func (p *Provider) SecretFields() []Field {
-	out := make([]Field, 0)
+	return p.secretFieldsFor("")
+}
+
+// ConfigFields returns the non-secret fields.
+func (p *Provider) ConfigFields() []Field {
+	return p.configFieldsFor("")
+}
+
+// FieldsFor returns the fields visible to one scope: shared fields plus those
+// scoped to it. An empty scope returns every field.
+func (p *Provider) FieldsFor(scope string) []Field {
+	return p.fieldsFor(scope)
+}
+
+func (p *Provider) fieldsFor(scope string) []Field {
+	out := make([]Field, 0, len(p.Fields))
 	for _, f := range p.Fields {
+		if f.Scope == "" || scope == "" || f.Scope == scope {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func (p *Provider) secretFieldsFor(scope string) []Field {
+	out := make([]Field, 0)
+	for _, f := range p.fieldsFor(scope) {
 		if f.Secret {
 			out = append(out, f)
 		}
@@ -131,10 +160,9 @@ func (p *Provider) SecretFields() []Field {
 	return out
 }
 
-// ConfigFields returns the non-secret fields.
-func (p *Provider) ConfigFields() []Field {
+func (p *Provider) configFieldsFor(scope string) []Field {
 	out := make([]Field, 0)
-	for _, f := range p.Fields {
+	for _, f := range p.fieldsFor(scope) {
 		if !f.Secret {
 			out = append(out, f)
 		}
@@ -190,20 +218,21 @@ type FieldResolution struct {
 	CredentialFields []string
 }
 
-// ResolveFields applies one submission to a provider's field model. It is the
-// single place that decides what is config, what is a Secret, which fields are
-// required and which values are valid, so domains and Dynamic DNS cannot drift.
+// ResolveFields applies one submission to a provider's field model for the
+// given scope ("cert" or "ddns"). It is the single place that decides what is
+// config, what is a Secret, which fields are required and which values are
+// valid, so domains and Dynamic DNS cannot drift.
 //
 // existingConfig and existingCredentialFields carry the persisted state on an
 // update (nil/empty on create); create enables the required-secret check.
-func (p *Provider) ResolveFields(submitted, existingConfig map[string]string, existingCredentialFields []string, create bool) (FieldResolution, error) {
+func (p *Provider) ResolveFields(scope string, submitted, existingConfig map[string]string, existingCredentialFields []string, create bool) (FieldResolution, error) {
 	out := FieldResolution{
 		Config:       map[string]string{},
 		SecretValues: map[string]string{},
 	}
 	out.CredentialFields = append(out.CredentialFields, existingCredentialFields...)
 
-	for _, f := range p.ConfigFields() {
+	for _, f := range p.configFieldsFor(scope) {
 		value, ok := submitted[f.Key]
 		switch {
 		case ok:
@@ -221,7 +250,7 @@ func (p *Provider) ResolveFields(submitted, existingConfig map[string]string, ex
 		}
 	}
 
-	for _, f := range p.SecretFields() {
+	for _, f := range p.secretFieldsFor(scope) {
 		if value, ok := submitted[f.Key]; ok && strings.TrimSpace(value) != "" {
 			out.SecretValues[f.SecretKeyOr()] = value
 			out.CredentialFields = addUnique(out.CredentialFields, f.Key)
@@ -235,6 +264,17 @@ func (p *Provider) ResolveFields(submitted, existingConfig map[string]string, ex
 		}
 	}
 	return out, nil
+}
+
+// ValidateSolver renders the cert-manager solver and returns any error, so a
+// domain create can reject a missing credential as a 400 rather than storing a
+// domain that will never issue.
+func (p *Provider) ValidateSolver(secretName string, config map[string]string) error {
+	if !p.HasCertManager() {
+		return nil
+	}
+	_, err := p.Solver(secretName, config)
+	return err
 }
 
 func addUnique(list []string, key string) []string {
@@ -435,6 +475,11 @@ func (p *Provider) validate() error {
 			return fmt.Errorf("provider %q: duplicate field key %q", p.Name, f.Key)
 		}
 		seen[f.Key] = true
+		switch f.Scope {
+		case "", "cert", "ddns":
+		default:
+			return fmt.Errorf("provider %q field %q: unknown scope %q", p.Name, f.Key, f.Scope)
+		}
 		switch f.Type {
 		case FieldString:
 		case FieldBool:

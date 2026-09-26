@@ -263,7 +263,7 @@ func (s *Server) upsertDdns(w http.ResponseWriter, r *http.Request, existing *dd
 		existingConfig = existing.ProviderConfig
 		existingFields = existing.CredentialFields
 	}
-	resolved, err := p.ResolveFields(req.Fields, existingConfig, existingFields, existing == nil)
+	resolved, err := p.ResolveFields("ddns", req.Fields, existingConfig, existingFields, existing == nil)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
