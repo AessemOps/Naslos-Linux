@@ -451,9 +451,12 @@ webhook are installed as separate releases in the `cert-manager` namespace
 (`make cert-manager`, `make cert-manager-webhook-ovh`), `ovh.yaml` renders the
 `webhook` solver, and every OVH credential (application key/secret/consumer key)
 is a Secret field read by the webhook. **Live-drilled on revision 29**: the OVH
-Issuer is created and `READY=True`, cert-manager and the webhook authenticates
-to OVH and reads the Secret, but OVH returns `403 "This call has not been
-granted"` for `GET /domain/zone/florentinrichard.fr/status` — the API token's
-rights must cover `GET/PUT/POST/DELETE /domain/zone/florentinrichard.fr/*` (the
-`/status`, `/record` and `/refresh` subpaths). The pre-refactor revision 55
-narrative is archived at `docs/archive/ai-handoff-log-2026-09.md`.
+Issuer is created and `READY=True`, and `florentinrichard.fr` issued a
+production Let's Encrypt certificate (SANs `*.florentinrichard.fr` +
+`florentinrichard.fr`, Secret `naslos-florentinrichard-fr-tls`) once the OVH API
+token covered the zone. Residual: the token still lacks **DELETE** on
+`/domain/zone/florentinrichard.fr/*`, so the webhook's `CleanUp` gets a 403 and
+leaves the `_acme-challenge` TXT record in the zone (issuance is unaffected);
+add DELETE for the four methods on the zone wildcard so cleanup succeeds. The
+pre-refactor revision 55 narrative is archived at
+`docs/archive/ai-handoff-log-2026-09.md`.
