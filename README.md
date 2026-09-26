@@ -92,4 +92,6 @@ kubectl port-forward -n naslos svc/naslos-ui 8080:80
 
 ## License
 
-Apache 2.0
+GNU Affero General Public License v3.0 — see [LICENSE](LICENSE).
+Third-party open-source components and their licenses are listed in
+[CREDITS.md](CREDITS.md).
