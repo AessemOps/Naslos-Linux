@@ -19,23 +19,28 @@ fields:
     type: string
     secret: true
     scope: ddns
-  # ZoneDNS API mode (and the cert-manager OVH solver): endpoint + keys.
+  # ZoneDNS API mode (and the cert-manager OVH solver): endpoint + keys. Shown
+  # for DDNS only in mode: api; always shown for certificates.
   - key: endpoint
     label: API endpoint
     type: enum
     default: ovh-eu
     enum: [ovh-eu, ovh-ca, ovh-us]
+    showIf: { key: mode, value: api }
   - key: applicationKey
     label: Application key
     type: string
+    showIf: { key: mode, value: api }
   - key: applicationSecret
     label: Application secret
     type: string
     secret: true
+    showIf: { key: mode, value: api }
   - key: consumerKey
     label: Consumer key
     type: string
     secret: true
+    showIf: { key: mode, value: api }
 certManager:
   solver:
     ovh:

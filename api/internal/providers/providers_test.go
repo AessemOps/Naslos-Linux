@@ -173,12 +173,34 @@ func TestResolveFieldsSplitsConfigAndSecrets(t *testing.T) {
 	}
 }
 
+func TestOVHAPIFieldsAreConditionalOnAPIMode(t *testing.T) {
+	p, _ := Load("").Get("ovh")
+	fields := map[string]Field{}
+	for _, f := range p.FieldsFor("ddns") {
+		fields[f.Key] = f
+	}
+	endpoint, ok := fields["endpoint"]
+	if !ok {
+		t.Fatal("ovh ddns scope is missing the endpoint field")
+	}
+	if endpoint.ShowIf == nil || endpoint.ShowIf.Key != "mode" || endpoint.ShowIf.Value != "api" {
+		t.Fatalf("endpoint ShowIf = %+v, want mode=api", endpoint.ShowIf)
+	}
+	if mode := fields["mode"]; mode.ShowIf != nil {
+		t.Fatalf("mode should always be visible: %+v", mode.ShowIf)
+	}
+	if _, ok := fields["password"]; !ok {
+		t.Fatal("ovh ddns scope is missing the DynHost password field")
+	}
+}
+
 func TestParseRejectsDuplicateFieldsAndBadEnums(t *testing.T) {
 	cases := map[string]string{
 		"duplicate":  "name: x\nfields:\n  - {key: a, label: A, type: string}\n  - {key: a, label: A2, type: string}\n",
 		"bad enum":   "name: x\nfields:\n  - key: a\n    label: A\n    type: enum\n    enum: [one]\n    default: two\n",
 		"bad name":   "name: Bad_Name\n",
 		"bad driver": "name: x\nddns:\n  driver: nope\n",
+		"bad showIf": "name: x\nfields:\n  - key: a\n    label: A\n    type: string\n    showIf: {value: api}\n",
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {

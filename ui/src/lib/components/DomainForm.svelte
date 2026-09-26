@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from 'svelte';
   import ProviderFields from './ProviderFields.svelte';
+  import { visibleFields } from '$lib/providerFields';
 
   export let domain: any | null = null;
 
@@ -36,8 +37,12 @@
   // template, so derive the provider/fields reactively instead.
   $: currentProvider = providers.find((p) => p.name === dnsProvider);
   $: currentFields = currentProvider?.fields ?? [];
-  // Hide fields that are DDNS-only (e.g. OVH DynHost credentials).
-  $: certFields = currentFields.filter((f: any) => f.scope !== 'ddns');
+  // Hide DDNS-only fields; showIf rules whose controller is absent here (no
+  // `mode` in the cert form) are ignored, so shared fields stay visible.
+  $: certFields = visibleFields(
+    currentFields.filter((f: any) => f.scope !== 'ddns'),
+    fieldValues
+  );
 
   function defaultsFor(name: string, seed: Record<string, string>): Record<string, string> {
     const next: Record<string, string> = { ...seed };

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import ProviderFields from './ProviderFields.svelte';
+  import { visibleFields } from '$lib/providerFields';
 
   export let entry: any | null = null;
   export let providers: any[] = [];
@@ -28,8 +29,12 @@
   // template, so derive the provider/fields reactively instead.
   $: currentProvider = ddnsProviders.find((p) => p.name === providerName);
   $: currentFields = currentProvider?.fields ?? [];
-  // Hide fields that are certificate-only (e.g. raw solver credentials).
-  $: ddnsFields = currentFields.filter((f: any) => f.scope !== 'cert');
+  // Hide certificate-only fields (scope) and fields whose showIf rule is not met
+  // (e.g. OVH's ZoneDNS fields unless mode is api).
+  $: ddnsFields = visibleFields(
+    currentFields.filter((f: any) => f.scope !== 'cert'),
+    fieldValues
+  );
 
   // Switch provider: keep the selection in sync and prefill field defaults.
   function onProviderChange(event: Event) {
@@ -120,7 +125,7 @@
         </div>
       </div>
 
-      <div class="grid grid-cols-3 gap-3">
+      <div class="grid grid-cols-2 gap-3">
         <div>
           <label class="label" for="ddns-type">Type</label>
           <select id="ddns-type" class="input" bind:value={recordType}>
@@ -132,13 +137,12 @@
           <label class="label" for="ddns-ttl">TTL</label>
           <input id="ddns-ttl" class="input" type="number" min="0" bind:value={ttl} placeholder="0 = provider default" />
         </div>
-        <div class="flex items-end pb-2">
-          <label class="flex items-center gap-2 text-sm">
-            <input type="checkbox" bind:checked={enabled} />
-            Enabled
-          </label>
-        </div>
       </div>
+
+      <label class="flex items-center gap-2 text-sm w-fit cursor-pointer select-none">
+        <input type="checkbox" bind:checked={enabled} />
+        Enabled
+      </label>
 
       <div class="border-t border-naslos-border pt-4 space-y-3">
         <p class="text-xs uppercase tracking-wide text-gray-500">Provider credentials</p>

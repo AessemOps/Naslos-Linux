@@ -63,6 +63,15 @@ type Field struct {
 	// "ddns" (dynamic DNS) or "" for both. It lets a shared provider (e.g. OVH)
 	// expose DynHost credentials to DDNS without cluttering the Domains form.
 	Scope string `yaml:"scope,omitempty" json:"scope,omitempty"`
+	// ShowIf hides the field in a form until another field visible in the same
+	// scope has Value (e.g. OVH's ZoneDNS fields only show for mode: api).
+	ShowIf *ShowIf `yaml:"showIf,omitempty" json:"showIf,omitempty"`
+}
+
+// ShowIf is a conditional-visibility rule for a field.
+type ShowIf struct {
+	Key   string `yaml:"key" json:"key"`
+	Value string `yaml:"value" json:"value"`
 }
 
 // SecretKeyOr returns the Secret data key for the field.
@@ -479,6 +488,9 @@ func (p *Provider) validate() error {
 		case "", "cert", "ddns":
 		default:
 			return fmt.Errorf("provider %q field %q: unknown scope %q", p.Name, f.Key, f.Scope)
+		}
+		if f.ShowIf != nil && strings.TrimSpace(f.ShowIf.Key) == "" {
+			return fmt.Errorf("provider %q field %q: showIf needs a key", p.Name, f.Key)
 		}
 		switch f.Type {
 		case FieldString:
