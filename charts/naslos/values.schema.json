@@ -12,6 +12,15 @@
       "properties": {
         "namespace": { "type": "string" },
         "privilegedNamespace": { "type": "string" },
+        "datasets": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "hostPath": { "type": "string" },
+            "size": { "type": "string" }
+          }
+        },
         "refreshTTL": { "type": "string" },
         "tlsSecret": { "type": "string" },
         "localOnlyCIDR": { "type": "string" },

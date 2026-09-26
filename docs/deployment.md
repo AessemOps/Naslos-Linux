@@ -31,6 +31,9 @@
   `0.0.0.0/0`; narrow `networkPolicy.gitEgressCIDRs` for an air-gapped or
   egress-restricted network. `apps.officialSource.channels` maps channels to
   branches (e.g. `{Prod: main}` for a repository with only `main`).
+- **Datasets for apps.** `apps.datasets` publishes the host datasets root
+  (default `/var/mnt`) as a static RWX `naslos-datasets` PV/PVC that baseline
+  apps mount, because PSA `baseline` forbids `hostPath` in `naslos-apps`.
 
 
 ## Images

@@ -22,15 +22,10 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // DefaultChannel is the channel offered when a source declares no mapping.
 const DefaultChannel = "Prod"
-
-// repoConfigFile is the optional source manifest at the repository root.
-const repoConfigFile = "naslos-repo.yaml"
 
 // appsDir is the directory holding one chart per app.
 const appsDir = "apps"
@@ -54,12 +49,6 @@ func defaultChannels() map[string]string {
 		"Develop":      "Develop",
 		"Experimental": "Experimental",
 	}
-}
-
-// RepoConfig is the optional naslos-repo.yaml at a repository root.
-type RepoConfig struct {
-	Name     string            `yaml:"name"`
-	Channels map[string]string `yaml:"channels"`
 }
 
 // Source is a configured chart repository.
@@ -344,20 +333,4 @@ func cloneSource(src *Source) *Source {
 		}
 	}
 	return &dup
-}
-
-// readRepoConfig parses an optional naslos-repo.yaml at a clone root.
-func readRepoConfig(dir string) (*RepoConfig, error) {
-	data, err := os.ReadFile(filepath.Join(dir, repoConfigFile))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var cfg RepoConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", repoConfigFile, err)
-	}
-	return &cfg, nil
 }
