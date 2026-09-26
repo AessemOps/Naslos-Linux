@@ -81,8 +81,8 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | GET | `/api/apps/{name}` | Record + release status |
 | PUT | `/api/apps/{name}` | Upgrade/reconfigure: `{values}` |
 | DELETE | `/api/apps/{name}` | Uninstall app, remove its route and record |
-| GET | `/api/apps/{name}/exposure` | Exposure settings + whether auth is allowed |
-| PUT | `/api/apps/{name}/exposure` | Update `{exposure, baseDomain?}`, re-render the route |
+| GET | `/api/apps/{name}/exposure` | Exposure settings, the app's own `baseDomain` (fallback primary), `primaryDomain`, `selectableDomains`, `ssoDomains` and `authAllowed` |
+| PUT | `/api/apps/{name}/exposure` | Update `{exposure, baseDomain?}`, re-render the route; an unconfigured `baseDomain` is rejected (400) |
 | GET | `/api/apps/{name}/services` | Services the release rendered (route-target discovery/picker) |
 
 ### Chart repositories (sources)
@@ -99,12 +99,13 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/domains` | List domains + cert-manager availability |
+| GET | `/api/domains` | List domains + cert-manager availability, plus `baseDomain`, `selectableDomains` and `ssoDomains` |
 | POST | `/api/domains` | Add a domain `{baseDomain, dnsProvider, acmeEmail, environment, credentialsSecret?, fields?}` (`fields` = provider fields; secret fields → a Secret) |
 | GET | `/api/domains/{domain}` | Read one domain |
 | PUT | `/api/domains/{domain}` | Update a domain (re-renders its Issuer/Certificate) |
 | DELETE | `/api/domains/{domain}` | Remove a domain and its CRs |
 | GET | `/api/domains/{domain}/certificate` | Certificate readiness/conditions |
+| POST | `/api/domains/{domain}/sso` | Promote/demote a domain in the runtime SSO list: `{enabled}`. The primary is 400; demoting while an app requires auth on it, or a chart `SSO_DOMAINS` entry, is 409 |
 
 > Start/stop is not implemented; `POST /api/apps/{name}/start|stop` has no route.
 
@@ -283,10 +284,11 @@ shell, never an arbitrary command.
 | `CHARTS_TTL` | `15m` | Cache freshness before a refresh |
 | `SOURCES_OFFICIAL_URL` | — | Official chart repository to seed (empty disables) |
 | `SOURCES_OFFICIAL_NAME` / `_DISPLAY` / `_AUTH` / `_SECRET` | `naslos` / `NaslosCharts` / `public` / — | Official source fields |
-| `NASLOS_DOMAIN` | `naslos.local` | Primary domain app subdomains hang off |
-| `SSO_DOMAINS` | primary domain | Comma-separated domains Authelia protects (auth is only offered there) |
+| `NASLOS_DOMAIN` | `naslos.local` | Primary domain app subdomains hang off (always an SSO domain) |
+| `SSO_DOMAINS` | primary domain | Comma-separated domains Authelia protects, seeded by the chart. It is a floor: the effective list is this plus the primary plus domains promoted at runtime, and a chart entry cannot be demoted from the UI |
 | `APPS_TLS_SECRET` | `naslos-apps-tls` | Fallback TLS Secret when the app's base domain has no domain record |
 | `AUTHELIA_SERVICE` / `AUTHELIA_PORT` | `naslos-authelia` / `80` | Authelia forwardAuth target (FQDN, cross-namespace) |
+| `AUTHELIA_SSO_CONFIGMAP` / `AUTHELIA_WORKLOAD` / `AUTHELIA_NAMESPACE` | `naslos-authelia-sso` / `naslos-authelia` / release ns | Where the API writes the SSO fragments and which workload it restarts on a promotion |
 | `EXPOSURE_LOCAL_ONLY_CIDR` | — | LAN CIDR an `localOnly` app is restricted to |
 | `PLATFORM_RELEASE` | release name | Release to exclude from the installed-app list/backfill |
 

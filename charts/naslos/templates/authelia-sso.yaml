@@ -1,0 +1,46 @@
+{{- if .Values.authelia.enabled }}
+{{- /*
+SSO fragments for Authelia. This is runtime state: the API's Domains page can
+promote a registered domain to SSO, which rewrites this ConfigMap and restarts
+Authelia (docs/spec.md FR-APP-15). Seed it only when it is absent and keep it
+across upgrades (`helm.sh/resource-policy: keep`) so Helm never clobbers or
+deletes the API's runtime state. The API reconciles the content on startup from
+the effective SSO list, so a promotion survives an API restart even when this
+seed is stale (for example after `helm upgrade`).
+*/}}
+{{- $existing := lookup "v1" "ConfigMap" .Release.Namespace "naslos-authelia-sso" }}
+{{- if not $existing }}
+{{- /* The primary domain is always first, matching the API's ordering (the
+       fragment renderer treats the first entry as primary). */}}
+{{- $ssoDomains := uniq (prepend (.Values.sso.domains | default (list)) .Values.domain) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: naslos-authelia-sso
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: authelia
+  annotations:
+    # The API owns this object after install; a Helm upgrade must not delete it
+    # when it stops being rendered (it is rendered only while absent).
+    helm.sh/resource-policy: keep
+data:
+  cookies.yml: |
+    {{- range $ssoDomains }}
+    - domain: {{ . | quote }}
+      authelia_url: {{ printf "https://%s/authelia/" . | quote }}
+    {{- end }}
+  rules.yml: |
+    {{- range $ssoDomains }}
+    {{- if ne . $.Values.domain }}
+    - domain: {{ . | quote }}
+      policy: one_factor
+    {{- end }}
+    {{- end }}
+    {{- range $ssoDomains }}
+    - domain: {{ printf "*.%s" . | quote }}
+      policy: one_factor
+    {{- end }}
+{{- end }}
+{{- end }}

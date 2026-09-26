@@ -23,6 +23,13 @@ func newTestServer(t *testing.T) *Server {
 // manager afterwards.
 func newSeededTestServer(t *testing.T, appsJSON, domainsJSON string) *Server {
 	t.Helper()
+	return newSeededTestServerSSO(t, appsJSON, domainsJSON, "naslos.local")
+}
+
+// newSeededTestServerSSO is newSeededTestServer with an explicit SSO_DOMAINS env
+// value (the chart-declared SSO seed).
+func newSeededTestServerSSO(t *testing.T, appsJSON, domainsJSON, ssoEnv string) *Server {
+	t.Helper()
 
 	dir := t.TempDir()
 	appsPath := filepath.Join(dir, "apps.json")
@@ -43,7 +50,7 @@ func newSeededTestServer(t *testing.T, appsJSON, domainsJSON string) *Server {
 	// Pin the primary domain and the chart SSO seed so assertions are stable
 	// regardless of the host environment.
 	t.Setenv("NASLOS_DOMAIN", "naslos.local")
-	t.Setenv("SSO_DOMAINS", "naslos.local")
+	t.Setenv("SSO_DOMAINS", ssoEnv)
 	t.Setenv("BUDDY_PEERS", filepath.Join(dir, "peers.json"))
 	t.Setenv("BUDDY_RECEIVE_PATH", filepath.Join(dir, "buddy"))
 	t.Setenv("SHARES_CONFIG", filepath.Join(dir, "shares.json"))
@@ -199,6 +206,7 @@ func TestNonAdminMayOnlyReachTheirIdentityAndDashboard(t *testing.T) {
 		"/api/apps", "/api/apps/nginx", "/api/catalog", "/api/catalog/nginx",
 		"/api/sources", "/api/sources/refresh", "/api/sources/mine",
 		"/api/domains", "/api/domains/example.com", "/api/domains/example.com/certificate",
+		"/api/domains/example.com/sso",
 		"/api/providers", "/api/ddns", "/api/ddns/x", "/api/ddns/x/run",
 		"/api/apps/nginx/exposure",
 		"/api/apps/nginx/services",

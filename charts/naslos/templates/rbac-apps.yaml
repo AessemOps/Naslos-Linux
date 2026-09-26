@@ -120,6 +120,45 @@ subjects:
     name: naslos-api
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- if and .Values.ui.enabled .Values.authelia.enabled }}
+---
+# Live SSO promotion (docs/spec.md FR-APP-15): the API rewrites only the SSO
+# fragment ConfigMap and restarts only the Authelia workload. resourceNames
+# scopes both rules so the jwt/LDAP secrets (authelia-config, naslos-openldap)
+# stay out of the API's reach - it must never get `get` on authelia-config.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: naslos-api-authelia-sso
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["naslos-authelia-sso"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    resourceNames: ["naslos-authelia"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-api-authelia-sso
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: naslos-api-authelia-sso
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- $apriv := .Values.apps.privilegedNamespace | default "naslos-apps-priv" }}
 {{- if and .Values.ui.enabled (ne $apriv .Release.Namespace) (ne $apriv (include "naslos.workloadNamespace" .)) (ne $apriv (.Values.apps.namespace | default "naslos-apps")) }}
 ---

@@ -142,18 +142,15 @@ data:
 
     session:
       name: authelia_session
-      {{- $ssoDomains := .Values.sso.domains | default (list .Values.domain) }}
-      {{- if gt (len $ssoDomains) 1 }}
-      # Multiple SSO domains: Authelia 4.39 requires per-domain cookies rather
-      # than a single session.domain.
+      # The SSO domain list is runtime state (the Domains page can promote a
+      # domain at any time), so Authelia's template filter injects it from the
+      # mounted /config-sso/cookies.yml. Always use `cookies:`: Authelia 4.39
+      # requires per-domain cookies, and a single `domain:` would not cover a
+      # promoted domain. The nindent lines up with the cookies: key after the
+      # ConfigMap literal block's indentation is stripped (verify with
+      # `helm template` + `authelia config template`).
       cookies:
-        {{- range $ssoDomains }}
-        - domain: {{ . | quote }}
-          authelia_url: {{ printf "https://%s/authelia/" . | quote }}
-        {{- end }}
-      {{- else }}
-      domain: {{ .Values.domain }}
-      {{- end }}
+        {{ `{{ fileContent "/config-sso/cookies.yml" | nindent 4 }}` }}
       same_site: lax
       expiration: 1h
       inactivity: 5m
@@ -234,23 +231,12 @@ data:
         # Everything else the proxy forwards needs at least a session.
         - domain: {{ .Values.domain | quote }}
           policy: one_factor
-        {{- $ssoDomains := .Values.sso.domains | default (list .Values.domain) }}
-        {{- if gt (len $ssoDomains) 1 }}
-        # Extra SSO domains: same posture as the primary apex. Only the per-app
-        # exposure toggle decides whether forwardAuth is attached at all.
-        {{- range $ssoDomains }}
-        {{- if ne . $.Values.domain }}
-        - domain: {{ . | quote }}
-          policy: one_factor
-        {{- end }}
-        {{- end }}
-        {{- end }}
-        # App subdomains under any SSO domain. A base domain outside this list
-        # can never use auth (the install UI disables it).
-        {{- range $ssoDomains }}
-        - domain: {{ printf "*.%s" . | quote }}
-          policy: one_factor
-        {{- end }}
+        # Extra SSO domains and the app-subdomain wildcards are runtime state, so
+        # they are injected from the mounted /config-sso/rules.yml (the Domains
+        # page can promote a domain; the API rewrites the fragments and restarts
+        # Authelia). The primary apex rules above stay static because they carry
+        # the bypasses and the two_factor subject rule.
+        {{ `{{ fileContent "/config-sso/rules.yml" | nindent 4 }}` }}
 
     notifier:
       disable_startup_check: false

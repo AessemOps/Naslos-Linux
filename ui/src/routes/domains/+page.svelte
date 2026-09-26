@@ -10,14 +10,17 @@
     acmeEmail?: string;
     environment: string;
     primary?: boolean;
+    sso?: boolean;
     lastError?: string;
   }
 
   let domains: Domain[] = [];
   let baseDomain = '';
   let certManager = false;
+  let ssoDomains: string[] = [];
   let loading = true;
   let error = '';
+  let busy: string | null = null;
   let showForm = false;
   let editing: Domain | null = null;
 
@@ -33,11 +36,39 @@
       domains = Array.isArray(data.domains) ? data.domains : [];
       baseDomain = data.baseDomain || '';
       certManager = !!data.certManager;
+      ssoDomains = Array.isArray(data.ssoDomains) ? data.ssoDomains : [];
     } catch (e) {
       error = 'Failed to load domains: ' + e;
       domains = [];
     } finally {
       loading = false;
+    }
+  }
+
+  // The effective SSO list is the source of truth (the primary is always in it,
+  // and a chart-declared SSO_DOMAINS entry cannot be demoted from here).
+  function isSSO(domain: Domain): boolean {
+    return domain.baseDomain === baseDomain || ssoDomains.includes(domain.baseDomain);
+  }
+
+  async function setSSO(domain: Domain, enabled: boolean) {
+    busy = domain.baseDomain;
+    error = '';
+    try {
+      const res = await fetch(`/api/domains/${encodeURIComponent(domain.baseDomain)}/sso`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      await load();
+    } catch (e: any) {
+      error = `SSO change for ${domain.baseDomain} failed: ${e.message}`;
+    } finally {
+      busy = null;
     }
   }
 
@@ -64,7 +95,9 @@
     <div>
       <h1 class="text-3xl font-bold mb-2">Domains &amp; SSL</h1>
       <p class="text-gray-400">
-        Base domains and their ACME DNS-01 wildcard certificates.
+        Base domains and their ACME DNS-01 wildcard certificates. Promoting a
+        domain to SSO lets apps on it require Authelia login (Authelia restarts
+        briefly to apply the change).
       </p>
     </div>
     <button class="btn btn-primary" on:click={() => { editing = null; showForm = true; }}>+ Add Domain</button>
@@ -103,6 +136,21 @@
               <h3 class="font-bold">{domain.baseDomain}</h3>
               <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{domain.dnsProvider}</span>
               <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{domain.environment}</span>
+              {#if domain.baseDomain === baseDomain}
+                <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-400" title="The primary domain is always an SSO domain">SSO (primary)</span>
+              {:else if isSSO(domain)}
+                <button
+                  class="text-xs px-2 py-0.5 rounded border border-naslos-border text-emerald-300 hover:text-emerald-200 disabled:opacity-60"
+                  disabled={busy === domain.baseDomain}
+                  on:click={() => setSSO(domain, false)}
+                >SSO on — disable</button>
+              {:else}
+                <button
+                  class="text-xs px-2 py-0.5 rounded border border-naslos-border text-gray-300 hover:text-white disabled:opacity-60"
+                  disabled={busy === domain.baseDomain}
+                  on:click={() => setSSO(domain, true)}
+                >Make SSO</button>
+              {/if}
               <CertificateStatus domain={domain.baseDomain} />
             </div>
             <p class="text-xs text-gray-500">

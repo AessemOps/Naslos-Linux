@@ -14,6 +14,11 @@ test.describe('domains & SSL', () => {
     const data = await res.json();
     expect(typeof data.certManager).toBe('boolean');
     expect(typeof data.baseDomain).toBe('string');
+    // FR-APP-10/15: the exposure UI and the SSO toggle read these.
+    expect(Array.isArray(data.selectableDomains)).toBe(true);
+    expect(data.selectableDomains).toContain(data.baseDomain);
+    expect(Array.isArray(data.ssoDomains)).toBe(true);
+    expect(data.ssoDomains).toContain(data.baseDomain);
 
     await page.goto('/domains');
     if (data.certManager) {
@@ -21,6 +26,17 @@ test.describe('domains & SSL', () => {
     } else {
       await expect(page.getByText('cert-manager is not installed')).toBeVisible();
     }
+  });
+
+  test('exposes the SSO toggle for a non-primary domain', async ({ page, request }) => {
+    const res = await request.get('/api/domains');
+    const data = await res.json();
+    const secondary = (data.domains || []).find((d: any) => d.baseDomain !== data.baseDomain);
+    test.skip(!secondary, 'no secondary domain registered');
+
+    await page.goto('/domains');
+    const row = page.locator('.card', { hasText: secondary.baseDomain });
+    await expect(row.getByRole('button', { name: /SSO/ })).toBeVisible();
   });
 
   test('opens the add-domain form', async ({ page }) => {

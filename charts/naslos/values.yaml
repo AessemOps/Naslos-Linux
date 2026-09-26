@@ -366,6 +366,24 @@ ovhWebhook:
 # Authelia authentication
 authelia:
   enabled: true
+  # A deterministic restart target for the live SSO promotion: the API patches
+  # this workload's pod template so Authelia re-reads the mounted fragments.
+  # Pinning StatefulSet also matches the LDAP-enabled default (the subchart picks
+  # StatefulSet when `authelia.stateful` is true, which LDAP without redis is).
+  pod:
+    kind: StatefulSet
+    # The SSO fragments (session cookies + access-control rules) rendered from
+    # the runtime SSO domain list by templates/authelia-sso.yaml and rewritten by
+    # the API when a domain is promoted/demoted. Mounted read-only; the config's
+    # Authelia template filter injects them via fileContent.
+    extraVolumes:
+      - name: authelia-sso
+        configMap:
+          name: naslos-authelia-sso
+    extraVolumeMounts:
+      - name: authelia-sso
+        mountPath: /config-sso
+        readOnly: true
   configMap:
     # Use our own ConfigMap (charts/naslos/templates/authelia-config.yaml,
     # wired up with the LDAP backend) instead of the authelia subchart's
