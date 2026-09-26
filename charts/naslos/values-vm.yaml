@@ -45,7 +45,7 @@ agent:
 ui:
   image:
     repository: 192.168.1.2:30095/naslos-ui
-    tag: "0.1.0-r20"
+    tag: "0.1.0-r21"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
