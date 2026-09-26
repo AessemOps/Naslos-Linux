@@ -1,0 +1,44 @@
+{{- /*
+The OVH DNS-01 webhook (cert-manager-webhook-ovh, installed separately by the
+Makefile) reads a Domain's OVH credentials from the Secret the API writes in the
+apps namespace. The webhook runs in the cert-manager namespace, so this is a
+cross-namespace RoleBinding: a Role in the apps namespace bound to the webhook's
+ServiceAccount. The webhook only calls Get on the Secret, but Watch is granted
+too because a Role cannot name dynamically-created Secrets (resourceNames) and
+the upstream README grants both. The API already has full Secret CRUD in this
+namespace (FR-DNS-04).
+*/}}
+{{- if .Values.ovhWebhook.enabled }}
+{{- $ns := .Values.apps.namespace | default "naslos-apps" }}
+{{- $sa := .Values.ovhWebhook.serviceAccount | default "cert-manager-webhook-ovh" }}
+{{- $saNs := .Values.ovhWebhook.namespace | default "cert-manager" }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: naslos-ovh-webhook-secret-reader
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-ovh-webhook-secret-reader
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/part-of: naslos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: naslos-ovh-webhook-secret-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ $saNs }}
+{{- end }}

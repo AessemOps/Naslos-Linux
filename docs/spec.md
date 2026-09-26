@@ -577,8 +577,9 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   assertion)*
 - **FR-DNS-05** — cert-manager DNS-01 solvers MUST be rendered from the
   registry (with `${secret}` / `${cred.<key>}` substitution), OVH MUST be
-  supported, and the existing `cloudflare`, `rfc2136` and `passthrough` output
-  MUST be preserved. OVH MUST support both its DynHost service
+  supported (via the OVH cert-manager webhook, since OVH is not a cert-manager
+  built-in solver), and the existing `cloudflare`, `rfc2136` and `passthrough`
+  output MUST be preserved. OVH MUST support both its DynHost service
   (`mode: dynamic`, username/password, the default) and the signed ZoneDNS API
   (`mode: api`). *(certs tests: `TestSpecOVH`, `TestSpecCloudflareSolverShape`,
   `TestSpecRFC2136SolverShape`, `TestSpecPassthroughIsUnchanged`;

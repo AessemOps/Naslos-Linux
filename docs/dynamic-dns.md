@@ -47,6 +47,7 @@ fields:                         # drives the UI form; secret fields go to a Secr
     label: Application key
     type: string
     required: true
+    secret: true
   - key: applicationSecret
     label: Application secret
     type: string
@@ -58,12 +59,16 @@ fields:                         # drives the UI form; secret fields go to a Secr
     required: true
     secret: true
 certManager:                    # optional: how a Domain builds its DNS-01 solver
-  solver:
-    ovh:
-      endpoint: "${cred.endpoint}"
-      applicationKey: "${cred.applicationKey}"
-      applicationSecretSecretRef: { name: "${secret}", key: applicationSecret }
-      consumerKeySecretRef: { name: "${secret}", key: consumerKey }
+  solver:                       # a webhook solver (OVH is not built into cert-manager)
+    webhook:
+      groupName: ovh.naslos.local
+      solverName: ovh
+      config:
+        endpoint: "${cred.endpoint}"
+        authenticationMethod: application
+        applicationKeyRef: { name: "${secret}", key: applicationKey }
+        applicationSecretRef: { name: "${secret}", key: applicationSecret }
+        applicationConsumerKeyRef: { name: "${secret}", key: consumerKey }
 ddns:                           # optional: DDNS support
   driver: ovh                   # ovh | cloudflare | http
   defaults: { endpoint: ovh-eu }
@@ -218,9 +223,14 @@ API environment variables: `DDNS_ENABLED`, `DDNS_CONFIG`, `DDNS_PROVIDERS_DIR`,
   silently doing nothing. On the VM profile `ddnsEgress: true`.
 - **`.local` domains** can never hold a public certificate or a public DNS
   record; DDNS applies only to real public zones.
-- **OVH certificates** need the OVH cert-manager webhook installed and
-  registered with cert-manager (the `ovh` solver is a webhook solver); OVH
-  **DDNS** updates call the OVH API directly and need no webhook.
+- **OVH certificates** need cert-manager **and** the OVH cert-manager webhook
+  installed (OVH is not a cert-manager built-in DNS-01 solver). Naslos uses
+  [aureq/cert-manager-webhook-ovh](https://github.com/aureq/cert-manager-webhook-ovh)
+  with group name `ovh.naslos.local`; `make install-vm` installs both into the
+  `cert-manager` namespace and grants the webhook read access to the domain
+  credential Secrets in `naslos-apps`. The provider stores every OVH credential
+  (application key, secret, consumer key) in that Secret; OVH **DDNS** updates
+  call the OVH API directly and need no webhook.
 - **Force a run:** `POST /api/ddns/{id}/run` updates even when the IP is
   unchanged; a failure returns `502` with the entry's `lastError`.
 - **Adding a provider:** drop a `*.yaml` file in the override directory (or a
