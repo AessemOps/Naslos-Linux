@@ -30,6 +30,9 @@ data:
     {{- range $ssoDomains }}
     - domain: {{ . | quote }}
       authelia_url: {{ printf "https://%s/authelia/" . | quote }}
+      # Required alongside a cookies list; must share the cookie scope with the
+      # domain and differ from authelia_url.
+      default_redirection_url: {{ printf "https://%s/" . | quote }}
     {{- end }}
   rules.yml: |
     {{- range $ssoDomains }}

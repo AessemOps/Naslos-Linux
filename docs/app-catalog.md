@@ -160,7 +160,13 @@ flag and takes effect live. The API renders the session cookies and the
 `/config-sso`, injected by Authelia's `fileContent` template filter) and restarts
 Authelia, which reads its configuration only at startup. The restart is a delete
 of the deterministic `naslos-authelia-0` pod (the StatefulSet recreates it), so
-the API's RBAC never includes workload write. The ConfigMap is
+the API's RBAC never includes workload write. Because Authelia's session cookie
+is scoped per domain, a promoted domain also needs its own portal: the API
+renders an IngressRoute per non-primary SSO domain in `naslos-apps` (where it
+already has Service/IngressRoute rights) targeting an ExternalName Service that
+aliases the Authelia Service in the release namespace, with the domain's wildcard
+TLS Secret. Traefik needs `providers.kubernetesCRD.allowExternalNameServices`
+(the chart sets it). The ConfigMap is
 `helm.sh/resource-policy: keep` and the API reconciles it on startup, so a
 promotion survives an API restart and a `helm upgrade`. Promoting the primary is
 rejected (400 — it is always SSO), and demotion is refused (409, naming the apps)

@@ -22,11 +22,15 @@ const (
 	RulesKey   = "rules.yml"
 )
 
-// cookie is one session.cookies entry: a domain and the portal URL Authelia
-// sends a redirected user to.
+// cookie is one session.cookies entry: a domain, the portal URL Authelia sends a
+// redirected user to, and the default redirection target for that domain. The
+// default_redirection_url MUST share a cookie scope with the domain and must
+// differ from authelia_url, so it is the domain's own apex; with a non-empty
+// `cookies:` list Authelia rejects the legacy global default_redirection_url.
 type cookie struct {
-	Domain      string `yaml:"domain"`
-	AutheliaURL string `yaml:"authelia_url"`
+	Domain                string `yaml:"domain"`
+	AutheliaURL           string `yaml:"authelia_url"`
+	DefaultRedirectionURL string `yaml:"default_redirection_url"`
 }
 
 // rule is one access_control.rules entry. The dynamic rules are always
@@ -44,7 +48,11 @@ type rule struct {
 func Fragments(domains []string) (cookiesYAML, rulesYAML []byte, err error) {
 	cookies := make([]cookie, 0, len(domains))
 	for _, domain := range domains {
-		cookies = append(cookies, cookie{Domain: domain, AutheliaURL: "https://" + domain + "/authelia/"})
+		cookies = append(cookies, cookie{
+			Domain:                domain,
+			AutheliaURL:           "https://" + domain + "/authelia/",
+			DefaultRedirectionURL: "https://" + domain + "/",
+		})
 	}
 	rules := make([]rule, 0, len(domains)*2)
 	primary := ""

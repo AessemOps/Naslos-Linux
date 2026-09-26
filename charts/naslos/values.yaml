@@ -251,6 +251,15 @@ traefik:
   api:
     dashboard: true
     basePath: /traefik
+  # The Authelia portal must be reachable on every SSO domain, not only the
+  # primary (Authelia's session cookie is per domain, so a promoted domain needs
+  # its own portal or the forwardAuth redirect 404s). The API renders those
+  # routes in naslos-apps, where it has IngressRoute/Service rights, pointing at
+  # an ExternalName Service that aliases the Authelia Service in the release
+  # namespace. Traefik refuses ExternalName services unless this is on.
+  providers:
+    kubernetesCRD:
+      allowExternalNameServices: true
   # hostPort 80/443 can only be held by one pod on this single node, so the
   # chart default (maxSurge 1, maxUnavailable 0) deadlocks: the new pod never
   # becomes Ready because the old one still owns the ports. terminate the old

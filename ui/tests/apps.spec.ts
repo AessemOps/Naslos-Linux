@@ -27,6 +27,10 @@ test.describe('apps', () => {
   });
 
   test('installs and uninstalls an app from the official source', async ({ page, request }) => {
+    // A cold catalog install pulls the app image server-side and the POST is
+    // synchronous, so it can exceed the default 30s test timeout.
+    test.setTimeout(300_000);
+
     const res = await request.get('/api/catalog');
     const catalog = res.ok() ? await res.json() : [];
     test.skip(!Array.isArray(catalog) || catalog.length === 0, 'no catalog entries; add and refresh a source first');

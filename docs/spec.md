@@ -357,11 +357,13 @@ with a sibling `naslos-app.yaml` install-config. See
   surfaced as **orphaned** rather than silently uninstallable. *(apps tests)*
 - **FR-APP-15** — Authelia MUST protect every base domain in the effective SSO
   list — the primary domain plus domains promoted at runtime from the Domains
-  page, seeded by the chart-declared `sso.domains` — including app subdomains. A
-  promotion MUST take effect live: the API MUST render the SSO fragments and
-  restart Authelia, the primary MUST NOT be demotable, and a domain MUST NOT be
-  demoted while an installed app requires auth on it. *(chart render:
-  authelia-config + naslos-authelia-sso; authelia tests; server tests)*
+  page, seeded by the chart-declared `sso.domains` — including app subdomains.
+  A promotion MUST take effect live: the API MUST render the SSO fragments,
+  restart Authelia, and serve the portal on the promoted domain (Authelia's
+  session cookie is per domain, so without a portal there the login redirect
+  404s); the primary MUST NOT be demotable, and a domain MUST NOT be demoted
+  while an installed app requires auth on it. *(chart render: authelia-config +
+  naslos-authelia-sso; authelia tests; routing tests; server tests)*
 
 
 ### 3.5 Dashboard & metrics (`FR-MET`)

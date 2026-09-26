@@ -5,6 +5,9 @@ package routing
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -18,15 +21,25 @@ import (
 	"github.com/AessemOps/Naslos-Linux/api/internal/apps"
 )
 
-// GroupVersionResource for the Traefik CRDs.
+// GroupVersionResource for the Traefik CRDs (and the ExternalName Service the
+// per-domain Authelia portal routes point at).
 var (
 	ingressRouteGVR = schema.GroupVersionResource{Group: "traefik.io", Version: "v1alpha1", Resource: "ingressroutes"}
 	middlewareGVR   = schema.GroupVersionResource{Group: "traefik.io", Version: "v1alpha1", Resource: "middlewares"}
+	serviceGVR      = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "services"}
 )
 
 const (
 	forwardAuthName     = "naslos-app-forwardauth-authelia"
 	securityHeadersName = "naslos-app-security-headers"
+
+	// portalExternalServiceName is the ExternalName Service in the apps
+	// namespace that aliases the Authelia Service in the release namespace, so
+	// the API can render portal routes without write access in the release
+	// namespace.
+	portalExternalServiceName = "naslos-authelia-portal"
+	// portalLabelKey marks the router objects the API owns for SSO portals.
+	portalLabelKey = "naslos.local/sso-portal"
 )
 
 // Spec is everything needed to render one app's route.
@@ -311,6 +324,146 @@ func (r *Reconciler) Delete(ctx context.Context, namespace, name string) error {
 	return r.deleteObject(ctx, namespace, middlewareGVR, name+"-ipallowlist")
 }
 
+// TLSSecretFor exposes the per-domain TLS Secret resolver.
+func (r *Reconciler) TLSSecretFor() func(baseDomain string) string { return r.tlsSecretFor }
+
+// ReconcilePortals makes the Authelia portal reachable on every SSO domain
+// except the primary (the chart serves the primary on the release namespace).
+// Authelia's session cookie is per domain, so a promoted domain needs its own
+// portal or the forwardAuth redirect 404s. Routes live in the apps namespace,
+// where the API already has Service/IngressRoute rights, and target an
+// ExternalName Service aliasing the Authelia Service, so no write access is
+// needed in the release namespace. Best-effort: the caller logs the error.
+func (r *Reconciler) ReconcilePortals(ctx context.Context, domains []string, primary string, tlsSecretFor func(string) string) error {
+	if r.dyn == nil || r.autheliaService == "" {
+		return nil
+	}
+	want := map[string]bool{}
+	var errs []error
+	for _, domain := range portalDomains(domains, primary) {
+		secret := ""
+		if tlsSecretFor != nil {
+			secret = tlsSecretFor(domain)
+		}
+		if secret == "" {
+			secret = r.tlsSecret
+		}
+		for _, obj := range r.portalObjects(domain, secret) {
+			if err := r.applyObject(ctx, obj, r.namespace); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		want[portalName(domain)] = true
+	}
+	if len(want) == 0 {
+		// No promoted domains: drop the alias Service. Routes are removed by the
+		// list below in the same pass.
+		if err := r.deleteObject(ctx, r.namespace, serviceGVR, portalExternalServiceName); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	list, err := r.dyn.Resource(ingressRouteGVR).Namespace(r.namespace).List(ctx, metav1.ListOptions{LabelSelector: portalLabelKey + "=true"})
+	if err != nil {
+		errs = append(errs, fmt.Errorf("listing portal routes: %w", err))
+		return errors.Join(errs...)
+	}
+	for i := range list.Items {
+		name := list.Items[i].GetName()
+		if !want[name] {
+			if err := r.deleteObject(ctx, r.namespace, ingressRouteGVR, name); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// portalDomains filters the effective SSO list down to the domains that need an
+// API-rendered portal (everything except the primary, which the chart serves).
+func portalDomains(domains []string, primary string) []string {
+	out := make([]string, 0, len(domains))
+	for _, domain := range domains {
+		if domain == "" || domain == primary {
+			continue
+		}
+		out = append(out, domain)
+	}
+	return out
+}
+
+// portalObjects renders the ExternalName Service and the IngressRoute for one
+// non-primary SSO domain.
+func (r *Reconciler) portalObjects(domain, tlsSecret string) []*unstructured.Unstructured {
+	externalName := fmt.Sprintf("%s.%s.svc.cluster.local", r.autheliaService, r.autheliaNS)
+	labels := map[string]interface{}{portalLabelKey: "true"}
+	svc := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "Service",
+		"metadata": map[string]interface{}{
+			"name":      portalExternalServiceName,
+			"namespace": r.namespace,
+			"labels":    labels,
+		},
+		"spec": map[string]interface{}{
+			"type":         "ExternalName",
+			"externalName": externalName,
+			"ports": []interface{}{map[string]interface{}{
+				"name": "http", "port": int64(r.autheliaPort), "targetPort": int64(r.autheliaPort), "protocol": "TCP",
+			}},
+		},
+	}}
+	spec := map[string]interface{}{
+		"entryPoints": []interface{}{"websecure"},
+		"routes": []interface{}{map[string]interface{}{
+			"match": fmt.Sprintf("Host(`%s`) && PathPrefix(`/authelia`)", domain),
+			"kind":  "Rule",
+			"services": []interface{}{map[string]interface{}{
+				"name": portalExternalServiceName,
+				"port": int64(r.autheliaPort),
+			}},
+		}},
+	}
+	if tlsSecret != "" {
+		spec["tls"] = map[string]interface{}{"secretName": tlsSecret}
+	}
+	route := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "traefik.io/v1alpha1",
+		"kind":       "IngressRoute",
+		"metadata": map[string]interface{}{
+			"name":      portalName(domain),
+			"namespace": r.namespace,
+			"labels":    labels,
+		},
+		"spec": spec,
+	}}
+	return []*unstructured.Unstructured{svc, route}
+}
+
+// portalName is a deterministic, DNS-label-safe IngressRoute name for a domain.
+// A short hash suffix keeps two domains that sanitize to the same label apart
+// and keeps the name within 63 characters.
+func portalName(domain string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(domain) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	label := strings.Trim(b.String(), "-")
+	if label == "" {
+		label = "domain"
+	}
+	sum := sha256.Sum256([]byte(domain))
+	suffix := hex.EncodeToString(sum[:])[:8]
+	name := "naslos-sso-portal-" + label
+	if len(name)+len(suffix)+1 > 63 {
+		name = name[:63-len(suffix)-1]
+	}
+	return name + "-" + suffix
+}
+
 func (r *Reconciler) applyObject(ctx context.Context, obj *unstructured.Unstructured, namespace string) error {
 	gvr := gvrFor(obj.GetKind())
 	if gvr == nil {
@@ -344,6 +497,8 @@ func gvrFor(kind string) *schema.GroupVersionResource {
 		return &ingressRouteGVR
 	case "middleware":
 		return &middlewareGVR
+	case "service":
+		return &serviceGVR
 	default:
 		return nil
 	}

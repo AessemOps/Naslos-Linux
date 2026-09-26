@@ -112,7 +112,7 @@ func (s *Server) handleDomainDetail(w http.ResponseWriter, r *http.Request) {
 		// A deleted domain drops out of the effective SSO list; reconcile the
 		// fragments so Authelia stops protecting it. Best-effort.
 		if domain.SSO || name == s.baseDomain {
-			if err := s.syncAutheliaState(r.Context()); err != nil {
+			if err := s.syncSSOState(r.Context()); err != nil {
 				log.Printf("Warning: Authelia SSO sync after removing %s failed: %v", name, err)
 			}
 		}
@@ -238,7 +238,7 @@ func (s *Server) handleDomainSSO(w http.ResponseWriter, r *http.Request, name st
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	if err := s.syncAutheliaState(r.Context()); err != nil {
+	if err := s.syncSSOState(r.Context()); err != nil {
 		// The flag is persisted; the fragments will be reconciled on the next
 		// change (or on startup), so this is not fatal.
 		log.Printf("Warning: Authelia SSO sync failed: %v", err)
