@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,6 +22,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
+
+	"github.com/AessemOps/Naslos-Linux/api/internal/providers"
 )
 
 var (
@@ -31,22 +34,50 @@ var (
 // dns1123Subdomain matches a DNS name / subdomain.
 var dns1123Subdomain = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 
-// Provider is the DNS-01 challenge provider.
+// Provider is the DNS-01 challenge provider. The set of valid values is the
+// provider registry (built-in YAML plus an optional override directory); these
+// constants remain for the built-ins so existing records and tests keep working.
 type Provider string
 
 const (
 	ProviderCloudflare  Provider = "cloudflare"
 	ProviderRFC2136     Provider = "rfc2136"
 	ProviderPassthrough Provider = "passthrough"
+	ProviderOVH         Provider = "ovh"
 )
+
+// providerRegistry is the registry used to validate domains and render solvers.
+// It is the embedded set by default and is replaced once at startup with the
+// server's registry (which also reads the override directory).
+var providerRegistry atomic.Pointer[providers.Registry]
+
+func init() {
+	providerRegistry.Store(providers.Load(""))
+}
+
+// ConfigureRegistry replaces the provider registry used by certificates. It is
+// called once at startup, before the API serves requests.
+func ConfigureRegistry(r *providers.Registry) {
+	if r != nil {
+		providerRegistry.Store(r)
+	}
+}
+
+func registry() *providers.Registry {
+	return providerRegistry.Load()
+}
 
 // Domain is a base domain with an optional ACME certificate.
 type Domain struct {
 	BaseDomain string `json:"baseDomain"`
-	// DNSProvider is cloudflare, rfc2136 or passthrough.
+	// DNSProvider names a provider from the registry (e.g. cloudflare, ovh,
+	// rfc2136, passthrough).
 	DNSProvider Provider `json:"dnsProvider"`
 	// CredentialsSecret names the Secret holding provider credentials.
 	CredentialsSecret string `json:"credentialsSecret,omitempty"`
+	// ProviderConfig holds a provider's non-secret fields (e.g. OVH's endpoint
+	// and applicationKey).
+	ProviderConfig map[string]string `json:"providerConfig,omitempty"`
 	// Solver is the raw cert-manager DNS-01 solver for passthrough providers.
 	Solver map[string]interface{} `json:"solver,omitempty"`
 	// ACMEEmail is the ACME account email.
@@ -66,21 +97,21 @@ func (d *Domain) Validate() error {
 	if !dns1123Subdomain.MatchString(d.BaseDomain) {
 		return fmt.Errorf("base domain %q is not a valid DNS name", d.BaseDomain)
 	}
-	switch d.DNSProvider {
-	case ProviderCloudflare:
+	p, ok := registry().Get(string(d.DNSProvider))
+	if !ok {
+		return fmt.Errorf("unsupported DNS provider %q", d.DNSProvider)
+	}
+	switch {
+	case p.HasCertManager():
 		if d.CredentialsSecret == "" {
-			return fmt.Errorf("cloudflare requires a credentials secret")
+			return fmt.Errorf("%s requires a credentials secret", p.Name)
 		}
-	case ProviderRFC2136:
-		if d.CredentialsSecret == "" {
-			return fmt.Errorf("rfc2136 requires a credentials secret")
-		}
-	case ProviderPassthrough:
+	case p.IsPassthrough():
 		if len(d.Solver) == 0 {
 			return fmt.Errorf("passthrough requires a solver")
 		}
 	default:
-		return fmt.Errorf("unsupported DNS provider %q", d.DNSProvider)
+		return fmt.Errorf("provider %q does not support certificates", p.Name)
 	}
 	switch d.Environment {
 	case "", "staging":
@@ -158,33 +189,17 @@ func Spec(d Domain, namespace string) (*unstructured.Unstructured, *unstructured
 }
 
 func solverFor(d Domain) (map[string]interface{}, error) {
-	switch d.DNSProvider {
-	case ProviderCloudflare:
-		return map[string]interface{}{
-			"cloudflare": map[string]interface{}{
-				"apiTokenSecretRef": map[string]interface{}{
-					"name": d.CredentialsSecret,
-					"key":  "api-token",
-				},
-			},
-		}, nil
-	case ProviderRFC2136:
-		return map[string]interface{}{
-			"rfc2136": map[string]interface{}{
-				"nameserver":    d.CredentialsSecret,
-				"tsigKeyName":   "",
-				"tsigAlgorithm": "HMACSHA256",
-				"tsigSecretSecretRef": map[string]interface{}{
-					"name": d.CredentialsSecret,
-					"key":  "tsig-secret",
-				},
-			},
-		}, nil
-	case ProviderPassthrough:
-		return d.Solver, nil
-	default:
+	p, ok := registry().Get(string(d.DNSProvider))
+	if !ok {
 		return nil, fmt.Errorf("unsupported DNS provider %q", d.DNSProvider)
 	}
+	if p.IsPassthrough() {
+		return d.Solver, nil
+	}
+	if !p.HasCertManager() {
+		return nil, fmt.Errorf("provider %q does not support certificates", p.Name)
+	}
+	return p.Solver(d.CredentialsSecret, d.ProviderConfig)
 }
 
 // Store persists domain records.

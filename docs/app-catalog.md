@@ -130,14 +130,21 @@ that points at the Authelia Service FQDN (no cross-namespace Traefik reference).
 | List / add domain | `GET`/`POST /api/domains` |
 | Read / update / delete | `GET`/`PUT`/`DELETE /api/domains/{domain}` |
 | Certificate status | `GET /api/domains/{domain}/certificate` |
+| Providers | `GET /api/providers` |
 
 A domain record is
-`{baseDomain, dnsProvider, credentialsSecret, acmeEmail, environment, primary}`.
-For each non-primary domain the API renders an ACME DNS-01 `Issuer` and a
-wildcard `Certificate` (`dnsNames: [<domain>, "*.<domain>"]`) into `naslos-apps`.
-Providers: `cloudflare` (`api-token` key), `rfc2136` (`tsig-secret` key) or
-`passthrough` (a raw cert-manager solver). The SSL page is gated on the
-cert-manager CRDs; `make crds` installs them.
+`{baseDomain, dnsProvider, credentialsSecret, providerConfig, acmeEmail,
+environment, primary}`. For each non-primary domain the API renders an ACME
+DNS-01 `Issuer` and a wildcard `Certificate`
+(`dnsNames: [<domain>, "*.<domain>"]`) into `naslos-apps`. The **provider** and
+its solver come from the declarative registry
+([dynamic-dns.md](dynamic-dns.md)): built-in `cloudflare` (`api-token` key),
+`rfc2136` (`tsig-secret` key), `ovh` (endpoint + application key in
+`providerConfig`; application secret and consumer key in the Secret) and
+`passthrough` (a raw cert-manager solver on the record). The Domains form lists
+the registry's certificate-capable providers and renders each provider's fields;
+secret fields are written to a Secret in `naslos-apps` and never returned. The
+SSL page is gated on the cert-manager CRDs; `make crds` installs them.
 
 ## Schema-driven forms
 

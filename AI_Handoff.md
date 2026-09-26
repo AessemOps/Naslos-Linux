@@ -58,6 +58,41 @@ cert-manager step, HSTS subdomains, baseline hostPath → datasets PVC).
 **Not done**: merge (PR #28 awaits approval); start/stop (`FR-APP-04`) is
 `[OPEN]`; gluetun charts need the user's VPN provider/key.
 
+## Dynamic DNS + declarative DNS providers (2026-09-26) — implemented
+
+Branch `feature/ddns-dynamic-dns` (from `origin/master` `b2e816c`, the PR #28
+merge). Plan: `.kilo/plans/1790427669127-dynamic-dns-providers.md`.
+
+- `api/internal/providers` — declarative registry: embedded YAML defaults
+  (`builtin/{ovh,cloudflare,generic,rfc2136,passthrough}.yaml`) + an optional
+  override directory (`DDNS_PROVIDERS_DIR`). Validation, field model,
+  cert-manager solver rendering with `${secret}` / `${cred.<key>}`
+  substitution. A bad override is skipped, logged and surfaced by
+  `GET /api/providers`.
+- `api/internal/ddns` — entry store (atomic JSON, 0600), public-IP detection,
+  and the `ovh` / `cloudflare` / `http` drivers. A manager detects the IP on
+  `DDNS_INTERVAL_SECONDS` (default 300) and updates only on change, recording
+  `lastIP/lastStatus/lastError/lastRunAt/nextRunAt`; `POST /api/ddns/{id}/run`
+  forces a run. The generic `http` driver renders operator templates and
+  refuses non-public targets (SSRF guard).
+- Credentials are written to a Secret in `naslos-apps` (`naslos-ddns-<id>`,
+  `naslos-domain-<domain>-creds`); the API never returns a value. No Secret
+  access is added in the release namespace.
+- `api/internal/certs` — `Validate`/`solverFor` now go through the registry;
+  OVH is supported and the existing `cloudflare` / `rfc2136` / `passthrough`
+  solver output is pinned byte-identical by tests. `Domain` gained
+  `providerConfig`.
+- Routes: `GET /api/providers`, `GET/POST /api/ddns`,
+  `GET/PUT/DELETE /api/ddns/{id}`, `POST /api/ddns/{id}/run` (all owner/admin).
+- Chart: `ddns` values, API env + optional `ddns.providersConfigMap` mount,
+  `networkPolicy.ddnsEgress` (80/443 only, both egress blocks); VM profile
+  enables it. UI: `/dns` page + sidebar entry; the Domains form fetches the
+  provider registry instead of a hardcoded list.
+- Spec: §3.9 `FR-DNS`; docs/dynamic-dns.md; app-catalog/api/architecture/README
+  updated.
+
+**Not done**: live drill + image retag (step 9 of the plan); PR not yet opened.
+
 | Piece | What it is |
 | --- | --- |
 | `api/` (Go) | UI-facing HTTP API + the buddy sender, scheduler and job runner |

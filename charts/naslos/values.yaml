@@ -314,6 +314,29 @@ apps:
 sso:
   domains: []
 
+# Dynamic DNS (docs/dynamic-dns.md). The API keeps A/AAAA records pointed at the
+# appliance's public IP, updating the provider only when the IP changes.
+# Providers are declared in YAML: embedded defaults plus an optional mounted
+# override directory, so adding a provider is a config change, not a code
+# change. Credentials are written to a Secret in the apps namespace.
+ddns:
+  # Wire the reconcile loop. The provider list (GET /api/providers) and the
+  # domain solver registry work regardless.
+  enabled: true
+  # Entry store, beside the other state files on the shares-config PVC.
+  stateFile: /var/lib/naslos/ddns.json
+  # Override directory for provider *.yaml files. Empty means embedded only.
+  providersDir: /etc/naslos/ddns-providers
+  # A ConfigMap whose keys are provider *.yaml files, mounted read-only at
+  # providersDir when set (`kubectl create configmap … --from-file=…`).
+  providersConfigMap: ""
+  # Public-IP detection URLs. The reconciler needs egress to these (see
+  # networkPolicy.ddnsEgress).
+  ipSource: https://api.ipify.org
+  ipv6Source: https://api6.ipify.org
+  # How often the reconciler checks the public IP.
+  intervalSeconds: 300
+
 # cert-manager is optional: enabling the subchart installs it, and the SSL page
 # gates on the CRDs being present. Its CRDs are installed by `make crds`.
 certManager:
@@ -491,6 +514,12 @@ networkPolicy:
   # narrow it with gitEgressCIDRs (default 0.0.0.0/0).
   gitEgress: false
   gitEgressCIDRs: []
+  # Dynamic DNS needs outbound HTTP(S) to the public-IP detection URL and to
+  # the provider APIs (OVH/Cloudflare/generic). Port-scoped to 80/443, not a
+  # general all-port opening; narrow it with ddnsEgressCIDRs (default
+  # 0.0.0.0/0).
+  ddnsEgress: false
+  ddnsEgressCIDRs: []
   # CiliumNetworkPolicy for what upstream NetworkPolicy cannot express: allowing
   # pods to reach the node host / API server. Only rendered when the CNI is
   # Cilium; harmless (an unused CR) elsewhere, but set false on a non-Cilium

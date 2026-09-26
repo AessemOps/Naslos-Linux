@@ -345,9 +345,11 @@ with a sibling `naslos-app.yaml` install-config. See
 - **FR-APP-12** — Installing a third-party chart MUST require an explicit
   confirmation in the request (`confirmed: true`). *(server tests)*
 - **FR-APP-13** — Base domains and their cert-manager ACME DNS-01 certificates
-  MUST be manageable (Cloudflare, RFC2136, raw solver passthrough) with
-  staging/production environments; the wildcard Certificate MUST cover the
-  domain and `*.<domain>`. *(certs tests)*
+  MUST be manageable, with the provider and its solver driven by the declarative
+  registry (§3.9): built-in `cloudflare`, `rfc2136` and raw `passthrough` behavior
+  MUST be preserved and OVH MUST be supported, with staging/production
+  environments; the wildcard Certificate MUST cover the domain and
+  `*.<domain>`. *(certs tests)*
 - **FR-APP-14** — A release found in the cluster without a catalog match MUST be
   surfaced as **orphaned** rather than silently uninstallable. *(apps tests)*
 - **FR-APP-15** — Authelia MUST protect every base domain in the chart-declared
@@ -540,6 +542,48 @@ See `docs/buddy-backup.md`.
   when it is created (an exact match, not a pool-prefix guess), so a typo fails at
   creation rather than at the first run.
 
+### 3.9 Dynamic DNS & DNS providers (`FR-DNS`)
+
+DNS providers are **declarative**: a provider is described by a YAML file
+(metadata, credential fields, an optional cert-manager DNS-01 solver and an
+optional DDNS driver). The registry is the embedded defaults plus an optional
+mounted override directory, shared by domains/certificates and Dynamic DNS. The
+API keeps A/AAAA records pointed at the appliance's current public IP. See
+[dynamic-dns.md](dynamic-dns.md).
+
+- **FR-DNS-01** — Providers MUST be declared in YAML (built-in defaults plus an
+  optional override directory); a provider that uses a built-in cert-manager
+  solver or a built-in DDNS driver MUST require no Go change. An invalid or
+  unreadable override MUST be skipped with a logged error and surfaced by
+  `GET /api/providers`, never fatal. *(providers tests)*
+- **FR-DNS-02** — DDNS entry CRUD MUST NOT return credential values: the API
+  MUST return only the Secret name and which credential fields are set. Secret
+  fields submitted through the API MUST be written to a Kubernetes Secret and
+  MUST NOT be persisted in the entry store. *(ddns tests, `TestDdnsNeverReturnsCredentialValues`)*
+- **FR-DNS-03** — A background reconciler MUST detect the public IP on an
+  interval (`DDNS_INTERVAL_SECONDS`, default 300) and call the provider only
+  when the IP changed, recording `lastIP`/`lastStatus`/`lastError`/`lastRunAt`/
+  `nextRunAt`. A detection or update failure MUST be recorded, not fatal.
+  *(ddns tests, audit.sh egress assertion)*
+- **FR-DNS-04** — DDNS and domain credentials MUST come from Kubernetes Secrets
+  in the apps namespace, where the API already has namespaced Secret CRUD. The
+  API MUST NOT be granted Secret access in the release namespace, so
+  proxy/LDAP/Authelia secrets stay unreadable. *(audit.sh platform-read Role
+  assertion)*
+- **FR-DNS-05** — cert-manager DNS-01 solvers MUST be rendered from the
+  registry (with `${secret}` / `${cred.<key>}` substitution), OVH MUST be
+  supported, and the existing `cloudflare`, `rfc2136` and `passthrough` output
+  MUST be preserved. *(certs tests: `TestSpecOVH`, `TestSpecCloudflareSolverShape`,
+  `TestSpecRFC2136SolverShape`, `TestSpecPassthroughIsUnchanged`)*
+- **FR-DNS-06** — A force-run endpoint (`POST /api/ddns/{id}/run`) MUST exist
+  and MUST update the record even when the detected IP is unchanged.
+  *(ddns tests: `TestManagerUpdateSkipsUnchangedAndHidesSecrets`)*
+- **FR-DNS-07** — The generic `http` driver MUST render operator-supplied
+  URL/body templates, apply the configured authentication, and MUST refuse a
+  target that is not a public address (loopback, private, link-local or cluster
+  service ranges), so an admin-supplied URL cannot be used as an SSRF pivot.
+  *(ddns tests: `TestHTTPDriverRejectsNonPublicTargets`)*
+
 ---
 
 ## 4. API contracts (normative)
@@ -572,6 +616,10 @@ See `docs/buddy-backup.md`.
 | `/api/catalog/{app}` | GET | App detail + JSON-Schema form |
 | `/api/apps` | GET | Installed apps |
 | `/api/apps/{app}` | GET, PUT, DELETE | Detail / configure / uninstall |
+| `/api/providers` | GET | Declarative DNS providers + override load errors (§3.9) |
+| `/api/ddns` | GET, POST | Dynamic-DNS entries (credentials never returned) / create (§3.9) |
+| `/api/ddns/{id}` | GET, PUT, DELETE | Entry detail / update / delete (deletes its credential Secret) |
+| `/api/ddns/{id}/run` | POST | Force one reconcile even when the IP is unchanged |
 | `/api/disks` | GET | Node disks |
 | `/api/disks/recommend` | POST | Topology advisor |
 | `/api/volumes/zfs` | GET | Pools (live via agent) |
@@ -715,6 +763,21 @@ real receiver over HTTP (an `httptest` server) against the real client:
 | `TestBuddyScheduleFanOutToSeveralBuddies` | FR-BUD-15 (two destinations get a job each, a dead one fails only itself, per-destination results recorded) |
 | `TestBuddyScheduleReceiversValidation` | FR-BUD-15 (at least one receiver, every URL valid, duplicates collapsed) |
 | `TestBuddySendRefusesADatasetTheHostCannotSee` / `TestBuddySendAllowsADatasetWithNoMountpoint` | FR-BUD-11 (a dataset mounted only inside a pod is refused before any snapshot; mountpoint none stays sendable) |
+
+Dynamic DNS and the provider registry are verified by
+`api/internal/providers/providers_test.go`, `api/internal/ddns/*_test.go` and
+`api/internal/certs/certs_test.go`:
+
+| Test | Verifies |
+| --- | --- |
+| `TestLoadBuiltins`, `TestOverrideReplacesBuiltinAndSkipsInvalid` | FR-DNS-01 (YAML providers, override merge, invalid file skipped and recorded) |
+| `TestOVHSolverShape`, `TestSolverMissingConfigIsAnError` | FR-DNS-01/05 (solver rendering and substitution) |
+| `TestSpecOVH`, `TestSpecCloudflareSolverShape`, `TestSpecRFC2136SolverShape`, `TestSpecPassthroughIsUnchanged` | FR-APP-13, FR-DNS-05 (OVH supported; existing solvers byte-identical) |
+| `TestManagerUpdateSkipsUnchangedAndHidesSecrets`, `TestDdnsNeverReturnsCredentialValues` | FR-DNS-02/03/06 (skip-when-unchanged, force-run, no credential values) |
+| `TestManagerRecordsCredentialErrors`, `TestDetectIPValidatesResponse` | FR-DNS-03 (errors recorded, IP response validated) |
+| `TestOVHDriverUpdate`, `TestCloudflareDriverCreateAndUpdate`, `TestHTTPDriverRendersAndAuthenticates` | FR-DNS-01 (drivers: URL/method/body/signature/auth) |
+| `TestHTTPDriverRejectsNonPublicTargets` | FR-DNS-07 (SSRF guard) |
+| `helm lint` + `scripts/audit.sh` DDNS assertions | FR-DNS-03/04 (env wired, egress port-scoped, no release-namespace Secret access) |
 
 Historical verification (2026-09-14, retired .96 VM, through its UI NodePort —
 that listener was removed on 2026-09-19, and the same checks now run through the

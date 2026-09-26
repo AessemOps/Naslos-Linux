@@ -1,7 +1,17 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, onMount } from 'svelte';
 
   export let domain: any | null = null;
+
+  interface ProviderField {
+    key: string;
+    label: string;
+    type: string;
+    default?: string;
+    enum?: string[];
+    required?: boolean;
+    secret?: boolean;
+  }
 
   let baseDomain = domain?.baseDomain || '';
   let dnsProvider = domain?.dnsProvider || 'cloudflare';
@@ -11,8 +21,48 @@
   let solverText = domain?.solver ? JSON.stringify(domain.solver, null, 2) : '';
   let saving = false;
   let error = '';
+  let providers: any[] = [];
+  let fieldValues: Record<string, string> = { ...(domain?.providerConfig || {}) };
 
   const dispatch = createEventDispatcher();
+
+  onMount(async () => {
+    try {
+      const res = await fetch('/api/providers');
+      if (!res.ok) return;
+      const data = await res.json();
+      providers = (Array.isArray(data.providers) ? data.providers : []).filter((p: any) => p.certManager);
+      if (!providers.some((p: any) => p.name === dnsProvider) && providers.length) {
+        dnsProvider = providers[0].name;
+      }
+      applyDefaults();
+    } catch {
+      // The hardcoded fallbacks below keep the form usable if the API is down.
+    }
+  });
+
+  function provider(): any | undefined {
+    return providers.find((p) => p.name === dnsProvider);
+  }
+
+  function fields(): ProviderField[] {
+    return provider()?.fields ?? [];
+  }
+
+  function applyDefaults() {
+    const next: Record<string, string> = { ...fieldValues };
+    for (const f of fields()) {
+      if (next[f.key] === undefined) {
+        next[f.key] = f.default ?? '';
+      }
+    }
+    fieldValues = next;
+  }
+
+  function onProviderChange() {
+    fieldValues = {};
+    applyDefaults();
+  }
 
   async function save() {
     saving = true;
@@ -31,6 +81,8 @@
         } catch {
           throw new Error('Solver must be valid JSON');
         }
+      } else if (fields().length > 0) {
+        body.fields = fieldValues;
       }
       const res = await fetch(`/api/domains/${encodeURIComponent(baseDomain)}`, {
         method: 'PUT',
@@ -63,23 +115,58 @@
       </div>
       <div>
         <label class="label" for="domain-provider">DNS-01 provider</label>
-        <select id="domain-provider" class="input" bind:value={dnsProvider}>
-          <option value="cloudflare">Cloudflare</option>
-          <option value="rfc2136">RFC2136</option>
-          <option value="passthrough">Passthrough (raw solver)</option>
+        <select id="domain-provider" class="input" bind:value={dnsProvider} on:change={onProviderChange}>
+          {#if providers.length === 0}
+            <option value="cloudflare">Cloudflare</option>
+            <option value="rfc2136">RFC2136</option>
+            <option value="passthrough">Passthrough (raw solver)</option>
+          {:else}
+            {#each providers as p}
+              <option value={p.name}>{p.displayName || p.name}</option>
+            {/each}
+          {/if}
         </select>
+        {#if provider()?.description}<p class="text-xs text-gray-500 mt-1">{provider()?.description}</p>{/if}
       </div>
-      {#if dnsProvider !== 'passthrough'}
-        <div>
-          <label class="label" for="domain-secret">Credentials Secret</label>
-          <input id="domain-secret" class="input" bind:value={credentialsSecret} placeholder="cloudflare-api-token" />
-        </div>
-      {:else}
+
+      {#if dnsProvider === 'passthrough'}
         <div>
           <label class="label" for="domain-solver">Solver (JSON)</label>
           <textarea id="domain-solver" class="input h-32 font-mono text-sm" bind:value={solverText}></textarea>
         </div>
+      {:else if fields().length > 0}
+        {#each fields() as f (f.key)}
+          <div>
+            <label class="label" for={`domain-field-${f.key}`}>
+              {f.label || f.key}{#if f.required}<span class="text-red-400"> *</span>{/if}
+            </label>
+            {#if f.type === 'enum'}
+              <select id={`domain-field-${f.key}`} class="input" bind:value={fieldValues[f.key]}>
+                {#each f.enum || [] as v (v)}
+                  <option value={v}>{v}</option>
+                {/each}
+              </select>
+            {:else if f.secret}
+              <input
+                id={`domain-field-${f.key}`}
+                class="input"
+                type="password"
+                autocomplete="new-password"
+                bind:value={fieldValues[f.key]}
+                placeholder={domain?.credentialsSecret ? '•••••• (unchanged)' : ''}
+              />
+            {:else}
+              <input id={`domain-field-${f.key}`} class="input" bind:value={fieldValues[f.key]} />
+            {/if}
+          </div>
+        {/each}
+      {:else}
+        <div>
+          <label class="label" for="domain-secret">Credentials Secret</label>
+          <input id="domain-secret" class="input" bind:value={credentialsSecret} placeholder="cloudflare-api-token" />
+        </div>
       {/if}
+
       <div>
         <label class="label" for="domain-email">ACME email</label>
         <input id="domain-email" class="input" bind:value={acmeEmail} />
