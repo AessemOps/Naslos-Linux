@@ -83,6 +83,17 @@ via `storageState`; a target that does not challenge is an error.
   line.
 - **Found a defect while drilling?** Fix it in the same branch with a test, and
   record it where the next session will read it (handoff/plan).
+- **Every fix must be in a fresh install.** A fix belongs in the declarative
+  install path — the `Makefile` (targets/prerequisites), `charts/naslos/`
+  (`values.yaml` and the VM overlay `values-vm.yaml`), or
+  `scripts/deploy-vm.sh` — and in the images built at install time, never only
+  in the live cluster. A change applied with a one-off `kubectl`, a live `helm
+  --set`, or a manual `helm upgrade` is **incomplete**: wire it into the
+  chart/Makefile/values and bump the image tag so `make install-vm` on a clean
+  node reproduces it. When touching install plumbing, prove it with a dry run
+  (`make -n install-vm`) and `helm template`/`helm lint`; a fix that needs
+  operator-only config (credentials, external API rights) must be documented as
+  such so the install gap is explicit.
 - **Tests before hand-off**: `go build/vet/test` for both Go modules,
   `npm run check`, `helm lint`, the Playwright suite for UI/API changes, and a
   live drill for anything touching the node (shares, LDAP, ZFS, backups).
