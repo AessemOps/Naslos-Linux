@@ -48,6 +48,12 @@ test.describe('apps', () => {
       await page.getByRole('button', { name: 'Installed', exact: true }).click();
       await expect(page.getByText('Loading installed apps...')).toBeHidden({ timeout: 10_000 });
       await expect(page.getByRole('heading', { name: app.name, exact: true })).toBeVisible();
+
+      // The exposure modal offers a base-domain picker (FR-APP-10); the API
+      // always returns the primary in selectableDomains, so the select renders.
+      await page.getByRole('button', { name: 'Exposure', exact: true }).first().click();
+      await expect(page.locator('#exposure-domain')).toBeVisible();
+      await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     } finally {
       const removed = await request.delete(`/api/apps/${app.name}`);
       expect([200, 500]).toContain(removed.status());

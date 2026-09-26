@@ -328,10 +328,13 @@ with a sibling `naslos-app.yaml` install-config. See
 - **FR-APP-09** — Catalog refresh MUST use a cached clone with a TTL and MUST
   fall back to the stale clone when the remote is unreachable. *(chartsrepo
   tests)*
-- **FR-APP-10** — Exposure MUST be orthogonal toggles: `subdomain`, `tls`,
-  `auth`, `localOnly`. Turning `tls` off MUST NOT inherit subdomain HSTS; an
-  empty `subdomain` MUST remove the route (cluster-internal only); `auth` MUST be
-  offered only on a base domain in the SSO list. *(routing tests, apps tests)*
+- **FR-APP-10** — Exposure MUST be orthogonal toggles: `baseDomain`, `subdomain`,
+  `tls`, `auth`, `localOnly`. The `baseDomain` MUST be selectable among the
+  configured domains (primary first, default the primary) and an unconfigured one
+  MUST be rejected. Turning `tls` off MUST NOT inherit subdomain HSTS; an empty
+  `subdomain` MUST remove the route (cluster-internal only); `auth` MUST be
+  offered only when the selected base domain is in the effective SSO list.
+  *(routing tests, apps tests, server tests)*
 - **FR-APP-11** — The API MUST own one Traefik `IngressRoute` per app plus its
   middlewares in `naslos-apps`, and MUST reconcile them on startup and delete
   them on uninstall. *(routing tests)*
@@ -352,8 +355,13 @@ with a sibling `naslos-app.yaml` install-config. See
   `*.<domain>`. *(certs tests)*
 - **FR-APP-14** — A release found in the cluster without a catalog match MUST be
   surfaced as **orphaned** rather than silently uninstallable. *(apps tests)*
-- **FR-APP-15** — Authelia MUST protect every base domain in the chart-declared
-  SSO domain list, including app subdomains. *(chart render: authelia-config)*
+- **FR-APP-15** — Authelia MUST protect every base domain in the effective SSO
+  list — the primary domain plus domains promoted at runtime from the Domains
+  page, seeded by the chart-declared `sso.domains` — including app subdomains. A
+  promotion MUST take effect live: the API MUST render the SSO fragments and
+  restart Authelia, the primary MUST NOT be demotable, and a domain MUST NOT be
+  demoted while an installed app requires auth on it. *(chart render:
+  authelia-config + naslos-authelia-sso; authelia tests; server tests)*
 
 
 ### 3.5 Dashboard & metrics (`FR-MET`)

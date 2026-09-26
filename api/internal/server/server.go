@@ -17,6 +17,7 @@ import (
 	"github.com/AessemOps/Naslos-Linux/api/internal/agent"
 	"github.com/AessemOps/Naslos-Linux/api/internal/apps"
 	"github.com/AessemOps/Naslos-Linux/api/internal/auth"
+	"github.com/AessemOps/Naslos-Linux/api/internal/authelia"
 	"github.com/AessemOps/Naslos-Linux/api/internal/buddy"
 	"github.com/AessemOps/Naslos-Linux/api/internal/catalog"
 	"github.com/AessemOps/Naslos-Linux/api/internal/certs"
@@ -68,10 +69,13 @@ type Server struct {
 	providers *providers.Registry
 	// ddns keeps A/AAAA records pointed at the public IP; nil when disabled.
 	ddns *ddns.Manager
+	// authelia pushes the runtime SSO domain fragments and restarts Authelia.
+	authelia *authelia.Reconciler
 	// kubeClient, when set, replaces the cached clientset (tests inject a fake).
 	kubeClient kubernetes.Interface
-	// baseDomain is the primary domain app subdomains hang off; ssoDomains are
-	// the Authelia-protected domains.
+	// baseDomain is the primary domain app subdomains hang off; ssoDomains is
+	// the chart-declared SSO_DOMAINS seed (effectiveSSODomains unions it with the
+	// primary and store-promoted domains).
 	baseDomain      string
 	ssoDomains      []string
 	platformRelease string
@@ -343,12 +347,33 @@ func (s *Server) setupChartRepos(appsHelmClient *helm.Client) {
 		Router:              router,
 		Discoverer:          appServiceDiscoverer{client: s.kubernetesClient},
 		BaseDomain:          s.baseDomain,
-		SSODomains:          s.ssoDomains,
+		SSODomains:          s.effectiveSSODomains,
 	})
 	if err != nil {
 		log.Printf("Warning: could not load installed-app records: %v", err)
 	}
 	s.appManager = manager
+
+	// Authelia SSO fragments: the Domains page can promote a domain to SSO at
+	// runtime, which the API renders into a ConfigMap and applies by restarting
+	// Authelia. The client is resolved lazily so a unit test can inject a fake.
+	s.authelia = authelia.NewReconciler(authelia.Options{
+		Client:    s.kubernetesClient,
+		Namespace: getEnv("AUTHELIA_NAMESPACE", s.namespace),
+		ConfigMap: getEnv("AUTHELIA_SSO_CONFIGMAP", "naslos-authelia-sso"),
+		Workload:  getEnv("AUTHELIA_WORKLOAD", "naslos-authelia"),
+	})
+}
+
+// syncAutheliaState reconciles the Authelia SSO fragments with the effective
+// SSO domain list. Best-effort: a failure is logged by the caller, never fatal.
+func (s *Server) syncAutheliaState(ctx context.Context) error {
+	if s.authelia == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return s.authelia.Sync(ctx, s.effectiveSSODomains())
 }
 
 // buildCatalog scans the cached repositories into a catalog snapshot.
@@ -595,6 +620,16 @@ func (s *Server) Start() error {
 	// converge routing. Runs in the background so an unreachable remote cannot
 	// block the API from serving.
 	go s.reconcileApps()
+
+	// Re-seed Authelia from the effective SSO list independently of the (slow)
+	// chart refresh, so a promotion survives an API restart promptly: the
+	// fragment ConfigMap is `keep` and Helm never clobbers it, so the API is the
+	// one that reconciles it. Best-effort only.
+	go func() {
+		if err := s.syncAutheliaState(context.Background()); err != nil {
+			log.Printf("Warning: initial Authelia SSO reconcile failed: %v", err)
+		}
+	}()
 
 	// Async buddy sends and the backup scheduler (FR-BUD-15/16).
 	s.ensureBuddyJobs()

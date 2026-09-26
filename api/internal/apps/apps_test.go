@@ -131,6 +131,24 @@ func TestURLForUsesRecordBaseDomain(t *testing.T) {
 	}
 }
 
+// TestAuthAllowedFollowsTheSSOProvider proves a live SSO promotion (the provider
+// list changing) is reflected without recreating the manager.
+func TestAuthAllowedFollowsTheSSOProvider(t *testing.T) {
+	domains := []string{"naslos.local"}
+	m := &Manager{baseDomain: "naslos.local", ssoDomains: func() []string { return domains }}
+	if m.AuthAllowed("media.example.com") {
+		t.Fatal("auth allowed on an unpromoted domain")
+	}
+	domains = append(domains, "media.example.com")
+	if !m.AuthAllowed("media.example.com") {
+		t.Fatal("auth not allowed after promotion")
+	}
+	// An empty domain falls back to the primary, which is always SSO.
+	if !m.AuthAllowed("") {
+		t.Fatal("auth not allowed on the primary fallback")
+	}
+}
+
 func TestValidateReleaseName(t *testing.T) {
 	if err := validateReleaseName("jellyfin"); err != nil {
 		t.Fatalf("valid name rejected: %v", err)
