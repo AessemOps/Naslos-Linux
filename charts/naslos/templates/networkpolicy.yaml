@@ -431,6 +431,23 @@ spec:
         - ipBlock:
             cidr: {{ . | quote }}
     {{- end }}
+    {{- if .Values.networkPolicy.gitEgress }}
+    # Git chart repositories are cloned by the API pod (and fetched by the
+    # installer). Open only the git transports to the configured CIDRs - not a
+    # general all-port Internet opening.
+    - to:
+        {{- range (.Values.networkPolicy.gitEgressCIDRs | default (list "0.0.0.0/0")) }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 22
+        - protocol: TCP
+          port: 9418
+    {{- end }}
 {{- if $split }}
 ---
 # AUDIT-M6: the same egress policy for the privileged namespace. Without it the
@@ -485,6 +502,23 @@ spec:
     - to:
         - ipBlock:
             cidr: {{ . | quote }}
+    {{- end }}
+    {{- if .Values.networkPolicy.gitEgress }}
+    # Git chart repositories are cloned by the API pod (and fetched by the
+    # installer). Open only the git transports to the configured CIDRs - not a
+    # general all-port Internet opening.
+    - to:
+        {{- range (.Values.networkPolicy.gitEgressCIDRs | default (list "0.0.0.0/0")) }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 22
+        - protocol: TCP
+          port: 9418
     {{- end }}
 {{- end }}
 {{- if .Values.networkPolicy.cilium.enabled }}

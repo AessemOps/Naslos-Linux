@@ -22,7 +22,11 @@
             "displayName": { "type": "string" },
             "url": { "type": "string" },
             "auth": { "type": "string", "enum": ["public", "token", "ssh"] },
-            "credentialsSecret": { "type": "string" }
+            "credentialsSecret": { "type": "string" },
+            "channels": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
           }
         }
       }
@@ -199,6 +203,11 @@
         "dnsCIDR": { "type": "string" },
         "nfsClientCIDR": { "type": "string" },
         "extraEgressCIDRs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "gitEgress": { "type": "boolean" },
+        "gitEgressCIDRs": {
           "type": "array",
           "items": { "type": "string" }
         },

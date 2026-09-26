@@ -44,10 +44,12 @@ Bugs the drill found and that are fixed in this branch:
 
 **Not done / environment limits**
 
-- The cluster has **no GitHub egress** (`dial tcp 140.82.121.4:443: i/o
-  timeout`), so the official HTTPS source cannot clone on this instance. The
-  configured URL stays `https://github.com/AessemOps/NaslosCharts.git`; a real
-  deployment needs either cluster egress or a LAN git mirror.
+- **GitHub egress fixed**: `networkPolicy.gitEgress` (on in `values-vm.yaml`)
+  opens the git transports (443/22/9418) to the Internet for the API pod; the
+  official source now clones `https://github.com/AessemOps/NaslosCharts.git`
+  with no error. That repository holds only a LICENSE, so the catalog is empty
+  until `apps/<name>/` charts are added. `apps.officialSource.channels` maps
+  channels to branches (`{Prod: main}` for the current repo).
 - **Playwright live run was blocked** by an Authelia TOTP mismatch for the
   `admin` user on the instance (`ui/.env.playwright.local` secret does not match
   the enrolled device); the specs themselves ran up to auth. No code fault.

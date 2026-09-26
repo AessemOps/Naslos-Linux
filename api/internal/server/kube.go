@@ -48,6 +48,25 @@ func (c serverCredentials) Resolve(ctx context.Context, src *chartsrepo.Source) 
 	return provider.Resolve(ctx, src)
 }
 
+// getEnvMap parses a comma-separated `key=value` environment variable.
+func getEnvMap(key string) map[string]string {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, pair := range strings.Split(raw, ",") {
+		name, value, found := strings.Cut(pair, "=")
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if !found || name == "" || value == "" {
+			continue
+		}
+		out[name] = value
+	}
+	return out
+}
+
 // getEnvList parses a comma-separated environment variable, trimmed and
 // de-duplicated, falling back to the defaults when unset.
 func getEnvList(key string, defaults []string) []string {
