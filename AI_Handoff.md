@@ -14,8 +14,8 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
 ## App catalog refactor (2026-09-26) — implemented, live-drilled
 
-Branch `feature/charts-repo-and-app-install-refactor` (PR #28, open; not
-merged). Plan + full status: `.kilo/plans/1789943277180-charts-repo-and-app-install-refactor.md`.
+Merged in PR #28 (branch `feature/charts-repo-and-app-install-refactor`).
+Plan + full status: `.kilo/plans/1789943277180-charts-repo-and-app-install-refactor.md`.
 
 The hard-coded Go catalog is replaced by **git-based chart repositories**:
 
@@ -55,43 +55,57 @@ installed into `naslos-apps-priv` with its route; Playwright `apps.spec.ts` +
 the target, Helm-list backfill needing secret access, `make crds` empty
 cert-manager step, HSTS subdomains, baseline hostPath → datasets PVC).
 
-**Not done**: merge (PR #28 awaits approval); start/stop (`FR-APP-04`) is
-`[OPEN]`; gluetun charts need the user's VPN provider/key.
+**Not done**: start/stop (`FR-APP-04`) is `[OPEN]`; gluetun charts need the
+user's VPN provider/key. (PR #28 is merged; the current deployed tags are in
+"Deployed right now" below.)
 
-## Dynamic DNS + declarative DNS providers (2026-09-26) — implemented
+## Dynamic DNS + declarative DNS providers (2026-09-26) — implemented, merged, live-drilled
 
-Branch `feature/ddns-dynamic-dns` (from `origin/master` `b2e816c`, the PR #28
-merge). Plan: `.kilo/plans/1790427669127-dynamic-dns-providers.md`.
+Merged in PR #29 (branch `feature/ddns-dynamic-dns`). Plan:
+`.kilo/plans/1790427669127-dynamic-dns-providers.md`. The provider configs and
+the detection model are based on
+[qdm12/ddns-updater](https://github.com/qdm12/ddns-updater) (MIT) — see
+`CREDITS.md` → "Ported & adapted code".
 
-- `api/internal/providers` — declarative registry: embedded YAML defaults
-  (`builtin/{ovh,cloudflare,generic,rfc2136,passthrough}.yaml`) + an optional
-  override directory (`DDNS_PROVIDERS_DIR`). Validation, field model,
-  cert-manager solver rendering with `${secret}` / `${cred.<key>}`
-  substitution. A bad override is skipped, logged and surfaced by
-  `GET /api/providers`.
-- `api/internal/ddns` — entry store (atomic JSON, 0600), public-IP detection,
-  and the `ovh` / `cloudflare` / `http` drivers. A manager detects the IP on
-  `DDNS_INTERVAL_SECONDS` (default 300) and updates only on change, recording
-  `lastIP/lastStatus/lastError/lastRunAt/nextRunAt`; `POST /api/ddns/{id}/run`
-  forces a run. The generic `http` driver renders operator templates and
-  refuses non-public targets (SSRF guard).
+- `api/internal/providers` — declarative registry: embedded YAML defaults plus
+  an optional override directory (`DDNS_PROVIDERS_DIR`). Cert providers:
+  `ovh`, `cloudflare`, `rfc2136`, `passthrough`. DDNS-only providers: `generic`
+  (custom HTTP), `duckdns`, `dynu`, `noip`, `freedns`, `namecheap`, `desec`,
+  `spdyn`, `selfhostde`, `dynv6`, `digitalocean`, `godaddy`, `porkbun`. Field
+  model: `secret`, `secretKey`, `scope: cert|ddns`, `showIf: {key,value}`. A bad
+  override is skipped, logged and surfaced by `GET /api/providers`.
+- `api/internal/certs` — `Validate`/`solverFor` render through the registry;
+  OVH is supported via the ZoneDNS solver; `cloudflare` / `rfc2136` /
+  `passthrough` solver output is pinned byte-identical by tests. `Domain` has
+  `providerConfig`; the Domains form fetches the registry and hides
+  `scope: ddns` fields.
+- `api/internal/ddns` — entry store (atomic JSON, 0600) and drivers `ovh`,
+  `cloudflare`, `digitalocean`, `godaddy`, `porkbun`, `http`. Detection follows
+  ddns-updater: the reconciler DNS-resolves each record and updates only when
+  the public IP is not among the answers (a lookup failure updates), with a
+  per-record cooldown (`DDNS_UPDATE_COOLDOWN_SECONDS`); proxied Cloudflare
+  compares the stored `lastIP`. IP detection cycles
+  `DDNS_IP_SOURCES`/`DDNS_IPV6_SOURCES` (HTTP URLs plus `dns:opendns` /
+  `dns:google`). OVH has `mode: dynamic` (DynHost username/password, default)
+  and `mode: api` (ZoneDNS signed API). `POST /api/ddns/{id}/run` forces a run
+  (bypasses the DNS pre-check and cooldown).
 - Credentials are written to a Secret in `naslos-apps` (`naslos-ddns-<id>`,
   `naslos-domain-<domain>-creds`); the API never returns a value. No Secret
   access is added in the release namespace.
-- `api/internal/certs` — `Validate`/`solverFor` now go through the registry;
-  OVH is supported and the existing `cloudflare` / `rfc2136` / `passthrough`
-  solver output is pinned byte-identical by tests. `Domain` gained
-  `providerConfig`.
 - Routes: `GET /api/providers`, `GET/POST /api/ddns`,
-  `GET/PUT/DELETE /api/ddns/{id}`, `POST /api/ddns/{id}/run` (all owner/admin).
-- Chart: `ddns` values, API env + optional `ddns.providersConfigMap` mount,
-  `networkPolicy.ddnsEgress` (80/443 only, both egress blocks); VM profile
-  enables it. UI: `/dns` page + sidebar entry; the Domains form fetches the
-  provider registry instead of a hardcoded list.
-- Spec: §3.9 `FR-DNS`; docs/dynamic-dns.md; app-catalog/api/architecture/README
-  updated.
+  `GET/PUT/DELETE /api/ddns/{id}`, `POST /api/ddns/{id}/run` (owner/admin).
+- Chart: `ddns` values (`ipSources`/`ipv6Sources`/`updateCooldownSeconds`), API
+  env + optional `ddns.providersConfigMap` mount, `networkPolicy.ddnsEgress`
+  (HTTP/HTTPS + DNS 53, **release namespace only**); VM profile enables it. UI:
+  `/dns` page + sidebar entry. Spec §3.9 `FR-DNS`; `docs/dynamic-dns.md`;
+  `CREDITS.md`.
+- Live-drilled: a real OVH DynHost entry (`dyn.florentinrichard.fr`) updated to
+  the public IP; Playwright `ddns.spec.ts` + `domains.spec.ts` 9/9 (the OVH
+  form shows DynHost fields, hides ZoneDNS fields until `mode: api`).
 
-**Not done**: live drill + image retag (step 9 of the plan); PR not yet opened.
+**Not done**: `ipv6_suffix` is intentionally not implemented (ddns-updater's
+IPv6 interface-identifier rewrite is not meaningful for the API pod); further
+providers are added as YAML, not code.
 
 | Piece | What it is |
 | --- | --- |
@@ -364,6 +378,11 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
 
 - **Spec rule**: a change that alters a MUST in `docs/spec.md` updates the spec *and*
   its test in the same change; unimplemented MUSTs are marked `[OPEN]` (VER-4).
+- **Credits rule**: `CREDITS.md` is always kept current. Any change that
+  ports/adapts code or config from another project (add a provenance header to the
+  ported file), or that changes a direct dependency (`api/go.mod`,
+  `ui/package.json`, `charts/naslos/Chart.yaml`, or a Dockerfile base image),
+  updates `CREDITS.md` **in the same change**, and bumps its `Last reviewed` line.
 - **Found a defect while drilling?** Fix it in the same branch with a test, and record
   it where the next session will read it — that is how every fix in this repo landed.
 - **Tests before hand-off**: `go build/vet/test` for both Go modules, `svelte-check`,
@@ -371,7 +390,8 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
   touching the node (shares, LDAP, ZFS, backups).
 - **Plans** live in `.kilo/plans/`; the per-topic docs in `docs/` are the reference
   material (`buddy-backup.md`, `shares.md`, `storage-zfs.md`, `api.md`,
-  `deployment.md`, `operations.md`, `architecture.md`).
+  `deployment.md`, `operations.md`, `architecture.md`). Third-party attribution
+  lives in [`CREDITS.md`](CREDITS.md).
 - **Record the deployed tags** below whenever they change, and keep this file short:
   new session narratives belong in the archive, not here.
 
@@ -396,10 +416,11 @@ found were insider-exposure, not internet-exposure.
 
 ## Deployed right now (2026-09-26)
 
-On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 21**:
-`naslos-api` **`0.1.0-r22`** (git chart repos, privileged-namespace support,
-datasets PV/PVC), `naslos-ui` **`0.1.0-r13`** (Sources tab, exposure editor,
-Domains & SSL), `naslos-agent` **`0.1.0-r8`**, `naslos-samba`/`naslos-nfs`/
+On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 27**:
+`naslos-api` **`0.1.0-r26`** (git chart repos, privileged-namespace support,
+datasets PV/PVC, declarative DNS providers + Dynamic DNS), `naslos-ui`
+**`0.1.0-r18`** (Sources tab, exposure editor, Domains & SSL, Dynamic DNS),
+`naslos-agent` **`0.1.0-r8`**, `naslos-samba`/`naslos-nfs`/
 `naslos-terminal` **`0.1.0-r3`**, OpenLDAP per `values.yaml`. Talos
 **v1.14.1** (kernel 6.18.51-talos), Cilium v1.20.2, ZFS pool `test` (stripe,
 79 G) + `test/drill`, `test/naslos-buddy`.
@@ -415,6 +436,9 @@ App catalog: official source `https://github.com/AessemOps/NaslosCharts.git`
 (public, channels `{Prod: main}`) — catalog lists **10 apps** (Jellyfin, Radarr,
 Sonarr, Seerr, FlareSolverr, Prowlarr, qBittorrent, Audiobookshelf, Calibre-Web,
 SearXNG). **Jellyfin is installed** (`naslos-apps`, `http://jellyfin.naslos.local`,
-served 200 via Traefik, no media configured yet). The app-catalog changes are on
-the unmerged branch/PR #28; the pre-refactor revision 55 narrative is archived at
+served 200 via Traefik, no media configured yet). Merged into `master`: app
+catalog (PR #28), Dynamic DNS + providers (PR #29), third-party credits
+(PR #30). Open: `chore/ddns-updater-credits` (PR #31) — credit ddns-updater for
+the DDNS provider configs and this handoff/credits-rule update. The
+pre-refactor revision 55 narrative is archived at
 `docs/archive/ai-handoff-log-2026-09.md`.
