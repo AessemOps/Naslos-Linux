@@ -222,5 +222,7 @@ API environment variables: `DDNS_ENABLED`, `DDNS_CONFIG`, `DDNS_PROVIDERS_DIR`,
 - **Adding a provider:** drop a `*.yaml` file in the override directory (or a
   ConfigMap key) and restart — no code change for a built-in solver or driver.
 
-*Portions of the provider logic and detection model are ported from
-[qdm12/ddns-updater](https://github.com/qdm12/ddns-updater) (MIT).*
+*Portions of the provider configurations, the detection model and the
+`digitalocean`/`godaddy`/`porkbun` drivers are ported from
+[qdm12/ddns-updater](https://github.com/qdm12/ddns-updater) (MIT); see
+[CREDITS.md](../CREDITS.md).*
