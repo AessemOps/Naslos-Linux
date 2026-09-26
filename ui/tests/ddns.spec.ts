@@ -39,6 +39,10 @@ test.describe('dynamic DNS', () => {
 
     const select = page.getByLabel('Provider');
     await select.selectOption('ovh');
+    // OVH defaults to DynHost: DynHost credentials show, ZoneDNS fields hide.
+    await expect(page.getByLabel(/DynHost username/)).toBeVisible();
+    await expect(page.getByLabel(/Application key/)).toBeHidden();
+    await page.locator('#ddns-field-mode').selectOption('api');
     await expect(page.getByLabel(/Application key/)).toBeVisible();
 
     await select.selectOption('generic');

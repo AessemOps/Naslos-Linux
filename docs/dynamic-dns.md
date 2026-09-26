@@ -79,6 +79,9 @@ ddns:                           # optional: DDNS support
 - A field may set `scope: cert` or `scope: ddns` to appear only in the Domains
   form or the Dynamic DNS form (OVH's DynHost `mode`/`username`/`password` are
   `ddns`-scoped so they do not clutter the certificate form).
+- A field may set `showIf: { key: mode, value: api }` to appear only when
+  another field (in the same scope) has that value — OVH's ZoneDNS fields show
+  only for `mode: api`.
 
 ### Where definitions come from
 
