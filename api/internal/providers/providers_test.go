@@ -32,6 +32,28 @@ func TestLoadBuiltins(t *testing.T) {
 	if p, _ := r.Get("passthrough"); !p.IsPassthrough() || !p.SupportsCertificates() {
 		t.Errorf("passthrough must be a certificate provider with an inline solver")
 	}
+	for _, name := range []string{"cloudflare", "ovh", "rfc2136", "passthrough"} {
+		p, _ := r.Get(name)
+		if len(p.APIRights) == 0 {
+			t.Errorf("cert-capable provider %q must declare apiRights", name)
+		}
+	}
+}
+
+func TestParseAPIRightsRoundTrip(t *testing.T) {
+	doc := `name: example
+displayName: Example
+apiRights:
+  - "Zone → DNS → Edit"
+  - "Zone → Zone → Read"
+`
+	p, err := Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(p.APIRights) != 2 || p.APIRights[0] != "Zone → DNS → Edit" {
+		t.Fatalf("apiRights = %#v", p.APIRights)
+	}
 }
 
 func TestOVHSolverShape(t *testing.T) {
@@ -201,6 +223,7 @@ func TestParseRejectsDuplicateFieldsAndBadEnums(t *testing.T) {
 		"bad name":   "name: Bad_Name\n",
 		"bad driver": "name: x\nddns:\n  driver: nope\n",
 		"bad showIf": "name: x\nfields:\n  - key: a\n    label: A\n    type: string\n    showIf: {value: api}\n",
+		"empty right": "name: x\napiRights:\n  - \"\"\n",
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {

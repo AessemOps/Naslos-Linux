@@ -115,7 +115,7 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/providers` | Provider definitions + `errors` from override files that failed to load |
+| GET | `/api/providers` | Provider definitions + `errors` from override files that failed to load. Each provider carries its `apiRights` (informational DNS-01 permissions) when defined |
 | GET | `/api/ddns` | Entries + `enabled` + `intervalSeconds` |
 | POST | `/api/ddns` | Create `{provider, zone, record, recordType, ttl, enabled, fields}` (secret fields → a Secret) |
 | GET | `/api/ddns/{id}` | Entry detail (Secret name + which fields are set, never values) |

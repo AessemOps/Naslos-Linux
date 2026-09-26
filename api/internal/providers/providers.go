@@ -107,6 +107,9 @@ type Provider struct {
 	DisplayName string       `yaml:"displayName" json:"displayName"`
 	Description string       `yaml:"description,omitempty" json:"description,omitempty"`
 	Icon        string       `yaml:"icon,omitempty" json:"icon,omitempty"`
+	// APIRights are the provider API permissions an operator must grant for a
+	// domain's DNS-01 solver. Informational; rendered as a UI info bubble.
+	APIRights   []string     `yaml:"apiRights,omitempty" json:"apiRights,omitempty"`
 	Fields      []Field      `yaml:"fields,omitempty" json:"fields"`
 	CertManager *CertManager `yaml:"certManager,omitempty" json:"certManager,omitempty"`
 	DDNS        *DDNS        `yaml:"ddns,omitempty" json:"ddns,omitempty"`
@@ -511,6 +514,11 @@ func (p *Provider) validate() error {
 	}
 	if p.DDNS != nil && p.DDNS.Driver != "" && !knownDrivers[p.DDNS.Driver] {
 		return fmt.Errorf("provider %q: unknown DDNS driver %q", p.Name, p.DDNS.Driver)
+	}
+	for i, right := range p.APIRights {
+		if strings.TrimSpace(right) == "" {
+			return fmt.Errorf("provider %q: apiRights[%d] is empty", p.Name, i)
+		}
 	}
 	return nil
 }

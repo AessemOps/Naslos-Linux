@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from 'svelte';
   import ProviderFields from './ProviderFields.svelte';
+  import InfoBubble from './InfoBubble.svelte';
   import { visibleFields } from '$lib/providerFields';
 
   export let domain: any | null = null;
@@ -110,7 +111,10 @@
         <input id="domain-name" class="input" bind:value={baseDomain} placeholder="example.com" disabled={!!domain} />
       </div>
       <div>
-        <label class="label" for="domain-provider">DNS-01 provider</label>
+        <div class="flex items-center gap-2 mb-1">
+          <label class="label mb-0" for="domain-provider">DNS-01 provider</label>
+          <InfoBubble items={currentProvider?.apiRights ?? []} />
+        </div>
         <select id="domain-provider" class="input" value={dnsProvider} on:change={onProviderChange}>
           {#if providers.length === 0}
             <option value="cloudflare">Cloudflare</option>

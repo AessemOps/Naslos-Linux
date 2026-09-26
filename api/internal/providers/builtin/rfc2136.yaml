@@ -1,7 +1,13 @@
+# apiRights text derived from cert-manager's DNS-01 provider docs:
+# https://cert-manager.io/docs/configuration/acme/dns01/ — see CREDITS.md.
+
 name: rfc2136
 displayName: RFC 2136 (dynamic DNS)
 description: RFC 2136 dynamic DNS updates with TSIG (cert-manager certificates only).
 icon: "📜"
+apiRights:
+  - "No provider API: a TSIG key name + secret is used"
+  - "The nameserver must permit that TSIG key to update the zone (allow-update / update-policy)"
 certManager:
   solver:
     rfc2136:

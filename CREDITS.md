@@ -123,6 +123,7 @@ license and copyright notice apply to the derived parts.
 | Component | What was used | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
 | ddns-updater | Dynamic DNS provider configurations (`api/internal/providers/builtin/*.yaml` for `duckdns`, `dynu`, `noip`, `freedns`, `namecheap`, `desec`, `spdyn`, `selfhostde`, `dynv6`, `digitalocean`, `godaddy`, `porkbun` and OVH DynHost), the DNS-resolution detection model, and the `digitalocean`/`godaddy`/`porkbun` driver logic | MIT | https://github.com/qdm12/ddns-updater |
+| cert-manager / cert-manager-webhook-ovh | Provider DNS-01 API-permission text (`apiRights` in `api/internal/providers/builtin/cloudflare.yaml`, `ovh.yaml`, `rfc2136.yaml`, `passthrough.yaml`) derived from cert-manager's DNS-01 provider documentation and the OVH webhook README | Apache-2.0 (cert-manager) / MIT (webhook) | https://cert-manager.io/docs/configuration/acme/dns01/ ; https://github.com/baarde/cert-manager-webhook-ovh |
 
 ## Bundled OS packages
 
