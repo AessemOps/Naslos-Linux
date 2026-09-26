@@ -253,6 +253,7 @@ shell, never an arbitrary command.
 | `BUDDY_IDENTITY` | `/var/lib/naslos/buddy-identity.json` | This instance's key material (private key + KEK); created on demand |
 | `BUDDY_SCHEDULES` | `/var/lib/naslos/buddy-schedules.json` | Scheduled backups (interval cadence, catch-up on startup) |
 | `APPS_NAMESPACE` | `naslos-apps` | Namespace user-installed apps run in |
+| `APPS_PRIVILEGED_NAMESPACE` | `naslos-apps-priv` | Namespace for apps that declare `privileged: true` |
 | `APPS_CONFIG` | `/var/lib/naslos/apps.json` | Installed-app records |
 | `SOURCES_CONFIG` | `/var/lib/naslos/sources.json` | Configured chart repositories |
 | `DOMAINS_CONFIG` | `/var/lib/naslos/domains.json` | Base domains |

@@ -115,3 +115,50 @@ subjects:
     name: naslos-api
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- $apriv := .Values.apps.privilegedNamespace | default "naslos-apps-priv" }}
+{{- if and .Values.ui.enabled (ne $apriv .Release.Namespace) (ne $apriv (include "naslos.workloadNamespace" .)) (ne $apriv (.Values.apps.namespace | default "naslos-apps")) }}
+---
+# Same capabilities as the managed apps Role, in the privileged apps namespace.
+# Only apps that declare `privileged: true` are installed here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: naslos-api-apps
+  namespace: {{ $apriv }}
+  labels:
+    app.kubernetes.io/name: naslos
+rules:
+  - apiGroups: [""]
+    resources:
+      ["services", "configmaps", "secrets", "persistentvolumeclaims",
+       "serviceaccounts", "pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["traefik.io"]
+    resources: ["ingressroutes", "middlewares"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates", "issuers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-api-apps
+  namespace: {{ $apriv }}
+  labels:
+    app.kubernetes.io/name: naslos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: naslos-api-apps
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -245,8 +245,12 @@ func NewReconciler(dyn dynamic.Interface, opts Options) *Reconciler {
 	}
 }
 
-// SpecFor builds a routing spec from an app record.
-func (r *Reconciler) SpecFor(rec apps.Record, baseDomain string) Spec {
+// SpecFor builds a routing spec from an app record. namespace is where the
+// route and its middlewares live (the managed or privileged apps namespace).
+func (r *Reconciler) SpecFor(rec apps.Record, namespace, baseDomain string) Spec {
+	if namespace == "" {
+		namespace = r.namespace
+	}
 	tlsSecret := r.tlsSecret
 	if r.tlsSecretFor != nil {
 		if resolved := r.tlsSecretFor(baseDomain); resolved != "" {
@@ -255,7 +259,7 @@ func (r *Reconciler) SpecFor(rec apps.Record, baseDomain string) Spec {
 	}
 	return Spec{
 		Name:              rec.Name,
-		Namespace:         r.namespace,
+		Namespace:         namespace,
 		Subdomain:         rec.Exposure.Subdomain,
 		BaseDomain:        baseDomain,
 		TLS:               rec.Exposure.TLS,
@@ -272,10 +276,10 @@ func (r *Reconciler) SpecFor(rec apps.Record, baseDomain string) Spec {
 	}
 }
 
-// Apply renders and server-side-applies an app's route and middlewares. Auth is
-// only rendered when the base domain is in the SSO list.
-func (r *Reconciler) Apply(ctx context.Context, rec apps.Record, baseDomain string, ssoDomains []string) error {
-	spec := r.SpecFor(rec, baseDomain)
+// Apply renders and server-side-applies an app's route and middlewares in
+// namespace. Auth is only rendered when the base domain is in the SSO list.
+func (r *Reconciler) Apply(ctx context.Context, rec apps.Record, namespace, baseDomain string, ssoDomains []string) error {
+	spec := r.SpecFor(rec, namespace, baseDomain)
 	if spec.Auth && !contains(ssoDomains, baseDomain) {
 		return fmt.Errorf("base domain %q is not in the SSO domain list; auth is unavailable", baseDomain)
 	}
@@ -285,25 +289,29 @@ func (r *Reconciler) Apply(ctx context.Context, rec apps.Record, baseDomain stri
 	}
 	if objects == nil {
 		// No subdomain: make sure a previously-applied route is gone.
-		return r.Delete(ctx, rec.Name)
+		return r.Delete(ctx, namespace, rec.Name)
 	}
 	for _, obj := range objects {
-		if err := r.applyObject(ctx, obj); err != nil {
+		if err := r.applyObject(ctx, obj, spec.Namespace); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// Delete removes an app's IngressRoute and its per-app ipallowlist middleware.
-func (r *Reconciler) Delete(ctx context.Context, name string) error {
-	if err := r.deleteObject(ctx, ingressRouteGVR, name); err != nil {
+// Delete removes an app's IngressRoute and its per-app ipallowlist middleware
+// from namespace.
+func (r *Reconciler) Delete(ctx context.Context, namespace, name string) error {
+	if namespace == "" {
+		namespace = r.namespace
+	}
+	if err := r.deleteObject(ctx, namespace, ingressRouteGVR, name); err != nil {
 		return err
 	}
-	return r.deleteObject(ctx, middlewareGVR, name+"-ipallowlist")
+	return r.deleteObject(ctx, namespace, middlewareGVR, name+"-ipallowlist")
 }
 
-func (r *Reconciler) applyObject(ctx context.Context, obj *unstructured.Unstructured) error {
+func (r *Reconciler) applyObject(ctx context.Context, obj *unstructured.Unstructured, namespace string) error {
 	gvr := gvrFor(obj.GetKind())
 	if gvr == nil {
 		return fmt.Errorf("unknown routing kind %q", obj.GetKind())
@@ -312,7 +320,7 @@ func (r *Reconciler) applyObject(ctx context.Context, obj *unstructured.Unstruct
 	if err != nil {
 		return err
 	}
-	_, err = r.dyn.Resource(*gvr).Namespace(r.namespace).Patch(
+	_, err = r.dyn.Resource(*gvr).Namespace(namespace).Patch(
 		ctx, obj.GetName(), types.ApplyPatchType, data,
 		metav1.PatchOptions{FieldManager: "naslos-api"},
 	)
@@ -322,8 +330,8 @@ func (r *Reconciler) applyObject(ctx context.Context, obj *unstructured.Unstruct
 	return nil
 }
 
-func (r *Reconciler) deleteObject(ctx context.Context, gvr schema.GroupVersionResource, name string) error {
-	err := r.dyn.Resource(gvr).Namespace(r.namespace).Delete(ctx, name, metav1.DeleteOptions{})
+func (r *Reconciler) deleteObject(ctx context.Context, namespace string, gvr schema.GroupVersionResource, name string) error {
+	err := r.dyn.Resource(gvr).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("deleting %s/%s: %w", gvr.Resource, name, err)
 	}

@@ -151,10 +151,10 @@ func TestSpecForResolvesPerDomainTLSSecret(t *testing.T) {
 	})
 	rec := apps.Record{Name: "jellyfin", Exposure: apps.Exposure{Subdomain: "jellyfin", TLS: true}}
 
-	if got := r.SpecFor(rec, "example.com").TLSSecret; got != "naslos-example-com-tls" {
+	if got := r.SpecFor(rec, "naslos-apps", "example.com").TLSSecret; got != "naslos-example-com-tls" {
 		t.Fatalf("TLS secret = %q, want the per-domain secret", got)
 	}
-	if got := r.SpecFor(rec, "other.example").TLSSecret; got != "naslos-apps-tls" {
+	if got := r.SpecFor(rec, "naslos-apps", "other.example").TLSSecret; got != "naslos-apps-tls" {
 		t.Fatalf("TLS secret fallback = %q, want naslos-apps-tls", got)
 	}
 }

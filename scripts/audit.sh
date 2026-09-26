@@ -241,6 +241,17 @@ assert api_env.get("APPS_NAMESPACE") == "naslos-apps", "the API must know the ap
 assert api_env.get("SOURCES_CONFIG"), "the API must get a sources state path"
 assert api_env.get("DOMAINS_CONFIG"), "the API must get a domains state path"
 
+# Privileged apps namespace: PSA privileged, with its own API Role, for charts
+# that need NET_ADMIN (VPN sidecars) and cannot run under baseline.
+priv_ns = nss.get("naslos-apps-priv")
+assert priv_ns is not None, "missing naslos-apps-priv namespace"
+assert priv_ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "privileged", \
+    "naslos-apps-priv must enforce privileged"
+assert ("Role", "naslos-api-apps", "naslos-apps-priv") in roles, \
+    "the API must have a namespaced Role in naslos-apps-priv"
+assert api_env.get("APPS_PRIVILEGED_NAMESPACE") == "naslos-apps-priv", \
+    "the API must know the privileged apps namespace"
+
 # Backfill reads Helm labels from workloads rather than listing Secrets; the
 # platform read Role must exist and must NOT grant secret access.
 assert ("Role", "naslos-api-platform-read", "naslos") in roles, \

@@ -216,6 +216,8 @@ spec:
             # cloned into a cache on the same volume.
             - name: APPS_NAMESPACE
               value: {{ .Values.apps.namespace | default "naslos-apps" | quote }}
+            - name: APPS_PRIVILEGED_NAMESPACE
+              value: {{ .Values.apps.privilegedNamespace | default "naslos-apps-priv" | quote }}
             - name: APPS_CONFIG
               value: {{ .Values.api.appsFile | default "/var/lib/naslos/apps.json" | quote }}
             - name: SOURCES_CONFIG
