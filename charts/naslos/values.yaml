@@ -280,6 +280,14 @@ apps:
   # Namespace for apps that declare `privileged: true` (VPN sidecars needing
   # NET_ADMIN, which PSA baseline forbids).
   privilegedNamespace: naslos-apps-priv
+  # Dataset access for baseline apps. PSA `baseline` forbids hostPath, but Naslos
+  # datasets are host directories, so the platform exposes them as a static RWX
+  # PV and the `naslos-datasets` PVC that apps mount. Privileged apps mount the
+  # host path directly.
+  datasets:
+    enabled: true
+    hostPath: /var/mnt
+    size: 10Ti
   # TTL after which a cached repository clone is refreshed.
   refreshTTL: 15m
   # TLS Secret the app IngressRoutes reference (written by the app-domain

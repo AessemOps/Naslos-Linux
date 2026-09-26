@@ -9,7 +9,6 @@ and installs charts from the **local clone path** — the distroless image has n
 
 ```
 <repo-root>/
-  naslos-repo.yaml            # optional: channel -> branch mapping, display name
   apps/
     jellyfin/
       Chart.yaml              # the folder IS the chart
@@ -18,9 +17,11 @@ and installs charts from the **local clone path** — the distroless image has n
       naslos-app.yaml         # install-config (metadata + schema + defaults + services + exposure)
 ```
 
-`naslos-repo.yaml` (optional, at the repository root) names the repo and maps
-channels to branches; without it the default `Prod`/`Develop`/`Experimental`
-mapping is used. A channel whose branch does not exist is simply not offered.
+Channels map to git branches on the Naslos side: a source's channel map
+(`apps.officialSource.channels`, or the `channels` field when adding a source)
+maps a channel name to a branch in the repository. A repository with only a
+`main` branch uses `{Prod: main}`. A channel pointing at a missing branch
+reports an error for that source.
 
 ### `naslos-app.yaml`
 
@@ -166,6 +167,13 @@ cert-manager CRDs; `make crds` installs them.
 Apps use `local-path-provisioner`, the only provisioner installed; the
 `naslos-zfs` ZFS LocalPV storage class was removed (AUDIT-M13) — see
 [storage-zfs.md](storage-zfs.md#storage-classes--app-data).
+
+PSA `baseline` (the `naslos-apps` namespace) forbids `hostPath` volumes, but
+Naslos datasets are host directories. The chart therefore publishes them as a
+static RWX `naslos-datasets` PV/PVC (`apps.datasets`, backed by
+`apps.datasets.hostPath`, default `/var/mnt`) that managed apps mount via a
+normal `persistentVolumeClaim` volume. Privileged apps (`naslos-apps-priv`) may
+mount the host path directly and share the same data.
 
 ## Operational notes
 
