@@ -294,6 +294,7 @@ func (s *Server) setupChartRepos(appsHelmClient *helm.Client) {
 		Charts:     s.charts,
 		Catalog:    func() *catalog.Catalog { return s.catalog.Load() },
 		Router:     router,
+		Discoverer: appServiceDiscoverer{client: s.kubernetesClient},
 		BaseDomain: s.baseDomain,
 		SSODomains: s.ssoDomains,
 	})

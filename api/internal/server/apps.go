@@ -102,6 +102,10 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		s.handleAppExposure(w, r, strings.TrimSuffix(path, "/exposure"))
 		return
 	}
+	if strings.HasSuffix(path, "/services") {
+		s.handleAppServices(w, r, strings.TrimSuffix(path, "/services"))
+		return
+	}
 	name := path
 	if name == "" || strings.Contains(name, "/") {
 		writeError(w, http.StatusNotFound, "app not found")
@@ -145,6 +149,25 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// handleAppServices lists the Services a release rendered, for the exposure
+// UI's route-target picker.
+func (s *Server) handleAppServices(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if name == "" || strings.Contains(name, "/") {
+		writeError(w, http.StatusNotFound, "app not found")
+		return
+	}
+	services, err := s.appManager.DiscoverServices(r.Context(), name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, services)
 }
 
 // handleAppExposure reads or updates an app's exposure settings.

@@ -9,12 +9,26 @@
     scheme?: string;
   }
 
+  interface ServiceOption {
+    name: string;
+    port: number;
+    scheme: string;
+  }
+
   export let exposure: Exposure;
   export let baseDomain = '';
   export let authAllowed = true;
+  export let services: ServiceOption[] = [];
 
   function set<K extends keyof Exposure>(key: K, value: Exposure[K]) {
     exposure = { ...exposure, [key]: value };
+  }
+
+  function chooseTarget(value: string) {
+    const svc = services.find((s) => `${s.name}:${s.port}` === value);
+    if (svc) {
+      exposure = { ...exposure, service: svc.name, port: svc.port, scheme: svc.scheme };
+    }
   }
 </script>
 
@@ -36,6 +50,35 @@
       Leave empty to keep the app cluster-internal (no route is created).
     </p>
   </div>
+
+  {#if services.length > 0}
+    <div>
+      <label class="label" for="exposure-service">Route target</label>
+      <select
+        id="exposure-service"
+        class="input"
+        value={`${exposure.service ?? ''}:${exposure.port ?? ''}`}
+        on:change={(e) => chooseTarget((e.currentTarget as HTMLSelectElement).value)}
+      >
+        {#if exposure.service}
+          <option value={`${exposure.service}:${exposure.port ?? ''}`}>
+            {exposure.service}:{exposure.port} ({exposure.scheme || 'http'}) — current
+          </option>
+        {/if}
+        {#each services as svc}
+          <option value={`${svc.name}:${svc.port}`}>{svc.name}:{svc.port} ({svc.scheme})</option>
+        {/each}
+      </select>
+      <p class="text-xs text-gray-500 mt-1">
+        The Service in the release this route forwards to.
+      </p>
+    </div>
+  {:else if exposure.service}
+    <div class="text-xs text-gray-500 border-t border-naslos-border pt-3">
+      Routed to <span class="text-gray-300">{exposure.service}:{exposure.port}</span>
+      ({exposure.scheme || 'http'}).
+    </div>
+  {/if}
 
   <label class="flex items-start gap-3 cursor-pointer">
     <input
@@ -84,11 +127,4 @@
       </span>
     </span>
   </label>
-
-  {#if exposure.service}
-    <div class="text-xs text-gray-500 border-t border-naslos-border pt-3">
-      Routed to <span class="text-gray-300">{exposure.service}:{exposure.port}</span>
-      ({exposure.scheme || 'http'}).
-    </div>
-  {/if}
 </div>

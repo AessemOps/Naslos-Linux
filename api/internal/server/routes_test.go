@@ -34,7 +34,7 @@ func newTestServer(t *testing.T) *Server {
 // table is deliberately exhaustive.
 var ownerPaths = []string{
 	"/api/catalog", "/api/catalog/nginx",
-	"/api/apps", "/api/apps/nginx", "/api/apps/nginx/exposure",
+	"/api/apps", "/api/apps/nginx", "/api/apps/nginx/exposure", "/api/apps/nginx/services",
 	"/api/sources", "/api/sources/refresh", "/api/sources/mine",
 	"/api/domains", "/api/domains/example.com", "/api/domains/example.com/certificate",
 	"/api/disks", "/api/disks/recommend",
@@ -169,6 +169,7 @@ func TestNonAdminMayOnlyReachTheirIdentityAndDashboard(t *testing.T) {
 		"/api/sources", "/api/sources/refresh", "/api/sources/mine",
 		"/api/domains", "/api/domains/example.com", "/api/domains/example.com/certificate",
 		"/api/apps/nginx/exposure",
+		"/api/apps/nginx/services",
 		"/api/pods", "/api/namespaces", "/api/ws/logs", "/api/ws/exec",
 		"/api/buddy/status", "/api/buddy/peers", "/api/buddy/identity", "/api/buddy/send",
 		"/api/buddy/restore", "/api/buddy/jobs", "/api/buddy/jobs/abc123", "/api/buddy/schedules",

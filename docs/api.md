@@ -83,6 +83,7 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | DELETE | `/api/apps/{name}` | Uninstall app, remove its route and record |
 | GET | `/api/apps/{name}/exposure` | Exposure settings + whether auth is allowed |
 | PUT | `/api/apps/{name}/exposure` | Update `{exposure, baseDomain?}`, re-render the route |
+| GET | `/api/apps/{name}/services` | Services the release rendered (route-target discovery/picker) |
 
 ### Chart repositories (sources)
 
