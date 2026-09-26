@@ -97,8 +97,15 @@ via `storageState`; a target that does not challenge is an error.
 - **Tests before hand-off**: `go build/vet/test` for both Go modules,
   `npm run check`, `helm lint`, the Playwright suite for UI/API changes, and a
   live drill for anything touching the node (shares, LDAP, ZFS, backups).
-- **Keep `AI_Handoff.md` current**: it is the ~1-page "deployed right now" page;
-  new session narratives belong in `docs/archive/`, not there.
+- **Docs rule**: `AI_Handoff.md` and the per-topic `docs/` (`spec.md`, `api.md`,
+  `deployment.md`, `operations.md`, …) are always kept up to date. A change that
+  alters behavior, an endpoint, a config key or env var, the chart/install path,
+  or the deployed state updates every affected doc **in the same change** — a doc
+  that no longer matches the code makes the change incomplete. `AI_Handoff.md`
+  stays the ~1-page "deployed right now" page (image tags, helm revision, open
+  PRs, live-drill results); new session narratives belong in `docs/archive/`, not
+  there. When a session ends, the handoff reflects what is actually deployed —
+  never stale tags or revisions.
 - Third-party attribution lives in [`CREDITS.md`](CREDITS.md).
 
 ## Deploying to the VM
