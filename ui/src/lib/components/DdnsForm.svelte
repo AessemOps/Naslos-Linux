@@ -152,6 +152,7 @@
           idPrefix="ddns"
           secretSet={entry?.credentialFields || []}
           unchangedPlaceholder="•••••• (unchanged)"
+          on:change={() => (fieldValues = { ...fieldValues })}
         />
       </div>
 

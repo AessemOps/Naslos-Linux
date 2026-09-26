@@ -137,6 +137,7 @@
           idPrefix="domain"
           secretSet={domain?.credentialsSecret ? certFields.filter((f: any) => f.secret).map((f: any) => f.key) : []}
           unchangedPlaceholder="•••••• (unchanged)"
+          on:change={() => (fieldValues = { ...fieldValues })}
         />
       {:else}
         <div>
