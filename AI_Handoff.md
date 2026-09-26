@@ -419,8 +419,8 @@ found were insider-exposure, not internet-exposure.
 
 ## Deployed right now (2026-09-26)
 
-On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 31**:
-`naslos-api` **`0.1.0-r28`** (git chart repos, privileged-namespace support,
+On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 32**:
+`naslos-api` **`0.1.0-r29`** (git chart repos, privileged-namespace support,
 datasets PV/PVC, declarative DNS providers + Dynamic DNS, provider `apiRights`,
 OVH webhook solver), `naslos-ui` **`0.1.0-r21`** (Sources tab, exposure editor,
 Domains & SSL with the provider API-rights info bubble and a self-refreshing

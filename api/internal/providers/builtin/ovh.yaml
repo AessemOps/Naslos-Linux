@@ -10,7 +10,7 @@ description: OVH DynHost (username/password) or ZoneDNS API (application keys).
 icon: "🟦"
 apiRights:
   - "ZoneDNS API rights scoped to the domain's zone: GET/POST/PUT/DELETE /domain/zone/<zone>/*"
-  - "Cover the /record, /status and /refresh subpaths (e.g. /domain/zone/florentinrichard.fr/*)"
+  - "Cover the /record, /status and /refresh subpaths (e.g. /domain/zone/example.com/*)"
   - "Scope to the single zone, not /domain/zone/* across all zones"
 fields:
   # DynHost mode (scope: ddns) — ddns-updater's default "dynamic" mode.
