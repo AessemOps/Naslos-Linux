@@ -11,16 +11,21 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/AessemOps/Naslos-Linux/api/internal/agent"
+	"github.com/AessemOps/Naslos-Linux/api/internal/apps"
 	"github.com/AessemOps/Naslos-Linux/api/internal/auth"
 	"github.com/AessemOps/Naslos-Linux/api/internal/buddy"
 	"github.com/AessemOps/Naslos-Linux/api/internal/catalog"
+	"github.com/AessemOps/Naslos-Linux/api/internal/certs"
+	"github.com/AessemOps/Naslos-Linux/api/internal/chartsrepo"
 	"github.com/AessemOps/Naslos-Linux/api/internal/helm"
 	"github.com/AessemOps/Naslos-Linux/api/internal/identity"
 	"github.com/AessemOps/Naslos-Linux/api/internal/metrics"
 	"github.com/AessemOps/Naslos-Linux/api/internal/notifications"
+	"github.com/AessemOps/Naslos-Linux/api/internal/routing"
 	"github.com/AessemOps/Naslos-Linux/api/internal/shares"
 	"github.com/AessemOps/Naslos-Linux/api/internal/talos"
 )
@@ -31,7 +36,7 @@ type Server struct {
 	talos         *talos.Client
 	agent         *agent.Client
 	helm          *helm.Client
-	catalog       *catalog.Catalog
+	catalog       atomic.Pointer[catalog.Catalog]
 	shares        *shares.Manager
 	sambaUsers    *shares.SambaUserStore
 	metrics       *metrics.Manager
@@ -42,6 +47,24 @@ type Server struct {
 	// namespace is where Naslos runs; it is the terminal's default namespace and
 	// the scope the API's exec permission is limited to.
 	namespace string
+	// appsNamespace is where user-installed apps run and where the API owns
+	// routing and certificates.
+	appsNamespace string
+	// appsPrivNamespace is the privileged apps namespace for apps that declare
+	// `privileged: true` (VPN sidecars needing NET_ADMIN).
+	appsPrivNamespace string
+	// charts sources/cache and the app record manager.
+	charts     *chartsrepo.Manager
+	sources    *chartsrepo.Store
+	appManager *apps.Manager
+	routing    *routing.Reconciler
+	certs      *certs.Reconciler
+	domains    *certs.Store
+	// baseDomain is the primary domain app subdomains hang off; ssoDomains are
+	// the Authelia-protected domains.
+	baseDomain      string
+	ssoDomains      []string
+	platformRelease string
 	// buddy is the receive side of Buddy Backup: peers push encrypted chunks that
 	// this instance stores but cannot read (docs/buddy-backup.md).
 	buddy *buddy.Receiver
@@ -75,12 +98,6 @@ func (s *Server) setNotificationManager(m *notifications.Manager) {
 
 // New creates a new server.
 func New(addr string, tc *talos.Client) *Server {
-	// Initialize Helm client for the naslos namespace
-	helmClient := helm.NewClient("naslos")
-
-	// Initialize app catalog (built-in)
-	c := catalog.New("")
-
 	// Initialize share manager. The config path is where share definitions
 	// are persisted; without it shares would live only in memory and be lost
 	// on every restart (see SHARES_CONFIG / the naslos-shares volume).
@@ -135,6 +152,13 @@ func New(addr string, tc *talos.Client) *Server {
 	// URL defaults to the in-namespace DNS name and is overridable via
 	// AGENT_BASE_URL for local dev (e.g. with a kubectl port-forward).
 	namespace := getEnv("NASLOS_NAMESPACE", "naslos")
+	appsNamespace := getEnv("APPS_NAMESPACE", "naslos-apps")
+	appsPrivNamespace := getEnv("APPS_PRIVILEGED_NAMESPACE", "naslos-apps-priv")
+	baseDomain := getEnv("NASLOS_DOMAIN", getEnv("DOMAIN", "naslos.local"))
+	ssoDomains := getEnvList("SSO_DOMAINS", []string{baseDomain})
+	platformRelease := getEnv("PLATFORM_RELEASE", namespace)
+	helmClient := helm.NewClient(namespace)
+	appsHelmClient := helm.NewClient(appsNamespace)
 	agentBaseURL := getEnv("AGENT_BASE_URL", fmt.Sprintf(agent.DefaultBaseURLPattern, namespace))
 	// The agent requires the shared token on every request but /health; the same
 	// value is mounted into both workloads from the naslos-agent-auth Secret.
@@ -170,25 +194,180 @@ func New(addr string, tc *talos.Client) *Server {
 	}
 
 	s := &Server{
-		addr:          addr,
-		talos:         tc,
-		agent:         agentClient,
-		helm:          helmClient,
-		catalog:       c,
-		shares:        shareManager,
-		sambaUsers:    sambaUserStore,
-		metrics:       metricsManager,
-		notifications: notifManager,
-		identity:      identityClient,
-		auth:          authMiddleware,
-		namespace:     namespace,
-		buddy:         buddyReceiver,
+		addr:              addr,
+		talos:             tc,
+		agent:             agentClient,
+		helm:              helmClient,
+		shares:            shareManager,
+		sambaUsers:        sambaUserStore,
+		metrics:           metricsManager,
+		notifications:     notifManager,
+		identity:          identityClient,
+		auth:              authMiddleware,
+		namespace:         namespace,
+		appsNamespace:     appsNamespace,
+		appsPrivNamespace: appsPrivNamespace,
+		baseDomain:        baseDomain,
+		ssoDomains:        ssoDomains,
+		platformRelease:   platformRelease,
+		buddy:             buddyReceiver,
 		// Owner routes are gated on the proxy secret by the composed router in
 		// routes().
 		router: http.NewServeMux(),
 	}
+	s.setupChartRepos(appsHelmClient)
 	s.routes()
 	return s
+}
+
+// setupChartRepos wires the source store, the git cache, the catalog snapshot,
+// the app records manager and the routing/certificates reconcilers.
+func (s *Server) setupChartRepos(appsHelmClient *helm.Client) {
+	sources := chartsrepo.NewStore(getEnv("SOURCES_CONFIG", "/var/lib/naslos/sources.json"))
+	if err := sources.Load(); err != nil {
+		log.Printf("Warning: could not load chart sources: %v", err)
+	}
+	s.sources = sources
+
+	creds := serverCredentials{s: s, defaultNS: s.namespace}
+	s.charts = chartsrepo.NewManager(
+		sources,
+		getEnv("CHARTS_CACHE_DIR", "/var/lib/naslos/charts"),
+		getEnvDuration("CHARTS_TTL", chartsrepo.DefaultTTL),
+		creds,
+	)
+
+	// Seed the official source once, from the chart's environment.
+	if url := getEnv("SOURCES_OFFICIAL_URL", ""); url != "" {
+		if _, err := sources.Get(getEnv("SOURCES_OFFICIAL_NAME", "naslos")); err != nil {
+			official := &chartsrepo.Source{
+				Name:              getEnv("SOURCES_OFFICIAL_NAME", "naslos"),
+				DisplayName:       getEnv("SOURCES_OFFICIAL_DISPLAY", "NaslosCharts"),
+				URL:               url,
+				Auth:              chartsrepo.AuthType(getEnv("SOURCES_OFFICIAL_AUTH", string(chartsrepo.AuthPublic))),
+				CredentialsSecret: getEnv("SOURCES_OFFICIAL_SECRET", ""),
+				Channels:          getEnvMap("SOURCES_OFFICIAL_CHANNELS"),
+				Official:          true,
+			}
+			if _, err := s.charts.AddSource(official); err != nil {
+				log.Printf("Warning: could not seed the official chart source: %v", err)
+			}
+		}
+	}
+
+	s.catalog.Store(s.buildCatalog())
+
+	// Base domains are loaded before the routing reconciler, whose TLS-secret
+	// resolver reads them.
+	domains := certs.NewStore(getEnv("DOMAINS_CONFIG", "/var/lib/naslos/domains.json"))
+	if err := domains.Load(); err != nil {
+		log.Printf("Warning: could not load domains: %v", err)
+	}
+	s.domains = domains
+
+	// Dynamic client for routing and certificates. A failure here (e.g. no
+	// cluster in a unit test) degrades to no routing rather than a fatal error.
+	var router apps.Router
+	if dyn, err := s.dynamicKubernetesClient(); err == nil {
+		s.routing = routing.NewReconciler(dyn, routing.Options{
+			Namespace:         s.appsNamespace,
+			TLSSecret:         getEnv("APPS_TLS_SECRET", "naslos-apps-tls"),
+			AutheliaService:   getEnv("AUTHELIA_SERVICE", "naslos-authelia"),
+			AutheliaPort:      getEnvInt("AUTHELIA_PORT", 80),
+			AutheliaNamespace: s.namespace,
+			LocalOnlyCIDR:     getEnv("EXPOSURE_LOCAL_ONLY_CIDR", ""),
+			// A domain's wildcard Certificate writes a per-domain Secret; the
+			// route must reference that, not a fixed name.
+			TLSSecretFor: func(baseDomain string) string {
+				if s.domains == nil {
+					return ""
+				}
+				if domain, err := s.domains.Get(baseDomain); err == nil {
+					return domain.SecretName()
+				}
+				return ""
+			},
+		})
+		s.certs = certs.NewReconciler(dyn, s.appsNamespace)
+		router = s.routing
+	} else {
+		log.Printf("Warning: no dynamic client for app routing: %v", err)
+	}
+
+	manager, err := apps.NewManager(apps.Config{
+		StorePath:           getEnv("APPS_CONFIG", "/var/lib/naslos/apps.json"),
+		Helm:                appsHelmClient,
+		HelmPrivileged:      helm.NewClient(s.appsPrivNamespace),
+		PrivilegedNamespace: s.appsPrivNamespace,
+		Charts:              s.charts,
+		Catalog:             func() *catalog.Catalog { return s.catalog.Load() },
+		Router:              router,
+		Discoverer:          appServiceDiscoverer{client: s.kubernetesClient},
+		BaseDomain:          s.baseDomain,
+		SSODomains:          s.ssoDomains,
+	})
+	if err != nil {
+		log.Printf("Warning: could not load installed-app records: %v", err)
+	}
+	s.appManager = manager
+}
+
+// buildCatalog scans the cached repositories into a catalog snapshot.
+func (s *Server) buildCatalog() *catalog.Catalog {
+	if s.charts == nil {
+		return catalog.Load(nil)
+	}
+	refs := make([]catalog.SourceRef, 0)
+	for _, src := range s.charts.Sources() {
+		for _, channel := range src.ChannelNames() {
+			dir, err := s.charts.Dir(src.Name, channel)
+			if err != nil {
+				continue
+			}
+			refs = append(refs, catalog.SourceRef{
+				Name:        src.Name,
+				DisplayName: src.DisplayName,
+				Channel:     channel,
+				Dir:         dir,
+				Official:    src.Official,
+			})
+		}
+	}
+	return catalog.Load(refs)
+}
+
+// reconcileApps refreshes sources, rebuilds the catalog, backfills records and
+// converges routing. It is best-effort: failures are logged, not fatal.
+func (s *Server) reconcileApps() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	if err := s.refreshSources(ctx); err != nil {
+		log.Printf("Warning: chart repository refresh failed: %v", err)
+	}
+	if s.appManager == nil {
+		return
+	}
+	if releases, err := s.discoverPlatformReleases(ctx); err == nil {
+		if err := s.appManager.Backfill(ctx, s.platformRelease, releases); err != nil {
+			log.Printf("Warning: app backfill failed: %v", err)
+		}
+	} else {
+		log.Printf("Warning: could not discover platform releases for backfill: %v", err)
+	}
+	if err := s.appManager.ReconcileRoutes(ctx); err != nil {
+		log.Printf("Warning: app route reconcile failed: %v", err)
+	}
+}
+
+// refreshSources refreshes every configured source and rebuilds the snapshot.
+func (s *Server) refreshSources(ctx context.Context) error {
+	if s.charts == nil {
+		return nil
+	}
+	err := s.charts.RefreshAll(ctx)
+	s.catalog.Store(s.buildCatalog())
+	return err
 }
 
 // getEnv returns the value of an environment variable or a default.
@@ -204,6 +383,16 @@ func getEnvInt(key string, defaultValue int) int {
 	if value, ok := os.LookupEnv(key); ok {
 		if intVal, err := strconv.Atoi(value); err == nil {
 			return intVal
+		}
+	}
+	return defaultValue
+}
+
+// getEnvDuration returns a duration environment variable or a default.
+func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
+	if value, ok := os.LookupEnv(key); ok {
+		if parsed, err := time.ParseDuration(value); err == nil {
+			return parsed
 		}
 	}
 	return defaultValue
@@ -233,6 +422,15 @@ func (s *Server) routes() {
 	// Apps (installed)
 	owner.HandleFunc("/api/apps", s.handleApps)
 	owner.HandleFunc("/api/apps/", s.handleAppDetail)
+
+	// Chart repositories (sources)
+	owner.HandleFunc("/api/sources", s.handleSources)
+	owner.HandleFunc("/api/sources/refresh", s.handleSourcesRefresh)
+	owner.HandleFunc("/api/sources/", s.handleSourceDetail)
+
+	// Domains & certificates
+	owner.HandleFunc("/api/domains", s.handleDomains)
+	owner.HandleFunc("/api/domains/", s.handleDomainDetail)
 
 	// Disks
 	owner.HandleFunc("/api/disks", s.handleDisks)
@@ -348,6 +546,11 @@ func (s *Server) Start() error {
 	// Kick off the background metrics collector so the dashboard has data
 	// as soon as the server comes up.
 	s.startMetricsCollector()
+
+	// Refresh the chart repositories, rebuild the catalog, backfill records and
+	// converge routing. Runs in the background so an unreachable remote cannot
+	// block the API from serving.
+	go s.reconcileApps()
 
 	// Async buddy sends and the backup scheduler (FR-BUD-15/16).
 	s.ensureBuddyJobs()

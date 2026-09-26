@@ -11,6 +11,31 @@
 | go | 1.26.5+ (build api/agent; see `api/go.mod`) |
 | node | 20+ (build ui) |
 
+### App install prerequisites
+
+- **`make crds`** installs both the Traefik and the cert-manager CRDs. The app
+  routing layer needs the Traefik CRDs; the SSL page is gated on the
+  cert-manager CRDs.
+- **cert-manager is optional.** Set `certManager.enabled=true` to install the
+  subchart, or install cert-manager yourself. Without it, apps still install and
+  route; only ACME certificates are unavailable.
+- **Wildcard DNS** for app subdomains: point `*.<domain>` at the node
+  (router/dnsmasq/registrar). Without it, `<app>.<domain>` does not resolve.
+- **A chart repository** with `apps/<name>/` entries (see
+  [app-catalog.md](app-catalog.md)). Seed the official one with
+  `apps.officialSource.url`; for SSH, create the deploy-key Secret first
+  (see the Operational notes in [app-catalog.md](app-catalog.md)).
+- **Pod egress to the git host.** The API clones repositories itself, so set
+  `networkPolicy.gitEgress: true` (already on in `values-vm.yaml`) to allow
+  outbound git (HTTPS 443 / SSH 22 / git:// 9418). The default target is
+  `0.0.0.0/0`; narrow `networkPolicy.gitEgressCIDRs` for an air-gapped or
+  egress-restricted network. `apps.officialSource.channels` maps channels to
+  branches (e.g. `{Prod: main}` for a repository with only `main`).
+- **Datasets for apps.** `apps.datasets` publishes the host datasets root
+  (default `/var/mnt`) as a static RWX `naslos-datasets` PV/PVC that baseline
+  apps mount, because PSA `baseline` forbids `hostPath` in `naslos-apps`.
+
+
 ## Images
 
 | Image | Where it comes from |

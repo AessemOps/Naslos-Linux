@@ -431,6 +431,38 @@ spec:
         - ipBlock:
             cidr: {{ . | quote }}
     {{- end }}
+    {{- if .Values.networkPolicy.gitEgress }}
+    # Git chart repositories are cloned by the API pod (and fetched by the
+    # installer). Open only the git transports to the configured CIDRs - not a
+    # general all-port Internet opening.
+    - to:
+        {{- range (.Values.networkPolicy.gitEgressCIDRs | default (list "0.0.0.0/0")) }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 22
+        - protocol: TCP
+          port: 9418
+    {{- end }}
+    {{- $ans := .Values.apps.namespace | default "naslos-apps" }}
+    {{- $apriv := .Values.apps.privilegedNamespace | default "naslos-apps-priv" }}
+    {{- if ne $ans $ns }}
+    # Traefik and the API reach apps in the managed apps namespace.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ans }}
+    {{- end }}
+    {{- if and (ne $apriv $ns) (ne $apriv $wns) (ne $apriv $ans) }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $apriv }}
+    {{- end }}
 {{- if $split }}
 ---
 # AUDIT-M6: the same egress policy for the privileged namespace. Without it the
@@ -485,6 +517,38 @@ spec:
     - to:
         - ipBlock:
             cidr: {{ . | quote }}
+    {{- end }}
+    {{- if .Values.networkPolicy.gitEgress }}
+    # Git chart repositories are cloned by the API pod (and fetched by the
+    # installer). Open only the git transports to the configured CIDRs - not a
+    # general all-port Internet opening.
+    - to:
+        {{- range (.Values.networkPolicy.gitEgressCIDRs | default (list "0.0.0.0/0")) }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 22
+        - protocol: TCP
+          port: 9418
+    {{- end }}
+    {{- $ans := .Values.apps.namespace | default "naslos-apps" }}
+    {{- $apriv := .Values.apps.privilegedNamespace | default "naslos-apps-priv" }}
+    {{- if ne $ans $ns }}
+    # Traefik and the API reach apps in the managed apps namespace.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ans }}
+    {{- end }}
+    {{- if and (ne $apriv $ns) (ne $apriv $wns) (ne $apriv $ans) }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $apriv }}
     {{- end }}
 {{- end }}
 {{- if .Values.networkPolicy.cilium.enabled }}

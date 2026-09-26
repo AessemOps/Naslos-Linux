@@ -15,6 +15,7 @@
     { name: 'Groups', path: '/groups', icon: '👥' },
     { name: 'Disks', path: '/disks', icon: '💾' },
     { name: 'Apps', path: '/apps', icon: '📦' },
+    { name: 'Domains', path: '/domains', icon: '🌐' },
     { name: 'Shares', path: '/shares', icon: '🔗' },
     { name: 'Backups', path: '/backups', icon: '💾' },
     { name: 'Terminal', path: '/terminal', icon: '💻' },

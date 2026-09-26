@@ -222,6 +222,52 @@ secret_ns = {
 }
 assert secret_ns == {"naslos", "naslos-privileged"}, \
     f"the naslos-agent Secret must exist in both namespaces, got {secret_ns}"
+
+# App-install subsystem: apps get their own namespace (PSA baseline) and the API
+# gets a namespaced Role there; the env must be wired for it to work at all.
+apps_ns = nss.get("naslos-apps")
+assert apps_ns is not None, "missing naslos-apps namespace"
+assert apps_ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "baseline", \
+    "naslos-apps must enforce baseline"
+assert ("Role", "naslos-api-apps", "naslos-apps") in roles, \
+    "the API must have a namespaced Role in naslos-apps"
+assert ("RoleBinding", "naslos-api-apps", "naslos-apps") in roles, \
+    "the API RoleBinding must be in naslos-apps"
+for d in docs:
+    if d.get("kind") == "RoleBinding" and d["metadata"]["name"] == "naslos-api-apps":
+        assert any(s.get("namespace") == "naslos" for s in d.get("subjects", [])), \
+            "the naslos-api-apps binding must target the API in the release namespace"
+assert api_env.get("APPS_NAMESPACE") == "naslos-apps", "the API must know the apps namespace"
+assert api_env.get("SOURCES_CONFIG"), "the API must get a sources state path"
+assert api_env.get("DOMAINS_CONFIG"), "the API must get a domains state path"
+
+# Privileged apps namespace: PSA privileged, with its own API Role, for charts
+# that need NET_ADMIN (VPN sidecars) and cannot run under baseline.
+priv_ns = nss.get("naslos-apps-priv")
+assert priv_ns is not None, "missing naslos-apps-priv namespace"
+assert priv_ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "privileged", \
+    "naslos-apps-priv must enforce privileged"
+assert ("Role", "naslos-api-apps", "naslos-apps-priv") in roles, \
+    "the API must have a namespaced Role in naslos-apps-priv"
+assert api_env.get("APPS_PRIVILEGED_NAMESPACE") == "naslos-apps-priv", \
+    "the API must know the privileged apps namespace"
+
+# Backfill reads Helm labels from workloads rather than listing Secrets; the
+# platform read Role must exist and must NOT grant secret access.
+assert ("Role", "naslos-api-platform-read", "naslos") in roles, \
+    "the API needs read-only workload access in the release namespace for backfill"
+for d in docs:
+    if d.get("kind") == "Role" and d["metadata"]["name"] == "naslos-api-platform-read":
+        resources = [res for rule in d.get("rules", []) for res in rule.get("resources", [])]
+        assert "secrets" not in resources, \
+            "the platform read Role must not grant secrets (it would expose proxy/LDAP/Authelia secrets)"
+
+# The security-headers middleware must NOT pin HSTS for subdomains: an app
+# subdomain can serve a TLS-off route that HSTS would make unreachable.
+for d in docs:
+    if d.get("kind") == "Middleware" and d["metadata"]["name"] == "security-headers":
+        assert "stsIncludeSubdomains" not in d["spec"]["headers"], \
+            "security-headers must not set stsIncludeSubdomains"
 print("network policy intent ok")
 PY
   rc=$?

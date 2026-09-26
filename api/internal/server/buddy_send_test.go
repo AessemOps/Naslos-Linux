@@ -831,9 +831,9 @@ func TestBuddySendAllowsASmallDataset(t *testing.T) {
 func TestRequireStreamMatchesDataset(t *testing.T) {
 	const mib = 1 << 20
 	cases := []struct {
-		name                 string
-		used, plain          int64
-		wantErr              bool
+		name        string
+		used, plain int64
+		wantErr     bool
 	}{
 		{"empty dataset", 0, 100, false},
 		{"sub-floor dataset", mib - 1, 100, false},

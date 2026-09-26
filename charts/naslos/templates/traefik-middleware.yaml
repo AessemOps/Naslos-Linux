@@ -38,7 +38,8 @@ spec:
     browserXssFilter: true
     contentTypeNosniff: true
     frameDeny: true
-    stsIncludeSubdomains: true
+    # Deliberately no stsIncludeSubdomains: an app subdomain can serve a TLS-off
+    # route, and an HSTS policy pinned by the main UI would make it unreachable.
     # No stsPreload: this is a .local host with a chart-generated self-signed
     # certificate, so preload can never be earned and HSTS otherwise removes the
     # "proceed anyway" path a user needs until they trust the cert.

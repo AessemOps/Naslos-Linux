@@ -2,10 +2,10 @@ package server
 
 import (
 	"encoding/json"
-	"maps"
 	"net/http"
+	"strings"
 
-	"github.com/AessemOps/Naslos-Linux/api/internal/helm"
+	"github.com/AessemOps/Naslos-Linux/api/internal/apps"
 )
 
 // handleCatalog returns the list of available apps in the catalog.
@@ -14,7 +14,12 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.catalog.List())
+	snapshot := s.catalog.Load()
+	if snapshot == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot.List())
 }
 
 // handleCatalogApp returns details of a specific catalog app, including its schema.
@@ -23,93 +28,100 @@ func (s *Server) handleCatalogApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-
-	name := r.URL.Path[len("/api/catalog/"):]
-	app, err := s.catalog.Get(name)
+	name := strings.TrimPrefix(r.URL.Path, "/api/catalog/")
+	snapshot := s.catalog.Load()
+	if snapshot == nil {
+		writeError(w, http.StatusNotFound, "catalog is not available")
+		return
+	}
+	app, err := snapshot.Get(name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-
 	writeJSON(w, http.StatusOK, app)
 }
 
 // handleApps handles installed app operations.
 func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
+	if s.appManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "app management is not available")
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
-		// List installed apps
-		apps, err := s.helm.List(r.Context())
+		views, err := s.appManager.List(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, apps)
+		writeJSON(w, http.StatusOK, views)
 
 	case http.MethodPost:
-		// Install app from catalog
 		var req struct {
-			Name   string                 `json:"name"`
-			Values map[string]interface{} `json:"values"`
+			Name       string                 `json:"name"`
+			Values     map[string]interface{} `json:"values"`
+			Exposure   *apps.Exposure         `json:"exposure,omitempty"`
+			BaseDomain string                 `json:"baseDomain,omitempty"`
+			Confirmed  bool                   `json:"confirmed"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-
-		// Get catalog entry for chart info
-		catalogApp, err := s.catalog.Get(req.Name)
-		if err != nil {
-			writeError(w, http.StatusNotFound, err.Error())
+		if !req.Confirmed {
+			writeError(w, http.StatusBadRequest, "install must be explicitly confirmed")
 			return
 		}
-
-		// Merge default values with user values. Clone first (nil-safe): writing
-		// straight into the catalog entry aliased the catalog's own map, so one
-		// install's values leaked into every later read of the entry (PF-M7).
-		values := maps.Clone(catalogApp.DefaultValues)
-		if values == nil {
-			values = make(map[string]interface{})
-		}
-		for k, v := range req.Values {
-			values[k] = v
-		}
-
-		// Install via Helm
-		rel, err := s.helm.Install(r.Context(), req.Name, catalogApp.Chart, values)
+		view, err := s.appManager.Install(r.Context(), apps.InstallRequest{
+			Name:       req.Name,
+			Values:     req.Values,
+			Exposure:   req.Exposure,
+			BaseDomain: req.BaseDomain,
+		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-
-		writeJSON(w, http.StatusCreated, map[string]string{
-			"status":  "app installed",
-			"name":    rel.Name,
-			"chart":   rel.Chart.Name(),
-			"version": rel.Chart.Metadata.Version,
-		})
+		writeJSON(w, http.StatusCreated, view)
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-// handleAppDetail handles individual app operations (configure/start/stop/uninstall).
+// handleAppDetail handles individual app operations (configure/exposure/uninstall).
 func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
-	name := r.URL.Path[len("/api/apps/"):]
+	if s.appManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "app management is not available")
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/apps/")
+	if strings.HasSuffix(path, "/exposure") {
+		s.handleAppExposure(w, r, strings.TrimSuffix(path, "/exposure"))
+		return
+	}
+	if strings.HasSuffix(path, "/services") {
+		s.handleAppServices(w, r, strings.TrimSuffix(path, "/services"))
+		return
+	}
+	name := path
+	if name == "" || strings.Contains(name, "/") {
+		writeError(w, http.StatusNotFound, "app not found")
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
-		// Get app details
-		app, err := s.helm.Get(r.Context(), name)
+		view, err := s.appManager.GetView(r.Context(), name)
 		if err != nil {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, app)
+		writeJSON(w, http.StatusOK, view)
 
 	case http.MethodPut:
-		// Upgrade/configure app
 		var req struct {
 			Values map[string]interface{} `json:"values"`
 		}
@@ -117,28 +129,15 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-
-		// Get catalog entry for chart reference
-		catalogApp, err := s.catalog.Get(name)
-		if err != nil {
-			writeError(w, http.StatusNotFound, err.Error())
-			return
-		}
-
-		rel, err := s.helm.Upgrade(r.Context(), name, catalogApp.Chart, req.Values)
+		view, err := s.appManager.Upgrade(r.Context(), name, req.Values)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-
-		writeJSON(w, http.StatusOK, map[string]string{
-			"status": "app updated",
-			"name":   rel.Name,
-		})
+		writeJSON(w, http.StatusOK, view)
 
 	case http.MethodDelete:
-		// Uninstall app
-		if err := s.helm.Uninstall(r.Context(), name); err != nil {
+		if err := s.appManager.Uninstall(r.Context(), name); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -152,10 +151,58 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Removed: handleAppStartStop was a stub that returned "not yet implemented",
-// had no route registered and no caller in the UI (staticcheck U1000, Batch 6).
-// App start/stop would be a real feature (scale replicas or a Helm suspend
-// value) and should be added with its route and a test when it is built.
+// handleAppServices lists the Services a release rendered, for the exposure
+// UI's route-target picker.
+func (s *Server) handleAppServices(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if name == "" || strings.Contains(name, "/") {
+		writeError(w, http.StatusNotFound, "app not found")
+		return
+	}
+	services, err := s.appManager.DiscoverServices(r.Context(), name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, services)
+}
 
-// ensure helm import is used
-var _ = helm.ReleaseStatus
+// handleAppExposure reads or updates an app's exposure settings.
+func (s *Server) handleAppExposure(w http.ResponseWriter, r *http.Request, name string) {
+	switch r.Method {
+	case http.MethodGet:
+		rec, err := s.appManager.Get(name)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"exposure":    rec.Exposure,
+			"baseDomain":  s.baseDomain,
+			"authAllowed": s.appManager.AuthAllowed(""),
+			"lastError":   rec.LastError,
+		})
+
+	case http.MethodPut:
+		var req struct {
+			Exposure   apps.Exposure `json:"exposure"`
+			BaseDomain string        `json:"baseDomain,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		view, err := s.appManager.SetExposure(r.Context(), name, req.Exposure, req.BaseDomain)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, view)
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}

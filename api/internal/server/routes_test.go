@@ -21,6 +21,10 @@ func newTestServer(t *testing.T) *Server {
 	t.Setenv("SHARES_CONFIG", filepath.Join(t.TempDir(), "shares.json"))
 	t.Setenv("SMB_USERS_CONFIG", filepath.Join(t.TempDir(), "smbusers.json"))
 	t.Setenv("NOTIFICATIONS_CONFIG", filepath.Join(t.TempDir(), "notifications.json"))
+	t.Setenv("APPS_CONFIG", filepath.Join(t.TempDir(), "apps.json"))
+	t.Setenv("SOURCES_CONFIG", filepath.Join(t.TempDir(), "sources.json"))
+	t.Setenv("DOMAINS_CONFIG", filepath.Join(t.TempDir(), "domains.json"))
+	t.Setenv("CHARTS_CACHE_DIR", filepath.Join(t.TempDir(), "charts"))
 
 	return New("127.0.0.1:0", nil)
 }
@@ -30,7 +34,9 @@ func newTestServer(t *testing.T) *Server {
 // table is deliberately exhaustive.
 var ownerPaths = []string{
 	"/api/catalog", "/api/catalog/nginx",
-	"/api/apps", "/api/apps/nginx",
+	"/api/apps", "/api/apps/nginx", "/api/apps/nginx/exposure", "/api/apps/nginx/services",
+	"/api/sources", "/api/sources/refresh", "/api/sources/mine",
+	"/api/domains", "/api/domains/example.com", "/api/domains/example.com/certificate",
 	"/api/disks", "/api/disks/recommend",
 	"/api/volumes", "/api/volumes/zfs", "/api/volumes/zfs/import", "/api/volumes/zfs/test",
 	"/api/datasets",
@@ -160,6 +166,10 @@ func TestNonAdminMayOnlyReachTheirIdentityAndDashboard(t *testing.T) {
 		"/api/shares/apply", "/api/shares/config/samba", "/api/shares/config/nfs",
 		"/api/notifications", "/api/notifications/test",
 		"/api/apps", "/api/apps/nginx", "/api/catalog", "/api/catalog/nginx",
+		"/api/sources", "/api/sources/refresh", "/api/sources/mine",
+		"/api/domains", "/api/domains/example.com", "/api/domains/example.com/certificate",
+		"/api/apps/nginx/exposure",
+		"/api/apps/nginx/services",
 		"/api/pods", "/api/namespaces", "/api/ws/logs", "/api/ws/exec",
 		"/api/buddy/status", "/api/buddy/peers", "/api/buddy/identity", "/api/buddy/send",
 		"/api/buddy/restore", "/api/buddy/jobs", "/api/buddy/jobs/abc123", "/api/buddy/schedules",

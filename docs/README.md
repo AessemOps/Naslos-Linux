@@ -22,7 +22,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [shares.md](shares.md) | SMB / NFS / Time-Machine share model, generated configs | New |
 | [terminal.md](terminal.md) | Web terminal: exec scoping, RBAC, terminal namespace | New |
 | [buddy-backup.md](buddy-backup.md) | Buddy Backup: owner-to-owner encrypted backup, enrollment, verify/restore | New |
-| [app-catalog.md](app-catalog.md) | App catalog, JSON-Schema-driven forms, Helm lifecycle | New |
+| [app-catalog.md](app-catalog.md) | App catalog: git chart repositories, `naslos-app.yaml`, install lifecycle, exposure/routing, domains/certs, privileged NS | Rebuilt |
 | [monitoring.md](monitoring.md) | Metrics API, Prometheus + Alertmanager (Grafana removed) | New |
 | [notifications.md](notifications.md) | ntfy alerting: topics, severities, defaults | New |
 | [deployment.md](deployment.md) | Prerequisites, Make targets, Helm values walkthrough | New |
@@ -53,6 +53,9 @@ plans live in [`plans/`](plans/).
   on top (schematic, chart, agents).
 - The authenticated services run in the `naslos` namespace; the
   hostNetwork/privileged workloads (agent, samba, nfs, terminal) run in
-  `naslos-privileged` (AUDIT-M6). Documents name the namespace where it matters.
+  `naslos-privileged` (AUDIT-M6). Installed apps run in `naslos-apps` (PSA
+  `baseline`); apps that declare `privileged: true` (VPN sidecars) run in
+  `naslos-apps-priv` (PSA `privileged`). Documents name the namespace where it
+  matters.
 - Command examples assume `kubectl`/`talosctl`/`helm` are available and pointed
   at the right cluster.
