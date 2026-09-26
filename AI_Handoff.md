@@ -390,6 +390,10 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
   updates `CREDITS.md` **in the same change**, and bumps its `Last reviewed` line.
 - **Found a defect while drilling?** Fix it in the same branch with a test, and record
   it where the next session will read it — that is how every fix in this repo landed.
+- **Fixes must land in a fresh install**: put them in the declarative path (the
+  `Makefile`, `charts/naslos/` + `values-vm.yaml`, or `scripts/deploy-vm.sh`) and in
+  the images built at install time — never only in the live cluster. Verify with
+  `make -n install-vm` / `helm template`; document any operator-only prerequisite.
 - **Tests before hand-off**: `go build/vet/test` for both Go modules, `svelte-check`,
   `helm lint`, the Playwright suite for UI/API changes, and a live drill for anything
   touching the node (shares, LDAP, ZFS, backups).
