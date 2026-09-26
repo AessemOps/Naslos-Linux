@@ -123,9 +123,11 @@ subjects:
 {{- if and .Values.ui.enabled .Values.authelia.enabled }}
 ---
 # Live SSO promotion (docs/spec.md FR-APP-15): the API rewrites only the SSO
-# fragment ConfigMap and restarts only the Authelia workload. resourceNames
-# scopes both rules so the jwt/LDAP secrets (authelia-config, naslos-openldap)
-# stay out of the API's reach - it must never get `get` on authelia-config.
+# fragment ConfigMap and restarts Authelia by deleting its pod (the StatefulSet
+# controller recreates it against the new fragments). Deleting a pod cannot
+# change the pod spec, so the pod-template secrets (the LDAP bind password and
+# the Authelia session/storage/jwt keys) stay out of the API's reach - unlike a
+# workload patch. resourceNames scopes both rules to the one object each.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -138,10 +140,10 @@ rules:
     resources: ["configmaps"]
     resourceNames: ["naslos-authelia-sso"]
     verbs: ["get", "update", "patch"]
-  - apiGroups: ["apps"]
-    resources: ["statefulsets"]
-    resourceNames: ["naslos-authelia"]
-    verbs: ["patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    resourceNames: ["naslos-authelia-0"]
+    verbs: ["delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

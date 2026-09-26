@@ -361,7 +361,7 @@ func (s *Server) setupChartRepos(appsHelmClient *helm.Client) {
 		Client:    s.kubernetesClient,
 		Namespace: getEnv("AUTHELIA_NAMESPACE", s.namespace),
 		ConfigMap: getEnv("AUTHELIA_SSO_CONFIGMAP", "naslos-authelia-sso"),
-		Workload:  getEnv("AUTHELIA_WORKLOAD", "naslos-authelia"),
+		Pod:       getEnv("AUTHELIA_POD", "naslos-authelia-0"),
 	})
 }
 

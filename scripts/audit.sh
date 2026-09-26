@@ -88,8 +88,15 @@ assert seed["metadata"].get("annotations", {}).get("helm.sh/resource-policy") ==
     "the SSO seed ConfigMap must be kept across upgrades"
 assert "cookies.yml" in seed["data"] and "rules.yml" in seed["data"], \
     "the seed ConfigMap must carry cookies.yml and rules.yml"
-assert "*.naslos.local" in seed["data"]["rules.yml"], \
-    "the seed must include the primary wildcard rule"
+# Seed/Fragments parity tripwire: the chart seed is only adopted because the API
+# renders the same structure, so any drift must fail here. Values are the VM
+# profile's sso.domains (naslos.local).
+assert yaml.safe_load(seed["data"]["cookies.yml"]) == [
+    {"domain": "naslos.local", "authelia_url": "https://naslos.local/authelia/"},
+], f"seed cookies drifted from the API Fragments output: {seed['data']['cookies.yml']!r}"
+assert yaml.safe_load(seed["data"]["rules.yml"]) == [
+    {"domain": "*.naslos.local", "policy": "one_factor"},
+], f"seed rules drifted from the API Fragments output: {seed['data']['rules.yml']!r}"
 
 cfg = find("ConfigMap", "authelia-config")
 assert cfg is not None, "missing authelia-config"
@@ -111,8 +118,12 @@ assert role is not None, "missing the scoped naslos-api-authelia-sso Role"
 scoped = {r["resources"][0]: set(r.get("resourceNames", [])) for r in role["rules"]}
 assert scoped.get("configmaps") == {"naslos-authelia-sso"}, \
     f"configmaps must be scoped to the fragment ConfigMap: {scoped}"
-assert scoped.get("statefulsets") == {"naslos-authelia"}, \
-    f"statefulsets must be scoped to the Authelia workload: {scoped}"
+# The restart is a pod delete, not a workload patch, so the API cannot change
+# the Authelia pod spec (which mounts the jwt/LDAP secrets).
+assert scoped.get("pods") == {"naslos-authelia-0"}, \
+    f"pods must be scoped to the deterministic Authelia pod: {scoped}"
+assert not any(r["resources"] == ["statefulsets"] for r in role["rules"]), \
+    "the API must not have workload write (a pod-template patch exposes the mounted secrets)"
 
 read = find("Role", "naslos-api-platform-read")
 resources = {res for r in read["rules"] for res in r["resources"]}
@@ -310,8 +321,8 @@ assert api_env.get("DOMAINS_CONFIG"), "the API must get a domains state path"
 # and the Authelia workload it restarts.
 assert api_env.get("AUTHELIA_SSO_CONFIGMAP") == "naslos-authelia-sso", \
     "the API must target the SSO fragment ConfigMap"
-assert api_env.get("AUTHELIA_WORKLOAD") == "naslos-authelia", \
-    "the API must target the Authelia workload to restart"
+assert api_env.get("AUTHELIA_POD") == "naslos-authelia-0", \
+    "the API must target the deterministic Authelia pod to restart"
 
 # Dynamic DNS (FR-DNS): the provider override dir and state path must be wired,
 # and the egress rule must stay port-scoped to HTTP/HTTPS (80/443).

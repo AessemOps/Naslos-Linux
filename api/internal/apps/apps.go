@@ -477,6 +477,9 @@ func (m *Manager) ReconcileRoutes(ctx context.Context) error {
 		return nil
 	}
 	var errs []error
+	// The effective SSO list is loop-invariant; materialise it once instead of
+	// re-walking the domain store for every record.
+	ssoDomains := m.ssoDomainsList()
 	for _, rec := range m.store.List() {
 		if rec.Orphaned {
 			continue
@@ -485,7 +488,7 @@ func (m *Manager) ReconcileRoutes(ctx context.Context) error {
 		if baseDomain == "" {
 			baseDomain = m.baseDomain
 		}
-		if err := m.router.Apply(ctx, rec, m.targetNamespace(rec), baseDomain, m.ssoDomainsList()); err != nil {
+		if err := m.router.Apply(ctx, rec, m.targetNamespace(rec), baseDomain, ssoDomains); err != nil {
 			errs = append(errs, fmt.Errorf("app %q: %w", rec.Name, err))
 		}
 	}

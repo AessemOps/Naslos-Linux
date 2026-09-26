@@ -74,7 +74,7 @@ unmodified Talos installation, administered through a web UI.
 | `naslos-samba` | DaemonSet (hostNetwork) | Serves SMB on the node's :445, reloads on config change, imports the account mirror, advertises via mDNS/WSD |
 | `naslos-openldap` | StatefulSet | Identity store (users, groups, password hashes) |
 | `naslos-traefik` | Deployment | Ingress (IngressRoutes), TLS termination, forwardAuth to Authelia |
-| Authelia | DaemonSet | Web SSO / 2FA against OpenLDAP |
+| Authelia | StatefulSet | Web SSO / 2FA against OpenLDAP. The API restarts `naslos-authelia-0` (pod delete) when the runtime SSO fragments change (FR-APP-15) |
 | ntfy | (external server, no bundled chart) | Push notifications for system events (`ntfy.sh` or self-hosted) |
 | Prometheus + Alertmanager | Deployments | Long-term metrics and alert routing (Grafana removed 2026-09-19) |
 | `zfs-service` | Talos system service | Auto-imports pools at boot (`zpool import -fal`) |
