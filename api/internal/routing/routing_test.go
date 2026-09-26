@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/AessemOps/Naslos-Linux/api/internal/apps"
@@ -20,6 +21,8 @@ func baseSpec() Spec {
 		TLSSecret:       "naslos-tls",
 		AutheliaService: "naslos-authelia",
 		AutheliaPort:    80,
+		// Authelia lives in the platform namespace, not the apps namespace.
+		AutheliaNamespace: "naslos",
 	}
 }
 
@@ -65,6 +68,12 @@ func TestRenderTLSAndAuthRoute(t *testing.T) {
 	hspec := headers["spec"].(map[string]interface{})["headers"].(map[string]interface{})
 	if _, ok := hspec["stsIncludeSubdomains"]; ok {
 		t.Fatal("stsIncludeSubdomains must not be set")
+	}
+	// The forwardAuth address must target the Authelia Service in its own
+	// (platform) namespace, not the apps namespace.
+	addr := forwardAuth["spec"].(map[string]interface{})["forwardAuth"].(map[string]interface{})["address"].(string)
+	if !strings.Contains(addr, "naslos-authelia.naslos.svc.cluster.local:80") {
+		t.Fatalf("forwardAuth address = %q, want the Authelia service in the platform namespace", addr)
 	}
 }
 

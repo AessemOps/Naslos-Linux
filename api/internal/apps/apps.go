@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,18 @@ import (
 
 // dns1123Label matches a lowercase RFC 1123 label.
 var dns1123Label = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// releaseNameTemplate is the only template a manifest may use in service names.
+const releaseNameTemplate = "{{ .Release.Name }}"
+
+// renderServiceName resolves the release-name template in a declared service.
+func renderServiceName(name, release string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	return strings.TrimSpace(strings.ReplaceAll(name, releaseNameTemplate, release))
+}
 
 // Exposure is the orthogonal exposure configuration of an installed app.
 type Exposure struct {
@@ -49,6 +62,9 @@ type Record struct {
 	// BaseDomain is the domain the exposure subdomain hangs off. It also selects
 	// the TLS certificate Secret the route references.
 	BaseDomain string `json:"baseDomain,omitempty"`
+	// Namespace is the release's namespace; set for backfilled (platform)
+	// releases, empty for apps installed into the managed apps namespace.
+	Namespace string `json:"-"`
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -171,7 +187,7 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*View, error
 	}
 
 	values := mergeValues(app.DefaultValues, req.Values)
-	exposure := exposureFor(app, req.Exposure)
+	exposure := exposureFor(app, req.Exposure, req.Name)
 
 	if _, err := m.helm.InstallDir(ctx, req.Name, chartDir, values); err != nil {
 		return nil, err
@@ -264,7 +280,24 @@ func (m *Manager) SetExposure(ctx context.Context, name string, exposure Exposur
 	if exposure.Auth && !m.authAllowed(baseDomain) {
 		return nil, fmt.Errorf("auth requires the domain to be in the SSO domain list")
 	}
-	rec.Exposure = exposure
+	// The exposure toggles are what this endpoint owns; the route target is not.
+	// Keep the recorded service/port/scheme unless the caller supplies one, so a
+	// toggle update cannot silently drop the route target.
+	merged := rec.Exposure
+	merged.Subdomain = exposure.Subdomain
+	merged.TLS = exposure.TLS
+	merged.Auth = exposure.Auth
+	merged.LocalOnly = exposure.LocalOnly
+	if exposure.Service != "" {
+		merged.Service = renderServiceName(exposure.Service, rec.Name)
+	}
+	if exposure.Port != 0 {
+		merged.Port = exposure.Port
+	}
+	if exposure.Scheme != "" {
+		merged.Scheme = exposure.Scheme
+	}
+	rec.Exposure = merged
 	rec.BaseDomain = baseDomain
 	rec.UpdatedAt = time.Now().UTC()
 	rec.LastError = ""
@@ -313,7 +346,7 @@ func (m *Manager) List(ctx context.Context) ([]View, error) {
 	for _, rec := range m.store.List() {
 		view := View{
 			Record:    rec,
-			Namespace: m.helm.Namespace(),
+			Namespace: namespaceFor(rec, m.helm.Namespace()),
 			Chart:     rec.ChartPath,
 		}
 		if rel, ok := byName[rec.Name]; ok {
@@ -346,6 +379,7 @@ func (m *Manager) Backfill(ctx context.Context, platformRelease string, releases
 			Name:         rel.Name,
 			ChartVersion: rel.Version,
 			Values:       rel.Values,
+			Namespace:    rel.Namespace,
 			Orphaned:     true,
 			CreatedAt:    time.Now().UTC(),
 			UpdatedAt:    time.Now().UTC(),
@@ -416,7 +450,7 @@ func (m *Manager) view(ctx context.Context, name string) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	view := View{Record: rec, Namespace: m.helm.Namespace(), Chart: rec.ChartPath}
+	view := View{Record: rec, Namespace: namespaceFor(rec, m.helm.Namespace()), Chart: rec.ChartPath}
 	if rel, err := m.helm.Get(ctx, name); err == nil && rel != nil {
 		view.Status = rel.Status
 		if rel.Chart != "" {
@@ -427,6 +461,14 @@ func (m *Manager) view(ctx context.Context, name string) (View, error) {
 	}
 	view.URL = m.urlFor(rec)
 	return view, nil
+}
+
+// namespaceFor returns the namespace a record's release lives in.
+func namespaceFor(rec Record, fallback string) string {
+	if rec.Namespace != "" {
+		return rec.Namespace
+	}
+	return fallback
 }
 
 // urlFor builds the app URL from its exposure.
@@ -458,8 +500,9 @@ func (m *Manager) authAllowed(baseDomain string) bool {
 }
 
 // exposureFor derives exposure from the catalog defaults, the declared service
-// and the caller's overrides.
-func exposureFor(app *catalog.App, override *Exposure) Exposure {
+// and the caller's overrides. The release name resolves the only permitted
+// service-name template.
+func exposureFor(app *catalog.App, override *Exposure, release string) Exposure {
 	e := Exposure{
 		Subdomain: app.Exposure.Subdomain,
 		TLS:       app.Exposure.TLS,
@@ -467,7 +510,7 @@ func exposureFor(app *catalog.App, override *Exposure) Exposure {
 		LocalOnly: app.Exposure.LocalOnly,
 	}
 	if len(app.Services) > 0 {
-		e.Service = app.Services[0].Name
+		e.Service = renderServiceName(app.Services[0].Name, release)
 		e.Port = app.Services[0].Port
 		e.Scheme = app.Services[0].Scheme
 	}
@@ -479,7 +522,7 @@ func exposureFor(app *catalog.App, override *Exposure) Exposure {
 		e.Auth = override.Auth
 		e.LocalOnly = override.LocalOnly
 		if override.Service != "" {
-			e.Service = override.Service
+			e.Service = renderServiceName(override.Service, release)
 		}
 		if override.Port != 0 {
 			e.Port = override.Port

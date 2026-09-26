@@ -48,6 +48,9 @@ type Spec struct {
 
 	AutheliaService string
 	AutheliaPort    int
+	// AutheliaNamespace is the namespace the Authelia Service lives in (the
+	// platform namespace), which differs from the app route's namespace.
+	AutheliaNamespace string
 
 	LocalOnlyCIDR string
 }
@@ -161,9 +164,13 @@ func securityHeadersMiddleware(namespace string) *unstructured.Unstructured {
 }
 
 func forwardAuthMiddleware(spec Spec) *unstructured.Unstructured {
+	namespace := spec.AutheliaNamespace
+	if namespace == "" {
+		namespace = spec.Namespace
+	}
 	address := fmt.Sprintf(
 		"http://%s.%s.svc.cluster.local:%d/api/authz/forward-auth?authelia_url=https://%s/authelia/",
-		spec.AutheliaService, spec.Namespace, spec.AutheliaPort, spec.BaseDomain,
+		spec.AutheliaService, namespace, spec.AutheliaPort, spec.BaseDomain,
 	)
 	return &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": "traefik.io/v1alpha1",
@@ -206,6 +213,7 @@ type Reconciler struct {
 	tlsSecretFor    func(baseDomain string) string
 	autheliaService string
 	autheliaPort    int
+	autheliaNS      string
 	localOnlyCIDR   string
 }
 
@@ -215,7 +223,9 @@ type Options struct {
 	TLSSecret       string
 	AutheliaService string
 	AutheliaPort    int
-	LocalOnlyCIDR   string
+	// AutheliaNamespace is the namespace the Authelia Service lives in.
+	AutheliaNamespace string
+	LocalOnlyCIDR     string
 	// TLSSecretFor resolves the TLS Secret for a base domain (the wildcard
 	// Certificate's secretName). When nil or empty, TLSSecret is used.
 	TLSSecretFor func(baseDomain string) string
@@ -230,6 +240,7 @@ func NewReconciler(dyn dynamic.Interface, opts Options) *Reconciler {
 		tlsSecretFor:    opts.TLSSecretFor,
 		autheliaService: opts.AutheliaService,
 		autheliaPort:    opts.AutheliaPort,
+		autheliaNS:      opts.AutheliaNamespace,
 		localOnlyCIDR:   opts.LocalOnlyCIDR,
 	}
 }
@@ -243,20 +254,21 @@ func (r *Reconciler) SpecFor(rec apps.Record, baseDomain string) Spec {
 		}
 	}
 	return Spec{
-		Name:            rec.Name,
-		Namespace:       r.namespace,
-		Subdomain:       rec.Exposure.Subdomain,
-		BaseDomain:      baseDomain,
-		TLS:             rec.Exposure.TLS,
-		Auth:            rec.Exposure.Auth,
-		LocalOnly:       rec.Exposure.LocalOnly,
-		Service:         rec.Exposure.Service,
-		Port:            rec.Exposure.Port,
-		Scheme:          rec.Exposure.Scheme,
-		TLSSecret:       tlsSecret,
-		AutheliaService: r.autheliaService,
-		AutheliaPort:    r.autheliaPort,
-		LocalOnlyCIDR:   r.localOnlyCIDR,
+		Name:              rec.Name,
+		Namespace:         r.namespace,
+		Subdomain:         rec.Exposure.Subdomain,
+		BaseDomain:        baseDomain,
+		TLS:               rec.Exposure.TLS,
+		Auth:              rec.Exposure.Auth,
+		LocalOnly:         rec.Exposure.LocalOnly,
+		Service:           rec.Exposure.Service,
+		Port:              rec.Exposure.Port,
+		Scheme:            rec.Exposure.Scheme,
+		TLSSecret:         tlsSecret,
+		AutheliaService:   r.autheliaService,
+		AutheliaPort:      r.autheliaPort,
+		AutheliaNamespace: r.autheliaNS,
+		LocalOnlyCIDR:     r.localOnlyCIDR,
 	}
 }
 

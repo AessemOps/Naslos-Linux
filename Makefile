@@ -162,7 +162,11 @@ crds:
 	$(HELM) show crds traefik/traefik | $(KUBECTL) apply --server-side --force-conflicts -f -
 	$(HELM) repo add jetstack https://charts.jetstack.io --force-update
 	$(HELM) repo update jetstack
-	$(HELM) show crds jetstack/cert-manager | $(KUBECTL) apply --server-side --force-conflicts -f -
+	# cert-manager keeps its CRDs in templates/crds.yaml (not crds/), so
+	# `helm show crds` is empty; render just that template with the CRDs enabled.
+	$(HELM) template cert-manager jetstack/cert-manager --version v1.18.2 \
+		--show-only templates/crds.yaml --set crds.enabled=true \
+		| $(KUBECTL) apply --server-side --force-conflicts -f -
 
 # Install Naslos Helm chart.
 # --force-conflicts: Helm 4 applies server-side, and the namespaces are
