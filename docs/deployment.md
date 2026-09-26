@@ -16,9 +16,16 @@
 - **`make crds`** installs both the Traefik and the cert-manager CRDs. The app
   routing layer needs the Traefik CRDs; the SSL page is gated on the
   cert-manager CRDs.
-- **cert-manager is optional.** Set `certManager.enabled=true` to install the
-  subchart, or install cert-manager yourself. Without it, apps still install and
-  route; only ACME certificates are unavailable.
+- **cert-manager + the OVH webhook.** `make install-vm` installs both as
+  prerequisites (`make cert-manager`, then `make cert-manager-webhook-ovh`) in
+  the `cert-manager` namespace, outside the `naslos` default-deny policies. OVH
+  is not a cert-manager built-in DNS-01 solver, so OVH certificates need the
+  webhook, and the OVH API token must grant
+  `GET/POST/PUT/DELETE /domain/zone/<zone>/*` (the `/status`, `/record` and
+  `/refresh` subpaths). On a non-VM install the chart's optional
+  `certManager.enabled` subchart can install the controller, but the OVH webhook
+  is still required for OVH. Without either, apps still install and route; only
+  ACME certificates are unavailable.
 - **Wildcard DNS** for app subdomains: point `*.<domain>` at the node
   (router/dnsmasq/registrar). Without it, `<app>.<domain>` does not resolve.
 - **A chart repository** with `apps/<name>/` entries (see
@@ -77,9 +84,11 @@ reference, so pin it there directly (`repo@sha256:…`).
 | `make image-digests` | Print each image's digest, for pinning with `*.image.digest` |
 | `make bootstrap` | Bundle installer ISO/schematic tar |
 | `make bootstrap-vm` | Generate the single-node VM Talos config |
-| `make crds` | Apply Traefik CRDs from `helm show crds traefik/traefik` |
-| `make install` | `helm dependency update && helm upgrade --install naslos charts/naslos -n naslos --create-namespace` |
-| `make install-vm` | `make install` with the VM values: Traefik on hostPort 80/443 with Authelia forwardAuth (see below). This is the only posture |
+| `make crds` | Apply Traefik CRDs from `helm show crds traefik/traefik` and the cert-manager CRDs |
+| `make cert-manager` | Install cert-manager in the `cert-manager` namespace (CRDs come from `make crds`) |
+| `make cert-manager-webhook-ovh` | Install the OVH DNS-01 webhook in `cert-manager` (group `ovh.naslos.local`) |
+| `make install` | `helm dependency update && helm upgrade --install naslos charts/naslos -n naslos --create-namespace` (does **not** install cert-manager) |
+| `make install-vm` | `make install` with the VM values **and its prerequisites** (`crds`, `cert-manager`, `cert-manager-webhook-ovh`): Traefik on hostPort 80/443 with Authelia forwardAuth (see below). This is the only posture |
 | `make uninstall` | `helm uninstall naslos -n naslos` |
 | `make dev-cluster` | `talosctl cluster create --name naslos-dev` from the rendered schematic |
 

@@ -286,10 +286,12 @@ cd ui    && npm run check && npx playwright test      # Playwright needs the VM
 helm lint charts/naslos -f charts/naslos/values.yaml
 
 # Deploy: always with FRESH tag suffixes (a retag can serve stale code)
-make api-image IMAGE_TAG=0.1.0-r23 && docker push 192.168.1.2:30095/naslos-api:0.1.0-r23
+make api-image IMAGE_TAG=0.1.0-r29 && docker push 192.168.1.2:30095/naslos-api:0.1.0-r29
+make ui-image  IMAGE_TAG=0.1.0-r21 && docker push 192.168.1.2:30095/naslos-ui:0.1.0-r21
 # install-vm renders -f values.yaml -f values-vm.yaml (NOT --reuse-values), so
 # bump the tag in values-vm.yaml or pass --set; new keys apply from the files.
-make install-vm HELM_FLAGS="--set api.image.tag=0.1.0-r23"
+# It also installs cert-manager + the OVH webhook first (see its prerequisites).
+make install-vm HELM_FLAGS="--set api.image.tag=0.1.0-r29"
 curl -sk -o /dev/null -w '%{http_code}\n' https://naslos.local/api/health
 
 # App-catalog API is owner-gated AND restricted to the proxy/pod CIDR, so query
@@ -388,6 +390,10 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
   updates `CREDITS.md` **in the same change**, and bumps its `Last reviewed` line.
 - **Found a defect while drilling?** Fix it in the same branch with a test, and record
   it where the next session will read it — that is how every fix in this repo landed.
+- **Fixes must land in a fresh install**: put them in the declarative path (the
+  `Makefile`, `charts/naslos/` + `values-vm.yaml`, or `scripts/deploy-vm.sh`) and in
+  the images built at install time — never only in the live cluster. Verify with
+  `make -n install-vm` / `helm template`; document any operator-only prerequisite.
 - **Tests before hand-off**: `go build/vet/test` for both Go modules, `svelte-check`,
   `helm lint`, the Playwright suite for UI/API changes, and a live drill for anything
   touching the node (shares, LDAP, ZFS, backups).
@@ -395,6 +401,9 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
   material (`buddy-backup.md`, `shares.md`, `storage-zfs.md`, `api.md`,
   `deployment.md`, `operations.md`, `architecture.md`). Third-party attribution
   lives in [`CREDITS.md`](CREDITS.md).
+- **Agent instructions** live in [`AGENTS.md`](AGENTS.md) (build/test/lint
+  commands, the branch/PR workflow, the credits and spec rules). Keep it in sync
+  with this file when a command or convention changes.
 - **Record the deployed tags** below whenever they change, and keep this file short:
   new session narratives belong in the archive, not here.
 
@@ -419,10 +428,10 @@ found were insider-exposure, not internet-exposure.
 
 ## Deployed right now (2026-09-26)
 
-On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 32**:
+On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 33**:
 `naslos-api` **`0.1.0-r29`** (git chart repos, privileged-namespace support,
 datasets PV/PVC, declarative DNS providers + Dynamic DNS, provider `apiRights`,
-OVH webhook solver), `naslos-ui` **`0.1.0-r21`** (Sources tab, exposure editor,
+OVH webhook solver), `naslos-ui` **`0.1.0-r22`** (Sources tab, exposure editor,
 Domains & SSL with the provider API-rights info bubble and a self-refreshing
 certificate badge, a sidebar sign-out control, Dynamic DNS),
 `naslos-agent` **`0.1.0-r8`**, `naslos-samba`/`naslos-nfs`/
@@ -432,10 +441,17 @@ certificate badge, a sidebar sign-out control, Dynamic DNS),
 
 Namespaces: `naslos` (authenticated services), `naslos-privileged`
 (agent/samba/nfs/terminal), `naslos-apps` (installed apps, PSA baseline,
-`naslos-datasets` RWX PVC), `naslos-apps-priv` (privileged apps). Posture is the
+`naslos-datasets` RWX PVC), `naslos-apps-priv` (privileged apps), and
+**`cert-manager`** (cert-manager v1.18.2 + `cert-manager-webhook-ovh` 0.9.17,
+installed by `make install-vm`; deliberately outside the naslos default-deny
+policies). Posture is the
 **only one**: Traefik v3.7.13 (chart 41.6.0) on hostPort 80/443, Authelia
 4.39.24 (chart 0.11.22) at `https://naslos.local/authelia`, no NodePort and no
 auth bypass, `admin` in `naslos_admins`.
+
+Domains: `florentinrichard.fr` holds a live production Let's Encrypt wildcard
+certificate (`*.florentinrichard.fr` + apex, Secret
+`naslos-florentinrichard-fr-tls`) issued through the OVH webhook.
 
 App catalog: official source `https://github.com/AessemOps/NaslosCharts.git`
 (public, channels `{Prod: main}`) — catalog lists **10 apps** (Jellyfin, Radarr,
@@ -451,7 +467,9 @@ certificates actually issue: cert-manager and the `cert-manager-webhook-ovh`
 webhook are installed as separate releases in the `cert-manager` namespace
 (`make cert-manager`, `make cert-manager-webhook-ovh`), `ovh.yaml` renders the
 `webhook` solver, and every OVH credential (application key/secret/consumer key)
-is a Secret field read by the webhook. **Live-drilled on revision 29**: the OVH
+is a Secret field read by the webhook. The same PR also adds a sidebar sign-out
+control (POST `/authelia/api/logout`) and a self-refreshing certificate status
+badge. **Live-drilled on revisions 29–32**: the OVH
 Issuer is created and `READY=True`, and `florentinrichard.fr` issued a
 production Let's Encrypt certificate (SANs `*.florentinrichard.fr` +
 `florentinrichard.fr`, Secret `naslos-florentinrichard-fr-tls`) once the OVH API
