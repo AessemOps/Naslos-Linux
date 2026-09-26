@@ -204,6 +204,19 @@ func TestSourceStorePersistence(t *testing.T) {
 	}
 }
 
+func TestChannelsForDeclaredIsAuthoritative(t *testing.T) {
+	src := &Source{Name: "naslos", URL: "u", Channels: map[string]string{"Prod": "main"}}
+	channels := src.ChannelsFor()
+	if len(channels) != 1 || channels["Prod"] != "main" {
+		t.Fatalf("ChannelsFor() = %v, want only {Prod: main}", channels)
+	}
+	// No declared channels -> the standard defaults.
+	def := (&Source{Name: "naslos", URL: "u"}).ChannelsFor()
+	if len(def) != 3 {
+		t.Fatalf("default ChannelsFor() = %v, want 3 channels", def)
+	}
+}
+
 func TestSourceValidate(t *testing.T) {
 	cases := []struct {
 		name    string

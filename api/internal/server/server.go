@@ -241,6 +241,7 @@ func (s *Server) setupChartRepos(appsHelmClient *helm.Client) {
 				URL:               url,
 				Auth:              chartsrepo.AuthType(getEnv("SOURCES_OFFICIAL_AUTH", string(chartsrepo.AuthPublic))),
 				CredentialsSecret: getEnv("SOURCES_OFFICIAL_SECRET", ""),
+				Channels:          getEnvMap("SOURCES_OFFICIAL_CHANNELS"),
 				Official:          true,
 			}
 			if _, err := s.charts.AddSource(official); err != nil {

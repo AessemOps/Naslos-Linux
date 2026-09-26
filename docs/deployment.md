@@ -25,6 +25,12 @@
   [app-catalog.md](app-catalog.md)). Seed the official one with
   `apps.officialSource.url`; for SSH, create the deploy-key Secret first
   (see the Operational notes in [app-catalog.md](app-catalog.md)).
+- **Pod egress to the git host.** The API clones repositories itself, so set
+  `networkPolicy.gitEgress: true` (already on in `values-vm.yaml`) to allow
+  outbound git (HTTPS 443 / SSH 22 / git:// 9418). The default target is
+  `0.0.0.0/0`; narrow `networkPolicy.gitEgressCIDRs` for an air-gapped or
+  egress-restricted network. `apps.officialSource.channels` maps channels to
+  branches (e.g. `{Prod: main}` for a repository with only `main`).
 
 
 ## Images

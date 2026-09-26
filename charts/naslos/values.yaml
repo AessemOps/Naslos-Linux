@@ -474,6 +474,12 @@ networkPolicy:
   # Extra egress CIDRs. No workload here has a documented outbound-Internet
   # dependency; add one only if that changes.
   extraEgressCIDRs: []
+  # Git chart repositories are cloned by the API pod, which needs outbound git
+  # (HTTPS:443, SSH:22, git://:9418). Enable to let a user-added source outside
+  # the cluster work. It is port-scoped, not a general all-port Internet opening;
+  # narrow it with gitEgressCIDRs (default 0.0.0.0/0).
+  gitEgress: false
+  gitEgressCIDRs: []
   # CiliumNetworkPolicy for what upstream NetworkPolicy cannot express: allowing
   # pods to reach the node host / API server. Only rendered when the CNI is
   # Cilium; harmless (an unused CR) elsewhere, but set false on a non-Cilium

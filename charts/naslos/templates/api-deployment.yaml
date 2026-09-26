@@ -251,6 +251,14 @@ spec:
               value: {{ .Values.apps.officialSource.displayName | default "NaslosCharts" | quote }}
             - name: SOURCES_OFFICIAL_AUTH
               value: {{ .Values.apps.officialSource.auth | default "public" | quote }}
+            {{- if .Values.apps.officialSource.channels }}
+            {{- $officialChannels := list }}
+            {{- range $k, $v := .Values.apps.officialSource.channels }}
+            {{- $officialChannels = append $officialChannels (printf "%s=%s" $k $v) }}
+            {{- end }}
+            - name: SOURCES_OFFICIAL_CHANNELS
+              value: {{ join "," $officialChannels | quote }}
+            {{- end }}
             {{- if .Values.apps.officialSource.credentialsSecret }}
             - name: SOURCES_OFFICIAL_SECRET
               value: {{ .Values.apps.officialSource.credentialsSecret | quote }}

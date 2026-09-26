@@ -164,9 +164,10 @@ Apps use `local-path-provisioner`, the only provisioner installed; the
 ## Operational notes
 
 - **The cluster must be able to reach the git host.** A clone runs from the API
-  pod, so a Docker/GitHub URL needs pod egress (DNS + 443); an air-gapped or
-  egress-restricted cluster needs a LAN git mirror. The failed clone is surfaced
-  as the source's `lastError`.
+  pod, so enable `networkPolicy.gitEgress: true` (on in `values-vm.yaml`) to
+  allow outbound git (HTTPS 443 / SSH 22 / git:// 9418); narrow
+  `networkPolicy.gitEgressCIDRs` (default `0.0.0.0/0`) for a restricted network.
+  A failed clone is surfaced as the source's `lastError`.
 - **Wildcard DNS is a prerequisite** for app subdomains: point `*.<domain>` at
   the node (router/dnsmasq/registrar). Without it, app hostnames do not resolve.
 - **TLS apps need a certificate Secret** in `naslos-apps`. The route references

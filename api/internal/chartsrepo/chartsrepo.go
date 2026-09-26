@@ -86,16 +86,23 @@ type Source struct {
 	LastError string    `json:"lastError,omitempty"`
 }
 
-// ChannelsFor returns the channel -> branch mapping with defaults applied.
+// ChannelsFor returns the channel -> branch mapping. A source that declares
+// channels uses exactly those (so a repository with only `main` can offer just
+// `Prod`); otherwise the standard defaults apply.
 func (s *Source) ChannelsFor() map[string]string {
-	channels := defaultChannels()
-	for k, v := range s.Channels {
-		if strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
-			continue
+	if len(s.Channels) > 0 {
+		channels := make(map[string]string, len(s.Channels))
+		for k, v := range s.Channels {
+			if strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
+				continue
+			}
+			channels[k] = v
 		}
-		channels[k] = v
+		if len(channels) > 0 {
+			return channels
+		}
 	}
-	return channels
+	return defaultChannels()
 }
 
 // ChannelNames returns the sorted channel names a source offers.
