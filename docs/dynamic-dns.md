@@ -82,6 +82,10 @@ ddns:                           # optional: DDNS support
 - A field may set `showIf: { key: mode, value: api }` to appear only when
   another field (in the same scope) has that value — OVH's ZoneDNS fields show
   only for `mode: api`.
+- A provider may set `apiRights:` — a list of API permissions the operator must
+  grant for its credentials. It is informational and shown in the Domains form's
+  info bubble next to the "DNS-01 provider" selector; it does not affect solver
+  rendering or validation.
 
 ### Where definitions come from
 

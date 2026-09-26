@@ -72,7 +72,9 @@ the detection model are based on
   `ovh`, `cloudflare`, `rfc2136`, `passthrough`. DDNS-only providers: `generic`
   (custom HTTP), `duckdns`, `dynu`, `noip`, `freedns`, `namecheap`, `desec`,
   `spdyn`, `selfhostde`, `dynv6`, `digitalocean`, `godaddy`, `porkbun`. Field
-  model: `secret`, `secretKey`, `scope: cert|ddns`, `showIf: {key,value}`. A bad
+  model: `secret`, `secretKey`, `scope: cert|ddns`, `showIf: {key,value}`. An
+  informational `apiRights` list (DNS-01 permissions) is returned by
+  `GET /api/providers` and shown in the Domains form's info bubble. A bad
   override is skipped, logged and surfaced by `GET /api/providers`.
 - `api/internal/certs` — `Validate`/`solverFor` render through the registry;
   OVH is supported via the ZoneDNS solver; `cloudflare` / `rfc2136` /

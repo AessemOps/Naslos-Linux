@@ -1,10 +1,18 @@
 # Ported from qdm12/ddns-updater (MIT): https://github.com/qdm12/ddns-updater
 # See CREDITS.md for attribution.
+# apiRights text derived from the cert-manager-webhook-ovh README (MIT):
+# https://github.com/baarde/cert-manager-webhook-ovh
 
 name: ovh
 displayName: OVH
 description: OVH DynHost (username/password) or ZoneDNS API (application keys).
 icon: "🟦"
+apiRights:
+  - "ZoneDNS API app rights: GET /domain/zone/*"
+  - "PUT /domain/zone/*"
+  - "POST /domain/zone/*"
+  - "DELETE /domain/zone/*"
+  - "Restrict \"*\" to the target zone if possible"
 fields:
   # DynHost mode (scope: ddns) — ddns-updater's default "dynamic" mode.
   - key: mode

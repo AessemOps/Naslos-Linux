@@ -1,6 +1,12 @@
+# apiRights text derived from cert-manager's DNS-01 provider docs:
+# https://cert-manager.io/docs/configuration/acme/dns01/ — see CREDITS.md.
+
 name: passthrough
 displayName: Passthrough (raw solver)
 description: Supply a raw cert-manager DNS-01 solver on the domain record.
 icon: "🧩"
+apiRights:
+  - "Not applicable: you supply the raw cert-manager DNS-01 solver"
+  - "Grant whatever that solver's credentials require"
 certManager:
   passthrough: true
