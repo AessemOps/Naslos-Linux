@@ -338,6 +338,10 @@ with a sibling `naslos-app.yaml` install-config. See
 - **FR-APP-16** — When a manifest declares no route target, the API MUST
   discover the release's Services from its Helm labels, route to one, and expose
   the candidates for the operator to pick. *(discovery_test.go)*
+- **FR-APP-17** — An app whose manifest sets `privileged: true` (a VPN sidecar
+  needing `NET_ADMIN`, which PSA `baseline` forbids) MUST install into the
+  separate privileged apps namespace, with its own Role and routing; all other
+  apps MUST stay under `baseline`. *(chart render + routing/apps tests)*
 - **FR-APP-12** — Installing a third-party chart MUST require an explicit
   confirmation in the request (`confirmed: true`). *(server tests)*
 - **FR-APP-13** — Base domains and their cert-manager ACME DNS-01 certificates

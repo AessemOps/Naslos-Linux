@@ -50,6 +50,9 @@ type Server struct {
 	// appsNamespace is where user-installed apps run and where the API owns
 	// routing and certificates.
 	appsNamespace string
+	// appsPrivNamespace is the privileged apps namespace for apps that declare
+	// `privileged: true` (VPN sidecars needing NET_ADMIN).
+	appsPrivNamespace string
 	// charts sources/cache and the app record manager.
 	charts     *chartsrepo.Manager
 	sources    *chartsrepo.Store
@@ -150,6 +153,7 @@ func New(addr string, tc *talos.Client) *Server {
 	// AGENT_BASE_URL for local dev (e.g. with a kubectl port-forward).
 	namespace := getEnv("NASLOS_NAMESPACE", "naslos")
 	appsNamespace := getEnv("APPS_NAMESPACE", "naslos-apps")
+	appsPrivNamespace := getEnv("APPS_PRIVILEGED_NAMESPACE", "naslos-apps-priv")
 	baseDomain := getEnv("NASLOS_DOMAIN", getEnv("DOMAIN", "naslos.local"))
 	ssoDomains := getEnvList("SSO_DOMAINS", []string{baseDomain})
 	platformRelease := getEnv("PLATFORM_RELEASE", namespace)
@@ -190,22 +194,23 @@ func New(addr string, tc *talos.Client) *Server {
 	}
 
 	s := &Server{
-		addr:            addr,
-		talos:           tc,
-		agent:           agentClient,
-		helm:            helmClient,
-		shares:          shareManager,
-		sambaUsers:      sambaUserStore,
-		metrics:         metricsManager,
-		notifications:   notifManager,
-		identity:        identityClient,
-		auth:            authMiddleware,
-		namespace:       namespace,
-		appsNamespace:   appsNamespace,
-		baseDomain:      baseDomain,
-		ssoDomains:      ssoDomains,
-		platformRelease: platformRelease,
-		buddy:           buddyReceiver,
+		addr:              addr,
+		talos:             tc,
+		agent:             agentClient,
+		helm:              helmClient,
+		shares:            shareManager,
+		sambaUsers:        sambaUserStore,
+		metrics:           metricsManager,
+		notifications:     notifManager,
+		identity:          identityClient,
+		auth:              authMiddleware,
+		namespace:         namespace,
+		appsNamespace:     appsNamespace,
+		appsPrivNamespace: appsPrivNamespace,
+		baseDomain:        baseDomain,
+		ssoDomains:        ssoDomains,
+		platformRelease:   platformRelease,
+		buddy:             buddyReceiver,
 		// Owner routes are gated on the proxy secret by the composed router in
 		// routes().
 		router: http.NewServeMux(),
@@ -290,14 +295,16 @@ func (s *Server) setupChartRepos(appsHelmClient *helm.Client) {
 	}
 
 	manager, err := apps.NewManager(apps.Config{
-		StorePath:  getEnv("APPS_CONFIG", "/var/lib/naslos/apps.json"),
-		Helm:       appsHelmClient,
-		Charts:     s.charts,
-		Catalog:    func() *catalog.Catalog { return s.catalog.Load() },
-		Router:     router,
-		Discoverer: appServiceDiscoverer{client: s.kubernetesClient},
-		BaseDomain: s.baseDomain,
-		SSODomains: s.ssoDomains,
+		StorePath:           getEnv("APPS_CONFIG", "/var/lib/naslos/apps.json"),
+		Helm:                appsHelmClient,
+		HelmPrivileged:      helm.NewClient(s.appsPrivNamespace),
+		PrivilegedNamespace: s.appsPrivNamespace,
+		Charts:              s.charts,
+		Catalog:             func() *catalog.Catalog { return s.catalog.Load() },
+		Router:              router,
+		Discoverer:          appServiceDiscoverer{client: s.kubernetesClient},
+		BaseDomain:          s.baseDomain,
+		SSODomains:          s.ssoDomains,
 	})
 	if err != nil {
 		log.Printf("Warning: could not load installed-app records: %v", err)

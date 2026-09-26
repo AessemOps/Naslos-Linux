@@ -72,6 +72,8 @@ type Record struct {
 	// Orphaned marks a release that was found in the cluster but has no
 	// matching catalog entry (backfilled from a pre-refactor install).
 	Orphaned bool `json:"orphaned,omitempty"`
+	// Privileged marks an app installed into the privileged apps namespace.
+	Privileged bool `json:"privileged,omitempty"`
 	// LastError records a non-fatal failure (e.g. routing could not be applied).
 	LastError string `json:"lastError,omitempty"`
 }
@@ -104,8 +106,8 @@ type ServiceDiscoverer interface {
 
 // Router renders and applies the exposure layer for a record.
 type Router interface {
-	Apply(ctx context.Context, rec Record, baseDomain string, ssoDomains []string) error
-	Delete(ctx context.Context, name string) error
+	Apply(ctx context.Context, rec Record, namespace, baseDomain string, ssoDomains []string) error
+	Delete(ctx context.Context, namespace, name string) error
 }
 
 // Config bounds the manager's external dependencies.
@@ -113,6 +115,11 @@ type Config struct {
 	StorePath string
 	// Helm is scoped to the apps namespace.
 	Helm *helm.Client
+	// HelmPrivileged is scoped to the privileged apps namespace, for apps that
+	// declare `privileged: true` (VPN sidecars needing NET_ADMIN).
+	HelmPrivileged *helm.Client
+	// PrivilegedNamespace is the namespace HelmPrivileged operates in.
+	PrivilegedNamespace string
 	// Charts resolves repository working trees.
 	Charts *chartsrepo.Manager
 	// Catalog returns the current catalog snapshot (may be swapped on refresh).
@@ -131,6 +138,8 @@ type Config struct {
 type Manager struct {
 	store      *Store
 	helm       *helm.Client
+	helmPriv   *helm.Client
+	privNS     string
 	charts     *chartsrepo.Manager
 	catalog    CatalogProvider
 	router     Router
@@ -151,6 +160,8 @@ func NewManager(cfg Config) (*Manager, error) {
 	return &Manager{
 		store:      store,
 		helm:       cfg.Helm,
+		helmPriv:   cfg.HelmPrivileged,
+		privNS:     cfg.PrivilegedNamespace,
 		charts:     cfg.Charts,
 		catalog:    cfg.Catalog,
 		router:     cfg.Router,
@@ -158,6 +169,23 @@ func NewManager(cfg Config) (*Manager, error) {
 		baseDomain: cfg.BaseDomain,
 		ssoDomains: cfg.SSODomains,
 	}, nil
+}
+
+// helmFor returns the Helm client for a record's namespace profile.
+func (m *Manager) helmFor(privileged bool) *helm.Client {
+	if privileged && m.helmPriv != nil {
+		return m.helmPriv
+	}
+	return m.helm
+}
+
+// targetNamespace is the namespace a record's release lives in (ignoring the
+// backfill-origin namespace, which is only used for display).
+func (m *Manager) targetNamespace(rec Record) string {
+	if rec.Privileged && m.privNS != "" {
+		return m.privNS
+	}
+	return m.helm.Namespace()
 }
 
 // Records returns all records ordered by name.
@@ -207,12 +235,12 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*View, error
 	values := mergeValues(app.DefaultValues, req.Values)
 	exposure := exposureFor(app, req.Exposure, req.Name)
 
-	if _, err := m.helm.InstallDir(ctx, req.Name, chartDir, values); err != nil {
+	if _, err := m.helmFor(app.Privileged).InstallDir(ctx, req.Name, chartDir, values); err != nil {
 		return nil, err
 	}
 	// Fallback: a manifest that declares no service routes to the release's
 	// first discovered Service (the admin can change it in the exposure UI).
-	exposure = m.fillDiscoveredService(ctx, req.Name, exposure)
+	exposure = m.fillDiscoveredService(ctx, req.Name, app.Privileged, exposure)
 
 	now := time.Now().UTC()
 	baseDomain := req.BaseDomain
@@ -228,6 +256,7 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*View, error
 		Values:       values,
 		Exposure:     exposure,
 		BaseDomain:   baseDomain,
+		Privileged:   app.Privileged,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -266,7 +295,7 @@ func (m *Manager) Upgrade(ctx context.Context, name string, values map[string]in
 		return nil, err
 	}
 	merged := mergeValues(rec.Values, values)
-	if _, err := m.helm.UpgradeDir(ctx, name, chartDir, merged); err != nil {
+	if _, err := m.helmFor(rec.Privileged).UpgradeDir(ctx, name, chartDir, merged); err != nil {
 		return nil, err
 	}
 	rec.Values = merged
@@ -319,7 +348,7 @@ func (m *Manager) SetExposure(ctx context.Context, name string, exposure Exposur
 		merged.Scheme = exposure.Scheme
 	}
 	if merged.Service == "" {
-		merged = m.fillDiscoveredService(ctx, rec.Name, merged)
+		merged = m.fillDiscoveredService(ctx, rec.Name, rec.Privileged, merged)
 	}
 	rec.Exposure = merged
 	rec.BaseDomain = baseDomain
@@ -343,37 +372,52 @@ func (m *Manager) Uninstall(ctx context.Context, name string) error {
 		return err
 	}
 	if !rec.Orphaned {
-		if err := m.helm.Uninstall(ctx, name); err != nil {
+		if err := m.helmFor(rec.Privileged).Uninstall(ctx, name); err != nil {
 			return err
 		}
 	}
 	if m.router != nil {
-		if err := m.router.Delete(ctx, name); err != nil {
+		if err := m.router.Delete(ctx, m.targetNamespace(rec), name); err != nil {
 			return err
 		}
 	}
 	return m.store.Delete(name)
 }
 
-// List returns all records with live status.
+// List returns all records with live status, merging the managed and
+// privileged apps namespaces.
 func (m *Manager) List(ctx context.Context) ([]View, error) {
-	releases, err := m.helm.List(ctx)
-	if err != nil {
-		return nil, err
+	releases := make(map[string]helm.App)
+	clients := []*helm.Client{m.helm}
+	if m.helmPriv != nil && m.helmPriv.Namespace() != m.helm.Namespace() {
+		clients = append(clients, m.helmPriv)
 	}
-	byName := make(map[string]helm.App, len(releases))
-	for _, rel := range releases {
-		byName[rel.Name] = rel
+	var firstErr error
+	for _, client := range clients {
+		list, err := client.List(ctx)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		for _, rel := range list {
+			releases[rel.Namespace+"/"+rel.Name] = rel
+		}
+	}
+	if len(releases) == 0 && firstErr != nil {
+		return nil, firstErr
 	}
 
 	views := make([]View, 0)
 	for _, rec := range m.store.List() {
+		ns := m.displayNamespace(rec)
 		view := View{
 			Record:    rec,
-			Namespace: namespaceFor(rec, m.helm.Namespace()),
+			Namespace: ns,
 			Chart:     rec.ChartPath,
 		}
-		if rel, ok := byName[rec.Name]; ok {
+		if rel, ok := releases[ns+"/"+rec.Name]; ok {
 			view.Status = rel.Status
 			if rel.Chart != "" {
 				view.Chart = rel.Chart
@@ -386,6 +430,15 @@ func (m *Manager) List(ctx context.Context) ([]View, error) {
 	}
 	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
 	return views, nil
+}
+
+// displayNamespace is where a record's release lives for display: a backfilled
+// record keeps its origin namespace; a managed record follows its profile.
+func (m *Manager) displayNamespace(rec Record) string {
+	if rec.Orphaned && rec.Namespace != "" {
+		return rec.Namespace
+	}
+	return m.targetNamespace(rec)
 }
 
 // Backfill creates orphaned records for releases that predate the refactor.
@@ -430,7 +483,7 @@ func (m *Manager) ReconcileRoutes(ctx context.Context) error {
 		if baseDomain == "" {
 			baseDomain = m.baseDomain
 		}
-		if err := m.router.Apply(ctx, rec, baseDomain, m.ssoDomains); err != nil {
+		if err := m.router.Apply(ctx, rec, m.targetNamespace(rec), baseDomain, m.ssoDomains); err != nil {
 			errs = append(errs, fmt.Errorf("app %q: %w", rec.Name, err))
 		}
 	}
@@ -455,7 +508,7 @@ func (m *Manager) applyRoute(ctx context.Context, rec Record, baseDomain string)
 	if baseDomain == "" {
 		baseDomain = m.baseDomain
 	}
-	if err := m.router.Apply(ctx, rec, baseDomain, m.ssoDomains); err != nil {
+	if err := m.router.Apply(ctx, rec, m.targetNamespace(rec), baseDomain, m.ssoDomains); err != nil {
 		_, _ = m.store.Update(rec.Name, func(r *Record) { r.LastError = err.Error() })
 	}
 }
@@ -463,23 +516,28 @@ func (m *Manager) applyRoute(ctx context.Context, rec Record, baseDomain string)
 // DiscoverServices returns the Services a release rendered, so the exposure UI
 // can offer them as route targets.
 func (m *Manager) DiscoverServices(ctx context.Context, name string) ([]DiscoveredService, error) {
-	if _, err := m.store.Get(name); err != nil {
+	rec, err := m.store.Get(name)
+	if err != nil {
 		return nil, err
 	}
 	if m.discoverer == nil {
 		return []DiscoveredService{}, nil
 	}
-	return m.discoverer.ServicesForRelease(ctx, m.helm.Namespace(), name)
+	return m.discoverer.ServicesForRelease(ctx, m.targetNamespace(rec), name)
 }
 
 // fillDiscoveredService resolves a route target from the release's Services
 // when the exposure has none. Discovery failure is not fatal: the record is
 // kept and the resulting lastError tells the operator to pick a service.
-func (m *Manager) fillDiscoveredService(ctx context.Context, release string, e Exposure) Exposure {
+func (m *Manager) fillDiscoveredService(ctx context.Context, release string, privileged bool, e Exposure) Exposure {
 	if e.Service != "" || m.discoverer == nil {
 		return e
 	}
-	services, err := m.discoverer.ServicesForRelease(ctx, m.helm.Namespace(), release)
+	namespace := m.helm.Namespace()
+	if privileged && m.privNS != "" {
+		namespace = m.privNS
+	}
+	services, err := m.discoverer.ServicesForRelease(ctx, namespace, release)
 	if err != nil || len(services) == 0 {
 		return e
 	}
@@ -503,8 +561,9 @@ func (m *Manager) view(ctx context.Context, name string) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	view := View{Record: rec, Namespace: namespaceFor(rec, m.helm.Namespace()), Chart: rec.ChartPath}
-	if rel, err := m.helm.Get(ctx, name); err == nil && rel != nil {
+	ns := m.displayNamespace(rec)
+	view := View{Record: rec, Namespace: ns, Chart: rec.ChartPath}
+	if rel, err := m.helmFor(rec.Privileged).Get(ctx, name); err == nil && rel != nil {
 		view.Status = rel.Status
 		if rel.Chart != "" {
 			view.Chart = rel.Chart
@@ -514,14 +573,6 @@ func (m *Manager) view(ctx context.Context, name string) (View, error) {
 	}
 	view.URL = m.urlFor(rec)
 	return view, nil
-}
-
-// namespaceFor returns the namespace a record's release lives in.
-func namespaceFor(rec Record, fallback string) string {
-	if rec.Namespace != "" {
-		return rec.Namespace
-	}
-	return fallback
 }
 
 // urlFor builds the app URL from its exposure.

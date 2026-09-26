@@ -1,8 +1,10 @@
-# Network policies for the apps namespace. Third-party charts are a privileged
-# trust boundary, so app pods get default-deny plus the minimum they need: DNS,
-# and east-west with the platform namespaces that front or depend on them.
+# Network policies for the apps namespaces. Third-party charts are a trust
+# boundary, so app pods get default-deny plus the minimum they need: DNS,
+# east-west with the platform namespaces that front or depend on them, and (for
+# the privileged namespace) outbound Internet for VPN/download clients.
 {{- if .Values.networkPolicy.enabled }}
 {{- $ans := .Values.apps.namespace | default "naslos-apps" }}
+{{- $apriv := .Values.apps.privilegedNamespace | default "naslos-apps-priv" }}
 {{- $ns := .Release.Namespace }}
 {{- $wns := include "naslos.workloadNamespace" . }}
 {{- if and (ne $ans $ns) (ne $ans $wns) }}
@@ -48,6 +50,13 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ $wns }}
+    {{- if and (ne $apriv $ns) (ne $apriv $wns) (ne $apriv $ans) }}
+    # Managed apps talk to their VPN-wrapped peers (e.g. Radarr -> qBittorrent).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $apriv }}
+    {{- end }}
     # Cluster DNS.
     - to:
         - namespaceSelector: {}
@@ -61,5 +70,73 @@ spec:
         - ipBlock:
             cidr: {{ . }}
     {{- end }}
+{{- end }}
+{{- if and (ne $apriv $ns) (ne $apriv $wns) (ne $apriv $ans) }}
+---
+# Privileged apps: default-deny plus explicit peers. Egress to the Internet is
+# open (VPN tunnels, indexers, download clients); ingress stays restricted to the
+# platform namespaces that front them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-apps-priv-default-deny
+  namespace: {{ $apriv }}
+  labels:
+    app.kubernetes.io/name: naslos
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-apps-priv-allow
+  namespace: {{ $apriv }}
+  labels:
+    app.kubernetes.io/name: naslos
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $wns }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ans }}
+  egress:
+    # In-cluster peers and Traffic between the VPN container and its app
+    # (same pod) are covered by the pod selector.
+    - to:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $wns }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ans }}
+    # Outbound Internet for VPN endpoints and indexers/downloads.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+    # Cluster DNS.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
 {{- end }}
 {{- end }}

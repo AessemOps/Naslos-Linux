@@ -49,6 +49,10 @@ exposure:                      # defaults shown in the install UI
   tls: true
   auth: true
   localOnly: false
+# Optional. Install into the privileged apps namespace (PSA privileged) instead
+# of naslos-apps (baseline). Required for a VPN sidecar that needs NET_ADMIN
+# (e.g. gluetun in the Prowlarr/qBittorrent charts).
+privileged: false
 ```
 
 ## Repositories (sources)
@@ -76,7 +80,9 @@ Each source is `{name, url, auth, credentialsSecret, channels, official}`:
 ## Install / manage lifecycle
 
 Apps install into the `naslos-apps` namespace (PSA `baseline`), separate from
-the platform (`naslos`) and the privileged workloads (`naslos-privileged`).
+the platform (`naslos`) and the privileged workloads (`naslos-privileged`). An
+app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
+`privileged`) instead, so only VPN-style apps get the relaxed profile.
 
 | Action | API | Behavior |
 | --- | --- | --- |

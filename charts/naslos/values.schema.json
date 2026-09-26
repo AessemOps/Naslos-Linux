@@ -11,6 +11,7 @@
       "additionalProperties": true,
       "properties": {
         "namespace": { "type": "string" },
+        "privilegedNamespace": { "type": "string" },
         "refreshTTL": { "type": "string" },
         "tlsSecret": { "type": "string" },
         "localOnlyCIDR": { "type": "string" },

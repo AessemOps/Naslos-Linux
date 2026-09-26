@@ -64,6 +64,9 @@ type App struct {
 	Services []Service `json:"services"`
 	// Exposure holds the install UI's exposure defaults.
 	Exposure ExposureDefaults `json:"exposure"`
+	// Privileged marks an app that must run in the privileged apps namespace
+	// (e.g. a VPN sidecar needing NET_ADMIN).
+	Privileged bool `json:"privileged,omitempty"`
 }
 
 // Service is a route target declared by an app manifest.
@@ -120,6 +123,8 @@ type manifest struct {
 	DefaultValues map[string]interface{} `yaml:"defaultValues"`
 	Services      []Service              `yaml:"services"`
 	Exposure      ExposureDefaults       `yaml:"exposure"`
+	// Privileged asks for the privileged apps namespace.
+	Privileged bool `yaml:"privileged"`
 }
 
 // candidate is one app found in one source/channel.
@@ -244,6 +249,7 @@ func loadApp(ref SourceRef, folder string) (*App, error) {
 		DefaultValues: m.DefaultValues,
 		Services:      normalizeServices(m.Services),
 		Exposure:      m.Exposure,
+		Privileged:    m.Privileged,
 		Repository:    ref.Name,
 		Source:        ref.Name,
 		Channel:       ref.Channel,
