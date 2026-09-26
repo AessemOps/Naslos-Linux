@@ -87,7 +87,13 @@ the platform (`naslos`) and the privileged workloads (`naslos-privileged`).
 | Detail | `GET /api/apps/{name}` | Record + status |
 | Reconfigure | `PUT /api/apps/{name} {values}` | `helm upgrade` with the full value set |
 | Exposure | `GET`/`PUT /api/apps/{name}/exposure` | Orthogonal toggles, re-renders the route |
+| Route targets | `GET /api/apps/{name}/services` | Services the release rendered (discovery fallback / UI picker) |
 | Uninstall | `DELETE /api/apps/{name}` | `helm uninstall` + route delete + record delete |
+
+If a manifest declares no `services[]`, the API discovers the release's
+Services after install (matched by the Helm release annotation/label) and routes
+to the first; `/api/apps/{name}/services` lists the candidates for the exposure
+UI's picker.
 
 Installed-app records are persisted in `APPS_CONFIG` (`/var/lib/naslos/apps.json`).
 A Helm release found in the platform namespace without a catalog match is

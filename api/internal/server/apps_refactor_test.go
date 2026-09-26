@@ -52,6 +52,16 @@ func TestExposureUnknownAppIs404(t *testing.T) {
 	}
 }
 
+// TestAppServicesUnknownAppIs404 covers the route-target discovery endpoint.
+func TestAppServicesUnknownAppIs404(t *testing.T) {
+	s := newTestServer(t)
+
+	rec := adminRequest(t, s, http.MethodGet, "/api/apps/does-not-exist/services", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("services of an unknown app: status = %d, want 404", rec.Code)
+	}
+}
+
 // TestSourcesListIsEmptyOnAFreshInstall pins the shape of GET /api/sources.
 func TestSourcesListIsEmptyOnAFreshInstall(t *testing.T) {
 	s := newTestServer(t)

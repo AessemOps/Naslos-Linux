@@ -51,8 +51,11 @@ Bugs the drill found and that are fixed in this branch:
 - **Playwright live run was blocked** by an Authelia TOTP mismatch for the
   `admin` user on the instance (`ui/.env.playwright.local` secret does not match
   the enrolled device); the specs themselves ran up to auth. No code fault.
-- Route-target **discovery fallback** (Services from release labels) is still
-  not implemented — an app must declare `services[]`.
+- Route-target **discovery fallback** is implemented: a manifest with no
+  `services[]` installs and then routes to the release's first discovered
+  Service (matched by Helm release annotation/label); `GET
+  /api/apps/{name}/services` lists the candidates and the exposure UI offers a
+  picker. `discovery_test.go` covers it.
 - Task 11 cutover/final deploy is not done; the tag suffixes `api 0.1.0-r19`,
   `ui 0.1.0-r13` are deployed on the drill instance only.
 - `gh` is not installed; the PR was not opened programmatically. Compare URL:

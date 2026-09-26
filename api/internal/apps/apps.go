@@ -88,6 +88,20 @@ type View struct {
 // CatalogProvider returns the current catalog snapshot.
 type CatalogProvider func() *catalog.Catalog
 
+// DiscoveredService is a Service rendered by an installed release.
+type DiscoveredService struct {
+	Name     string `json:"name"`
+	Port     int    `json:"port"`
+	Scheme   string `json:"scheme"`
+	PortName string `json:"portName,omitempty"`
+}
+
+// ServiceDiscoverer finds the Services a release rendered, for the fallback
+// when an app manifest declares no route target.
+type ServiceDiscoverer interface {
+	ServicesForRelease(ctx context.Context, namespace, release string) ([]DiscoveredService, error)
+}
+
 // Router renders and applies the exposure layer for a record.
 type Router interface {
 	Apply(ctx context.Context, rec Record, baseDomain string, ssoDomains []string) error
@@ -105,6 +119,8 @@ type Config struct {
 	Catalog CatalogProvider
 	// Router applies/removes the exposure layer; may be nil (no routing).
 	Router Router
+	// Discoverer finds a release's Services when the manifest declares none.
+	Discoverer ServiceDiscoverer
 	// BaseDomain is the primary (Helm-owned) domain app subdomains hang off.
 	BaseDomain string
 	// SSODomains are the Authelia-protected domains; auth is only offered there.
@@ -113,11 +129,12 @@ type Config struct {
 
 // Manager coordinates records and lifecycle operations.
 type Manager struct {
-	store   *Store
-	helm    *helm.Client
-	charts  *chartsrepo.Manager
-	catalog CatalogProvider
-	router  Router
+	store      *Store
+	helm       *helm.Client
+	charts     *chartsrepo.Manager
+	catalog    CatalogProvider
+	router     Router
+	discoverer ServiceDiscoverer
 
 	baseDomain string
 	ssoDomains []string
@@ -137,6 +154,7 @@ func NewManager(cfg Config) (*Manager, error) {
 		charts:     cfg.Charts,
 		catalog:    cfg.Catalog,
 		router:     cfg.Router,
+		discoverer: cfg.Discoverer,
 		baseDomain: cfg.BaseDomain,
 		ssoDomains: cfg.SSODomains,
 	}, nil
@@ -192,6 +210,9 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*View, error
 	if _, err := m.helm.InstallDir(ctx, req.Name, chartDir, values); err != nil {
 		return nil, err
 	}
+	// Fallback: a manifest that declares no service routes to the release's
+	// first discovered Service (the admin can change it in the exposure UI).
+	exposure = m.fillDiscoveredService(ctx, req.Name, exposure)
 
 	now := time.Now().UTC()
 	baseDomain := req.BaseDomain
@@ -296,6 +317,9 @@ func (m *Manager) SetExposure(ctx context.Context, name string, exposure Exposur
 	}
 	if exposure.Scheme != "" {
 		merged.Scheme = exposure.Scheme
+	}
+	if merged.Service == "" {
+		merged = m.fillDiscoveredService(ctx, rec.Name, merged)
 	}
 	rec.Exposure = merged
 	rec.BaseDomain = baseDomain
@@ -434,6 +458,35 @@ func (m *Manager) applyRoute(ctx context.Context, rec Record, baseDomain string)
 	if err := m.router.Apply(ctx, rec, baseDomain, m.ssoDomains); err != nil {
 		_, _ = m.store.Update(rec.Name, func(r *Record) { r.LastError = err.Error() })
 	}
+}
+
+// DiscoverServices returns the Services a release rendered, so the exposure UI
+// can offer them as route targets.
+func (m *Manager) DiscoverServices(ctx context.Context, name string) ([]DiscoveredService, error) {
+	if _, err := m.store.Get(name); err != nil {
+		return nil, err
+	}
+	if m.discoverer == nil {
+		return []DiscoveredService{}, nil
+	}
+	return m.discoverer.ServicesForRelease(ctx, m.helm.Namespace(), name)
+}
+
+// fillDiscoveredService resolves a route target from the release's Services
+// when the exposure has none. Discovery failure is not fatal: the record is
+// kept and the resulting lastError tells the operator to pick a service.
+func (m *Manager) fillDiscoveredService(ctx context.Context, release string, e Exposure) Exposure {
+	if e.Service != "" || m.discoverer == nil {
+		return e
+	}
+	services, err := m.discoverer.ServicesForRelease(ctx, m.helm.Namespace(), release)
+	if err != nil || len(services) == 0 {
+		return e
+	}
+	e.Service = services[0].Name
+	e.Port = services[0].Port
+	e.Scheme = services[0].Scheme
+	return e
 }
 
 // resolveChart ensures the source cache is fresh and returns the local chart dir.
