@@ -16,7 +16,8 @@
 
   let exposure: Exposure = { subdomain: '', tls: true, auth: true, localOnly: false };
   let baseDomain = '';
-  let authAllowed = true;
+  let selectableDomains: string[] = [];
+  let ssoDomains: string[] = [];
   let services: { name: string; port: number; scheme: string }[] = [];
   let loading = true;
   let saving = false;
@@ -33,7 +34,8 @@
       const data = await res.json();
       exposure = data.exposure;
       baseDomain = data.baseDomain || '';
-      authAllowed = data.authAllowed ?? true;
+      selectableDomains = Array.isArray(data.selectableDomains) ? data.selectableDomains : [];
+      ssoDomains = Array.isArray(data.ssoDomains) ? data.ssoDomains : [];
       const servicesRes = await fetch(`/api/apps/${appName}/services`);
       if (servicesRes.ok) {
         const discovered = await servicesRes.json();
@@ -80,7 +82,7 @@
       {#if loading}
         <p class="text-gray-400">Loading exposure...</p>
       {:else}
-        <ExposureForm bind:exposure {baseDomain} {authAllowed} {services} />
+        <ExposureForm bind:exposure bind:baseDomain {selectableDomains} {ssoDomains} {services} />
       {/if}
       {#if error}<div class="mt-4 p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
     </div>

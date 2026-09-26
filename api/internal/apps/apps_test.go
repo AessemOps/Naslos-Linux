@@ -115,6 +115,22 @@ func TestBackfillSkipsPlatformAndExisting(t *testing.T) {
 	}
 }
 
+func TestURLForUsesRecordBaseDomain(t *testing.T) {
+	m := &Manager{baseDomain: "naslos.local"}
+	rec := Record{Exposure: Exposure{Subdomain: "jellyfin", TLS: true}, BaseDomain: "media.example.com"}
+	if got := m.urlFor(rec); got != "https://jellyfin.media.example.com" {
+		t.Fatalf("urlFor with a record domain = %q", got)
+	}
+	rec.BaseDomain = ""
+	if got := m.urlFor(rec); got != "https://jellyfin.naslos.local" {
+		t.Fatalf("urlFor fallback to primary = %q", got)
+	}
+	plain := &Manager{baseDomain: "naslos.local"}
+	if got := plain.urlFor(Record{Exposure: Exposure{Subdomain: "x"}}); got != "http://x.naslos.local" {
+		t.Fatalf("urlFor non-TLS = %q", got)
+	}
+}
+
 func TestValidateReleaseName(t *testing.T) {
 	if err := validateReleaseName("jellyfin"); err != nil {
 		t.Fatalf("valid name rejected: %v", err)
