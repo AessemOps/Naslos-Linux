@@ -8,25 +8,38 @@ API-owned Traefik routing layer and a cert-manager ACME DNS-01 certificate UI.
 
 ## Implementation status (2026-09-26, branch `feature/charts-repo-and-app-install-refactor`)
 
-Tasks 1–9 are implemented and committed; all local gates pass
-(`scripts/audit.sh`, `go test -race ./...` for api and agent, `svelte-check`,
-`helm lint`, `helm template` with `values.yaml`+`values-vm.yaml`).
+Tasks 1–11 are implemented; all gates pass (`scripts/audit.sh`, `go test -race`
+for api/agent, `svelte-check`, `helm lint`, `helm template` with
+`values.yaml`+`values-vm.yaml`). PR **#28** is open (not merged).
 
-**Live drill on 192.168.1.117 (revisions 10–15)** — done against a temporary
-`git://` sample repo (NaslosCharts is an empty placeholder) served from the
-workstation, with cert-manager CRDs installed via `make crds`:
+Beyond the original plan, the live work also added: the opt-in **privileged apps
+namespace** (`privileged: true` → `naslos-apps-priv`, for NET_ADMIN/gluetun), the
+**`naslos-datasets` RWX PV/PVC** (PSA `baseline` forbids `hostPath`, so managed
+apps mount a PVC backed by the datasets root), **git egress**
+(`networkPolicy.gitEgress`), configurable **channel mapping**, and the populated
+**NaslosCharts** repository (README app-authoring spec + 10 charts: Jellyfin,
+Radarr, Sonarr, Seerr, FlareSolverr, Prowlarr(+gluetun), qBittorrent(+gluetun),
+Audiobookshelf, Calibre-Web, SearXNG).
 
-- go-git clone/pull over `git://`, catalog discovery, `naslos-app.yaml` parse ✓
+**Live drill on 192.168.1.117 (helm revisions 10–21; `naslos-api` r19→r22,
+`naslos-ui` r13)**, first against a temporary `git://` sample repo then against
+the real `https://github.com/AessemOps/NaslosCharts.git` (`{Prod: main}`):
+
+- go-git clone/refresh over `git://` and HTTPS; catalog discovery of all **10
+  apps** from GitHub; `naslos-app.yaml` parse ✓
 - install from the local clone into `naslos-apps`, Service `{{ .Release.Name }}`
-  template resolved, record + live status ✓
+  template resolved, record + live status; **Jellyfin serves `200` via Traefik** ✓
+- a `privileged: true` chart installed into **`naslos-apps-priv`** with its route ✓
 - exposure: TLS+auth → `websecure`, Authelia `302` to the portal; auth-off +
-  local-only → `IPAllowList` middleware and no redirect; empty subdomain →
-  IngressRoute deleted (cluster-internal) ✓
+  local-only → `IPAllowList` and no redirect; empty subdomain → IngressRoute
+  deleted (cluster-internal) ✓
 - uninstall removed the release, route and per-app middleware ✓
 - domains: `certManager: true`, Issuer + wildcard Certificate CRs created,
   status `pending` (no controller) ✓
-- orphan backfill: a stray platform release was discovered via Helm workload
-  labels and surfaced as `orphaned: true` ✓
+- orphan backfill: a stray platform release was surfaced as `orphaned: true` ✓
+- route-target discovery: a no-services chart auto-filled `service:80` and got a
+  route ✓
+- Playwright `apps.spec.ts` + `domains.spec.ts`: **11 passed live** ✓
 
 Bugs the drill found and that are fixed in this branch:
 
@@ -41,27 +54,17 @@ Bugs the drill found and that are fixed in this branch:
    workloads and Services with a read-only Role (no Secret access).
 5. `make crds`' cert-manager step was empty (`helm show crds` is empty for
    cert-manager v1.18, whose CRDs live in `templates/crds.yaml`); fixed.
+6. `security-headers` pinned HSTS subdomains (`stsIncludeSubdomains`), which
+   breaks a TLS-off app subdomain; removed.
+7. PSA `baseline` forbids `hostPath` volumes, so media apps could not mount a
+   dataset; the platform now publishes them as the `naslos-datasets` PVC.
 
-**Not done / environment limits**
+**Not done**
 
-- **GitHub egress fixed**: `networkPolicy.gitEgress` (on in `values-vm.yaml`)
-  opens the git transports (443/22/9418) to the Internet for the API pod; the
-  official source now clones `https://github.com/AessemOps/NaslosCharts.git`
-  with no error. That repository holds only a LICENSE, so the catalog is empty
-  until `apps/<name>/` charts are added. `apps.officialSource.channels` maps
-  channels to branches (`{Prod: main}` for the current repo).
-- **Playwright live run was blocked** by an Authelia TOTP mismatch for the
-  `admin` user on the instance (`ui/.env.playwright.local` secret does not match
-  the enrolled device); the specs themselves ran up to auth. No code fault.
-- Route-target **discovery fallback** is implemented: a manifest with no
-  `services[]` installs and then routes to the release's first discovered
-  Service (matched by Helm release annotation/label); `GET
-  /api/apps/{name}/services` lists the candidates and the exposure UI offers a
-  picker. `discovery_test.go` covers it.
-- Task 11 cutover/final deploy is not done; the tag suffixes `api 0.1.0-r19`,
-  `ui 0.1.0-r13` are deployed on the drill instance only.
-- `gh` is not installed; the PR was not opened programmatically. Compare URL:
-  `https://github.com/AessemOps/Naslos-Linux/pull/new/feature/charts-repo-and-app-install-refactor`.
+- Merge PR #28 (needs approval).
+- Start/stop (`FR-APP-04`) is `[OPEN]`.
+- gluetun charts need the user's VPN provider/key at install time (the charts
+  ship with the sidecar pattern; the namespace/RBAC/routing are verified).
 
 ---
 

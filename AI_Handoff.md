@@ -12,31 +12,58 @@ working papers (audit findings, fix plan, code-review list, the superseded
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## App catalog refactor (2026-09-26, branch `feature/charts-repo-and-app-install-refactor`)
+## App catalog refactor (2026-09-26) — implemented, live-drilled
 
-The hard-coded Go catalog is replaced by git-based chart repositories. Plan and
-full status: `.kilo/plans/1789943277180-charts-repo-and-app-install-refactor.md`.
-New packages: `api/internal/chartsrepo`, `apps` (records + lifecycle + backfill),
-`routing` (Traefik IngressRoutes/middlewares), `certs` (cert-manager CRs); the
-`catalog` package now loads `apps/<name>/naslos-app.yaml` from cloned repos.
-Apps install into `naslos-apps` (PSA `baseline`) with a namespaced API Role;
-`make crds` now also installs the cert-manager CRDs.
+Branch `feature/charts-repo-and-app-install-refactor` (PR #28, open; not
+merged). Plan + full status: `.kilo/plans/1789943277180-charts-repo-and-app-install-refactor.md`.
 
-Live-drilled on `192.168.1.117` (drill revisions 10–15; images `naslos-api`
-**`0.1.0-r19`**, `naslos-ui` **`0.1.0-r13`**): clone, install, exposure
-(TLS/auth/local-only/empty), uninstall, domains/certificate CRs and orphan
-backfill all verified. The drill found and fixed five bugs (see the plan).
-Two environment limits: the cluster has **no GitHub egress**, so the official
-`https://github.com/AessemOps/NaslosCharts.git` source cannot clone here (the
-repo is also an empty placeholder), and the Playwright live run was blocked by
-an Authelia TOTP mismatch for `admin`.
+The hard-coded Go catalog is replaced by **git-based chart repositories**:
+
+- `api/internal/chartsrepo` — source store (official + user), pure-Go `go-git`
+  clone/pull per `(source, channel)` into `/var/lib/naslos/charts`, TTL refresh
+  with stale fallback, credentials from Secrets (public/token/SSH), traversal +
+  size guards.
+- `api/internal/catalog` — loads `apps/<name>/naslos-app.yaml` from the clones;
+  user sources override the official repo on name collision; channel aggregation.
+- `api/internal/apps` — persisted install records (`apps.json`), install/
+  upgrade/exposure/uninstall from the **local clone** (helm `LoadDir`), orphan
+  backfill (Helm workload labels, read-only), route-target discovery when a
+  manifest declares no `services[]`.
+- `api/internal/routing` — one Traefik `IngressRoute` + middlewares per app,
+  rendered/applied by the API; `security-headers` omits `stsIncludeSubdomains`.
+- `api/internal/certs` — base domains + cert-manager ACME DNS-01 `Issuer` and
+  wildcard `Certificate` CRs; SSL page gated on the CRDs.
+- Chart: `naslos-apps` (PSA `baseline`), opt-in **`naslos-apps-priv`** (PSA
+  `privileged`) for `privileged: true` charts (gluetun `NET_ADMIN`); namespaced
+  API Roles; the **`naslos-datasets`** RWX PV/PVC (baseline forbids `hostPath`);
+  `networkPolicy.gitEgress` (443/22/9418); `apps.officialSource.channels`
+  (`{Prod: main}`); `make crds` installs the cert-manager CRDs.
+- UI: Sources tab, config→exposure→review→confirm install, exposure editor with
+  route-target picker, Domains & SSL page.
+
+**NaslosCharts** (public, `AessemOps/NaslosCharts`): README app-authoring spec +
+10 charts — Jellyfin, Radarr, Sonarr, Seerr, FlareSolverr, Prowlarr(+gluetun),
+qBittorrent(+gluetun), Audiobookshelf, Calibre-Web, SearXNG (last two VPN charts
+declare `privileged: true`). Chart repo is currently a single `main` branch.
+
+**Live on `192.168.1.117` (helm revision 21, `naslos-api 0.1.0-r22`, `naslos-ui
+0.1.0-r13`)**: catalog refresh pulled all 10 apps from GitHub; Jellyfin installed
+from the catalog and serves **200 via Traefik**; a `privileged: true` test chart
+installed into `naslos-apps-priv` with its route; Playwright `apps.spec.ts` +
+`domains.spec.ts` 11/11. Bugs the drill found and fixed are listed in the plan
+(Release.Name service template, forwardAuth namespace, exposure PUT clobbering
+the target, Helm-list backfill needing secret access, `make crds` empty
+cert-manager step, HSTS subdomains, baseline hostPath → datasets PVC).
+
+**Not done**: merge (PR #28 awaits approval); start/stop (`FR-APP-04`) is
+`[OPEN]`; gluetun charts need the user's VPN provider/key.
 
 | Piece | What it is |
 | --- | --- |
 | `api/` (Go) | UI-facing HTTP API + the buddy sender, scheduler and job runner |
 | `agent/` (Go) | Privileged, host-networked DaemonSet: the only thing that runs `zpool`/`zfs`/`wipefs`; also serves the streaming backup endpoints |
 | `ui/` | Svelte 5 + TS + Tailwind, built statically and served by unprivileged nginx |
-| `charts/naslos` | Helm chart: api, ui, agent, samba, nfs, terminal, openldap, Traefik + Authelia subcharts |
+| `charts/naslos` | Helm chart: api, ui, agent, samba, nfs, terminal, openldap, Traefik + Authelia (and optional cert-manager) subcharts |
 | `openldap/ samba/ nfs/ terminal/` | Per-service images and config templates |
 | `api/cmd/buddyctl`, `api/cmd/buddy-receiver` | Standalone backup client and Docker receiver (no Kubernetes, no ZFS) |
 
@@ -46,6 +73,13 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
 
 ## Where things stand (2026-09-19)
 
+- **2026-09-26 update — app catalog refactor.** Branch
+  `feature/charts-repo-and-app-install-refactor` (PR #28, open) replaces the
+  hard-coded catalog with git chart repositories, adds the app lifecycle,
+  routing/certs, the privileged apps namespace and the datasets PV/PVC (see the
+  section above). All gates green; deployed to `192.168.1.117` at revision 21.
+  The bullets below describe the pre-refactor `master`/audit state that the
+  branch is based on.
 - **`master` = `85ae874`**; PRs #9–#23 merged (buddy, security fixes, the
   authenticated-only removal of the dev endpoint, namespace/Authelia/admin
   gating). The audit branch `audit/full-2026-09-19` carries the remediation
@@ -200,16 +234,28 @@ cd ui    && npm run check && npx playwright test      # Playwright needs the VM
 helm lint charts/naslos -f charts/naslos/values.yaml
 
 # Deploy: always with FRESH tag suffixes (a retag can serve stale code)
-make api-image IMAGE_TAG=0.1.0-r11 && docker push 192.168.1.2:30095/naslos-api:0.1.0-r11
-helm upgrade naslos charts/naslos -n naslos --reuse-values \
-  --set api.image.tag=0.1.0-r11 --wait
+make api-image IMAGE_TAG=0.1.0-r23 && docker push 192.168.1.2:30095/naslos-api:0.1.0-r23
+# install-vm renders -f values.yaml -f values-vm.yaml (NOT --reuse-values), so
+# bump the tag in values-vm.yaml or pass --set; new keys apply from the files.
+make install-vm HELM_FLAGS="--set api.image.tag=0.1.0-r23"
 curl -sk -o /dev/null -w '%{http_code}\n' https://naslos.local/api/health
+
+# App-catalog API is owner-gated AND restricted to the proxy/pod CIDR, so query
+# it from a trusted pod, not from the workstation:
+SECRET=$(kubectl -n naslos get secret naslos-proxy -o jsonpath='{.data.secret}' | base64 -d)
+kubectl -n naslos-privileged exec deploy/naslos-terminal -- sh -c \
+  "curl -s -H 'Remote-User: admin' -H 'Remote-Groups: naslos_admins' \
+   -H \"X-Naslos-Proxy-Secret: $SECRET\" \
+   http://naslos-api.naslos.svc.cluster.local:8080/api/catalog"
 ```
 
 VM facts: node `192.168.1.117`, UI at `https://naslos.local` (the only listener;
 no NodePort), private registry `192.168.1.2:30095`, namespaces `naslos`
-(authenticated services) and `naslos-privileged` (agent/samba/nfs/terminal),
-`TALOSCONFIG=bootstrap/vm/talosconfig`.
+(authenticated services), `naslos-privileged` (agent/samba/nfs/terminal),
+**`naslos-apps`** (installed apps, PSA baseline) and **`naslos-apps-priv`**
+(privileged apps, PSA privileged), `TALOSCONFIG=bootstrap/vm/talosconfig`.
+Pods have outbound git access (`networkPolicy.gitEgress`) and the datasets root
+is exposed as the `naslos-datasets` RWX PVC/PV.
 Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` and
 `test/naslos-buddy` (the buddy receive dataset); **Buddy is enabled** with
 `buddy.name=naslos-vm` and `peersFile`/`schedulesFile` on the state PVC.
@@ -260,6 +306,24 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
     export/import, which the agent deliberately does not do; the error names that
     state. `kubectl -n naslos-privileged rollout restart ds/naslos-agent` remains
     a manual fallback.
+11. **PSA is enforced per namespace.** `naslos` and `naslos-privileged` are
+    `privileged`; `naslos-apps` is **`baseline`** and `naslos-apps-priv` is
+    `privileged`. Baseline **forbids `hostPath` volumes** (verified live:
+    "violates PodSecurity baseline: hostPath volumes"), so managed app charts
+    mount the platform's `naslos-datasets` RWX PVC; `hostPath` and `NET_ADMIN`
+    only work in `naslos-apps-priv` (a chart opts in with `privileged: true`).
+12. **The node has Internet; pods do not, by default.** `naslos-workload-egress`
+    is default-deny, so the API cannot clone a chart repo until
+    `networkPolicy.gitEgress: true` (on in `values-vm.yaml`; ports 443/22/9418).
+    Image pulls are kubelet traffic and unaffected by pod policy.
+13. **Channels are a source property, and authoritative.** A source that declares
+    channels uses exactly those (no defaults merge). NaslosCharts has only `main`,
+    so `values-vm.yaml` sets `apps.officialSource.channels: {Prod: main}`;
+    a channel pointing at a missing branch reports a per-source error.
+14. **`make install-vm` renders the `-f` files; it is not `--reuse-values`.** New
+    keys in `values*.yaml` apply, but the official source is seeded only when it
+    is absent from `sources.json` — to change its URL/channels/auth, delete it
+    (`DELETE /api/sources/naslos`) and restart the API so it re-seeds from env.
 
 ## Conventions
 
@@ -295,21 +359,27 @@ base-CVE backlog. No secret values are in the report; the repository is private
 (unauthenticated GitHub API returns 404), so the committed credentials that were
 found were insider-exposure, not internet-exposure.
 
-## Deployed right now (2026-09-19)
+## Deployed right now (2026-09-26)
 
-On `192.168.1.117`: `naslos-api` **`0.1.0-r10`**, `naslos-ui` **`0.1.0-r11`**
-(Svelte 5 + `@xterm`, unprivileged nginx), `naslos-agent` **`0.1.0-r7`**
-(contentless-backup guard); `naslos-samba`, `naslos-nfs` and `naslos-terminal`
-are **`0.1.0-r3`** (all on Debian 13 / trixie) and OpenLDAP is **`0.1.0-r4`**;
-chart `naslos-0.1.0`, helm revision **55** (the M6 split; the later AV-8 build
-bumps the API/agent tags), Talos **v1.14.1** (kernel 6.18.51-talos), ZFS pool `test`
-(stripe, 79 G) + dataset `test/drill` (plus `test/naslos-buddy` as the Buddy
-receive dataset). The posture is the **only one**: Traefik **v3.7.13** (chart
-41.6.0) on hostPort 80/443, Authelia **4.39.24** (chart 0.11.22) at
-`https://naslos.local/authelia`, no NodePort and no auth bypass, with `admin` in
-`naslos_admins` (TOTP/WebAuthn enrolled). At revision 41 the Authelia LDAP bind
-password comes from the `naslos-openldap` Secret via
-`AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE` (AUDIT-M3 follow-up), so
-`kubectl get cm authelia-config` no longer carries it. The old VM's tags
-(`api 0.1.0-b21`, `agent 0.1.0-b6`, `ui 0.1.0-b9`, revision 82) are retired with
-it, and the `.118` work server has been deleted, so only this instance exists.
+On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 21**:
+`naslos-api` **`0.1.0-r22`** (git chart repos, privileged-namespace support,
+datasets PV/PVC), `naslos-ui` **`0.1.0-r13`** (Sources tab, exposure editor,
+Domains & SSL), `naslos-agent` **`0.1.0-r8`**, `naslos-samba`/`naslos-nfs`/
+`naslos-terminal` **`0.1.0-r3`**, OpenLDAP per `values.yaml`. Talos
+**v1.14.1** (kernel 6.18.51-talos), Cilium v1.20.2, ZFS pool `test` (stripe,
+79 G) + `test/drill`, `test/naslos-buddy`.
+
+Namespaces: `naslos` (authenticated services), `naslos-privileged`
+(agent/samba/nfs/terminal), `naslos-apps` (installed apps, PSA baseline,
+`naslos-datasets` RWX PVC), `naslos-apps-priv` (privileged apps). Posture is the
+**only one**: Traefik v3.7.13 (chart 41.6.0) on hostPort 80/443, Authelia
+4.39.24 (chart 0.11.22) at `https://naslos.local/authelia`, no NodePort and no
+auth bypass, `admin` in `naslos_admins`.
+
+App catalog: official source `https://github.com/AessemOps/NaslosCharts.git`
+(public, channels `{Prod: main}`) — catalog lists **10 apps** (Jellyfin, Radarr,
+Sonarr, Seerr, FlareSolverr, Prowlarr, qBittorrent, Audiobookshelf, Calibre-Web,
+SearXNG). **Jellyfin is installed** (`naslos-apps`, `http://jellyfin.naslos.local`,
+served 200 via Traefik, no media configured yet). The app-catalog changes are on
+the unmerged branch/PR #28; the pre-refactor revision 55 narrative is archived at
+`docs/archive/ai-handoff-log-2026-09.md`.
