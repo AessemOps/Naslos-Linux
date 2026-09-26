@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -365,15 +366,25 @@ func (s *Server) setupChartRepos(appsHelmClient *helm.Client) {
 	})
 }
 
-// syncAutheliaState reconciles the Authelia SSO fragments with the effective
-// SSO domain list. Best-effort: a failure is logged by the caller, never fatal.
-func (s *Server) syncAutheliaState(ctx context.Context) error {
-	if s.authelia == nil {
-		return nil
-	}
+// syncSSOState reconciles everything that makes the effective SSO domain list
+// work: the Authelia fragments, the pod restart inside Sync, and the per-domain
+// portal routes a promoted domain needs. Best-effort: a failure is logged by the
+// caller, never fatal.
+func (s *Server) syncSSOState(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	return s.authelia.Sync(ctx, s.effectiveSSODomains())
+	var errs []error
+	if s.authelia != nil {
+		if err := s.authelia.Sync(ctx, s.effectiveSSODomains()); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if s.routing != nil {
+		if err := s.routing.ReconcilePortals(ctx, s.effectiveSSODomains(), s.baseDomain, s.routing.TLSSecretFor()); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // buildCatalog scans the cached repositories into a catalog snapshot.
@@ -621,13 +632,14 @@ func (s *Server) Start() error {
 	// block the API from serving.
 	go s.reconcileApps()
 
-	// Re-seed Authelia from the effective SSO list independently of the (slow)
-	// chart refresh, so a promotion survives an API restart promptly: the
-	// fragment ConfigMap is `keep` and Helm never clobbers it, so the API is the
-	// one that reconciles it. Best-effort only.
+	// Re-seed the SSO state (Authelia fragments + per-domain portal routes) from
+	// the effective domain list independently of the (slow) chart refresh, so a
+	// promotion survives an API restart promptly: the fragment ConfigMap is
+	// `keep` and its volume is not Helm-managed, so the API reconciles it.
+	// Best-effort only.
 	go func() {
-		if err := s.syncAutheliaState(context.Background()); err != nil {
-			log.Printf("Warning: initial Authelia SSO reconcile failed: %v", err)
+		if err := s.syncSSOState(context.Background()); err != nil {
+			log.Printf("Warning: initial SSO reconcile failed: %v", err)
 		}
 	}()
 

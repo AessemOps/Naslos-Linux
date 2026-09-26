@@ -54,7 +54,9 @@ data:
     ##################################
 
     theme: dark
-    default_redirection_url: https://{{ .Values.domain }}/
+    # No global default_redirection_url: with a session.cookies list (below)
+    # Authelia rejects it and requires default_redirection_url per cookie, which
+    # the SSO fragment provides.
     jwt_secret: {{ $jwtSecret | quote }}
     # Trust the openldap self-signed CA (mounted at /certificates from the
     # naslos-openldap-tls secret via authelia.certificates.existingSecret in

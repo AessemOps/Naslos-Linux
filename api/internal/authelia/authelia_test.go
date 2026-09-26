@@ -2,9 +2,11 @@ package authelia
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -16,16 +18,27 @@ func TestFragmentsCookieAndRuleShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fragments: %v", err)
 	}
-	gotCookies := string(cookies)
-	for _, want := range []string{
-		"domain: naslos.local",
-		"authelia_url: https://naslos.local/authelia/",
-		"domain: media.example.com",
-		"authelia_url: https://media.example.com/authelia/",
-	} {
-		if !strings.Contains(gotCookies, want) {
-			t.Errorf("cookies.yml missing %q:\n%s", want, gotCookies)
-		}
+	// With a cookies list Authelia rejects a global default_redirection_url and
+	// requires each per-cookie value to be a https URL that shares the cookie
+	// scope (its own apex) and differs from authelia_url.
+	var gotCookies []map[string]string
+	if err := yaml.Unmarshal(cookies, &gotCookies); err != nil {
+		t.Fatalf("cookies.yml is not valid YAML: %v\n%s", err, cookies)
+	}
+	wantCookies := []map[string]string{
+		{
+			"domain":                  "naslos.local",
+			"authelia_url":            "https://naslos.local/authelia/",
+			"default_redirection_url": "https://naslos.local/",
+		},
+		{
+			"domain":                  "media.example.com",
+			"authelia_url":            "https://media.example.com/authelia/",
+			"default_redirection_url": "https://media.example.com/",
+		},
+	}
+	if !reflect.DeepEqual(gotCookies, wantCookies) {
+		t.Errorf("cookies.yml = %#v, want %#v", gotCookies, wantCookies)
 	}
 
 	gotRules := string(rules)
@@ -156,7 +169,7 @@ func TestSyncRewritesAndRestartsOnChange(t *testing.T) {
 func TestSyncAdoptsSemanticallyEqualSeed(t *testing.T) {
 	r, client := syncHarness(t)
 	seedFragments(t, client,
-		"- domain: \"naslos.local\"\n  authelia_url: \"https://naslos.local/authelia/\"\n",
+		"- domain: \"naslos.local\"\n  authelia_url: \"https://naslos.local/authelia/\"\n  default_redirection_url: \"https://naslos.local/\"\n",
 		"- domain: \"*.naslos.local\"\n  policy: \"one_factor\"\n",
 	)
 

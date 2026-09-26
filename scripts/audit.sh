@@ -74,7 +74,7 @@ check_authelia_sso_fragments() {
     return 1
   fi
   python3 - "$f" <<'PY'
-import sys, yaml
+import re, sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 def find(kind, name):
     for d in docs:
@@ -92,7 +92,11 @@ assert "cookies.yml" in seed["data"] and "rules.yml" in seed["data"], \
 # renders the same structure, so any drift must fail here. Values are the VM
 # profile's sso.domains (naslos.local).
 assert yaml.safe_load(seed["data"]["cookies.yml"]) == [
-    {"domain": "naslos.local", "authelia_url": "https://naslos.local/authelia/"},
+    {
+        "domain": "naslos.local",
+        "authelia_url": "https://naslos.local/authelia/",
+        "default_redirection_url": "https://naslos.local/",
+    },
 ], f"seed cookies drifted from the API Fragments output: {seed['data']['cookies.yml']!r}"
 assert yaml.safe_load(seed["data"]["rules.yml"]) == [
     {"domain": "*.naslos.local", "policy": "one_factor"},
@@ -107,11 +111,24 @@ assert 'fileContent "/config-sso/rules.yml"' in configuration, \
     "authelia-config must inject rules.yml via fileContent"
 assert "$ssoDomains" not in configuration, \
     "authelia-config must not render static SSO domain loops"
+# With a cookies list Authelia rejects the legacy global default_redirection_url;
+# the per-cookie value comes from the fragment (checked above).
+body = "\n".join(l for l in configuration.splitlines() if not l.strip().startswith("#"))
+assert not re.search(r"^\s*default_redirection_url\s*:", body, re.M), \
+    "authelia-config must not set the legacy global default_redirection_url"
 
 sts = find("StatefulSet", "naslos-authelia")
 assert sts is not None, "Authelia must be a StatefulSet (a deterministic restart target)"
 mounts = [m["mountPath"] for m in sts["spec"]["template"]["spec"]["containers"][0].get("volumeMounts", [])]
 assert "/config-sso" in mounts, f"Authelia must mount /config-sso, got {mounts}"
+
+# A promoted domain needs its own portal, served by an API-rendered ExternalName
+# route in the apps namespace; Traefik refuses ExternalName services otherwise.
+traefik = find("Deployment", "naslos-traefik")
+assert traefik is not None, "missing the Traefik Deployment"
+args = traefik["spec"]["template"]["spec"]["containers"][0].get("args", [])
+assert "--providers.kubernetescrd.allowExternalNameServices=true" in args, \
+    "Traefik must allow ExternalName services for the per-domain Authelia portal"
 
 role = find("Role", "naslos-api-authelia-sso")
 assert role is not None, "missing the scoped naslos-api-authelia-sso Role"
