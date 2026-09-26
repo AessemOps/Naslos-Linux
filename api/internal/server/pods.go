@@ -27,8 +27,12 @@ var (
 )
 
 // kubernetesClient returns a cached clientset: the API is one long-lived
-// process, so a single client keeps the connection pool warm.
+// process, so a single client keeps the connection pool warm. Tests inject a
+// fake through Server.kubeClient.
 func (s *Server) kubernetesClient() (kubernetes.Interface, error) {
+	if s.kubeClient != nil {
+		return s.kubeClient, nil
+	}
 	k8sOnce.Do(func() {
 		config, err := getKubeConfig(s.kubeconfig)
 		if err != nil {

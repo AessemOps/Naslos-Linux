@@ -1,4 +1,5 @@
 {{- if .Values.api.enabled }}
+{{- $ddns := get .Values "ddns" | default dict }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -266,6 +267,22 @@ spec:
               value: {{ .Values.apps.officialSource.credentialsSecret | quote }}
             {{- end }}
             {{- end }}
+            # ---- Dynamic DNS (docs/dynamic-dns.md) ----
+            # Providers are declarative (embedded defaults + an optional mounted
+            # override directory). The entry store lives on the shares-config
+            # PVC; detecting the public IP needs ddnsEgress.
+            - name: DDNS_ENABLED
+              value: {{ if hasKey $ddns "enabled" }}{{ $ddns.enabled | quote }}{{ else }}"true"{{ end }}
+            - name: DDNS_CONFIG
+              value: {{ $ddns.stateFile | default "/var/lib/naslos/ddns.json" | quote }}
+            - name: DDNS_PROVIDERS_DIR
+              value: {{ $ddns.providersDir | default "/etc/naslos/ddns-providers" | quote }}
+            - name: DDNS_IP_SOURCE
+              value: {{ $ddns.ipSource | default "https://api.ipify.org" | quote }}
+            - name: DDNS_IPV6_SOURCE
+              value: {{ $ddns.ipv6Source | default "https://api6.ipify.org" | quote }}
+            - name: DDNS_INTERVAL_SECONDS
+              value: {{ $ddns.intervalSeconds | default 300 | quote }}
             # Notification settings: kept on the same volume as the other state
             # files so an operator's topic, token and enabled events survive a
             # restart (they used to be in-memory only).
@@ -310,7 +327,7 @@ spec:
             - name: LDAP_CA_CERT
               value: /var/run/secrets/ldap.ca/ca.crt
             {{- end }}
-          {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath .Values.buddy.enabled .Values.agent.tls.enabled }}
+          {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath .Values.buddy.enabled .Values.agent.tls.enabled $ddns.providersConfigMap }}
           volumeMounts:
             {{- if .Values.agent.tls.enabled }}
             - name: agent-tls
@@ -351,10 +368,18 @@ spec:
               readOnly: true
               mountPropagation: HostToContainer
             {{- end }}
+            {{- if $ddns.providersConfigMap }}
+            # Operator-supplied provider overrides (docs/dynamic-dns.md). Each
+            # key is a provider *.yaml file; an invalid one is skipped and
+            # surfaced by GET /api/providers.
+            - name: ddns-providers
+              mountPath: {{ $ddns.providersDir | default "/etc/naslos/ddns-providers" }}
+              readOnly: true
+            {{- end }}
           {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
-      {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath .Values.buddy.enabled .Values.agent.tls.enabled }}
+      {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath .Values.buddy.enabled .Values.agent.tls.enabled $ddns.providersConfigMap }}
       volumes:
         {{- if .Values.agent.tls.enabled }}
         - name: agent-tls
@@ -393,6 +418,11 @@ spec:
           hostPath:
             path: {{ .Values.api.datasetsHostPath }}
             type: Directory
+        {{- end }}
+        {{- if $ddns.providersConfigMap }}
+        - name: ddns-providers
+          configMap:
+            name: {{ $ddns.providersConfigMap }}
         {{- end }}
         {{- if .Values.buddy.enabled }}
         - name: buddy-data

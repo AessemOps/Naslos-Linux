@@ -25,6 +25,9 @@ func newTestServer(t *testing.T) *Server {
 	t.Setenv("SOURCES_CONFIG", filepath.Join(t.TempDir(), "sources.json"))
 	t.Setenv("DOMAINS_CONFIG", filepath.Join(t.TempDir(), "domains.json"))
 	t.Setenv("CHARTS_CACHE_DIR", filepath.Join(t.TempDir(), "charts"))
+	t.Setenv("DDNS_CONFIG", filepath.Join(t.TempDir(), "ddns.json"))
+	t.Setenv("DDNS_ENABLED", "true")
+	t.Setenv("DDNS_PROVIDERS_DIR", filepath.Join(t.TempDir(), "ddns-providers"))
 
 	return New("127.0.0.1:0", nil)
 }
@@ -168,6 +171,7 @@ func TestNonAdminMayOnlyReachTheirIdentityAndDashboard(t *testing.T) {
 		"/api/apps", "/api/apps/nginx", "/api/catalog", "/api/catalog/nginx",
 		"/api/sources", "/api/sources/refresh", "/api/sources/mine",
 		"/api/domains", "/api/domains/example.com", "/api/domains/example.com/certificate",
+		"/api/providers", "/api/ddns", "/api/ddns/x", "/api/ddns/x/run",
 		"/api/apps/nginx/exposure",
 		"/api/apps/nginx/services",
 		"/api/pods", "/api/namespaces", "/api/ws/logs", "/api/ws/exec",

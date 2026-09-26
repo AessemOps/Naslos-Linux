@@ -1,13 +1,24 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/AessemOps/Naslos-Linux/api/internal/certs"
+	"github.com/AessemOps/Naslos-Linux/api/internal/ddns"
 )
+
+// domainRequest is a domain create/update body. `fields` carries the selected
+// provider's credential fields; the server splits them into a Secret (secret
+// fields) and the domain's providerConfig (the rest).
+type domainRequest struct {
+	certs.Domain
+	Fields map[string]string `json:"fields"`
+}
 
 // handleDomains lists and creates base domains with ACME certificates.
 func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
@@ -24,13 +35,13 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case http.MethodPost:
-		var domain certs.Domain
-		if err := json.NewDecoder(r.Body).Decode(&domain); err != nil {
+		var req domainRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		domain.Primary = false
-		s.upsertDomain(w, r, domain, http.StatusCreated)
+		req.Primary = false
+		s.upsertDomain(w, r, req, http.StatusCreated)
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -64,15 +75,15 @@ func (s *Server) handleDomainDetail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, domain)
 
 	case http.MethodPut:
-		var domain certs.Domain
-		if err := json.NewDecoder(r.Body).Decode(&domain); err != nil {
+		var req domainRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if domain.BaseDomain == "" {
-			domain.BaseDomain = name
+		if req.BaseDomain == "" {
+			req.BaseDomain = name
 		}
-		s.upsertDomain(w, r, domain, http.StatusOK)
+		s.upsertDomain(w, r, req, http.StatusOK)
 
 	case http.MethodDelete:
 		domain, err := s.domains.Get(name)
@@ -98,16 +109,30 @@ func (s *Server) handleDomainDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // upsertDomain validates, persists and applies a domain.
-func (s *Server) upsertDomain(w http.ResponseWriter, r *http.Request, domain certs.Domain, status int) {
+func (s *Server) upsertDomain(w http.ResponseWriter, r *http.Request, req domainRequest, status int) {
+	domain := req.Domain
 	if domain.Environment == "" {
 		domain.Environment = "staging"
+	}
+	existing, getErr := s.domains.Get(domain.BaseDomain)
+	existed := getErr == nil
+
+	if req.Fields != nil {
+		var prior *certs.Domain
+		if existed {
+			prior = &existing
+		}
+		if err := s.applyDomainFields(r, &domain, req.Fields, prior); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if err := domain.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	now := time.Now().UTC()
-	if existing, err := s.domains.Get(domain.BaseDomain); err == nil {
+	if existed {
 		domain.CreatedAt = existing.CreatedAt
 	} else {
 		domain.CreatedAt = now
@@ -128,6 +153,92 @@ func (s *Server) upsertDomain(w http.ResponseWriter, r *http.Request, domain cer
 		return
 	}
 	writeJSON(w, status, domain)
+}
+
+// applyDomainFields splits a submitted provider field map into the non-secret
+// providerConfig and a credential Secret, writing the Secret in the apps
+// namespace. When no secret value is submitted the existing Secret is kept.
+func (s *Server) applyDomainFields(r *http.Request, domain *certs.Domain, fields map[string]string, existing *certs.Domain) error {
+	if s.providers == nil {
+		return fmt.Errorf("no DNS provider registry is loaded")
+	}
+	p, ok := s.providers.Get(string(domain.DNSProvider))
+	if !ok {
+		return fmt.Errorf("unsupported DNS provider %q", domain.DNSProvider)
+	}
+	if !p.SupportsCertificates() {
+		return fmt.Errorf("provider %q does not support certificates", p.Name)
+	}
+	if p.IsPassthrough() {
+		// Passthrough takes a raw solver; there are no provider fields.
+		return nil
+	}
+	create := existing == nil
+
+	config := map[string]string{}
+	for _, f := range p.ConfigFields() {
+		value, submitted := fields[f.Key]
+		switch {
+		case submitted:
+			config[f.Key] = value
+		case existing != nil && existing.ProviderConfig[f.Key] != "":
+			config[f.Key] = existing.ProviderConfig[f.Key]
+		case f.Default != "":
+			config[f.Key] = f.Default
+		}
+		if f.Required && strings.TrimSpace(config[f.Key]) == "" {
+			return fmt.Errorf("field %q is required", f.Key)
+		}
+		if err := validateFieldValue(f, config[f.Key]); err != nil {
+			return err
+		}
+	}
+	domain.ProviderConfig = config
+
+	secretData := map[string]string{}
+	for _, f := range p.SecretFields() {
+		value, submitted := fields[f.Key]
+		if submitted && strings.TrimSpace(value) != "" {
+			secretData[f.SecretKeyOr()] = value
+			continue
+		}
+		if create && f.Required {
+			return fmt.Errorf("field %q is required", f.Key)
+		}
+	}
+	if len(secretData) == 0 {
+		// Nothing new to store: keep whatever Secret the domain already names.
+		return nil
+	}
+	secretName := domain.CredentialsSecret
+	if secretName == "" {
+		secretName = "naslos-domain-" + sanitizeName(domain.BaseDomain) + "-creds"
+	}
+	client, err := s.kubernetesClient()
+	if err != nil {
+		return fmt.Errorf("cannot reach the Kubernetes API to store credentials: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := ddns.WriteSecret(ctx, client, s.appsNamespace, secretName, secretData); err != nil {
+		return fmt.Errorf("storing credentials: %w", err)
+	}
+	domain.CredentialsSecret = secretName
+	return nil
+}
+
+// sanitizeName reduces a domain to a DNS-1123-safe component.
+func sanitizeName(name string) string {
+	return strings.Trim(strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		case r == '.':
+			return '-'
+		default:
+			return '-'
+		}
+	}, strings.ToLower(name)), "-")
 }
 
 // handleDomainCertificate reports a domain's certificate status.

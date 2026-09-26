@@ -241,6 +241,13 @@ assert api_env.get("APPS_NAMESPACE") == "naslos-apps", "the API must know the ap
 assert api_env.get("SOURCES_CONFIG"), "the API must get a sources state path"
 assert api_env.get("DOMAINS_CONFIG"), "the API must get a domains state path"
 
+# Dynamic DNS (FR-DNS): the provider override dir and state path must be wired,
+# and the egress rule must stay port-scoped to HTTP/HTTPS (80/443).
+assert api_env.get("DDNS_CONFIG"), "the API must get a DDNS state path"
+assert api_env.get("DDNS_PROVIDERS_DIR"), "the API must get a DDNS provider override directory"
+assert "DDNS_IP_SOURCE" in api_env and "DDNS_IPV6_SOURCE" in api_env, \
+    "the API must get the public-IP detection sources"
+
 # Privileged apps namespace: PSA privileged, with its own API Role, for charts
 # that need NET_ADMIN (VPN sidecars) and cannot run under baseline.
 priv_ns = nss.get("naslos-apps-priv")
@@ -268,6 +275,14 @@ for d in docs:
     if d.get("kind") == "Middleware" and d["metadata"]["name"] == "security-headers":
         assert "stsIncludeSubdomains" not in d["spec"]["headers"], \
             "security-headers must not set stsIncludeSubdomains"
+
+# FR-DNS-03: the DDNS egress is port-scoped to HTTP/HTTPS only, and CIDR-scoped.
+egress = nps["naslos-workload-egress"]["spec"]["egress"]
+ddns_rules = [r for r in egress if {p.get("port") for p in r.get("ports", [])} == {443, 80}]
+assert ddns_rules, "the workload egress must include a DDNS rule on 80/443"
+for r in ddns_rules:
+    assert all("ipBlock" in p for p in r.get("to", [])), \
+        "the DDNS egress rule must be CIDR-scoped, never a pod selector"
 print("network policy intent ok")
 PY
   rc=$?

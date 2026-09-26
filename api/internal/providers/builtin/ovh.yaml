@@ -1,0 +1,39 @@
+name: ovh
+displayName: OVH
+description: OVH DNS (ovh-eu / ovh-ca / ovh-us), via the OVH cert-manager webhook.
+icon: "🟦"
+fields:
+  - key: endpoint
+    label: API endpoint
+    type: enum
+    default: ovh-eu
+    enum: [ovh-eu, ovh-ca, ovh-us]
+  - key: applicationKey
+    label: Application key
+    type: string
+    required: true
+  - key: applicationSecret
+    label: Application secret
+    type: string
+    required: true
+    secret: true
+  - key: consumerKey
+    label: Consumer key
+    type: string
+    required: true
+    secret: true
+certManager:
+  solver:
+    ovh:
+      endpoint: "${cred.endpoint}"
+      applicationKey: "${cred.applicationKey}"
+      applicationSecretSecretRef:
+        name: "${secret}"
+        key: applicationSecret
+      consumerKeySecretRef:
+        name: "${secret}"
+        key: consumerKey
+ddns:
+  driver: ovh
+  defaults:
+    endpoint: ovh-eu

@@ -100,13 +100,28 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/domains` | List domains + cert-manager availability |
-| POST | `/api/domains` | Add a domain `{baseDomain, dnsProvider, credentialsSecret?, acmeEmail, environment}` |
+| POST | `/api/domains` | Add a domain `{baseDomain, dnsProvider, acmeEmail, environment, credentialsSecret?, fields?}` (`fields` = provider fields; secret fields → a Secret) |
 | GET | `/api/domains/{domain}` | Read one domain |
 | PUT | `/api/domains/{domain}` | Update a domain (re-renders its Issuer/Certificate) |
 | DELETE | `/api/domains/{domain}` | Remove a domain and its CRs |
 | GET | `/api/domains/{domain}/certificate` | Certificate readiness/conditions |
 
 > Start/stop is not implemented; `POST /api/apps/{name}/start|stop` has no route.
+
+### DNS providers & Dynamic DNS
+
+> Providers are declarative YAML, shared by domains and DDNS
+> (see [dynamic-dns.md](dynamic-dns.md)). Credential values are never returned.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/providers` | Provider definitions + `errors` from override files that failed to load |
+| GET | `/api/ddns` | Entries + `enabled` + `intervalSeconds` |
+| POST | `/api/ddns` | Create `{provider, zone, record, recordType, ttl, enabled, fields}` (secret fields → a Secret) |
+| GET | `/api/ddns/{id}` | Entry detail (Secret name + which fields are set, never values) |
+| PUT | `/api/ddns/{id}` | Update; an omitted secret field keeps the stored value |
+| DELETE | `/api/ddns/{id}` | Remove the entry and its credential Secret |
+| POST | `/api/ddns/{id}/run` | Force one reconcile even when the IP is unchanged |
 
 
 ### Disks, volumes & ZFS
@@ -257,6 +272,11 @@ shell, never an arbitrary command.
 | `APPS_CONFIG` | `/var/lib/naslos/apps.json` | Installed-app records |
 | `SOURCES_CONFIG` | `/var/lib/naslos/sources.json` | Configured chart repositories |
 | `DOMAINS_CONFIG` | `/var/lib/naslos/domains.json` | Base domains |
+| `DDNS_ENABLED` | `true` | Wire the DDNS reconcile loop |
+| `DDNS_CONFIG` | `/var/lib/naslos/ddns.json` | Dynamic-DNS entry store |
+| `DDNS_PROVIDERS_DIR` | — | Override directory for provider `*.yaml` files |
+| `DDNS_IP_SOURCE` / `DDNS_IPV6_SOURCE` | `https://api.ipify.org` / `https://api6.ipify.org` | Public-IP detection URLs |
+| `DDNS_INTERVAL_SECONDS` | `300` | How often the reconciler checks the public IP |
 | `CHARTS_CACHE_DIR` | `/var/lib/naslos/charts` | Git clone cache (one tree per source/channel) |
 | `CHARTS_TTL` | `15m` | Cache freshness before a refresh |
 | `SOURCES_OFFICIAL_URL` | — | Official chart repository to seed (empty disables) |

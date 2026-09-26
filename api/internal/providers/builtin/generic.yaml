@@ -1,0 +1,57 @@
+name: generic
+displayName: Generic HTTP
+description: Generic dynamic-DNS update over a templated HTTP request.
+icon: "🔧"
+fields:
+  - key: updateUrl
+    label: Update URL
+    type: string
+    required: true
+  - key: method
+    label: HTTP method
+    type: enum
+    default: GET
+    enum: [GET, POST, PUT, PATCH]
+  - key: contentType
+    label: Content type
+    type: string
+    default: application/json
+  - key: body
+    label: Request body template
+    type: string
+  - key: authType
+    label: Authentication
+    type: enum
+    default: none
+    enum: [none, basic, bearer, header, query]
+  - key: username
+    label: Username
+    type: string
+  - key: headerName
+    label: Header / parameter name
+    type: string
+  - key: successStatus
+    label: Expected status
+    type: string
+    default: "200"
+  - key: successContains
+    label: Response must contain
+    type: string
+  - key: token
+    label: Token
+    type: string
+    secret: true
+  - key: password
+    label: Password
+    type: string
+    secret: true
+  - key: headerValue
+    label: Header value
+    type: string
+    secret: true
+ddns:
+  driver: http
+  defaults:
+    method: GET
+    authType: none
+    successStatus: "200"
