@@ -72,16 +72,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: api/go.mod
-
       - name: Install gitleaks
         # The CLI (MIT); the gitleaks-action needs a commercial license for an
-        # organization account. Pinned to a release tag.
+        # organization account. Pinned release, checksum-verified.
         run: |
-          go install github.com/gitleaks/gitleaks/v8@v8.30.1
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          set -euo pipefail
+          version=8.30.1
+          tarball="gitleaks_${version}_linux_x64.tar.gz"
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${version}"
+          curl -fsSL -o "$tarball" "${base}/${tarball}"
+          curl -fsSL -o gitleaks_checksums.txt "${base}/gitleaks_${version}_checksums.txt"
+          grep " ${tarball}\$" gitleaks_checksums.txt | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+          install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
 
       - name: Scan the working tree
         run: gitleaks dir . --no-banner --redact

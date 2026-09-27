@@ -641,7 +641,7 @@ if have gitleaks; then
   run "gitleaks (working tree)" gitleaks dir . --no-banner --redact
   run "gitleaks (git history)" gitleaks git . --no-banner --redact
 else
-  skip "gitleaks" "not installed (CI installs the gitleaks CLI; go install github.com/gitleaks/gitleaks/v8@latest)"
+  skip "gitleaks" "not installed (CI downloads the gitleaks CLI release; or: go install github.com/zricethezav/gitleaks/v8@latest)"
 fi
 
 printf '\n== summary ==\n'
