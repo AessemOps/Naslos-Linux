@@ -179,6 +179,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install PyYAML (pin-installer-values.py rewrites the profiles)
+        run: python3 -m pip install pyyaml
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: digest-*
