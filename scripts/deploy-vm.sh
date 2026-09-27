@@ -300,7 +300,10 @@ talosctl kubeconfig --nodes "$VM_IP" --endpoints "$VM_IP" -f "$HOME/.kube/config
 
 # --- deploy local-path-provisioner (works on single-node VM without a ZFS pool) ---
 echo "=== Deploying local-path-provisioner ==="
-kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.26/deploy/local-path-storage.yaml
+# Pinned locally (bootstrap/local-path/local-path-storage.yaml, v0.0.26) instead
+# of the mutable raw GitHub URL, so a fresh install needs no egress and the
+# installer pack ships the same bytes.
+kubectl apply -f "$REPO_ROOT/bootstrap/local-path/local-path-storage.yaml"
 
 # Wait for the provisioner to become ready
 kubectl wait --for=condition=ready pod -l app=local-path-provisioner -n local-path-storage --timeout=120s || true
@@ -319,8 +322,12 @@ kubectl patch storageclass local-path \
     -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' \
     || echo "WARN: could not patch local-path as default StorageClass" >&2
 
-# --- create OpenLDAP secrets and deploy OpenLDAP ---
-echo "=== Creating OpenLDAP secrets ==="
+# --- create and label the platform namespaces ---
+# The chart's namespace.yaml also creates these (with the same PSA labels), but
+# `naslos` must exist before the talosconfig Secret below, and pre-labelling
+# keeps the PSA profile correct on the very first install. `--take-ownership` on
+# the Helm targets adopts them into the release.
+echo "=== Creating platform namespaces ==="
 kubectl create namespace naslos --dry-run=client -o yaml | kubectl apply -f -
 # PodSecurity (AUDIT-M6): `naslos` holds only the unprivileged workloads now
 # (api, ui, traefik, authelia, openldap), so it enforces `baseline`. The
@@ -344,13 +351,16 @@ for ns in naslos naslos-privileged; do
     kubectl annotate namespace "$ns" "meta.helm.sh/release-name=naslos" --overwrite 2>/dev/null || true
     kubectl annotate namespace "$ns" "meta.helm.sh/release-namespace=naslos" --overwrite 2>/dev/null || true
 done
-LDAP_IMAGE="$REGISTRY/naslos-openldap:$IMAGE_TAG" ./openldap/generate-secrets.sh
 
 # --- create the talosconfig secret the API pod needs to manage the node ---
 # The talos machinery client resolves its config via the TALOSCONFIG env var
 # pointing at a mounted file; the CLI talosconfig ($TALOSCONFIG) has an empty
 # `endpoints:` list (endpoints are normally passed via --endpoints on the
 # CLI), so a pod-ready copy with endpoints filled in is generated here.
+# NOTE: OpenLDAP (StatefulSet, Secrets, bootstrap Job, backup CronJob) is now
+# owned by the Helm chart (charts/naslos/templates/openldap-*.yaml), so there is
+# no generate-secrets.sh / standalone manifest step here. The chart's
+# lookup-guarded Secrets preserve an existing install's credentials.
 echo "=== Creating naslos-talosconfig secret for the API pod ==="
 TALOSCONFIG_POD="$REPO_ROOT/bootstrap/vm/talosconfig-pod"
 python3 - "$TALOSCONFIG" "$TALOSCONFIG_POD" "$VM_IP" <<'PYEOF'
@@ -368,20 +378,6 @@ PYEOF
 kubectl create secret generic naslos-talosconfig -n naslos \
     --from-file=talosconfig="$TALOSCONFIG_POD" \
     --dry-run=client -o yaml | kubectl apply -f -
-
-echo "=== Deploying OpenLDAP ==="
-# Standalone manifests use a fixed image; substitute the target registry/tag
-# (they live outside the Helm chart, so --set openldap.image would not apply).
-LDAP_MANIFEST_DIR="$(mktemp -d)"
-trap 'rm -rf "$LDAP_MANIFEST_DIR"' EXIT
-for f in openldap/manifests/*.yaml; do
-    case "$(basename "$f")" in
-        secrets.yaml) continue ;;
-    esac
-    sed -e "s|image: .*naslos-openldap:[^[:space:]]*|image: $REGISTRY/naslos-openldap:$IMAGE_TAG|" \
-        "$f" > "$LDAP_MANIFEST_DIR/$(basename "$f")"
-done
-kubectl apply -f "$LDAP_MANIFEST_DIR"
 
 # --- install Naslos Helm chart ---
 # Every image the chart references needs the tag override, not just api/agent/ui:

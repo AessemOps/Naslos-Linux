@@ -1,0 +1,122 @@
+# Naslos Helm values for the desktop installer (FR-INSTALL).
+#
+# This profile is shipped inside `naslos-install-pack-<version>.tar.gz` and is
+# applied by the installer engine on top of values.yaml:
+#
+#   helm upgrade --install naslos charts/naslos -n naslos --create-namespace \
+#     -f values.yaml -f values-installer.yaml \
+#     --set domain=<name> --set shares.discovery.name=<short name> ...
+#
+# Unlike values-vm.yaml (the hand-managed VM), this file must NOT reference the
+# private registry 192.168.1.2:30095: images come from the published repository
+# base below. Only the repository base is parameterised; a digest/tag bump is a
+# pack release. Bump the tags here (or via `--set`) in step with the CI build.
+#
+# The installer engine overrides, at install time:
+#   domain, sso.domains, shares.discovery.name, openldap.host,
+#   networkPolicy.{nodeCIDR,ingressPluginsCIDR,nfsClientCIDR}
+# so the values below are coherent placeholders for the validated 192.168.1.0/24
+# layout; do not assume they survive to a real install.
+
+# --- images (published repository base, no private registry) ---
+# NOTE (NAS-022 / FR-INSTALL): these are tag-pinned placeholders. Once CI
+# publishes images, the pack build must fill each `digest:` (or use a full
+# `repository@sha256:` for openldap) from `make image-digests`, because a tag is
+# mutable and `IfNotPresent` can keep running older code after a retag.
+api:
+  image:
+    repository: ghcr.io/aessemops/naslos-api
+    tag: "0.1.0"
+  # The API manages the node via the Talos API; the installer creates this
+  # Secret from the kubeconfig/talosconfig it generated.
+  talosConfigSecret: "naslos-talosconfig"
+agent:
+  image:
+    repository: ghcr.io/aessemops/naslos-agent
+    tag: "0.1.0"
+ui:
+  image:
+    repository: ghcr.io/aessemops/naslos-ui
+    tag: "0.1.0"
+shares:
+  smb:
+    image:
+      repository: ghcr.io/aessemops/naslos-samba
+      tag: "0.1.0"
+  nfs:
+    image:
+      repository: ghcr.io/aessemops/naslos-nfs
+      tag: "0.1.0"
+  # The advertised SMB/mDNS name. `shares.discovery.name` feeds both
+  # SMB_DISCOVERY_NAME (samba) and SMB_NETBIOS_NAME (api), so clients see one
+  # identity. The installer sets it to the chosen short name (the first label of
+  # `domain` when the user does not override it).
+  discovery:
+    enabled: true
+    name: "naslos"
+terminal:
+  image:
+    repository: ghcr.io/aessemops/naslos-terminal
+    tag: "0.1.0"
+openldap:
+  image: ghcr.io/aessemops/naslos-openldap:0.1.0
+
+# --- identity ---
+# The public name: session cookie domain, TOTP issuer and TLS SAN. The installer
+# replaces it with the user's choice; `<name>.local` is the default.
+domain: naslos.local
+sso:
+  domains:
+    - naslos.local
+
+# --- exposure: Traefik is the only listener, on the node's 80/443 ---
+traefik:
+  ports:
+    web:
+      hostPort: 80
+    websecure:
+      hostPort: 443
+  service:
+    type: ClusterIP
+ingress:
+  enabled: true
+
+# --- app catalog / dynamic DNS ---
+apps:
+  namespace: naslos-apps
+  officialSource:
+    name: naslos
+    displayName: NaslosCharts
+    url: https://github.com/AessemOps/NaslosCharts.git
+    auth: public
+    credentialsSecret: ""
+    channels:
+      Prod: main
+ddns:
+  enabled: true
+
+# --- NetworkPolicy CIDRs (the installer computes these from the node IP) ---
+# `nodeCIDR` is the node's /24 (agent :9090, Talos API :50000, hostNetwork
+# samba/nfs); `ingressPluginsCIDR` is the LAN the browser reaches Traefik from;
+# `nfsClientCIDR` is the LAN allowed to mount NFS. With Cilium these are
+# enforced, so a wrong value locks out the API server or the UI.
+networkPolicy:
+  nodeCIDR: 192.168.1.0/24
+  ingressPluginsCIDR: 192.168.1.0/24
+  nfsClientCIDR: 192.168.1.0/24
+  gitEgress: true
+  ddnsEgress: true
+
+# --- optional subsystems ---
+# cert-manager + the OVH webhook are NOT installed by the installer; real ACME
+# certificates stay a UI action on the Domains page (see the chart Makefile
+# targets `cert-manager` / `cert-manager-webhook-ovh`).
+certManager:
+  enabled: false
+ovhWebhook:
+  enabled: false
+# Buddy Backup stays off until a receive dataset exists on the node; the UI can
+# enable it later once a pool/dataset is created.
+buddy:
+  enabled: false
+  receiveHostPath: ""

@@ -1,0 +1,39 @@
+# Build and publish the versioned install pack the desktop installer pins
+# (FR-INSTALL; docs/installer-contract.md).
+#
+# On a `v*` tag: `make install-pack` renders the machine-config template,
+# packages the chart + vendored subcharts + Cilium + pinned local-path +
+# schematic, and emits metadata.json with a sha256 per member. The tarball and
+# its checksum are attached to the GitHub release. Naslos-Installer pins the tag
+# and verifies the checksums before embedding the pack.
+#
+# No Helm registry access is needed: the subchart .tgz files are committed under
+# charts/naslos/charts/.
+name: install-pack
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to immutable commit SHAs (the tag can be moved): this workflow
+      # attaches the artifact the desktop installer pins.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build install pack
+        run: make install-pack PACK_VERSION="${GITHUB_REF_NAME#v}"
+
+      - name: Attach pack to the release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          files: |
+            dist/naslos-install-pack-*.tar.gz
+            dist/naslos-install-pack-*.tar.gz.sha256
+          fail_on_unmatched_files: true

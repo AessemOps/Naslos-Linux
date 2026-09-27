@@ -2,7 +2,7 @@
         buddyctl buddy-receiver-image \
         bootstrap bootstrap-vm dev-cluster crds \
         cert-manager cert-manager-webhook-ovh \
-        install install-vm uninstall clean
+        install install-vm install-pack uninstall clean
 
 GO := go
 DOCKER := docker
@@ -14,6 +14,8 @@ VM_IP := 192.168.1.96
 VM_CONFIG_DIR := bootstrap/vm
 REGISTRY ?= 192.168.1.2:30095
 IMAGE_TAG ?= 0.1.0
+# Version of the install pack (defaults to the chart version when empty).
+PACK_VERSION ?=
 
 # cert-manager + the OVH DNS-01 webhook (FR-APP-13/FR-DNS-05). OVH is not a
 # cert-manager built-in solver, so it needs aureq/cert-manager-webhook-ovh. Both
@@ -208,11 +210,16 @@ cert-manager-webhook-ovh:
 # --force-conflicts: Helm 4 applies server-side, and the namespaces are
 # pre-created and PSA-labelled by deploy-vm.sh with kubectl; without this the
 # install aborts with "conflict with kubectl-label ... pod-security.../enforce".
+# --take-ownership: the OpenLDAP Secrets were previously created by
+# openldap/generate-secrets.sh and the namespaces by deploy-vm.sh; adopt those
+# existing resources into the release instead of failing on their missing Helm
+# ownership metadata (their values are preserved by the chart's lookup guards).
 install: crds
 	$(HELM) dependency update $(CHART_DIR)
 	$(HELM) upgrade --install naslos $(CHART_DIR) -n naslos --create-namespace \
 		--skip-crds \
 		--force-conflicts \
+		--take-ownership \
 		$(AUTHELIA_CONFIG_FLAG)
 
 # Install Naslos on the single-node VM: Traefik on the node's 80/443 with
@@ -228,13 +235,26 @@ install-vm: crds cert-manager cert-manager-webhook-ovh
 	# two never both mount the session PVC. No-op on a fresh install and after
 	# the migration.
 	-$(KUBECTL) -n naslos delete daemonset naslos-authelia --ignore-not-found
+	# One-time migration: OpenLDAP moved from kubectl-applied manifests into the
+	# chart, and its bootstrap Job is now a Helm hook. Delete any legacy
+	# (non-Helm-owned) Job so the hook can create it; a finished Job is
+	# harmless to remove (it has a 1h TTL anyway). No-op after the migration.
+	-$(KUBECTL) -n naslos delete job naslos-openldap-bootstrap --ignore-not-found
 	$(HELM) upgrade --install naslos $(CHART_DIR) -n naslos --create-namespace \
 		-f $(CHART_DIR)/values.yaml \
 		-f $(CHART_DIR)/values-vm.yaml \
 		--skip-crds \
 		--force-conflicts \
+		--take-ownership \
 		$(AUTHELIA_CONFIG_FLAG) \
 		$(HELM_FLAGS)
+
+# Build the versioned install pack the desktop installer pins, downloads and
+# embeds (FR-INSTALL; docs/installer-contract.md). Output:
+# dist/naslos-install-pack-<PACK_VERSION>.tar.gz (+ .sha256).
+install-pack:
+	scripts/render-installer-template.sh --check
+	PACK_VERSION="$(PACK_VERSION)" scripts/build-install-pack.sh
 
 # Uninstall Naslos
 uninstall:
@@ -247,4 +267,4 @@ dev-cluster:
 		--workers 0
 
 clean:
-	rm -rf bin/ ui/dist ui/node_modules bootstrap/*.tar *.iso
+	rm -rf bin/ ui/dist ui/node_modules bootstrap/*.tar *.iso dist/
