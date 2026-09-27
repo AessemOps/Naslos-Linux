@@ -38,6 +38,11 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   (`make install-pack`), with a progress bar, first-admin + 2FA handoff and a
   recovery ZIP; the stable interfaces are in
   [docs/installer-contract.md](docs/installer-contract.md)
+- **Published images + release CI** — every PR runs the full gate sweep,
+  secret scan and a Docker build of all images; a semantic `vX.Y.Z` tag pushes
+  all 8 images to `ghcr.io/aessemops/naslos-*` and publishes the install pack
+  with every chart image pinned by digest (`FR-INSTALL-13`). See
+  [docs/deployment.md](docs/deployment.md)
 
 ## Architecture
 
@@ -52,6 +57,7 @@ terminal/    web-terminal image (+ zsh-terminal/)
 openldap/    OpenLDAP SSO image (identity store; the workloads live in charts/naslos)
 bootstrap/   schematic + ISO generator, Cilium manifest, VM + installer machine-config patches
 scripts/     deploy-vm.sh, render-cilium.sh, build-install-pack.sh, audit.sh
+.github/     CI + release workflows (gate sweep, image push, digest-pinned pack)
 docs/        architecture, spec, API, storage, identity, catalog, installer contract, ops docs
 ```
 

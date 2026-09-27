@@ -415,7 +415,9 @@ findings, fix plan and code-review list are in `docs/archive/`). Headline: 0
 Critical, 4 High, 14 Medium, 10 Low; **all four Highs are fixed**, 10 Mediums
 are closed (M4/M6 included: Cilium enforces the policies and the privileged
 workloads are split into `naslos-privileged`), M4/M3 are reduced to documented
-Low residuals, M10 is excluded and M12 (no CI) is a manual sweep, and the
+Low residuals, M10 is excluded and **M12 (no CI) is closed**: `ci.yml` runs the
+gate sweep on every PR/push and `release.yml` publishes images + the
+digest-pinned pack on a `vX.Y.Z` tag, and the
 NAS-010 default-credential work is closed, including the live LDAP service and
 admin rotations. The auth model verifies sound (anonymous 302, pod without the
 secret 401, agent without the token 401, no NodePort, no bypass). The report's §8
@@ -521,7 +523,7 @@ Branch `feature/install-pack` (PR #39). Plan:
   (`bootstrap/installer/naslos-installer.yaml.tmpl`,
   `scripts/render-installer-template.sh`), Cilium, the pinned local-path
   manifest, the schematic, and a `metadata.json` with per-member sha256 + the
-  ISO URL. `.github/workflows/install-pack.yml` attaches it to a `v*` release.
+  ISO URL. `.github/workflows/release.yml` attaches it to a `vX.Y.Z` release.
 - **Not deployed**: the live cluster is unchanged (revision 39). A live drill is
   needed before this is called done: `helm upgrade` must adopt the existing
   OpenLDAP Secrets/StatefulSet without re-keying, then the normal gates.
@@ -534,9 +536,21 @@ Branch `feature/install-pack` (PR #39). Plan:
   PKI/config generation and the lifecycle client. See that repo's `AI_HANDOFF.md`
   for state, spike results and the exact next steps. The TOTP CLI command was
   validated live (generate/delete with a throwaway user; admin untouched).
-- **Residual**: `values-installer.yaml` image refs are tag-pinned placeholders;
-  when CI publishes images, the pack build must fill each `digest:` /
-  `repository@sha256:` (NAS-022).
+- **CI + GHCR releases (FR-INSTALL-13).** `.github/workflows/ci.yml` runs the
+  full `scripts/audit.sh` sweep (security tools installed), gitleaks, a no-push
+  Docker build of all 8 images and a pack build on every PR/push. On a strict
+  `vX.Y.Z` tag, `.github/workflows/release.yml` guards the version, pushes all 8
+  images to `ghcr.io/aessemops/naslos-*` (linux/amd64), builds the pack with
+  every chart image **pinned by digest** (`scripts/pin-installer-values.py` +
+  `metadata.json.images`), attaches it and dispatches the installer. A local
+  `make install-pack` keeps the tag placeholders. **Open operator steps**: the
+  `INSTALLER_DISPATCH_TOKEN` secret is not configured (dispatch is skipped) and
+  the GHCR packages must be made **public** (no `imagePullSecret` on the
+  provisioned node). The old residual (tag-pinned placeholders / NAS-022) is
+  closed for released packs. Turning the gate on also surfaced and fixed two
+  pre-existing issues: stale reachable advisories (go-git / x-crypto / go-billy
+  bumped to the fixed versions) and a random share order in
+  `GenerateSambaConfig` that flaked the shares test.
 
 ## Deployed right now (2026-09-27)
 

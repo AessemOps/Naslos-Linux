@@ -12,7 +12,7 @@ versioned **install pack** plus the interfaces below.
 ## 1. Install pack
 
 Built by `make install-pack` (`scripts/build-install-pack.sh`), published by the
-`install-pack` GitHub Actions workflow on a semantic **`vX.Y.Z`** tag, and
+`release` GitHub Actions workflow on a semantic **`vX.Y.Z`** tag, and
 embedded by the installer: `scripts/fetch-install-pack.sh` resolves the **newest
 `vX.Y.Z` tag** of this repo, downloads the tarball, verifies its sha256 (and the
 loader then verifies every member checksum), and extracts it into a gitignored
@@ -20,7 +20,15 @@ loader then verifies every member checksum), and extracts it into a gitignored
 `ExpectedTalosVersion`/`ExpectedSchematicID` gate from that pack's
 `metadata.json`. Non-semver tags (e.g. a moving `latest`) are ignored.
 
-After attaching the pack, the `install-pack` workflow sends a
+A released pack pins every chart image by digest from the **public** registry
+`ghcr.io/aessemops/naslos-*` (FR-INSTALL-13): the `vX.Y.Z` workflow publishes the
+images first, then rewrites the packed `values-installer.yaml` so each renders
+`repository@sha256:…` (a digest wins over a tag). The in-tree
+`values-installer.yaml` keeps tag placeholders, so a local `make install-pack`
+(or `audit.sh`) is tag-only; only a released pack is digest-pinned. The
+provisioned node has no `imagePullSecret`, so the packages must be **public**.
+
+After attaching the pack, the `release` workflow sends a
 `repository_dispatch` (`naslos-release`) to `AessemOps/Naslos-Installer`, so
 publishing a pack rebuilds and republishes the installer against it (requires
 the `INSTALLER_DISPATCH_TOKEN` secret in this repo).
@@ -52,6 +60,7 @@ naslos-install-pack-<version>/
 | `isoUrls` | `{"metal-amd64": "https://factory.talos.dev/image/<schematicId>/<talosVersion>/metal-amd64.iso"}` |
 | `generatedAt` | UTC build timestamp |
 | `checksums` | map of every other member path → sha256 |
+| `images` | (additive; released packs) map of chart component → `ghcr.io/aessemops/naslos-<component>@sha256:…` for `api`, `agent`, `ui`, `samba`, `nfs`, `terminal`, `openldap`. The installer's parser ignores unknown fields, so its absence (a local pack) is fine |
 
 The installer MUST verify every `checksums` entry before use and MUST refuse a
 pack whose `talosVersion`/`schematicId` differ from the values it was built to
@@ -90,7 +99,7 @@ plus overrides:
 | `networkPolicy.nodeCIDR` | the node's /24 |
 | `networkPolicy.ingressPluginsCIDR` | the LAN that reaches the UI |
 | `networkPolicy.nfsClientCIDR` | the LAN allowed to mount NFS |
-| `<comp>.image.repository` / `.tag` | the published image base for the pack version |
+| `<comp>.image.repository` / `.tag` | the published image base for the pack version. **A released pack** already pins `<comp>.image.digest` (or a full `openldap.image` reference): the engine MUST NOT override a digest-pinned reference with a repository/tag, and MUST leave `.image.digest`/`openldap.image` as the pack sets them (FR-INSTALL-13) |
 
 The chart generates `naslos-openldap`/`naslos-openldap-tls` itself (no
 out-of-band step). The internal LDAP suffix (`openldap.baseDN`) is fixed at
