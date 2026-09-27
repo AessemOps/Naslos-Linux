@@ -75,10 +75,12 @@ via `storageState`; a target that does not challenge is an error.
 - Only commit/push/create PRs when the work is complete and verified. Never
   force-push, skip hooks, or amend a failed commit — add a new commit.
 - **Cross-repo installer order**: the desktop installer lives in
-  `AessemOps/Naslos-Installer` and pins a versioned install pack. Land the
-  Naslos-Linux pack + `docs/installer-contract.md` changes first (release a
-  pack), then the installer work that pins them. A change to any interface in
-  the contract doc must update the installer in the same release.
+  `AessemOps/Naslos-Installer` and embeds the newest semantic `vX.Y.Z` install
+  pack. Land the Naslos-Linux pack + `docs/installer-contract.md` changes first
+  (release a `vX.Y.Z` pack), then the installer work that consumes them; the
+  `install-pack` workflow dispatches the installer to rebuild against the new
+  pack. A change to any interface in the contract doc must update the installer
+  in the same release.
 
 ## Conventions
 
