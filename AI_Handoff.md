@@ -547,7 +547,10 @@ Branch `feature/install-pack` (PR #39). Plan:
   `INSTALLER_DISPATCH_TOKEN` secret is not configured (dispatch is skipped) and
   the GHCR packages must be made **public** (no `imagePullSecret` on the
   provisioned node). The old residual (tag-pinned placeholders / NAS-022) is
-  closed for released packs.
+  closed for released packs. Turning the gate on also surfaced and fixed two
+  pre-existing issues: stale reachable advisories (go-git / x-crypto / go-billy
+  bumped to the fixed versions) and a random share order in
+  `GenerateSambaConfig` that flaked the shares test.
 
 ## Deployed right now (2026-09-27)
 
