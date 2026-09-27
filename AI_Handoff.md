@@ -496,7 +496,7 @@ Branch `feature/app-install-progress`. Plan:
 
 ## Desktop installer — install pack + chart refactor (2026-09-27) — branch, not deployed
 
-Branch `feature/install-pack`. Plan:
+Branch `feature/install-pack` (PR #39). Plan:
 `.kilo/plans/1790466900440-desktop-installer-app.md`; contract:
 `docs/installer-contract.md`; spec `FR-INSTALL` (§3.10).
 
@@ -567,8 +567,9 @@ SearXNG). **No app is installed** (the SSO drill's Jellyfin was uninstalled).
 Merged into `master`: app catalog (PR #28), Dynamic DNS + providers (PR #29),
 third-party credits (PR #30), ddns-updater credits + credits rule (PR #32), the
 app-base-domain choice + runtime SSO promotion (PR #35, merged), and the
-docs/README currency rules (PRs #36/#37). Open: `feature/app-install-progress`
-(async app lifecycle jobs, FR-APP-18, not yet deployed). Merged:
+docs/README currency rules (PRs #36/#37). Merged: `feature/app-install-progress`
+(PR #38, async app lifecycle jobs, FR-APP-18). Open: `feature/install-pack`
+(PR #39, install pack + chart-owned OpenLDAP, not deployed). Merged:
 `feature/domain-provider-api-rights` (PR #33) — declarative per-provider
 `apiRights` surfaced by `GET /api/providers` and shown as an info bubble next to
 the Domains form's DNS-01 provider selector, plus the fix that makes OVH
