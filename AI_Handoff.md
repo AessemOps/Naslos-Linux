@@ -528,6 +528,12 @@ Branch `feature/install-pack` (PR #39). Plan:
 - **Next**: build `Naslos-Installer` against this pack (engine, Tauri shell,
   recovery ZIP, resolver). Spike first: confirm a CLI-generated TOTP device
   (`authelia storage user totp generate`) is accepted at the portal.
+- **Installer repo progress** (2026-09-27): `AessemOps/Naslos-Installer` is
+  bootstrapped on `main` (`f9fb079`) with the Go engine foundation; open
+  PR [#1](https://github.com/AessemOps/Naslos-Installer/pull/1) adds Talos
+  PKI/config generation and the lifecycle client. See that repo's `AI_HANDOFF.md`
+  for state, spike results and the exact next steps. The TOTP CLI command was
+  validated live (generate/delete with a throwaway user; admin untouched).
 - **Residual**: `values-installer.yaml` image refs are tag-pinned placeholders;
   when CI publishes images, the pack build must fill each `digest:` /
   `repository@sha256:` (NAS-022).
