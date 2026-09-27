@@ -2,8 +2,8 @@
 # Naslos audit sweep (see docs/AUDIT-2026-09-19-REPORT.md).
 #
 # Reproducible checks that are fast enough for a pre-PR run. Missing tools are
-# reported as "skipped" rather than failing, so it runs anywhere. There is no CI
-# workflow wired to it for now - run it by hand, or add a workflow later.
+# reported as "skipped" rather than failing, so it runs anywhere. CI wires this
+# into `.github/workflows/ci.yml`; run it by hand before pushing.
 #
 # Requires bash: the govulncheck advisory-set diff uses process substitution.
 #
@@ -438,6 +438,109 @@ PY
   return "$rc"
 }
 
+# FR-INSTALL-13 (part 1): the chart's digest mechanism must render. With a
+# `sha256:` digest set for every chart image, `helm template` of the installer
+# profile must emit `repository@sha256:...` and no longer the tag - this is what
+# the digest-pinned pack relies on (VER-2).
+check_image_digest_render() {
+  hex=$(printf 'a%.0s' $(seq 64))
+  f=$(mktemp) || return 1
+  if ! helm template naslos "$root/charts/naslos" -n naslos \
+    -f "$root/charts/naslos/values.yaml" -f "$root/charts/naslos/values-installer.yaml" \
+    --set api.image.digest="sha256:$hex" \
+    --set agent.image.digest="sha256:$hex" \
+    --set ui.image.digest="sha256:$hex" \
+    --set shares.smb.image.digest="sha256:$hex" \
+    --set shares.nfs.image.digest="sha256:$hex" \
+    --set terminal.image.digest="sha256:$hex" \
+    --set openldap.image="ghcr.io/aessemops/naslos-openldap@sha256:$hex" \
+    >"$f" 2>/dev/null; then
+    rm -f "$f"
+    return 1
+  fi
+  ok=1
+  for repo in naslos-api naslos-agent naslos-ui naslos-samba naslos-nfs naslos-terminal naslos-openldap; do
+    grep -qF "ghcr.io/aessemops/${repo}@sha256:${hex}" "$f" || ok=0
+  done
+  # The digest must win over the tag: the installer profile's tag must be gone.
+  grep -qF "ghcr.io/aessemops/naslos-api:0.1.0" "$f" && ok=0
+  rm -f "$f"
+  [ "$ok" -eq 1 ]
+}
+
+# FR-INSTALL-13 (part 2): the pack build must pin every chart image by digest
+# when a map is supplied, record the same map in metadata.json.images, render,
+# and fail closed when a component is missing. This is the test paired with the
+# spec MUST.
+check_pack_digest_pinning() {
+  hex=$(printf 'a%.0s' $(seq 64))
+  d=$(mktemp -d) || return 1
+  cat >"$d/digests.json" <<EOF
+{
+  "api": "ghcr.io/aessemops/naslos-api@sha256:${hex}",
+  "agent": "ghcr.io/aessemops/naslos-agent@sha256:${hex}",
+  "ui": "ghcr.io/aessemops/naslos-ui@sha256:${hex}",
+  "samba": "ghcr.io/aessemops/naslos-samba@sha256:${hex}",
+  "nfs": "ghcr.io/aessemops/naslos-nfs@sha256:${hex}",
+  "terminal": "ghcr.io/aessemops/naslos-terminal@sha256:${hex}",
+  "openldap": "ghcr.io/aessemops/naslos-openldap@sha256:${hex}"
+}
+EOF
+  if ! IMAGE_DIGESTS_FILE="$d/digests.json" "$root/scripts/build-install-pack.sh" "$d/ok" >/dev/null 2>&1; then
+    rm -rf "$d"
+    return 1
+  fi
+  python3 - "$d/ok" "$hex" <<'PY'
+import glob, json, os, sys, tarfile, yaml
+
+d, hex = sys.argv[1], sys.argv[2]
+tars = glob.glob(os.path.join(d, "naslos-install-pack-*.tar.gz"))
+assert len(tars) == 1, f"expected exactly one tarball, got {tars}"
+with tarfile.open(tars[0]) as tf:
+    tf.extractall(os.path.join(d, "x"))
+root = glob.glob(os.path.join(d, "x", "naslos-install-pack-*"))[0]
+m = json.load(open(os.path.join(root, "metadata.json")))
+assert m["formatVersion"] == 1, "the images map must be additive (formatVersion stays 1)"
+images = m.get("images")
+assert isinstance(images, dict) and len(images) == 7, f"metadata.images must pin 7 images: {images!r}"
+for comp, ref in images.items():
+    assert ref == f"ghcr.io/aessemops/naslos-{comp}@sha256:{hex}", f"bad metadata image {comp}: {ref}"
+
+v = yaml.safe_load(open(os.path.join(root, "charts/naslos/values-installer.yaml")))
+for comp, path in [("api", ("api", "image")), ("agent", ("agent", "image")),
+                   ("ui", ("ui", "image")), ("samba", ("shares", "smb", "image")),
+                   ("nfs", ("shares", "nfs", "image")), ("terminal", ("terminal", "image"))]:
+    node = v
+    for key in path:
+        node = node[key]
+    assert node.get("digest") == f"sha256:{hex}", f"{'.'.join(path)}.digest not pinned: {node!r}"
+    assert node.get("repository") == f"ghcr.io/aessemops/naslos-{comp}", \
+        f"{'.'.join(path)}.repository wrong: {node.get('repository')!r}"
+assert v["openldap"]["image"] == f"ghcr.io/aessemops/naslos-openldap@sha256:{hex}", \
+    f"openldap.image not pinned: {v['openldap']['image']!r}"
+print("pack digest pinning ok")
+PY
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -rf "$d"
+    return "$rc"
+  fi
+  # A missing component must fail the build (fail closed).
+  python3 - "$d/digests.json" "$d/partial.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d.pop("agent", None)
+json.dump(d, open(sys.argv[2], "w"))
+PY
+  if IMAGE_DIGESTS_FILE="$d/partial.json" "$root/scripts/build-install-pack.sh" "$d/bad" >/dev/null 2>&1; then
+    printf 'pack build accepted a partial digest map (must fail closed)\n'
+    rm -rf "$d"
+    return 1
+  fi
+  rm -rf "$d"
+  return 0
+}
+
 # --- Go ---------------------------------------------------------------------
 cd "$root/api" || exit 1
 run "go vet (api)" go vet ./...
@@ -517,6 +620,8 @@ if have helm; then
   run "helm lint (installer profile, FR-INSTALL)" helm lint charts/naslos \
     -f charts/naslos/values.yaml -f charts/naslos/values-installer.yaml
   run "install pack builds + checksums (FR-INSTALL)" check_install_pack
+  run "chart images render by digest (FR-INSTALL-13)" check_image_digest_render
+  run "install pack pins image digests (FR-INSTALL-13)" check_pack_digest_pinning
   run "authelia ldap password is a Secret file (AUDIT-M3)" check_authelia_ldap_secret
   run "authelia SSO fragments + scoped RBAC (FR-APP-15)" check_authelia_sso_fragments
   run "network policy intent (AUDIT-M4)" check_network_policies
@@ -536,7 +641,7 @@ if have gitleaks; then
   run "gitleaks (working tree)" gitleaks dir . --no-banner --redact
   run "gitleaks (git history)" gitleaks git . --no-banner --redact
 else
-  skip "gitleaks" "not installed (CI uses gitleaks/gitleaks-action)"
+  skip "gitleaks" "not installed (CI downloads the gitleaks CLI release; or: go install github.com/zricethezav/gitleaks/v8@latest)"
 fi
 
 printf '\n== summary ==\n'

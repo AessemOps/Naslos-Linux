@@ -19,10 +19,12 @@
 # layout; do not assume they survive to a real install.
 
 # --- images (published repository base, no private registry) ---
-# NOTE (NAS-022 / FR-INSTALL): these are tag-pinned placeholders. Once CI
-# publishes images, the pack build must fill each `digest:` (or use a full
-# `repository@sha256:` for openldap) from `make image-digests`, because a tag is
-# mutable and `IfNotPresent` can keep running older code after a retag.
+# NOTE (FR-INSTALL-13): the in-tree values are tag-pinned placeholders for local
+# builds. A released pack is rewritten by `scripts/build-install-pack.sh` (via
+# `scripts/pin-installer-values.py`) to pin every image by digest from the public
+# `ghcr.io/aessemops/naslos-*` registry, because a tag is mutable and
+# `IfNotPresent` can keep running older code after a retag. Keep the repositories
+# and tags in step with the CI build.
 api:
   image:
     repository: ghcr.io/aessemops/naslos-api

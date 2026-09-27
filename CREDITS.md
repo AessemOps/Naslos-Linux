@@ -18,9 +18,9 @@ and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
-**Last reviewed: 2026-09-27.**
-Maintenance: update this file whenever a direct dependency changes in
+**Last reviewed: 2026-09-27.** Maintenance: update this file whenever a direct dependency changes in
 `api/go.mod`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
+It also lists the GitHub Actions used by the CI/release workflows.
 
 ## Platform & runtime
 
@@ -53,11 +53,11 @@ Maintenance: update this file whenever a direct dependency changes in
 | Component | Version | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
 | github.com/cosi-project/runtime | v1.16.3 | MPL-2.0 | https://github.com/cosi-project/runtime |
-| github.com/go-git/go-git/v5 | v5.16.3 | Apache-2.0 | https://github.com/go-git/go-git |
+| github.com/go-git/go-git/v5 | v5.19.2 | Apache-2.0 | https://github.com/go-git/go-git |
 | github.com/go-ldap/ldap/v3 | v3.4.8 | MIT | https://github.com/go-ldap/ldap |
 | github.com/gorilla/websocket | v1.5.4-0.20250319132907-e064f32e3674 | BSD-2-Clause | https://github.com/gorilla/websocket |
 | github.com/siderolabs/talos/pkg/machinery | v1.14.0 | MPL-2.0 | https://github.com/siderolabs/talos |
-| golang.org/x/crypto | v0.55.0 | BSD-3-Clause | https://github.com/golang/crypto |
+| golang.org/x/crypto | v0.57.0 | BSD-3-Clause | https://github.com/golang/crypto |
 | gopkg.in/yaml.v3 | v3.0.1 | MIT AND Apache-2.0 | https://github.com/go-yaml/yaml |
 | helm.sh/helm/v3 | v3.18.5 | Apache-2.0 | https://github.com/helm/helm |
 | k8s.io/api | v0.33.3 | Apache-2.0 | https://github.com/kubernetes/api |
@@ -114,6 +114,29 @@ The full transitive tree is pinned in
 | Component | Pin | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
 | ntfy (server) | operator-configured; not a chart dependency | Apache-2.0 (GPL-2.0-only for the Android app) | https://github.com/binwiederhier/ntfy |
+
+## CI & release tooling
+
+Pinned GitHub Actions (`.github/workflows/ci.yml`, `release.yml`), all pinned to
+immutable commit SHAs, plus the secret scanner. **Not** used: `gitleaks-action`,
+whose license is commercial for organization accounts; the MIT `gitleaks` CLI is
+used instead.
+
+| Component | Pin | License (SPDX) | Upstream |
+| --- | --- | --- | --- |
+| actions/checkout | v4 | MIT | https://github.com/actions/checkout |
+| actions/setup-go | v5 | MIT | https://github.com/actions/setup-go |
+| actions/setup-node | v4 | MIT | https://github.com/actions/setup-node |
+| actions/setup-python | v5 | MIT | https://github.com/actions/setup-python |
+| actions/upload-artifact | v4 | MIT | https://github.com/actions/upload-artifact |
+| actions/download-artifact | v4 | MIT | https://github.com/actions/download-artifact |
+| docker/login-action | v4.6.0 | Apache-2.0 | https://github.com/docker/login-action |
+| docker/setup-buildx-action | v4.4.1 | Apache-2.0 | https://github.com/docker/setup-buildx-action |
+| docker/build-push-action | v7.4.0 | Apache-2.0 | https://github.com/docker/build-push-action |
+| softprops/action-gh-release | v2 | MIT | https://github.com/softprops/action-gh-release |
+| govulncheck | v1.8.0 (CI) | BSD-3-Clause | https://github.com/golang/vuln |
+| gosec | v2.29.0 (CI) | Apache-2.0 | https://github.com/securego/gosec |
+| gitleaks (CLI) | v8.30.1 | MIT | https://github.com/gitleaks/gitleaks |
 
 ## Ported & adapted code
 
@@ -211,6 +234,7 @@ authoritative copyright file ships in the image at
   `avahi`, and `nfs-ganesha`).
 - Redistributed components retain their original copyright and license notices.
   Nothing in this file grants additional rights or re-licenses third-party work.
-- CI: the `install-pack` workflow (`.github/workflows/install-pack.yml`) uses the
-  `softprops/action-gh-release` action (MIT) to attach the pack to a release;
-  the pack itself bundles only the components listed above.
+- CI: the `.github/workflows/` workflows use the pinned Actions listed under
+  "CI & release tooling" (MIT / Apache-2.0) to run the gate sweep, scan for
+  secrets, build and push the images and attach the pack to a release; the pack
+  itself bundles only the components listed above.

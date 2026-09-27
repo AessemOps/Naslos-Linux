@@ -123,12 +123,18 @@ func TestSambaConfigHardenedDefaults(t *testing.T) {
 	if strings.Contains(conf, "force user") || strings.Contains(conf, "force group") {
 		t.Errorf("smb.conf still forces root:\n%s", conf)
 	}
-	// The explicit-wildcard share must not carry a hosts allow/deny pair.
-	parts := strings.Split(conf, "[guests]")
-	if len(parts) != 2 {
+	// The explicit-wildcard share must not carry a hosts allow/deny pair. Slice
+	// out just the [guests] section (up to the next section header) so a share
+	// emitted after it cannot be mistaken for part of it.
+	idx := strings.Index(conf, "[guests]")
+	if idx < 0 {
 		t.Fatalf("smb.conf has no [guests] block:\n%s", conf)
 	}
-	if strings.Contains(parts[1], "hosts allow") {
+	guests := conf[idx:]
+	if end := strings.Index(guests, "\n["); end >= 0 {
+		guests = guests[:end]
+	}
+	if strings.Contains(guests, "hosts allow") {
 		t.Errorf("explicit '*' should not be restricted by hosts allow:\n%s", conf)
 	}
 }
