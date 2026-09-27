@@ -79,17 +79,17 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("base domain %q is not configured", req.BaseDomain))
 			return
 		}
-		view, err := s.appManager.Install(r.Context(), apps.InstallRequest{
+		if conflict := s.ensureAppJobs().conflicting(req.Name); conflict != nil {
+			writeAppJobConflict(w, conflict)
+			return
+		}
+		job := s.enqueueAppJob(appJobInstall, req.Name, req.BaseDomain, apps.InstallRequest{
 			Name:       req.Name,
 			Values:     req.Values,
 			Exposure:   req.Exposure,
 			BaseDomain: req.BaseDomain,
-		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusCreated, view)
+		}, nil)
+		writeJSON(w, http.StatusAccepted, map[string]any{"jobId": job.ID, "state": appJobRunning})
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -103,6 +103,16 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/apps/")
+	// Defensive: the dedicated jobs routes match first, but a reorganization
+	// must not turn `jobs` into an app name.
+	if path == "jobs" {
+		s.handleAppJobs(w, r)
+		return
+	}
+	if strings.HasPrefix(path, "jobs/") {
+		s.handleAppJobDetail(w, r)
+		return
+	}
 	if strings.HasSuffix(path, "/exposure") {
 		s.handleAppExposure(w, r, strings.TrimSuffix(path, "/exposure"))
 		return
@@ -134,22 +144,28 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		view, err := s.appManager.Upgrade(r.Context(), name, req.Values)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+		if _, err := s.appManager.Get(name); err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, view)
+		if conflict := s.ensureAppJobs().conflicting(name); conflict != nil {
+			writeAppJobConflict(w, conflict)
+			return
+		}
+		job := s.enqueueAppJob(appJobUpgrade, name, "", apps.InstallRequest{}, req.Values)
+		writeJSON(w, http.StatusAccepted, map[string]any{"jobId": job.ID, "state": appJobRunning})
 
 	case http.MethodDelete:
-		if err := s.appManager.Uninstall(r.Context(), name); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+		if _, err := s.appManager.Get(name); err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{
-			"status": "app uninstalled",
-			"name":   name,
-		})
+		if conflict := s.ensureAppJobs().conflicting(name); conflict != nil {
+			writeAppJobConflict(w, conflict)
+			return
+		}
+		job := s.enqueueAppJob(appJobUninstall, name, "", apps.InstallRequest{}, nil)
+		writeJSON(w, http.StatusAccepted, map[string]any{"jobId": job.ID, "state": appJobRunning})
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

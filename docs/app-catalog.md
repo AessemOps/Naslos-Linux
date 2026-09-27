@@ -89,13 +89,24 @@ app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
 | --- | --- | --- |
 | List catalog | `GET /api/catalog` | Source/channel-tagged summaries |
 | Catalog detail | `GET /api/catalog/{name}` | Full entry incl. `schema`, `services`, `exposure` |
-| Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed}` | `confirmed` MUST be `true`; defaults merged, chart loaded from the clone |
+| Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed}` | `confirmed` MUST be `true`; defaults merged, chart loaded from the clone. Enqueues an install job → `202 {jobId, state}` |
 | List installed | `GET /api/apps` | Records + live status, orphan flag, URL |
 | Detail | `GET /api/apps/{name}` | Record + status |
-| Reconfigure | `PUT /api/apps/{name} {values}` | `helm upgrade` with the full value set |
-| Exposure | `GET`/`PUT /api/apps/{name}/exposure` | Orthogonal toggles + `baseDomain`, re-renders the route |
+| Reconfigure | `PUT /api/apps/{name} {values}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}` |
+| Exposure | `GET`/`PUT /api/apps/{name}/exposure` | Orthogonal toggles + `baseDomain`, re-renders the route (synchronous) |
 | Route targets | `GET /api/apps/{name}/services` | Services the release rendered (discovery fallback / UI picker) |
-| Uninstall | `DELETE /api/apps/{name}` | `helm uninstall` + route delete + record delete |
+| Uninstall | `DELETE /api/apps/{name}` | Enqueues an uninstall job (`helm uninstall` + route delete + record delete) → `202 {jobId, state}` |
+| Job list | `GET /api/apps/jobs` | Running plus the last ~20 finished lifecycle jobs |
+| Job detail | `GET /api/apps/jobs/{id}` | `state` (`running`/`succeeded`/`failed`), `stage` (`preparing`/`installing`/`finalizing`), `message`, `error` |
+
+Install/upgrade/uninstall run as **background jobs** (FR-APP-18): a cold
+install's Helm `--wait` can take minutes, so the handler validates, enqueues and
+answers `202` while the job runs under a server-owned context — a closed modal
+or a navigated-away page no longer cancels it. The UI keeps a global job drawer
+and a completion toast. A second job for an app already running one is `409`.
+Jobs are in-memory: an API restart abandons a running job (records/routes
+re-converge on boot via `reconcileApps`), and a partial Helm release may need a
+manual retry.
 
 If a manifest declares no `services[]`, the API discovers the release's
 Services after install (matched by the Helm release annotation/label) and routes
