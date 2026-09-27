@@ -1,12 +1,38 @@
+{{- /*
+OpenLDAP bootstrap Job (FR-INSTALL). Folded from
+openldap/manifests/bootstrap-job.yaml.
+
+It seeds the service-account password and verifies the groups created by the
+image's bootstrap.ldif, over ldaps:// (never ldapi:// — a separate pod cannot
+reach the server's Unix socket).
+
+Rendered as a post-install/post-upgrade Helm hook with the
+`before-hook-creation` delete policy: a Job's pod template is immutable, so a
+plain chart resource would make every image-tag bump fail the upgrade. The hook
+recreates it each time; `ttlSecondsAfterFinished` garbage-collects the pod.
+*/}}
+{{- if .Values.openldap.enabled }}
+{{- $baseDN := include "naslos.openldapBaseDN" . }}
+{{- $bindDN := include "naslos.openldapBindDN" . }}
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: naslos-openldap-bootstrap
-  namespace: naslos
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos-openldap
+    app.kubernetes.io/component: identity
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+    "helm.sh/hook-weight": "10"
 spec:
   ttlSecondsAfterFinished: 3600
   backoffLimit: 3
   template:
+    metadata:
+      labels:
+        job-name: naslos-openldap-bootstrap
     spec:
       restartPolicy: OnFailure
       serviceAccountName: naslos-openldap-bootstrap
@@ -21,7 +47,8 @@ spec:
         # Wait for OpenLDAP to be ready (uses ldapsearch from the Naslos
         # OpenLDAP image so the VM does not need to pull busybox externally).
         - name: wait-for-ldap
-          image: 192.168.1.2:30095/naslos-openldap:0.1.0-r4
+          image: "{{ .Values.openldap.image }}"
+          imagePullPolicy: {{ .Values.openldap.imagePullPolicy | default "IfNotPresent" }}
           env:
             # Verify the server certificate against the Naslos CA rather than
             # disabling verification (AUDIT-L9).
@@ -35,14 +62,15 @@ spec:
             - sh
             - -c
             - |
-              until ldapsearch -x -H ldaps://naslos-openldap:636 -b "" -s base >/dev/null 2>&1; do
+              until ldapsearch -x -H ldaps://{{ .Values.openldap.serviceName | default "naslos-openldap" }}:636 -b "" -s base >/dev/null 2>&1; do
                 echo "Waiting for OpenLDAP..."
                 sleep 2
               done
               echo "OpenLDAP is ready"
       containers:
         - name: bootstrap
-          image: 192.168.1.2:30095/naslos-openldap:0.1.0-r4
+          image: "{{ .Values.openldap.image }}"
+          imagePullPolicy: {{ .Values.openldap.imagePullPolicy | default "IfNotPresent" }}
           env:
             - name: LDAPTLS_CACERT
               value: /ldap-ca/ca.crt
@@ -57,28 +85,28 @@ spec:
               # NOTE: ldapi:/// is a Unix domain socket only reachable from
               # inside the openldap server's own container/network
               # namespace. This Job runs in a separate pod, so it must
-              # connect over the network via ldaps://naslos-openldap:636
-              # (same as the wait-for-ldap init container above) — using
-              # ldapi:/// here fails with "Can't contact LDAP server (-1)".
-              LDAP_URI="ldaps://naslos-openldap:636"
+              # connect over the network via ldaps://<service>:636 (same as
+              # the wait-for-ldap init container above) — using ldapi:///
+              # here fails with "Can't contact LDAP server (-1)".
+              LDAP_URI="ldaps://{{ .Values.openldap.serviceName | default "naslos-openldap" }}:636"
 
               # Update service account password
               SERVICE_PW=$(cat /run/secrets/service-password)
               SERVICE_PW_HASH=$(slappasswd -h "{SSHA}" -s "$SERVICE_PW")
 
               cat > /tmp/update-service-pw.ldif <<EOF
-              dn: cn=naslos-service,ou=services,dc=naslos,dc=local
+              dn: {{ $bindDN }}
               changetype: modify
               replace: userPassword
               userPassword: $SERVICE_PW_HASH
               EOF
 
-              ldapmodify -x -H "$LDAP_URI" -D "cn=admin,dc=naslos,dc=local" -w "$(cat /run/secrets/admin-password)" -f /tmp/update-service-pw.ldif
+              ldapmodify -x -H "$LDAP_URI" -D "cn=admin,{{ $baseDN }}" -w "$(cat /run/secrets/admin-password)" -f /tmp/update-service-pw.ldif
 
               # Verify groups exist (created by bootstrap.ldif)
               echo "Verifying groups..."
-              ldapsearch -x -H "$LDAP_URI" -D "cn=admin,dc=naslos,dc=local" -w "$(cat /run/secrets/admin-password)" \
-                -b "cn=naslos_admins,ou=groups,dc=naslos,dc=local" -s base "(objectClass=*)" cn
+              ldapsearch -x -H "$LDAP_URI" -D "cn=admin,{{ $baseDN }}" -w "$(cat /run/secrets/admin-password)" \
+                -b "cn=naslos_admins,ou=groups,{{ $baseDN }}" -s base "(objectClass=*)" cn
 
               echo "OpenLDAP bootstrap completed successfully!"
           volumeMounts:
@@ -108,10 +136,13 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: naslos-openldap-bootstrap
-  namespace: naslos
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos-openldap
+    app.kubernetes.io/component: identity
 # No Role/RoleBinding: the Job only runs ldapmodify/ldapsearch over the network
-# (ldaps://naslos-openldap:636) and never calls the Kubernetes API - it even
-# sets automountServiceAccountToken: false. The Role previously granted
-# get/list on pods and create on pods/exec (trivy KSV-0053), which is a known
-# escalation path and was entirely unused. Removing it leaves the SA with no
-# permissions, which is what the workload needs.
+# (ldaps://<service>:636) and never calls the Kubernetes API - it even sets
+# automountServiceAccountToken: false. The Role previously granted get/list on
+# pods and create on pods/exec (trivy KSV-0053), which is a known escalation
+# path and was entirely unused.
+{{- end }}

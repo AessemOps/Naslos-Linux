@@ -400,6 +400,44 @@ PY
   [ "$rc" -eq 0 ]
 }
 
+# FR-INSTALL: the install pack must build and its metadata.json checksums must
+# match every packaged member. Built into a temp dir so the working tree stays
+# clean, and the Cilium block must be current with bootstrap/cilium/cilium.yaml.
+check_install_pack() {
+  scripts/render-installer-template.sh --check >/dev/null 2>&1 || return 1
+  d=$(mktemp -d) || return 1
+  if ! scripts/build-install-pack.sh "$d" >/dev/null 2>&1; then
+    rm -rf "$d"
+    return 1
+  fi
+  python3 - "$d" <<'PY'
+import glob, hashlib, json, os, sys, tarfile
+d = sys.argv[1]
+tars = glob.glob(os.path.join(d, "naslos-install-pack-*.tar.gz"))
+assert len(tars) == 1, f"expected exactly one tarball, got {tars}"
+with tarfile.open(tars[0]) as tf:
+    tf.extractall(os.path.join(d, "x"))
+root = glob.glob(os.path.join(d, "x", "naslos-install-pack-*"))[0]
+m = json.load(open(os.path.join(root, "metadata.json")))
+assert m["talosVersion"] and m["schematicId"], "metadata must pin talosVersion + schematicId"
+assert "metal-amd64" in m["isoUrls"], "metadata must carry the metal-amd64 ISO URL"
+for rel in ["charts/naslos/values-installer.yaml",
+            "machine-config/naslos-installer.yaml.tmpl",
+            "manifests/local-path-v0.0.26.yaml",
+            "cilium/cilium.yaml",
+            "schematic/naslos.yaml"]:
+    assert os.path.exists(os.path.join(root, rel)), f"missing pack member {rel}"
+for rel, sha in m["checksums"].items():
+    p = os.path.join(root, rel)
+    assert os.path.exists(p), f"checksum lists a missing member: {rel}"
+    assert hashlib.sha256(open(p, "rb").read()).hexdigest() == sha, f"checksum mismatch: {rel}"
+print("install pack ok")
+PY
+  rc=$?
+  rm -rf "$d"
+  return "$rc"
+}
+
 # --- Go ---------------------------------------------------------------------
 cd "$root/api" || exit 1
 run "go vet (api)" go vet ./...
@@ -474,6 +512,11 @@ if have helm; then
   run "helm lint" helm lint charts/naslos \
     -f charts/naslos/values.yaml -f charts/naslos/values-vm.yaml \
     --set openldap.bindPassword=lint-only
+  # FR-INSTALL: the installer profile must render (no install-time `fail`) and
+  # must not reference the private VM registry.
+  run "helm lint (installer profile, FR-INSTALL)" helm lint charts/naslos \
+    -f charts/naslos/values.yaml -f charts/naslos/values-installer.yaml
+  run "install pack builds + checksums (FR-INSTALL)" check_install_pack
   run "authelia ldap password is a Secret file (AUDIT-M3)" check_authelia_ldap_secret
   run "authelia SSO fragments + scoped RBAC (FR-APP-15)" check_authelia_sso_fragments
   run "network policy intent (AUDIT-M4)" check_network_policies
