@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -45,7 +46,17 @@ func (m *Manager) GenerateSambaConfig() string {
 	sb.WriteString("   fruit:wipe_intentionally_left_blank_rfork = yes\n")
 	sb.WriteString("   fruit:delete_empty_adfiles = yes\n\n")
 
-	for _, share := range m.shares {
+	// Emit shares in a stable order: the map iteration is randomized, and an
+	// unstable order makes the generated file (and its revision) churn for no
+	// reason. Sorted by name, matching Manager.List().
+	names := make([]string, 0, len(m.shares))
+	for name := range m.shares {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		share := m.shares[name]
 		if share.Protocol != ProtocolSMB && share.Protocol != ProtocolAFP {
 			continue
 		}
