@@ -619,6 +619,69 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   as YAML where a built-in driver suffices. Every built-in DDNS provider MUST
   resolve to a known driver. *(ddns test: `TestBuiltinProvidersHaveKnownDrivers`)*
 
+### 3.10 Installer & first-run provisioning (`FR-INSTALL`)
+
+The desktop installer (`Naslos-Installer`, a separate repo) provisions a
+freshly-booted Talos node end to end. Naslos-Linux supplies the declarative
+artifact — the **install pack** — and the stable interfaces the installer
+consumes; the contract is `docs/installer-contract.md`. Engine-side steps are
+**[OPEN]** until the installer repo ships them (the pack and chart halves are
+implemented here).
+
+- **FR-INSTALL-01** — `make install-pack` MUST build
+  `dist/naslos-install-pack-<version>.tar.gz` containing the umbrella chart
+  (with vendored subcharts), `values-installer.yaml`, the machine-config
+  template, the Cilium manifest, the pinned local-path manifest and the
+  schematic, plus a `metadata.json` that pins `talosVersion`, `schematicId`,
+  the amd64 ISO URL and a sha256 for every member. *(audit
+  `check_install_pack`)*
+- **FR-INSTALL-02** — The installer MUST refuse a pack whose `talosVersion` or
+  `schematicId` does not match what it was built against. **[OPEN]**
+- **FR-INSTALL-03** — `charts/naslos/values-installer.yaml` MUST parameterise
+  the image repository base (published `ghcr.io/...`) and MUST NOT reference the
+  private VM registry. `helm lint`/`helm template` with it MUST succeed.
+- **FR-INSTALL-04** — The machine-config template
+  (`bootstrap/installer/naslos-installer.yaml.tmpl`) MUST parameterise the
+  node's IPv4 /24 and install disk, MUST NOT reference a private registry, and
+  MUST keep the ZFS module, Cilium inline manifest, kube-proxy replacement and
+  host-DNS settings. Its Cilium block MUST stay in step with
+  `bootstrap/cilium/cilium.yaml`. *(audit `check_install_pack` /
+  `render-installer-template.sh --check`)*
+- **FR-INSTALL-05** — The chart MUST generate the `naslos-openldap` and
+  `naslos-openldap-tls` Secrets when they do not exist and MUST preserve an
+  existing Secret's bytes across upgrades (lookup-guarded, no rotation), so a
+  bare `helm install` needs no out-of-band step and an upgrade does not re-key
+  OpenLDAP. *(audit `check_authelia_ldap_secret`; `helm template` first-install
+  render)*
+- **FR-INSTALL-06** — The installer MUST create the first administrator through
+  the existing owner-gated `POST /api/users`, from inside the `naslos-terminal`
+  pod (reading the `naslos-proxy` Secret and sending `Remote-User` /
+  `Remote-Groups` / `X-Naslos-Proxy-Secret`); it MUST NOT add a new auth
+  surface. **[OPEN]**
+- **FR-INSTALL-07** — After creating the admin, the installer MUST set up a
+  second factor and show the `otpauth://` URI and its base32 secret. A device
+  created with `authelia storage user totp generate` MUST be accepted at the
+  portal without web enrolment. **[OPEN — spike: validate CLI-generated TOTP
+  login on the live VM]**
+- **FR-INSTALL-08** — The installer MUST write a recovery ZIP with
+  `talosconfig`, `controlplane.yaml`, the Talos secrets bundle, `kubeconfig`,
+  the schematic, the ISO URL + checksum and a README. It MUST NOT contain the
+  admin password, and MUST warn that `/var/lib/naslos/buddy-identity.json` is
+  the backup KEK and must be kept offline. **[OPEN]**
+- **FR-INSTALL-09** — The installer MUST persist its state and MUST refuse to
+  regenerate Talos PKI against an already-installed node (mirroring the
+  `bootstrap-vm` / `WIPE_STATE` guard). **[OPEN]**
+- **FR-INSTALL-10** — Adding the chosen name to the local resolver MUST be
+  opt-in, MUST use OS privilege elevation, MUST rewrite only its own marked
+  entry, and MUST always show the exact hosts line/DNS record as a fallback.
+  **[OPEN]**
+- **FR-INSTALL-11** — The engine MUST define all command arguments itself
+  (Talos is immutable and has no shell) and MUST NOT expose arbitrary shell
+  input to the node (SEC-1). **[OPEN]**
+- **FR-INSTALL-12** — The engine MUST stream step progress as newline-delimited
+  JSON on stdout, ending in a `done` or `error` event; the shell MUST render a
+  progress bar and MUST be able to cancel by killing the child. **[OPEN]**
+
 ---
 
 ## 4. API contracts (normative)
@@ -858,6 +921,16 @@ LDAP resilience (FR-IDN-11/12) is covered by
    `200`; `/` and `/api/metrics` → `200`
 4. `kubectl -n naslos scale sts naslos-openldap --replicas=1`
 5. `/api/groups` → `200` **with the same API pod, 0 restarts**
+
+Installer provisioning (FR-INSTALL) is verified here by the install-pack build
+and checksum gate (`scripts/audit.sh` → `check_install_pack`), `helm lint` of
+`values-installer.yaml`, and the machine-config template's
+`render-installer-template.sh --check` tripwire against `cilium.yaml`. The
+engine-side steps are verified end to end from `Naslos-Installer`: boot the ISO
+from the pack's URL, run `naslos-install` headless, then check node Ready, pods
+Running, admin login at `https://<domain>/authelia` with an installer-displayed
+TOTP code, SMB login with the same password, and a recovery ZIP that restores a
+working `talosctl`/`kubectl` context. **[OPEN until Naslos-Installer ships]**
 
 Conformance rule: any PR that changes a MUST in this spec MUST update the
 corresponding test in the same PR.

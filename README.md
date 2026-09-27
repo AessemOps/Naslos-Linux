@@ -32,6 +32,12 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 - **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served)
 - **ntfy notifications** — push alerts on Talos / Kubernetes / ZFS / backup events
 - **Monitoring dashboard** — Prometheus + Alertmanager (Grafana was removed)
+- **Desktop installer** — a one-app installer (separate
+  [Naslos-Installer](https://github.com/AessemOps/Naslos-Installer) repo) that
+  provisions a fresh Talos node from this repo's versioned **install pack**
+  (`make install-pack`), with a progress bar, first-admin + 2FA handoff and a
+  recovery ZIP; the stable interfaces are in
+  [docs/installer-contract.md](docs/installer-contract.md)
 
 ## Architecture
 
@@ -43,10 +49,10 @@ charts/      naslos umbrella chart (api, ui, agent, openldap, monitoring, shares
 samba/       Samba image + config
 nfs/         NFS-Ganesha image + config
 terminal/    web-terminal image (+ zsh-terminal/)
-openldap/    OpenLDAP SSO image + manifests (identity store)
-bootstrap/   schematic + ISO generator, Cilium manifest, first-boot wizard
-scripts/     deploy-vm.sh, render-cilium.sh, audit.sh
-docs/        architecture, spec, API, storage, identity, catalog, ops docs
+openldap/    OpenLDAP SSO image (identity store; the workloads live in charts/naslos)
+bootstrap/   schematic + ISO generator, Cilium manifest, VM + installer machine-config patches
+scripts/     deploy-vm.sh, render-cilium.sh, build-install-pack.sh, audit.sh
+docs/        architecture, spec, API, storage, identity, catalog, installer contract, ops docs
 ```
 
 ## Documentation
@@ -65,6 +71,7 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [monitoring](docs/monitoring.md) | Metrics API + Prometheus/Alertmanager (Grafana removed) |
 | [notifications](docs/notifications.md) | ntfy alerts |
 | [deployment](docs/deployment.md) | Prerequisites, Make targets, Helm values |
+| [installer-contract](docs/installer-contract.md) | Install pack + interfaces for the desktop installer (FR-INSTALL) |
 | [operations](docs/operations.md) | Backups, restore, troubleshooting |
 | [development](docs/development.md) | Layout, builds, extending the catalog |
 | [audit-report](docs/AUDIT-2026-09-19-REPORT.md) | Audit and fix report: findings, fixes, verification, remaining work (archived working papers in `docs/archive/`) |

@@ -494,6 +494,44 @@ Branch `feature/app-install-progress`. Plan:
   reached `succeeded` and removed the release, route and record. Playwright
   `apps.spec.ts` 8/8 (the install test now polls the 202 job).
 
+## Desktop installer — install pack + chart refactor (2026-09-27) — branch, not deployed
+
+Branch `feature/install-pack`. Plan:
+`.kilo/plans/1790466900440-desktop-installer-app.md`; contract:
+`docs/installer-contract.md`; spec `FR-INSTALL` (§3.10).
+
+- **OpenLDAP is now part of the umbrella chart.** The old
+  `openldap/manifests/*` (StatefulSet, bootstrap Job, backup CronJob) and
+  `openldap/generate-secrets.sh` are gone; `charts/naslos/templates/openldap-*`
+  render them from `openldap.*` values. `deploy-vm.sh` no longer applies them.
+  The bootstrap Job is a `post-install,post-upgrade` hook (a Job's pod template
+  is immutable) and the backup CronJob is a `CronJob`.
+- **Chart-generated LDAP Secrets** (`templates/openldap-secrets.yaml`):
+  lookup-guarded, so a first `helm install` needs no out-of-band step and an
+  upgrade re-emits the existing bytes (never re-keys OpenLDAP). The Authelia
+  config no longer `fail`s when the Secret is missing.
+- `make install`/`install-vm` add `--take-ownership` (Helm 4) to adopt the
+  pre-existing namespaces and the old kubectl-created OpenLDAP Secrets.
+- **`charts/naslos/values-installer.yaml`**: public image base
+  (`ghcr.io/aessemops/naslos-*`), no private registry; the installer overrides
+  domain/discovery/CIDRs at install time.
+- **`make install-pack`** (`scripts/build-install-pack.sh`) builds
+  `dist/naslos-install-pack-<version>.tar.gz` + `.sha256`: chart (+vendored
+  subcharts), `values-installer.yaml`, the parameterised machine-config template
+  (`bootstrap/installer/naslos-installer.yaml.tmpl`,
+  `scripts/render-installer-template.sh`), Cilium, the pinned local-path
+  manifest, the schematic, and a `metadata.json` with per-member sha256 + the
+  ISO URL. `.github/workflows/install-pack.yml` attaches it to a `v*` release.
+- **Not deployed**: the live cluster is unchanged (revision 39). A live drill is
+  needed before this is called done: `helm upgrade` must adopt the existing
+  OpenLDAP Secrets/StatefulSet without re-keying, then the normal gates.
+- **Next**: build `Naslos-Installer` against this pack (engine, Tauri shell,
+  recovery ZIP, resolver). Spike first: confirm a CLI-generated TOTP device
+  (`authelia storage user totp generate`) is accepted at the portal.
+- **Residual**: `values-installer.yaml` image refs are tag-pinned placeholders;
+  when CI publishes images, the pack build must fill each `digest:` /
+  `repository@sha256:` (NAS-022).
+
 ## Deployed right now (2026-09-27)
 
 On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 39**:
