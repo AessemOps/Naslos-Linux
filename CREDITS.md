@@ -18,7 +18,7 @@ and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
-**Last reviewed: 2026-09-26.**
+**Last reviewed: 2026-09-27.**
 Maintenance: update this file whenever a direct dependency changes in
 `api/go.mod`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
 
@@ -125,6 +125,7 @@ license and copyright notice apply to the derived parts.
 | ddns-updater | Dynamic DNS provider configurations (`api/internal/providers/builtin/*.yaml` for `duckdns`, `dynu`, `noip`, `freedns`, `namecheap`, `desec`, `spdyn`, `selfhostde`, `dynv6`, `digitalocean`, `godaddy`, `porkbun` and OVH DynHost), the DNS-resolution detection model, and the `digitalocean`/`godaddy`/`porkbun` driver logic | MIT | https://github.com/qdm12/ddns-updater |
 | cert-manager | ACME DNS-01 certificates and Issuer/Certificate CRs (chart dependency `cert-manager`, Apache-2.0); the OVH provider's `apiRights` and webhook solver are derived from cert-manager's DNS-01 documentation | Apache-2.0 | https://cert-manager.io/docs/configuration/acme/dns01/ |
 | cert-manager-webhook-ovh (aureq) | The OVH DNS-01 webhook (Helm chart + image) that renders the OVH `webhook` solver; `apiRights` text derived from its README | MIT | https://github.com/aureq/cert-manager-webhook-ovh |
+| local-path-provisioner (Rancher) | The v0.0.26 `local-path-storage.yaml` manifest, pinned at `bootstrap/local-path/local-path-storage.yaml` and shipped in the install pack as `manifests/local-path-v0.0.26.yaml` (FR-INSTALL) | Apache-2.0 | https://github.com/rancher/local-path-provisioner |
 
 ## Bundled OS packages
 
@@ -210,3 +211,6 @@ authoritative copyright file ships in the image at
   `avahi`, and `nfs-ganesha`).
 - Redistributed components retain their original copyright and license notices.
   Nothing in this file grants additional rights or re-licenses third-party work.
+- CI: the `install-pack` workflow (`.github/workflows/install-pack.yml`) uses the
+  `softprops/action-gh-release` action (MIT) to attach the pack to a release;
+  the pack itself bundles only the components listed above.
