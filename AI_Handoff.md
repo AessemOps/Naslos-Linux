@@ -543,10 +543,16 @@ Branch `feature/install-pack` (PR #39). Plan:
   images to `ghcr.io/aessemops/naslos-*` (linux/amd64), builds the pack with
   every chart image **pinned by digest** (`scripts/pin-installer-values.py` +
   `metadata.json.images`), attaches it and dispatches the installer. A local
-  `make install-pack` keeps the tag placeholders. **Open operator steps**: the
-  `INSTALLER_DISPATCH_TOKEN` secret is not configured (dispatch is skipped) and
-  the GHCR packages must be made **public** (no `imagePullSecret` on the
-  provisioned node). The old residual (tag-pinned placeholders / NAS-022) is
+  `make install-pack` keeps the tag placeholders.
+  **Released: `v0.1.0`** (PR #41 + the PyYAML pack-job fix PR #42, both merged):
+  all 8 images are `ghcr.io/aessemops/naslos-*:0.1.0` (public, anonymous pull
+  verified) and `naslos-install-pack-0.1.0.tar.gz` is attached to the release
+  with all 7 chart images digest-pinned. **Open operator step**: the
+  `INSTALLER_DISPATCH_TOKEN` secret is not configured, so the installer dispatch
+  was skipped — set it (fine-grained PAT with `Contents: read and write` on
+  `AessemOps/Naslos-Installer`) and re-run the `release` workflow on `v0.1.0`
+  (or trigger `Naslos-Installer` manually) to rebuild the installer against the
+  pack. The old residual (tag-pinned placeholders / NAS-022) is
   closed for released packs. Turning the gate on also surfaced and fixed two
   pre-existing issues: stale reachable advisories (go-git / x-crypto / go-billy
   bumped to the fixed versions) and a random share order in
