@@ -27,6 +27,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [monitoring.md](monitoring.md) | Metrics API, Prometheus + Alertmanager (Grafana removed) | New |
 | [notifications.md](notifications.md) | ntfy alerting: topics, severities, defaults | New |
 | [deployment.md](deployment.md) | Prerequisites, Make targets, Helm values walkthrough | New |
+| [installer-contract.md](installer-contract.md) | Install pack format + stable interfaces for the desktop installer (FR-INSTALL) | New |
 | [operations.md](operations.md) | Day-2: LDAP backup/restore, troubleshooting | New |
 | [development.md](development.md) | Repo layout, how to build, extend the catalog/shares | New |
 | [AUDIT-2026-09-19-REPORT.md](AUDIT-2026-09-19-REPORT.md) | **The audit and fix report**: findings, every security and code fix with commit/revision, verification, remaining work | Current |

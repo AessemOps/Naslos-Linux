@@ -72,7 +72,7 @@ api:
   chartsCacheDir: /var/lib/naslos/charts
   # LDAP CA certificate Secret (key ca.crt) used to verify the OpenLDAP TLS
   # certificate. The API mounts it and sets LDAP_CA_CERT. Defaults to the
-  # secret created by openldap/generate-secrets.sh.
+  # secret the chart generates (templates/openldap-secrets.yaml).
   ldapCA:
     secretName: naslos-openldap-tls
     key: ca.crt
@@ -426,9 +426,8 @@ authelia:
           - key: service-password
             path: service-password
   # Trust the openldap self-signed CA for the ldaps:// connection — the
-  # secret (created by openldap/generate-secrets.sh) already has a ca.crt
-  # key; the authelia chart mounts every key of this secret at /certificates
-  # and trusts them as additional CAs.
+  # chart-generated secret already has a ca.crt key; the authelia chart mounts
+  # every key of this secret at /certificates and trusts them as additional CAs.
   certificates:
     existingSecret: naslos-openldap-tls
   # Persist Authelia's SQLite session/storage DB — without this, /config
@@ -476,21 +475,47 @@ storage:
 openldap:
   enabled: true
   serviceName: naslos-openldap
-  # Custom Naslos OpenLDAP image (in the chart authelia only needs host/baseDN;
-  # deploy-vm.sh overrides this for the standalone manifests).
-  # A full image reference, so a digest can be pinned directly here:
+  # Custom Naslos OpenLDAP image. A full image reference, so a digest can be
+  # pinned directly here:
   #   192.168.1.2:30095/naslos-openldap@sha256:<digest>
-  # Used by the API's wait-for-ldap init container. Keep it in step with the
-  # tag the openldap manifests deploy.
+  # Used by the OpenLDAP StatefulSet, the bootstrap Job, the backup CronJob and
+  # the API's wait-for-ldap init container.
   image: 192.168.1.2:30095/naslos-openldap:0.1.0-r5
+  imagePullPolicy: IfNotPresent
+  # LDAP hostname used as Authelia's TLS `server_name` (and added as a
+  # certificate SAN). The internal directory suffix is fixed at
+  # `dc=naslos,dc=local` (the image's bootstrap.ldif and the API/Authelia base
+  # DN all assume it); only this public host varies with the deployment.
   host: ldap.naslos.local
   baseDN: "dc=naslos,dc=local"
   bindDN: "cn=naslos-service,ou=services,dc=naslos,dc=local"
-  # Leave empty: the chart reads the password from the naslos-openldap Secret
-  # (key service-password), so no credential is committed. Set it only for a
-  # dry run where `helm template` has no cluster to look the Secret up in
-  # (AUDIT-H1). Never commit a real value here.
+  organisation: "Naslos"
+  # Explicit credentials, used ONLY when the chart's `naslos-openldap` Secret
+  # (or the specific key) does not already exist — i.e. a dry run or the very
+  # first install. On an existing install they are ignored by design, so the
+  # binding credential never silently rotates (AUDIT-H1). To rotate, patch the
+  # Secret and re-run the bootstrap Job (docs/deployment.md). Never commit a
+  # real value here.
+  adminPassword: ""
   bindPassword: ""
+  storageClassName: local-path
+  dataSize: 1Gi
+  configSize: 100Mi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      # 512Mi was too tight for first-boot initialization (RSA-4096 TLS cert
+      # generation + full schema/module/database slapadd bootstrap) and caused
+      # the container to be OOMKilled before slapd ever finished starting.
+      memory: 1Gi
+  # Nightly slapcat backup onto the config volume; keeps the last `retain`.
+  backup:
+    enabled: true
+    schedule: "0 3 * * *"
+    retain: 7
 
 # No `namespace` value: every template uses `.Release.Namespace`, so the chart
 # installs under any release namespace (`helm -n <ns>`), which is what multi-

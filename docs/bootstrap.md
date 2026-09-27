@@ -39,6 +39,21 @@ make dev-cluster
 #   --image factory.talos.dev/<rendered digest> --workers 0
 ```
 
+### The pinned ISO (installer)
+
+The validated schematic is
+`4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c`, with
+`siderolabs/zfs` at Talos **v1.14.1** (amd64 only). The boot ISO the desktop
+installer points at is
+
+```
+https://factory.talos.dev/image/4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c/v1.14.1/metal-amd64.iso
+```
+
+(likewise the installer image
+`factory.talos.dev/installer/<schematic>:v1.14.1`). Both are in the install
+pack's `metadata.json`; see [installer-contract.md](installer-contract.md).
+
 ## First boot sequence
 
 1. Stock Talos boots with the ZFS extension.
@@ -66,5 +81,8 @@ schematic is the only thing that changes the OS image.
 | Path | Role |
 | --- | --- |
 | `bootstrap/schematic/naslos.yaml` | The Image Factory schematic |
-| `Makefile` targets `bootstrap`, `dev-cluster` | Build & local dev cluster |
+| `bootstrap/vm/naslos-vm.yaml` | Machine-config patch for the hand-managed VM |
+| `bootstrap/installer/naslos-installer.yaml.tmpl` | Parameterised patch shipped in the install pack (FR-INSTALL) |
+| `bootstrap/cilium/cilium.yaml` | Cilium manifest inlined into both patches |
+| `Makefile` targets `bootstrap`, `dev-cluster`, `install-pack` | Build, local dev cluster, install pack |
 | `charts/naslos/` | Umbrella Helm chart (installs on top of the image) |

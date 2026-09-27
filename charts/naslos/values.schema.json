@@ -160,12 +160,29 @@
       "type": "object",
       "additionalProperties": true,
       "properties": {
+        "enabled": { "type": "boolean" },
         "image": { "type": "string" },
+        "imagePullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
         "host": { "type": "string" },
         "serviceName": { "type": "string" },
+        "organisation": { "type": "string" },
         "baseDN": { "type": "string" },
         "bindDN": { "type": "string" },
-        "bindPassword": { "type": "string" }
+        "bindPassword": { "type": "string" },
+        "adminPassword": { "type": "string" },
+        "storageClassName": { "type": "string" },
+        "dataSize": { "type": "string" },
+        "configSize": { "type": "string" },
+        "resources": { "type": "object" },
+        "backup": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "schedule": { "type": "string" },
+            "retain": { "type": "integer", "minimum": 1 }
+          }
+        }
       }
     },
     "auth": {
