@@ -212,12 +212,39 @@ type InstallRequest struct {
 	BaseDomain string                 `json:"baseDomain,omitempty"`
 }
 
+// Progress stages reported by the lifecycle operations; they name the phase an
+// async job is in, not a percentage (Helm's `--wait` exposes no byte progress).
+const (
+	StagePreparing  = "preparing"
+	StageInstalling = "installing"
+	StageFinalizing = "finalizing"
+)
+
+// ProgressFunc observes a lifecycle operation's current stage. message is a
+// human-readable detail. A nil ProgressFunc is a no-op.
+type ProgressFunc func(stage, message string)
+
+// report calls progress when it is set.
+func report(progress ProgressFunc, stage, message string) {
+	if progress != nil {
+		progress(stage, message)
+	}
+}
+
 // Install resolves the chart from the catalog, installs it into the apps
-// namespace and records the exposure.
+// namespace and records the exposure. It is InstallWithProgress with no
+// observer.
 func (m *Manager) Install(ctx context.Context, req InstallRequest) (*View, error) {
+	return m.InstallWithProgress(ctx, req, nil)
+}
+
+// InstallWithProgress is Install, reporting each stage to progress so an async
+// job can surface it (FR-APP-18).
+func (m *Manager) InstallWithProgress(ctx context.Context, req InstallRequest, progress ProgressFunc) (*View, error) {
 	if err := validateReleaseName(req.Name); err != nil {
 		return nil, err
 	}
+	report(progress, StagePreparing, fmt.Sprintf("Resolving %s from the catalog", req.Name))
 	c := m.catalog()
 	if c == nil {
 		return nil, errors.New("catalog is not available")
@@ -237,9 +264,11 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*View, error
 	values := mergeValues(app.DefaultValues, req.Values)
 	exposure := exposureFor(app, req.Exposure, req.Name)
 
+	report(progress, StageInstalling, fmt.Sprintf("Installing %s", req.Name))
 	if _, err := m.helmFor(app.Privileged).InstallDir(ctx, req.Name, chartDir, values); err != nil {
 		return nil, err
 	}
+	report(progress, StageFinalizing, "Recording the install and applying routing")
 	// Fallback: a manifest that declares no service routes to the release's
 	// first discovered Service (the admin can change it in the exposure UI).
 	exposure = m.fillDiscoveredService(ctx, req.Name, app.Privileged, exposure)
@@ -277,6 +306,12 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*View, error
 
 // Upgrade reconciles an installed app against its chart, replacing values.
 func (m *Manager) Upgrade(ctx context.Context, name string, values map[string]interface{}) (*View, error) {
+	return m.UpgradeWithProgress(ctx, name, values, nil)
+}
+
+// UpgradeWithProgress is Upgrade, reporting each stage to progress (FR-APP-18).
+func (m *Manager) UpgradeWithProgress(ctx context.Context, name string, values map[string]interface{}, progress ProgressFunc) (*View, error) {
+	report(progress, StagePreparing, fmt.Sprintf("Resolving the chart for %s", name))
 	rec, err := m.store.Get(name)
 	if err != nil {
 		return nil, err
@@ -297,9 +332,11 @@ func (m *Manager) Upgrade(ctx context.Context, name string, values map[string]in
 		return nil, err
 	}
 	merged := mergeValues(rec.Values, values)
+	report(progress, StageInstalling, fmt.Sprintf("Upgrading %s", name))
 	if _, err := m.helmFor(rec.Privileged).UpgradeDir(ctx, name, chartDir, merged); err != nil {
 		return nil, err
 	}
+	report(progress, StageFinalizing, "Recording the new configuration")
 	rec.Values = merged
 	rec.ChartVersion = app.Version
 	rec.UpdatedAt = time.Now().UTC()
@@ -369,15 +406,24 @@ func (m *Manager) SetExposure(ctx context.Context, name string, exposure Exposur
 
 // Uninstall removes the release, its route and its record.
 func (m *Manager) Uninstall(ctx context.Context, name string) error {
+	return m.UninstallWithProgress(ctx, name, nil)
+}
+
+// UninstallWithProgress is Uninstall, reporting each stage to progress
+// (FR-APP-18).
+func (m *Manager) UninstallWithProgress(ctx context.Context, name string, progress ProgressFunc) error {
+	report(progress, StagePreparing, fmt.Sprintf("Loading the record for %s", name))
 	rec, err := m.store.Get(name)
 	if err != nil {
 		return err
 	}
 	if !rec.Orphaned {
+		report(progress, StageInstalling, fmt.Sprintf("Removing the %s release", name))
 		if err := m.helmFor(rec.Privileged).Uninstall(ctx, name); err != nil {
 			return err
 		}
 	}
+	report(progress, StageFinalizing, "Removing the route and record")
 	if m.router != nil {
 		if err := m.router.Delete(ctx, m.targetNamespace(rec), name); err != nil {
 			return err

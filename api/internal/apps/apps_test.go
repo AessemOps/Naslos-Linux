@@ -2,10 +2,13 @@ package apps
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/AessemOps/Naslos-Linux/api/internal/catalog"
+	"github.com/AessemOps/Naslos-Linux/api/internal/chartsrepo"
 	"github.com/AessemOps/Naslos-Linux/api/internal/helm"
 )
 
@@ -155,5 +158,95 @@ func TestValidateReleaseName(t *testing.T) {
 	}
 	if err := validateReleaseName("Bad Name"); err == nil {
 		t.Fatal("invalid name accepted")
+	}
+}
+
+// TestInstallWithProgressStagesInOrder pins FR-APP-18's progress contract: the
+// install reports `preparing` before `installing`, and a Helm failure stops
+// there (never `finalizing`). It runs against a fixture clone so resolveChart
+// succeeds; the chart directory has no Chart.yaml, so the Helm load fails
+// deterministically without a cluster.
+func TestInstallWithProgressStagesInOrder(t *testing.T) {
+	cacheDir := t.TempDir()
+	cloneDir := filepath.Join(cacheDir, "test", "prod")
+	appDir := filepath.Join(cloneDir, "apps", "demo")
+	if err := os.MkdirAll(filepath.Join(cloneDir, ".git"), 0o755); err != nil {
+		t.Fatalf("creating clone: %v", err)
+	}
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatalf("creating app dir: %v", err)
+	}
+	writeFile(t, filepath.Join(appDir, "naslos-app.yaml"), "name: demo\nversion: 0.1.0\n")
+
+	sources := chartsrepo.NewStore("")
+	if err := sources.Upsert(&chartsrepo.Source{
+		Name:     "test",
+		URL:      "https://example.invalid/repo.git",
+		Auth:     chartsrepo.AuthPublic,
+		Channels: map[string]string{"Prod": "main"},
+		LastSync: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seeding source: %v", err)
+	}
+	charts := chartsrepo.NewManager(sources, cacheDir, time.Hour, nil)
+	cat := catalog.Load([]catalog.SourceRef{{Name: "test", Channel: "Prod", Dir: cloneDir}})
+	store := NewStore(filepath.Join(t.TempDir(), "apps.json"))
+	if err := store.Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	m := &Manager{
+		store:      store,
+		helm:       helm.NewClient("naslos-apps"),
+		charts:     charts,
+		catalog:    func() *catalog.Catalog { return cat },
+		baseDomain: "naslos.local",
+	}
+
+	var stages []string
+	_, err := m.InstallWithProgress(context.Background(), InstallRequest{Name: "demo"}, func(stage, _ string) {
+		stages = append(stages, stage)
+	})
+	if err == nil {
+		t.Fatal("expected the Helm install to fail without a cluster")
+	}
+	want := []string{StagePreparing, StageInstalling}
+	if len(stages) != len(want) || stages[0] != want[0] || stages[1] != want[1] {
+		t.Fatalf("stages = %v, want %v", stages, want)
+	}
+}
+
+// TestUninstallWithProgressStagesInOrder covers the uninstall callback: an
+// orphaned record skips Helm, so it reports `preparing` then `finalizing` and
+// succeeds without a cluster.
+func TestUninstallWithProgressStagesInOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apps.json")
+	store := NewStore(path)
+	if err := store.Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := store.Upsert(Record{Name: "legacy", Orphaned: true, Values: map[string]interface{}{}}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	m := &Manager{store: store, helm: helm.NewClient("naslos-apps")}
+
+	var stages []string
+	if err := m.UninstallWithProgress(context.Background(), "legacy", func(stage, _ string) {
+		stages = append(stages, stage)
+	}); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	want := []string{StagePreparing, StageFinalizing}
+	if len(stages) != len(want) || stages[0] != want[0] || stages[1] != want[1] {
+		t.Fatalf("stages = %v, want %v", stages, want)
+	}
+	if _, err := store.Get("legacy"); err == nil {
+		t.Fatal("record was not removed")
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
 	}
 }

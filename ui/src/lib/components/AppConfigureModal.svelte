@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, createEventDispatcher } from 'svelte';
   import SchemaForm from './SchemaForm.svelte';
+  import { trackAppJob } from '$lib/stores/appJobs';
 
   export let appName: string;
 
@@ -43,9 +44,12 @@
         body: JSON.stringify({ values })
       });
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Update failed');
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Update failed (HTTP ${res.status})`);
       }
+      // The upgrade runs as a background job: close and let the drawer follow it.
+      const data = await res.json();
+      if (data.jobId) trackAppJob(data.jobId);
       dispatch('close');
     } catch (e: any) {
       error = e.message;
