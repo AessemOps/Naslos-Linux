@@ -16,6 +16,11 @@ REGISTRY ?= 192.168.1.2:30095
 IMAGE_TAG ?= 0.1.0
 # Version of the install pack (defaults to the chart version when empty).
 PACK_VERSION ?=
+# Optional digest map for the install pack (FR-INSTALL-13): a JSON file
+# {"api":"ghcr.io/aessemops/naslos-api@sha256:...", ...} (or `component=ref`
+# lines). CI builds it from the images it pushed to GHCR; a local build leaves it
+# empty and the pack keeps the tag placeholders. Supplying one is fail-closed.
+IMAGE_DIGESTS_FILE ?=
 
 # cert-manager + the OVH DNS-01 webhook (FR-APP-13/FR-DNS-05). OVH is not a
 # cert-manager built-in solver, so it needs aureq/cert-manager-webhook-ovh. Both
@@ -113,7 +118,9 @@ push-images: images
 	$(DOCKER) push $(BUDDY_RECEIVER_IMAGE)
 
 # Print the digests of the images built for IMAGE_TAG, for pinning them in
-# values (NAS-022: a tag is mutable, a digest is not).
+# values (NAS-022: a tag is mutable, a digest is not). This reads the local
+# daemon, so it only works for the private VM registry; the GHCR release digests
+# come from the push step (`docker buildx imagetools inspect`).
 image-digests:
 	@for image in $(API_IMAGE) $(AGENT_IMAGE) $(UI_IMAGE) $(OPENLDAP_IMAGE) \
 	              $(SAMBA_IMAGE) $(NFS_IMAGE) $(TERMINAL_IMAGE) $(BUDDY_RECEIVER_IMAGE); do \
@@ -252,9 +259,16 @@ install-vm: crds cert-manager cert-manager-webhook-ovh
 # Build the versioned install pack the desktop installer pins, downloads and
 # embeds (FR-INSTALL; docs/installer-contract.md). Output:
 # dist/naslos-install-pack-<PACK_VERSION>.tar.gz (+ .sha256).
+#
+# IMAGE_DIGESTS_FILE pins every chart image by digest (FR-INSTALL-13); it is the
+# shape the release workflow builds from the pushed GHCR images. Local builds
+# leave it empty. For GHCR the digests come from
+# `docker buildx imagetools inspect ghcr.io/aessemops/naslos-<comp>:<version>`
+# (the `image-digests` target above is `docker inspect`, private-registry
+# oriented).
 install-pack:
 	scripts/render-installer-template.sh --check
-	PACK_VERSION="$(PACK_VERSION)" scripts/build-install-pack.sh
+	PACK_VERSION="$(PACK_VERSION)" IMAGE_DIGESTS_FILE="$(IMAGE_DIGESTS_FILE)" scripts/build-install-pack.sh
 
 # Uninstall Naslos
 uninstall:
