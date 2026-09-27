@@ -1,10 +1,29 @@
+{{- /*
+OpenLDAP nightly backup (FR-INSTALL). Folded from
+openldap/manifests/backup-cronjob.yaml.
+
+slapcat writes to the config volume (mounted a second time at /backups); the
+data volume is mounted read-write because the mdb backend maps a lock file
+beside the database even for a read. Both PVCs are created by the StatefulSet's
+volumeClaimTemplates, so their names follow <template>-<statefulset>-0.
+*/}}
+{{- if .Values.openldap.enabled }}
+{{- $backup := get .Values.openldap "backup" | default dict }}
+{{- $backupEnabled := true }}
+{{- if hasKey $backup "enabled" }}{{ $backupEnabled = index $backup "enabled" }}{{ end }}
+{{- if $backupEnabled }}
+{{- $sts := .Values.openldap.serviceName | default "naslos-openldap" }}
+{{- $retain := index $backup "retain" | default 7 }}
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: naslos-openldap-backup
-  namespace: naslos
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos-openldap
+    app.kubernetes.io/component: identity
 spec:
-  schedule: "0 3 * * *"
+  schedule: {{ index $backup "schedule" | default "0 3 * * *" | quote }}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -16,7 +35,8 @@ spec:
           serviceAccountName: naslos-openldap-backup
           containers:
             - name: backup
-              image: 192.168.1.2:30095/naslos-openldap:0.1.0-r4
+              image: "{{ .Values.openldap.image }}"
+              imagePullPolicy: {{ .Values.openldap.imagePullPolicy | default "IfNotPresent" }}
               command:
                 - /bin/sh
                 - -c
@@ -32,9 +52,9 @@ spec:
                   slapcat -F /etc/ldap/slapd.d -n 0 -l "${BACKUP_DIR}/config_${TIMESTAMP}.ldif"
                   slapcat -F /etc/ldap/slapd.d -n 1 -l "${BACKUP_DIR}/data_${TIMESTAMP}.ldif"
 
-                  # Keep only the last 7 of each.
-                  ls -t "${BACKUP_DIR}"/config_*.ldif 2>/dev/null | tail -n +8 | xargs -r rm -f
-                  ls -t "${BACKUP_DIR}"/data_*.ldif 2>/dev/null | tail -n +8 | xargs -r rm -f
+                  # Keep only the last {{ $retain }} of each.
+                  ls -t "${BACKUP_DIR}"/config_*.ldif 2>/dev/null | tail -n +{{ add $retain 1 }} | xargs -r rm -f
+                  ls -t "${BACKUP_DIR}"/data_*.ldif 2>/dev/null | tail -n +{{ add $retain 1 }} | xargs -r rm -f
 
                   echo "Backup completed: ${TIMESTAMP}"
               volumeMounts:
@@ -55,13 +75,18 @@ spec:
           volumes:
             - name: data
               persistentVolumeClaim:
-                claimName: data-naslos-openldap-0
+                claimName: data-{{ $sts }}-0
             - name: config
               persistentVolumeClaim:
-                claimName: config-naslos-openldap-0
+                claimName: config-{{ $sts }}-0
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: naslos-openldap-backup
-  namespace: naslos
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos-openldap
+    app.kubernetes.io/component: identity
+{{- end }}
+{{- end }}
