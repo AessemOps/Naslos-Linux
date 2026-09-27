@@ -345,6 +345,15 @@ with a sibling `naslos-app.yaml` install-config. See
   needing `NET_ADMIN`, which PSA `baseline` forbids) MUST install into the
   separate privileged apps namespace, with its own Role and routing; all other
   apps MUST stay under `baseline`. *(chart render + routing/apps tests)*
+- **FR-APP-18** — Install, upgrade and uninstall MUST run as **background jobs**
+  with an observable stage (`preparing` → `installing` → `finalizing`).
+  `POST /api/apps`, `PUT /api/apps/{name}` and `DELETE /api/apps/{name}` MUST
+  validate, enqueue and answer `202 {jobId, state:"running"}` instead of blocking
+  on Helm; the job MUST run under a server-owned context so a disconnected
+  client cannot cancel it, its state MUST be observable via
+  `GET /api/apps/jobs/{id}` (and `GET /api/apps/jobs`), and a second job for an
+  app that already has one running MUST be rejected with `409`. *(server
+  app_jobs tests, apps tests)*
 - **FR-APP-12** — Installing a third-party chart MUST require an explicit
   confirmation in the request (`confirmed: true`). *(server tests)*
 - **FR-APP-13** — Base domains and their cert-manager ACME DNS-01 certificates

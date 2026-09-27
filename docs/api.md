@@ -77,13 +77,25 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | GET | `/api/catalog` | List catalog entries (summary incl. `source`, `channel`, `channels`) |
 | GET | `/api/catalog/{name}` | Full entry incl. JSON Schema, `services`, `exposure`, `chartPath` |
 | GET | `/api/apps` | Installed-app records with live status and URL |
-| POST | `/api/apps` | Install: `{name, values, exposure?, baseDomain?, confirmed:true}` (confirmed is required) |
+| POST | `/api/apps` | Enqueue an install job: `{name, values, exposure?, baseDomain?, confirmed:true}` (confirmed is required) → `202 {jobId, state}` |
 | GET | `/api/apps/{name}` | Record + release status |
-| PUT | `/api/apps/{name}` | Upgrade/reconfigure: `{values}` |
-| DELETE | `/api/apps/{name}` | Uninstall app, remove its route and record |
+| PUT | `/api/apps/{name}` | Enqueue an upgrade job: `{values}` → `202 {jobId, state}` |
+| DELETE | `/api/apps/{name}` | Enqueue an uninstall job (removes the release, its route and record) → `202 {jobId, state}` |
+| GET | `/api/apps/jobs` | Lifecycle jobs: running plus the last ~20 finished |
+| GET | `/api/apps/jobs/{id}` | One job's `state`, `stage`, `message` and `error` (the poll target) |
 | GET | `/api/apps/{name}/exposure` | Exposure settings, the app's own `baseDomain` (fallback primary), `primaryDomain`, `selectableDomains`, `ssoDomains` and `authAllowed` |
 | PUT | `/api/apps/{name}/exposure` | Update `{exposure, baseDomain?}`, re-render the route; an unconfigured `baseDomain` is rejected (400) |
 | GET | `/api/apps/{name}/services` | Services the release rendered (route-target discovery/picker) |
+
+Install/upgrade/uninstall are **asynchronous** (FR-APP-18): the handler
+validates and enqueues, then answers `202 {jobId, state:"running"}`; the UI
+polls `GET /api/apps/jobs/{id}`. A job reports `kind` (`install`/`upgrade`/
+`uninstall`), `app`, `state` (`running`/`succeeded`/`failed`), `stage`
+(`preparing`/`installing`/`finalizing`) and `message`, and a failed job carries
+`error`. A second job for an app that already has one running is `409`. Jobs
+are in-memory (a restart abandons a running job; the app record and
+`reconcileApps` are the durable outcome). `/api/apps/jobs` is matched before
+`/api/apps/{name}`, so `jobs` is never an app name.
 
 ### Chart repositories (sources)
 
@@ -302,7 +314,9 @@ The `naslos-agent` uses `NODE_NAME` (from `spec.nodeName`) and listens on `:9090
   pools on disk, then `POST /api/volumes/zfs/import` with `{"name":"tank"}` to import.
   Pools already imported do not appear in the list.
 - The app catalog merges `DefaultValues` with request `values` (request wins)
-  before `helm install`; apps are installed into the `naslos` namespace.
+  before `helm install`; apps install into the `naslos-apps` namespace (a chart
+  that declares `privileged: true` installs into `naslos-apps-priv` instead).
+  Installing is a background job (FR-APP-18) and the request answers `202`.
 - Password changes hit `/api/users/{uid}/password`, which updates LDAP via
   Password Modify (RFC 3062) and returns the NT hash for the Samba sync half
   described in [identity-sso.md](identity-sso.md#shared-password-flow).
