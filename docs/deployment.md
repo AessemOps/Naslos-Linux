@@ -488,7 +488,10 @@ The pack bundles the umbrella chart (with vendored subcharts),
 pinned local-path manifest and the schematic, plus a `metadata.json` that pins
 `talosVersion`, `schematicId`, the amd64 ISO URL and a sha256 per member. The
 `install-pack` GitHub Actions workflow attaches it, and the checksum file, to a
-`v*` release.
+semantic `vX.Y.Z` release, then dispatches `AessemOps/Naslos-Installer` so the
+installer rebuilds against it. The installer resolves the **newest `vX.Y.Z`
+tag** (it ignores non-semver tags such as `latest`) and derives its Talos /
+schematic gate from the pack's `metadata.json`.
 
 `values-installer.yaml` is the installer profile: it parameterises the image
 repository base and **must not** reference the private VM registry. The engine
