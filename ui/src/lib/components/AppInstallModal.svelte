@@ -2,6 +2,7 @@
   import { onMount, createEventDispatcher } from 'svelte';
   import SchemaForm from './SchemaForm.svelte';
   import ExposureForm from './ExposureForm.svelte';
+  import { trackAppJob } from '$lib/stores/appJobs';
 
   interface Exposure {
     subdomain: string;
@@ -96,9 +97,13 @@
         body: JSON.stringify({ name: appName, values, exposure, baseDomain, confirmed: true })
       });
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Install failed');
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Install failed (HTTP ${res.status})`);
       }
+      // The install runs as a background job: close the modal immediately and
+      // let the global job drawer/toast follow it.
+      const data = await res.json();
+      if (data.jobId) trackAppJob(data.jobId);
       dispatch('close');
     } catch (e: any) {
       error = e.message;
@@ -181,7 +186,7 @@
           {#if activeStep === 'config'}<button class="btn btn-primary" on:click={() => activeStep = 'exposure'}>Exposure →</button>
           {:else if activeStep === 'exposure'}<button class="btn btn-secondary" on:click={() => activeStep = 'config'}>← Back</button><button class="btn btn-primary" on:click={() => activeStep = 'review'}>Review →</button>
           {:else if activeStep === 'review'}<button class="btn btn-secondary" on:click={() => activeStep = 'exposure'}>← Back</button><button class="btn btn-primary" on:click={() => activeStep = 'confirm'}>Confirm →</button>
-          {:else}<button class="btn btn-secondary" on:click={() => activeStep = 'review'}>← Back</button><button class="btn btn-primary" on:click={install} disabled={installing || !confirmed}>{installing ? 'Installing...' : 'Install'}</button>{/if}
+          {:else}<button class="btn btn-secondary" on:click={() => activeStep = 'review'}>← Back</button><button class="btn btn-primary" on:click={install} disabled={installing || !confirmed}>{installing ? 'Starting...' : 'Install'}</button>{/if}
         </div>
       </div>
     {/if}

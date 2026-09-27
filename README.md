@@ -25,7 +25,8 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 - **Import existing pools** — discover and import pools already on disk via `zpool import`
 - **App catalog** — install apps from git-based chart repositories (official +
   user-added), with schema-driven config and per-app exposure (subdomain, TLS,
-  Authelia auth, local-only) rendered as Traefik routes; domains and wildcard
+  Authelia auth, local-only) rendered as Traefik routes; install/upgrade/
+  uninstall run as background jobs with live progress; domains and wildcard
   ACME certificates managed from the UI (see [docs/app-catalog.md](docs/app-catalog.md)).
 - **Logs & terminal** — stream logs and open a zsh shell to any pod from the UI
 - **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served)

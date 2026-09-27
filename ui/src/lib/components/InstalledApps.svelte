@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import AppExposureModal from './AppExposureModal.svelte';
   import AppConfigureModal from './AppConfigureModal.svelte';
+  import { appJobs, trackAppJob } from '$lib/stores/appJobs';
 
   interface AppView {
     name: string;
@@ -27,6 +28,10 @@
   let error = '';
   let editingExposure: string | null = null;
   let editingConfig: string | null = null;
+  // Apps with a job currently running: their actions are disabled and a badge
+  // marks them as in-flight.
+  let runningJobApps = new Set<string>();
+  let previousRunning = new Set<string>();
 
   async function loadApps() {
     loading = true;
@@ -54,9 +59,12 @@
     try {
       const res = await fetch(`/api/apps/${name}`, { method: 'DELETE' });
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
       }
-      loadApps();
+      // The uninstall runs as a background job; the list refetches when it ends.
+      const data = await res.json();
+      if (data.jobId) trackAppJob(data.jobId);
     } catch (e) {
       error = `Failed to uninstall ${name}: ` + e;
     }
@@ -72,7 +80,23 @@
     }
   }
 
-  onMount(loadApps);
+  // Follow the shared job store: mark in-flight apps, and reload once a job for
+  // a listed app finishes so its status/record reflects the outcome.
+  const unsubscribeJobs = appJobs.subscribe((jobs) => {
+    const running = new Set(jobs.filter((j) => j.state === 'running').map((j) => j.app));
+    let finished = false;
+    for (const name of previousRunning) {
+      if (!running.has(name) && apps.some((a) => a.name === name)) finished = true;
+    }
+    previousRunning = running;
+    runningJobApps = running;
+    if (finished) loadApps();
+  });
+
+  onMount(() => {
+    loadApps();
+    return () => unsubscribeJobs();
+  });
 </script>
 
 <div>
@@ -99,6 +123,9 @@
               {#if app.orphaned}
                 <span class="text-xs px-2 py-0.5 rounded bg-amber-900/50 text-amber-300" title="Found in the cluster without a catalog entry">orphaned</span>
               {/if}
+              {#if runningJobApps.has(app.name)}
+                <span class="text-xs px-2 py-0.5 rounded bg-yellow-900/50 text-yellow-300" title="A lifecycle job is running for this app">job running</span>
+              {/if}
             </div>
             {#if app.url}
               <a class="text-sm text-naslos-accent hover:underline" href={app.url} target="_blank" rel="noreferrer">{app.url}</a>
@@ -109,14 +136,14 @@
             {#if app.lastError}<p class="text-xs text-amber-400 mt-1">{app.lastError}</p>{/if}
           </div>
           <div class="flex gap-2">
-            <button class="btn btn-secondary" on:click={() => editingExposure = app.name}>Exposure</button>
+            <button class="btn btn-secondary" disabled={runningJobApps.has(app.name)} on:click={() => editingExposure = app.name}>Exposure</button>
             <button
               class="btn btn-secondary"
-              disabled={app.orphaned}
+              disabled={app.orphaned || runningJobApps.has(app.name)}
               title={app.orphaned ? 'Orphaned releases cannot be reconfigured' : ''}
               on:click={() => editingConfig = app.name}
             >Configure</button>
-            <button class="btn btn-danger" on:click={() => uninstallApp(app.name)}>Uninstall</button>
+            <button class="btn btn-danger" disabled={runningJobApps.has(app.name)} on:click={() => uninstallApp(app.name)}>Uninstall</button>
           </div>
         </div>
       {/each}

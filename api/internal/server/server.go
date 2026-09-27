@@ -85,6 +85,8 @@ type Server struct {
 	buddy *buddy.Receiver
 	// buddyJobs tracks async instance-side sends (POST /api/buddy/send → 202).
 	buddyJobs *buddyJobManager
+	// appJobs tracks async app lifecycle operations (FR-APP-18).
+	appJobs *appJobManager
 	// buddySchedules persists scheduled backups and drives the runner.
 	buddySchedules *buddyScheduleStore
 	// schedulerStop stops the backup scheduler; nil until started.
@@ -494,8 +496,11 @@ func (s *Server) routes() {
 	owner.HandleFunc("/api/catalog", s.handleCatalog)
 	owner.HandleFunc("/api/catalog/", s.handleCatalogApp)
 
-	// Apps (installed)
+	// Apps (installed). `/api/apps/jobs` is registered before the `/api/apps/`
+	// subtree so `jobs` is never parsed as an app name.
 	owner.HandleFunc("/api/apps", s.handleApps)
+	owner.HandleFunc("/api/apps/jobs", s.handleAppJobs)
+	owner.HandleFunc("/api/apps/jobs/", s.handleAppJobDetail)
 	owner.HandleFunc("/api/apps/", s.handleAppDetail)
 
 	// Chart repositories (sources)
@@ -648,6 +653,9 @@ func (s *Server) Start() error {
 	s.ensureBuddySchedules()
 	s.startBuddyScheduler()
 
+	// Async app lifecycle jobs (FR-APP-18).
+	s.ensureAppJobs()
+
 	// Dynamic DNS: detect the public IP on an interval and keep records
 	// converged (FR-DNS-03).
 	if s.ddns != nil {
@@ -691,6 +699,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.buddyJobs != nil {
 		s.buddyJobs.cancelAll()
+	}
+	if s.appJobs != nil {
+		s.appJobs.cancelAll()
 	}
 	if s.server == nil {
 		return nil

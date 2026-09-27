@@ -73,6 +73,7 @@ func newSeededTestServerSSO(t *testing.T, appsJSON, domainsJSON, ssoEnv string) 
 var ownerPaths = []string{
 	"/api/catalog", "/api/catalog/nginx",
 	"/api/apps", "/api/apps/nginx", "/api/apps/nginx/exposure", "/api/apps/nginx/services",
+	"/api/apps/jobs", "/api/apps/jobs/abc123",
 	"/api/sources", "/api/sources/refresh", "/api/sources/mine",
 	"/api/domains", "/api/domains/example.com", "/api/domains/example.com/certificate",
 	"/api/disks", "/api/disks/recommend",
@@ -204,6 +205,7 @@ func TestNonAdminMayOnlyReachTheirIdentityAndDashboard(t *testing.T) {
 		"/api/shares/apply", "/api/shares/config/samba", "/api/shares/config/nfs",
 		"/api/notifications", "/api/notifications/test",
 		"/api/apps", "/api/apps/nginx", "/api/catalog", "/api/catalog/nginx",
+		"/api/apps/jobs", "/api/apps/jobs/abc123",
 		"/api/sources", "/api/sources/refresh", "/api/sources/mine",
 		"/api/domains", "/api/domains/example.com", "/api/domains/example.com/certificate",
 		"/api/domains/example.com/sso",
