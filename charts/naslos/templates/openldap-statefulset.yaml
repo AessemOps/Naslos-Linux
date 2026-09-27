@@ -1,13 +1,26 @@
+{{- /*
+OpenLDAP directory server (FR-INSTALL). Folded into the umbrella chart from
+openldap/manifests/statefulset.yaml so a declarative install owns it; see
+AGENTS.md "Every fix must be in a fresh install".
+
+The internal directory suffix is fixed (`LDAP_DOMAIN=naslos.local`, i.e.
+`dc=naslos,dc=local`). It is baked into the mdb database on first boot and the
+image's `bootstrap.ldif` hard-codes the same DNs, so it is intentionally NOT
+derived from `.Values.domain` or configurable: changing it would orphan every
+account. The public domain only drives the certificate SAN and Authelia's
+`server_name` (via `openldap.host`).
+*/}}
+{{- if .Values.openldap.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: naslos-openldap
-  namespace: naslos
+  name: {{ .Values.openldap.serviceName | default "naslos-openldap" }}
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: naslos-openldap
     app.kubernetes.io/component: identity
 spec:
-  serviceName: naslos-openldap
+  serviceName: {{ .Values.openldap.serviceName | default "naslos-openldap" }}
   replicas: 1
   selector:
     matchLabels:
@@ -27,16 +40,18 @@ spec:
         fsGroup: 101
       containers:
         - name: openldap
-          image: 192.168.1.2:30095/naslos-openldap:0.1.0-r4
-          imagePullPolicy: IfNotPresent
+          image: "{{ .Values.openldap.image }}"
+          imagePullPolicy: {{ .Values.openldap.imagePullPolicy | default "IfNotPresent" }}
           ports:
             - containerPort: 636
               name: ldaps
           env:
             - name: LDAP_DOMAIN
+              # Fixed on purpose: the image's bootstrap.ldif and the base DN the
+              # API/Authelia use are all dc=naslos,dc=local. Not configurable.
               value: "naslos.local"
             - name: LDAP_ORGANISATION
-              value: "Naslos"
+              value: {{ .Values.openldap.organisation | default "Naslos" | quote }}
             - name: LDAP_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -53,16 +68,7 @@ spec:
               mountPath: /container/service/slapd/assets/certs
               readOnly: true
           resources:
-            requests:
-              cpu: 100m
-              memory: 256Mi
-            limits:
-              cpu: 500m
-              # 512Mi was too tight for first-boot initialization (RSA-4096
-              # TLS cert generation + full schema/module/database slapadd
-              # bootstrap) and caused the container to be OOMKilled before
-              # slapd ever finished starting.
-              memory: 1Gi
+            {{- toYaml (.Values.openldap.resources | default (dict "requests" (dict "cpu" "100m" "memory" "256Mi") "limits" (dict "cpu" "500m" "memory" "1Gi"))) | nindent 12 }}
           livenessProbe:
             tcpSocket:
               port: 636
@@ -86,24 +92,27 @@ spec:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
-        storageClassName: local-path
+        storageClassName: {{ .Values.openldap.storageClassName | default "local-path" }}
         resources:
           requests:
-            storage: 1Gi
+            storage: {{ .Values.openldap.dataSize | default "1Gi" }}
     - metadata:
         name: config
       spec:
         accessModes: ["ReadWriteOnce"]
-        storageClassName: local-path
+        storageClassName: {{ .Values.openldap.storageClassName | default "local-path" }}
         resources:
           requests:
-            storage: 100Mi
+            storage: {{ .Values.openldap.configSize | default "100Mi" }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: naslos-openldap
-  namespace: naslos
+  name: {{ .Values.openldap.serviceName | default "naslos-openldap" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos-openldap
+    app.kubernetes.io/component: identity
 spec:
   type: ClusterIP
   selector:
@@ -112,3 +121,4 @@ spec:
     - port: 636
       targetPort: 636
       name: ldaps
+{{- end }}

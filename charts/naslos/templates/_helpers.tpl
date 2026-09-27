@@ -46,6 +46,23 @@ different namespace from the release namespace for the split to mean anything).
 {{- if $v -}}{{ $v }}{{- else -}}naslos-privileged{{- end -}}
 {{- end -}}
 
+{{/*
+OpenLDAP base DN and service bind DN. The suffix is deliberately independent of
+`.Values.domain` (see openldap-statefulset.yaml): it is baked into the mdb
+database on first boot, so tying it to the public domain would orphan accounts
+on a rename.
+*/}}
+{{- define "naslos.openldapBaseDN" -}}
+{{- $v := get .Values "openldap" | default dict -}}
+{{- index $v "baseDN" | default "dc=naslos,dc=local" -}}
+{{- end -}}
+
+{{- define "naslos.openldapBindDN" -}}
+{{- $v := get .Values "openldap" | default dict -}}
+{{- $bind := index $v "bindDN" | default "" -}}
+{{- if $bind -}}{{ $bind }}{{- else -}}{{ printf "cn=naslos-service,ou=services,%s" (include "naslos.openldapBaseDN" .) }}{{- end -}}
+{{- end -}}
+
 {{- define "naslos.ingressEnabled" -}}
 {{- $ingress := get .Values "ingress" -}}
 {{- if and $ingress (index $ingress "enabled") -}}true{{- else -}}false{{- end -}}
