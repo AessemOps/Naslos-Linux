@@ -463,7 +463,7 @@ Branch `fix/app-base-domain-choice` (PR #35). Plan:
   `domains.spec.ts` 14/14 (the install test needed a longer timeout: a cold
   catalog install is a synchronous image pull).
 
-## App install progress jobs (2026-09-27) — branch, not yet deployed
+## App install progress jobs (2026-09-27) — branch, deployed + live-drilled
 
 Branch `feature/app-install-progress`. Plan:
 `.kilo/plans/1790503400805-app-install-progress-jobs.md`.
@@ -487,15 +487,21 @@ Branch `feature/app-install-progress`. Plan:
   `+layout.svelte`; install/configure/uninstall components enqueue, track and
   close immediately.
 - Docs: `docs/spec.md` FR-APP-18, `docs/api.md`, `docs/app-catalog.md`.
-- Not deployed or live-drilled yet.
+- **Deployed at revision 39** (`naslos-api 0.1.0-r33`, `naslos-ui 0.1.0-r24`)
+  and live-drilled: an install through the UI closed the modal immediately, the
+  drawer showed `preparing`/`installing`/`finalizing`, the success toast fired
+  and the app landed `running` in the Installed tab; the async uninstall job
+  reached `succeeded` and removed the release, route and record. Playwright
+  `apps.spec.ts` 8/8 (the install test now polls the 202 job).
 
 ## Deployed right now (2026-09-27)
 
-On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 38**:
-`naslos-api` **`0.1.0-r32`** (exposure base-domain choice, runtime SSO
-promotion + per-domain Authelia portals, declarative DNS providers + Dynamic
-DNS, OVH webhook solver), `naslos-ui` **`0.1.0-r23`** (domain-select exposure
-form, Domains-page SSO toggle, cert badge, sign-out), `naslos-agent`
+On `192.168.1.117`, chart `naslos-0.1.0`, **helm revision 39**:
+`naslos-api` **`0.1.0-r33`** (async app lifecycle jobs with progress, FR-APP-18;
+exposure base-domain choice, runtime SSO promotion + per-domain Authelia portals,
+declarative DNS providers + Dynamic DNS, OVH webhook solver), `naslos-ui`
+**`0.1.0-r24`** (job drawer + completion toasts; domain-select exposure form,
+Domains-page SSO toggle, cert badge, sign-out), `naslos-agent`
 **`0.1.0-r8`**, `naslos-samba`/`naslos-nfs`/`naslos-terminal` **`0.1.0-r3`**,
 OpenLDAP per `values.yaml`. **Authelia is a StatefulSet** (`naslos-authelia-0`)
 and the `naslos-authelia-sso` fragments ConfigMap exists (API-owned,
