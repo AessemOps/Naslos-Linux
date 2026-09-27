@@ -53,11 +53,11 @@ It also lists the GitHub Actions used by the CI/release workflows.
 | Component | Version | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
 | github.com/cosi-project/runtime | v1.16.3 | MPL-2.0 | https://github.com/cosi-project/runtime |
-| github.com/go-git/go-git/v5 | v5.16.3 | Apache-2.0 | https://github.com/go-git/go-git |
+| github.com/go-git/go-git/v5 | v5.19.2 | Apache-2.0 | https://github.com/go-git/go-git |
 | github.com/go-ldap/ldap/v3 | v3.4.8 | MIT | https://github.com/go-ldap/ldap |
 | github.com/gorilla/websocket | v1.5.4-0.20250319132907-e064f32e3674 | BSD-2-Clause | https://github.com/gorilla/websocket |
 | github.com/siderolabs/talos/pkg/machinery | v1.14.0 | MPL-2.0 | https://github.com/siderolabs/talos |
-| golang.org/x/crypto | v0.55.0 | BSD-3-Clause | https://github.com/golang/crypto |
+| golang.org/x/crypto | v0.57.0 | BSD-3-Clause | https://github.com/golang/crypto |
 | gopkg.in/yaml.v3 | v3.0.1 | MIT AND Apache-2.0 | https://github.com/go-yaml/yaml |
 | helm.sh/helm/v3 | v3.18.5 | Apache-2.0 | https://github.com/helm/helm |
 | k8s.io/api | v0.33.3 | Apache-2.0 | https://github.com/kubernetes/api |
