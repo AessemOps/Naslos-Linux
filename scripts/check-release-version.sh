@@ -15,8 +15,9 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 version="${1:?usage: check-release-version.sh <X.Y.Z>}"
 
 chart="$root/charts/naslos/Chart.yaml"
-chart_version=$(awk '/^version:/ {print $2; exit}' "$chart")
-chart_app_version=$(awk '/^appVersion:/ {gsub(/"/, "", $2); print $2; exit}' "$chart")
+# Strip either YAML quote style from both fields.
+chart_version=$(awk -v q="'" '/^version:/ {gsub(/"/, "", $2); gsub(q, "", $2); print $2; exit}' "$chart")
+chart_app_version=$(awk -v q="'" '/^appVersion:/ {gsub(/"/, "", $2); gsub(q, "", $2); print $2; exit}' "$chart")
 ui_version=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$root/ui/package.json")
 
 fails=0

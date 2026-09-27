@@ -6,7 +6,8 @@
 # dispatched (`naslos-release`). One `vX.Y.Z` tag therefore produces images and a
 # pack that references exactly those images, atomically. Never push a throwaway
 # strict-semver tag: the installer resolves the newest `vX.Y.Z` and would pick it
-# up. Use `workflow_dispatch` with `publish=false` for a dry run.
+# up. Use `workflow_dispatch` with `publish=false` for a dry run (it pushes only
+# the `sha-<commit>` tag, never the mutable `:<version>` tag).
 #
 # Prerequisites (operator, documented in docs/deployment.md):
 #   - `INSTALLER_DISPATCH_TOKEN`: fine-grained PAT with `Contents: read and
@@ -14,7 +15,12 @@
 #     dispatch step is skipped, the pack still publishes.
 #   - The 8 GHCR packages made public (one-time, per package): the provisioned
 #     node has no imagePullSecret and pulls anonymously. `GITHUB_TOKEN` +
-#     `packages: write` can publish but cannot change visibility.
+#     `packages: write` can publish but cannot change visibility. A `publish=true`
+#     release fails if they are not anonymously pullable.
+#
+# If a `vX.Y.Z` run fails before attaching the pack, delete the tag before
+# retrying: the installer resolves the newest strict-semver tag and would
+# otherwise select a packless tag.
 #
 # Third-party actions are pinned to immutable commit SHAs (a tag can be moved).
 name: release
@@ -36,10 +42,24 @@ on:
         default: false
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  # Shared with ci.yml (`.github/image-matrix.json`): the two workflows cannot
+  # drift on which images exist or how they are built.
+  image-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.read.outputs.images }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: read
+        run: echo "images=$(jq -c . .github/image-matrix.json)" >> "$GITHUB_OUTPUT"
+
   guard:
     runs-on: ubuntu-latest
     outputs:
@@ -75,37 +95,15 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
 
   images:
-    needs: guard
+    needs: [guard, image-matrix]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: api
-            context: .
-            file: api/Dockerfile
-          - name: agent
-            context: .
-            file: agent/Dockerfile
-          - name: ui
-            context: .
-            file: ui/Dockerfile
-          - name: samba
-            context: samba/image
-            file: samba/image/Dockerfile
-          - name: nfs
-            context: nfs/image
-            file: nfs/image/Dockerfile
-          - name: terminal
-            context: terminal/image
-            file: terminal/image/Dockerfile
-          - name: openldap
-            context: openldap/image
-            file: openldap/image/Dockerfile
-          - name: buddy-receiver
-            context: .
-            file: api/Dockerfile.receiver
-            build-args: VERSION=${{ needs.guard.outputs.version }}
+        include: ${{ fromJSON(needs.image-matrix.outputs.images) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -117,22 +115,42 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute the image tags
+        id: tags
+        env:
+          COMPONENT: ${{ matrix.name }}
+          PUBLISH: ${{ needs.guard.outputs.publish }}
+          VERSION: ${{ needs.guard.outputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/aessemops/naslos-${COMPONENT}"
+          {
+            echo "tags<<EOF"
+            # Every run pushes an immutable commit tag; only a publish run also
+            # moves the mutable `:<version>` tag, so a dry run cannot overwrite
+            # an already-released version.
+            echo "${image}:sha-${SHA}"
+            if [ "$PUBLISH" = "true" ]; then
+              echo "${image}:${VERSION}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push ${{ matrix.name }}
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
-          build-args: ${{ matrix.build-args }}
+          build-args: ${{ matrix.name == 'buddy-receiver' && format('VERSION={0}', needs.guard.outputs.version) || '' }}
           platforms: linux/amd64
           push: true
           provenance: true
           sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          tags: |
-            ghcr.io/aessemops/naslos-${{ matrix.name }}:${{ needs.guard.outputs.version }}
-            ghcr.io/aessemops/naslos-${{ matrix.name }}:sha-${{ github.sha }}
+          tags: ${{ steps.tags.outputs.tags }}
 
       - name: Record the digest
         run: |
@@ -151,8 +169,9 @@ jobs:
   pack:
     needs: [guard, images]
     runs-on: ubuntu-latest
-    env:
-      INSTALLER_DISPATCH_TOKEN: ${{ secrets.INSTALLER_DISPATCH_TOKEN }}
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -195,6 +214,25 @@ jobs:
             echo "resolved $ref"
           done
 
+      # FR-INSTALL-13: the provisioned node pulls anonymously, so a published
+      # release must be anonymously pullable. Check before the pack is built and
+      # attached, so a private package fails the release instead of the install.
+      - name: Verify anonymous pullability (release only)
+        if: needs.guard.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io || true
+          python3 -c 'import json; [print(v) for v in json.load(open("dist/image-digests.json")).values()]' |
+          while read -r ref; do
+            docker buildx imagetools inspect "$ref" >/dev/null
+            echo "anonymous pull ok: $ref"
+          done
+
+      - name: Note the anonymous-pull requirement (dry run)
+        if: needs.guard.outputs.publish != 'true'
+        run: |
+          echo "dry run: skipping the anonymous pull check; make the GHCR packages public before a real release"
+
       - name: Build the digest-pinned pack
         run: |
           make install-pack \
@@ -227,18 +265,24 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.guard.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: |
             dist/naslos-install-pack-*.tar.gz
             dist/naslos-install-pack-*.tar.gz.sha256
           fail_on_unmatched_files: true
 
-      # Rebuild the installer against this pack. Skipped until the PAT secret is
-      # configured; the pack release itself is unaffected.
+      # Rebuild the installer against this pack. The PAT is scoped to this step
+      # only; an absent secret skips the dispatch without failing the release.
       - name: Dispatch the installer rebuild
-        if: needs.guard.outputs.publish == 'true' && env.INSTALLER_DISPATCH_TOKEN != ''
+        if: needs.guard.outputs.publish == 'true'
         env:
-          GH_TOKEN: ${{ env.INSTALLER_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ secrets.INSTALLER_DISPATCH_TOKEN }}
         run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "INSTALLER_DISPATCH_TOKEN is not configured; skipping the installer dispatch."
+            exit 0
+          fi
           gh api repos/AessemOps/Naslos-Installer/dispatches \
             -f event_type=naslos-release \
             -f client_payload[tag]="${{ needs.guard.outputs.tag }}" \
