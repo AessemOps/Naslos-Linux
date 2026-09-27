@@ -120,6 +120,7 @@ jobs:
         env:
           COMPONENT: ${{ matrix.name }}
           PUBLISH: ${{ needs.guard.outputs.publish }}
+          EVENT_NAME: ${{ github.event_name }}
           VERSION: ${{ needs.guard.outputs.version }}
           SHA: ${{ github.sha }}
         run: |
@@ -127,11 +128,12 @@ jobs:
           image="ghcr.io/aessemops/naslos-${COMPONENT}"
           {
             echo "tags<<EOF"
-            # Every run pushes an immutable commit tag; only a publish run also
-            # moves the mutable `:<version>` tag, so a dry run cannot overwrite
-            # an already-released version.
+            # Every run pushes an immutable commit tag; only a real tag push
+            # (publish=true on a `push` event) moves the mutable `:<version>`
+            # tag, so neither a dry run nor a re-dispatch can overwrite a
+            # released version.
             echo "${image}:sha-${SHA}"
-            if [ "$PUBLISH" = "true" ]; then
+            if [ "$PUBLISH" = "true" ] && [ "$EVENT_NAME" = "push" ]; then
               echo "${image}:${VERSION}"
             fi
             echo "EOF"
@@ -268,18 +270,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.guard.outputs.tag }}
+          PACK: naslos-install-pack-${{ needs.guard.outputs.version }}.tar.gz
         run: |
           set -euo pipefail
-          # The repo has immutable releases, so never move an existing release's
-          # target. Create the release (and its tag) only when missing; a re-run
-          # just replaces the pack assets.
+          # The repo has immutable releases: never move an existing release's
+          # target, and never try to replace an existing asset. Create the
+          # release (and its tag) only when missing; a re-run just keeps the
+          # already-published pack and continues to the dispatch.
           if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" --title "$TAG" --generate-notes
           fi
-          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber \
-            dist/naslos-install-pack-*.tar.gz \
-            dist/naslos-install-pack-*.tar.gz.sha256
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+               --jq '.assets[].name' | grep -qx "$PACK"; then
+            echo "pack already attached to $TAG (immutable release); leaving it in place"
+          else
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" \
+              dist/naslos-install-pack-*.tar.gz \
+              dist/naslos-install-pack-*.tar.gz.sha256
+          fi
 
       # Rebuild the installer against this pack. The PAT is scoped to this step
       # only; an absent secret skips the dispatch without failing the release.
