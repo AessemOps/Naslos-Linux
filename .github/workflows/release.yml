@@ -265,14 +265,21 @@ jobs:
 
       - name: Attach the pack to the release
         if: needs.guard.outputs.publish == 'true'
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          tag_name: ${{ needs.guard.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          files: |
-            dist/naslos-install-pack-*.tar.gz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.guard.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The repo has immutable releases, so never move an existing release's
+          # target. Create the release (and its tag) only when missing; a re-run
+          # just replaces the pack assets.
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber \
+            dist/naslos-install-pack-*.tar.gz \
             dist/naslos-install-pack-*.tar.gz.sha256
-          fail_on_unmatched_files: true
 
       # Rebuild the installer against this pack. The PAT is scoped to this step
       # only; an absent secret skips the dispatch without failing the release.
