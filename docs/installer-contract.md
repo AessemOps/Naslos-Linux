@@ -12,10 +12,18 @@ versioned **install pack** plus the interfaces below.
 ## 1. Install pack
 
 Built by `make install-pack` (`scripts/build-install-pack.sh`), published by the
-`install-pack` GitHub Actions workflow on a `v*` tag, and pinned to a release
-tag by the installer (`scripts/fetch-install-pack.sh` downloads it, verifies the
-tarball sha256, and extracts it into a gitignored `installpack/` that is
-`go:embed`-ed).
+`install-pack` GitHub Actions workflow on a semantic **`vX.Y.Z`** tag, and
+embedded by the installer: `scripts/fetch-install-pack.sh` resolves the **newest
+`vX.Y.Z` tag** of this repo, downloads the tarball, verifies its sha256 (and the
+loader then verifies every member checksum), and extracts it into a gitignored
+`installpack/` that is `go:embed`-ed. The Makefile derives the installer's
+`ExpectedTalosVersion`/`ExpectedSchematicID` gate from that pack's
+`metadata.json`. Non-semver tags (e.g. a moving `latest`) are ignored.
+
+After attaching the pack, the `install-pack` workflow sends a
+`repository_dispatch` (`naslos-release`) to `AessemOps/Naslos-Installer`, so
+publishing a pack rebuilds and republishes the installer against it (requires
+the `INSTALLER_DISPATCH_TOKEN` secret in this repo).
 
 `naslos-install-pack-<version>.tar.gz`:
 
