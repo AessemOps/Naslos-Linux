@@ -50,8 +50,9 @@ for f in "$CHART_YAML" "$TEMPLATE" "$CILIUM" "$LOCAL_PATH" "$SCHEMATIC"; do
     [ -f "$f" ] || { echo "build-install-pack: missing $f" >&2; exit 1; }
 done
 
-chart_version=$(awk '/^version:/ {print $2; exit}' "$CHART_YAML")
-chart_app_version=$(awk '/^appVersion:/ {gsub(/"/,"",$2); print $2; exit}' "$CHART_YAML")
+# Strip either YAML quote style from both fields.
+chart_version=$(awk -v q="'" '/^version:/ {gsub(/"/, "", $2); gsub(q, "", $2); print $2; exit}' "$CHART_YAML")
+chart_app_version=$(awk -v q="'" '/^appVersion:/ {gsub(/"/, "", $2); gsub(q, "", $2); print $2; exit}' "$CHART_YAML")
 VERSION="${PACK_VERSION:-$chart_version}"
 
 # Optional digest map (FR-INSTALL-13). Supplying one is fail-closed: the pack

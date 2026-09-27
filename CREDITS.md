@@ -134,8 +134,8 @@ used instead.
 | docker/setup-buildx-action | v4.4.1 | Apache-2.0 | https://github.com/docker/setup-buildx-action |
 | docker/build-push-action | v7.4.0 | Apache-2.0 | https://github.com/docker/build-push-action |
 | softprops/action-gh-release | v2 | MIT | https://github.com/softprops/action-gh-release |
-| govulncheck | latest (CI) | BSD-3-Clause | https://github.com/golang/vuln |
-| gosec | latest (CI) | Apache-2.0 | https://github.com/securego/gosec |
+| govulncheck | v1.8.0 (CI) | BSD-3-Clause | https://github.com/golang/vuln |
+| gosec | v2.29.0 (CI) | Apache-2.0 | https://github.com/securego/gosec |
 | gitleaks (CLI) | v8.30.1 | MIT | https://github.com/gitleaks/gitleaks |
 
 ## Ported & adapted code

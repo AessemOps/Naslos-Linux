@@ -24,6 +24,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Single source of truth for the 8 image build contexts. release.yml reads the
+  # same file, so the CI and release matrices cannot drift.
+  image-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.read.outputs.images }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: read
+        run: echo "images=$(jq -c . .github/image-matrix.json)" >> "$GITHUB_OUTPUT"
+
   audit:
     runs-on: ubuntu-latest
     steps:
@@ -57,9 +68,10 @@ jobs:
 
       - name: Install govulncheck + gosec
         # Without these the audit's security gates are skipped, not failed.
+        # Pinned like every action: `@latest` would execute a floating release.
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Gate sweep
@@ -94,36 +106,12 @@ jobs:
         run: gitleaks git . --no-banner --redact
 
   images-build:
+    needs: image-matrix
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: api
-            context: .
-            file: api/Dockerfile
-          - name: agent
-            context: .
-            file: agent/Dockerfile
-          - name: ui
-            context: .
-            file: ui/Dockerfile
-          - name: samba
-            context: samba/image
-            file: samba/image/Dockerfile
-          - name: nfs
-            context: nfs/image
-            file: nfs/image/Dockerfile
-          - name: terminal
-            context: terminal/image
-            file: terminal/image/Dockerfile
-          - name: openldap
-            context: openldap/image
-            file: openldap/image/Dockerfile
-          - name: buddy-receiver
-            context: .
-            file: api/Dockerfile.receiver
-            build-args: VERSION=ci
+        include: ${{ fromJSON(needs.image-matrix.outputs.images) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -134,7 +122,7 @@ jobs:
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
-          build-args: ${{ matrix.build-args }}
+          build-args: ${{ matrix.name == 'buddy-receiver' && 'VERSION=ci' || '' }}
           platforms: linux/amd64
           push: false
           cache-from: type=gha

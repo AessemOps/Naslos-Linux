@@ -104,6 +104,11 @@ via `storageState`; a target that does not challenge is an error.
 - Release prerequisites (operator, documented in `docs/deployment.md`): the
   `INSTALLER_DISPATCH_TOKEN` secret (the dispatch is skipped without it) and the
   GHCR packages made **public** (the provisioned node has no `imagePullSecret`).
+- `.github/image-matrix.json` is the single source for the 8 image build
+  contexts: both workflows read it, so add/remove an image there. A
+  `publish=false` dry run pushes only `:sha-<commit>`, never the mutable
+  `:<version>` tag; a failed `vX.Y.Z` run leaves a packless tag, so delete the
+  tag before retrying.
 - `scripts/audit.sh` is the single local gate before pushing; missing tools are
   skipped, so install `govulncheck`/`gosec`/`gitleaks` for a complete run.
 

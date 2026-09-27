@@ -90,15 +90,20 @@ anonymously:
 - **Never push a throwaway `vX.Y.Z` tag**: `Naslos-Installer` resolves the
   newest strict-semver tag and would treat it as the release. Test with
   Actions → `release` → Run workflow (`version=0.1.0`, `publish=false`), which
-  builds/pushes images and uploads the digest-pinned pack as an artifact without
-  touching the release or dispatching the installer.
+  pushes only the immutable `:sha-<commit>` tag, builds the digest-pinned pack
+  and uploads it as an artifact without touching the release, the mutable
+  `:<version>` tag, or the installer dispatch. If a `vX.Y.Z` run fails before
+  attaching the pack, delete the tag before retrying so the installer cannot
+  resolve a packless tag.
 - **Operator prerequisites** (not code): the `INSTALLER_DISPATCH_TOKEN` secret
   (fine-grained PAT with `Contents: read and write` on `AessemOps/Naslos-Installer`;
   without it the dispatch is skipped), and the 8 GHCR packages made **public**
   (one-time, per package → Settings → visibility). `GITHUB_TOKEN` with
-  `packages: write` can publish but cannot change package visibility. The image
-  *tags* also live in GHCR as `naslos-<component>:<version>` and
-  `:sha-<commit>`; the pack pins the immutable digests.
+  `packages: write` can publish but cannot change package visibility, so a
+  `publish=true` release verifies anonymous pullability and fails if a package
+  is still private. The image *tags* also live in GHCR as
+  `naslos-<component>:<version>` and `:sha-<commit>`; the pack pins the immutable
+  digests.
 
 ## Make targets
 
