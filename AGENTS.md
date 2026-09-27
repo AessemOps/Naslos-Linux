@@ -40,6 +40,10 @@ cd ui && npm run check && npm run build
 
 # Chart
 helm lint charts/naslos -f charts/naslos/values.yaml -f charts/naslos/values-vm.yaml
+helm lint charts/naslos -f charts/naslos/values.yaml -f charts/naslos/values-installer.yaml
+
+# Install pack for the desktop installer (FR-INSTALL; docs/installer-contract.md)
+make install-pack
 
 # Full sweep (go + UI + other checks)
 sh scripts/audit.sh
@@ -70,6 +74,11 @@ via `storageState`; a target that does not challenge is an error.
 - Write a plan in `.kilo/plans/` for any non-trivial change and commit it.
 - Only commit/push/create PRs when the work is complete and verified. Never
   force-push, skip hooks, or amend a failed commit — add a new commit.
+- **Cross-repo installer order**: the desktop installer lives in
+  `AessemOps/Naslos-Installer` and pins a versioned install pack. Land the
+  Naslos-Linux pack + `docs/installer-contract.md` changes first (release a
+  pack), then the installer work that pins them. A change to any interface in
+  the contract doc must update the installer in the same release.
 
 ## Conventions
 
@@ -85,7 +94,8 @@ via `storageState`; a target that does not challenge is an error.
   record it where the next session will read it (handoff/plan).
 - **Every fix must be in a fresh install.** A fix belongs in the declarative
   install path — the `Makefile` (targets/prerequisites), `charts/naslos/`
-  (`values.yaml` and the VM overlay `values-vm.yaml`), or
+  (`values.yaml`, the VM overlay `values-vm.yaml` and the installer overlay
+  `values-installer.yaml`), or
   `scripts/deploy-vm.sh` — and in the images built at install time, never only
   in the live cluster. A change applied with a one-off `kubectl`, a live `helm
   --set`, or a manual `helm upgrade` is **incomplete**: wire it into the
@@ -98,7 +108,8 @@ via `storageState`; a target that does not challenge is an error.
   `npm run check`, `helm lint`, the Playwright suite for UI/API changes, and a
   live drill for anything touching the node (shares, LDAP, ZFS, backups).
 - **Docs rule**: `AI_Handoff.md` and the per-topic `docs/` (`spec.md`, `api.md`,
-  `deployment.md`, `operations.md`, …) are always kept up to date. A change that
+  `deployment.md`, `operations.md`, `installer-contract.md`, …) are always kept
+  up to date. A change that
   alters behavior, an endpoint, a config key or env var, the chart/install path,
   or the deployed state updates every affected doc **in the same change** — a doc
   that no longer matches the code makes the change incomplete. `AI_Handoff.md`
