@@ -78,9 +78,34 @@ via `storageState`; a target that does not challenge is an error.
   `AessemOps/Naslos-Installer` and embeds the newest semantic `vX.Y.Z` install
   pack. Land the Naslos-Linux pack + `docs/installer-contract.md` changes first
   (release a `vX.Y.Z` pack), then the installer work that consumes them; the
-  `install-pack` workflow dispatches the installer to rebuild against the new
+  `release` workflow dispatches the installer to rebuild against the new
   pack. A change to any interface in the contract doc must update the installer
   in the same release.
+- **Never push a throwaway strict-semver tag.** `Naslos-Installer` resolves the
+  newest `v^[0-9]+\.[0-9]+\.[0-9]+$` tag, so any `vX.Y.Z` tag (even a scratch
+  one) becomes the release the installer picks up. Test via Actions → `release`
+  → Run workflow with `publish=false` (dry run).
+
+## Continuous integration & releases
+
+- `.github/workflows/ci.yml` — on `pull_request`, `push` to `master` and
+  `workflow_dispatch`: `audit` (the full `bash scripts/audit.sh` sweep with
+  `govulncheck`/`gosec` installed so the security gates run, `helm`, PyYAML and
+  the UI deps), `gitleaks` (the MIT CLI, working tree + history), `images-build`
+  (no-push Docker build of all 8 images) and `pack` (`make install-pack` +
+  checksum).
+- `.github/workflows/release.yml` — on a `vX.Y.Z` tag: `guard` (the tag must
+  equal `Chart.yaml` `version`/`appVersion` and `ui/package.json` `version` via
+  `scripts/check-release-version.sh`) → build + push all 8 images to
+  `ghcr.io/aessemops/naslos-*` (linux/amd64) → build the install pack with every
+  chart image pinned by digest (FR-INSTALL-13) → attach the pack to the release
+  → dispatch `Naslos-Installer`. Bump the three version fields in the release
+  commit or `guard` fails.
+- Release prerequisites (operator, documented in `docs/deployment.md`): the
+  `INSTALLER_DISPATCH_TOKEN` secret (the dispatch is skipped without it) and the
+  GHCR packages made **public** (the provisioned node has no `imagePullSecret`).
+- `scripts/audit.sh` is the single local gate before pushing; missing tools are
+  skipped, so install `govulncheck`/`gosec`/`gitleaks` for a complete run.
 
 ## Conventions
 

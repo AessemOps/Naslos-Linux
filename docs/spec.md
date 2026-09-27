@@ -681,6 +681,14 @@ implemented here).
 - **FR-INSTALL-12** — The engine MUST stream step progress as newline-delimited
   JSON on stdout, ending in a `done` or `error` event; the shell MUST render a
   progress bar and MUST be able to cancel by killing the child. **[OPEN]**
+- **FR-INSTALL-13** — a released pack (`vX.Y.Z`) MUST pin each of the 7 chart
+  images (`api`, `agent`, `ui`, `samba`, `nfs`, `terminal`, `openldap`) by digest
+  to the public registry (`ghcr.io/aessemops/naslos-*`), and the tag workflow
+  MUST publish those images before it builds the pack, so a pack never
+  references an unpublished image. The digest MUST win over the tag (VER-2), and
+  the pack build MUST fail closed when a chart image has no digest. *(audit
+  `check_image_digest_render` / `check_pack_digest_pinning`; workflow
+  `.github/workflows/release.yml`)*
 
 ---
 
@@ -924,9 +932,13 @@ LDAP resilience (FR-IDN-11/12) is covered by
 
 Installer provisioning (FR-INSTALL) is verified here by the install-pack build
 and checksum gate (`scripts/audit.sh` → `check_install_pack`), `helm lint` of
-`values-installer.yaml`, and the machine-config template's
-`render-installer-template.sh --check` tripwire against `cilium.yaml`. The
-engine-side steps are verified end to end from `Naslos-Installer`: boot the ISO
+`values-installer.yaml`, the machine-config template's
+`render-installer-template.sh --check` tripwire against `cilium.yaml`, and the
+released-pack digest pinning (FR-INSTALL-13: `check_image_digest_render` proves
+the chart renders `repository@sha256:…`, `check_pack_digest_pinning` proves the
+pack build pins all 7 images, records them in `metadata.json.images`, and fails
+closed on a missing image). The engine-side steps are verified end to end from
+`Naslos-Installer`: boot the ISO
 from the pack's URL, run `naslos-install` headless, then check node Ready, pods
 Running, admin login at `https://<domain>/authelia` with an installer-displayed
 TOTP code, SMB login with the same password, and a recovery ZIP that restores a

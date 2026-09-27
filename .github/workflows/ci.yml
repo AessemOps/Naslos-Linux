@@ -1,0 +1,152 @@
+# Continuous integration for Naslos-Linux.
+#
+# Every PR and push to master runs the full gate sweep (`scripts/audit.sh`, with
+# the security tools installed so they do not silently skip), a dedicated secret
+# scan, a Docker build of every image (no push) and a local install-pack build.
+# The release path (images -> digest-pinned pack -> release -> installer
+# dispatch) is `.github/workflows/release.yml`.
+#
+# Third-party actions are pinned to immutable commit SHAs (a tag can be moved);
+# the repo convention is `owner/action@<sha> # vX`.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: api/go.mod
+          cache: true
+          cache-dependency-path: |
+            api/go.sum
+            agent/go.sum
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UI dependencies
+        # The committed lock is resolved here (glibc); ui/Dockerfile resolves
+        # in-image for the musl build (npm/cli#4828).
+        run: cd ui && npm install --no-audit --no-fund
+
+      - name: Install PyYAML (audit.sh parses rendered manifests)
+        run: python3 -m pip install pyyaml
+
+      - name: Install govulncheck + gosec
+        # Without these the audit's security gates are skipped, not failed.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Gate sweep
+        run: bash scripts/audit.sh
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: api/go.mod
+
+      - name: Install gitleaks
+        # The CLI (MIT); the gitleaks-action needs a commercial license for an
+        # organization account. Pinned to a release tag.
+        run: |
+          go install github.com/gitleaks/gitleaks/v8@v8.30.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Scan the working tree
+        run: gitleaks dir . --no-banner --redact
+
+      - name: Scan git history
+        run: gitleaks git . --no-banner --redact
+
+  images-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            context: .
+            file: api/Dockerfile
+          - name: agent
+            context: .
+            file: agent/Dockerfile
+          - name: ui
+            context: .
+            file: ui/Dockerfile
+          - name: samba
+            context: samba/image
+            file: samba/image/Dockerfile
+          - name: nfs
+            context: nfs/image
+            file: nfs/image/Dockerfile
+          - name: terminal
+            context: terminal/image
+            file: terminal/image/Dockerfile
+          - name: openldap
+            context: openldap/image
+            file: openldap/image/Dockerfile
+          - name: buddy-receiver
+            context: .
+            file: api/Dockerfile.receiver
+            build-args: VERSION=ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build ${{ matrix.name }} (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          build-args: ${{ matrix.build-args }}
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the install pack (tag placeholders)
+        run: make install-pack
+
+      - name: Verify the pack checksum
+        run: cd dist && sha256sum -c naslos-install-pack-*.tar.gz.sha256

@@ -71,6 +71,35 @@ next upgrade too** — with `--reuse-values` the stored digest is kept, so switc
 back to tags needs an explicit `--set api.image.digest=` (empty). `openldap.image` is a full image
 reference, so pin it there directly (`repo@sha256:…`).
 
+## GHCR images + release tags
+
+The VM path above uses the private registry `192.168.1.2:30095`. A **release**
+publishes the same images publicly so the desktop installer's node can pull them
+anonymously:
+
+- `.github/workflows/ci.yml` runs on every PR/push to `master`: the full
+  `scripts/audit.sh` sweep (with `govulncheck`/`gosec` installed so the security
+  gates do not skip), a gitleaks scan, a no-push Docker build of all 8 images,
+  and a local install-pack build.
+- `.github/workflows/release.yml` runs on a strict-semver **`vX.Y.Z`** tag:
+  `guard` (the tag must equal `charts/naslos/Chart.yaml` `version`/`appVersion`
+  and `ui/package.json` `version`) → build + push all 8 images to
+  `ghcr.io/aessemops/naslos-*` (linux/amd64) → build the install pack with every
+  chart image **pinned by digest** (FR-INSTALL-13) → attach the pack to the
+  GitHub release → dispatch `AessemOps/Naslos-Installer` (`naslos-release`).
+- **Never push a throwaway `vX.Y.Z` tag**: `Naslos-Installer` resolves the
+  newest strict-semver tag and would treat it as the release. Test with
+  Actions → `release` → Run workflow (`version=0.1.0`, `publish=false`), which
+  builds/pushes images and uploads the digest-pinned pack as an artifact without
+  touching the release or dispatching the installer.
+- **Operator prerequisites** (not code): the `INSTALLER_DISPATCH_TOKEN` secret
+  (fine-grained PAT with `Contents: read and write` on `AessemOps/Naslos-Installer`;
+  without it the dispatch is skipped), and the 8 GHCR packages made **public**
+  (one-time, per package → Settings → visibility). `GITHUB_TOKEN` with
+  `packages: write` can publish but cannot change package visibility. The image
+  *tags* also live in GHCR as `naslos-<component>:<version>` and
+  `:sha-<commit>`; the pack pins the immutable digests.
+
 ## Make targets
 
 | Target | What it does |
@@ -487,16 +516,26 @@ The pack bundles the umbrella chart (with vendored subcharts),
 `values-installer.yaml`, the parameterised machine-config template, Cilium, the
 pinned local-path manifest and the schematic, plus a `metadata.json` that pins
 `talosVersion`, `schematicId`, the amd64 ISO URL and a sha256 per member. The
-`install-pack` GitHub Actions workflow attaches it, and the checksum file, to a
+`release` GitHub Actions workflow attaches it, and the checksum file, to a
 semantic `vX.Y.Z` release, then dispatches `AessemOps/Naslos-Installer` so the
 installer rebuilds against it. The installer resolves the **newest `vX.Y.Z`
 tag** (it ignores non-semver tags such as `latest`) and derives its Talos /
 schematic gate from the pack's `metadata.json`.
 
+A **released** pack also pins each chart image by digest to
+`ghcr.io/aessemops/naslos-*` (FR-INSTALL-13): the tag workflow publishes the
+images first, then `scripts/pin-installer-values.py` rewrites the packed
+`values-installer.yaml` and `metadata.json.images` records the exact
+references. A digest wins over a tag (VER-2), and the pack build fails closed if
+any of the 7 chart images is missing from the digest map. A local
+`make install-pack` has no digest map and keeps the tag placeholders. See
+"GHCR images + release tags" above.
+
 `values-installer.yaml` is the installer profile: it parameterises the image
 repository base and **must not** reference the private VM registry. The engine
 overrides `domain`, `sso.domains`, `shares.discovery.name`, `openldap.host` and
-the `networkPolicy.*` CIDRs at install time.
+the `networkPolicy.*` CIDRs at install time; it must **not** override a
+digest-pinned image reference.
 
 ## Uninstall
 
