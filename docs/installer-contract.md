@@ -171,12 +171,25 @@ killing the child. One object per line, e.g.:
 
 ```json
 {"step":"helm","status":"running","pct":55,"msg":"Installing chart"}
-{"step":"done","status":"ok","pct":100,"msg":"https://naslos.local/authelia"}
+{"step":"totp","status":"running","pct":94,"msg":"Scan this code","data":{"otpauth":"otpauth://totp/...","secret":"BASE32"}}
+{"step":"done","status":"ok","pct":100,"msg":"https://naslos.local/authelia","data":{"loginUrl":"https://naslos.local/authelia"}}
 {"error":{"step":"bootstrap","msg":"...","output":"..."}}
 ```
 
 `step` identifiers, `status` and the terminal `done`/`error` shape are the
 stable part; `msg` is human text.
+
+The optional `data` object on a step event carries the machine-readable values
+the shell must not have to parse out of `msg`:
+
+| Step | `data` keys |
+| --- | --- |
+| `totp` | `otpauth` (the full `otpauth://` URI), `secret` (base32) |
+| `archive` | `path` (the recovery ZIP path) |
+| `done` | `loginUrl` (the Authelia portal URL) |
+
+The shell falls back to scanning `msg` when `data` is absent, so an older engine
+still drives the wizard.
 
 ## 6. ISO
 
