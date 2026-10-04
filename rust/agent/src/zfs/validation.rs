@@ -11,14 +11,6 @@ pub enum ZfsError {
 }
 
 impl ZfsError {
-    pub fn invalid(msg: impl Into<String>) -> Self {
-        ZfsError::Validation(msg.into())
-    }
-
-    pub fn other(msg: impl Into<String>) -> Self {
-        ZfsError::Other(msg.into())
-    }
-
     pub fn is_validation(&self) -> bool {
         matches!(self, ZfsError::Validation(_))
     }
@@ -31,13 +23,5 @@ pub type ZfsResult<T> = Result<T, ZfsError>;
 macro_rules! invalid {
     ($($arg:tt)*) => {
         $crate::zfs::validation::ZfsError::Validation(format!($($arg)*))
-    };
-}
-
-/// `fmt.Errorf(...)` equivalent for node-side failures.
-#[macro_export]
-macro_rules! other_err {
-    ($($arg:tt)*) => {
-        $crate::zfs::validation::ZfsError::Other(format!($($arg)*))
     };
 }

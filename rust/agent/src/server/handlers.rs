@@ -164,7 +164,12 @@ pub async fn pool_devices_get(
         return write_error(StatusCode::BAD_REQUEST, e.to_string());
     }
     match zfs.free_disks().await {
-        Ok(disks) => json_response(StatusCode::OK, &json!({ "pool": pool, "disks": disks })),
+        // Go marshalled a nil slice as `null`; an empty list must serialize the
+        // same way, so wrap it in an Option.
+        Ok(disks) => {
+            let disks = if disks.is_empty() { None } else { Some(disks) };
+            json_response(StatusCode::OK, &json!({ "pool": pool, "disks": disks }))
+        }
         Err(e) => write_client_error(&e),
     }
 }
@@ -239,6 +244,12 @@ pub async fn datasets_get(
     }
 }
 
+/// `/api/v1/datasets/` (empty pool segment): Go's prefix mux matched it and
+/// returned 400 `pool name required` before any ZFS-availability check.
+pub async fn datasets_get_empty() -> Response {
+    write_error(StatusCode::BAD_REQUEST, "pool name required")
+}
+
 #[derive(Default, Deserialize)]
 struct DatasetCreateRequest {
     #[serde(default)]
@@ -270,6 +281,11 @@ pub async fn datasets_post(
         }
         Err(e) => write_error(StatusCode::BAD_REQUEST, e.to_string()),
     }
+}
+
+/// `/api/v1/datasets/` POST with an empty pool segment.
+pub async fn datasets_post_empty() -> Response {
+    write_error(StatusCode::BAD_REQUEST, "pool name required")
 }
 
 pub async fn datasets_delete(
@@ -308,6 +324,12 @@ pub async fn snapshots_get(
     }
 }
 
+/// `/api/v1/snapshots/` (empty dataset segment): Go validated the empty path
+/// and returned 400.
+pub async fn snapshots_get_empty() -> Response {
+    write_error(StatusCode::BAD_REQUEST, "dataset path is required")
+}
+
 #[derive(Default, Deserialize)]
 struct SnapshotRequest {
     #[serde(default)]
@@ -330,6 +352,11 @@ pub async fn snapshots_post(
         Ok(()) => json_response(StatusCode::CREATED, &json!({ "status": "snapshot created" })),
         Err(e) => write_client_error(&e),
     }
+}
+
+/// `/api/v1/snapshots/` POST with an empty dataset segment.
+pub async fn snapshots_post_empty() -> Response {
+    write_error(StatusCode::BAD_REQUEST, "dataset path is required")
 }
 
 // ---- Shares --------------------------------------------------------------
@@ -372,18 +399,25 @@ pub async fn shares_config(State(state): State<Arc<AppState>>, body: Body) -> Re
         revision: req.revision,
         share_count: req.share_count,
     };
-    match shares.apply(&cfg) {
-        Ok(status) => {
+    let revision = cfg.revision.clone();
+    let share_count = cfg.share_count;
+    // shares.apply does synchronous host-filesystem I/O (including fsync);
+    // run it off the async worker threads.
+    let shares = shares.clone();
+    let result = tokio::task::spawn_blocking(move || shares.apply(&cfg)).await;
+    match result {
+        Ok(Ok(status)) => {
             tracing::info!(
                 "applied shares config revision {} ({} enabled shares, {} smb sections, {} nfs exports)",
-                cfg.revision,
-                cfg.share_count,
+                revision,
+                share_count,
                 status.smb_share_count,
                 status.nfs_export_count
             );
             json_response(StatusCode::OK, &status)
         }
-        Err(msg) => write_client_error(&ZfsError::Other(msg)),
+        Ok(Err(msg)) => write_client_error(&ZfsError::Other(msg)),
+        Err(e) => write_client_error(&ZfsError::Other(format!("apply task failed: {e}"))),
     }
 }
 
@@ -391,9 +425,11 @@ pub async fn shares_status(State(state): State<Arc<AppState>>) -> Response {
     let Some(shares) = state.shares.as_ref() else {
         return shares_unavailable("share configuration");
     };
-    match shares.status() {
-        Ok(status) => json_response(StatusCode::OK, &status),
-        Err(msg) => write_client_error(&ZfsError::Other(msg)),
+    let shares = shares.clone();
+    match tokio::task::spawn_blocking(move || shares.status()).await {
+        Ok(Ok(status)) => json_response(StatusCode::OK, &status),
+        Ok(Err(msg)) => write_client_error(&ZfsError::Other(msg)),
+        Err(e) => write_client_error(&ZfsError::Other(format!("status task failed: {e}"))),
     }
 }
 
@@ -413,11 +449,14 @@ pub async fn shares_folders_get(
         return shares_unavailable("share folders");
     };
     let path = query.get("path").cloned().unwrap_or_default();
-    match shares.list_folders(&path) {
-        Ok(folders) => {
+    let shares = shares.clone();
+    let path_for_task = path.clone();
+    match tokio::task::spawn_blocking(move || shares.list_folders(&path_for_task)).await {
+        Ok(Ok(folders)) => {
             json_response(StatusCode::OK, &json!({ "path": path, "folders": folders }))
         }
-        Err(msg) => write_error(StatusCode::NOT_FOUND, msg),
+        Ok(Err(msg)) => write_error(StatusCode::NOT_FOUND, msg),
+        Err(e) => write_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task failed: {e}")),
     }
 }
 
@@ -429,12 +468,14 @@ pub async fn shares_folders_post(State(state): State<Arc<AppState>>, body: Body)
         Ok(req) => req,
         Err(resp) => return resp,
     };
-    match shares.create_folder(&req.path, &req.name) {
-        Ok(created) => {
+    let shares = shares.clone();
+    match tokio::task::spawn_blocking(move || shares.create_folder(&req.path, &req.name)).await {
+        Ok(Ok(created)) => {
             tracing::info!("created share folder {}", created);
             json_response(StatusCode::CREATED, &json!({ "path": created }))
         }
-        Err(msg) => write_error(StatusCode::BAD_REQUEST, msg),
+        Ok(Err(msg)) => write_error(StatusCode::BAD_REQUEST, msg),
+        Err(e) => write_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task failed: {e}")),
     }
 }
 
@@ -446,15 +487,18 @@ pub async fn shares_folders_delete(
         return shares_unavailable("share folders");
     };
     let path = query.get("path").cloned().unwrap_or_default();
-    match shares.delete_folder(&path) {
-        Ok(()) => {
+    let shares = shares.clone();
+    let path_for_task = path.clone();
+    match tokio::task::spawn_blocking(move || shares.delete_folder(&path_for_task)).await {
+        Ok(Ok(())) => {
             tracing::info!("removed share folder {}", path);
             json_response(
                 StatusCode::OK,
                 &json!({ "status": "folder removed", "path": path }),
             )
         }
-        Err(msg) => write_error(StatusCode::BAD_REQUEST, msg),
+        Ok(Err(msg)) => write_error(StatusCode::BAD_REQUEST, msg),
+        Err(e) => write_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task failed: {e}")),
     }
 }
 
@@ -503,7 +547,9 @@ pub async fn zfs_send(
         Err(e) => return write_error(StatusCode::BAD_REQUEST, e.to_string()),
     };
 
-    let reader = tokio_util::io::ReaderStream::new(read);
+    // 128 KiB chunks instead of the 4 KiB default: the send path streams
+    // potentially terabytes and Go used a 32 KiB copy buffer.
+    let reader = tokio_util::io::ReaderStream::with_capacity(read, 128 * 1024);
     let mut wait = Some(wait);
     let stream = reader.chain(futures::stream::once(async move {
         if let Some(w) = wait.take() {
@@ -543,6 +589,7 @@ pub async fn zfs_receive(
         let chunk = match chunk {
             Ok(chunk) => chunk,
             Err(e) => {
+                let _ = stdin.shutdown().await;
                 let _ = wait.await;
                 return write_error(
                     StatusCode::BAD_REQUEST,
@@ -552,6 +599,7 @@ pub async fn zfs_receive(
         };
         written += chunk.len() as u64;
         if written > MAX_STREAM_BODY_BYTES {
+            let _ = stdin.shutdown().await;
             let _ = wait.await;
             return write_error(
                 StatusCode::BAD_REQUEST,
@@ -559,6 +607,7 @@ pub async fn zfs_receive(
             );
         }
         if let Err(e) = stdin.write_all(&chunk).await {
+            let _ = stdin.shutdown().await;
             let _ = wait.await;
             return write_error(
                 StatusCode::BAD_REQUEST,
@@ -603,4 +652,19 @@ pub async fn zfs_snapshots(
         Ok(snapshots) => json_response(StatusCode::OK, &snapshots),
         Err(e) => write_error(StatusCode::BAD_REQUEST, e.to_string()),
     }
+}
+
+/// `/api/v1/zfs/send/` (empty dataset segment).
+pub async fn zfs_send_empty() -> Response {
+    write_error(StatusCode::BAD_REQUEST, "dataset is required")
+}
+
+/// `/api/v1/zfs/receive/` (empty dataset segment).
+pub async fn zfs_receive_empty() -> Response {
+    write_error(StatusCode::BAD_REQUEST, "dataset is required")
+}
+
+/// `/api/v1/zfs/snapshots/` (empty dataset segment).
+pub async fn zfs_snapshots_empty() -> Response {
+    write_error(StatusCode::BAD_REQUEST, "dataset is required")
 }

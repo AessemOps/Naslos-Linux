@@ -391,3 +391,24 @@ validation, same degraded-mode 503s.
 - **Not done (release-time):** image tag bump in `values-vm.yaml`, version bump,
   installer dispatch, and the live DaemonSet rollout drill. `make install-vm`
   will pick up the Rust image once a fresh tag is built and pushed.
+
+### Phase 1 review fixes (2026-10-04)
+
+Self-review of the Phase 1 branch found and fixed, with regression tests:
+
+- **CRITICAL — restore-stream leak:** the receive error paths awaited the child
+  before closing stdin; `spawn_in` already took stdin, so `wait()` could never
+  see EOF. A client that aborts a restore blocked a task and orphaned
+  `zfs receive`. Fixed by closing stdin before every `wait.await` on error paths.
+- **Contract parity:** `GET /pools/{pool}/devices` now serializes an empty list
+  as `null` (Go's nil slice), not `[]`; bare trailing-slash URLs
+  (`/api/v1/datasets/`, `/snapshots/`, `/zfs/{send,receive,snapshots}/`) now
+  reach the handlers and return 400 as Go's prefix mux did, instead of 404;
+  relative folder paths (`var/mnt/...`) are rejected as non-absolute again.
+- **Deploy:** `values-vm.yaml` agent tag bumped `0.1.0-r8` -> `0.1.0-r9`.
+- **Performance:** 128 KiB `ReaderStream` capacity on the send hot path;
+  shares apply/status/folder ops moved to `spawn_blocking`.
+- **Security posture:** restored the Go header-read timeout (10s) and installed
+  the hyper timer axum-server omits.
+- **Dead code removed:** `zfs::utils` module, `dataset_exists`, `is_base`,
+  `other_err!` and the unused `ZfsError::invalid/other`.

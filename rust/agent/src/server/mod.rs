@@ -75,11 +75,22 @@ impl Server {
                 get(handlers::pool_detail_get).delete(handlers::pool_detail_delete),
             )
             .route("/api/v1/datasets", get(handlers::datasets_all_get))
+            // The bare trailing-slash URL matched Go's prefix mux (rest == "")
+            // and returned 400; matchit's {*rest} needs a non-empty segment, so
+            // register it explicitly to preserve the contract.
+            .route(
+                "/api/v1/datasets/",
+                get(handlers::datasets_get_empty).post(handlers::datasets_post_empty),
+            )
             .route(
                 "/api/v1/datasets/{*rest}",
                 get(handlers::datasets_get)
                     .post(handlers::datasets_post)
                     .delete(handlers::datasets_delete),
+            )
+            .route(
+                "/api/v1/snapshots/",
+                get(handlers::snapshots_get_empty).post(handlers::snapshots_post_empty),
             )
             .route(
                 "/api/v1/snapshots/{*dataset}",
@@ -96,10 +107,16 @@ impl Server {
                     .post(handlers::shares_folders_post)
                     .delete(handlers::shares_folders_delete),
             )
+            .route("/api/v1/zfs/send/", get(handlers::zfs_send_empty))
             .route("/api/v1/zfs/send/{*dataset}", get(handlers::zfs_send))
+            .route("/api/v1/zfs/receive/", post(handlers::zfs_receive_empty))
             .route(
                 "/api/v1/zfs/receive/{*dataset}",
                 post(handlers::zfs_receive),
+            )
+            .route(
+                "/api/v1/zfs/snapshots/",
+                get(handlers::zfs_snapshots_empty),
             )
             .route(
                 "/api/v1/zfs/snapshots/{*dataset}",
@@ -119,20 +136,38 @@ impl Server {
     /// Start the HTTP(S) server.
     pub async fn start(&self) -> anyhow::Result<()> {
         let addr = parse_addr(&self.addr)?;
-        let app = self.router().into_make_service();
+        let tls = !self.tls_cert_file.is_empty() && !self.tls_key_file.is_empty();
 
-        if !self.tls_cert_file.is_empty() && !self.tls_key_file.is_empty() {
+        // The Go server bounded slow/silent clients with
+        // ReadHeaderTimeout=10s / ReadTimeout=30s / IdleTimeout=120s (gosec
+        // G112) while leaving WriteTimeout=0 so long `zfs send` streams and
+        // receive bodies survive. axum-server does not configure a hyper timer,
+        // so we install one and set a header-read timeout; the send/receive
+        // handlers are long-lived streams and keep no body/write deadline.
+        if tls {
             let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
                 &self.tls_cert_file,
                 &self.tls_key_file,
             )
             .await?;
-            axum_server::bind_rustls(addr, config).serve(app).await?;
+            let mut server = axum_server::bind_rustls(addr, config);
+            configure_http(server.http_builder());
+            server.serve(self.router().into_make_service()).await?;
         } else {
-            axum_server::bind(addr).serve(app).await?;
+            let mut server = axum_server::bind(addr);
+            configure_http(server.http_builder());
+            server.serve(self.router().into_make_service()).await?;
         }
         Ok(())
     }
+}
+
+/// Install a timer (axum-server sets none, which disables hyper's default
+/// header-read timeout) and restore the Go server's 10s `ReadHeaderTimeout`.
+fn configure_http(builder: &mut hyper_util::server::conn::auto::Builder<hyper_util::rt::TokioExecutor>) {
+    let mut http1 = builder.http1();
+    http1.timer(hyper_util::rt::TokioTimer::new());
+    http1.header_read_timeout(std::time::Duration::from_secs(10));
 }
 
 /// Parse `:9090` / `0.0.0.0:9090` / `127.0.0.1:9090`.

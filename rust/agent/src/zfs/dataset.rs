@@ -405,13 +405,6 @@ impl ZfsClient {
         }
     }
 
-    /// Whether a dataset (or snapshot) exists.
-    pub async fn dataset_exists(&self, name: &str) -> bool {
-        self.host_exec(ZFS_BIN, &strings(&["list", "-H", "-o", "name", name]))
-            .await
-            .is_ok()
-    }
-
     /// Create a snapshot.
     pub async fn snapshot(&self, dataset: &str, snap_name: &str) -> ZfsResult<()> {
         validate_dataset_path(dataset)?;

@@ -683,6 +683,7 @@ dependencies = [
  "clap",
  "futures",
  "http-body-util",
+ "hyper-util",
  "rustls-pemfile",
  "serde",
  "serde_json",

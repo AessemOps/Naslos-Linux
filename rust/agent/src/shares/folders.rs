@@ -2,7 +2,6 @@
 //! `shares/folders.go`).
 
 use super::SharesClient;
-use std::path::Path;
 
 /// In-host mount root of the ZFS datasets shares are served from.
 pub const DATASETS_BASE: &str = "/var/mnt";
@@ -108,10 +107,13 @@ impl SharesClient {
             return Err("folder path is required".to_string());
         }
 
-        let clean = clean_abs_path(trimmed);
-        if !clean.starts_with('/') {
+        // Reject non-absolute input BEFORE cleaning: clean_abs_path always
+        // yields a leading '/', so the check below could never fail on its own.
+        if !trimmed.starts_with('/') {
             return Err(format!("folder path must be absolute: {trimmed}"));
         }
+
+        let clean = clean_abs_path(trimmed);
         if clean != DATASETS_BASE && !clean.starts_with(&format!("{DATASETS_BASE}/")) {
             return Err(format!("folder path must be inside {DATASETS_BASE}"));
         }
@@ -160,10 +162,4 @@ pub fn validate_folder_name(name: &str) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-/// Whether `p` is the datasets base itself (unused helper kept for parity).
-#[allow(dead_code)]
-fn is_base(p: &str) -> bool {
-    Path::new(p) == Path::new(DATASETS_BASE)
 }

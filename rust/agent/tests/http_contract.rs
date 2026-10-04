@@ -212,3 +212,45 @@ async fn shares_status_reports_applied_state() {
     assert_eq!(body["applied"], false);
     assert!(body["messages"].as_array().unwrap().len() == 2);
 }
+
+#[tokio::test]
+async fn pool_devices_serializes_no_disks_as_null() {
+    // Go marshalled a nil slice as `null`; the port must not emit `[]`.
+    // An empty host root means every fake device belongs to the pool.
+    let host = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(host.path().join("dev")).unwrap();
+    // 1: `zpool list` (no pools); pool_disks is never reached for none.
+    let runner = Arc::new(FakeRunner::new(&["tank\t10G\t1G\t9G\tONLINE\n", ""]));
+    let zfs = ZfsClient::new(runner, host.path().to_path_buf());
+    let server = server_with(Some(zfs), None, TOKEN);
+
+    let (_status, body) = send(&server, get_auth("/api/v1/pools/tank/devices")).await;
+    assert!(
+        body["disks"].is_null(),
+        "empty free-disk list must serialize as null, got {}",
+        body["disks"]
+    );
+}
+
+#[tokio::test]
+async fn bare_trailing_slash_route_is_bad_request_not_not_found() {
+    // Go's prefix mux matched `/api/v1/datasets/` and returned 400 because the
+    // empty pool was rejected before any host call.
+    let server = degraded();
+    let resp = server
+        .router()
+        .oneshot(get_auth("/api/v1/datasets/"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "route did not match");
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"], "pool name required");
+
+    let resp = server
+        .router()
+        .oneshot(get_auth("/api/v1/snapshots/"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "route did not match");
+}

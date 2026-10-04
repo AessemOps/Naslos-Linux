@@ -8,7 +8,6 @@ pub mod devices;
 pub mod operations;
 pub mod runner;
 pub mod types;
-pub mod utils;
 pub mod validation;
 
 pub use devices::validate_pool_name;

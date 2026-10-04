@@ -24,6 +24,8 @@ fn clean_folder_path_cases() {
         ("/var/mnt/test/./media", Some("/var/mnt/test/media")),
         ("  /var/mnt/test  ", Some("/var/mnt/test")),
         ("", None),
+        ("var/mnt/test", None),
+        ("../var/mnt", None),
         ("/var/mnt", Some("/var/mnt")),
         ("/var/mnt/test/../../etc", None),
         ("/var/mnt/test/../..", None),
