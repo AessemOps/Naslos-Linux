@@ -174,8 +174,8 @@ metrics, web terminal, app catalog, notifications, and zero-knowledge peer backu
 
 ## Current instance: 192.168.1.117 (2026-09-19)
 
-Fresh install from scratch (the old .96 VM is off): Talos from the Naslos ISO,
-etcd bootstrapped, local-path provisioner, OpenLDAP + bootstrap. The instance is
+Fresh install from scratch (the old .96 VM is off): Talos from the Talos ISO
+(Naslos schematic), etcd bootstrapped, local-path provisioner, OpenLDAP + bootstrap. The instance is
 now on the **only posture** (`make install-vm`): Traefik on hostPort 80/443,
 Authelia forwardAuth with the portal at `https://naslos.local/authelia`, 2FA for
 `naslos_admins` on every path, `/api` routed straight to the API. The dev posture
