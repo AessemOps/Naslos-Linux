@@ -164,6 +164,7 @@ providers are added as YAML, not code.
 | --- | --- |
 | `api/` (Go) | UI-facing HTTP API + the buddy sender, scheduler and job runner |
 | `agent/` (Go) | Privileged, host-networked DaemonSet: the only thing that runs `zpool`/`zfs`/`wipefs`; also serves the streaming backup endpoints |
+| `rust/agent/` (Rust) | Port of `agent/` — same HTTP contract; the privileged DaemonSet image is now built from `agent/Dockerfile.rust` |
 | `ui/` | Svelte 5 + TS + Tailwind, built statically and served by unprivileged nginx |
 | `charts/naslos` | Helm chart: api, ui, agent, samba, nfs, terminal, openldap, Traefik + Authelia (and optional cert-manager) subcharts |
 | `openldap/ samba/ nfs/ terminal/` | Per-service images and config templates |

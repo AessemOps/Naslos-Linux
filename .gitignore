@@ -51,3 +51,6 @@ bootstrap/vm/talos-secrets.json
 *.key
 *.age
 .talos/
+
+# Rust build output
+/rust/target/

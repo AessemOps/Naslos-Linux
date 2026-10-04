@@ -44,9 +44,16 @@ jobs:
         with:
           go-version-file: api/go.mod
           cache: true
-          cache-dependency-path: |
-            api/go.sum
-            agent/go.sum
+          cache-dependency-path: api/go.sum
+
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # stable
+        with:
+          toolchain: "1.85"
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: rust
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
