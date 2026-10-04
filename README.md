@@ -34,7 +34,8 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 - **Monitoring dashboard** — Prometheus + Alertmanager (Grafana was removed)
 - **Desktop installer** — a one-app installer (separate
   [Naslos-Installer](https://github.com/AessemOps/Naslos-Installer) repo) that
-  provisions a fresh Talos node from this repo's versioned **install pack**
+  provisions the Naslos node from a machine booted from the Talos ISO using this
+  repo's versioned **install pack**
   (`make install-pack`), with a progress bar, first-admin + 2FA handoff and a
   recovery ZIP; the stable interfaces are in
   [docs/installer-contract.md](docs/installer-contract.md)
