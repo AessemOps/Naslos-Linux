@@ -32,10 +32,11 @@ dependencies:
   # helm-manager-<hash>" error. Notifications still work: the Naslos API sends
   # to the public ntfy.sh server (api ServerURL default) or any self-hosted
   # ntfy server you configure.
-  - name: prometheus
-    version: "25.0.0"
-    repository: https://prometheus-community.github.io/helm-charts
-    condition: prometheus.enabled
+  # Prometheus/Alertmanager intentionally NOT a dependency (removed 2026-10-04):
+  # the stack cost ~265 MiB of resident memory on the single-node appliance and
+  # nothing consumed its data. The dashboard reads the API's own /api/metrics
+  # aggregator (api/internal/metrics), which is independent of Prometheus. See
+  # docs/monitoring.md.
   # Optional: the SSL page renders cert-manager Issuer/Certificate CRs and
   # gates on the CRDs being installed. Enabling this subchart installs
   # cert-manager itself; the CRDs come from `make crds` either way.
