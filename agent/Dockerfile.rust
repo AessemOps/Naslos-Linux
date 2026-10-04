@@ -9,10 +9,14 @@ WORKDIR /build
 COPY rust/Cargo.toml Cargo.toml
 COPY rust/Cargo.lock Cargo.lock
 COPY rust/agent/Cargo.toml agent/Cargo.toml
+# The workspace also contains the API crate; cargo needs every member manifest
+# to load the workspace, even when only building the agent.
+COPY rust/api/Cargo.toml api/Cargo.toml
 # Warm the dependency cache before copying sources so a code change does not
 # rebuild the whole graph.
-RUN mkdir -p agent/src && echo 'fn main() {}' > agent/src/main.rs \
-    && echo '' > agent/src/lib.rs \
+RUN mkdir -p agent/src api/src \
+    && echo 'fn main() {}' > agent/src/main.rs && echo '' > agent/src/lib.rs \
+    && echo 'pub fn placeholder() {}' > api/src/lib.rs && echo 'fn main() {}' > api/src/main.rs \
     && cargo build --release --package naslos-agent || true
 COPY rust/agent/src agent/src
 # Bust the placeholder build (touch the lib too, so the dependency crate is
