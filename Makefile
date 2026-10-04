@@ -247,6 +247,12 @@ install-vm: crds cert-manager cert-manager-webhook-ovh
 	# (non-Helm-owned) Job so the hook can create it; a finished Job is
 	# harmless to remove (it has a 1h TTL anyway). No-op after the migration.
 	-$(KUBECTL) -n naslos delete job naslos-openldap-bootstrap --ignore-not-found
+	# One-time migration: the Prometheus/Alertmanager subchart was dropped
+	# (2026-10-04). Helm deletes the subchart objects it owns, but the
+	# alertmanager StatefulSet's volumeClaimTemplate PVC is not in the rendered
+	# manifest and is left orphaned (a bound 2Gi local-path volume). Delete it;
+	# no-op on a fresh install. See docs/monitoring.md.
+	-$(KUBECTL) -n naslos delete pvc storage-naslos-alertmanager-0 --ignore-not-found
 	$(HELM) upgrade --install naslos $(CHART_DIR) -n naslos --create-namespace \
 		-f $(CHART_DIR)/values.yaml \
 		-f $(CHART_DIR)/values-vm.yaml \

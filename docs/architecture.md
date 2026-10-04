@@ -69,7 +69,6 @@ see the [document index](README.md).
 | OpenLDAP :636 | LDAPS | users, groups, password modify |
 | Samba workload | agent-pushed `smbusers` mirror (+ `pdbedit -i smbpasswd:`) | NT-hash sync |
 | Helm SDK | in-process | app install / upgrade / uninstall |
-| Prometheus | HTTP | metrics (Grafana removed 2026-09-19) |
 | ntfy (external `ntfy.sh` or self-hosted) | HTTPS | push notifications |
 | Git chart hosts | HTTPS 443 / SSH 22 / git 9418 | clone configured chart repositories (`networkPolicy.gitEgress`) |
 | Public-IP sources + DNS provider APIs | HTTPS 443 (HTTP 80 for `http` providers) + DNS 53 | Dynamic DNS detection (HTTP + `dns:opendns`/`dns:google`) and record updates (`networkPolicy.ddnsEgress`, §3.9) |
@@ -99,11 +98,12 @@ see the [document index](README.md).
         │  │  svc ClusterIP   │   │ naslos-api Deployment  │       │
         │  │  :80             │   │  svc ClusterIP :8080   │       │
         │  └──────────────────┘   │  SA: naslos-api        │       │
-        │  ┌────────────┐  ┌──────┴──────┐  ┌─────────────┐       │
-        │  │ prometheus │  │ alertmgr    │  │ (no ntfy    │       │
-        │  │ ret. 30d   │  │  routing    │  │  workload;  │       │
-        │  └────────────┘  └─────────────┘  │  external)  │       │
-        │                                    └─────────────┘       │
+        │                         └────────────────────────┘       │
+        │  ┌───────────────────────────────────────────────┐      │
+        │  │ (no monitoring/ntfy workload: the metrics API  │      │
+        │  │  lives in naslos-api; ntfy is an external      │      │
+        │  │  server — there is no bundled subchart)        │      │
+        │  └───────────────────────────────────────────────┘      │
         └──────────────────────────┬───────────────────────────────┘
                                    │ exec RBAC + agent-token Secret
         ┌──────────────────────────▼───────────────────────────────┐

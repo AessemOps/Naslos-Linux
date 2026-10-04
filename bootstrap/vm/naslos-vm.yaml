@@ -47,6 +47,10 @@ machine:
     image: factory.talos.dev/installer/4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c:v1.14.1
     disk: /dev/vda
     wipe: true
+    # ZFS ARC is NOT capped here: neither machine.kernel.modules[].parameters nor
+    # extraKernelArgs works on this platform (the siderolabs/zfs extension loads
+    # the module itself; SDBoot rejects extraKernelArgs). See docs/deployment.md
+    # → "ZFS ARC" for the evidence and the planned agent-initContainer fix.
   registries:
     mirrors:
       "192.168.1.2:30095":
@@ -76,8 +80,8 @@ machine:
 # taints: {} — single-node cluster: do NOT NoSchedule the control-plane node.
 # By default Talos v1.14 applies node-role.kubernetes.io/control-plane:NoSchedule
 # via KubeNodeConfig, leaving every workload (api/ui/agent, traefik, authelia,
-# prometheus, grafana, openldap) Pending with no schurable node. Clearing the
-# taints map is the correct single-node VM configuration.
+# openldap) Pending with no schedulable node. Clearing the taints map is the
+# correct single-node VM configuration.
 # NOTE: `taints: {}` alone does NOT clear the map under JSON merge patch —
 # an empty map is ignored. Use `$patch: delete` on the taints key instead,
 # which RFC 7386 understands as "remove this key".
