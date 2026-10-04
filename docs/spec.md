@@ -915,7 +915,8 @@ ingress): peer → nginx → API, with the chart's `buddy` values enabled:
 | schedule against a dead receiver → job `failed`, `lastResult: failed`, one `backup_failure` ntfy post | FR-BUD-15 |
 | `ui/tests/backups.spec.ts` — identity card, schedule create/delete, receiver free space, manual send to `succeeded` | FR-BUD-16 |
 
-Go verification: `go build ./...` in `api/` and `agent/`; `go vet` clean;
+Go verification: `go build ./...` in `api/`; `go vet` clean. Agent verification
+(Rust): `cargo clippy --all-targets -- -D warnings` and `cargo test` in `rust/`.
 `gofmt` clean on touched files; `npm run check` in `ui/` with 0 errors.
 
 LDAP resilience (FR-IDN-11/12) is covered by

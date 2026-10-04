@@ -61,7 +61,7 @@ it manually. A minimal manual flow:
 ```bash
 sh scripts/audit.sh
 cd api && go build ./... && go vet ./...
-cd agent && go build ./... && go vet ./...
+cd rust && cargo test -p naslos-agent
 ```
 
 For a live smoke test: `make dev-cluster && make crds && make install`, then

@@ -345,3 +345,70 @@ Not required for the RAM goal.
   (initContainer follow-up); Phase 1/2 remain justified. The Prometheus removal
   is the only deployed RAM win so far.
 
+### Phase 1 (2026-10-04) — branch `refactor/rust-agent`
+
+Port of `agent/` (Go, 4554 LOC, zero external deps) to a Rust workspace at
+`rust/` (`naslos-agent` crate). Same HTTP contract, same route set, same
+validation, same degraded-mode 503s.
+
+- **Layout.** `rust/Cargo.toml` (workspace, release: `opt-level="z"`, LTO,
+  `panic="abort"`, strip) + `rust/agent/`. Modules mirror the Go packages:
+  `zfs/{types,validation,runner,utils,devices,dataset,operations,backup}`,
+  `shares/{mod,config,folders}`, `server/{mod,auth,error,handlers}`.
+- **Runner seam.** A `Runner` trait replaces Go's `var runHost`; `RealRunner`
+  spawns `chroot /host <bin>` with piped stdio for the streaming send/receive
+  and a combined-output capture for buffered calls. Tests inject a
+  `FakeRunner` that records argv and replays canned responses — the destructive
+  argument assertions port one-for-one.
+- **HTTP parity.** `axum` + `axum-server` (rustls). The API router is mounted
+  behind `middleware::from_fn_with_state(require_auth)`, so a new route is
+  authenticated by default (the Go longest-prefix default-deny property).
+  `subtle::ConstantTimeEq` for the bearer token. JSON responses append the
+  trailing newline Go's `json.Encoder` wrote. All struct JSON tags are copied
+  exactly (lowercase keys, `usedBytes`, `smbShareCount`, `ioStats`, …).
+- **Body caps.** 1 MiB JSON everywhere; the receive handler counts streamed
+  bytes and stops at 1 TiB (the Go `MaxBytesReader` equivalent). `WriteTimeout`
+  is not set (axum has none by default), so long `zfs send` streams survive.
+- **Deploy wiring.** `agent/Dockerfile.rust` (multi-stage rust:alpine → musl
+  static → alpine:3.24 for busybox `chroot`), `.github/image-matrix.json`
+  repointed, `make agent-image` uses it, `make agent` builds via cargo,
+  `scripts/audit.sh` runs `cargo fmt/clippy/test` for the agent, CI installs
+  the Rust toolchain + rust-cache. The Go `agent/` tree is deleted.
+- **Tests.** 43 Rust tests ported from the Go suite: zfs validation (every
+  refusal asserts no command ran), the AV-8 stale-mount destroy ladder, dataset
+  option sorting, `humanBytes` boundaries, folder confinement incl. the PF-L5
+  symlink escape, secret-file modes (CR-15), backup command lines, plus HTTP
+  contract tests (public `/health` with trailing newline, 401 on the API,
+  a new route 401s, exact degraded-mode 503 messages, 400-vs-500 classification,
+  lowercase pool JSON).
+- **Phase 1 gate (measured).** Degraded mode, same host: RSS idle 7.1 MB (Go)
+  → 5.3 MB (Rust); RSS after 500 requests 10.2 MB → 5.7 MB; server CPU per 2000
+  requests 390 ms → 260 ms; static binary 7.7 MB → 3.9 MB. The savings are real
+  but small in absolute terms (~4 MB/pod); the decisive RAM is the ARC cap and
+  the API port, not the agent. Proceeding past Phase 1 is justified mainly by the
+  API port and by the lower CPU/FD footprint.
+- **Not done (release-time):** version bump, installer dispatch, and the live
+  DaemonSet rollout drill. The image tag is already bumped to `0.1.0-r9` in
+  `values-vm.yaml`, so `make install-vm` will pick up the Rust image once it is
+  built and pushed.
+
+### Phase 1 review fixes (2026-10-04)
+
+Self-review of the Phase 1 branch found and fixed, with regression tests:
+
+- **CRITICAL — restore-stream leak:** the receive error paths awaited the child
+  before closing stdin; `spawn_in` already took stdin, so `wait()` could never
+  see EOF. A client that aborts a restore blocked a task and orphaned
+  `zfs receive`. Fixed by closing stdin before every `wait.await` on error paths.
+- **Contract parity:** `GET /pools/{pool}/devices` now serializes an empty list
+  as `null` (Go's nil slice), not `[]`; bare trailing-slash URLs
+  (`/api/v1/datasets/`, `/snapshots/`, `/zfs/{send,receive,snapshots}/`) now
+  reach the handlers and return 400 as Go's prefix mux did, instead of 404;
+  relative folder paths (`var/mnt/...`) are rejected as non-absolute again.
+- **Deploy:** `values-vm.yaml` agent tag bumped `0.1.0-r8` -> `0.1.0-r9`.
+- **Performance:** 128 KiB `ReaderStream` capacity on the send hot path;
+  shares apply/status/folder ops moved to `spawn_blocking`.
+- **Security posture:** restored the Go header-read timeout (10s) and installed
+  the hyper timer axum-server omits.
+- **Dead code removed:** `zfs::utils` module, `dataset_exists`, `is_base`,
+  `other_err!` and the unused `ZfsError::invalid/other`.
