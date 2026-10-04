@@ -31,7 +31,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 - **Logs & terminal** — stream logs and open a zsh shell to any pod from the UI
 - **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served)
 - **ntfy notifications** — push alerts on Talos / Kubernetes / ZFS / backup events
-- **Monitoring dashboard** — Prometheus + Alertmanager (Grafana was removed)
+- **Monitoring dashboard** — live metrics API (`/api/metrics`) + home dashboard; no bundled metrics stack
 - **Desktop installer** — a one-app installer (separate
   [Naslos-Installer](https://github.com/AessemOps/Naslos-Installer) repo) that
   provisions the Naslos node from a machine booted from the Talos ISO using this
@@ -75,7 +75,7 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [identity-sso](docs/identity-sso.md) | Authelia + OpenLDAP + Samba single sign-on |
 | [shares](docs/shares.md) | SMB / NFS / Time-Machine shares |
 | [app-catalog](docs/app-catalog.md) | Catalog, schema-driven forms, Helm lifecycle |
-| [monitoring](docs/monitoring.md) | Metrics API + Prometheus/Alertmanager (Grafana removed) |
+| [monitoring](docs/monitoring.md) | Live metrics API + dashboard (no Prometheus) |
 | [notifications](docs/notifications.md) | ntfy alerts |
 | [deployment](docs/deployment.md) | Prerequisites, Make targets, Helm values |
 | [installer-contract](docs/installer-contract.md) | Install pack + interfaces for the desktop installer (FR-INSTALL) |

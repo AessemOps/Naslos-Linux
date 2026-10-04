@@ -317,7 +317,7 @@ kubectl label ns local-path-storage \
     pod-security.kubernetes.io/enforce-version=latest --overwrite || true
 
 # Make local-path the cluster default StorageClass so chart PVCs
-# (prometheus, alertmanager, ...) bind without an explicit storageClassName.
+# (openldap, authelia, ...) bind without an explicit storageClassName.
 kubectl patch storageclass local-path \
     -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' \
     || echo "WARN: could not patch local-path as default StorageClass" >&2

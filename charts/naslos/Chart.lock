@@ -5,11 +5,8 @@ dependencies:
 - name: authelia
   repository: https://charts.authelia.com
   version: 0.11.22
-- name: prometheus
-  repository: https://prometheus-community.github.io/helm-charts
-  version: 25.0.0
 - name: cert-manager
   repository: https://charts.jetstack.io
   version: v1.18.2
-digest: sha256:5dbb95e4a377266d37bb433192fb2e1b631fed81d99256fb25010b1bfda2dc30
-generated: "2026-09-26T00:17:05.242241181+02:00"
+digest: sha256:e0d3c2887481a023adeddf443fad8db040b1137aeb08e979fb1419adab55a6db
+generated: "2026-10-04T16:54:20.330482442+02:00"

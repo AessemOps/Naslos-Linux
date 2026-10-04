@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "title": "Naslos Helm values",
-  "description": "Type checks for the Naslos umbrella chart's own values. Subchart keys (traefik.*, authelia.*, prometheus.*) are validated by their own charts, so additional properties are allowed throughout.",
+  "description": "Type checks for the Naslos umbrella chart's own values. Subchart keys (traefik.*, authelia.*, cert-manager.*) are validated by their own charts, so additional properties are allowed throughout.",
   "type": "object",
   "additionalProperties": true,
   "properties": {
@@ -141,7 +141,6 @@
       }
     },
     "ntfy": { "type": "object", "additionalProperties": true },
-    "prometheus": { "type": "object", "additionalProperties": true },
     "storage": {
       "type": "object",
       "additionalProperties": true,

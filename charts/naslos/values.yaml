@@ -154,8 +154,12 @@ agent:
 # ZFS configuration
 zfs:
   enabled: true
-  # ARC max size in bytes (0 = auto-detect based on system memory)
-  arcMax: 0
+  # ARC sizing is not wired to any value. zfs_arc_max is a kernel-module
+  # parameter, and on this Talos + siderolabs/zfs extension setup neither
+  # machine.kernel.modules[].parameters nor machine.install.extraKernelArgs
+  # reaches it (the extension loads the module itself; SDBoot rejects
+  # extraKernelArgs). See docs/deployment.md → "ZFS ARC" for the evidence and
+  # the planned fix. The old `arcMax` key here was dead: no template consumed it.
   # Auto-import pools at boot (handled by zfs-service extension)
   autoImport: true
 
@@ -449,16 +453,10 @@ ntfy:
     url: ""  # Empty = use https://ntfy.sh (public)
     topic: "naslos-alerts"
 
-# Monitoring
-prometheus:
-  enabled: true
-  prometheus:
-    prometheusSpec:
-      retention: 30d
-      resources:
-        requests:
-          cpu: 200m
-          memory: 512Mi
+# Monitoring. There is no Prometheus/Alertmanager subchart: the stack cost
+# ~265 MiB resident on the single-node appliance and nothing consumed its data.
+# The dashboard and /api/metrics are served by the API's own metrics aggregator
+# (api/internal/metrics), which is independent. See docs/monitoring.md.
 
 # Storage classes
 storage:
@@ -504,7 +502,11 @@ openldap:
   resources:
     requests:
       cpu: 100m
-      memory: 256Mi
+      # Measured idle working set is ~673MiB (2026-10-04 baseline), so the old
+      # 256Mi request was below real usage and left the pod first in line for
+      # eviction. Request = observed + headroom; the 1Gi limit still covers the
+      # one-off first-boot burst.
+      memory: 768Mi
     limits:
       cpu: 500m
       # 512Mi was too tight for first-boot initialization (RSA-4096 TLS cert
