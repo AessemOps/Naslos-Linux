@@ -270,9 +270,8 @@ for kind, name in [
     assert (kind, name) in priv_workloads, f"{name} is not in naslos-privileged"
 
 # The release namespace must NOT still run OUR hostNetwork/privileged workloads.
-# Scoped to this chart's own names (naslos-*) and skips the monitoring subchart:
-# prometheus-node-exporter is hostNetwork by design (it reads host metrics) and
-# is not one of the workloads the split moves.
+# Scoped to this chart's own names (naslos-*): anything else (a user-added
+# subchart, say) is not one of the workloads the split moves.
 split_names = {"naslos-agent", "naslos-samba", "naslos-nfs", "naslos-terminal"}
 for d in docs:
     name = d["metadata"]["name"]

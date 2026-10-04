@@ -136,8 +136,6 @@ The full transitive tree is pinned in
 | --- | --- | --- | --- |
 | Traefik | 41.6.0 | MIT | https://github.com/traefik/traefik |
 | Authelia | 0.11.22 | Apache-2.0 | https://github.com/authelia/authelia |
-| Prometheus | 25.0.0 | Apache-2.0 | https://github.com/prometheus/prometheus |
-| Alertmanager (via Prometheus chart) | 25.0.0 | Apache-2.0 | https://github.com/prometheus/alertmanager |
 | cert-manager | v1.18.2 | Apache-2.0 | https://github.com/cert-manager/cert-manager |
 
 ## Integrated services

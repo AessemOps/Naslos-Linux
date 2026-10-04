@@ -139,8 +139,8 @@ workloads (agent, samba, nfs, terminal) live in **`naslos-privileged`**, while
 | `naslos-traefik` | `hostPort` 80/443 | it is the LAN entry point, so it binds the node's ports directly |
 | API `fix-receive-dataset-ownership` init | `runAsUser: 0` | one-shot `chown` of the Buddy receive dataset to the API's uid (65532); the API container itself runs non-root |
 
-Everything else — `naslos-ui`, `naslos-authelia`, Prometheus and Alertmanager —
-runs non-root with capabilities dropped and needs no hostPath. `naslos-api` runs
+Everything else — `naslos-ui` and `naslos-authelia` — runs non-root with
+capabilities dropped and needs no hostPath. `naslos-api` runs
 non-root too, but mounts hostPath volumes for the shares view and the buddy
 receive dataset, which is why its namespace must stay `privileged`. Any future
 change that adds a privileged workload should add it to this table in the same

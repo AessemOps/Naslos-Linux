@@ -345,7 +345,6 @@ Not required for the RAM goal.
   (initContainer follow-up); Phase 1/2 remain justified. The Prometheus removal
   is the only deployed RAM win so far.
 
-
 ### Phase 1 (2026-10-04) — branch `refactor/rust-agent`
 
 Port of `agent/` (Go, 4554 LOC, zero external deps) to a Rust workspace at
@@ -388,9 +387,10 @@ validation, same degraded-mode 503s.
   but small in absolute terms (~4 MB/pod); the decisive RAM is the ARC cap and
   the API port, not the agent. Proceeding past Phase 1 is justified mainly by the
   API port and by the lower CPU/FD footprint.
-- **Not done (release-time):** image tag bump in `values-vm.yaml`, version bump,
-  installer dispatch, and the live DaemonSet rollout drill. `make install-vm`
-  will pick up the Rust image once a fresh tag is built and pushed.
+- **Not done (release-time):** version bump, installer dispatch, and the live
+  DaemonSet rollout drill. The image tag is already bumped to `0.1.0-r9` in
+  `values-vm.yaml`, so `make install-vm` will pick up the Rust image once it is
+  built and pushed.
 
 ### Phase 1 review fixes (2026-10-04)
 

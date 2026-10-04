@@ -1,12 +1,20 @@
 # Monitoring
 
-Naslos ships two monitoring layers:
+Naslos ships one monitoring layer: a **live metrics API**
+(`GET /api/metrics`, `GET /api/dashboard`) served by `naslos-api` from the
+`metrics` package. There is **no Prometheus, Alertmanager or Grafana** in the
+chart.
 
-1. A **live metrics API** (`GET /api/metrics`, `GET /api/dashboard`) served by
-   `naslos-api` from the `metrics` package.
-2. **Prometheus + Alertmanager** (Helm dependencies) with a 30-day retention.
-   Grafana was removed on 2026-09-19 (AUDIT-H4); the metrics API plus Prometheus
-   are the current story.
+The Prometheus + Alertmanager subchart was removed on 2026-10-04 (Phase 0 of the
+Go→Rust RAM plan): together they cost ~265 MiB of resident memory on the
+single-node appliance, and nothing consumed their data. Grafana had already been
+removed on 2026-09-19 (AUDIT-H4). See `docs/AUDIT-2026-09-19-REPORT.md`.
+
+Upgrading a release that previously shipped Prometheus: Helm removes the
+subchart objects it owns, but the Alertmanager StatefulSet's
+`volumeClaimTemplate` PVC (`storage-naslos-alertmanager-0`) is orphaned and must
+be deleted — `make install-vm` does that as a one-time migration. The
+`naslos-prometheus-server` PVC is Deployment-owned and is deleted by Helm.
 
 ## Metrics model
 
@@ -29,37 +37,30 @@ SystemMetrics
   usage, ZFS pool list, hostname/uptime/OS, `updatedAt`).
 
 The manager is intentionally a pass-through: a collector process fills the
-snapshot; the API serves it under a mutex.
+snapshot; the API serves it under a mutex. The payload is JSON, so it is not a
+Prometheus scrape target.
 
-## Prometheus & Alertmanager
+## Node and workload measurement
 
-Wired through `charts/naslos/values.yaml`:
+Because there is no metrics-server, operator measurement uses the dependency-free
+kubelet summary API and `talosctl` — this is what the RAM baseline
+(`scripts/memory-baseline.sh`) does:
 
-```yaml
-prometheus:
-  enabled: true
-  prometheus:
-    prometheusSpec:
-      retention: 30d
-      resources:
-        requests: { cpu: 200m, memory: 512Mi }
-
-# Grafana is NOT deployed: it was removed on 2026-09-19 (AUDIT-H4) because it
-# shipped a committed default admin password and was unused (ClusterIP, no
-# IngressRoute). Re-enabling it requires a credential from a Secret.
-# See docs/AUDIT-2026-09-19-REPORT.md.
+```bash
+kubectl get --raw "/api/v1/nodes/<node>/proxy/stats/summary"   # per-pod working set
+talosctl read /proc/spl/kstat/zfs/arcstats                     # ARC c_max / size
 ```
 
-- Prometheus scrapes Kubernetes metrics; retention is 30 days.
-- Alertmanager routes alerts; it is a Helm dependency of the umbrella chart.
-- Grafana is **not deployed** (removed 2026-09-19). Re-enabling it needs a
-  credential from a Secret, never the old committed default.
+`kubectl top` is only available if a metrics-server is installed; the summary API
+is always present and is the source of truth for the baseline.
 
 ## Relating to the dashboard UI
 
 The SvelteKit home screen (`ui/src/lib/components/Dashboard.svelte`) renders
-`GET /api/dashboard` data; Prometheus is the deeper, long-term view (query it
-directly or through the API; there is no Grafana dashboard to link to).
+`GET /api/dashboard`. There is no long-term store and no external dashboard to
+link to; the live snapshot is the whole story. If long-term retention is ever
+wanted, it has to be added back deliberately (and sized against the node's RAM
+budget) — it is not a silent dependency.
 
 See [api.md](api.md) for the exact routes and [deployment.md](deployment.md)
 for Helm values that control these components.
