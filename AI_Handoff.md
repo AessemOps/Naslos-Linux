@@ -32,7 +32,21 @@ the `v0.1.2` install pack. Live state:
 Kept to continue work on the appliance from the workspace. The earlier
 `0.1.0-r*` live-drill sections below are historical.
 
-## RAM plan Phase 0 (2026-10-04) — Prometheus removed; ARC blocked
+## RAM plan — Phase 0 done (PR #54), Phase 1 done (PR #55), Phase 2 spike done
+
+Plan: `.kilo/plans/1791069821704-go-to-rust-migration.md` (see "Execution log").
+Goal: free RAM for custom apps. `TARGET_FREE` = **>= 2.5 GiB available under
+load** on this 5.76 GiB node.
+
+- **Phase 1 (merged):** the privileged agent is now Rust (`rust/agent`,
+  `naslos-agent`). Live measurement: ~4 MB/pod saved.
+- **Phase 2 spike (branch `refactor/rust-api-spike`):** a minimal Rust API
+  (`rust/api-spike`) with health/ready/dashboard/metrics + auth + the metrics
+  collector measured at **4.6 MiB RSS / ~5 MiB working set** vs the Go API's
+  **18.8 MiB RSS / 98.1 MiB working set** live — the gate **PASSES** (~93 MiB
+  reclaimed), so the full API port is justified. Not yet deployed.
+
+## RAM plan Phase 0 detail (2026-10-04) — Prometheus removed; ARC blocked
 
 Branch `chore/ram-baseline-prometheus-removal` (PR open). Plan:
 `.kilo/plans/1791069821704-go-to-rust-migration.md` (see "Execution log").

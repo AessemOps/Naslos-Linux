@@ -72,7 +72,10 @@ each is under the license published by its own module.
 ## Rust crates — direct (`rust/agent/Cargo.toml`)
 
 The privileged agent was ported from Go to Rust (Phase 1 of the Go→Rust plan,
-`.kilo/plans/1791069821704-go-to-rust-migration.md`). Direct dependencies:
+`.kilo/plans/1791069821704-go-to-rust-migration.md`). The Phase 2 spike crate
+`rust/api-spike` (`naslos-api-spike`) reuses axum, axum-server, clap,
+hyper-util, serde and tracing and adds `chrono` and `ipnet`. Direct
+dependencies:
 
 | Component | Version | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
@@ -81,10 +84,12 @@ The privileged agent was ported from Go to Rust (Phase 1 of the Go→Rust plan,
 | axum | 0.8 | MIT | https://github.com/tokio-rs/axum |
 | axum-server | 0.7 | MIT | https://github.com/programatik29/axum-server |
 | bytes | 1 | MIT | https://github.com/tokio-rs/bytes |
+| chrono | 0.4 | MIT OR Apache-2.0 | https://github.com/chronotope/chrono |
 | clap | 4 | MIT OR Apache-2.0 | https://github.com/clap-rs/clap |
 | futures | 0.3 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
 | http-body-util | 0.1 | MIT | https://github.com/hyperium/http-body |
 | hyper-util | 0.1 | MIT | https://github.com/hyperium/hyper-util |
+| ipnet | 2 | MIT OR Apache-2.0 | https://github.com/krisprice/ipnet |
 | rustls-pemfile | 2 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/pemfile |
 | serde / serde_json | 1 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
 | subtle | 2 | BSD-3-Clause | https://github.com/dalek-cryptography/subtle |

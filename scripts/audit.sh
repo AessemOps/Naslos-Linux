@@ -585,25 +585,26 @@ else
 fi
 
 # The agent is Rust (Phase 1 of the Go->Rust plan): `rust/` is a cargo workspace
-# with the `naslos-agent` crate. The old Go sources under agent/ were replaced.
+# with the `naslos-agent` crate (and the Phase 2 `naslos-api-spike` crate). The
+# old Go sources under agent/ were replaced.
 if [ -d "$root/rust" ]; then
   cd "$root/rust" || exit 1
   if have cargo; then
     # rustfmt/clippy live in toolchain components, installed in CI; skip (not
     # fail) where they are absent, like every other optional tool here.
     if cargo fmt --version >/dev/null 2>&1; then
-      run "cargo fmt --check (agent)" cargo fmt --all -- --check
+      run "cargo fmt --check (rust workspace)" cargo fmt --all -- --check
     else
-      skip "cargo fmt --check (agent)" "rustfmt not installed (rustup component add rustfmt)"
+      skip "cargo fmt --check (rust workspace)" "rustfmt not installed (rustup component add rustfmt)"
     fi
     if cargo clippy --version >/dev/null 2>&1; then
-      run "cargo clippy (agent)" cargo clippy --all-targets -- -D warnings
+      run "cargo clippy (rust workspace)" cargo clippy --all-targets -- -D warnings
     else
-      skip "cargo clippy (agent)" "clippy not installed (rustup component add clippy)"
+      skip "cargo clippy (rust workspace)" "clippy not installed (rustup component add clippy)"
     fi
-    run "cargo test (agent)" cargo test --release
+    run "cargo test (rust workspace)" cargo test --release
   else
-    skip "cargo (agent)" "cargo is not installed"
+    skip "cargo (rust workspace)" "cargo is not installed"
   fi
 fi
 

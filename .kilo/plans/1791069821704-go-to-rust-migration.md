@@ -412,3 +412,33 @@ Self-review of the Phase 1 branch found and fixed, with regression tests:
   the hyper timer axum-server omits.
 - **Dead code removed:** `zfs::utils` module, `dataset_exists`, `is_base`,
   `other_err!` and the unused `ZfsError::invalid/other`.
+
+### Phase 2 spike (2026-10-04) — branch `refactor/rust-api-spike`
+
+Timeboxed spike required before the full API port: a minimal Rust API
+(`rust/api-spike`) serving only `/api/health`, `/api/ready`, `/api/dashboard`
+and `/api/metrics`, with the proxy auth middleware, the metrics collector loop
+and the exact Go JSON contracts (RFC3339 `updatedAt`, nil slices -> `null` in the
+dashboard projection, trailing newline).
+
+- **Measured (same host, single process):**
+
+  | | Go API (live, in-cluster) | Rust spike |
+  | --- | --- | --- |
+  | RSS | 18.8 MiB | **4.6 MiB idle / 4.8 MiB after 3000 requests** |
+  | Working set | 98.1 MiB | ~5 MiB |
+  | Binary | 80.8 MB | **2.0 MB** |
+
+- **Gate: PASS.** The spike alone reclaims ~93 MiB of working set — far more
+  than the Phase 0 gap to `TARGET_FREE` (and ~3x the Rust agent's own saving).
+  The API runs the full metrics collector + auth path here, so this is a
+  realistic floor, not a trivial responder. The full port is justified; the
+  remaining cost is engineering, not RAM risk.
+- **Caveats for the full port.** The spike deliberately stubs the Talos collector
+  (it reads `/proc` locally) and does not touch LDAP, kube-rs, Helm, git clones,
+  buddy crypto or the 20 state-file packages; those will raise RSS above 4.6 MiB.
+  Even a 3-4x increase keeps a large win against 98 MiB. The bundled `helm`/
+  `talosctl` binaries add image size, not idle RSS (documented).
+- **Contract tests** (5): public health/ready with the trailing newline, 401
+  without secret/identity, dashboard/metrics shape including RFC3339 `updatedAt`
+  and `null` nil slices, and default-deny on an unknown `/api/` route.
