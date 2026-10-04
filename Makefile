@@ -66,7 +66,7 @@ api:
 	cd api && $(GO) build -o ../bin/naslos-api ./cmd
 
 agent:
-	cd agent && $(GO) build -o ../bin/naslos-agent ./cmd
+	cargo build --manifest-path rust/Cargo.toml --release --package naslos-agent
 
 ui:
 	cd ui && npm install && npm run build
@@ -82,7 +82,7 @@ api-image:
 	$(DOCKER) build -t $(API_IMAGE) -f api/Dockerfile .
 
 agent-image:
-	$(DOCKER) build -t $(AGENT_IMAGE) -f agent/Dockerfile .
+	$(DOCKER) build -t $(AGENT_IMAGE) -f agent/Dockerfile.rust .
 
 ui-image:
 	$(DOCKER) build -t $(UI_IMAGE) -f ui/Dockerfile .

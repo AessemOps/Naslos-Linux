@@ -1,0 +1,35 @@
+# Naslos agent container image (Rust port).
+# Runs as a privileged DaemonSet and executes zpool/zfs via chroot /host.
+
+FROM rust:1.85-alpine AS builder
+
+RUN apk add --no-cache musl-dev
+
+WORKDIR /build
+COPY rust/Cargo.toml Cargo.toml
+COPY rust/Cargo.lock Cargo.lock
+COPY rust/agent/Cargo.toml agent/Cargo.toml
+# Warm the dependency cache before copying sources so a code change does not
+# rebuild the whole graph.
+RUN mkdir -p agent/src && echo 'fn main() {}' > agent/src/main.rs \
+    && echo '' > agent/src/lib.rs \
+    && cargo build --release --package naslos-agent || true
+COPY rust/agent/src agent/src
+# Bust the placeholder build (touch the lib too, so the dependency crate is
+# recompiled with the real sources) and produce the real binary.
+RUN touch agent/src/main.rs agent/src/lib.rs && cargo build --release --package naslos-agent
+
+# Alpine (not distroless): the agent calls `chroot /host <bin>` to run
+# zpool/zfs/wipefs on the Talos host, and distroless ships no chroot binary.
+# Alpine's busybox provides chroot and the static musl binary runs unchanged.
+FROM alpine:3.24
+
+WORKDIR /app
+COPY --from=builder /build/target/release/naslos-agent /app/naslos-agent
+
+# The agent is privileged and must run as root to chroot /host.
+USER root:root
+
+EXPOSE 9090
+
+ENTRYPOINT ["/app/naslos-agent"]

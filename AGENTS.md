@@ -18,7 +18,7 @@ backups ("Buddy").
 | Path | What it is |
 | --- | --- |
 | `api/` | Go HTTP API + scheduler/job runner (Go module `github.com/AessemOps/Naslos-Linux/api`) |
-| `agent/` | Privileged, host-networked DaemonSet: the only thing that runs `zpool`/`zfs`/`wipefs` (Go module) |
+| `rust/agent/` | Privileged, host-networked DaemonSet: the only thing that runs `zpool`/`zfs`/`wipefs` (Rust crate `naslos-agent`) |
 | `ui/` | Svelte 5 (legacy syntax) + TypeScript + Tailwind, built with adapter-static, served by unprivileged nginx |
 | `charts/naslos/` | The Helm chart: api, ui, agent, samba, nfs, terminal, openldap, Traefik + Authelia (+ optional cert-manager) |
 | `openldap/ samba/ nfs/ terminal/` | Per-service images and config templates |
@@ -34,6 +34,9 @@ There are **no `make test` / `make lint` targets** — run the gates directly.
 # Go (both modules)
 cd api   && go build ./... && go vet ./... && go test -race ./...
 cd agent && go build ./... && go vet ./... && go test -race ./...
+
+# Rust agent (workspace root is rust/)
+cd rust && cargo build --release -p naslos-agent && cargo test -p naslos-agent
 
 # UI type-check + build
 cd ui && npm run check && npm run build
