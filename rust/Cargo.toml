@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["agent", "api-spike"]
+members = ["agent", "api"]
 
 [workspace.package]
 version = "0.1.0"

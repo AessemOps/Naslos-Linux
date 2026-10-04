@@ -1,0 +1,91 @@
+//! The API HTTP server (port of the `api/internal/server` router + the S1
+//! handler set). Every owner-facing route lives on the `owner` router behind
+//! `require_auth`; `/api/auth/me`, `/api/dashboard` and `/api/metrics` are
+//! auth-but-not-admin; the rest of `/api/` is admin-only. Routes whose ported
+//! handler is not in this slice return a documented 501 Not Implemented so the
+//! route surface (and its auth) already matches Go.
+
+pub mod handlers;
+
+use crate::auth;
+use crate::state::AppState;
+use axum::middleware;
+use axum::routing::{any, get};
+use axum::Router;
+use std::sync::Arc;
+
+/// The status a not-yet-ported owner route returns.
+pub const NOT_PORTED_STATUS: u16 = 501;
+
+pub fn build_router(state: Arc<AppState>) -> Router {
+    // Public: health probes.
+    let public: Router<Arc<AppState>> = Router::new()
+        .route("/api/health", get(handlers::health))
+        .route("/api/ready", get(handlers::ready));
+
+    // Auth-but-not-admin (any authenticated user).
+    let user: Router<Arc<AppState>> = Router::new()
+        .route("/api/auth/me", get(handlers::auth_me))
+        .route("/api/dashboard", get(handlers::dashboard))
+        .route("/api/metrics", get(handlers::metrics))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_auth,
+        ));
+
+    // Admin-only owner routes. Handlers not in S1 answer 501.
+    let owner: Router<Arc<AppState>> = Router::new()
+        .route("/api/catalog", any(handlers::not_ported))
+        .route("/api/catalog/{*rest}", any(handlers::not_ported))
+        .route("/api/apps", any(handlers::not_ported))
+        .route("/api/apps/jobs", any(handlers::not_ported))
+        .route("/api/apps/jobs/{*rest}", any(handlers::not_ported))
+        .route("/api/apps/{*rest}", any(handlers::not_ported))
+        .route("/api/sources", any(handlers::not_ported))
+        .route("/api/sources/refresh", any(handlers::not_ported))
+        .route("/api/sources/{*rest}", any(handlers::not_ported))
+        .route("/api/domains", any(handlers::not_ported))
+        .route("/api/domains/{*rest}", any(handlers::not_ported))
+        .route("/api/providers", any(handlers::not_ported))
+        .route("/api/ddns", any(handlers::not_ported))
+        .route("/api/ddns/{*rest}", any(handlers::not_ported))
+        .route("/api/disks", any(handlers::not_ported))
+        .route("/api/disks/recommend", any(handlers::not_ported))
+        .route("/api/volumes/zfs", any(handlers::not_ported))
+        .route("/api/volumes/zfs/import", any(handlers::not_ported))
+        .route("/api/volumes/zfs/{*rest}", any(handlers::not_ported))
+        .route("/api/datasets", any(handlers::not_ported))
+        .route("/api/ws/logs", any(handlers::not_ported))
+        .route("/api/pods", any(handlers::not_ported))
+        .route("/api/namespaces", any(handlers::not_ported))
+        .route("/api/ws/exec", any(handlers::not_ported))
+        .route("/api/shares", any(handlers::not_ported))
+        .route("/api/shares/paths", any(handlers::not_ported))
+        .route("/api/shares/folders", any(handlers::not_ported))
+        .route("/api/shares/status", any(handlers::not_ported))
+        .route("/api/shares/apply", any(handlers::not_ported))
+        .route("/api/shares/config/samba", any(handlers::not_ported))
+        .route("/api/shares/config/nfs", any(handlers::not_ported))
+        .route("/api/shares/{*rest}", any(handlers::not_ported))
+        .route("/api/notifications", any(handlers::not_ported))
+        .route("/api/notifications/test", any(handlers::not_ported))
+        .route("/api/buddy/status", any(handlers::not_ported))
+        .route("/api/buddy/peers", any(handlers::not_ported))
+        .route("/api/buddy/identity", any(handlers::not_ported))
+        .route("/api/buddy/send", any(handlers::not_ported))
+        .route("/api/buddy/restore", any(handlers::not_ported))
+        .route("/api/buddy/jobs", any(handlers::not_ported))
+        .route("/api/buddy/jobs/{*rest}", any(handlers::not_ported))
+        .route("/api/buddy/schedules", any(handlers::not_ported))
+        .route("/api/users", any(handlers::not_ported))
+        .route("/api/users/{*rest}", any(handlers::not_ported))
+        .route("/api/groups", any(handlers::not_ported))
+        .route("/api/groups/{*rest}", any(handlers::not_ported))
+        .layer(middleware::from_fn(auth::require_admin))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_auth,
+        ));
+
+    public.merge(user).merge(owner).with_state(state)
+}

@@ -1,20 +1,21 @@
 [package]
-name = "naslos-api-spike"
+name = "naslos-api"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Naslos API Rust spike (Phase 2): /api/health, /api/ready, /api/dashboard, /api/metrics"
+description = "Naslos HTTP API (Rust port of api/)"
 
 [[bin]]
-name = "naslos-api-spike"
+name = "naslos-api"
 path = "src/main.rs"
 
 [lib]
-name = "naslos_api_spike"
+name = "naslos_api"
 path = "src/lib.rs"
 
 [dependencies]
+anyhow = "1"
 axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 chrono = { version = "0.4", features = ["serde"] }

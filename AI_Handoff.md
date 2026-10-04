@@ -45,6 +45,12 @@ load** on this 5.76 GiB node.
   collector measured at **4.6 MiB RSS / ~5 MiB working set** vs the Go API's
   **18.8 MiB RSS / 98.1 MiB working set** live — the gate **PASSES** (~93 MiB
   reclaimed), so the full API port is justified. Not yet deployed.
+- **Phase 2 S1 (branch `refactor/rust-api`, in progress):** `rust/api`
+  (`naslos-api`) foundation — config/logsafe/auth/metrics/talos(CLI)/server with
+  the full route surface and correct auth gates; health/ready/auth-me/dashboard/
+  metrics are live, other owner routes return 501. Talos CLI adapter verified
+  live. `api/Dockerfile.rust` builds (10.6 MB, ~2.4 MiB RSS). The Go `api/`
+  remains the deployed image until parity.
 
 ## RAM plan Phase 0 detail (2026-10-04) — Prometheus removed; ARC blocked
 

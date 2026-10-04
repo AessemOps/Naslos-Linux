@@ -775,9 +775,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "naslos-api-spike"
+name = "naslos-api"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "axum",
  "axum-server",
  "chrono",

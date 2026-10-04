@@ -72,10 +72,9 @@ each is under the license published by its own module.
 ## Rust crates — direct (`rust/agent/Cargo.toml`)
 
 The privileged agent was ported from Go to Rust (Phase 1 of the Go→Rust plan,
-`.kilo/plans/1791069821704-go-to-rust-migration.md`). The Phase 2 spike crate
-`rust/api-spike` (`naslos-api-spike`) reuses axum, axum-server, clap,
-hyper-util, serde and tracing and adds `chrono` and `ipnet`. Direct
-dependencies:
+`.kilo/plans/1791069821704-go-to-rust-migration.md`). The Phase 2 API port
+(`rust/api`, `naslos-api`) reuses axum, axum-server, clap, hyper-util, serde,
+tracing, chrono and ipnet. Direct dependencies:
 
 | Component | Version | License (SPDX) | Upstream |
 | --- | --- | --- | --- |

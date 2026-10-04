@@ -1,0 +1,30 @@
+# Naslos API server container image (Rust port, Phase 2).
+# Build context: repo root. Not yet wired into .github/image-matrix.json — the
+# Go API image stays the deployed one until the port reaches parity (slice S7).
+# This Dockerfile exists so the Rust API can be built and smoke-tested.
+
+FROM rust:1.85-alpine AS builder
+RUN apk add --no-cache musl-dev
+
+WORKDIR /build
+COPY rust/Cargo.toml Cargo.toml
+COPY rust/Cargo.lock Cargo.lock
+COPY rust/agent/Cargo.toml agent/Cargo.toml
+COPY rust/api/Cargo.toml api/Cargo.toml
+# Warm the dependency cache before copying sources (placeholder libs, both
+# touched after the real COPY so the crates rebuild).
+RUN mkdir -p agent/src api/src \
+    && echo 'pub fn placeholder(){}' > agent/src/lib.rs && echo 'fn main(){}' > agent/src/main.rs \
+    && echo 'pub fn placeholder(){}' > api/src/lib.rs && echo 'fn main(){}' > api/src/main.rs \
+    && cargo build --release --package naslos-api || true
+COPY rust/agent/src agent/src
+COPY rust/api/src api/src
+RUN touch agent/src/lib.rs agent/src/main.rs api/src/lib.rs api/src/main.rs \
+    && cargo build --release --package naslos-api
+
+FROM gcr.io/distroless/static-debian12:nonroot
+WORKDIR /app
+COPY --from=builder /build/target/release/naslos-api /app/naslos-api
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/app/naslos-api"]

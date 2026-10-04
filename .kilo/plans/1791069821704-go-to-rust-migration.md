@@ -236,6 +236,28 @@ saving go to the full port.
 | `talos` | bundled `talosctl -o json` for version/read/memory/mounts/disks; parse defensively |
 | `config`, `logsafe` | port; keep log redaction rules |
 
+### Execution strategy (incremental slices)
+
+The full port is ~23k LOC across 20 packages; it lands as **vertical slices**,
+each a working increment with contract tests, on branch `refactor/rust-api`:
+
+1. **S1 — foundation** (this slice): crate skeleton `rust/api`, `config`,
+   `logsafe`, `metrics`, `auth`, `talos` (CLI adapter), the `server` router +
+   the four endpoints for real, `/api/auth/me`, and the deployable image. This
+   makes the API runnable and replaces the spike.
+2. **S2 — ZFS/shares read path:** `agent` client (token transport + TLS) and the
+   `server` handlers for pools/datasets/disks/shares (read + apply).
+3. **S3 — identity/LDAP:** `identity`, users/groups handlers.
+4. **S4 — apps/catalog/helm:** `chartsrepo`, `catalog`, `apps`, the bundled
+   `helm` adapter, `kube`, app jobs.
+5. **S5 — routing/certs/authelia/domains/providers/ddns.** 
+6. **S6 — buddy** (the crypto-heavy slice) + notifications.
+7. **S7 — retire Go:** Playwright green against the Rust API, then remove
+   `api/` (or archive), drop the Go CI steps, update AGENTS/README/spec.
+
+Each slice keeps the Go API as the reference; the image tag only moves in S7's
+deploy, and the Go tag stays for rollback.
+
 ### Tasks
 
 1. Create `rust/api` crate; port package-by-package behind contract tests, keeping
@@ -442,3 +464,36 @@ dashboard projection, trailing newline).
 - **Contract tests** (5): public health/ready with the trailing newline, 401
   without secret/identity, dashboard/metrics shape including RFC3339 `updatedAt`
   and `null` nil slices, and default-deny on an unknown `/api/` route.
+
+### Phase 2 S1 — foundation (2026-10-04) — branch `refactor/rust-api`
+
+First vertical slice of the full port: `rust/api` (`naslos-api`) replaces the
+spike and is runnable.
+
+- **Modules:** `config`, `logsafe`, `auth` (proxy secret + CIDR + identity +
+  admin gate), `metrics` (manager + models + dashboard projection), `talos`
+  (bundled-`talosctl` adapter), `server` (router + S1 handlers).
+- **Route surface matches Go now.** The full owner route table is registered
+  with the correct gates: `/api/health`, `/api/ready` public; `/api/auth/me`,
+  `/api/dashboard`, `/api/metrics` auth-but-not-admin; every other `/api/` route
+  admin-only. Handlers not yet ported return a documented **501** so the surface
+  and its auth are already correct.
+- **Live endpoints:** health, ready, auth/me, dashboard, metrics — real, with the
+  metrics collector polling the node.
+- **Talos CLI adapter verified live:** `talosctl read /proc/{meminfo,uptime,stat,
+  loadavg,cpuinfo,sys/kernel/*}` + `get {version,addresses,disks} -o json`,
+  `TALOSCONFIG` resolution (env → `~/.talos/config` → in-cluster mount),
+  `TALOS_ENDPOINTS`, defensive JSON parsing that skips the version-mismatch
+  `WARNING:` preamble. Matched the Go client's fields on the live node.
+- **Tests (15 in the crate):** auth gates (fail-closed without secret/identity,
+  plain-user 200 on dashboard/metrics, plain-user 403 + admin 501 on admin
+  routes), the four endpoint shapes incl. RFC3339 / Go zero-time, logsafe
+  sanitisation, meminfo/size/addresses parsing, talosctl JSON preamble skipping.
+- **Image:** `api/Dockerfile.rust` (multi-stage musl → distroless static,
+  nonroot). Built and smoke-tested: `/health` 200, no-secret 401, dashboard 200
+  with the CIDR + headers, plain-user admin route 403. **10.6 MB image, ~2.4 MiB
+  RSS** idle. The deployed image stays `api/Dockerfile` (Go) until S7.
+
+**Not yet ported (next slices):** agent client + shares/ZFS, identity/LDAP,
+apps/catalog/helm, routing/certs/authelia/domains/ddns, buddy, notifications.
+The image matrix, values tags, and the Go API remain the deployed path until S7.
