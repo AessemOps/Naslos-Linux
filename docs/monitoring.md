@@ -10,6 +10,12 @@ Go→Rust RAM plan): together they cost ~265 MiB of resident memory on the
 single-node appliance, and nothing consumed their data. Grafana had already been
 removed on 2026-09-19 (AUDIT-H4). See `docs/AUDIT-2026-09-19-REPORT.md`.
 
+Upgrading a release that previously shipped Prometheus: Helm removes the
+subchart objects it owns, but the Alertmanager StatefulSet's
+`volumeClaimTemplate` PVC (`storage-naslos-alertmanager-0`) is orphaned and must
+be deleted — `make install-vm` does that as a one-time migration. The
+`naslos-prometheus-server` PVC is Deployment-owned and is deleted by Helm.
+
 ## Metrics model
 
 `metrics.Manager` keeps a single `SystemMetrics` snapshot:

@@ -55,6 +55,10 @@ load** on this 5.76 GiB node.
   at boot. Evidence in `docs/deployment.md` -> "ZFS ARC".
 - **Right-sizing**: OpenLDAP request 256Mi -> 768Mi (measured idle 673 MiB);
   other workloads left as-is (requests are hints, not reclamation).
+- **Live now (2026-10-04)**: helm revision **5** (`naslos-0.1.2`), no
+  Prometheus/Alertmanager, OpenLDAP request 768Mi/limit 1Gi. The one-time
+  alertmanager PVC cleanup is wired into `make install-vm`. Prometheus removal
+  is the only deployed RAM win so far; the ARC cap is still the missing piece.
 - **Gate**: not met until ARC is capped — `c_max` can still grow to ~4.76 GiB
   under load. Phase 1/2 remain justified.
 

@@ -58,8 +58,11 @@ arc_key() {
   raw="$("$TALOSCTL" -e "$TALOS_ENDPOINT" -n "$TALOS_ENDPOINT" \
     read /proc/spl/kstat/zfs/arcstats 2>/dev/null || true)"
   if [ -z "$raw" ]; then
+    # Talos has no `cat` in its host rootfs, so `chroot /host cat` fails
+    # (verified). Read through the terminal pod's host-root bind mount with the
+    # pod image's own cat instead.
     raw="$("$KUBECTL" -n naslos-privileged exec deploy/naslos-terminal -- \
-      chroot /host cat /proc/spl/kstat/zfs/arcstats 2>/dev/null || true)"
+      cat /host/proc/spl/kstat/zfs/arcstats 2>/dev/null || true)"
   fi
   printf '%s\n' "$raw" | awk -v k="$key" '$1==k {print $3; exit}'
 }
@@ -88,6 +91,9 @@ for ws, rss, ns, name in rows:
 print("  TOTAL {:.1f} MiB working set over {} pods".format(mib(sum(r[0] for r in rows)), len(rows)))
 '
   cmax="$(arc_key c_max)"; c="$(arc_key c)"; size="$(arc_key size)"
+  if [ -z "$cmax$c$size" ]; then
+    echo "WARN: could not read ZFS arcstats (talosctl and terminal-pod fallback both failed); values below are unknown, not zero" >&2
+  fi
   echo "zfs arc: c_max=$(( ${cmax:-0} / 1048576 )) MiB  c=$(( ${c:-0} / 1048576 )) MiB  size=$(( ${size:-0} / 1048576 )) MiB"
 }
 
