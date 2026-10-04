@@ -18,11 +18,11 @@ be built.
 ## 1. Goal
 
 One downloadable app per OS (`.dmg`/`.app`, `.msi`/`.exe`, Linux `.AppImage`)
-that installs Naslos onto a user-provided Talos node booted from the Naslos ZFS
-ISO, end to end, with a progress bar and a first-login handoff.
+that installs Naslos onto a user-provided machine booted from the Talos ISO
+(Naslos ZFS schematic), end to end, with a progress bar and a first-login handoff.
 
 Inputs, in order:
-1. IP of the Talos machine (user boots it from the Naslos ISO — the app shows the
+1. IP of the machine (user boots it from the Talos ISO — the app shows the
    link and checksum; it does **not** download or write USB).
 2. Wanted local domain / appliance name.
 3. Wanted admin username.
