@@ -168,7 +168,7 @@ bootstrap-vm:
 	@python3 -c "import re,sys; p=sys.argv[1]; t=open(p).read(); d=re.split(r'(?m)^---\s*$$', t); open(p,'w').write('---'.join(x for x in d if 'kind: UnattendedInstallConfig' not in x))" $(VM_CONFIG_DIR)/controlplane.yaml
 	@if grep -q "^kind: UnattendedInstallConfig" $(VM_CONFIG_DIR)/controlplane.yaml; then echo "ERROR: strip failed"; exit 1; fi
 	@echo "talosconfig written to $(VM_CONFIG_DIR)/talosconfig"
-	@echo "Next: boot the VM from the Naslos ISO and run:"
+	@echo "Next: boot the VM from the Talos ISO (Naslos schematic) and run:"
 	@echo "  export TALOSCONFIG=$(VM_CONFIG_DIR)/talosconfig"
 	@echo "  talosctl apply-config --insecure --nodes $(VM_IP) --file $(VM_CONFIG_DIR)/controlplane.yaml"
 	@echo "  talosctl bootstrap --nodes $(VM_IP) --endpoints $(VM_IP)"

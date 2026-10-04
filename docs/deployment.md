@@ -207,7 +207,7 @@ This writes:
 
 ### 2. Install Talos on the VM
 
-Boot the VM from the Naslos installer image (ISO/USB/PXE), then run:
+Boot the VM from the Talos ISO (the Naslos ZFS schematic), then run:
 
 ```bash
 # Apply the machine config to the still-insecure installer
