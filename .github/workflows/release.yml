@@ -273,19 +273,22 @@ jobs:
           PACK: naslos-install-pack-${{ needs.guard.outputs.version }}.tar.gz
         run: |
           set -euo pipefail
-          # The repo has immutable releases: never move an existing release's
-          # target, and never try to replace an existing asset. Create the
-          # release (and its tag) only when missing; a re-run just keeps the
-          # already-published pack and continues to the dispatch.
-          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" --title "$TAG" --generate-notes
-          fi
-          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
-               --jq '.assets[].name' | grep -qx "$PACK"; then
+          # The repo has immutable releases: an asset can only be attached when
+          # the release is created, never uploaded afterwards. A tag push may
+          # auto-create an empty release, so: keep one that already has the pack
+          # (a re-run), otherwise remove the empty/asset-less release and create
+          # it again WITH the pack in the same call.
+          assets=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+                     --jq '.assets[].name' 2>/dev/null || true)
+          if printf '%s\n' "$assets" | grep -qx "$PACK"; then
             echo "pack already attached to $TAG (immutable release); leaving it in place"
           else
-            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" \
+            if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              # Asset-less release (e.g. auto-created by the tag push): drop it.
+              gh release delete "$TAG" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag=false
+            fi
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "$TAG" --generate-notes \
               dist/naslos-install-pack-*.tar.gz \
               dist/naslos-install-pack-*.tar.gz.sha256
           fi
