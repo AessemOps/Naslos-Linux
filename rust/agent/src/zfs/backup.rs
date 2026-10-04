@@ -22,10 +22,7 @@ pub fn validate_snapshot_name(name: &str) -> ZfsResult<()> {
         return Err(ZfsError::Validation("snapshot name is required".into()));
     }
     if name.starts_with('-') {
-        return Err(invalid!(
-            "snapshot name {:?} must not start with '-'",
-            name
-        ));
+        return Err(invalid!("snapshot name {:?} must not start with '-'", name));
     }
     if name.contains('@') || name.contains(' ') || name.contains('/') || name.contains('\\') {
         return Err(invalid!(
@@ -86,23 +83,20 @@ pub fn parse_send_size(out: &str) -> ZfsResult<i64> {
         if key != "size" {
             continue;
         }
-        let size: i64 = value
-            .trim()
-            .parse()
-            .map_err(|e| ZfsError::Other(format!("unexpected size {:?} from zfs send -nP: {e}", value)))?;
+        let size: i64 = value.trim().parse().map_err(|e| {
+            ZfsError::Other(format!(
+                "unexpected size {:?} from zfs send -nP: {e}",
+                value
+            ))
+        })?;
         return Ok(size);
     }
-    Err(ZfsError::Other(
-        "zfs send -nP did not report a size".into(),
-    ))
+    Err(ZfsError::Other("zfs send -nP did not report a size".into()))
 }
 
 impl ZfsClient {
     /// Start a `zfs send` and return its stdout plus a waiter.
-    pub async fn send_stream(
-        &self,
-        opts: &SendStreamOptions,
-    ) -> ZfsResult<(BoxedRead, Waiter)> {
+    pub async fn send_stream(&self, opts: &SendStreamOptions) -> ZfsResult<(BoxedRead, Waiter)> {
         let argv = send_command_line(opts)?;
         self.runner_spawn_out(&argv).await
     }
@@ -146,9 +140,7 @@ impl ZfsClient {
             .await
         {
             Ok(out) => out,
-            Err(e) => {
-                return Err(ZfsError::Other(format!("listing snapshots: {}", e.message)))
-            }
+            Err(e) => return Err(ZfsError::Other(format!("listing snapshots: {}", e.message))),
         };
 
         let mut snapshots = Vec::new();

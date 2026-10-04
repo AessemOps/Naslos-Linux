@@ -138,14 +138,21 @@ async fn destroy_dataset_requires_recursive_flag() {
     let calls = runner.calls();
     let c = client(&host, runner);
 
-    c.destroy_dataset("tank/media", false).await.expect("destroy");
-    assert_eq!(calls.lock().unwrap()[0], "/usr/local/sbin/zfs destroy tank/media");
+    c.destroy_dataset("tank/media", false)
+        .await
+        .expect("destroy");
+    assert_eq!(
+        calls.lock().unwrap()[0],
+        "/usr/local/sbin/zfs destroy tank/media"
+    );
 
     let host = FakeHost::new();
     let runner = Arc::new(FakeRunner::new(&[]));
     let calls = runner.calls();
     let c = client(&host, runner);
-    c.destroy_dataset("tank/media", true).await.expect("destroy -r");
+    c.destroy_dataset("tank/media", true)
+        .await
+        .expect("destroy -r");
     assert_eq!(
         calls.lock().unwrap()[0],
         "/usr/local/sbin/zfs destroy -r tank/media"
@@ -162,10 +169,18 @@ async fn destroy_dataset_requires_recursive_flag() {
 #[test]
 fn validate_dataset_name_cases() {
     for ok in ["media", "photos/2026", "a.b_c-d", "Media1", "a/b/c/d"] {
-        assert!(validate_dataset_name(ok).is_ok(), "ValidateDatasetName({ok:?})");
+        assert!(
+            validate_dataset_name(ok).is_ok(),
+            "ValidateDatasetName({ok:?})"
+        );
     }
-    for bad in ["", " media", "media ", "../x", "a/../b", "a b", "-1-", "@", "a@b", "/abs"] {
-        assert!(validate_dataset_name(bad).is_err(), "ValidateDatasetName({bad:?})");
+    for bad in [
+        "", " media", "media ", "../x", "a/../b", "a b", "-1-", "@", "a@b", "/abs",
+    ] {
+        assert!(
+            validate_dataset_name(bad).is_err(),
+            "ValidateDatasetName({bad:?})"
+        );
     }
 }
 
@@ -184,7 +199,11 @@ async fn destroy_dataset_recovers_from_stale_mount() {
         .await
         .expect("should recover from a stale mount");
     let all = calls.lock().unwrap();
-    assert_eq!(all.len(), 3, "expected destroy, unmount, destroy; got {all:?}");
+    assert_eq!(
+        all.len(),
+        3,
+        "expected destroy, unmount, destroy; got {all:?}"
+    );
     assert_eq!(all[0], "/usr/local/sbin/zfs destroy -r tank/stale");
     assert_eq!(all[1], "/usr/local/sbin/zfs unmount -f tank/stale");
     assert_eq!(all[2], all[0]);
@@ -193,12 +212,18 @@ async fn destroy_dataset_recovers_from_stale_mount() {
 #[tokio::test]
 async fn destroy_dataset_does_not_unmount_on_other_errors() {
     let host = FakeHost::new();
-    let runner = Arc::new(FakeRunner::new(&["ERR:cannot destroy 'tank/live': dataset is in use\n"]));
+    let runner = Arc::new(FakeRunner::new(&[
+        "ERR:cannot destroy 'tank/live': dataset is in use\n",
+    ]));
     let calls = runner.calls();
     let c = client(&host, runner);
 
     assert!(c.destroy_dataset("tank/live", false).await.is_err());
-    assert_eq!(calls.lock().unwrap().len(), 1, "a non-busy error must not unmount");
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        1,
+        "a non-busy error must not unmount"
+    );
 }
 
 #[tokio::test]
@@ -211,7 +236,10 @@ async fn destroy_dataset_reports_unmount_failure() {
     let calls = runner.calls();
     let c = client(&host, runner);
 
-    let err = c.destroy_dataset("tank/stale", false).await.expect_err("error");
+    let err = c
+        .destroy_dataset("tank/stale", false)
+        .await
+        .expect_err("error");
     assert!(err.to_string().contains("forced unmount"), "{err:?}");
     assert_eq!(calls.lock().unwrap().len(), 2);
 }

@@ -349,7 +349,10 @@ pub async fn snapshots_post(
         Err(resp) => return resp,
     };
     match zfs.snapshot(&dataset, &req.name).await {
-        Ok(()) => json_response(StatusCode::CREATED, &json!({ "status": "snapshot created" })),
+        Ok(()) => json_response(
+            StatusCode::CREATED,
+            &json!({ "status": "snapshot created" }),
+        ),
         Err(e) => write_client_error(&e),
     }
 }
@@ -456,7 +459,10 @@ pub async fn shares_folders_get(
             json_response(StatusCode::OK, &json!({ "path": path, "folders": folders }))
         }
         Ok(Err(msg)) => write_error(StatusCode::NOT_FOUND, msg),
-        Err(e) => write_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task failed: {e}")),
+        Err(e) => write_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task failed: {e}"),
+        ),
     }
 }
 
@@ -475,7 +481,10 @@ pub async fn shares_folders_post(State(state): State<Arc<AppState>>, body: Body)
             json_response(StatusCode::CREATED, &json!({ "path": created }))
         }
         Ok(Err(msg)) => write_error(StatusCode::BAD_REQUEST, msg),
-        Err(e) => write_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task failed: {e}")),
+        Err(e) => write_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task failed: {e}"),
+        ),
     }
 }
 
@@ -498,7 +507,10 @@ pub async fn shares_folders_delete(
             )
         }
         Ok(Err(msg)) => write_error(StatusCode::BAD_REQUEST, msg),
-        Err(e) => write_error(StatusCode::INTERNAL_SERVER_ERROR, format!("task failed: {e}")),
+        Err(e) => write_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task failed: {e}"),
+        ),
     }
 }
 

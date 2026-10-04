@@ -82,10 +82,14 @@ impl RealRunner {
 #[async_trait]
 impl Runner for RealRunner {
     async fn run(&self, bin: &str, args: &[String]) -> Result<String, RunError> {
-        let output = self.command(bin, args).output().await.map_err(|e| RunError {
-            output: String::new(),
-            message: e.to_string(),
-        })?;
+        let output = self
+            .command(bin, args)
+            .output()
+            .await
+            .map_err(|e| RunError {
+                output: String::new(),
+                message: e.to_string(),
+            })?;
 
         let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
         combined.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -126,10 +130,7 @@ impl Runner for RealRunner {
         });
 
         let waiter: Waiter = Box::pin(async move {
-            let status = child
-                .wait()
-                .await
-                .map_err(|e| format!("zfs: {e}"))?;
+            let status = child.wait().await.map_err(|e| format!("zfs: {e}"))?;
             if status.success() {
                 Ok(())
             } else {
@@ -173,10 +174,7 @@ impl Runner for RealRunner {
         });
 
         let waiter: Waiter = Box::pin(async move {
-            let status = child
-                .wait()
-                .await
-                .map_err(|e| format!("zfs: {e}"))?;
+            let status = child.wait().await.map_err(|e| format!("zfs: {e}"))?;
             if status.success() {
                 Ok(())
             } else {

@@ -14,8 +14,8 @@ pub use devices::validate_pool_name;
 
 pub use runner::{join_host, RealRunner, Runner};
 pub use types::{
-    Dataset, ImportablePool, Pool, PoolConfig, PoolDevice, PoolHealth, PoolIOStats, SendStreamOptions,
-    SnapshotInfo,
+    Dataset, ImportablePool, Pool, PoolConfig, PoolDevice, PoolHealth, PoolIOStats,
+    SendStreamOptions, SnapshotInfo,
 };
 pub use validation::{ZfsError, ZfsResult};
 

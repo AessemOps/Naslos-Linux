@@ -87,9 +87,5 @@ impl FakeHost {
 /// Whether any recorded call contains `substr`.
 #[allow(dead_code)]
 pub fn ran_command(calls: &Arc<Mutex<Vec<String>>>, substr: &str) -> bool {
-    calls
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|c| c.contains(substr))
+    calls.lock().unwrap().iter().any(|c| c.contains(substr))
 }

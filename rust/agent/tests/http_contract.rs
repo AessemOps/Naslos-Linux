@@ -88,7 +88,11 @@ async fn health_is_public() {
 #[tokio::test]
 async fn api_requires_a_bearer_token() {
     for req in [
-        Request::builder().method("GET").uri("/api/v1/pools").body(Body::empty()).unwrap(),
+        Request::builder()
+            .method("GET")
+            .uri("/api/v1/pools")
+            .body(Body::empty())
+            .unwrap(),
         Request::builder()
             .method("GET")
             .uri("/api/v1/pools")
@@ -163,7 +167,11 @@ async fn validation_errors_are_400_and_node_errors_are_500() {
     let server = server_with(Some(zfs), None, TOKEN);
 
     // A validation error reaches the HTTP layer as 400.
-    let (status, body) = send(&server, post_json("/api/v1/pools", r#"{"name":"-f","disks":["/dev/sdb"]}"#)).await;
+    let (status, body) = send(
+        &server,
+        post_json("/api/v1/pools", r#"{"name":"-f","disks":["/dev/sdb"]}"#),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body["error"].as_str().unwrap().contains("pool name"));
 
@@ -242,7 +250,11 @@ async fn bare_trailing_slash_route_is_bad_request_not_not_found() {
         .oneshot(get_auth("/api/v1/datasets/"))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "route did not match");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "route did not match"
+    );
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["error"], "pool name required");
@@ -252,5 +264,9 @@ async fn bare_trailing_slash_route_is_bad_request_not_not_found() {
         .oneshot(get_auth("/api/v1/snapshots/"))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "route did not match");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "route did not match"
+    );
 }

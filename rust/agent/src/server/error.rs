@@ -14,12 +14,7 @@ pub const MAX_STREAM_BODY_BYTES: u64 = 1 << 40; // 1 TiB
 pub fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Response {
     let mut body = serde_json::to_vec(value).unwrap_or_default();
     body.push(b'\n');
-    (
-        status,
-        [(header::CONTENT_TYPE, "application/json")],
-        body,
-    )
-        .into_response()
+    (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
 /// `{"error": "..."}` with the given status.
@@ -38,6 +33,9 @@ pub fn write_client_error(err: &ZfsError) -> Response {
 
 /// Read a JSON body with a cap, mapping any failure to a 400 (the Go decoder
 /// returned 400 for every decode error).
+// The Err variant is an axum `Response` (>128 bytes); boxing it would ripple
+// through every handler for no real benefit here.
+#[allow(clippy::result_large_err)]
 pub async fn read_json<T: serde::de::DeserializeOwned>(
     body: axum::body::Body,
     limit: usize,
@@ -45,6 +43,5 @@ pub async fn read_json<T: serde::de::DeserializeOwned>(
     let bytes = axum::body::to_bytes(body, limit)
         .await
         .map_err(|e| write_error(StatusCode::BAD_REQUEST, e.to_string()))?;
-    serde_json::from_slice(&bytes)
-        .map_err(|e| write_error(StatusCode::BAD_REQUEST, e.to_string()))
+    serde_json::from_slice(&bytes).map_err(|e| write_error(StatusCode::BAD_REQUEST, e.to_string()))
 }

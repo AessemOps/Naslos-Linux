@@ -1,9 +1,11 @@
 //! Pool listing, creation, import/export and health (port of
 //! `zfs/operations.go`).
 
-use super::devices::{args2, normalize_vdev_topology, validate_pool_name, vdev_label, vdev_minimum_disks};
+use super::devices::{
+    args2, normalize_vdev_topology, validate_pool_name, vdev_label, vdev_minimum_disks,
+};
 use super::types::{ImportablePool, Pool, PoolConfig, PoolDevice, PoolHealth, PoolIOStats};
-use super::{args, ZfsClient, ZFS_BIN, ZPOOL_BIN, WIPEFS_BIN};
+use super::{args, ZfsClient, WIPEFS_BIN, ZFS_BIN, ZPOOL_BIN};
 use crate::invalid;
 use crate::zfs::validation::{ZfsError, ZfsResult};
 
@@ -34,9 +36,7 @@ impl ZfsClient {
             .await
         {
             Ok(out) => out,
-            Err(e) => {
-                return Err(ZfsError::Other(format!("listing pools: {}", e.message)))
-            }
+            Err(e) => return Err(ZfsError::Other(format!("listing pools: {}", e.message))),
         };
 
         let mut pools = Vec::new();
@@ -124,9 +124,7 @@ impl ZfsClient {
         let topology = normalize_vdev_topology(&cfg.topology)?;
         super::dataset::validate_dataset_options(&cfg.options)?;
         if cfg.disks.is_empty() {
-            return Err(ZfsError::Validation(
-                "at least one disk is required".into(),
-            ));
+            return Err(ZfsError::Validation("at least one disk is required".into()));
         }
         let min = vdev_minimum_disks(&topology);
         if cfg.disks.len() < min {
@@ -152,8 +150,8 @@ impl ZfsClient {
 
         let mut cache = String::new();
         if !cfg.cache.is_empty() {
-            let normalized = self
-                .normalize_disk_set_for_host(&[cfg.cache.clone()], &members)?;
+            let normalized =
+                self.normalize_disk_set_for_host(std::slice::from_ref(&cfg.cache), &members)?;
             cache = normalized[0].clone();
             if disks.contains(&cache) {
                 return Err(invalid!(
@@ -166,14 +164,8 @@ impl ZfsClient {
         // Wipe signatures when wipefs exists; Talos's ZFS extension may not ship it.
         if self.host_bin_exists(WIPEFS_BIN) {
             for disk in &disks {
-                if let Err(e) = self
-                    .host_exec(WIPEFS_BIN, &args(&["--all", disk]))
-                    .await
-                {
-                    return Err(ZfsError::Other(format!(
-                        "wiping {}: {}",
-                        disk, e.message
-                    )));
+                if let Err(e) = self.host_exec(WIPEFS_BIN, &args(&["--all", disk])).await {
+                    return Err(ZfsError::Other(format!("wiping {}: {}", disk, e.message)));
                 }
             }
         }
@@ -408,10 +400,7 @@ impl ZfsClient {
     /// Export a pool.
     pub async fn export_pool(&self, name: &str) -> ZfsResult<()> {
         validate_pool_name(name)?;
-        match self
-            .host_exec(ZPOOL_BIN, &args(&["export", name]))
-            .await
-        {
+        match self.host_exec(ZPOOL_BIN, &args(&["export", name])).await {
             Ok(_) => Ok(()),
             Err(e) => Err(ZfsError::Other(format!(
                 "exporting pool: {}: {}",

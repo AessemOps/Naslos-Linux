@@ -151,13 +151,10 @@ pub fn validate_dataset_options(
                     return Err(invalid!("{} must be on or off", key));
                 }
             }
-            "copies" => {
-                if value != "1" && value != "2" && value != "3" {
-                    return Err(ZfsError::Validation(
-                        "copies must be 1, 2 or 3".into(),
-                    ));
-                }
-            }
+            "copies" => match value {
+                "1" | "2" | "3" => {}
+                _ => return Err(ZfsError::Validation("copies must be 1, 2 or 3".into())),
+            },
             _ => {}
         }
     }
@@ -205,12 +202,7 @@ impl ZfsClient {
             .await
         {
             Ok(out) => out,
-            Err(e) => {
-                return Err(ZfsError::Other(format!(
-                    "listing datasets: {}",
-                    e.message
-                )))
-            }
+            Err(e) => return Err(ZfsError::Other(format!("listing datasets: {}", e.message))),
         };
 
         let mut datasets = Vec::new();
@@ -256,12 +248,7 @@ impl ZfsClient {
             .await
         {
             Ok(out) => out,
-            Err(e) => {
-                return Err(ZfsError::Other(format!(
-                    "listing datasets: {}",
-                    e.message
-                )))
-            }
+            Err(e) => return Err(ZfsError::Other(format!("listing datasets: {}", e.message))),
         };
 
         let mut datasets = Vec::new();
@@ -433,9 +420,7 @@ impl ZfsClient {
             .await
         {
             Ok(out) => out,
-            Err(e) => {
-                return Err(ZfsError::Other(format!("listing snapshots: {}", e.message)))
-            }
+            Err(e) => return Err(ZfsError::Other(format!("listing snapshots: {}", e.message))),
         };
 
         let prefix = format!("{dataset}@");
@@ -452,7 +437,8 @@ impl ZfsClient {
 /// The stale-mount "dataset is busy" signature that a forced unmount can clear.
 pub fn is_busy_error(out: &str) -> bool {
     let lower = out.to_ascii_lowercase();
-    lower.contains("dataset is busy") || (lower.contains("cannot destroy") && lower.contains("busy"))
+    lower.contains("dataset is busy")
+        || (lower.contains("cannot destroy") && lower.contains("busy"))
 }
 
 /// Build `Vec<String>` from `&str` items.

@@ -8,9 +8,7 @@ use common::{ran_command, FakeHost, FakeRunner};
 use naslos_agent::zfs::dataset::{
     is_busy_error, validate_dataset_name, validate_dataset_options, validate_dataset_path,
 };
-use naslos_agent::zfs::devices::{
-    is_whole_disk, normalize_vdev_topology, validate_pool_name,
-};
+use naslos_agent::zfs::devices::{is_whole_disk, normalize_vdev_topology, validate_pool_name};
 use naslos_agent::zfs::PoolConfig;
 use naslos_agent::zfs::{ZfsClient, ZfsError};
 use std::collections::HashMap;
@@ -37,10 +35,7 @@ fn validators_classify_as_validation_errors() {
                 "/".to_string(),
             )])),
         ),
-        (
-            "topology",
-            normalize_vdev_topology("raidz9").map(|_| ()),
-        ),
+        ("topology", normalize_vdev_topology("raidz9").map(|_| ())),
     ];
 
     for (name, result) in cases {
@@ -208,7 +203,10 @@ async fn create_pool_refuses_bad_disks() {
     for (name, cfg, want) in cases {
         let host = FakeHost::new();
         // 1: the pool does not exist yet; 2: no pools, so no disk is a member.
-        let runner = Arc::new(FakeRunner::new(&["ERR:cannot open 'tank': no such pool\n", ""]));
+        let runner = Arc::new(FakeRunner::new(&[
+            "ERR:cannot open 'tank': no such pool\n",
+            "",
+        ]));
         let calls = runner.calls();
         let c = client(&host, runner);
 
@@ -259,7 +257,10 @@ async fn create_pool_refuses_disk_in_another_pool() {
 #[tokio::test]
 async fn create_pool_command_line() {
     let host = FakeHost::new();
-    let runner = Arc::new(FakeRunner::new(&["ERR:cannot open 'tank': no such pool\n", ""]));
+    let runner = Arc::new(FakeRunner::new(&[
+        "ERR:cannot open 'tank': no such pool\n",
+        "",
+    ]));
     let calls = runner.calls();
     let c = client(&host, runner);
 
@@ -269,7 +270,6 @@ async fn create_pool_command_line() {
         disks: vec!["/dev/sdb".into(), "/dev/sdc".into()],
         cache: "/dev/sdd".into(),
         options: HashMap::from([("compression".to_string(), "lz4".to_string())]),
-        ..Default::default()
     })
     .await
     .expect("CreatePool should succeed");
@@ -333,12 +333,42 @@ async fn import_pool_validates_a_named_pool() {
 #[tokio::test]
 async fn snapshot_refuses_invalid_arguments() {
     let cases: Vec<(&str, &str, &str, &str)> = vec![
-        ("flag-shaped snapshot", "tank/data", "-r", "must not start with '-'"),
-        ("snapshot with a slash", "tank/data", "a/b", "must not contain"),
-        ("snapshot with a space", "tank/data", "a b", "must not contain"),
-        ("dataset without a pool", "data", "snap1", "must be <pool>/<name>"),
-        ("absolute dataset", "/tank/data", "snap1", "not an absolute path"),
-        ("dataset with a snapshot", "tank/data@old", "snap1", "must not contain '@'"),
+        (
+            "flag-shaped snapshot",
+            "tank/data",
+            "-r",
+            "must not start with '-'",
+        ),
+        (
+            "snapshot with a slash",
+            "tank/data",
+            "a/b",
+            "must not contain",
+        ),
+        (
+            "snapshot with a space",
+            "tank/data",
+            "a b",
+            "must not contain",
+        ),
+        (
+            "dataset without a pool",
+            "data",
+            "snap1",
+            "must be <pool>/<name>",
+        ),
+        (
+            "absolute dataset",
+            "/tank/data",
+            "snap1",
+            "not an absolute path",
+        ),
+        (
+            "dataset with a snapshot",
+            "tank/data@old",
+            "snap1",
+            "must not contain '@'",
+        ),
     ];
     for (name, dataset, snap, want) in cases {
         let host = FakeHost::new();
@@ -386,12 +416,48 @@ async fn snapshots_refuses_invalid_dataset() {
 #[tokio::test]
 async fn add_vdev_command_line() {
     let cases: Vec<(&str, &str, Vec<&str>, bool, &str)> = vec![
-        ("single disk", "single", vec!["/dev/sdb"], false, "/usr/local/sbin/zpool add tank /dev/sdb"),
-        ("empty topology means stripe", "", vec!["/dev/sdb"], false, "/usr/local/sbin/zpool add tank /dev/sdb"),
-        ("stripe spelling", "stripe", vec!["/dev/sdb", "/dev/sdc"], false, "/usr/local/sbin/zpool add tank /dev/sdb /dev/sdc"),
-        ("mirror", "mirror", vec!["/dev/sdb", "/dev/sdc"], false, "/usr/local/sbin/zpool add tank mirror /dev/sdb /dev/sdc"),
-        ("raidz2", "raidz2", vec!["/dev/sdb", "/dev/sdc", "/dev/sdd"], false, "/usr/local/sbin/zpool add tank raidz2 /dev/sdb /dev/sdc /dev/sdd"),
-        ("force is opt-in and comes before the pool", "mirror", vec!["/dev/sdb", "/dev/sdc"], true, "/usr/local/sbin/zpool add -f tank mirror /dev/sdb /dev/sdc"),
+        (
+            "single disk",
+            "single",
+            vec!["/dev/sdb"],
+            false,
+            "/usr/local/sbin/zpool add tank /dev/sdb",
+        ),
+        (
+            "empty topology means stripe",
+            "",
+            vec!["/dev/sdb"],
+            false,
+            "/usr/local/sbin/zpool add tank /dev/sdb",
+        ),
+        (
+            "stripe spelling",
+            "stripe",
+            vec!["/dev/sdb", "/dev/sdc"],
+            false,
+            "/usr/local/sbin/zpool add tank /dev/sdb /dev/sdc",
+        ),
+        (
+            "mirror",
+            "mirror",
+            vec!["/dev/sdb", "/dev/sdc"],
+            false,
+            "/usr/local/sbin/zpool add tank mirror /dev/sdb /dev/sdc",
+        ),
+        (
+            "raidz2",
+            "raidz2",
+            vec!["/dev/sdb", "/dev/sdc", "/dev/sdd"],
+            false,
+            "/usr/local/sbin/zpool add tank raidz2 /dev/sdb /dev/sdc /dev/sdd",
+        ),
+        (
+            "force is opt-in and comes before the pool",
+            "mirror",
+            vec!["/dev/sdb", "/dev/sdc"],
+            true,
+            "/usr/local/sbin/zpool add -f tank mirror /dev/sdb /dev/sdc",
+        ),
     ];
     for (name, topology, disks, force, want) in cases {
         let host = FakeHost::new();
@@ -413,14 +479,62 @@ async fn add_vdev_command_line() {
 async fn add_vdev_refusals() {
     let cases: Vec<(&str, &str, &str, Vec<&str>, &str)> = vec![
         ("no disks", "tank", "mirror", vec![], "at least one disk"),
-        ("mirror needs two", "tank", "mirror", vec!["/dev/sdb"], "at least 2 disks"),
-        ("raidz2 needs three", "tank", "raidz2", vec!["/dev/sdb", "/dev/sdc"], "at least 3 disks"),
-        ("raidz3 needs four", "tank", "raidz3", vec!["/dev/sdb", "/dev/sdc", "/dev/sdd"], "at least 4 disks"),
-        ("unknown topology", "tank", "raidz9", vec!["/dev/sdb"], "unsupported topology"),
-        ("bad pool name", "tank/../etc", "single", vec!["/dev/sdb"], "invalid pool name"),
-        ("relative disk", "tank", "single", vec!["sdb"], "absolute path under /dev"),
-        ("device does not exist", "tank", "single", vec!["/dev/sdq"], "not found on the node"),
-        ("duplicate disk", "tank", "single", vec!["/dev/sdb", "/dev/sdb"], "more than once"),
+        (
+            "mirror needs two",
+            "tank",
+            "mirror",
+            vec!["/dev/sdb"],
+            "at least 2 disks",
+        ),
+        (
+            "raidz2 needs three",
+            "tank",
+            "raidz2",
+            vec!["/dev/sdb", "/dev/sdc"],
+            "at least 3 disks",
+        ),
+        (
+            "raidz3 needs four",
+            "tank",
+            "raidz3",
+            vec!["/dev/sdb", "/dev/sdc", "/dev/sdd"],
+            "at least 4 disks",
+        ),
+        (
+            "unknown topology",
+            "tank",
+            "raidz9",
+            vec!["/dev/sdb"],
+            "unsupported topology",
+        ),
+        (
+            "bad pool name",
+            "tank/../etc",
+            "single",
+            vec!["/dev/sdb"],
+            "invalid pool name",
+        ),
+        (
+            "relative disk",
+            "tank",
+            "single",
+            vec!["sdb"],
+            "absolute path under /dev",
+        ),
+        (
+            "device does not exist",
+            "tank",
+            "single",
+            vec!["/dev/sdq"],
+            "not found on the node",
+        ),
+        (
+            "duplicate disk",
+            "tank",
+            "single",
+            vec!["/dev/sdb", "/dev/sdb"],
+            "more than once",
+        ),
     ];
     for (name, pool, topology, disks, want) in cases {
         let host = FakeHost::new();
@@ -466,7 +580,9 @@ async fn add_vdev_refuses_disk_in_another_pool() {
 #[tokio::test]
 async fn add_vdev_missing_pool_is_reported() {
     let host = FakeHost::new();
-    let runner = Arc::new(FakeRunner::new(&["ERR:cannot open 'nosuch': no such pool\n"]));
+    let runner = Arc::new(FakeRunner::new(&[
+        "ERR:cannot open 'nosuch': no such pool\n",
+    ]));
     let calls = runner.calls();
     let c = client(&host, runner);
 
@@ -483,7 +599,15 @@ fn is_whole_disk_cases() {
     for name in ["sda", "vdb", "hdc", "nvme0n1"] {
         assert!(is_whole_disk(name), "isWholeDisk({name}) should be true");
     }
-    for name in ["sda1", "vdb12", "nvme0n1p1", "loop0", "sr0", "zram0", "dm-0"] {
+    for name in [
+        "sda1",
+        "vdb12",
+        "nvme0n1p1",
+        "loop0",
+        "sr0",
+        "zram0",
+        "dm-0",
+    ] {
         assert!(!is_whole_disk(name), "isWholeDisk({name}) should be false");
     }
 }
@@ -493,8 +617,19 @@ fn validate_pool_name_cases() {
     for ok in ["tank", "pool1", "my-pool", "a.b_c:d"] {
         assert!(validate_pool_name(ok).is_ok(), "ValidatePoolName({ok:?})");
     }
-    for bad in ["", "  ", "-tank", "tank/name", "tank pool", "../etc", "tank@snap"] {
-        assert!(validate_pool_name(bad).is_err(), "ValidatePoolName({bad:?})");
+    for bad in [
+        "",
+        "  ",
+        "-tank",
+        "tank/name",
+        "tank pool",
+        "../etc",
+        "tank@snap",
+    ] {
+        assert!(
+            validate_pool_name(bad).is_err(),
+            "ValidatePoolName({bad:?})"
+        );
     }
 }
 

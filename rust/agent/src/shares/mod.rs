@@ -87,8 +87,7 @@ pub(crate) fn write_atomic(host_file_path: &Path, content: &str, mode: u32) -> R
     let parent = host_file_path
         .parent()
         .ok_or_else(|| format!("no parent directory for {}", host_file_path.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|e| format!("creating {}: {e}", parent.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("creating {}: {e}", parent.display()))?;
 
     let mut tmp = tempfile::Builder::new()
         .prefix(".tmp-")

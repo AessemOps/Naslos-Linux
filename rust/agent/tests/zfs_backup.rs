@@ -15,11 +15,7 @@ fn send_command_line_full_and_incremental() {
     .unwrap();
     assert_eq!(
         full,
-        vec![
-            "send".to_string(),
-            "-w".into(),
-            "tank/data@snap1".into()
-        ]
+        vec!["send".to_string(), "-w".into(), "tank/data@snap1".into()]
     );
 
     let incremental = send_command_line(&SendStreamOptions {
@@ -74,10 +70,16 @@ fn send_command_line_refusals() {
 #[test]
 fn validate_snapshot_name_cases() {
     for ok in ["buddy-20260101T000000Z-abcd", "snap_1", "a.b:c+d"] {
-        assert!(validate_snapshot_name(ok).is_ok(), "ValidateSnapshotName({ok:?})");
+        assert!(
+            validate_snapshot_name(ok).is_ok(),
+            "ValidateSnapshotName({ok:?})"
+        );
     }
     for bad in ["", "-r", "a/b", "a b", "a@b", "a\\b"] {
-        assert!(validate_snapshot_name(bad).is_err(), "ValidateSnapshotName({bad:?})");
+        assert!(
+            validate_snapshot_name(bad).is_err(),
+            "ValidateSnapshotName({bad:?})"
+        );
     }
 }
 

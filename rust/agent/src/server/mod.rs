@@ -114,10 +114,7 @@ impl Server {
                 "/api/v1/zfs/receive/{*dataset}",
                 post(handlers::zfs_receive),
             )
-            .route(
-                "/api/v1/zfs/snapshots/",
-                get(handlers::zfs_snapshots_empty),
-            )
+            .route("/api/v1/zfs/snapshots/", get(handlers::zfs_snapshots_empty))
             .route(
                 "/api/v1/zfs/snapshots/{*dataset}",
                 get(handlers::zfs_snapshots),
@@ -164,7 +161,9 @@ impl Server {
 
 /// Install a timer (axum-server sets none, which disables hyper's default
 /// header-read timeout) and restore the Go server's 10s `ReadHeaderTimeout`.
-fn configure_http(builder: &mut hyper_util::server::conn::auto::Builder<hyper_util::rt::TokioExecutor>) {
+fn configure_http(
+    builder: &mut hyper_util::server::conn::auto::Builder<hyper_util::rt::TokioExecutor>,
+) {
     let mut http1 = builder.http1();
     http1.timer(hyper_util::rt::TokioTimer::new());
     http1.header_read_timeout(std::time::Duration::from_secs(10));

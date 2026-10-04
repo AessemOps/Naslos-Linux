@@ -190,9 +190,7 @@ impl ZfsClient {
         validate_pool_name(pool)?;
         let norm = normalize_vdev_topology(topology)?;
         if disks.is_empty() {
-            return Err(ZfsError::Validation(
-                "at least one disk is required".into(),
-            ));
+            return Err(ZfsError::Validation("at least one disk is required".into()));
         }
         let min = vdev_minimum_disks(&norm);
         if disks.len() < min {
@@ -205,7 +203,11 @@ impl ZfsClient {
         }
 
         // The pool has to exist first.
-        if self.host_exec(ZPOOL_BIN, &args2("list", pool)).await.is_err() {
+        if self
+            .host_exec(ZPOOL_BIN, &args2("list", pool))
+            .await
+            .is_err()
+        {
             return Err(invalid!("pool {:?} not found", pool));
         }
 

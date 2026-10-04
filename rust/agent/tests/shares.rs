@@ -1,9 +1,7 @@
 //! Port of the Go agent's shares tests: folder confinement (incl. symlink
 //! escape, PF-L5) and secret-file permissions (CR-15).
 
-use naslos_agent::shares::folders::{
-    validate_folder_name, DATASETS_BASE,
-};
+use naslos_agent::shares::folders::{validate_folder_name, DATASETS_BASE};
 use naslos_agent::shares::{Config, SharesClient};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -38,10 +36,14 @@ fn clean_folder_path_cases() {
     for (input, want) in cases {
         match c.clean_folder_path(input) {
             Ok(got) => {
-                let want = want.unwrap_or_else(|| panic!("CleanFolderPath({input:?}) succeeded, want error"));
+                let want = want
+                    .unwrap_or_else(|| panic!("CleanFolderPath({input:?}) succeeded, want error"));
                 assert_eq!(got, want, "CleanFolderPath({input:?})");
             }
-            Err(_) => assert!(want.is_none(), "CleanFolderPath({input:?}) errored, want {want:?}"),
+            Err(_) => assert!(
+                want.is_none(),
+                "CleanFolderPath({input:?}) errored, want {want:?}"
+            ),
         }
     }
 }
@@ -70,8 +72,18 @@ fn clean_folder_path_rejects_symlink_escape() {
 
 #[test]
 fn validate_folder_name_cases() {
-    for name in ["media", "My Photos", "backup-2026", "a", "_hidden", "dossier"] {
-        assert!(validate_folder_name(name).is_ok(), "ValidateFolderName({name:?})");
+    for name in [
+        "media",
+        "My Photos",
+        "backup-2026",
+        "a",
+        "_hidden",
+        "dossier",
+    ] {
+        assert!(
+            validate_folder_name(name).is_ok(),
+            "ValidateFolderName({name:?})"
+        );
     }
 
     let long = "x".repeat(256);
@@ -90,7 +102,10 @@ fn validate_folder_name_cases() {
         &long,
     ];
     for name in invalid {
-        assert!(validate_folder_name(name).is_err(), "ValidateFolderName({name:?})");
+        assert!(
+            validate_folder_name(name).is_err(),
+            "ValidateFolderName({name:?})"
+        );
     }
 }
 
@@ -103,7 +118,10 @@ fn folder_operations() {
 
     let c = client(&root);
 
-    assert!(c.list_folders("/var/mnt/test").unwrap().is_empty(), ".zfs must be hidden");
+    assert!(
+        c.list_folders("/var/mnt/test").unwrap().is_empty(),
+        ".zfs must be hidden"
+    );
 
     let created = c.create_folder("/var/mnt/test", "media").unwrap();
     assert_eq!(created, "/var/mnt/test/media");
@@ -143,7 +161,9 @@ fn apply_restricts_secret_mirrors() {
     let cfg = Config {
         samba_conf: "[global]\n   workgroup = NASLOS\n".into(),
         ganesha_conf: "EXPORT {\n}\n".into(),
-        samba_users: "alice:0:NO_PASSWORD:8846F7EAEE8FB117AD06BDD830B7586C:[U          ]:LCT-00000000:\n".into(),
+        samba_users:
+            "alice:0:NO_PASSWORD:8846F7EAEE8FB117AD06BDD830B7586C:[U          ]:LCT-00000000:\n"
+                .into(),
         nss_passwd: "alice:x:10001:10000::/home/alice:/bin/bash\n".into(),
         nss_group: "users:x:10000:\n".into(),
         nss_shadow: "alice:$6$hash:19000:0:99999:7:::\n".into(),
@@ -161,17 +181,11 @@ fn apply_restricts_secret_mirrors() {
     for (in_host, mode) in checks {
         let path: PathBuf = root.path().join(in_host.trim_start_matches('/'));
         let meta = std::fs::metadata(&path).unwrap_or_else(|e| panic!("stat {in_host}: {e}"));
-        assert_eq!(
-            meta.permissions().mode() & 0o777,
-            mode,
-            "{in_host} mode"
-        );
+        assert_eq!(meta.permissions().mode() & 0o777, mode, "{in_host} mode");
     }
 
     // A content-identical Apply must still fix a changed mode (0644 -> 0600).
-    let shadow = root
-        .path()
-        .join("var/lib/naslos/shares/extrausers/shadow");
+    let shadow = root.path().join("var/lib/naslos/shares/extrausers/shadow");
     std::fs::set_permissions(&shadow, std::fs::Permissions::from_mode(0o644)).unwrap();
     c.apply(&cfg).expect("second Apply");
     let meta = std::fs::metadata(&shadow).unwrap();
