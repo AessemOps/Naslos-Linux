@@ -12,6 +12,26 @@ working papers (audit findings, fix plan, code-review list, the superseded
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
+## Current instance (2026-10-04) — clean install from the desktop installer, v0.1.2
+
+`192.168.1.117` was reset to maintenance and provisioned end to end by the
+**Naslos-Installer desktop app** (a clean install from the user's PC), embedding
+the `v0.1.2` install pack. Live state:
+
+- Node `talos-nu3-7j0`, Talos v1.14.1 / k8s v1.37.0, **control-plane Ready**.
+- Helm release `naslos` (chart `naslos-0.1.2`), all images pinned by digest
+  (`ghcr.io/aessemops/naslos-api@sha256:aabdf383…`).
+- The install's **recovery bundle is extracted into `bootstrap/vm/`**:
+  `talosconfig`, `controlplane.yaml`, `talos-secrets.json`, `kubeconfig` — all
+  gitignored (master credentials, never commit). `kubeconfig` is the live
+  cluster-admin access: `export KUBECONFIG=bootstrap/vm/kubeconfig`.
+- The administrator is `admin` with a TOTP device (secret in the emitted
+  `totp` payload / recovery ZIP README); the login URL is
+  `https://naslos.local/authelia`.
+
+Kept to continue work on the appliance from the workspace. The earlier
+`0.1.0-r*` live-drill sections below are historical.
+
 ## App catalog refactor (2026-09-26) — implemented, live-drilled
 
 Merged in PR #28 (branch `feature/charts-repo-and-app-install-refactor`).

@@ -42,6 +42,9 @@ bootstrap/vm/controlplane.yaml
 bootstrap/vm/talosconfig
 bootstrap/vm/talosconfig-pod
 bootstrap/vm/worker.yaml
+# Recovery bundle (installer output): master credentials, never commit.
+bootstrap/vm/kubeconfig
+bootstrap/vm/talos-secrets.json
 
 # Secrets
 *.pem
