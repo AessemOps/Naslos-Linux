@@ -531,3 +531,83 @@ Second vertical slice: the ZFS read/write path through the privileged agent.
   RSS; `/health` 200, no-secret 401, dashboard 200, `/api/volumes/zfs` 502 with
   no agent configured. The agent image (`agent/Dockerfile.rust`) still builds
   (20.2 MB) with the `api` workspace member present.
+
+### Phase 2 S3a — identity/LDAP library (2026-10-04) — branch `refactor/rust-api-identity`
+
+S3 is identity + shares; it is split because the users/groups handlers depend on
+the shares store. S3a is the identity (LDAP) library.
+
+- **`rust/api/src/identity.rs` + `identity/ops.rs`**: the LDAP client (lazy
+  connect, reconnect cooldown, retry-once on connection errors, all in one `Op`
+  runner), person/group CRUD, `set_password` via the RFC 3062 Password Modify
+  exop returning the NT hash, POSIX id lookup, enable/disable, membership.
+- **Security parity**: the `^[a-z0-9][a-z0-9._-]{0,63}$` name allowlist, RFC
+  4514/4515 DN/filter escaping, unguessable placeholder password (NAS-010),
+  fail-closed LDAPS with a pinned CA (rustls, ring provider) — no silent fallback
+  to system roots.
+- **NT hash**: a minimal MD4 (RFC 1320) implementation, required by the SMB
+  protocol and not used for security (AUDIT-L7); verified against the known
+  `password` vector `8846F7EAEE8FB117AD06BDD830B7586C`.
+- **Wiring**: `AppState.identity` is built from `LDAP_*`; `/api/auth/me` now
+  returns 503 when LDAP is unconfigured (matching Go) and the Go identity shape
+  (`groups` as a comma-joined string).
+- **Deps**: ldap3 0.12 (`tls-rustls-ring`), rustls 0.23, rustls-pemfile,
+  getrandom.
+- **Tests (17 lib + 9 contract):** NT-hash vector, name allowlist, DN/filter
+  escaping, `hashUID`, `shortNames`, `personCN`, and the auth/me 200/503 paths.
+- **Not yet (S3b):** the shares render/apply package, the samba users store, and
+  the users/groups/shares handlers (which need `refreshShareAccess`). A live
+  LDAP drill is part of S3b once the handlers land.
+
+### Phase 2 S3b — shares manager + renderers (2026-10-04) — branch `refactor/rust-api-identity`
+
+The shares core: definitions, validation, persistence and the smb.conf /
+ganesha.conf renderers (port of `shares/{shares,manager,config}.go`).
+
+- **`rust/api/src/shares/mod.rs`**: `Share`/`Protocol`, `CreateShareRequest` /
+  `UpdateShareRequest`, `Manager` (load/save atomic + 0600, CRUD, `normalize_path`,
+  `validate_path`, `PathOnDataset`, `validate_share_name`, `validate_share_fields`,
+  `normalize_list`, the SHA-256 content `revision`, `render_config_bundle`).
+- **`rust/api/src/shares/render.rs`**: `generate_samba_config` (global + per-share
+  sections in stable sorted order, hosts allow/deny with the fail-closed client
+  list, `valid users` with `@group`, Time Machine), `generate_ganesha_config`
+  (NFSv4-only EXPORT blocks, Root_Squash by default, stable FNV-1a Export_Id),
+  `sanitize_netbios_name`.
+- **Security parity (NAS-007)**: share names and every rendered field reject the
+  control characters / `;` / `"` that would start a new config directive; a share
+  that names no hosts gets the LAN CIDR or localhost, never `*` (PF-H4).
+- **Tests (11 new, 28 lib total):** stable share ordering, wildcard hosts,
+  `@group` rendering, ganesha export block + Root_Squash + stable id, NetBIOS
+  sanitisation, injection refusal at create, path-on-dataset specificity,
+  `normalize_list`, `clean_path`.
+- **Not yet (S3c):** the Samba users store (passwd/group/shadow mirrors + NT
+  hashes) and the users/groups/shares handlers, which need it plus the agent
+  shares-config apply. Live LDAP/SMB drill is part of S3c.
+
+### Phase 2 S3c — samba users store + users/groups/shares handlers (2026-10-04)
+
+Completes S3. The Rust API now serves the full identity + shares surface.
+
+- **`shares/smbusers.rs`**: `SambaUserStore` (atomic 0600 load/save, upsert with
+  NT-hash validation, enable/disable, remove) and the four renders —
+  `smbpasswd` (U/DU flags + LCT), extrausers `passwd`/`group`/`shadow`, with
+  `group_gid` (FNV-1a, 20000..28000) and `normalize_nt_hash` (32 hex, uppercase).
+- **`server/shares.rs`**: share CRUD with the dataset-path guard
+  (`require_dataset_path` → the "data would live on the ephemeral partition"
+  error), `share_paths`, `share_folders` (via the agent), `status`, `apply`
+  (render bundle + Samba mirrors → `agent.apply_shares_config`), and the raw
+  `config/samba` / `config/nfs` text endpoints.
+- **`server/users.rs`**: users (list/create with required password + SMB sync),
+  user detail (update with a group membership delta, delete), password,
+  enable/disable, and groups (list/create/detail/members/delete), each mirroring
+  to the Samba store and re-pushing the share config.
+- **Interior mutability**: `AppState.shares`/`samba_users` are `std::sync::Mutex`
+  (CRUD handlers mutate them). The one subtlety: `apply_shares_config` resolves
+  LDAP groups BEFORE locking the account store — a `MutexGuard` across an await
+  made the handler futures non-`Send` (found via `axum::debug_handler`).
+- **Tests (48 total; +6 shares/users contract, +5 smbusers unit):** share list
+  empty, create 400 paths, samba text, status revision, users/groups 503 without
+  LDAP; NT-hash validation, smbpasswd flags/LCT, passwd/group/shadow rendering,
+  group_gid stability, colon rejection.
+- **Image** rebuilt: 14.2 MB. **Not yet:** the live LDAP/SMB drill (needs the
+  Rust API deployed, S7); S4 apps/catalog/helm is next.

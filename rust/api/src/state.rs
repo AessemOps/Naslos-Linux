@@ -42,8 +42,12 @@ pub struct AppState {
     pub talos: Option<Arc<crate::talos::TalosClient>>,
     /// The agent client (S2). Absent when `AGENT_TOKEN` is unset.
     pub agent: Option<Arc<crate::agent::Client>>,
-    /// The share definitions read from the state file (S2 read path).
-    pub shares: crate::shares::Store,
+    /// The share definitions (S3b); interior-mutable for the CRUD handlers.
+    pub shares: std::sync::Mutex<crate::shares::Manager>,
+    /// The SMB account mirror (S3c).
+    pub samba_users: std::sync::Mutex<crate::shares::SambaUserStore>,
+    /// The LDAP identity client (S3a). Absent when LDAP config is unusable.
+    pub identity: Option<Arc<crate::identity::Client>>,
 }
 
 impl AppState {
@@ -64,7 +68,9 @@ impl AppState {
             metrics: Manager::new(),
             talos: crate::talos::TalosClient::from_env().map(Arc::new),
             agent: crate::agent::Client::from_env().ok().map(Arc::new),
-            shares: crate::shares::Store::load(&crate::shares::default_config_path()),
+            shares: std::sync::Mutex::new(crate::shares::Manager::from_env()),
+            samba_users: std::sync::Mutex::new(crate::shares::SambaUserStore::from_env()),
+            identity: crate::identity::Client::from_env().ok().map(Arc::new),
         })
     }
 
@@ -76,7 +82,9 @@ impl AppState {
             metrics: Manager::new(),
             talos: None,
             agent: None,
-            shares: crate::shares::Store::load(""),
+            shares: std::sync::Mutex::new(crate::shares::Manager::new("", "/var/mnt")),
+            samba_users: std::sync::Mutex::new(crate::shares::SambaUserStore::new("")),
+            identity: None,
         }
     }
 }

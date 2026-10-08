@@ -8,6 +8,7 @@
 pub mod agent;
 pub mod auth;
 pub mod config;
+pub mod identity;
 pub mod logsafe;
 pub mod metrics;
 pub mod server;
