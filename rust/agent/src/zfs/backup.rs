@@ -84,10 +84,7 @@ pub fn parse_send_size(out: &str) -> ZfsResult<i64> {
             continue;
         }
         let size: i64 = value.trim().parse().map_err(|e| {
-            ZfsError::Other(format!(
-                "unexpected size {:?} from zfs send -nP: {e}",
-                value
-            ))
+            ZfsError::Other(format!("unexpected size {value:?} from zfs send -nP: {e}"))
         })?;
         return Ok(size);
     }

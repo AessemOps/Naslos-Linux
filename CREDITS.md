@@ -44,7 +44,7 @@ It also lists the GitHub Actions used by the CI/release workflows.
 | distroless static | `gcr.io/distroless/static-debian12:nonroot` | Apache-2.0 | https://github.com/GoogleContainerTools/distroless |
 | nginx unprivileged | `nginxinc/nginx-unprivileged:1.30.5-alpine` | BSD-2-Clause | https://github.com/nginxinc/docker-nginx-unprivileged |
 | Go toolchain | `golang:1.26-alpine` | BSD-3-Clause | https://go.dev/ |
-| Rust toolchain | `rust:1.85-alpine` | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
+| Rust toolchain | `rust:1.88-alpine` | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
 | Node.js toolchain | `node:20-alpine` | MIT | https://nodejs.org/ |
 
 ## Go modules — direct (`api/go.mod`)
@@ -72,7 +72,9 @@ each is under the license published by its own module.
 ## Rust crates — direct (`rust/agent/Cargo.toml`)
 
 The privileged agent was ported from Go to Rust (Phase 1 of the Go→Rust plan,
-`.kilo/plans/1791069821704-go-to-rust-migration.md`). Direct dependencies:
+`.kilo/plans/1791069821704-go-to-rust-migration.md`). The Phase 2 API port
+(`rust/api`, `naslos-api`) reuses axum, axum-server, clap, hyper-util, serde,
+tracing, chrono and ipnet. Direct dependencies:
 
 | Component | Version | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
@@ -81,10 +83,12 @@ The privileged agent was ported from Go to Rust (Phase 1 of the Go→Rust plan,
 | axum | 0.8 | MIT | https://github.com/tokio-rs/axum |
 | axum-server | 0.7 | MIT | https://github.com/programatik29/axum-server |
 | bytes | 1 | MIT | https://github.com/tokio-rs/bytes |
+| chrono | 0.4 | MIT OR Apache-2.0 | https://github.com/chronotope/chrono |
 | clap | 4 | MIT OR Apache-2.0 | https://github.com/clap-rs/clap |
 | futures | 0.3 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
 | http-body-util | 0.1 | MIT | https://github.com/hyperium/http-body |
 | hyper-util | 0.1 | MIT | https://github.com/hyperium/hyper-util |
+| ipnet | 2 | MIT OR Apache-2.0 | https://github.com/krisprice/ipnet |
 | rustls-pemfile | 2 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/pemfile |
 | serde / serde_json | 1 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
 | subtle | 2 | BSD-3-Clause | https://github.com/dalek-cryptography/subtle |
@@ -94,7 +98,7 @@ The privileged agent was ported from Go to Rust (Phase 1 of the Go→Rust plan,
 | tokio-util | 0.7 | MIT | https://github.com/tokio-rs/tokio |
 | tower / tower-http | 0.5 / 0.6 | MIT | https://github.com/tower-rs/tower |
 | tracing / tracing-subscriber | 0.1 / 0.3 | MIT | https://github.com/tokio-rs/tracing |
-| Rust toolchain (`rust:1.85-alpine`) | 1.85 | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
+| Rust toolchain (`rust:1.88-alpine`) | 1.88 | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
 
 Transitive crates are recorded in [`rust/Cargo.lock`](rust/Cargo.lock); each is
 under the license published by its own crate project.
