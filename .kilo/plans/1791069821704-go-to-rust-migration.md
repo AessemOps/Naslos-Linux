@@ -531,3 +531,30 @@ Second vertical slice: the ZFS read/write path through the privileged agent.
   RSS; `/health` 200, no-secret 401, dashboard 200, `/api/volumes/zfs` 502 with
   no agent configured. The agent image (`agent/Dockerfile.rust`) still builds
   (20.2 MB) with the `api` workspace member present.
+
+### Phase 2 S3a — identity/LDAP library (2026-10-04) — branch `refactor/rust-api-identity`
+
+S3 is identity + shares; it is split because the users/groups handlers depend on
+the shares store. S3a is the identity (LDAP) library.
+
+- **`rust/api/src/identity.rs` + `identity/ops.rs`**: the LDAP client (lazy
+  connect, reconnect cooldown, retry-once on connection errors, all in one `Op`
+  runner), person/group CRUD, `set_password` via the RFC 3062 Password Modify
+  exop returning the NT hash, POSIX id lookup, enable/disable, membership.
+- **Security parity**: the `^[a-z0-9][a-z0-9._-]{0,63}$` name allowlist, RFC
+  4514/4515 DN/filter escaping, unguessable placeholder password (NAS-010),
+  fail-closed LDAPS with a pinned CA (rustls, ring provider) — no silent fallback
+  to system roots.
+- **NT hash**: a minimal MD4 (RFC 1320) implementation, required by the SMB
+  protocol and not used for security (AUDIT-L7); verified against the known
+  `password` vector `8846F7EAEE8FB117AD06BDD830B7586C`.
+- **Wiring**: `AppState.identity` is built from `LDAP_*`; `/api/auth/me` now
+  returns 503 when LDAP is unconfigured (matching Go) and the Go identity shape
+  (`groups` as a comma-joined string).
+- **Deps**: ldap3 0.12 (`tls-rustls-ring`), rustls 0.23, rustls-pemfile,
+  getrandom.
+- **Tests (17 lib + 9 contract):** NT-hash vector, name allowlist, DN/filter
+  escaping, `hashUID`, `shortNames`, `personCN`, and the auth/me 200/503 paths.
+- **Not yet (S3b):** the shares render/apply package, the samba users store, and
+  the users/groups/shares handlers (which need `refreshShareAccess`). A live
+  LDAP drill is part of S3b once the handlers land.

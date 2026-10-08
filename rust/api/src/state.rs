@@ -44,6 +44,8 @@ pub struct AppState {
     pub agent: Option<Arc<crate::agent::Client>>,
     /// The share definitions read from the state file (S2 read path).
     pub shares: crate::shares::Store,
+    /// The LDAP identity client (S3a). Absent when LDAP config is unusable.
+    pub identity: Option<Arc<crate::identity::Client>>,
 }
 
 impl AppState {
@@ -65,6 +67,7 @@ impl AppState {
             talos: crate::talos::TalosClient::from_env().map(Arc::new),
             agent: crate::agent::Client::from_env().ok().map(Arc::new),
             shares: crate::shares::Store::load(&crate::shares::default_config_path()),
+            identity: crate::identity::Client::from_env().ok().map(Arc::new),
         })
     }
 
@@ -77,6 +80,7 @@ impl AppState {
             talos: None,
             agent: None,
             shares: crate::shares::Store::load(""),
+            identity: None,
         }
     }
 }

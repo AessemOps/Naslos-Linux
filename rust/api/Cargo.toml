@@ -20,9 +20,13 @@ axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
+getrandom = "0.2"
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
 ipnet = "2"
+ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 subtle = "2"
