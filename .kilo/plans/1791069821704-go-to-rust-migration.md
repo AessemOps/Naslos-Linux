@@ -632,3 +632,30 @@ there is no Rust Helm SDK (the plan's bundled-CLI decision).
 - **Tests (4):** status mapping, chart split, list-time parsing, list-entry →
   App. **Not yet (S4b/S4c):** chartsrepo (git clone + sources), catalog, apps
   install/jobs and their handlers.
+
+### Phase 2 S4b — chartsrepo + catalog (2026-10-04) — branch `refactor/rust-api-charts`
+
+The chart-repository ingestion layer and the catalog that reads it.
+
+- **`rust/api/src/chartsrepo.rs`**: `Source`/`AuthType`/`Store` (source CRUD,
+  channels, DNS-1123 name validation), `Manager` (cache dir per source/channel,
+  `refresh`/`refresh_all`, `ensure_fresh` with the TTL + stale-clone fallback,
+  `app_names`/`app_dir`, `safe_join` traversal guard, `stat_repo` size/file
+  guard), and the credentials trait.
+- **Git via a `GitBackend` trait**: `GitCliBackend` drives the bundled `git`
+  CLI (`clone --single-branch --depth 1 --no-tags`, `fetch`+`reset --hard`),
+  with HTTPS-token basic auth and `GIT_SSH_COMMAND` for deploy keys. The trait
+  keeps the repository logic testable without a real remote. (Deviation from the
+  plan's gix/git2 note, consistent with the helm/talosctl bundled-CLI decision;
+  the API image will bundle `git` at S7.)
+- **`rust/api/src/catalog.rs`**: `App`/`Service`/`ExposureDefaults`/
+  `CatalogEntry`/`SourceRef`, YAML `naslos-app.yaml` + `Chart.yaml` parsing,
+  `load`/`pick_winner` (user-over-official, then Prod, then alphabetical),
+  `validate_manifest` (name == folder, DNS-1123, port/scheme, release-name-only
+  service templates), and the summary/detail accessors.
+- **Tests (11 new, 48 lib total):** DNS-1123 + source validation, channel
+  defaults/custom + branch lookup, `safe_join`, cache dir casing, `app_names`
+  filtering; catalog load, user-over-official precedence, name/folder mismatch,
+  channel collection, service-template rules.
+- **Not yet (S4c):** the apps install/jobs package and the catalog/apps/sources
+  handlers.

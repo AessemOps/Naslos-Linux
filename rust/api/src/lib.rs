@@ -7,6 +7,8 @@
 
 pub mod agent;
 pub mod auth;
+pub mod catalog;
+pub mod chartsrepo;
 pub mod config;
 pub mod helm;
 pub mod identity;
