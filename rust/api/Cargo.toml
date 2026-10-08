@@ -28,6 +28,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+tempfile = "3"
 serde_json = "1"
 subtle = "2"
 tokio = { version = "1", features = ["full"] }

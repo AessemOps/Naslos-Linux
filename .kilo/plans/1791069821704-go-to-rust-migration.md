@@ -558,3 +558,28 @@ the shares store. S3a is the identity (LDAP) library.
 - **Not yet (S3b):** the shares render/apply package, the samba users store, and
   the users/groups/shares handlers (which need `refreshShareAccess`). A live
   LDAP drill is part of S3b once the handlers land.
+
+### Phase 2 S3b — shares manager + renderers (2026-10-04) — branch `refactor/rust-api-identity`
+
+The shares core: definitions, validation, persistence and the smb.conf /
+ganesha.conf renderers (port of `shares/{shares,manager,config}.go`).
+
+- **`rust/api/src/shares/mod.rs`**: `Share`/`Protocol`, `CreateShareRequest` /
+  `UpdateShareRequest`, `Manager` (load/save atomic + 0600, CRUD, `normalize_path`,
+  `validate_path`, `PathOnDataset`, `validate_share_name`, `validate_share_fields`,
+  `normalize_list`, the SHA-256 content `revision`, `render_config_bundle`).
+- **`rust/api/src/shares/render.rs`**: `generate_samba_config` (global + per-share
+  sections in stable sorted order, hosts allow/deny with the fail-closed client
+  list, `valid users` with `@group`, Time Machine), `generate_ganesha_config`
+  (NFSv4-only EXPORT blocks, Root_Squash by default, stable FNV-1a Export_Id),
+  `sanitize_netbios_name`.
+- **Security parity (NAS-007)**: share names and every rendered field reject the
+  control characters / `;` / `"` that would start a new config directive; a share
+  that names no hosts gets the LAN CIDR or localhost, never `*` (PF-H4).
+- **Tests (11 new, 28 lib total):** stable share ordering, wildcard hosts,
+  `@group` rendering, ganesha export block + Root_Squash + stable id, NetBIOS
+  sanitisation, injection refusal at create, path-on-dataset specificity,
+  `normalize_list`, `clean_path`.
+- **Not yet (S3c):** the Samba users store (passwd/group/shadow mirrors + NT
+  hashes) and the users/groups/shares handlers, which need it plus the agent
+  shares-config apply. Live LDAP/SMB drill is part of S3c.

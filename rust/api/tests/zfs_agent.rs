@@ -10,7 +10,7 @@ use http_body_util::BodyExt;
 use naslos_api::agent::Client as AgentClient;
 use naslos_api::metrics::Manager;
 use naslos_api::server::build_router;
-use naslos_api::shares::Store;
+use naslos_api::shares::Manager as SharesManager;
 use naslos_api::state::{AppState, Cidr};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -123,7 +123,7 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         metrics: Manager::new(),
         talos: None,
         agent: Some(Arc::new(agent)),
-        shares: Store::load(""),
+        shares: SharesManager::new("", "/var/mnt"),
         identity: None,
     })
 }
@@ -260,7 +260,7 @@ async fn no_agent_configured_is_502() {
         metrics: Manager::new(),
         talos: None,
         agent: None,
-        shares: Store::load(""),
+        shares: SharesManager::new("", "/var/mnt"),
         identity: None,
     });
     let (status, _b) = call(state, "GET", "/api/volumes/zfs", None).await;
