@@ -6,6 +6,7 @@
 //! injecting a new config directive (NAS-007).
 
 pub mod render;
+pub mod smbusers;
 
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -544,6 +545,7 @@ pub fn normalize_list(input: &[String]) -> Vec<String> {
 
 // Re-export the renderers for convenience.
 pub use render::{access_list, effective_clients, sanitize_netbios_name};
+pub use smbusers::{group_gid, normalize_nt_hash, NssGroup, PosixIdentity, SambaUserStore};
 
 #[cfg(test)]
 mod tests {

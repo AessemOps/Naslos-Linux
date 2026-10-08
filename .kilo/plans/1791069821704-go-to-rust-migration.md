@@ -583,3 +583,31 @@ ganesha.conf renderers (port of `shares/{shares,manager,config}.go`).
 - **Not yet (S3c):** the Samba users store (passwd/group/shadow mirrors + NT
   hashes) and the users/groups/shares handlers, which need it plus the agent
   shares-config apply. Live LDAP/SMB drill is part of S3c.
+
+### Phase 2 S3c — samba users store + users/groups/shares handlers (2026-10-04)
+
+Completes S3. The Rust API now serves the full identity + shares surface.
+
+- **`shares/smbusers.rs`**: `SambaUserStore` (atomic 0600 load/save, upsert with
+  NT-hash validation, enable/disable, remove) and the four renders —
+  `smbpasswd` (U/DU flags + LCT), extrausers `passwd`/`group`/`shadow`, with
+  `group_gid` (FNV-1a, 20000..28000) and `normalize_nt_hash` (32 hex, uppercase).
+- **`server/shares.rs`**: share CRUD with the dataset-path guard
+  (`require_dataset_path` → the "data would live on the ephemeral partition"
+  error), `share_paths`, `share_folders` (via the agent), `status`, `apply`
+  (render bundle + Samba mirrors → `agent.apply_shares_config`), and the raw
+  `config/samba` / `config/nfs` text endpoints.
+- **`server/users.rs`**: users (list/create with required password + SMB sync),
+  user detail (update with a group membership delta, delete), password,
+  enable/disable, and groups (list/create/detail/members/delete), each mirroring
+  to the Samba store and re-pushing the share config.
+- **Interior mutability**: `AppState.shares`/`samba_users` are `std::sync::Mutex`
+  (CRUD handlers mutate them). The one subtlety: `apply_shares_config` resolves
+  LDAP groups BEFORE locking the account store — a `MutexGuard` across an await
+  made the handler futures non-`Send` (found via `axum::debug_handler`).
+- **Tests (48 total; +6 shares/users contract, +5 smbusers unit):** share list
+  empty, create 400 paths, samba text, status revision, users/groups 503 without
+  LDAP; NT-hash validation, smbpasswd flags/LCT, passwd/group/shadow rendering,
+  group_gid stability, colon rejection.
+- **Image** rebuilt: 14.2 MB. **Not yet:** the live LDAP/SMB drill (needs the
+  Rust API deployed, S7); S4 apps/catalog/helm is next.
