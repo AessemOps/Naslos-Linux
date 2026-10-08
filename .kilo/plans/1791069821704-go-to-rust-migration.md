@@ -527,6 +527,7 @@ Second vertical slice: the ZFS read/write path through the privileged agent.
 - **Not yet ported (next slices):** shares render/apply + LDAP (S3), apps/
   catalog/helm (S4), routing/certs/authelia/domains/ddns (S5), buddy (S6).
 
-Docker image rebuild was not re-run locally (this environment's Docker daemon
-can no longer create veth pairs); `api/Dockerfile.rust` is unchanged since the
-S1 build that succeeded, and the code compiles and passes the gates.
+- **Image:** `api/Dockerfile.rust` rebuilt and smoke-tested — 13.3 MB, ~3.7 MiB
+  RSS; `/health` 200, no-secret 401, dashboard 200, `/api/volumes/zfs` 502 with
+  no agent configured. The agent image (`agent/Dockerfile.rust`) still builds
+  (20.2 MB) with the `api` workspace member present.
