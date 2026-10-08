@@ -5,12 +5,14 @@
 //! handler is not in this slice return a documented 501 Not Implemented so the
 //! route surface (and its auth) already matches Go.
 
+pub mod disks;
 pub mod handlers;
+pub mod zfs;
 
 use crate::auth;
 use crate::state::AppState;
 use axum::middleware;
-use axum::routing::{any, get};
+use axum::routing::{any, get, post};
 use axum::Router;
 use std::sync::Arc;
 
@@ -49,12 +51,31 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/providers", any(handlers::not_ported))
         .route("/api/ddns", any(handlers::not_ported))
         .route("/api/ddns/{*rest}", any(handlers::not_ported))
-        .route("/api/disks", any(handlers::not_ported))
-        .route("/api/disks/recommend", any(handlers::not_ported))
-        .route("/api/volumes/zfs", any(handlers::not_ported))
-        .route("/api/volumes/zfs/import", any(handlers::not_ported))
-        .route("/api/volumes/zfs/{*rest}", any(handlers::not_ported))
-        .route("/api/datasets", any(handlers::not_ported))
+        .route("/api/disks", get(disks::disks_get))
+        .route("/api/disks/recommend", post(disks::disks_recommend))
+        .route(
+            "/api/volumes/zfs",
+            get(zfs::pools_get).post(zfs::pools_post),
+        )
+        .route(
+            "/api/volumes/zfs/import",
+            get(zfs::import_get).post(zfs::import_post),
+        )
+        .route("/api/volumes/zfs/{pool}/health", get(zfs::pool_health_get))
+        .route(
+            "/api/volumes/zfs/{pool}/devices",
+            post(zfs::pool_devices_post),
+        )
+        .route(
+            "/api/volumes/zfs/{pool}",
+            get(zfs::pool_detail_get).delete(zfs::pool_detail_delete),
+        )
+        .route(
+            "/api/datasets",
+            get(zfs::datasets_get)
+                .post(zfs::datasets_post)
+                .delete(zfs::datasets_delete),
+        )
         .route("/api/ws/logs", any(handlers::not_ported))
         .route("/api/pods", any(handlers::not_ported))
         .route("/api/namespaces", any(handlers::not_ported))

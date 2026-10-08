@@ -51,6 +51,12 @@ load** on this 5.76 GiB node.
   metrics are live, other owner routes return 501. Talos CLI adapter verified
   live. `api/Dockerfile.rust` builds (10.6 MB, ~2.4 MiB RSS). The Go `api/`
   remains the deployed image until parity.
+- **Phase 2 S2 (same branch):** agent HTTP client + ZFS/disks/datasets handlers
+  (`/api/volumes/zfs*`, `/api/datasets`, `/api/disks*`) with ported validation
+  and agent-error mapping (503 forwarded, transport → 502), plus the Talos disk
+  discovery + topology advisor and a read-only shares store. 31 crate tests
+  including a mock-agent server. Shares render/apply, LDAP, apps/helm, routing,
+  domains/ddns and buddy remain.
 
 ## RAM plan Phase 0 detail (2026-10-04) — Prometheus removed; ARC blocked
 

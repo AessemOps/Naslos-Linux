@@ -301,6 +301,157 @@ fn resolve_talosconfig() -> Option<String> {
     None
 }
 
+/// A discovered disk (the subset of Talos's `storage.Disk` the API uses).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct Disk {
+    #[serde(rename = "device")]
+    pub device_name: String,
+    pub size: u64,
+    #[serde(rename = "isSystemDisk")]
+    pub system_disk: bool,
+    pub model: String,
+    pub serial: String,
+    #[serde(rename = "busPath")]
+    pub bus_path: String,
+    #[serde(rename = "type")]
+    pub disk_type: String,
+    /// True for spinning disks; used to derive the type when Talos does not
+    /// report one.
+    #[serde(default)]
+    pub rotational: bool,
+    #[serde(default)]
+    pub cdrom: bool,
+}
+
+impl TalosClient {
+    /// Discover disks via `talosctl get disks` + `get systemdisk`. The system
+    /// disk is marked so the API can exclude it.
+    pub async fn get_discovered_volumes(&self) -> Result<Vec<Disk>, String> {
+        let disks_out = self.run(&["get", "disks", "-o", "json"]).await?;
+        let system_out = self.run(&["get", "systemdisk", "-o", "json"]).await?;
+        let system_dev = first_json(&system_out)
+            .and_then(|v| {
+                v.get("spec")
+                    .and_then(|s| s.get("devPath"))
+                    .and_then(|d| d.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+
+        let mut disks = Vec::new();
+        for v in all_json(&disks_out) {
+            let Some(spec) = v.get("spec") else { continue };
+            let dev = spec.get("dev_path").and_then(|s| s.as_str()).unwrap_or("");
+            if dev.is_empty() {
+                continue;
+            }
+            let rotational = spec
+                .get("rotational")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false);
+            let cdrom = spec.get("cdrom").and_then(|b| b.as_bool()).unwrap_or(false);
+            let disk_type = if dev.starts_with("/dev/nvme") {
+                "NVME"
+            } else if rotational {
+                "HDD"
+            } else if dev.starts_with("/dev/loop") {
+                "UNKNOWN"
+            } else {
+                "SSD"
+            };
+            disks.push(Disk {
+                device_name: dev.to_string(),
+                size: spec.get("size").and_then(|s| s.as_u64()).unwrap_or(0),
+                system_disk: dev == system_dev,
+                model: spec
+                    .get("model")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                serial: spec
+                    .get("serial")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                bus_path: spec
+                    .get("bus_path")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                disk_type: disk_type.to_string(),
+                rotational,
+                cdrom,
+            });
+        }
+        Ok(disks)
+    }
+}
+
+/// Disk info passed to the advisor (port of `talos.DiskInfo`).
+#[derive(Debug, Clone, Default)]
+pub struct DiskInfo {
+    pub device_path: String,
+    pub size: u64,
+    pub is_system_disk: bool,
+    pub model: String,
+    pub serial: String,
+    pub is_ssd: bool,
+}
+
+/// A disk configuration recommendation (lowercase JSON keys match the UI
+/// contract, `DiskWizard.svelte`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Recommendation {
+    pub topology: String,
+    pub disks: Vec<String>,
+    pub description: String,
+    #[serde(rename = "humanReadableSize")]
+    pub human_readable_size: String,
+}
+
+/// Best-practice topology recommendations (port of `VolumeAdvisor`).
+pub struct VolumeAdvisor;
+
+impl VolumeAdvisor {
+    pub fn recommend(disks: &[DiskInfo]) -> Result<Recommendation, String> {
+        if disks.is_empty() {
+            return Err("no disks provided".to_string());
+        }
+        let usable: Vec<&DiskInfo> = disks.iter().filter(|d| !d.is_system_disk).collect();
+        let n = usable.len();
+        let paths: Vec<String> = usable.iter().map(|d| d.device_path.clone()).collect();
+        let (topology, description) = match n {
+            0 => return Err("no disks provided".to_string()),
+            1 => (
+                "single",
+                "Single disk — no redundancy. Use only for non-critical data or cache.",
+            ),
+            2 => (
+                "mirror",
+                "Mirror (RAID1) — maximum redundancy for 2 disks. Usable capacity = size of smallest disk.",
+            ),
+            3..=5 => (
+                "raidz1",
+                "RAIDZ1 (single parity) — good balance of capacity and redundancy for 3-5 disks.",
+            ),
+            6..=10 => (
+                "raidz2",
+                "RAIDZ2 (double parity) — recommended for 6-10 disks. Survives any 2 disk failures.",
+            ),
+            _ => (
+                "raidz3",
+                "RAIDZ3 (triple parity) — recommended for 11+ disks. Survives any 3 disk failures.",
+            ),
+        };
+        Ok(Recommendation {
+            topology: topology.to_string(),
+            disks: paths,
+            description: description.to_string(),
+            human_readable_size: String::new(),
+        })
+    }
+}
+
 fn split_csv(s: &str) -> Vec<String> {
     s.split(',')
         .map(|p| p.trim().to_string())

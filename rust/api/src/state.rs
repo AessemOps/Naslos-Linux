@@ -40,6 +40,10 @@ pub struct AppState {
     pub metrics: Manager,
     /// Present once the Talos CLI adapter is wired (S1 keeps it optional).
     pub talos: Option<Arc<crate::talos::TalosClient>>,
+    /// The agent client (S2). Absent when `AGENT_TOKEN` is unset.
+    pub agent: Option<Arc<crate::agent::Client>>,
+    /// The share definitions read from the state file (S2 read path).
+    pub shares: crate::shares::Store,
 }
 
 impl AppState {
@@ -59,16 +63,20 @@ impl AppState {
             trusted_cidrs,
             metrics: Manager::new(),
             talos: crate::talos::TalosClient::from_env().map(Arc::new),
+            agent: crate::agent::Client::from_env().ok().map(Arc::new),
+            shares: crate::shares::Store::load(&crate::shares::default_config_path()),
         })
     }
 
-    /// A state for tests: explicit secret, permissive CIDR, no Talos client.
+    /// A state for tests: explicit secret, permissive CIDR, no Talos/agent.
     pub fn for_test(proxy_secret: &str) -> Self {
         Self {
             proxy_secret: proxy_secret.to_string(),
             trusted_cidrs: vec![Cidr::parse("0.0.0.0/0").unwrap()],
             metrics: Manager::new(),
             talos: None,
+            agent: None,
+            shares: crate::shares::Store::load(""),
         }
     }
 }

@@ -5,11 +5,13 @@
 //! four dashboard endpoints and `/api/auth/me` are live; not-yet-ported owner
 //! handlers return a documented 501.
 
+pub mod agent;
 pub mod auth;
 pub mod config;
 pub mod logsafe;
 pub mod metrics;
 pub mod server;
+pub mod shares;
 pub mod state;
 pub mod talos;
 

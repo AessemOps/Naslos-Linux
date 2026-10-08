@@ -497,3 +497,36 @@ spike and is runnable.
 **Not yet ported (next slices):** agent client + shares/ZFS, identity/LDAP,
 apps/catalog/helm, routing/certs/authelia/domains/ddns, buddy, notifications.
 The image matrix, values tags, and the Go API remain the deployed path until S7.
+
+### Phase 2 S2 — agent client + ZFS/disks (2026-10-04) — branch `refactor/rust-api`
+
+Second vertical slice: the ZFS read/write path through the privileged agent.
+
+- **`agent` client** (`rust/api/src/agent.rs`): typed HTTP client for the
+  DaemonSet — pools (list/create/delete/health/status), import, vdev add,
+  datasets (list/create/destroy), shares config/status/folders. Bearer token per
+  request; optional pinned CA (`AGENT_CA_FILE`, fail-closed, PF-M5); 180s
+  timeout; `AgentError{status,message}` so the handler forwards the upstream
+  status (503 degraded) instead of collapsing to 500. `AGENT_BASE_URL` /
+  `NASLOS_NAMESPACE` resolution. RFC3986 escaping without an extra crate.
+- **Talos disks** (`talos.rs` additions): `get_discovered_volumes()` via
+  `talosctl get disks` + `get systemdisk`, mapping dev_path/size/serial/rotational
+  and deriving SSD/HDD/NVME/UNKNOWN; `VolumeAdvisor::recommend` (1→single,
+  2→mirror, 3-5→raidz1, 6-10→raidz2, 11+→raidz3) with lowercase JSON keys.
+- **`shares` store** (read path): loads the share definitions so dataset
+  deletion can refuse to remove a dataset a share serves.
+- **Handlers** (`server/zfs.rs`, `server/disks.rs`): `/api/volumes/zfs`
+  (GET/POST), `/import` (GET/POST), `/{pool}` (GET/DELETE), `/{pool}/health`,
+  `/{pool}/devices` (POST), `/api/datasets` (GET/POST/DELETE), `/api/disks`
+  (GET), `/api/disks/recommend` (POST). Ported validators (pool/dataset/options/
+  disk selection) fail fast with 400 before contacting the agent; agent errors
+  map via `writeAgentError` (upstream status, else 502).
+- **Tests (31 in the crate now):** the S1 auth/route suite plus a mock-agent
+  server: pool list pass-through, 503-degraded forwarding, 400 agent-validation
+  forwarding, fail-fast validation, dataset-path rejection, and no-agent → 502.
+- **Not yet ported (next slices):** shares render/apply + LDAP (S3), apps/
+  catalog/helm (S4), routing/certs/authelia/domains/ddns (S5), buddy (S6).
+
+Docker image rebuild was not re-run locally (this environment's Docker daemon
+can no longer create veth pairs); `api/Dockerfile.rust` is unchanged since the
+S1 build that succeeded, and the code compiles and passes the gates.

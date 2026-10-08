@@ -22,6 +22,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
 ipnet = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 subtle = "2"
