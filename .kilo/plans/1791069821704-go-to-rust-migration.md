@@ -706,3 +706,25 @@ The read/refresh half of the app catalog.
   the chart manager.
 - **Not yet (S4e):** the apps handlers (`/api/apps*`), the async app-jobs runner,
   and wiring the apps Manager into `AppState`.
+
+### Phase 2 S4e — apps handlers + async jobs (2026-10-04) — branch `refactor/rust-api-charts`
+
+Completes S4. The Rust API now serves the full app-catalog + lifecycle surface.
+
+- **`server/app_jobs.rs`**: the in-memory job registry (`JobPublic`/`JobState`/
+  `JobKind`/`JobStage`, `AppJobManager` with conflict detection + a ~20-finished
+  retention cap) and the async runner — the handler enqueues and answers 202,
+  the install/upgrade/uninstall runs in a server-owned task the operator polls.
+- **`server/apps.rs`**: `GET|POST /api/apps` (install requires `confirmed`,
+  base-domain gate, conflict → 409, 202 + jobId), `GET|PUT|DELETE
+  /api/apps/{name}` (upgrade/uninstall jobs), `/{name}/services`,
+  `/{name}/exposure` (GET reads the record's exposure + domains; PUT validates +
+  applies), `GET /api/apps/jobs`, `GET /api/apps/jobs/{id}`.
+- **Wiring**: `AppState` gains `app_manager` (built from the helm clients, the
+  charts manager and a catalog closure), `app_jobs` and `base_domain`. Routing
+  (S5) and Service discovery (kube) are `None` for now, so installs record +
+  render but do not yet route — documented.
+- **Tests (4 new, 82 total):** apps 503 without the manager, install 503,
+  empty jobs list, unknown job 404.
+- **Not yet:** S5 (routing/certs/authelia/domains/providers/ddns) supplies the
+  Router/Discoverer and the real SSO/domain lists; S6 buddy/notifications.

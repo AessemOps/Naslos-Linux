@@ -127,6 +127,9 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         samba_users: std::sync::Mutex::new(SambaUserStore::new("")),
         charts: None,
         catalog: std::sync::Arc::new(naslos_api::state::CatalogHolder::new()),
+        app_manager: None,
+        app_jobs: std::sync::Arc::new(naslos_api::server::app_jobs::AppJobManager::new()),
+        base_domain: String::new(),
         identity: None,
     })
 }
@@ -267,6 +270,9 @@ async fn no_agent_configured_is_502() {
         samba_users: std::sync::Mutex::new(SambaUserStore::new("")),
         charts: None,
         catalog: std::sync::Arc::new(naslos_api::state::CatalogHolder::new()),
+        app_manager: None,
+        app_jobs: std::sync::Arc::new(naslos_api::server::app_jobs::AppJobManager::new()),
+        base_domain: String::new(),
         identity: None,
     });
     let (status, _b) = call(state, "GET", "/api/volumes/zfs", None).await;

@@ -52,6 +52,12 @@ pub struct AppState {
     pub charts: Option<Arc<crate::chartsrepo::Manager>>,
     /// The swappable catalog snapshot (S4d).
     pub catalog: Arc<CatalogHolder>,
+    /// The installed-app manager (S4e). Absent when chart repos are unavailable.
+    pub app_manager: Option<Arc<crate::apps::Manager>>,
+    /// The in-memory async app-job registry (S4e).
+    pub app_jobs: Arc<crate::server::app_jobs::AppJobManager>,
+    /// The primary base domain app subdomains hang off.
+    pub base_domain: String,
 }
 
 /// Holds the current catalog snapshot; refresh replaces it atomically.
@@ -87,6 +93,7 @@ impl AppState {
         let trusted_cidrs = parse_cidrs(&cidr_env)?;
 
         let (charts, catalog) = build_chart_repos();
+        let app_manager = build_app_manager(&charts, &catalog);
 
         Ok(Self {
             proxy_secret,
@@ -99,6 +106,9 @@ impl AppState {
             identity: crate::identity::Client::from_env().ok().map(Arc::new),
             charts: charts.clone(),
             catalog,
+            app_manager,
+            app_jobs: Arc::new(crate::server::app_jobs::AppJobManager::new()),
+            base_domain: std::env::var("BASE_DOMAIN").unwrap_or_default(),
         })
     }
 
@@ -115,6 +125,9 @@ impl AppState {
             identity: None,
             charts: None,
             catalog: Arc::new(CatalogHolder::new()),
+            app_manager: None,
+            app_jobs: Arc::new(crate::server::app_jobs::AppJobManager::new()),
+            base_domain: String::new(),
         }
     }
 }
@@ -240,4 +253,38 @@ fn parse_go_duration(s: &str) -> Option<std::time::Duration> {
         total += std::time::Duration::from_secs_f64(value * unit);
     }
     Some(total)
+}
+
+/// Build the installed-app manager (S4e). Routing (S5) and Service discovery
+/// (kube) are wired as `None` for now, so installs record + render but do not
+/// yet route; that is documented in the plan.
+fn build_app_manager(
+    charts: &Option<Arc<crate::chartsrepo::Manager>>,
+    catalog: &Arc<CatalogHolder>,
+) -> Option<Arc<crate::apps::Manager>> {
+    let charts = charts.clone()?;
+    let apps_ns = std::env::var("APPS_NAMESPACE").unwrap_or_else(|_| "naslos-apps".to_string());
+    let apps_priv_ns = std::env::var("APPS_PRIVILEGED_NAMESPACE")
+        .unwrap_or_else(|_| "naslos-apps-priv".to_string());
+    let catalog_holder = catalog.clone();
+    let cfg = crate::apps::Config {
+        store_path: std::env::var("APPS_CONFIG")
+            .unwrap_or_else(|_| "/var/lib/naslos/apps.json".to_string()),
+        helm: Arc::new(crate::helm::Client::new(&apps_ns)),
+        helm_privileged: Some(Arc::new(crate::helm::Client::new(&apps_priv_ns))),
+        privileged_namespace: apps_priv_ns,
+        charts,
+        catalog: Arc::new(move || catalog_holder.load()),
+        router: None,
+        discoverer: None,
+        base_domain: std::env::var("BASE_DOMAIN").unwrap_or_default(),
+        sso_domains: None,
+    };
+    match crate::apps::Manager::new(cfg) {
+        Ok(m) => Some(Arc::new(m)),
+        Err(e) => {
+            tracing::warn!("could not load installed-app records: {e}");
+            None
+        }
+    }
 }

@@ -116,3 +116,38 @@ async fn sources_are_503_without_the_chart_manager() {
     let (status, _b, _r) = call("POST", "/api/sources/refresh", None).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
+
+// ---- S4e: apps ----------------------------------------------------------
+
+#[tokio::test]
+async fn apps_are_503_without_the_manager() {
+    let (status, body, _r) = call("GET", "/api/apps", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["error"].as_str().unwrap().contains("app management"));
+}
+
+#[tokio::test]
+async fn install_is_503_without_the_manager() {
+    // The manager check precedes the confirmation check (matching Go).
+    let (status, body, _r) = call(
+        "POST",
+        "/api/apps",
+        Some(serde_json::json!({ "name": "nginx", "confirmed": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["error"].as_str().unwrap().contains("app management"));
+}
+
+#[tokio::test]
+async fn app_jobs_list_is_empty() {
+    let (status, body, _r) = call("GET", "/api/apps/jobs", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["jobs"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn unknown_job_is_404() {
+    let (status, _b, _r) = call("GET", "/api/apps/jobs/deadbeef", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

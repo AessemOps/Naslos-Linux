@@ -5,6 +5,8 @@
 //! handler is not in this slice return a documented 501 Not Implemented so the
 //! route surface (and its auth) already matches Go.
 
+pub mod app_jobs;
+pub mod apps;
 pub mod catalog;
 pub mod disks;
 pub mod handlers;
@@ -42,10 +44,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let owner: Router<Arc<AppState>> = Router::new()
         .route("/api/catalog", get(catalog::catalog_get))
         .route("/api/catalog/{name}", get(catalog::catalog_app_get))
-        .route("/api/apps", any(handlers::not_ported))
-        .route("/api/apps/jobs", any(handlers::not_ported))
-        .route("/api/apps/jobs/{*rest}", any(handlers::not_ported))
-        .route("/api/apps/{*rest}", any(handlers::not_ported))
+        .route("/api/apps", get(apps::apps_get).post(apps::apps_post))
+        .route("/api/apps/jobs", get(apps::app_jobs_get))
+        .route("/api/apps/jobs/{id}", get(apps::app_job_detail_get))
+        .route(
+            "/api/apps/{name}",
+            get(apps::app_detail_get)
+                .put(apps::app_detail_put)
+                .delete(apps::app_detail_delete),
+        )
+        .route(
+            "/api/apps/{name}/exposure",
+            get(apps::app_exposure_get).put(apps::app_exposure_put),
+        )
+        .route("/api/apps/{name}/services", get(apps::app_services_get))
         .route(
             "/api/sources",
             get(catalog::sources_get).post(catalog::sources_post),
