@@ -659,3 +659,31 @@ The chart-repository ingestion layer and the catalog that reads it.
   channel collection, service-template rules.
 - **Not yet (S4c):** the apps install/jobs package and the catalog/apps/sources
   handlers.
+
+### Phase 2 S4c — apps orchestration (2026-10-04) — branch `refactor/rust-api-charts`
+
+The installed-app record store and lifecycle orchestration (port of
+`api/internal/apps`, 912 LOC). No client-go needed — it composes the ported
+helm/catalog/chartsrepo and two traits.
+
+- **`rust/api/src/apps.rs`**: `Exposure`/`Record`/`View`/`DiscoveredService`,
+  `Config`/`Manager`/`Store` (atomic 0600 JSON, clone-on-read), and the
+  lifecycle: `install` (resolve chart → merge values → helm install → discover
+  service → record → route), `upgrade` (re-merge + `--reset-values`),
+  `set_exposure` (toggle merge preserving the route target), `uninstall`,
+  `list` (merges managed + privileged namespaces), `backfill` (orphaned
+  records), `reconcile_routes`, `discover_services`, `view`/`url_for`/
+  `auth_allowed`, and the `exposure_for`/`merge_values`/`render_service_name`
+  helpers.
+- **Traits** for the S5/kube edges: `Router` (exposure layer) and
+  `ServiceDiscoverer` (release Services); both optional, so the manager works
+  without them. `CatalogProvider` is a swappable closure (refresh replaces the
+  snapshot).
+- **Parity details**: `Record.Namespace` is `json:"-"`; progress stages
+  (preparing/installing/finalizing); user values deep-merge over defaults;
+  routing failure is non-fatal (recorded as `lastError`); release-name-only
+  service templates.
+- **Tests (5 new, 53 lib total):** release-name/subdomain validation, deep
+  merge, service-name templating, store round-trip + ordering.
+- **Not yet (S4d):** the catalog/apps/sources handlers and the async app-jobs
+  runner, plus wiring the Manager into AppState.
