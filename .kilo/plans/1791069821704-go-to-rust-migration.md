@@ -687,3 +687,22 @@ helm/catalog/chartsrepo and two traits.
   merge, service-name templating, store round-trip + ordering.
 - **Not yet (S4d):** the catalog/apps/sources handlers and the async app-jobs
   runner, plus wiring the Manager into AppState.
+
+### Phase 2 S4d — catalog + sources handlers (2026-10-04) — branch `refactor/rust-api-charts`
+
+The read/refresh half of the app catalog.
+
+- **`AppState`** gains `charts: Option<Arc<chartsrepo::Manager>>` and
+  `catalog: Arc<CatalogHolder>` (a swappable snapshot). `build_chart_repos()`
+  constructs the source store, seeds the official source from `SOURCES_OFFICIAL_*`,
+  builds the git manager (public-only creds for now — documented) and the initial
+  catalog; `build_catalog()` scans every source/channel dir.
+- **`server/catalog.rs`**: `GET /api/catalog`, `GET /api/catalog/{name}`,
+  `GET|POST /api/sources`, `POST /api/sources/refresh?name=`,
+  `GET|DELETE /api/sources/{name}` — with the 503 "chart repositories are not
+  available" guard and catalog rebuild after refresh/delete.
+- **Routes** for catalog/sources moved off the 501 placeholder.
+- **Tests (2 new, 76 total):** empty catalog without sources; sources 503 without
+  the chart manager.
+- **Not yet (S4e):** the apps handlers (`/api/apps*`), the async app-jobs runner,
+  and wiring the apps Manager into `AppState`.

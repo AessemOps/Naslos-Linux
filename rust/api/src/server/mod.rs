@@ -5,6 +5,7 @@
 //! handler is not in this slice return a documented 501 Not Implemented so the
 //! route surface (and its auth) already matches Go.
 
+pub mod catalog;
 pub mod disks;
 pub mod handlers;
 pub mod shares;
@@ -39,15 +40,21 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     // Admin-only owner routes. Handlers not in S1 answer 501.
     let owner: Router<Arc<AppState>> = Router::new()
-        .route("/api/catalog", any(handlers::not_ported))
-        .route("/api/catalog/{*rest}", any(handlers::not_ported))
+        .route("/api/catalog", get(catalog::catalog_get))
+        .route("/api/catalog/{name}", get(catalog::catalog_app_get))
         .route("/api/apps", any(handlers::not_ported))
         .route("/api/apps/jobs", any(handlers::not_ported))
         .route("/api/apps/jobs/{*rest}", any(handlers::not_ported))
         .route("/api/apps/{*rest}", any(handlers::not_ported))
-        .route("/api/sources", any(handlers::not_ported))
-        .route("/api/sources/refresh", any(handlers::not_ported))
-        .route("/api/sources/{*rest}", any(handlers::not_ported))
+        .route(
+            "/api/sources",
+            get(catalog::sources_get).post(catalog::sources_post),
+        )
+        .route("/api/sources/refresh", post(catalog::sources_refresh))
+        .route(
+            "/api/sources/{name}",
+            get(catalog::source_detail_get).delete(catalog::source_detail_delete),
+        )
         .route("/api/domains", any(handlers::not_ported))
         .route("/api/domains/{*rest}", any(handlers::not_ported))
         .route("/api/providers", any(handlers::not_ported))

@@ -94,3 +94,25 @@ async fn users_are_503_without_ldap() {
     let (status, _b, _r) = call("GET", "/api/groups", None).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
+
+// ---- S4d: catalog + sources ---------------------------------------------
+
+#[tokio::test]
+async fn catalog_is_empty_without_sources() {
+    let (status, body, _r) = call("GET", "/api/catalog", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn sources_are_503_without_the_chart_manager() {
+    let (status, body, _r) = call("GET", "/api/sources", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("chart repositories"));
+
+    let (status, _b, _r) = call("POST", "/api/sources/refresh", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
