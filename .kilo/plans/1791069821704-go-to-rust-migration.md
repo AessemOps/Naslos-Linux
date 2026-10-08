@@ -611,3 +611,24 @@ Completes S3. The Rust API now serves the full identity + shares surface.
   group_gid stability, colon rejection.
 - **Image** rebuilt: 14.2 MB. **Not yet:** the live LDAP/SMB drill (needs the
   Rust API deployed, S7); S4 apps/catalog/helm is next.
+
+### Phase 2 S4a — Helm CLI adapter (2026-10-04) — branch `refactor/rust-api-apps`
+
+S4 is apps/catalog/helm (~2450 LOC); it starts with the Helm adapter, since
+there is no Rust Helm SDK (the plan's bundled-CLI decision).
+
+- **`rust/api/src/helm.rs`**: drives the bundled `helm` binary — `install_dir`
+  (`--wait --timeout 5m0s`), `upgrade_dir` (`--reset-values`, mirroring the Go
+  `ResetValues=true`), `uninstall`, `list`, `get`, `rollback`. Values are written
+  to a temp JSON file and passed with `-f`.
+- **In-cluster kubeconfig**: the Go SDK resolved its Kubernetes config
+  in-cluster, which the `helm` CLI does not do automatically, so the adapter
+  builds a kubeconfig from the pod's service account (`KUBERNETES_SERVICE_HOST`
+  + the SA token/CA) unless `HELM_KUBECONFIG` is set.
+- **JSON parsing**: `helm list -o json` and `helm status -o json`, with
+  `release_status` (deployed→running, pending→pending, uninstalled→stopped),
+  `split_chart` ("nginx-15.0.0" → name/version), and `parse_helm_time` for the
+  list's `updated` field.
+- **Tests (4):** status mapping, chart split, list-time parsing, list-entry →
+  App. **Not yet (S4b/S4c):** chartsrepo (git clone + sources), catalog, apps
+  install/jobs and their handlers.
