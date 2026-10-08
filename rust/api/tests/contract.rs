@@ -75,7 +75,7 @@ async fn dashboard_and_metrics_are_any_authenticated_user() {
 async fn admin_routes_reject_a_plain_user_and_reach_the_handler_for_an_admin() {
     // A plain authenticated user is forbidden on an admin route.
     let (status, _b, _r) = send(get(
-        "/api/catalog",
+        "/api/buddy/status",
         true,
         Some("someone"),
         Some("naslos_users"),
@@ -85,7 +85,7 @@ async fn admin_routes_reject_a_plain_user_and_reach_the_handler_for_an_admin() {
 
     // An admin passes the gate and reaches the (not-yet-ported) handler.
     let (status, body, _r) = send(get(
-        "/api/catalog",
+        "/api/buddy/status",
         true,
         Some("admin"),
         Some("naslos_admins,naslos_users"),

@@ -632,3 +632,99 @@ there is no Rust Helm SDK (the plan's bundled-CLI decision).
 - **Tests (4):** status mapping, chart split, list-time parsing, list-entry →
   App. **Not yet (S4b/S4c):** chartsrepo (git clone + sources), catalog, apps
   install/jobs and their handlers.
+
+### Phase 2 S4b — chartsrepo + catalog (2026-10-04) — branch `refactor/rust-api-charts`
+
+The chart-repository ingestion layer and the catalog that reads it.
+
+- **`rust/api/src/chartsrepo.rs`**: `Source`/`AuthType`/`Store` (source CRUD,
+  channels, DNS-1123 name validation), `Manager` (cache dir per source/channel,
+  `refresh`/`refresh_all`, `ensure_fresh` with the TTL + stale-clone fallback,
+  `app_names`/`app_dir`, `safe_join` traversal guard, `stat_repo` size/file
+  guard), and the credentials trait.
+- **Git via a `GitBackend` trait**: `GitCliBackend` drives the bundled `git`
+  CLI (`clone --single-branch --depth 1 --no-tags`, `fetch`+`reset --hard`),
+  with HTTPS-token basic auth and `GIT_SSH_COMMAND` for deploy keys. The trait
+  keeps the repository logic testable without a real remote. (Deviation from the
+  plan's gix/git2 note, consistent with the helm/talosctl bundled-CLI decision;
+  the API image will bundle `git` at S7.)
+- **`rust/api/src/catalog.rs`**: `App`/`Service`/`ExposureDefaults`/
+  `CatalogEntry`/`SourceRef`, YAML `naslos-app.yaml` + `Chart.yaml` parsing,
+  `load`/`pick_winner` (user-over-official, then Prod, then alphabetical),
+  `validate_manifest` (name == folder, DNS-1123, port/scheme, release-name-only
+  service templates), and the summary/detail accessors.
+- **Tests (11 new, 48 lib total):** DNS-1123 + source validation, channel
+  defaults/custom + branch lookup, `safe_join`, cache dir casing, `app_names`
+  filtering; catalog load, user-over-official precedence, name/folder mismatch,
+  channel collection, service-template rules.
+- **Not yet (S4c):** the apps install/jobs package and the catalog/apps/sources
+  handlers.
+
+### Phase 2 S4c — apps orchestration (2026-10-04) — branch `refactor/rust-api-charts`
+
+The installed-app record store and lifecycle orchestration (port of
+`api/internal/apps`, 912 LOC). No client-go needed — it composes the ported
+helm/catalog/chartsrepo and two traits.
+
+- **`rust/api/src/apps.rs`**: `Exposure`/`Record`/`View`/`DiscoveredService`,
+  `Config`/`Manager`/`Store` (atomic 0600 JSON, clone-on-read), and the
+  lifecycle: `install` (resolve chart → merge values → helm install → discover
+  service → record → route), `upgrade` (re-merge + `--reset-values`),
+  `set_exposure` (toggle merge preserving the route target), `uninstall`,
+  `list` (merges managed + privileged namespaces), `backfill` (orphaned
+  records), `reconcile_routes`, `discover_services`, `view`/`url_for`/
+  `auth_allowed`, and the `exposure_for`/`merge_values`/`render_service_name`
+  helpers.
+- **Traits** for the S5/kube edges: `Router` (exposure layer) and
+  `ServiceDiscoverer` (release Services); both optional, so the manager works
+  without them. `CatalogProvider` is a swappable closure (refresh replaces the
+  snapshot).
+- **Parity details**: `Record.Namespace` is `json:"-"`; progress stages
+  (preparing/installing/finalizing); user values deep-merge over defaults;
+  routing failure is non-fatal (recorded as `lastError`); release-name-only
+  service templates.
+- **Tests (5 new, 53 lib total):** release-name/subdomain validation, deep
+  merge, service-name templating, store round-trip + ordering.
+- **Not yet (S4d):** the catalog/apps/sources handlers and the async app-jobs
+  runner, plus wiring the Manager into AppState.
+
+### Phase 2 S4d — catalog + sources handlers (2026-10-04) — branch `refactor/rust-api-charts`
+
+The read/refresh half of the app catalog.
+
+- **`AppState`** gains `charts: Option<Arc<chartsrepo::Manager>>` and
+  `catalog: Arc<CatalogHolder>` (a swappable snapshot). `build_chart_repos()`
+  constructs the source store, seeds the official source from `SOURCES_OFFICIAL_*`,
+  builds the git manager (public-only creds for now — documented) and the initial
+  catalog; `build_catalog()` scans every source/channel dir.
+- **`server/catalog.rs`**: `GET /api/catalog`, `GET /api/catalog/{name}`,
+  `GET|POST /api/sources`, `POST /api/sources/refresh?name=`,
+  `GET|DELETE /api/sources/{name}` — with the 503 "chart repositories are not
+  available" guard and catalog rebuild after refresh/delete.
+- **Routes** for catalog/sources moved off the 501 placeholder.
+- **Tests (2 new, 76 total):** empty catalog without sources; sources 503 without
+  the chart manager.
+- **Not yet (S4e):** the apps handlers (`/api/apps*`), the async app-jobs runner,
+  and wiring the apps Manager into `AppState`.
+
+### Phase 2 S4e — apps handlers + async jobs (2026-10-04) — branch `refactor/rust-api-charts`
+
+Completes S4. The Rust API now serves the full app-catalog + lifecycle surface.
+
+- **`server/app_jobs.rs`**: the in-memory job registry (`JobPublic`/`JobState`/
+  `JobKind`/`JobStage`, `AppJobManager` with conflict detection + a ~20-finished
+  retention cap) and the async runner — the handler enqueues and answers 202,
+  the install/upgrade/uninstall runs in a server-owned task the operator polls.
+- **`server/apps.rs`**: `GET|POST /api/apps` (install requires `confirmed`,
+  base-domain gate, conflict → 409, 202 + jobId), `GET|PUT|DELETE
+  /api/apps/{name}` (upgrade/uninstall jobs), `/{name}/services`,
+  `/{name}/exposure` (GET reads the record's exposure + domains; PUT validates +
+  applies), `GET /api/apps/jobs`, `GET /api/apps/jobs/{id}`.
+- **Wiring**: `AppState` gains `app_manager` (built from the helm clients, the
+  charts manager and a catalog closure), `app_jobs` and `base_domain`. Routing
+  (S5) and Service discovery (kube) are `None` for now, so installs record +
+  render but do not yet route — documented.
+- **Tests (4 new, 82 total):** apps 503 without the manager, install 503,
+  empty jobs list, unknown job 404.
+- **Not yet:** S5 (routing/certs/authelia/domains/providers/ddns) supplies the
+  Router/Discoverer and the real SSO/domain lists; S6 buddy/notifications.

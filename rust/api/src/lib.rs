@@ -6,7 +6,10 @@
 //! handlers return a documented 501.
 
 pub mod agent;
+pub mod apps;
 pub mod auth;
+pub mod catalog;
+pub mod chartsrepo;
 pub mod config;
 pub mod helm;
 pub mod identity;
