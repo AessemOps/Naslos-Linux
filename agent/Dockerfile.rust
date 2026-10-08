@@ -1,7 +1,7 @@
 # Naslos agent container image (Rust port).
 # Runs as a privileged DaemonSet and executes zpool/zfs via chroot /host.
 
-FROM rust:1.85-alpine AS builder
+FROM rust:1.88-alpine AS builder
 
 RUN apk add --no-cache musl-dev
 

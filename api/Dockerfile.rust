@@ -3,7 +3,7 @@
 # Go API image stays the deployed one until the port reaches parity (slice S7).
 # This Dockerfile exists so the Rust API can be built and smoke-tested.
 
-FROM rust:1.85-alpine AS builder
+FROM rust:1.88-alpine AS builder
 RUN apk add --no-cache musl-dev
 
 WORKDIR /build

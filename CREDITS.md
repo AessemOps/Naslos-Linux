@@ -44,7 +44,7 @@ It also lists the GitHub Actions used by the CI/release workflows.
 | distroless static | `gcr.io/distroless/static-debian12:nonroot` | Apache-2.0 | https://github.com/GoogleContainerTools/distroless |
 | nginx unprivileged | `nginxinc/nginx-unprivileged:1.30.5-alpine` | BSD-2-Clause | https://github.com/nginxinc/docker-nginx-unprivileged |
 | Go toolchain | `golang:1.26-alpine` | BSD-3-Clause | https://go.dev/ |
-| Rust toolchain | `rust:1.85-alpine` | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
+| Rust toolchain | `rust:1.88-alpine` | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
 | Node.js toolchain | `node:20-alpine` | MIT | https://nodejs.org/ |
 
 ## Go modules — direct (`api/go.mod`)
@@ -98,7 +98,7 @@ tracing, chrono and ipnet. Direct dependencies:
 | tokio-util | 0.7 | MIT | https://github.com/tokio-rs/tokio |
 | tower / tower-http | 0.5 / 0.6 | MIT | https://github.com/tower-rs/tower |
 | tracing / tracing-subscriber | 0.1 / 0.3 | MIT | https://github.com/tokio-rs/tracing |
-| Rust toolchain (`rust:1.85-alpine`) | 1.85 | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
+| Rust toolchain (`rust:1.88-alpine`) | 1.88 | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
 
 Transitive crates are recorded in [`rust/Cargo.lock`](rust/Cargo.lock); each is
 under the license published by its own crate project.
