@@ -17,7 +17,11 @@ fn state() -> Arc<AppState> {
 }
 
 async fn send(req: Request<Body>) -> (StatusCode, Value, String) {
-    let resp = build_router(state()).oneshot(req).await.unwrap();
+    send_state(state(), req).await
+}
+
+async fn send_state(state: Arc<AppState>, req: Request<Body>) -> (StatusCode, Value, String) {
+    let resp = build_router(state).oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let raw = String::from_utf8_lossy(&bytes).to_string();
@@ -71,7 +75,7 @@ async fn dashboard_and_metrics_are_any_authenticated_user() {
 async fn admin_routes_reject_a_plain_user_and_reach_the_handler_for_an_admin() {
     // A plain authenticated user is forbidden on an admin route.
     let (status, _b, _r) = send(get(
-        "/api/users",
+        "/api/catalog",
         true,
         Some("someone"),
         Some("naslos_users"),
@@ -81,7 +85,7 @@ async fn admin_routes_reject_a_plain_user_and_reach_the_handler_for_an_admin() {
 
     // An admin passes the gate and reaches the (not-yet-ported) handler.
     let (status, body, _r) = send(get(
-        "/api/users",
+        "/api/catalog",
         true,
         Some("admin"),
         Some("naslos_admins,naslos_users"),
@@ -100,19 +104,50 @@ async fn unknown_api_route_is_authenticated_then_not_found() {
 }
 
 #[tokio::test]
-async fn auth_me_returns_identity_and_admin_flag() {
+async fn auth_me_returns_identity_when_ldap_is_configured() {
+    // A plaintext (non-dialing) identity client is enough to make the handler
+    // report the identity from the trusted headers.
+    let client = naslos_api::identity::Client::new(&naslos_api::identity::Config {
+        host: "localhost".into(),
+        port: 389,
+        base_dn: "dc=naslos,dc=local".into(),
+        bind_dn: "cn=admin".into(),
+        bind_pass: "x".into(),
+        ca_cert_path: String::new(),
+        use_tls: false,
+    })
+    .unwrap();
+    let mut st = AppState::for_test(SECRET);
+    st.identity = Some(Arc::new(client));
+    let st = Arc::new(st);
+
+    let (status, body, _r) = send_state(
+        st,
+        get(
+            "/api/auth/me",
+            true,
+            Some("alice"),
+            Some("naslos_admins, naslos_users"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["username"], "alice");
+    // Go joins groups into a comma-separated string.
+    assert_eq!(body["groups"], "naslos_admins,naslos_users");
+}
+
+#[tokio::test]
+async fn auth_me_is_503_without_ldap() {
     let (status, body, _r) = send(get(
         "/api/auth/me",
         true,
         Some("alice"),
-        Some("naslos_admins, naslos_users"),
+        Some("naslos_admins"),
     ))
     .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["username"], "alice");
-    assert_eq!(body["isAdmin"], true);
-    // Groups are trimmed.
-    assert_eq!(body["groups"][1], "naslos_users");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["error"].as_str().unwrap().contains("Identity/LDAP"));
 }
 
 #[tokio::test]

@@ -23,7 +23,13 @@ pub async fn ready() -> Response {
 }
 
 /// `GET /api/auth/me` — the caller's identity from the trusted headers.
-pub async fn auth_me(req: Request) -> Response {
+pub async fn auth_me(State(state): State<Arc<AppState>>, req: Request) -> Response {
+    if state.identity.is_none() {
+        return json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": "Identity/LDAP is not configured (check LDAP_HOST, LDAP_BIND_PASS, and that OpenLDAP is running)" }),
+        );
+    }
     let Some(user) = user_from_request(&req) else {
         return json(
             StatusCode::UNAUTHORIZED,
@@ -34,10 +40,9 @@ pub async fn auth_me(req: Request) -> Response {
         StatusCode::OK,
         serde_json::json!({
             "username": user.username,
-            "groups": user.groups,
+            "groups": user.groups.join(","),
             "email": user.email,
             "displayName": user.display_name,
-            "isAdmin": user.is_admin(),
         }),
     )
 }

@@ -655,7 +655,8 @@ async fn require_unused_by_shares(state: &AppState, name: &str) -> Result<(), St
         }
     }
 
-    for share in state.shares.list() {
+    let shares = state.shares.lock().unwrap();
+    for share in shares.list() {
         for mp in &mountpoints {
             if share.path == *mp || share.path.starts_with(&format!("{mp}/")) {
                 return Err(format!(
