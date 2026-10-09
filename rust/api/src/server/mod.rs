@@ -9,6 +9,7 @@ pub mod app_jobs;
 pub mod apps;
 pub mod catalog;
 pub mod disks;
+pub mod domains;
 pub mod handlers;
 pub mod providers;
 pub mod shares;
@@ -68,8 +69,21 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/sources/{name}",
             get(catalog::source_detail_get).delete(catalog::source_detail_delete),
         )
-        .route("/api/domains", any(handlers::not_ported))
-        .route("/api/domains/{*rest}", any(handlers::not_ported))
+        .route(
+            "/api/domains",
+            get(domains::domains_get).post(domains::domains_post),
+        )
+        .route(
+            "/api/domains/{name}/certificate",
+            get(domains::domain_certificate_get),
+        )
+        .route("/api/domains/{name}/sso", post(domains::domain_sso_post))
+        .route(
+            "/api/domains/{name}",
+            get(domains::domain_detail_get)
+                .put(domains::domain_detail_put)
+                .delete(domains::domain_detail_delete),
+        )
         .route("/api/providers", get(providers::providers_get))
         .route("/api/ddns", any(handlers::not_ported))
         .route("/api/ddns/{*rest}", any(handlers::not_ported))

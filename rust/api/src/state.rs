@@ -60,6 +60,18 @@ pub struct AppState {
     pub base_domain: String,
     /// The declarative DNS provider registry (S5a).
     pub providers: Arc<crate::providers::Registry>,
+    /// The base-domain store (S5d).
+    pub domains: crate::certs::Store,
+    /// The certificate reconciler (S5d), present when a kube client is available.
+    pub certs: Option<Arc<dyn crate::certs::Reconciler>>,
+    /// The Authelia SSO syncer (S5d).
+    pub sso: Option<Arc<dyn crate::authelia::Syncer>>,
+    /// The Kubernetes client (S5c), used for Secret writes and discovery.
+    pub kube: Option<Arc<crate::kube::Client>>,
+    /// The chart-declared SSO domain seed (`SSO_DOMAINS`).
+    pub sso_domains: Vec<String>,
+    /// The apps namespace (Secrets, Certificates).
+    pub apps_namespace: String,
 }
 
 /// Holds the current catalog snapshot; refresh replaces it atomically.
@@ -97,6 +109,31 @@ impl AppState {
         let (charts, catalog) = build_chart_repos();
         let app_manager = build_app_manager(&charts, &catalog);
 
+        let apps_namespace =
+            std::env::var("APPS_NAMESPACE").unwrap_or_else(|_| "naslos-apps".to_string());
+        let domains_store = crate::certs::Store::from_env();
+        if let Err(e) = domains_store.load() {
+            tracing::warn!("could not load domains: {e}");
+        }
+        let sso_domains: Vec<String> = std::env::var("SSO_DOMAINS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let kube = Some(Arc::new(crate::kube::Client::new(&apps_namespace)));
+        let certs: Option<Arc<dyn crate::certs::Reconciler>> = kube.as_ref().map(|k| {
+            Arc::new(crate::certs::KubeReconciler::new(
+                k.clone(),
+                &apps_namespace,
+            )) as Arc<dyn crate::certs::Reconciler>
+        });
+        let sso: Option<Arc<dyn crate::authelia::Syncer>> = kube.as_ref().map(|k| {
+            let ns = std::env::var("NASLOS_NAMESPACE").unwrap_or_else(|_| "naslos".to_string());
+            Arc::new(crate::authelia::KubeSyncer::new(k.clone(), &ns))
+                as Arc<dyn crate::authelia::Syncer>
+        });
+
         Ok(Self {
             proxy_secret,
             trusted_cidrs,
@@ -114,6 +151,12 @@ impl AppState {
             providers: Arc::new(crate::providers::Registry::load(
                 &std::env::var("DDNS_PROVIDERS_DIR").unwrap_or_default(),
             )),
+            domains: domains_store,
+            certs,
+            sso,
+            kube,
+            sso_domains,
+            apps_namespace,
         })
     }
 
@@ -134,6 +177,12 @@ impl AppState {
             app_jobs: Arc::new(crate::server::app_jobs::AppJobManager::new()),
             base_domain: String::new(),
             providers: Arc::new(crate::providers::Registry::load("")),
+            domains: crate::certs::Store::new(""),
+            certs: None,
+            sso: None,
+            kube: None,
+            sso_domains: Vec::new(),
+            apps_namespace: "naslos-apps".to_string(),
         }
     }
 }

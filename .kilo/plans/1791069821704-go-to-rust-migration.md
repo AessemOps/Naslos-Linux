@@ -789,3 +789,20 @@ The cluster edges of the certificate/SSO layer, over the bundled `kubectl`
   fragments-equal ignores YAML quoting.
 - **Not yet (S5d):** the domains handlers (create/update/delete/certificate/sso)
   and the routing reconciler + `Router`/`ServiceDiscoverer` wiring; then ddns.
+
+### Phase 2 S5d — domains handlers + shared domain helpers (2026-10-09)
+
+- **`server/domains.rs`**: `GET|POST /api/domains`, `GET|PUT|DELETE
+  /api/domains/{name}`, `GET /{name}/certificate`, `POST /{name}/sso`. Ported
+  `selectable_domains`/`effective_sso_domains`/`base_domain_selectable`,
+  `apps_using_auth`, `upsert_domain` (validate → apply certs → persist; the SSO
+  flag is preserved on a plain edit), and `apply_domain_fields` (split provider
+  fields into providerConfig + a credential Secret via the kube adapter).
+- **Shared helpers**: `apps.rs` now uses the domains module's selectable/effective
+  lists, so exposure's `ssoDomains` and the domain picker agree.
+- **Wiring**: `AppState` gains `domains`, `certs` (KubeReconciler), `sso`
+  (KubeSyncer), `kube`, `sso_domains` (`SSO_DOMAINS`), `apps_namespace`.
+- **Tests (3 new, 72 lib total + integration):** empty domains list + no
+  cert-manager; invalid-domain create 400; unknown domain 404.
+- **Not yet (S5e):** the routing reconciler + `Router`/`ServiceDiscoverer`
+  wiring, then ddns.
