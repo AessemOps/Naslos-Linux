@@ -1,6 +1,6 @@
 module github.com/AessemOps/Naslos-Linux/api
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/cosi-project/runtime v1.16.3

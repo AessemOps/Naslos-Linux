@@ -550,7 +550,7 @@ run "go test -race (api)" go test -race ./...
 if have govulncheck; then
   # govulncheck exits non-zero for ANY findable advisory. The four AUDIT-H3
   # ones are `Fixed in: N/A` and not on an exercised path. The six PF-M2 ones
-  # are Go stdlib advisories fixed in 1.26.6, which both go.mod files now
+  # are Go stdlib advisories fixed in 1.26.9, which the api go.mod now
   # require; they are listed so a build under an older toolchain still reports
   # them without failing the gate. A genuinely NEW id fails.
   check_govulncheck() {
