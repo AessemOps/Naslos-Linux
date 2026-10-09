@@ -114,6 +114,9 @@ pub struct DiscoveredService {
 /// Returns the current catalog snapshot.
 pub type CatalogProvider = Arc<dyn Fn() -> Option<Arc<Catalog>> + Send + Sync>;
 
+/// Returns the effective SSO domain list.
+pub type SsoDomainsFn = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+
 /// Finds the Services a release rendered.
 #[async_trait::async_trait]
 pub trait ServiceDiscoverer: Send + Sync {
@@ -156,7 +159,7 @@ pub struct Config {
     pub router: Option<Arc<dyn Router>>,
     pub discoverer: Option<Arc<dyn ServiceDiscoverer>>,
     pub base_domain: String,
-    pub sso_domains: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
+    pub sso_domains: Option<SsoDomainsFn>,
 }
 
 /// Coordinates records and lifecycle operations.
@@ -170,7 +173,7 @@ pub struct Manager {
     router: Option<Arc<dyn Router>>,
     discoverer: Option<Arc<dyn ServiceDiscoverer>>,
     base_domain: String,
-    sso_domains: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
+    sso_domains: Option<SsoDomainsFn>,
     _mu: Mutex<()>,
 }
 

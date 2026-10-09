@@ -187,8 +187,7 @@ func (s *buddyScheduleStore) list() []*buddyScheduleEntry {
 	defer s.mu.RUnlock()
 	out := make([]*buddyScheduleEntry, 0, len(s.entries))
 	for _, e := range s.entries {
-		cp := *e
-		out = append(out, &cp)
+		out = append(out, cloneScheduleEntry(e))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -198,10 +197,26 @@ func (s *buddyScheduleStore) get(id string) *buddyScheduleEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if e, ok := s.entries[id]; ok {
-		cp := *e
-		return &cp
+		return cloneScheduleEntry(e)
 	}
 	return nil
+}
+
+// cloneScheduleEntry deep-copies an entry, including its slice and map, so a
+// caller (the scheduler fan-out) can read it without racing recordResult, which
+// mutates the stored entry's ReceiverResults under the lock (CR-06).
+func cloneScheduleEntry(e *buddyScheduleEntry) *buddyScheduleEntry {
+	cp := *e
+	if e.Receivers != nil {
+		cp.Receivers = append([]string(nil), e.Receivers...)
+	}
+	if e.ReceiverResults != nil {
+		cp.ReceiverResults = make(map[string]string, len(e.ReceiverResults))
+		for k, v := range e.ReceiverResults {
+			cp.ReceiverResults[k] = v
+		}
+	}
+	return &cp
 }
 
 func (s *buddyScheduleStore) put(e *buddyScheduleEntry) error {

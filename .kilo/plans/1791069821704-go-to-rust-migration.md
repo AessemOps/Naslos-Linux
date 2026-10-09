@@ -728,3 +728,119 @@ Completes S4. The Rust API now serves the full app-catalog + lifecycle surface.
   empty jobs list, unknown job 404.
 - **Not yet:** S5 (routing/certs/authelia/domains/providers/ddns) supplies the
   Router/Discoverer and the real SSO/domain lists; S6 buddy/notifications.
+
+### Phase 2 S5a — DNS providers (2026-10-09) — branch `refactor/rust-api-routing`
+
+S5 (routing/certs/authelia/domains/providers/ddns, ~3600 LOC) starts with the
+declarative DNS provider registry — the base the domains and DDNS layers build
+on.
+
+- **`rust/api/src/providers.rs`**: `Field`/`ShowIf`/`CertManager`/`Ddns`/
+  `Provider`/`Registry`, embedded built-ins (the 17 YAMLs via `include_dir`,
+  copied from `api/internal/providers/builtin/`), an optional override
+  directory, `parse`/`validate`, `ResolveFields` (the single place deciding
+  config vs Secret vs required vs valid), `WithDefaults`, and the cert-manager
+  `Solver` renderer (`${secret}` / `${cred.<key>}` placeholders).
+- **`server/providers.rs`**: `GET /api/providers` (views + load errors), moved
+  off the 501 placeholder. `AppState.providers` is loaded from
+  `DDNS_PROVIDERS_DIR`.
+- **Tests (7 new, 89 total):** all 17 built-ins load clean, OVH solver renders
+  the secret + cred, passthrough supports certificates without a solver,
+  ResolveFields splits secret/config, a bad override is recorded not fatal,
+  field-type validation, and the handler lists built-ins.
+- **Not yet (S5b/S5c):** domains (the certs domain store) + authelia; routing +
+  certs reconcilers (kube); ddns (drivers + manager + handlers).
+
+### Phase 2 S5b — domains + authelia fragments (2026-10-09) — branch `refactor/rust-api-routing`
+
+The pure halves of the certificate/SSO layer (the kube reconcilers are S5c).
+
+- **`rust/api/src/certs.rs`**: `Domain`/`Provider`/`Store`, `validate`,
+  `secret_name`/`issuer_name`, and `spec()` rendering the cert-manager `Issuer`
+  + wildcard `Certificate` as JSON (staging/production ACME servers, the DNS-01
+  solver from the provider registry — passthrough or rendered). A process-wide
+  provider registry (`configure_registry`, mirroring the Go global) links certs
+  to providers.
+- **`rust/api/src/authelia.rs`**: `fragments(domains)` rendering `cookies.yml`
+  and `rules.yml` — the primary apex is omitted (static chart rules) while every
+  wildcard is emitted.
+- **Tests (7 new, 68 lib total):** Cloudflare production spec (ACME server +
+  dnsNames), staging default, domain validation (bad domain/missing secret/
+  passthrough/bad env), store round-trip; cookie/rule shape, primary-only,
+  zero-domain empty list.
+- **Not yet (S5c):** the certs and authelia reconcilers (dynamic/client-go →
+  kube), the domains handlers, and wiring the Router/ServiceDiscoverer.
+
+### Phase 2 S5c — kube adapter + certs/authelia reconcilers (2026-10-09)
+
+The cluster edges of the certificate/SSO layer, over the bundled `kubectl`
+(consistent with the plan's bundled-CLI decision; keeps distroless, no kube-rs).
+
+- **`rust/api/src/kube.rs`**: a `kubectl` client (server-side `apply`, `delete`,
+  `get -o json`, `list -o json`, merge `patch`, `delete_pod`, `write_secret`,
+  cert-manager CRD probe), reusing the in-cluster kubeconfig the helm adapter
+  builds.
+- **`certs::Reconciler` trait + `KubeReconciler`**: apply (Issuer + wildcard
+  Certificate), delete, and certificate `status` (Ready condition).
+- **`authelia::Syncer` trait + `KubeSyncer`**: render the fragments, compare
+  semantically against the seeded ConfigMap, merge-patch `data`, and delete the
+  Authelia pod to restart it.
+- **Tests (3 new, 71 lib total):** kube base-args with/without kubeconfig;
+  fragments-equal ignores YAML quoting.
+- **Not yet (S5d):** the domains handlers (create/update/delete/certificate/sso)
+  and the routing reconciler + `Router`/`ServiceDiscoverer` wiring; then ddns.
+
+### Phase 2 S5d — domains handlers + shared domain helpers (2026-10-09)
+
+- **`server/domains.rs`**: `GET|POST /api/domains`, `GET|PUT|DELETE
+  /api/domains/{name}`, `GET /{name}/certificate`, `POST /{name}/sso`. Ported
+  `selectable_domains`/`effective_sso_domains`/`base_domain_selectable`,
+  `apps_using_auth`, `upsert_domain` (validate → apply certs → persist; the SSO
+  flag is preserved on a plain edit), and `apply_domain_fields` (split provider
+  fields into providerConfig + a credential Secret via the kube adapter).
+- **Shared helpers**: `apps.rs` now uses the domains module's selectable/effective
+  lists, so exposure's `ssoDomains` and the domain picker agree.
+- **Wiring**: `AppState` gains `domains`, `certs` (KubeReconciler), `sso`
+  (KubeSyncer), `kube`, `sso_domains` (`SSO_DOMAINS`), `apps_namespace`.
+- **Tests (3 new, 72 lib total + integration):** empty domains list + no
+  cert-manager; invalid-domain create 400; unknown domain 404.
+- **Not yet (S5e):** the routing reconciler + `Router`/`ServiceDiscoverer`
+  wiring, then ddns.
+
+### Phase 2 S5e — routing reconciler + Service discovery (2026-10-09)
+
+- **`rust/api/src/routing.rs`**: `Spec`/`render` (security-headers + forwardAuth
+  + ipAllowList middlewares and the IngressRoute, TLS/entrypoint handling) and
+  `KubeRouter` implementing `apps::Router` (apply/delete + `reconcile_portals`
+  for non-primary SSO portals via an ExternalName Service). `KubeDiscoverer`
+  implements `apps::ServiceDiscoverer` (Helm release Services → ports/scheme).
+- **Wiring**: `build_app_manager` now builds the `KubeRouter` (with the
+  per-domain TLS-secret resolver reading the domain store), the `KubeDiscoverer`
+  and the effective-SSO closure (base + `SSO_DOMAINS` seed + store-promoted),
+  so installs record **and** route, and app exposure uses the real domain lists.
+  `AppState.domains` is now `Arc<Store>` so the resolver and state share it.
+- **Tests (4 new, 76 lib total):** basic route render (entrypoint/middleware/
+  TLS), forwardAuth address, empty-subdomain → no route, stable portal name.
+- **Not yet (S5f):** ddns (drivers + manager + handlers); then S6 buddy.
+
+### Phase 2 S5f — dynamic DNS (2026-10-09) — branch `refactor/rust-api-routing`
+
+Completes S5. The full DDNS surface (~3100 LOC in Go).
+
+- **`rust/api/src/ddns.rs`**: `Entry`/`Store` (atomic 0600 JSON), the `Manager`
+  (public-IP detection with HTTP + `dns:opendns`/`dns:google` sources, the
+  reconcile loop, cooldown, record pre-check via DNS, secret read/write, error
+  redaction), and the driver registry.
+- **`rust/api/src/ddns/drivers.rs`**: the `Driver` trait and the OVH (DynHost +
+  signed ZoneDNS), Cloudflare, DigitalOcean, GoDaddy, Porkbun and generic HTTP
+  drivers — the HTTP driver with the `{{...}}` template (`fqdn`/`label` + field/
+  secret/config access, missing-key error) and a basic SSRF guard.
+- **`server/ddns.rs`**: `GET|POST /api/ddns`, `GET|PUT|DELETE /api/ddns/{id}`,
+  `POST /api/ddns/{id}/run`, with provider/zone/record/ttl validation and the
+  credential Secret split (shared `ResolveFields`).
+- **Wiring**: `AppState.ddns` built from `DDNS_*`; `main` spawns the reconcile
+  loop.
+- **Tests (11 new, 85 lib total + integration):** fqdn/label, store round-trip,
+  error redaction, IP family, OVH signature, template render, SSRF guard; ddns
+  disabled/503 handlers.
+- **Not yet:** S6 buddy crypto + notifications; S7 retire the Go API.

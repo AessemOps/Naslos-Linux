@@ -8,8 +8,11 @@
 pub mod app_jobs;
 pub mod apps;
 pub mod catalog;
+pub mod ddns;
 pub mod disks;
+pub mod domains;
 pub mod handlers;
+pub mod providers;
 pub mod shares;
 pub mod users;
 pub mod zfs;
@@ -67,11 +70,30 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/sources/{name}",
             get(catalog::source_detail_get).delete(catalog::source_detail_delete),
         )
-        .route("/api/domains", any(handlers::not_ported))
-        .route("/api/domains/{*rest}", any(handlers::not_ported))
-        .route("/api/providers", any(handlers::not_ported))
-        .route("/api/ddns", any(handlers::not_ported))
-        .route("/api/ddns/{*rest}", any(handlers::not_ported))
+        .route(
+            "/api/domains",
+            get(domains::domains_get).post(domains::domains_post),
+        )
+        .route(
+            "/api/domains/{name}/certificate",
+            get(domains::domain_certificate_get),
+        )
+        .route("/api/domains/{name}/sso", post(domains::domain_sso_post))
+        .route(
+            "/api/domains/{name}",
+            get(domains::domain_detail_get)
+                .put(domains::domain_detail_put)
+                .delete(domains::domain_detail_delete),
+        )
+        .route("/api/providers", get(providers::providers_get))
+        .route("/api/ddns", get(ddns::ddns_get).post(ddns::ddns_post))
+        .route("/api/ddns/{id}/run", post(ddns::ddns_run_post))
+        .route(
+            "/api/ddns/{id}",
+            get(ddns::ddns_detail_get)
+                .put(ddns::ddns_detail_put)
+                .delete(ddns::ddns_detail_delete),
+        )
         .route("/api/disks", get(disks::disks_get))
         .route("/api/disks/recommend", post(disks::disks_recommend))
         .route(
