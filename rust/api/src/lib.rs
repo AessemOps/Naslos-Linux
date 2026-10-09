@@ -19,6 +19,7 @@ pub mod kube;
 pub mod logsafe;
 pub mod metrics;
 pub mod providers;
+pub mod routing;
 pub mod server;
 pub mod shares;
 pub mod state;

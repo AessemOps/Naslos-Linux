@@ -806,3 +806,19 @@ The cluster edges of the certificate/SSO layer, over the bundled `kubectl`
   cert-manager; invalid-domain create 400; unknown domain 404.
 - **Not yet (S5e):** the routing reconciler + `Router`/`ServiceDiscoverer`
   wiring, then ddns.
+
+### Phase 2 S5e — routing reconciler + Service discovery (2026-10-09)
+
+- **`rust/api/src/routing.rs`**: `Spec`/`render` (security-headers + forwardAuth
+  + ipAllowList middlewares and the IngressRoute, TLS/entrypoint handling) and
+  `KubeRouter` implementing `apps::Router` (apply/delete + `reconcile_portals`
+  for non-primary SSO portals via an ExternalName Service). `KubeDiscoverer`
+  implements `apps::ServiceDiscoverer` (Helm release Services → ports/scheme).
+- **Wiring**: `build_app_manager` now builds the `KubeRouter` (with the
+  per-domain TLS-secret resolver reading the domain store), the `KubeDiscoverer`
+  and the effective-SSO closure (base + `SSO_DOMAINS` seed + store-promoted),
+  so installs record **and** route, and app exposure uses the real domain lists.
+  `AppState.domains` is now `Arc<Store>` so the resolver and state share it.
+- **Tests (4 new, 76 lib total):** basic route render (entrypoint/middleware/
+  TLS), forwardAuth address, empty-subdomain → no route, stable portal name.
+- **Not yet (S5f):** ddns (drivers + manager + handlers); then S6 buddy.
