@@ -728,3 +728,25 @@ Completes S4. The Rust API now serves the full app-catalog + lifecycle surface.
   empty jobs list, unknown job 404.
 - **Not yet:** S5 (routing/certs/authelia/domains/providers/ddns) supplies the
   Router/Discoverer and the real SSO/domain lists; S6 buddy/notifications.
+
+### Phase 2 S5a — DNS providers (2026-10-09) — branch `refactor/rust-api-routing`
+
+S5 (routing/certs/authelia/domains/providers/ddns, ~3600 LOC) starts with the
+declarative DNS provider registry — the base the domains and DDNS layers build
+on.
+
+- **`rust/api/src/providers.rs`**: `Field`/`ShowIf`/`CertManager`/`Ddns`/
+  `Provider`/`Registry`, embedded built-ins (the 17 YAMLs via `include_dir`,
+  copied from `api/internal/providers/builtin/`), an optional override
+  directory, `parse`/`validate`, `ResolveFields` (the single place deciding
+  config vs Secret vs required vs valid), `WithDefaults`, and the cert-manager
+  `Solver` renderer (`${secret}` / `${cred.<key>}` placeholders).
+- **`server/providers.rs`**: `GET /api/providers` (views + load errors), moved
+  off the 501 placeholder. `AppState.providers` is loaded from
+  `DDNS_PROVIDERS_DIR`.
+- **Tests (7 new, 89 total):** all 17 built-ins load clean, OVH solver renders
+  the secret + cred, passthrough supports certificates without a solver,
+  ResolveFields splits secret/config, a bad override is recorded not fatal,
+  field-type validation, and the handler lists built-ins.
+- **Not yet (S5b/S5c):** domains (the certs domain store) + authelia; routing +
+  certs reconcilers (kube); ddns (drivers + manager + handlers).

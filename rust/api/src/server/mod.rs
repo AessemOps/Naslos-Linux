@@ -10,6 +10,7 @@ pub mod apps;
 pub mod catalog;
 pub mod disks;
 pub mod handlers;
+pub mod providers;
 pub mod shares;
 pub mod users;
 pub mod zfs;
@@ -69,7 +70,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/domains", any(handlers::not_ported))
         .route("/api/domains/{*rest}", any(handlers::not_ported))
-        .route("/api/providers", any(handlers::not_ported))
+        .route("/api/providers", get(providers::providers_get))
         .route("/api/ddns", any(handlers::not_ported))
         .route("/api/ddns/{*rest}", any(handlers::not_ported))
         .route("/api/disks", get(disks::disks_get))

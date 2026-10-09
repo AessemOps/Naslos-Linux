@@ -58,6 +58,8 @@ pub struct AppState {
     pub app_jobs: Arc<crate::server::app_jobs::AppJobManager>,
     /// The primary base domain app subdomains hang off.
     pub base_domain: String,
+    /// The declarative DNS provider registry (S5a).
+    pub providers: Arc<crate::providers::Registry>,
 }
 
 /// Holds the current catalog snapshot; refresh replaces it atomically.
@@ -109,6 +111,9 @@ impl AppState {
             app_manager,
             app_jobs: Arc::new(crate::server::app_jobs::AppJobManager::new()),
             base_domain: std::env::var("BASE_DOMAIN").unwrap_or_default(),
+            providers: Arc::new(crate::providers::Registry::load(
+                &std::env::var("DDNS_PROVIDERS_DIR").unwrap_or_default(),
+            )),
         })
     }
 
@@ -128,6 +133,7 @@ impl AppState {
             app_manager: None,
             app_jobs: Arc::new(crate::server::app_jobs::AppJobManager::new()),
             base_domain: String::new(),
+            providers: Arc::new(crate::providers::Registry::load("")),
         }
     }
 }

@@ -151,3 +151,22 @@ async fn unknown_job_is_404() {
     let (status, _b, _r) = call("GET", "/api/apps/jobs/deadbeef", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ---- S5a: providers -----------------------------------------------------
+
+#[tokio::test]
+async fn providers_lists_builtins() {
+    let (status, body, _r) = call("GET", "/api/providers", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let providers = body["providers"].as_array().unwrap();
+    assert_eq!(providers.len(), 17, "built-in providers");
+    assert!(body["errors"].as_array().unwrap().is_empty());
+    // ovh supports certificates; cloudflare has a ddns driver.
+    let ovh = providers.iter().find(|p| p["name"] == "ovh").unwrap();
+    assert_eq!(ovh["certManager"], true);
+    let cf = providers
+        .iter()
+        .find(|p| p["name"] == "cloudflare")
+        .unwrap();
+    assert_eq!(cf["ddns"], true);
+}

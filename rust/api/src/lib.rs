@@ -15,6 +15,7 @@ pub mod helm;
 pub mod identity;
 pub mod logsafe;
 pub mod metrics;
+pub mod providers;
 pub mod server;
 pub mod shares;
 pub mod state;

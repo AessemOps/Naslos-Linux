@@ -23,6 +23,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 getrandom = "0.2"
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
+include_dir = "0.7"
 ipnet = "2"
 ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

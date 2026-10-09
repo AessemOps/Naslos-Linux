@@ -1,0 +1,81 @@
+# Ported from qdm12/ddns-updater (MIT): https://github.com/qdm12/ddns-updater
+# See CREDITS.md for attribution.
+# apiRights and the cert-manager solver derived from the
+# aureq/cert-manager-webhook-ovh README (MIT):
+# https://github.com/aureq/cert-manager-webhook-ovh
+
+name: ovh
+displayName: OVH
+description: OVH DynHost (username/password) or ZoneDNS API (application keys).
+icon: "🟦"
+apiRights:
+  - "ZoneDNS API rights scoped to the domain's zone: GET/POST/PUT/DELETE /domain/zone/<zone>/*"
+  - "Cover the /record, /status and /refresh subpaths (e.g. /domain/zone/example.com/*)"
+  - "Scope to the single zone, not /domain/zone/* across all zones"
+fields:
+  # DynHost mode (scope: ddns) — ddns-updater's default "dynamic" mode.
+  - key: mode
+    label: Mode
+    type: enum
+    default: dynamic
+    enum: [dynamic, api]
+    scope: ddns
+  - key: username
+    label: DynHost username
+    type: string
+    scope: ddns
+  - key: password
+    label: DynHost password
+    type: string
+    secret: true
+    scope: ddns
+  # ZoneDNS API mode (and the cert-manager OVH webhook): endpoint + keys. Shown
+  # for DDNS only in mode: api; always shown for certificates. The OVH webhook
+  # takes every credential as a Secret key selector, so applicationKey is a
+  # secret too (the DDNS driver reads it from the Secret, falling back to config
+  # for entries written before this change).
+  - key: endpoint
+    label: API endpoint
+    type: enum
+    default: ovh-eu
+    enum: [ovh-eu, ovh-ca, ovh-us]
+    showIf: { key: mode, value: api }
+  - key: applicationKey
+    label: Application key
+    type: string
+    secret: true
+    showIf: { key: mode, value: api }
+  - key: applicationSecret
+    label: Application secret
+    type: string
+    secret: true
+    showIf: { key: mode, value: api }
+  - key: consumerKey
+    label: Consumer key
+    type: string
+    secret: true
+    showIf: { key: mode, value: api }
+certManager:
+  # OVH is not a cert-manager built-in DNS-01 solver: it is served by the
+  # cert-manager-webhook-ovh webhook (group name set by the chart/Makefile).
+  solver:
+    webhook:
+      groupName: ovh.naslos.local
+      solverName: ovh
+      config:
+        endpoint: "${cred.endpoint}"
+        authenticationMethod: application
+        applicationKeyRef:
+          name: "${secret}"
+          key: applicationKey
+        applicationSecretRef:
+          name: "${secret}"
+          key: applicationSecret
+        applicationConsumerKeyRef:
+          name: "${secret}"
+          key: consumerKey
+ddns:
+  driver: ovh
+  defaults:
+    mode: dynamic
+    endpoint: ovh-eu
