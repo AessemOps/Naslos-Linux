@@ -750,3 +750,23 @@ on.
   field-type validation, and the handler lists built-ins.
 - **Not yet (S5b/S5c):** domains (the certs domain store) + authelia; routing +
   certs reconcilers (kube); ddns (drivers + manager + handlers).
+
+### Phase 2 S5b — domains + authelia fragments (2026-10-09) — branch `refactor/rust-api-routing`
+
+The pure halves of the certificate/SSO layer (the kube reconcilers are S5c).
+
+- **`rust/api/src/certs.rs`**: `Domain`/`Provider`/`Store`, `validate`,
+  `secret_name`/`issuer_name`, and `spec()` rendering the cert-manager `Issuer`
+  + wildcard `Certificate` as JSON (staging/production ACME servers, the DNS-01
+  solver from the provider registry — passthrough or rendered). A process-wide
+  provider registry (`configure_registry`, mirroring the Go global) links certs
+  to providers.
+- **`rust/api/src/authelia.rs`**: `fragments(domains)` rendering `cookies.yml`
+  and `rules.yml` — the primary apex is omitted (static chart rules) while every
+  wildcard is emitted.
+- **Tests (7 new, 68 lib total):** Cloudflare production spec (ACME server +
+  dnsNames), staging default, domain validation (bad domain/missing secret/
+  passthrough/bad env), store round-trip; cookie/rule shape, primary-only,
+  zero-domain empty list.
+- **Not yet (S5c):** the certs and authelia reconcilers (dynamic/client-go →
+  kube), the domains handlers, and wiring the Router/ServiceDiscoverer.

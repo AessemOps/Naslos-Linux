@@ -8,7 +8,9 @@
 pub mod agent;
 pub mod apps;
 pub mod auth;
+pub mod authelia;
 pub mod catalog;
+pub mod certs;
 pub mod chartsrepo;
 pub mod config;
 pub mod helm;
