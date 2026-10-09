@@ -770,3 +770,22 @@ The pure halves of the certificate/SSO layer (the kube reconcilers are S5c).
   zero-domain empty list.
 - **Not yet (S5c):** the certs and authelia reconcilers (dynamic/client-go →
   kube), the domains handlers, and wiring the Router/ServiceDiscoverer.
+
+### Phase 2 S5c — kube adapter + certs/authelia reconcilers (2026-10-09)
+
+The cluster edges of the certificate/SSO layer, over the bundled `kubectl`
+(consistent with the plan's bundled-CLI decision; keeps distroless, no kube-rs).
+
+- **`rust/api/src/kube.rs`**: a `kubectl` client (server-side `apply`, `delete`,
+  `get -o json`, `list -o json`, merge `patch`, `delete_pod`, `write_secret`,
+  cert-manager CRD probe), reusing the in-cluster kubeconfig the helm adapter
+  builds.
+- **`certs::Reconciler` trait + `KubeReconciler`**: apply (Issuer + wildcard
+  Certificate), delete, and certificate `status` (Ready condition).
+- **`authelia::Syncer` trait + `KubeSyncer`**: render the fragments, compare
+  semantically against the seeded ConfigMap, merge-patch `data`, and delete the
+  Authelia pod to restart it.
+- **Tests (3 new, 71 lib total):** kube base-args with/without kubeconfig;
+  fragments-equal ignores YAML quoting.
+- **Not yet (S5d):** the domains handlers (create/update/delete/certificate/sso)
+  and the routing reconciler + `Router`/`ServiceDiscoverer` wiring; then ddns.

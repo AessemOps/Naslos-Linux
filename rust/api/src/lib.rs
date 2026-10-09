@@ -15,6 +15,7 @@ pub mod chartsrepo;
 pub mod config;
 pub mod helm;
 pub mod identity;
+pub mod kube;
 pub mod logsafe;
 pub mod metrics;
 pub mod providers;

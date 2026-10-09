@@ -325,6 +325,79 @@ impl Store {
     }
 }
 
+/// Applies a domain's certificate CRs to the cluster.
+#[async_trait::async_trait]
+pub trait Reconciler: Send + Sync {
+    async fn apply(&self, d: &Domain) -> Result<(), String>;
+    async fn delete(&self, d: &Domain) -> Result<(), String>;
+    async fn status(&self, d: &Domain) -> Result<serde_json::Value, String>;
+}
+
+/// A reconciler over the bundled `kubectl` client.
+pub struct KubeReconciler {
+    client: Arc<crate::kube::Client>,
+    namespace: String,
+}
+
+impl KubeReconciler {
+    pub fn new(client: Arc<crate::kube::Client>, namespace: &str) -> Self {
+        Self {
+            client,
+            namespace: namespace.to_string(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Reconciler for KubeReconciler {
+    async fn apply(&self, d: &Domain) -> Result<(), String> {
+        let (issuer, certificate) = spec(d, &self.namespace)?;
+        self.client.apply(&issuer).await?;
+        self.client.apply(&certificate).await
+    }
+
+    async fn delete(&self, d: &Domain) -> Result<(), String> {
+        self.client
+            .delete("certificate", &d.secret_name(), &self.namespace)
+            .await?;
+        self.client
+            .delete("issuer", &d.issuer_name(), &self.namespace)
+            .await
+    }
+
+    async fn status(&self, d: &Domain) -> Result<serde_json::Value, String> {
+        let obj = self
+            .client
+            .get_json("certificate", &d.secret_name(), &self.namespace)
+            .await?;
+        let Some(obj) = obj else {
+            return Ok(serde_json::json!({ "status": "pending" }));
+        };
+        let conditions = obj
+            .get("status")
+            .and_then(|s| s.get("conditions"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Array(vec![]));
+        let mut state = "pending";
+        if let Some(arr) = conditions.as_array() {
+            for c in arr {
+                if c.get("type") == Some(&serde_json::json!("Ready")) {
+                    state = if c.get("status") == Some(&serde_json::json!("True")) {
+                        "ready"
+                    } else {
+                        "not-ready"
+                    };
+                }
+            }
+        }
+        Ok(serde_json::json!({
+            "status": state,
+            "conditions": conditions,
+            "secretName": d.secret_name(),
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
