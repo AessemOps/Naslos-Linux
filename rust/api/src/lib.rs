@@ -13,6 +13,7 @@ pub mod catalog;
 pub mod certs;
 pub mod chartsrepo;
 pub mod config;
+pub mod ddns;
 pub mod helm;
 pub mod identity;
 pub mod kube;

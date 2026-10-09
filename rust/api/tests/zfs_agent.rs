@@ -137,6 +137,7 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         kube: None,
         sso_domains: Vec::new(),
         apps_namespace: "naslos-apps".to_string(),
+        ddns: None,
         identity: None,
     })
 }
@@ -287,6 +288,7 @@ async fn no_agent_configured_is_502() {
         kube: None,
         sso_domains: Vec::new(),
         apps_namespace: "naslos-apps".to_string(),
+        ddns: None,
         identity: None,
     });
     let (status, _b) = call(state, "GET", "/api/volumes/zfs", None).await;

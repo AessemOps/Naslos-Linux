@@ -79,6 +79,7 @@ tracing, chrono and ipnet. Direct dependencies:
 | Component | Version | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
 | anyhow | 1 | MIT OR Apache-2.0 | https://github.com/dtolnay/anyhow |
+| base64 | 0.22 | MIT OR Apache-2.0 | https://github.com/marshallpierce/rust-base64 |
 | async-trait | 0.1 | MIT OR Apache-2.0 | https://github.com/dtolnay/async-trait |
 | axum | 0.8 | MIT | https://github.com/tokio-rs/axum |
 | axum-server | 0.7 | MIT | https://github.com/programatik29/axum-server |
@@ -89,6 +90,7 @@ tracing, chrono and ipnet. Direct dependencies:
 | http-body-util | 0.1 | MIT | https://github.com/hyperium/http-body |
 | hyper-util | 0.1 | MIT | https://github.com/hyperium/hyper-util |
 | getrandom | 0.2 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
+| hickory-resolver | 0.24 | MIT OR Apache-2.0 | https://github.com/hickory-dns/hickory-dns |
 | include_dir | 0.7 | MIT | https://github.com/Michael-F-Bryan/include_dir |
 | ipnet | 2 | MIT OR Apache-2.0 | https://github.com/krisprice/ipnet |
 | ldap3 | 0.12 | MIT OR Apache-2.0 | https://github.com/inejge/ldap3 |
@@ -96,7 +98,7 @@ tracing, chrono and ipnet. Direct dependencies:
 | rustls-pemfile | 2 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/pemfile |
 | serde / serde_json | 1 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
 | serde_yaml | 0.9 | MIT OR Apache-2.0 | https://github.com/dtolnay/serde-yaml |
-| sha2 | 0.10 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
+| sha1 / sha2 | 0.10 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
 | subtle | 2 | BSD-3-Clause | https://github.com/dalek-cryptography/subtle |
 | tempfile | 3 | MIT OR Apache-2.0 | https://github.com/Stebalien/tempfile |
 | thiserror | 2 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror |

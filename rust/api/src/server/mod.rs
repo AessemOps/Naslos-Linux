@@ -8,6 +8,7 @@
 pub mod app_jobs;
 pub mod apps;
 pub mod catalog;
+pub mod ddns;
 pub mod disks;
 pub mod domains;
 pub mod handlers;
@@ -85,8 +86,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .delete(domains::domain_detail_delete),
         )
         .route("/api/providers", get(providers::providers_get))
-        .route("/api/ddns", any(handlers::not_ported))
-        .route("/api/ddns/{*rest}", any(handlers::not_ported))
+        .route("/api/ddns", get(ddns::ddns_get).post(ddns::ddns_post))
+        .route("/api/ddns/{id}/run", post(ddns::ddns_run_post))
+        .route(
+            "/api/ddns/{id}",
+            get(ddns::ddns_detail_get)
+                .put(ddns::ddns_detail_put)
+                .delete(ddns::ddns_detail_delete),
+        )
         .route("/api/disks", get(disks::disks_get))
         .route("/api/disks/recommend", post(disks::disks_recommend))
         .route(

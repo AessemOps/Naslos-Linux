@@ -72,6 +72,8 @@ pub struct AppState {
     pub sso_domains: Vec<String>,
     /// The apps namespace (Secrets, Certificates).
     pub apps_namespace: String,
+    /// The dynamic-DNS manager (S5f). Absent when DDNS is disabled.
+    pub ddns: Option<Arc<crate::ddns::Manager>>,
 }
 
 /// Holds the current catalog snapshot; refresh replaces it atomically.
@@ -141,6 +143,10 @@ impl AppState {
             Arc::new(crate::authelia::KubeSyncer::new(k.clone(), &ns))
                 as Arc<dyn crate::authelia::Syncer>
         });
+        let providers = Arc::new(crate::providers::Registry::load(
+            &std::env::var("DDNS_PROVIDERS_DIR").unwrap_or_default(),
+        ));
+        let ddns = build_ddns(&providers, &kube, &apps_namespace);
 
         Ok(Self {
             proxy_secret,
@@ -156,15 +162,14 @@ impl AppState {
             app_manager,
             app_jobs: Arc::new(crate::server::app_jobs::AppJobManager::new()),
             base_domain: std::env::var("BASE_DOMAIN").unwrap_or_default(),
-            providers: Arc::new(crate::providers::Registry::load(
-                &std::env::var("DDNS_PROVIDERS_DIR").unwrap_or_default(),
-            )),
+            providers,
             domains: domains_store,
             certs,
             sso,
             kube,
             sso_domains,
             apps_namespace,
+            ddns,
         })
     }
 
@@ -191,6 +196,7 @@ impl AppState {
             kube: None,
             sso_domains: Vec::new(),
             apps_namespace: "naslos-apps".to_string(),
+            ddns: None,
         }
     }
 }
@@ -409,4 +415,45 @@ fn build_app_manager(
             None
         }
     }
+}
+
+/// Build the dynamic-DNS manager (S5f) unless DDNS is disabled.
+fn build_ddns(
+    providers: &Arc<crate::providers::Registry>,
+    kube: &Option<Arc<crate::kube::Client>>,
+    apps_namespace: &str,
+) -> Option<Arc<crate::ddns::Manager>> {
+    if std::env::var("DDNS_ENABLED")
+        .map(|v| v == "false")
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let interval = std::env::var("DDNS_INTERVAL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    let cooldown = std::env::var("DDNS_UPDATE_COOLDOWN_SECONDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    let ip_sources = crate::server::ddns::ddns_sources(
+        &std::env::var("DDNS_IP_SOURCES").unwrap_or_default(),
+        &std::env::var("DDNS_IP_SOURCE").unwrap_or_default(),
+    );
+    let ipv6_sources = crate::server::ddns::ddns_sources(
+        &std::env::var("DDNS_IPV6_SOURCES").unwrap_or_default(),
+        &std::env::var("DDNS_IPV6_SOURCE").unwrap_or_default(),
+    );
+    Some(Arc::new(crate::ddns::Manager::new(crate::ddns::Options {
+        registry: providers.clone(),
+        store_path: std::env::var("DDNS_CONFIG")
+            .unwrap_or_else(|_| "/var/lib/naslos/ddns.json".to_string()),
+        apps_namespace: apps_namespace.to_string(),
+        kube: kube.clone(),
+        ip_sources,
+        ipv6_sources,
+        interval: std::time::Duration::from_secs(interval),
+        cooldown: std::time::Duration::from_secs(cooldown),
+    })))
 }

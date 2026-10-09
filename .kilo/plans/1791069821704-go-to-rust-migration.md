@@ -822,3 +822,25 @@ The cluster edges of the certificate/SSO layer, over the bundled `kubectl`
 - **Tests (4 new, 76 lib total):** basic route render (entrypoint/middleware/
   TLS), forwardAuth address, empty-subdomain → no route, stable portal name.
 - **Not yet (S5f):** ddns (drivers + manager + handlers); then S6 buddy.
+
+### Phase 2 S5f — dynamic DNS (2026-10-09) — branch `refactor/rust-api-routing`
+
+Completes S5. The full DDNS surface (~3100 LOC in Go).
+
+- **`rust/api/src/ddns.rs`**: `Entry`/`Store` (atomic 0600 JSON), the `Manager`
+  (public-IP detection with HTTP + `dns:opendns`/`dns:google` sources, the
+  reconcile loop, cooldown, record pre-check via DNS, secret read/write, error
+  redaction), and the driver registry.
+- **`rust/api/src/ddns/drivers.rs`**: the `Driver` trait and the OVH (DynHost +
+  signed ZoneDNS), Cloudflare, DigitalOcean, GoDaddy, Porkbun and generic HTTP
+  drivers — the HTTP driver with the `{{...}}` template (`fqdn`/`label` + field/
+  secret/config access, missing-key error) and a basic SSRF guard.
+- **`server/ddns.rs`**: `GET|POST /api/ddns`, `GET|PUT|DELETE /api/ddns/{id}`,
+  `POST /api/ddns/{id}/run`, with provider/zone/record/ttl validation and the
+  credential Secret split (shared `ResolveFields`).
+- **Wiring**: `AppState.ddns` built from `DDNS_*`; `main` spawns the reconcile
+  loop.
+- **Tests (11 new, 85 lib total + integration):** fqdn/label, store round-trip,
+  error redaction, IP family, OVH signature, template render, SSRF guard; ddns
+  disabled/503 handlers.
+- **Not yet:** S6 buddy crypto + notifications; S7 retire the Go API.

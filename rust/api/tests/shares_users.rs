@@ -198,3 +198,20 @@ async fn unknown_domain_is_404() {
     let (status, _b, _r) = call("GET", "/api/domains/nope.example.com", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ---- S5f: ddns ----------------------------------------------------------
+
+#[tokio::test]
+async fn ddns_is_disabled_without_a_manager() {
+    let (status, body, _r) = call("GET", "/api/ddns", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    assert!(body["entries"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn ddns_run_is_503_without_a_manager() {
+    let (status, body, _r) = call("POST", "/api/ddns/abc/run", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["error"].as_str().unwrap().contains("dynamic DNS"));
+}
