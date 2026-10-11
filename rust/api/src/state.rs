@@ -74,6 +74,8 @@ pub struct AppState {
     pub apps_namespace: String,
     /// The dynamic-DNS manager (S5f). Absent when DDNS is disabled.
     pub ddns: Option<Arc<crate::ddns::Manager>>,
+    /// The ntfy notification manager (S6a).
+    pub notifications: Arc<crate::notifications::Manager>,
 }
 
 /// Holds the current catalog snapshot; refresh replaces it atomically.
@@ -170,6 +172,7 @@ impl AppState {
             sso_domains,
             apps_namespace,
             ddns,
+            notifications: Arc::new(crate::notifications::Manager::from_env()),
         })
     }
 
@@ -197,6 +200,7 @@ impl AppState {
             sso_domains: Vec::new(),
             apps_namespace: "naslos-apps".to_string(),
             ddns: None,
+            notifications: Arc::new(crate::notifications::Manager::new("")),
         }
     }
 }

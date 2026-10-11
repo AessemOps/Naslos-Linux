@@ -215,3 +215,15 @@ async fn ddns_run_is_503_without_a_manager() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(body["error"].as_str().unwrap().contains("dynamic DNS"));
 }
+
+// ---- S6a: notifications -------------------------------------------------
+
+#[tokio::test]
+async fn notification_settings_shape() {
+    let (status, body, _r) = call("GET", "/api/notifications", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["serverUrl"], "https://ntfy.sh");
+    assert_eq!(body["hasAuthToken"], false);
+    assert!(body["enabledEvents"].as_array().unwrap().len() == 2);
+}

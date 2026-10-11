@@ -844,3 +844,21 @@ Completes S5. The full DDNS surface (~3100 LOC in Go).
   error redaction, IP family, OVH signature, template render, SSRF guard; ddns
   disabled/503 handlers.
 - **Not yet:** S6 buddy crypto + notifications; S7 retire the Go API.
+
+### Phase 2 S6a — notifications (2026-10-11) — branch `refactor/rust-api-buddy`
+
+S6 (buddy + notifications) starts with the smaller, self-contained notifications
+manager.
+
+- **`rust/api/src/notifications.rs`**: `Settings`/`Notification`/`Manager`
+  (atomic 0600 load/save, `UpdateSettings` with the token-pointer semantics that
+  never wipes a stored token, `EventEnabled`, `Send`/`SendTest`), and
+  `notification_url` (http/https only, link-local refused — PF-L8, topic charset
+  enforced).
+- **`server/notifications.rs`**: `GET|PUT /api/notifications` (the response
+  exposes `hasAuthToken`, never the token), `POST /api/notifications/test`.
+- **Wiring**: `AppState.notifications` from `NOTIFICATIONS_CONFIG`.
+- **Tests (4 new, 88 lib total + integration):** URL/topic validation,
+  severity threshold/priority, token preservation, settings shape.
+- **Not yet (S6b/S6c):** the buddy crypto primitives (keys/envelope/auth) and
+  the buddy store/client/peers/handlers.
