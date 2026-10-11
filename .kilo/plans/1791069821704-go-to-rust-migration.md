@@ -887,3 +887,23 @@ and the signed manifest.
   index), wrap/unwrap (+ wrong chain), manifest sign/verify (+ tamper), Go JSON
   escaping.
 - **Not yet (S6c):** the buddy store/client/peers/http and the server handlers.
+
+### Phase 2 S6c — buddy peers + request auth (2026-10-11) — branch `refactor/rust-api-buddy`
+
+The receiver-side trust layer.
+
+- **`rust/api/src/buddy/peers.rs`**: `Peer`/`PeerStore` (JSON registry with the
+  key-substitution and duplicate-key guards, `by_fingerprint`, `touch_seen`),
+  `validate_source` (the `naslos-a/tank/data` shape), and `validate_quota`
+  (0 = unlimited, bounded by one sealed chunk..2^60).
+- **`rust/api/src/buddy/auth.rs`**: `canonical_request` (`BUDDY2` + audience +
+  method + path + body digest + timestamp + nonce), `body_digest`,
+  `sign_request_for`, and the `Authenticator` (signature verification bound to
+  the receiver's audience, clock-skew window, nonce validation + bounded replay
+  cache with optional `.nonces` persistence and compaction). The empty audience
+  is accepted only on `/api/buddy/status` (PF-M13).
+- **Tests (9 new, 102 lib total):** source/quota validation, prefix allows;
+  sign→verify, nonce replay rejection, wrong-audience rejection, empty-audience
+  only on status, nonce bounds.
+- **Not yet (S6d):** the receiver store (chunks/manifests/quota accounting), the
+  sender client, the receiver http endpoints and the server handlers.
