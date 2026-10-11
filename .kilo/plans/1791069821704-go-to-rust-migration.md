@@ -862,3 +862,28 @@ manager.
   severity threshold/priority, token preservation, settings shape.
 - **Not yet (S6b/S6c):** the buddy crypto primitives (keys/envelope/auth) and
   the buddy store/client/peers/handlers.
+
+### Phase 2 S6b — buddy crypto primitives (2026-10-11) — branch `refactor/rust-api-buddy`
+
+The highest-risk interop surface: the identity keys, the sealed-chunk envelope
+and the signed manifest.
+
+- **`rust/api/src/buddy/keys.rs`**: `Identity` (OpenSSH Ed25519, ssh-key),
+  `new_identity`/`load_identity`/`save` (0600 atomic), `signing_key`/`sign`,
+  `fingerprint` (`SHA256:…`), `kek_bytes` (env `BUDDY_KEK` precedence),
+  `public_key_of`, `verify`.
+- **`rust/api/src/buddy/envelope.rs`**: the fixed wire format (`NBC2` magic,
+  BE plainLen, 12-byte nonce `prefix||generation||index`, AES-256-GCM with the
+  position AAD), `seal_chunk`/`open_chunk`, `wrap_dek`/`unwrap_dek`,
+  `Manifest::sign`/`verify_signature`, `validate_manifest_shape`, and a
+  **Go-compatible canonical JSON** (`<`,`>`,`&`,U+2028/9 escaped like
+  `encoding/json`) so a Go-signed manifest verifies here.
+- **Cross-implementation golden tests (both directions):**
+  `rust/api/tests/buddy_interop.rs` opens a **Go-sealed** chunk + verifies the
+  Go-signed manifest (fixture from the Go `buddy` package); the Go
+  `TestOpensRustSealedFixture` opens a **Rust-sealed** chunk + verifies the
+  Rust-signed manifest (fixture from `rust/api/examples/buddy_fixture.rs`).
+- **Tests (6 lib + 1 interop here, +1 Go):** sign/verify, seal/open (+ wrong
+  index), wrap/unwrap (+ wrong chain), manifest sign/verify (+ tamper), Go JSON
+  escaping.
+- **Not yet (S6c):** the buddy store/client/peers/http and the server handlers.

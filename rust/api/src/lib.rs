@@ -9,6 +9,7 @@ pub mod agent;
 pub mod apps;
 pub mod auth;
 pub mod authelia;
+pub mod buddy;
 pub mod catalog;
 pub mod certs;
 pub mod chartsrepo;

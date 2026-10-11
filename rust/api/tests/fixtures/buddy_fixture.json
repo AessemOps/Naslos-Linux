@@ -1,0 +1,31 @@
+{
+  "chunk": "TkJDMgAAABcRIjNEVWYAAAAAAABNEkOz/uyuOGLqSWo9LiMFKTbQtNfHeEvKc6Yth4lYnewyuRli6v4=",
+  "kek": "AMxu4tJF2KX7rVKnPPtP77okDaLV1e54QsH0hDPQ2+M=",
+  "manifest": {
+    "version": 2,
+    "source": "naslos-test/data",
+    "chain": "fixturechain",
+    "kind": "zfs-send",
+    "toSnapshot": "buddy-20260101T000000Z-abcd",
+    "toGUID": "0123456789abcdef",
+    "createdAt": "2023-11-14T22:13:20Z",
+    "keyId": "SHA256:UvKHYErzsuKNKhhz8myzD/ZvhE0H1sijOFuDdsqePw0",
+    "sequence": 1,
+    "generation": 0,
+    "streamPrefix": "ESIzRFVm",
+    "chunkPlainSize": 1048576,
+    "chunks": [
+      {
+        "index": 0,
+        "plainBytes": 23,
+        "sealedBytes": 59,
+        "generation": 0,
+        "sha256Plain": "0217e89fdd4d38546ac4cb94171222c9854a33e6ec08b4b6ab25b2e7f82cd699"
+      }
+    ],
+    "dekWrapped": "nU4zKG/l38RwCXMk+wtIw8g+Aqt3lNMB4x5s0pMdR+qS56I2wZA4/mb64O7LHepk9HzJcz+fj2ng57CO",
+    "signature": "qFA/YdfNWmc19DGpQa6E0k/Xl/a8jshqy0pY7GVx9Z3VizAEotl6EnExuJZTzEFsMHAJPRxc0IN0DTWAW9jADQ=="
+  },
+  "plaintext": "Z28tc2VhbGVkIGJ1ZGR5IHBheWxvYWQ=",
+  "publicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPtlJ/SVCXRM8GTIvUgJHkxrOIboZ3dko7uOOafNGuqX"
+}
