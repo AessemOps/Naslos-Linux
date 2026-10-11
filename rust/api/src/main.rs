@@ -42,6 +42,11 @@ async fn main() {
     let collector = state.clone();
     tokio::spawn(async move { run_metrics_collector(collector).await });
 
+    // Dynamic-DNS reconcile loop (port of ddns.Manager.Start).
+    if let Some(ddns) = state.ddns.clone() {
+        tokio::spawn(async move { ddns.run_loop().await });
+    }
+
     let app = build_router(state.clone());
 
     let addr = parse_addr(&cli.listen);

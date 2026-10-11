@@ -1,0 +1,27 @@
+# Ported from qdm12/ddns-updater (MIT): https://github.com/qdm12/ddns-updater
+# See CREDITS.md for attribution.
+
+name: selfhostde
+displayName: selfhost.de
+description: selfhost.de dynamic DNS; HTTP Basic auth (204 means no change).
+icon: "🔴"
+fields:
+  - key: username
+    label: Username
+    type: string
+    required: true
+  - key: password
+    label: Password
+    type: string
+    required: true
+    secret: true
+ddns:
+  driver: http
+  defaults:
+    method: GET
+    authType: basic
+    successStatus: "200,204"
+    successAny: good,nochg
+    errorAny: badauth,notfqdn,nohost
+    updateUrl: >-
+      https://carol.selfhost.de/nic/update?hostname={{fqdn .record .zone}}&myip={{.ip}}

@@ -1,0 +1,22 @@
+# Ported from qdm12/ddns-updater (MIT): https://github.com/qdm12/ddns-updater
+# See CREDITS.md for attribution.
+
+name: freedns
+displayName: FreeDNS / afraid.org
+description: FreeDNS (freedns.afraid.org) update URL keyed by its per-record token.
+icon: "🟢"
+fields:
+  - key: token
+    label: Update token
+    type: string
+    required: true
+    secret: true
+ddns:
+  driver: http
+  defaults:
+    method: GET
+    authType: none
+    successStatus: "200"
+    successAny: Updated,No IP change detected
+    updateUrl: >-
+      {{if eq .type "AAAA"}}https://v6.sync.afraid.org/u/{{.secret.token}}/{{else}}https://sync.afraid.org/u/{{.secret.token}}/{{end}}
