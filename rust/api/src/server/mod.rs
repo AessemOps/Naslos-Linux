@@ -12,6 +12,7 @@ pub mod ddns;
 pub mod disks;
 pub mod domains;
 pub mod handlers;
+pub mod notifications;
 pub mod providers;
 pub mod shares;
 pub mod users;
@@ -147,8 +148,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .put(shares::share_detail_put)
                 .delete(shares::share_detail_delete),
         )
-        .route("/api/notifications", any(handlers::not_ported))
-        .route("/api/notifications/test", any(handlers::not_ported))
+        .route(
+            "/api/notifications",
+            get(notifications::notifications_get).put(notifications::notifications_put),
+        )
+        .route(
+            "/api/notifications/test",
+            post(notifications::notification_test_post),
+        )
         .route("/api/buddy/status", any(handlers::not_ported))
         .route("/api/buddy/peers", any(handlers::not_ported))
         .route("/api/buddy/identity", any(handlers::not_ported))

@@ -18,7 +18,7 @@ and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
-**Last reviewed: 2026-10-09.** Maintenance: update this file whenever a direct dependency changes in
+**Last reviewed: 2026-10-11.** Maintenance: update this file whenever a direct dependency changes in
 `api/go.mod`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
 It also lists the GitHub Actions used by the CI/release workflows.
 
@@ -78,6 +78,7 @@ tracing, chrono and ipnet. Direct dependencies:
 
 | Component | Version | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
+| aes-gcm | 0.10 | Apache-2.0 OR MIT | https://github.com/RustCrypto/AEADs |
 | anyhow | 1 | MIT OR Apache-2.0 | https://github.com/dtolnay/anyhow |
 | base64 | 0.22 | MIT OR Apache-2.0 | https://github.com/marshallpierce/rust-base64 |
 | async-trait | 0.1 | MIT OR Apache-2.0 | https://github.com/dtolnay/async-trait |
@@ -86,6 +87,7 @@ tracing, chrono and ipnet. Direct dependencies:
 | bytes | 1 | MIT | https://github.com/tokio-rs/bytes |
 | chrono | 0.4 | MIT OR Apache-2.0 | https://github.com/chronotope/chrono |
 | clap | 4 | MIT OR Apache-2.0 | https://github.com/clap-rs/clap |
+| ed25519-dalek | 2 | BSD-3-Clause | https://github.com/dalek-cryptography/ed25519-dalek |
 | futures | 0.3 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
 | http-body-util | 0.1 | MIT | https://github.com/hyperium/http-body |
 | hyper-util | 0.1 | MIT | https://github.com/hyperium/hyper-util |
@@ -99,6 +101,7 @@ tracing, chrono and ipnet. Direct dependencies:
 | serde / serde_json | 1 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
 | serde_yaml | 0.9 | MIT OR Apache-2.0 | https://github.com/dtolnay/serde-yaml |
 | sha1 / sha2 | 0.10 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
+| ssh-key | 0.6 | Apache-2.0 OR MIT | https://github.com/RustCrypto/SSH |
 | subtle | 2 | BSD-3-Clause | https://github.com/dalek-cryptography/subtle |
 | tempfile | 3 | MIT OR Apache-2.0 | https://github.com/Stebalien/tempfile |
 | thiserror | 2 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror |

@@ -844,3 +844,66 @@ Completes S5. The full DDNS surface (~3100 LOC in Go).
   error redaction, IP family, OVH signature, template render, SSRF guard; ddns
   disabled/503 handlers.
 - **Not yet:** S6 buddy crypto + notifications; S7 retire the Go API.
+
+### Phase 2 S6a — notifications (2026-10-11) — branch `refactor/rust-api-buddy`
+
+S6 (buddy + notifications) starts with the smaller, self-contained notifications
+manager.
+
+- **`rust/api/src/notifications.rs`**: `Settings`/`Notification`/`Manager`
+  (atomic 0600 load/save, `UpdateSettings` with the token-pointer semantics that
+  never wipes a stored token, `EventEnabled`, `Send`/`SendTest`), and
+  `notification_url` (http/https only, link-local refused — PF-L8, topic charset
+  enforced).
+- **`server/notifications.rs`**: `GET|PUT /api/notifications` (the response
+  exposes `hasAuthToken`, never the token), `POST /api/notifications/test`.
+- **Wiring**: `AppState.notifications` from `NOTIFICATIONS_CONFIG`.
+- **Tests (4 new, 88 lib total + integration):** URL/topic validation,
+  severity threshold/priority, token preservation, settings shape.
+- **Not yet (S6b/S6c):** the buddy crypto primitives (keys/envelope/auth) and
+  the buddy store/client/peers/handlers.
+
+### Phase 2 S6b — buddy crypto primitives (2026-10-11) — branch `refactor/rust-api-buddy`
+
+The highest-risk interop surface: the identity keys, the sealed-chunk envelope
+and the signed manifest.
+
+- **`rust/api/src/buddy/keys.rs`**: `Identity` (OpenSSH Ed25519, ssh-key),
+  `new_identity`/`load_identity`/`save` (0600 atomic), `signing_key`/`sign`,
+  `fingerprint` (`SHA256:…`), `kek_bytes` (env `BUDDY_KEK` precedence),
+  `public_key_of`, `verify`.
+- **`rust/api/src/buddy/envelope.rs`**: the fixed wire format (`NBC2` magic,
+  BE plainLen, 12-byte nonce `prefix||generation||index`, AES-256-GCM with the
+  position AAD), `seal_chunk`/`open_chunk`, `wrap_dek`/`unwrap_dek`,
+  `Manifest::sign`/`verify_signature`, `validate_manifest_shape`, and a
+  **Go-compatible canonical JSON** (`<`,`>`,`&`,U+2028/9 escaped like
+  `encoding/json`) so a Go-signed manifest verifies here.
+- **Cross-implementation golden tests (both directions):**
+  `rust/api/tests/buddy_interop.rs` opens a **Go-sealed** chunk + verifies the
+  Go-signed manifest (fixture from the Go `buddy` package); the Go
+  `TestOpensRustSealedFixture` opens a **Rust-sealed** chunk + verifies the
+  Rust-signed manifest (fixture from `rust/api/examples/buddy_fixture.rs`).
+- **Tests (6 lib + 1 interop here, +1 Go):** sign/verify, seal/open (+ wrong
+  index), wrap/unwrap (+ wrong chain), manifest sign/verify (+ tamper), Go JSON
+  escaping.
+- **Not yet (S6c):** the buddy store/client/peers/http and the server handlers.
+
+### Phase 2 S6c — buddy peers + request auth (2026-10-11) — branch `refactor/rust-api-buddy`
+
+The receiver-side trust layer.
+
+- **`rust/api/src/buddy/peers.rs`**: `Peer`/`PeerStore` (JSON registry with the
+  key-substitution and duplicate-key guards, `by_fingerprint`, `touch_seen`),
+  `validate_source` (the `naslos-a/tank/data` shape), and `validate_quota`
+  (0 = unlimited, bounded by one sealed chunk..2^60).
+- **`rust/api/src/buddy/auth.rs`**: `canonical_request` (`BUDDY2` + audience +
+  method + path + body digest + timestamp + nonce), `body_digest`,
+  `sign_request_for`, and the `Authenticator` (signature verification bound to
+  the receiver's audience, clock-skew window, nonce validation + bounded replay
+  cache with optional `.nonces` persistence and compaction). The empty audience
+  is accepted only on `/api/buddy/status` (PF-M13).
+- **Tests (9 new, 102 lib total):** source/quota validation, prefix allows;
+  sign→verify, nonce replay rejection, wrong-audience rejection, empty-audience
+  only on status, nonce bounds.
+- **Not yet (S6d):** the receiver store (chunks/manifests/quota accounting), the
+  sender client, the receiver http endpoints and the server handlers.
