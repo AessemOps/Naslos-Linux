@@ -58,6 +58,22 @@ pub struct AppState {
     pub app_jobs: Arc<crate::server::app_jobs::AppJobManager>,
     /// The primary base domain app subdomains hang off.
     pub base_domain: String,
+    /// The declarative DNS provider registry (S5a).
+    pub providers: Arc<crate::providers::Registry>,
+    /// The base-domain store (S5d).
+    pub domains: Arc<crate::certs::Store>,
+    /// The certificate reconciler (S5d), present when a kube client is available.
+    pub certs: Option<Arc<dyn crate::certs::Reconciler>>,
+    /// The Authelia SSO syncer (S5d).
+    pub sso: Option<Arc<dyn crate::authelia::Syncer>>,
+    /// The Kubernetes client (S5c), used for Secret writes and discovery.
+    pub kube: Option<Arc<crate::kube::Client>>,
+    /// The chart-declared SSO domain seed (`SSO_DOMAINS`).
+    pub sso_domains: Vec<String>,
+    /// The apps namespace (Secrets, Certificates).
+    pub apps_namespace: String,
+    /// The dynamic-DNS manager (S5f). Absent when DDNS is disabled.
+    pub ddns: Option<Arc<crate::ddns::Manager>>,
 }
 
 /// Holds the current catalog snapshot; refresh replaces it atomically.
@@ -92,8 +108,45 @@ impl AppState {
         let cidr_env = std::env::var("TRAEFIK_CIDR").unwrap_or_else(|_| "10.0.0.0/8".to_string());
         let trusted_cidrs = parse_cidrs(&cidr_env)?;
 
+        let apps_namespace =
+            std::env::var("APPS_NAMESPACE").unwrap_or_else(|_| "naslos-apps".to_string());
+        let kube = Some(Arc::new(crate::kube::Client::new(&apps_namespace)));
+        let domains_store = Arc::new(crate::certs::Store::from_env());
+        if let Err(e) = domains_store.load() {
+            tracing::warn!("could not load domains: {e}");
+        }
+        let sso_domains: Vec<String> = std::env::var("SSO_DOMAINS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
         let (charts, catalog) = build_chart_repos();
-        let app_manager = build_app_manager(&charts, &catalog);
+        let app_manager = build_app_manager(
+            &charts,
+            &catalog,
+            kube.as_ref(),
+            &domains_store,
+            &sso_domains,
+            &apps_namespace,
+        );
+
+        let certs: Option<Arc<dyn crate::certs::Reconciler>> = kube.as_ref().map(|k| {
+            Arc::new(crate::certs::KubeReconciler::new(
+                k.clone(),
+                &apps_namespace,
+            )) as Arc<dyn crate::certs::Reconciler>
+        });
+        let sso: Option<Arc<dyn crate::authelia::Syncer>> = kube.as_ref().map(|k| {
+            let ns = std::env::var("NASLOS_NAMESPACE").unwrap_or_else(|_| "naslos".to_string());
+            Arc::new(crate::authelia::KubeSyncer::new(k.clone(), &ns))
+                as Arc<dyn crate::authelia::Syncer>
+        });
+        let providers = Arc::new(crate::providers::Registry::load(
+            &std::env::var("DDNS_PROVIDERS_DIR").unwrap_or_default(),
+        ));
+        let ddns = build_ddns(&providers, &kube, &apps_namespace);
 
         Ok(Self {
             proxy_secret,
@@ -109,6 +162,14 @@ impl AppState {
             app_manager,
             app_jobs: Arc::new(crate::server::app_jobs::AppJobManager::new()),
             base_domain: std::env::var("BASE_DOMAIN").unwrap_or_default(),
+            providers,
+            domains: domains_store,
+            certs,
+            sso,
+            kube,
+            sso_domains,
+            apps_namespace,
+            ddns,
         })
     }
 
@@ -128,6 +189,14 @@ impl AppState {
             app_manager: None,
             app_jobs: Arc::new(crate::server::app_jobs::AppJobManager::new()),
             base_domain: String::new(),
+            providers: Arc::new(crate::providers::Registry::load("")),
+            domains: Arc::new(crate::certs::Store::new("")),
+            certs: None,
+            sso: None,
+            kube: None,
+            sso_domains: Vec::new(),
+            apps_namespace: "naslos-apps".to_string(),
+            ddns: None,
         }
     }
 }
@@ -261,11 +330,70 @@ fn parse_go_duration(s: &str) -> Option<std::time::Duration> {
 fn build_app_manager(
     charts: &Option<Arc<crate::chartsrepo::Manager>>,
     catalog: &Arc<CatalogHolder>,
+    kube: Option<&Arc<crate::kube::Client>>,
+    domains: &Arc<crate::certs::Store>,
+    sso_seed: &[String],
+    apps_namespace: &str,
 ) -> Option<Arc<crate::apps::Manager>> {
     let charts = charts.clone()?;
-    let apps_ns = std::env::var("APPS_NAMESPACE").unwrap_or_else(|_| "naslos-apps".to_string());
+    let apps_ns = apps_namespace.to_string();
     let apps_priv_ns = std::env::var("APPS_PRIVILEGED_NAMESPACE")
         .unwrap_or_else(|_| "naslos-apps-priv".to_string());
+    let base_domain = std::env::var("BASE_DOMAIN").unwrap_or_default();
+
+    let router: Option<Arc<dyn crate::apps::Router>> = kube.map(|k| {
+        let domains_for_tls = domains.clone();
+        let opts = crate::routing::Options {
+            namespace: apps_ns.clone(),
+            tls_secret: std::env::var("APPS_TLS_SECRET")
+                .unwrap_or_else(|_| "naslos-apps-tls".to_string()),
+            authelia_service: std::env::var("AUTHELIA_SERVICE")
+                .unwrap_or_else(|_| "naslos-authelia".to_string()),
+            authelia_port: std::env::var("AUTHELIA_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(80),
+            authelia_namespace: std::env::var("NASLOS_NAMESPACE")
+                .unwrap_or_else(|_| "naslos".to_string()),
+            local_only_cidr: std::env::var("EXPOSURE_LOCAL_ONLY_CIDR").unwrap_or_default(),
+            tls_secret_for: Some(Arc::new(move |base: &str| {
+                domains_for_tls
+                    .get(base)
+                    .map(|d| d.secret_name())
+                    .unwrap_or_default()
+            })),
+        };
+        Arc::new(crate::routing::KubeRouter::new(k.clone(), opts)) as Arc<dyn crate::apps::Router>
+    });
+    let discoverer: Option<Arc<dyn crate::apps::ServiceDiscoverer>> = kube.map(|k| {
+        Arc::new(crate::routing::KubeDiscoverer::new(k.clone()))
+            as Arc<dyn crate::apps::ServiceDiscoverer>
+    });
+
+    let base_for_sso = base_domain.clone();
+    let seed = sso_seed.to_vec();
+    let store = domains.clone();
+    let sso_domains: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>> =
+        Some(Arc::new(move || {
+            let mut out = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            let mut add = |d: String| {
+                if !d.is_empty() && seen.insert(d.clone()) {
+                    out.push(d);
+                }
+            };
+            add(base_for_sso.clone());
+            for d in &seed {
+                add(d.clone());
+            }
+            for d in store.list() {
+                if d.sso {
+                    add(d.base_domain);
+                }
+            }
+            out
+        }));
+
     let catalog_holder = catalog.clone();
     let cfg = crate::apps::Config {
         store_path: std::env::var("APPS_CONFIG")
@@ -275,10 +403,10 @@ fn build_app_manager(
         privileged_namespace: apps_priv_ns,
         charts,
         catalog: Arc::new(move || catalog_holder.load()),
-        router: None,
-        discoverer: None,
-        base_domain: std::env::var("BASE_DOMAIN").unwrap_or_default(),
-        sso_domains: None,
+        router,
+        discoverer,
+        base_domain,
+        sso_domains,
     };
     match crate::apps::Manager::new(cfg) {
         Ok(m) => Some(Arc::new(m)),
@@ -287,4 +415,45 @@ fn build_app_manager(
             None
         }
     }
+}
+
+/// Build the dynamic-DNS manager (S5f) unless DDNS is disabled.
+fn build_ddns(
+    providers: &Arc<crate::providers::Registry>,
+    kube: &Option<Arc<crate::kube::Client>>,
+    apps_namespace: &str,
+) -> Option<Arc<crate::ddns::Manager>> {
+    if std::env::var("DDNS_ENABLED")
+        .map(|v| v == "false")
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let interval = std::env::var("DDNS_INTERVAL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    let cooldown = std::env::var("DDNS_UPDATE_COOLDOWN_SECONDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    let ip_sources = crate::server::ddns::ddns_sources(
+        &std::env::var("DDNS_IP_SOURCES").unwrap_or_default(),
+        &std::env::var("DDNS_IP_SOURCE").unwrap_or_default(),
+    );
+    let ipv6_sources = crate::server::ddns::ddns_sources(
+        &std::env::var("DDNS_IPV6_SOURCES").unwrap_or_default(),
+        &std::env::var("DDNS_IPV6_SOURCE").unwrap_or_default(),
+    );
+    Some(Arc::new(crate::ddns::Manager::new(crate::ddns::Options {
+        registry: providers.clone(),
+        store_path: std::env::var("DDNS_CONFIG")
+            .unwrap_or_else(|_| "/var/lib/naslos/ddns.json".to_string()),
+        apps_namespace: apps_namespace.to_string(),
+        kube: kube.clone(),
+        ip_sources,
+        ipv6_sources,
+        interval: std::time::Duration::from_secs(interval),
+        cooldown: std::time::Duration::from_secs(cooldown),
+    })))
 }

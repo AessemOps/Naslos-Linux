@@ -151,3 +151,67 @@ async fn unknown_job_is_404() {
     let (status, _b, _r) = call("GET", "/api/apps/jobs/deadbeef", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ---- S5a: providers -----------------------------------------------------
+
+#[tokio::test]
+async fn providers_lists_builtins() {
+    let (status, body, _r) = call("GET", "/api/providers", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let providers = body["providers"].as_array().unwrap();
+    assert_eq!(providers.len(), 17, "built-in providers");
+    assert!(body["errors"].as_array().unwrap().is_empty());
+    // ovh supports certificates; cloudflare has a ddns driver.
+    let ovh = providers.iter().find(|p| p["name"] == "ovh").unwrap();
+    assert_eq!(ovh["certManager"], true);
+    let cf = providers
+        .iter()
+        .find(|p| p["name"] == "cloudflare")
+        .unwrap();
+    assert_eq!(cf["ddns"], true);
+}
+
+// ---- S5d: domains -------------------------------------------------------
+
+#[tokio::test]
+async fn domains_list_is_empty_initially() {
+    let (status, body, _r) = call("GET", "/api/domains", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["domains"].as_array().unwrap().is_empty());
+    assert_eq!(body["certManager"], false);
+}
+
+#[tokio::test]
+async fn domain_create_rejects_an_invalid_domain() {
+    let (status, body, _r) = call(
+        "POST",
+        "/api/domains",
+        Some(serde_json::json!({ "baseDomain": "not a domain", "dnsProvider": "cloudflare" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("valid DNS name"));
+}
+
+#[tokio::test]
+async fn unknown_domain_is_404() {
+    let (status, _b, _r) = call("GET", "/api/domains/nope.example.com", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ---- S5f: ddns ----------------------------------------------------------
+
+#[tokio::test]
+async fn ddns_is_disabled_without_a_manager() {
+    let (status, body, _r) = call("GET", "/api/ddns", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    assert!(body["entries"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn ddns_run_is_503_without_a_manager() {
+    let (status, body, _r) = call("POST", "/api/ddns/abc/run", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["error"].as_str().unwrap().contains("dynamic DNS"));
+}

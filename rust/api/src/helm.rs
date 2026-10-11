@@ -349,7 +349,7 @@ fn app_from_status(
 
 /// Resolve a kubeconfig for the helm CLI: `HELM_KUBECONFIG`, else a generated
 /// in-cluster one, else `None` (ambient `KUBECONFIG`/`~/.kube/config`).
-fn resolve_kubeconfig() -> Option<PathBuf> {
+pub fn resolve_kubeconfig() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("HELM_KUBECONFIG") {
         if !path.is_empty() {
             return Some(PathBuf::from(path));

@@ -1,0 +1,22 @@
+# Ported from qdm12/ddns-updater (MIT): https://github.com/qdm12/ddns-updater
+# See CREDITS.md for attribution.
+
+name: namecheap
+displayName: Namecheap
+description: Namecheap Dynamic DNS (IPv4 / A records only).
+icon: "🟠"
+fields:
+  - key: token
+    label: Dynamic DNS password
+    type: string
+    required: true
+    secret: true
+ddns:
+  driver: http
+  defaults:
+    method: GET
+    authType: none
+    successStatus: "200"
+    successContains: "<ErrCount>0"
+    updateUrl: >-
+      https://dynamicdns.park-your-domain.com/update?host={{if label .record .zone}}{{label .record .zone}}{{else}}@{{end}}&domain={{.zone}}&password={{.secret.token}}&ip={{.ip}}

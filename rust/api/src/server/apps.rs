@@ -24,15 +24,11 @@ fn bad_request(msg: &str) -> Response {
 }
 
 fn base_domain_selectable(state: &AppState, domain: &str) -> bool {
-    state.base_domain.is_empty() || domain == state.base_domain
+    state.base_domain.is_empty() || super::domains::base_domain_selectable(state, domain)
 }
 
 fn selectable_domains(state: &AppState) -> Vec<String> {
-    if state.base_domain.is_empty() {
-        Vec::new()
-    } else {
-        vec![state.base_domain.clone()]
-    }
+    super::domains::selectable_domains(state)
 }
 
 /// `GET|POST /api/apps`
@@ -207,7 +203,7 @@ pub async fn app_exposure_get(
             "baseDomain": base_domain,
             "primaryDomain": state.base_domain,
             "selectableDomains": selectable_domains(&state),
-            "ssoDomains": Vec::<String>::new(),
+            "ssoDomains": super::domains::effective_sso_domains(&state),
             "authAllowed": manager.auth_allowed(&rec.base_domain),
             "lastError": rec.last_error,
         }),

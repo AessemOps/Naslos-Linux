@@ -1,0 +1,21 @@
+# Ported from qdm12/ddns-updater (MIT): https://github.com/qdm12/ddns-updater
+# See CREDITS.md for attribution.
+
+name: dynv6
+displayName: dynv6
+description: dynv6 dynamic DNS (dynv6.com); token in the query.
+icon: "🟩"
+fields:
+  - key: token
+    label: Token
+    type: string
+    required: true
+    secret: true
+ddns:
+  driver: http
+  defaults:
+    method: GET
+    authType: none
+    successStatus: "200"
+    updateUrl: >-
+      {{if eq .type "AAAA"}}https://ipv6.dynv6.com/api/update?zone={{fqdn .record .zone}}&ipv6={{.ip}}{{else}}https://ipv4.dynv6.com/api/update?zone={{fqdn .record .zone}}&ipv4={{.ip}}{{end}}&token={{.secret.token}}

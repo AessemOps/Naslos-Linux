@@ -1,0 +1,27 @@
+# Ported from qdm12/ddns-updater (MIT): https://github.com/qdm12/ddns-updater
+# See CREDITS.md for attribution.
+
+name: noip
+displayName: No-IP
+description: No-IP dynamic DNS (no-ip.com), HTTP Basic auth.
+icon: "🔵"
+fields:
+  - key: username
+    label: Username
+    type: string
+    required: true
+  - key: password
+    label: Password
+    type: string
+    required: true
+    secret: true
+ddns:
+  driver: http
+  defaults:
+    method: GET
+    authType: basic
+    successStatus: "200"
+    successAny: good,nochg
+    errorAny: "911,abuse,!donator,badagent,badauth,nohost"
+    updateUrl: >-
+      https://dynupdate.no-ip.com/nic/update?hostname={{fqdn .record .zone}}&myip={{.ip}}
