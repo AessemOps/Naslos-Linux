@@ -907,3 +907,19 @@ The receiver-side trust layer.
   only on status, nonce bounds.
 - **Not yet (S6d):** the receiver store (chunks/manifests/quota accounting), the
   sender client, the receiver http endpoints and the server handlers.
+
+### Phase 2 S6d — buddy receiver store (2026-10-20) — branch `refactor/rust-api-buddy`
+
+The receiver-side storage layer (port of the 1205-line `buddy/store.go`).
+
+- **`rust/api/src/buddy/store.rs`**: the fingerprint-hashed `key_dir`, recursive
+  source walk, path validation (`source`/`chain`), `put_chunk_within` with
+  atomic quota accounting + the free-space reserve, the interrupted-tail
+  `may_replace` rule, `chunk`/`list_chunks`/`chunk_digests`, `put_manifest`
+  (rollback refusal + the GUID `links.json` index + `current.json`), `sequence`
+  (oldest-first chain history), `chains`, `summary`, cached `usage`, `prune`
+  (dependency-safe retention), and `free_space` via `statvfs`.
+- **Tests (5 new, 107 lib total):** chunk round-trip + digests, path traversal
+  refusal, quota enforcement, manifest rollback refusal, hashed key dirs.
+- **Not yet (S6e):** the sender client, the receiver HTTP endpoints, and the
+  server handlers (send/jobs/schedules).

@@ -96,6 +96,7 @@ tracing, chrono and ipnet. Direct dependencies:
 | include_dir | 0.7 | MIT | https://github.com/Michael-F-Bryan/include_dir |
 | ipnet | 2 | MIT OR Apache-2.0 | https://github.com/krisprice/ipnet |
 | ldap3 | 0.12 | MIT OR Apache-2.0 | https://github.com/inejge/ldap3 |
+| libc | 0.2 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc |
 | rustls | 0.23 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls |
 | rustls-pemfile | 2 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/pemfile |
 | serde / serde_json | 1 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
