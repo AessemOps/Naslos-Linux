@@ -548,8 +548,9 @@ run "go test (api)" go test ./...
 # detector runs unconditionally.
 run "go test -race (api)" go test -race ./...
 if have govulncheck; then
-  # govulncheck exits non-zero for ANY findable advisory. The four AUDIT-H3
-  # ones are `Fixed in: N/A` and not on an exercised path. The six PF-M2 ones
+  # govulncheck exits non-zero for ANY findable advisory. The five AUDIT-H3
+  # ones are `Fixed in: N/A` (containerd v1, which the api still pulls) and not
+  # on an exercised path. The six PF-M2 ones
   # are Go stdlib advisories fixed in 1.26.9, which the api go.mod now
   # require; they are listed so a build under an older toolchain still reports
   # them without failing the gate. A genuinely NEW id fails.
@@ -557,7 +558,7 @@ if have govulncheck; then
     f=$(mktemp) || return 1
     govulncheck ./... >"$f" 2>&1
     found=$(grep -oE '^Vulnerability #[0-9]+: GO-[0-9-]+' "$f" | awk '{print $3}' | sort -u)
-    accepted="GO-2026-5064 GO-2026-5338 GO-2026-5622 GO-2026-5932 GO-2026-5026 GO-2026-5972 GO-2026-6089 GO-2026-6090 GO-2026-6091 GO-2026-6218"
+    accepted="GO-2026-5064 GO-2026-5338 GO-2026-5622 GO-2026-5932 GO-2026-6791 GO-2026-5026 GO-2026-5972 GO-2026-6089 GO-2026-6090 GO-2026-6091 GO-2026-6218"
     new=$(comm -23 <(printf '%s\n' $found | sort -u) <(printf '%s\n' $accepted | tr ' ' '\n' | sort -u))
     printf 'govulncheck advisories: %s\n' "$(printf '%s' "$found" | tr '\n' ' ')"
     rm -f "$f"
