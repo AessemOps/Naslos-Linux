@@ -7,6 +7,7 @@
 
 pub mod app_jobs;
 pub mod apps;
+pub mod buddy;
 pub mod catalog;
 pub mod ddns;
 pub mod disks;
@@ -32,7 +33,22 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // Public: health probes.
     let public: Router<Arc<AppState>> = Router::new()
         .route("/api/health", get(handlers::health))
-        .route("/api/ready", get(handlers::ready));
+        .route("/api/ready", get(handlers::ready))
+        // Buddy peers authenticate with their own Ed25519 key, not the proxy.
+        .route("/api/buddy/v1/status", get(buddy::status))
+        .route("/api/buddy/v1/enroll", post(buddy::enroll))
+        .route("/api/buddy/v1/backups", get(buddy::backups))
+        .route(
+            "/api/buddy/v1/chunks/{*source}",
+            get(buddy::chunks).put(buddy::chunks),
+        )
+        .route("/api/buddy/v1/chains/{*source}", get(buddy::chains))
+        .route("/api/buddy/v1/sequence/{*source}", get(buddy::sequence))
+        .route(
+            "/api/buddy/v1/manifest/{*source}",
+            get(buddy::manifest).put(buddy::manifest),
+        )
+        .route("/api/buddy/v1/prune/{*source}", post(buddy::prune));
 
     // Auth-but-not-admin (any authenticated user).
     let user: Router<Arc<AppState>> = Router::new()

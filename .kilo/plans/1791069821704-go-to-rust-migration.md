@@ -923,3 +923,24 @@ The receiver-side storage layer (port of the 1205-line `buddy/store.go`).
   refusal, quota enforcement, manifest rollback refusal, hashed key dirs.
 - **Not yet (S6e):** the sender client, the receiver HTTP endpoints, and the
   server handlers (send/jobs/schedules).
+
+### Phase 2 S6e — buddy receiver HTTP endpoints (2026-10-20) — branch `refactor/rust-api-buddy`
+
+The receiver's peer-facing HTTP surface (port of `buddy/http.go`, 755 lines),
+mounted on the **public** router (peers authenticate with their own key, not the
+proxy).
+
+- **`server/buddy.rs`**: the `Receiver` config and `/api/buddy/v1/{status,
+  enroll,backups,chunks/{source},chains/{source},sequence/{source},manifest/{source},
+  prune/{source}}`. Ported the canonical-path signing (full URI), enrollment
+  (constant-time token, single-use marker, finite default quota), chunk GET
+  (list digests/generations + published flag) / PUT (quota + free-space mapped to
+  413/507/409), chain listing and sequence, manifest publish (version/name/chain/
+  signature/shape checks, missing-chunk 409) and prune.
+- **`AppState.buddy`** built from `BUDDY_NAME`/`BUDDY_RECEIVE_PATH`/`BUDDY_PEERS`
+  /`BUDDY_ENROLL_TOKEN`/`BUDDY_ENROLL_OPEN`/`BUDDY_DEFAULT_QUOTA_BYTES`; nonce
+  persistence under the receive path.
+- **End-to-end test:** enroll → status → sealed chunk PUT → signed manifest PUT
+  → manifest GET, all signed the way a real sender does.
+- **Not yet (S6f):** the sender client (instance-side backup) and the owner
+  handlers for peers/identity/send/jobs/schedules.

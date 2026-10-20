@@ -248,6 +248,11 @@ impl Store {
         }
     }
 
+    /// Whether a chain has a manifest (a finished backup rather than an upload).
+    pub fn is_chain_published(&self, key_id: &str, source: &str, chain: &str) -> SResult<bool> {
+        self.chain_published(key_id, source, chain)
+    }
+
     fn chain_published(&self, key_id: &str, source: &str, chain: &str) -> SResult<bool> {
         let dir = self.chain_dir(key_id, source, chain)?;
         Ok(dir.join("manifest.json").exists())
