@@ -80,6 +80,8 @@ pub struct AppState {
     pub buddy: Option<Arc<crate::server::buddy::Receiver>>,
     /// The async instance-side buddy send jobs (S6i).
     pub buddy_jobs: Arc<crate::server::buddy_send::BuddyJobManager>,
+    /// The scheduled-backup store (S6j).
+    pub buddy_schedules: Arc<crate::server::buddy_schedules::ScheduleStore>,
 }
 
 /// Holds the current catalog snapshot; refresh replaces it atomically.
@@ -179,6 +181,13 @@ impl AppState {
             notifications: Arc::new(crate::notifications::Manager::from_env()),
             buddy: build_buddy_receiver(),
             buddy_jobs: Arc::new(crate::server::buddy_send::BuddyJobManager::new()),
+            buddy_schedules: {
+                let store = Arc::new(crate::server::buddy_schedules::ScheduleStore::from_env());
+                if let Err(e) = store.load() {
+                    tracing::warn!("could not load the buddy schedule store: {e}");
+                }
+                store
+            },
         })
     }
 
@@ -209,6 +218,7 @@ impl AppState {
             notifications: Arc::new(crate::notifications::Manager::new("")),
             buddy: None,
             buddy_jobs: Arc::new(crate::server::buddy_send::BuddyJobManager::new()),
+            buddy_schedules: Arc::new(crate::server::buddy_schedules::ScheduleStore::new("")),
         }
     }
 }

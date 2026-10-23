@@ -283,3 +283,24 @@ async fn buddy_jobs_list_is_empty_and_unknown_is_404() {
     let (status, _b, _r) = call("GET", "/api/buddy/jobs/nope", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ---- S6j: buddy schedules ----------------------------------------------
+
+#[tokio::test]
+async fn buddy_schedules_list_is_empty() {
+    let (status, body, _r) = call("GET", "/api/buddy/schedules", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["schedules"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn buddy_schedule_requires_a_dataset_and_cadence() {
+    let (status, body, _r) = call(
+        "POST",
+        "/api/buddy/schedules",
+        Some(serde_json::json!({ "dataset": "", "source": "naslos-a/x", "receiver": "https://b", "cadence": "daily" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("dataset"));
+}

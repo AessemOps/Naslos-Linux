@@ -88,7 +88,7 @@ fn is_zero_usize(n: &usize) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct JobPublic {
+pub struct JobPublic {
     id: String,
     dataset: String,
     source: String,
@@ -122,6 +122,12 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+impl JobPublic {
+    pub fn job_id(&self) -> &str {
+        &self.id
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 struct ProgressView {
     chunk: i64,
@@ -133,7 +139,7 @@ struct ProgressView {
     skipped: usize,
 }
 
-struct BuddyJob {
+pub struct BuddyJob {
     public: Mutex<JobPublic>,
     handle: Mutex<Option<JoinHandle<()>>>,
 }
@@ -161,7 +167,7 @@ impl BuddyJobManager {
         Self::default()
     }
 
-    fn conflicting(&self, receiver: &str, source: &str) -> Option<JobPublic> {
+    pub fn conflicting(&self, receiver: &str, source: &str) -> Option<JobPublic> {
         let inner = self.inner.lock().unwrap();
         for job in inner.0.values() {
             let p = job.snapshot();
@@ -193,11 +199,11 @@ impl BuddyJobManager {
         inner.1 = kept;
     }
 
-    fn get(&self, id: &str) -> Option<Arc<BuddyJob>> {
+    pub fn get(&self, id: &str) -> Option<Arc<BuddyJob>> {
         self.inner.lock().unwrap().0.get(id).cloned()
     }
 
-    fn list(&self) -> Vec<JobPublic> {
+    pub fn list(&self) -> Vec<JobPublic> {
         let inner = self.inner.lock().unwrap();
         inner
             .1
@@ -323,49 +329,17 @@ pub async fn send_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
         );
     }
     let raw = req.raw.unwrap_or(true);
-    let id = random_job_id();
-    let job = Arc::new(BuddyJob {
-        public: Mutex::new(JobPublic {
-            id: id.clone(),
-            dataset: dataset.clone(),
-            source: source.clone(),
-            receiver: receiver.clone(),
-            prune_keep: req.prune_keep,
-            raw,
-            force: req.force,
-            schedule_id: String::new(),
-            state: JobState::Running,
-            started_at: Utc::now(),
-            finished_at: None,
-            progress: ProgressView::default(),
-            incremental: false,
-            resumed: false,
-            snapshot: String::new(),
-            estimated_bytes: 0,
-            result: None,
-            error: String::new(),
-        }),
-        handle: Mutex::new(None),
-    });
-    state.buddy_jobs.add(&id, job.clone());
-    let state_for_task = state.clone();
-    let job_for_task = job.clone();
-    let agent_for_task = agent;
-    let handle = tokio::spawn(async move {
-        run_send_job(
-            state_for_task,
-            job_for_task,
-            agent_for_task,
-            dataset,
-            source,
-            receiver,
-            raw,
-            req.force,
-            req.prune_keep,
-        )
-        .await;
-    });
-    *job.handle.lock().unwrap() = Some(handle);
+    let id = enqueue_job(
+        &state,
+        agent,
+        dataset,
+        source,
+        receiver,
+        raw,
+        req.force,
+        req.prune_keep,
+        String::new(),
+    );
     json(
         StatusCode::ACCEPTED,
         serde_json::json!({ "jobId": id, "status": "started" }),
@@ -769,6 +743,64 @@ pub async fn job_detail_delete(
         StatusCode::OK,
         serde_json::json!({ "status": "cancelling", "id": id }),
     )
+}
+
+/// Create and start a send job. Shared by the manual endpoint and the scheduler.
+#[allow(clippy::too_many_arguments)]
+pub fn enqueue_job(
+    state: &Arc<AppState>,
+    agent: Arc<crate::agent::Client>,
+    dataset: String,
+    source: String,
+    receiver: String,
+    raw: bool,
+    force: bool,
+    prune_keep: usize,
+    schedule_id: String,
+) -> String {
+    let id = random_job_id();
+    let job = Arc::new(BuddyJob {
+        public: Mutex::new(JobPublic {
+            id: id.clone(),
+            dataset: dataset.clone(),
+            source: source.clone(),
+            receiver: receiver.clone(),
+            prune_keep,
+            raw,
+            force,
+            schedule_id,
+            state: JobState::Running,
+            started_at: Utc::now(),
+            finished_at: None,
+            progress: ProgressView::default(),
+            incremental: false,
+            resumed: false,
+            snapshot: String::new(),
+            estimated_bytes: 0,
+            result: None,
+            error: String::new(),
+        }),
+        handle: Mutex::new(None),
+    });
+    state.buddy_jobs.add(&id, job.clone());
+    let state_for_task = state.clone();
+    let job_for_task = job.clone();
+    let handle = tokio::spawn(async move {
+        run_send_job(
+            state_for_task,
+            job_for_task,
+            agent,
+            dataset,
+            source,
+            receiver,
+            raw,
+            force,
+            prune_keep,
+        )
+        .await;
+    });
+    *job.handle.lock().unwrap() = Some(handle);
+    id
 }
 
 // Keep Duration referenced for a future timeout guard.

@@ -1003,3 +1003,22 @@ The sender side (port of `buddy/client.go`, 1178 lines).
 - **Tests:** send 503 without an agent; empty jobs list; unknown job 404.
 - **Not yet (S6j):** the schedule store/runner + `/api/buddy/schedules`, and the
   S7 retirement.
+
+### Phase 2 S6j — buddy scheduled backups (2026-10-23)
+
+Completes the buddy feature.
+
+- **`server/buddy_schedules.rs`**: `ScheduleEntry`/`Cadence`/`ScheduleStore`
+  (JSON, clone-on-read, deep-copied fan-out), `parse_run_at` +
+  `compute_next_run` (hourly/daily/weekly, strictly-after-now), `validate_schedule`
+  (dataset/source/receivers/cadence/runAt + best-effort agent dataset check),
+  `GET|POST|DELETE /api/buddy/schedules`, `record_result` (per-buddy fan-out
+  aggregation), `run_due_schedules`/`start_schedule_job` (one job per buddy,
+  conflicts skipped, next run advanced once), and `run_scheduler` (catch-up +
+  interval, `BUDDY_SCHEDULER_INTERVAL_MS`).
+- **`buddy_send`**: `enqueue_job` extracted so manual and scheduled sends share
+  the same path.
+- **Tests:** empty schedules list; a schedule without a dataset is refused;
+  runAt/next-run unit tests.
+- **Phase 2 status:** all of S1–S6 is ported. Only the pod/logs/exec websocket
+  routes remain 501 (kube-rs/websocket, part of S7 hardening).
