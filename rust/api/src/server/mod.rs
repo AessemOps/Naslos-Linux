@@ -8,6 +8,7 @@
 pub mod app_jobs;
 pub mod apps;
 pub mod buddy;
+pub mod buddy_owner;
 pub mod catalog;
 pub mod ddns;
 pub mod disks;
@@ -172,9 +173,17 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/notifications/test",
             post(notifications::notification_test_post),
         )
-        .route("/api/buddy/status", any(handlers::not_ported))
-        .route("/api/buddy/peers", any(handlers::not_ported))
-        .route("/api/buddy/identity", any(handlers::not_ported))
+        .route("/api/buddy/status", get(buddy_owner::status))
+        .route(
+            "/api/buddy/peers",
+            get(buddy_owner::peers_get)
+                .post(buddy_owner::peers_post)
+                .delete(buddy_owner::peers_delete),
+        )
+        .route(
+            "/api/buddy/identity",
+            get(buddy_owner::identity_get).post(buddy_owner::identity_post),
+        )
         .route("/api/buddy/send", any(handlers::not_ported))
         .route("/api/buddy/restore", any(handlers::not_ported))
         .route("/api/buddy/jobs", any(handlers::not_ported))

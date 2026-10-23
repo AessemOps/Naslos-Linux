@@ -227,3 +227,12 @@ async fn notification_settings_shape() {
     assert_eq!(body["hasAuthToken"], false);
     assert!(body["enabledEvents"].as_array().unwrap().len() == 2);
 }
+
+// ---- S6f: buddy (owner) ------------------------------------------------
+
+#[tokio::test]
+async fn buddy_status_is_503_without_a_receiver() {
+    let (status, body, _r) = call("GET", "/api/buddy/status", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["error"].as_str().unwrap().contains("Buddy Backup"));
+}

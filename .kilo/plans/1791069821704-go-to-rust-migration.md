@@ -944,3 +944,15 @@ proxy).
   → manifest GET, all signed the way a real sender does.
 - **Not yet (S6f):** the sender client (instance-side backup) and the owner
   handlers for peers/identity/send/jobs/schedules.
+
+### Phase 2 S6f — buddy owner handlers: status, peers, identity (2026-10-23)
+
+- **`server/buddy_owner.rs`**: `GET /api/buddy/status` (free/used space, peers,
+  backups), `GET|POST|DELETE /api/buddy/peers` (manual authorization with the
+  keep-permissions-on-update rule and the revoke note), and
+  `GET|POST /api/buddy/identity` (`BUDDY_IDENTITY`, first-use creation, the
+  replace-cost warning).
+- **Tests:** buddy status 503 without a receiver; the admin-route test moved to
+  `/api/buddy/schedules` (still 501).
+- **Not yet (S6g):** the sender client (instance-side backup) and the
+  send/restore/jobs/schedules handlers.
