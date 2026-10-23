@@ -734,7 +734,7 @@ pub struct StoredChunk {
 }
 
 /// A summary row for one stored source.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Backups {
     pub source: String,
     pub chain: String,

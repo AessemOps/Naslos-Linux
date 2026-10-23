@@ -956,3 +956,22 @@ proxy).
   `/api/buddy/schedules` (still 501).
 - **Not yet (S6g):** the sender client (instance-side backup) and the
   send/restore/jobs/schedules handlers.
+
+### Phase 2 S6g — buddy sender client (2026-10-23) — branch `refactor/rust-api-buddy`
+
+The sender side (port of `buddy/client.go`, 1178 lines).
+
+- **`rust/api/src/buddy/client.rs`**: `Client` (audience discovery via `/status`,
+  full-URI request signing, sequence tracking), `Status`/`ChainSummary`/
+  `ChainState`/`StoredChunk`, and the operations: `status`, `enroll`, `backups`,
+  `manifest`, `stored_chunks`, `chains`, `restore_sequence` (with the listing
+  fallback), `prune`, **`push`** (chunk-streaming seal/upload with resume, the
+  partial-tail generation bump, pre-publish veto, manifest size guard, sequence
+  recording, prune) and **`restore`** (manifest binding, signature, freshness,
+  contiguity and per-chunk digest checks, decrypted output).
+- **Bug fixed during the round trip:** `PATH_PREFIX` must be `/api/buddy/v1`, and
+  the client signs the full URI (prefix included), matching the receiver's
+  rebuilt canonical path.
+- **Full round-trip test:** a 3 MiB payload is pushed by the Rust client to the
+  Rust receiver (multiple chunks) and restored byte-for-byte.
+- **Not yet (S6h):** the send/restore/jobs/schedules owner handlers.

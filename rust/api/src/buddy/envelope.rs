@@ -139,7 +139,7 @@ fn aead_for(key: &[u8]) -> Result<Aes256Gcm, String> {
     Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())
 }
 
-fn digest_of(data: &[u8]) -> String {
+pub(crate) fn digest_of(data: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(data);

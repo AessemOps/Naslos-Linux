@@ -229,7 +229,7 @@ impl Authenticator {
             .map_err(|e| format!("decoding signature: {e}"))?;
 
         let mut audiences = vec![audience.to_string()];
-        if !audience.is_empty() && path == format!("{}/status", super::PATH_PREFIX) {
+        if !audience.is_empty() && path == format!("{}/status", crate::buddy::PATH_PREFIX) {
             audiences.push(String::new());
         }
         let mut verified = false;
@@ -334,14 +334,21 @@ mod tests {
         let auth = authenticator_with(&id, "peer-a");
         let now = Utc::now();
         let digest = body_digest(b"");
-        let headers =
-            sign_request_for(&id, "GET", "/api/buddy/status", &digest, "receiver", now).unwrap();
+        let headers = sign_request_for(
+            &id,
+            "GET",
+            &format!("{}/status", crate::buddy::PATH_PREFIX),
+            &digest,
+            "receiver",
+            now,
+        )
+        .unwrap();
         let peer = auth
             .verify(
                 &headers,
                 &digest,
                 "GET",
-                "/api/buddy/status",
+                &format!("{}/status", crate::buddy::PATH_PREFIX),
                 "receiver",
                 now,
             )
@@ -355,11 +362,33 @@ mod tests {
         let auth = authenticator_with(&id, "p");
         let now = Utc::now();
         let digest = body_digest(b"");
-        let h = sign_request_for(&id, "GET", "/api/buddy/status", &digest, "r", now).unwrap();
-        auth.verify(&h, &digest, "GET", "/api/buddy/status", "r", now)
-            .unwrap();
+        let h = sign_request_for(
+            &id,
+            "GET",
+            &format!("{}/status", crate::buddy::PATH_PREFIX),
+            &digest,
+            "r",
+            now,
+        )
+        .unwrap();
+        auth.verify(
+            &h,
+            &digest,
+            "GET",
+            &format!("{}/status", crate::buddy::PATH_PREFIX),
+            "r",
+            now,
+        )
+        .unwrap();
         let err = auth
-            .verify(&h, &digest, "GET", "/api/buddy/status", "r", now)
+            .verify(
+                &h,
+                &digest,
+                "GET",
+                &format!("{}/status", crate::buddy::PATH_PREFIX),
+                "r",
+                now,
+            )
             .unwrap_err();
         assert!(err.contains("already used"), "{err}");
     }
@@ -382,10 +411,25 @@ mod tests {
         let auth = authenticator_with(&id, "p");
         let now = Utc::now();
         let digest = body_digest(b"");
-        let h = sign_request_for(&id, "GET", "/api/buddy/status", &digest, "", now).unwrap();
+        let h = sign_request_for(
+            &id,
+            "GET",
+            &format!("{}/status", crate::buddy::PATH_PREFIX),
+            &digest,
+            "",
+            now,
+        )
+        .unwrap();
         // On /status, the empty-audience signature is accepted alongside the real one.
         assert!(auth
-            .verify(&h, &digest, "GET", "/api/buddy/status", "receiver", now)
+            .verify(
+                &h,
+                &digest,
+                "GET",
+                &format!("{}/status", crate::buddy::PATH_PREFIX),
+                "receiver",
+                now
+            )
             .is_ok());
     }
 
