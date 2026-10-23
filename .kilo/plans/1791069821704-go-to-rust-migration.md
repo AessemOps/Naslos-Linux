@@ -975,3 +975,18 @@ The sender side (port of `buddy/client.go`, 1178 lines).
 - **Full round-trip test:** a 3 MiB payload is pushed by the Rust client to the
   Rust receiver (multiple chunks) and restored byte-for-byte.
 - **Not yet (S6h):** the send/restore/jobs/schedules owner handlers.
+
+### Phase 2 S6h — buddy restore + agent streaming (2026-10-23)
+
+- **`agent.rs`**: the streaming methods the buddy needs — `send_stream` (a
+  `zfs send` body as a byte stream), `estimate_send`, `snapshots_with_guid`,
+  `create_snapshot`, and `receive_stream_body` (a body piped into
+  `zfs receive`).
+- **`server/buddy_restore.rs`**: `POST /api/buddy/restore` — validates the
+  source/dataset/URL, loads the identity, fetches the restore sequence, then
+  either **verifies** (decrypt + hash each chain, no ZFS) or applies it chain by
+  chain through a duplex pipe into the agent's receive (force only on the first
+  stream).
+- **Tests:** restore input validation (source/URL).
+- **Not yet (S6i):** the async send job runner + `POST /api/buddy/send`, the
+  jobs list/detail/cancel endpoints, and the schedule runner.

@@ -236,3 +236,26 @@ async fn buddy_status_is_503_without_a_receiver() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(body["error"].as_str().unwrap().contains("Buddy Backup"));
 }
+
+// ---- S6h: buddy restore validation -------------------------------------
+
+#[tokio::test]
+async fn restore_validates_input() {
+    let (status, body, _r) = call(
+        "POST",
+        "/api/buddy/restore",
+        Some(serde_json::json!({ "source": "", "receiver": "https://buddy" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("source"));
+
+    let (status, body, _r) = call(
+        "POST",
+        "/api/buddy/restore",
+        Some(serde_json::json!({ "source": "naslos-a/data", "receiver": "ftp://buddy", "dataset": "tank/x" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("http"));
+}
