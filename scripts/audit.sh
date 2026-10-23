@@ -551,7 +551,7 @@ if have govulncheck; then
   # govulncheck exits non-zero for ANY findable advisory. The five AUDIT-H3
   # ones are `Fixed in: N/A` (containerd v1, which the api still pulls) and not
   # on an exercised path. The six PF-M2 ones
-  # are Go stdlib advisories fixed in 1.26.9, which the api go.mod now
+  # are Go stdlib advisories fixed in 1.26.10, which the api go.mod now
   # require; they are listed so a build under an older toolchain still reports
   # them without failing the gate. A genuinely NEW id fails.
   check_govulncheck() {
