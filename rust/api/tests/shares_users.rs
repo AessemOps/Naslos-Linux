@@ -259,3 +259,27 @@ async fn restore_validates_input() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body["error"].as_str().unwrap().contains("http"));
 }
+
+// ---- S6i: buddy send jobs ----------------------------------------------
+
+#[tokio::test]
+async fn buddy_send_is_503_without_an_agent() {
+    let (status, body, _r) = call(
+        "POST",
+        "/api/buddy/send",
+        Some(serde_json::json!({ "dataset": "tank/x", "source": "naslos-a/x", "receiver": "https://b" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["error"].as_str().unwrap().contains("agent"));
+}
+
+#[tokio::test]
+async fn buddy_jobs_list_is_empty_and_unknown_is_404() {
+    let (status, body, _r) = call("GET", "/api/buddy/jobs", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["jobs"].as_array().unwrap().is_empty());
+
+    let (status, _b, _r) = call("GET", "/api/buddy/jobs/nope", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

@@ -990,3 +990,16 @@ The sender side (port of `buddy/client.go`, 1178 lines).
 - **Tests:** restore input validation (source/URL).
 - **Not yet (S6i):** the async send job runner + `POST /api/buddy/send`, the
   jobs list/detail/cancel endpoints, and the schedule runner.
+
+### Phase 2 S6i — buddy async send job (2026-10-23)
+
+- **`server/buddy_send.rs`**: the async send job manager (conflict detection per
+  receiver+source, ~20-finished retention, cancel via task abort), `POST
+  /api/buddy/send` (validate + 202 + jobId), the `run_send_job` runner
+  (resume-state load/validate, base-from-previous-manifest, mount-propagation
+  guards, snapshot + GUID, estimate, `zfs send` stream → `Push` with
+  pre-publish veto, resume-state persistence), `GET /api/buddy/jobs`,
+  `GET|DELETE /api/buddy/jobs/{id}`, and success/failure notifications.
+- **Tests:** send 503 without an agent; empty jobs list; unknown job 404.
+- **Not yet (S6j):** the schedule store/runner + `/api/buddy/schedules`, and the
+  S7 retirement.

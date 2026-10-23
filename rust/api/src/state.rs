@@ -78,6 +78,8 @@ pub struct AppState {
     pub notifications: Arc<crate::notifications::Manager>,
     /// The buddy receiver (S6e). Absent when buddy is disabled.
     pub buddy: Option<Arc<crate::server::buddy::Receiver>>,
+    /// The async instance-side buddy send jobs (S6i).
+    pub buddy_jobs: Arc<crate::server::buddy_send::BuddyJobManager>,
 }
 
 /// Holds the current catalog snapshot; refresh replaces it atomically.
@@ -176,6 +178,7 @@ impl AppState {
             ddns,
             notifications: Arc::new(crate::notifications::Manager::from_env()),
             buddy: build_buddy_receiver(),
+            buddy_jobs: Arc::new(crate::server::buddy_send::BuddyJobManager::new()),
         })
     }
 
@@ -205,6 +208,7 @@ impl AppState {
             ddns: None,
             notifications: Arc::new(crate::notifications::Manager::new("")),
             buddy: None,
+            buddy_jobs: Arc::new(crate::server::buddy_send::BuddyJobManager::new()),
         }
     }
 }

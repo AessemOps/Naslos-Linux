@@ -10,6 +10,7 @@ pub mod apps;
 pub mod buddy;
 pub mod buddy_owner;
 pub mod buddy_restore;
+pub mod buddy_send;
 pub mod catalog;
 pub mod ddns;
 pub mod disks;
@@ -185,10 +186,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/buddy/identity",
             get(buddy_owner::identity_get).post(buddy_owner::identity_post),
         )
-        .route("/api/buddy/send", any(handlers::not_ported))
+        .route("/api/buddy/send", post(buddy_send::send_post))
         .route("/api/buddy/restore", post(buddy_restore::restore))
-        .route("/api/buddy/jobs", any(handlers::not_ported))
-        .route("/api/buddy/jobs/{*rest}", any(handlers::not_ported))
+        .route("/api/buddy/jobs", get(buddy_send::jobs_get))
+        .route(
+            "/api/buddy/jobs/{id}",
+            get(buddy_send::job_detail_get).delete(buddy_send::job_detail_delete),
+        )
         .route("/api/buddy/schedules", any(handlers::not_ported))
         .route("/api/users", get(users::users_get).post(users::users_post))
         .route(
