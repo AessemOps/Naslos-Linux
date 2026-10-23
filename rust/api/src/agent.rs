@@ -488,3 +488,135 @@ mod tests {
         assert_eq!(url, "https://naslos-agent.naslos.svc.cluster.local:9090");
     }
 }
+
+// ---- Streaming (buddy send/restore) -------------------------------------
+
+/// A snapshot's identity, from the agent's `/zfs/snapshots`.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct SnapshotInfo {
+    pub name: String,
+    #[serde(default)]
+    pub guid: String,
+    #[serde(default)]
+    pub created: String,
+}
+
+/// Options for a `zfs send`.
+#[derive(Debug, Clone, Default)]
+pub struct SendStreamOptions {
+    pub dataset: String,
+    pub to: String,
+    pub from: String,
+    pub raw: bool,
+}
+
+fn send_path(opts: &SendStreamOptions) -> String {
+    let mut path = format!(
+        "/api/v1/zfs/send/{}?to={}",
+        escape_dataset_path(&opts.dataset),
+        urlencode(&opts.to, true)
+    );
+    if !opts.from.is_empty() {
+        path.push_str(&format!("&from={}", urlencode(&opts.from, true)));
+    }
+    path.push_str(if opts.raw { "&raw=true" } else { "&raw=false" });
+    path
+}
+
+impl Client {
+    /// Open a `zfs send` stream as an async reader.
+    pub async fn send_stream(
+        &self,
+        opts: &SendStreamOptions,
+    ) -> Result<futures::stream::BoxStream<'static, Result<bytes::Bytes, std::io::Error>>, AgentError>
+    {
+        let resp = self
+            .request(reqwest::Method::GET, &send_path(opts))
+            .send()
+            .await
+            .map_err(|e| AgentError {
+                status: 0,
+                message: format!("starting zfs send: {e}"),
+            })?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = resp.bytes().await.unwrap_or_default();
+            return Err(AgentError {
+                status,
+                message: String::from_utf8_lossy(&body).trim().to_string(),
+            });
+        }
+        use futures::StreamExt;
+        Ok(resp
+            .bytes_stream()
+            .map(|r| r.map_err(std::io::Error::other))
+            .boxed())
+    }
+
+    /// Ask the agent to estimate the stream size (`zfs send -nP`).
+    pub async fn estimate_send(&self, opts: &SendStreamOptions) -> Result<i64, AgentError> {
+        let path = format!("{}&estimate=true", send_path(opts));
+        let payload: serde_json::Value = self
+            .do_json(self.request(reqwest::Method::GET, &path))
+            .await?;
+        Ok(payload.get("bytes").and_then(|v| v.as_i64()).unwrap_or(0))
+    }
+
+    /// A dataset's snapshots with GUIDs.
+    pub async fn snapshots_with_guid(
+        &self,
+        dataset: &str,
+    ) -> Result<Vec<SnapshotInfo>, AgentError> {
+        let path = format!("/api/v1/zfs/snapshots/{}", escape_dataset_path(dataset));
+        let list: Vec<SnapshotInfo> = self
+            .do_json(self.request(reqwest::Method::GET, &path))
+            .await?;
+        Ok(list)
+    }
+
+    /// Create a snapshot on the host.
+    pub async fn create_snapshot(&self, dataset: &str, name: &str) -> Result<(), AgentError> {
+        let path = format!("/api/v1/snapshots/{}", escape_dataset_path(dataset));
+        self.do_empty(
+            self.request(reqwest::Method::POST, &path)
+                .json(&serde_json::json!({ "name": name })),
+        )
+        .await
+    }
+
+    /// Stream a restore body into `zfs receive`. The reader is consumed as the
+    /// request body; the call resolves when the agent finishes the receive.
+    pub async fn receive_stream_body(
+        &self,
+        dataset: &str,
+        force: bool,
+        reader: impl tokio::io::AsyncRead + Send + 'static,
+    ) -> Result<(), AgentError> {
+        let path = format!(
+            "/api/v1/zfs/receive/{}?force={}",
+            escape_dataset_path(dataset),
+            force
+        );
+        let stream = tokio_util::io::ReaderStream::new(reader);
+        let body = reqwest::Body::wrap_stream(stream);
+        let resp = self
+            .request(reqwest::Method::POST, &path)
+            .header("Content-Type", "application/octet-stream")
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| AgentError {
+                status: 0,
+                message: format!("zfs receive: {e}"),
+            })?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = resp.bytes().await.unwrap_or_default();
+            return Err(AgentError {
+                status,
+                message: String::from_utf8_lossy(&body).trim().to_string(),
+            });
+        }
+        Ok(())
+    }
+}

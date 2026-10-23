@@ -402,7 +402,11 @@ func TestBuddyScheduleFanOutToSeveralBuddies(t *testing.T) {
 
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
-		if store.get(id).LastResult == "failed" {
+		// Wait for BOTH destinations to report: the dead buddy fails quickly, so
+		// breaking on LastResult alone raced the live buddy's still-in-flight
+		// send and made the ReceiverResults assertion below flaky.
+		results := store.get(id).ReceiverResults
+		if results[harness.receiverURL] != "" && results[dead.URL] != "" {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)

@@ -74,6 +74,14 @@ pub struct AppState {
     pub apps_namespace: String,
     /// The dynamic-DNS manager (S5f). Absent when DDNS is disabled.
     pub ddns: Option<Arc<crate::ddns::Manager>>,
+    /// The ntfy notification manager (S6a).
+    pub notifications: Arc<crate::notifications::Manager>,
+    /// The buddy receiver (S6e). Absent when buddy is disabled.
+    pub buddy: Option<Arc<crate::server::buddy::Receiver>>,
+    /// The async instance-side buddy send jobs (S6i).
+    pub buddy_jobs: Arc<crate::server::buddy_send::BuddyJobManager>,
+    /// The scheduled-backup store (S6j).
+    pub buddy_schedules: Arc<crate::server::buddy_schedules::ScheduleStore>,
 }
 
 /// Holds the current catalog snapshot; refresh replaces it atomically.
@@ -170,6 +178,16 @@ impl AppState {
             sso_domains,
             apps_namespace,
             ddns,
+            notifications: Arc::new(crate::notifications::Manager::from_env()),
+            buddy: build_buddy_receiver(),
+            buddy_jobs: Arc::new(crate::server::buddy_send::BuddyJobManager::new()),
+            buddy_schedules: {
+                let store = Arc::new(crate::server::buddy_schedules::ScheduleStore::from_env());
+                if let Err(e) = store.load() {
+                    tracing::warn!("could not load the buddy schedule store: {e}");
+                }
+                store
+            },
         })
     }
 
@@ -197,6 +215,10 @@ impl AppState {
             sso_domains: Vec::new(),
             apps_namespace: "naslos-apps".to_string(),
             ddns: None,
+            notifications: Arc::new(crate::notifications::Manager::new("")),
+            buddy: None,
+            buddy_jobs: Arc::new(crate::server::buddy_send::BuddyJobManager::new()),
+            buddy_schedules: Arc::new(crate::server::buddy_schedules::ScheduleStore::new("")),
         }
     }
 }
@@ -456,4 +478,31 @@ fn build_ddns(
         interval: std::time::Duration::from_secs(interval),
         cooldown: std::time::Duration::from_secs(cooldown),
     })))
+}
+
+/// Build the buddy receiver (S6e) from the environment.
+fn build_buddy_receiver() -> Option<Arc<crate::server::buddy::Receiver>> {
+    use crate::buddy::{auth::Authenticator, peers::PeerStore, store::Store};
+    let receive_path =
+        std::env::var("BUDDY_RECEIVE_PATH").unwrap_or_else(|_| "/var/lib/naslos/buddy".to_string());
+    let peers_path = std::env::var("BUDDY_PEERS")
+        .unwrap_or_else(|_| "/var/lib/naslos/buddy-peers.json".to_string());
+    let peers = Arc::new(PeerStore::new(&peers_path));
+    if let Err(e) = peers.load() {
+        tracing::warn!("could not load buddy peers: {e}");
+    }
+    let store = Arc::new(Store::new(&receive_path));
+    let auth = Arc::new(Authenticator::new(peers.clone()));
+    auth.persist_nonces(&receive_path);
+    let name = std::env::var("BUDDY_NAME").unwrap_or_else(|_| "naslos".to_string());
+    let mut receiver = crate::server::buddy::Receiver::new(store, peers, auth, &name);
+    receiver.enroll_token = std::env::var("BUDDY_ENROLL_TOKEN").unwrap_or_default();
+    receiver.enroll_open = std::env::var("BUDDY_ENROLL_OPEN")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    receiver.default_quota_bytes = std::env::var("BUDDY_DEFAULT_QUOTA_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    Some(Arc::new(receiver))
 }

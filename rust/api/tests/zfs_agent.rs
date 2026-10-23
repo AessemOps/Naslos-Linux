@@ -138,6 +138,12 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         sso_domains: Vec::new(),
         apps_namespace: "naslos-apps".to_string(),
         ddns: None,
+        notifications: std::sync::Arc::new(naslos_api::notifications::Manager::new("")),
+        buddy: None,
+        buddy_jobs: std::sync::Arc::new(naslos_api::server::buddy_send::BuddyJobManager::new()),
+        buddy_schedules: std::sync::Arc::new(
+            naslos_api::server::buddy_schedules::ScheduleStore::new(""),
+        ),
         identity: None,
     })
 }
@@ -289,6 +295,12 @@ async fn no_agent_configured_is_502() {
         sso_domains: Vec::new(),
         apps_namespace: "naslos-apps".to_string(),
         ddns: None,
+        notifications: std::sync::Arc::new(naslos_api::notifications::Manager::new("")),
+        buddy: None,
+        buddy_jobs: std::sync::Arc::new(naslos_api::server::buddy_send::BuddyJobManager::new()),
+        buddy_schedules: std::sync::Arc::new(
+            naslos_api::server::buddy_schedules::ScheduleStore::new(""),
+        ),
         identity: None,
     });
     let (status, _b) = call(state, "GET", "/api/volumes/zfs", None).await;

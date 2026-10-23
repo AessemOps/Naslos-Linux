@@ -844,3 +844,181 @@ Completes S5. The full DDNS surface (~3100 LOC in Go).
   error redaction, IP family, OVH signature, template render, SSRF guard; ddns
   disabled/503 handlers.
 - **Not yet:** S6 buddy crypto + notifications; S7 retire the Go API.
+
+### Phase 2 S6a — notifications (2026-10-11) — branch `refactor/rust-api-buddy`
+
+S6 (buddy + notifications) starts with the smaller, self-contained notifications
+manager.
+
+- **`rust/api/src/notifications.rs`**: `Settings`/`Notification`/`Manager`
+  (atomic 0600 load/save, `UpdateSettings` with the token-pointer semantics that
+  never wipes a stored token, `EventEnabled`, `Send`/`SendTest`), and
+  `notification_url` (http/https only, link-local refused — PF-L8, topic charset
+  enforced).
+- **`server/notifications.rs`**: `GET|PUT /api/notifications` (the response
+  exposes `hasAuthToken`, never the token), `POST /api/notifications/test`.
+- **Wiring**: `AppState.notifications` from `NOTIFICATIONS_CONFIG`.
+- **Tests (4 new, 88 lib total + integration):** URL/topic validation,
+  severity threshold/priority, token preservation, settings shape.
+- **Not yet (S6b/S6c):** the buddy crypto primitives (keys/envelope/auth) and
+  the buddy store/client/peers/handlers.
+
+### Phase 2 S6b — buddy crypto primitives (2026-10-11) — branch `refactor/rust-api-buddy`
+
+The highest-risk interop surface: the identity keys, the sealed-chunk envelope
+and the signed manifest.
+
+- **`rust/api/src/buddy/keys.rs`**: `Identity` (OpenSSH Ed25519, ssh-key),
+  `new_identity`/`load_identity`/`save` (0600 atomic), `signing_key`/`sign`,
+  `fingerprint` (`SHA256:…`), `kek_bytes` (env `BUDDY_KEK` precedence),
+  `public_key_of`, `verify`.
+- **`rust/api/src/buddy/envelope.rs`**: the fixed wire format (`NBC2` magic,
+  BE plainLen, 12-byte nonce `prefix||generation||index`, AES-256-GCM with the
+  position AAD), `seal_chunk`/`open_chunk`, `wrap_dek`/`unwrap_dek`,
+  `Manifest::sign`/`verify_signature`, `validate_manifest_shape`, and a
+  **Go-compatible canonical JSON** (`<`,`>`,`&`,U+2028/9 escaped like
+  `encoding/json`) so a Go-signed manifest verifies here.
+- **Cross-implementation golden tests (both directions):**
+  `rust/api/tests/buddy_interop.rs` opens a **Go-sealed** chunk + verifies the
+  Go-signed manifest (fixture from the Go `buddy` package); the Go
+  `TestOpensRustSealedFixture` opens a **Rust-sealed** chunk + verifies the
+  Rust-signed manifest (fixture from `rust/api/examples/buddy_fixture.rs`).
+- **Tests (6 lib + 1 interop here, +1 Go):** sign/verify, seal/open (+ wrong
+  index), wrap/unwrap (+ wrong chain), manifest sign/verify (+ tamper), Go JSON
+  escaping.
+- **Not yet (S6c):** the buddy store/client/peers/http and the server handlers.
+
+### Phase 2 S6c — buddy peers + request auth (2026-10-11) — branch `refactor/rust-api-buddy`
+
+The receiver-side trust layer.
+
+- **`rust/api/src/buddy/peers.rs`**: `Peer`/`PeerStore` (JSON registry with the
+  key-substitution and duplicate-key guards, `by_fingerprint`, `touch_seen`),
+  `validate_source` (the `naslos-a/tank/data` shape), and `validate_quota`
+  (0 = unlimited, bounded by one sealed chunk..2^60).
+- **`rust/api/src/buddy/auth.rs`**: `canonical_request` (`BUDDY2` + audience +
+  method + path + body digest + timestamp + nonce), `body_digest`,
+  `sign_request_for`, and the `Authenticator` (signature verification bound to
+  the receiver's audience, clock-skew window, nonce validation + bounded replay
+  cache with optional `.nonces` persistence and compaction). The empty audience
+  is accepted only on `/api/buddy/status` (PF-M13).
+- **Tests (9 new, 102 lib total):** source/quota validation, prefix allows;
+  sign→verify, nonce replay rejection, wrong-audience rejection, empty-audience
+  only on status, nonce bounds.
+- **Not yet (S6d):** the receiver store (chunks/manifests/quota accounting), the
+  sender client, the receiver http endpoints and the server handlers.
+
+### Phase 2 S6d — buddy receiver store (2026-10-20) — branch `refactor/rust-api-buddy`
+
+The receiver-side storage layer (port of the 1205-line `buddy/store.go`).
+
+- **`rust/api/src/buddy/store.rs`**: the fingerprint-hashed `key_dir`, recursive
+  source walk, path validation (`source`/`chain`), `put_chunk_within` with
+  atomic quota accounting + the free-space reserve, the interrupted-tail
+  `may_replace` rule, `chunk`/`list_chunks`/`chunk_digests`, `put_manifest`
+  (rollback refusal + the GUID `links.json` index + `current.json`), `sequence`
+  (oldest-first chain history), `chains`, `summary`, cached `usage`, `prune`
+  (dependency-safe retention), and `free_space` via `statvfs`.
+- **Tests (5 new, 107 lib total):** chunk round-trip + digests, path traversal
+  refusal, quota enforcement, manifest rollback refusal, hashed key dirs.
+- **Not yet (S6e):** the sender client, the receiver HTTP endpoints, and the
+  server handlers (send/jobs/schedules).
+
+### Phase 2 S6e — buddy receiver HTTP endpoints (2026-10-20) — branch `refactor/rust-api-buddy`
+
+The receiver's peer-facing HTTP surface (port of `buddy/http.go`, 755 lines),
+mounted on the **public** router (peers authenticate with their own key, not the
+proxy).
+
+- **`server/buddy.rs`**: the `Receiver` config and `/api/buddy/v1/{status,
+  enroll,backups,chunks/{source},chains/{source},sequence/{source},manifest/{source},
+  prune/{source}}`. Ported the canonical-path signing (full URI), enrollment
+  (constant-time token, single-use marker, finite default quota), chunk GET
+  (list digests/generations + published flag) / PUT (quota + free-space mapped to
+  413/507/409), chain listing and sequence, manifest publish (version/name/chain/
+  signature/shape checks, missing-chunk 409) and prune.
+- **`AppState.buddy`** built from `BUDDY_NAME`/`BUDDY_RECEIVE_PATH`/`BUDDY_PEERS`
+  /`BUDDY_ENROLL_TOKEN`/`BUDDY_ENROLL_OPEN`/`BUDDY_DEFAULT_QUOTA_BYTES`; nonce
+  persistence under the receive path.
+- **End-to-end test:** enroll → status → sealed chunk PUT → signed manifest PUT
+  → manifest GET, all signed the way a real sender does.
+- **Not yet (S6f):** the sender client (instance-side backup) and the owner
+  handlers for peers/identity/send/jobs/schedules.
+
+### Phase 2 S6f — buddy owner handlers: status, peers, identity (2026-10-23)
+
+- **`server/buddy_owner.rs`**: `GET /api/buddy/status` (free/used space, peers,
+  backups), `GET|POST|DELETE /api/buddy/peers` (manual authorization with the
+  keep-permissions-on-update rule and the revoke note), and
+  `GET|POST /api/buddy/identity` (`BUDDY_IDENTITY`, first-use creation, the
+  replace-cost warning).
+- **Tests:** buddy status 503 without a receiver; the admin-route test moved to
+  `/api/buddy/schedules` (still 501).
+- **Not yet (S6g):** the sender client (instance-side backup) and the
+  send/restore/jobs/schedules handlers.
+
+### Phase 2 S6g — buddy sender client (2026-10-23) — branch `refactor/rust-api-buddy`
+
+The sender side (port of `buddy/client.go`, 1178 lines).
+
+- **`rust/api/src/buddy/client.rs`**: `Client` (audience discovery via `/status`,
+  full-URI request signing, sequence tracking), `Status`/`ChainSummary`/
+  `ChainState`/`StoredChunk`, and the operations: `status`, `enroll`, `backups`,
+  `manifest`, `stored_chunks`, `chains`, `restore_sequence` (with the listing
+  fallback), `prune`, **`push`** (chunk-streaming seal/upload with resume, the
+  partial-tail generation bump, pre-publish veto, manifest size guard, sequence
+  recording, prune) and **`restore`** (manifest binding, signature, freshness,
+  contiguity and per-chunk digest checks, decrypted output).
+- **Bug fixed during the round trip:** `PATH_PREFIX` must be `/api/buddy/v1`, and
+  the client signs the full URI (prefix included), matching the receiver's
+  rebuilt canonical path.
+- **Full round-trip test:** a 3 MiB payload is pushed by the Rust client to the
+  Rust receiver (multiple chunks) and restored byte-for-byte.
+- **Not yet (S6h):** the send/restore/jobs/schedules owner handlers.
+
+### Phase 2 S6h — buddy restore + agent streaming (2026-10-23)
+
+- **`agent.rs`**: the streaming methods the buddy needs — `send_stream` (a
+  `zfs send` body as a byte stream), `estimate_send`, `snapshots_with_guid`,
+  `create_snapshot`, and `receive_stream_body` (a body piped into
+  `zfs receive`).
+- **`server/buddy_restore.rs`**: `POST /api/buddy/restore` — validates the
+  source/dataset/URL, loads the identity, fetches the restore sequence, then
+  either **verifies** (decrypt + hash each chain, no ZFS) or applies it chain by
+  chain through a duplex pipe into the agent's receive (force only on the first
+  stream).
+- **Tests:** restore input validation (source/URL).
+- **Not yet (S6i):** the async send job runner + `POST /api/buddy/send`, the
+  jobs list/detail/cancel endpoints, and the schedule runner.
+
+### Phase 2 S6i — buddy async send job (2026-10-23)
+
+- **`server/buddy_send.rs`**: the async send job manager (conflict detection per
+  receiver+source, ~20-finished retention, cancel via task abort), `POST
+  /api/buddy/send` (validate + 202 + jobId), the `run_send_job` runner
+  (resume-state load/validate, base-from-previous-manifest, mount-propagation
+  guards, snapshot + GUID, estimate, `zfs send` stream → `Push` with
+  pre-publish veto, resume-state persistence), `GET /api/buddy/jobs`,
+  `GET|DELETE /api/buddy/jobs/{id}`, and success/failure notifications.
+- **Tests:** send 503 without an agent; empty jobs list; unknown job 404.
+- **Not yet (S6j):** the schedule store/runner + `/api/buddy/schedules`, and the
+  S7 retirement.
+
+### Phase 2 S6j — buddy scheduled backups (2026-10-23)
+
+Completes the buddy feature.
+
+- **`server/buddy_schedules.rs`**: `ScheduleEntry`/`Cadence`/`ScheduleStore`
+  (JSON, clone-on-read, deep-copied fan-out), `parse_run_at` +
+  `compute_next_run` (hourly/daily/weekly, strictly-after-now), `validate_schedule`
+  (dataset/source/receivers/cadence/runAt + best-effort agent dataset check),
+  `GET|POST|DELETE /api/buddy/schedules`, `record_result` (per-buddy fan-out
+  aggregation), `run_due_schedules`/`start_schedule_job` (one job per buddy,
+  conflicts skipped, next run advanced once), and `run_scheduler` (catch-up +
+  interval, `BUDDY_SCHEDULER_INTERVAL_MS`).
+- **`buddy_send`**: `enqueue_job` extracted so manual and scheduled sends share
+  the same path.
+- **Tests:** empty schedules list; a schedule without a dataset is refused;
+  runAt/next-run unit tests.
+- **Phase 2 status:** all of S1–S6 is ported. Only the pod/logs/exec websocket
+  routes remain 501 (kube-rs/websocket, part of S7 hardening).
