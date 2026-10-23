@@ -7,11 +7,17 @@
 
 pub mod app_jobs;
 pub mod apps;
+pub mod buddy;
+pub mod buddy_owner;
+pub mod buddy_restore;
+pub mod buddy_schedules;
+pub mod buddy_send;
 pub mod catalog;
 pub mod ddns;
 pub mod disks;
 pub mod domains;
 pub mod handlers;
+pub mod notifications;
 pub mod providers;
 pub mod shares;
 pub mod users;
@@ -31,7 +37,22 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // Public: health probes.
     let public: Router<Arc<AppState>> = Router::new()
         .route("/api/health", get(handlers::health))
-        .route("/api/ready", get(handlers::ready));
+        .route("/api/ready", get(handlers::ready))
+        // Buddy peers authenticate with their own Ed25519 key, not the proxy.
+        .route("/api/buddy/v1/status", get(buddy::status))
+        .route("/api/buddy/v1/enroll", post(buddy::enroll))
+        .route("/api/buddy/v1/backups", get(buddy::backups))
+        .route(
+            "/api/buddy/v1/chunks/{*source}",
+            get(buddy::chunks).put(buddy::chunks),
+        )
+        .route("/api/buddy/v1/chains/{*source}", get(buddy::chains))
+        .route("/api/buddy/v1/sequence/{*source}", get(buddy::sequence))
+        .route(
+            "/api/buddy/v1/manifest/{*source}",
+            get(buddy::manifest).put(buddy::manifest),
+        )
+        .route("/api/buddy/v1/prune/{*source}", post(buddy::prune));
 
     // Auth-but-not-admin (any authenticated user).
     let user: Router<Arc<AppState>> = Router::new()
@@ -147,16 +168,38 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .put(shares::share_detail_put)
                 .delete(shares::share_detail_delete),
         )
-        .route("/api/notifications", any(handlers::not_ported))
-        .route("/api/notifications/test", any(handlers::not_ported))
-        .route("/api/buddy/status", any(handlers::not_ported))
-        .route("/api/buddy/peers", any(handlers::not_ported))
-        .route("/api/buddy/identity", any(handlers::not_ported))
-        .route("/api/buddy/send", any(handlers::not_ported))
-        .route("/api/buddy/restore", any(handlers::not_ported))
-        .route("/api/buddy/jobs", any(handlers::not_ported))
-        .route("/api/buddy/jobs/{*rest}", any(handlers::not_ported))
-        .route("/api/buddy/schedules", any(handlers::not_ported))
+        .route(
+            "/api/notifications",
+            get(notifications::notifications_get).put(notifications::notifications_put),
+        )
+        .route(
+            "/api/notifications/test",
+            post(notifications::notification_test_post),
+        )
+        .route("/api/buddy/status", get(buddy_owner::status))
+        .route(
+            "/api/buddy/peers",
+            get(buddy_owner::peers_get)
+                .post(buddy_owner::peers_post)
+                .delete(buddy_owner::peers_delete),
+        )
+        .route(
+            "/api/buddy/identity",
+            get(buddy_owner::identity_get).post(buddy_owner::identity_post),
+        )
+        .route("/api/buddy/send", post(buddy_send::send_post))
+        .route("/api/buddy/restore", post(buddy_restore::restore))
+        .route("/api/buddy/jobs", get(buddy_send::jobs_get))
+        .route(
+            "/api/buddy/jobs/{id}",
+            get(buddy_send::job_detail_get).delete(buddy_send::job_detail_delete),
+        )
+        .route(
+            "/api/buddy/schedules",
+            get(buddy_schedules::schedules_get)
+                .post(buddy_schedules::schedules_post)
+                .delete(buddy_schedules::schedules_delete),
+        )
         .route("/api/users", get(users::users_get).post(users::users_post))
         .route(
             "/api/users/{uid}",

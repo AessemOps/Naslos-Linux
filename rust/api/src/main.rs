@@ -47,6 +47,14 @@ async fn main() {
         tokio::spawn(async move { ddns.run_loop().await });
     }
 
+    // Scheduled buddy backups: catch-up + interval.
+    {
+        let scheduler_state = state.clone();
+        tokio::spawn(async move {
+            naslos_api::server::buddy_schedules::run_scheduler(scheduler_state).await
+        });
+    }
+
     let app = build_router(state.clone());
 
     let addr = parse_addr(&cli.listen);

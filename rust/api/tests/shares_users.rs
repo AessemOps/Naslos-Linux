@@ -215,3 +215,92 @@ async fn ddns_run_is_503_without_a_manager() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(body["error"].as_str().unwrap().contains("dynamic DNS"));
 }
+
+// ---- S6a: notifications -------------------------------------------------
+
+#[tokio::test]
+async fn notification_settings_shape() {
+    let (status, body, _r) = call("GET", "/api/notifications", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["serverUrl"], "https://ntfy.sh");
+    assert_eq!(body["hasAuthToken"], false);
+    assert!(body["enabledEvents"].as_array().unwrap().len() == 2);
+}
+
+// ---- S6f: buddy (owner) ------------------------------------------------
+
+#[tokio::test]
+async fn buddy_status_is_503_without_a_receiver() {
+    let (status, body, _r) = call("GET", "/api/buddy/status", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["error"].as_str().unwrap().contains("Buddy Backup"));
+}
+
+// ---- S6h: buddy restore validation -------------------------------------
+
+#[tokio::test]
+async fn restore_validates_input() {
+    let (status, body, _r) = call(
+        "POST",
+        "/api/buddy/restore",
+        Some(serde_json::json!({ "source": "", "receiver": "https://buddy" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("source"));
+
+    let (status, body, _r) = call(
+        "POST",
+        "/api/buddy/restore",
+        Some(serde_json::json!({ "source": "naslos-a/data", "receiver": "ftp://buddy", "dataset": "tank/x" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("http"));
+}
+
+// ---- S6i: buddy send jobs ----------------------------------------------
+
+#[tokio::test]
+async fn buddy_send_is_503_without_an_agent() {
+    let (status, body, _r) = call(
+        "POST",
+        "/api/buddy/send",
+        Some(serde_json::json!({ "dataset": "tank/x", "source": "naslos-a/x", "receiver": "https://b" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["error"].as_str().unwrap().contains("agent"));
+}
+
+#[tokio::test]
+async fn buddy_jobs_list_is_empty_and_unknown_is_404() {
+    let (status, body, _r) = call("GET", "/api/buddy/jobs", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["jobs"].as_array().unwrap().is_empty());
+
+    let (status, _b, _r) = call("GET", "/api/buddy/jobs/nope", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ---- S6j: buddy schedules ----------------------------------------------
+
+#[tokio::test]
+async fn buddy_schedules_list_is_empty() {
+    let (status, body, _r) = call("GET", "/api/buddy/schedules", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["schedules"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn buddy_schedule_requires_a_dataset_and_cadence() {
+    let (status, body, _r) = call(
+        "POST",
+        "/api/buddy/schedules",
+        Some(serde_json::json!({ "dataset": "", "source": "naslos-a/x", "receiver": "https://b", "cadence": "daily" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("dataset"));
+}
