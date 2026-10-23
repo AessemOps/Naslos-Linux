@@ -18,15 +18,17 @@ pub mod disks;
 pub mod domains;
 pub mod handlers;
 pub mod notifications;
+pub mod pods;
 pub mod providers;
 pub mod shares;
 pub mod users;
+pub mod ws;
 pub mod zfs;
 
 use crate::auth;
 use crate::state::AppState;
 use axum::middleware;
-use axum::routing::{any, get, post};
+use axum::routing::{get, post};
 use axum::Router;
 use std::sync::Arc;
 
@@ -140,10 +142,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .post(zfs::datasets_post)
                 .delete(zfs::datasets_delete),
         )
-        .route("/api/ws/logs", any(handlers::not_ported))
-        .route("/api/pods", any(handlers::not_ported))
-        .route("/api/namespaces", any(handlers::not_ported))
-        .route("/api/ws/exec", any(handlers::not_ported))
+        .route("/api/ws/logs", get(ws::logs_ws))
+        .route("/api/pods", get(pods::pods_get))
+        .route("/api/namespaces", get(pods::namespaces_get))
+        .route("/api/ws/exec", get(ws::exec_ws))
         .route(
             "/api/shares",
             get(shares::shares_get).post(shares::shares_post),

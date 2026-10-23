@@ -58,6 +58,34 @@ load** on this 5.76 GiB node.
   including a mock-agent server. Shares render/apply, LDAP, apps/helm, routing,
   domains/ddns and buddy remain.
 
+## Phase 2 S7 (2026-10-23) — Rust API deployed to the VM
+
+The Rust API (`rust/api`, `naslos-api`) is now the **deployed** API on the
+Talos VM, next to the Rust agent.
+
+- **Live (helm revision 7):** `api` = `192.168.1.2:30095/naslos-api:rust-s7b`,
+  `agent` = `192.168.1.2:30095/naslos-agent:0.1.0-r10` (both pulled into the
+  node's containerd; the private registry mirror was added to the live machine
+  config for the drill and is already in `bootstrap/vm/naslos-vm.yaml`).
+- **Live-verified (all 200 unless noted):** `/api/health`, `/api/ready`,
+  `/api/auth/me`, `/api/dashboard`, `/api/metrics` (real Talos CPU/memory/disk/
+  network), `/api/volumes/zfs` (pool `test`), `/api/datasets`, `/api/disks`,
+  `/api/shares`, `/api/users` + `/api/groups` (LDAP), `/api/catalog`,
+  `/api/sources`, `/api/domains`, `/api/notifications`, `/api/ddns`,
+  `/api/buddy/status`, `/api/namespaces`, `/api/pods?namespace=naslos-privileged`,
+  and the `/api/ws/exec` preflight.
+- **Disk metric:** the Go used the Talos gRPC `Mounts` API (not exposed by
+  `talosctl`); the agent now reports host `/var` usage at
+  `GET /api/v1/system/disk` and the API collector merges it (14.2% live).
+- **Rollback:** the previous Go API is pinned in the installer pack; the Go
+  `api/` tree is kept for `buddyctl`/`buddy-receiver` (out of scope) and is not
+  deleted yet.
+- **OPEN — Playwright:** the suite's Authelia login fails because the `admin`
+  LDAP password no longer matches `ui/.env.playwright.local` nor the
+  `naslos-openldap` `admin-password` secret (Authelia logs: LDAP bind
+  "Invalid Credentials"). A current password (and TOTP) is needed, or approval
+  to reset it.
+
 ## RAM plan Phase 0 detail (2026-10-04) — Prometheus removed; ARC blocked
 
 Branch `chore/ram-baseline-prometheus-removal` (PR open). Plan:

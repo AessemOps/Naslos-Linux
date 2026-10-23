@@ -79,7 +79,7 @@ buddyctl:
 images: api-image agent-image ui-image openldap-image samba-image nfs-image terminal-image buddy-receiver-image
 
 api-image:
-	$(DOCKER) build -t $(API_IMAGE) -f api/Dockerfile .
+	$(DOCKER) build -t $(API_IMAGE) -f api/Dockerfile.rust .
 
 agent-image:
 	$(DOCKER) build -t $(AGENT_IMAGE) -f agent/Dockerfile.rust .

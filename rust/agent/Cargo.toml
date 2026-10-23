@@ -22,6 +22,7 @@ axum-server = { version = "0.7", features = ["tls-rustls"] }
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
+libc = "0.2"
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
 rustls-pemfile = "2"

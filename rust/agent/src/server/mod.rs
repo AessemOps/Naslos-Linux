@@ -74,6 +74,7 @@ impl Server {
                 "/api/v1/pools/{pool}",
                 get(handlers::pool_detail_get).delete(handlers::pool_detail_delete),
             )
+            .route("/api/v1/system/disk", get(handlers::disk_usage))
             .route("/api/v1/datasets", get(handlers::datasets_all_get))
             // The bare trailing-slash URL matched Go's prefix mux (rest == "")
             // and returned 400; matchit's {*rest} needs a non-empty segment, so

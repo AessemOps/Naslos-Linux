@@ -20,7 +20,7 @@ anyhow = "1"
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 async-trait = "0.1"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 bytes = "1"
 futures = "0.3"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
