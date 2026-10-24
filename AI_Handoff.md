@@ -91,7 +91,7 @@ Talos VM, next to the Rust agent.
   `None`), `helm list --all` rejected by helm v4 (`/api/apps` 500), and
   `kubectl exec -t` needing a local PTY (exec now runs under `portable-pty`).
 
-## RAM plan Phase 0 detail (2026-10-04) — Prometheus removed; ARC blocked
+## RAM plan Phase 0 detail (2026-10-04) — Prometheus removed
 
 Branch `chore/ram-baseline-prometheus-removal` (PR open). Plan:
 `.kilo/plans/1791069821704-go-to-rust-migration.md` (see "Execution log").
@@ -105,21 +105,17 @@ load** on this 5.76 GiB node.
   schema, docs, CREDITS). Live `helm upgrade` on the v0.1.2 instance removed the
   stack (working set 1.81 -> 1.59 GiB) and an orphaned alertmanager PVC was
   deleted; `/api/health`, `/api/metrics`, `/api/dashboard` all 200.
-- **ARC cap is BLOCKED, not deployed.** On Talos v1.14.1 + `siderolabs/zfs` +
-  SDBoot, `machine.kernel.modules[].parameters` is ignored (the extension loads
-  the module), `machine.install.extraKernelArgs` is unsupported, and a
-  `machine.files` modprobe drop-in was ignored (and coincided with a CRI boot
-  failure). The runtime sysfs write works. Deferred; planned fix is an agent
-  DaemonSet initContainer writing `/host/sys/module/zfs/parameters/zfs_arc_max`
-  at boot. Evidence in `docs/deployment.md` -> "ZFS ARC".
+- **ARC cap dropped (2026-10-24).** On Talos v1.14.1 + `siderolabs/zfs` +
+  SDBoot no boot-persistent route works (`machine.kernel.modules[].parameters`
+  ignored, `extraKernelArgs` unsupported, a `machine.files` modprobe drop-in
+  ignored). The runtime sysfs write works but is not worth a privileged agent
+  write on every boot, so the item is closed, not deferred.
 - **Right-sizing**: OpenLDAP request 256Mi -> 768Mi (measured idle 673 MiB);
   other workloads left as-is (requests are hints, not reclamation).
 - **Live now (2026-10-04)**: helm revision **5** (`naslos-0.1.2`), no
   Prometheus/Alertmanager, OpenLDAP request 768Mi/limit 1Gi. The one-time
   alertmanager PVC cleanup is wired into `make install-vm`. Prometheus removal
-  is the only deployed RAM win so far; the ARC cap is still the missing piece.
-- **Gate**: not met until ARC is capped — `c_max` can still grow to ~4.76 GiB
-  under load. Phase 1/2 remain justified.
+  is the deployed RAM win; the ARC cap is not pursued.
 
 ## App catalog refactor (2026-09-26) — implemented, live-drilled
 
