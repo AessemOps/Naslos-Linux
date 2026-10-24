@@ -1,0 +1,48 @@
+# Standalone Buddy Backup receiver image (Rust port).
+#
+# A two-volume container that stores AES-256-GCM ciphertext it cannot read: no
+# ZFS, no Kubernetes, no database, no shell.
+#
+#   docker build -f api/Dockerfile.receiver.rust -t naslos-buddy-receiver .
+#   docker run -d --name buddy-receiver -p 8484:8484 \
+#     -e BUDDY_ENROLL_TOKEN=one-time-token \
+#     -v /srv/buddy-data:/data -v /srv/buddy-config:/config \
+#     naslos-buddy-receiver
+
+FROM rust:1.88-alpine AS builder
+RUN apk add --no-cache musl-dev
+# Build the musl target statically for the distroless static runtime. The flag is
+# target-scoped so proc macros still build for the host (a global RUSTFLAGS makes
+# proc-macro crates fail with "does not support these crate types").
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static"
+
+WORKDIR /build
+COPY rust/Cargo.toml Cargo.toml
+COPY rust/Cargo.lock Cargo.lock
+COPY rust/agent/Cargo.toml agent/Cargo.toml
+COPY rust/api/Cargo.toml api/Cargo.toml
+RUN mkdir -p agent/src api/src \
+    && echo 'pub fn placeholder(){}' > agent/src/lib.rs && echo 'fn main(){}' > agent/src/main.rs \
+    && echo 'pub fn placeholder(){}' > api/src/lib.rs && echo 'fn main(){}' > api/src/main.rs \
+    && cargo build --release --target x86_64-unknown-linux-musl --package naslos-api --bin buddy-receiver || true
+COPY rust/agent/src agent/src
+COPY rust/api/src api/src
+RUN touch agent/src/lib.rs agent/src/main.rs api/src/lib.rs api/src/main.rs api/src/bin/*.rs \
+    && cargo build --release --target x86_64-unknown-linux-musl --package naslos-api --bin buddy-receiver
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+ARG VERSION=dev
+COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/buddy-receiver /app/buddy-receiver
+
+VOLUME ["/data", "/config"]
+
+ENV BUDDY_LISTEN=:8484 \
+    BUDDY_RECEIVE_PATH=/data \
+    BUDDY_PEERS=/config/peers.json \
+    BUDDY_NAME=buddy-receiver \
+    BUDDY_VERSION=${VERSION}
+
+USER 65532:65532
+EXPOSE 8484
+ENTRYPOINT ["/app/buddy-receiver"]

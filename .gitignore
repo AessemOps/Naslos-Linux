@@ -1,5 +1,6 @@
 # Binaries
 bin/
+!rust/api/src/bin/
 *.exe
 *.dll
 *.so

@@ -87,18 +87,12 @@ fn auth_from_headers(headers: &HeaderMap) -> RequestAuth {
 /// peer (or a ready-to-send 401).
 #[allow(clippy::result_large_err)]
 fn authenticate(
-    state: &AppState,
+    receiver: &Receiver,
     headers: &HeaderMap,
     body_digest: &str,
     method: &str,
     uri: &str,
 ) -> Result<crate::buddy::Peer, Response> {
-    let Some(receiver) = state.buddy.as_ref() else {
-        return Err(json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({ "error": "buddy receiver is not configured" }),
-        ));
-    };
     let auth = auth_from_headers(headers);
     receiver
         .auth
@@ -116,23 +110,21 @@ fn authenticate(
 /// Authenticate and check the key may write `source`.
 #[allow(clippy::result_large_err)]
 fn peer_for(
-    state: &AppState,
+    receiver: &Receiver,
     headers: &HeaderMap,
     body_digest: &str,
     method: &str,
     uri: &str,
     source: &str,
 ) -> Result<crate::buddy::Peer, Response> {
-    let peer = authenticate(state, headers, body_digest, method, uri)?;
+    let peer = authenticate(receiver, headers, body_digest, method, uri)?;
     if !peer.allows(source) {
         return Err(json(
             StatusCode::FORBIDDEN,
             serde_json::json!({ "error": format!("key {:?} is not allowed to write {source}", peer.name) }),
         ));
     }
-    if let Some(receiver) = &state.buddy {
-        receiver.peers.touch_seen(&peer.name, chrono::Utc::now());
-    }
+    receiver.peers.touch_seen(&peer.name, chrono::Utc::now());
     Ok(peer)
 }
 
@@ -156,20 +148,14 @@ fn uri_path(uri: &axum::http::Uri) -> String {
 
 /// `GET /api/buddy/v1/status`
 pub async fn status(
-    State(state): State<Arc<AppState>>,
+    State(receiver): State<BuddyState>,
     headers: HeaderMap,
     uri: axum::http::Uri,
 ) -> Response {
     let digest = body_digest(b"");
-    let peer = match authenticate(&state, &headers, &digest, "GET", &uri_path(&uri)) {
+    let peer = match authenticate(&receiver, &headers, &digest, "GET", &uri_path(&uri)) {
         Ok(p) => p,
         Err(resp) => return resp,
-    };
-    let Some(receiver) = &state.buddy else {
-        return json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({ "error": "buddy receiver is not configured" }),
-        );
     };
     receiver.peers.touch_seen(&peer.name, chrono::Utc::now());
     let free = match receiver.store.free_space() {
@@ -223,13 +209,7 @@ pub async fn status(
 }
 
 /// `POST /api/buddy/v1/enroll`
-pub async fn enroll(State(state): State<Arc<AppState>>, body: Body) -> Response {
-    let Some(receiver) = &state.buddy else {
-        return json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({ "error": "buddy receiver is not configured" }),
-        );
-    };
+pub async fn enroll(State(receiver): State<BuddyState>, body: Body) -> Response {
     if receiver.enroll_token.is_empty() {
         return json(
             StatusCode::FORBIDDEN,
@@ -324,16 +304,15 @@ pub async fn enroll(State(state): State<Arc<AppState>>, body: Body) -> Response 
 
 /// `GET /api/buddy/v1/backups`
 pub async fn backups(
-    State(state): State<Arc<AppState>>,
+    State(receiver): State<BuddyState>,
     headers: HeaderMap,
     uri: axum::http::Uri,
 ) -> Response {
     let digest = body_digest(b"");
-    let peer = match authenticate(&state, &headers, &digest, "GET", &uri_path(&uri)) {
+    let peer = match authenticate(&receiver, &headers, &digest, "GET", &uri_path(&uri)) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
-    let receiver = state.buddy.as_ref().unwrap();
     receiver.peers.touch_seen(&peer.name, chrono::Utc::now());
     match receiver.store.summary(&peer.fingerprint) {
         Ok(backups) => json(StatusCode::OK, serde_json::json!({ "backups": backups })),
@@ -346,7 +325,7 @@ pub async fn backups(
 
 /// `GET|PUT /api/buddy/v1/chunks/{source}`
 pub async fn chunks(
-    State(state): State<Arc<AppState>>,
+    State(receiver): State<BuddyState>,
     Path(source): Path<String>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
@@ -354,17 +333,18 @@ pub async fn chunks(
     uri: axum::http::Uri,
     body: Body,
 ) -> Response {
-    let Some(receiver) = state.buddy.clone() else {
-        return json(
-            StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({ "error": "buddy receiver is not configured" }),
-        );
-    };
     let chain = query.get("chain").cloned().unwrap_or_default();
     let index_param = query.get("index").cloned().unwrap_or_default();
     if method == axum::http::Method::GET {
         let digest = body_digest(b"");
-        let peer = match peer_for(&state, &headers, &digest, "GET", &uri_path(&uri), &source) {
+        let peer = match peer_for(
+            &receiver,
+            &headers,
+            &digest,
+            "GET",
+            &uri_path(&uri),
+            &source,
+        ) {
             Ok(p) => p,
             Err(resp) => return resp,
         };
@@ -429,7 +409,14 @@ pub async fn chunks(
         Err(resp) => return resp,
     };
     let digest = body_digest(&body);
-    let peer = match peer_for(&state, &headers, &digest, "PUT", &uri_path(&uri), &source) {
+    let peer = match peer_for(
+        &receiver,
+        &headers,
+        &digest,
+        "PUT",
+        &uri_path(&uri),
+        &source,
+    ) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
@@ -480,17 +467,23 @@ fn chain_summaries(manifests: &[Manifest]) -> Vec<serde_json::Value> {
 
 /// `GET /api/buddy/v1/chains/{source}`
 pub async fn chains(
-    State(state): State<Arc<AppState>>,
+    State(receiver): State<BuddyState>,
     Path(source): Path<String>,
     headers: HeaderMap,
     uri: axum::http::Uri,
 ) -> Response {
     let digest = body_digest(b"");
-    let peer = match peer_for(&state, &headers, &digest, "GET", &uri_path(&uri), &source) {
+    let peer = match peer_for(
+        &receiver,
+        &headers,
+        &digest,
+        "GET",
+        &uri_path(&uri),
+        &source,
+    ) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
-    let receiver = state.buddy.as_ref().unwrap();
     let manifests = match receiver
         .store
         .chains_limited(&peer.fingerprint, &source, 500)
@@ -518,18 +511,24 @@ pub async fn chains(
 
 /// `GET /api/buddy/v1/sequence/{source}`
 pub async fn sequence(
-    State(state): State<Arc<AppState>>,
+    State(receiver): State<BuddyState>,
     Path(source): Path<String>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
     uri: axum::http::Uri,
 ) -> Response {
     let digest = body_digest(b"");
-    let peer = match peer_for(&state, &headers, &digest, "GET", &uri_path(&uri), &source) {
+    let peer = match peer_for(
+        &receiver,
+        &headers,
+        &digest,
+        "GET",
+        &uri_path(&uri),
+        &source,
+    ) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
-    let receiver = state.buddy.as_ref().unwrap();
     let chain = query.get("chain").cloned().unwrap_or_default();
     match receiver.store.sequence(&peer.fingerprint, &source, &chain) {
         Ok(m) => json(
@@ -545,7 +544,7 @@ pub async fn sequence(
 
 /// `GET|PUT /api/buddy/v1/manifest/{source}`
 pub async fn manifest(
-    State(state): State<Arc<AppState>>,
+    State(receiver): State<BuddyState>,
     Path(source): Path<String>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
@@ -556,19 +555,17 @@ pub async fn manifest(
     if let Err(e) = validate_source(&source) {
         return bad_request(&e);
     }
-    let receiver = match state.buddy.clone() {
-        Some(r) => r,
-        None => {
-            return json(
-                StatusCode::SERVICE_UNAVAILABLE,
-                serde_json::json!({ "error": "buddy receiver is not configured" }),
-            )
-        }
-    };
     let chain = query.get("chain").cloned().unwrap_or_default();
     if method == axum::http::Method::GET {
         let digest = body_digest(b"");
-        let peer = match peer_for(&state, &headers, &digest, "GET", &uri_path(&uri), &source) {
+        let peer = match peer_for(
+            &receiver,
+            &headers,
+            &digest,
+            "GET",
+            &uri_path(&uri),
+            &source,
+        ) {
             Ok(p) => p,
             Err(resp) => return resp,
         };
@@ -602,7 +599,14 @@ pub async fn manifest(
         Err(resp) => return resp,
     };
     let digest = body_digest(&body);
-    let peer = match peer_for(&state, &headers, &digest, "PUT", &uri_path(&uri), &source) {
+    let peer = match peer_for(
+        &receiver,
+        &headers,
+        &digest,
+        "PUT",
+        &uri_path(&uri),
+        &source,
+    ) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
@@ -684,7 +688,7 @@ pub async fn manifest(
 
 /// `POST /api/buddy/v1/prune/{source}`
 pub async fn prune(
-    State(state): State<Arc<AppState>>,
+    State(receiver): State<BuddyState>,
     Path(source): Path<String>,
     headers: HeaderMap,
     uri: axum::http::Uri,
@@ -698,7 +702,14 @@ pub async fn prune(
         Err(resp) => return resp,
     };
     let digest = body_digest(&body);
-    let peer = match peer_for(&state, &headers, &digest, "POST", &uri_path(&uri), &source) {
+    let peer = match peer_for(
+        &receiver,
+        &headers,
+        &digest,
+        "POST",
+        &uri_path(&uri),
+        &source,
+    ) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
@@ -714,7 +725,6 @@ pub async fn prune(
     if req.keep < 1 {
         return bad_request("keep must be at least 1");
     }
-    let receiver = state.buddy.as_ref().unwrap();
     match receiver.store.prune(&peer.fingerprint, &source, req.keep) {
         Ok(removed) => json(
             StatusCode::OK,
@@ -724,5 +734,31 @@ pub async fn prune(
             StatusCode::INTERNAL_SERVER_ERROR,
             serde_json::json!({ "error": e.to_string() }),
         ),
+    }
+}
+
+/// Per-router state for the buddy handlers.
+///
+/// The API mounts them under the full `AppState`; the standalone receiver
+/// mounts them with just this value. A local wrapper keeps the `FromRef`
+/// impl legal (both `Arc` and axum's trait are foreign).
+#[derive(Clone)]
+pub struct BuddyState(pub Arc<Receiver>);
+
+impl std::ops::Deref for BuddyState {
+    type Target = Receiver;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl axum::extract::FromRef<Arc<AppState>> for BuddyState {
+    fn from_ref(state: &Arc<AppState>) -> Self {
+        BuddyState(
+            state
+                .buddy
+                .clone()
+                .expect("buddy routes are only mounted when the receiver is configured"),
+        )
     }
 }

@@ -24,7 +24,7 @@ const SEALED_OVERHEAD: usize = 4 + 4 + 12 + 16;
 pub const CHAIN_STATE_VERSION: i32 = 1;
 
 /// The receiver's identity and stored state, as returned by `/status`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Status {
     #[serde(default)]
     pub version: String,

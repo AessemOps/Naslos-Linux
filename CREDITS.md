@@ -97,6 +97,7 @@ tracing, chrono and ipnet. Direct dependencies:
 | ipnet | 2 | MIT OR Apache-2.0 | https://github.com/krisprice/ipnet |
 | ldap3 | 0.12 | MIT OR Apache-2.0 | https://github.com/inejge/ldap3 |
 | portable-pty | 0.8 | MIT | https://github.com/wez/wezterm |
+| tar | 0.4 | MIT OR Apache-2.0 | https://github.com/alexcrichton/tar-rs |
 | libc | 0.2 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc |
 | rustls | 0.23 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls |
 | rustls-pemfile | 2 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/pemfile |

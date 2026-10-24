@@ -17,9 +17,9 @@ backups ("Buddy").
 
 | Path | What it is |
 | --- | --- |
-| `api/` | Go HTTP API + scheduler/job runner (Go module `github.com/AessemOps/Naslos-Linux/api`) |
+| `api/` | Legacy Go API (replaced by `rust/api/`); its buddy tools are ported to Rust too, so the tree is kept only until it is removed |
 | `rust/agent/` | Privileged, host-networked DaemonSet: the only thing that runs `zpool`/`zfs`/`wipefs` (Rust crate `naslos-agent`) |
-| `rust/api/` | Rust API (crate `naslos-api`, Phase 2) — the deployed API server; the Go `api/` remains for the `buddyctl`/`buddy-receiver` tools |
+| `rust/api/` | Rust API (crate `naslos-api`) — the deployed API server, plus the `buddyctl` and `buddy-receiver` binaries |
 | `ui/` | Svelte 5 (legacy syntax) + TypeScript + Tailwind, built with adapter-static, served by unprivileged nginx |
 | `charts/naslos/` | The Helm chart: api, ui, agent, samba, nfs, terminal, openldap, Traefik + Authelia (+ optional cert-manager) |
 | `openldap/ samba/ nfs/ terminal/` | Per-service images and config templates |

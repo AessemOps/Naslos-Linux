@@ -37,7 +37,7 @@ Two receiver flavours speak the identical protocol:
    chunks land in a ZFS dataset you nominate (chart value `buddy.receiveHostPath`).
 2. **The standalone container** — `naslos-buddy-receiver`, two volumes (`/data` for
    chunks, `/config` for authorized keys), no ZFS, no Kubernetes, no database.
-   Built from `api/Dockerfile.receiver`.
+   Built from `api/Dockerfile.receiver.rust` (Rust).
 
 A sender cannot tell them apart, which is deliberate: the protocol is the
 interface.
