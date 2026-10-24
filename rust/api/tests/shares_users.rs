@@ -1,11 +1,13 @@
 //! Contract tests for the S3c shares/users handlers.
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use naslos_api::server::build_router;
 use naslos_api::state::AppState;
 use serde_json::Value;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -29,6 +31,9 @@ async fn call(method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Valu
         }
         None => b.body(Body::empty()).unwrap(),
     };
+    let mut req = req;
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40000))));
     let resp = build_router(state()).oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();

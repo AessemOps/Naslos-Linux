@@ -7,7 +7,8 @@
 
 use crate::json;
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::StatusCode;
+use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE, HOST, TRANSFER_ENCODING};
+use axum::http::{Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::Response;
 use std::net::IpAddr;
@@ -84,6 +85,20 @@ pub async fn require_auth(
         return unauthorized();
     }
 
+    // Reject cross-origin state changes (CSRF) and non-JSON request bodies.
+    // Browsers always send `Origin`/`Sec-Fetch-Site` on cross-origin requests;
+    // non-browser clients send neither, so the API/CLI contract is unchanged.
+    if !same_origin_request(&req) {
+        return forbidden("Cross-origin request refused");
+    }
+    if !request_body_is_json(&req) {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Unsupported Media Type\n",
+        )
+            .into_response_plain();
+    }
+
     // Extract the user from the Remote-User header.
     let username = req
         .headers()
@@ -137,6 +152,10 @@ fn unauthorized() -> Response {
     (StatusCode::UNAUTHORIZED, "Unauthorized\n").into_response_plain()
 }
 
+fn forbidden(msg: &str) -> Response {
+    (StatusCode::FORBIDDEN, msg).into_response_plain()
+}
+
 fn is_trusted(state: &AppState, req: &Request) -> bool {
     let ip: Option<IpAddr> = req
         .extensions()
@@ -144,10 +163,97 @@ fn is_trusted(state: &AppState, req: &Request) -> bool {
         .map(|ci| ci.0.ip());
     match ip {
         Some(ip) => state.trusted_cidrs.iter().any(|c| c.contains(&ip)),
-        // Routes exercised by in-process tests have no ConnectInfo; the proxy
-        // secret still gates them.
-        None => true,
+        // Fail closed: without a peer address the CIDR is unknowable. Every
+        // production listener uses `into_make_service_with_connect_info`, so
+        // this only affects a mis-wired server (which must be fixed, not
+        // trusted) and tests, which attach a fake peer address.
+        None => false,
     }
+}
+
+fn is_safe_method(method: &Method) -> bool {
+    matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+/// CSRF defence for unsafe methods.
+///
+/// A cross-site page cannot set an arbitrary `Content-Type` without a preflight
+/// (blocked by the absence of CORS) and browsers label the request with
+/// `Sec-Fetch-Site`/`Origin`. Requests that carry neither header come from a
+/// non-browser client (API, CLI, tests) and are not subject to CSRF.
+fn same_origin_request(req: &Request) -> bool {
+    if is_safe_method(req.method()) {
+        return true;
+    }
+    if let Some(site) = header_str(req, "sec-fetch-site") {
+        return site.eq_ignore_ascii_case("same-origin");
+    }
+    let Some(origin) = header_str(req, "origin") else {
+        return true;
+    };
+    let Some(origin_authority) = origin_authority(origin) else {
+        // `Origin: null` (sandboxed iframe, file://) never matches.
+        return false;
+    };
+    match request_authority(req) {
+        Some(authority) => authority.eq_ignore_ascii_case(&origin_authority),
+        None => false,
+    }
+}
+
+/// A body-bearing unsafe request must declare `application/json`. This forces a
+/// CORS preflight for any cross-origin JSON request and keeps the API's
+/// existing contract (every UI write already sends this header).
+fn request_body_is_json(req: &Request) -> bool {
+    if is_safe_method(req.method()) {
+        return true;
+    }
+    let declared = req
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let has_body = declared > 0
+        || req.headers().contains_key(TRANSFER_ENCODING)
+        || req.headers().contains_key(CONTENT_TYPE);
+    if !has_body {
+        return true;
+    }
+    req.headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("application/json")
+        })
+        .unwrap_or(false)
+}
+
+fn header_str<'a>(req: &'a Request, name: &str) -> Option<&'a str> {
+    req.headers().get(name).and_then(|v| v.to_str().ok())
+}
+
+fn request_authority(req: &Request) -> Option<String> {
+    // Traefik forwards the client's Host; `X-Forwarded-Host` is the fallback for
+    // deployments that rewrite it.
+    header_str(req, "x-forwarded-host")
+        .and_then(|v| v.split(',').next())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| header_str(req, HOST.as_str()).map(|v| v.trim().to_string()))
+}
+
+fn origin_authority(origin: &str) -> Option<String> {
+    let uri: Uri = origin.parse().ok()?;
+    match uri.scheme_str()? {
+        "http" | "https" => {}
+        _ => return None,
+    }
+    uri.authority().map(|a| a.to_string())
 }
 
 trait PlainResponse {
