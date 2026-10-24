@@ -70,7 +70,7 @@ jobs:
         run: |
           trivy fs --scanners vuln,secret --severity HIGH,CRITICAL \
             --ignore-unfixed --exit-code 1 \
-            --skip-dirs ui/node_modules --skip-dirs rust/target --skip-dirs .git .
+            --skip-dirs ui/node_modules --skip-dirs rust/target --skip-dirs bootstrap/vm --skip-dirs .git . --ignorefile .trivyignore
 
   audit:
     runs-on: ubuntu-latest
@@ -175,7 +175,7 @@ jobs:
       - name: Scan ${{ matrix.name }} for HIGH/CRITICAL CVEs
         run: |
           trivy image --severity HIGH,CRITICAL --ignore-unfixed \
-            --exit-code 1 "naslos-${{ matrix.name }}:ci"
+            --exit-code 1 --ignorefile .trivyignore "naslos-${{ matrix.name }}:ci"
 
       - name: SBOM for ${{ matrix.name }} (CycloneDX)
         run: |

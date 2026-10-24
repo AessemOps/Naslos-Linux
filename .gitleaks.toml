@@ -19,6 +19,13 @@ paths = [
   '''^\.kilo/''',
   '''^ui/\.env''',
   '''^ui/tests/\.auth/''',
+  # Generated build output (present locally, absent from a fresh CI checkout).
+  '''^rust/target/''',
+  '''^ui/node_modules/''',
+  '''^ui/\.svelte-kit/''',
+  '''^ui/dist/''',
+  '''^ui/test-results/''',
+  '''^ui/playwright-report/''',
 ]
 
 # Intentional test fixtures that look like secrets.
