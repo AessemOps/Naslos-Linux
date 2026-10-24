@@ -20,7 +20,7 @@ anyhow = "1"
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 async-trait = "0.1"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 bytes = "1"
 futures = "0.3"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
@@ -31,6 +31,7 @@ hickory-resolver = "0.24"
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
 include_dir = "0.7"
 ipnet = "2"
+portable-pty = "0.8"
 libc = "0.2"
 ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }

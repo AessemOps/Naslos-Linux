@@ -620,3 +620,24 @@ impl Client {
         Ok(())
     }
 }
+
+/// Host filesystem usage, reported by the agent (it can statvfs the host).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct DiskUsage {
+    #[serde(default)]
+    pub total: u64,
+    #[serde(default)]
+    pub free: u64,
+    #[serde(default)]
+    pub used: u64,
+    #[serde(default, rename = "usagePercent")]
+    pub usage_percent: f64,
+}
+
+impl Client {
+    /// The host EPHEMERAL partition's usage.
+    pub async fn get_disk_usage(&self) -> Result<DiskUsage, AgentError> {
+        self.do_json(self.request(reqwest::Method::GET, "/api/v1/system/disk"))
+            .await
+    }
+}

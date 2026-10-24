@@ -105,7 +105,19 @@ async fn run_metrics_collector(state: Arc<AppState>) {
 }
 
 async fn collect_once(state: &AppState, talos: &naslos_api::talos::TalosClient) {
-    let tm = talos.get_system_metrics().await;
+    let mut tm = talos.get_system_metrics().await;
+    // The host filesystem's usage is only visible from the agent (the CLI's
+    // `mountstatus` has no size/available); the Go API used the Talos Mounts API.
+    if let Some(agent) = &state.agent {
+        if let Ok(d) = agent.get_disk_usage().await {
+            tm.disk = naslos_api::metrics::DiskMetrics {
+                total: d.total,
+                used: d.used,
+                free: d.free,
+                usage_percent: d.usage_percent,
+            };
+        }
+    }
     state.metrics.update(tm);
 }
 
