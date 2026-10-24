@@ -72,13 +72,12 @@ use by `buddyctl identity`:
   volume, an arbitrary-file-read in the API, the admin terminal) can both
   impersonate the sender to every buddy *and* decrypt every backup. File
   permissions are `0600`, which is not the same as at-rest encryption.
-- **Move the KEK into a Secret.** Set `buddy.kekSecret` (Helm) or `BUDDY_KEK`
-  (base64, 32 bytes) and the KEK is read from the environment instead of the
-  file; the identity file then exposes only the signing key. The environment
-  value takes precedence when both are present, so migrating does not lose access
-  to existing backups, and the file's `kek` should be deleted once the Secret is
-  in place (the resume state still holds each in-flight chain's DEK in plaintext
-  until that push finishes).
+- **The KEK is in a Secret by default.** With `buddy.enabled=true` the chart
+  generates `naslos-buddy-kek` (or uses `buddy.kekSecret` if you set one) and
+  mounts it as `BUDDY_KEK`. The API strips the `kek` field from an existing
+  `buddy-identity.json` on load, so a read of the state volume no longer yields
+  the key that unwraps every backup. The resume state still holds each
+  in-flight chain's DEK in plaintext until that push finishes.
 - The receiver never sees this file. It stores an authorized-keys line per sender
   and nothing else secret.
 
@@ -216,10 +215,13 @@ and an Ed25519 signature over all of it. The receiver can verify the signature a
 the presence of every chunk; only the owner can check the plaintext digests — which
 is exactly the intended asymmetry.
 
-Owners verify the manifest is the one they asked for: a restore binds it to the
-requested source (and chain, when one is named) and refuses a sequence older than
-the last one this sender published, so a hostile buddy cannot answer with another
-source's or a stale but validly signed backup (PF-H3).
+Owners verify the manifest is the one they asked for: the restore sequence must
+start at a full send (`fromGUID` empty), be contiguous (`fromGUID` of each chain
+equals the previous `toGUID`), have strictly increasing sequences, and not end
+older than the last sequence this sender published. Each requested manifest must
+match the sequence value validated for its chain. A hostile buddy therefore
+cannot answer with another source's, a stale, or an incomplete but validly
+signed backup (PF-H3 / SEC-2026-C3).
 
 > **Protocol version.** The envelope is **v2** (`NBC2`/`NB2`). A v2 sender and a v2
 > receiver are required on both ends: an in-flight chain created by an earlier v1

@@ -214,10 +214,23 @@ The actual ZFS work is delegated to `naslos-agent` on each node:
 | GET | `/api/namespaces` | Namespace names, for the terminal's picker |
 | GET | `/api/pods?namespace=naslos-privileged` | Pods with their containers, phase, readiness, and a `terminal` flag marking the shell container (the terminal UI probes the candidate namespaces) |
 | GET | `/api/ws/logs?namespace=&pod=&container=&tail=` | Stream a pod's live logs |
-| GET | `/api/ws/exec?namespace=&pod=&container=&shell=` | Interactive exec (xterm). Defaults: namespace = the Naslos namespace, shell = `sh`, container = the pod's only container |
+| GET | `/api/ws/exec?namespace=&pod=&container=&shell=` | Interactive exec (xterm). Defaults: namespace = the Naslos namespace, shell = `sh`, container = the pod's only container. Rejected (403) when `Origin` is foreign |
+
+### Request trust
+
+Owner and user routes require Traefik's `X-Naslos-Proxy-Secret` **and** a peer
+address inside `TRAEFIK_CIDR`; a request without `ConnectInfo` is refused (fail
+closed). Unsafe methods additionally require a same-origin browser context
+(`Sec-Fetch-Site: same-origin` or a matching `Origin`) and, when a body is
+present, `Content-Type: application/json`; otherwise the API returns 403/415.
+Non-browser clients that send neither header are unaffected.
 
 `/api/ws/logs` reads the pod log stream (tail 200 lines, follow).
 `/api/ws/exec` uses the Kubernetes `remotecommand` SPDY executor over a websocket.
+
+Both WebSocket endpoints refuse an upgrade whose `Origin` does not match the
+request host (or a configured domain); a non-browser client that sends no
+`Origin` is allowed. This restores the Go `CheckOrigin` (NAS-009).
 
 **Frame protocol** (the two are split by frame type so a resize can never be
 typed into the shell as garbage):

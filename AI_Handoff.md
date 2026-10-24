@@ -2,11 +2,10 @@
 
 **This file is the project's current state, kept to about a page.** The detailed
 per-session narrative (1250 lines, 2026-09-17 snapshot) is archived at
-`docs/archive/ai-handoff-log-2026-09.md`. The audit and fix report — the only
-current audit document — is `docs/AUDIT-2026-09-19-REPORT.md`; the detailed
-working papers (audit findings, fix plan, code-review list, the superseded
-2026-09-14 audit) are archived in `docs/archive/`. Normative requirements are in
-`docs/spec.md`.
+`docs/archive/ai-handoff-log-2026-09.md`. The **current** audit is
+`docs/AUDIT-2026-10-24.md` (post-Rust full audit; it supersedes
+`docs/AUDIT-2026-09-19-REPORT.md`, kept for history). Normative requirements are
+in `docs/spec.md`.
 
 ## What this is
 
@@ -19,8 +18,11 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 the `v0.1.2` install pack. Live state:
 
 - Node `talos-nu3-7j0`, Talos v1.14.1 / k8s v1.37.0, **control-plane Ready**.
-- Helm release `naslos` (chart `naslos-0.1.2`), all images pinned by digest
-  (`ghcr.io/aessemops/naslos-api@sha256:aabdf383…`).
+- Helm release `naslos` (chart `naslos-0.1.2`, revision 8). **Mixed image
+  state (verified 2026-10-24):** API `192.168.1.2:30095/naslos-api:0.1.0-r34`
+  and agent `.../naslos-agent:0.1.0-r10` are tags, while UI is digest-pinned
+  from GHCR. A clean `make install-vm` from the current overlay reproduces this;
+  the release pack is digest-pinned.
 - The install's **recovery bundle is extracted into `bootstrap/vm/`**:
   `talosconfig`, `controlplane.yaml`, `talos-secrets.json`, `kubeconfig` — all
   gitignored (master credentials, never commit). `kubeconfig` is the live
@@ -31,6 +33,30 @@ the `v0.1.2` install pack. Live state:
 
 Kept to continue work on the appliance from the workspace. The earlier
 `0.1.0-r*` live-drill sections below are historical.
+
+## Audit 2026-10-24 (branch `audit/full-2026-10-24`)
+
+Full post-Rust audit; findings, evidence and status are in
+`docs/AUDIT-2026-10-24.md`. Security-relevant fixes on this branch (not yet
+deployed):
+
+- auth: fail-closed CIDR, WS `Origin` check, CSRF (same-origin + JSON) middleware;
+- buddy: nonce generation persisted per attempt, restore sequence binding,
+  16 MiB pre-auth manifest cap, KEK generated in a Secret and stripped from
+  `buddy-identity.json`;
+- command/path: strict kubectl names, ganesha path characters, chart-source URL
+  scheme allowlist, pinned SSH host keys, kill-on-drop CLI timeouts;
+- SSRF/panics: redirects off, IPv4-mapped/ULA blocking, char-boundary truncation;
+- chart: `TRAEFIK_CIDR` default, `strip-client-identity`, LDAP authenticated-read,
+  bootstrap `-y`, UI/agent probes, OVH `watch` removed;
+- supply chain: verified `kubectl`/`helm`/`talosctl` checksums, `npm ci` on Node 22,
+  `cargo audit`/`cargo deny`, split gitleaks configs, Trivy + SBOM in CI, release
+  gated on green CI.
+
+Remaining High items are architectural (app-chart RBAC/routes, shared datasets
+PV, privileged-install consent) and are listed with proposed fixes in the audit
+report. **No live drill was run in this session**; the pre-test snapshot and the
+Phase 5 checks remain the 0.2.1 release gate.
 
 ## RAM plan — Phase 0 done (PR #54), Phase 1 done (PR #55), Phase 2 spike done
 
