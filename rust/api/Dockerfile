@@ -1,9 +1,8 @@
 # Naslos API server container image (Rust port).
 #
-# Build context: repo root. Unlike the Go API (which embedded the Helm and Talos
-# SDKs), the Rust port drives the bundled CLIs, so this image ships pinned
-# `helm`, `kubectl` and `talosctl` plus `git` for the chart-repository cache.
-# That adds image size, not idle RSS.
+# Build context: repo root. The Rust port drives the bundled CLIs rather than
+# SDKs, so this image ships pinned `helm`, `kubectl` and `talosctl` plus `git`
+# for the chart-repository cache. That adds image size, not idle RSS.
 
 FROM rust:1.88-alpine AS builder
 RUN apk add --no-cache musl-dev
