@@ -471,27 +471,22 @@ NASLOS_RECEIVER_URL=http://naslos-api.naslos.svc.cluster.local:8080 \
 
 ## ZFS ARC
 
-> **Status (2026-10-04): not capped yet — deferred.** The runtime knob works
+> **Not capped, and not planned (2026-10-24).** The runtime knob works
 > (`echo <bytes> > /sys/module/zfs/parameters/zfs_arc_max` drops `c_max`
-> immediately, verified live), but no boot-persistent Talos mechanism reaches it
-> on this platform:
+> immediately, verified live), but no boot-persistent Talos route reaches it on
+> this platform:
 >
-> - `machine.kernel.modules[].parameters: [zfs_arc_max=…]` is **ignored**: the
->   `siderolabs/zfs` extension loads the module itself, so Talos never passes
->   the parameter (`/sys/module/zfs/parameters/zfs_arc_max` stayed `0` across two
->   reboots on Talos v1.14.1).
-> - `machine.install.extraKernelArgs` is **unsupported**: the node boots with
->   SDBoot (`extra kernel arguments are not supported when booting using
->   SDBoot`).
+> - `machine.kernel.modules[].parameters: [zfs_arc_max=<bytes>]` is ignored: the
+>   `siderolabs/zfs` extension loads the module itself, so Talos never passes the
+>   parameter (`zfs_arc_max` stayed `0` across two reboots on Talos v1.14.1).
+> - `machine.install.extraKernelArgs` is unsupported with SDBoot.
 > - A `machine.files` `/etc/modprobe.d/zfs.conf` drop-in was ignored too and
 >   coincided with a CRI boot failure (reverted).
 >
-> The planned fix is a privileged **agent DaemonSet initContainer** that writes
-> the host sysfs value on every boot (the agent already mounts the host root at
-> `/host`), gated by a chart value. That is a follow-up change, not part of
-> Phase 0. The default `c_max` is ~80 % of RAM (~4.76 GiB of the 5.76 GiB node).
-> `zfs.arcMax` was removed from the chart because it was dead (no template
-> consumed it).
+> A privileged agent initContainer could write the host sysfs value on every
+> boot, but that trade-off was rejected, so the item is closed. The default
+> `c_max` is ~80 % of RAM (~4.76 GiB of the 5.76 GiB node). `zfs.arcMax` is not
+> in the chart because nothing consumed it.
 
 ## Secrets to rotate before production
 
