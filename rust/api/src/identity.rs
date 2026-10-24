@@ -392,7 +392,7 @@ impl Client {
             Op::PasswordModify { dn, password } => {
                 ldap.extended(PasswordModify {
                     user_id: Some(dn),
-                    old_pass: Some(""),
+                    old_pass: None,
                     new_pass: Some(password),
                 })
                 .await

@@ -83,7 +83,9 @@ async fn admin_routes_reject_a_plain_user_and_reach_the_handler_for_an_admin() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    // An admin passes the gate and reaches the (not-yet-ported) handler.
+    // An admin passes the gate and reaches the real handler. kubectl is not
+    // configured in this test, so the handler reports unavailability; the
+    // point is that it is no longer a 501 stub.
     let (status, body, _r) = send(get(
         "/api/pods",
         true,
@@ -91,8 +93,9 @@ async fn admin_routes_reject_a_plain_user_and_reach_the_handler_for_an_admin() {
         Some("naslos_admins,naslos_users"),
     ))
     .await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(body["error"], "not implemented in the Rust port yet");
+    assert_ne!(status, StatusCode::FORBIDDEN);
+    assert_ne!(status, StatusCode::NOT_IMPLEMENTED);
+    assert_ne!(body["error"], "not implemented in the Rust port yet");
 }
 
 #[tokio::test]

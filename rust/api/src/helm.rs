@@ -183,6 +183,9 @@ impl Client {
     }
 
     /// List every release in the namespace.
+    ///
+    /// Helm v4 lists releases in any status by default; the v3 `--all` flag no
+    /// longer exists (it errors with "unknown flag: --all").
     pub async fn list(&self) -> Result<Vec<App>, String> {
         let out = self
             .run(&[
@@ -191,7 +194,6 @@ impl Client {
                 self.namespace.clone(),
                 "-o".into(),
                 "json".into(),
-                "--all".into(),
             ])
             .await?;
         let entries: Vec<serde_json::Value> = serde_json::from_str(out.trim()).unwrap_or_default();

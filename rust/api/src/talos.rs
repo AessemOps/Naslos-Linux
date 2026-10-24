@@ -31,9 +31,19 @@ impl TalosClient {
     /// Build from the environment. Returns `None` when the Talos endpoints are
     /// not configured (the API still serves; metrics collection is skipped).
     pub fn from_env() -> Option<Self> {
-        let endpoints = split_csv(&std::env::var("TALOS_ENDPOINTS").unwrap_or_default());
+        let talosconfig = resolve_talosconfig();
+        let mut endpoints = split_csv(&std::env::var("TALOS_ENDPOINTS").unwrap_or_default());
         if endpoints.is_empty() {
-            tracing::warn!("TALOS_ENDPOINTS not set; Talos metrics disabled");
+            // The chart mounts only a talosconfig (no TALOS_ENDPOINTS), and the
+            // file's context carries the real node endpoints.
+            if let Some(cfg) = &talosconfig {
+                endpoints = endpoints_from_talosconfig(cfg);
+            }
+        }
+        if endpoints.is_empty() {
+            tracing::warn!(
+                "no Talos endpoints (TALOS_ENDPOINTS or talosconfig); Talos metrics disabled"
+            );
             return None;
         }
         let nodes = match std::env::var("TALOS_NODES") {
@@ -44,7 +54,7 @@ impl TalosClient {
             binary: std::env::var("TALOSCTL_BIN").unwrap_or_else(|_| "talosctl".to_string()),
             endpoints,
             nodes,
-            talosconfig: resolve_talosconfig(),
+            talosconfig,
         })
     }
 
@@ -564,6 +574,46 @@ pub fn all_json(out: &str) -> Vec<serde_json::Value> {
         }
     }
     values
+}
+
+/// Read the current context's endpoints from a talosconfig file.
+pub fn endpoints_from_talosconfig(path: &str) -> Vec<String> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let doc: serde_yaml::Value = match serde_yaml::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let context = doc.get("context").and_then(|v| v.as_str()).unwrap_or("");
+    let contexts = doc.get("contexts").and_then(|v| v.as_mapping());
+    let Some(contexts) = contexts else {
+        return Vec::new();
+    };
+    let ctx = contexts
+        .get(serde_yaml::Value::String(context.to_string()))
+        .or_else(|| contexts.values().next());
+    let Some(ctx) = ctx else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = ctx
+        .get("endpoints")
+        .and_then(|v| v.as_sequence())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    if out.is_empty() {
+        if let Some(ep) = ctx.get("endpoint").and_then(|v| v.as_str()) {
+            if !ep.is_empty() {
+                out.push(ep.to_string());
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

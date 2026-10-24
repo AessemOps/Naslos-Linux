@@ -18,7 +18,7 @@ and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
-**Last reviewed: 2026-10-11.** Maintenance: update this file whenever a direct dependency changes in
+**Last reviewed: 2026-10-24.** Maintenance: update this file whenever a direct dependency changes in
 `api/go.mod`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
 It also lists the GitHub Actions used by the CI/release workflows.
 
@@ -96,6 +96,7 @@ tracing, chrono and ipnet. Direct dependencies:
 | include_dir | 0.7 | MIT | https://github.com/Michael-F-Bryan/include_dir |
 | ipnet | 2 | MIT OR Apache-2.0 | https://github.com/krisprice/ipnet |
 | ldap3 | 0.12 | MIT OR Apache-2.0 | https://github.com/inejge/ldap3 |
+| portable-pty | 0.8 | MIT | https://github.com/wez/wezterm |
 | libc | 0.2 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc |
 | rustls | 0.23 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls |
 | rustls-pemfile | 2 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/pemfile |

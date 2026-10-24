@@ -227,6 +227,40 @@ pub async fn cert_manager_available(client: &Client) -> bool {
         .is_ok()
 }
 
+impl Client {
+    /// List a cluster-scoped resource (no `-n`).
+    pub async fn list_cluster(&self, kind: &str) -> Result<serde_json::Value, String> {
+        let out = self
+            .run(
+                &["get".into(), kind.into(), "-o".into(), "json".into()],
+                None,
+            )
+            .await?;
+        serde_json::from_str(out.trim()).map_err(|e| format!("parsing kubectl output: {e}"))
+    }
+
+    /// List pods in one namespace, or across every namespace when empty.
+    pub async fn list_pods(&self, namespace: &str) -> Result<serde_json::Value, String> {
+        if namespace.is_empty() {
+            let out = self
+                .run(
+                    &[
+                        "get".into(),
+                        "pods".into(),
+                        "-A".into(),
+                        "-o".into(),
+                        "json".into(),
+                    ],
+                    None,
+                )
+                .await?;
+            return serde_json::from_str(out.trim())
+                .map_err(|e| format!("parsing kubectl output: {e}"));
+        }
+        self.list_json("pods", namespace, None).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

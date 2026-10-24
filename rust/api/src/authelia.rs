@@ -78,8 +78,9 @@ impl KubeSyncer {
         Self {
             client,
             namespace: namespace.to_string(),
-            config_map: "naslos-authelia-sso".to_string(),
-            pod: "naslos-authelia-0".to_string(),
+            config_map: std::env::var("AUTHELIA_SSO_CONFIGMAP")
+                .unwrap_or_else(|_| "naslos-authelia-sso".to_string()),
+            pod: std::env::var("AUTHELIA_POD").unwrap_or_else(|_| "naslos-authelia-0".to_string()),
         }
     }
 }

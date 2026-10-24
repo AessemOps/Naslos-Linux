@@ -169,7 +169,7 @@ impl AppState {
             catalog,
             app_manager,
             app_jobs: Arc::new(crate::server::app_jobs::AppJobManager::new()),
-            base_domain: std::env::var("BASE_DOMAIN").unwrap_or_default(),
+            base_domain: base_domain_from_env(),
             providers,
             domains: domains_store,
             certs,
@@ -361,7 +361,7 @@ fn build_app_manager(
     let apps_ns = apps_namespace.to_string();
     let apps_priv_ns = std::env::var("APPS_PRIVILEGED_NAMESPACE")
         .unwrap_or_else(|_| "naslos-apps-priv".to_string());
-    let base_domain = std::env::var("BASE_DOMAIN").unwrap_or_default();
+    let base_domain = base_domain_from_env();
 
     let router: Option<Arc<dyn crate::apps::Router>> = kube.map(|k| {
         let domains_for_tls = domains.clone();
@@ -505,4 +505,17 @@ fn build_buddy_receiver() -> Option<Arc<crate::server::buddy::Receiver>> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     Some(Arc::new(receiver))
+}
+
+/// The primary domain, from `NASLOS_DOMAIN` (the chart) or `BASE_DOMAIN` (dev).
+pub fn base_domain_from_env() -> String {
+    std::env::var("NASLOS_DOMAIN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            std::env::var("BASE_DOMAIN")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })
+        .unwrap_or_default()
 }

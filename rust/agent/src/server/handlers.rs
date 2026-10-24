@@ -680,3 +680,40 @@ pub async fn zfs_receive_empty() -> Response {
 pub async fn zfs_snapshots_empty() -> Response {
     write_error(StatusCode::BAD_REQUEST, "dataset is required")
 }
+
+/// `GET /api/v1/system/disk` — the host EPHEMERAL partition's usage. The API
+/// cannot statvfs the host filesystem from its own namespace, so the agent
+/// reports it (the dashboard's disk widget used the Talos machinery Mounts API
+/// in the Go implementation, which `talosctl` does not expose).
+pub async fn disk_usage() -> Response {
+    let path = std::ffi::CString::new("/host/var").expect("static path");
+    // SAFETY: statvfs writes into a caller-owned struct; the path is valid.
+    let stat = unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(path.as_ptr(), &mut stat) != 0 {
+            return write_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("statvfs /host/var: {}", std::io::Error::last_os_error()),
+            );
+        }
+        stat
+    };
+    let bsize = stat.f_bsize as u128;
+    let total = (stat.f_blocks as u128).saturating_mul(bsize);
+    let free = (stat.f_bavail as u128).saturating_mul(bsize);
+    let used = total.saturating_sub(free);
+    let usage = if total > 0 {
+        used as f64 / total as f64 * 100.0
+    } else {
+        0.0
+    };
+    json_response(
+        StatusCode::OK,
+        &json!({
+            "total": total.min(i64::MAX as u128) as i64,
+            "free": free.min(i64::MAX as u128) as i64,
+            "used": used.min(i64::MAX as u128) as i64,
+            "usagePercent": usage,
+        }),
+    )
+}
