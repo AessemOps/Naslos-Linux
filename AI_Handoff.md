@@ -63,7 +63,7 @@ load** on this 5.76 GiB node.
 The Rust API (`rust/api`, `naslos-api`) is now the **deployed** API on the
 Talos VM, next to the Rust agent.
 
-- **Live (helm revision 7):** `api` = `192.168.1.2:30095/naslos-api:rust-s7b`,
+- **Live (helm revision 8):** `api` = `192.168.1.2:30095/naslos-api:rust-s7e`,
   `agent` = `192.168.1.2:30095/naslos-agent:0.1.0-r10` (both pulled into the
   node's containerd; the private registry mirror was added to the live machine
   config for the drill and is already in `bootstrap/vm/naslos-vm.yaml`).
@@ -80,11 +80,13 @@ Talos VM, next to the Rust agent.
 - **Rollback:** the previous Go API is pinned in the installer pack; the Go
   `api/` tree is kept for `buddyctl`/`buddy-receiver` (out of scope) and is not
   deleted yet.
-- **OPEN — Playwright:** the suite's Authelia login fails because the `admin`
-  LDAP password no longer matches `ui/.env.playwright.local` nor the
-  `naslos-openldap` `admin-password` secret (Authelia logs: LDAP bind
-  "Invalid Credentials"). A current password (and TOTP) is needed, or approval
-  to reset it.
+- **Playwright (live):** the full suite is green — **50 passed, 3 skipped, 0
+  failed**. The admin password was stale (LDAP bind "Invalid Credentials"), so
+  it was reset to the `ui/.env.playwright.local` value through the API; the
+  TOTP secret already matched. The drill also caught and fixed three defects:
+  an empty `old_pass` sent to OpenLDAP's password modify (`ldap3` must send
+  `None`), `helm list --all` rejected by helm v4 (`/api/apps` 500), and
+  `kubectl exec -t` needing a local PTY (exec now runs under `portable-pty`).
 
 ## RAM plan Phase 0 detail (2026-10-04) — Prometheus removed; ARC blocked
 

@@ -9,7 +9,7 @@ use axum::extract::{FromRequestParts, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures::{SinkExt, StreamExt};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 
 use super::pods::{default_namespace, validate_kube_name};
 use crate::json;
@@ -300,29 +300,42 @@ async fn exec_session(
     container: String,
     command: Vec<&'static str>,
 ) {
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+
     let (mut sender, mut receiver) = socket.split();
 
-    let mut args = kubeconfig_args();
-    args.extend([
-        "exec".into(),
-        "-i".into(),
-        "--tty".into(),
-        pod.clone(),
-        "-n".into(),
-        namespace.clone(),
-        "-c".into(),
-        container.clone(),
-        "--".into(),
-    ]);
-    args.extend(command.iter().map(|s| s.to_string()));
+    let pty_system = native_pty_system();
+    let pair = match pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(pair) => pair,
+        Err(e) => {
+            let _ = sender
+                .send(Message::Text(
+                    format!("\r\n\x1b[31mCannot create a PTY: {e}\x1b[0m\r\n").into(),
+                ))
+                .await;
+            return;
+        }
+    };
 
-    let mut child = match tokio::process::Command::new(kubectl_binary())
-        .args(&args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
+    let mut cmd = CommandBuilder::new(kubectl_binary());
+    for a in kubeconfig_args() {
+        cmd.arg(a);
+    }
+    for a in [
+        "exec", "-i", "--tty", &pod, "-n", &namespace, "-c", &container, "--",
+    ] {
+        cmd.arg(a);
+    }
+    for a in &command {
+        cmd.arg(a);
+    }
+
+    let mut child = match pair.slave.spawn_command(cmd) {
         Ok(c) => c,
         Err(e) => {
             let _ = sender
@@ -333,52 +346,94 @@ async fn exec_session(
             return;
         }
     };
-    let mut stdin = child.stdin.take().expect("stdin piped");
-    let mut stdout = child.stdout.take().expect("stdout piped");
-    let mut stderr = child.stderr.take().expect("stderr piped");
+    drop(pair.slave);
 
-    // Output: child stdout/stderr → websocket text frames.
-    let output_task = tokio::spawn(async move {
-        let mut out_buf = [0u8; 4096];
-        let mut err_buf = [0u8; 4096];
+    let mut reader = match pair.master.try_clone_reader() {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = sender
+                .send(Message::Text(
+                    format!("\r\n\x1b[31mCannot read the PTY: {e}\x1b[0m\r\n").into(),
+                ))
+                .await;
+            return;
+        }
+    };
+    let mut writer = match pair.master.take_writer() {
+        Ok(w) => w,
+        Err(e) => {
+            let _ = sender
+                .send(Message::Text(
+                    format!("\r\n\x1b[31mCannot write the PTY: {e}\x1b[0m\r\n").into(),
+                ))
+                .await;
+            return;
+        }
+    };
+
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 4096];
         loop {
-            tokio::select! {
-                r = stdout.read(&mut out_buf) => match r {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if sender.send(Message::Text(String::from_utf8_lossy(&out_buf[..n]).into_owned().into())).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                },
-                r = stderr.read(&mut err_buf) => {
-                    if let Ok(n) = r {
-                        if n > 0 {
-                            let _ = sender.send(Message::Text(String::from_utf8_lossy(&err_buf[..n]).into_owned().into())).await;
-                        }
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if out_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
                     }
                 }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let output_task = tokio::spawn(async move {
+        while let Some(chunk) = out_rx.recv().await {
+            if sender
+                .send(Message::Text(
+                    String::from_utf8_lossy(&chunk).into_owned().into(),
+                ))
+                .await
+                .is_err()
+            {
+                break;
             }
         }
         let _ = sender.close().await;
     });
 
-    // Input: binary frames are keystrokes; text frames are control messages
-    // (resize is ignored: kubectl does not expose it).
+    let master = pair.master;
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(Message::Binary(data)) => {
-                if stdin.write_all(&data).await.is_err() {
+                use std::io::Write;
+                if writer.write_all(&data).is_err() {
                     break;
                 }
+                let _ = writer.flush();
             }
-            Ok(Message::Text(_)) => {}
+            Ok(Message::Text(text)) => {
+                // Control message: apply a window resize to the PTY.
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if value.get("type").and_then(|v| v.as_str()) == Some("resize") {
+                        let cols = value.get("cols").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+                        let rows = value.get("rows").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+                        if cols > 0 && rows > 0 {
+                            let _ = master.resize(PtySize {
+                                rows,
+                                cols,
+                                pixel_width: 0,
+                                pixel_height: 0,
+                            });
+                        }
+                    }
+                }
+            }
             Ok(Message::Close(_)) | Err(_) => break,
             _ => {}
         }
     }
-    drop(stdin);
-    let _ = child.kill().await;
+    let _ = child.kill();
     let _ = output_task.await;
 }

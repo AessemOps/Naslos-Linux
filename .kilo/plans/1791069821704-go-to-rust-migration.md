@@ -1022,3 +1022,21 @@ Completes the buddy feature.
   runAt/next-run unit tests.
 - **Phase 2 status:** all of S1–S6 is ported. Only the pod/logs/exec websocket
   routes remain 501 (kube-rs/websocket, part of S7 hardening).
+
+---
+
+## Execution log — S7 live drill (2026-10-24)
+
+Deployed `api` `rust-s7e` + `agent` `0.1.0-r10` to the Talos VM (helm revision 8)
+and ran the full Playwright suite: **50 passed, 3 skipped, 0 failed**. The drill
+caught three real defects, all fixed on PR #63:
+
+1. **LDAP password change** — `ldap3` sent an empty `old_pass` in the RFC 3062
+   modify; OpenLDAP rejects it (`rc=53 unwillingToPerform, old password value is
+   empty`) while the Go library omitted the field. Fixed to `old_pass: None`.
+2. **`helm list --all`** — helm v4 removed the flag (`unknown flag: --all`; the
+   default already lists every status), so `/api/apps` returned 500 and the
+   Installed tab was empty.
+3. **`kubectl exec -t`** — needs a local TTY. The exec WebSocket now runs
+   kubectl under a native PTY (`portable-pty`), allocating the remote TTY, and
+   forwards window resize control messages.
