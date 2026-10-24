@@ -20,7 +20,7 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
   ```
 - Unsupported methods return `405 Method Not Allowed`.
 - Authentication **is** enforced: the API is only reachable through Traefik's
-  `proxy-identity` middleware, and `api/internal/auth` independently requires the
+  `proxy-identity` middleware, and `rust/api/src/auth.rs` independently requires the
   shared proxy secret plus a `Remote-User` header from the Traefik pod CIDR
   (see [identity-sso.md](identity-sso.md#header-trust)). The API refuses to start
   without the secret, so a request that bypasses Traefik cannot authenticate.

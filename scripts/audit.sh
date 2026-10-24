@@ -5,10 +5,7 @@
 # reported as "skipped" rather than failing, so it runs anywhere. CI wires this
 # into `.github/workflows/ci.yml`; run it by hand before pushing.
 #
-# Requires bash: the govulncheck advisory-set diff uses process substitution.
-#
 # Usage:  bash scripts/audit.sh
-#         NASLOS_AUDIT_RACE=1 bash scripts/audit.sh   # adds go test -race (CR-06)
 set -u
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -540,54 +537,8 @@ PY
   return 0
 }
 
-# --- Go ---------------------------------------------------------------------
-cd "$root/api" || exit 1
-run "go vet (api)" go vet ./...
-run "go test (api)" go test ./...
-# CR-06 fixed: the buddy scheduler's notification race is gone, so the race
-# detector runs unconditionally.
-run "go test -race (api)" go test -race ./...
-if have govulncheck; then
-  # govulncheck exits non-zero for ANY findable advisory. The five AUDIT-H3
-  # ones are `Fixed in: N/A` (containerd v1, which the api still pulls) and not
-  # on an exercised path. The six PF-M2 ones
-  # are Go stdlib advisories fixed in 1.26.10, which the api go.mod now
-  # require; they are listed so a build under an older toolchain still reports
-  # them without failing the gate. A genuinely NEW id fails.
-  check_govulncheck() {
-    f=$(mktemp) || return 1
-    govulncheck ./... >"$f" 2>&1
-    found=$(grep -oE '^Vulnerability #[0-9]+: GO-[0-9-]+' "$f" | awk '{print $3}' | sort -u)
-    accepted="GO-2026-5064 GO-2026-5338 GO-2026-5622 GO-2026-5932 GO-2026-6791 GO-2026-5026 GO-2026-5972 GO-2026-6089 GO-2026-6090 GO-2026-6091 GO-2026-6218"
-    new=$(comm -23 <(printf '%s\n' $found | sort -u) <(printf '%s\n' $accepted | tr ' ' '\n' | sort -u))
-    printf 'govulncheck advisories: %s\n' "$(printf '%s' "$found" | tr '\n' ' ')"
-    rm -f "$f"
-    if [ -n "$new" ]; then
-      printf 'NEW advisory (not in the AUDIT-H3 accepted set): %s\n' "$(printf '%s' "$new" | tr '\n' ' ')"
-      return 1
-    fi
-    return 0
-  }
-  run "govulncheck (api; fails on a NEW advisory)" check_govulncheck
-else
-  skip "govulncheck (api)" "not installed (go install golang.org/x/vuln/cmd/govulncheck@latest)"
-fi
-if have gosec; then
-  # G101: flags ProxySecretHeader, which is a header NAME, not a credential
-  #   (reviewed by hand; annotated #nosec in the source too).
-  # G703: path-traversal taint analysis false-positives on buddy/store.go -
-  #   the tainted chain names come from os.ReadDir (a directory listing), which
-  #   cannot yield '/'-containing or '..' components, and every peer-supplied
-  #   name passes validateChainName first (AUDIT-M9). A NEW HIGH rule still
-  #   fails this gate.
-  run "gosec high severity (api)" gosec -quiet -severity high -exclude G101,G703 ./...
-else
-  skip "gosec (api)" "not installed (go install github.com/securego/gosec/v2/cmd/gosec@latest)"
-fi
-
-# The agent is Rust (Phase 1 of the Go->Rust plan): `rust/` is a cargo workspace
-# with the `naslos-agent` crate (and the Phase 2 `naslos-api-spike` crate). The
-# old Go sources under agent/ were replaced.
+# The agent and API are Rust (`rust/` is a cargo workspace with the
+# `naslos-agent` and `naslos-api` crates).
 if [ -d "$root/rust" ]; then
   cd "$root/rust" || exit 1
   if have cargo; then
@@ -661,7 +612,7 @@ if have gitleaks; then
   run "gitleaks (working tree)" gitleaks dir . --no-banner --redact
   run "gitleaks (git history)" gitleaks git . --no-banner --redact
 else
-  skip "gitleaks" "not installed (CI downloads the gitleaks CLI release; or: go install github.com/zricethezav/gitleaks/v8@latest)"
+  skip "gitleaks" "not installed (download the gitleaks CLI release)"
 fi
 
 printf '\n== summary ==\n'

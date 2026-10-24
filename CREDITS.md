@@ -43,38 +43,16 @@ It also lists the GitHub Actions used by the CI/release workflows.
 | Alpine Linux | `alpine:3.20` | Alpine (musl MIT, BusyBox GPL-2.0-only, apk-tools GPL-2.0-only) | https://alpinelinux.org/ |
 | distroless static | `gcr.io/distroless/static-debian12:nonroot` | Apache-2.0 | https://github.com/GoogleContainerTools/distroless |
 | nginx unprivileged | `nginxinc/nginx-unprivileged:1.30.5-alpine` | BSD-2-Clause | https://github.com/nginxinc/docker-nginx-unprivileged |
-| Go toolchain | `golang:1.26-alpine` | BSD-3-Clause | https://go.dev/ |
 | Rust toolchain | `rust:1.88-alpine` | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
 | Node.js toolchain | `node:20-alpine` | MIT | https://nodejs.org/ |
 
-## Go modules — direct (`api/go.mod`)
-
-`agent/go.mod` declares no external modules.
-
-| Component | Version | License (SPDX) | Upstream |
-| --- | --- | --- | --- |
-| github.com/cosi-project/runtime | v1.16.3 | MPL-2.0 | https://github.com/cosi-project/runtime |
-| github.com/go-git/go-git/v5 | v5.19.2 | Apache-2.0 | https://github.com/go-git/go-git |
-| github.com/go-ldap/ldap/v3 | v3.4.8 | MIT | https://github.com/go-ldap/ldap |
-| github.com/gorilla/websocket | v1.5.4-0.20250319132907-e064f32e3674 | BSD-2-Clause | https://github.com/gorilla/websocket |
-| github.com/siderolabs/talos/pkg/machinery | v1.14.0 | MPL-2.0 | https://github.com/siderolabs/talos |
-| golang.org/x/crypto | v0.57.0 | BSD-3-Clause | https://github.com/golang/crypto |
-| gopkg.in/yaml.v3 | v3.0.1 | MIT AND Apache-2.0 | https://github.com/go-yaml/yaml |
-| helm.sh/helm/v3 | v3.18.5 | Apache-2.0 | https://github.com/helm/helm |
-| k8s.io/api | v0.33.3 | Apache-2.0 | https://github.com/kubernetes/api |
-| k8s.io/apimachinery | v0.33.3 | Apache-2.0 | https://github.com/kubernetes/apimachinery |
-| k8s.io/cli-runtime | v0.33.3 | Apache-2.0 | https://github.com/kubernetes/cli-runtime |
-| k8s.io/client-go | v0.33.3 | Apache-2.0 | https://github.com/kubernetes/client-go |
-
-Indirect Go dependencies (~165 modules) are recorded in [`api/go.sum`](api/go.sum);
-each is under the license published by its own module.
-
-## Rust crates — direct (`rust/agent/Cargo.toml`)
+## Rust crates — direct (`rust/agent` + `rust/api`)
 
 The privileged agent was ported from Go to Rust (Phase 1 of the Go→Rust plan,
 `.kilo/plans/1791069821704-go-to-rust-migration.md`). The Phase 2 API port
 (`rust/api`, `naslos-api`) reuses axum, axum-server, clap, hyper-util, serde,
-tracing, chrono and ipnet. Direct dependencies:
+tracing, chrono and ipnet; Phase 3 added the `buddyctl` / `buddy-receiver`
+binaries (tar streaming, a PTY for terminal exec). Direct dependencies:
 
 | Component | Version | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
@@ -180,8 +158,6 @@ used instead.
 | docker/login-action | v4.6.0 | Apache-2.0 | https://github.com/docker/login-action |
 | docker/setup-buildx-action | v4.4.1 | Apache-2.0 | https://github.com/docker/setup-buildx-action |
 | docker/build-push-action | v7.4.0 | Apache-2.0 | https://github.com/docker/build-push-action |
-| govulncheck | v1.8.0 (CI) | BSD-3-Clause | https://github.com/golang/vuln |
-| gosec | v2.29.0 (CI) | Apache-2.0 | https://github.com/securego/gosec |
 | gitleaks (CLI) | v8.30.1 | MIT | https://github.com/gitleaks/gitleaks |
 
 ## Ported & adapted code
@@ -191,7 +167,7 @@ license and copyright notice apply to the derived parts.
 
 | Component | What was used | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
-| ddns-updater | Dynamic DNS provider configurations (`api/internal/providers/builtin/*.yaml` for `duckdns`, `dynu`, `noip`, `freedns`, `namecheap`, `desec`, `spdyn`, `selfhostde`, `dynv6`, `digitalocean`, `godaddy`, `porkbun` and OVH DynHost), the DNS-resolution detection model, and the `digitalocean`/`godaddy`/`porkbun` driver logic | MIT | https://github.com/qdm12/ddns-updater |
+| ddns-updater | Dynamic DNS provider configurations (`rust/api/src/providers/builtin/*.yaml` for `duckdns`, `dynu`, `noip`, `freedns`, `namecheap`, `desec`, `spdyn`, `selfhostde`, `dynv6`, `digitalocean`, `godaddy`, `porkbun` and OVH DynHost), the DNS-resolution detection model, and the `digitalocean`/`godaddy`/`porkbun` driver logic | MIT | https://github.com/qdm12/ddns-updater |
 | cert-manager | ACME DNS-01 certificates and Issuer/Certificate CRs (chart dependency `cert-manager`, Apache-2.0); the OVH provider's `apiRights` and webhook solver are derived from cert-manager's DNS-01 documentation | Apache-2.0 | https://cert-manager.io/docs/configuration/acme/dns01/ |
 | cert-manager-webhook-ovh (aureq) | The OVH DNS-01 webhook (Helm chart + image) that renders the OVH `webhook` solver; `apiRights` text derived from its README | MIT | https://github.com/aureq/cert-manager-webhook-ovh |
 | local-path-provisioner (Rancher) | The v0.0.26 `local-path-storage.yaml` manifest, pinned at `bootstrap/local-path/local-path-storage.yaml` and shipped in the install pack as `manifests/local-path-v0.0.26.yaml` (FR-INSTALL) | Apache-2.0 | https://github.com/rancher/local-path-provisioner |

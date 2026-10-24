@@ -1,10 +1,9 @@
-.PHONY: all api agent ui images push-images \
+.PHONY: all agent ui images push-images \
         buddyctl buddy-receiver-image \
         bootstrap bootstrap-vm dev-cluster crds \
         cert-manager cert-manager-webhook-ovh \
         install install-vm install-pack uninstall clean
 
-GO := go
 DOCKER := docker
 TALOSCTL := talosctl
 KUBECTL := kubectl
@@ -60,10 +59,7 @@ SCHEMATIC := $(if $(wildcard bootstrap/schematic/naslos.yaml),bootstrap/schemati
 AUTHELIA_CONFIG_SHA := $(shell sha256sum $(CHART_DIR)/templates/authelia-config.yaml 2>/dev/null | cut -c1-64)
 AUTHELIA_CONFIG_FLAG := $(if $(AUTHELIA_CONFIG_SHA),--set authelia.pod.annotations.checksum-config=$(AUTHELIA_CONFIG_SHA))
 
-all: api agent ui
-
-api:
-	cd api && $(GO) build -o ../bin/naslos-api ./cmd
+all: agent ui
 
 agent:
 	cargo build --manifest-path rust/Cargo.toml --release --package naslos-agent
@@ -81,7 +77,7 @@ buddyctl:
 images: api-image agent-image ui-image openldap-image samba-image nfs-image terminal-image buddy-receiver-image
 
 api-image:
-	$(DOCKER) build -t $(API_IMAGE) -f api/Dockerfile.rust .
+	$(DOCKER) build -t $(API_IMAGE) -f rust/api/Dockerfile .
 
 agent-image:
 	$(DOCKER) build -t $(AGENT_IMAGE) -f agent/Dockerfile.rust .
@@ -106,7 +102,7 @@ terminal-image:
 # The standalone Buddy Backup receiver: a two-volume container that stores
 # encrypted backups it cannot read (docs/buddy-backup.md).
 buddy-receiver-image:
-	$(DOCKER) build -t $(BUDDY_RECEIVER_IMAGE) --build-arg VERSION=$(IMAGE_TAG) -f api/Dockerfile.receiver.rust .
+	$(DOCKER) build -t $(BUDDY_RECEIVER_IMAGE) --build-arg VERSION=$(IMAGE_TAG) -f rust/api/Dockerfile.receiver .
 
 # Push all Naslos container images to REGISTRY (requires docker login / insecure-registry config for HTTP registries).
 push-images: images
@@ -193,7 +189,7 @@ crds:
 # Install cert-manager and the OVH DNS-01 webhook, each as its own release in
 # the `cert-manager` namespace. CRDs come from `make crds` (crds.enabled=false
 # avoids a second, conflicting CRD install). The webhook's group name must match
-# the `webhook.groupName` in api/internal/providers/builtin/ovh.yaml.
+# the `webhook.groupName` in rust/api/src/providers/builtin/ovh.yaml.
 cert-manager:
 	$(HELM) repo add jetstack https://charts.jetstack.io --force-update
 	$(HELM) repo update jetstack
