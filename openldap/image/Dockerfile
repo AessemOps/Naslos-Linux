@@ -38,7 +38,6 @@ RUN apt-get update && \
         slapd \
         ldap-utils \
         openssl \
-        ca-certificates \
         && rm -rf /var/lib/apt/lists/*
 
 # Debian 13's slapd defaults olcPidFile to /var/run/slapd/slapd.pid and relies on

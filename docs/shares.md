@@ -568,7 +568,7 @@ for the single-node layout, but it must be cleared on multi-node clusters
 
 | Image | Role | Make target |
 | --- | --- | --- |
-| `naslos-samba` | SMB / Time Machine serving (smbd, smbclient, pdbedit, samba-vfs-modules, libnss-extrausers, **avahi-daemon + wsdd** for discovery) | `make samba-image` |
+| `naslos-samba` | SMB / Time Machine serving (smbd, pdbedit, testparm/smbcontrol, samba-vfs-modules, libnss-extrausers, **avahi-daemon + wsdd2** for discovery) | `make samba-image` |
 | `naslos-nfs` | NFS serving (NFS-Ganesha, NFSv4/TCP on :2049) | `make nfs-image` |
 
 ## Verification

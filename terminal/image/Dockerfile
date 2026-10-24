@@ -11,37 +11,33 @@
 # match the running kernel module. A login shell gets `zpool`/`zfs` wrappers for
 # it (see /etc/profile.d), so `zpool status` works as typed.
 #
+# Alpine (not Debian): the toolset is the same (bash, e2fsprogs, util-linux,
+# iproute2, ping, dig, curl, less, nano, jq) at ~1/4 of the image size, and the
+# busybox base already provides `chroot` for the host wrappers.
+#
 # This is intentionally a powerful container: it is gated by the UI's auth
 # (Authelia forwardAuth) and documented as such in docs/terminal.md.
 
-FROM debian:trixie-slim
+FROM alpine:3.24
 
 LABEL maintainer="Naslos <team@naslos.dev>"
 LABEL description="Administrative shell for the Naslos web terminal"
 
-# dist-upgrade pulls the current Debian security pocket over the base image:
-# `trixie-slim` ships whatever versions were current when the tag was pushed,
-# and the trivy scan found base-library HIGHs (util-linux, systemd, ncurses,
-# perl, curl, expat) that Debian marks as having no fix yet. Without this step
-# the image pins the base lag; with it, a rebuild picks up a fix the moment the
-# security pocket publishes one.
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+# `procps` and `tini` are deliberately absent: nothing in the image uses them
+# (the pod is kept alive by CMD and exec sessions attach to it), and Alpine's
+# busybox provides the basic process tools the shell needs.
+RUN apk add --no-cache \
         bash \
         e2fsprogs \
         util-linux \
-        procps \
         iproute2 \
-        iputils-ping \
-        dnsutils \
+        iputils \
+        bind-tools \
         curl \
         ca-certificates \
         less \
         nano \
-        jq \
-        tini \
-        && rm -rf /var/lib/apt/lists/*
+        jq
 
 # /host is the Talos host filesystem, /var/mnt the datasets, /dev the devices.
 RUN mkdir -p /host /var/mnt
@@ -54,4 +50,3 @@ RUN chmod 0644 /etc/profile.d/naslos-shell.sh
 # The pod stays alive so exec sessions can attach to it; the shell is started by
 # the terminal (`bash -l` by default), not by the container.
 CMD ["sleep", "infinity"]
-

@@ -104,6 +104,23 @@ anonymously:
   `naslos-<component>:<version>` and `:sha-<commit>`; the pack pins the immutable
   digests.
 
+### Image footprint (2026-10-24 audit)
+
+| Image | Base | Size | Why it cannot be smaller (yet) |
+| --- | --- | --- | --- |
+| `naslos-api` | Alpine | ~375 MB | ~246 MB is the three pinned CLIs (`talosctl` 118, `helm` 66, `kubectl` 62) the API shells out to, plus `git`/`openssh-client` for chart sources. A native Talos gRPC client would remove `talosctl` (the largest item) — a code change, not a base swap. |
+| `naslos-agent` | scratch + static busybox | ~8 MB | Static musl binary; busybox supplies the `chroot` the agent uses to run host `zpool`/`zfs`. |
+| `naslos-ui` | nginx-unprivileged alpine-slim | ~31 MB | Static assets; the slim variant drops the unused dynamic nginx modules. |
+| `naslos-terminal` | Alpine | ~53 MB | The admin toolset (bash, e2fsprogs, util-linux, iproute2, iputils, bind-tools, curl, less, nano, jq); no unused `procps`/`tini`. |
+| `naslos-samba` | Debian slim | ~264 MB | Samba + VFS modules; Debian is required because musl has no NSS module loading, so `libnss-extrausers` (the LDAP uid mirror) cannot work on Alpine. |
+| `naslos-nfs` | Debian slim | ~153 MB | NFS-Ganesha + VFS FSAL (not packaged for Alpine). |
+| `naslos-openldap` | Debian slim | ~213 MB | slapd + the Debian entrypoint paths/schema layout. |
+| `naslos-buddy-receiver` | distroless static | ~17 MB | Static binary, no shell; the image is already minimal. |
+
+The Debian images run `apt-get dist-upgrade` on purpose (security pocket) and
+`--no-install-recommends`; packages nothing in the entrypoints/config uses are
+not installed (e.g. `smbclient`, `avahi-utils`, `nfs-common`, `procps`).
+
 ## Make targets
 
 | Target | What it does |
