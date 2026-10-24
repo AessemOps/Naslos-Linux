@@ -1,17 +1,16 @@
 # Naslos UI container image
 # Builds the SvelteKit static site and serves it with nginx.
 
-FROM node:20-alpine AS builder
+# Node 22 LTS on glibc: the committed lockfile was generated on glibc, so the
+# build uses `npm ci` against exactly the audited dependency set (SEC-2026-G4)
+# instead of resolving caret ranges inside the image. The output is static, so
+# the glibc/musl distinction of the final nginx stage does not matter.
+FROM node:22-bookworm-slim AS builder
 
 WORKDIR /build
 
-# Install dependencies. `npm install` rather than `npm ci`: package-lock.json is
-# generated on the glibc host, and the npm optional-dependency bug
-# (npm/cli#4828) means `npm ci` then misses the musl-only binaries this alpine
-# builder needs (rollup's @rollup/rollup-linux-x64-musl). Resolving in-image is
-# the workaround the error itself recommends; the lock still pins the versions.
-COPY ui/package*.json ./
-RUN rm -f package-lock.json && npm install --no-audit --no-fund
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 # Copy the UI source and build the static site
 COPY ui/ ./

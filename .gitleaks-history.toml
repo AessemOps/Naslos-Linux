@@ -1,0 +1,15 @@
+# gitleaks configuration for `gitleaks git` (history scan).
+#
+# Unlike .gitleaks.toml it must NOT allowlist bootstrap/vm/ or .kilo/: those
+# paths are ignored working-tree material, but a copy that ever reached history
+# is exactly what this scan exists to find (PF-H1: the Talos CA and an OpenLDAP
+# password had to be purged with git filter-repo).
+[extend]
+useDefault = true
+
+# Intentional public test fixtures only (the RFC 6238 TOTP vector).
+[[allowlists]]
+description = "test fixtures"
+paths = [
+  '''^ui/tests/totp\.spec\.ts$''',
+]

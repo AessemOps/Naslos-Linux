@@ -34,6 +34,63 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # This is the assertion the revision-38 attempt lacked: it would have failed on
 # the missing AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE env var and on
 # the additionalSecrets mount path not matching the env path.
+
+# SEC-2026 hardening regression guard: the rendered chart must keep the
+# strip-identity middleware on the API route, a narrow TRAEFIK_CIDR fallback,
+# and a Secret-sourced buddy KEK (PF-M14).
+check_security_rendering() {
+  f=$(mktemp) || return 1
+  if ! helm template naslos "$root/charts/naslos" -n naslos \
+    -f "$root/charts/naslos/values.yaml" -f "$root/charts/naslos/values-vm.yaml" \
+    --set openldap.bindPassword=lint-only --set buddy.enabled=true >"$f" 2>/dev/null; then
+    rm -f "$f"
+    return 1
+  fi
+  python3 - "$f" <<'PY'
+import base64, sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+def find(kind, name):
+    for d in docs:
+        if d.get("kind") == kind and d["metadata"]["name"] == name:
+            return d
+    return None
+api = find("IngressRoute", "naslos-api")
+assert api, "naslos-api IngressRoute missing"
+middlewares = [m["name"] for m in api["spec"]["routes"][0].get("middlewares", [])]
+assert "strip-client-identity" in middlewares, middlewares
+assert middlewares.index("strip-client-identity") < middlewares.index("forwardauth-authelia"), middlewares
+dp = find("Deployment", "naslos-api")
+env = {e["name"]: e for e in dp["spec"]["template"]["spec"]["containers"][0]["env"]}
+assert env.get("TRAEFIK_CIDR", {}).get("value") == "10.244.0.0/16", env.get("TRAEFIK_CIDR")
+kek = env.get("BUDDY_KEK", {})
+ref = kek.get("valueFrom", {}).get("secretKeyRef", {})
+assert ref.get("name") == "naslos-buddy-kek", ref
+secret = find("Secret", "naslos-buddy-kek")
+assert secret, "generated buddy KEK Secret missing"
+raw = base64.b64decode(secret["data"]["kek"])
+assert len(base64.b64decode(raw)) == 32, "buddy KEK must be 32 bytes"
+PY
+  rm -f "$f"
+}
+
+# SEC-2026-G1/G4/G8 guard: no unverified CLI download, no disabled SSH host-key
+# check, no npm lockfile deletion, and the history secret scan uses its own
+# config (bootstrap/vm must not be allowlisted there).
+check_build_integrity() {
+  ok=1
+  grep -q 'KUBECTL_SHA256' "$root/rust/api/Dockerfile" || ok=0
+  grep -q 'HELM_SHA256' "$root/rust/api/Dockerfile" || ok=0
+  grep -q 'TALOSCTL_SHA256' "$root/rust/api/Dockerfile" || ok=0
+  grep -q 'sha256sum -c -' "$root/rust/api/Dockerfile" || ok=0
+  if grep -q 'StrictHostKeyChecking=no' "$root/rust/api/src/chartsrepo.rs"; then ok=0; fi
+  if grep -q 'rm -f package-lock.json' "$root/ui/Dockerfile"; then ok=0; fi
+  grep -q 'npm ci' "$root/ui/Dockerfile" || ok=0
+  [ -f "$root/.gitleaks-history.toml" ] || ok=0
+  grep -q -- '--config .gitleaks-history.toml' "$root/.github/workflows/ci.yml" || ok=0
+  if grep -q "^  '''\\^bootstrap/vm/" "$root/.gitleaks-history.toml"; then ok=0; fi
+  [ "$ok" -eq 1 ]
+}
+
 check_authelia_ldap_secret() {
   f=$(mktemp) || return 1
   if ! helm template naslos "$root/charts/naslos" -n naslos \
@@ -554,7 +611,17 @@ if [ -d "$root/rust" ]; then
     else
       skip "cargo clippy (rust workspace)" "clippy not installed (rustup component add clippy)"
     fi
-    run "cargo test (rust workspace)" cargo test --release
+    run "cargo test (rust workspace)" cargo test --release --locked
+    if have cargo-audit; then
+      run "cargo audit (rust workspace)" cargo audit --ignore RUSTSEC-2026-0119 --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0387
+    else
+      skip "cargo audit" "cargo-audit not installed (cargo install cargo-audit)"
+    fi
+    if have cargo-deny; then
+      run "cargo deny (advisories, bans, licenses, sources)" cargo deny check advisories bans licenses sources
+    else
+      skip "cargo deny" "cargo-deny not installed (cargo install cargo-deny)"
+    fi
   else
     skip "cargo (rust workspace)" "cargo is not installed"
   fi
@@ -602,6 +669,8 @@ if have helm; then
   # silently generates stock Talos + flannel (the patch file is what ships).
   run "talos patch ships cilium (AUDIT-M4)" check_talos_patch
   run "grafana stays removed (AUDIT-H4/PF-M3)" check_no_grafana
+  run "security hardening renders (auth/KEK)" check_security_rendering
+  run "build integrity (checksums, host keys, lockfile)" check_build_integrity
 else
   skip "helm lint" "helm is not installed"
 fi
@@ -610,7 +679,7 @@ if have gitleaks; then
   # which let a committed-but-never-committed-later secret slip. Scan both: the
   # working tree (catches new leaks pre-commit) and git history (PF-H1).
   run "gitleaks (working tree)" gitleaks dir . --no-banner --redact
-  run "gitleaks (git history)" gitleaks git . --no-banner --redact
+  run "gitleaks (git history)" gitleaks git . --config .gitleaks-history.toml --no-banner --redact
 else
   skip "gitleaks" "not installed (download the gitleaks CLI release)"
 fi
