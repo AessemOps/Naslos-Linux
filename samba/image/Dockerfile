@@ -21,10 +21,8 @@ RUN apt-get update && \
         samba \
         samba-common-bin \
         samba-vfs-modules \
-        smbclient \
         libnss-extrausers \
         avahi-daemon \
-        avahi-utils \
         dbus \
         wsdd2 \
         tini \

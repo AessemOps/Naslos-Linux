@@ -42,8 +42,8 @@ ls /var/mnt/test        # the datasets, as the host sees them
 ```
 
 The wrappers exist because the image deliberately carries no ZFS packages:
-`zfsutils-linux` is in Debian's contrib component, and the host's own binaries
-match the running kernel module. Note the path *after* `chroot /host` is relative
+a distro ZFS package would only duplicate the host's own binaries, which match
+the running kernel module. Note the path *after* `chroot /host` is relative
 to the new root (`/usr/local/sbin/zpool`), which is a mistake worth remembering.
 
 ## Security

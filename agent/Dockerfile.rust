@@ -3,7 +3,10 @@
 
 FROM rust:1.88-alpine AS builder
 
-RUN apk add --no-cache musl-dev
+RUN apk add --no-cache musl-dev busybox-static
+# Static musl binary for the scratch runtime; the flag is target-scoped so proc
+# macros still build for the host.
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static"
 
 WORKDIR /build
 COPY rust/Cargo.toml Cargo.toml
@@ -17,19 +20,31 @@ COPY rust/api/Cargo.toml api/Cargo.toml
 RUN mkdir -p agent/src api/src \
     && echo 'fn main() {}' > agent/src/main.rs && echo '' > agent/src/lib.rs \
     && echo 'pub fn placeholder() {}' > api/src/lib.rs && echo 'fn main() {}' > api/src/main.rs \
-    && cargo build --release --package naslos-agent || true
+    && cargo build --release --target x86_64-unknown-linux-musl --package naslos-agent || true
 COPY rust/agent/src agent/src
 # Bust the placeholder build (touch the lib too, so the dependency crate is
 # recompiled with the real sources) and produce the real binary.
-RUN touch agent/src/main.rs agent/src/lib.rs && cargo build --release --package naslos-agent
+RUN touch agent/src/main.rs agent/src/lib.rs \
+    && cargo build --release --target x86_64-unknown-linux-musl --package naslos-agent
 
-# Alpine (not distroless): the agent calls `chroot /host <bin>` to run
-# zpool/zfs/wipefs on the Talos host, and distroless ships no chroot binary.
-# Alpine's busybox provides chroot and the static musl binary runs unchanged.
-FROM alpine:3.24
+# Assemble the two files the agent needs on top of the static binary:
+#   - a static busybox with `chroot` (the agent runs zpool/zfs on the Talos host
+#     through `chroot /host`; distroless/scratch ship no chroot),
+#   - /tmp for any transient file.
+RUN mkdir -p /rootfs/bin /rootfs/tmp /rootfs/etc \
+    && cp /bin/busybox.static /rootfs/bin/busybox \
+    && ln -s busybox /rootfs/bin/chroot \
+    && ln -s busybox /rootfs/bin/sh \
+    && printf 'root:x:0:0:root:/root:/bin/sh\n' > /rootfs/etc/passwd \
+    && printf 'root:x:0:\n' > /rootfs/etc/group
 
-WORKDIR /app
-COPY --from=builder /build/target/release/naslos-agent /app/naslos-agent
+FROM scratch
+
+COPY --from=builder /rootfs/ /
+COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/naslos-agent /app/naslos-agent
+
+# `/bin` holds the static busybox applets; the agent resolves `chroot` by name.
+ENV PATH=/bin
 
 # The agent is privileged and must run as root to chroot /host.
 USER root:root

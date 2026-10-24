@@ -40,7 +40,7 @@ It also lists the GitHub Actions used by the CI/release workflows.
 | Component | Pin | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
 | Debian (slim base) | `debian:trixie-slim` | Debian DFSG (mixed per package) | https://www.debian.org/ |
-| Alpine Linux | `alpine:3.20` | Alpine (musl MIT, BusyBox GPL-2.0-only, apk-tools GPL-2.0-only) | https://alpinelinux.org/ |
+| Alpine Linux | `alpine:3.24` | Alpine (musl MIT, BusyBox GPL-2.0-only, apk-tools GPL-2.0-only) | https://alpinelinux.org/ |
 | distroless static | `gcr.io/distroless/static-debian12:nonroot` | Apache-2.0 | https://github.com/GoogleContainerTools/distroless |
 | nginx unprivileged | `nginxinc/nginx-unprivileged:1.30.5-alpine` | BSD-2-Clause | https://github.com/nginxinc/docker-nginx-unprivileged |
 | Rust toolchain | `rust:1.88-alpine` | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
@@ -182,9 +182,9 @@ authoritative copyright file ships in the image at
 
 | Package | License (SPDX) | Upstream |
 | --- | --- | --- |
-| samba, samba-common-bin, samba-vfs-modules, smbclient | GPL-3.0-or-later | https://www.samba.org/ |
+| samba, samba-common-bin, samba-vfs-modules | GPL-3.0-or-later | https://www.samba.org/ |
 | libnss-extrausers | GPL-2.0-only AND LGPL-2.1-or-later | https://tracker.debian.org/pkg/libnss-extrausers |
-| avahi-daemon, avahi-utils | LGPL-2.1-or-later (GPL-2.0-or-later for some files) | https://github.com/avahi/avahi |
+| avahi-daemon | LGPL-2.1-or-later (GPL-2.0-or-later for some files) | https://github.com/avahi/avahi |
 | dbus | AFL-2.1 OR GPL-2.0-or-later | https://gitlab.freedesktop.org/dbus/dbus |
 | wsdd2 | GPL-3.0 | https://github.com/Netgear/wsdd2 |
 | tini | MIT | https://github.com/krallin/tini |
@@ -194,8 +194,6 @@ authoritative copyright file ships in the image at
 | Package | License (SPDX) | Upstream |
 | --- | --- | --- |
 | nfs-ganesha, nfs-ganesha-vfs | LGPL-3.0 (LGPL-3.0-or-later for some files) | https://github.com/nfs-ganesha/nfs-ganesha |
-| nfs-common (nfs-utils) | GPL-2.0-or-later | https://linux-nfs.org/ |
-| procps | GPL-2.0-or-later AND LGPL-2.1-or-later | https://gitlab.com/procps-ng/procps |
 | tini | MIT | https://github.com/krallin/tini |
 
 ### openldap image (`openldap/image/Dockerfile`)
@@ -204,25 +202,23 @@ authoritative copyright file ships in the image at
 | --- | --- | --- |
 | slapd, ldap-utils (OpenLDAP) | OpenLDAP Public License (OLDAP-2.8 style) | https://www.openldap.org/ |
 | openssl | Apache-2.0 | https://www.openssl.org/ |
-| ca-certificates | GPL-2.0-or-later AND MPL-2.0 | https://tracker.debian.org/pkg/ca-certificates |
 
 ### terminal image (`terminal/image/Dockerfile`)
 
 | Package | License (SPDX) | Upstream |
 | --- | --- | --- |
 | bash | GPL-3.0-or-later | https://www.gnu.org/software/bash/ |
+| busybox (base + `chroot`) | GPL-2.0-only | https://busybox.net/ |
 | e2fsprogs | GPL-2.0-only AND LGPL-2.0-only AND BSD-3-Clause AND MIT | https://e2fsprogs.sourceforge.net/ |
 | util-linux | GPL-2.0-or-later AND LGPL-2.1-or-later AND BSD-3-Clause AND MIT | https://github.com/util-linux/util-linux |
-| procps | GPL-2.0-or-later AND LGPL-2.1-or-later | https://gitlab.com/procps-ng/procps |
 | iproute2 | GPL-2.0-or-later | https://git.kernel.org/pub/scm/network/iproute2/iproute2.git |
 | iputils | BSD-3-Clause AND GPL-2.0-or-later | https://github.com/iputils/iputils |
-| dnsutils (BIND 9) | MPL-2.0 | https://gitlab.isc.org/isc-projects/bind9 |
+| bind-tools (BIND 9) | MPL-2.0 | https://gitlab.isc.org/isc-projects/bind9 |
 | curl | curl (MIT-like) | https://github.com/curl/curl |
-| ca-certificates | GPL-2.0-or-later AND MPL-2.0 | https://tracker.debian.org/pkg/ca-certificates |
+| ca-certificates | GPL-2.0-or-later AND MPL-2.0 | https://gitlab.alpinelinux.org/alpine/aports |
 | less | GPL-3.0-or-later OR BSD-2-Clause | https://www.greenwoodsoftware.com/less/ |
 | nano | GPL-3.0-or-later | https://www.nano-editor.org/ |
 | jq | MIT | https://github.com/jqlang/jq |
-| tini | MIT | https://github.com/krallin/tini |
 
 ### zsh-terminal image (`zsh-terminal/Dockerfile`)
 
