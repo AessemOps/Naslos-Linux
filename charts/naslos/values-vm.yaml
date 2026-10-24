@@ -23,7 +23,7 @@
 api:
   image:
     repository: 192.168.1.2:30095/naslos-api
-    tag: "0.1.0-r33"
+    tag: "0.1.0-r34"
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -41,10 +41,10 @@ api:
 agent:
   image:
     repository: 192.168.1.2:30095/naslos-agent
-    # r9 = the Rust port of the agent (Phase 1 of the Go-to-Rust plan). The
-    # registry reuses tags and the DaemonSet pulls IfNotPresent, so the suffix
-    # must change for the Rust binary to roll out (agent/Dockerfile.rust).
-    tag: "0.1.0-r9"
+    # r10 = the Rust agent (Phase 1 of the Go-to-Rust plan). The registry reuses
+    # tags and the DaemonSet pulls IfNotPresent, so the suffix must change for a
+    # new binary to roll out (agent/Dockerfile.rust).
+    tag: "0.1.0-r10"
 ui:
   image:
     repository: 192.168.1.2:30095/naslos-ui

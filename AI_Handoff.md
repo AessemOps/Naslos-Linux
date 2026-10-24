@@ -63,10 +63,12 @@ load** on this 5.76 GiB node.
 The Rust API (`rust/api`, `naslos-api`) is now the **deployed** API on the
 Talos VM, next to the Rust agent.
 
-- **Live (helm revision 8):** `api` = `192.168.1.2:30095/naslos-api:rust-s7e`,
-  `agent` = `192.168.1.2:30095/naslos-agent:0.1.0-r10` (both pulled into the
-  node's containerd; the private registry mirror was added to the live machine
-  config for the drill and is already in `bootstrap/vm/naslos-vm.yaml`).
+- **Live (helm revision 8, API rolled by patch):** `api` =
+  `192.168.1.2:30095/naslos-api:0.1.0-r34`, `agent` =
+  `192.168.1.2:30095/naslos-agent:0.1.0-r10`. The VM overlay now pins both, so a
+  clean `make install-vm` deploys the Rust pair (the old `0.1.0-r33` was the last
+  Go API image). The private-registry mirror was added to the live machine
+  config for the drill and is already in `bootstrap/vm/naslos-vm.yaml`.
 - **Live-verified (all 200 unless noted):** `/api/health`, `/api/ready`,
   `/api/auth/me`, `/api/dashboard`, `/api/metrics` (real Talos CPU/memory/disk/
   network), `/api/volumes/zfs` (pool `test`), `/api/datasets`, `/api/disks`,
