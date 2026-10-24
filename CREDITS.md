@@ -42,9 +42,9 @@ It also lists the GitHub Actions used by the CI/release workflows.
 | Debian (slim base) | `debian:trixie-slim` | Debian DFSG (mixed per package) | https://www.debian.org/ |
 | Alpine Linux | `alpine:3.24` | Alpine (musl MIT, BusyBox GPL-2.0-only, apk-tools GPL-2.0-only) | https://alpinelinux.org/ |
 | distroless static | `gcr.io/distroless/static-debian12:nonroot` | Apache-2.0 | https://github.com/GoogleContainerTools/distroless |
-| nginx unprivileged | `nginxinc/nginx-unprivileged:1.30.5-alpine-slim` | BSD-2-Clause | https://github.com/nginxinc/docker-nginx-unprivileged |
+| nginx unprivileged | `nginxinc/nginx-unprivileged:1.30.6-alpine-slim` | BSD-2-Clause | https://github.com/nginxinc/docker-nginx-unprivileged |
 | Rust toolchain | `rust:1.88-alpine` | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
-| Node.js toolchain | `node:22-bookworm-slim` | MIT | https://nodejs.org/ |
+| Node.js toolchain | `node:24-bookworm-slim` | MIT | https://nodejs.org/ |
 
 ## Rust crates — direct (`rust/agent` + `rust/api`)
 

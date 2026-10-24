@@ -5,7 +5,7 @@
 # build uses `npm ci` against exactly the audited dependency set (SEC-2026-G4)
 # instead of resolving caret ranges inside the image. The output is static, so
 # the glibc/musl distinction of the final nginx stage does not matter.
-FROM node:22-bookworm-slim AS builder
+FROM node:24-bookworm-slim AS builder
 
 WORKDIR /build
 
@@ -23,7 +23,7 @@ RUN npm run build
 # rootfs. The Service maps its port 80 to this 8080.
 # The `alpine-slim` variant drops the unused dynamic modules (xslt, geoip,
 # image-filter, njs); this config only needs core nginx (proxy, map, try_files).
-FROM nginxinc/nginx-unprivileged:1.30.5-alpine-slim
+FROM nginxinc/nginx-unprivileged:1.30.6-alpine-slim
 
 # Copy the built static assets to nginx's document root
 COPY --from=builder /build/dist /usr/share/nginx/html
