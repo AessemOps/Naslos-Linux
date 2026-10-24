@@ -94,7 +94,7 @@ ddns:                           # optional: DDNS support
 
 ### Where definitions come from
 
-1. **Embedded defaults** (`api/internal/providers/builtin/`): `ovh`,
+1. **Embedded defaults** (`rust/api/src/providers/builtin/`): `ovh`,
    `cloudflare`, `generic` (DDNS), `rfc2136`, `passthrough` (certificates).
 2. **An override directory** (`DDNS_PROVIDERS_DIR`, set by `ddns.providersDir`).
    Files are read in name order; a file whose `name` matches a built-in replaces
@@ -151,7 +151,7 @@ stored value.
 ### Built-in DDNS providers
 
 The embedded `builtin/` definitions ported from ddns-updater (a provider using
-one of the drivers above is pure YAML — no Go change):
+one of the drivers above is pure YAML — no code change):
 
 | Provider | Driver | Notes |
 | --- | --- | --- |

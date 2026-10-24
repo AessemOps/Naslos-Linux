@@ -1,10 +1,10 @@
 [
-  { "name": "api", "context": ".", "file": "api/Dockerfile.rust" },
+  { "name": "api", "context": ".", "file": "rust/api/Dockerfile" },
   { "name": "agent", "context": ".", "file": "agent/Dockerfile.rust" },
   { "name": "ui", "context": ".", "file": "ui/Dockerfile" },
   { "name": "samba", "context": "samba/image", "file": "samba/image/Dockerfile" },
   { "name": "nfs", "context": "nfs/image", "file": "nfs/image/Dockerfile" },
   { "name": "terminal", "context": "terminal/image", "file": "terminal/image/Dockerfile" },
   { "name": "openldap", "context": "openldap/image", "file": "openldap/image/Dockerfile" },
-  { "name": "buddy-receiver", "context": ".", "file": "api/Dockerfile.receiver.rust" }
+  { "name": "buddy-receiver", "context": ".", "file": "rust/api/Dockerfile.receiver" }
 ]

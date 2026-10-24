@@ -571,7 +571,7 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
 
 - **FR-DNS-01** — Providers MUST be declared in YAML (built-in defaults plus an
   optional override directory); a provider that uses a built-in cert-manager
-  solver or a built-in DDNS driver MUST require no Go change. An invalid or
+  solver or a built-in DDNS driver MUST require no code change. An invalid or
   unreadable override MUST be skipped with a logged error and surfaced by
   `GET /api/providers`, never fatal. *(providers tests)*
 - **FR-DNS-02** — DDNS entry CRUD MUST NOT return credential values: the API
@@ -838,17 +838,17 @@ are additionally verified against the live VM (not by Playwright):
 | `avahi-browse -rt _smb._tcp` lists the server at the LAN address | FR-SHR-08 |
 | `netbios name` in `smb.conf` equals the advertised discovery name | FR-SHR-10 |
 
-Go tests cover the parts that need no node: `api/internal/identity`
-(`TestComputeNTHashKnownVector` against OpenSSL-computed vectors);
-`api/internal/shares` (smbpasswd and
-extrausers rendering, `TestGroupGIDIsStable`, `TestAccessListRendersGroups`,
-`TestNetBIOSNameSanitised`); `api/internal/server` (`TestGroupDelta` for the
-user-edit membership diff, FR-IDN-04; `TestNotificationsNeverReturnTheAuthToken`
-for the write-only ntfy token); and `agent/internal/shares`
-(`TestApplyRestrictsSecretMirrors` for the 0600 passdb/shadow mirrors, FR-IDN-13).
+Rust tests cover the parts that need no node: `rust/api/src/identity.rs`
+(NT-hash known vectors against OpenSSL-computed values);
+`rust/api/src/shares.rs` (smbpasswd and
+extrausers rendering, stable group GIDs, access-list groups, NetBIOS name
+sanitising); `rust/api/src/server/` (the user-edit membership diff, FR-IDN-04;
+the write-only ntfy token, `TestNotificationsNeverReturnTheAuthToken`); and
+`rust/agent/src/shares/` (the 0600 passdb/shadow mirrors, FR-IDN-13).
 
-Buddy Backup is verified by `api/internal/buddy/buddy_test.go`, which runs the
-real receiver over HTTP (an `httptest` server) against the real client:
+Buddy Backup is verified by the Rust suites in `rust/api/src/buddy/` and
+`rust/api/tests/`, which run the real receiver over HTTP against the real
+client (the case names below are the original Go suite's):
 
 | Test | Verifies |
 | --- | --- |
@@ -870,8 +870,8 @@ real receiver over HTTP (an `httptest` server) against the real client:
 | `TestBuddySendRefusesADatasetTheHostCannotSee` / `TestBuddySendAllowsADatasetWithNoMountpoint` | FR-BUD-11 (a dataset mounted only inside a pod is refused before any snapshot; mountpoint none stays sendable) |
 
 Dynamic DNS and the provider registry are verified by
-`api/internal/providers/providers_test.go`, `api/internal/ddns/*_test.go` and
-`api/internal/certs/certs_test.go`:
+`rust/api/src/providers.rs`, `rust/api/src/ddns.rs` and
+`rust/api/src/certs.rs`:
 
 | Test | Verifies |
 | --- | --- |
@@ -915,13 +915,12 @@ ingress): peer → nginx → API, with the chart's `buddy` values enabled:
 | schedule against a dead receiver → job `failed`, `lastResult: failed`, one `backup_failure` ntfy post | FR-BUD-15 |
 | `ui/tests/backups.spec.ts` — identity card, schedule create/delete, receiver free space, manual send to `succeeded` | FR-BUD-16 |
 
-Go verification: `go build ./...` in `api/`; `go vet` clean. Agent verification
-(Rust): `cargo clippy --all-targets -- -D warnings` and `cargo test` in `rust/`.
-`gofmt` clean on touched files; `npm run check` in `ui/` with 0 errors.
+Rust verification: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
+and `cargo test` in `rust/` (agent and API). `npm run check` in `ui/` with 0 errors.
 
 LDAP resilience (FR-IDN-11/12) is covered by
-`api/internal/identity/client_test.go` (`TestNewClientIsLazyAndDoesNotFailWhenLDAPIsDown`,
-`TestEnsureConnectionRetriesAfterFailure`) plus this live drill:
+`rust/api/src/identity.rs` (lazy client and retry-after-failure cases) plus this
+live drill:
 
 1. `kubectl -n naslos scale sts naslos-openldap --replicas=0`
 2. `kubectl -n naslos rollout restart deploy/naslos-api` (the restart race)

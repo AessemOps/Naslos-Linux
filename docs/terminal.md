@@ -24,7 +24,7 @@ Components:
 | Piece | Where | Notes |
 | --- | --- | --- |
 | `naslos-terminal` Deployment | `charts/naslos/templates/terminal.yaml` | Runs in `naslos-privileged`; one idle container (`sleep infinity`); exec sessions attach to it. The UI discovers the namespace rather than assuming one. `terminal.enabled=false` removes it and the API's RBAC together |
-| exec + pickers | `api/internal/server/websocket.go`, `pods.go` | Pod/namespace listing, target validation, SPDY exec, resize queue |
+| exec + pickers | `rust/api/src/server/ws.rs`, `pods.rs` | Pod/namespace listing, target validation, kubectl exec under a PTY, log streaming, resize |
 | terminal page | `ui/src/routes/terminal/+page.svelte` | Namespace/pod/container pickers, shell picker, toasts for errors |
 | shell setup | `terminal/image/naslos-shell.sh` | `zpool`/`zfs`/`wipefs` wrappers that chroot into the host |
 

@@ -48,9 +48,8 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 ## Architecture
 
 ```
-api/         Go — Talos API + K8s API + ZFS orchestration (the brain)
 rust/agent/  Rust DaemonSet, privileged — executes zpool/zfs via chroot /host
-rust/api/    Rust API (Phase 2) — the deployed API server
+rust/api/    Rust API — Talos/K8s/ZFS orchestration + buddyctl/buddy-receiver
 ui/          SvelteKit + Tailwind — dashboard, wizards, terminal
 charts/      naslos umbrella chart (api, ui, agent, openldap, monitoring, shares)
 samba/       Samba image + config
@@ -90,7 +89,7 @@ The full documentation set lives in [`docs/`](docs/README.md):
 - [kubectl](https://kubernetes.io/docs/tasks/tools/)
 - [helm](https://helm.sh/docs/intro/install/)
 - [docker](https://docs.docker.com/get-docker/) or [podman](https://podman.io/)
-- [go](https://go.dev/) 1.26.5+ (for building api/agent)
+- [rust](https://rustup.rs/) 1.88+ (for building the agent and API)
 - [node](https://nodejs.org/) 20+ (for building ui)
 
 ## Quick start

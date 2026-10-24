@@ -1060,4 +1060,8 @@ caught three real defects, all fixed on PR #63:
   zfs receive` (now stderr when the payload is on stdout).
 - Follow-up (S3c): remove the dead Go `api/` tree and relocate the Rust
   Dockerfiles out of `api/` (they still live there today).
+- S3c (2026-10-24): the Go `api/` tree is deleted; the Rust image Dockerfiles
+  moved to `rust/api/Dockerfile` and `rust/api/Dockerfile.receiver`; the image
+  matrix, Makefile, `scripts/audit.sh` and CI no longer reference Go, and the
+  active docs point at the Rust modules. The installer pack remains the rollback.
 
