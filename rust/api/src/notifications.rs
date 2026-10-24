@@ -71,6 +71,7 @@ impl Manager {
             settings: Mutex::new(Settings::default()),
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
             config_path: config_path.to_string(),

@@ -261,7 +261,7 @@ async fn run_job(
 
 /// A short random hex job id.
 fn random_job_id() -> String {
-    let mut buf = [0u8; 8];
+    let mut buf = [0u8; 16];
     if getrandom::getrandom(&mut buf).is_err() {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

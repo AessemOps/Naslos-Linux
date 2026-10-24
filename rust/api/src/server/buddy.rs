@@ -18,7 +18,7 @@ use crate::buddy::store::{Store, StoreError};
 use crate::json;
 use crate::state::AppState;
 
-const MAX_MANIFEST_BYTES: usize = 64 << 20;
+const MAX_MANIFEST_BYTES: usize = 16 << 20;
 const DEFAULT_ENROLL_QUOTA_BYTES: i64 = 1i64 << 40;
 
 /// The receiver's configuration.
@@ -129,14 +129,21 @@ fn peer_for(
 }
 
 #[allow(clippy::result_large_err)]
-async fn read_limited(body: Body, limit: usize) -> Result<Vec<u8>, Response> {
+async fn read_limited(body: Body, limit: usize) -> Result<bytes::Bytes, Response> {
     match axum::body::to_bytes(body, limit).await {
-        Ok(b) => Ok(b.to_vec()),
+        Ok(b) => Ok(b),
         Err(_) => Err(json(
             StatusCode::PAYLOAD_TOO_LARGE,
             serde_json::json!({ "error": format!("request body exceeds {limit} bytes") }),
         )),
     }
+}
+
+fn declared_body_len(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse().ok())
 }
 
 fn uri_path(uri: &axum::http::Uri) -> String {
@@ -460,6 +467,7 @@ fn chain_summaries(manifests: &[Manifest]) -> Vec<serde_json::Value> {
                 "chain": m.chain, "kind": m.kind, "createdAt": m.created_at,
                 "fromSnapshot": m.from_snapshot, "toSnapshot": m.to_snapshot,
                 "fromGUID": m.from_guid, "toGUID": m.to_guid, "chunks": m.chunks.len(),
+                "sequence": m.sequence,
             })
         })
         .collect()
@@ -594,6 +602,12 @@ pub async fn manifest(
     }
 
     // PUT
+    if declared_body_len(&headers).is_some_and(|len| len > MAX_MANIFEST_BYTES as u64) {
+        return json(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            serde_json::json!({ "error": format!("request body exceeds {MAX_MANIFEST_BYTES} bytes") }),
+        );
+    }
     let body = match read_limited(body, MAX_MANIFEST_BYTES).await {
         Ok(b) => b,
         Err(resp) => return resp,

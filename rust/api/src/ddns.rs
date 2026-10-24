@@ -215,6 +215,7 @@ impl Resolver for SystemResolver {
 pub fn default_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent(USER_AGENT)
         .build()
         .unwrap_or_default()
@@ -269,10 +270,12 @@ pub fn normalize_ttl(ttl: i64) -> i64 {
 
 pub fn truncate(s: &str) -> String {
     let s = s.trim();
-    if s.len() > 200 {
-        s[..200].to_string()
+    let mut chars = s.chars();
+    let head: String = chars.by_ref().take(200).collect();
+    if chars.next().is_some() {
+        format!("{head}...")
     } else {
-        s.to_string()
+        head
     }
 }
 
@@ -293,14 +296,25 @@ pub async fn detect_ip(client: &reqwest::Client, source: &str) -> Result<String,
             resp.status().as_u16()
         ));
     }
-    let body = resp
-        .text()
+    // Cap the response before decoding and never let a source advertise a
+    // loopback/private/ULA address as the node's public IP.
+    let bytes = resp
+        .bytes()
         .await
         .map_err(|e| format!("reading the IP source response: {e}"))?;
-    let ip: IpAddr = body
-        .trim()
-        .parse()
-        .map_err(|_| format!("IP source {source} returned {:?}, not an IP", body.trim()))?;
+    let head = &bytes[..bytes.len().min(4096)];
+    let body = String::from_utf8_lossy(head);
+    let ip: IpAddr = body.trim().parse().map_err(|_| {
+        format!(
+            "IP source {source} returned {:?}, not an IP",
+            truncate(&body)
+        )
+    })?;
+    if drivers::blocked_ip(&ip) {
+        return Err(format!(
+            "IP source {source} returned the non-public address {ip}"
+        ));
+    }
     Ok(ip.to_string())
 }
 
@@ -801,6 +815,15 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_respects_char_boundaries() {
+        let body = "é".repeat(300);
+        let out = truncate(&body);
+        assert!(out.ends_with("..."));
+        assert_eq!(out.chars().filter(|c| *c == 'é').count(), 200);
+        assert_eq!(truncate("short"), "short");
+    }
 
     #[test]
     fn fqdn_and_label() {
