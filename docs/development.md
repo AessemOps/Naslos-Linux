@@ -6,22 +6,9 @@ Guide for working with the Naslos codebase: layout, builds, and how to extend.
 
 ```
 Naslos-Linux/
-├── api/                 Go — HTTP API server (the brain)
-│   └── internal/
-│       ├── auth/        header-trust middleware (Remote-*, TRAEFIK_CIDR + proxy secret)
-│       ├── catalog/     built-in app store + JSON Schema entries
-│       ├── config/      flag/env config type
-│       ├── helm/        Helm SDK wrapper (install/upgrade/…)
-│       ├── identity/    OpenLDAP client + Samba NT-hash sync
-│       ├── metrics/     SystemMetrics snapshot
-│       ├── notifications/ ntfy settings + delivery
-│       ├── server/      HTTP routes, WebSocket log/exec
-│       ├── shares/      share CRUD + smb.conf / NFS-Ganesha config generation
-│       └── talos/       Talos machinery client, VolumeAdvisor, volumes
-├── agent/               Go privileged DaemonSet for ZFS (chroot /host)
-│   └── internal/
-│       ├── server/      agent HTTP API (:9090)
-│       └── zfs/         pool/dataset/snapshot via chroot /host
+├── rust/                cargo workspace
+│   ├── api/             Rust HTTP API (the brain) + buddyctl / buddy-receiver bins
+│   └── agent/           Rust privileged DaemonSet for ZFS (chroot /host)
 ├── ui/                  SvelteKit + Tailwind + @xterm
 ├── charts/naslos/        umbrella Helm chart (api, ui, agent, deps…)
 ├── bootstrap/schematic/ Image Factory schematic (ZFS extension)
@@ -39,29 +26,28 @@ Naslos-Linux/
 
 | Component | Command | Output |
 | --- | --- | --- |
-| API | `make api` | `bin/naslos-api` |
-| Agent | `make agent` | `bin/naslos-agent` |
+| API | `cd rust && cargo build --release -p naslos-api` | `rust/target/release/naslos-api` |
+| Agent | `make agent` | `rust/target/release/naslos-agent` |
 | UI | `make ui` | `ui/dist` (static) |
-| All | `make all` | above three |
+| All | `make all` | agent + UI |
 | Dev cluster | `make dev-cluster` | local Talos cluster |
 
 UI dev (hot reload): `cd ui && npm run dev` — Vite proxies `/api` to
 `http://localhost:8080`.
 
 Container images are built upstream from these binaries (see
-[deployment.md](deployment.md#images)). Node/go versions: go 1.26.5+, node 20+.
+[deployment.md](deployment.md#images)). Node/Rust versions: node 20+, Rust 1.88+.
 
 ## Testing
 
-Unit tests are colocated as `_test.go` files. `scripts/audit.sh` is the sweep
-(build, vet, `go test -race`, `svelte-check`, `helm lint`, plus `govulncheck`,
-`gosec`, `staticcheck` when installed); there is no CI workflow right now, so run
-it manually. A minimal manual flow:
+Rust tests are colocated as `#[cfg(test)]` modules and in `rust/api/tests/`.
+`scripts/audit.sh` is the sweep (`cargo fmt/clippy/test`, `svelte-check`,
+`helm lint`, the install-pack checks and `gitleaks` when installed); CI runs it
+on every PR. A minimal manual flow:
 
 ```bash
 sh scripts/audit.sh
-cd api && go build ./... && go vet ./...
-cd rust && cargo test -p naslos-agent
+cd rust && cargo test
 ```
 
 For a live smoke test: `make dev-cluster && make crds && make install`, then
@@ -70,7 +56,7 @@ For a live smoke test: `make dev-cluster && make crds && make install`, then
 ## Extending — add a catalog app
 
 Apps now live in the **NaslosCharts** git repository (see
-[app-catalog.md](app-catalog.md) for the repository contract), not in Go source.
+[app-catalog.md](app-catalog.md) for the repository contract), not in the Rust sources.
 
 1. Create `apps/<name>/` in the chart repository with `Chart.yaml`,
    `values.yaml`, `templates/` and a `naslos-app.yaml` install-config.
@@ -85,9 +71,9 @@ Apps now live in the **NaslosCharts** git repository (see
 
 ## Adding a share protocol
 
-1. Add the protocol constant in `api/internal/shares` (`share.go`).
+1. Add the protocol constant in `rust/api/src/shares.rs`.
 2. Extend `GenerateSambaConfig` / add `Generate<Proto>Config`.
-3. Add the API route in `api/internal/server/shares.go` if config generation is
+3. Add the API route in `rust/api/src/server/shares.rs` if config generation is
    needed (+ API doc in [api.md](api.md)).
 4. Add a UI form if needed (`ui/src/lib/components/ShareForm.svelte`).
 5. Add the chart flag under `values.yaml: shares.<proto>`.
@@ -96,7 +82,7 @@ Apps now live in the **NaslosCharts** git repository (see
 
 This project is AI-assisted. Before trusting anything in production:
 
-- **Audit the auth boundary** (`api/internal/auth`): trust identity headers only
+- **Audit the auth boundary** (`rust/api/src/auth.rs`): trust identity headers only
   from the Traefik CIDR **and** only with the `X-Naslos-Proxy-Secret`, never from
   remote IPs.
 - **Review privileged surfaces**: `agent` runs as root with host mounts; keep

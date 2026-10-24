@@ -37,7 +37,7 @@ Two receiver flavours speak the identical protocol:
    chunks land in a ZFS dataset you nominate (chart value `buddy.receiveHostPath`).
 2. **The standalone container** — `naslos-buddy-receiver`, two volumes (`/data` for
    chunks, `/config` for authorized keys), no ZFS, no Kubernetes, no database.
-   Built from `api/Dockerfile.receiver.rust` (Rust).
+   Built from `rust/api/Dockerfile.receiver` (Rust).
 
 A sender cannot tell them apart, which is deliberate: the protocol is the
 interface.
@@ -403,7 +403,7 @@ link is missing - rather than applying half a backup and leaving you to notice.
 ### 5.4 Receiver: the standalone container
 
 ```bash
-docker build -f api/Dockerfile.receiver -t naslos-buddy-receiver .
+docker build -f rust/api/Dockerfile.receiver -t naslos-buddy-receiver .
 
 mkdir -p /srv/buddy-data /srv/buddy-config
 # The image is distroless and runs as its unprivileged "nonroot" user (uid 65532,
@@ -445,8 +445,8 @@ zfs diff test/data@drill test/data      # no output = identical
 
 The negative half of the drill matters as much: corrupt one sealed chunk in the
 receiver's store and confirm `buddyctl restore` **fails** with an authentication
-error instead of writing damaged data. `TestReceiverRefusesTamperedChunk` in
-`api/internal/buddy/buddy_test.go` automates exactly that.
+error instead of writing damaged data. The Rust buddy suite in
+`rust/api/src/buddy/` automates exactly that.
 
 ## 7. What is protected, and what is not
 
@@ -522,13 +522,13 @@ error instead of writing damaged data. `TestReceiverRefusesTamperedChunk` in
 
 Implemented and tested in this change:
 
-- `api/internal/buddy/` — identity/keys, request signing and replay protection,
+- `rust/api/src/buddy/` — identity/keys, request signing and replay protection,
   the chunked AES-256-GCM envelope, the receiver store, the peer registry, the
   receiver HTTP surface and the sender client (unit and end-to-end tests that drive
   a real receiver over HTTP).
-- `api/cmd/buddyctl` — identity, enroll, push (dir/file/stream, resumable), status,
-  backups, restore, prune.
-- `api/cmd/buddy-receiver` + `api/Dockerfile.receiver` +
+- `rust/api/src/bin/buddyctl.rs` — identity, enroll, push (dir/file/stream,
+  resumable), status, backups, restore, prune.
+- `rust/api/src/bin/buddy-receiver.rs` + `rust/api/Dockerfile.receiver` +
   `make buddy-receiver-image` — the standalone two-volume receiver.
 - Receive side on a Naslos instance: `/api/buddy/v1/*`, `/api/buddy/status`,
   `/api/buddy/peers`, chart values, enrollment Secret, the dataset mount, and the

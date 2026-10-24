@@ -17,7 +17,6 @@ backups ("Buddy").
 
 | Path | What it is |
 | --- | --- |
-| `api/` | Legacy Go API (replaced by `rust/api/`); its buddy tools are ported to Rust too, so the tree is kept only until it is removed |
 | `rust/agent/` | Privileged, host-networked DaemonSet: the only thing that runs `zpool`/`zfs`/`wipefs` (Rust crate `naslos-agent`) |
 | `rust/api/` | Rust API (crate `naslos-api`) — the deployed API server, plus the `buddyctl` and `buddy-receiver` binaries |
 | `ui/` | Svelte 5 (legacy syntax) + TypeScript + Tailwind, built with adapter-static, served by unprivileged nginx |
@@ -32,14 +31,10 @@ backups ("Buddy").
 There are **no `make test` / `make lint` targets** — run the gates directly.
 
 ```bash
-# Go (both modules)
-cd api   && go build ./... && go vet ./... && go test -race ./...
-cd agent && go build ./... && go vet ./... && go test -race ./...
-
 # Rust agent (workspace root is rust/)
 cd rust && cargo build --release -p naslos-agent && cargo test -p naslos-agent
 
-# Rust API port (Phase 2, in progress)
+# Rust API (deployed)
 cd rust && cargo build --release -p naslos-api && cargo test -p naslos-api
 # UI type-check + build
 cd ui && npm run check && npm run build
@@ -96,7 +91,7 @@ via `storageState`; a target that does not challenge is an error.
 
 - `.github/workflows/ci.yml` — on `pull_request`, `push` to `master` and
   `workflow_dispatch`: `audit` (the full `bash scripts/audit.sh` sweep with
-  `govulncheck`/`gosec` installed so the security gates run, `helm`, PyYAML and
+  `gitleaks`, `helm`, PyYAML and
   the UI deps), `gitleaks` (the MIT CLI, working tree + history), `images-build`
   (no-push Docker build of all 8 images) and `pack` (`make install-pack` +
   checksum).
@@ -116,7 +111,7 @@ via `storageState`; a target that does not challenge is an error.
   `:<version>` tag; a failed `vX.Y.Z` run leaves a packless tag, so delete the
   tag before retrying.
 - `scripts/audit.sh` is the single local gate before pushing; missing tools are
-  skipped, so install `govulncheck`/`gosec`/`gitleaks` for a complete run.
+  skipped, so install `gitleaks` for a complete run.
 
 ## Conventions
 
@@ -124,7 +119,8 @@ via `storageState`; a target that does not challenge is an error.
   *and* its test in the same change; unimplemented MUSTs are marked `[OPEN]`.
 - **Credits rule**: `CREDITS.md` is always kept current. A change that
   ports/adapts code or config from another project adds a provenance header to
-  the ported file; a change to a direct dependency (`api/go.mod`,
+  the ported file; a change to a direct dependency (`rust/api/Cargo.toml`,
+  `rust/agent/Cargo.toml`,
   `ui/package.json`, `charts/naslos/Chart.yaml`, or a Dockerfile base image)
   updates `CREDITS.md` **in the same change** and bumps its `Last reviewed`
   line.
@@ -142,7 +138,7 @@ via `storageState`; a target that does not challenge is an error.
   (`make -n install-vm`) and `helm template`/`helm lint`; a fix that needs
   operator-only config (credentials, external API rights) must be documented as
   such so the install gap is explicit.
-- **Tests before hand-off**: `go build/vet/test` for both Go modules,
+- **Tests before hand-off**: `cargo fmt/clippy/test` for the workspace,
   `npm run check`, `helm lint`, the Playwright suite for UI/API changes, and a
   live drill for anything touching the node (shares, LDAP, ZFS, backups).
 - **Docs rule**: `AI_Handoff.md` and the per-topic `docs/` (`spec.md`, `api.md`,

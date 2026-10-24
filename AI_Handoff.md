@@ -77,9 +77,10 @@ Talos VM, next to the Rust agent.
 - **Disk metric:** the Go used the Talos gRPC `Mounts` API (not exposed by
   `talosctl`); the agent now reports host `/var` usage at
   `GET /api/v1/system/disk` and the API collector merges it (14.2% live).
-- **Rollback:** the previous Go API is pinned in the installer pack; the Go
-  `api/` tree is kept for `buddyctl`/`buddy-receiver` (out of scope) and is not
-  deleted yet.
+- **Go tree retired:** the `api/` Go module is deleted; the two Rust image
+  Dockerfiles moved to `rust/api/Dockerfile` and `rust/api/Dockerfile.receiver`,
+  and the audit/CI no longer run Go tools. The installer pack is the rollback
+  path.
 - **Playwright (live):** the full suite is green — **50 passed, 3 skipped, 0
   failed**. The admin password was stale (LDAP bind "Invalid Credentials"), so
   it was reset to the `ui/.env.playwright.local` value through the API; the

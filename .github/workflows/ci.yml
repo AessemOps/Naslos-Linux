@@ -40,12 +40,6 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: api/go.mod
-          cache: true
-          cache-dependency-path: api/go.sum
-
       - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # stable
         with:
           toolchain: "1.88"
@@ -72,14 +66,6 @@ jobs:
 
       - name: Install PyYAML (audit.sh parses rendered manifests)
         run: python3 -m pip install pyyaml
-
-      - name: Install govulncheck + gosec
-        # Without these the audit's security gates are skipped, not failed.
-        # Pinned like every action: `@latest` would execute a floating release.
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
-          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Gate sweep
         run: bash scripts/audit.sh

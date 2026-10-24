@@ -180,17 +180,17 @@ see the [document index](README.md).
 
 | Package | Owning directory | Responsibility |
 | --- | --- | --- |
-| `auth` | `api/internal/auth` | Middleware: accepts `Remote-User/-Groups/-Email/-Name` only from `TRAEFIK_CIDR` **and** with the `X-Naslos-Proxy-Secret` injected by Traefik; `RequireAdmin` checks `naslos_admins` |
-| `talos` | `api/internal/talos` | Talos machinery client, disk discovery, `VolumeAdvisor`, `UserVolumeConfig` documents |
-| `catalog` | `api/internal/catalog` | Built-in app store + JSON Schema per app; loads external JSON catalog overrides |
-| `helm` | `api/internal/helm` | Helm SDK wrapper: install/upgrade/uninstall/list/get/rollback, chart repo cache |
-| `shares` | `api/internal/shares` | Share CRUD + generated `smb.conf` and NFS-Ganesha config |
-| `identity` | `api/internal/identity` | OpenLDAP client: persons/groups, SetPassword; NT-hash computed for the agent-pushed `smbusers` mirror |
-| `metrics` | `api/internal/metrics` | SystemMetrics snapshot + dashboard projection |
-| `notifications` | `api/internal/notifications` | ntfy settings + push delivery |
-| `providers` | `api/internal/providers` | Declarative DNS providers: embedded YAML + override dir, cert-manager solver rendering |
-| `ddns` | `api/internal/ddns` | Dynamic-DNS entry store, public-IP detection, `ovh`/`cloudflare`/`http` drivers, credential Secrets |
-| `server` | `api/internal/server` | HTTP routing, WebSocket log/exec, Samba sync glue |
+| `auth` | `rust/api/src/auth.rs` | Middleware: accepts `Remote-User/-Groups/-Email/-Name` only from `TRAEFIK_CIDR` **and** with the `X-Naslos-Proxy-Secret` injected by Traefik; `RequireAdmin` checks `naslos_admins` |
+| `talos` | `rust/api/src/talos.rs` | Talos machinery client, disk discovery, `VolumeAdvisor`, `UserVolumeConfig` documents |
+| `catalog` | `rust/api/src/catalog.rs` | Built-in app store + JSON Schema per app; loads external JSON catalog overrides |
+| `helm` | `rust/api/src/helm.rs` | Helm CLI adapter (bundled `helm`): install/upgrade/uninstall/list/get/rollback, chart repo cache |
+| `shares` | `rust/api/src/shares.rs` | Share CRUD + generated `smb.conf` and NFS-Ganesha config |
+| `identity` | `rust/api/src/identity.rs` | OpenLDAP client: persons/groups, SetPassword; NT-hash computed for the agent-pushed `smbusers` mirror |
+| `metrics` | `rust/api/src/metrics.rs` | SystemMetrics snapshot + dashboard projection |
+| `notifications` | `rust/api/src/notifications.rs` | ntfy settings + push delivery |
+| `providers` | `rust/api/src/providers.rs` | Declarative DNS providers: embedded YAML + override dir, cert-manager solver rendering |
+| `ddns` | `rust/api/src/ddns.rs` | Dynamic-DNS entry store, public-IP detection, `ovh`/`cloudflare`/`http` drivers, credential Secrets |
+| `server` | `rust/api/src/server/` | HTTP routing, WebSocket log/exec, Samba sync glue |
 
 ## Layer 4 — Port & Trust Map
 

@@ -8,7 +8,6 @@
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | current |
 | [helm](https://helm.sh/docs/intro/install/) | current |
 | docker / podman | current |
-| go | 1.26.5+ (build api/agent; see `api/go.mod`) |
 | node | 20+ (build ui) |
 
 ### App install prerequisites
@@ -47,9 +46,9 @@
 
 | Image | Where it comes from |
 | --- | --- |
-| `192.168.1.2:30095/naslos-api` | `make api` + container build |
-| `192.168.1.2:30095/naslos-ui` | `make ui` + container build |
-| `192.168.1.2:30095/naslos-agent` | `make agent` + container build |
+| `192.168.1.2:30095/naslos-api` | `make api-image` (`rust/api/Dockerfile`) |
+| `192.168.1.2:30095/naslos-ui` | `make ui-image` (`ui/Dockerfile`) |
+| `192.168.1.2:30095/naslos-agent` | `make agent-image` (`agent/Dockerfile.rust`) |
 | `192.168.1.2:30095/naslos-openldap` | `openldap/image/Dockerfile` |
 
 ### Pinning a digest (recommended for a real release)
@@ -78,8 +77,8 @@ publishes the same images publicly so the desktop installer's node can pull them
 anonymously:
 
 - `.github/workflows/ci.yml` runs on every PR/push to `master`: the full
-  `scripts/audit.sh` sweep (with `govulncheck`/`gosec` installed so the security
-  gates do not skip), a gitleaks scan, a no-push Docker build of all 8 images,
+  `scripts/audit.sh` sweep (with `gitleaks` installed so the secret scan does not
+  skip), a gitleaks scan, a no-push Docker build of all 8 images,
   and a local install-pack build.
 - `.github/workflows/release.yml` runs on a strict-semver **`vX.Y.Z`** tag:
   `guard` (the tag must equal `charts/naslos/Chart.yaml` `version`/`appVersion`
@@ -109,9 +108,8 @@ anonymously:
 
 | Target | What it does |
 | --- | --- |
-| `make all` | Build api, agent, ui binaries |
-| `make api` | `go build -o ../bin/naslos-api ./cmd` (api dir) |
-| `make agent` | `go build -o ../bin/naslos-agent ./cmd` (agent dir) |
+| `make all` | Build the agent and UI |
+| `make agent` | `cargo build --release -p naslos-agent` (rust workspace) |
 | `make ui` | `npm install && npm run build` (ui dir) |
 | `make images` | Build all Naslos container images locally |
 | `make push-images` | Push all Naslos container images to `REGISTRY` |
@@ -304,7 +302,7 @@ REGISTRY=docker.io/myuser REGISTRY_HTTP_SECRET=mypassword IMAGE_TAG=latest \
 | `bootstrap/installer/naslos-installer.yaml.tmpl` | Parameterised machine-config patch shipped in the install pack |
 | `scripts/deploy-vm.sh` | One-shot VM deployment script |
 | `scripts/build-install-pack.sh` | Builds `dist/naslos-install-pack-<version>.tar.gz` |
-| `api/Dockerfile`, `agent/Dockerfile`, `ui/Dockerfile` | Container image builds for Naslos components |
+| `rust/api/Dockerfile`, `rust/api/Dockerfile.receiver`, `agent/Dockerfile.rust`, `ui/Dockerfile` | Container image builds for Naslos components |
 
 ### Fixes baked into the deployment (learned the hard way — do not remove)
 
@@ -323,7 +321,6 @@ REGISTRY=docker.io/myuser REGISTRY_HTTP_SECRET=mypassword IMAGE_TAG=latest \
 | No `olcTLSCipherSuite` in the slapd config LDIF | `openldap/image/entrypoint.sh` | Debian's OpenLDAP is built against GnuTLS, which rejects OpenSSL cipher strings (`HIGH:!aNULL:!MD5`) — `slapadd -n 0` fails on `cn=config` with an opaque error. |
 | LDIF continuation lines with a single leading space | `openldap/image/entrypoint.sh` | Four-space continuations corrupt `olcAccess` values. |
 | `--skip-crds` on Helm install | `Makefile` (`install`, `install-vm`) | Avoids CRD ownership conflicts with previously kubectl-applied CRDs. |
-| Golang builder image ≥ the version required by `cosi-project/runtime` (currently `golang:1.26-alpine`, `go 1.26.5` in go.mod) | `api/Dockerfile`, `agent/Dockerfile` | Older toolchains fail `go mod download` with "requires go >= 1.26.5". |
 
 ## The posture: Authelia + Traefik (`values-vm.yaml`)
 
