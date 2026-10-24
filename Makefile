@@ -73,7 +73,9 @@ ui:
 
 # Buddy Backup client: the sender an operator runs (docs/buddy-backup.md).
 buddyctl:
-	cd api && $(GO) build -o ../bin/buddyctl ./cmd/buddyctl
+	mkdir -p bin
+	cd rust && cargo build --release -p naslos-api --bin buddyctl
+	cp rust/target/release/buddyctl bin/buddyctl
 
 # Build all Naslos container images locally.
 images: api-image agent-image ui-image openldap-image samba-image nfs-image terminal-image buddy-receiver-image
@@ -104,7 +106,7 @@ terminal-image:
 # The standalone Buddy Backup receiver: a two-volume container that stores
 # encrypted backups it cannot read (docs/buddy-backup.md).
 buddy-receiver-image:
-	$(DOCKER) build -t $(BUDDY_RECEIVER_IMAGE) --build-arg VERSION=$(IMAGE_TAG) -f api/Dockerfile.receiver .
+	$(DOCKER) build -t $(BUDDY_RECEIVER_IMAGE) --build-arg VERSION=$(IMAGE_TAG) -f api/Dockerfile.receiver.rust .
 
 # Push all Naslos container images to REGISTRY (requires docker login / insecure-registry config for HTTP registries).
 push-images: images

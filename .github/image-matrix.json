@@ -6,5 +6,5 @@
   { "name": "nfs", "context": "nfs/image", "file": "nfs/image/Dockerfile" },
   { "name": "terminal", "context": "terminal/image", "file": "terminal/image/Dockerfile" },
   { "name": "openldap", "context": "openldap/image", "file": "openldap/image/Dockerfile" },
-  { "name": "buddy-receiver", "context": ".", "file": "api/Dockerfile.receiver" }
+  { "name": "buddy-receiver", "context": ".", "file": "api/Dockerfile.receiver.rust" }
 ]

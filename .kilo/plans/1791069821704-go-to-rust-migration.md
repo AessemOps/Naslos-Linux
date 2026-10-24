@@ -1040,3 +1040,24 @@ caught three real defects, all fixed on PR #63:
 3. **`kubectl exec -t`** — needs a local TTY. The exec WebSocket now runs
    kubectl under a native PTY (`portable-pty`), allocating the remote TTY, and
    forwards window resize control messages.
+
+### Phase 3 — Buddy tools in Rust (2026-10-24) — branch `refactor/rust-buddy-tools`
+
+- `rust/api/src/bin/buddy-receiver.rs`: standalone receiver reusing the ported
+  buddy modules. The handlers now take a `BuddyState` (a local wrapper with a
+  `FromRef<Arc<AppState>>` impl), so the same code serves the API (full state) and
+  the standalone binary (receiver only). Reads `BUDDY_LISTEN`, `BUDDY_RECEIVE_PATH`,
+  `BUDDY_PEERS`, `BUDDY_NAME`, `BUDDY_ENROLL_TOKEN`, `BUDDY_VERSION`, plus
+  `--health`, and persists replay nonces across restarts.
+- `rust/api/src/bin/buddyctl.rs`: the seven operator commands (identity, enroll,
+  status, backups, push, restore, prune) over `buddy::client`, with tar streaming
+  through `tokio-util`'s `SyncIoBridge` and traversal-safe extraction.
+- Images: `api/Dockerfile.receiver.rust` (static musl → distroless nonroot),
+  image matrix + `Makefile` `buddyctl`/`buddy-receiver-image` now Rust.
+- Defects caught by the local end-to-end drill: the manifest rejected `raw`
+  payloads although `buddyctl --file`/stdin default to it (now accepted, with a
+  test); and the restore summary went to stdout, corrupting `buddyctl restore |
+  zfs receive` (now stderr when the payload is on stdout).
+- Follow-up (S3c): remove the dead Go `api/` tree and relocate the Rust
+  Dockerfiles out of `api/` (they still live there today).
+
