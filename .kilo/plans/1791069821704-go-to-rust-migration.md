@@ -28,8 +28,9 @@ cheapest wins before spending effort on a rewrite that may yield little.
 1. **Sequencing:** measure first → port `agent/` → port `api/` **only if** the
    Phase 0/1 gate passes.
 2. **Phase 0 includes the non-Rust RAM levers**, explicitly including
-   **removal of the Prometheus subchart**, ZFS ARC capping, and resource
-   right-sizing. The port is judged against the residual need.
+   **removal of the Prometheus subchart** and resource right-sizing. ZFS ARC
+   capping was investigated and dropped (see the execution log). The port is
+   judged against the residual need.
 3. **Helm and Talos in the Rust API:** bundle the official static `helm` and
    `talosctl` binaries and shell out. Both are admin-time control-plane
    operations (chart install already waits 5 min; metrics/disks are periodic
@@ -64,8 +65,8 @@ cheapest wins before spending effort on a rewrite that may yield little.
   (`bootstrap/vm/naslos-vm.yaml` → `machine.kernel.modules[name=zfs]`).
 - Live chart requests: api 128Mi, agent 64Mi, ui 64Mi, samba/nfs/terminal 64Mi,
   OpenLDAP 256Mi→1Gi, Prometheus 512Mi. A Rust port plausibly saves tens of MiB;
-  Prometheus + ZFS ARC are worth hundreds of MiB–GiB. This is why Phase 0 comes
-  first.
+  the Prometheus subchart alone was worth hundreds of MiB of working set. This is
+  why Phase 0 comes first.
 
 ## Cross-cutting invariants (all phases)
 
@@ -132,17 +133,6 @@ documented decision (go/no-go) for Phase 2 is recorded.
      live `helm upgrade` that removes the release objects (delete the
      `naslos-prometheus-*` Deployment/STS/ServiceAccount and its PVC explicitly
      if Helm leaves them), then confirm the dashboard `/api/metrics` still 200.
-4. **Cap ZFS ARC** (wire the currently-dead `zfs.arcMax`):
-   - Apply `zfs_arc_max` at boot via the machine config
-     (`bootstrap/vm/naslos-vm.yaml` and the installer template
-     `bootstrap/installer/naslos-installer.yaml.tmpl`):
-     `machine.kernel.modules: [{name: zfs, parameters: ["zfs_arc_max=<bytes>"]}]`.
-   - Either implement `zfs.arcMax` as the rendered source of that parameter, or
-     remove the misleading value and document the machine-config knob. Prefer
-     implementing it in the installer template (fresh-install rule) and setting
-     the VM value in `bootstrap/vm/naslos-vm.yaml`.
-   - Target: leave `TARGET_FREE` plus headroom for the control plane; e.g.
-     `arcMax = total_ram - reserve`. Confirm `c_max` changed after reboot.
 5. **Right-size the remaining workloads** (measure, then set request = observed
    working set + ~25%, keep limits for bursts):
    - OpenLDAP: lower `resources.requests.memory`; **keep the 1Gi limit** (the
@@ -291,7 +281,6 @@ Not required for the RAM goal.
 | Change | Required evidence |
 | --- | --- |
 | Prometheus removal | `helm lint`/`template`, `make -n install-vm`, live upgrade, `/api/metrics` + dashboard 200 |
-| ZFS ARC cap | `c_max` in `arcstats` after reboot; `c` bounded under load |
 | Resource right-sizing | No OOMKills over a drill; working set within request |
 | Agent port | Go↔Rust golden wire tests, ported unit tests, live ZFS/share/backup drill, `rollout status ds/naslos-agent` |
 | API port | Go↔Rust contract tests, Playwright suite green, live drill (shares, LDAP, ZFS, buddy send/restore, apps install, ddns, domains), dashboard `/api/metrics` |
@@ -325,10 +314,9 @@ Not required for the RAM goal.
 
 ## Out of scope
 
-- UI, Samba/NFS/OpenLDAP/Traefik/Authelia images, OS/Talos changes beyond the
-  ZFS ARC module parameter, and any release/version bump (a release needs the
-  `Chart.yaml` + `ui/package.json` version bump and installer dispatch per
-  `AGENTS.md`, tracked separately).
+- UI, Samba/NFS/OpenLDAP/Traefik/Authelia images, and any release/version bump
+  (a release needs the `Chart.yaml` + `ui/package.json` version bump and
+  installer dispatch per `AGENTS.md`, tracked separately).
 
 ---
 
@@ -348,24 +336,22 @@ Not required for the RAM goal.
   block, schema entry, docs, CREDITS). Live `helm upgrade` removed the stack
   (working set 1.81 -> 1.59 GiB); the orphaned alertmanager PVC was deleted.
   `/api/health`, `/api/metrics`, `/api/dashboard` all 200.
-- **ARC cap (2 GiB) BLOCKED.** No machine-config route works on this
+- **ARC cap dropped (2026-10-24).** No machine-config route works on this
   Talos v1.14.1 + `siderolabs/zfs` extension + SDBoot node:
   `machine.kernel.modules[].parameters` is ignored (extension loads the module),
   `machine.install.extraKernelArgs` is unsupported on SDBoot, and a
   `machine.files` `/etc/modprobe.d` drop-in was ignored (and coincided with a
-  CRI boot failure). The runtime sysfs write works. Deferred by user decision;
-  the planned fix is an agent DaemonSet initContainer writing
-  `/host/sys/module/zfs/parameters/zfs_arc_max` at boot. Documented in
-  `docs/deployment.md` -> "ZFS ARC".
+  CRI boot failure). The runtime sysfs write works, but a boot-persistent
+  initContainer is not worth the privileged write for this node, so the item is
+  closed rather than deferred. `docs/deployment.md` -> "ZFS ARC" records the
+  status.
 - **Right-sizing.** OpenLDAP request raised 256Mi -> 768Mi (measured idle
   673 MiB; the old request was below real usage). Other workloads unchanged:
   requests are scheduling hints, not memory reclamation, and lowering them only
   worsens eviction on a single node.
-- **Go/no-go gate.** With ARC uncapped, `c_max` (~4.76 GiB) will reclaim down
-  under pressure but can squeeze available below TARGET_FREE under a big
-  share/backup load. So the gate is **not met** until the ARC cap is restored
-  (initContainer follow-up); Phase 1/2 remain justified. The Prometheus removal
-  is the only deployed RAM win so far.
+- **Gate (resolved).** The ARC cap is dropped, not pending; the gate is no
+  longer conditional on it. The port proceeded on the lower CPU/FD footprint and
+  the Rust API's smaller footprint, and Phases 1–3 are complete.
 
 ### Phase 1 (2026-10-04) — branch `refactor/rust-agent`
 
@@ -406,8 +392,8 @@ validation, same degraded-mode 503s.
 - **Phase 1 gate (measured).** Degraded mode, same host: RSS idle 7.1 MB (Go)
   → 5.3 MB (Rust); RSS after 500 requests 10.2 MB → 5.7 MB; server CPU per 2000
   requests 390 ms → 260 ms; static binary 7.7 MB → 3.9 MB. The savings are real
-  but small in absolute terms (~4 MB/pod); the decisive RAM is the ARC cap and
-  the API port, not the agent. Proceeding past Phase 1 is justified mainly by the
+  but small in absolute terms (~4 MB/pod); the decisive RAM would have been the ARC cap (now
+  dropped) and the API port, not the agent. Proceeding past Phase 1 is justified mainly by the
   API port and by the lower CPU/FD footprint.
 - **Not done (release-time):** version bump, installer dispatch, and the live
   DaemonSet rollout drill. The image tag is already bumped to `0.1.0-r9` in
