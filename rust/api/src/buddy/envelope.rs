@@ -357,7 +357,7 @@ pub fn go_json_escape(json: &str) -> Vec<u8> {
 
 /// Check the sender-controlled parts of a manifest the receiver can validate.
 pub fn validate_manifest_shape(m: &Manifest) -> Result<(), String> {
-    if m.kind != "zfs-send" && m.kind != "tar" {
+    if m.kind != "zfs-send" && m.kind != "tar" && m.kind != "raw" {
         return Err(format!("unsupported payload kind {:?}", m.kind));
     }
     if m.chunk_plain_size != CHUNK_PLAIN_SIZE as i64 {
@@ -457,6 +457,18 @@ mod tests {
         let mut bad = m.clone();
         bad.chain = "tampered".to_string();
         assert!(bad.verify_signature(&id.public_key).is_err());
+    }
+
+    #[test]
+    fn manifest_shape_accepts_the_three_payload_kinds() {
+        for kind in ["tar", "zfs-send", "raw"] {
+            let mut m = sample_manifest();
+            m.kind = kind.to_string();
+            validate_manifest_shape(&m).unwrap();
+        }
+        let mut m = sample_manifest();
+        m.kind = "exec".to_string();
+        assert!(validate_manifest_shape(&m).is_err());
     }
 
     #[test]
