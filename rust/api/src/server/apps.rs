@@ -100,24 +100,23 @@ pub async fn apps_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
             req.base_domain
         ));
     }
-    if let Some(conflict) = state.app_jobs.conflicting(&req.name) {
-        return conflict_response(&conflict);
-    }
     let install = InstallRequest {
         name: req.name.clone(),
         values: req.values.clone(),
         exposure: req.exposure.clone(),
         base_domain: req.base_domain.clone(),
     };
-    let job = state.app_jobs.enqueue(
+    match state.app_jobs.enqueue(
         JobKind::Install,
         &req.name,
         &req.base_domain,
         Some(install),
         None,
         state.app_manager.clone(),
-    );
-    accepted(&job)
+    ) {
+        Ok(job) => accepted(&job),
+        Err(conflict) => conflict_response(&conflict),
+    }
 }
 
 /// `GET|PUT|DELETE /api/apps/{name}`
@@ -161,12 +160,14 @@ pub async fn app_detail_put(
     if let Err(e) = manager.get(&name) {
         return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e }));
     }
-    if let Some(conflict) = state.app_jobs.conflicting(&name) {
-        return conflict_response(&conflict);
-    }
-    let job = state
-        .app_jobs
-        .enqueue(JobKind::Upgrade, &name, "", None, req.values, Some(manager));
+    let job =
+        match state
+            .app_jobs
+            .enqueue(JobKind::Upgrade, &name, "", None, req.values, Some(manager))
+        {
+            Ok(job) => job,
+            Err(conflict) => return conflict_response(&conflict),
+        };
     accepted(&job)
 }
 
@@ -180,12 +181,13 @@ pub async fn app_detail_delete(
     if let Err(e) = manager.get(&name) {
         return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e }));
     }
-    if let Some(conflict) = state.app_jobs.conflicting(&name) {
-        return conflict_response(&conflict);
-    }
-    let job = state
+    let job = match state
         .app_jobs
-        .enqueue(JobKind::Uninstall, &name, "", None, None, Some(manager));
+        .enqueue(JobKind::Uninstall, &name, "", None, None, Some(manager))
+    {
+        Ok(job) => job,
+        Err(conflict) => return conflict_response(&conflict),
+    };
     accepted(&job)
 }
 
@@ -237,7 +239,7 @@ pub async fn app_exposure_get(
 #[derive(Default, serde::Deserialize)]
 struct ExposureBody {
     #[serde(default)]
-    exposure: Exposure,
+    exposure: crate::apps::ExposurePatch,
     #[serde(default, rename = "baseDomain")]
     base_domain: String,
 }
