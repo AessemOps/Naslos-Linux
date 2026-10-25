@@ -24,6 +24,7 @@ spec:
         app.kubernetes.io/name: naslos-samba
         app.kubernetes.io/component: shares
     spec:
+      automountServiceAccountToken: false
       hostNetwork: true
       # hostNetwork pods need this to resolve cluster DNS names.
       dnsPolicy: ClusterFirstWithHostNet

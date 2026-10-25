@@ -43,6 +43,9 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: {{ $wns }}
   egress:
+    # Same-namespace east-west (app -> its own helper pods).
+    - to:
+        - podSelector: {}
     - to:
         - namespaceSelector:
             matchLabels:
@@ -57,9 +60,11 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: {{ $apriv }}
     {{- end }}
-    # Cluster DNS.
+    # Cluster DNS only (kube-system hosts the resolver).
     - to:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
       ports:
         - port: 53
           protocol: UDP
@@ -126,13 +131,22 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ $ans }}
-    # Outbound Internet for VPN endpoints and indexers/downloads.
+    # Outbound Internet for VPN endpoints and indexers/downloads, but never
+    # the cluster/metadata ranges (a compromised privileged app must not reach
+    # the API, kubelet, or a cloud metadata service).
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
-    # Cluster DNS.
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+    # Cluster DNS only.
     - to:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
       ports:
         - port: 53
           protocol: UDP

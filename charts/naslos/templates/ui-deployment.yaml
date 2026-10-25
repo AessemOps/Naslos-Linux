@@ -17,6 +17,8 @@ spec:
       labels:
         app.kubernetes.io/name: naslos-ui
     spec:
+      # The UI only serves static files; it never calls the Kubernetes API.
+      automountServiceAccountToken: false
       initContainers:
         # nginx resolves the API host name once at startup (see ui/nginx.conf)
         # and refuses to boot if it does not resolve yet. That is exactly what
