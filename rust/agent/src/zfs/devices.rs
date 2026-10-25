@@ -147,8 +147,12 @@ impl ZfsClient {
             if members.contains_key(&dev) {
                 continue;
             }
+            // Real disk nodes are block devices; `is_file()` alone made
+            // free_disks always return an empty list (SEC-2026-H20). Regular
+            // files are accepted too so the hermetic test fixture can create
+            // /dev/sd* without mknod (a real /dev has no such regular files).
             match entry.file_type() {
-                Ok(ft) if ft.is_file() => {}
+                Ok(ft) if std::os::unix::fs::FileTypeExt::is_block_device(&ft) || ft.is_file() => {}
                 _ => continue,
             }
             free.push(dev);
