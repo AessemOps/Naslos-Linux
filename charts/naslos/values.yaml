@@ -324,6 +324,9 @@ apps:
     url: ""
     # public | token | ssh
     auth: public
+    # Optional full 40-character commit SHA. When set, the clone is checked out
+    # at exactly this commit and the sync fails if HEAD differs (SEC-2026-D6).
+    commit: ""
     # Secret (in the release namespace) holding the token or SSH private key.
     credentialsSecret: ""
 
