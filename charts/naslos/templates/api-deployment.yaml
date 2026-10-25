@@ -46,12 +46,15 @@ spec:
             - name: LDAPTLS_REQCERT
               value: demand
             {{- end }}
-          {{- if .Values.api.ldapCA.secretName }}
           volumeMounts:
+            {{- if .Values.api.ldapCA.secretName }}
             - name: ldap-ca
               mountPath: /var/run/secrets/ldap.ca
               readOnly: true
-          {{- end }}
+            {{- end }}
+            - name: ldap-bind
+              mountPath: /var/run/secrets/ldap-bind
+              readOnly: true
           command:
             - sh
             - -c
@@ -119,7 +122,7 @@ spec:
             runAsUser: 65532
             runAsGroup: 65532
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
@@ -150,6 +153,16 @@ spec:
           env:
             - name: NASLOS_NAMESPACE
               value: {{ .Release.Namespace }}
+            # SEC-2026-D13: the root filesystem is read-only. Helm/kubectl and
+            # the API's temp files live on the emptyDir at /tmp.
+            - name: HOME
+              value: /tmp
+            - name: HELM_CACHE_HOME
+              value: /tmp/helm/cache
+            - name: HELM_CONFIG_HOME
+              value: /tmp/helm/config
+            - name: HELM_DATA_HOME
+              value: /tmp/helm/data
             # Base URL of the naslos-agent Service (headless, one endpoint per
             # node) used for ZFS pool operations. Overridable for local dev
             # (e.g. AGENT_BASE_URL=http://127.0.0.1:9090 with a port-forward).
@@ -190,11 +203,10 @@ spec:
             - name: TALOSCONFIG
               value: /var/run/secrets/talos.dev/config
             {{- end }}
-            - name: LDAP_BIND_PASS
-              valueFrom:
-                secretKeyRef:
-                  name: naslos-openldap
-                  key: service-password
+            # SEC-2026-F16: a file, not env — the API forks helm/kubectl/talosctl,
+            # and any child would otherwise inherit the service password.
+            - name: LDAP_BIND_PASS_FILE
+              value: /var/run/secrets/ldap-bind/service-password
             # Name Samba advertises itself as; kept in step with the mDNS/WSD
             # name published by the naslos-samba container so browsing clients
             # and direct connections see one identity.
@@ -355,6 +367,11 @@ spec:
               mountPath: /var/run/secrets/ldap.ca
               readOnly: true
             {{- end }}
+            - name: ldap-bind
+              mountPath: /var/run/secrets/ldap-bind
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
             {{- if .Values.api.sharesConfig.enabled }}
             # Persists share definitions across restarts.
             - name: shares-config
@@ -411,6 +428,14 @@ spec:
               - key: talosconfig
                 path: config
         {{- end }}
+        - name: tmp
+          emptyDir: {}
+        - name: ldap-bind
+          secret:
+            secretName: naslos-openldap
+            items:
+              - key: service-password
+                path: service-password
         {{- if .Values.api.ldapCA.secretName }}
         - name: ldap-ca
           secret:

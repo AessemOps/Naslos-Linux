@@ -100,7 +100,7 @@ unmodified Talos installation, administered through a web UI.
 - **SEC-4** — The user's LDAP password MUST be mirrored to Samba's passdb as
   an NT hash at password-change time; plaintext passwords MUST NOT be stored
   anywhere.
-- **SEC-5** — Service secrets (`LDAP_BIND_PASS`, ntfy topic tokens) MUST be
+- **SEC-5** — Service secrets (`LDAP_BIND_PASS_FILE`, ntfy topic tokens) MUST be
   injected by the Helm chart, never baked into images.
 - **SEC-6** — Backup peer requests MUST authenticate with the peer's own Ed25519
   key and MUST NOT be served on the strength of the interactive-proxy identity

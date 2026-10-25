@@ -231,6 +231,18 @@ pub struct Client {
     last_err: Mutex<Option<(Instant, String)>>,
 }
 
+/// Resolve the service-account password. The file form is preferred so the
+/// secret is not inherited by the `helm`/`kubectl`/`talosctl` children the API
+/// forks (SEC-2026-F16). A missing/unreadable file is an error, not a fallback.
+fn resolve_bind_pass(file: Option<&str>, inline: &str) -> Result<String, String> {
+    match file.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(path) => std::fs::read_to_string(path)
+            .map(|s| s.trim_end_matches(['\r', '\n']).to_string())
+            .map_err(|e| format!("reading LDAP_BIND_PASS_FILE {path}: {e}")),
+        None => Ok(inline.to_string()),
+    }
+}
+
 impl Client {
     /// Build a client; does not dial (lazy connection, NAS restart-race safe).
     pub fn new(cfg: &Config) -> Result<Self, String> {
@@ -261,7 +273,10 @@ impl Client {
             base_dn: std::env::var("LDAP_BASE_DN").unwrap_or_else(|_| "dc=naslos,dc=local".into()),
             bind_dn: std::env::var("LDAP_BIND_DN")
                 .unwrap_or_else(|_| "cn=naslos-service,ou=services,dc=naslos,dc=local".into()),
-            bind_pass: std::env::var("LDAP_BIND_PASS").unwrap_or_default(),
+            bind_pass: resolve_bind_pass(
+                std::env::var("LDAP_BIND_PASS_FILE").ok().as_deref(),
+                &std::env::var("LDAP_BIND_PASS").unwrap_or_default(),
+            )?,
             ca_cert_path: std::env::var("LDAP_CA_CERT").unwrap_or_default(),
             use_tls: std::env::var("LDAP_USE_TLS")
                 .map(|v| v == "true")
@@ -631,6 +646,19 @@ mod tests {
             compute_nt_hash("password"),
             "8846F7EAEE8FB117AD06BDD830B7586C"
         );
+    }
+
+    #[test]
+    fn the_bind_password_prefers_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pw");
+        std::fs::write(&path, "from-file\n").unwrap();
+        assert_eq!(
+            resolve_bind_pass(Some(path.to_str().unwrap()), "inline").unwrap(),
+            "from-file"
+        );
+        assert_eq!(resolve_bind_pass(None, "inline").unwrap(), "inline");
+        assert!(resolve_bind_pass(Some("/nonexistent/naslos"), "inline").is_err());
     }
 
     #[test]
