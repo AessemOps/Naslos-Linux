@@ -18,7 +18,11 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
   ```json
   { "error": "message" }
   ```
-- Unsupported methods return `405 Method Not Allowed`.
+- Unsupported methods return `405` and unknown paths `404`, both with the JSON
+  error shape. Unknown `/api/*` paths stay behind the auth gate (401 without
+  the proxy identity) so route existence is not leaked.
+- `GET /api/ready` always answers `200` (LDAP being down must not take the
+  dashboard down) and reports the measured state: `{"status":"ok","ldap":"up"|"down"}`.
 - Authentication **is** enforced: the API is only reachable through Traefik's
   `proxy-identity` middleware, and `rust/api/src/auth.rs` independently requires the
   shared proxy secret plus a `Remote-User` header from the Traefik pod CIDR

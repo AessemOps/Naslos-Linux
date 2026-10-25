@@ -347,7 +347,7 @@ with a sibling `naslos-app.yaml` install-config. See
   *(routing tests, apps tests, server tests)*
 - **FR-APP-11** — The API MUST own one Traefik `IngressRoute` per app plus its
   middlewares in `naslos-apps`, and MUST reconcile them on startup and delete
-  them on uninstall. *(routing tests)*
+  them on uninstall. *(routing tests; startup call in `main.rs` after SEC-2026-H9)*
 - **FR-APP-16** — When a manifest declares no route target, the API MUST
   discover the release's Services from its Helm labels, route to one, and expose
   the candidates for the operator to pick. *(discovery_test.go)*
@@ -715,7 +715,8 @@ implemented here).
   `/api/v1/`.
 - **API-02** — Errors MUST use `{"error": "<message>"}` with a proper HTTP
   status (400 invalid input, 404 unknown, 405 wrong method, 503 dependency
-  unavailable).
+  unavailable). Unknown `/api/*` paths remain behind the auth gate. *(contract
+  tests: `unknown_routes_return_json_404`, `a_wrong_method_returns_json_405`)*
 - **API-03** — Wrong HTTP method MUST yield `405`.
 - **API-04** — List responses MUST be JSON arrays, never `null` (see
   FR-IDN-08).

@@ -47,6 +47,17 @@ async fn main() {
         tokio::spawn(async move { ddns.run_loop().await });
     }
 
+    // Re-apply Traefik routing for every installed app (FR-APP-11). This was
+    // never called after the Rust port, so a restart could leave an installed
+    // app unrouted (SEC-2026-H9).
+    if let Some(manager) = state.app_manager.clone() {
+        tokio::spawn(async move {
+            if let Err(e) = manager.reconcile_routes().await {
+                tracing::warn!("reconciling app routes at startup: {e}");
+            }
+        });
+    }
+
     // Scheduled buddy backups: catch-up + interval.
     {
         let scheduler_state = state.clone();
