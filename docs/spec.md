@@ -87,7 +87,16 @@ unmodified Talos installation, administered through a web UI.
   (`LDAP_USE_TLS=true` default).
 - **SEC-3** — `naslos-api` MUST only honor Traefik-injected authentication
   headers (`Remote-User` etc.) from requests originating in `TRAEFIK_CIDR`
-  (default `10.244.0.0/16`).
+  (default `10.244.0.0/16`). A request without a peer address MUST be refused
+  (fail closed).
+- **SEC-15** — Unsafe HTTP methods MUST be refused when the browser labels the
+  request cross-site (`Sec-Fetch-Site`), when `Origin` does not match the
+  request host, or when a body-bearing write does not declare
+  `application/json`; non-browser clients that send neither header remain
+  supported.
+- **SEC-16** — A WebSocket upgrade MUST be refused unless a present `Origin`
+  matches the request host (ports aside) or a configured Naslos domain.
+  Non-browser clients that send no `Origin` remain supported.
 - **SEC-4** — The user's LDAP password MUST be mirrored to Samba's passdb as
   an NT hash at password-change time; plaintext passwords MUST NOT be stored
   anywhere.
@@ -307,8 +316,10 @@ with a sibling `naslos-app.yaml` install-config. See
 - **FR-APP-02** — App configuration forms MUST be generated from the app's
   JSON Schema.
 - **FR-APP-03** — Installing/upgrading an app MUST be a Helm operation **from the
-  cloned local chart path** in the `naslos-apps` namespace; the API MUST NOT
-  require a `git` or `helm` binary at runtime. *(apps_test.go, chartsrepo tests)*
+  cloned local chart path** in the `naslos-apps` namespace. **[OPEN]** — the
+  Rust port drives the bundled `git` and `helm` CLIs (verified checksums in
+  `rust/api/Dockerfile`), so the “MUST NOT require a binary” clause is not met;
+  the spec needs either an amendment or an embedded library.
 - **FR-APP-04** — Start/stop MUST scale replicas 0↔N and MUST preserve PVCs.
   **[OPEN]** — no route exists yet; uninstall/install is the supported path.
 - **FR-APP-05** — A source MUST declare public, HTTPS-token or SSH-deploy-key
@@ -802,6 +813,12 @@ implemented here).
 ---
 
 ## 7. Acceptance criteria & verification
+
+> **Status note (2026-10-24).** Rows below that name `Test…` functions refer to
+> the deleted Go suite; the Rust equivalents live in `rust/api/tests/` and the
+> crate unit tests, and the mapping (including the rows whose test did not
+> survive the port) is in `docs/AUDIT-2026-10-24.md`. The Playwright rows are
+> still authoritative.
 
 The authoritative executable acceptance suite is the Playwright suite in
 `ui/tests/` against a live deployment:

@@ -13,13 +13,13 @@ software, `/usr/share/doc/<package>/copyright` in the image).
 
 Scope: direct and notable dependencies plus the platform and base images the
 project is built on. The complete transitive sets used at build time are pinned
-in [`api/go.sum`](api/go.sum), [`ui/package-lock.json`](ui/package-lock.json),
+in [`rust/Cargo.lock`](rust/Cargo.lock), [`ui/package-lock.json`](ui/package-lock.json),
 and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
 **Last reviewed: 2026-10-24.** Maintenance: update this file whenever a direct dependency changes in
-`api/go.mod`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
+`rust/api/Cargo.toml`, `rust/agent/Cargo.toml`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
 It also lists the GitHub Actions used by the CI/release workflows.
 
 ## Platform & runtime
@@ -42,9 +42,9 @@ It also lists the GitHub Actions used by the CI/release workflows.
 | Debian (slim base) | `debian:trixie-slim` | Debian DFSG (mixed per package) | https://www.debian.org/ |
 | Alpine Linux | `alpine:3.24` | Alpine (musl MIT, BusyBox GPL-2.0-only, apk-tools GPL-2.0-only) | https://alpinelinux.org/ |
 | distroless static | `gcr.io/distroless/static-debian12:nonroot` | Apache-2.0 | https://github.com/GoogleContainerTools/distroless |
-| nginx unprivileged | `nginxinc/nginx-unprivileged:1.30.5-alpine` | BSD-2-Clause | https://github.com/nginxinc/docker-nginx-unprivileged |
+| nginx unprivileged | `nginxinc/nginx-unprivileged:1.30.6-alpine-slim` | BSD-2-Clause | https://github.com/nginxinc/docker-nginx-unprivileged |
 | Rust toolchain | `rust:1.88-alpine` | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
-| Node.js toolchain | `node:20-alpine` | MIT | https://nodejs.org/ |
+| Node.js toolchain | `node:24-bookworm-slim` | MIT | https://nodejs.org/ |
 
 ## Rust crates — direct (`rust/agent` + `rust/api`)
 
@@ -77,6 +77,7 @@ binaries (tar streaming, a PTY for terminal exec). Direct dependencies:
 | portable-pty | 0.8 | MIT | https://github.com/wez/wezterm |
 | tar | 0.4 | MIT OR Apache-2.0 | https://github.com/alexcrichton/tar-rs |
 | libc | 0.2 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc |
+| reqwest | 0.12 | MIT OR Apache-2.0 | https://github.com/seanmonstar/reqwest |
 | rustls | 0.23 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls |
 | rustls-pemfile | 2 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/pemfile |
 | serde / serde_json | 1 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
@@ -150,15 +151,19 @@ used instead.
 | Component | Pin | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
 | actions/checkout | v4 | MIT | https://github.com/actions/checkout |
-| actions/setup-go | v5 | MIT | https://github.com/actions/setup-go |
 | actions/setup-node | v4 | MIT | https://github.com/actions/setup-node |
 | actions/setup-python | v5 | MIT | https://github.com/actions/setup-python |
+| dtolnay/rust-toolchain | stable (1.88) | MIT OR Apache-2.0 | https://github.com/dtolnay/rust-toolchain |
+| Swatinem/rust-cache | v2 | LGPL-3.0-only | https://github.com/Swatinem/rust-cache |
 | actions/upload-artifact | v4 | MIT | https://github.com/actions/upload-artifact |
 | actions/download-artifact | v4 | MIT | https://github.com/actions/download-artifact |
 | docker/login-action | v4.6.0 | Apache-2.0 | https://github.com/docker/login-action |
 | docker/setup-buildx-action | v4.4.1 | Apache-2.0 | https://github.com/docker/setup-buildx-action |
 | docker/build-push-action | v7.4.0 | Apache-2.0 | https://github.com/docker/build-push-action |
 | gitleaks (CLI) | v8.30.1 | MIT | https://github.com/gitleaks/gitleaks |
+| cargo-audit | 0.22.2 | Apache-2.0 OR MIT | https://github.com/rustsec/rustsec |
+| cargo-deny | 0.20.2 | Apache-2.0 OR MIT | https://github.com/EmbarkStudios/cargo-deny |
+| Trivy | 0.76.1 | Apache-2.0 | https://github.com/aquasecurity/trivy |
 
 ## Ported & adapted code
 

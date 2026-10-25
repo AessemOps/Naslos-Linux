@@ -19,7 +19,7 @@ use super::envelope::{
 use super::keys::{public_key_of, Identity};
 use super::peers::validate_source;
 
-const MAX_MANIFEST_BYTES: usize = 64 << 20;
+const MAX_MANIFEST_BYTES: usize = 16 << 20;
 const SEALED_OVERHEAD: usize = 4 + 4 + 12 + 16;
 pub const CHAIN_STATE_VERSION: i32 = 1;
 
@@ -71,6 +71,9 @@ pub struct ChainSummary {
     pub to_guid: String,
     #[serde(default)]
     pub chunks: usize,
+    /// The publish sequence carried by the signed manifest.
+    #[serde(default)]
+    pub sequence: u64,
 }
 
 /// A stored chunk's digest and nonce generation.
@@ -120,6 +123,19 @@ pub struct PushOptions<'a> {
     pub prune_keep: usize,
     pub progress: Option<&'a (dyn Fn(PushProgress) + Send + Sync)>,
     pub before_publish: Option<&'a (dyn Fn(&PushResult) -> Result<(), String> + Send + Sync)>,
+    /// Persist the chain state (including the bumped nonce generation) before
+    /// any chunk is sealed/uploaded. Required for resume safety: a failed
+    /// upload must never re-use a generation for a different plaintext.
+    pub save_state: Option<&'a (dyn Fn(&ChainState) -> Result<(), String> + Send + Sync)>,
+}
+
+/// The generation a push attempt uses. It is strictly greater than both the
+/// persisted generation and every stored chunk's generation, so a retry can
+/// never re-use a (prefix, generation, index) nonce for different plaintext.
+fn next_attempt_generation(persisted: u16, stored_max: u16) -> Result<u16, String> {
+    persisted.max(stored_max).checked_add(1).ok_or_else(|| {
+        "the chain's nonce generation counter is exhausted; start a new chain".to_string()
+    })
 }
 
 /// The outcome of a restore.
@@ -139,6 +155,9 @@ pub struct RestoreOptions<'a> {
     pub out: &'a mut (dyn tokio::io::AsyncWrite + Unpin + Send),
     pub progress: Option<&'a (dyn Fn(i64, usize, i64) + Send + Sync)>,
     pub skip_signature_check: bool,
+    /// The sequence the caller validated in `restore_sequence`. When set, a
+    /// receiver that swaps in a different (older) manifest is refused.
+    pub expected_sequence: Option<u64>,
 }
 
 /// Resume state for an interrupted push. Holds the chain's DEK, so it is as
@@ -244,6 +263,56 @@ struct AudienceCache {
     known: bool,
 }
 
+/// Refuse a restore sequence that is incomplete, non-contiguous, out of order,
+/// or older than what this instance last published (SEC-2026-C3 / PF-H3).
+pub fn validate_restore_sequence(
+    source: &str,
+    sequence: &[ChainSummary],
+    last_published: u64,
+) -> Result<(), String> {
+    if sequence.is_empty() {
+        return Err(format!("no backup of {source} is stored here"));
+    }
+    let base = &sequence[0];
+    if !base.from_guid.is_empty() {
+        return Err(format!(
+            "refusing to restore: chain {} is incremental but starts at GUID {}, and the chain that produced it is missing",
+            base.chain, base.from_guid
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for chain in sequence {
+        if !seen.insert(chain.chain.as_str()) {
+            return Err(format!(
+                "refusing to restore: the chain history of {source} repeats chain {}",
+                chain.chain
+            ));
+        }
+    }
+    for pair in sequence.windows(2) {
+        let (previous, next) = (&pair[0], &pair[1]);
+        if previous.to_guid.is_empty() || next.from_guid != previous.to_guid {
+            return Err(format!(
+                "refusing to restore: the sequence is not contiguous (chain {} ends at {:?}, chain {} starts at {:?})",
+                previous.chain, previous.to_guid, next.chain, next.from_guid
+            ));
+        }
+        if next.sequence <= previous.sequence {
+            return Err(format!(
+                "refusing to restore: sequence {} for chain {} does not follow {} for chain {}",
+                next.sequence, next.chain, previous.sequence, previous.chain
+            ));
+        }
+    }
+    let latest = sequence.last().map(|c| c.sequence).unwrap_or(0);
+    if last_published > 0 && latest < last_published {
+        return Err(format!(
+            "refusing to restore: the receiver's newest stored sequence for {source} is {latest}, but this instance published {last_published}; the receiver is stale or withholding chains"
+        ));
+    }
+    Ok(())
+}
+
 /// A buddy sender.
 pub struct Client {
     pub identity: Arc<Identity>,
@@ -260,6 +329,7 @@ impl Client {
             base_url: base_url.trim_end_matches('/').to_string(),
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(300))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
             sequence_dir: String::new(),
@@ -532,6 +602,8 @@ impl Client {
         chain: &str,
     ) -> Result<Vec<ChainSummary>, String> {
         if let Ok(seq) = self.sequence(source, chain).await {
+            let last = self.last_published_sequence(source)?;
+            validate_restore_sequence(source, &seq, last)?;
             return Ok(seq);
         }
         let chains = self.chains(source).await?;
@@ -573,6 +645,8 @@ impl Client {
             current = (*base).clone();
         }
         sequence.reverse();
+        let last = self.last_published_sequence(source)?;
+        validate_restore_sequence(source, &sequence, last)?;
         Ok(sequence)
     }
 
@@ -639,6 +713,20 @@ impl Client {
             Err(e) => return (result, Some(e)),
         };
         let tail_index = stored.keys().copied().max().unwrap_or(-1);
+        let stored_max_generation = stored.values().map(|c| c.generation).max().unwrap_or(0);
+        let attempt_generation =
+            match next_attempt_generation(state.generation, stored_max_generation) {
+                Ok(g) => g,
+                Err(e) => return (result, Some(e)),
+            };
+        // Persist before transmitting: if this attempt dies mid-stream the next
+        // one must start from a fresh generation, not the old one.
+        state.generation = attempt_generation;
+        if let Some(save) = opts.save_state {
+            if let Err(e) = save(&state) {
+                return (result, Some(format!("persisting the resume state: {e}")));
+            }
+        }
         let last_sequence = match self.last_published_sequence(opts.source) {
             Ok(s) => s,
             Err(e) => return (result, Some(e)),
@@ -666,8 +754,7 @@ impl Client {
         };
         result.state = Some(state.clone());
 
-        let mut generation = state.generation;
-        let mut max_generation = generation;
+        let generation = attempt_generation;
         let mut buf = vec![0u8; CHUNK_PLAIN_SIZE];
         let mut index: i64 = 0;
         loop {
@@ -719,10 +806,7 @@ impl Client {
                             )),
                         );
                     }
-                    if info.generation == u16::MAX {
-                        return (result, Some(format!("chain {} cannot be resumed: its nonce generation counter is exhausted", state.chain)));
-                    }
-                    chunk_generation = info.generation + 1;
+                    chunk_generation = generation;
                     match seal_chunk(
                         &dek,
                         &prefix,
@@ -742,7 +826,6 @@ impl Client {
                                 generation: chunk_generation,
                                 sha256_plain: sha.clone(),
                             };
-                            generation = chunk_generation;
                         }
                         Err(e) => return (result, Some(e)),
                     }
@@ -751,10 +834,6 @@ impl Client {
                     upload = false;
                 }
             }
-            if entry.generation > max_generation {
-                max_generation = entry.generation;
-            }
-
             if upload {
                 let path = format!(
                     "/chunks/{}?chain={}&index={index}",
@@ -793,10 +872,6 @@ impl Client {
                 Some("nothing to back up: the input stream produced no data".to_string()),
             );
         }
-        if max_generation > generation {
-            generation = max_generation;
-        }
-        state.generation = generation;
         manifest.generation = generation;
 
         if let Some(before) = opts.before_publish {
@@ -896,7 +971,17 @@ impl Client {
                 return (result, Some(format!("refusing to restore: {e}")));
             }
         }
-        if opts.chain.is_empty() {
+        if let Some(expected) = opts.expected_sequence {
+            if manifest.sequence != expected {
+                return (
+                    result,
+                    Some(format!(
+                        "refusing to restore chain {}: the receiver returned sequence {}, but the verified sequence was {expected}",
+                        manifest.chain, manifest.sequence
+                    )),
+                );
+            }
+        } else if opts.chain.is_empty() {
             match self.last_published_sequence(opts.source) {
                 Ok(last) if manifest.sequence < last => {
                     return (result, Some(format!("refusing to restore: the receiver returned a stale manifest (sequence {}, latest published {last})", manifest.sequence)));
@@ -1012,10 +1097,14 @@ fn describe_error(status: u16, data: &[u8]) -> String {
     } else {
         text
     };
-    let text = if text.len() > 300 {
-        format!("{}...", &text[..300])
-    } else {
-        text
+    let text = {
+        let mut chars = text.chars();
+        let head: String = chars.by_ref().take(300).collect();
+        if chars.next().is_some() {
+            format!("{head}...")
+        } else {
+            head
+        }
     };
     format!("{text} ({status})")
 }
@@ -1027,3 +1116,59 @@ use chunk_plain_len as _chunk_plain_len;
 use public_key_of as _public_key_of;
 #[allow(unused_imports)]
 use MAX_SEALED_CHUNK_SIZE as _MAX_SEALED_CHUNK_SIZE;
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_restore_sequence, ChainSummary};
+
+    fn chain(name: &str, from: &str, to: &str, sequence: u64) -> ChainSummary {
+        ChainSummary {
+            chain: name.to_string(),
+            from_guid: from.to_string(),
+            to_guid: to.to_string(),
+            sequence,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn contiguous_sequence_is_accepted() {
+        let seq = vec![
+            chain("a", "", "g1", 1),
+            chain("b", "g1", "g2", 2),
+            chain("c", "g2", "g3", 3),
+        ];
+        assert!(validate_restore_sequence("naslos-test/data", &seq, 3).is_ok());
+        assert!(validate_restore_sequence("naslos-test/data", &seq, 2).is_ok());
+    }
+
+    #[test]
+    fn missing_base_is_refused() {
+        let seq = vec![chain("b", "g1", "g2", 2)];
+        assert!(validate_restore_sequence("s", &seq, 0).is_err());
+    }
+
+    #[test]
+    fn a_gap_is_refused() {
+        let seq = vec![chain("a", "", "g1", 1), chain("c", "g2", "g3", 3)];
+        assert!(validate_restore_sequence("s", &seq, 0).is_err());
+    }
+
+    #[test]
+    fn out_of_order_sequences_are_refused() {
+        let seq = vec![chain("a", "", "g1", 2), chain("b", "g1", "g2", 1)];
+        assert!(validate_restore_sequence("s", &seq, 0).is_err());
+    }
+
+    #[test]
+    fn a_stale_sequence_is_refused() {
+        let seq = vec![chain("a", "", "g1", 1)];
+        assert!(validate_restore_sequence("s", &seq, 5).is_err());
+    }
+
+    #[test]
+    fn a_repeated_chain_is_refused() {
+        let seq = vec![chain("a", "", "g1", 1), chain("a", "g1", "g2", 2)];
+        assert!(validate_restore_sequence("s", &seq, 0).is_err());
+    }
+}

@@ -71,6 +71,28 @@ spec:
               mountPath: /etc/naslos/agent-tls
               readOnly: true
             {{- end }}
+          # /health is the only unauthenticated route; it proves the listener
+          # and the TLS material are usable (SEC-2026-F10).
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9090
+              {{- if .Values.agent.tls.enabled }}
+              scheme: HTTPS
+              insecureSkipTLSVerify: true
+              {{- end }}
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9090
+              {{- if .Values.agent.tls.enabled }}
+              scheme: HTTPS
+              insecureSkipTLSVerify: true
+              {{- end }}
+            initialDelaySeconds: 10
+            periodSeconds: 30
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
       volumes:

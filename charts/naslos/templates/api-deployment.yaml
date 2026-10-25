@@ -324,16 +324,15 @@ spec:
                   name: {{ .Values.buddy.enrollTokenSecret | default "naslos-buddy" }}
                   key: enrollToken
             {{- end }}
-            {{- if .Values.buddy.kekSecret }}
             # PF-M14: take the key-encryption key from a Secret instead of the
             # identity file, so a read of that file does not also yield the key
-            # that unwraps every backup. Key must be `kek` (base64, 32 bytes).
+            # that unwraps every backup. The chart generates `naslos-buddy-kek`
+            # unless buddy.kekSecret names an operator-managed Secret.
             - name: BUDDY_KEK
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.buddy.kekSecret }}
+                  name: {{ .Values.buddy.kekSecret | default "naslos-buddy-kek" }}
                   key: {{ .Values.buddy.kekSecretKey | default "kek" }}
-            {{- end }}
             {{- end }}
             {{- if .Values.api.ldapCA.secretName }}
             - name: LDAP_CA_CERT

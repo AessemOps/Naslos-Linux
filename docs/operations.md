@@ -34,7 +34,7 @@ automatically on the next operation.)
 
 ### Cannot log in via web
 
-1. Check Authelia logs: `kubectl logs -n naslos daemonset/naslos-authelia`.
+1. Check Authelia logs: `kubectl logs -n naslos statefulset/naslos-authelia`.
 2. Verify `LDAP_HOST` and that the Authelia bind password comes from the
    `naslos-openldap` Secret key `service-password` via
    `AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE`; the `authelia-config`

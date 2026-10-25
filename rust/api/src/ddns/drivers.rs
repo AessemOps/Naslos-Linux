@@ -40,7 +40,9 @@ pub fn default_driver(driver: &str, client: reqwest::Client) -> Result<Box<dyn D
 }
 
 async fn read_body(resp: reqwest::Response) -> String {
-    resp.text().await.unwrap_or_default()
+    const MAX: usize = 8 * 1024;
+    let bytes = resp.bytes().await.unwrap_or_default();
+    String::from_utf8_lossy(&bytes[..bytes.len().min(MAX)]).into_owned()
 }
 
 fn status_ok(status: reqwest::StatusCode, want: u16) -> bool {
@@ -985,7 +987,7 @@ fn default_guard(url: &reqwest::Url) -> Result<(), String> {
     Ok(())
 }
 
-fn blocked_ip(ip: &std::net::IpAddr) -> bool {
+pub(crate) fn blocked_ip(ip: &std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
             v4.is_loopback()
@@ -995,10 +997,20 @@ fn blocked_ip(ip: &std::net::IpAddr) -> bool {
                 || v4.is_unspecified()
         }
         std::net::IpAddr::V6(v6) => {
+            // IPv4-mapped addresses (::ffff:127.0.0.1) must be judged as IPv4,
+            // otherwise the loopback/private checks above are bypassed.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return blocked_ip(&std::net::IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
             v6.is_loopback()
                 || v6.is_multicast()
                 || v6.is_unspecified()
-                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                || (first & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || (first & 0xfe00) == 0xfc00 // unique-local fc00::/7
+                || (first == 0x0064 && v6.segments()[1] == 0xff9b) // NAT64
+                || first == 0x2002 // 6to4
+                || (first == 0x2001 && v6.segments()[1] == 0x0db8) // documentation
         }
     }
 }
@@ -1050,6 +1062,28 @@ mod tests {
         );
         assert_eq!(render_template("{{.secret.token}}", &r).unwrap(), "abc");
         assert!(render_template("{{.secret.missing}}", &r).is_err());
+    }
+
+    #[test]
+    fn blocked_ip_covers_mapped_and_ula_addresses() {
+        use std::net::IpAddr;
+        for bad in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "169.254.169.254",
+            "::1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "fc00::1",
+            "fd12:3456::1",
+            "fe80::1",
+            "64:ff9b::7f00:1",
+        ] {
+            assert!(blocked_ip(&bad.parse::<IpAddr>().unwrap()), "{bad}");
+        }
+        for good in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+            assert!(!blocked_ip(&good.parse::<IpAddr>().unwrap()), "{good}");
+        }
     }
 
     #[test]

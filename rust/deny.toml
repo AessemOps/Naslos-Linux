@@ -1,0 +1,46 @@
+# cargo-deny policy (SEC-2026-G7).
+#
+# Targets: rustsec advisories with dated, reasoned ignores only; a permissive
+# license allowlist (the workspace itself is AGPL-3.0-only); no wildcard or git
+# dependencies; crates.io as the only source.
+
+[advisories]
+version = 2
+ignore = [
+  { id = "RUSTSEC-2025-0134", reason = "Reviewed 2026-10-24. rustls-pemfile is unmaintained; it only parses the mounted LDAP CA PEM. Migration to rustls-pki-types tracked in docs/AUDIT-2026-10-24.md" },
+  { id = "RUSTSEC-2017-0008", reason = "Reviewed 2026-10-24. serial is an optional portable-pty dependency; portable-pty is used only for the kubectl exec PTY" },
+  { id = "RUSTSEC-2024-0449", reason = "Reviewed 2026-10-24. unsafe-libyaml is reachable only through serde_yaml (chart values/config); no untrusted YAML is parsed by the API" },
+  { id = "RUSTSEC-2026-0119", reason = "Reviewed 2026-10-24, re-check by 2027-03-31. hickory-resolver 0.24 O(n^2) encoding: used only against two hard-coded public resolvers (8.8.8.8, 208.67.222.222) for DDNS IP discovery; messages are not attacker-controlled. Upgrade tracked in docs/AUDIT-2026-10-24.md" },
+]
+
+[licenses]
+version = 2
+allow = [
+  "AGPL-3.0-only",
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Zlib",
+  "CC0-1.0",
+  "Unlicense",
+  "BSL-1.0",
+  "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = [
+  { name = "openssl", reason = "the workspace uses rustls only" },
+  { name = "native-tls", reason = "the workspace uses rustls only" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -547,6 +547,13 @@ async fn run_send_job(
         Ok(())
     };
 
+    let persist_template = send_state.clone();
+    let persist_path = state_path.clone();
+    let save_state = move |chain: &ChainState| {
+        let mut next = persist_template.clone();
+        next.chain = chain.clone();
+        save_send_state(&persist_path, &next)
+    };
     let mut chain_state = send_state.chain.clone();
     let (result, err) = client
         .push(PushOptions {
@@ -561,6 +568,7 @@ async fn run_send_job(
             prune_keep,
             progress: Some(&progress),
             before_publish: Some(&before_publish),
+            save_state: Some(&save_state),
         })
         .await;
     if let Some(new_state) = result.state.clone() {

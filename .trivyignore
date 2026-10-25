@@ -1,0 +1,15 @@
+# Trivy exceptions, each with a rationale and an expiry.
+#
+# The vendored kubectl/helm/talosctl client binaries are built by upstream with
+# a Go toolchain that has not picked up these fixes yet (checked against the
+# latest kubectl v1.37.1, helm v4.3.1 and talosctl v1.14.4 on 2026-10-24).
+# They are CLI clients talking to operator-configured endpoints with pinned CA
+# material, not network listeners; revisit when upstream rebuilds.
+CVE-2026-111943 exp:2027-01-31
+CVE-2026-78667 exp:2027-01-31
+CVE-2026-78669 exp:2027-01-31
+CVE-2026-97031 exp:2027-01-31
+CVE-2026-56851 exp:2027-01-31
+# hickory-resolver 0.24 O(n^2) encoding: client-only against two hard-coded
+# public resolvers for DDNS discovery (see rust/deny.toml).
+GHSA-5j98-2g5x-46v6 exp:2027-03-31

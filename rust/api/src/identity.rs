@@ -180,11 +180,20 @@ pub fn short_names(values: &[String]) -> Vec<String> {
 }
 
 /// Whether the account is not expired (`shadowExpire`).
+///
+/// `shadowExpire` is days since the Unix epoch; `-1`/empty means "never", and
+/// `0`/a past date (the disable path writes `1`) means disabled.
 pub fn is_person_enabled(shadow_expire: &str) -> bool {
-    if shadow_expire.is_empty() || shadow_expire == "-1" {
+    let value = shadow_expire.trim();
+    if value.is_empty() || value == "-1" {
         return true;
     }
-    shadow_expire != "0"
+    let Ok(expire) = value.parse::<i64>() else {
+        // An unparsable value is safer treated as expired.
+        return false;
+    };
+    let today = chrono::Utc::now().timestamp() / 86_400;
+    expire > today
 }
 
 /// An LDAP operation, so the retry-once logic lives in one place.
@@ -622,6 +631,18 @@ mod tests {
             compute_nt_hash("password"),
             "8846F7EAEE8FB117AD06BDD830B7586C"
         );
+    }
+
+    #[test]
+    fn shadow_expire_semantics() {
+        assert!(is_person_enabled(""));
+        assert!(is_person_enabled("-1"));
+        // The disable path writes 1 (Jan 2 1970), and 0 is the classic lock.
+        assert!(!is_person_enabled("0"));
+        assert!(!is_person_enabled("1"));
+        assert!(!is_person_enabled("not-a-number"));
+        // A far-future expiry is enabled.
+        assert!(is_person_enabled("99999"));
     }
 
     #[test]

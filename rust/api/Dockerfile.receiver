@@ -24,11 +24,11 @@ COPY rust/api/Cargo.toml api/Cargo.toml
 RUN mkdir -p agent/src api/src \
     && echo 'pub fn placeholder(){}' > agent/src/lib.rs && echo 'fn main(){}' > agent/src/main.rs \
     && echo 'pub fn placeholder(){}' > api/src/lib.rs && echo 'fn main(){}' > api/src/main.rs \
-    && cargo build --release --target x86_64-unknown-linux-musl --package naslos-api --bin buddy-receiver || true
+    && cargo build --release --locked --target x86_64-unknown-linux-musl --package naslos-api --bin buddy-receiver || true
 COPY rust/agent/src agent/src
 COPY rust/api/src api/src
 RUN touch agent/src/lib.rs agent/src/main.rs api/src/lib.rs api/src/main.rs api/src/bin/*.rs \
-    && cargo build --release --target x86_64-unknown-linux-musl --package naslos-api --bin buddy-receiver
+    && cargo build --release --locked --target x86_64-unknown-linux-musl --package naslos-api --bin buddy-receiver
 
 FROM gcr.io/distroless/static-debian12:nonroot
 

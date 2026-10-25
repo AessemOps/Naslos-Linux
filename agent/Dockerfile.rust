@@ -20,12 +20,12 @@ COPY rust/api/Cargo.toml api/Cargo.toml
 RUN mkdir -p agent/src api/src \
     && echo 'fn main() {}' > agent/src/main.rs && echo '' > agent/src/lib.rs \
     && echo 'pub fn placeholder() {}' > api/src/lib.rs && echo 'fn main() {}' > api/src/main.rs \
-    && cargo build --release --target x86_64-unknown-linux-musl --package naslos-agent || true
+    && cargo build --release --locked --target x86_64-unknown-linux-musl --package naslos-agent || true
 COPY rust/agent/src agent/src
 # Bust the placeholder build (touch the lib too, so the dependency crate is
 # recompiled with the real sources) and produce the real binary.
 RUN touch agent/src/main.rs agent/src/lib.rs \
-    && cargo build --release --target x86_64-unknown-linux-musl --package naslos-agent
+    && cargo build --release --locked --target x86_64-unknown-linux-musl --package naslos-agent
 
 # Assemble the two files the agent needs on top of the static binary:
 #   - a static busybox with `chroot` (the agent runs zpool/zfs on the Talos host

@@ -30,7 +30,8 @@ read them in order for the full picture, or jump straight to a topic.
 | [installer-contract.md](installer-contract.md) | Install pack format + stable interfaces for the desktop installer (FR-INSTALL) | New |
 | [operations.md](operations.md) | Day-2: LDAP backup/restore, troubleshooting | New |
 | [development.md](development.md) | Repo layout, how to build, extend the catalog/shares | New |
-| [AUDIT-2026-09-19-REPORT.md](AUDIT-2026-09-19-REPORT.md) | **The audit and fix report**: findings, every security and code fix with commit/revision, verification, remaining work | Current |
+| [AUDIT-2026-10-24.md](AUDIT-2026-10-24.md) | **The current post-Rust audit**: findings register (SEC-2026-NN), fixes with tests, open/accepted risks, remaining work | Current |
+| [AUDIT-2026-09-19-REPORT.md](AUDIT-2026-09-19-REPORT.md) | The pre-Rust audit and fix report (kept for history; superseded by the 2026-10-24 audit) | Superseded |
 
 The detailed working documents behind the report — the audit findings
 (`AUDIT-2026-09-19.md`), its fix plan (`AUDIT-2026-09-19-FIXPLAN.md`), the
