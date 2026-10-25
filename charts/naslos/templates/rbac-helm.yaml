@@ -1,0 +1,87 @@
+{{- /*
+The identity Helm runs as (SEC-2026-D1/D4).
+
+Installing a chart with the API's own ServiceAccount let the chart's manifests
+create Traefik `IngressRoute`/`Middleware` objects (host hijack, same-origin with
+the UI) and cert-manager objects. Helm now runs as `naslos-helm`, a namespaced
+account that can create workloads, Services, ConfigMaps, Secrets, PVCs and
+Ingresses but NOT trajectories/certificates or RBAC. The API keeps those rights
+and creates the app route/certificate itself.
+
+The token Secret is a long-lived, controller-populated
+`kubernetes.io/service-account-token` in the release namespace (so the API pod
+can mount it); the RoleBinding is in the apps namespace.
+*/}}
+{{- $ans := .Values.apps.namespace | default "naslos-apps" }}
+{{- if and .Values.ui.enabled (ne $ans .Release.Namespace) (ne $ans (include "naslos.workloadNamespace" .)) }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: naslos-helm
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: helm
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: naslos-helm-token
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: helm
+  annotations:
+    kubernetes.io/service-account.name: naslos-helm
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: naslos-helm-apps
+  namespace: {{ $ans }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: helm
+rules:
+  - apiGroups: [""]
+    resources:
+      ["services", "configmaps", "secrets", "persistentvolumeclaims",
+       "serviceaccounts", "pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Deliberately absent: traefik.io (routes/middlewares), cert-manager.io
+  # (certificates/issuers), rbac.authorization.k8s.io (roles/bindings) and all
+  # cluster-scoped writes.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-helm-apps
+  namespace: {{ $ans }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: naslos-helm-apps
+subjects:
+  - kind: ServiceAccount
+    name: naslos-helm
+    namespace: {{ .Release.Namespace }}
+{{- end }}

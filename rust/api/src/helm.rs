@@ -350,15 +350,64 @@ fn app_from_status(
     }
 }
 
-/// Resolve a kubeconfig for the helm CLI: `HELM_KUBECONFIG`, else a generated
-/// in-cluster one, else `None` (ambient `KUBECONFIG`/`~/.kube/config`).
+/// Resolve a kubeconfig for the helm CLI: `HELM_KUBECONFIG` (development),
+/// else the reduced `naslos-helm` service account, else the API's own account.
+///
+/// Charts must NOT be applied with the API's identity: that account can create
+/// Traefik routes and cert-manager objects, so a malicious chart could become
+/// same-origin with the UI (SEC-2026-D1/D4). The chart grants `naslos-helm` only
+/// workload resources.
 pub fn resolve_kubeconfig() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("HELM_KUBECONFIG") {
         if !path.is_empty() {
             return Some(PathBuf::from(path));
         }
     }
+    if let (Ok(token), Ok(ca)) = (
+        std::env::var("HELM_SA_TOKEN_FILE"),
+        std::env::var("HELM_SA_CA_FILE"),
+    ) {
+        if !token.is_empty() && !ca.is_empty() {
+            return helm_sa_kubeconfig(&token, &ca);
+        }
+    }
     in_cluster_kubeconfig()
+}
+
+/// The API's own kubeconfig (routing, exec, certs): never the Helm account.
+pub fn resolve_api_kubeconfig() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("HELM_KUBECONFIG") {
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+    in_cluster_kubeconfig()
+}
+
+fn helm_sa_kubeconfig(token_file: &str, ca_file: &str) -> Option<PathBuf> {
+    let host = std::env::var("KUBERNETES_SERVICE_HOST").ok()?;
+    let port = std::env::var("KUBERNETES_SERVICE_PORT").unwrap_or_else(|_| "443".to_string());
+    let namespace = std::env::var("APPS_NAMESPACE").unwrap_or_else(|_| "naslos-apps".to_string());
+    let yaml = build_sa_kubeconfig(&host, &port, &namespace, token_file, ca_file);
+    let path = std::env::temp_dir().join(format!(
+        "naslos-helm-sa-kubeconfig-{}.yaml",
+        std::process::id()
+    ));
+    crate::chartsrepo::write_atomic(&path.display().to_string(), yaml.as_bytes(), 0o600, 0o700)
+        .ok()?;
+    Some(path)
+}
+
+fn build_sa_kubeconfig(
+    host: &str,
+    port: &str,
+    namespace: &str,
+    token_file: &str,
+    ca_file: &str,
+) -> String {
+    format!(
+        "apiVersion: v1\nkind: Config\nclusters:\n- name: naslos-helm\n  cluster:\n    server: https://{host}:{port}\n    certificate-authority: {ca_file}\ncontexts:\n- name: naslos-helm\n  context:\n    cluster: naslos-helm\n    user: naslos-helm\n    namespace: {namespace}\ncurrent-context: naslos-helm\nusers:\n- name: naslos-helm\n  user:\n    tokenFile: {token_file}\n"
+    )
 }
 
 /// Build a kubeconfig from the pod's service account, if running in-cluster.
@@ -394,6 +443,20 @@ fn in_cluster_kubeconfig() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_helm_sa_kubeconfig_uses_the_mounted_token() {
+        let yaml = build_sa_kubeconfig(
+            "10.96.0.1",
+            "443",
+            "naslos-apps",
+            "/var/run/secrets/naslos-helm/token",
+            "/var/run/secrets/naslos-helm/ca.crt",
+        );
+        assert!(yaml.contains("tokenFile: /var/run/secrets/naslos-helm/token"));
+        assert!(yaml.contains("namespace: naslos-apps"));
+        assert!(yaml.contains("server: https://10.96.0.1:443"));
+    }
 
     #[test]
     fn release_status_mapping() {
