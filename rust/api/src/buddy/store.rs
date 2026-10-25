@@ -197,20 +197,31 @@ impl Store {
         if delta == 0 {
             return Ok(());
         }
-        let used = self.usage_locked(key_id)?;
-        if quota > 0 && delta > 0 && used + delta > quota {
+        // Load the key's usage first, then hold the usage mutex across the
+        // check and the increment so two concurrent PUTs cannot both pass a
+        // quota/free-space check (SEC-2026-C8).
+        let _ = self.usage_locked(key_id)?;
+        let mut usage = self.usage.lock().unwrap();
+        let used = usage.get(key_id).copied().unwrap_or(0);
+        if quota > 0 && delta > 0 && used.saturating_add(delta) > quota {
             return Err(StoreError::Quota { used, quota });
         }
         if delta > 0 {
             if let Ok(free) = free_space(&self.root) {
-                if free - delta < free_space_reserve() {
+                if free.saturating_sub(delta) < free_space_reserve() {
                     return Err(StoreError::NoSpace);
                 }
             }
         }
-        let mut usage = self.usage.lock().unwrap();
-        let loaded = self.loaded.lock().unwrap();
-        if usage.contains_key(key_id) || loaded.get(key_id).copied().unwrap_or(false) {
+        if usage.contains_key(key_id)
+            || self
+                .loaded
+                .lock()
+                .unwrap()
+                .get(key_id)
+                .copied()
+                .unwrap_or(false)
+        {
             *usage.entry(key_id.to_string()).or_insert(0) += delta;
         }
         Ok(())
