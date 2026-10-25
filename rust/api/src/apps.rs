@@ -310,6 +310,7 @@ impl Manager {
         let chart_dir = self.resolve_chart(&app).await?;
 
         let values = merge_values(&app.default_values, req.values.as_ref());
+        validate_install_values(&app, &values)?;
         let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
 
         report(
@@ -745,6 +746,35 @@ pub fn exposure_for(
 }
 
 /// Deep-merge overlay into base and return a new map.
+/// Validate the merged install values against the catalog's JSON schema
+/// (SEC-2026-D7). A missing/null schema means the catalog does not constrain
+/// the values; an invalid schema is a catalog defect and fails closed.
+fn validate_install_values(
+    app: &crate::catalog::App,
+    values: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    if app.schema.is_null() {
+        return Ok(());
+    }
+    let validator = jsonschema::validator_for(&app.schema)
+        .map_err(|e| format!("app {:?} has an invalid values schema: {e}", app.name))?;
+    let instance = serde_json::Value::Object(values.clone());
+    let errors: Vec<String> = validator
+        .iter_errors(&instance)
+        .map(|e| e.to_string())
+        .take(8)
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid values for {:?}: {}",
+            app.name,
+            errors.join("; ")
+        ))
+    }
+}
+
 pub fn merge_values(
     base: &serde_json::Value,
     overlay: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -982,5 +1012,51 @@ mod exposure_patch_tests {
         assert!(merged.tls, "TLS must not be disabled by an omitted field");
         assert!(merged.auth, "auth must not be disabled by an omitted field");
         assert_eq!(merged.port, 32400);
+    }
+}
+
+#[cfg(test)]
+mod value_schema_tests {
+    use super::validate_install_values;
+    use crate::catalog::App;
+    use serde_json::json;
+
+    fn app_with_schema() -> App {
+        App {
+            name: "demo".into(),
+            schema: json!({
+                "type": "object",
+                "properties": { "port": { "type": "integer", "minimum": 1 } },
+                "required": ["port"]
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn valid_values_pass() {
+        let mut values = serde_json::Map::new();
+        values.insert("port".into(), json!(8080));
+        assert!(validate_install_values(&app_with_schema(), &values).is_ok());
+    }
+
+    #[test]
+    fn missing_or_wrong_type_is_refused() {
+        let empty = serde_json::Map::new();
+        assert!(validate_install_values(&app_with_schema(), &empty).is_err());
+        let mut bad = serde_json::Map::new();
+        bad.insert("port".into(), json!("eighty"));
+        let err = validate_install_values(&app_with_schema(), &bad).unwrap_err();
+        assert!(err.contains("invalid values"), "{err}");
+    }
+
+    #[test]
+    fn a_null_schema_is_unconstrained() {
+        let app = App {
+            name: "demo".into(),
+            schema: serde_json::Value::Null,
+            ..Default::default()
+        };
+        assert!(validate_install_values(&app, &serde_json::Map::new()).is_ok());
     }
 }
