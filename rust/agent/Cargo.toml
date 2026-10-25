@@ -34,7 +34,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io", "compat"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["limit"] }
+tower-http = { version = "0.6", features = ["limit", "timeout"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

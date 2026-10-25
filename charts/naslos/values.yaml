@@ -532,6 +532,10 @@ openldap:
     enabled: true
     schedule: "0 3 * * *"
     retain: 7
+    # Dedicated volume for the `slapcat` dumps (SEC-2026-F5). Empty
+    # storageClassName uses the cluster default.
+    size: 2Gi
+    storageClassName: ""
 
 # No `namespace` value: every template uses `.Release.Namespace`, so the chart
 # installs under any release namespace (`helm -n <ns>`), which is what multi-

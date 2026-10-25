@@ -8,8 +8,9 @@ Day-2 topics: backups, restore, common failures.
 
 - Runs daily at **03:00 UTC**.
 - Exports config (`slapcat -F /etc/ldap/slapd.d -n 0`) and data (`… -n 1`) to
-  `/backups/ldap` on the config PVC (a `local-path` volume — there is no ZFS
-  snapshot layer for it).
+  `/backups/ldap` on a dedicated `naslos-openldap-backups` PVC (`openldap.backup.size`,
+  default 2Gi). It is deliberately not the config volume: a few retained dumps
+  could fill the 100 MiB volume slapd itself needs.
 - Retains the last **7** backups.
 
 ### Manual backup

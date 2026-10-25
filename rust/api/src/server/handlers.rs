@@ -13,12 +13,24 @@ pub async fn health() -> Response {
     json(StatusCode::OK, serde_json::json!({ "status": "ok" }))
 }
 
-/// Readiness never fails when LDAP is down (ported behavior); the LDAP state is
-/// reported for observability. S1 has no identity backend yet, so it is "down".
-pub async fn ready() -> Response {
+/// Readiness never fails when LDAP is down (the UI and the API's non-identity
+/// routes keep working), but the reported state is now measured with a short
+/// LDAP search instead of being hard-coded (SEC-2026-H3).
+pub async fn ready(State(state): State<Arc<AppState>>) -> Response {
+    let ldap = match &state.identity {
+        None => "down",
+        Some(identity) => {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), identity.list_groups())
+                .await
+            {
+                Ok(Ok(_)) => "up",
+                _ => "down",
+            }
+        }
+    };
     json(
         StatusCode::OK,
-        serde_json::json!({ "status": "ok", "ldap": "down" }),
+        serde_json::json!({ "status": "ok", "ldap": ldap }),
     )
 }
 

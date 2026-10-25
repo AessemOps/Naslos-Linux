@@ -108,17 +108,27 @@ impl Server {
                     .post(handlers::shares_folders_post)
                     .delete(handlers::shares_folders_delete),
             )
-            .route("/api/v1/zfs/send/", get(handlers::zfs_send_empty))
-            .route("/api/v1/zfs/send/{*dataset}", get(handlers::zfs_send))
-            .route("/api/v1/zfs/receive/", post(handlers::zfs_receive_empty))
-            .route(
-                "/api/v1/zfs/receive/{*dataset}",
-                post(handlers::zfs_receive),
-            )
             .route("/api/v1/zfs/snapshots/", get(handlers::zfs_snapshots_empty))
             .route(
                 "/api/v1/zfs/snapshots/{*dataset}",
                 get(handlers::zfs_snapshots),
+            )
+            // Non-streaming calls are bounded below the API client's 180 s
+            // timeout. `zfs send`/`receive` are long-lived streams and are
+            // merged after this layer, so they keep no deadline (SEC-2026-D9).
+            .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+                axum::http::StatusCode::GATEWAY_TIMEOUT,
+                std::time::Duration::from_secs(170),
+            ))
+            .merge(
+                Router::new()
+                    .route("/api/v1/zfs/send/", get(handlers::zfs_send_empty))
+                    .route("/api/v1/zfs/send/{*dataset}", get(handlers::zfs_send))
+                    .route("/api/v1/zfs/receive/", post(handlers::zfs_receive_empty))
+                    .route(
+                        "/api/v1/zfs/receive/{*dataset}",
+                        post(handlers::zfs_receive),
+                    ),
             )
             .layer(middleware::from_fn_with_state(
                 self.state.clone(),
