@@ -100,6 +100,9 @@ apps:
     # naslos-charts-deploy-key Secret with an `ssh-private-key` key.)
     url: https://github.com/AessemOps/NaslosCharts.git
     auth: public
+    # SEC-2026-D6: pin the NASLOS catalog to an audited commit. Bump this when
+    # releasing a chart that needs newer catalog entries.
+    commit: 781f192de6a54db23f9fc098397d38a0b37d9fc0
     credentialsSecret: ""
     # NaslosCharts currently has only a `main` branch, so map the channels onto
     # it; add real Prod/Develop/Experimental branches and drop this later.

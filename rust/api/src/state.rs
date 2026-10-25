@@ -249,12 +249,57 @@ pub fn is_admin(user: &UserInfo) -> bool {
     user.is_admin()
 }
 
+/// Build the pinned official source from `SOURCES_OFFICIAL_*` (chart values).
+fn official_source_from_env() -> Option<crate::chartsrepo::Source> {
+    use crate::chartsrepo::{AuthType, Source};
+    let url = std::env::var("SOURCES_OFFICIAL_URL").ok()?;
+    if url.is_empty() {
+        return None;
+    }
+    let name = std::env::var("SOURCES_OFFICIAL_NAME").unwrap_or_else(|_| "naslos".to_string());
+    let auth = match std::env::var("SOURCES_OFFICIAL_AUTH")
+        .unwrap_or_else(|_| "public".to_string())
+        .as_str()
+    {
+        "token" => AuthType::Token,
+        "ssh" => AuthType::Ssh,
+        _ => AuthType::Public,
+    };
+    let channels = std::env::var("SOURCES_OFFICIAL_CHANNELS")
+        .map(|raw| parse_channels(&raw))
+        .unwrap_or_default();
+    Some(Source {
+        name,
+        display_name: std::env::var("SOURCES_OFFICIAL_DISPLAY")
+            .unwrap_or_else(|_| "NaslosCharts".to_string()),
+        url,
+        auth,
+        credentials_secret: std::env::var("SOURCES_OFFICIAL_SECRET").unwrap_or_default(),
+        channels,
+        commit: std::env::var("SOURCES_OFFICIAL_COMMIT").unwrap_or_default(),
+        official: true,
+        ..Default::default()
+    })
+}
+
+fn parse_channels(raw: &str) -> std::collections::HashMap<String, String> {
+    let mut channels = std::collections::HashMap::new();
+    for pair in raw.split(',').filter(|p| !p.trim().is_empty()) {
+        if let Some((k, v)) = pair.split_once('=') {
+            if !k.trim().is_empty() && !v.trim().is_empty() {
+                channels.insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
+    }
+    channels
+}
+
 /// Build the chart-repository manager and the initial catalog snapshot.
 /// Credentials come from a Kubernetes Secret in the Go server; the Rust port
 /// wires a public-only provider for now (documented in the plan), so private
 /// sources are added but not yet clonable.
 fn build_chart_repos() -> (Option<Arc<crate::chartsrepo::Manager>>, Arc<CatalogHolder>) {
-    use crate::chartsrepo::{GitCliBackend, Manager, Source, Store, DEFAULT_TTL};
+    use crate::chartsrepo::{GitCliBackend, Manager, Store, DEFAULT_TTL};
 
     let sources = Arc::new(Store::new(
         &std::env::var("SOURCES_CONFIG")
@@ -278,23 +323,20 @@ fn build_chart_repos() -> (Option<Arc<crate::chartsrepo::Manager>>, Arc<CatalogH
         Arc::new(GitCliBackend::new()),
     ));
 
-    // Seed the official source once, from the chart's environment.
-    if let Ok(url) = std::env::var("SOURCES_OFFICIAL_URL") {
-        if !url.is_empty() {
-            let name =
-                std::env::var("SOURCES_OFFICIAL_NAME").unwrap_or_else(|_| "naslos".to_string());
-            if sources.get(&name).is_err() {
-                let official = Source {
-                    name,
-                    display_name: std::env::var("SOURCES_OFFICIAL_DISPLAY")
-                        .unwrap_or_else(|_| "NaslosCharts".to_string()),
-                    url,
-                    official: true,
-                    ..Default::default()
-                };
-                if let Err(e) = charts.add_source(official) {
-                    tracing::warn!("could not seed the official chart source: {e}");
-                }
+    // Seed/refresh the official source from the chart's environment. It is
+    // refreshed (not just seeded) so a release can tighten the pinned commit,
+    // auth mode or channel map on an existing install without an admin edit.
+    if let Some(official) = official_source_from_env() {
+        let keep = sources.get(&official.name).ok().filter(|s| s.official);
+        if keep.is_some() || sources.get(&official.name).is_err() {
+            let mut official = official;
+            if let Some(existing) = keep {
+                official.last_sync = existing.last_sync;
+                official.last_error = existing.last_error;
+                official.added_at = existing.added_at;
+            }
+            if let Err(e) = charts.add_source(official) {
+                tracing::warn!("could not seed the official chart source: {e}");
             }
         }
     }
@@ -528,4 +570,17 @@ pub fn base_domain_from_env() -> String {
                 .filter(|v| !v.trim().is_empty())
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_channels;
+
+    #[test]
+    fn official_channel_mapping_is_parsed() {
+        let c = parse_channels("Prod=main,Develop=dev,,bad,=x,y=");
+        assert_eq!(c.get("Prod").map(String::as_str), Some("main"));
+        assert_eq!(c.get("Develop").map(String::as_str), Some("dev"));
+        assert_eq!(c.len(), 2);
+    }
 }

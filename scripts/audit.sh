@@ -64,6 +64,8 @@ assert "traefik.io" not in groups, groups
 assert "cert-manager.io" not in groups, groups
 assert "rbac.authorization.k8s.io" not in groups, groups
 assert "HELM_SA_TOKEN_FILE" in env, env.get("HELM_SA_TOKEN_FILE")
+commit = env.get("SOURCES_OFFICIAL_COMMIT", {}).get("value", "")
+assert len(commit) == 40 and all(c in "0123456789abcdef" for c in commit), commit
 api = find("IngressRoute", "naslos-api")
 assert api, "naslos-api IngressRoute missing"
 middlewares = [m["name"] for m in api["spec"]["routes"][0].get("middlewares", [])]
@@ -124,6 +126,7 @@ check_build_integrity() {
   grep -q 'BUDDY_RECEIVE_PATH' "$root/rust/api/src/state.rs" || ok=0
   grep -q 'health_watch::run' "$root/rust/api/src/main.rs" || ok=0
   grep -q 'LDAP_BIND_PASS_FILE' "$root/rust/api/src/identity.rs" || ok=0
+  grep -q 'rev-parse' "$root/rust/api/src/chartsrepo.rs" || ok=0
   if grep -q "^  '''\\^bootstrap/vm/" "$root/.gitleaks-history.toml"; then ok=0; fi
   [ "$ok" -eq 1 ]
 }
