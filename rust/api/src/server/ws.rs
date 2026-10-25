@@ -53,7 +53,7 @@ fn kubectl_binary() -> String {
 }
 
 fn kubeconfig_args() -> Vec<String> {
-    match crate::helm::resolve_kubeconfig() {
+    match crate::helm::resolve_api_kubeconfig() {
         Some(p) => vec!["--kubeconfig".into(), p.display().to_string()],
         None => Vec::new(),
     }

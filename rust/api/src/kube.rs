@@ -57,7 +57,7 @@ impl Client {
     pub fn new(namespace: &str) -> Self {
         Self {
             binary: std::env::var("KUBECTL_BIN").unwrap_or_else(|_| "kubectl".to_string()),
-            kubeconfig: crate::helm::resolve_kubeconfig(),
+            kubeconfig: crate::helm::resolve_api_kubeconfig(),
             namespace: namespace.to_string(),
         }
     }
