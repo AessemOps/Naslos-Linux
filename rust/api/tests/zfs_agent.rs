@@ -3,6 +3,7 @@
 //! server) stands in for the DaemonSet.
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -13,6 +14,7 @@ use naslos_api::server::build_router;
 use naslos_api::shares::{Manager as SharesManager, SambaUserStore};
 use naslos_api::state::{AppState, Cidr};
 use serde_json::{json, Value};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -167,6 +169,9 @@ async fn call(
         }
         None => b.body(Body::empty()).unwrap(),
     };
+    let mut req = req;
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40000))));
     let resp = build_router(state).oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();

@@ -101,11 +101,11 @@ spec:
               userPassword: $SERVICE_PW_HASH
               EOF
 
-              ldapmodify -x -H "$LDAP_URI" -D "cn=admin,{{ $baseDN }}" -w "$(cat /run/secrets/admin-password)" -f /tmp/update-service-pw.ldif
+              ldapmodify -x -H "$LDAP_URI" -D "cn=admin,{{ $baseDN }}" -y /run/secrets/admin-password -f /tmp/update-service-pw.ldif
 
               # Verify groups exist (created by bootstrap.ldif)
               echo "Verifying groups..."
-              ldapsearch -x -H "$LDAP_URI" -D "cn=admin,{{ $baseDN }}" -w "$(cat /run/secrets/admin-password)" \
+              ldapsearch -x -H "$LDAP_URI" -D "cn=admin,{{ $baseDN }}" -y /run/secrets/admin-password \
                 -b "cn=naslos_admins,ou=groups,{{ $baseDN }}" -s base "(objectClass=*)" cn
 
               echo "OpenLDAP bootstrap completed successfully!"

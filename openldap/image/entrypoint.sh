@@ -133,7 +133,8 @@ olcAccess: {1}to dn.base="" by * read
 olcAccess: {2}to *
   by dn="cn=admin,${BASE_DN}" write
   by dn="cn=naslos-service,ou=services,${BASE_DN}" write
-  by * read
+  by users read
+  by * none
 olcDbIndex: objectClass eq
 olcDbIndex: cn,uid eq
 olcDbIndex: mail eq

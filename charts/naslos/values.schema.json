@@ -230,6 +230,8 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "receiveHostPath": { "type": "string" },
+        "kekSecret": { "type": "string" },
+        "kekSecretKey": { "type": "string" },
         "enrollTokenSecret": { "type": "string" }
       }
     },

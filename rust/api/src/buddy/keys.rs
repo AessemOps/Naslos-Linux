@@ -26,13 +26,28 @@ pub struct Identity {
     pub public_key: String,
     #[serde(rename = "privateKey")]
     pub private_key: String,
+    /// Empty when `BUDDY_KEK` supplies the key (PF-M14): the KEK must not be
+    /// persisted beside the identity private key.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kek: String,
     #[serde(rename = "createdAt")]
     pub created_at: DateTime<Utc>,
 }
 
-/// Generate a fresh Ed25519 keypair and a random KEK.
+/// Whether the environment supplies the KEK.
+fn env_kek_is_set() -> bool {
+    std::env::var(ENV_KEK)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Generate a fresh Ed25519 keypair and (unless the environment supplies one)
+/// a random KEK.
 pub fn new_identity(name: &str) -> Result<Identity, String> {
+    new_identity_with_env(name, env_kek_is_set())
+}
+
+fn new_identity_with_env(name: &str, env_kek: bool) -> Result<Identity, String> {
     let signing = SigningKey::generate(&mut ssh_key::rand_core::OsRng);
     let ed = ssh_key::private::Ed25519PrivateKey::from(&signing);
     let priv_key = PrivateKey::new(
@@ -52,26 +67,38 @@ pub fn new_identity(name: &str) -> Result<Identity, String> {
         .to_openssh()
         .map_err(|e| format!("encoding public key: {e}"))?;
 
-    let mut kek = [0u8; 32];
-    getrandom::getrandom(&mut kek).map_err(|e| format!("generating key encryption key: {e}"))?;
+    let kek = if env_kek {
+        String::new()
+    } else {
+        let mut kek = [0u8; 32];
+        getrandom::getrandom(&mut kek)
+            .map_err(|e| format!("generating key encryption key: {e}"))?;
+        base64::engine::general_purpose::STANDARD.encode(kek)
+    };
 
     Ok(Identity {
         version: IDENTITY_VERSION,
         name: name.to_string(),
         public_key: public_line.trim().to_string(),
         private_key: private_pem,
-        kek: base64::engine::general_purpose::STANDARD.encode(kek),
+        kek,
         created_at: Utc::now(),
     })
 }
 
-/// Read an identity file.
+/// Read an identity file. When `BUDDY_KEK` is set, the persisted `kek` field is
+/// removed and the file rewritten (PF-M14), so at-rest copies stop yielding the
+/// key that unwraps every backup.
 pub fn load_identity(path: &str) -> Result<Identity, String> {
     let data = std::fs::read(path).map_err(|e| e.to_string())?;
-    let id: Identity =
+    let mut id: Identity =
         serde_json::from_slice(&data).map_err(|e| format!("parsing identity {path}: {e}"))?;
     if id.private_key.is_empty() || id.public_key.is_empty() {
         return Err(format!("identity {path} is incomplete"));
+    }
+    if env_kek_is_set() && !id.kek.is_empty() {
+        id.kek.clear();
+        id.save(path)?;
     }
     Ok(id)
 }
@@ -202,7 +229,28 @@ mod tests {
 
     #[test]
     fn kek_is_32_bytes() {
-        let id = new_identity("x").unwrap();
+        let id = new_identity_with_env("x", false).unwrap();
         assert_eq!(id.kek_bytes().unwrap().len(), 32);
+    }
+
+    #[test]
+    fn new_identity_keeps_the_kek_out_of_the_file_when_env_supplies_it() {
+        let id = new_identity_with_env("naslos-a", true).unwrap();
+        assert!(id.kek.is_empty());
+        let json = serde_json::to_string(&id).unwrap();
+        assert!(!json.contains("kek"), "kek must not be serialized: {json}");
+    }
+
+    #[test]
+    fn new_identity_persists_a_kek_without_the_env() {
+        let id = new_identity_with_env("naslos-a", false).unwrap();
+        assert!(!id.kek.is_empty());
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&id.kek)
+                .unwrap()
+                .len(),
+            32
+        );
     }
 }

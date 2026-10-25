@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Query, Request, State};
-use axum::http::StatusCode;
+use axum::http::{header::HOST, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use futures::{SinkExt, StreamExt};
 use tokio::io::AsyncReadExt;
@@ -63,9 +63,15 @@ fn kubeconfig_args() -> Vec<String> {
 pub async fn logs_ws(
     State(state): State<Arc<AppState>>,
     Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let _ = &state;
+    if !origin_allowed(&headers, &allowed_origins(&state)) {
+        return json(
+            StatusCode::FORBIDDEN,
+            serde_json::json!({ "error": "websocket origin refused" }),
+        );
+    }
     let namespace = query
         .get("namespace")
         .cloned()
@@ -104,6 +110,7 @@ async fn logs_stream(socket: WebSocket, namespace: String, pod: String, containe
         args.push(container.clone());
     }
     let mut child = match tokio::process::Command::new(kubectl_binary())
+        .kill_on_drop(true)
         .args(&args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -176,6 +183,12 @@ pub async fn exec_ws(
     Query(query): Query<HashMap<String, String>>,
     request: Request,
 ) -> Response {
+    if !origin_allowed(request.headers(), &allowed_origins(&state)) {
+        return json(
+            StatusCode::FORBIDDEN,
+            serde_json::json!({ "error": "websocket origin refused" }),
+        );
+    }
     let namespace = query
         .get("namespace")
         .cloned()
@@ -260,6 +273,74 @@ pub async fn exec_ws(
         Err(e) => return e.into_response(),
     };
     ws.on_upgrade(move |socket| exec_session(socket, namespace, pod, resolved, command))
+}
+
+/// Hosts that may open a terminal WebSocket in addition to the request's own
+/// `Host` (the configured primary domain and SSO domains).
+fn allowed_origins(state: &AppState) -> Vec<String> {
+    let mut out = Vec::new();
+    if !state.base_domain.is_empty() {
+        out.push(state.base_domain.clone());
+    }
+    for d in &state.sso_domains {
+        if !d.is_empty() {
+            out.push(d.clone());
+        }
+    }
+    out
+}
+
+/// Same-host WebSocket origin check (port of the Go `CheckOrigin`, NAS-009).
+///
+/// Browsers always send `Origin` on a WebSocket handshake; non-browser clients
+/// (CLI, tests) do not. A present `Origin` must be `http(s)://` and match the
+/// request host or a configured domain, otherwise the upgrade is refused.
+pub(crate) fn origin_allowed(headers: &HeaderMap, extra_hosts: &[String]) -> bool {
+    let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return true;
+    };
+    let uri: Uri = match origin.parse() {
+        Ok(uri) => uri,
+        Err(_) => return false,
+    };
+    if !matches!(uri.scheme_str(), Some("http" | "https")) {
+        return false;
+    }
+    let Some(authority) = uri.authority().map(|a| a.to_string()) else {
+        return false;
+    };
+    let request_host = headers
+        .get("x-forwarded-host")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            headers
+                .get(HOST)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.trim())
+        });
+    if let Some(host) = request_host {
+        if authority.eq_ignore_ascii_case(host) {
+            return true;
+        }
+    }
+    let origin_host = authority
+        .strip_prefix('[')
+        .and_then(|rest| rest.split(']').next())
+        .unwrap_or_else(|| {
+            authority
+                .rsplit_once(':')
+                .map(|(h, _)| h)
+                .unwrap_or(&authority)
+        });
+    extra_hosts.iter().any(|allowed| {
+        origin_host.eq_ignore_ascii_case(allowed) || authority.eq_ignore_ascii_case(allowed)
+    })
 }
 
 fn resolve_container(pod: &serde_json::Value, requested: &str) -> Result<String, String> {
@@ -436,4 +517,65 @@ async fn exec_session(
     }
     let _ = child.kill();
     let _ = output_task.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::origin_allowed;
+    use axum::http::{header::HOST, HeaderMap};
+
+    fn headers(origin: Option<&str>, host: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(HOST, host.parse().unwrap());
+        if let Some(o) = origin {
+            h.insert(axum::http::header::ORIGIN, o.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn absent_origin_is_a_non_browser_client() {
+        assert!(origin_allowed(&headers(None, "naslos.local"), &[]));
+    }
+
+    #[test]
+    fn same_host_origin_is_allowed() {
+        assert!(origin_allowed(
+            &headers(Some("https://naslos.local"), "naslos.local"),
+            &[]
+        ));
+        assert!(origin_allowed(
+            &headers(Some("https://naslos.local:8443"), "naslos.local:8443"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn foreign_origin_is_refused() {
+        assert!(!origin_allowed(
+            &headers(Some("https://evil.naslos.local"), "naslos.local"),
+            &[]
+        ));
+        assert!(!origin_allowed(
+            &headers(Some("https://evil.example"), "naslos.local"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn opaque_and_non_http_origins_are_refused() {
+        assert!(!origin_allowed(&headers(Some("null"), "naslos.local"), &[]));
+        assert!(!origin_allowed(
+            &headers(Some("file://naslos.local"), "naslos.local"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn configured_domain_is_allowed_even_with_a_port() {
+        assert!(origin_allowed(
+            &headers(Some("https://naslos.local:8443"), "10.0.0.1:8080"),
+            &["naslos.local".to_string()]
+        ));
+    }
 }

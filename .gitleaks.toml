@@ -7,21 +7,30 @@ useDefault = true
 
 # Local, never-committed material. `gitleaks dir` scans the whole working tree,
 # including gitignored files, so the generated Talos PKI (bootstrap/vm/
-# controlplane.yaml, talosconfig) and the agent workspace (.kilo/) would
-# otherwise fail the sweep. Nothing here is product code; a committed copy is
-# still caught by `gitleaks git .`, which never sees ignored paths.
+# controlplane.yaml, talosconfig), the agent workspace (.kilo/) and the
+# Playwright session state would otherwise fail the sweep. This file is for the
+# WORKING-TREE scan only; history uses .gitleaks-history.toml, which does NOT
+# allowlist bootstrap/vm/ (a force-added talosconfig must fail the history
+# scan).
 [[allowlists]]
 description = "generated/local state that is never committed"
 paths = [
   '''^bootstrap/vm/''',
   '''^\.kilo/''',
   '''^ui/\.env''',
+  '''^ui/tests/\.auth/''',
+  # Generated build output (present locally, absent from a fresh CI checkout).
+  '''^rust/target/''',
+  '''^ui/node_modules/''',
+  '''^ui/\.svelte-kit/''',
+  '''^ui/dist/''',
+  '''^ui/test-results/''',
+  '''^ui/playwright-report/''',
 ]
 
 # Intentional test fixtures that look like secrets.
 [[allowlists]]
 description = "test fixtures"
 paths = [
-  '''^api/internal/identity/nthash_test\.go$''',
   '''^ui/tests/totp\.spec\.ts$''',
 ]

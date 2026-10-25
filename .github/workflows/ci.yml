@@ -35,6 +35,43 @@ jobs:
       - id: read
         run: echo "images=$(jq -c . .github/image-matrix.json)" >> "$GITHUB_OUTPUT"
 
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # stable
+        with:
+          toolchain: "1.88"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: rust
+
+      - name: Install scanners
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --locked
+          cargo install cargo-deny --locked
+          version=0.76.1
+          base="https://github.com/aquasecurity/trivy/releases/download/v${version}"
+          tarball="trivy_${version}_Linux-64bit.tar.gz"
+          curl -fsSL -o "$tarball" "${base}/${tarball}"
+          curl -fsSL -o trivy_checksums.txt "${base}/trivy_${version}_checksums.txt"
+          grep " ${tarball}\$" trivy_checksums.txt | sha256sum -c -
+          tar -xzf "$tarball" trivy
+          install -m 0755 trivy /usr/local/bin/trivy
+          trivy --version
+
+      - name: Rust advisories, licenses, bans, sources
+        run: cd rust && cargo audit --ignore RUSTSEC-2026-0119 --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0387 && cargo deny check advisories bans licenses sources
+
+      - name: Filesystem vulnerability + secret scan
+        run: |
+          trivy fs --scanners vuln,secret --severity HIGH,CRITICAL \
+            --ignore-unfixed --exit-code 1 \
+            --skip-dirs ui/node_modules --skip-dirs rust/target --skip-dirs bootstrap/vm --skip-dirs .git . --ignorefile .trivyignore
+
   audit:
     runs-on: ubuntu-latest
     steps:
@@ -51,7 +88,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
@@ -62,7 +99,7 @@ jobs:
       - name: Install UI dependencies
         # The committed lock is resolved here (glibc); ui/Dockerfile resolves
         # in-image for the musl build (npm/cli#4828).
-        run: cd ui && npm install --no-audit --no-fund
+        run: cd ui && npm ci --no-audit --no-fund
 
       - name: Install PyYAML (audit.sh parses rendered manifests)
         run: python3 -m pip install pyyaml
@@ -96,7 +133,7 @@ jobs:
         run: gitleaks dir . --no-banner --redact
 
       - name: Scan git history
-        run: gitleaks git . --no-banner --redact
+        run: gitleaks git . --config .gitleaks-history.toml --no-banner --redact
 
   images-build:
     needs: image-matrix
@@ -118,8 +155,37 @@ jobs:
           build-args: ${{ matrix.name == 'buddy-receiver' && 'VERSION=ci' || '' }}
           platforms: linux/amd64
           push: false
+          load: true
+          tags: naslos-${{ matrix.name }}:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Install Trivy
+        run: |
+          set -euo pipefail
+          version=0.76.1
+          base="https://github.com/aquasecurity/trivy/releases/download/v${version}"
+          tarball="trivy_${version}_Linux-64bit.tar.gz"
+          curl -fsSL -o "$tarball" "${base}/${tarball}"
+          curl -fsSL -o trivy_checksums.txt "${base}/trivy_${version}_checksums.txt"
+          grep " ${tarball}\$" trivy_checksums.txt | sha256sum -c -
+          tar -xzf "$tarball" trivy
+          install -m 0755 trivy /usr/local/bin/trivy
+
+      - name: Scan ${{ matrix.name }} for HIGH/CRITICAL CVEs
+        run: |
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 --ignorefile .trivyignore "naslos-${{ matrix.name }}:ci"
+
+      - name: SBOM for ${{ matrix.name }} (CycloneDX)
+        run: |
+          trivy image --format cyclonedx \
+            --output "sbom-${{ matrix.name }}.cdx.json" "naslos-${{ matrix.name }}:ci"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom-${{ matrix.name }}
+          path: sbom-${{ matrix.name }}.cdx.json
 
   pack:
     runs-on: ubuntu-latest

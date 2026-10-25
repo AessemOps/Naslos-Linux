@@ -2,11 +2,13 @@
 //! Go server (api/internal/server/routes_test.go and the metrics contract).
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use naslos_api::server::build_router;
 use naslos_api::state::AppState;
 use serde_json::Value;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -40,7 +42,10 @@ fn get(path: &str, secret: bool, user: Option<&str>, groups: Option<&str>) -> Re
     if let Some(g) = groups {
         b = b.header("Remote-Groups", g);
     }
-    b.body(Body::empty()).unwrap()
+    let mut req = b.body(Body::empty()).unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40000))));
+    req
 }
 
 #[tokio::test]
@@ -181,4 +186,99 @@ async fn metrics_shape_matches_go() {
     assert!(body["cpu"]["usagePercent"].is_number());
     assert!(body["system"]["talosVersion"].is_string());
     assert_eq!(body["updatedAt"], "0001-01-01T00:00:00Z");
+}
+
+fn with_peer(req: Request<Body>, peer: [u8; 4]) -> Request<Body> {
+    let mut req = req;
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from((peer, 40000))));
+    req
+}
+
+#[tokio::test]
+async fn auth_fails_closed_without_a_peer_address() {
+    // Same trusted secret and identity, but no ConnectInfo: the CIDR cannot be
+    // evaluated, so the request must not be trusted.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/metrics")
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body, _r) = send(req).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, Value::Null);
+}
+
+#[tokio::test]
+async fn auth_rejects_an_untrusted_peer_even_with_the_secret() {
+    let req = with_peer(
+        get("/api/metrics", true, Some("admin"), None),
+        [203, 0, 113, 5],
+    );
+    let (status, _b, _r) = send(req).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn cross_site_state_change_is_refused() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/shares/apply")
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins")
+        .header("Sec-Fetch-Site", "cross-site")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _b, _r) = send(with_peer(req, [127, 0, 0, 1])).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn same_origin_state_change_is_allowed() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/shares/apply")
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins")
+        .header("Sec-Fetch-Site", "same-origin")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _b, _r) = send(with_peer(req, [127, 0, 0, 1])).await;
+    assert_ne!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn foreign_origin_on_a_write_is_refused() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/shares/apply")
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins")
+        .header("Host", "naslos.local")
+        .header("Origin", "https://evil.naslos.local")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _b, _r) = send(with_peer(req, [127, 0, 0, 1])).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn text_plain_json_body_is_refused() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/shares/apply")
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins")
+        .header("Content-Type", "text/plain")
+        .body(Body::from("{\"apply\":true}"))
+        .unwrap();
+    let (status, _b, _r) = send(with_peer(req, [127, 0, 0, 1])).await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }

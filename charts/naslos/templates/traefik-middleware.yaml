@@ -27,6 +27,24 @@ spec:
       - Remote-Email
       - Remote-Name
 ---
+# Strip client-supplied identity headers before Authelia runs. Traefik only
+# overwrites the Remote-* headers it gets from forwardAuth; a header the client
+# sends is otherwise forwarded verbatim on every bypassed path. Removing them
+# first means only Authelia's auth-response headers can reach the API.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-client-identity
+  namespace: {{ .Release.Namespace }}
+spec:
+  headers:
+    customRequestHeaders:
+      Remote-User: ""
+      Remote-Groups: ""
+      Remote-Email: ""
+      Remote-Name: ""
+      X-Naslos-Proxy-Secret: ""
+---
 # Headers middleware for security
 apiVersion: traefik.io/v1alpha1
 kind: Middleware

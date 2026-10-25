@@ -505,6 +505,15 @@ pub fn validate_share_name(name: &str) -> Result<(), String> {
 pub fn validate_share_fields(share: &Share) -> Result<(), String> {
     validate_no_control_chars("description", &share.description)?;
     validate_no_control_chars("path", &share.path)?;
+    // The path is interpolated unquoted into ganesha.conf (`Path = …;`), whose
+    // grammar uses ';' and braces. Reject anything that could close the
+    // statement or the EXPORT block (SEC-2026-B4).
+    if share.path.contains([';', '{', '}', '"', '#']) {
+        return Err(format!(
+            "path {:?} must not contain ';', '{{', '}}', '\"' or '#'",
+            share.path
+        ));
+    }
     for (kind, entries) in [
         ("allowed host", &share.allowed_hosts),
         ("valid user", &share.valid_users),
@@ -571,6 +580,35 @@ mod tests {
             ("/var/mnt/tank/media".to_string(), true)
         );
         assert!(!path_on_dataset("/var/mnt/other", &mps).1);
+    }
+
+    #[test]
+    fn share_path_rejects_config_structure_characters() {
+        let mut share = Share {
+            name: "media".into(),
+            path: "/var/mnt/tank/media".into(),
+            protocol: Protocol::Smb,
+            description: String::new(),
+            read_only: false,
+            browseable: true,
+            allowed_hosts: Vec::new(),
+            valid_users: Vec::new(),
+            valid_groups: Vec::new(),
+            time_machine: false,
+            no_root_squash: false,
+            created_at: None,
+            enabled: true,
+        };
+        assert!(validate_share_fields(&share).is_ok());
+        for path in [
+            "/var/mnt/tank/x; Squash = No_Root_Squash",
+            "/var/mnt/tank/x} EXPORT {",
+            "/var/mnt/tank/x\"",
+            "/var/mnt/tank/x#comment",
+        ] {
+            share.path = path.into();
+            assert!(validate_share_fields(&share).is_err(), "{path}");
+        }
     }
 
     #[test]

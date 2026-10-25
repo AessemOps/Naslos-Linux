@@ -577,16 +577,20 @@ async fn cmd_push(
             prune_keep,
             progress: progress_ref.map(|f| f as &(dyn Fn(PushProgress) + Send + Sync)),
             before_publish: None,
+            save_state: Some(&|s| s.save(&state_shown)),
         })
         .await;
 
     if let Some(err) = error {
-        if let Err(save_err) = state.save(&state_shown) {
+        // Keep the generation the push persisted before transmitting; saving
+        // the pre-push clone here would re-arm a nonce for the next attempt.
+        let current = result.state.clone().unwrap_or_else(|| state.clone());
+        if let Err(save_err) = current.save(&state_shown) {
             eprintln!("could not persist the resume state: {save_err}");
         }
         eprintln!(
             "\nthe push did not finish. Re-run with --resume to continue chain {}",
-            state.chain
+            current.chain
         );
         return Err(err);
     }
@@ -659,6 +663,7 @@ async fn cmd_restore(
                     out: &mut sink,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
+                    expected_sequence: None,
                 })
                 .await;
             if let Some(e) = error {
@@ -675,6 +680,7 @@ async fn cmd_restore(
                     out: &mut stdout,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
+                    expected_sequence: None,
                 })
                 .await;
             if let Some(e) = error {
@@ -696,6 +702,7 @@ async fn cmd_restore(
                     out: &mut file,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
+                    expected_sequence: None,
                 })
                 .await;
             if let Some(e) = error {
@@ -719,6 +726,7 @@ async fn cmd_restore(
                     out: &mut write_half,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
+                    expected_sequence: None,
                 })
                 .await;
             // Signal EOF to the extractor and let it report its own error.

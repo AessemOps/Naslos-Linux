@@ -20,10 +20,27 @@ pub fn validate_kube_name(name: &str, what: &str) -> Result<(), String> {
     if name.len() > 253 {
         return Err(format!("{what} is too long"));
     }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.')
-    {
+    // DNS-1123 subdomain: lowercase alphanumerics, '-' and '.', each label
+    // starting and ending alphanumeric. Rejecting a leading '-' matters: the
+    // value becomes a bare kubectl positional, where a leading '-' would be
+    // parsed as a flag (`--server=…`).
+    if name.split('.').any(|label| {
+        label.is_empty()
+            || label.len() > 63
+            || !label
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                .unwrap_or(false)
+            || !label
+                .chars()
+                .last()
+                .map(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                .unwrap_or(false)
+            || !label
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    }) {
         return Err(format!("invalid {what} {name:?}"));
     }
     Ok(())
@@ -163,4 +180,33 @@ pub async fn pods_get(
         )
     });
     json(StatusCode::OK, serde_json::Value::Array(pods))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_kube_name;
+
+    #[test]
+    fn accepts_dns1123_names() {
+        for ok in ["naslos", "naslos-terminal", "a.b-c", "ns1"] {
+            assert!(validate_kube_name(ok, "pod").is_ok(), "{ok}");
+        }
+    }
+
+    #[test]
+    fn rejects_flag_like_and_malformed_names() {
+        for bad in [
+            "--insecure-skip-tls-verify",
+            "-n",
+            ".hidden",
+            "trailing-",
+            "UPPER",
+            "with space",
+            "a..b",
+            "under_score",
+            "x".repeat(64).as_str(),
+        ] {
+            assert!(validate_kube_name(bad, "pod").is_err(), "{bad}");
+        }
+    }
 }

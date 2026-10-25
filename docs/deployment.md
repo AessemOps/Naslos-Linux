@@ -78,14 +78,20 @@ anonymously:
 
 - `.github/workflows/ci.yml` runs on every PR/push to `master`: the full
   `scripts/audit.sh` sweep (with `gitleaks` installed so the secret scan does not
-  skip), a gitleaks scan, a no-push Docker build of all 8 images,
-  and a local install-pack build.
+  skip), a `supply-chain` job (`cargo audit`, `cargo deny`, `trivy fs`), a
+  gitleaks scan, a no-push Docker build of all 8 images with a Trivy
+  HIGH/CRITICAL gate and a CycloneDX SBOM per image, and a local install-pack
+  build.
 - `.github/workflows/release.yml` runs on a strict-semver **`vX.Y.Z`** tag:
   `guard` (the tag must equal `charts/naslos/Chart.yaml` `version`/`appVersion`
   and `ui/package.json` `version`) → build + push all 8 images to
   `ghcr.io/aessemops/naslos-*` (linux/amd64) → build the install pack with every
-  chart image **pinned by digest** (FR-INSTALL-13) → attach the pack to the
-  GitHub release → dispatch `AessemOps/Naslos-Installer` (`naslos-release`).
+  chart image **pinned by digest** (FR-INSTALL-13) → require green
+  `audit`/`supply-chain`/`gitleaks` check runs for the commit, verify the pack
+  checksum → attach the pack to the GitHub release → dispatch
+  `AessemOps/Naslos-Installer` (`naslos-release`). `publish=true` is rejected on
+  `workflow_dispatch`, so a dry run cannot mint a release tag; release runs are
+  serialized globally.
 - **Never push a throwaway `vX.Y.Z` tag**: `Naslos-Installer` resolves the
   newest strict-semver tag and would treat it as the release. Test with
   Actions → `release` → Run workflow (`version=0.1.0`, `publish=false`), which
@@ -416,13 +422,13 @@ loop).** In order, least destructive first:
 1. **Another factor still works?** Log in with a registered WebAuthn device, or
    the recovery/one-time codes if they were saved. The elevated-session one-time
    code is written to the Authelia volume and can be read with
-   `kubectl -n naslos exec daemonset/naslos-authelia -- cat /config/notification.txt`.
+   `kubectl -n naslos exec statefulset/naslos-authelia -- cat /config/notification.txt`.
 2. **Session/identity checks.** Confirm the Authelia pod is running and can bind
    LDAP: its logs show `LDAP Result Code 49` when the bind password and the
    `naslos-openldap` Secret's `service-password` disagree. Fix by aligning the
    Secret (never by committing a literal).
 3. **Reset the second factor from the DB.** Stop Authelia
-   (`kubectl -n naslos scale daemonset/naslos-authelia --replicas=0`), then either
+   (`kubectl -n naslos scale statefulset/naslos-authelia --replicas=0`), then either
    restore `/config/db.sqlite3` from a backup on the PVC, or delete the affected
    rows in `totp_devices` / `webauthn_devices` with `sqlite3` in a throwaway pod
    that mounts the same PVC. Scale back up and enrol again at first login.

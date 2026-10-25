@@ -17,11 +17,11 @@ COPY rust/api/Cargo.toml api/Cargo.toml
 RUN mkdir -p agent/src api/src \
     && echo 'pub fn placeholder(){}' > agent/src/lib.rs && echo 'fn main(){}' > agent/src/main.rs \
     && echo 'pub fn placeholder(){}' > api/src/lib.rs && echo 'fn main(){}' > api/src/main.rs \
-    && cargo build --release --package naslos-api || true
+    && cargo build --release --locked --package naslos-api || true
 COPY rust/agent/src agent/src
 COPY rust/api/src api/src
 RUN touch agent/src/lib.rs agent/src/main.rs api/src/lib.rs api/src/main.rs \
-    && cargo build --release --package naslos-api
+    && cargo build --release --locked --package naslos-api
 
 FROM alpine:3.24
 
@@ -31,15 +31,23 @@ FROM alpine:3.24
 ARG KUBECTL_VERSION=v1.37.0
 ARG HELM_VERSION=v4.3.0
 ARG TALOSCTL_VERSION=v1.14.1
+# SHA-256 of each downloaded artifact for the versions above (SEC-2026-G1).
+# Bump the version and the digest together; the build fails on a mismatch.
+ARG KUBECTL_SHA256=6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+ARG HELM_SHA256=86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
+ARG TALOSCTL_SHA256=7233ece94c94296a033a6ddb5efe0baf508a94c71de7e6c7b286500705924208
 
 RUN apk add --no-cache ca-certificates git openssh-client \
     && wget -q -O /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+    && echo "${KUBECTL_SHA256}  /usr/local/bin/kubectl" | sha256sum -c - \
     && chmod +x /usr/local/bin/kubectl \
     && wget -q -O /tmp/helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+    && echo "${HELM_SHA256}  /tmp/helm.tgz" | sha256sum -c - \
     && tar -xzf /tmp/helm.tgz -C /tmp \
     && mv /tmp/linux-amd64/helm /usr/local/bin/helm \
     && rm -rf /tmp/helm.tgz /tmp/linux-amd64 \
     && wget -q -O /usr/local/bin/talosctl "https://github.com/siderolabs/talos/releases/download/${TALOSCTL_VERSION}/talosctl-linux-amd64" \
+    && echo "${TALOSCTL_SHA256}  /usr/local/bin/talosctl" | sha256sum -c - \
     && chmod +x /usr/local/bin/talosctl \
     && addgroup -g 65532 -S naslos \
     && adduser -u 65532 -S -G naslos -h /home/naslos naslos \

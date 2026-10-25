@@ -22,7 +22,7 @@ map. Authentication has no opt-out, so there is no `auth.disabled` helper.
 {{- $auth := get .Values "auth" -}}
 {{- $cidr := "" -}}
 {{- if $auth -}}{{- $cidr = index $auth "traefikCIDR" | default "" -}}{{- end -}}
-{{- if $cidr -}}{{ $cidr }}{{- else -}}10.0.0.0/8{{- end -}}
+{{- if $cidr -}}{{ $cidr }}{{- else -}}10.244.0.0/16{{- end -}}
 {{- end -}}
 
 {{- define "naslos.agentTokenSecret" -}}

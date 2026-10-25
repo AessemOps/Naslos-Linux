@@ -138,6 +138,7 @@ impl Source {
         if self.url.trim().is_empty() {
             return Err(format!("source {:?}: url is required", self.name));
         }
+        validate_source_url(&self.url).map_err(|e| format!("source {:?}: {e}", self.name))?;
         match self.auth {
             AuthType::Public => {}
             AuthType::Token | AuthType::Ssh => {
@@ -161,6 +162,29 @@ impl Source {
         }
         self.validate()
     }
+}
+
+/// Only well-formed HTTPS/SSH/git URLs may reach `git clone`.
+///
+/// A leading '-' (option injection), an `ext::`/`file://` transport (local
+/// command execution / local file reads) or control characters are refused.
+pub fn validate_source_url(url: &str) -> Result<(), String> {
+    let url = url.trim();
+    if url.starts_with('-') {
+        return Err("url must not start with '-'".to_string());
+    }
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("url must not contain whitespace or control characters".to_string());
+    }
+    let lower = url.to_ascii_lowercase();
+    let allowed = lower.starts_with("https://")
+        || lower.starts_with("ssh://")
+        || lower.starts_with("git://")
+        || (lower.starts_with("git@") && lower.contains(':'));
+    if !allowed {
+        return Err("url must use https://, ssh://, git:// or git@host:path".to_string());
+    }
+    Ok(())
 }
 
 /// A lowercase RFC 1123 label (DNS-1123).
@@ -347,6 +371,7 @@ impl GitCliBackend {
 
     async fn run(&self, args: &[String], env: &[(String, String)]) -> Result<(), String> {
         let mut cmd = tokio::process::Command::new(&self.binary);
+        cmd.kill_on_drop(true);
         cmd.args(args);
         for (k, v) in env {
             cmd.env(k, v);
@@ -382,17 +407,32 @@ impl GitBackend for GitCliBackend {
     async fn sync(&self, url: &str, branch: &str, dir: &str, auth: &GitAuth) -> Result<(), String> {
         // HTTPS token: embed as basic auth in the URL (go-git used
         // x-access-token). SSH: point GIT_SSH_COMMAND at a temp key.
+        validate_source_url(url)?;
+        let mut key_file = None;
         let (clone_url, env) = if !auth.token.is_empty() {
             (inject_token(url, &auth.token), Vec::new())
         } else if !auth.ssh_key.is_empty() {
-            let key_path = write_ssh_key(&auth.ssh_key)?;
+            // Host-key verification is mandatory: without a pinned known_hosts
+            // an on-path attacker could serve an arbitrary chart (and the API
+            // installs charts with its own, Talos-bearing identity).
+            let known_hosts = std::env::var("GIT_SSH_KNOWN_HOSTS")
+                .unwrap_or_else(|_| "/var/lib/naslos/known_hosts".to_string());
+            if !Path::new(&known_hosts).is_file() {
+                return Err(format!(
+                    "SSH chart sources require a pinned host key at {known_hosts} (set GIT_SSH_KNOWN_HOSTS); refusing to clone without host verification"
+                ));
+            }
+            let file = write_ssh_key(&auth.ssh_key)?;
+            let key_path = file.path().to_path_buf();
+            key_file = Some(file);
             (
                 url.to_string(),
                 vec![(
                     "GIT_SSH_COMMAND".to_string(),
                     format!(
-                        "ssh -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-                        key_path.display()
+                        "ssh -i {} -o StrictHostKeyChecking=yes -o UserKnownHostsFile={}",
+                        shell_quote(&key_path.display().to_string()),
+                        shell_quote(&known_hosts)
                     ),
                 )],
             )
@@ -400,53 +440,70 @@ impl GitBackend for GitCliBackend {
             (url.to_string(), Vec::new())
         };
 
-        if !Path::new(dir).join(".git").exists() {
-            if let Some(parent) = Path::new(dir).parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("creating cache directory: {e}"))?;
+        let result = async {
+            if !Path::new(dir).join(".git").exists() {
+                if let Some(parent) = Path::new(dir).parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("creating cache directory: {e}"))?;
+                }
+                self.run(
+                    &[
+                        "clone".into(),
+                        "--branch".into(),
+                        branch.into(),
+                        "--single-branch".into(),
+                        "--depth".into(),
+                        "1".into(),
+                        "--no-tags".into(),
+                        "--".into(),
+                        clone_url,
+                        dir.into(),
+                    ],
+                    &env,
+                )
+                .await
+            } else {
+                self.run(
+                    &[
+                        "-C".into(),
+                        dir.into(),
+                        "fetch".into(),
+                        "--depth".into(),
+                        "1".into(),
+                        "origin".into(),
+                        branch.into(),
+                    ],
+                    &env,
+                )
+                .await?;
+                self.run(
+                    &[
+                        "-C".into(),
+                        dir.into(),
+                        "reset".into(),
+                        "--hard".into(),
+                        "FETCH_HEAD".into(),
+                    ],
+                    &env,
+                )
+                .await
             }
-            self.run(
-                &[
-                    "clone".into(),
-                    "--branch".into(),
-                    branch.into(),
-                    "--single-branch".into(),
-                    "--depth".into(),
-                    "1".into(),
-                    "--no-tags".into(),
-                    clone_url,
-                    dir.into(),
-                ],
-                &env,
-            )
-            .await
-        } else {
-            self.run(
-                &[
-                    "-C".into(),
-                    dir.into(),
-                    "fetch".into(),
-                    "--depth".into(),
-                    "1".into(),
-                    "origin".into(),
-                    branch.into(),
-                ],
-                &env,
-            )
-            .await?;
-            self.run(
-                &[
-                    "-C".into(),
-                    dir.into(),
-                    "reset".into(),
-                    "--hard".into(),
-                    "FETCH_HEAD".into(),
-                ],
-                &env,
-            )
-            .await
         }
+        .await;
+        drop(key_file);
+        result.map_err(|e| {
+            if auth.token.is_empty() {
+                e
+            } else {
+                e.replace(&auth.token, "***")
+            }
+        })
     }
+}
+
+/// Quote a path for `GIT_SSH_COMMAND`, which git evaluates with a shell.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// Embed an HTTPS token as basic auth (x-access-token).
@@ -458,12 +515,17 @@ fn inject_token(url: &str, token: &str) -> String {
     }
 }
 
-fn write_ssh_key(key: &[u8]) -> Result<PathBuf, String> {
-    let path = std::env::temp_dir().join("naslos-charts-deploy-key");
-    std::fs::write(&path, key).map_err(|e| format!("writing deploy key: {e}"))?;
-    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+fn write_ssh_key(key: &[u8]) -> Result<tempfile::NamedTempFile, String> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let mut file =
+        tempfile::NamedTempFile::new().map_err(|e| format!("creating the deploy-key file: {e}"))?;
+    file.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o600))
         .map_err(|e| format!("setting deploy key mode: {e}"))?;
-    Ok(path)
+    file.write_all(key)
+        .map_err(|e| format!("writing deploy key: {e}"))?;
+    Ok(file)
 }
 
 /// Owns the source store and the local clone cache.
@@ -812,6 +874,27 @@ mod tests {
         assert!(validate_name("Bad_Name").is_err());
         assert!(validate_name("").is_err());
         assert!(validate_name("-lead").is_err());
+    }
+
+    #[test]
+    fn source_urls_are_scheme_restricted() {
+        for ok in [
+            "https://github.com/o/r.git",
+            "ssh://git@example.com/o/r.git",
+            "git://example.com/r.git",
+            "git@example.com:o/r.git",
+        ] {
+            assert!(validate_source_url(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "ext::sh -c touch /tmp/pwned",
+            "file:///etc/passwd",
+            "-oProxyCommand=id",
+            "https://example.com/r git",
+            "ftp://example.com/r",
+        ] {
+            assert!(validate_source_url(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

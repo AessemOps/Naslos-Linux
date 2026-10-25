@@ -20,6 +20,7 @@ spec:
     - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/api`)
       kind: Rule
       middlewares:
+        - name: strip-client-identity
         - name: forwardauth-authelia
         - name: proxy-identity
         - name: security-headers
@@ -73,6 +74,7 @@ spec:
     - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/traefik`)
       kind: Rule
       middlewares:
+        - name: strip-client-identity
         - name: forwardauth-authelia
         - name: security-headers
       services:

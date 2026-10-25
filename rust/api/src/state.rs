@@ -113,7 +113,8 @@ impl AppState {
                 "PROXY_SHARED_SECRET is required; set it from the naslos-proxy Secret".into(),
             );
         }
-        let cidr_env = std::env::var("TRAEFIK_CIDR").unwrap_or_else(|_| "10.0.0.0/8".to_string());
+        let cidr_env =
+            std::env::var("TRAEFIK_CIDR").unwrap_or_else(|_| "10.244.0.0/16".to_string());
         let trusted_cidrs = parse_cidrs(&cidr_env)?;
 
         let apps_namespace =
@@ -191,11 +192,14 @@ impl AppState {
         })
     }
 
-    /// A state for tests: explicit secret, permissive CIDR, no Talos/agent.
+    /// A state for tests: explicit secret, loopback-only CIDR, no Talos/agent.
     pub fn for_test(proxy_secret: &str) -> Self {
         Self {
             proxy_secret: proxy_secret.to_string(),
-            trusted_cidrs: vec![Cidr::parse("0.0.0.0/0").unwrap()],
+            trusted_cidrs: vec![
+                Cidr::parse("127.0.0.1/32").unwrap(),
+                Cidr::parse("::1/128").unwrap(),
+            ],
             metrics: Manager::new(),
             talos: None,
             agent: None,

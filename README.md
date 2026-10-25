@@ -28,9 +28,9 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   Authelia auth, local-only) rendered as Traefik routes; install/upgrade/
   uninstall run as background jobs with live progress; domains and wildcard
   ACME certificates managed from the UI (see [docs/app-catalog.md](docs/app-catalog.md)).
-- **Logs & terminal** — stream logs and open a zsh shell to any pod from the UI
+- **Logs & terminal** — stream logs and open an interactive shell (`bash` by default; `sh`/`ash`/`zsh` where installed) in any pod from the UI
 - **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served)
-- **ntfy notifications** — push alerts on Talos / Kubernetes / ZFS / backup events
+- **ntfy notifications** — push alerts on backup events (the ZFS/Kubernetes health watcher is an open item; see `docs/AUDIT-2026-10-24.md`)
 - **Monitoring dashboard** — live metrics API (`/api/metrics`) + home dashboard; no bundled metrics stack
 - **Desktop installer** — a one-app installer (separate
   [Naslos-Installer](https://github.com/AessemOps/Naslos-Installer) repo) that
@@ -40,7 +40,8 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   recovery ZIP; the stable interfaces are in
   [docs/installer-contract.md](docs/installer-contract.md)
 - **Published images + release CI** — every PR runs the full gate sweep,
-  secret scan and a Docker build of all images; a semantic `vX.Y.Z` tag pushes
+  supply-chain scan, secret scan and a Docker build of all images with an
+  image CVE gate and SBOM; a semantic `vX.Y.Z` tag pushes
   all 8 images to `ghcr.io/aessemops/naslos-*` and publishes the install pack
   with every chart image pinned by digest (`FR-INSTALL-13`). See
   [docs/deployment.md](docs/deployment.md)
@@ -51,7 +52,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 rust/agent/  Rust DaemonSet, privileged — executes zpool/zfs via chroot /host
 rust/api/    Rust API — Talos/K8s/ZFS orchestration + buddyctl/buddy-receiver
 ui/          SvelteKit + Tailwind — dashboard, wizards, terminal
-charts/      naslos umbrella chart (api, ui, agent, openldap, monitoring, shares)
+charts/      naslos umbrella chart (api, ui, agent, openldap, samba, nfs, terminal, Traefik/Authelia)
 samba/       Samba image + config
 nfs/         NFS-Ganesha image + config
 terminal/    web-terminal image (+ zsh-terminal/)
@@ -81,7 +82,7 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [installer-contract](docs/installer-contract.md) | Install pack + interfaces for the desktop installer (FR-INSTALL) |
 | [operations](docs/operations.md) | Backups, restore, troubleshooting |
 | [development](docs/development.md) | Layout, builds, extending the catalog |
-| [audit-report](docs/AUDIT-2026-09-19-REPORT.md) | Audit and fix report: findings, fixes, verification, remaining work (archived working papers in `docs/archive/`) |
+| [audit-report](docs/AUDIT-2026-10-24.md) | Current post-Rust audit: findings, fixes, open/accepted risks (pre-Rust report kept in `docs/AUDIT-2026-09-19-REPORT.md`) |
 
 ## Requirements
 

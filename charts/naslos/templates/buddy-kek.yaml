@@ -1,0 +1,34 @@
+{{- /*
+Buddy Backup key-encryption key (PF-M14).
+
+The KEK unwraps the per-chain DEKs, so it must not live beside the identity
+private key in buddy-identity.json. Resolution order:
+  1. buddy.kekSecret: an operator-managed Secret (not rendered here);
+  2. the existing `naslos-buddy-kek` Secret's `kek` key (upgrades);
+  3. a fresh 32-byte random value (first install).
+
+Only rendered for the built-in Secret; the API mounts `kek` from whichever
+Secret is selected.
+*/}}
+{{- if and .Values.buddy.enabled (not .Values.buddy.kekSecret) }}
+{{- $name := "naslos-buddy-kek" }}
+{{- $key := .Values.buddy.kekSecretKey | default "kek" }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $name }}
+{{- $value := "" }}
+{{- if and $existing (index $existing.data $key) }}
+{{- $value = index $existing.data $key | b64dec }}
+{{- else }}
+{{- $value = randBytes 32 }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos-api
+    app.kubernetes.io/component: buddy
+type: Opaque
+data:
+  {{ $key }}: {{ $value | b64enc | quote }}
+{{- end }}

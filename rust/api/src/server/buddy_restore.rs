@@ -151,6 +151,7 @@ pub async fn restore(State(state): State<Arc<AppState>>, body: Body) -> Response
                     out: &mut sink,
                     progress: None,
                     skip_signature_check: false,
+                    expected_sequence: Some(chain.sequence),
                 })
                 .await;
             if let Some(e) = err {
@@ -205,6 +206,7 @@ pub async fn restore(State(state): State<Arc<AppState>>, body: Body) -> Response
                 out: &mut writer,
                 progress: None,
                 skip_signature_check: false,
+                expected_sequence: Some(chain.sequence),
             })
             .await;
         drop(writer);

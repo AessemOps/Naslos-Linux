@@ -693,6 +693,11 @@ buddy:
   # how often the runner checks for due ones. Defaults match the API's.
   schedulesFile: /var/lib/naslos/buddy-schedules.json
   schedulerIntervalMs: 60000
+  # PF-M14: take the key-encryption key from a Secret instead of storing it in
+  # buddy-identity.json. Empty means the chart generates `naslos-buddy-kek` in
+  # the release namespace (preserved across upgrades) and mounts its `kek` key.
+  kekSecret: ""
+  kekSecretKey: kek
   # A one-time token that lets a peer authorize its own key (buddyctl enroll).
   # Empty means every key must be authorized explicitly. Either set it in values
   # (rendered into the naslos-buddy Secret) or point enrollTokenSecret at a

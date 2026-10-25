@@ -45,7 +45,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  # One release at a time globally: a tag push and a dispatch must never race on
+  # the immutable GitHub release (SEC-2026-G9).
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -87,6 +89,10 @@ jobs:
           fi
           if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "release guard: '$version' is not strict semver X.Y.Z" >&2
+            exit 1
+          fi
+          if [ "$EVENT_NAME" != "push" ] && [ "$publish" = "true" ]; then
+            echo "release guard: publish=true is only allowed for a vX.Y.Z tag push (use publish=false for a dry run)" >&2
             exit 1
           fi
           scripts/check-release-version.sh "$version"
@@ -173,7 +179,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
+      checks: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -264,6 +270,26 @@ jobs:
             dist/naslos-install-pack-*.tar.gz
             dist/naslos-install-pack-*.tar.gz.sha256
           if-no-files-found: error
+
+      - name: Require green CI for this commit
+        if: needs.guard.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ok=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs" \
+                 --jq '[.check_runs[] | select(.name=="audit" or .name=="supply-chain" or .name=="gitleaks") | .conclusion] | all(. == "success")')
+          if [ "$ok" != "true" ]; then
+            echo "release: CI is not green for $GITHUB_SHA (audit/supply-chain/gitleaks)" >&2
+            exit 1
+          fi
+
+      - name: Verify the pack checksum before attaching
+        if: needs.guard.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c naslos-install-pack-*.tar.gz.sha256
 
       - name: Attach the pack to the release
         if: needs.guard.outputs.publish == 'true'

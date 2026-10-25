@@ -65,6 +65,20 @@ spec:
             # 80 (AUDIT-L2).
             - containerPort: 8080
               name: http
+          # nginx answers / for the static SPA; a wedged worker must not keep
+          # receiving Service traffic (SEC-2026-F10).
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
           resources:
             {{- toYaml .Values.ui.resources | nindent 12 }}
 ---
