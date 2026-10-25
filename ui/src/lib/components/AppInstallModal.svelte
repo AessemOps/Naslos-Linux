@@ -28,6 +28,7 @@
     defaultValues: Record<string, any>;
     exposure: Exposure;
     services: { name: string; port: number; scheme: string }[];
+    privileged?: boolean;
   }
 
   export let appName: string;
@@ -42,6 +43,7 @@
   let selectableDomains: string[] = [];
   let ssoDomains: string[] = [];
   let confirmed = false;
+  let privilegedConfirmed = false;
   let activeStep: 'config' | 'exposure' | 'review' | 'confirm' = 'config';
 
   const dispatch = createEventDispatcher();
@@ -94,7 +96,14 @@
       const res = await fetch('/api/apps', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: appName, values, exposure, baseDomain, confirmed: true })
+        body: JSON.stringify({
+          name: appName,
+          values,
+          exposure,
+          baseDomain,
+          confirmed: true,
+          privilegedConfirmed
+        })
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -164,10 +173,20 @@
               <p>
                 This installs <span class="font-mono">{app.source}</span> /
                 <span class="font-mono">{app.chartPath || app.chart}</span> into
-                <span class="font-mono">naslos-apps</span>. The chart's manifests
+                <span class="font-mono">{app.privileged ? 'naslos-apps-priv' : 'naslos-apps'}</span>. The chart's manifests
                 run in-cluster under the API's namespaced permissions.
               </p>
             </div>
+            {#if app.privileged}
+              <div class="p-4 rounded-lg border border-red-700 bg-red-900/30 text-red-200 text-sm">
+                <p class="font-medium mb-1">This app requests privileged mode</p>
+                <p>
+                  It will be installed into <span class="font-mono">naslos-apps-priv</span>,
+                  the namespace that allows privileged pods and host access. Only install
+                  it if you trust the chart source completely.
+                </p>
+              </div>
+            {/if}
             <label class="flex items-start gap-3 cursor-pointer">
               <input
                 type="checkbox"
@@ -176,6 +195,16 @@
               />
               <span>I have reviewed the source and confirm this install.</span>
             </label>
+            {#if app.privileged}
+              <label class="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  class="mt-1"
+                  bind:checked={privilegedConfirmed}
+                />
+                <span class="font-medium">I understand this app runs privileged and may access the host.</span>
+              </label>
+            {/if}
           </div>
         {/if}
         {#if error}<div class="mt-4 p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
@@ -186,7 +215,7 @@
           {#if activeStep === 'config'}<button class="btn btn-primary" on:click={() => activeStep = 'exposure'}>Exposure →</button>
           {:else if activeStep === 'exposure'}<button class="btn btn-secondary" on:click={() => activeStep = 'config'}>← Back</button><button class="btn btn-primary" on:click={() => activeStep = 'review'}>Review →</button>
           {:else if activeStep === 'review'}<button class="btn btn-secondary" on:click={() => activeStep = 'exposure'}>← Back</button><button class="btn btn-primary" on:click={() => activeStep = 'confirm'}>Confirm →</button>
-          {:else}<button class="btn btn-secondary" on:click={() => activeStep = 'review'}>← Back</button><button class="btn btn-primary" on:click={install} disabled={installing || !confirmed}>{installing ? 'Starting...' : 'Install'}</button>{/if}
+          {:else}<button class="btn btn-secondary" on:click={() => activeStep = 'review'}>← Back</button><button class="btn btn-primary" on:click={install} disabled={installing || !confirmed || (app.privileged && !privilegedConfirmed)}>{installing ? 'Starting...' : 'Install'}</button>{/if}
         </div>
       </div>
     {/if}

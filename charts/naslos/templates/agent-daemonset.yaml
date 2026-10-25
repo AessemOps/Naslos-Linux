@@ -17,6 +17,8 @@ spec:
         app.kubernetes.io/name: naslos-agent
     spec:
       serviceAccountName: naslos-agent
+      # The agent only runs host commands; it has no Kubernetes API client.
+      automountServiceAccountToken: false
       # hostNetwork keeps the agent reachable at the node's own address, which is
       # what the headless Service advertises one endpoint per node for (and what
       # AGENT_BASE_URL can be pointed at directly). Dropping it was attempted in

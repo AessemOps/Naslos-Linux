@@ -354,7 +354,10 @@ with a sibling `naslos-app.yaml` install-config. See
 - **FR-APP-17** — An app whose manifest sets `privileged: true` (a VPN sidecar
   needing `NET_ADMIN`, which PSA `baseline` forbids) MUST install into the
   separate privileged apps namespace, with its own Role and routing; all other
-  apps MUST stay under `baseline`. *(chart render + routing/apps tests)*
+  apps MUST stay under `baseline`. Such an install MUST additionally carry
+  `privilegedConfirmed: true`, and the UI MUST show a separate privileged
+  warning; a missing confirmation is a 400. *(chart render + routing/apps tests,
+  `privileged_installs_need_a_second_confirmation`)*
 - **FR-APP-18** — Install, upgrade and uninstall MUST run as **background jobs**
   with an observable stage (`preparing` → `installing` → `finalizing`).
   `POST /api/apps`, `PUT /api/apps/{name}` and `DELETE /api/apps/{name}` MUST
@@ -365,7 +368,9 @@ with a sibling `naslos-app.yaml` install-config. See
   app that already has one running MUST be rejected with `409`. *(server
   app_jobs tests, apps tests)*
 - **FR-APP-12** — Installing a third-party chart MUST require an explicit
-  confirmation in the request (`confirmed: true`). *(server tests)*
+  confirmation in the request (`confirmed: true`), plus
+  `privilegedConfirmed: true` when the catalog entry is privileged (FR-APP-17).
+  *(server tests)*
 - **FR-APP-13** — Base domains and their cert-manager ACME DNS-01 certificates
   MUST be manageable, with the provider and its solver driven by the declarative
   registry (§3.9): built-in `cloudflare`, `rfc2136` and raw `passthrough` behavior

@@ -21,6 +21,21 @@ use crate::state::AppState;
 const MAX_MANIFEST_BYTES: usize = 16 << 20;
 const DEFAULT_ENROLL_QUOTA_BYTES: i64 = 1i64 << 40;
 
+/// The quota an enrolling peer gets: its request, capped by the receiver's
+/// configured default (0/negative means "use the built-in 1 TiB default").
+fn enrollment_quota(requested: i64, configured_default: i64) -> i64 {
+    let ceiling = if configured_default > 0 {
+        configured_default
+    } else {
+        DEFAULT_ENROLL_QUOTA_BYTES
+    };
+    if requested <= 0 {
+        ceiling
+    } else {
+        requested.min(ceiling)
+    }
+}
+
 /// The receiver's configuration.
 pub struct Receiver {
     pub store: Arc<Store>,
@@ -276,13 +291,9 @@ pub async fn enroll(State(receiver): State<BuddyState>, body: Body) -> Response 
             serde_json::json!({ "error": "this enrollment token has already been used" }),
         );
     }
-    let mut quota = req.quota_bytes;
-    if quota <= 0 {
-        quota = receiver.default_quota_bytes;
-    }
-    if quota <= 0 {
-        quota = DEFAULT_ENROLL_QUOTA_BYTES;
-    }
+    // A peer may not grant itself more than the receiver's configured default
+    // (PF-M10 / SEC-2026-C9).
+    let quota = enrollment_quota(req.quota_bytes, receiver.default_quota_bytes);
     let peer = crate::buddy::Peer {
         name: req.name.clone(),
         public_key: req.public_key.clone(),
@@ -291,14 +302,19 @@ pub async fn enroll(State(receiver): State<BuddyState>, body: Body) -> Response 
         enabled: true,
         ..Default::default()
     };
+    if !receiver.enroll_open {
+        // Record single use before the key is authorized. If the marker cannot
+        // be written the enrollment fails closed (SEC-2026-C21).
+        if let Err(e) = receiver.store.mark_enrollment_used() {
+            return json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "error": format!("cannot record the enrollment token as used: {e}") }),
+            );
+        }
+        *used = true;
+    }
     match receiver.peers.add(peer) {
         Ok(()) => {
-            if !receiver.enroll_open {
-                *used = true;
-                if let Err(e) = receiver.store.mark_enrollment_used() {
-                    tracing::warn!("buddy enroll: cannot record that the token was used ({e})");
-                }
-            }
             let added = receiver.peers.get(&req.name).unwrap_or_default();
             json(
                 StatusCode::CREATED,
@@ -774,5 +790,18 @@ impl axum::extract::FromRef<Arc<AppState>> for BuddyState {
                 .clone()
                 .expect("buddy routes are only mounted when the receiver is configured"),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::enrollment_quota;
+
+    #[test]
+    fn enrollment_cannot_raise_its_own_quota() {
+        assert_eq!(enrollment_quota(0, 100), 100);
+        assert_eq!(enrollment_quota(50, 100), 50);
+        assert_eq!(enrollment_quota(10_000, 100), 100);
+        assert_eq!(enrollment_quota(i64::MAX, 0), 1i64 << 40);
     }
 }
