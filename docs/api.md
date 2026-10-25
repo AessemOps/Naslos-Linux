@@ -283,7 +283,7 @@ shell, never an arbitrary command.
 | `LDAP_PORT` | `636` | LDAPS port |
 | `LDAP_BASE_DN` | `dc=naslos,dc=local` | Base DN |
 | `LDAP_BIND_DN` | `cn=naslos-service,ou=services,dc=naslos,dc=local` | Service bind DN |
-| `LDAP_BIND_PASS` | — | Service account password |
+| `LDAP_BIND_PASS_FILE` | — | File holding the service-account password (mounted from `naslos-openldap`/`service-password`); `LDAP_BIND_PASS` remains supported for development but is not set by the chart |
 | `LDAP_USE_TLS` | `true` | Use LDAPS |
 | `LDAP_CA_CERT` | — | Path to CA cert for LDAPS verification |
 | `TRAEFIK_CIDR` | `10.244.0.0/16` | Comma-separated CIDRs trusted for auth headers (the cluster pod CIDR Traefik sources from); the `X-Naslos-Proxy-Secret` is the actual proof of the proxy hop |

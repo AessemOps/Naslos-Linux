@@ -65,6 +65,12 @@ assert env.get("TRAEFIK_CIDR", {}).get("value") == "10.244.0.0/16", env.get("TRA
 kek = env.get("BUDDY_KEK", {})
 ref = kek.get("valueFrom", {}).get("secretKeyRef", {})
 assert ref.get("name") == "naslos-buddy-kek", ref
+assert "LDAP_BIND_PASS_FILE" in env, "the LDAP bind password must come from a file"
+assert "LDAP_BIND_PASS" not in env, "the LDAP bind password must not be injected as env"
+mounts = {m["name"] for m in dp["spec"]["template"]["spec"]["containers"][0].get("volumeMounts", [])}
+assert "ldap-bind" in mounts, mounts
+assert "tmp" in mounts, mounts
+assert dp["spec"]["template"]["spec"]["containers"][0]["securityContext"]["readOnlyRootFilesystem"] is True
 secret = find("Secret", "naslos-buddy-kek")
 assert secret, "generated buddy KEK Secret missing"
 raw = base64.b64decode(secret["data"]["kek"])
@@ -106,6 +112,8 @@ check_build_integrity() {
   grep -q -- '--config .gitleaks-history.toml' "$root/.github/workflows/ci.yml" || ok=0
   grep -q 'privilegedConfirmed' "$root/rust/api/src/server/apps.rs" || ok=0
   grep -q 'BUDDY_RECEIVE_PATH' "$root/rust/api/src/state.rs" || ok=0
+  grep -q 'health_watch::run' "$root/rust/api/src/main.rs" || ok=0
+  grep -q 'LDAP_BIND_PASS_FILE' "$root/rust/api/src/identity.rs" || ok=0
   if grep -q "^  '''\\^bootstrap/vm/" "$root/.gitleaks-history.toml"; then ok=0; fi
   [ "$ok" -eq 1 ]
 }

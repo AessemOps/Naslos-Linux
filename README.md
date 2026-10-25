@@ -30,7 +30,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   ACME certificates managed from the UI (see [docs/app-catalog.md](docs/app-catalog.md)).
 - **Logs & terminal** — stream logs and open an interactive shell (`bash` by default; `sh`/`ash`/`zsh` where installed) in any pod from the UI
 - **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served)
-- **ntfy notifications** — push alerts on backup events (the ZFS/Kubernetes health watcher is an open item; see `docs/AUDIT-2026-10-24.md`)
+- **ntfy notifications** — push alerts on backup and ZFS/agent health transitions
 - **Monitoring dashboard** — live metrics API (`/api/metrics`) + home dashboard; no bundled metrics stack
 - **Desktop installer** — a one-app installer (separate
   [Naslos-Installer](https://github.com/AessemOps/Naslos-Installer) repo) that
