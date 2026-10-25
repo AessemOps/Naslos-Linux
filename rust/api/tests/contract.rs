@@ -282,3 +282,38 @@ async fn text_plain_json_body_is_refused() {
     let (status, _b, _r) = send(with_peer(req, [127, 0, 0, 1])).await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
+
+#[tokio::test]
+async fn unknown_routes_return_json_404() {
+    let (status, body, _r) = send(with_peer(
+        get("/does-not-exist", false, None, None),
+        [127, 0, 0, 1],
+    ))
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "not found");
+}
+
+#[tokio::test]
+async fn a_wrong_method_returns_json_405() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/health")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body, _r) = send(with_peer(req, [127, 0, 0, 1])).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(body["error"], "method not allowed");
+}
+
+#[tokio::test]
+async fn readiness_reports_the_identity_state() {
+    // for_test has no identity backend.
+    let (status, body, _r) = send(with_peer(
+        get("/api/ready", false, None, None),
+        [127, 0, 0, 1],
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ldap"], "down");
+}

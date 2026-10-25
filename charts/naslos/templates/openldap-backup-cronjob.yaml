@@ -2,10 +2,12 @@
 OpenLDAP nightly backup (FR-INSTALL). Folded from
 openldap/manifests/backup-cronjob.yaml.
 
-slapcat writes to the config volume (mounted a second time at /backups); the
-data volume is mounted read-write because the mdb backend maps a lock file
-beside the database even for a read. Both PVCs are created by the StatefulSet's
-volumeClaimTemplates, so their names follow <template>-<statefulset>-0.
+slapcat writes to a dedicated backup PVC (SEC-2026-F5): the previous destination
+was the 100 MiB config volume, so a few retained dumps could fill the volume
+slapd itself needs. The data volume is mounted read-write because the mdb
+backend maps a lock file beside the database even for a read. Both StatefulSet
+PVCs are created by its volumeClaimTemplates, so their names follow
+<template>-<statefulset>-0.
 */}}
 {{- if .Values.openldap.enabled }}
 {{- $backup := get .Values.openldap "backup" | default dict }}
@@ -14,6 +16,26 @@ volumeClaimTemplates, so their names follow <template>-<statefulset>-0.
 {{- if $backupEnabled }}
 {{- $sts := .Values.openldap.serviceName | default "naslos-openldap" }}
 {{- $retain := index $backup "retain" | default 7 }}
+{{- $size := index $backup "size" | default "2Gi" }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: naslos-openldap-backups
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos-openldap
+    app.kubernetes.io/component: identity
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ $size }}
+  {{- with index $backup "storageClassName" }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -65,12 +87,9 @@ spec:
                   mountPath: /var/lib/ldap
                 - name: config
                   mountPath: /etc/ldap/slapd.d
-                # The same config volume, mounted a second time as the backup
-                # destination. It used to be mounted at /var/lib/ldap/backups,
-                # i.e. *inside* the data mount, which the container runtime
-                # cannot create when that mount is read-only - the pod never
-                # started (RunContainerError).
-                - name: config
+                # A separate volume: dumps must never fill the config volume
+                # slapd needs (SEC-2026-F5).
+                - name: backups
                   mountPath: /backups
           volumes:
             - name: data
@@ -79,6 +98,9 @@ spec:
             - name: config
               persistentVolumeClaim:
                 claimName: config-{{ $sts }}-0
+            - name: backups
+              persistentVolumeClaim:
+                claimName: naslos-openldap-backups
 ---
 apiVersion: v1
 kind: ServiceAccount

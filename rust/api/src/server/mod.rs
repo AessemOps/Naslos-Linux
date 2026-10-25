@@ -27,8 +27,10 @@ pub mod zfs;
 
 use crate::auth;
 use crate::state::AppState;
+use axum::http::StatusCode;
 use axum::middleware;
-use axum::routing::{get, post};
+use axum::response::Response;
+use axum::routing::{any, get, post};
 use axum::Router;
 use std::sync::Arc;
 
@@ -221,11 +223,33 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .put(users::group_detail_put)
                 .delete(users::group_detail_delete),
         )
+        // Unknown /api paths stay behind auth so their existence is not
+        // leaked; the public fallback below only serves non-API paths.
+        .route("/api/{*rest}", any(not_found))
         .layer(middleware::from_fn(auth::require_admin))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
         ));
 
-    public.merge(user).merge(owner).with_state(state)
+    public
+        .merge(user)
+        .merge(owner)
+        .with_state(state)
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed)
+}
+
+async fn not_found() -> Response {
+    crate::json(
+        StatusCode::NOT_FOUND,
+        serde_json::json!({ "error": "not found" }),
+    )
+}
+
+async fn method_not_allowed() -> Response {
+    crate::json(
+        StatusCode::METHOD_NOT_ALLOWED,
+        serde_json::json!({ "error": "method not allowed" }),
+    )
 }
