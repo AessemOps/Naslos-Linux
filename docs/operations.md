@@ -101,7 +101,7 @@ transient by design.
 4. **No API restart is required** — the next request after LDAP returns will
    succeed. Restarting the API pod is only a last resort.
 5. If `ldap: down` persists while LDAP is healthy, check the API's secret and
-   CA: `LDAP_BIND_PASS` (Secret `naslos-openldap`/`service-password`) and
+   CA: `LDAP_BIND_PASS_FILE` (Secret `naslos-openldap`/`service-password`, mounted at `/var/run/secrets/ldap-bind/service-password`) and
    `LDAP_CA_CERT` (Secret `naslos-openldap-tls`).
 6. Startup ordering: on a cold start the API waits briefly (best-effort,
    ~10 s) for OpenLDAP, then starts anyway. `kubectl -n naslos logs
