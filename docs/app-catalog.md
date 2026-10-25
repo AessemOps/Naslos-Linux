@@ -232,9 +232,13 @@ mount the host path directly and share the same data.
   the base domain's wildcard Certificate `secretName` (from its domain record);
   `APPS_TLS_SECRET` is only the fallback when no domain record exists. A `.local`
   domain can never get a public cert — keep TLS off or self-sign for `.local`.
-- **Third-party charts are privileged.** Any install runs arbitrary in-cluster
-  manifests under the API's namespaced Role. Mitigations: dedicated namespace,
-  PSA `baseline`, NetworkPolicy, no proxy-secret/Talos access, admin-only access
-  and explicit confirmation. Commit pinning is deferred.
-- SSH host-key pinning (a `known_hosts` Secret) is a known follow-up; the
-  current SSH transport is configured by the appliance admin.
+- **Third-party charts are privileged, but cannot own routing.** Helm runs as
+  the reduced `naslos-helm` ServiceAccount (SEC-2026-D1/D4): it can create
+  workloads, Services, ConfigMaps, Secrets, PVCs and Ingresses but **not**
+  Traefik `IngressRoute`/`Middleware` objects, cert-manager objects, RBAC or
+  cluster-scoped resources. The API creates and reconciles the app route and
+  certificate itself. A chart that ships its own `IngressRoute` now fails
+  (403) instead of silently becoming same-origin with the UI.
+- Charts can still create Secrets/PVCs and mount the shared `naslos-datasets`
+  PVC; per-app dataset isolation is the remaining open item (D3/F1).
+- SSH chart sources require a pinned `known_hosts` (SEC-2026-B1).

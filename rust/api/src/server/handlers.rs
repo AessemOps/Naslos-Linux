@@ -39,7 +39,7 @@ pub async fn auth_me(State(state): State<Arc<AppState>>, req: Request) -> Respon
     if state.identity.is_none() {
         return json(
             StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({ "error": "Identity/LDAP is not configured (check LDAP_HOST, LDAP_BIND_PASS, and that OpenLDAP is running)" }),
+            serde_json::json!({ "error": "Identity/LDAP is not configured (check LDAP_HOST, LDAP_BIND_PASS_FILE, and that OpenLDAP is running)" }),
         );
     }
     let Some(user) = user_from_request(&req) else {

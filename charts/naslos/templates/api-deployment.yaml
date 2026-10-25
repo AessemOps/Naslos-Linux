@@ -163,6 +163,14 @@ spec:
               value: /tmp/helm/config
             - name: HELM_DATA_HOME
               value: /tmp/helm/data
+            {{- if and .Values.ui.enabled (ne .Values.apps.namespace .Release.Namespace) (ne .Values.apps.namespace (include "naslos.workloadNamespace" .)) }}
+            # SEC-2026-D1/D4: Helm must not run as the API identity. This token
+            # can create workloads but not Traefik routes or certificates.
+            - name: HELM_SA_TOKEN_FILE
+              value: /var/run/secrets/naslos-helm/token
+            - name: HELM_SA_CA_FILE
+              value: /var/run/secrets/naslos-helm/ca.crt
+            {{- end }}
             # Base URL of the naslos-agent Service (headless, one endpoint per
             # node) used for ZFS pool operations. Overridable for local dev
             # (e.g. AGENT_BASE_URL=http://127.0.0.1:9090 with a port-forward).
@@ -372,6 +380,11 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- if and .Values.ui.enabled (ne .Values.apps.namespace .Release.Namespace) (ne .Values.apps.namespace (include "naslos.workloadNamespace" .)) }}
+            - name: helm-sa
+              mountPath: /var/run/secrets/naslos-helm
+              readOnly: true
+            {{- end }}
             {{- if .Values.api.sharesConfig.enabled }}
             # Persists share definitions across restarts.
             - name: shares-config
@@ -430,6 +443,16 @@ spec:
         {{- end }}
         - name: tmp
           emptyDir: {}
+        {{- if and .Values.ui.enabled (ne .Values.apps.namespace .Release.Namespace) (ne .Values.apps.namespace (include "naslos.workloadNamespace" .)) }}
+        - name: helm-sa
+          secret:
+            secretName: naslos-helm-token
+            items:
+              - key: token
+                path: token
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
         - name: ldap-bind
           secret:
             secretName: naslos-openldap

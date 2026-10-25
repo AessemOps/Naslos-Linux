@@ -15,6 +15,11 @@
 - **`make crds`** installs both the Traefik and the cert-manager CRDs. The app
   routing layer needs the Traefik CRDs; the SSL page is gated on the
   cert-manager CRDs.
+- **App-install identity.** The chart creates a `naslos-helm` ServiceAccount
+  and token Secret in the release namespace, bound to a namespaced Role in
+  `naslos-apps` that excludes Traefik, cert-manager and RBAC writes. Helm uses
+  that token (`HELM_SA_TOKEN_FILE`/`HELM_SA_CA_FILE`); routing/certs/exec keep
+  using the API's own ServiceAccount (SEC-2026-D1/D4).
 - **cert-manager + the OVH webhook.** `make install-vm` installs both as
   prerequisites (`make cert-manager`, then `make cert-manager-webhook-ovh`) in
   the `cert-manager` namespace, outside the `naslos` default-deny policies. OVH

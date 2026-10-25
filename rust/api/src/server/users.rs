@@ -14,7 +14,7 @@ fn identity_unavailable(state: &AppState) -> Option<Response> {
     if state.identity.is_none() {
         return Some(json(
             StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({ "error": "Identity/LDAP is not configured (check LDAP_HOST, LDAP_BIND_PASS, and that OpenLDAP is running)" }),
+            serde_json::json!({ "error": "Identity/LDAP is not configured (check LDAP_HOST, LDAP_BIND_PASS_FILE, and that OpenLDAP is running)" }),
         ));
     }
     None

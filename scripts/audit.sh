@@ -54,6 +54,16 @@ def find(kind, name):
         if d.get("kind") == kind and d["metadata"]["name"] == name:
             return d
     return None
+assert find("ServiceAccount", "naslos-helm"), "Helm service account missing"
+helm_secret = find("Secret", "naslos-helm-token")
+assert helm_secret, "Helm token Secret missing"
+helm_role = find("Role", "naslos-helm-apps")
+assert helm_role, "Helm apps Role missing"
+groups = {g for r in helm_role["rules"] for g in r["apiGroups"]}
+assert "traefik.io" not in groups, groups
+assert "cert-manager.io" not in groups, groups
+assert "rbac.authorization.k8s.io" not in groups, groups
+assert "HELM_SA_TOKEN_FILE" in env, env.get("HELM_SA_TOKEN_FILE")
 api = find("IngressRoute", "naslos-api")
 assert api, "naslos-api IngressRoute missing"
 middlewares = [m["name"] for m in api["spec"]["routes"][0].get("middlewares", [])]

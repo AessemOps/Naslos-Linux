@@ -358,6 +358,10 @@ with a sibling `naslos-app.yaml` install-config. See
   `privilegedConfirmed: true`, and the UI MUST show a separate privileged
   warning; a missing confirmation is a 400. *(chart render + routing/apps tests,
   `privileged_installs_need_a_second_confirmation`)*
+- **FR-APP-19** — Chart installs MUST run as a namespaced identity that cannot
+  create Traefik `IngressRoute`/`Middleware` or cert-manager objects; the API
+  MUST own the app's route and certificate. *(chart render gate:
+  `naslos-helm-apps` Role excludes `traefik.io`/`cert-manager.io`)*
 - **FR-APP-18** — Install, upgrade and uninstall MUST run as **background jobs**
   with an observable stage (`preparing` → `installing` → `finalizing`).
   `POST /api/apps`, `PUT /api/apps/{name}` and `DELETE /api/apps/{name}` MUST
