@@ -106,7 +106,7 @@ are in-memory (a restart abandons a running job; the app record and
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/sources` | List configured sources |
-| POST | `/api/sources` | Add a source `{name, url, auth, credentialsSecret?, channels?}` |
+| POST | `/api/sources` | Add a source `{name, url, auth, credentialsSecret?, channels?, commit?}`; `commit` is a full 40-char SHA and pins the clone |
 | GET | `/api/sources/{name}` | Read one source |
 | DELETE | `/api/sources/{name}` | Remove a source and its cached clones |
 | POST | `/api/sources/refresh` | Refresh all sources, or one with `?name=` |

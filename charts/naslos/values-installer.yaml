@@ -91,6 +91,9 @@ apps:
     displayName: NaslosCharts
     url: https://github.com/AessemOps/NaslosCharts.git
     auth: public
+    # SEC-2026-D6: pin the NASLOS catalog to an audited commit. Bump this when
+    # releasing a chart that needs newer catalog entries.
+    commit: 781f192de6a54db23f9fc098397d38a0b37d9fc0
     credentialsSecret: ""
     channels:
       Prod: main

@@ -81,6 +81,8 @@ pub struct Source {
     pub ssh_key_key: String,
     #[serde(default)]
     pub channels: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub commit: String,
     #[serde(default)]
     pub official: bool,
     #[serde(default, rename = "addedAt", skip_serializing_if = "Option::is_none")]
@@ -139,6 +141,12 @@ impl Source {
             return Err(format!("source {:?}: url is required", self.name));
         }
         validate_source_url(&self.url).map_err(|e| format!("source {:?}: {e}", self.name))?;
+        if !self.commit.is_empty() && !is_full_commit(&self.commit) {
+            return Err(format!(
+                "source {:?}: commit must be a full 40-character hex SHA",
+                self.name
+            ));
+        }
         match self.auth {
             AuthType::Public => {}
             AuthType::Token | AuthType::Ssh => {
@@ -358,7 +366,18 @@ pub struct GitAuth {
 /// logic is testable without a real remote.
 #[async_trait::async_trait]
 pub trait GitBackend: Send + Sync {
-    async fn sync(&self, url: &str, branch: &str, dir: &str, auth: &GitAuth) -> Result<(), String>;
+    async fn sync(
+        &self,
+        url: &str,
+        branch: &str,
+        commit: &str,
+        dir: &str,
+        auth: &GitAuth,
+    ) -> Result<(), String>;
+}
+
+fn is_full_commit(value: &str) -> bool {
+    value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Drives the bundled `git` CLI.
@@ -374,6 +393,14 @@ impl GitCliBackend {
     }
 
     async fn run(&self, args: &[String], env: &[(String, String)]) -> Result<(), String> {
+        self.run_stdout(args, env).await.map(|_| ())
+    }
+
+    async fn run_stdout(
+        &self,
+        args: &[String],
+        env: &[(String, String)],
+    ) -> Result<String, String> {
         let mut cmd = tokio::process::Command::new(&self.binary);
         cmd.kill_on_drop(true);
         cmd.args(args);
@@ -396,7 +423,7 @@ impl GitCliBackend {
                 String::from_utf8_lossy(&output.stderr).trim()
             ));
         }
-        Ok(())
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 }
 
@@ -408,7 +435,14 @@ impl Default for GitCliBackend {
 
 #[async_trait::async_trait]
 impl GitBackend for GitCliBackend {
-    async fn sync(&self, url: &str, branch: &str, dir: &str, auth: &GitAuth) -> Result<(), String> {
+    async fn sync(
+        &self,
+        url: &str,
+        branch: &str,
+        commit: &str,
+        dir: &str,
+        auth: &GitAuth,
+    ) -> Result<(), String> {
         // HTTPS token: embed as basic auth in the URL (go-git used
         // x-access-token). SSH: point GIT_SSH_COMMAND at a temp key.
         validate_source_url(url)?;
@@ -445,7 +479,8 @@ impl GitBackend for GitCliBackend {
         };
 
         let result = async {
-            if !Path::new(dir).join(".git").exists() {
+            let fresh = !Path::new(dir).join(".git").exists();
+            if fresh {
                 if let Some(parent) = Path::new(dir).parent() {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| format!("creating cache directory: {e}"))?;
@@ -465,7 +500,7 @@ impl GitBackend for GitCliBackend {
                     ],
                     &env,
                 )
-                .await
+                .await?;
             } else {
                 self.run(
                     &[
@@ -480,6 +515,63 @@ impl GitBackend for GitCliBackend {
                     &env,
                 )
                 .await?;
+            }
+
+            if !commit.is_empty() {
+                // Commit pinning (SEC-2026-D6): check out exactly the pinned
+                // commit and fail closed if it is not what we ended up with.
+                let present = self
+                    .run(
+                        &[
+                            "-C".into(),
+                            dir.into(),
+                            "cat-file".into(),
+                            "-e".into(),
+                            format!("{commit}^{{commit}}"),
+                        ],
+                        &env,
+                    )
+                    .await
+                    .is_ok();
+                if !present {
+                    self.run(
+                        &[
+                            "-C".into(),
+                            dir.into(),
+                            "fetch".into(),
+                            "--depth".into(),
+                            "1".into(),
+                            "origin".into(),
+                            commit.into(),
+                        ],
+                        &env,
+                    )
+                    .await?;
+                }
+                self.run(
+                    &[
+                        "-C".into(),
+                        dir.into(),
+                        "reset".into(),
+                        "--hard".into(),
+                        commit.into(),
+                    ],
+                    &env,
+                )
+                .await?;
+                let head = self
+                    .run_stdout(
+                        &["-C".into(), dir.into(), "rev-parse".into(), "HEAD".into()],
+                        &env,
+                    )
+                    .await?;
+                if !head.trim().eq_ignore_ascii_case(commit) {
+                    return Err(format!(
+                        "the checked-out commit {} does not match the pinned {commit}",
+                        head.trim()
+                    ));
+                }
+            } else if !fresh {
                 self.run(
                     &[
                         "-C".into(),
@@ -490,8 +582,9 @@ impl GitBackend for GitCliBackend {
                     ],
                     &env,
                 )
-                .await
+                .await?;
             }
+            Ok(())
         }
         .await;
         drop(key_file);
@@ -631,7 +724,11 @@ impl Manager {
         let _guard = self.refresh_mu.lock().await;
 
         let auth = self.auth_for(src)?;
-        if let Err(e) = self.git.sync(&src.url, &branch, &dir, &auth).await {
+        if let Err(e) = self
+            .git
+            .sync(&src.url, &branch, &src.commit, &dir, &auth)
+            .await
+        {
             self.record_sync(&src.name, Some(&e));
             return Err(format!("refreshing {}/{channel}: {e}", src.name));
         }
@@ -891,6 +988,20 @@ mod tests {
         .unwrap();
         let store = Store::new(&path.display().to_string());
         assert!(store.load().is_err());
+    }
+
+    #[test]
+    fn a_pinned_commit_must_be_a_full_sha() {
+        let mut src = Source {
+            name: "naslos".into(),
+            url: "https://example.com/r.git".into(),
+            ..Default::default()
+        };
+        assert!(src.validate().is_ok());
+        src.commit = "781f192".into();
+        assert!(src.validate().is_err());
+        src.commit = "781f192de6a54db23f9fc098397d38a0b37d9fc0".into();
+        assert!(src.validate().is_ok());
     }
 
     #[test]

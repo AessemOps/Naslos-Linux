@@ -15,6 +15,11 @@
 - **`make crds`** installs both the Traefik and the cert-manager CRDs. The app
   routing layer needs the Traefik CRDs; the SSL page is gated on the
   cert-manager CRDs.
+- **Pinned catalog.** The VM and installer overlays set
+  `apps.officialSource.commit` to a full SHA; the API checks out exactly that
+  commit and fails the sync if `HEAD` differs. Bump it when a release needs
+  catalog changes. Source definitions loaded from `sources.json` can carry the
+  same field.
 - **App-install identity.** The chart creates a `naslos-helm` ServiceAccount
   and token Secret in the release namespace, bound to a namespaced Role in
   `naslos-apps` that excludes Traefik, cert-manager and RBAC writes. Helm uses

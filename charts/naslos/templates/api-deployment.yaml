@@ -292,6 +292,10 @@ spec:
             - name: SOURCES_OFFICIAL_CHANNELS
               value: {{ join "," $officialChannels | quote }}
             {{- end }}
+            {{- if .Values.apps.officialSource.commit }}
+            - name: SOURCES_OFFICIAL_COMMIT
+              value: {{ .Values.apps.officialSource.commit | quote }}
+            {{- end }}
             {{- if .Values.apps.officialSource.credentialsSecret }}
             - name: SOURCES_OFFICIAL_SECRET
               value: {{ .Values.apps.officialSource.credentialsSecret | quote }}
