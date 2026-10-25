@@ -329,6 +329,7 @@ async fn apply_domain_fields(
     let secret_name = if domain.credentials_secret.is_empty() {
         format!("naslos-domain-{}-creds", sanitize_name(&domain.base_domain))
     } else {
+        crate::kube::validate_credentials_secret(&domain.credentials_secret)?;
         domain.credentials_secret.clone()
     };
     p.validate_solver(&secret_name, &resolved.config)?;

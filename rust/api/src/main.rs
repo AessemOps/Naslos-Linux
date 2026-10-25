@@ -128,6 +128,33 @@ async fn collect_once(state: &AppState, talos: &naslos_api::talos::TalosClient) 
                 usage_percent: d.usage_percent,
             };
         }
+        // The dashboard's `zfs.pools` was never populated after the Rust port
+        // (SEC-2026-H7); the agent has the live pool list.
+        if let Ok(pools) = agent.list_pools().await {
+            tm.zfs.pools = Some(
+                pools
+                    .into_iter()
+                    .map(|p| {
+                        let size = naslos_api::metrics::parse_zfs_size(&p.size).unwrap_or(0);
+                        let alloc = naslos_api::metrics::parse_zfs_size(&p.alloc).unwrap_or(0);
+                        let free = naslos_api::metrics::parse_zfs_size(&p.free).unwrap_or(0);
+                        let usage_percent = if size > 0 {
+                            (alloc as f64 / size as f64) * 100.0
+                        } else {
+                            0.0
+                        };
+                        naslos_api::metrics::PoolMetrics {
+                            name: p.name,
+                            size,
+                            alloc,
+                            free,
+                            usage_percent,
+                            health: p.health,
+                        }
+                    })
+                    .collect(),
+            );
+        }
     }
     state.metrics.update(tm);
 }

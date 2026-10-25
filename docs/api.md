@@ -88,7 +88,7 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | GET | `/api/apps/jobs` | Lifecycle jobs: running plus the last ~20 finished |
 | GET | `/api/apps/jobs/{id}` | One job's `state`, `stage`, `message` and `error` (the poll target) |
 | GET | `/api/apps/{name}/exposure` | Exposure settings, the app's own `baseDomain` (fallback primary), `primaryDomain`, `selectableDomains`, `ssoDomains` and `authAllowed` |
-| PUT | `/api/apps/{name}/exposure` | Update `{exposure, baseDomain?}`, re-render the route; an unconfigured `baseDomain` is rejected (400) |
+| PUT | `/api/apps/{name}/exposure` | Partial update `{exposure, baseDomain?}`, re-render the route; omitted exposure fields keep their stored value (SEC-2026-D11), and an unconfigured `baseDomain` is rejected (400) |
 | GET | `/api/apps/{name}/services` | Services the release rendered (route-target discovery/picker) |
 
 Install/upgrade/uninstall are **asynchronous** (FR-APP-18): the handler
@@ -116,7 +116,7 @@ are in-memory (a restart abandons a running job; the app record and
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/domains` | List domains + cert-manager availability, plus `baseDomain`, `selectableDomains` and `ssoDomains` |
-| POST | `/api/domains` | Add a domain `{baseDomain, dnsProvider, acmeEmail, environment, credentialsSecret?, fields?}` (`fields` = provider fields; secret fields → a Secret) |
+| POST | `/api/domains` | Add a domain `{baseDomain, dnsProvider, acmeEmail, environment, credentialsSecret?, fields?}` (`fields` = provider fields; secret fields → a Secret). An explicit `credentialsSecret` must be a DNS-1123 name starting with `naslos-` (SEC-2026-D12) |
 | GET | `/api/domains/{domain}` | Read one domain |
 | PUT | `/api/domains/{domain}` | Update a domain (re-renders its Issuer/Certificate) |
 | DELETE | `/api/domains/{domain}` | Remove a domain and its CRs |

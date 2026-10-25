@@ -257,6 +257,10 @@ impl Store {
             if src.name.is_empty() {
                 continue;
             }
+            // The name becomes a directory under the cache and is later passed
+            // to remove_dir_all; never trust it from the on-disk file
+            // (SEC-2026-B12).
+            validate_name(&src.name)?;
             if src.channels.is_empty() {
                 src.channels = default_channels();
             }
@@ -874,6 +878,19 @@ mod tests {
         assert!(validate_name("Bad_Name").is_err());
         assert!(validate_name("").is_err());
         assert!(validate_name("-lead").is_err());
+    }
+
+    #[test]
+    fn unsafe_source_names_are_refused_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sources.json");
+        std::fs::write(
+            &path,
+            r#"[{"name":"../escape","url":"https://example.com/r.git"}]"#,
+        )
+        .unwrap();
+        let store = Store::new(&path.display().to_string());
+        assert!(store.load().is_err());
     }
 
     #[test]

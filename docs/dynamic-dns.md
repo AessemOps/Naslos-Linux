@@ -135,7 +135,9 @@ stored value.
   `naslos-api-platform-read` Role and its assertion in `scripts/audit.sh`).
 - Domains use the same model: secret fields submitted through the Domains form
   are written to `naslos-domain-<domain>-creds` (or an existing
-  `credentialsSecret`) and never returned.
+  `credentialsSecret`) and never returned. An explicit `credentialsSecret` must
+  be a DNS-1123 name starting with `naslos-`; generated names always are, and
+  the prefix keeps a request from targeting another app's Secret (SEC-2026-D12).
 
 ## Drivers
 

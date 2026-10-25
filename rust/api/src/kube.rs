@@ -9,6 +9,42 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
+/// A DNS-1123 subdomain (what Kubernetes accepts for a Secret name).
+pub fn is_dns1123_subdomain(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 253
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                    .unwrap_or(false)
+                && label
+                    .chars()
+                    .last()
+                    .map(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                    .unwrap_or(false)
+                && label
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        })
+}
+
+/// Operator-supplied Secret names must be a DNS-1123 subdomain and stay in the
+/// Naslos namespace convention; anything else is a path to another app's
+/// Secret (SEC-2026-D12).
+pub fn validate_credentials_secret(name: &str) -> Result<(), String> {
+    if !is_dns1123_subdomain(name) {
+        return Err(format!("invalid Secret name {name:?}"));
+    }
+    if !name.starts_with("naslos-") {
+        return Err(format!("Secret name {name:?} must start with \"naslos-\""));
+    }
+    Ok(())
+}
+
 /// A `kubectl`-backed Kubernetes client.
 pub struct Client {
     binary: String,
@@ -287,5 +323,14 @@ mod tests {
             namespace: "naslos".into(),
         };
         assert!(c.base_args().is_empty());
+    }
+
+    #[test]
+    fn secret_names_are_strict_and_namespaced_by_convention() {
+        assert!(validate_credentials_secret("naslos-ddns-home").is_ok());
+        assert!(validate_credentials_secret("../other").is_err());
+        assert!(validate_credentials_secret("my-app-secret").is_err());
+        assert!(is_dns1123_subdomain("a.b-c"));
+        assert!(!is_dns1123_subdomain("Upper"));
     }
 }
