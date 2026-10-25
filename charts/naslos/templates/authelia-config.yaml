@@ -184,13 +184,15 @@ data:
           policy: bypass
           resources:
             - "^/api/health$"
+        {{- if .Values.buddy.enabled }}
         # The buddy peer API authenticates with the peers' own Ed25519 keys (a
         # peer cannot complete an interactive login), so it must not enter the
-        # login flow.
+        # login flow. Only present when the receiver is enabled (SEC-2026-F25).
         - domain: {{ .Values.domain | quote }}
           policy: bypass
           resources:
             - "^/api/buddy/v1/"
+        {{- end }}
         # The portal (page, assets and its own /authelia/api/* XHR calls) is
         # routed to Authelia by its own IngressRoute with no forwardAuth, so it
         # never reaches these rules. The bypass is defensive only.

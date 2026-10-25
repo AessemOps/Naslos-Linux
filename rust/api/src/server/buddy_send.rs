@@ -262,9 +262,13 @@ fn random_job_id() -> String {
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// `zfs send -n -P` is close but not exact (measured differences are a few
+/// hundred bytes to ~0.2 % of the stream), so allow 0.5 % with a small floor.
+/// The old 1 MiB floor let a 2 MiB send lose half its data and still publish
+/// (SEC-2026-C4).
 fn send_shortfall_allowance(estimate: i64) -> i64 {
-    const FLOOR: i64 = 1 << 20;
-    let relative = estimate / 100;
+    const FLOOR: i64 = 16 << 10;
+    let relative = estimate / 200;
     if relative > FLOOR {
         relative
     } else {
@@ -813,3 +817,21 @@ pub fn enqueue_job(
 
 // Keep Duration referenced for a future timeout guard.
 const _: Duration = Duration::from_secs(0);
+
+#[cfg(test)]
+mod tests {
+    use super::send_shortfall_allowance;
+
+    #[test]
+    fn a_half_truncated_small_send_is_refused() {
+        let estimate = 2 * 1024 * 1024;
+        assert!(1_048_576 + send_shortfall_allowance(estimate) < estimate);
+    }
+
+    #[test]
+    fn the_measured_estimate_skew_is_tolerated() {
+        // +232 B on a 44 KB send and -120 KB on a 57 MB incremental.
+        assert!(44_000 + send_shortfall_allowance(44_232) >= 44_232);
+        assert!(57_000_000 + send_shortfall_allowance(57_000_000) >= 57_000_000);
+    }
+}

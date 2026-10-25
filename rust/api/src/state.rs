@@ -487,8 +487,14 @@ fn build_ddns(
 /// Build the buddy receiver (S6e) from the environment.
 fn build_buddy_receiver() -> Option<Arc<crate::server::buddy::Receiver>> {
     use crate::buddy::{auth::Authenticator, peers::PeerStore, store::Store};
-    let receive_path =
-        std::env::var("BUDDY_RECEIVE_PATH").unwrap_or_else(|_| "/var/lib/naslos/buddy".to_string());
+    // The chart sets BUDDY_RECEIVE_PATH only when buddy.enabled. Without it the
+    // receiver used to fall back to a directory on the shared state/config PVC
+    // (64 MiB in the installer profile) and accept peer chunks there
+    // (SEC-2026-C10). No path means no receiver.
+    let receive_path = std::env::var("BUDDY_RECEIVE_PATH").ok()?;
+    if receive_path.trim().is_empty() {
+        return None;
+    }
     let peers_path = std::env::var("BUDDY_PEERS")
         .unwrap_or_else(|_| "/var/lib/naslos/buddy-peers.json".to_string());
     let peers = Arc::new(PeerStore::new(&peers_path));

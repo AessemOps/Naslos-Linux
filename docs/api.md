@@ -77,7 +77,7 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | GET | `/api/catalog` | List catalog entries (summary incl. `source`, `channel`, `channels`) |
 | GET | `/api/catalog/{name}` | Full entry incl. JSON Schema, `services`, `exposure`, `chartPath` |
 | GET | `/api/apps` | Installed-app records with live status and URL |
-| POST | `/api/apps` | Enqueue an install job: `{name, values, exposure?, baseDomain?, confirmed:true}` (confirmed is required) → `202 {jobId, state}` |
+| POST | `/api/apps` | Enqueue an install job: `{name, values, exposure?, baseDomain?, confirmed:true, privilegedConfirmed?:true}`. `confirmed` is always required; an app whose catalog entry declares `privileged: true` additionally requires `privilegedConfirmed:true` (SEC-2026-D8) → `202 {jobId, state}` |
 | GET | `/api/apps/{name}` | Record + release status |
 | PUT | `/api/apps/{name}` | Enqueue an upgrade job: `{values}` → `202 {jobId, state}` |
 | DELETE | `/api/apps/{name}` | Enqueue an uninstall job (removes the release, its route and record) → `202 {jobId, state}` |
@@ -286,7 +286,7 @@ shell, never an arbitrary command.
 | `NASLOS_NAMESPACE` | — | Namespace injected by the Helm chart |
 | `KUBECONFIG` | — | Path to kubeconfig (default: in-cluster) |
 | `BUDDY_NAME` | `naslos` | Name this instance reports to backup peers |
-| `BUDDY_RECEIVE_PATH` | `/var/lib/naslos/buddy` | Dataset (mounted read-write) that stores received sealed chunks. The VM profile sets `buddy.enabled=true` + `receiveHostPath: /var/mnt/test/naslos-buddy`, so chunks land on their own dataset (AUDIT-H2) |
+| `BUDDY_RECEIVE_PATH` | unset | Dataset (mounted read-write) that stores received sealed chunks. **Unset disables the receiver** (the chart sets it when `buddy.enabled=true`). The VM profile sets `receiveHostPath: /var/mnt/test/naslos-buddy`, so chunks land on their own dataset (AUDIT-H2 / SEC-2026-C10) |
 | `BUDDY_PEERS` | `/var/lib/naslos/buddy-peers.json` | Authorized-keys registry for backup peers |
 | `BUDDY_ENROLL_TOKEN` | — | One-time token that lets a peer authorize its own key (from the `naslos-buddy` Secret) |
 | `PROXY_SHARED_SECRET` | — | **Required.** Shared secret Traefik's `proxy-identity` middleware injects; the API refuses to start without it (from the `naslos-proxy` Secret, key `secret`). There is no opt-out |

@@ -120,7 +120,9 @@ body digest, timestamp and nonce are all inside it, a captured request cannot be
 replayed twice inside the clock-skew window — nor at a different receiver: the
 receiver records each nonce it has
 seen, per key, bounded in memory and persisted next to its store (`.nonces`) so a
-restart cannot re-arm the window. A captured request cannot be
+restart cannot re-arm the window. If that file cannot be written the request is
+refused (fail closed), so a read-only store cannot silently lose replay
+protection. A captured request cannot be
 pointed at another path, another body, or replayed later. The receiver additionally:
 
 - rejects a timestamp more than **5 minutes** from its own clock;
@@ -135,7 +137,7 @@ that rewrites the path — an error nobody can debug otherwise.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/enroll` | Bootstrap: a peer presents the receiver's one-time token and its public key. The only unsigned call. |
+| POST | `/enroll` | Bootstrap: a peer presents the receiver's one-time token and its public key. The only unsigned call. The token is burned before the key is authorized (a failed write fails the enrollment), and the requested quota is capped at the receiver's configured default. |
 | GET | `/status` | Free space, bytes stored for this key, quota, sources, last backup, current chain per source |
 | GET | `/backups` | Rows: source, chain, kind, created, chunks, stored bytes |
 | GET | `/chains/{source}` | Chain list (newest first) with GUIDs, for showing a source's history. Bounded to the newest 500 chains and reports `truncated`/`total` |
@@ -496,8 +498,13 @@ error instead of writing damaged data. The Rust buddy suite in
   request (the buddy client's calls are context-bound) and stops between chunks, so
   `DELETE /api/buddy/jobs/{id}` does not wait for a stalled receiver.
 - **Enrollment is single use across restarts.** The receiver records the spent
-  token in its store (`.enroll-used`), and a peer name cannot be re-keyed without an
-  explicit revoke, so a leaked token cannot substitute a key after a restart.
+  token in its store (`.enroll-used`) *before* authorizing the key; if that write
+  fails the enrollment fails, and a peer name cannot be re-keyed without an
+  explicit revoke, so a leaked token cannot substitute a key after a restart. A
+  peer's self-declared quota is capped by `BUDDY_DEFAULT_QUOTA_BYTES`.
+- **The receiver exists only when configured.** `BUDDY_RECEIVE_PATH` unset means
+  no receiver and no backing directory (the chart sets it only with
+  `buddy.enabled=true`); there is no fallback to the state/config volume.
 - **tar payloads lose symlinks, devices and xattrs** in v1, and only regular files
   and directories are archived. For filesystems that need all of it, send a ZFS
   stream (`--kind zfs-send`), which preserves everything by construction.
@@ -514,7 +521,7 @@ error instead of writing damaged data. The Rust buddy suite in
 | 413 on a chunk, or `client_max_body_size` in a proxy log | A proxy in front limits the body. The UI's nginx needs the `/api/buddy/` location (it is in `ui/nginx.conf`). |
 | `mkdir /var/lib/naslos/buddy/SHA256_…: permission denied` | The receive dataset is not writable by the API's user. The API runs as uid 65532 and the `fix-receive-dataset-ownership` init container normally handles this; if it could not, `chown 65532:65532 /var/mnt/<pool>/naslos-buddy` on the node (hostPath volumes ignore `fsGroup`). |
 | Backups work but the dataset's `USED` stays ~0 while the pool's grows | The dataset is not mounted in the host namespace, so the API bind-mounted the parent dataset's directory. On Talos a `zfs create` from inside a pod mounts only in that pod's namespace (`mountPropagation: HostToContainer` is one-way), and writes through the mountpoint land on the **parent** dataset instead. Detect it with `df -h` from a fresh pod on the mount path: it must name `<pool>/naslos-buddy`, not the pool. Workarounds: reboot the node (the ZFS extension runs `zfs mount -a` at boot), or populate the dataset with `zfs receive` instead of writing through its mountpoint. |
-| `the send stream ended early (N of at least M bytes)` | The node's `zfs send` died mid-stream, so nothing was published. Retry the same send: it continues the same chain and the buddy skips the chunks it already has. Note the dry-run estimate is an approximation (measured: +232 B on a 44 KB full send, +9.7 KB on a 53 MB full send, −120 KB on a 57 MB incremental), so the allowance is 1% and anything smaller is caught by `zfs receive` at restore time instead. |
+| `the send stream ended early (N of at least M bytes)` | The node's `zfs send` died mid-stream, so nothing was published. Retry the same send: it continues the same chain and the buddy skips the chunks it already has. Note the dry-run estimate is close but not exact (measured: +232 B on a 44 KB full send, +9.7 KB on a 53 MB full send, −120 KB on a 57 MB incremental), so the allowance is 0.5 % with a 16 KiB floor; a send truncated further is refused before publish (SEC-2026-C4). |
 | `quota exceeded: … bytes are already stored for this key` | The receiver's quota for this key is full. Prune, or raise `QuotaBytes` on the peer entry. |
 | `the receiver already holds different bytes for chunk N` | The source changed while a push was interrupted. Start a new chain (drop `--resume`). |
 | `cannot unwrap the data key` | The identity being used did not encrypt this backup. Restores need the sender's own identity file (private key **and** KEK). |

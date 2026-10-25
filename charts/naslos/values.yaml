@@ -247,6 +247,13 @@ traefik:
         default: true
   service:
     type: LoadBalancer
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
   # Traefik's own dashboard, served under https://<domain>/traefik by the
   # naslos-traefik-dashboard IngressRoute (ingress-api.yaml). `api.insecure`
   # stays false, so the API is only reachable through that route, and basePath
@@ -386,6 +393,13 @@ authelia:
   # deletes the legacy DaemonSet first so the two never share the session PVC.
   pod:
     kind: StatefulSet
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
     # The SSO fragments (session cookies + access-control rules) rendered from
     # the runtime SSO domain list by templates/authelia-sso.yaml and rewritten by
     # the API when a domain is promoted/demoted. Mounted read-only; the config's

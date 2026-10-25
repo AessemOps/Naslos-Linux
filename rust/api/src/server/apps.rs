@@ -57,6 +57,20 @@ struct InstallBody {
     base_domain: String,
     #[serde(default)]
     confirmed: bool,
+    #[serde(default, rename = "privilegedConfirmed")]
+    privileged_confirmed: bool,
+}
+
+/// A privileged catalog entry moves the app into the PSA-privileged namespace,
+/// so a generic "I reviewed the source" click is not enough (SEC-2026-D8).
+fn require_privileged_confirmation(privileged: bool, confirmed: bool) -> Result<(), String> {
+    if privileged && !confirmed {
+        return Err(
+            "this app runs privileged (it is installed into the privileged namespace);              set privilegedConfirmed=true after reviewing that fact"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 pub async fn apps_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
@@ -69,6 +83,16 @@ pub async fn apps_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
     };
     if !req.confirmed {
         return bad_request("install must be explicitly confirmed");
+    }
+    let privileged = match state.catalog.load() {
+        Some(catalog) => match catalog.get(&req.name) {
+            Ok(app) => app.privileged,
+            Err(e) => return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
+        },
+        None => return app_unavailable(),
+    };
+    if let Err(e) = require_privileged_confirmation(privileged, req.privileged_confirmed) {
+        return bad_request(&e);
     }
     if !req.base_domain.is_empty() && !base_domain_selectable(&state, &req.base_domain) {
         return bad_request(&format!(
@@ -290,4 +314,16 @@ fn conflict_response(conflict: &super::app_jobs::JobPublic) -> Response {
             )
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::require_privileged_confirmation;
+
+    #[test]
+    fn privileged_installs_need_a_second_confirmation() {
+        assert!(require_privileged_confirmation(false, false).is_ok());
+        assert!(require_privileged_confirmation(true, false).is_err());
+        assert!(require_privileged_confirmation(true, true).is_ok());
+    }
 }

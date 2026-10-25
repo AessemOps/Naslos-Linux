@@ -148,23 +148,31 @@ impl Authenticator {
         }
     }
 
-    fn persist_nonce(&self, key_id: &str, nonce: &str, expiry_nanos: i64, live_entries: usize) {
+    fn persist_nonce(
+        &self,
+        key_id: &str,
+        nonce: &str,
+        expiry_nanos: i64,
+        live_entries: usize,
+    ) -> Result<(), String> {
         let file = self.nonce_file.lock().unwrap().clone();
-        let Some(path) = file else { return };
+        let Some(path) = file else {
+            return Ok(());
+        };
         let line = format!("{expiry_nanos} {key_id} {nonce}\n");
         use std::io::Write;
-        let append = std::fs::OpenOptions::new()
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
             .append(true)
             .create(true)
+            .mode(0o600)
             .open(&path)
-            .and_then(|mut f| f.write_all(line.as_bytes()));
-        if append.is_err() {
-            self.warn_once(
-                "cannot persist nonces; a restart would re-arm them within the skew window",
-            );
-        }
+            .and_then(|mut f| f.write_all(line.as_bytes()))
+            .map_err(|e| {
+                format!("the replay cache at {path} is not writable ({e}); refusing the request")
+            })?;
         if live_entries < NONCE_FILE_COMPACT_THRESHOLD {
-            return;
+            return Ok(());
         }
         let mut builder = String::new();
         {
@@ -178,6 +186,7 @@ impl Authenticator {
         if crate::chartsrepo::write_atomic(&path, builder.as_bytes(), 0o600, 0o750).is_err() {
             self.warn_once("cannot compact the nonce cache");
         }
+        Ok(())
     }
 
     fn warn_once(&self, msg: &str) {
@@ -254,14 +263,16 @@ impl Authenticator {
         }
 
         validate_nonce(&auth.nonce)?;
-        if self.replay(&auth.key_id, &auth.nonce, now) {
-            return Err("this request was already used (nonce replay)".to_string());
+        match self.replay(&auth.key_id, &auth.nonce, now) {
+            Ok(true) => return Err("this request was already used (nonce replay)".to_string()),
+            Ok(false) => {}
+            Err(e) => return Err(e),
         }
         Ok(peer)
     }
 
     /// Record a nonce; returns true if it was already seen.
-    fn replay(&self, key_id: &str, nonce: &str, now: DateTime<Utc>) -> bool {
+    fn replay(&self, key_id: &str, nonce: &str, now: DateTime<Utc>) -> Result<bool, String> {
         let now_nanos = now.timestamp_nanos_opt().unwrap_or(0);
         let live;
         {
@@ -269,7 +280,7 @@ impl Authenticator {
             let nonces = guard.entry(key_id.to_string()).or_default();
             nonces.retain(|_, exp| *exp >= now_nanos);
             if nonces.contains_key(nonce) {
-                return true;
+                return Ok(true);
             }
             if nonces.len() >= MAX_NONCES_PER_KEY {
                 if let Some(soonest) = nonces
@@ -284,8 +295,8 @@ impl Authenticator {
             nonces.insert(nonce.to_string(), expiry);
             live = nonces.len();
         }
-        self.persist_nonce(key_id, nonce, now_nanos + NONCE_TTL.as_nanos() as i64, live);
-        false
+        self.persist_nonce(key_id, nonce, now_nanos + NONCE_TTL.as_nanos() as i64, live)?;
+        Ok(false)
     }
 }
 
@@ -354,6 +365,21 @@ mod tests {
             )
             .unwrap();
         assert_eq!(peer.name, "peer-a");
+    }
+
+    #[test]
+    fn a_non_writable_replay_cache_refuses_the_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = new_identity("a").unwrap();
+        let auth = authenticator_with(&id, "p");
+        auth.persist_nonces(dir.path().to_str().unwrap());
+        let path = dir.path().join(".nonces");
+        let _ = std::fs::remove_file(&path);
+        // A directory at the cache path makes append fail even when the tests
+        // run as root (permission bits would not).
+        std::fs::create_dir(&path).unwrap();
+        let err = auth.replay("p", "nonce-123", Utc::now()).unwrap_err();
+        assert!(err.contains("not writable"), "{err}");
     }
 
     #[test]

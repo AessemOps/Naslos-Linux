@@ -69,6 +69,23 @@ secret = find("Secret", "naslos-buddy-kek")
 assert secret, "generated buddy KEK Secret missing"
 raw = base64.b64decode(secret["data"]["kek"])
 assert len(base64.b64decode(raw)) == 32, "buddy KEK must be 32 bytes"
+headers = find("Middleware", "security-headers")
+csp = headers["spec"]["headers"].get("contentSecurityPolicy", "")
+assert "default-src 'self'" in csp and "frame-ancestors 'none'" in csp, csp
+priv = find("NetworkPolicy", "naslos-apps-priv-allow")
+ipblock = [r for r in priv["spec"]["egress"] if "ipBlock" in r["to"][0]][0]["to"][0]["ipBlock"]
+assert "169.254.0.0/16" in ipblock.get("except", []), ipblock
+for kind, name in [
+    ("Deployment", "naslos-ui"),
+    ("DaemonSet", "naslos-agent"),
+    ("StatefulSet", "naslos-openldap"),
+    ("DaemonSet", "naslos-samba"),
+    ("DaemonSet", "naslos-nfs"),
+]:
+    doc = find(kind, name)
+    assert doc, f"{kind}/{name} missing"
+    if doc["spec"]["template"]["spec"].get("automountServiceAccountToken") is not False:
+        raise AssertionError(f"{kind}/{name} automounts a service-account token")
 PY
   rm -f "$f"
 }
@@ -87,6 +104,8 @@ check_build_integrity() {
   grep -q 'npm ci' "$root/ui/Dockerfile" || ok=0
   [ -f "$root/.gitleaks-history.toml" ] || ok=0
   grep -q -- '--config .gitleaks-history.toml' "$root/.github/workflows/ci.yml" || ok=0
+  grep -q 'privilegedConfirmed' "$root/rust/api/src/server/apps.rs" || ok=0
+  grep -q 'BUDDY_RECEIVE_PATH' "$root/rust/api/src/state.rs" || ok=0
   if grep -q "^  '''\\^bootstrap/vm/" "$root/.gitleaks-history.toml"; then ok=0; fi
   [ "$ok" -eq 1 ]
 }

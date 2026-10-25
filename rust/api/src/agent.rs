@@ -192,8 +192,16 @@ impl Client {
         Self::new(&base, &token, &ca_file)
     }
 
-    /// Create a client for `base_url` with an optional pinned CA.
+    /// Create a client for `base_url` with a pinned CA. An HTTPS agent URL
+    /// without a CA is refused: falling back to the system roots would accept
+    /// any publicly trusted certificate for the in-cluster name (PF-M5).
     pub fn new(base_url: &str, token: &str, ca_file: &str) -> Result<Self, String> {
+        if base_url.starts_with("https://") && ca_file.trim().is_empty() {
+            return Err(
+                "AGENT_CA_FILE is required for an https agent URL; refusing to use the system roots"
+                    .to_string(),
+            );
+        }
         let mut builder = reqwest::Client::builder().timeout(DEFAULT_TIMEOUT);
         if !ca_file.is_empty() {
             let pem = std::fs::read(ca_file)
@@ -479,6 +487,16 @@ mod tests {
         assert_eq!(escape_dataset_path("tank/media 2026"), "tank/media%202026");
         assert_eq!(escape_component("a/b"), "a%2Fb");
         assert_eq!(query_escape("tank/media 2026"), "tank%2Fmedia+2026");
+    }
+
+    #[test]
+    fn https_without_a_ca_is_refused() {
+        let err = match Client::new("https://naslos-agent.naslos.svc:9090", "t", "") {
+            Ok(_) => panic!("an https URL without a CA must be refused"),
+            Err(e) => e,
+        };
+        assert!(err.contains("AGENT_CA_FILE"), "{err}");
+        assert!(Client::new("http://127.0.0.1:9090", "t", "").is_ok());
     }
 
     #[test]

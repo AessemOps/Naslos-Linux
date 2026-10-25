@@ -30,6 +30,8 @@ spec:
       labels:
         app.kubernetes.io/name: naslos-openldap
     spec:
+      # slapd never calls the Kubernetes API.
+      automountServiceAccountToken: false
       # fsGroup must match the openldap user's GID (101 in the Debian
       # image), not an arbitrary value — otherwise the group-owned
       # /container/service/slapd/assets/certs (mounted from a Secret
