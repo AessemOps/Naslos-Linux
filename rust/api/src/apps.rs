@@ -45,6 +45,57 @@ fn is_zero(n: &i64) -> bool {
     *n == 0
 }
 
+/// A partial exposure update. Omitted fields keep their stored value instead
+/// of defaulting to `false`, which used to silently disable TLS/auth on a
+/// partial PUT (SEC-2026-D11).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct ExposurePatch {
+    #[serde(default)]
+    pub subdomain: Option<String>,
+    #[serde(default)]
+    pub tls: Option<bool>,
+    #[serde(default)]
+    pub auth: Option<bool>,
+    #[serde(default, rename = "localOnly")]
+    pub local_only: Option<bool>,
+    #[serde(default)]
+    pub service: Option<String>,
+    #[serde(default)]
+    pub port: Option<i64>,
+    #[serde(default)]
+    pub scheme: Option<String>,
+}
+
+impl ExposurePatch {
+    pub fn apply(&self, current: &Exposure) -> Exposure {
+        let mut merged = current.clone();
+        if let Some(v) = &self.subdomain {
+            merged.subdomain = v.clone();
+        }
+        if let Some(v) = self.tls {
+            merged.tls = v;
+        }
+        if let Some(v) = self.auth {
+            merged.auth = v;
+        }
+        if let Some(v) = self.local_only {
+            merged.local_only = v;
+        }
+        if let Some(v) = &self.service {
+            merged.service = v.clone();
+        }
+        if let Some(v) = self.port {
+            if v != 0 {
+                merged.port = v;
+            }
+        }
+        if let Some(v) = &self.scheme {
+            merged.scheme = v.clone();
+        }
+        merged
+    }
+}
+
 /// A persisted installed app.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Record {
@@ -353,11 +404,12 @@ impl Manager {
     pub async fn set_exposure(
         &self,
         name: &str,
-        exposure: &Exposure,
+        patch: &ExposurePatch,
         base_domain: &str,
     ) -> Result<View, String> {
         let mut rec = self.store.get(name)?;
-        validate_subdomain(&exposure.subdomain)?;
+        let mut merged = patch.apply(&rec.exposure);
+        validate_subdomain(&merged.subdomain)?;
         let base_domain = if base_domain.is_empty() {
             if rec.base_domain.is_empty() {
                 self.base_domain.clone()
@@ -367,22 +419,13 @@ impl Manager {
         } else {
             base_domain.to_string()
         };
-        if exposure.auth && !self.auth_allowed(&base_domain) {
+        if merged.auth && !self.auth_allowed(&base_domain) {
             return Err("auth requires the domain to be in the SSO domain list".to_string());
         }
-        let mut merged = rec.exposure.clone();
-        merged.subdomain = exposure.subdomain.clone();
-        merged.tls = exposure.tls;
-        merged.auth = exposure.auth;
-        merged.local_only = exposure.local_only;
-        if !exposure.service.is_empty() {
-            merged.service = render_service_name(&exposure.service, &rec.name);
-        }
-        if exposure.port != 0 {
-            merged.port = exposure.port;
-        }
-        if !exposure.scheme.is_empty() {
-            merged.scheme = exposure.scheme.clone();
+        if let Some(service) = &patch.service {
+            if !service.is_empty() {
+                merged.service = render_service_name(service, &rec.name);
+            }
         }
         if merged.service.is_empty() {
             merged = self
@@ -915,5 +958,29 @@ mod tests {
         let mut reloaded = reloaded;
         reloaded.load().unwrap();
         assert_eq!(reloaded.list().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod exposure_patch_tests {
+    use super::{Exposure, ExposurePatch};
+
+    #[test]
+    fn omitted_fields_keep_the_stored_value() {
+        let current = Exposure {
+            subdomain: "plex".into(),
+            tls: true,
+            auth: true,
+            local_only: false,
+            service: "plex".into(),
+            port: 32400,
+            scheme: "http".into(),
+        };
+        let patch: ExposurePatch = serde_json::from_str(r#"{"subdomain":"media"}"#).unwrap();
+        let merged = patch.apply(&current);
+        assert_eq!(merged.subdomain, "media");
+        assert!(merged.tls, "TLS must not be disabled by an omitted field");
+        assert!(merged.auth, "auth must not be disabled by an omitted field");
+        assert_eq!(merged.port, 32400);
     }
 }

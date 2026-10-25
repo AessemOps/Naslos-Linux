@@ -381,8 +381,13 @@ fn in_cluster_kubeconfig() -> Option<PathBuf> {
         token = token.display(),
     );
 
-    let path = std::env::temp_dir().join("naslos-helm-kubeconfig.yaml");
-    std::fs::write(&path, yaml).ok()?;
+    // Per-process path and 0600: the file points at the SA token (SEC-2026-B11).
+    let path = std::env::temp_dir().join(format!(
+        "naslos-helm-kubeconfig-{}.yaml",
+        std::process::id()
+    ));
+    crate::chartsrepo::write_atomic(&path.display().to_string(), yaml.as_bytes(), 0o600, 0o700)
+        .ok()?;
     Some(path)
 }
 

@@ -91,7 +91,9 @@ pub async fn logs_ws(
         return json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": e }));
     }
 
-    ws.on_upgrade(move |socket| logs_stream(socket, namespace, pod, container))
+    ws.max_message_size(4 << 20)
+        .max_frame_size(1 << 20)
+        .on_upgrade(move |socket| logs_stream(socket, namespace, pod, container))
 }
 
 async fn logs_stream(socket: WebSocket, namespace: String, pod: String, container: String) {
@@ -272,7 +274,9 @@ pub async fn exec_ws(
         Ok(ws) => ws,
         Err(e) => return e.into_response(),
     };
-    ws.on_upgrade(move |socket| exec_session(socket, namespace, pod, resolved, command))
+    ws.max_message_size(1 << 20)
+        .max_frame_size(256 << 10)
+        .on_upgrade(move |socket| exec_session(socket, namespace, pod, resolved, command))
 }
 
 /// Hosts that may open a terminal WebSocket in addition to the request's own
@@ -489,18 +493,26 @@ async fn exec_session(
         match msg {
             Ok(Message::Binary(data)) => {
                 use std::io::Write;
+                if data.len() > (256 << 10) {
+                    break;
+                }
                 if writer.write_all(&data).is_err() {
                     break;
                 }
                 let _ = writer.flush();
             }
             Ok(Message::Text(text)) => {
-                // Control message: apply a window resize to the PTY.
+                // Control message: apply a window resize to the PTY. Cap the
+                // frame so a client cannot make the API parse megabytes of
+                // JSON per keystroke (SEC-2026-B14).
+                if text.len() > 4096 {
+                    break;
+                }
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
                     if value.get("type").and_then(|v| v.as_str()) == Some("resize") {
                         let cols = value.get("cols").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
                         let rows = value.get("rows").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
-                        if cols > 0 && rows > 0 {
+                        if cols > 0 && rows > 0 && cols <= 1000 && rows <= 1000 {
                             let _ = master.resize(PtySize {
                                 rows,
                                 cols,

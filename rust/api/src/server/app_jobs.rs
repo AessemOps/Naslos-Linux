@@ -140,6 +140,10 @@ impl AppJobManager {
 
     pub fn add(&self, job: Arc<AppJob>) {
         let mut inner = self.inner.lock().unwrap();
+        Self::add_locked(&mut inner, job);
+    }
+
+    fn add_locked(inner: &mut JobManagerInner, job: Arc<AppJob>) {
         let id = job.snapshot().id;
         inner.jobs.insert(id.clone(), job);
         inner.order.push(id);
@@ -176,8 +180,10 @@ impl AppJobManager {
             .collect()
     }
 
-    /// Register and start a lifecycle job. The caller must have checked for a
-    /// conflict first.
+    /// Register and start a lifecycle job, refusing a second job for the same
+    /// app while one is running. The check and insert happen under one lock, so
+    /// two concurrent requests cannot both pass (SEC-2026-D14).
+    #[allow(clippy::result_large_err)]
     pub fn enqueue(
         self: &Arc<Self>,
         kind: JobKind,
@@ -186,7 +192,15 @@ impl AppJobManager {
         request: Option<InstallRequest>,
         values: Option<serde_json::Map<String, serde_json::Value>>,
         manager: Option<Arc<crate::apps::Manager>>,
-    ) -> JobPublic {
+    ) -> Result<JobPublic, JobPublic> {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(running) = inner
+            .jobs
+            .values()
+            .find(|j| j.state() == JobState::Running && j.app == app)
+        {
+            return Err(running.snapshot());
+        }
         let job = Arc::new(AppJob {
             public: Mutex::new(JobPublic {
                 id: random_job_id(),
@@ -206,15 +220,16 @@ impl AppJobManager {
             values,
             result: Mutex::new(None),
         });
-        self.add(job.clone());
         let snapshot = job.snapshot();
+        Self::add_locked(&mut inner, job.clone());
+        drop(inner);
 
         let manager_for_task = self.clone();
         let job_for_task = job.clone();
         tokio::spawn(async move {
             run_job(manager_for_task, job_for_task, manager).await;
         });
-        snapshot
+        Ok(snapshot)
     }
 }
 

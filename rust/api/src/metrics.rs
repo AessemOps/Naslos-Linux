@@ -80,6 +80,29 @@ pub struct NetworkInterface {
     pub bytes_recv: u64,
 }
 
+/// Parse a `zpool list` size (`10.5G`, `1.2T`, `512M`) into bytes. The agent's
+/// pool list uses human-readable strings while the dashboard contract is
+/// numeric (SEC-2026-H7).
+pub fn parse_zfs_size(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() || value == "-" {
+        return None;
+    }
+    let (number, multiplier) = match value.chars().last()? {
+        'K' | 'k' => (&value[..value.len() - 1], 1u64 << 10),
+        'M' | 'm' => (&value[..value.len() - 1], 1u64 << 20),
+        'G' | 'g' => (&value[..value.len() - 1], 1u64 << 30),
+        'T' | 't' => (&value[..value.len() - 1], 1u64 << 40),
+        'P' | 'p' => (&value[..value.len() - 1], 1u64 << 50),
+        _ => (value, 1),
+    };
+    let number: f64 = number.trim_end_matches('B').parse().ok()?;
+    if !number.is_finite() || number < 0.0 {
+        return None;
+    }
+    Some((number * multiplier as f64) as u64)
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ZfsMetrics {
     pub pools: Option<Vec<PoolMetrics>>,
@@ -180,5 +203,22 @@ impl Manager {
             Some(t) => serde_json::Value::String(t.to_rfc3339()),
             None => serde_json::Value::String(ZERO_TIME.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_zfs_size;
+
+    #[test]
+    fn zpool_sizes_are_parsed() {
+        assert_eq!(parse_zfs_size("10G"), Some(10 * (1 << 30)));
+        assert_eq!(parse_zfs_size("512M"), Some(512 * (1 << 20)));
+        assert_eq!(
+            parse_zfs_size("1.5T"),
+            Some((1.5 * (1u64 << 40) as f64) as u64)
+        );
+        assert_eq!(parse_zfs_size("123"), Some(123));
+        assert_eq!(parse_zfs_size("-"), None);
     }
 }

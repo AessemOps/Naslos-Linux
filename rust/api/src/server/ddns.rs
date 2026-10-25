@@ -304,6 +304,9 @@ async fn upsert(state: &Arc<AppState>, existing: Option<Entry>, req: DdnsRequest
         let secret_name = if entry.credentials_secret.is_empty() {
             entry.secret_name()
         } else {
+            if let Err(e) = crate::kube::validate_credentials_secret(&entry.credentials_secret) {
+                return json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": e }));
+            }
             entry.credentials_secret.clone()
         };
         let Some(kube) = &state.kube else {
