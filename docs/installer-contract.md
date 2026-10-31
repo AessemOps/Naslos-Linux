@@ -76,7 +76,16 @@ substituted before parsing:
 | Placeholder | Value |
 | --- | --- |
 | `{{NODE_SUBNET}}` | the node's IPv4 /24, e.g. `192.168.1.0/24` |
-| `{{INSTALL_DISK}}` | the install disk, e.g. `/dev/vda` (v1 assumes `/dev/vda`) |
+| `{{INSTALL_DISK}}` | the install disk chosen by the operator, e.g. `/dev/vda` or `/dev/nvme0n1` |
+
+`{{INSTALL_DISK}}` MUST come from an explicit `--install-disk` argument; the
+engine MUST NOT default to a device name. A non-dry-run install MUST also
+require `--confirm-wipe=<same device>` so a typo cannot erase the wrong disk.
+The value MUST be an absolute path under `/dev/`, contain no whitespace, `..`
+or shell metacharacters, and MUST NOT be a partition when the node is known to
+expose whole disks (the engine refuses a value that is not a whole device when
+it can identify one). Choosing the disk is the operator's decision: the engine
+does not infer it from the boot order.
 
 It pins the installer image to `factory.talos.dev/installer/<schematicId>:<talosVersion>`,
 keeps the ZFS kernel module, disables flannel/kube-proxy, fixes host DNS and
