@@ -148,6 +148,40 @@ PY
 # SEC-2026-G1/G4/G8 guard: no unverified CLI download, no disabled SSH host-key
 # check, no npm lockfile deletion, and the history secret scan uses its own
 # config (bootstrap/vm must not be allowlisted there).
+check_all_off_volumes() {
+  f=$(mktemp) || return 1
+  if ! helm template naslos "$root/charts/naslos" -n naslos \
+    -f "$root/charts/naslos/values.yaml" \
+    --set api.sharesConfig.enabled=false \
+    --set api.talosConfigSecret= \
+    --set api.ldapCA.secretName= \
+    --set api.datasetsHostPath= \
+    --set agent.tls.enabled=false \
+    --set buddy.enabled=false \
+    --show-only templates/api-deployment.yaml >"$f" 2>/dev/null; then
+    rm -f "$f"
+    return 1
+  fi
+  python3 - "$f" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+dp = next((d for d in docs if d.get("kind") == "Deployment"), None)
+assert dp, "no API Deployment rendered"
+spec = dp["spec"]["template"]["spec"]
+volumes = {v["name"] for v in spec.get("volumes", [])}
+for container in spec.get("containers", []) + spec.get("initContainers", []):
+    for mount in container.get("volumeMounts", []):
+        assert mount["name"] in volumes, (
+            f'{container["name"]} mounts missing volume {mount["name"]}'
+        )
+# LDAP_BIND_PASS_FILE and HELM_*_HOME=/tmp are unconditional, so both mounts
+# must exist even with every optional feature off.
+for required in ("ldap-bind", "tmp"):
+    assert required in volumes, f"unconditional volume {required} missing"
+PY
+  rm -f "$f"
+}
+
 check_build_integrity() {
   ok=1
   grep -q 'KUBECTL_SHA256' "$root/rust/api/Dockerfile" || ok=0
@@ -749,6 +783,7 @@ if have helm; then
   run "talos patch ships cilium (AUDIT-M4)" check_talos_patch
   run "grafana stays removed (AUDIT-H4/PF-M3)" check_no_grafana
   run "security hardening renders (auth/KEK)" check_security_rendering
+  run "api deployment renders with every optional feature off" check_all_off_volumes
   run "build integrity (checksums, host keys, lockfile)" check_build_integrity
 else
   skip "helm lint" "helm is not installed"

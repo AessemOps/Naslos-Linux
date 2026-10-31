@@ -392,7 +392,10 @@ spec:
             - name: LDAP_CA_CERT
               value: /var/run/secrets/ldap.ca/ca.crt
             {{- end }}
-          {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath .Values.buddy.enabled .Values.agent.tls.enabled $ddns.providersConfigMap }}
+          # Always mounted: LDAP_BIND_PASS_FILE and HELM_*_HOME=/tmp are set
+          # unconditionally, so gating this block on optional features produced
+          # a Deployment whose mounts had no matching volumes (rejected at
+          # admission) when every optional feature was off.
           volumeMounts:
             {{- if .Values.agent.tls.enabled }}
             - name: agent-tls
@@ -451,10 +454,10 @@ spec:
               mountPath: {{ $ddns.providersDir | default "/etc/naslos/ddns-providers" }}
               readOnly: true
             {{- end }}
-          {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
-      {{- if or .Values.api.talosConfigSecret .Values.api.ldapCA.secretName .Values.api.sharesConfig.enabled .Values.api.datasetsHostPath .Values.buddy.enabled .Values.agent.tls.enabled $ddns.providersConfigMap }}
+      # Always rendered for the same reason as volumeMounts above; `tmp` and
+      # `ldap-bind` are unconditional entries below.
       volumes:
         {{- if .Values.agent.tls.enabled }}
         - name: agent-tls
@@ -526,7 +529,6 @@ spec:
             path: {{ required "buddy.receiveHostPath is required when buddy.enabled=true: it is the dataset that stores received chunks" .Values.buddy.receiveHostPath }}
             type: Directory
         {{- end }}
-      {{- end }}
 ---
 {{- if .Values.api.sharesConfig.enabled }}
 apiVersion: v1
