@@ -276,6 +276,8 @@ spec:
               value: {{ join "," (.Values.sso.domains | default (list .Values.domain)) | quote }}
             - name: APPS_TLS_SECRET
               value: {{ .Values.apps.tlsSecret | default "naslos-apps-tls" | quote }}
+            - name: PLATFORM_TLS_SECRET
+              value: {{ .Values.ingress.tls.secretName | default "naslos-tls" | quote }}
             - name: AUTHELIA_SERVICE
               value: {{ .Values.ingress.authelia.serviceName | default "naslos-authelia" | quote }}
             - name: AUTHELIA_PORT
