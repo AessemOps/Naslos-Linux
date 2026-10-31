@@ -68,6 +68,11 @@ assert api, "naslos-api IngressRoute missing"
 middlewares = [m["name"] for m in api["spec"]["routes"][0].get("middlewares", [])]
 assert "strip-client-identity" in middlewares, middlewares
 assert middlewares.index("strip-client-identity") < middlewares.index("forwardauth-authelia"), middlewares
+assert api["spec"]["tls"]["options"]["name"] == "naslos-tls", api["spec"]["tls"]
+tlsopt = find("TLSOption", "naslos-tls")
+assert tlsopt, "TLSOption missing"
+assert tlsopt["spec"]["minVersion"] == "VersionTLS12", tlsopt["spec"]
+assert tlsopt["spec"].get("sniStrict") is True
 dp = find("Deployment", "naslos-api")
 env = {e["name"]: e for e in dp["spec"]["template"]["spec"]["containers"][0]["env"]}
 assert env.get("TRAEFIK_CIDR", {}).get("value") == "10.244.0.0/16", env.get("TRAEFIK_CIDR")
@@ -113,6 +118,8 @@ assert "default-src 'self'" in csp and "frame-ancestors 'none'" in csp, csp
 priv = find("NetworkPolicy", "naslos-apps-priv-allow")
 ipblock = [r for r in priv["spec"]["egress"] if "ipBlock" in r["to"][0]][0]["to"][0]["ipBlock"]
 assert "169.254.0.0/16" in ipblock.get("except", []), ipblock
+ui_doc = find("Deployment", "naslos-ui")
+assert ui_doc["spec"]["template"]["spec"]["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
 for kind, name in [
     ("Deployment", "naslos-ui"),
     ("DaemonSet", "naslos-agent"),
