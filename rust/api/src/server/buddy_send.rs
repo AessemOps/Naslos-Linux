@@ -178,8 +178,30 @@ impl BuddyJobManager {
         None
     }
 
-    fn add(&self, id: &str, job: Arc<BuddyJob>) {
+    /// Register a job, refusing when the same receiver+source already runs.
+    /// The check and the insert share one lock: doing them separately (the old
+    /// `conflicting` + `add`) let two jobs resume the same chain state file.
+    #[allow(clippy::result_large_err)]
+    fn add_if_free(
+        &self,
+        id: &str,
+        job: Arc<BuddyJob>,
+        receiver: &str,
+        source: &str,
+    ) -> Result<(), JobPublic> {
         let mut inner = self.inner.lock().unwrap();
+        for existing in inner.0.values() {
+            let p = existing.snapshot();
+            if existing.state() == JobState::Running && p.receiver == receiver && p.source == source
+            {
+                return Err(p);
+            }
+        }
+        Self::insert_locked(&mut inner, id, job);
+        Ok(())
+    }
+
+    fn insert_locked(inner: &mut (JobMap, JobOrder), id: &str, job: Arc<BuddyJob>) {
         inner.0.insert(id.to_string(), job);
         inner.1.push(id.to_string());
         let mut kept: Vec<String> = Vec::new();
@@ -333,7 +355,7 @@ pub async fn send_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
         );
     }
     let raw = req.raw.unwrap_or(true);
-    let id = enqueue_job(
+    let id = match enqueue_job(
         &state,
         agent,
         dataset,
@@ -343,7 +365,15 @@ pub async fn send_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
         req.force,
         req.prune_keep,
         String::new(),
-    );
+    ) {
+        Ok(id) => id,
+        Err(conflict) => {
+            return json(
+                StatusCode::CONFLICT,
+                serde_json::json!({ "error": format!("a backup of this source is already running (job {}, started {})", conflict.id, conflict.started_at.to_rfc3339()) }),
+            )
+        }
+    };
     json(
         StatusCode::ACCEPTED,
         serde_json::json!({ "jobId": id, "status": "started" }),
@@ -361,6 +391,7 @@ async fn run_send_job(
     raw: bool,
     force: bool,
     prune_keep: usize,
+    schedule_id: String,
 ) {
     let started = std::time::Instant::now();
     let state_path = send_state_path(&receiver, &source);
@@ -373,6 +404,11 @@ async fn run_send_job(
                 p.state = JobState::Failed;
                 p.error = msg.clone();
                 p.finished_at = Some(Utc::now());
+            }
+            if !schedule_id.is_empty() {
+                state
+                    .buddy_schedules
+                    .record_result(&schedule_id, &receiver, false, &msg);
             }
             notify(&state, &job.snapshot()).await;
             return;
@@ -572,7 +608,7 @@ async fn run_send_job(
             prune_keep,
             progress: Some(&progress),
             before_publish: Some(&before_publish),
-            save_state: Some(&save_state),
+            save_state: &save_state,
         })
         .await;
     if let Some(new_state) = result.state.clone() {
@@ -619,6 +655,11 @@ async fn run_send_job(
             skipped: result.skipped,
         };
         p.finished_at = Some(Utc::now());
+    }
+    if !schedule_id.is_empty() {
+        state
+            .buddy_schedules
+            .record_result(&schedule_id, &receiver, true, "");
     }
     notify(&state, &job.snapshot()).await;
 }
@@ -758,7 +799,7 @@ pub async fn job_detail_delete(
 }
 
 /// Create and start a send job. Shared by the manual endpoint and the scheduler.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
 pub fn enqueue_job(
     state: &Arc<AppState>,
     agent: Arc<crate::agent::Client>,
@@ -769,8 +810,9 @@ pub fn enqueue_job(
     force: bool,
     prune_keep: usize,
     schedule_id: String,
-) -> String {
+) -> Result<String, JobPublic> {
     let id = random_job_id();
+    let schedule_for_job = schedule_id.clone();
     let job = Arc::new(BuddyJob {
         public: Mutex::new(JobPublic {
             id: id.clone(),
@@ -794,7 +836,9 @@ pub fn enqueue_job(
         }),
         handle: Mutex::new(None),
     });
-    state.buddy_jobs.add(&id, job.clone());
+    state
+        .buddy_jobs
+        .add_if_free(&id, job.clone(), &receiver, &source)?;
     let state_for_task = state.clone();
     let job_for_task = job.clone();
     let handle = tokio::spawn(async move {
@@ -808,11 +852,12 @@ pub fn enqueue_job(
             raw,
             force,
             prune_keep,
+            schedule_for_job,
         )
         .await;
     });
     *job.handle.lock().unwrap() = Some(handle);
-    id
+    Ok(id)
 }
 
 // Keep Duration referenced for a future timeout guard.

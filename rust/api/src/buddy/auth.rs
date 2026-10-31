@@ -282,14 +282,14 @@ impl Authenticator {
             if nonces.contains_key(nonce) {
                 return Ok(true);
             }
+            // Never evict an unexpired nonce: doing so makes a captured
+            // request replayable again. Refuse instead and let the peer retry
+            // after the window (NONCE_TTL) drains.
             if nonces.len() >= MAX_NONCES_PER_KEY {
-                if let Some(soonest) = nonces
-                    .iter()
-                    .min_by_key(|(_, exp)| **exp)
-                    .map(|(k, _)| k.clone())
-                {
-                    nonces.remove(&soonest);
-                }
+                return Err(
+                    "too many unexpired signed requests for this key; retry after the replay window"
+                        .to_string(),
+                );
             }
             let expiry = now_nanos + NONCE_TTL.as_nanos() as i64;
             nonces.insert(nonce.to_string(), expiry);

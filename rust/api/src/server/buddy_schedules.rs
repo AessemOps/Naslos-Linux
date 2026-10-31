@@ -490,17 +490,21 @@ async fn start_schedule_job(state: &Arc<AppState>, entry: ScheduleEntry) {
             );
             continue;
         }
-        super::buddy_send::enqueue_job(
+        if super::buddy_send::enqueue_job(
             state,
             agent.clone(),
             entry.dataset.clone(),
             entry.source.clone(),
-            receiver,
+            receiver.clone(),
             true,
             false,
             entry.prune_keep,
             entry.id.clone(),
-        );
+        )
+        .is_err()
+        {
+            continue;
+        }
         started += 1;
     }
     if started > 0 {

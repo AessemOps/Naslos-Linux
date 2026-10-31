@@ -112,6 +112,11 @@ pub async fn restore(State(state): State<Arc<AppState>>, body: Body) -> Response
     if dataset.is_empty() && !req.verify {
         return bad_request("dataset is required (it is where the backup is restored to)");
     }
+    if !dataset.is_empty() {
+        if let Err(e) = super::zfs::validate_dataset_path(&dataset) {
+            return bad_request(&format!("invalid restore dataset: {e}"));
+        }
+    }
     if let Err(e) = validate_source(&source) {
         return bad_request(&e);
     }

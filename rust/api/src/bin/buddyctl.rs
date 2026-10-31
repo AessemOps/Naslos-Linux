@@ -577,7 +577,7 @@ async fn cmd_push(
             prune_keep,
             progress: progress_ref.map(|f| f as &(dyn Fn(PushProgress) + Send + Sync)),
             before_publish: None,
-            save_state: Some(&|s| s.save(&state_shown)),
+            save_state: &|s| s.save(&state_shown),
         })
         .await;
 

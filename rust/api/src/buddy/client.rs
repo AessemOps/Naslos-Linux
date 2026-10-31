@@ -124,9 +124,10 @@ pub struct PushOptions<'a> {
     pub progress: Option<&'a (dyn Fn(PushProgress) + Send + Sync)>,
     pub before_publish: Option<&'a (dyn Fn(&PushResult) -> Result<(), String> + Send + Sync)>,
     /// Persist the chain state (including the bumped nonce generation) before
-    /// any chunk is sealed/uploaded. Required for resume safety: a failed
-    /// upload must never re-use a generation for a different plaintext.
-    pub save_state: Option<&'a (dyn Fn(&ChainState) -> Result<(), String> + Send + Sync)>,
+    /// any chunk is sealed/uploaded. Required, not optional: a failed upload
+    /// must never re-use a generation for a different plaintext, and an
+    /// optional field lets a caller forget that guarantee.
+    pub save_state: &'a (dyn Fn(&ChainState) -> Result<(), String> + Send + Sync),
 }
 
 /// The generation a push attempt uses. It is strictly greater than both the
@@ -722,10 +723,8 @@ impl Client {
         // Persist before transmitting: if this attempt dies mid-stream the next
         // one must start from a fresh generation, not the old one.
         state.generation = attempt_generation;
-        if let Some(save) = opts.save_state {
-            if let Err(e) = save(&state) {
-                return (result, Some(format!("persisting the resume state: {e}")));
-            }
+        if let Err(e) = (opts.save_state)(&state) {
+            return (result, Some(format!("persisting the resume state: {e}")));
         }
         let last_sequence = match self.last_published_sequence(opts.source) {
             Ok(s) => s,
