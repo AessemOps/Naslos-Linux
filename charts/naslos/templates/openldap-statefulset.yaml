@@ -40,6 +40,8 @@ spec:
       # file ...: Error while reading file".
       securityContext:
         fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: openldap
           image: "{{ .Values.openldap.image }}"

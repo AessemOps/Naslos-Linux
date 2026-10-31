@@ -1,8 +1,8 @@
 # Dataset isolation for installed apps (D3/F1)
 
-Status: **design — not yet implemented**. The current shared-root model is
-documented here, with the recommended target architecture, migration steps and
-the residual risk the operator is accepting until it lands.
+Status: **implemented for new installs (batch 11); legacy apps still use the
+shared root until migrated.** This document records the model, the implemented
+per-app isolation, the catalog-compatibility caveat and the migration.
 
 ## 1. Current model
 
@@ -41,7 +41,72 @@ What does **not** help:
   disclosure, and downloads need writes.
 - Removing `hostPath` without a replacement: PSA `baseline` rejects the pod.
 
-## 2. Options
+## 2. Phase 1 (implemented) — managed dataset registry
+
+Operators can register specific datasets instead of exposing `/var/mnt`:
+
+- `GET/POST /api/datasets/registry`, `DELETE /api/datasets/registry/{name}`.
+- A record is `{name, hostPath, shared, warningAcknowledged}`. The API checks
+  that the path is an absolute, normalized ZFS mountpoint below `/var/mnt` and
+  does not overlap `buddy.receiveHostPath`; `name` is a DNS-1123 label.
+- Marking a record `shared` requires `warningAcknowledged:true` and the UI shows
+  a red warning plus a separate checkbox. The registry page lists every record
+  and its private/shared state.
+
+This is the input for the per-app provisioning below; it does not mount
+anything yet.
+
+## 3. Phase 2 (implemented) — per-app namespaces and claims
+
+With `apps.isolation.enabled=true` the chart creates a fixed pool of
+namespaces (`apps.isolation.namespaces` baseline + `privilegedNamespaces`
+privileged). Each has PSA labels, a quota/limit range, a default-deny
+NetworkPolicy (DNS, Traefik, and `naslos.local/apps=true` peers only) and
+RoleBindings to two ClusterRoles:
+
+- `naslos-helm-workloads` — the reduced Helm identity (no routes, certificates
+  or RBAC);
+- `naslos-api-app-isolation` — routes, certificates, Services (read) and
+  per-app PVCs/Secrets for the API.
+
+The API receives the pool in `APPS_NAMESPACE_POOL` /
+`APPS_PRIVILEGED_NAMESPACE_POOL`, assigns a free namespace to each new install,
+and records it in `apps.json` (`namespace`). For each selected registry dataset
+it creates:
+
+- a `PersistentVolume` with `hostPath` = that dataset only and
+  `storageClassName: naslos-app-data` (no provisioner);
+- a `PersistentVolumeClaim` in the app namespace bound to it by `volumeName`;
+- Helm values `datasetsClaim` (first claim) and `datasetsClaims` (all claims).
+
+Privileged apps receive the specific `hostPath` value instead (their charts
+mount it directly; they are already in a privileged namespace).
+
+A copy of the TLS Secret is written into the app namespace before the
+IngressRoute, because Traefik only reads a route's Secret from its own
+namespace. The source is the domain Certificate's Secret in the shared apps
+namespace; when no domain Certificate exists, the platform `naslos-tls` Secret
+is copied instead (the API has `get` on that one Secret only). The copy is
+refreshed whenever the route is re-applied (startup reconcile, exposure update,
+upgrade).
+
+`apps.isolation.enabled` is true in the VM and installer overlays; existing
+records without a `namespace` stay in the legacy shared namespace. Fresh
+installs set `apps.datasets.enabled=false`, so the shared `/var/mnt` PV/PVC is
+not created at all: register a dataset under `/datasets` and select it when
+installing the app. The VM overlay keeps the shared PV for legacy records until
+they are migrated.
+
+### Catalog compatibility
+
+The claim's root is the selected dataset, not `/var/mnt`. A chart that mounts
+`datasetsClaim` at `/data` therefore sees the dataset at `/data`, so catalog
+values that assumed `/data/<pool>/<dataset>` must use `/data/<subdir>` (or the
+dataset root). The current NaslosCharts values that default to `/var/mnt` must
+be pointed at the selected dataset path. This is a catalog change per app, not
+a platform one; until it lands, an isolated install may need value overrides.
+
+## 4. Options
 
 ### A. Per-app namespace + per-dataset PV/PVC (recommended)
 
@@ -88,7 +153,25 @@ keep the Buddy store outside the exposed root. This does not close D3/F1; it
 records the residual and is only acceptable if the operator treats installed
 charts as trusted code.
 
-## 3. Recommended sequence
+### Migrating an existing app
+
+Existing records have no `namespace` and stay in `naslos-apps` on the shared
+PVC. To isolate one:
+
+1. Register the dataset it actually uses (`/datasets`).
+2. Reinstall it with the dataset selected (the UI install flow). The API
+   allocates a per-app namespace and claim; chart values must use the claim
+   root (see the catalog caveat).
+3. Verify the app and its route, then uninstall the legacy release (the shared
+   PVC is untouched). Repeat for every app.
+4. When no record lacks a namespace, delete the `naslos-datasets` PVC/PV and set
+   `apps.datasets.enabled=false` (the legacy path can then be removed from the
+   chart in a later release).
+
+Data is not moved by the API: the registered dataset's `hostPath` is mounted
+directly, so the new claim sees the same data.
+
+## 5. Recommended sequence
 
 1. **Move the Buddy receive store out of the shared root.** On the VM the store
    is `test/naslos-buddy` under `/var/mnt`. The cleanest migration is to change
@@ -135,7 +218,7 @@ If the dataset cannot be moved (busy mount), use `zfs send | zfs receive` into a
 new dataset with the new mountpoint and swap the paths after verifying the
 copy. Rolling back is the reverse `zfs set mountpoint` plus the previous values.
 
-## 4. Interim guardrails already in place
+## 6. Interim guardrails already in place
 
 - The chart rejects an obviously unsafe `apps.datasets.hostPath` (`/`, `/var`,
   `/etc`, `/home`, `/root`; see `apps-datasets.yaml`) and refuses to render when
@@ -150,9 +233,14 @@ copy. Rolling back is the reverse `zfs set mountpoint` plus the previous values.
   wrapped by a KEK in a Secret that apps cannot read. An app that reads the
   store gains ciphertext, not plaintext.
 
-## 5. Residual risk until Option A lands
+## 7. Residual risk
 
-Any chart in `naslos-apps` can read/write every dataset under
-`apps.datasets.hostPath`, and (on the VM profile) the encrypted Buddy store.
-This is recorded as **D3/F1 open** in `docs/AUDIT-2026-10-24.md`; it requires
-operator sign-off for a release that keeps the shared model.
+New installs are isolated: a chart in `naslos-app-*` cannot mount another app's
+claim (different namespaces) and only sees the datasets attached to it. A
+shared dataset is intentionally visible to every app it is attached to.
+
+Legacy records in `naslos-apps`/`naslos-apps-priv` still see the shared
+`/var/mnt` PVC (and the encrypted Buddy store on the VM) until they are
+reinstalled into an isolated namespace and the shared PV/PVC is removed. This
+residual is recorded as **D3/F1 open for legacy apps** in
+`docs/AUDIT-2026-10-24.md`.

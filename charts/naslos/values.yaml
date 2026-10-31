@@ -300,6 +300,15 @@ apps:
   # Namespace for apps that declare `privileged: true` (VPN sidecars needing
   # NET_ADMIN, which PSA baseline forbids).
   privilegedNamespace: naslos-apps-priv
+  # Per-app namespaces + per-dataset PV/PVCs (D3/F1, Option A). The pool is
+  # fixed-size; the API assigns new installs to a free namespace and creates one
+  # claim per selected managed dataset. Existing apps stay in the legacy
+  # namespace. Enable with apps.isolation.enabled.
+  isolation:
+    enabled: false
+    namePrefix: naslos-app
+    namespaces: 8
+    privilegedNamespaces: 4
   # Dataset access for baseline apps. PSA `baseline` forbids hostPath, but Naslos
   # datasets are host directories, so the platform exposes them as a static RWX
   # PV and the `naslos-datasets` PVC that apps mount. Privileged apps mount the

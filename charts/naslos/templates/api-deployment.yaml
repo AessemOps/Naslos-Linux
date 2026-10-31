@@ -239,10 +239,27 @@ spec:
               value: {{ .Values.apps.namespace | default "naslos-apps" | quote }}
             - name: APPS_PRIVILEGED_NAMESPACE
               value: {{ .Values.apps.privilegedNamespace | default "naslos-apps-priv" | quote }}
+            {{- if .Values.apps.isolation.enabled }}
+            {{- $isoPrefix := .Values.apps.isolation.namePrefix | default "naslos-app" }}
+            {{- $baseNames := list }}
+            {{- range $i := until (int (.Values.apps.isolation.namespaces | default 8)) }}
+            {{- $baseNames = append $baseNames (printf "%s-%d" $isoPrefix (add $i 1)) }}
+            {{- end }}
+            {{- $privNames := list }}
+            {{- range $i := until (int (.Values.apps.isolation.privilegedNamespaces | default 4)) }}
+            {{- $privNames = append $privNames (printf "%s-p%d" $isoPrefix (add $i 1)) }}
+            {{- end }}
+            - name: APPS_NAMESPACE_POOL
+              value: {{ join "," $baseNames | quote }}
+            - name: APPS_PRIVILEGED_NAMESPACE_POOL
+              value: {{ join "," $privNames | quote }}
+            {{- end }}
             - name: APPS_CONFIG
               value: {{ .Values.api.appsFile | default "/var/lib/naslos/apps.json" | quote }}
             - name: SOURCES_CONFIG
               value: {{ .Values.api.sourcesFile | default "/var/lib/naslos/sources.json" | quote }}
+            - name: DATASETS_CONFIG
+              value: {{ .Values.api.datasetsFile | default "/var/lib/naslos/datasets.json" | quote }}
             - name: DOMAINS_CONFIG
               value: {{ .Values.api.domainsFile | default "/var/lib/naslos/domains.json" | quote }}
             - name: CHARTS_CACHE_DIR
@@ -259,6 +276,8 @@ spec:
               value: {{ join "," (.Values.sso.domains | default (list .Values.domain)) | quote }}
             - name: APPS_TLS_SECRET
               value: {{ .Values.apps.tlsSecret | default "naslos-apps-tls" | quote }}
+            - name: PLATFORM_TLS_SECRET
+              value: {{ .Values.ingress.tls.secretName | default "naslos-tls" | quote }}
             - name: AUTHELIA_SERVICE
               value: {{ .Values.ingress.authelia.serviceName | default "naslos-authelia" | quote }}
             - name: AUTHELIA_PORT

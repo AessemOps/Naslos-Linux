@@ -173,6 +173,10 @@ pub struct Options {
     pub authelia_port: i64,
     pub authelia_namespace: String,
     pub local_only_cidr: String,
+    /// Release namespace holding the platform TLS Secret.
+    pub release_namespace: String,
+    /// Platform TLS Secret used when no domain-specific Secret exists.
+    pub fallback_tls_secret: String,
     /// Resolves the TLS Secret for a base domain (the wildcard Certificate's
     /// secretName). When absent, `tls_secret` is used.
     pub tls_secret_for: Option<TlsSecretResolver>,
@@ -348,6 +352,63 @@ impl KubeRouter {
         });
         vec![svc, route]
     }
+
+    /// Copy the domain/default TLS Secret into the app namespace. An
+    /// IngressRoute can only reference a Secret in its own namespace, and the
+    /// domain Certificates live in the shared apps namespace.
+    async fn copy_tls_secret(&self, target: &str, name: &str) -> Result<(), String> {
+        let mut found = None;
+        for (namespace, source_name) in [
+            (self.opts.namespace.as_str(), name),
+            (
+                self.opts.release_namespace.as_str(),
+                self.opts.fallback_tls_secret.as_str(),
+            ),
+        ] {
+            if namespace.is_empty() || source_name.is_empty() {
+                continue;
+            }
+            match self.kube.get_json("secret", source_name, namespace).await {
+                Ok(Some(secret)) => {
+                    found = Some(secret);
+                    break;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Err(format!(
+                        "reading TLS secret {source_name:?} in {namespace}: {e}"
+                    ))
+                }
+            }
+        }
+        let Some(mut secret) = found else {
+            return Err(format!(
+                "no TLS secret {name:?} in {} or {}; cannot expose this app with TLS",
+                self.opts.namespace, self.opts.release_namespace
+            ));
+        };
+        if let Some(meta) = secret.get_mut("metadata").and_then(|m| m.as_object_mut()) {
+            for key in [
+                "resourceVersion",
+                "uid",
+                "creationTimestamp",
+                "ownerReferences",
+                "managedFields",
+                "selfLink",
+            ] {
+                meta.remove(key);
+            }
+            meta.insert("namespace".to_string(), serde_json::json!(target));
+            meta.insert("name".to_string(), serde_json::json!(name));
+        }
+        if let Some(obj) = secret.as_object_mut() {
+            obj.remove("status");
+        }
+        self.kube
+            .apply(&secret)
+            .await
+            .map_err(|e| format!("copying TLS secret {name:?} to {target}: {e}"))
+    }
 }
 
 #[async_trait::async_trait]
@@ -364,6 +425,10 @@ impl Router for KubeRouter {
             return Err(format!(
                 "base domain {base_domain:?} is not in the SSO domain list; auth is unavailable"
             ));
+        }
+        if spec.tls && !spec.tls_secret.is_empty() && spec.namespace != self.opts.namespace {
+            self.copy_tls_secret(&spec.namespace, &spec.tls_secret)
+                .await?;
         }
         let objects = render(&spec)?;
         if objects.is_empty() {

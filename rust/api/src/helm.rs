@@ -59,6 +59,16 @@ impl Client {
         &self.namespace
     }
 
+    /// A client with the same binary/kubeconfig but a different target
+    /// namespace (per-app isolation, D3/F1).
+    pub fn for_namespace(&self, namespace: &str) -> Self {
+        Self {
+            binary: self.binary.clone(),
+            kubeconfig: self.kubeconfig.clone(),
+            namespace: namespace.to_string(),
+        }
+    }
+
     fn base_args(&self) -> Vec<String> {
         let mut args = Vec::new();
         if let Some(kc) = &self.kubeconfig {
