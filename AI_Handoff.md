@@ -37,6 +37,15 @@ pack). Live state:
 Kept to continue work on the appliance from the workspace. The earlier
 `0.1.0-r*` live-drill sections below are historical.
 
+## Release 0.2.2 (prepared) — clean-install follow-ups
+
+0.2.2 adds the two drill fixes that 0.2.1 lacked: the app catalog is refreshed
+at startup, and the release namespace's egress allows the per-app namespaces
+(exposed app routes no longer time out). It also rejects registering the Buddy
+store (or a parent) as an app dataset, and carries the TLS/seccomp policy from
+0.2.1. Bump tag/release after merge; installer v0.2.4 embeds this pack (the
+v0.2.3 installer engine already has the resumed-PKI clock fix).
+
 ## Release 0.2.1 (deployed) and installer v0.2.3
 
 `v0.2.1` is tagged, the GitHub release has the digest-pinned pack
