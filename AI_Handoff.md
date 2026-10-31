@@ -53,8 +53,10 @@ installer then includes:
 Clean-install notes: create the pools/datasets first, register the dataset in
 **Datasets**, then install an app and select it. The catalog chart paths must
 use the claim root (the selected dataset), not `/var/mnt`; see
-`docs/datasets-isolation.md`. D6 (signed catalog commits) remains open; the
-catalog is commit-pinned, not signature-verified.
+`docs/datasets-isolation.md`. Accepted for 0.2.1 (sign-off required): D6
+commit-pinned but unsigned catalog, app values at rest in a 0600 file, the
+database-level LDAP `olcSecurity` gap, and local-path `0777`; see the audit
+report's "Accepted-risk candidates".
 
 ## Audit 2026-10-24 (branch `audit/full-2026-10-24`)
 
