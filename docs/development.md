@@ -16,7 +16,7 @@ Naslos-Linux/
 ├── openldap/            OpenLDAP image + manifests (StatefulSet, jobs)
 ├── samba/               Samba image + config
 ├── nfs/                 NFS-Ganesha image + config
-├── terminal/            web-terminal image (+ zsh-terminal/)
+├── terminal/            web-terminal image
 ├── scripts/             deploy-vm.sh, render-cilium.sh, audit.sh
 ├── Makefile             build/install/dev targets
 └── docs/                this documentation set

@@ -33,7 +33,6 @@ pub struct Config {
     pub nss_group: String,
     pub nss_shadow: String,
     pub revision: String,
-    #[allow(dead_code)]
     pub share_count: i32,
 }
 

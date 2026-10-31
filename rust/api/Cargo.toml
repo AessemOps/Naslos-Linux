@@ -16,7 +16,6 @@ path = "src/lib.rs"
 
 [dependencies]
 aes-gcm = "0.10"
-anyhow = "1"
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 async-trait = "0.1"
