@@ -42,6 +42,22 @@ async fn main() {
     let collector = state.clone();
     tokio::spawn(async move { run_metrics_collector(collector).await });
 
+    // Populate the catalog at startup. The chart seeds the official source,
+    // but a clean install used to show an empty app catalog until an admin
+    // clicked Refresh (found in the 0.2.1 clean-install drill).
+    if let Some(charts) = state.charts.clone() {
+        let catalog = state.catalog.clone();
+        tokio::spawn(async move {
+            match charts.refresh_all().await {
+                Ok(()) => tracing::info!("chart catalog refreshed at startup"),
+                Err(e) => tracing::warn!("startup catalog refresh: {e}"),
+            }
+            catalog.store(std::sync::Arc::new(naslos_api::state::build_catalog(
+                &charts,
+            )));
+        });
+    }
+
     // ZFS/agent health watcher (notifications on transitions).
     {
         let watcher_state = state.clone();

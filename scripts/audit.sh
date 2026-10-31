@@ -154,6 +154,8 @@ check_build_integrity() {
   grep -q 'privilegedConfirmed' "$root/rust/api/src/server/apps.rs" || ok=0
   grep -q 'BUDDY_RECEIVE_PATH' "$root/rust/api/src/state.rs" || ok=0
   grep -q 'health_watch::run' "$root/rust/api/src/main.rs" || ok=0
+  grep -q 'refresh_all().await' "$root/rust/api/src/main.rs" || ok=0
+  grep -q 'overlaps_buddy' "$root/rust/api/src/server/dataset_registry.rs" || ok=0
   grep -q 'LDAP_BIND_PASS_FILE' "$root/rust/api/src/identity.rs" || ok=0
   grep -q 'rev-parse' "$root/rust/api/src/chartsrepo.rs" || ok=0
   if grep -q "^  '''\\^bootstrap/vm/" "$root/.gitleaks-history.toml"; then ok=0; fi
