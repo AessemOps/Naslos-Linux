@@ -82,10 +82,13 @@ it creates:
 Privileged apps receive the specific `hostPath` value instead (their charts
 mount it directly; they are already in a privileged namespace).
 
-A copied copy of the domain TLS Secret is written into the app namespace before
-the IngressRoute, because Traefik only reads a route's Secret from its own
-namespace. The copy is refreshed whenever the route is re-applied (startup
-reconcile, exposure update, upgrade).
+A copy of the TLS Secret is written into the app namespace before the
+IngressRoute, because Traefik only reads a route's Secret from its own
+namespace. The source is the domain Certificate's Secret in the shared apps
+namespace; when no domain Certificate exists, the platform `naslos-tls` Secret
+is copied instead (the API has `get` on that one Secret only). The copy is
+refreshed whenever the route is re-applied (startup reconcile, exposure update,
+upgrade).
 
 `apps.isolation.enabled` is true in the VM and installer overlays; existing
 records without a `namespace` stay in the legacy shared namespace. Fresh

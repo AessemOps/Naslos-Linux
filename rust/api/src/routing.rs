@@ -173,6 +173,10 @@ pub struct Options {
     pub authelia_port: i64,
     pub authelia_namespace: String,
     pub local_only_cidr: String,
+    /// Release namespace holding the platform TLS Secret.
+    pub release_namespace: String,
+    /// Platform TLS Secret used when no domain-specific Secret exists.
+    pub fallback_tls_secret: String,
     /// Resolves the TLS Secret for a base domain (the wildcard Certificate's
     /// secretName). When absent, `tls_secret` is used.
     pub tls_secret_for: Option<TlsSecretResolver>,
@@ -353,15 +357,34 @@ impl KubeRouter {
     /// IngressRoute can only reference a Secret in its own namespace, and the
     /// domain Certificates live in the shared apps namespace.
     async fn copy_tls_secret(&self, target: &str, name: &str) -> Result<(), String> {
-        let Some(mut secret) = self
-            .kube
-            .get_json("secret", name, &self.opts.namespace)
-            .await
-            .map_err(|e| format!("reading TLS secret {name:?}: {e}"))?
-        else {
+        let mut found = None;
+        for (namespace, source_name) in [
+            (self.opts.namespace.as_str(), name),
+            (
+                self.opts.release_namespace.as_str(),
+                self.opts.fallback_tls_secret.as_str(),
+            ),
+        ] {
+            if namespace.is_empty() || source_name.is_empty() {
+                continue;
+            }
+            match self.kube.get_json("secret", source_name, namespace).await {
+                Ok(Some(secret)) => {
+                    found = Some(secret);
+                    break;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Err(format!(
+                        "reading TLS secret {source_name:?} in {namespace}: {e}"
+                    ))
+                }
+            }
+        }
+        let Some(mut secret) = found else {
             return Err(format!(
-                "TLS secret {name:?} does not exist in {}; cannot expose this app with TLS",
-                self.opts.namespace
+                "no TLS secret {name:?} in {} or {}; cannot expose this app with TLS",
+                self.opts.namespace, self.opts.release_namespace
             ));
         };
         if let Some(meta) = secret.get_mut("metadata").and_then(|m| m.as_object_mut()) {
@@ -376,6 +399,7 @@ impl KubeRouter {
                 meta.remove(key);
             }
             meta.insert("namespace".to_string(), serde_json::json!(target));
+            meta.insert("name".to_string(), serde_json::json!(name));
         }
         if let Some(obj) = secret.as_object_mut() {
             obj.remove("status");
