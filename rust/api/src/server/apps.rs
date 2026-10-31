@@ -108,6 +108,7 @@ pub async fn apps_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
         exposure: req.exposure.clone(),
         base_domain: req.base_domain.clone(),
         datasets: req.datasets.clone(),
+        privileged_confirmed: req.privileged_confirmed,
     };
     match state.app_jobs.enqueue(
         JobKind::Install,
@@ -133,8 +134,8 @@ pub async fn app_detail_get(
     match manager.get(&name) {
         Ok(rec) => {
             // A live status view (the manager's view() is private); report the
-            // record with a coarse status.
-            let mut view = serde_json::to_value(&rec).unwrap();
+            // record with a coarse status, with secret values masked.
+            let mut view = manager.public_record(&rec);
             view["status"] = serde_json::json!("unknown");
             json(StatusCode::OK, view)
         }

@@ -3,6 +3,16 @@
     schema: { properties: Record<string, any>; required?: string[] };
   };
   export let values: Record<string, any>;
+  /// Secret values the API masked on read. Leaving the field untouched keeps
+  /// the stored value (the request sends `null` and the server preserves it).
+  export let redactedKeys: string[] = [];
+
+  function placeholderFor(key: string, prop: any): string {
+    if (redactedKeys.includes(key) && (values[key] ?? null) === null) {
+      return 'unchanged (leave blank to keep the current value)';
+    }
+    return prop.default || prop.description || '';
+  }
 
   function inputType(format?: string): string {
     if (format === 'password') return 'password';
@@ -84,7 +94,7 @@
           id="field-{key}"
           value={values[key] ?? ''}
           on:input={(e) => updateValue(key, e.currentTarget.value)}
-          placeholder={prop.default || prop.description || ''}
+          placeholder={placeholderFor(key, prop)}
           class="input w-full"
         />
       {/if}

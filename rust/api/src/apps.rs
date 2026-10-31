@@ -153,6 +153,14 @@ pub struct View {
     pub chart: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub url: String,
+    /// Values masked on read because the catalog marks them as secrets. A
+    /// client echoes them back as `null` to keep the stored value.
+    #[serde(
+        default,
+        rename = "redactedKeys",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub redacted_keys: Vec<String>,
 }
 
 /// A Service rendered by an installed release.
@@ -238,7 +246,24 @@ pub struct Manager {
     privileged_namespace_pool: Vec<String>,
     kube: Option<Arc<crate::kube::Client>>,
     datasets: Option<Arc<crate::datasets::Registry>>,
-    _mu: Mutex<()>,
+    /// Namespaces reserved by installs that have not recorded a release yet.
+    /// `_mu` was never taken, so two concurrent installs picked the same
+    /// "isolated" namespace; reservations are the fix.
+    reservations: Arc<Mutex<std::collections::HashSet<String>>>,
+}
+
+/// Frees a namespace reservation when the install finishes, succeeds or not.
+struct NamespaceReservation {
+    reserved: Arc<Mutex<std::collections::HashSet<String>>>,
+    namespace: String,
+}
+
+impl Drop for NamespaceReservation {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.reserved.lock() {
+            set.remove(&self.namespace);
+        }
+    }
 }
 
 impl Manager {
@@ -260,7 +285,7 @@ impl Manager {
             privileged_namespace_pool: cfg.privileged_namespace_pool,
             kube: cfg.kube,
             datasets: cfg.datasets,
-            _mu: Mutex::new(()),
+            reservations: Arc::new(Mutex::new(std::collections::HashSet::new())),
         })
     }
 
@@ -288,33 +313,53 @@ impl Manager {
     }
 
     /// Pick a free namespace from the pool (or the legacy shared namespace
-    /// when no pool is configured).
-    fn allocate_namespace(&self, privileged: bool) -> Result<String, String> {
+    /// when no pool is configured) and reserve it for this install.
+    ///
+    /// The record is only written after Helm finishes, so reading persisted
+    /// records alone lets two concurrent installs claim the same namespace.
+    fn reserve_namespace(
+        &self,
+        privileged: bool,
+    ) -> Result<(String, Option<NamespaceReservation>), String> {
         let pool = if privileged {
             &self.privileged_namespace_pool
         } else {
             &self.namespace_pool
         };
         if pool.is_empty() {
-            return Ok(if privileged && !self.priv_ns.is_empty() {
-                self.priv_ns.clone()
-            } else {
-                self.helm.namespace().to_string()
-            });
+            return Ok((
+                if privileged && !self.priv_ns.is_empty() {
+                    self.priv_ns.clone()
+                } else {
+                    self.helm.namespace().to_string()
+                },
+                None,
+            ));
         }
-        let used: std::collections::HashSet<String> = self
+
+        let mut reservations = self
+            .reservations
+            .lock()
+            .map_err(|_| "app namespace reservations are poisoned".to_string())?;
+        let mut used: std::collections::HashSet<String> = self
             .store
             .list()
             .iter()
             .map(|r| self.display_namespace(r))
             .collect();
-        pool.iter()
-            .find(|ns| !used.contains(*ns))
-            .cloned()
-            .ok_or_else(|| {
-                "no free per-app namespace is available; raise apps.isolation.namespaces"
-                    .to_string()
-            })
+        used.extend(reservations.iter().cloned());
+
+        let namespace = pick_namespace(pool, &used).ok_or_else(|| {
+            "no free per-app namespace is available; raise apps.isolation.namespaces".to_string()
+        })?;
+        reservations.insert(namespace.clone());
+        Ok((
+            namespace.clone(),
+            Some(NamespaceReservation {
+                reserved: self.reservations.clone(),
+                namespace,
+            }),
+        ))
     }
 
     pub fn records(&self) -> Vec<Record> {
@@ -360,12 +405,22 @@ impl Manager {
         );
         let catalog = (self.catalog)().ok_or("catalog is not available")?;
         let app = catalog.get(&req.name)?;
+        // The HTTP layer checked the catalog snapshot it showed the operator.
+        // The job resolves the (swappable) catalog again, so re-check here: a
+        // refresh between confirm and execution must not install privileged
+        // with only the generic confirmation.
+        if app.privileged && !req.privileged_confirmed {
+            return Err(
+                "this app now requires privileged mode; review that and confirm the install again"
+                    .to_string(),
+            );
+        }
         let chart_dir = self.resolve_chart(&app).await?;
         crate::chartsrepo::assert_regular_tree(&chart_dir)?;
 
         let mut values = merge_values(&app.default_values, req.values.as_ref());
         validate_install_values(&app, &values)?;
-        let namespace = self.allocate_namespace(app.privileged)?;
+        let (namespace, _reservation) = self.reserve_namespace(app.privileged)?;
         let dataset_values = self
             .provision_datasets(&req.name, &namespace, app.privileged, &req.datasets)
             .await?;
@@ -452,7 +507,18 @@ impl Manager {
         let app = catalog.get(name)?;
         let chart_dir = self.resolve_chart(&app).await?;
         crate::chartsrepo::assert_regular_tree(&chart_dir)?;
-        let merged = merge_values(&serde_json::Value::Object(rec.values.clone()), values);
+        let mut merged = merge_values(&serde_json::Value::Object(rec.values.clone()), values);
+
+        // A redacted secret comes back as `null`; keep the stored value.
+        for key in secret_value_keys(&app.schema) {
+            if merged.get(&key).map(|v| v.is_null()).unwrap_or(false) {
+                if let Some(previous) = rec.values.get(&key) {
+                    merged.insert(key, previous.clone());
+                }
+            }
+        }
+        // `install` validated the catalog schema; `upgrade` did not.
+        validate_install_values(&app, &merged)?;
 
         report(progress, STAGE_INSTALLING, &format!("Upgrading {name}"));
         self.helm_for(&rec)
@@ -552,7 +618,9 @@ impl Manager {
                 status: "missing".to_string(),
                 url: self.url_for(&rec),
                 record: rec.clone(),
+                redacted_keys: Vec::new(),
             };
+            view.redacted_keys = self.redact_record_values(&mut view.record);
             match self.helm_for(&rec).get(&rec.name).await {
                 Ok(rel) => {
                     view.status = rel.status.clone();
@@ -866,7 +934,9 @@ impl Manager {
             status: "missing".to_string(),
             url: self.url_for(&rec),
             record: rec.clone(),
+            redacted_keys: Vec::new(),
         };
+        view.redacted_keys = self.redact_record_values(&mut view.record);
         if let Ok(rel) = self.helm_for(&rec).get(name).await {
             view.status = rel.status.clone();
             if !rel.chart.is_empty() {
@@ -874,6 +944,40 @@ impl Manager {
             }
         }
         Ok(view)
+    }
+
+    /// Mask secret values in a record for API responses (returns the keys).
+    pub fn redact_record_values(&self, record: &mut Record) -> Vec<String> {
+        let keys = match (self.catalog)().and_then(|c| c.get(&record.name).ok()) {
+            Some(app) => secret_value_keys(&app.schema),
+            None => return Vec::new(),
+        };
+        let mut redacted: Vec<String> = keys
+            .into_iter()
+            .filter(|key| {
+                record
+                    .values
+                    .get(key)
+                    .map(|v| !v.is_null())
+                    .unwrap_or(false)
+            })
+            .collect();
+        for key in &redacted {
+            record.values.insert(key.clone(), serde_json::Value::Null);
+        }
+        redacted.sort();
+        redacted
+    }
+
+    /// A record ready for `GET /api/apps/{name}` (secrets masked).
+    pub fn public_record(&self, rec: &Record) -> serde_json::Value {
+        let mut masked = rec.clone();
+        let redacted = self.redact_record_values(&mut masked);
+        let mut value = serde_json::to_value(&masked).unwrap_or_default();
+        if !redacted.is_empty() {
+            value["redactedKeys"] = serde_json::json!(redacted);
+        }
+        value
     }
 
     fn url_for(&self, rec: &Record) -> String {
@@ -911,6 +1015,53 @@ pub struct InstallRequest {
     /// Registered datasets to attach (D3/F1); empty keeps the app claim-less.
     #[serde(default)]
     pub datasets: Vec<String>,
+    /// The operator reviewed the privileged warning. Re-checked at run time.
+    #[serde(default, rename = "privilegedConfirmed")]
+    pub privileged_confirmed: bool,
+}
+
+/// First namespace in `pool` that is neither recorded nor reserved.
+fn pick_namespace(pool: &[String], used: &std::collections::HashSet<String>) -> Option<String> {
+    pool.iter().find(|ns| !used.contains(*ns)).cloned()
+}
+
+/// Property names the catalog marks as secrets (`format: password` or
+/// `writeOnly: true`), at any nesting depth.
+pub fn secret_value_keys(schema: &serde_json::Value) -> std::collections::HashSet<String> {
+    fn walk(node: &serde_json::Value, out: &mut std::collections::HashSet<String>) {
+        match node {
+            serde_json::Value::Object(map) => {
+                if let Some(serde_json::Value::Object(props)) = map.get("properties") {
+                    for (key, prop) in props {
+                        let secret = prop
+                            .get("format")
+                            .and_then(|f| f.as_str())
+                            .map(|f| f == "password")
+                            .unwrap_or(false)
+                            || prop
+                                .get("writeOnly")
+                                .and_then(|w| w.as_bool())
+                                .unwrap_or(false);
+                        if secret {
+                            out.insert(key.clone());
+                        }
+                    }
+                }
+                for value in map.values() {
+                    walk(value, out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    walk(schema, &mut out);
+    out
 }
 
 fn report(progress: Option<&ProgressFn>, stage: &str, message: &str) {
@@ -1233,7 +1384,7 @@ mod exposure_patch_tests {
 
 #[cfg(test)]
 mod value_schema_tests {
-    use super::validate_install_values;
+    use super::{pick_namespace, secret_value_keys, validate_install_values};
     use crate::catalog::App;
     use serde_json::json;
 
@@ -1274,5 +1425,39 @@ mod value_schema_tests {
             ..Default::default()
         };
         assert!(validate_install_values(&app, &serde_json::Map::new()).is_ok());
+    }
+
+    #[test]
+    fn catalog_secret_fields_are_detected() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "password": {"type": "string", "format": "password"},
+                "nested": {"type": "object", "properties": {"token": {"writeOnly": true}}},
+                "user": {"type": "string"}
+            }
+        });
+        let keys = secret_value_keys(&schema);
+        assert!(keys.contains("password"));
+        assert!(keys.contains("token"));
+        assert!(!keys.contains("user"));
+    }
+
+    #[test]
+    fn namespace_selection_skips_records_and_reservations() {
+        let pool = vec![
+            "naslos-apps-1".to_string(),
+            "naslos-apps-2".to_string(),
+            "naslos-apps-3".to_string(),
+        ];
+        let mut used = std::collections::HashSet::new();
+        used.insert("naslos-apps-1".to_string());
+        used.insert("naslos-apps-2".to_string());
+        assert_eq!(
+            pick_namespace(&pool, &used).as_deref(),
+            Some("naslos-apps-3")
+        );
+        used.insert("naslos-apps-3".to_string());
+        assert_eq!(pick_namespace(&pool, &used), None);
     }
 }
