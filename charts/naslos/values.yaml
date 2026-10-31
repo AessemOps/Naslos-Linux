@@ -308,6 +308,10 @@ apps:
     enabled: true
     hostPath: /var/mnt
     size: 10Ti
+    # D3/F1: refuse to render when the Buddy receive store is nested inside the
+    # app datasets root. The VM overlay still sets this to true until the Buddy
+    # dataset is remounted outside /var/mnt (docs/datasets-isolation.md).
+    allowBuddyStore: false
   # TTL after which a cached repository clone is refreshed.
   refreshTTL: 15m
   # TLS Secret the app IngressRoutes reference (written by the app-domain

@@ -28,6 +28,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [notifications.md](notifications.md) | ntfy alerting: topics, severities, defaults | New |
 | [deployment.md](deployment.md) | Prerequisites, Make targets, Helm values walkthrough | New |
 | [installer-contract.md](installer-contract.md) | Install pack format + stable interfaces for the desktop installer (FR-INSTALL) | New |
+| [datasets-isolation.md](datasets-isolation.md) | Design for isolating installed apps from the shared datasets root (D3/F1): current model, options, migration, residual risk | Current |
 | [operations.md](operations.md) | Day-2: LDAP backup/restore, troubleshooting | New |
 | [development.md](development.md) | Repo layout, how to build, extend the catalog/shares | New |
 | [AUDIT-2026-10-24.md](AUDIT-2026-10-24.md) | **The current post-Rust audit**: findings register (SEC-2026-NN), fixes with tests, open/accepted risks, remaining work | Current |

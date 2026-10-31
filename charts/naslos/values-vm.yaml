@@ -92,6 +92,11 @@ domain: naslos.local
 # when unset.
 apps:
   namespace: naslos-apps
+  datasets:
+    # D3/F1 is still open on this profile: the Buddy store is nested under the
+    # exposed root. Remove this once buddy.receiveHostPath is migrated outside
+    # /var/mnt (docs/datasets-isolation.md).
+    allowBuddyStore: true
   officialSource:
     name: naslos
     displayName: NaslosCharts
