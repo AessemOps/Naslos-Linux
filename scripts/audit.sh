@@ -78,6 +78,14 @@ env = {e["name"]: e for e in dp["spec"]["template"]["spec"]["containers"][0]["en
 assert env.get("TRAEFIK_CIDR", {}).get("value") == "10.244.0.0/16", env.get("TRAEFIK_CIDR")
 assert "HELM_SA_TOKEN_FILE" in env, env.get("HELM_SA_TOKEN_FILE")
 assert "naslos-app-1" in env.get("APPS_NAMESPACE_POOL", {}).get("value", ""), env.get("APPS_NAMESPACE_POOL")
+for ns_name in ("naslos", "naslos-privileged"):
+    # find() returns the first match; loop the docs for the namespace variant.
+    matches = [d for d in docs if d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == "naslos-workload-egress" and d["metadata"]["namespace"] == ns_name]
+    assert matches, f"workload egress missing in {ns_name}"
+    assert any(
+        any(t.get("namespaceSelector", {}).get("matchLabels", {}).get("naslos.local/apps") == "true" for t in rule.get("to", []))
+        for rule in matches[0]["spec"]["egress"]
+    ), f"app-namespace egress missing in {ns_name}"
 ns = find("Namespace", "naslos-app-1")
 assert ns, "per-app namespace missing"
 assert ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "baseline"

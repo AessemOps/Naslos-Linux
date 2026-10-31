@@ -63,10 +63,18 @@ Clean-install drill (2026-10-31): Playwright **48 passed, 5 skipped**; API
 `/api/health` and `/api/ready` green; the catalog needed one manual
 `POST /api/sources/refresh` (fixed to run at startup in the follow-up branch);
 a private dataset registered, a test app installed into `naslos-app-1` with a
-bound PV/PVC, and uninstalled cleanly (claims and registry attachment removed).
-The Buddy store (`test/naslos-buddy`, inherited from the previous disk) was
-**not** registerable through the UI during the drill; the API now rejects any
-dataset path that overlaps a `naslos-buddy` dataset.
+bound PV/PVC, a copied `naslos-apps-tls` Secret and an IngressRoute, reached
+through Traefik at `https://flaresolverr.naslos.local` (HTTP 200), then
+uninstalled cleanly (claims and registry attachment removed). The Buddy store
+(`test/naslos-buddy`, inherited from the previous disk) was **not** registerable
+through the UI during the drill; the API now rejects any dataset path that
+overlaps a `naslos-buddy` dataset.
+
+**One live policy patch:** `naslos-workload-egress` in the `naslos` namespace
+was patched by hand to allow `naslos.local/apps=true` (exposed app routes
+otherwise timed out). The chart now carries the rule for both workload egress
+policies; it reaches the node with 0.2.2. Until then the live cluster is
+0.2.1 + this one patch, not a pure fresh install.
 
 Clean-install notes: create the pools/datasets first, register the dataset in
 **Datasets**, then install an app and select it. The catalog chart paths must
