@@ -331,7 +331,10 @@ jobs:
             echo "INSTALLER_DISPATCH_TOKEN is not configured; skipping the installer dispatch."
             exit 0
           fi
-          gh api repos/AessemOps/Naslos-Installer/dispatches \
+          if ! gh api repos/AessemOps/Naslos-Installer/dispatches \
             -f event_type=naslos-release \
-            -f client_payload[tag]="${{ needs.guard.outputs.tag }}" \
-            -f client_payload[version]="${{ needs.guard.outputs.version }}"
+            -f "client_payload[tag]=${{ needs.guard.outputs.tag }}" \
+            -f "client_payload[version]=${{ needs.guard.outputs.version }}"; then
+            echo "::error::installer dispatch failed; rotate INSTALLER_DISPATCH_TOKEN (contents:write on AessemOps/Naslos-Installer) and run scripts/dispatch-installer.sh ${{ needs.guard.outputs.tag }} with a valid gh login"
+            exit 1
+          fi
