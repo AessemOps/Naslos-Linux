@@ -361,6 +361,7 @@ impl Manager {
         let catalog = (self.catalog)().ok_or("catalog is not available")?;
         let app = catalog.get(&req.name)?;
         let chart_dir = self.resolve_chart(&app).await?;
+        crate::chartsrepo::assert_regular_tree(&chart_dir)?;
 
         let mut values = merge_values(&app.default_values, req.values.as_ref());
         validate_install_values(&app, &values)?;
@@ -450,6 +451,7 @@ impl Manager {
         let catalog = (self.catalog)().ok_or("catalog is not available")?;
         let app = catalog.get(name)?;
         let chart_dir = self.resolve_chart(&app).await?;
+        crate::chartsrepo::assert_regular_tree(&chart_dir)?;
         let merged = merge_values(&serde_json::Value::Object(rec.values.clone()), values);
 
         report(progress, STAGE_INSTALLING, &format!("Upgrading {name}"));
