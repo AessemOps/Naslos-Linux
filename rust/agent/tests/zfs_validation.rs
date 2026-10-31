@@ -263,6 +263,7 @@ async fn create_pool_command_line() {
         "",
     ]));
     let calls = runner.calls();
+    let argv = runner.argv();
     let c = client(&host, runner);
 
     c.create_pool(&PoolConfig {
@@ -287,6 +288,24 @@ async fn create_pool_command_line() {
         ran_command(&calls, "/usr/local/sbin/zpool add tank cache /dev/sdd"),
         "want the cache device added; calls: {:?}",
         calls.lock().unwrap()
+    );
+
+    // Exact argv: each disk must be its own argument. A joined string
+    // assertion would still pass if `tank mirror` were one argument.
+    let recorded = argv.lock().unwrap().clone();
+    assert!(
+        recorded.iter().any(|a| a
+            == &vec![
+                "create".to_string(),
+                "-f".to_string(),
+                "-o".to_string(),
+                "ashift=12".to_string(),
+                "tank".to_string(),
+                "mirror".to_string(),
+                "/dev/sdb".to_string(),
+                "/dev/sdc".to_string(),
+            ]),
+        "create argv did not keep every element separate: {recorded:?}"
     );
 }
 

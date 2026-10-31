@@ -13,6 +13,7 @@ enum Response {
 
 pub struct FakeRunner {
     calls: Arc<Mutex<Vec<String>>>,
+    raw_argv: Arc<Mutex<Vec<Vec<String>>>>,
     responses: Mutex<Vec<Response>>,
     idx: AtomicUsize,
 }
@@ -28,6 +29,7 @@ impl FakeRunner {
             .collect();
         Self {
             calls: Arc::new(Mutex::new(Vec::new())),
+            raw_argv: Arc::new(Mutex::new(Vec::new())),
             responses: Mutex::new(responses),
             idx: AtomicUsize::new(0),
         }
@@ -37,6 +39,14 @@ impl FakeRunner {
     #[allow(dead_code)]
     pub fn calls(&self) -> Arc<Mutex<Vec<String>>> {
         self.calls.clone()
+    }
+
+    /// The recorded argv, one `Vec` per invocation. Asserting on this (rather
+    /// than a joined string) is what catches a value that was concatenated
+    /// into one argument instead of passed as a separate one.
+    #[allow(dead_code)]
+    pub fn argv(&self) -> Arc<Mutex<Vec<Vec<String>>>> {
+        self.raw_argv.clone()
     }
 
     fn respond(&self) -> Result<String, RunError> {
@@ -62,6 +72,7 @@ impl Runner for FakeRunner {
             line.push_str(a);
         }
         self.calls.lock().unwrap().push(line);
+        self.raw_argv.lock().unwrap().push(args.to_vec());
         self.respond()
     }
 }
