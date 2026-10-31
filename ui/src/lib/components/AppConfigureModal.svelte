@@ -8,6 +8,7 @@
 
   let app: { schema: { properties: Record<string, any>; required?: string[] } } | null = null;
   let values: Record<string, any> = {};
+  let redactedKeys: string[] = [];
   let loading = true;
   let saving = false;
   let error = '';
@@ -27,6 +28,7 @@
       if (installedRes.ok) {
         const installed = await installedRes.json();
         values = { ...(installed.values || {}) };
+        redactedKeys = Array.isArray(installed.redactedKeys) ? installed.redactedKeys : [];
       }
     } catch (e) {
       error = 'Failed to load app configuration: ' + e;
@@ -73,7 +75,7 @@
       {#if loading}
         <p class="text-gray-400">Loading configuration...</p>
       {:else if app}
-        <SchemaForm {app} bind:values />
+        <SchemaForm {app} {redactedKeys} bind:values />
       {/if}
       {#if error}<div role="alert" class="mt-4 p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
     </div>
