@@ -5,7 +5,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use crate::datasets::{normalize_host_path, ManagedDataset};
+use crate::datasets::{normalize_host_path, overlaps_buddy, ManagedDataset};
 use crate::json;
 use crate::state::AppState;
 
@@ -53,6 +53,19 @@ pub async fn create(State(state): State<Arc<AppState>>, body: Body) -> Response 
             StatusCode::BAD_REQUEST,
             serde_json::json!({
                 "error": format!("{normalized:?} is not a mounted ZFS dataset")
+            }),
+        );
+    }
+    let buddy_paths: Vec<String> = datasets
+        .iter()
+        .filter(|d| d.name == "naslos-buddy" || d.name.ends_with("/naslos-buddy"))
+        .filter_map(|d| normalize_host_path(&d.mountpoint).ok())
+        .collect();
+    if overlaps_buddy(&normalized, &buddy_paths) {
+        return json(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({
+                "error": "the Buddy receive store (or a parent path) cannot be registered as an app dataset"
             }),
         );
     }

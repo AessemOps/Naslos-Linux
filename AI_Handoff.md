@@ -11,18 +11,21 @@ in `docs/spec.md`.
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## Current instance (2026-10-04) — clean install from the desktop installer, v0.1.2
+## Current instance (2026-10-31) — clean install from the desktop installer, v0.2.1
 
 `192.168.1.117` was reset to maintenance and provisioned end to end by the
-**Naslos-Installer desktop app** (a clean install from the user's PC), embedding
-the `v0.1.2` install pack. Live state:
+**Naslos-Installer desktop app** (installer v0.2.3, embedding the `v0.2.1`
+pack). Live state:
 
-- Node `talos-nu3-7j0`, Talos v1.14.1 / k8s v1.37.0, **control-plane Ready**.
-- Helm release `naslos` (chart `naslos-0.1.2`, revision 8). **Mixed image
-  state (verified 2026-10-24):** API `192.168.1.2:30095/naslos-api:0.1.0-r34`
-  and agent `.../naslos-agent:0.1.0-r10` are tags, while UI is digest-pinned
-  from GHCR. A clean `make install-vm` from the current overlay reproduces this;
-  the release pack is digest-pinned.
+- Node `talos-bcn-hpp`, Talos v1.14.1 / k8s v1.37.0, **control-plane Ready**.
+- Helm release `naslos` (chart `naslos-0.2.1`, revision 1). All images are
+  **digest-pinned from GHCR**: API `sha256:e84b62a4…`, agent `sha256:8fa1f354…`,
+  UI `sha256:a357e0a9…`, OpenLDAP `sha256:72205812…`, Samba
+  `sha256:23b2e2a6…`, NFS `sha256:f7305191…`, terminal `sha256:d8514dd2…`.
+- Per-app namespaces `naslos-app-1..8` and `naslos-app-p1..4` exist; the shared
+  `/var/mnt` PV/PVC is **not** created (fresh installer profile).
+- Recovery bundle imported into `bootstrap/vm/` from the 2026-10-31 archive;
+  the old credentials are in `~/naslos-backups/20261004/` (outside the repo).
 - The install's **recovery bundle is extracted into `bootstrap/vm/`**:
   `talosconfig`, `controlplane.yaml`, `talos-secrets.json`, `kubeconfig` — all
   gitignored (master credentials, never commit). `kubeconfig` is the live
@@ -34,14 +37,16 @@ the `v0.1.2` install pack. Live state:
 Kept to continue work on the appliance from the workspace. The earlier
 `0.1.0-r*` live-drill sections below are historical.
 
-## Release 0.2.1 (published; clean install pending)
+## Release 0.2.1 (deployed) and installer v0.2.3
 
-`v0.2.1` is tagged and the GitHub release has the digest-pinned pack
-(`naslos-install-pack-0.2.1.tar.gz`). The release workflow failed only at the
-installer dispatch (`401 Bad credentials` from `INSTALLER_DISPATCH_TOKEN`); the
-installer was dispatched manually and **`naslos-v0.2.1`** now exists in
-`AessemOps/Naslos-Installer`. Rotate that secret before the next release (see
-`docs/deployment.md` and `scripts/dispatch-installer.sh`).
+`v0.2.1` is tagged, the GitHub release has the digest-pinned pack
+(`naslos-install-pack-0.2.1.tar.gz`), and the node was clean-installed from it.
+The release workflow's installer dispatch failed with `401 Bad credentials`;
+the installer was dispatched manually. The **installer engine was fixed**
+(`Clock` was not restored on a resumed PKI bundle, crashing every retry) and
+**installer v0.2.3** is released. Rotate `INSTALLER_DISPATCH_TOKEN` before the
+next Naslos release (see `docs/deployment.md` and
+`scripts/dispatch-installer.sh`).
 
 The clean install from the installer includes:
 
@@ -53,6 +58,23 @@ The clean install from the installer includes:
   `naslos-app-*`, with one PV/PVC per dataset registered under `/datasets`;
 - platform TLS pinned through the `naslos-tls` TLSOption, and seccomp on the
   API/UI/OpenLDAP.
+
+Clean-install drill (2026-10-31): Playwright **48 passed, 5 skipped**; API
+`/api/health` and `/api/ready` green; the catalog needed one manual
+`POST /api/sources/refresh` (fixed to run at startup in the follow-up branch);
+a private dataset registered, a test app installed into `naslos-app-1` with a
+bound PV/PVC, a copied `naslos-apps-tls` Secret and an IngressRoute, reached
+through Traefik at `https://flaresolverr.naslos.local` (HTTP 200), then
+uninstalled cleanly (claims and registry attachment removed). The Buddy store
+(`test/naslos-buddy`, inherited from the previous disk) was **not** registerable
+through the UI during the drill; the API now rejects any dataset path that
+overlaps a `naslos-buddy` dataset.
+
+**One live policy patch:** `naslos-workload-egress` in the `naslos` namespace
+was patched by hand to allow `naslos.local/apps=true` (exposed app routes
+otherwise timed out). The chart now carries the rule for both workload egress
+policies; it reaches the node with 0.2.2. Until then the live cluster is
+0.2.1 + this one patch, not a pure fresh install.
 
 Clean-install notes: create the pools/datasets first, register the dataset in
 **Datasets**, then install an app and select it. The catalog chart paths must

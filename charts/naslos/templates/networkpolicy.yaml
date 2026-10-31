@@ -412,6 +412,13 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: {{ $wns }}
         {{- end }}
+    # Per-app namespaces (Traefik routes to their Services; the admin pods can
+    # reach them too). This was missing after D3/F1 and made every exposed app
+    # route time out even though the IngressRoute and TLS Secret existed.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              naslos.local/apps: "true"
     # Service ClusterIPs (the API resolves naslos-openldap and the agent through
     # Services; some clients dial the ClusterIP rather than a Pod IP).
     {{- with $serviceCIDR }}
@@ -523,6 +530,10 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ $wns }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              naslos.local/apps: "true"
     {{- with $serviceCIDR }}
     - to:
         - ipBlock:

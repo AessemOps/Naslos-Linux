@@ -196,6 +196,21 @@ pub fn validate(ds: &ManagedDataset, buddy_host_path: &str) -> Result<(), String
 
 /// Reject `..`, `.` and non-normal components and return a clean absolute path
 /// without a trailing slash.
+/// Whether a dataset path is, contains, or sits inside one of the Buddy store
+/// paths. Registering a pool root must not expose the encrypted Buddy store
+/// just because Buddy is disabled on this install (the data disk may still
+/// contain one).
+pub fn overlaps_buddy(host: &str, buddy_paths: &[String]) -> bool {
+    let host = host.trim_end_matches('/');
+    buddy_paths.iter().any(|buddy| {
+        let buddy = buddy.trim_end_matches('/');
+        !buddy.is_empty()
+            && (host == buddy
+                || host.starts_with(&format!("{buddy}/"))
+                || buddy.starts_with(&format!("{host}/")))
+    })
+}
+
 pub fn normalize_host_path(raw: &str) -> Result<String, String> {
     if raw.split('/').any(|part| part == "." || part == "..") {
         return Err(format!(
@@ -259,6 +274,16 @@ mod tests {
         assert!(validate(&ds("parent", "/var/mnt/test"), buddy).is_err());
         assert!(validate(&ds("inside", "/var/mnt/test/naslos-buddy/x"), buddy).is_err());
         assert!(validate(&ds("media", "/var/mnt/test/media"), buddy).is_ok());
+    }
+
+    #[test]
+    fn a_registered_path_cannot_expose_the_buddy_store() {
+        let buddy = vec!["/var/mnt/test/naslos-buddy".to_string()];
+        assert!(overlaps_buddy("/var/mnt/test/naslos-buddy", &buddy));
+        assert!(overlaps_buddy("/var/mnt/test", &buddy));
+        assert!(overlaps_buddy("/var/mnt/test/naslos-buddy/chunks", &buddy));
+        assert!(!overlaps_buddy("/var/mnt/test/drill", &buddy));
+        assert!(!overlaps_buddy("/var/mnt/other", &buddy));
     }
 
     #[test]
