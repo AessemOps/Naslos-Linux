@@ -147,6 +147,11 @@ agent:
   # API client. Set false only for local development.
   tls:
     enabled: true
+  # Caps concurrent zfs send/receive streams (each pins a host process and its
+  # file descriptors, so an authenticated caller must not start unbounded ones).
+  maxStreams: 4
+  # Longest tolerated gap between restore body chunks.
+  streamIdleTimeoutSecs: 300
   # Use a Secret you manage out of band for the agent bearer token; it must have
   # a `token` key. Empty means the chart generates `naslos-agent`/`token`.
   tokenSecret: ""

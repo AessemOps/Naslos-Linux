@@ -89,16 +89,27 @@ pub async fn pool_import_get(State(state): State<Arc<AppState>>) -> Response {
 struct ImportRequest {
     #[serde(default)]
     name: String,
+    #[serde(default)]
+    all: bool,
 }
 
 pub async fn pool_import_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
     let Some(zfs) = state.zfs.as_ref() else {
         return zfs_unavailable();
     };
-    // The Go handler ignores decode errors, so an empty/garbage body imports all.
-    let req: ImportRequest = read_json(body, MAX_JSON_BODY_BYTES)
-        .await
-        .unwrap_or_default();
+    // A malformed body must not degrade to "import every pool": that runs
+    // `zpool import -f` across all disks. Import-all is an explicit
+    // {"all": true}; a named import is {"name": "<pool>"}.
+    let req: ImportRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
+        Ok(req) => req,
+        Err(resp) => return resp,
+    };
+    if req.name.trim().is_empty() && !req.all {
+        return write_error(
+            StatusCode::BAD_REQUEST,
+            "name is required (or set \"all\": true to import every importable pool)",
+        );
+    }
     match zfs.import_pool(&req.name).await {
         Ok(()) => {
             if req.name.is_empty() {
@@ -130,11 +141,21 @@ pub async fn pool_detail_get(
 pub async fn pool_detail_delete(
     State(state): State<Arc<AppState>>,
     Path(pool): Path<String>,
+    Query(query): Query<QueryMap>,
 ) -> Response {
     let Some(zfs) = state.zfs.as_ref() else {
         return zfs_unavailable();
     };
-    match zfs.destroy_pool(&pool).await {
+    // A path parameter is easy to hit by mistake; require the operator to
+    // repeat the pool name, and keep `-f` for an explicit force request only.
+    if query.get("confirm").map(String::as_str) != Some(pool.as_str()) {
+        return write_error(
+            StatusCode::BAD_REQUEST,
+            "destroying a pool requires confirm=<pool name>",
+        );
+    }
+    let force = query.get("force").map(|v| v == "true").unwrap_or(false);
+    match zfs.destroy_pool(&pool, force).await {
         Ok(()) => json_response(
             StatusCode::OK,
             &json!({ "status": "pool destroyed", "name": pool }),
@@ -554,6 +575,16 @@ pub async fn zfs_send(
         };
     }
 
+    let permit = match state.stream_slots.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return write_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "too many concurrent zfs streams; retry when one finishes",
+            )
+        }
+    };
+
     let (read, wait) = match zfs.send_stream(&opts).await {
         Ok(pair) => pair,
         Err(e) => return write_error(StatusCode::BAD_REQUEST, e.to_string()),
@@ -571,6 +602,12 @@ pub async fn zfs_send(
         }
         Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::new())
     }));
+    // Hold the stream permit until the body is dropped, not just until this
+    // handler returns.
+    let stream = stream.map(move |item| {
+        let _held = &permit;
+        item
+    });
 
     Response::builder()
         .status(StatusCode::OK)
@@ -589,6 +626,15 @@ pub async fn zfs_receive(
         return backup_unavailable();
     };
     let force = query.get("force").map(|v| v == "true").unwrap_or(false);
+    let _permit = match state.stream_slots.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return write_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "too many concurrent zfs streams; retry when one finishes",
+            )
+        }
+    };
 
     let (mut stdin, wait) = match zfs.receive_stream(&dataset, force).await {
         Ok(pair) => pair,
@@ -597,7 +643,20 @@ pub async fn zfs_receive(
 
     let mut written: u64 = 0;
     let mut stream = body.into_data_stream();
-    while let Some(chunk) = stream.next().await {
+    let idle = super::stream_idle_timeout();
+    loop {
+        let next = match tokio::time::timeout(idle, stream.next()).await {
+            Ok(next) => next,
+            Err(_) => {
+                let _ = stdin.shutdown().await;
+                let _ = wait.await;
+                return write_error(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "restore stream stalled (no data within the idle deadline)",
+                );
+            }
+        };
+        let Some(chunk) = next else { break };
         let chunk = match chunk {
             Ok(chunk) => chunk,
             Err(e) => {

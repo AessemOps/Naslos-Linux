@@ -150,10 +150,10 @@ are in-memory (a restart abandons a running job; the app record and
 | GET | `/api/volumes/zfs` | List ZFS pools via `naslos-agent` (`agent.ListPools`) |
 | POST | `/api/volumes/zfs` | Create pool `{name, topology, disks, options, wipeConfirmed}` via `naslos-agent` (validated: ZFS-safe name, non-empty disks, known topology; a disk with an existing filesystem needs `wipeConfirmed`, a `zfs_member` disk is refused) |
 | GET | `/api/volumes/zfs/{name}` | Structured health data (device tree, IO stats, scan state, errors) |
-| DELETE | `/api/volumes/zfs/{name}` | Destroy a pool via `naslos-agent` |
+| DELETE | `/api/volumes/zfs/{name}?confirm=<name>` | Destroy a pool via `naslos-agent`. `confirm` must repeat the pool name; `force=true` adds `zpool destroy -f` (absent by default, so a pool with mounted datasets is refused rather than force-destroyed) |
 | GET | `/api/volumes/zfs/{name}/health` | Structured health data (alias) |
 | GET | `/api/volumes/zfs/import` | List pools available for import (on disk but not imported) |
-| POST | `/api/volumes/zfs/import` | Import: `{"name":"tank"}` for one pool, `{}` for all |
+| POST | `/api/volumes/zfs/import` | Import: `{"name":"tank"}` for one pool, `{"all":true}` for every importable pool. A missing/malformed body is a 400, never an implicit import-all |
 | POST | `/api/volumes/zfs/{name}/devices` | Attach disks: `{disks, topology, force, wipeConfirmed}` → `zpool add`. Refuses a disk already in any pool (even with `force`), a disk holding a ZFS label, a non-`/dev` path, an unknown disk, and too few disks for the topology (FR-STO-08). A disk with another filesystem signature needs `wipeConfirmed`. |
 | GET | `/api/datasets` | Every dataset with used/avail/refer/mountpoint |
 | GET | `/api/datasets/registry` | List operator-registered datasets apps may mount (`{name, hostPath, shared, warningAcknowledged, createdAt}`) |

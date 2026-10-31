@@ -392,8 +392,11 @@ impl Client {
         .await
     }
 
-    pub async fn delete_pool(&self, name: &str) -> Result<(), AgentError> {
-        self.do_empty(self.request(reqwest::Method::DELETE, &format!("/api/v1/pools/{name}")))
+    /// `force` maps to `zpool destroy -f`; the agent also requires
+    /// `confirm` to repeat the pool name.
+    pub async fn delete_pool(&self, name: &str, force: bool) -> Result<(), AgentError> {
+        let path = format!("/api/v1/pools/{name}?confirm={name}&force={force}");
+        self.do_empty(self.request(reqwest::Method::DELETE, &path))
             .await
     }
 

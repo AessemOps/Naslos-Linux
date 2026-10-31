@@ -78,6 +78,18 @@ async fn main() {
         eprintln!("AGENT_TLS_CERT and AGENT_TLS_KEY must be set together");
         std::process::exit(1);
     }
+    if tls_cert.is_empty() {
+        // Fail closed: the token is root-equivalent and the agent is
+        // hostNetwork. Plaintext must be an explicit, visible choice (the
+        // chart sets AGENT_ALLOW_PLAINTEXT=1 only when agent.tls.enabled=false).
+        if std::env::var("AGENT_ALLOW_PLAINTEXT").as_deref() != Ok("1") {
+            eprintln!(
+                "AGENT_TLS_CERT/AGENT_TLS_KEY are unset and AGENT_ALLOW_PLAINTEXT is not 1; refusing to serve the agent token in cleartext"
+            );
+            std::process::exit(1);
+        }
+        tracing::warn!("the agent is serving plaintext (AGENT_ALLOW_PLAINTEXT=1)");
+    }
 
     let server = Server::new(
         cli.listen.clone(),
