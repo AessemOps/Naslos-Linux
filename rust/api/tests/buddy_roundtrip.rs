@@ -56,7 +56,7 @@ async fn push_then_restore_round_trip() {
             prune_keep: 0,
             progress: None,
             before_publish: None,
-            save_state: None,
+            save_state: &|_| Ok(()),
         })
         .await;
     assert!(err.is_none(), "push failed: {err:?}");
@@ -143,7 +143,7 @@ async fn failed_push_bumps_and_persists_the_nonce_generation() {
                 prune_keep: 0,
                 progress: None,
                 before_publish: Some(&|_| Err("stop before publish".to_string())),
-                save_state: Some(&|s| s.save(&state_path.display().to_string())),
+                save_state: &|s| s.save(&state_path.display().to_string()),
             })
             .await;
         assert!(err.is_some(), "the push must fail at before_publish");
