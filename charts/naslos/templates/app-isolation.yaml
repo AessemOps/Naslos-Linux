@@ -1,0 +1,355 @@
+{{- /*
+Per-app namespaces + per-dataset claims (D3/F1, Option A).
+
+The pool is fixed-size so the API never needs cluster-wide namespace/RBAC
+create rights: each namespace is prepared here with PSA, a quota, a default
+NetworkPolicy and RoleBindings for the reduced Helm identity and the API's
+route/certificate/PVC identity. The API assigns an app to a free namespace and
+creates one PV/PVC per registry dataset, pointing at that dataset only.
+*/}}
+{{- if .Values.apps.isolation.enabled }}
+{{- $rels := .Release.Namespace }}
+{{- $prefix := .Values.apps.isolation.namePrefix | default "naslos-app" }}
+{{- $baseline := int (.Values.apps.isolation.namespaces | default 8) }}
+{{- $privileged := int (.Values.apps.isolation.privilegedNamespaces | default 4) }}
+{{- $helmSA := printf "system:serviceaccount:%s:naslos-helm" $rels }}
+{{- $apiSA := printf "system:serviceaccount:%s:naslos-api" $rels }}
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: naslos-app-data
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: app-data
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: naslos-helm-workloads
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: helm
+rules:
+  - apiGroups: [""]
+    resources:
+      ["services", "configmaps", "secrets", "persistentvolumeclaims",
+       "serviceaccounts", "pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # No traefik.io, cert-manager.io, RBAC or cluster-scoped writes.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: naslos-api-app-isolation
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: api
+rules:
+  - apiGroups: ["traefik.io"]
+    resources: ["ingressroutes", "middlewares"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates", "issuers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Copy the domain TLS Secret into the app namespace for its IngressRoute.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: naslos-api-datasets
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: api
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# Read only the platform TLS Secret so an app whose base domain has no
+# domain-specific Certificate can still get a copy in its namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: naslos-api-tls-read
+  namespace: {{ $rels }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ .Values.ingress.tls.secretName | default "naslos-tls" | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-api-tls-read
+  namespace: {{ $rels }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: naslos-api-tls-read
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ $rels }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: naslos-api-datasets
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: api
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: naslos-api-datasets
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ $rels }}
+{{- range $i := until $baseline }}
+{{- $ns := printf "%s-%d" $prefix (add $i 1) }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: app
+    naslos.local/apps: "true"
+    naslos.local/app-tier: baseline
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+  annotations:
+    # Keep app data across a platform uninstall, like the legacy namespaces.
+    helm.sh/resource-policy: keep
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-helm
+  namespace: {{ $ns }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: naslos-helm-workloads
+subjects:
+  - kind: ServiceAccount
+    name: naslos-helm
+    namespace: {{ $rels }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-api-app
+  namespace: {{ $ns }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: naslos-api-app-isolation
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ $rels }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-app-isolation
+  namespace: {{ $ns }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $rels }}
+        - namespaceSelector:
+            matchLabels:
+              naslos.local/apps: "true"
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              naslos.local/apps: "true"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: naslos-app-quota
+  namespace: {{ $ns }}
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "4"
+    limits.memory: 8Gi
+    persistentvolumeclaims: "4"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: naslos-app-limits
+  namespace: {{ $ns }}
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 500m
+        memory: 512Mi
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+{{- end }}
+{{- range $i := until $privileged }}
+{{- $ns := printf "%s-p%d" $prefix (add $i 1) }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: app
+    naslos.local/apps: "true"
+    naslos.local/app-tier: privileged
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+  annotations:
+    helm.sh/resource-policy: keep
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-helm
+  namespace: {{ $ns }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: naslos-helm-workloads
+subjects:
+  - kind: ServiceAccount
+    name: naslos-helm
+    namespace: {{ $rels }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-api-app
+  namespace: {{ $ns }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: naslos-api-app-isolation
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ $rels }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-app-isolation
+  namespace: {{ $ns }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $rels }}
+        - namespaceSelector:
+            matchLabels:
+              naslos.local/apps: "true"
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              naslos.local/apps: "true"
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: naslos-app-quota
+  namespace: {{ $ns }}
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    persistentvolumeclaims: "4"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: naslos-app-limits
+  namespace: {{ $ns }}
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "1"
+        memory: 1Gi
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+{{- end }}
+{{- end }}

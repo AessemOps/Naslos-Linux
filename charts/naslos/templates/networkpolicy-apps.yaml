@@ -42,10 +42,17 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ $wns }}
+        - namespaceSelector:
+            matchLabels:
+              naslos.local/apps: "true"
   egress:
     # Same-namespace east-west (app -> its own helper pods).
     - to:
         - podSelector: {}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              naslos.local/apps: "true"
     - to:
         - namespaceSelector:
             matchLabels:
@@ -117,6 +124,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ $ans }}
+        - namespaceSelector:
+            matchLabels:
+              naslos.local/apps: "true"
   egress:
     # In-cluster peers and Traffic between the VPN container and its app
     # (same pod) are covered by the pod selector.
@@ -131,6 +141,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ $ans }}
+        - namespaceSelector:
+            matchLabels:
+              naslos.local/apps: "true"
     # Outbound Internet for VPN endpoints and indexers/downloads, but never
     # the cluster/metadata ranges (a compromised privileged app must not reach
     # the API, kubelet, or a cloud metadata service).

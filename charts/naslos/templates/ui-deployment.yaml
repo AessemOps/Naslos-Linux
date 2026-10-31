@@ -19,6 +19,9 @@ spec:
     spec:
       # The UI only serves static files; it never calls the Kubernetes API.
       automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
         # nginx resolves the API host name once at startup (see ui/nginx.conf)
         # and refuses to boot if it does not resolve yet. That is exactly what

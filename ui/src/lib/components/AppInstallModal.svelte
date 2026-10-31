@@ -45,16 +45,24 @@
   let ssoDomains: string[] = [];
   let confirmed = false;
   let privilegedConfirmed = false;
+  let managedDatasets: { name: string; hostPath: string; shared: boolean }[] = [];
+  let selectedDataset = '';
   let activeStep: 'config' | 'exposure' | 'review' | 'confirm' = 'config';
+
+  $: selectedDatasetInfo = managedDatasets.find((d) => d.name === selectedDataset);
 
   const dispatch = createEventDispatcher();
 
   async function loadApp() {
     try {
-      const res = await fetch(`/api/catalog/${encodeURIComponent(appName)}`);
+      const [res, registryRes] = await Promise.all([
+        fetch(`/api/catalog/${encodeURIComponent(appName)}`),
+        fetch('/api/datasets/registry')
+      ]);
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
+      if (registryRes.ok) managedDatasets = await registryRes.json();
       app = await res.json();
       if (app) {
         values = { ...app.defaultValues };
@@ -103,7 +111,8 @@
           exposure,
           baseDomain,
           confirmed: true,
-          privilegedConfirmed
+          privilegedConfirmed,
+          datasets: selectedDataset ? [selectedDataset] : []
         })
       });
       if (!res.ok) {
@@ -151,6 +160,24 @@
       <div class="flex-1 overflow-y-auto p-6">
         {#if activeStep === 'config'}
           <SchemaForm {app} bind:values />
+          <div class="mt-4">
+            <label class="label" for="install-dataset">Dataset</label>
+            <select id="install-dataset" class="input w-full" bind:value={selectedDataset}>
+              <option value="">No dataset</option>
+              {#each managedDatasets as dataset (dataset.name)}
+                <option value={dataset.name}>{dataset.name} — {dataset.hostPath} ({dataset.shared ? 'shared' : 'private'})</option>
+              {/each}
+            </select>
+            <p class="text-xs text-gray-500 mt-1">
+              Registered in Datasets. A private dataset is attached to this app only; a shared dataset can be
+              attached to several apps.
+            </p>
+            {#if selectedDatasetInfo?.shared}
+              <p role="alert" class="text-xs text-amber-300 mt-1">
+                This dataset is shared: every app attached to it can read and modify its data.
+              </p>
+            {/if}
+          </div>
         {:else if activeStep === 'exposure'}
           <ExposureForm bind:exposure bind:baseDomain {selectableDomains} {ssoDomains} />
         {:else if activeStep === 'review'}
@@ -159,6 +186,7 @@
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Source</span><span class="font-medium text-sm">{app.source} / {app.channel}</span></div>
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Chart</span><span class="font-medium text-sm">{app.chart}</span></div>
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Version</span><span class="font-medium">{app.version}</span></div>
+            <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Dataset</span><span class="font-medium text-sm">{selectedDataset ? `${selectedDataset} (${selectedDatasetInfo?.shared ? 'shared' : 'private'})` : 'none'}</span></div>
             <div class="flex justify-between py-2 border-b border-naslos-border">
               <span class="text-gray-400">Exposure</span>
               <span class="font-medium text-sm text-right">
@@ -175,7 +203,7 @@
               <p>
                 This installs <span class="font-mono">{app.source}</span> /
                 <span class="font-mono">{app.chartPath || app.chart}</span> into
-                <span class="font-mono">{app.privileged ? 'naslos-apps-priv' : 'naslos-apps'}</span>. The chart's manifests
+                <span class="font-mono">{app.privileged ? 'the privileged app pool' : 'an app namespace'}</span>. The chart's manifests
                 run in-cluster under the API's namespaced permissions. Charts that
                 request the datasets volume can read every Naslos dataset mounted
                 below the platform's datasets root.

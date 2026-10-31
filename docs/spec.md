@@ -358,6 +358,11 @@ with a sibling `naslos-app.yaml` install-config. See
   `privilegedConfirmed: true`, and the UI MUST show a separate privileged
   warning; a missing confirmation is a 400. *(chart render + routing/apps tests,
   `privileged_installs_need_a_second_confirmation`)*
+- **FR-APP-20** — With per-app isolation enabled, an installed app MUST run in
+  its own namespace (a fixed pool is prepared by the chart) with PSA, quota and
+  a default-deny NetworkPolicy; each selected registered dataset MUST be exposed
+  through a PV/PVC whose `hostPath` is that dataset only. The API MUST never
+  hand a chart the `/var/mnt` root. *(chart render gate + dataset tests)*
 - **FR-APP-19** — Chart installs MUST run as a namespaced identity that cannot
   create Traefik `IngressRoute`/`Middleware` or cert-manager objects; the API
   MUST own the app's route and certificate. *(chart render gate:

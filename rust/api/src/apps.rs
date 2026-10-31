@@ -118,8 +118,11 @@ pub struct Record {
         skip_serializing_if = "String::is_empty"
     )]
     pub base_domain: String,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub namespace: String,
+    /// Registry datasets attached to this app (D3/F1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub datasets: Vec<String>,
     #[serde(rename = "createdAt")]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(rename = "updatedAt")]
@@ -211,6 +214,12 @@ pub struct Config {
     pub discoverer: Option<Arc<dyn ServiceDiscoverer>>,
     pub base_domain: String,
     pub sso_domains: Option<SsoDomainsFn>,
+    /// Per-app namespace pool and dataset provisioning (D3/F1). Empty pools
+    /// keep the legacy shared-namespace behaviour.
+    pub namespace_pool: Vec<String>,
+    pub privileged_namespace_pool: Vec<String>,
+    pub kube: Option<Arc<crate::kube::Client>>,
+    pub datasets: Option<Arc<crate::datasets::Registry>>,
 }
 
 /// Coordinates records and lifecycle operations.
@@ -225,6 +234,10 @@ pub struct Manager {
     discoverer: Option<Arc<dyn ServiceDiscoverer>>,
     base_domain: String,
     sso_domains: Option<SsoDomainsFn>,
+    namespace_pool: Vec<String>,
+    privileged_namespace_pool: Vec<String>,
+    kube: Option<Arc<crate::kube::Client>>,
+    datasets: Option<Arc<crate::datasets::Registry>>,
     _mu: Mutex<()>,
 }
 
@@ -243,25 +256,65 @@ impl Manager {
             discoverer: cfg.discoverer,
             base_domain: cfg.base_domain,
             sso_domains: cfg.sso_domains,
+            namespace_pool: cfg.namespace_pool,
+            privileged_namespace_pool: cfg.privileged_namespace_pool,
+            kube: cfg.kube,
+            datasets: cfg.datasets,
             _mu: Mutex::new(()),
         })
     }
 
-    fn helm_for(&self, privileged: bool) -> &Arc<helm::Client> {
-        if privileged {
-            if let Some(h) = &self.helm_priv {
-                return h;
-            }
-        }
-        &self.helm
+    fn helm_for(&self, rec: &Record) -> helm::Client {
+        self.helm_client(rec.privileged, &self.target_namespace(rec))
+    }
+
+    fn helm_client(&self, privileged: bool, namespace: &str) -> helm::Client {
+        let base = if privileged {
+            self.helm_priv.as_ref().unwrap_or(&self.helm)
+        } else {
+            &self.helm
+        };
+        base.for_namespace(namespace)
     }
 
     fn target_namespace(&self, rec: &Record) -> String {
-        if rec.privileged && !self.priv_ns.is_empty() {
+        if !rec.namespace.is_empty() {
+            rec.namespace.clone()
+        } else if rec.privileged && !self.priv_ns.is_empty() {
             self.priv_ns.clone()
         } else {
             self.helm.namespace().to_string()
         }
+    }
+
+    /// Pick a free namespace from the pool (or the legacy shared namespace
+    /// when no pool is configured).
+    fn allocate_namespace(&self, privileged: bool) -> Result<String, String> {
+        let pool = if privileged {
+            &self.privileged_namespace_pool
+        } else {
+            &self.namespace_pool
+        };
+        if pool.is_empty() {
+            return Ok(if privileged && !self.priv_ns.is_empty() {
+                self.priv_ns.clone()
+            } else {
+                self.helm.namespace().to_string()
+            });
+        }
+        let used: std::collections::HashSet<String> = self
+            .store
+            .list()
+            .iter()
+            .map(|r| self.display_namespace(r))
+            .collect();
+        pool.iter()
+            .find(|ns| !used.contains(*ns))
+            .cloned()
+            .ok_or_else(|| {
+                "no free per-app namespace is available; raise apps.isolation.namespaces"
+                    .to_string()
+            })
     }
 
     pub fn records(&self) -> Vec<Record> {
@@ -309,8 +362,15 @@ impl Manager {
         let app = catalog.get(&req.name)?;
         let chart_dir = self.resolve_chart(&app).await?;
 
-        let values = merge_values(&app.default_values, req.values.as_ref());
+        let mut values = merge_values(&app.default_values, req.values.as_ref());
         validate_install_values(&app, &values)?;
+        let namespace = self.allocate_namespace(app.privileged)?;
+        let dataset_values = self
+            .provision_datasets(&req.name, &namespace, app.privileged, &req.datasets)
+            .await?;
+        for (key, value) in dataset_values {
+            values.insert(key, value);
+        }
         let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
 
         report(
@@ -318,13 +378,20 @@ impl Manager {
             STAGE_INSTALLING,
             &format!("Installing {}", req.name),
         );
-        self.helm_for(app.privileged)
+        if let Err(e) = self
+            .helm_client(app.privileged, &namespace)
             .install_dir(
                 &req.name,
                 &chart_dir,
                 &serde_json::Value::Object(values.clone()),
             )
-            .await?;
+            .await
+        {
+            // Do not leak a PV/PVC when Helm fails before the record exists.
+            self.delete_claims(&req.name, &namespace, &req.datasets)
+                .await;
+            return Err(e);
+        }
 
         report(
             progress,
@@ -332,7 +399,7 @@ impl Manager {
             "Recording the install and applying routing",
         );
         exposure = self
-            .fill_discovered_service(&req.name, app.privileged, exposure)
+            .fill_discovered_service(&req.name, &namespace, exposure)
             .await;
 
         let now = Utc::now();
@@ -350,6 +417,8 @@ impl Manager {
             values,
             exposure,
             base_domain: base_domain.clone(),
+            namespace,
+            datasets: req.datasets.clone(),
             privileged: app.privileged,
             created_at: Some(now),
             updated_at: Some(now),
@@ -384,7 +453,7 @@ impl Manager {
         let merged = merge_values(&serde_json::Value::Object(rec.values.clone()), values);
 
         report(progress, STAGE_INSTALLING, &format!("Upgrading {name}"));
-        self.helm_for(rec.privileged)
+        self.helm_for(&rec)
             .upgrade_dir(name, &chart_dir, &serde_json::Value::Object(merged.clone()))
             .await?;
 
@@ -429,8 +498,9 @@ impl Manager {
             }
         }
         if merged.service.is_empty() {
+            let namespace = self.target_namespace(&rec);
             merged = self
-                .fill_discovered_service(&rec.name, rec.privileged, merged)
+                .fill_discovered_service(&rec.name, &namespace, merged)
                 .await;
         }
         rec.exposure = merged;
@@ -456,47 +526,22 @@ impl Manager {
                 STAGE_INSTALLING,
                 &format!("Removing the {name} release"),
             );
-            self.helm_for(rec.privileged).uninstall(name).await?;
+            self.helm_for(&rec).uninstall(name).await?;
         }
         report(progress, STAGE_FINALIZING, "Removing the route and record");
         if let Some(router) = &self.router {
             router.delete(&self.target_namespace(&rec), name).await?;
         }
+        if let Err(e) = self.delete_datasets(&rec).await {
+            tracing::warn!("app {name}: dataset cleanup failed: {e}");
+        }
         self.store.delete(name)
     }
 
-    /// All records with live status, merging the managed and privileged
-    /// namespaces.
+    /// All records with live status, looked up in each record's namespace.
     pub async fn list(&self) -> Result<Vec<View>, String> {
-        let mut releases: HashMap<String, helm::App> = HashMap::new();
-        let mut clients: Vec<&Arc<helm::Client>> = vec![&self.helm];
-        if let Some(hp) = &self.helm_priv {
-            if hp.namespace() != self.helm.namespace() {
-                clients.push(hp);
-            }
-        }
-        let mut first_err: Option<String> = None;
-        for client in clients {
-            match client.list().await {
-                Ok(list) => {
-                    for rel in list {
-                        releases.insert(format!("{}/{}", rel.namespace, rel.name), rel);
-                    }
-                }
-                Err(e) => {
-                    if first_err.is_none() {
-                        first_err = Some(e);
-                    }
-                }
-            }
-        }
-        if releases.is_empty() {
-            if let Some(e) = first_err {
-                return Err(e);
-            }
-        }
-
         let mut views = Vec::new();
+        let mut first_err: Option<String> = None;
         for rec in self.store.list() {
             let ns = self.display_namespace(&rec);
             let mut view = View {
@@ -506,22 +551,31 @@ impl Manager {
                 url: self.url_for(&rec),
                 record: rec.clone(),
             };
-            if let Some(rel) = releases.get(&format!("{ns}/{}", rec.name)) {
-                view.status = rel.status.clone();
-                if !rel.chart.is_empty() {
-                    view.chart = rel.chart.clone();
+            match self.helm_for(&rec).get(&rec.name).await {
+                Ok(rel) => {
+                    view.status = rel.status.clone();
+                    if !rel.chart.is_empty() {
+                        view.chart = rel.chart;
+                    }
+                }
+                Err(e) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
                 }
             }
             views.push(view);
+        }
+        if views.is_empty() {
+            if let Some(e) = first_err {
+                return Err(e);
+            }
         }
         views.sort_by(|a, b| a.record.name.cmp(&b.record.name));
         Ok(views)
     }
 
     fn display_namespace(&self, rec: &Record) -> String {
-        if rec.orphaned && !rec.namespace.is_empty() {
-            return rec.namespace.clone();
-        }
         self.target_namespace(rec)
     }
 
@@ -613,21 +667,178 @@ impl Manager {
             .await
     }
 
+    fn isolation_enabled(&self) -> bool {
+        !self.namespace_pool.is_empty() || !self.privileged_namespace_pool.is_empty()
+    }
+
+    /// Create the per-app PV/PVCs for the selected registry datasets and return
+    /// the Helm values the chart needs. Baseline apps get a claim bound to the
+    /// dataset; privileged apps get the specific host path (they can mount it).
+    async fn provision_datasets(
+        &self,
+        app: &str,
+        namespace: &str,
+        privileged: bool,
+        selected: &[String],
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let mut values = serde_json::Map::new();
+        if selected.is_empty() {
+            return Ok(values);
+        }
+        if selected.len() > 1 {
+            return Err(
+                "installed apps currently support one dataset; attach the others with a future chart that reads datasetsClaims"
+                    .to_string(),
+            );
+        }
+        if !self.isolation_enabled() {
+            return Err(
+                "attaching datasets requires per-app namespaces (apps.isolation.enabled=true)"
+                    .to_string(),
+            );
+        }
+        let Some(registry) = &self.datasets else {
+            return Err("the dataset registry is not configured".to_string());
+        };
+        let Some(kube) = &self.kube else {
+            return Err("the Kubernetes client is not configured".to_string());
+        };
+        // Reserve each dataset before creating a claim. The reservation is
+        // persisted, so two concurrent installs cannot both claim a private
+        // dataset.
+        let mut attached: Vec<String> = Vec::new();
+        for name in selected {
+            if let Err(e) = registry.attach(name, app) {
+                for done in &attached {
+                    let _ = registry.detach(done, app);
+                }
+                return Err(e);
+            }
+            attached.push(name.clone());
+        }
+        let mut claims = Vec::new();
+        let mut created: Vec<(String, String)> = Vec::new();
+        for name in selected {
+            let record = registry.get(name).unwrap();
+            let object_name = format!("naslos-ds-{app}-{name}");
+            if object_name.len() > 253 {
+                return Err(format!("dataset claim name {object_name:?} is too long"));
+            }
+            if privileged {
+                // Privileged charts mount the specific dataset path directly;
+                // no claim is needed.
+                values.insert("hostPath".to_string(), serde_json::json!(record.host_path));
+                continue;
+            }
+            let pv = serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "PersistentVolume",
+                "metadata": {
+                    "name": object_name,
+                    "labels": {
+                        "naslos.local/managed-dataset": name,
+                        "naslos.local/app": app,
+                    },
+                },
+                "spec": {
+                    "capacity": { "storage": "10Ti" },
+                    "accessModes": ["ReadWriteOnce"],
+                    "persistentVolumeReclaimPolicy": "Retain",
+                    "storageClassName": "naslos-app-data",
+                    "hostPath": { "path": record.host_path, "type": "Directory" },
+                },
+            });
+            let pvc = serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "PersistentVolumeClaim",
+                "metadata": {
+                    "name": object_name,
+                    "namespace": namespace,
+                    "labels": {
+                        "naslos.local/managed-dataset": name,
+                        "naslos.local/app": app,
+                    },
+                },
+                "spec": {
+                    "accessModes": ["ReadWriteOnce"],
+                    "storageClassName": "naslos-app-data",
+                    "volumeName": object_name,
+                    "resources": { "requests": { "storage": "10Ti" } },
+                },
+            });
+            if let Err(e) = kube.apply(&pv).await {
+                self.rollback_claims(&created).await;
+                for done in &attached {
+                    let _ = registry.detach(done, app);
+                }
+                return Err(format!("creating dataset PV {object_name}: {e}"));
+            }
+            if let Err(e) = kube.apply(&pvc).await {
+                let _ = kube.delete("pv", &object_name, "").await;
+                self.rollback_claims(&created).await;
+                for done in &attached {
+                    let _ = registry.detach(done, app);
+                }
+                return Err(format!("creating dataset PVC {object_name}: {e}"));
+            }
+            created.push((object_name.clone(), namespace.to_string()));
+            claims.push(serde_json::json!(object_name));
+        }
+        if !claims.is_empty() {
+            values.insert(
+                "datasetsClaim".to_string(),
+                claims.first().cloned().unwrap_or_default(),
+            );
+            values.insert(
+                "datasetsClaims".to_string(),
+                serde_json::Value::Array(claims),
+            );
+        }
+        Ok(values)
+    }
+
+    async fn rollback_claims(&self, created: &[(String, String)]) {
+        if let Some(kube) = &self.kube {
+            for (name, namespace) in created {
+                let _ = kube.delete("pvc", name, namespace).await;
+                let _ = kube.delete("pv", name, "").await;
+            }
+        }
+    }
+
+    async fn delete_claims(&self, app: &str, namespace: &str, datasets: &[String]) {
+        if let Some(registry) = &self.datasets {
+            for name in datasets {
+                let _ = registry.detach(name, app);
+            }
+        }
+        let Some(kube) = &self.kube else {
+            return;
+        };
+        for name in datasets {
+            let object_name = format!("naslos-ds-{app}-{name}");
+            let _ = kube.delete("pvc", &object_name, namespace).await;
+            let _ = kube.delete("pv", &object_name, "").await;
+        }
+    }
+
+    async fn delete_datasets(&self, rec: &Record) -> Result<(), String> {
+        self.delete_claims(&rec.name, &self.target_namespace(rec), &rec.datasets)
+            .await;
+        Ok(())
+    }
+
     async fn fill_discovered_service(
         &self,
         release: &str,
-        privileged: bool,
+        namespace: &str,
         e: Exposure,
     ) -> Exposure {
         if !e.service.is_empty() || self.discoverer.is_none() {
             return e;
         }
-        let mut namespace = self.helm.namespace().to_string();
-        if privileged && !self.priv_ns.is_empty() {
-            namespace = self.priv_ns.clone();
-        }
         let d = self.discoverer.as_ref().unwrap();
-        match d.services_for_release(&namespace, release).await {
+        match d.services_for_release(namespace, release).await {
             Ok(services) if !services.is_empty() => {
                 let mut e = e;
                 e.service = services[0].name.clone();
@@ -654,7 +865,7 @@ impl Manager {
             url: self.url_for(&rec),
             record: rec.clone(),
         };
-        if let Ok(rel) = self.helm_for(rec.privileged).get(name).await {
+        if let Ok(rel) = self.helm_for(&rec).get(name).await {
             view.status = rel.status.clone();
             if !rel.chart.is_empty() {
                 view.chart = rel.chart;
@@ -695,6 +906,9 @@ pub struct InstallRequest {
     pub exposure: Option<Exposure>,
     #[serde(default, rename = "baseDomain")]
     pub base_domain: String,
+    /// Registered datasets to attach (D3/F1); empty keeps the app claim-less.
+    #[serde(default)]
+    pub datasets: Vec<String>,
 }
 
 fn report(progress: Option<&ProgressFn>, stage: &str, message: &str) {

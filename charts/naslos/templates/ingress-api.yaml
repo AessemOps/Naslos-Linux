@@ -29,6 +29,8 @@ spec:
           port: {{ .Values.api.service.port }}
   tls:
     secretName: {{ .Values.ingress.tls.secretName | default "naslos-tls" }}
+    options:
+      name: naslos-tls
 ---
 # Authelia portal IngressRoute.
 #
@@ -54,6 +56,8 @@ spec:
           port: {{ .Values.ingress.authelia.port | default 80 }}
   tls:
     secretName: {{ .Values.ingress.tls.secretName | default "naslos-tls" }}
+    options:
+      name: naslos-tls
 ---
 # Traefik's own dashboard, under https://<domain>/traefik.
 #
@@ -82,4 +86,6 @@ spec:
           kind: TraefikService
   tls:
     secretName: {{ .Values.ingress.tls.secretName | default "naslos-tls" }}
+    options:
+      name: naslos-tls
 {{- end }}

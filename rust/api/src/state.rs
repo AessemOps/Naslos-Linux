@@ -76,6 +76,8 @@ pub struct AppState {
     pub ddns: Option<Arc<crate::ddns::Manager>>,
     /// The ntfy notification manager (S6a).
     pub notifications: Arc<crate::notifications::Manager>,
+    /// The operator-registered datasets an app may mount (D3/F1).
+    pub datasets_registry: Arc<crate::datasets::Registry>,
     /// The buddy receiver (S6e). Absent when buddy is disabled.
     pub buddy: Option<Arc<crate::server::buddy::Receiver>>,
     /// The async instance-side buddy send jobs (S6i).
@@ -132,6 +134,11 @@ impl AppState {
             .collect();
 
         let (charts, catalog) = build_chart_repos();
+        let datasets_registry = Arc::new(crate::datasets::Registry::new(
+            &std::env::var("DATASETS_CONFIG")
+                .unwrap_or_else(|_| "/var/lib/naslos/datasets.json".to_string()),
+            &std::env::var("BUDDY_RECEIVE_HOST_PATH").unwrap_or_default(),
+        ));
         let app_manager = build_app_manager(
             &charts,
             &catalog,
@@ -139,6 +146,7 @@ impl AppState {
             &domains_store,
             &sso_domains,
             &apps_namespace,
+            Some(datasets_registry.clone()),
         );
 
         let certs: Option<Arc<dyn crate::certs::Reconciler>> = kube.as_ref().map(|k| {
@@ -180,6 +188,7 @@ impl AppState {
             apps_namespace,
             ddns,
             notifications: Arc::new(crate::notifications::Manager::from_env()),
+            datasets_registry,
             buddy: build_buddy_receiver(),
             buddy_jobs: Arc::new(crate::server::buddy_send::BuddyJobManager::new()),
             buddy_schedules: {
@@ -220,6 +229,7 @@ impl AppState {
             apps_namespace: "naslos-apps".to_string(),
             ddns: None,
             notifications: Arc::new(crate::notifications::Manager::new("")),
+            datasets_registry: Arc::new(crate::datasets::Registry::new("", "")),
             buddy: None,
             buddy_jobs: Arc::new(crate::server::buddy_send::BuddyJobManager::new()),
             buddy_schedules: Arc::new(crate::server::buddy_schedules::ScheduleStore::new("")),
@@ -402,6 +412,7 @@ fn build_app_manager(
     domains: &Arc<crate::certs::Store>,
     sso_seed: &[String],
     apps_namespace: &str,
+    datasets: Option<Arc<crate::datasets::Registry>>,
 ) -> Option<Arc<crate::apps::Manager>> {
     let charts = charts.clone()?;
     let apps_ns = apps_namespace.to_string();
@@ -424,6 +435,10 @@ fn build_app_manager(
             authelia_namespace: std::env::var("NASLOS_NAMESPACE")
                 .unwrap_or_else(|_| "naslos".to_string()),
             local_only_cidr: std::env::var("EXPOSURE_LOCAL_ONLY_CIDR").unwrap_or_default(),
+            release_namespace: std::env::var("NASLOS_NAMESPACE")
+                .unwrap_or_else(|_| "naslos".to_string()),
+            fallback_tls_secret: std::env::var("PLATFORM_TLS_SECRET")
+                .unwrap_or_else(|_| "naslos-tls".to_string()),
             tls_secret_for: Some(Arc::new(move |base: &str| {
                 domains_for_tls
                     .get(base)
@@ -463,6 +478,15 @@ fn build_app_manager(
         }));
 
     let catalog_holder = catalog.clone();
+    let parse_pool = |raw: String| -> Vec<String> {
+        raw.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    let namespace_pool = parse_pool(std::env::var("APPS_NAMESPACE_POOL").unwrap_or_default());
+    let privileged_namespace_pool =
+        parse_pool(std::env::var("APPS_PRIVILEGED_NAMESPACE_POOL").unwrap_or_default());
     let cfg = crate::apps::Config {
         store_path: std::env::var("APPS_CONFIG")
             .unwrap_or_else(|_| "/var/lib/naslos/apps.json".to_string()),
@@ -475,6 +499,10 @@ fn build_app_manager(
         discoverer,
         base_domain,
         sso_domains,
+        namespace_pool,
+        privileged_namespace_pool,
+        kube: kube.cloned(),
+        datasets,
     };
     match crate::apps::Manager::new(cfg) {
         Ok(m) => Some(Arc::new(m)),

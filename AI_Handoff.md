@@ -34,6 +34,30 @@ the `v0.1.2` install pack. Live state:
 Kept to continue work on the appliance from the workspace. The earlier
 `0.1.0-r*` live-drill sections below are historical.
 
+## Release 0.2.1 (prepared, not deployed)
+
+`Chart.yaml`/`ui/package.json` are at **0.2.1**. The release workflow
+(`v0.2.1` tag) builds the eight images, pins them by digest in the install pack,
+attaches the pack and dispatches `Naslos-Installer`. The clean install from the
+installer then includes:
+
+- the audit fixes from batches 1-12 (auth/CSRF, WS origin, KEK Secret, verified
+  CLI downloads, per-app Helm identity, catalog commit pin, install-value schema
+  validation, health watcher, read-only API rootfs);
+- **per-app datasets (D3/F1):** the installer profile enables the namespace pool
+  and disables the shared `/var/mnt` PV; apps are installed into
+  `naslos-app-*`, with one PV/PVC per dataset registered under `/datasets`;
+- platform TLS pinned through the `naslos-tls` TLSOption, and seccomp on the
+  API/UI/OpenLDAP.
+
+Clean-install notes: create the pools/datasets first, register the dataset in
+**Datasets**, then install an app and select it. The catalog chart paths must
+use the claim root (the selected dataset), not `/var/mnt`; see
+`docs/datasets-isolation.md`. Accepted for 0.2.1 (sign-off required): D6
+commit-pinned but unsigned catalog, app values at rest in a 0600 file, the
+database-level LDAP `olcSecurity` gap, and local-path `0777`; see the audit
+report's "Accepted-risk candidates".
+
 ## Audit 2026-10-24 (branch `audit/full-2026-10-24`)
 
 Full post-Rust audit; findings, evidence and status are in

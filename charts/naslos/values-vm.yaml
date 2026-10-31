@@ -92,6 +92,10 @@ domain: naslos.local
 # when unset.
 apps:
   namespace: naslos-apps
+  isolation:
+    enabled: true
+    namespaces: 8
+    privilegedNamespaces: 4
   datasets:
     # D3/F1 is still open on this profile: the Buddy store is nested under the
     # exposed root. Remove this once buddy.receiveHostPath is migrated outside

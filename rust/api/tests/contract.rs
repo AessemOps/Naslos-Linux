@@ -317,3 +317,21 @@ async fn readiness_reports_the_identity_state() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ldap"], "down");
 }
+
+#[tokio::test]
+async fn the_dataset_registry_requires_the_agent_for_registration() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/datasets/registry")
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"name":"media","hostPath":"/var/mnt/tank/media","shared":false}"#,
+        ))
+        .unwrap();
+    let (status, body, _r) = send(with_peer(req, [127, 0, 0, 1])).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["error"].as_str().unwrap_or_default().contains("agent"));
+}

@@ -141,6 +141,7 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         apps_namespace: "naslos-apps".to_string(),
         ddns: None,
         notifications: std::sync::Arc::new(naslos_api::notifications::Manager::new("")),
+        datasets_registry: std::sync::Arc::new(naslos_api::datasets::Registry::new("", "")),
         buddy: None,
         buddy_jobs: std::sync::Arc::new(naslos_api::server::buddy_send::BuddyJobManager::new()),
         buddy_schedules: std::sync::Arc::new(
@@ -301,6 +302,7 @@ async fn no_agent_configured_is_502() {
         apps_namespace: "naslos-apps".to_string(),
         ddns: None,
         notifications: std::sync::Arc::new(naslos_api::notifications::Manager::new("")),
+        datasets_registry: std::sync::Arc::new(naslos_api::datasets::Registry::new("", "")),
         buddy: None,
         buddy_jobs: std::sync::Arc::new(naslos_api::server::buddy_send::BuddyJobManager::new()),
         buddy_schedules: std::sync::Arc::new(
