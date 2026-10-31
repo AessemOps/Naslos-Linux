@@ -23,6 +23,7 @@ pub mod kube;
 pub mod logsafe;
 pub mod metrics;
 pub mod notifications;
+pub mod proc;
 pub mod providers;
 pub mod routing;
 pub mod server;

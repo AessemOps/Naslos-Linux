@@ -415,6 +415,7 @@ impl GitCliBackend {
         env: &[(String, String)],
     ) -> Result<String, String> {
         let mut cmd = tokio::process::Command::new(&self.binary);
+        crate::proc::scrub(&mut cmd);
         cmd.kill_on_drop(true);
         cmd.args(Self::argv(args));
         for (k, v) in env {

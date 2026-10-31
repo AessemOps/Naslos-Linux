@@ -150,7 +150,9 @@ async fn logs_stream(socket: WebSocket, namespace: String, pod: String, containe
         args.push("-c".into());
         args.push(container.clone());
     }
-    let mut child = match tokio::process::Command::new(kubectl_binary())
+    let mut logs_cmd = tokio::process::Command::new(kubectl_binary());
+    crate::proc::scrub(&mut logs_cmd);
+    let mut child = match logs_cmd
         .kill_on_drop(true)
         .args(&args)
         .stdout(std::process::Stdio::piped())
@@ -465,6 +467,16 @@ async fn exec_session(
     };
 
     let mut cmd = CommandBuilder::new(kubectl_binary());
+    // The PTY's CommandBuilder has its own environment handling, so the
+    // shared scrub helper cannot be used; apply the same allowlist.
+    cmd.env_clear();
+    for key in crate::proc::allowlist() {
+        if let Ok(value) = std::env::var(key) {
+            if !value.is_empty() {
+                cmd.env(key, value);
+            }
+        }
+    }
     for a in kubeconfig_args() {
         cmd.arg(a);
     }
