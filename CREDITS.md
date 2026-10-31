@@ -18,7 +18,7 @@ and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
-**Last reviewed: 2026-10-25.** Maintenance: update this file whenever a direct dependency changes in
+**Last reviewed: 2026-10-31.** Maintenance: update this file whenever a direct dependency changes in
 `rust/api/Cargo.toml`, `rust/agent/Cargo.toml`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
 It also lists the GitHub Actions used by the CI/release workflows.
 
@@ -113,7 +113,6 @@ produce the shipped static assets):
 | --- | --- | --- | --- |
 | @playwright/test | ^1.63.0 | Apache-2.0 | https://github.com/microsoft/playwright |
 | @sveltejs/kit | ^2.0.0 | MIT | https://github.com/sveltejs/kit |
-| @sveltejs/adapter-auto | ^3.0.0 | MIT | https://github.com/sveltejs/kit |
 | @sveltejs/adapter-static | ^3.0.0 | MIT | https://github.com/sveltejs/kit |
 | @sveltejs/vite-plugin-svelte | ^4.0.4 | MIT | https://github.com/sveltejs/vite-plugin-svelte |
 | @types/node | ^20.0.0 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
@@ -225,29 +224,6 @@ authoritative copyright file ships in the image at
 | less | GPL-3.0-or-later OR BSD-2-Clause | https://www.greenwoodsoftware.com/less/ |
 | nano | GPL-3.0-or-later | https://www.nano-editor.org/ |
 | jq | MIT | https://github.com/jqlang/jq |
-
-### zsh-terminal image (`zsh-terminal/Dockerfile`)
-
-| Package | License (SPDX) | Upstream |
-| --- | --- | --- |
-| zsh | MIT (zsh license) | https://www.zsh.org/ |
-| zsh-autosuggestions | MIT | https://github.com/zsh-users/zsh-autosuggestions |
-| zsh-syntax-highlighting | BSD-3-Clause | https://github.com/zsh-users/zsh-syntax-highlighting |
-| bash | GPL-3.0-or-later | https://www.gnu.org/software/bash/ |
-| curl | curl (MIT-like) | https://github.com/curl/curl |
-| wget | GPL-3.0-or-later | https://gitlab.com/gnuwget/wget |
-| jq | MIT | https://github.com/jqlang/jq |
-| vim | Vim | https://github.com/vim/vim |
-| nano | GPL-3.0-or-later | https://www.nano-editor.org/ |
-| htop | GPL-2.0-or-later | https://github.com/htop-dev/htop |
-| iotop | GPL-2.0-or-later | http://guichaz.free.fr/iotop/ |
-| ncdu | MIT | https://dev.yorhel.nl/ncdu |
-| tmux | ISC | https://github.com/tmux/tmux |
-| openssh-client | BSD-2-Clause AND ISC | https://www.openssh.com/ |
-| ca-certificates | GPL-2.0-or-later AND MPL-2.0 | https://tracker.debian.org/pkg/ca-certificates |
-| zfs, zfs-utils (ZFS userspace) | CDDL-1.0 | https://github.com/openzfs/zfs |
-| kubectl | Apache-2.0 | https://github.com/kubernetes/kubectl |
-| talosctl | MPL-2.0 | https://github.com/siderolabs/talos |
 
 ## Attribution notes
 

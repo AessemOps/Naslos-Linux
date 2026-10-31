@@ -13,10 +13,10 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 use super::auth::{body_digest, sign_request_for};
 use super::envelope::{
-    chunk_plain_len, digest_of, new_stream_prefix, open_chunk, seal_chunk, unwrap_dek, wrap_dek,
-    Manifest, ManifestChunk, CHUNK_PLAIN_SIZE, ENVELOPE_VERSION, MAX_SEALED_CHUNK_SIZE,
+    digest_of, new_stream_prefix, open_chunk, seal_chunk, unwrap_dek, wrap_dek, Manifest,
+    ManifestChunk, CHUNK_PLAIN_SIZE, ENVELOPE_VERSION,
 };
-use super::keys::{public_key_of, Identity};
+use super::keys::Identity;
 use super::peers::validate_source;
 
 const MAX_MANIFEST_BYTES: usize = 16 << 20;
@@ -1108,14 +1108,6 @@ fn describe_error(status: u16, data: &[u8]) -> String {
     };
     format!("{text} ({status})")
 }
-
-// keep imports used by the module's optional helpers
-#[allow(unused_imports)]
-use chunk_plain_len as _chunk_plain_len;
-#[allow(unused_imports)]
-use public_key_of as _public_key_of;
-#[allow(unused_imports)]
-use MAX_SEALED_CHUNK_SIZE as _MAX_SEALED_CHUNK_SIZE;
 
 #[cfg(test)]
 mod tests {

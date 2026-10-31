@@ -55,7 +55,7 @@ ui/          SvelteKit + Tailwind — dashboard, wizards, terminal
 charts/      naslos umbrella chart (api, ui, agent, openldap, samba, nfs, terminal, Traefik/Authelia)
 samba/       Samba image + config
 nfs/         NFS-Ganesha image + config
-terminal/    web-terminal image (+ zsh-terminal/)
+terminal/    web-terminal image
 openldap/    OpenLDAP SSO image (identity store; the workloads live in charts/naslos)
 bootstrap/   schematic + ISO generator, Cilium manifest, VM + installer machine-config patches
 scripts/     deploy-vm.sh, render-cilium.sh, build-install-pack.sh, audit.sh
