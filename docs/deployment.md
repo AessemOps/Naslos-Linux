@@ -15,6 +15,12 @@
 - **`make crds`** installs both the Traefik and the cert-manager CRDs. The app
   routing layer needs the Traefik CRDs; the SSL page is gated on the
   cert-manager CRDs.
+- **Dataset exposure.** `apps.datasets.hostPath` (default `/var/mnt`) is mounted
+  into every baseline app. The chart refuses `/`, `/var`, `/etc`, `/home`,
+  `/root`, `/usr`, `/system`, and refuses a Buddy store nested inside the root
+  unless `apps.datasets.allowBuddyStore=true`. The VM overlay sets that flag
+  until the Buddy dataset is moved outside `/var/mnt`; see
+  `docs/datasets-isolation.md` for the recommended per-app isolation design.
 - **Pinned catalog.** The VM and installer overlays set
   `apps.officialSource.commit` to a full SHA; the API checks out exactly that
   commit and fails the sync if `HEAD` differs. Bump it when a release needs
