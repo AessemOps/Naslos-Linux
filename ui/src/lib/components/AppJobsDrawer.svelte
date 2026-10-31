@@ -53,7 +53,7 @@
                 </div>
                 {#if job.message}<p class="text-xs text-gray-500 mt-1">{job.message}</p>{/if}
               {:else if job.error}
-                <p class="text-xs text-red-300 mt-1 break-words">{job.error}</p>
+                <p role="alert" class="text-xs text-red-300 mt-1 break-words">{job.error}</p>
               {/if}
               <div class="flex items-center justify-between mt-1">
                 {#if job.state === 'succeeded' && job.kind === 'install'}

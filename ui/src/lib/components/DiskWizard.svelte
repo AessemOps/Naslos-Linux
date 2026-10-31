@@ -201,7 +201,7 @@
       {#if loading}
         <p class="text-gray-400">Loading disks...</p>
       {:else if error}
-        <p class="text-red-400">{error}</p>
+        <p role="alert" class="text-red-400">{error}</p>
       {:else}
         <div class="space-y-3">
           {#each disks.filter(d => !d.isSystemDisk) as disk}
@@ -252,7 +252,7 @@
       {#if loading}
         <p class="text-gray-400">Generating recommendation...</p>
       {:else if error}
-        <p class="text-red-400">{error}</p>
+        <p role="alert" class="text-red-400">{error}</p>
       {:else if recommendation}
         <div class="mb-6">
           <div class="flex items-center justify-between mb-4">
