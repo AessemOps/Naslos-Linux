@@ -207,6 +207,24 @@ network symptom, not the client giving up — check the value above and the node
 `zfs` progress. Regression coverage lives in `rust/api/src/agent.rs`
 (`agent::tests::send_stream_*`).
 
+
+### Consistency guarantees
+
+- **Replay cache:** a nonce is kept for its full window. When a key reaches the
+  per-key cap the receiver refuses new requests instead of evicting an
+  unexpired nonce (eviction made a captured request replayable).
+- **Manifest rollback:** for the same chain, a manifest whose `sequence` is
+  strictly older than the stored one is refused. An equal sequence is accepted
+  because it is the idempotent re-PUT of a retried publish.
+- **One job per `(receiver, source)`:** the conflict check and job registration
+  happen under one lock, so two sends cannot share and overwrite one resume
+  state file.
+- **Scheduled outcomes are recorded:** each terminal job result updates
+  `lastRun`, `lastResult`, `lastError` and the per-receiver result map, so the
+  Schedules page reflects a failing nightly backup instead of showing nothing.
+- **Restore target:** the dataset name is validated at the API before any
+  stream is opened.
+
 ## 4. The envelope
 
 The plaintext stream is cut into fixed 1 MiB chunks; each chunk is sealed on its

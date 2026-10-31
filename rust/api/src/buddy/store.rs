@@ -326,10 +326,22 @@ impl Store {
         std::fs::create_dir_all(&dir)?;
         let data = serde_json::to_vec_pretty(m).map_err(|e| other(e.to_string()))?;
 
-        let previous = match self.manifest(key_id, source) {
-            Ok(cur) => cur.chain,
-            Err(_) => String::new(),
-        };
+        let current = self.manifest(key_id, source).ok();
+        let previous = current
+            .as_ref()
+            .map(|c| c.chain.clone())
+            .unwrap_or_default();
+        // Same chain: a strictly older sequence is a rollback. An equal
+        // sequence is the idempotent re-PUT of a retried publish, accepted
+        // because the bytes are identical.
+        if let Some(cur) = &current {
+            if cur.chain == m.chain && m.sequence < cur.sequence {
+                return Err(other(format!(
+                    "refusing stale manifest for {source}: sequence {} is older than the stored {}",
+                    m.sequence, cur.sequence
+                )));
+            }
+        }
         if !previous.is_empty() && previous != m.chain {
             let candidate = dir
                 .parent()
@@ -1005,6 +1017,40 @@ mod tests {
         )
         .unwrap();
         assert!(store.put_manifest(&kid, "src", &old).is_err());
+    }
+
+    #[test]
+    fn an_older_sequence_for_the_same_chain_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(&dir.path().display().to_string());
+        let kid = key_id();
+        let base = Manifest {
+            version: 2,
+            source: "src".into(),
+            chain: "same".into(),
+            kind: "zfs-send".into(),
+            created_at: Utc::now(),
+            chunk_plain_size: CHUNK_PLAIN_SIZE as i64,
+            sequence: 3,
+            ..Default::default()
+        };
+        store.put_manifest(&kid, "src", &base).unwrap();
+
+        let mut newer = base.clone();
+        newer.sequence = 4;
+        assert!(store.put_manifest(&kid, "src", &newer).is_ok());
+
+        // Equal sequence is the idempotent re-PUT of a retried publish.
+        let mut same = base.clone();
+        same.sequence = 4;
+        assert!(store.put_manifest(&kid, "src", &same).is_ok());
+
+        // Strictly older is a rollback.
+        let mut stale = base.clone();
+        stale.sequence = 2;
+        let err = store.put_manifest(&kid, "src", &stale).unwrap_err();
+        assert!(format!("{err:?}").contains("stale manifest"), "{err:?}");
+        assert_eq!(store.manifest(&kid, "src").unwrap().sequence, 4);
     }
 
     #[test]
