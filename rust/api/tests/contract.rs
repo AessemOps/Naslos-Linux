@@ -249,7 +249,91 @@ async fn same_origin_state_change_is_allowed() {
         .body(Body::empty())
         .unwrap();
     let (status, _b, _r) = send(with_peer(req, [127, 0, 0, 1])).await;
+    // The CSRF gate let it through. The handler itself may still be unable to
+    // apply the config in this test process (no agent), but it must not be an
+    // auth refusal.
     assert_ne!(status, StatusCode::FORBIDDEN);
+    assert_ne!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// Every protected route fails closed for: no secret, a wrong secret, and a
+/// forwarded identity without the secret. The owner routes must not leak route
+/// existence before the gate.
+#[tokio::test]
+async fn protected_routes_fail_closed_for_all_unauthenticated_shapes() {
+    let routes = [
+        ("GET", "/api/metrics"),
+        ("GET", "/api/users"),
+        ("POST", "/api/users"),
+        ("GET", "/api/shares"),
+        ("POST", "/api/shares/apply"),
+        ("DELETE", "/api/volumes/zfs/tank?confirm=tank"),
+        ("POST", "/api/apps"),
+    ];
+    for (method, path) in routes {
+        for (secret, user) in [
+            (None, Some("admin")),                 // forwarded identity, no secret
+            (Some("wrong-secret"), Some("admin")), // wrong secret
+            (None, None),                          // nothing
+        ] {
+            let mut b = Request::builder().method(method).uri(path);
+            if let Some(secret) = secret {
+                b = b.header("X-Naslos-Proxy-Secret", secret);
+            }
+            if let Some(user) = user {
+                b = b.header("Remote-User", user);
+                b = b.header("Remote-Groups", "naslos_admins,naslos_users");
+            }
+            let req = with_peer(b.body(Body::empty()).unwrap(), [127, 0, 0, 1]);
+            let (status, _b, _r) = send(req).await;
+            assert_eq!(
+                status,
+                StatusCode::UNAUTHORIZED,
+                "{method} {path} with secret={secret:?} user={user:?}"
+            );
+        }
+    }
+}
+
+fn ws_request(path: &str, secret: Option<&str>, origin: Option<&str>) -> Request<Body> {
+    let mut b = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("Host", "naslos.local")
+        .header("Upgrade", "websocket")
+        .header("Connection", "Upgrade")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "AAAAAAAAAAAAAAAAAAAAAA==")
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins");
+    if let Some(secret) = secret {
+        b = b.header("X-Naslos-Proxy-Secret", secret);
+    }
+    if let Some(origin) = origin {
+        b = b.header("Origin", origin);
+    }
+    with_peer(b.body(Body::empty()).unwrap(), [127, 0, 0, 1])
+}
+
+#[tokio::test]
+async fn terminal_websocket_requires_the_proxy_secret() {
+    let path = "/api/ws/exec?namespace=naslos-privileged&pod=naslos-terminal";
+    let (status, _b, _r) = send(ws_request(path, None, Some("https://naslos.local"))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _b, _r) = send(ws_request(
+        path,
+        Some("wrong"),
+        Some("https://naslos.local"),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn terminal_websocket_refuses_a_foreign_origin() {
+    let path = "/api/ws/exec?namespace=naslos-privileged&pod=naslos-terminal";
+    let (status, _b, _r) = send(ws_request(path, Some(SECRET), Some("https://evil.example"))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
