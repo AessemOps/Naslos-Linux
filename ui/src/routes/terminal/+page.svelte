@@ -140,6 +140,9 @@
 
   async function connect() {
     error = '';
+    if (connecting || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))) {
+      return;
+    }
     if (!pod) {
       error = 'Choose a pod to connect to.';
       return;
@@ -169,29 +172,37 @@
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     term.writeln(`\r\n\x1b[36mAttaching to ${namespace}/${pod}${container ? ` (${container})` : ''}…\x1b[0m`);
 
-    ws = new WebSocket(`${proto}//${window.location.host}${apiUrl}`);
+    const socket = new WebSocket(`${proto}//${window.location.host}${apiUrl}`);
+    ws = socket;
+    const current = () => ws === socket;
 
-    ws.onopen = () => {
+    socket.onopen = () => {
+      if (!current()) return;
       connected = true;
       connecting = false;
       sendSize();
       term.focus();
     };
 
-    ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (!current()) return;
       term.write(typeof event.data === 'string' ? event.data : new Uint8Array(event.data));
     };
 
-    ws.onerror = () => {
+    socket.onerror = () => {
+      if (!current()) return;
       error = 'The terminal connection failed.';
       connected = false;
       connecting = false;
     };
 
-    ws.onclose = () => {
+    socket.onclose = (event) => {
+      if (!current()) return;
       connected = false;
       connecting = false;
-      term.writeln('\r\n\x1b[33mSession closed.\x1b[0m');
+      const reason = event.reason || 'Session closed.';
+      term.writeln(`\r\n\x1b[33m${reason}\x1b[0m`);
+      ws = null;
     };
   }
 
