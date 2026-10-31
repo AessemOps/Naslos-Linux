@@ -94,7 +94,7 @@ app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
 | --- | --- | --- |
 | List catalog | `GET /api/catalog` | Source/channel-tagged summaries |
 | Catalog detail | `GET /api/catalog/{name}` | Full entry incl. `schema`, `services`, `exposure` |
-| Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed, privilegedConfirmed?}` | `confirmed` MUST be `true`; a catalog entry with `privileged: true` also requires `privilegedConfirmed: true`, and the UI shows a second, red confirmation (SEC-2026-D8). Defaults are merged and the result is validated against the catalog's JSON schema before Helm runs; a violation is a 400 (SEC-2026-D7). Chart loaded from the clone. Enqueues an install job → `202 {jobId, state}` |
+| Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed, privilegedConfirmed?, datasets?}` | `confirmed` MUST be `true`; a catalog entry with `privileged: true` also requires `privilegedConfirmed: true`, and the UI shows a second, red confirmation (SEC-2026-D8). Defaults are merged and the result is validated against the catalog's JSON schema before Helm runs; a violation is a 400 (SEC-2026-D7). `datasets` selects registered datasets; with `apps.isolation.enabled` the app gets its own namespace and a claim per dataset, and the chart receives `datasetsClaim`/`datasetsClaims` (baseline) or `hostPath` (privileged). Chart loaded from the clone. Enqueues an install job → `202 {jobId, state}` |
 | List installed | `GET /api/apps` | Records + live status, orphan flag, URL |
 | Detail | `GET /api/apps/{name}` | Record + status |
 | Reconfigure | `PUT /api/apps/{name} {values}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}` |

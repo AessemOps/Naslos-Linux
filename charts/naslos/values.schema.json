@@ -12,6 +12,16 @@
       "properties": {
         "namespace": { "type": "string" },
         "privilegedNamespace": { "type": "string" },
+        "isolation": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "namePrefix": { "type": "string" },
+            "namespaces": { "type": "integer" },
+            "privilegedNamespaces": { "type": "integer" }
+          }
+        },
         "datasets": {
           "type": "object",
           "additionalProperties": true,

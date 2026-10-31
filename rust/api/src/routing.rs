@@ -348,6 +348,43 @@ impl KubeRouter {
         });
         vec![svc, route]
     }
+
+    /// Copy the domain/default TLS Secret into the app namespace. An
+    /// IngressRoute can only reference a Secret in its own namespace, and the
+    /// domain Certificates live in the shared apps namespace.
+    async fn copy_tls_secret(&self, target: &str, name: &str) -> Result<(), String> {
+        let Some(mut secret) = self
+            .kube
+            .get_json("secret", name, &self.opts.namespace)
+            .await
+            .map_err(|e| format!("reading TLS secret {name:?}: {e}"))?
+        else {
+            return Err(format!(
+                "TLS secret {name:?} does not exist in {}; cannot expose this app with TLS",
+                self.opts.namespace
+            ));
+        };
+        if let Some(meta) = secret.get_mut("metadata").and_then(|m| m.as_object_mut()) {
+            for key in [
+                "resourceVersion",
+                "uid",
+                "creationTimestamp",
+                "ownerReferences",
+                "managedFields",
+                "selfLink",
+            ] {
+                meta.remove(key);
+            }
+            meta.insert("namespace".to_string(), serde_json::json!(target));
+        }
+        if let Some(obj) = secret.as_object_mut() {
+            obj.remove("status");
+        }
+        self.kube
+            .apply(&secret)
+            .await
+            .map_err(|e| format!("copying TLS secret {name:?} to {target}: {e}"))
+    }
 }
 
 #[async_trait::async_trait]
@@ -364,6 +401,10 @@ impl Router for KubeRouter {
             return Err(format!(
                 "base domain {base_domain:?} is not in the SSO domain list; auth is unavailable"
             ));
+        }
+        if spec.tls && !spec.tls_secret.is_empty() && spec.namespace != self.opts.namespace {
+            self.copy_tls_secret(&spec.namespace, &spec.tls_secret)
+                .await?;
         }
         let objects = render(&spec)?;
         if objects.is_empty() {
