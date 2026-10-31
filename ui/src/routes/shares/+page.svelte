@@ -32,11 +32,12 @@
     loading = true;
     try {
       const res = await fetch('/api/shares');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       shares = Array.isArray(data) ? data : [];
     } catch (e) {
       console.error('Failed to load shares:', e);
-      shares = [];
+      error = `Could not load shares: ${e instanceof Error ? e.message : String(e)}`;
     } finally {
       loading = false;
     }

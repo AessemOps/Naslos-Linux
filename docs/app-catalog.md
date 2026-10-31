@@ -281,3 +281,13 @@ mount the host path directly and share the same data.
   `redactedKeys`. Echoing `null` back on upgrade keeps the stored value. The
   values are still stored in `apps.json`; moving them to a Kubernetes Secret is
   tracked as D7.
+
+## Exposure safety in the UI
+
+The install wizard reflects the backend rules instead of silently installing an
+unsafe exposure. A catalog entry with `exposure.auth: false` or
+`exposure.tls: false` shows a red warning in review and requires a second,
+explicit checkbox before Install enables; an entry with both off is preselected
+as cluster-internal (`localOnly`). Password fields are masked in the review
+step. Dismissing a running app job is disabled (it only hid the "already
+running" conflict), and a job evicted from the server's list stops polling.

@@ -44,6 +44,7 @@
   let selectableDomains: string[] = [];
   let ssoDomains: string[] = [];
   let confirmed = false;
+  let unsafeConfirmed = false;
   let privilegedConfirmed = false;
   let managedDatasets: { name: string; hostPath: string; shared: boolean }[] = [];
   let selectedDataset = '';
@@ -75,6 +76,11 @@
           port: app.services?.[0]?.port,
           scheme: app.services?.[0]?.scheme || 'http'
         };
+        // A catalog entry with neither auth nor TLS should not be published
+        // beyond the LAN by default.
+        if (!exposure.tls && !exposure.auth) {
+          exposure.localOnly = true;
+        }
       }
       const domainRes = await fetch('/api/domains');
       if (domainRes.ok) {
@@ -132,6 +138,14 @@
   }
 
   $: valueEntries = Object.entries(values).filter(([_, v]) => typeof v !== 'object');
+  // Review must not print a password the operator just typed.
+  $: secretKeys = new Set(
+    Object.entries(app?.schema?.properties ?? {})
+      .filter(([, prop]: [string, any]) => prop?.format === 'password' || prop?.writeOnly === true)
+      .map(([key]) => key)
+  );
+  $: unsafeExposure =
+    !!exposure.subdomain && (!exposure.tls || !exposure.auth);
   onMount(loadApp);
 </script>
 
@@ -194,10 +208,21 @@
                 TLS {exposure.tls ? 'on' : 'off'} · Auth {exposure.auth ? 'on' : 'off'} · Local-only {exposure.localOnly ? 'on' : 'off'}
               </span>
             </div>
-            {#each valueEntries as [key, value]}<div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">{key}</span><span class="font-medium text-sm">{value || '(empty)'}</span></div>{/each}
+            {#each valueEntries as [key, value]}<div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">{key}</span><span class="font-medium text-sm">{secretKeys.has(key) && value ? '••••••' : (value || '(empty)')}</span></div>{/each}
           </div>
         {:else}
           <div class="space-y-4">
+            {#if unsafeExposure}
+              <div class="p-4 rounded-lg border border-red-700 bg-red-900/30 text-red-200 text-sm">
+                <p class="font-medium mb-1">This app will be exposed without full protection</p>
+                <p>
+                  {#if !exposure.auth}Without Naslos login (auth is off).{/if}
+                  {#if !exposure.tls}Without TLS (traffic is cleartext).{/if}
+                  Anything that can reach <span class="font-mono">{exposure.subdomain}.{baseDomain}</span>
+                  can use its admin interface.
+                </p>
+              </div>
+            {/if}
             <div class="p-4 rounded-lg border border-amber-700 bg-amber-900/30 text-amber-200 text-sm">
               <p class="font-medium mb-1">Third-party chart trust boundary</p>
               <p>
@@ -227,6 +252,14 @@
               />
               <span>I have reviewed the source and confirm this install.</span>
             </label>
+            {#if unsafeExposure}
+              <label class="flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" class="mt-1" bind:checked={unsafeConfirmed} />
+                <span class="font-medium text-red-300">
+                  I understand this app is reachable without {#if !exposure.auth}Naslos login{/if}{#if !exposure.auth && !exposure.tls} and {/if}{#if !exposure.tls}encryption{/if}.
+                </span>
+              </label>
+            {/if}
             {#if app.privileged}
               <label class="flex items-start gap-3 cursor-pointer">
                 <input
@@ -247,7 +280,7 @@
           {#if activeStep === 'config'}<button class="btn btn-primary" on:click={() => activeStep = 'exposure'}>Exposure →</button>
           {:else if activeStep === 'exposure'}<button class="btn btn-secondary" on:click={() => activeStep = 'config'}>← Back</button><button class="btn btn-primary" on:click={() => activeStep = 'review'}>Review →</button>
           {:else if activeStep === 'review'}<button class="btn btn-secondary" on:click={() => activeStep = 'exposure'}>← Back</button><button class="btn btn-primary" on:click={() => activeStep = 'confirm'}>Confirm →</button>
-          {:else}<button class="btn btn-secondary" on:click={() => activeStep = 'review'}>← Back</button><button class="btn btn-primary" on:click={install} disabled={installing || !confirmed || (app.privileged && !privilegedConfirmed)}>{installing ? 'Starting...' : 'Install'}</button>{/if}
+          {:else}<button class="btn btn-secondary" on:click={() => activeStep = 'review'}>← Back</button><button class="btn btn-primary" on:click={install} disabled={installing || !confirmed || (unsafeExposure && !unsafeConfirmed) || (app.privileged && !privilegedConfirmed)}>{installing ? 'Starting...' : 'Install'}</button>{/if}
         </div>
       </div>
     {/if}
