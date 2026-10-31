@@ -201,6 +201,12 @@ spec:
                 secretKeyRef:
                   name: {{ include "naslos.agentTokenSecret" . | default "naslos-agent" }}
                   key: token
+            - name: TERMINAL_MAX_SESSION_SECS
+              value: {{ .Values.api.terminal.maxSessionSecs | default 28800 | quote }}
+            - name: TERMINAL_IDLE_TIMEOUT_SECS
+              value: {{ .Values.api.terminal.idleTimeoutSecs | default 1800 | quote }}
+            - name: TERMINAL_MAX_SESSIONS
+              value: {{ .Values.api.terminal.maxSessions | default 8 | quote }}
             {{- if gt (int .Values.api.agentStreamIdleTimeoutSecs) 0 }}
             # Idle deadline for zfs send/receive bodies (not a total deadline).
             - name: AGENT_STREAM_IDLE_TIMEOUT_SECS

@@ -71,6 +71,24 @@ namespace listing only, so it cannot exec into anything outside Naslos. Shells a
 never an arbitrary command. Websocket upgrades are accepted only from the same
 host (ports ignored). Sessions are logged with the authenticated user.
 
+
+### Session lifetime
+
+The `kubectl exec` websocket is authenticated once, at the handshake. It is not
+revalidated against Authelia, so the following bounds are the only thing that
+stops a session outliving a logout, a group change or a stolen laptop:
+
+| Bound | Default | Setting |
+| --- | --- | --- |
+| Hard maximum | 8 h | `TERMINAL_MAX_SESSION_SECS` / `api.terminal.maxSessionSecs` |
+| Idle (no client input) | 30 min | `TERMINAL_IDLE_TIMEOUT_SECS` / `api.terminal.idleTimeoutSecs` |
+| Concurrent exec sessions | 8 (HTTP 429 above) | `TERMINAL_MAX_SESSIONS` / `api.terminal.maxSessions` |
+
+A log-follow websocket uses the hard maximum only. When a session ends the PTY
+child is killed **and reaped** (the API is not PID 1), and the reader thread is
+released by aborting its output task. Keep the limits finite; `0` is ignored in
+favour of the default.
+
 ### Current state of this installation
 
 The instance runs the **only** posture: `ingress.enabled=true` in

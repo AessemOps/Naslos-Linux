@@ -121,8 +121,14 @@ Authelia rules (`charts/naslos/templates/authelia-config.yaml`):
 | `/api/buddy/v1/` | bypass (peers authenticate with their own keys, not a session) |
 | `/authelia` | bypass (the portal route has no forwardAuth) |
 | every path, for a user in `group:naslos_admins` | two_factor (2FA on the whole surface, so the portal prompts enrolment during the first login — not just on the API prefixes, which would let the SPA open on a one-factor session) |
-| `/traefik` for `group:naslos_users` | deny (the Traefik dashboard is operator-only; admins matched the rule above and keep 2FA) |
+| `/traefik` | deny for everyone except admins (matched above with 2FA). The rule has no subject on purpose: an authenticated account outside both Naslos groups used to fall through to the catch-all and reach the dashboard, whose API returns the `proxy-identity` middleware with the shared secret |
 | everything else | one_factor (authenticated; the API's `RequireAdmin` group check still gates admin-only routes) |
+
+Authelia's `users_filter` additionally requires membership of `naslos_users` or
+`naslos_admins` via the `memberOf` overlay. Without it, a user created with no
+groups could authenticate (the UI permits that) and reach the one-factor
+catch-all. Adding the filter is a **live-drill change**: verify admin, ordinary
+user, and group-less user login on the VM before merging.
 
 The admin rule is subject-based (`group:naslos_admins`) rather than a list of
 paths. The API checks group membership, not the factor, so if only some paths

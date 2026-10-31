@@ -47,6 +47,13 @@ api:
   # backup that keeps making progress may run for hours; only a stalled peer
   # is cut. See docs/buddy-backup.md.
   agentStreamIdleTimeoutSecs: 0
+  # Terminal session bounds (docs/terminal.md). A websocket is not revalidated
+  # against Authelia, so these finite limits are the only bound on a session
+  # that outlives logout, group removal or a stolen laptop.
+  terminal:
+    maxSessionSecs: 28800   # 8 h hard cap
+    idleTimeoutSecs: 1800   # 30 min without input
+    maxSessions: 8          # concurrent exec sessions across the API
   # Read-only hostPath to the ZFS datasets, mounted at /var/mnt so the API can
   # list and validate share paths for the shares UI. Set to "null"/empty on
   # multi-node clusters (a hostPath pins the pod to one node and would list
