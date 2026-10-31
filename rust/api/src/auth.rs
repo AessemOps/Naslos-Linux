@@ -238,13 +238,10 @@ fn header_str<'a>(req: &'a Request, name: &str) -> Option<&'a str> {
 }
 
 fn request_authority(req: &Request) -> Option<String> {
-    // Traefik forwards the client's Host; `X-Forwarded-Host` is the fallback for
-    // deployments that rewrite it.
-    header_str(req, "x-forwarded-host")
-        .and_then(|v| v.split(',').next())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .or_else(|| header_str(req, HOST.as_str()).map(|v| v.trim().to_string()))
+    // `Host` only. `X-Forwarded-Host` is client-influenced unless every hop
+    // strips it, and a value that disagrees with Host would let a same-site
+    // check pass for an attacker-chosen name. Traefik preserves Host.
+    header_str(req, HOST.as_str()).map(|v| v.trim().to_string())
 }
 
 fn origin_authority(origin: &str) -> Option<String> {

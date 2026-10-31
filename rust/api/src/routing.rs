@@ -127,6 +127,16 @@ fn security_headers_middleware(namespace: &str) -> serde_json::Value {
             "customFrameOptionsValue": "DENY",
             "referrerPolicy": "strict-origin-when-cross-origin",
             "stsSeconds": 31536000,
+            // This middleware is first on every app route. Removing client
+            // supplied identity headers means an app reached with auth=false
+            // cannot be told who the browser claims to be; with auth=true,
+            // forwardAuth's authResponseHeaders then set the real values.
+            "customRequestHeaders": {
+                "Remote-User": "",
+                "Remote-Groups": "",
+                "Remote-Email": "",
+                "Remote-Name": "",
+            },
         }},
     })
 }
@@ -599,6 +609,31 @@ mod tests {
         assert_eq!(
             route["spec"]["tls"]["secretName"],
             "naslos-naslos-local-tls"
+        );
+    }
+
+    #[test]
+    fn app_routes_strip_client_identity() {
+        let objects = render(&spec()).unwrap();
+        let headers = objects
+            .iter()
+            .find(|o| o["metadata"]["name"] == SECURITY_HEADERS_NAME)
+            .expect("security headers middleware");
+        let stripped = &headers["spec"]["headers"]["customRequestHeaders"];
+        for header in [
+            "Remote-User",
+            "Remote-Groups",
+            "Remote-Email",
+            "Remote-Name",
+        ] {
+            assert_eq!(stripped[header], "", "{header} must be removed");
+        }
+        // The middleware is first on the route, so forwardAuth cannot run
+        // before the client value is removed.
+        let route = objects.last().unwrap();
+        assert_eq!(
+            route["spec"]["routes"][0]["middlewares"][0]["name"],
+            SECURITY_HEADERS_NAME
         );
     }
 

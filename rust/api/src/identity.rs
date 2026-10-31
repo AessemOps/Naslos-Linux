@@ -133,18 +133,6 @@ pub fn compute_nt_hash(password: &str) -> String {
     digest.iter().map(|b| format!("{b:02X}")).collect()
 }
 
-/// POSIX uidNumber from a uid (port of `hashUID`).
-pub fn hash_uid(uid: &str) -> i32 {
-    let mut h: i32 = 0;
-    for c in uid.chars() {
-        h = 31i32.wrapping_mul(h).wrapping_add(c as i32);
-    }
-    if h < 0 {
-        h = -h;
-    }
-    h % 9000 + 1000
-}
-
 /// Non-empty common name for a person entry.
 pub fn person_cn(display_name: &str, first_name: &str, last_name: &str, uid: &str) -> String {
     let cn = display_name.trim();
@@ -229,6 +217,12 @@ pub struct Client {
     bind_pass: String,
     tls: Option<Arc<rustls::ClientConfig>>,
     last_err: Mutex<Option<(Instant, String)>>,
+    /// Cached readiness probe: `/api/ready` is public, and an LDAP search per
+    /// request would serialize on the single connection under the mutex.
+    ready_cache: tokio::sync::Mutex<Option<(Instant, Result<(), String>)>>,
+    /// Serializes uidNumber allocation (search max + add) so two concurrent
+    /// creates cannot pick the same POSIX uid.
+    user_alloc: tokio::sync::Mutex<()>,
 }
 
 /// Resolve the service-account password. The file form is preferred so the
@@ -259,6 +253,8 @@ impl Client {
             bind_pass: cfg.bind_pass.clone(),
             tls,
             last_err: Mutex::new(None),
+            ready_cache: tokio::sync::Mutex::new(None),
+            user_alloc: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -283,6 +279,20 @@ impl Client {
                 .unwrap_or(true),
         };
         Self::new(&cfg)
+    }
+
+    /// Cheap readiness probe: at most one LDAP round-trip every 15 s.
+    pub async fn ready(&self) -> Result<(), String> {
+        const TTL: std::time::Duration = std::time::Duration::from_secs(15);
+        let mut cache = self.ready_cache.lock().await;
+        if let Some((at, result)) = cache.as_ref() {
+            if at.elapsed() < TTL {
+                return result.clone();
+            }
+        }
+        let result = self.list_groups().await.map(|_| ());
+        *cache = Some((Instant::now(), result.clone()));
+        result
     }
 
     fn people_base(&self) -> String {
@@ -687,13 +697,6 @@ mod tests {
     fn dn_and_filter_escaping() {
         assert_eq!(escape_filter("a*b(c)"), "a\\2ab\\28c\\29");
         assert_eq!(escape_dn_component("a,b"), "a\\,b");
-    }
-
-    #[test]
-    fn hash_uid_is_stable_and_bounded() {
-        let h = hash_uid("alice");
-        assert!((1000..10000).contains(&h));
-        assert_eq!(h, hash_uid("alice"));
     }
 
     #[test]
