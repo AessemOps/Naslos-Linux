@@ -19,7 +19,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_COOLDOWN: Duration = Duration::from_secs(2);
 
 /// LDAP connection configuration.
-#[derive(Debug, Clone, Default)]
+///
+/// `Debug` is manual: the struct holds the service-account password, and a
+/// derived `Debug` turns any `{:?}` in a log line or assertion into a leak.
+#[derive(Clone, Default)]
 pub struct Config {
     pub host: String,
     pub port: u16,
@@ -28,6 +31,20 @@ pub struct Config {
     pub bind_pass: String,
     pub ca_cert_path: String,
     pub use_tls: bool,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("base_dn", &self.base_dn)
+            .field("bind_dn", &self.bind_dn)
+            .field("bind_pass", &"<redacted>")
+            .field("ca_cert_path", &self.ca_cert_path)
+            .field("use_tls", &self.use_tls)
+            .finish()
+    }
 }
 
 /// A user account.
@@ -225,24 +242,52 @@ pub struct Client {
     user_alloc: tokio::sync::Mutex<()>,
 }
 
-/// Resolve the service-account password. The file form is preferred so the
-/// secret is not inherited by the `helm`/`kubectl`/`talosctl` children the API
-/// forks (SEC-2026-F16). A missing/unreadable file is an error, not a fallback.
-fn resolve_bind_pass(file: Option<&str>, inline: &str) -> Result<String, String> {
-    match file.map(str::trim).filter(|p| !p.is_empty()) {
-        Some(path) => std::fs::read_to_string(path)
-            .map(|s| s.trim_end_matches(['\r', '\n']).to_string())
-            .map_err(|e| format!("reading LDAP_BIND_PASS_FILE {path}: {e}")),
-        None => Ok(inline.to_string()),
-    }
+/// Resolve the service-account password **from a file only**.
+///
+/// The secret must not live in the environment: the API forks
+/// `helm`/`kubectl`/`talosctl`/`git` and any child would inherit it
+/// (SEC-2026-F16). There is deliberately no inline fallback — an earlier one
+/// silently defeated that control.
+fn resolve_bind_pass(file: Option<&str>) -> Result<String, String> {
+    let Some(path) = file.map(str::trim).filter(|p| !p.is_empty()) else {
+        if std::env::var("LDAP_BIND_PASS")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
+            tracing::warn!(
+                "LDAP_BIND_PASS is set but ignored; mount the password and set LDAP_BIND_PASS_FILE"
+            );
+        }
+        return Err(
+            "LDAP_BIND_PASS_FILE is required (mount the service-account password; an inline LDAP_BIND_PASS is not accepted)"
+                .to_string(),
+        );
+    };
+    std::fs::read_to_string(path)
+        .map(|s| s.trim_end_matches(['\r', '\n']).to_string())
+        .map_err(|e| format!("reading LDAP_BIND_PASS_FILE {path}: {e}"))
 }
 
 impl Client {
     /// Build a client; does not dial (lazy connection, NAS restart-race safe).
     pub fn new(cfg: &Config) -> Result<Self, String> {
         let tls = if cfg.use_tls {
+            if cfg.ca_cert_path.trim().is_empty() {
+                return Err(
+                    "LDAP_CA_CERT is required when LDAP_USE_TLS=true; refusing to build a client that cannot verify the server"
+                        .to_string(),
+                );
+            }
             Some(build_tls_config(&cfg.host, &cfg.ca_cert_path)?)
         } else {
+            let loopback =
+                cfg.host == "localhost" || cfg.host == "::1" || cfg.host.starts_with("127.");
+            if !loopback {
+                tracing::warn!(
+                    "LDAP_USE_TLS=false for {}: the service-account password crosses the network in cleartext",
+                    cfg.host
+                );
+            }
             None
         };
         Ok(Self {
@@ -269,10 +314,7 @@ impl Client {
             base_dn: std::env::var("LDAP_BASE_DN").unwrap_or_else(|_| "dc=naslos,dc=local".into()),
             bind_dn: std::env::var("LDAP_BIND_DN")
                 .unwrap_or_else(|_| "cn=naslos-service,ou=services,dc=naslos,dc=local".into()),
-            bind_pass: resolve_bind_pass(
-                std::env::var("LDAP_BIND_PASS_FILE").ok().as_deref(),
-                &std::env::var("LDAP_BIND_PASS").unwrap_or_default(),
-            )?,
+            bind_pass: resolve_bind_pass(std::env::var("LDAP_BIND_PASS_FILE").ok().as_deref())?,
             ca_cert_path: std::env::var("LDAP_CA_CERT").unwrap_or_default(),
             use_tls: std::env::var("LDAP_USE_TLS")
                 .map(|v| v == "true")
@@ -659,16 +701,45 @@ mod tests {
     }
 
     #[test]
-    fn the_bind_password_prefers_the_file() {
+    fn the_bind_password_comes_from_a_file_only() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pw");
         std::fs::write(&path, "from-file\n").unwrap();
         assert_eq!(
-            resolve_bind_pass(Some(path.to_str().unwrap()), "inline").unwrap(),
+            resolve_bind_pass(Some(path.to_str().unwrap())).unwrap(),
             "from-file"
         );
-        assert_eq!(resolve_bind_pass(None, "inline").unwrap(), "inline");
-        assert!(resolve_bind_pass(Some("/nonexistent/naslos"), "inline").is_err());
+        // No inline fallback: an environment-only password must be refused.
+        assert!(resolve_bind_pass(None).is_err());
+        assert!(resolve_bind_pass(Some("  ")).is_err());
+        assert!(resolve_bind_pass(Some("/nonexistent/naslos")).is_err());
+    }
+
+    #[test]
+    fn config_debug_does_not_leak_the_password() {
+        let cfg = Config {
+            host: "ldap".into(),
+            bind_pass: "hunter2".into(),
+            ..Default::default()
+        };
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("hunter2"), "{rendered}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+    }
+
+    #[test]
+    fn tls_without_a_ca_is_refused() {
+        let cfg = Config {
+            host: "naslos-openldap".into(),
+            use_tls: true,
+            ca_cert_path: String::new(),
+            ..Default::default()
+        };
+        let err = match Client::new(&cfg) {
+            Ok(_) => panic!("TLS without a CA must fail"),
+            Err(e) => e,
+        };
+        assert!(err.contains("LDAP_CA_CERT"), "{err}");
     }
 
     #[test]

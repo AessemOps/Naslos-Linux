@@ -12,12 +12,6 @@ struct Cli {
     /// HTTP listen address.
     #[arg(long, default_value = ":8080")]
     listen: String,
-    /// Path to kubeconfig (empty = in-cluster).
-    #[arg(long, default_value = "")]
-    kubeconfig: String,
-    /// Path to talosconfig (empty = use default).
-    #[arg(long, default_value = "")]
-    talosconfig: String,
 }
 
 #[tokio::main]
@@ -90,8 +84,14 @@ async fn main() {
 
     let app = build_router(state.clone());
 
-    let addr = parse_addr(&cli.listen);
-    tracing::info!("naslos-api listening on {}", cli.listen);
+    let addr = match parse_addr(&cli.listen) {
+        Ok(addr) => addr,
+        Err(e) => {
+            eprintln!("invalid --listen {:?}: {e}", cli.listen);
+            std::process::exit(1);
+        }
+    };
+    tracing::info!("naslos-api listening on {addr}");
     let mut server = axum_server::bind(addr);
     let builder = server.http_builder();
     let mut http1 = builder.http1();
@@ -181,14 +181,15 @@ async fn collect_once(state: &AppState, talos: &naslos_api::talos::TalosClient) 
     state.metrics.update(tm);
 }
 
-fn parse_addr(addr: &str) -> std::net::SocketAddr {
+/// Parse `--listen`. `:8080` means every interface (the in-cluster Service
+/// needs that); anything else must parse exactly. A typo must not silently
+/// widen the bind to 0.0.0.0.
+fn parse_addr(addr: &str) -> Result<std::net::SocketAddr, String> {
     let normalized = match addr.strip_prefix(':') {
         Some(rest) => format!("0.0.0.0:{rest}"),
         None => addr.to_string(),
     };
-    normalized
-        .parse()
-        .unwrap_or_else(|_| "0.0.0.0:8080".parse().unwrap())
+    normalized.parse().map_err(|e| format!("{e}"))
 }
 
 async fn shutdown_signal() {

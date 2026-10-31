@@ -82,6 +82,7 @@ impl TalosClient {
         full.extend(args.iter().map(|s| s.to_string()));
 
         let mut cmd = tokio::process::Command::new(&self.binary);
+        crate::proc::scrub(&mut cmd);
         cmd.kill_on_drop(true);
         cmd.args(&full);
         cmd.stdout(Stdio::piped());

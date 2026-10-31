@@ -170,10 +170,22 @@ impl AppState {
             trusted_cidrs,
             metrics: Manager::new(),
             talos: crate::talos::TalosClient::from_env().map(Arc::new),
-            agent: crate::agent::Client::from_env().ok().map(Arc::new),
+            agent: match crate::agent::Client::from_env() {
+                Ok(client) => Some(Arc::new(client)),
+                Err(e) => {
+                    tracing::error!("agent client unavailable: {e}");
+                    None
+                }
+            },
             shares: std::sync::Mutex::new(crate::shares::Manager::from_env()),
             samba_users: std::sync::Mutex::new(crate::shares::SambaUserStore::from_env()),
-            identity: crate::identity::Client::from_env().ok().map(Arc::new),
+            identity: match crate::identity::Client::from_env() {
+                Ok(client) => Some(Arc::new(client)),
+                Err(e) => {
+                    tracing::error!("identity/LDAP client unavailable: {e}");
+                    None
+                }
+            },
             charts: charts.clone(),
             catalog,
             app_manager,
