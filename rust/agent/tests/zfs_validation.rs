@@ -232,6 +232,7 @@ async fn create_pool_refuses_disk_in_another_pool() {
         "ERR:cannot open 'tank': no such pool\n",
         "other\t10G\t1G\t9G\tONLINE\n",
         "config:\n\n        NAME   STATE  READ WRITE CKSUM\n        other  ONLINE 0 0 0\n          /dev/sdb ONLINE 0 0 0\n\n",
+        "",
     ]));
     let calls = runner.calls();
     let c = client(&host, runner);
@@ -565,6 +566,7 @@ async fn add_vdev_refuses_disk_in_another_pool() {
         "tank\n",
         "other\t10G\t1G\t9G\tONLINE\n",
         "config:\n\n        NAME   STATE  READ WRITE CKSUM\n        other  ONLINE 0 0 0\n          /dev/sdb ONLINE 0 0 0\n\n",
+        "",
     ]));
     let calls = runner.calls();
     let c = client(&host, runner);
@@ -638,4 +640,82 @@ fn is_busy_error_matches_the_stale_mount_signature() {
     assert!(is_busy_error("cannot destroy 'tank/x': dataset is busy"));
     assert!(is_busy_error("cannot destroy 'tank/x': dataset is busy\n"));
     assert!(!is_busy_error("dataset is in use"));
+}
+
+/// A disk whose pool is only *importable* must not be wiped: `wipefs --all`
+/// destroys the label before `zpool import` could recover it.
+#[tokio::test]
+async fn create_pool_refuses_disk_in_an_exported_pool() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "ERR:cannot open 'tank': no such pool\n",
+        "",
+        "   pool: backup\n     id: 1\n  state: ONLINE\n action: import it\n config:\n\n        NAME        STATE     READ WRITE CKSUM\n        backup      ONLINE       0     0     0\n          /dev/sdb  ONLINE       0     0     0\n\n",
+    ]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    let err = c
+        .create_pool(&PoolConfig {
+            name: "tank".into(),
+            disks: vec!["/dev/sdb".into()],
+            ..Default::default()
+        })
+        .await
+        .expect_err("an exported pool's disk must be refused");
+    assert!(err.to_string().contains("exported pool"), "{err:?}");
+    assert!(!ran_command(&calls, "wipefs"), "the disk was wiped");
+    assert!(!ran_command(&calls, " create "));
+}
+
+/// If a pool's status cannot be read, ownership is unknown: fail closed.
+#[tokio::test]
+async fn create_pool_fails_closed_when_a_pool_status_errors() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "ERR:cannot open 'tank': no such pool\n",
+        "other\t10G\t1G\t9G\tONLINE\n",
+        "ERR:status: pool I/O is currently suspended\n",
+        "",
+    ]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    let err = c
+        .create_pool(&PoolConfig {
+            name: "tank".into(),
+            disks: vec!["/dev/sdc".into()],
+            ..Default::default()
+        })
+        .await
+        .expect_err("an unreadable pool status must abort the create");
+    assert!(!err.to_string().is_empty());
+    assert!(!ran_command(&calls, "wipefs"), "the disk was wiped");
+    assert!(!ran_command(&calls, " create "));
+}
+
+/// `/dev//sdb` resolves to the same device as `/dev/sdb`, so it must not slip
+/// past the ownership check.
+#[tokio::test]
+async fn create_pool_refuses_a_disk_alias() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "ERR:cannot open 'tank': no such pool\n",
+        "other\t10G\t1G\t9G\tONLINE\n",
+        "config:\n\n        NAME   STATE  READ WRITE CKSUM\n        other  ONLINE 0 0 0\n          /dev/sdb ONLINE 0 0 0\n\n",
+        "",
+    ]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    let err = c
+        .create_pool(&PoolConfig {
+            name: "tank".into(),
+            disks: vec!["/dev//sdb".into()],
+            ..Default::default()
+        })
+        .await
+        .expect_err("an alias of a pool member must be refused");
+    assert!(err.to_string().contains("already belongs"), "{err:?}");
+    assert!(!ran_command(&calls, "wipefs"));
 }

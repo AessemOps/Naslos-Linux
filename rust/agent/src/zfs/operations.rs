@@ -26,8 +26,33 @@ pub fn default_options() -> std::collections::HashMap<String, String> {
 }
 
 impl ZfsClient {
-    /// All pools with their member disks.
+    /// All pools with their member disks. A pool whose status cannot be read
+    /// is still listed, without its disks (display path only — use
+    /// `pools_strict` before acting on the result).
     pub async fn pools(&self) -> ZfsResult<Vec<Pool>> {
+        let mut pools = self.pool_rows().await?;
+        for pool in &mut pools {
+            // Parse `zpool status` for member disks so the disk wizard can mark
+            // disks already in a pool.
+            if let Ok(disks) = self.pool_disks(&pool.name).await {
+                pool.disks = if disks.is_empty() { None } else { Some(disks) };
+            }
+        }
+        Ok(pools)
+    }
+
+    /// Every pool with its members; fails if any `zpool status` fails.
+    pub async fn pools_strict(&self) -> ZfsResult<Vec<Pool>> {
+        let mut pools = self.pool_rows().await?;
+        for pool in &mut pools {
+            let disks = self.pool_disks(&pool.name).await?;
+            pool.disks = if disks.is_empty() { None } else { Some(disks) };
+        }
+        Ok(pools)
+    }
+
+    /// `zpool list` rows, without per-pool status.
+    async fn pool_rows(&self) -> ZfsResult<Vec<Pool>> {
         let out = match self
             .host_exec(
                 ZPOOL_BIN,
@@ -48,7 +73,7 @@ impl ZfsClient {
             if fields.len() < 5 {
                 continue;
             }
-            let mut pool = Pool {
+            let pool = Pool {
                 name: fields[0].to_string(),
                 size: fields[1].to_string(),
                 alloc: fields[2].to_string(),
@@ -56,11 +81,6 @@ impl ZfsClient {
                 health: fields[4].to_string(),
                 ..Default::default()
             };
-            // Parse `zpool status` for member disks so the disk wizard can mark
-            // disks already in a pool.
-            if let Ok(disks) = self.pool_disks(&pool.name).await {
-                pool.disks = if disks.is_empty() { None } else { Some(disks) };
-            }
             pools.push(pool);
         }
         Ok(pools)
@@ -136,6 +156,10 @@ impl ZfsClient {
             ));
         }
 
+        // Serialize the whole check → wipe → create sequence. Without this the
+        // existence check, the ownership snapshot and the wipe race each other.
+        let _guard = self.mutation_lock.lock().await;
+
         // Refuse if the pool already exists.
         if self
             .host_exec(ZPOOL_BIN, &args2("list", &cfg.name))
@@ -145,14 +169,33 @@ impl ZfsClient {
             return Err(invalid!("pool {:?} already exists", cfg.name));
         }
 
-        let members = self.pool_members().await?;
+        // Fail closed: if a pool's status cannot be read we do not know whether
+        // its disks are free, so we must not wipe anything.
+        let members = self.pool_members_strict().await?;
+        let importable = self.importable_members().await?;
         let disks = self.normalize_disk_set_for_host(&cfg.disks, &members)?;
+        for dev in &disks {
+            if let Some(owner) = importable.get(dev) {
+                return Err(invalid!(
+                    "disk {} belongs to exported pool {:?}; import or destroy that pool first",
+                    dev,
+                    owner
+                ));
+            }
+        }
 
         let mut cache = String::new();
         if !cfg.cache.is_empty() {
             let normalized =
                 self.normalize_disk_set_for_host(std::slice::from_ref(&cfg.cache), &members)?;
             cache = normalized[0].clone();
+            if let Some(owner) = importable.get(&cache) {
+                return Err(invalid!(
+                    "cache disk {} belongs to exported pool {:?}; import or destroy that pool first",
+                    cache,
+                    owner
+                ));
+            }
             if disks.contains(&cache) {
                 return Err(invalid!(
                     "disk {} cannot be both a data disk and the cache device",
@@ -291,10 +334,16 @@ impl ZfsClient {
         let out = match self.host_exec(ZPOOL_BIN, &args(&["import"])).await {
             Ok(out) => out,
             Err(e) => {
+                // `zpool import` exits non-zero with "no pools available to
+                // import" on a clean node; that is not a failure.
+                let combined = format!("{} {}", e.output, e.message);
+                if combined.to_ascii_lowercase().contains("no pools available") {
+                    return Ok(Vec::new());
+                }
                 return Err(ZfsError::Other(format!(
                     "listing importable pools: {}",
-                    e.message
-                )))
+                    combined.trim()
+                )));
             }
         };
 
