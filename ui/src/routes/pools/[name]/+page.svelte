@@ -63,7 +63,7 @@
 
   async function loadHealth() {
     try {
-      const res = await fetch(`/api/volumes/zfs/${poolName}/health`);
+      const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(poolName ?? '')}/health`);
       if (res.ok) {
         health = await res.json();
       } else {
@@ -187,7 +187,7 @@
     addSaving = true;
     addError = '';
     try {
-      const res = await fetch(`/api/volumes/zfs/${poolName}/devices`, {
+      const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(poolName ?? '')}/devices`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ disks: selectedDisks, topology: addTopology, force: addForce })
@@ -251,7 +251,7 @@
   {#if loading}
     <p class="text-gray-400">Loading health data...</p>
   {:else if error}
-    <p class="text-red-400">{error}</p>
+    <p role="alert" class="text-red-400">{error}</p>
   {:else if health}
     <!-- Status Overview -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
@@ -306,7 +306,7 @@
       </div>
 
       {#if datasetsError}
-        <p class="text-red-400 text-sm">{datasetsError}</p>
+        <p role="alert" class="text-red-400 text-sm">{datasetsError}</p>
       {:else if datasets.length === 0}
         <p class="text-gray-400 text-sm">No datasets yet. Create one to have a place for a share.</p>
       {:else}
@@ -403,7 +403,7 @@
           <input id="pool-field-3" type="text" bind:value={datasetQuota} placeholder="e.g. 500G (empty = pool-wide limit)" class="input w-full" />
         </div>
 
-        {#if datasetError}<div class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{datasetError}</div>{/if}
+        {#if datasetError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{datasetError}</div>{/if}
       </div>
 
       <div class="p-6 border-t border-naslos-border flex justify-end gap-3">
@@ -434,7 +434,7 @@
         </p>
 
         {#if disksError}
-          <p class="text-red-400 text-sm">{disksError}</p>
+          <p role="alert" class="text-red-400 text-sm">{disksError}</p>
         {:else if disks.length === 0}
           <p class="text-gray-400 text-sm">No disks detected.</p>
         {:else}
@@ -485,12 +485,12 @@
           <span class="text-gray-300 text-sm">Force: overwrite any existing signature on the disks</span>
         </label>
         {#if addForce}
-          <p class="text-xs text-red-400">
+          <p role="alert" class="text-xs text-red-400">
             Forcing writes over whatever is on the disks. If a disk holds another pool's label, that pool is destroyed.
           </p>
         {/if}
 
-        {#if addError}<div class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{addError}</div>{/if}
+        {#if addError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{addError}</div>{/if}
       </div>
 
       <div class="p-6 border-t border-naslos-border flex justify-end gap-3">

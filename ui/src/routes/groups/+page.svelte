@@ -66,7 +66,7 @@
   async function deleteGroup(cn: string) {
     if (!confirm(`Delete group "${cn}"?`)) return;
     try {
-      const res = await fetch(`/api/groups/${cn}`, { method: 'DELETE' });
+      const res = await fetch(`/api/groups/${encodeURIComponent(cn)}`, { method: 'DELETE' });
       if (res.ok) {
         loadGroups();
       } else {
@@ -103,7 +103,7 @@
   </div>
 
   {#if error}
-    <p class="text-red-400 mb-4">{error}</p>
+    <p role="alert" class="text-red-400 mb-4">{error}</p>
   {/if}
 
   {#if loading}

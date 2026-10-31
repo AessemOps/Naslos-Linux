@@ -124,7 +124,7 @@
   {/if}
 
   {#if error}
-    <div class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
+    <div role="alert" class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
   {/if}
 
   {#if loading}
