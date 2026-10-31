@@ -83,6 +83,7 @@ impl Client {
         full.extend(args.iter().cloned());
 
         let mut cmd = tokio::process::Command::new(&self.binary);
+        crate::proc::scrub(&mut cmd);
         cmd.kill_on_drop(true);
         cmd.args(&full);
         cmd.stdout(Stdio::piped());
