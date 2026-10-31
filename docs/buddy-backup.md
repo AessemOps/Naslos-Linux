@@ -186,6 +186,27 @@ interrupted push cheap to resume:
 5. After the manifest is published the chain is complete and the state file is
    removed.
 
+### 3.4 Stream deadlines
+
+The API's normal agent calls have a **total** 180 s deadline. The streaming
+paths (`GET /api/v1/zfs/send/...`, `POST /api/v1/zfs/receive/...`) do not: a
+backup that keeps making progress may legitimately run for hours, and SEC-2026-D9
+removed their total deadline on the agent side.
+
+Instead, the streaming client enforces two bounds:
+
+| Bound | Default | Env / value |
+| --- | --- | --- |
+| Connect | 10 s | fixed |
+| Idle between body chunks | 300 s | `AGENT_STREAM_IDLE_TIMEOUT_SECS` (chart: `api.agentStreamIdleTimeoutSecs`) |
+
+A peer that stops sending for longer than the idle deadline is cut and the
+operation fails; it can be resumed (the chain state makes that cheap). A send or
+restore that silently stops after three minutes is therefore a configuration or
+network symptom, not the client giving up — check the value above and the node's
+`zfs` progress. Regression coverage lives in `rust/api/src/agent.rs`
+(`agent::tests::send_stream_*`).
+
 ## 4. The envelope
 
 The plaintext stream is cut into fixed 1 MiB chunks; each chunk is sealed on its
