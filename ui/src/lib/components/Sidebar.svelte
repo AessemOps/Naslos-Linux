@@ -15,6 +15,7 @@
     { name: 'Groups', path: '/groups', icon: '👥' },
     { name: 'Disks', path: '/disks', icon: '💾' },
     { name: 'Apps', path: '/apps', icon: '📦' },
+    { name: 'Datasets', path: '/datasets', icon: '🗂️' },
     { name: 'Domains', path: '/domains', icon: '🌐' },
     { name: 'Dynamic DNS', path: '/dns', icon: '🌍' },
     { name: 'Shares', path: '/shares', icon: '🔗' },

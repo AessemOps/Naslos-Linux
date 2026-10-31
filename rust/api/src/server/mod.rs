@@ -13,6 +13,7 @@ pub mod buddy_restore;
 pub mod buddy_schedules;
 pub mod buddy_send;
 pub mod catalog;
+pub mod dataset_registry;
 pub mod ddns;
 pub mod disks;
 pub mod domains;
@@ -216,6 +217,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/groups",
             get(users::groups_get).post(users::groups_post),
+        )
+        .route(
+            "/api/datasets/registry",
+            get(dataset_registry::list).post(dataset_registry::create),
+        )
+        .route(
+            "/api/datasets/registry/{name}",
+            axum::routing::delete(dataset_registry::delete),
         )
         .route(
             "/api/groups/{cn}",

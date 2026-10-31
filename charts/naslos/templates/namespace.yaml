@@ -59,6 +59,7 @@ metadata:
     app.kubernetes.io/name: naslos
     app.kubernetes.io/part-of: naslos
     app.kubernetes.io/component: apps
+    naslos.local/apps: "true"
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/enforce-version: latest
   annotations:
@@ -81,6 +82,7 @@ metadata:
     app.kubernetes.io/name: naslos
     app.kubernetes.io/part-of: naslos
     app.kubernetes.io/component: apps-privileged
+    naslos.local/apps: "true"
     pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/enforce-version: latest
   annotations:

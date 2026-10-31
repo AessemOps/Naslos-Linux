@@ -72,6 +72,15 @@ dp = find("Deployment", "naslos-api")
 env = {e["name"]: e for e in dp["spec"]["template"]["spec"]["containers"][0]["env"]}
 assert env.get("TRAEFIK_CIDR", {}).get("value") == "10.244.0.0/16", env.get("TRAEFIK_CIDR")
 assert "HELM_SA_TOKEN_FILE" in env, env.get("HELM_SA_TOKEN_FILE")
+assert "naslos-app-1" in env.get("APPS_NAMESPACE_POOL", {}).get("value", ""), env.get("APPS_NAMESPACE_POOL")
+ns = find("Namespace", "naslos-app-1")
+assert ns, "per-app namespace missing"
+assert ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "baseline"
+pns = find("Namespace", "naslos-app-p1")
+assert pns, "privileged per-app namespace missing"
+assert pns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "privileged"
+assert find("ClusterRole", "naslos-helm-workloads"), "Helm workload ClusterRole missing"
+assert find("ClusterRoleBinding", "naslos-api-datasets"), "API PV ClusterRoleBinding missing"
 commit = env.get("SOURCES_OFFICIAL_COMMIT", {}).get("value", "")
 assert len(commit) == 40 and all(c in "0123456789abcdef" for c in commit), commit
 kek = env.get("BUDDY_KEK", {})

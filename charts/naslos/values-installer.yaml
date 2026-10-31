@@ -86,6 +86,11 @@ ingress:
 # --- app catalog / dynamic DNS ---
 apps:
   namespace: naslos-apps
+  isolation:
+    enabled: true
+  # Fresh installs use per-app claims only; no shared /var/mnt exposure.
+  datasets:
+    enabled: false
   officialSource:
     name: naslos
     displayName: NaslosCharts
