@@ -24,6 +24,29 @@ pub struct AppState {
     pub zfs: Option<Arc<ZfsClient>>,
     pub shares: Option<Arc<SharesClient>>,
     pub auth_token: String,
+    /// Caps concurrent `zfs send`/`receive` streams. Each pins host processes
+    /// and file descriptors, and an authenticated caller could otherwise start
+    /// unbounded ones.
+    pub stream_slots: Arc<tokio::sync::Semaphore>,
+}
+
+/// Concurrent `zfs send`/`receive` limit (default 4).
+fn max_streams() -> usize {
+    std::env::var("AGENT_MAX_STREAMS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(4)
+}
+
+/// Longest tolerated gap between restore body chunks.
+fn stream_idle_timeout() -> std::time::Duration {
+    let secs = std::env::var("AGENT_STREAM_IDLE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(300);
+    std::time::Duration::from_secs(secs)
 }
 
 /// The agent's HTTP server.
@@ -47,6 +70,7 @@ impl Server {
                 zfs,
                 shares,
                 auth_token: opts.auth_token,
+                stream_slots: Arc::new(tokio::sync::Semaphore::new(max_streams())),
             }),
             tls_cert_file: opts.tls_cert_file,
             tls_key_file: opts.tls_key_file,

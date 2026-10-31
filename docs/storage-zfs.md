@@ -212,3 +212,19 @@ checks stand between a request and `wipefs --all`:
 The UI mirrors the rules: disks holding a ZFS label are not selectable, a disk
 with existing data shows a signature badge, and the create button stays
 disabled until the operator ticks "Erase this disk and everything on it".
+
+## Pool destroy and import-all
+
+`DELETE /api/volumes/zfs/{pool}` requires `confirm=<pool>`. `zpool destroy` runs
+**without** `-f` unless the request also sends `force=true`, so a pool whose
+datasets are mounted or busy fails instead of being torn down. The agent's
+`DELETE /api/v1/pools/{pool}` applies the same rule; there is no unconfirmed
+destroy path.
+
+`POST /api/volumes/zfs/import` requires either a pool name or an explicit
+`{"all": true}`. A malformed or empty body is rejected, because the previous
+fallback imported every importable pool with `-f`.
+
+Concurrent `zfs send`/`receive` streams are capped (`agent.maxStreams`,
+`AGENT_MAX_STREAMS`, default 4) and a restore fails after
+`agent.streamIdleTimeoutSecs` (default 300 s) without body data.

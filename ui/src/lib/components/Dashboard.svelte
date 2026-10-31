@@ -34,6 +34,7 @@
   let deleteTarget: string | null = null;
   let deleting = false;
   let deleteError = '';
+  let deleteConfirmText = '';
 
   async function loadDashboard() {
     if (inFlight) return;
@@ -56,11 +57,13 @@
   function confirmDelete(name: string) {
     deleteTarget = name;
     deleteError = '';
+    deleteConfirmText = '';
   }
 
   function cancelDelete() {
     deleteTarget = null;
     deleteError = '';
+    deleteConfirmText = '';
   }
 
   async function deletePool() {
@@ -68,9 +71,10 @@
     deleting = true;
     deleteError = '';
     try {
-      const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(deleteTarget)}`, {
-        method: 'DELETE',
-      });
+      const res = await fetch(
+        `/api/volumes/zfs/${encodeURIComponent(deleteTarget)}?confirm=${encodeURIComponent(deleteTarget)}`,
+        { method: 'DELETE' }
+      );
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`HTTP ${res.status} — ${text.slice(0, 200)}`);
@@ -200,12 +204,20 @@
             Are you sure you want to delete pool <strong class="text-white">{deleteTarget}</strong>?
             This will destroy the pool and all data on it. This action cannot be undone.
           </p>
+          <label class="block mb-4">
+            <span class="text-sm text-gray-300">Type <span class="font-mono text-white">{deleteTarget}</span> to confirm</span>
+            <input class="input w-full mt-1" bind:value={deleteConfirmText} autocomplete="off" />
+          </label>
           {#if deleteError}
             <p role="alert" class="text-red-400 text-sm mb-4">{deleteError}</p>
           {/if}
           <div class="flex justify-end gap-3">
             <button class="btn btn-secondary" on:click={cancelDelete} disabled={deleting}>Cancel</button>
-            <button class="btn bg-red-600 hover:bg-red-700 text-white" on:click={deletePool} disabled={deleting}>
+            <button
+              class="btn bg-red-600 hover:bg-red-700 text-white"
+              on:click={deletePool}
+              disabled={deleting || deleteConfirmText !== deleteTarget}
+            >
               {deleting ? 'Deleting…' : 'Delete Pool'}
             </button>
           </div>

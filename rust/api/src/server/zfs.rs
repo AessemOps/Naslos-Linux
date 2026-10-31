@@ -413,15 +413,20 @@ pub async fn pool_detail_get(
 pub async fn pool_detail_delete(
     State(state): State<Arc<AppState>>,
     Path(pool): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Response {
     if !is_valid_pool_name(&pool) {
         return bad_request(&format!("invalid pool name {pool:?}"));
     }
+    if query.get("confirm").map(String::as_str) != Some(pool.as_str()) {
+        return bad_request("destroying a pool requires confirm=<pool name>");
+    }
+    let force = query.get("force").map(|v| v == "true").unwrap_or(false);
     let client = match agent(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    match client.delete_pool(&pool).await {
+    match client.delete_pool(&pool, force).await {
         Ok(()) => json(
             StatusCode::OK,
             serde_json::json!({ "status": "pool destroyed", "pool": pool }),

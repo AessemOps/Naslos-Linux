@@ -299,7 +299,10 @@ async fn pool_sinks_refuse_invalid_names() {
         let calls = runner.calls();
         let c = client(&host, runner);
 
-        assert!(c.destroy_pool(name).await.is_err(), "DestroyPool({name:?})");
+        assert!(
+            c.destroy_pool(name, false).await.is_err(),
+            "DestroyPool({name:?})"
+        );
         assert!(c.pool_status(name).await.is_err(), "PoolStatus({name:?})");
         assert!(c.pool_health(name).await.is_err(), "PoolHealth({name:?})");
         assert!(c.export_pool(name).await.is_err(), "ExportPool({name:?})");
@@ -718,4 +721,22 @@ async fn create_pool_refuses_a_disk_alias() {
         .expect_err("an alias of a pool member must be refused");
     assert!(err.to_string().contains("already belongs"), "{err:?}");
     assert!(!ran_command(&calls, "wipefs"));
+}
+
+/// `zpool destroy` must not force by default, and the force flag is opt-in.
+#[tokio::test]
+async fn destroy_pool_only_forces_when_requested() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&["", ""]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    c.destroy_pool("tank", false).await.expect("destroy");
+    c.destroy_pool("tank", true).await.expect("destroy -f");
+
+    let recorded = calls.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 2);
+    assert!(recorded[0].contains("destroy") && recorded[0].contains("tank"));
+    assert!(!recorded[0].contains("-f"), "{}", recorded[0]);
+    assert!(recorded[1].contains("-f"), "{}", recorded[1]);
 }
