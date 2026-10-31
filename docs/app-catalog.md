@@ -260,3 +260,24 @@ mount the host path directly and share the same data.
   model, options and migration plan are in
   [datasets-isolation.md](datasets-isolation.md).
 - SSH chart sources require a pinned `known_hosts` (SEC-2026-B1).
+
+## Install integrity
+
+- **Namespace isolation is reserved, not raced.** The record used to be written
+  only after Helm finished, so two concurrent installs of different apps both
+  picked the same free `naslos-app-N`. Each install now reserves a namespace
+  under the manager lock (records ∪ reservations) and releases it on success or
+  failure; the record takes over once written.
+- **Privileged consent is re-checked at run time.** `POST /api/apps` validates
+  `privilegedConfirmed` against the catalog snapshot the operator saw, but the
+  job re-resolves the (refreshable) catalog. `Manager::install` refuses a
+  privileged app whose request did not carry the confirmation, so a catalog
+  refresh between confirm and execution cannot silently escalate.
+- **Upgrade validates values.** `PUT /api/apps/{name}` now runs the same
+  `schema` validation as install before calling Helm.
+- **Secret values are not returned.** Catalog fields marked
+  `format: password` (or `writeOnly: true`) are masked as `null` in
+  `GET /api/apps` and `GET /api/apps/{name}`, with the names listed in
+  `redactedKeys`. Echoing `null` back on upgrade keeps the stored value. The
+  values are still stored in `apps.json`; moving them to a Kubernetes Secret is
+  tracked as D7.
