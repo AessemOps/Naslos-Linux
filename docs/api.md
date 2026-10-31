@@ -81,7 +81,7 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | GET | `/api/catalog` | List catalog entries (summary incl. `source`, `channel`, `channels`) |
 | GET | `/api/catalog/{name}` | Full entry incl. JSON Schema, `services`, `exposure`, `chartPath` |
 | GET | `/api/apps` | Installed-app records with live status and URL |
-| POST | `/api/apps` | Enqueue an install job: `{name, values, exposure?, baseDomain?, confirmed:true, privilegedConfirmed?:true}`. `confirmed` is always required; an app whose catalog entry declares `privileged: true` additionally requires `privilegedConfirmed:true` (SEC-2026-D8) → `202 {jobId, state}` |
+| POST | `/api/apps` | Enqueue an install job: `{name, values, exposure?, baseDomain?, confirmed:true, privilegedConfirmed?:true}`. `confirmed` is always required; an app whose catalog entry declares `privileged: true` additionally requires `privilegedConfirmed:true` (SEC-2026-D8). Values are merged with the catalog defaults and validated against its JSON schema; a violation is a 400 (SEC-2026-D7) → `202 {jobId, state}` |
 | GET | `/api/apps/{name}` | Record + release status |
 | PUT | `/api/apps/{name}` | Enqueue an upgrade job: `{values}` → `202 {jobId, state}` |
 | DELETE | `/api/apps/{name}` | Enqueue an uninstall job (removes the release, its route and record) → `202 {jobId, state}` |

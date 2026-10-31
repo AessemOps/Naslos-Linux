@@ -18,7 +18,7 @@ and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
-**Last reviewed: 2026-10-24.** Maintenance: update this file whenever a direct dependency changes in
+**Last reviewed: 2026-10-25.** Maintenance: update this file whenever a direct dependency changes in
 `rust/api/Cargo.toml`, `rust/agent/Cargo.toml`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
 It also lists the GitHub Actions used by the CI/release workflows.
 
@@ -78,6 +78,7 @@ binaries (tar streaming, a PTY for terminal exec). Direct dependencies:
 | tar | 0.4 | MIT OR Apache-2.0 | https://github.com/alexcrichton/tar-rs |
 | libc | 0.2 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc |
 | reqwest | 0.12 | MIT OR Apache-2.0 | https://github.com/seanmonstar/reqwest |
+| jsonschema | 0.60 | MIT | https://github.com/Stranger6667/jsonschema |
 | rustls | 0.23 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls |
 | rustls-pemfile | 2 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/pemfile |
 | serde / serde_json | 1 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
