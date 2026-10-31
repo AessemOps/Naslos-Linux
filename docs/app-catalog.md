@@ -71,6 +71,11 @@ entries. Signature verification is still a follow-up.
 | `token` | HTTPS token in a Secret (`token` key) |
 | `ssh` | deploy key in a Secret (`ssh-private-key` key) |
 
+Allowed URL forms are `https://`, `ssh://` and `git@host:path`. `git://` is
+refused: it is unauthenticated and unencrypted, so an on-path attacker could
+serve an arbitrary chart to an install that runs with cluster identity. Other
+transports (`file://`, `ext::`) are refused as well.
+
 - The **official** source is seeded from `apps.officialSource` in the chart
   (`SOURCES_OFFICIAL_URL`); it cannot be recreated through the API as official.
 - Admin-added sources are created via `POST /api/sources`. A source's channel
@@ -80,8 +85,14 @@ entries. Signature verification is still a follow-up.
   tree per `(source, channel)`. A refresh uses `CHARTS_TTL` (default `15m`);
   when the remote is unreachable the stale clone is served and `lastError` is
   recorded. `POST /api/sources/refresh` forces a refresh.
-- The clone guard rejects path traversal and symlinks that escape the clone,
-  and refuses repositories beyond the size/file-count limits.
+- The clone guard rejects path traversal and refuses repositories beyond the
+  size/file-count limits.
+- **Charts may not contain links.** Git checks out with `core.symlinks=false`
+  (a link becomes a plain file holding the target path), and before every
+  install/upgrade the API walks the chart and refuses any symlink, hard link,
+  device, fifo, file over 5 MiB, or tree over 5000 entries. This matters because
+  the Helm loader reads chart files; a symlinked file would have let a chart
+  render `/var/lib/naslos/buddy-identity.json` into a manifest.
 
 ## Install / manage lifecycle
 
@@ -228,7 +239,7 @@ mount the host path directly and share the same data.
 
 - **The cluster must be able to reach the git host.** A clone runs from the API
   pod, so enable `networkPolicy.gitEgress: true` (on in `values-vm.yaml`) to
-  allow outbound git (HTTPS 443 / SSH 22 / git:// 9418); narrow
+  allow outbound git (HTTPS 443 / SSH 22); narrow
   `networkPolicy.gitEgressCIDRs` (default `0.0.0.0/0`) for a restricted network.
   A failed clone is surfaced as the source's `lastError`.
 - **Wildcard DNS is a prerequisite** for app subdomains: point `*.<domain>` at

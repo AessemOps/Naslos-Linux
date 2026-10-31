@@ -185,12 +185,13 @@ pub fn validate_source_url(url: &str) -> Result<(), String> {
         return Err("url must not contain whitespace or control characters".to_string());
     }
     let lower = url.to_ascii_lowercase();
+    // `git://` is unauthenticated and unencrypted: an on-path attacker could
+    // serve an arbitrary chart to an install that runs with cluster identity.
     let allowed = lower.starts_with("https://")
         || lower.starts_with("ssh://")
-        || lower.starts_with("git://")
         || (lower.starts_with("git@") && lower.contains(':'));
     if !allowed {
-        return Err("url must use https://, ssh://, git:// or git@host:path".to_string());
+        return Err("url must use https://, ssh:// or git@host:path".to_string());
     }
     Ok(())
 }
@@ -396,6 +397,18 @@ impl GitCliBackend {
         self.run_stdout(args, env).await.map(|_| ())
     }
 
+    /// Global git options that must precede every subcommand.
+    ///
+    /// A chart is installed from this tree by the Helm loader, which follows
+    /// symlinks. Checking links out as plain files (containing the target path)
+    /// removes the primitive that let a chart read files outside the clone;
+    /// `assert_regular_tree` is the second layer.
+    fn argv(args: &[String]) -> Vec<String> {
+        let mut full = vec!["-c".to_string(), "core.symlinks=false".to_string()];
+        full.extend(args.iter().cloned());
+        full
+    }
+
     async fn run_stdout(
         &self,
         args: &[String],
@@ -403,7 +416,7 @@ impl GitCliBackend {
     ) -> Result<String, String> {
         let mut cmd = tokio::process::Command::new(&self.binary);
         cmd.kill_on_drop(true);
-        cmd.args(args);
+        cmd.args(Self::argv(args));
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -596,6 +609,70 @@ impl GitBackend for GitCliBackend {
             }
         })
     }
+}
+
+/// Refuse a chart tree that contains anything Helm would follow outside the
+/// clone: symlinks, hard links, devices, fifos, or an oversized/very large tree.
+///
+/// Confirmed against Helm v4.3.0: a symlinked chart file is read through, so
+/// `{{ .Files.Get "leak.txt" }}` renders `/var/lib/naslos/buddy-identity.json`
+/// into a manifest. Git already checks links out as plain files
+/// (`core.symlinks=false`); this also covers trees produced any other way.
+pub fn assert_regular_tree(root: &str) -> Result<(), String> {
+    const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
+    const MAX_ENTRIES: usize = 5000;
+
+    let root = std::fs::canonicalize(root)
+        .map_err(|e| format!("resolving chart directory {root:?}: {e}"))?;
+    if !root.is_dir() {
+        return Err(format!("chart path {root:?} is not a directory"));
+    }
+
+    fn walk(dir: &std::path::Path, entries: &mut usize) -> Result<(), String> {
+        let read = std::fs::read_dir(dir)
+            .map_err(|e| format!("reading chart directory {}: {e}", dir.display()))?;
+        for entry in read {
+            let entry = entry.map_err(|e| format!("reading chart directory: {e}"))?;
+            *entries += 1;
+            if *entries > MAX_ENTRIES {
+                return Err(format!(
+                    "chart has more than {MAX_ENTRIES} entries; refusing to install it"
+                ));
+            }
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|e| format!("stat {}: {e}", path.display()))?;
+            if file_type.is_symlink() {
+                return Err(format!(
+                    "chart contains a symlink ({}); charts may only contain regular files and directories",
+                    path.display()
+                ));
+            }
+            if file_type.is_dir() {
+                walk(&path, entries)?;
+            } else if file_type.is_file() {
+                let meta = entry
+                    .metadata()
+                    .map_err(|e| format!("stat {}: {e}", path.display()))?;
+                if meta.len() > MAX_FILE_BYTES {
+                    return Err(format!(
+                        "chart file {} is larger than {MAX_FILE_BYTES} bytes; refusing to install it",
+                        path.display()
+                    ));
+                }
+            } else {
+                return Err(format!(
+                    "chart contains a non-regular entry ({}); refusing to install it",
+                    path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    let mut entries = 0;
+    walk(&root, &mut entries)
 }
 
 /// Quote a path for `GIT_SSH_COMMAND`, which git evaluates with a shell.
@@ -991,6 +1068,52 @@ mod tests {
     }
 
     #[test]
+    fn git_commands_disable_symlinks() {
+        let argv = GitCliBackend::argv(&["clone".to_string(), "--".to_string(), "u".to_string()]);
+        assert_eq!(argv[0], "-c");
+        assert_eq!(argv[1], "core.symlinks=false");
+        assert_eq!(argv[2], "clone");
+    }
+
+    fn chart_tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("templates")).unwrap();
+        std::fs::write(
+            dir.path().join("Chart.yaml"),
+            "apiVersion: v2\nname: x\nversion: 0.1.0\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("templates/cm.yaml"), "kind: ConfigMap\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_regular_chart_tree_is_accepted() {
+        let dir = chart_tree();
+        assert!(assert_regular_tree(dir.path().to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn a_symlinked_chart_file_is_refused() {
+        let dir = chart_tree();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/etc/hostname", dir.path().join("leak.txt")).unwrap();
+        let err = assert_regular_tree(dir.path().to_str().unwrap())
+            .expect_err("a symlink must be refused");
+        assert!(err.contains("symlink"), "{err}");
+    }
+
+    #[test]
+    fn an_oversized_chart_file_is_refused() {
+        let dir = chart_tree();
+        let big = std::fs::File::create(dir.path().join("big.bin")).unwrap();
+        big.set_len(6 * 1024 * 1024).unwrap();
+        let err = assert_regular_tree(dir.path().to_str().unwrap())
+            .expect_err("a 6 MiB chart file must be refused");
+        assert!(err.contains("larger than"), "{err}");
+    }
+
+    #[test]
     fn a_pinned_commit_must_be_a_full_sha() {
         let mut src = Source {
             name: "naslos".into(),
@@ -1009,7 +1132,6 @@ mod tests {
         for ok in [
             "https://github.com/o/r.git",
             "ssh://git@example.com/o/r.git",
-            "git://example.com/r.git",
             "git@example.com:o/r.git",
         ] {
             assert!(validate_source_url(ok).is_ok(), "{ok}");
@@ -1017,6 +1139,7 @@ mod tests {
         for bad in [
             "ext::sh -c touch /tmp/pwned",
             "file:///etc/passwd",
+            "git://example.com/r.git",
             "-oProxyCommand=id",
             "https://example.com/r git",
             "ftp://example.com/r",
