@@ -84,6 +84,8 @@ impl Registry {
     }
 
     pub fn add(&self, mut ds: ManagedDataset) -> Result<ManagedDataset, String> {
+        // Attachments are server-owned; a client must not be able to spoof them.
+        ds.attached_to.clear();
         ds.host_path = normalize_host_path(&ds.host_path)?;
         validate(&ds, &self.buddy_host_path)?;
         if ds.created_at.is_none() {
@@ -295,6 +297,11 @@ mod tests {
         let store = Registry::new(&path.display().to_string(), "");
         store.add(ds("media", "/var/mnt/tank/media")).unwrap();
         assert_eq!(store.list().len(), 1);
+        let mut spoof = ds("spoof", "/var/mnt/tank/spoof");
+        spoof.attached_to = vec!["attacker".into()];
+        store.add(spoof).unwrap();
+        assert!(store.get("spoof").unwrap().attached_to.is_empty());
+        store.remove("spoof").unwrap();
         assert!(store.add(ds("media", "/var/mnt/tank/other")).is_err());
         let reloaded = Registry::new(&path.display().to_string(), "");
         assert_eq!(
