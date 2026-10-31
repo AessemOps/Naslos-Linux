@@ -31,9 +31,12 @@ impl Client {
         validate_identity_name("username", &uid)?;
         let dn = self.person_dn(&uid);
 
+        // Hold the allocator across existence-check → uidNumber search → add.
+        let _alloc = self.user_alloc.lock().await;
         if self.get_person(&uid).await.is_ok() {
             return Err(format!("person {uid:?} already exists"));
         }
+        let uid_number = self.next_uid_number().await?;
 
         let cn = person_cn(display_name, first_name, last_name, &uid);
         let sn = if last_name.trim().is_empty() {
@@ -63,10 +66,7 @@ impl Client {
         if !mail.is_empty() {
             attrs.push(("mail".into(), set1(mail)));
         }
-        attrs.push((
-            "uidNumber".into(),
-            set1(&format!("{}", 10000 + hash_uid(&uid))),
-        ));
+        attrs.push(("uidNumber".into(), set1(&uid_number.to_string())));
         attrs.push(("gidNumber".into(), set1("10000")));
         attrs.push(("homeDirectory".into(), set1(&format!("/home/{uid}"))));
         attrs.push(("loginShell".into(), set1("/bin/bash")));
@@ -77,6 +77,29 @@ impl Client {
             .await
             .map_err(|e| format!("creating person: {e}"))?;
         self.get_person(&uid).await
+    }
+
+    /// Allocate the next POSIX uid. Callers must hold `user_alloc`.
+    async fn next_uid_number(&self) -> Result<i32, String> {
+        const FLOOR: i32 = 10001;
+        let entries = self
+            .run(Op::Search {
+                base: self.people_base(),
+                filter: "(uidNumber=*)".into(),
+                attrs: vec!["uidNumber".into()],
+            })
+            .await
+            .map_err(|e| format!("listing uidNumber values: {e}"))?
+            .entries()?;
+        let highest = entries
+            .iter()
+            .filter_map(|e| attr(e, "uidNumber").parse::<i32>().ok())
+            .max()
+            .unwrap_or(FLOOR - 1);
+        highest
+            .checked_add(1)
+            .filter(|n| *n >= FLOOR && *n < i32::MAX)
+            .ok_or_else(|| "no uidNumber left to allocate".to_string())
     }
 
     /// Retrieve a person by uid.

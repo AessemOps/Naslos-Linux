@@ -59,6 +59,45 @@ fn kubeconfig_args() -> Vec<String> {
     }
 }
 
+/// Terminal session bounds. Read once from the environment:
+/// `TERMINAL_MAX_SESSION_SECS` (default 8 h), `TERMINAL_IDLE_TIMEOUT_SECS`
+/// (default 30 min), `TERMINAL_MAX_SESSIONS` (default 8 concurrent execs).
+struct SessionLimits {
+    max: std::time::Duration,
+    idle: std::time::Duration,
+    max_sessions: usize,
+}
+
+fn env_secs(name: &str, default: u64) -> std::time::Duration {
+    let Ok(raw) = std::env::var(name) else {
+        return std::time::Duration::from_secs(default);
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(n) if n > 0 => std::time::Duration::from_secs(n),
+        _ => {
+            tracing::warn!("{name}={raw:?} is not a positive integer; using {default}s");
+            std::time::Duration::from_secs(default)
+        }
+    }
+}
+
+fn session_limits() -> &'static SessionLimits {
+    static LIMITS: std::sync::OnceLock<SessionLimits> = std::sync::OnceLock::new();
+    LIMITS.get_or_init(|| SessionLimits {
+        max: env_secs("TERMINAL_MAX_SESSION_SECS", 8 * 60 * 60),
+        idle: env_secs("TERMINAL_IDLE_TIMEOUT_SECS", 30 * 60),
+        max_sessions: env_secs("TERMINAL_MAX_SESSIONS", 8).as_secs() as usize,
+    })
+}
+
+fn exec_slots() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
+    static SLOTS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| {
+        std::sync::Arc::new(tokio::sync::Semaphore::new(session_limits().max_sessions))
+    })
+}
+
 /// `GET /api/ws/logs?namespace&pod&container`
 pub async fn logs_ws(
     State(state): State<Arc<AppState>>,
@@ -169,13 +208,25 @@ async fn logs_stream(socket: WebSocket, namespace: String, pod: String, containe
     };
 
     // Drain incoming frames (the logs client sends none) so the socket closes
-    // cleanly; when it does, stop the process.
-    while let Some(msg) = receiver.next().await {
-        if msg.is_err() || matches!(msg, Ok(Message::Close(_))) {
-            break;
+    // cleanly; when it does, stop the process. The stream is also bounded so a
+    // forgotten tab cannot follow logs forever.
+    let deadline = tokio::time::Instant::now() + session_limits().max;
+    loop {
+        let next = tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => {
+                tracing::info!("logs websocket hit the maximum session duration");
+                None
+            }
+            msg = receiver.next() => msg,
+        };
+        match next {
+            None => break,
+            Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+            Some(Ok(_)) => {}
         }
     }
     let _ = child.kill().await;
+    send_task.abort();
     let _ = send_task.await;
 }
 
@@ -274,9 +325,19 @@ pub async fn exec_ws(
         Ok(ws) => ws,
         Err(e) => return e.into_response(),
     };
+    let permit = match exec_slots().clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            return json(
+                StatusCode::TOO_MANY_REQUESTS,
+                serde_json::json!({ "error": "too many terminal sessions; close one and retry" }),
+            )
+        }
+    };
+
     ws.max_message_size(1 << 20)
         .max_frame_size(256 << 10)
-        .on_upgrade(move |socket| exec_session(socket, namespace, pod, resolved, command))
+        .on_upgrade(move |socket| exec_session(socket, namespace, pod, resolved, command, permit))
 }
 
 /// Hosts that may open a terminal WebSocket in addition to the request's own
@@ -316,18 +377,13 @@ pub(crate) fn origin_allowed(headers: &HeaderMap, extra_hosts: &[String]) -> boo
     let Some(authority) = uri.authority().map(|a| a.to_string()) else {
         return false;
     };
+    // `Host`, never `X-Forwarded-Host`: a hop that forwards the client value
+    // would otherwise let `Origin: https://evil` + `X-Forwarded-Host: evil`
+    // pass this check. Traefik preserves the real Host.
     let request_host = headers
-        .get("x-forwarded-host")
+        .get(HOST)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(|v| v.trim())
-        .filter(|v| !v.is_empty())
-        .or_else(|| {
-            headers
-                .get(HOST)
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.trim())
-        });
+        .map(|v| v.trim());
     if let Some(host) = request_host {
         if authority.eq_ignore_ascii_case(host) {
             return true;
@@ -384,6 +440,7 @@ async fn exec_session(
     pod: String,
     container: String,
     command: Vec<&'static str>,
+    _slot: tokio::sync::OwnedSemaphorePermit,
 ) {
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
@@ -489,7 +546,25 @@ async fn exec_session(
     });
 
     let master = pair.master;
-    while let Some(msg) = receiver.next().await {
+    let limits = session_limits();
+    let started = tokio::time::Instant::now();
+    let mut last_input = started;
+    let mut reason = "client closed the socket";
+    loop {
+        let deadline = (started + limits.max).min(last_input + limits.idle);
+        let next = tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => {
+                reason = if last_input + limits.idle < started + limits.max {
+                    "idle timeout"
+                } else {
+                    "maximum session duration"
+                };
+                break;
+            }
+            msg = receiver.next() => msg,
+        };
+        let Some(msg) = next else { break };
+        last_input = tokio::time::Instant::now();
         match msg {
             Ok(Message::Binary(data)) => {
                 use std::io::Write;
@@ -527,8 +602,22 @@ async fn exec_session(
             _ => {}
         }
     }
+    tracing::info!("terminal session ended: {reason}");
     let _ = child.kill();
+    // Closing the receiver makes the PTY reader thread's blocking_send fail, so
+    // it exits instead of pinning a thread until the kernel closes the pty.
+    output_task.abort();
     let _ = output_task.await;
+    // Reap the child; an unreaped portable-pty child becomes a zombie per
+    // session because the API is not PID 1.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || {
+            let mut child = child;
+            let _ = child.wait();
+        }),
+    )
+    .await;
 }
 
 #[cfg(test)]
@@ -581,6 +670,15 @@ mod tests {
             &headers(Some("file://naslos.local"), "naslos.local"),
             &[]
         ));
+    }
+
+    #[test]
+    fn forwarded_host_cannot_override_host() {
+        // A proxy that forwarded the client's X-Forwarded-Host must not make a
+        // foreign Origin look same-origin.
+        let mut h = headers(Some("https://evil.example"), "naslos.local");
+        h.insert("x-forwarded-host", "evil.example".parse().unwrap());
+        assert!(!origin_allowed(&h, &[]));
     }
 
     #[test]

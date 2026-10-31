@@ -123,7 +123,12 @@ data:
         # a template action calling an undefined "input" function, which
         # fatals with a "function not defined" error before the LDAP config
         # is even validated.
-        users_filter: (&(objectClass=inetOrgPerson)({username_attribute}={input}))
+        # Require an explicit Naslos group. The UI lets you create a user with
+        # no groups, and the apex catch-all rule is one_factor, so without this
+        # such an account could authenticate to the proxy and reach operator
+        # surfaces (the /traefik deny is the second layer). Admins are in
+        # naslos_admins, ordinary users in naslos_users.
+        users_filter: (&(objectClass=inetOrgPerson)({username_attribute}={input})(|(memberOf=cn=naslos_users,ou=groups,{{ .Values.openldap.baseDN | default "dc=naslos,dc=local" }})(memberOf=cn=naslos_admins,ou=groups,{{ .Values.openldap.baseDN | default "dc=naslos,dc=local" }})))
         additional_groups_dn: ou=groups
         groups_filter: (&(objectClass=groupOfNames)(member={dn}))
         group_name_attribute: cn
@@ -213,14 +218,13 @@ data:
           subject:
             - "group:naslos_admins"
           policy: two_factor
-        # The Traefik dashboard exposes every router, service and middleware, so
-        # it is operator-only. Admins already matched the subject rule above
-        # (with 2FA); a non-admin account is denied outright rather than being
-        # let in on one_factor. First match wins, so an account in both groups
-        # is still allowed by the rule above.
+        # The Traefik dashboard exposes every router, service and middleware,
+        # including the proxy-identity middleware with the shared secret, so it
+        # is operator-only. Admins already matched the subject rule above (with
+        # 2FA). This deny has no subject on purpose: an account authenticated
+        # outside naslos_users/naslos_admins used to fall through to the
+        # catch-all one_factor rule and reach the dashboard.
         - domain: {{ .Values.domain | quote }}
-          subject:
-            - "group:naslos_users"
           policy: deny
           resources:
             - "^/traefik"

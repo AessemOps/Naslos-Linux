@@ -14,16 +14,18 @@ pub async fn health() -> Response {
 }
 
 /// Readiness never fails when LDAP is down (the UI and the API's non-identity
-/// routes keep working), but the reported state is now measured with a short
-/// LDAP search instead of being hard-coded (SEC-2026-H3).
+/// routes keep working), but the reported state is measured instead of being
+/// hard-coded (SEC-2026-H3).
+///
+/// The probe is cached inside the identity client: this route is public, and a
+/// search per request would queue on the single LDAP connection and become a
+/// cheap way to block every identity-backed admin operation.
 pub async fn ready(State(state): State<Arc<AppState>>) -> Response {
     let ldap = match &state.identity {
         None => "down",
         Some(identity) => {
-            match tokio::time::timeout(std::time::Duration::from_secs(2), identity.list_groups())
-                .await
-            {
-                Ok(Ok(_)) => "up",
+            match tokio::time::timeout(std::time::Duration::from_secs(2), identity.ready()).await {
+                Ok(Ok(())) => "up",
                 _ => "down",
             }
         }
