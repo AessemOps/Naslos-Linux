@@ -501,15 +501,13 @@ ntfy:
 # (api/internal/metrics), which is independent. See docs/monitoring.md.
 
 # Storage classes
-storage:
-  # Local path provisioner for app data
-  localPath:
-    enabled: true
-    path: /var/mnt/local-path-provisioner
-  # No zfsLocalPV block: no template consumed it, the ZFS LocalPV provisioner
-  # is not installed, and its pool name did not exist on the node (AUDIT-M13).
-  # Every volume binds through local-path above. Add the provisioner first if
-  # ZFS-backed PVCs are ever wanted.
+# No storage-provisioner values here: the chart installs no provisioner. The
+# `local-path` StorageClass is applied by `scripts/deploy-vm.sh` and by the
+# installer's pack (manifests/local-path-*.yaml), so a bare `helm install` on a
+# cluster without it leaves the OpenLDAP/shares PVCs Pending. The old
+# `storage.localPath` block was never read by any template (it looked like the
+# chart configured storage) and has been removed. Add a provisioner first if
+# ZFS-backed PVCs are ever wanted.
 
 # OpenLDAP configuration
 openldap:
@@ -704,7 +702,7 @@ terminal:
   # The terminal's endpoints are owner routes like any other, so they are gated
   # by `auth` above (previously a separate terminal.requireAuth switch).
   # digest (NAS-022): pin the exact image; empty means "use the tag".
-  image: { repository: 192.168.1.2:30095/naslos-terminal, tag: "0.1.0-r3", digest: "" }
+  image: { repository: 192.168.1.2:30095/naslos-terminal, tag: "0.1.0-r3", digest: "", pullPolicy: IfNotPresent }
   resources:
     requests:
       cpu: 10m

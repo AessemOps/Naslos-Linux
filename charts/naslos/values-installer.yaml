@@ -28,27 +28,27 @@
 api:
   image:
     repository: ghcr.io/aessemops/naslos-api
-    tag: "0.1.0"
+    tag: "0.2.2"
   # The API manages the node via the Talos API; the installer creates this
   # Secret from the kubeconfig/talosconfig it generated.
   talosConfigSecret: "naslos-talosconfig"
 agent:
   image:
     repository: ghcr.io/aessemops/naslos-agent
-    tag: "0.1.0"
+    tag: "0.2.2"
 ui:
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    tag: "0.1.0"
+    tag: "0.2.2"
 shares:
   smb:
     image:
       repository: ghcr.io/aessemops/naslos-samba
-      tag: "0.1.0"
+      tag: "0.2.2"
   nfs:
     image:
       repository: ghcr.io/aessemops/naslos-nfs
-      tag: "0.1.0"
+      tag: "0.2.2"
   # The advertised SMB/mDNS name. `shares.discovery.name` feeds both
   # SMB_DISCOVERY_NAME (samba) and SMB_NETBIOS_NAME (api), so clients see one
   # identity. The installer sets it to the chosen short name (the first label of
@@ -59,9 +59,9 @@ shares:
 terminal:
   image:
     repository: ghcr.io/aessemops/naslos-terminal
-    tag: "0.1.0"
+    tag: "0.2.2"
 openldap:
-  image: ghcr.io/aessemops/naslos-openldap:0.1.0
+  image: ghcr.io/aessemops/naslos-openldap:0.2.2
 
 # --- identity ---
 # The public name: session cookie domain, TOTP issuer and TLS SAN. The installer
