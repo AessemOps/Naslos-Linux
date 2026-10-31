@@ -145,6 +145,18 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Refuse to move an already-published :${{ needs.guard.outputs.version }} tag
+        if: needs.guard.outputs.publish == 'true' && github.event_name == 'push'
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          image="${{ matrix.repository }}"
+          if docker buildx imagetools inspect "${image}:${VERSION}" >/dev/null 2>&1; then
+            echo "release: ${image}:${VERSION} already exists. Re-running a release would move the tag while the attached pack keeps the old digests. Delete the release and tag, then re-run." >&2
+            exit 1
+          fi
+
       - name: Build and push ${{ matrix.name }}
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -188,7 +200,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install PyYAML (pin-installer-values.py rewrites the profiles)
-        run: python3 -m pip install pyyaml
+        run: python3 -m pip install pyyaml==6.0.2
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -232,7 +244,9 @@ jobs:
         if: needs.guard.outputs.publish == 'true'
         run: |
           set -euo pipefail
-          docker logout ghcr.io || true
+          # A fresh config dir guarantees no cached GHCR credential is used;
+          # `docker logout || true` alone could leave a credential helper.
+          export DOCKER_CONFIG=$(mktemp -d)
           python3 -c 'import json; [print(v) for v in json.load(open("dist/image-digests.json")).values()]' |
           while read -r ref; do
             docker buildx imagetools inspect "$ref" >/dev/null
@@ -277,13 +291,34 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          ok=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs" \
-                 --jq '[.check_runs[] | select(.name=="audit" or .name=="supply-chain" or .name=="gitleaks") | .conclusion] | all(. == "success")')
-          if [ "$ok" != "true" ]; then
-            echo "release: CI is not green for $GITHUB_SHA (audit/supply-chain/gitleaks)" >&2
-            exit 1
-          fi
+          # `all(... == "success")` is vacuously true for an empty array and
+          # only the first page of check-runs was read, so a commit with none of
+          # these checks (or with a re-run failure on page 2) passed. Paginate,
+          # keep the latest run per name, and require all three to be present.
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs" \
+            --jq '.check_runs[]' > /tmp/check-runs.ndjson
+          python3 - <<'PY'
+          import json
 
+          wanted = {"audit", "supply-chain", "gitleaks"}
+          latest = {}
+          with open("/tmp/check-runs.ndjson", encoding="utf-8") as fh:
+              for line in fh:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  run = json.loads(line)
+                  if run.get("name") in wanted:
+                      latest[run["name"]] = run.get("conclusion")
+          missing = sorted(wanted - set(latest))
+          bad = {k: v for k, v in latest.items() if v != "success"}
+          if missing or bad:
+              raise SystemExit(
+                  f"release: CI is not green for the tagged commit (missing={missing}, not-success={bad})"
+              )
+          print("release: audit, supply-chain and gitleaks are green for this commit")
+          PY
       - name: Verify the pack checksum before attaching
         if: needs.guard.outputs.publish == 'true'
         run: |
