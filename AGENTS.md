@@ -82,6 +82,14 @@ via `storageState`; a target that does not challenge is an error.
   `release` workflow dispatches the installer to rebuild against the new
   pack. A change to any interface in the contract doc must update the installer
   in the same release.
+- **Naslos-Linux and Naslos-Installer release versions MUST stay identical.**
+  A `vX.Y.Z` release here MUST correspond to the installer's
+  `naslos-vX.Y.Z` release, and the installer app/engine version MUST be the
+  same `X.Y.Z`; never publish an installer-only patch (for example an installer
+  `v0.2.3` while Naslos is `0.2.2`). If the installer engine/UI needs a fix,
+  bump the Naslos patch version, release the `vX.Y.Z` pack, and rebuild the
+  installer at that same version. The release/installer workflows MUST reject
+  a version mismatch rather than publishing it.
 - **Never push a throwaway strict-semver tag.** `Naslos-Installer` resolves the
   newest `v^[0-9]+\.[0-9]+\.[0-9]+$` tag, so any `vX.Y.Z` tag (even a scratch
   one) becomes the release the installer picks up. Test via Actions → `release`

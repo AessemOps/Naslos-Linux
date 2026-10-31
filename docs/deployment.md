@@ -40,6 +40,10 @@
   `naslos-apps` that excludes Traefik, cert-manager and RBAC writes. Helm uses
   that token (`HELM_SA_TOKEN_FILE`/`HELM_SA_CA_FILE`); routing/certs/exec keep
   using the API's own ServiceAccount (SEC-2026-D1/D4).
+- **Version lockstep.** The installer release version MUST equal the Naslos
+  version (`vX.Y.Z` ↔ `naslos-vX.Y.Z`); an installer-only patch is refused by
+  the installer workflow. If the installer engine needs a fix, bump the Naslos
+  patch, release the pack, and rebuild the installer at that version.
 - **Installer dispatch token.** If the release run fails with `401 Bad
   credentials` at "Dispatch the installer rebuild", rotate
   `INSTALLER_DISPATCH_TOKEN` in the repository secrets, then run
