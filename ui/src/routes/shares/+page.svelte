@@ -82,7 +82,7 @@
     if (!confirm(`Delete share "${name}"?`)) return;
     error = '';
     try {
-      const res = await fetch(`/api/shares/${name}`, { method: 'DELETE' });
+      const res = await fetch(`/api/shares/${encodeURIComponent(name)}`, { method: 'DELETE' });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
@@ -126,7 +126,7 @@
   </div>
 
   {#if error}
-    <div class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
+    <div role="alert" class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
   {/if}
 
   {#if loading}

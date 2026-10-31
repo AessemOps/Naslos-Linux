@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { modal } from '$lib/actions/modal';
   import { onDestroy } from 'svelte';
 
   interface DashboardData {
@@ -128,7 +129,7 @@
     <p class="text-gray-400">Loading dashboard...</p>
   {:else}
     {#if error}
-      <p class="text-red-400 mb-4">{error}</p>
+      <p role="alert" class="text-red-400 mb-4">{error}</p>
     {/if}
     <!-- Quick stats -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
@@ -191,7 +192,8 @@
 
     <!-- Delete Confirmation Modal -->
     {#if deleteTarget}
-      <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+      <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" use:modal={{ onClose: cancelDelete }}>
         <div class="bg-naslos-card border border-naslos-border rounded-lg p-6 max-w-md w-full mx-4">
           <h3 class="text-xl font-bold mb-2">Delete Pool</h3>
           <p class="text-gray-400 mb-4">
@@ -199,7 +201,7 @@
             This will destroy the pool and all data on it. This action cannot be undone.
           </p>
           {#if deleteError}
-            <p class="text-red-400 text-sm mb-4">{deleteError}</p>
+            <p role="alert" class="text-red-400 text-sm mb-4">{deleteError}</p>
           {/if}
           <div class="flex justify-end gap-3">
             <button class="btn btn-secondary" on:click={cancelDelete} disabled={deleting}>Cancel</button>

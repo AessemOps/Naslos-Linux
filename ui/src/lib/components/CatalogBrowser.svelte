@@ -103,7 +103,7 @@
   {#if loading}
     <p class="text-gray-400">Loading catalog...</p>
   {:else if loadError}
-    <div class="card border-red-700 bg-red-900/30 text-red-300 p-4">{loadError}</div>
+    <div role="alert" class="card border-red-700 bg-red-900/30 text-red-300 p-4">{loadError}</div>
   {:else if apps.length === 0}
     <div class="card text-center py-12" role="status">
       <div class="text-5xl mb-4">🗂️</div>

@@ -112,7 +112,7 @@
   {#if loading}
     <p class="text-gray-400">Loading pools...</p>
   {:else if error}
-    <p class="text-red-400">{error}</p>
+    <p role="alert" class="text-red-400">{error}</p>
   {:else if pools.length === 0}
     <div class="card text-center py-12">
       <p class="text-gray-400 mb-4">No ZFS pools configured yet.</p>
@@ -157,7 +157,7 @@
       {#if importLoading}
         <p class="text-gray-400">Scanning for importable pools...</p>
       {:else if importError}
-        <p class="text-red-400">{importError}</p>
+        <p role="alert" class="text-red-400">{importError}</p>
       {:else if importablePools.length === 0}
         <div class="text-center py-8">
           <p class="text-gray-400">No importable pools found.</p>

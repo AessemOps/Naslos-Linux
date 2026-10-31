@@ -51,7 +51,7 @@
     if (!confirm(`Delete user "${uid}"? This will also remove their SMB access.`)) return;
     error = '';
     try {
-      const res = await fetch(`/api/users/${uid}`, { method: 'DELETE' });
+      const res = await fetch(`/api/users/${encodeURIComponent(uid)}`, { method: 'DELETE' });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
@@ -65,7 +65,7 @@
     const action = user.enabled ? 'disable' : 'enable';
     error = '';
     try {
-      const res = await fetch(`/api/users/${user.uid}/${action}`, { method: 'POST' });
+      const res = await fetch(`/api/users/${encodeURIComponent(user.uid)}/${encodeURIComponent(action)}`, { method: 'POST' });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
@@ -88,7 +88,7 @@
   </div>
 
   {#if error}
-    <div class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
+    <div role="alert" class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
   {/if}
 
   {#if loading}

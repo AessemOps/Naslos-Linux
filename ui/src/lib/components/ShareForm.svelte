@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { modal } from '$lib/actions/modal';
   import { onMount, createEventDispatcher } from 'svelte';
 
   interface Share {
@@ -241,7 +242,8 @@
   });
 </script>
 
-<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" role="presentation" on:click|self={() => dispatch('close')}>
+<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" use:modal={{ onClose: () => dispatch('close') }} on:click|self={() => dispatch('close')}>
   <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
     <div class="p-6 border-b border-naslos-border flex items-center justify-between">
       <h2 class="text-xl font-bold">{share ? 'Edit Share' : 'New Share'}</h2>
@@ -316,7 +318,7 @@
                 disabled={folderBusy || !newFolderName.trim()}
               >{folderBusy ? 'Creating...' : 'Create folder'}</button>
             </div>
-            {#if folderError}<p class="text-xs text-red-400 mt-2">{folderError}</p>{/if}
+            {#if folderError}<p role="alert" class="text-xs text-red-400 mt-2">{folderError}</p>{/if}
           </div>
         {/if}
 
@@ -401,7 +403,7 @@
         <p class="text-xs text-gray-500 mt-1">Members of the selected groups can use this share. With no users and no groups selected, any valid account can.</p>
       </div>
 
-      {#if error}<div class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
+      {#if error}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
     </div>
 
     <div class="p-6 border-t border-naslos-border flex justify-end gap-3">

@@ -272,7 +272,7 @@
   </div>
 
   {#if error}
-    <div class="card mb-4 border-red-700 bg-red-900/20 text-red-300 text-sm">{error}</div>
+    <div role="alert" class="card mb-4 border-red-700 bg-red-900/20 text-red-300 text-sm">{error}</div>
   {/if}
 
   {#if !loadingTargets && !terminalPod}

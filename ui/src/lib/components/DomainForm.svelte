@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { modal } from '$lib/actions/modal';
   import { createEventDispatcher, onMount } from 'svelte';
   import ProviderFields from './ProviderFields.svelte';
   import InfoBubble from './InfoBubble.svelte';
@@ -99,7 +100,8 @@
   }
 </script>
 
-<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" role="presentation" on:click|self={() => dispatch('close')}>
+<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" use:modal={{ onClose: () => dispatch('close') }} on:click|self={() => dispatch('close')}>
   <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
     <div class="p-6 border-b border-naslos-border flex items-center justify-between">
       <h2 class="text-xl font-bold">{domain ? 'Edit Domain' : 'Add Domain'}</h2>
@@ -161,7 +163,7 @@
           <option value="production">Production</option>
         </select>
       </div>
-      {#if error}<div class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
+      {#if error}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
     </div>
     <div class="p-6 border-t border-naslos-border flex justify-end gap-3">
       <button class="btn btn-secondary" on:click={() => dispatch('close')}>Cancel</button>

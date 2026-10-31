@@ -389,7 +389,7 @@
   <h1 class="text-3xl font-bold mb-2">Backups</h1>
   <p class="text-gray-400 mb-6">Push encrypted backups to a buddy. The buddy stores ciphertext it cannot read.</p>
 
-  {#if error}<div class="p-4 mb-4 rounded-lg border bg-red-900/30 border-red-700 text-red-300"><span>{error}</span></div>{/if}
+  {#if error}<div role="alert" class="p-4 mb-4 rounded-lg border bg-red-900/30 border-red-700 text-red-300"><span>{error}</span></div>{/if}
 
   {#if loading}
     <p class="text-gray-400">Loading backups...</p>
@@ -480,7 +480,7 @@
         <div class="mt-3 text-sm">
           <p class="text-gray-400">Verify {verifyFor}:</p>
           {#if verifying}<p class="text-gray-400">Verifying…</p>
-          {:else if verifyError}<p class="text-red-300">{verifyError}</p>
+          {:else if verifyError}<p role="alert" class="text-red-300">{verifyError}</p>
           {:else if verifyChains.length > 0}
             <ul class="mt-1 space-y-1">
               {#each verifyChains as c}<li><code class="text-xs text-naslos-primary">{c.chain}</code> <span class="text-gray-400 text-xs">{c.sha256} ({fmtBytes(c.bytes)})</span></li>{/each}
@@ -502,7 +502,7 @@
         <input type="text" bind:value={adhoc.source} placeholder="Source name" class="input" />
       </div>
       <button class="btn btn-primary mt-3" on:click={() => startSend(adhoc.dataset, adhoc.receiver, adhoc.source)}>Start backup</button>
-      {#if jobError}<p class="text-sm text-red-300 mt-2">{jobError}</p>{/if}
+      {#if jobError}<p role="alert" class="text-sm text-red-300 mt-2">{jobError}</p>{/if}
       {#if activeJob}
         <div class="mt-3 text-sm">
           <p>Job <code class="text-naslos-primary">{activeJob.id}</code>: <span class="font-medium">{activeJob.state}</span>
@@ -518,7 +518,7 @@
           {:else if activeJob.result}
             <p class="text-xs text-gray-400 mt-1">Chain {activeJob.result.chain}: {activeJob.result.chunks} chunks, {fmtBytes(activeJob.result.plainBytes)}.</p>
           {:else if activeJob.error}
-            <p class="text-sm text-red-300 mt-1">{activeJob.error}</p>
+            <p role="alert" class="text-sm text-red-300 mt-1">{activeJob.error}</p>
           {/if}
         </div>
       {/if}
@@ -537,7 +537,7 @@
         <input type="text" bind:value={restore.confirm} placeholder="Type destination to confirm" class="input" />
       </div>
       <button class="btn btn-danger mt-3" on:click={doRestore} disabled={restoring}>{restoring ? 'Restoring...' : 'Restore'}</button>
-      {#if restoreError}<p class="text-sm text-red-300 mt-2">{restoreError}</p>{/if}
+      {#if restoreError}<p role="alert" class="text-sm text-red-300 mt-2">{restoreError}</p>{/if}
       {#if restoreResult}<p class="text-sm text-green-300 mt-2">{restoreResult}</p>{/if}
     </div>
 
