@@ -15,8 +15,17 @@
 - **`make crds`** installs both the Traefik and the cert-manager CRDs. The app
   routing layer needs the Traefik CRDs; the SSL page is gated on the
   cert-manager CRDs.
-- **Dataset exposure.** `apps.datasets.hostPath` (default `/var/mnt`) is mounted
-  into every baseline app. The chart refuses `/`, `/var`, `/etc`, `/home`,
+- **Per-app isolation.** With `apps.isolation.enabled=true` (VM and installer
+  overlays) the chart creates `apps.isolation.namespaces` baseline and
+  `apps.isolation.privilegedNamespaces` privileged app namespaces, each with PSA,
+  a quota, a default-deny NetworkPolicy and the reduced Helm/API RoleBindings.
+  New installs are assigned a free namespace and get one PV/PVC per selected
+  dataset (`naslos-app-data` StorageClass). Legacy records stay in
+  `naslos-apps` until reinstalled. See `docs/datasets-isolation.md`.
+- **Dataset exposure (legacy).** `apps.datasets.hostPath` (default `/var/mnt`) is
+  mounted into legacy baseline apps. Fresh installs set
+  `apps.datasets.enabled=false` in the installer overlay and use only per-app
+  claims; the VM overlay keeps it for records that predate isolation. The chart refuses `/`, `/var`, `/etc`, `/home`,
   `/root`, `/usr`, `/system`, and refuses a Buddy store nested inside the root
   unless `apps.datasets.allowBuddyStore=true`. The VM overlay sets that flag
   until the Buddy dataset is moved outside `/var/mnt`; see
