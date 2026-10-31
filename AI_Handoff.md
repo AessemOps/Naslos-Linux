@@ -34,12 +34,16 @@ the `v0.1.2` install pack. Live state:
 Kept to continue work on the appliance from the workspace. The earlier
 `0.1.0-r*` live-drill sections below are historical.
 
-## Release 0.2.1 (prepared, not deployed)
+## Release 0.2.1 (published; clean install pending)
 
-`Chart.yaml`/`ui/package.json` are at **0.2.1**. The release workflow
-(`v0.2.1` tag) builds the eight images, pins them by digest in the install pack,
-attaches the pack and dispatches `Naslos-Installer`. The clean install from the
-installer then includes:
+`v0.2.1` is tagged and the GitHub release has the digest-pinned pack
+(`naslos-install-pack-0.2.1.tar.gz`). The release workflow failed only at the
+installer dispatch (`401 Bad credentials` from `INSTALLER_DISPATCH_TOKEN`); the
+installer was dispatched manually and **`naslos-v0.2.1`** now exists in
+`AessemOps/Naslos-Installer`. Rotate that secret before the next release (see
+`docs/deployment.md` and `scripts/dispatch-installer.sh`).
+
+The clean install from the installer includes:
 
 - the audit fixes from batches 1-12 (auth/CSRF, WS origin, KEK Secret, verified
   CLI downloads, per-app Helm identity, catalog commit pin, install-value schema

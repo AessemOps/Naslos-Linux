@@ -40,6 +40,12 @@
   `naslos-apps` that excludes Traefik, cert-manager and RBAC writes. Helm uses
   that token (`HELM_SA_TOKEN_FILE`/`HELM_SA_CA_FILE`); routing/certs/exec keep
   using the API's own ServiceAccount (SEC-2026-D1/D4).
+- **Installer dispatch token.** If the release run fails with `401 Bad
+  credentials` at "Dispatch the installer rebuild", rotate
+  `INSTALLER_DISPATCH_TOKEN` in the repository secrets, then run
+  `scripts/dispatch-installer.sh vX.Y.Z` (or re-run the release workflow). The
+  pack is already attached to the release; only the installer rebuild is
+  missing.
 - **cert-manager + the OVH webhook.** `make install-vm` installs both as
   prerequisites (`make cert-manager`, then `make cert-manager-webhook-ovh`) in
   the `cert-manager` namespace, outside the `naslos` default-deny policies. OVH
