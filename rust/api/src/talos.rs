@@ -396,6 +396,44 @@ impl TalosClient {
         }
         Ok(disks)
     }
+
+    /// Filesystem signatures per whole disk, from `discoveredvolumes`.
+    ///
+    /// Partition signatures are attributed to their parent disk, so a disk
+    /// holding an exported ZFS pool (or any filesystem) is visible before the
+    /// API lets a create/add wipe it. The map key is the whole-disk path.
+    pub async fn get_discovered_signatures(
+        &self,
+    ) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+        let out = self
+            .run(&["get", "discoveredvolumes", "-o", "json"])
+            .await?;
+        let mut signatures: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for v in all_json(&out) {
+            let Some(spec) = v.get("spec") else { continue };
+            let text = |key: &str| {
+                spec.get(key)
+                    .and_then(|s| s.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            };
+            // `name` is the filesystem type (ext4, xfs, vfat, zfs_member, ...).
+            let Some(name) = text("name") else { continue };
+            // Prefer the parent disk: `usable` is keyed by whole disk.
+            let Some(target) = text("parent_dev_path")
+                .or_else(|| text("parent"))
+                .or_else(|| text("dev_path"))
+            else {
+                continue;
+            };
+            let entry = signatures.entry(target.to_string()).or_default();
+            if !entry.iter().any(|e| e == name) {
+                entry.push(name.to_string());
+            }
+        }
+        Ok(signatures)
+    }
 }
 
 /// Disk info passed to the advisor (port of `talos.DiskInfo`).

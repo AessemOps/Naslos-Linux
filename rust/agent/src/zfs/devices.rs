@@ -79,7 +79,31 @@ pub fn vdev_label(topology: &str) -> &'static str {
     }
 }
 
-/// Require an absolute `/dev` path whose device exists on the node.
+/// Resolve a device path to its canonical `/dev/<node>` name.
+///
+/// This is the guard against `/dev//sdb`, `/dev/disk/by-id/...` and
+/// `/dev/mapper/...` aliases: ownership is tracked by the real device node, so
+/// an alias can no longer hide a disk that already belongs to a pool.
+pub(crate) fn canonical_dev(host_root: &std::path::Path, dev: &str) -> ZfsResult<String> {
+    let host = join_host(host_root, dev);
+    let resolved =
+        std::fs::canonicalize(&host).map_err(|_| invalid!("disk {} not found on the node", dev))?;
+    let dev_dir = std::fs::canonicalize(join_host(host_root, "/dev"))
+        .map_err(|e| ZfsError::Other(format!("resolving /dev: {e}")))?;
+    if !resolved.starts_with(&dev_dir) || resolved == dev_dir {
+        return Err(invalid!(
+            "disk {} does not resolve to a device under /dev",
+            dev
+        ));
+    }
+    let name = resolved
+        .file_name()
+        .ok_or_else(|| invalid!("disk {} has no device name", dev))?;
+    Ok(format!("/dev/{}", name.to_string_lossy()))
+}
+
+/// Require an absolute `/dev` path whose device exists on the node, and return
+/// its canonical device name.
 fn normalize_disk_path(host_root: &std::path::Path, disk: &str) -> ZfsResult<String> {
     let dev = disk.trim();
     if dev.is_empty() {
@@ -97,7 +121,11 @@ fn normalize_disk_path(host_root: &std::path::Path, disk: &str) -> ZfsResult<Str
     if !join_host(host_root, dev).exists() {
         return Err(invalid!("disk {} not found on the node", dev));
     }
-    Ok(dev.to_string())
+    let canonical = canonical_dev(host_root, dev)?;
+    if !is_whole_disk(canonical.trim_start_matches("/dev/")) {
+        return Err(invalid!("disk {} is a partition, not a whole disk", dev));
+    }
+    Ok(canonical)
 }
 
 /// `isWholeDisk`: sda/vdb/nvme0n1 are disks; partitions and loop/sr/zram are not.
@@ -116,14 +144,49 @@ pub fn is_whole_disk(name: &str) -> bool {
 
 impl ZfsClient {
     /// Map every disk currently in a pool to that pool's name.
+    ///
+    /// Member names are canonicalized so an alias on either side
+    /// (`zpool status` reporting `by-id`, the request using `/dev/sdb`) still
+    /// matches.
     pub async fn pool_members(&self) -> ZfsResult<std::collections::HashMap<String, String>> {
-        let pools = self.pools().await?;
+        self.collect_members(self.pools().await?).await
+    }
+
+    /// Like `pool_members`, but fails if any pool's `zpool status` could not be
+    /// read. Destructive operations must use this: a suspended/UNAVAIL pool is
+    /// exactly the state in which `zpool status` fails, and its disks are
+    /// obviously still in use.
+    pub async fn pool_members_strict(
+        &self,
+    ) -> ZfsResult<std::collections::HashMap<String, String>> {
+        let pools = self.pools_strict().await?;
+        self.collect_members(pools).await
+    }
+
+    async fn collect_members(
+        &self,
+        pools: Vec<super::types::Pool>,
+    ) -> ZfsResult<std::collections::HashMap<String, String>> {
         let mut members = std::collections::HashMap::new();
         for pool in pools {
             if let Some(disks) = pool.disks {
                 for disk in disks {
-                    members.insert(disk, pool.name.clone());
+                    let key = canonical_dev(&self.host_root, &disk).unwrap_or(disk);
+                    members.insert(key, pool.name.clone());
                 }
+            }
+        }
+        Ok(members)
+    }
+
+    /// Disks that belong to an *exported* pool (`zpool import` dry run).
+    pub async fn importable_members(&self) -> ZfsResult<std::collections::HashMap<String, String>> {
+        let pools = self.list_importable().await?;
+        let mut members = std::collections::HashMap::new();
+        for pool in pools {
+            for disk in pool.disks.unwrap_or_default() {
+                let key = canonical_dev(&self.host_root, &disk).unwrap_or(disk);
+                members.insert(key, pool.name.clone());
             }
         }
         Ok(members)
@@ -215,8 +278,19 @@ impl ZfsClient {
             return Err(invalid!("pool {:?} not found", pool));
         }
 
-        let members = self.pool_members().await?;
+        let _guard = self.mutation_lock.lock().await;
+        let members = self.pool_members_strict().await?;
+        let importable = self.importable_members().await?;
         let clean = self.normalize_disk_set(disks, &members)?;
+        for dev in &clean {
+            if let Some(owner) = importable.get(dev) {
+                return Err(invalid!(
+                    "disk {} belongs to exported pool {:?}; import or destroy that pool first",
+                    dev,
+                    owner
+                ));
+            }
+        }
 
         let mut argv: Vec<String> = vec!["add".into()];
         if force {

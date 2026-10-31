@@ -39,6 +39,10 @@ pub async fn disks_get(State(state): State<Arc<AppState>>) -> Response {
         }
     };
 
+    // Best effort for display; the destructive endpoints re-check and fail
+    // closed, so an error here only means the badges are missing.
+    let signatures = talos.get_discovered_signatures().await.unwrap_or_default();
+
     let mut in_pool: HashMap<String, String> = HashMap::new();
     if let Some(client) = state.agent.clone() {
         if let Ok(pools) = client.list_pools().await {
@@ -60,6 +64,7 @@ pub async fn disks_get(State(state): State<Arc<AppState>>) -> Response {
             "serial": d.serial,
             "busPath": d.bus_path,
             "type": d.disk_type,
+            "signatures": signatures.get(&d.device_name).cloned().unwrap_or_default(),
         });
         if let Some(pool) = in_pool.get(&d.device_name) {
             info["inPool"] = serde_json::json!(pool);

@@ -32,6 +32,10 @@ pub const WIPEFS_BIN: &str = "/usr/bin/wipefs";
 pub struct ZfsClient {
     runner: Arc<dyn Runner>,
     host_root: PathBuf,
+    /// Serializes destructive pool mutations (check → wipefs → create/add).
+    /// Without it two concurrent requests both pass the ownership check and
+    /// wipe the same device.
+    mutation_lock: tokio::sync::Mutex<()>,
 }
 
 impl ZfsClient {
@@ -39,6 +43,7 @@ impl ZfsClient {
         Self {
             runner,
             host_root: host_root.into(),
+            mutation_lock: tokio::sync::Mutex::new(()),
         }
     }
 

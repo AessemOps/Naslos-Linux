@@ -168,11 +168,20 @@ pub fn validate_dataset_create_options(options: &HashMap<String, String>) -> Res
 }
 
 /// The pure part of the disk check.
+///
+/// `signatures` maps a whole disk to the filesystem types found on it;
+/// `wipe_confirmed` lists the disks the operator explicitly accepted erasing.
+/// A `zfs_member` signature is never overridable: `wipefs --all` would destroy
+/// the label of a pool that `zpool import` could still recover.
 pub fn validate_disk_selection(
     disks: &[String],
     usable: &std::collections::HashSet<String>,
     in_pool: &HashMap<String, String>,
+    signatures: &HashMap<String, Vec<String>>,
+    wipe_confirmed: &[String],
 ) -> Result<(), String> {
+    let confirmed: std::collections::HashSet<&str> =
+        wipe_confirmed.iter().map(|d| d.trim()).collect();
     let mut seen = std::collections::HashSet::new();
     for disk in disks {
         let dev = disk.trim();
@@ -189,6 +198,19 @@ pub fn validate_disk_selection(
             return Err(format!(
                 "disk {dev} is not a disk this node can use (unknown, or the system disk)"
             ));
+        }
+        if let Some(sigs) = signatures.get(dev) {
+            if sigs.iter().any(|s| s == "zfs_member") {
+                return Err(format!(
+                    "disk {dev} holds a ZFS pool label; import or destroy that pool first"
+                ));
+            }
+            if !sigs.is_empty() && !confirmed.contains(dev) {
+                return Err(format!(
+                    "disk {dev} already contains data ({}) and will be erased; confirm the wipe for this disk",
+                    sigs.join(", ")
+                ));
+            }
         }
     }
     Ok(())
@@ -250,6 +272,10 @@ struct CreatePoolBody {
     cache: String,
     #[serde(default)]
     options: HashMap<String, String>,
+    /// Disks the operator explicitly accepted erasing (see
+    /// `validate_disk_selection`).
+    #[serde(default, rename = "wipeConfirmed")]
+    wipe_confirmed: Vec<String>,
 }
 
 pub async fn pools_get(State(state): State<Arc<AppState>>) -> Response {
@@ -288,11 +314,17 @@ pub async fn pools_post(State(state): State<Arc<AppState>>, body: Body) -> Respo
             req.topology
         ));
     }
-    if let Err(e) = validate_add_disks(&state, &topology, &req.disks).await {
+    if let Err(e) = validate_add_disks(&state, &topology, &req.disks, &req.wipe_confirmed).await {
         return bad_request(&e);
     }
     if !req.cache.is_empty() {
-        if let Err(e) = validate_add_disks(&state, "single", std::slice::from_ref(&req.cache)).await
+        if let Err(e) = validate_add_disks(
+            &state,
+            "single",
+            std::slice::from_ref(&req.cache),
+            &req.wipe_confirmed,
+        )
+        .await
         {
             return bad_request(&format!("cache device: {e}"));
         }
@@ -423,6 +455,8 @@ struct DevicesBody {
     topology: String,
     #[serde(default)]
     force: bool,
+    #[serde(default, rename = "wipeConfirmed")]
+    wipe_confirmed: Vec<String>,
 }
 
 pub async fn pool_devices_post(
@@ -440,7 +474,8 @@ pub async fn pool_devices_post(
     if let Err(e) = require_pool(&state, &pool).await {
         return bad_request(&e);
     }
-    if let Err(e) = validate_add_disks(&state, &req.topology, &req.disks).await {
+    if let Err(e) = validate_add_disks(&state, &req.topology, &req.disks, &req.wipe_confirmed).await
+    {
         return bad_request(&e);
     }
     let client = match agent(&state) {
@@ -491,6 +526,7 @@ async fn validate_add_disks(
     state: &AppState,
     topology: &str,
     disks: &[String],
+    wipe_confirmed: &[String],
 ) -> Result<(), String> {
     let norm = topology.trim().to_ascii_lowercase();
     let Some(minimum) = vdev_minimum_disks(&norm) else {
@@ -522,18 +558,27 @@ async fn validate_add_disks(
         .map(|d| d.device_name.clone())
         .collect();
 
+    // Fail closed: if ownership or signatures cannot be read we cannot prove
+    // the disks are free, and these operations are irreversible.
+    let signatures = talos
+        .get_discovered_signatures()
+        .await
+        .map_err(|e| format!("cannot verify disk contents: {e}"))?;
+
     let mut in_pool = HashMap::new();
     if let Some(client) = state.agent.clone() {
-        if let Ok(pools) = client.list_pools().await {
-            for p in pools {
-                for d in p.disks {
-                    in_pool.insert(d, p.name.clone());
-                }
+        let pools = client
+            .list_pools()
+            .await
+            .map_err(|e| format!("cannot verify disk ownership: {e}"))?;
+        for p in pools {
+            for d in p.disks {
+                in_pool.insert(d, p.name.clone());
             }
         }
     }
 
-    validate_disk_selection(disks, &usable, &in_pool)
+    validate_disk_selection(disks, &usable, &in_pool, &signatures, wipe_confirmed)
 }
 
 // ---- Datasets ------------------------------------------------------------
@@ -694,15 +739,58 @@ mod tests {
         let mut in_pool = HashMap::new();
         in_pool.insert("/dev/sdc".to_string(), "other".to_string());
 
-        assert!(validate_disk_selection(&["/dev/sdb".into()], &usable, &in_pool).is_ok());
-        assert!(validate_disk_selection(&["sdb".into()], &usable, &in_pool).is_err());
+        let no_sigs = HashMap::new();
+        let none: Vec<String> = Vec::new();
+
+        assert!(
+            validate_disk_selection(&["/dev/sdb".into()], &usable, &in_pool, &no_sigs, &none)
+                .is_ok()
+        );
+        assert!(
+            validate_disk_selection(&["sdb".into()], &usable, &in_pool, &no_sigs, &none).is_err()
+        );
         assert!(validate_disk_selection(
             &["/dev/sdb".into(), "/dev/sdb".into()],
             &usable,
-            &in_pool
+            &in_pool,
+            &no_sigs,
+            &none
         )
         .is_err());
-        assert!(validate_disk_selection(&["/dev/sdc".into()], &usable, &in_pool).is_err());
-        assert!(validate_disk_selection(&["/dev/sdz".into()], &usable, &in_pool).is_err());
+        assert!(
+            validate_disk_selection(&["/dev/sdc".into()], &usable, &in_pool, &no_sigs, &none)
+                .is_err()
+        );
+        assert!(
+            validate_disk_selection(&["/dev/sdz".into()], &usable, &in_pool, &no_sigs, &none)
+                .is_err()
+        );
+
+        // A formatted disk needs an explicit per-disk confirmation.
+        let mut sigs = HashMap::new();
+        sigs.insert("/dev/sdb".to_string(), vec!["ext4".to_string()]);
+        assert!(
+            validate_disk_selection(&["/dev/sdb".into()], &usable, &in_pool, &sigs, &none).is_err()
+        );
+        assert!(validate_disk_selection(
+            &["/dev/sdb".into()],
+            &usable,
+            &in_pool,
+            &sigs,
+            &["/dev/sdb".to_string()]
+        )
+        .is_ok());
+
+        // A ZFS label is never overridable.
+        let mut zfs = HashMap::new();
+        zfs.insert("/dev/sdb".to_string(), vec!["zfs_member".to_string()]);
+        assert!(validate_disk_selection(
+            &["/dev/sdb".into()],
+            &usable,
+            &in_pool,
+            &zfs,
+            &["/dev/sdb".to_string()]
+        )
+        .is_err());
     }
 }
