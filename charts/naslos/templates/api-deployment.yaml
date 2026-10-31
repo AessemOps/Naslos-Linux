@@ -201,6 +201,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "naslos.agentTokenSecret" . | default "naslos-agent" }}
                   key: token
+            {{- if gt (int .Values.api.agentStreamIdleTimeoutSecs) 0 }}
+            # Idle deadline for zfs send/receive bodies (not a total deadline).
+            - name: AGENT_STREAM_IDLE_TIMEOUT_SECS
+              value: {{ .Values.api.agentStreamIdleTimeoutSecs | quote }}
+            {{- end }}
             {{- if .Values.api.talosConfigSecret }}
             # The talos machinery client library (api/internal/talos/client.go)
             # resolves its config via the TALOSCONFIG env var pointing at a

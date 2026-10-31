@@ -42,6 +42,11 @@ api:
   # (see templates/agent-daemonset.yaml headless Service). Empty selects the
   # in-namespace default http://naslos-agent.<namespace>.svc.cluster.local:9090.
   agentBaseURL: ""
+  # Idle deadline (seconds between body chunks) for `zfs send`/`receive`
+  # streams. 0 uses the API default (300). This is NOT a total deadline: a
+  # backup that keeps making progress may run for hours; only a stalled peer
+  # is cut. See docs/buddy-backup.md.
+  agentStreamIdleTimeoutSecs: 0
   # Read-only hostPath to the ZFS datasets, mounted at /var/mnt so the API can
   # list and validate share paths for the shares UI. Set to "null"/empty on
   # multi-node clusters (a hostPath pins the pod to one node and would list

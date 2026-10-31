@@ -11,8 +11,21 @@ use serde::{Deserialize, Serialize};
 /// Used when `AGENT_BASE_URL` is unset; `{}` is the namespace.
 pub const DEFAULT_BASE_URL_PATTERN: &str = "https://naslos-agent.{}.svc.cluster.local:9090";
 
-/// Covers slow operations (wipefs + `zpool create` on real spinning disks).
+/// Total deadline for ordinary (JSON) agent calls. Covers slow operations
+/// (wipefs + `zpool create` on real spinning disks).
 pub const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Connection deadline shared by both clients. A host that accepts nothing
+/// must fail fast instead of consuming the whole stream budget.
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Idle deadline for `zfs send`/`receive` bodies: the longest gap tolerated
+/// between two body chunks. It is **not** a total deadline (SEC-2026-D9): a
+/// multi-hour backup that keeps making progress must keep running.
+pub const DEFAULT_STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Env override for the stream idle deadline, in seconds.
+pub const STREAM_IDLE_TIMEOUT_ENV: &str = "AGENT_STREAM_IDLE_TIMEOUT_SECS";
 
 /// An agent-side failure carrying the upstream HTTP status so the API handler
 /// can forward 503 (degraded, no ZFS on host) instead of collapsing everything
@@ -162,11 +175,39 @@ pub struct SharesConfigStatus {
     pub error: String,
 }
 
+/// Resolve the stream idle deadline from `AGENT_STREAM_IDLE_TIMEOUT_SECS`.
+/// A missing, unparsable, or zero value falls back to the default (and warns
+/// for the latter two, so a typo does not silently disable the guard).
+fn stream_idle_timeout_from_env() -> std::time::Duration {
+    let Ok(raw) = std::env::var(STREAM_IDLE_TIMEOUT_ENV) else {
+        return DEFAULT_STREAM_IDLE_TIMEOUT;
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return DEFAULT_STREAM_IDLE_TIMEOUT;
+    }
+    match raw.parse::<u64>() {
+        Ok(secs) if secs > 0 => std::time::Duration::from_secs(secs),
+        _ => {
+            tracing::warn!(
+                "{STREAM_IDLE_TIMEOUT_ENV}={raw:?} is not a positive integer; using {}s",
+                DEFAULT_STREAM_IDLE_TIMEOUT.as_secs()
+            );
+            DEFAULT_STREAM_IDLE_TIMEOUT
+        }
+    }
+}
+
 /// A thin HTTP client for one agent endpoint.
 pub struct Client {
     base_url: String,
     token: String,
+    /// Ordinary calls: a total deadline (`DEFAULT_TIMEOUT`).
     http: reqwest::Client,
+    /// Streaming calls: no total deadline, only connect + per-read idle
+    /// (`DEFAULT_STREAM_IDLE_TIMEOUT`). Using `http` for a long `zfs send`
+    /// silently truncated the backup after 180 s.
+    stream_http: reqwest::Client,
 }
 
 impl Client {
@@ -196,13 +237,56 @@ impl Client {
     /// without a CA is refused: falling back to the system roots would accept
     /// any publicly trusted certificate for the in-cluster name (PF-M5).
     pub fn new(base_url: &str, token: &str, ca_file: &str) -> Result<Self, String> {
+        Self::with_timeouts(
+            base_url,
+            token,
+            ca_file,
+            DEFAULT_TIMEOUT,
+            stream_idle_timeout_from_env(),
+        )
+    }
+
+    /// Build both clients with explicit deadlines. Public so tests can use
+    /// short values; production goes through `new`/`from_env`.
+    pub fn with_timeouts(
+        base_url: &str,
+        token: &str,
+        ca_file: &str,
+        total: std::time::Duration,
+        stream_idle: std::time::Duration,
+    ) -> Result<Self, String> {
         if base_url.starts_with("https://") && ca_file.trim().is_empty() {
             return Err(
                 "AGENT_CA_FILE is required for an https agent URL; refusing to use the system roots"
                     .to_string(),
             );
         }
-        let mut builder = reqwest::Client::builder().timeout(DEFAULT_TIMEOUT);
+        let http = Self::builder(ca_file)?
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(total)
+            .build()
+            .map_err(|e| format!("building the agent HTTP client: {e}"))?;
+        // No `.timeout()` here: reqwest applies a total deadline to the body
+        // too, which would cut long `zfs send`/`receive` streams. `read_timeout`
+        // is a per-read idle deadline, so slow-but-progressing backups survive
+        // and a stalled peer still fails.
+        let stream_http = Self::builder(ca_file)?
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(stream_idle)
+            .build()
+            .map_err(|e| format!("building the agent streaming HTTP client: {e}"))?;
+        Ok(Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            token: token.to_string(),
+            http,
+            stream_http,
+        })
+    }
+
+    /// Shared TLS setup: a pinned CA, never the system roots when a CA is
+    /// supplied, and no system roots at all for the agent identity.
+    fn builder(ca_file: &str) -> Result<reqwest::ClientBuilder, String> {
+        let mut builder = reqwest::Client::builder();
         if !ca_file.is_empty() {
             let pem = std::fs::read(ca_file)
                 .map_err(|e| format!("reading the agent CA {ca_file}: {e}"))?;
@@ -214,22 +298,25 @@ impl Client {
                 .tls_built_in_root_certs(false)
                 .add_root_certificate(cert);
         }
-        let http = builder
-            .build()
-            .map_err(|e| format!("building the agent HTTP client: {e}"))?;
-        Ok(Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
-            token: token.to_string(),
-            http,
-        })
+        Ok(builder)
     }
 
     /// The bearer token is applied per request (so streaming paths cannot forget
     /// it).
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
-        let rb = self
-            .http
-            .request(method, format!("{}{}", self.base_url, path));
+        self.authorize(self.http.request(method, self.url(path)))
+    }
+
+    /// Like `request`, but on the streaming client (idle deadline only).
+    fn stream_request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        self.authorize(self.stream_http.request(method, self.url(path)))
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.base_url, path)
+    }
+
+    fn authorize(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if self.token.is_empty() {
             rb
         } else {
@@ -505,6 +592,143 @@ mod tests {
         let url = DEFAULT_BASE_URL_PATTERN.replace("{}", "naslos");
         assert_eq!(url, "https://naslos-agent.naslos.svc.cluster.local:9090");
     }
+
+    // ---- Streaming deadlines (W1) --------------------------------------
+    //
+    // Regression: both streaming methods used the ordinary client, whose
+    // `.timeout()` is a **total** deadline including the body. Any `zfs send`
+    // or `receive` longer than 180 s was therefore cut mid-transfer.
+
+    use axum::body::Body;
+    use axum::routing::get;
+    use axum::Router;
+    use futures::StreamExt;
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+
+    /// A mock agent whose send body emits `chunks` one-byte chunks `gap_ms`
+    /// apart, stalling for five seconds after chunk `stall_after`.
+    async fn spawn_stream_agent(chunks: usize, gap_ms: u64, stall_after: usize) -> String {
+        let app = Router::new()
+            .route(
+                "/api/v1/zfs/send/{*dataset}",
+                get(move || async move {
+                    let body = futures::stream::unfold(0usize, move |i| async move {
+                        if i >= chunks {
+                            return None;
+                        }
+                        if i == stall_after {
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                        } else {
+                            tokio::time::sleep(Duration::from_millis(gap_ms)).await;
+                        }
+                        Some((
+                            Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"x")),
+                            i + 1,
+                        ))
+                    });
+                    Body::from_stream(body)
+                }),
+            )
+            .route(
+                "/api/v1/system/disk",
+                get(|| async {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    axum::Json(serde_json::json!({ "total": 1 }))
+                }),
+            );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    fn send_opts() -> SendStreamOptions {
+        SendStreamOptions {
+            dataset: "tank/data".into(),
+            to: "snap".into(),
+            from: String::new(),
+            raw: false,
+        }
+    }
+
+    /// The stream client ignores the total deadline: with a 50 ms total (the
+    /// old behaviour would abort here) a 500 ms body still completes.
+    #[tokio::test]
+    async fn send_stream_is_not_bounded_by_the_total_timeout() {
+        let base = spawn_stream_agent(5, 100, usize::MAX).await;
+        let client = Client::with_timeouts(
+            &base,
+            "token",
+            "",
+            Duration::from_millis(50),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+
+        let stream = client.send_stream(&send_opts()).await.unwrap();
+        let mut chunks = 0usize;
+        let mut stream = stream;
+        while let Some(item) = stream.next().await {
+            item.expect("no chunk error");
+            chunks += 1;
+        }
+        assert_eq!(chunks, 5, "the whole body must arrive");
+    }
+
+    /// A stalled body still fails: the idle deadline is a real guard.
+    #[tokio::test]
+    async fn send_stream_fails_when_the_body_stalls() {
+        let base = spawn_stream_agent(5, 10, 1).await;
+        let client = Client::with_timeouts(
+            &base,
+            "token",
+            "",
+            Duration::from_secs(30),
+            Duration::from_millis(100),
+        )
+        .unwrap();
+
+        let stream = client.send_stream(&send_opts()).await.unwrap();
+        let outcome = tokio::time::timeout(Duration::from_millis(900), async move {
+            let mut stream = stream;
+            let mut chunks = 0usize;
+            while let Some(item) = stream.next().await {
+                if item.is_err() {
+                    return Err(());
+                }
+                chunks += 1;
+            }
+            Ok(chunks)
+        })
+        .await
+        .expect("the idle deadline must fire, not hang");
+
+        assert!(outcome.is_err(), "a stalled stream must surface an error");
+    }
+
+    /// Ordinary calls keep the total deadline.
+    #[tokio::test]
+    async fn json_calls_still_use_the_total_timeout() {
+        let base = spawn_stream_agent(0, 0, usize::MAX).await;
+        let client = Client::with_timeouts(
+            &base,
+            "token",
+            "",
+            Duration::from_millis(100),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+
+        let started = std::time::Instant::now();
+        let err = client.get_disk_usage().await.expect_err("must time out");
+        assert_eq!(err.status, 0, "transport-level failure");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the 100 ms total deadline did not fire: {:?}",
+            started.elapsed()
+        );
+    }
 }
 
 // ---- Streaming (buddy send/restore) -------------------------------------
@@ -549,7 +773,7 @@ impl Client {
     ) -> Result<futures::stream::BoxStream<'static, Result<bytes::Bytes, std::io::Error>>, AgentError>
     {
         let resp = self
-            .request(reqwest::Method::GET, &send_path(opts))
+            .stream_request(reqwest::Method::GET, &send_path(opts))
             .send()
             .await
             .map_err(|e| AgentError {
@@ -618,7 +842,7 @@ impl Client {
         let stream = tokio_util::io::ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
         let resp = self
-            .request(reqwest::Method::POST, &path)
+            .stream_request(reqwest::Method::POST, &path)
             .header("Content-Type", "application/octet-stream")
             .body(body)
             .send()
