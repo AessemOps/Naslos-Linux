@@ -14,6 +14,7 @@
         `/api/domains/${encodeURIComponent(domain)}/certificate`,
         { cache: 'no-store' }
       );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       status = data.status || 'unknown';
       reason = data.reason || '';
@@ -26,7 +27,9 @@
     // poll until the status settles instead of showing the initial "pending"
     // until the operator reloads the page. no-store above keeps a cached
     // response from pinning a stale badge.
-    if (status !== 'loading' && status !== 'pending') {
+    // Only a settled certificate stops the poll. A transient 5xx or network
+    // error used to stop it permanently, leaving a red badge until reload.
+    if (status === 'ready' || status === 'not-ready' || status === 'unavailable') {
       stop();
     }
   }

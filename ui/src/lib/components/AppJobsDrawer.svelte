@@ -61,7 +61,12 @@
                 {:else}
                   <span></span>
                 {/if}
-                <button class="text-xs text-gray-500 hover:text-white" on:click={() => dismissAppJob(job.id)}>Dismiss</button>
+                <button
+                  class="text-xs text-gray-500 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                  disabled={job.state === 'running'}
+                  title={job.state === 'running' ? 'Wait for the job to finish' : 'Dismiss'}
+                  on:click={() => dismissAppJob(job.id)}
+                >Dismiss</button>
               </div>
             </div>
           {/each}

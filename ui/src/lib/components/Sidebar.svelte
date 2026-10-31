@@ -119,7 +119,7 @@
       <span class="font-medium">{loggingOut ? 'Signing out…' : 'Sign out'}</span>
     </button>
     <p class="text-xs text-gray-600 text-center">
-      {#if username}{username} · {/if}Naslos v0.1.0
+      {#if username}{username} · {/if}Naslos v{__APP_VERSION__}
     </p>
   </div>
 </aside>

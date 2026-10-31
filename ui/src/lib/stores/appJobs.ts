@@ -74,6 +74,9 @@ function toast(job: AppJob) {
 }
 
 export function dismissAppJob(id: string) {
+  // Dismissing a running job only hid the conflict ("install already
+  // running") while the job kept going.
+  if (get(appJobs).some((j) => j.id === id && j.state === 'running')) return;
   tracked.delete(id);
   appJobs.update((list) => list.filter((j) => j.id !== id));
   if (tracked.size === 0) stopPoll();
@@ -98,6 +101,13 @@ async function pollOnce() {
       ids.map(async (id) => {
         try {
           const res = await fetch(`/api/apps/jobs/${encodeURIComponent(id)}`);
+          if (res.status === 404 || res.status === 410) {
+            // The job was evicted from the server's recent list; stop polling
+            // it or it would be requested forever.
+            tracked.delete(id);
+            appJobs.update((list) => list.filter((j) => j.id !== id));
+            return null;
+          }
           if (!res.ok) return null;
           return (await res.json()) as AppJob;
         } catch {
