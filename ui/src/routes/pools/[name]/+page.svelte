@@ -161,6 +161,21 @@
     }
   }
 
+  function diskSignatures(device: string): string[] {
+    const disk = disks.find(d => d.device === device);
+    return (disk && Array.isArray(disk.signatures)) ? disk.signatures : [];
+  }
+
+  function isZfsMember(device: string): boolean {
+    return diskSignatures(device).includes('zfs_member');
+  }
+
+  // A disk with data needs the explicit "Force" acknowledgement before the API
+  // accepts it; a ZFS label is refused outright.
+  function needsWipeConfirm(): boolean {
+    return selectedDisks.some(d => diskSignatures(d).length > 0 && !isZfsMember(d));
+  }
+
   function toggleDisk(device: string) {
     selectedDisks = selectedDisks.includes(device)
       ? selectedDisks.filter(d => d !== device)
@@ -190,7 +205,12 @@
       const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(poolName ?? '')}/devices`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ disks: selectedDisks, topology: addTopology, force: addForce })
+        body: JSON.stringify({
+          disks: selectedDisks,
+          topology: addTopology,
+          force: addForce,
+          wipeConfirmed: addForce ? selectedDisks : []
+        })
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Could not add the disks');
@@ -446,7 +466,7 @@
                 <input
                   type="checkbox"
                   class="w-4 h-4 rounded"
-                  disabled={!!disk.inPool}
+                  disabled={!!disk.inPool || isZfsMember(disk.device)}
                   checked={selectedDisks.includes(disk.device)}
                   on:change={() => toggleDisk(disk.device)}
                 />
@@ -458,6 +478,10 @@
                 </div>
                 {#if disk.inPool}
                   <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-400">in pool {disk.inPool}</span>
+                {:else if isZfsMember(disk.device)}
+                  <span class="text-xs px-2 py-0.5 rounded bg-red-900/40 text-red-300">holds a ZFS pool</span>
+                {:else if (disk.signatures || []).length > 0}
+                  <span class="text-xs px-2 py-0.5 rounded bg-amber-900/40 text-amber-300">contains {(disk.signatures || []).join(', ')}</span>
                 {:else}
                   <span class="text-xs px-2 py-0.5 rounded bg-green-900/40 text-green-400">available</span>
                 {/if}
@@ -482,7 +506,7 @@
 
         <label class="flex items-center gap-3 cursor-pointer">
           <input type="checkbox" bind:checked={addForce} class="w-4 h-4 rounded" />
-          <span class="text-gray-300 text-sm">Force: overwrite any existing signature on the disks</span>
+          <span class="text-gray-300 text-sm">Force: overwrite any existing signature on the disks (required when a selected disk already contains data)</span>
         </label>
         {#if addForce}
           <p role="alert" class="text-xs text-red-400">
@@ -498,7 +522,7 @@
         <button
           class="btn btn-primary"
           on:click={addDevices}
-          disabled={addSaving || selectedDisks.length < (topologyDisksNeeded[addTopology] || 1)}
+          disabled={addSaving || selectedDisks.length < (topologyDisksNeeded[addTopology] || 1) || (needsWipeConfirm() && !addForce)}
         >
           {addSaving ? 'Adding...' : `Add ${selectedDisks.length || ''} disk${selectedDisks.length === 1 ? '' : 's'}`}
         </button>

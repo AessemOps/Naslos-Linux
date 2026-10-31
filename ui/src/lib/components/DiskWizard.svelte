@@ -9,6 +9,7 @@
     serial: string;
     type: string;
     inPool?: string; // name of the pool this disk already belongs to (if any)
+    signatures?: string[]; // filesystems found on the disk (W2)
   }
 
   interface Recommendation {
@@ -26,6 +27,7 @@
   let customTopology = '';
   let poolName = '';
   let cacheDisk = '';
+  let wipeConfirmed: string[] = [];
   let creating = false;
   let createResult = '';
 
@@ -107,6 +109,29 @@
     }
   }
 
+  // A disk with a filesystem signature must be confirmed individually; a
+  // `zfs_member` signature is never overridable (it may be a recoverable pool).
+  function isZfsMember(disk: Disk) {
+    return (disk.signatures || []).includes('zfs_member');
+  }
+
+  function needsWipeConfirm(disk: Disk) {
+    return !isZfsMember(disk) && (disk.signatures || []).length > 0;
+  }
+
+  function toggleWipeConfirm(device: string) {
+    wipeConfirmed = wipeConfirmed.includes(device)
+      ? wipeConfirmed.filter(d => d !== device)
+      : [...wipeConfirmed, device];
+  }
+
+  function unconfirmedSelection() {
+    return selectedDisks.filter(device => {
+      const disk = disks.find(d => d.device === device);
+      return disk ? needsWipeConfirm(disk) && !wipeConfirmed.includes(device) : false;
+    });
+  }
+
   async function createPool() {
     creating = true;
     createResult = '';
@@ -119,7 +144,8 @@
           topology: customTopology || recommendation?.topology || 'single',
           disks: selectedDisks,
           cache: cacheDisk || undefined,
-          options: {}
+          options: {},
+          wipeConfirmed
         })
       });
       if (res.ok) {
@@ -206,13 +232,14 @@
         <div class="space-y-3">
           {#each disks.filter(d => !d.isSystemDisk) as disk}
             <!-- in-pool disks are disabled: they already belong to a pool. -->
+            {@const blocked = !!disk.inPool || isZfsMember(disk)}
             <label
-              class={`flex items-center gap-4 p-4 rounded-lg border transition-colors ${disk.inPool ? 'border-naslos-border/50 bg-naslos-border/10 opacity-60 cursor-not-allowed' : selectedDisks.includes(disk.device) ? 'border-naslos-primary bg-naslos-primary/10 cursor-pointer' : 'border-naslos-border hover:border-naslos-accent cursor-pointer'}`}
+              class={`flex items-center gap-4 p-4 rounded-lg border transition-colors ${blocked ? 'border-naslos-border/50 bg-naslos-border/10 opacity-60 cursor-not-allowed' : selectedDisks.includes(disk.device) ? 'border-naslos-primary bg-naslos-primary/10 cursor-pointer' : 'border-naslos-border hover:border-naslos-accent cursor-pointer'}`}
             >
               <input
                 type="checkbox"
                 checked={selectedDisks.includes(disk.device)}
-                disabled={!!disk.inPool}
+                disabled={blocked}
                 on:change={() => toggleDisk(disk.device)}
                 class="w-5 h-5 rounded"
               />
@@ -222,10 +249,26 @@
                   {#if disk.inPool}
                     <span class="text-xs px-2 py-0.5 rounded bg-yellow-900/50 text-yellow-400" title="Already a member of pool '{disk.inPool}'">in pool: {disk.inPool}</span>
                   {/if}
+                  {#if isZfsMember(disk)}
+                    <span class="text-xs px-2 py-0.5 rounded bg-red-900/50 text-red-300" title="This disk holds a ZFS pool label; import or destroy that pool first">holds a ZFS pool</span>
+                  {:else if needsWipeConfirm(disk)}
+                    <span class="text-xs px-2 py-0.5 rounded bg-amber-900/50 text-amber-300" title="Selected disks with existing data must be confirmed for erasure">contains {(disk.signatures || []).join(', ')}</span>
+                  {/if}
                 </div>
                 <div class="text-sm text-gray-400">
                   {formatSize(disk.size)} {disk.model ? `• ${disk.model}` : ''}
                 </div>
+                {#if needsWipeConfirm(disk) && selectedDisks.includes(disk.device)}
+                  <label class="flex items-center gap-2 mt-2 text-sm text-amber-300">
+                    <input
+                      type="checkbox"
+                      checked={wipeConfirmed.includes(disk.device)}
+                      on:change={() => toggleWipeConfirm(disk.device)}
+                      class="w-4 h-4 rounded"
+                    />
+                    Erase this disk and everything on it
+                  </label>
+                {/if}
               </div>
               <span class="text-xs px-2 py-1 rounded bg-naslos-border text-gray-300">
                 {disk.type}
@@ -371,7 +414,7 @@
 
       <div class="flex justify-between mt-6">
         <button class="btn btn-secondary" on:click={prevStep}>← Back</button>
-        <button class="btn btn-primary" on:click={createPool} disabled={!poolName.trim() || creating}>
+        <button class="btn btn-primary" on:click={createPool} disabled={!poolName.trim() || creating || unconfirmedSelection().length > 0}>
           {creating ? 'Creating…' : 'Create Pool'}
         </button>
       </div>

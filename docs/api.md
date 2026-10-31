@@ -148,13 +148,13 @@ are in-memory (a restart abandons a running job; the app record and
 | GET | `/api/disks` | Discovered disks from Talos (`talosctl get discoveredvolumes`) |
 | POST | `/api/disks/recommend` | `{disks:[...]}` → `VolumeAdvisor` topology recommendation |
 | GET | `/api/volumes/zfs` | List ZFS pools via `naslos-agent` (`agent.ListPools`) |
-| POST | `/api/volumes/zfs` | Create pool `{name, topology, disks, options}` via `naslos-agent` (validated: ZFS-safe name, non-empty disks, known topology) |
+| POST | `/api/volumes/zfs` | Create pool `{name, topology, disks, options, wipeConfirmed}` via `naslos-agent` (validated: ZFS-safe name, non-empty disks, known topology; a disk with an existing filesystem needs `wipeConfirmed`, a `zfs_member` disk is refused) |
 | GET | `/api/volumes/zfs/{name}` | Structured health data (device tree, IO stats, scan state, errors) |
 | DELETE | `/api/volumes/zfs/{name}` | Destroy a pool via `naslos-agent` |
 | GET | `/api/volumes/zfs/{name}/health` | Structured health data (alias) |
 | GET | `/api/volumes/zfs/import` | List pools available for import (on disk but not imported) |
 | POST | `/api/volumes/zfs/import` | Import: `{"name":"tank"}` for one pool, `{}` for all |
-| POST | `/api/volumes/zfs/{name}/devices` | Attach disks: `{disks, topology, force}` → `zpool add`. Refuses a disk already in any pool (even with `force`), a non-`/dev` path, an unknown disk, and too few disks for the topology (FR-STO-08) |
+| POST | `/api/volumes/zfs/{name}/devices` | Attach disks: `{disks, topology, force, wipeConfirmed}` → `zpool add`. Refuses a disk already in any pool (even with `force`), a disk holding a ZFS label, a non-`/dev` path, an unknown disk, and too few disks for the topology (FR-STO-08). A disk with another filesystem signature needs `wipeConfirmed`. |
 | GET | `/api/datasets` | Every dataset with used/avail/refer/mountpoint |
 | GET | `/api/datasets/registry` | List operator-registered datasets apps may mount (`{name, hostPath, shared, warningAcknowledged, createdAt}`) |
 | POST | `/api/datasets/registry` | Register a dataset `{name, hostPath, shared, warningAcknowledged?}`. The path must be a mounted ZFS dataset below `/var/mnt`, must not overlap the Buddy store, and a `shared` dataset requires `warningAcknowledged:true` (400 otherwise) |

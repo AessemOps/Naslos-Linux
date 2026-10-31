@@ -184,3 +184,31 @@ mount-under-`/var`, and noexec notes.
 | --- | --- | --- |
 | agent `NODE_NAME` | from `spec.nodeName` | Which node this agent runs on |
 | `LDAP_*` | see api.md | LDAP connection (for OpenLDAP's ZFS-backed PVCs) |
+
+## Destructive-operation guards
+
+Creating or extending a pool erases the selected disks, so three independent
+checks stand between a request and `wipefs --all`:
+
+1. **API: disk ownership and signatures.** The disk list comes from Talos
+   (`get disks` / `get discoveredvolumes`), the system disk is excluded, and a
+   disk that belongs to any pool is refused even with `force`. Signatures are
+   attributed to their parent disk: a disk holding a **`zfs_member`** label is
+   refused outright ("import or destroy that pool first"), and any other
+   filesystem requires the disk to appear in the request's `wipeConfirmed`
+   list. Ownership and signature lookups **fail closed**: if either cannot be
+   read, the request is rejected rather than assumed safe.
+2. **Agent: canonical device identity.** Request paths are canonicalized
+   (`/dev//sdb`, `/dev/disk/by-id/...` and `/dev/mapper/...` all resolve to the
+   real node) and must be whole disks. Pool membership is keyed by the same
+   canonical name, so an alias cannot hide a member.
+3. **Agent: strict membership and exported pools.** Destructive paths use
+   `pools_strict()`, which fails if any `zpool status` cannot be read (a
+   suspended pool is exactly that case), and refuse any disk that appears in
+   `zpool import` output — the label would be destroyed before the import flow
+   could recover it. A process-wide mutex serializes check → wipe → create, so
+   two concurrent requests cannot both claim one disk.
+
+The UI mirrors the rules: disks holding a ZFS label are not selectable, a disk
+with existing data shows a signature badge, and the create button stays
+disabled until the operator ticks "Erase this disk and everything on it".
