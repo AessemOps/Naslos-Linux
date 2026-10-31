@@ -245,5 +245,7 @@ mount the host path directly and share the same data.
   certificate itself. A chart that ships its own `IngressRoute` now fails
   (403) instead of silently becoming same-origin with the UI.
 - Charts can still create Secrets/PVCs and mount the shared `naslos-datasets`
-  PVC; per-app dataset isolation is the remaining open item (D3/F1).
+  PVC; per-app dataset isolation is the remaining open item (D3/F1). The threat
+  model, options and migration plan are in
+  [datasets-isolation.md](datasets-isolation.md).
 - SSH chart sources require a pinned `known_hosts` (SEC-2026-B1).

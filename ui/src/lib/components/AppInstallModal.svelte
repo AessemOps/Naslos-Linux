@@ -176,7 +176,9 @@
                 This installs <span class="font-mono">{app.source}</span> /
                 <span class="font-mono">{app.chartPath || app.chart}</span> into
                 <span class="font-mono">{app.privileged ? 'naslos-apps-priv' : 'naslos-apps'}</span>. The chart's manifests
-                run in-cluster under the API's namespaced permissions.
+                run in-cluster under the API's namespaced permissions. Charts that
+                request the datasets volume can read every Naslos dataset mounted
+                below the platform's datasets root.
               </p>
             </div>
             {#if app.privileged}

@@ -7,6 +7,19 @@
 # ReadWriteMany because Kubernetes does not enforce access modes for hostPath and
 # every app pod runs on the same node.
 {{- if .Values.apps.datasets.enabled }}
+{{- $root := .Values.apps.datasets.hostPath | default "/var/mnt" }}
+{{- if not (hasPrefix "/" $root) }}
+{{- fail "apps.datasets.hostPath must be an absolute path" }}
+{{- end }}
+{{- if has $root (list "/" "/var" "/etc" "/home" "/root" "/usr" "/system") }}
+{{- fail "apps.datasets.hostPath must be a dedicated data directory, not a system directory or a filesystem root" }}
+{{- end }}
+{{- if and .Values.buddy.enabled .Values.buddy.receiveHostPath (not .Values.apps.datasets.allowBuddyStore) }}
+{{- $buddy := .Values.buddy.receiveHostPath }}
+{{- if or (eq $buddy $root) (hasPrefix (printf "%s/" (trimSuffix "/" $root)) $buddy) }}
+{{- fail "buddy.receiveHostPath is inside apps.datasets.hostPath; mount the Buddy store outside the exposed root or set apps.datasets.allowBuddyStore=true to accept D3/F1" }}
+{{- end }}
+{{- end }}
 {{- $ans := .Values.apps.namespace | default "naslos-apps" }}
 {{- $wns := include "naslos.workloadNamespace" . }}
 {{- $size := .Values.apps.datasets.size | default "10Ti" }}
@@ -25,7 +38,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: naslos-datasets
   hostPath:
-    path: {{ .Values.apps.datasets.hostPath | default "/var/mnt" }}
+    path: {{ $root }}
 {{- if and (ne $ans .Release.Namespace) (ne $ans $wns) }}
 ---
 apiVersion: v1

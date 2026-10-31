@@ -18,7 +18,8 @@
           "properties": {
             "enabled": { "type": "boolean" },
             "hostPath": { "type": "string" },
-            "size": { "type": "string" }
+            "size": { "type": "string" },
+            "allowBuddyStore": { "type": "boolean" }
           }
         },
         "refreshTTL": { "type": "string" },

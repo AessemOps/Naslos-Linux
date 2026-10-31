@@ -63,9 +63,6 @@ groups = {g for r in helm_role["rules"] for g in r["apiGroups"]}
 assert "traefik.io" not in groups, groups
 assert "cert-manager.io" not in groups, groups
 assert "rbac.authorization.k8s.io" not in groups, groups
-assert "HELM_SA_TOKEN_FILE" in env, env.get("HELM_SA_TOKEN_FILE")
-commit = env.get("SOURCES_OFFICIAL_COMMIT", {}).get("value", "")
-assert len(commit) == 40 and all(c in "0123456789abcdef" for c in commit), commit
 api = find("IngressRoute", "naslos-api")
 assert api, "naslos-api IngressRoute missing"
 middlewares = [m["name"] for m in api["spec"]["routes"][0].get("middlewares", [])]
@@ -74,6 +71,9 @@ assert middlewares.index("strip-client-identity") < middlewares.index("forwardau
 dp = find("Deployment", "naslos-api")
 env = {e["name"]: e for e in dp["spec"]["template"]["spec"]["containers"][0]["env"]}
 assert env.get("TRAEFIK_CIDR", {}).get("value") == "10.244.0.0/16", env.get("TRAEFIK_CIDR")
+assert "HELM_SA_TOKEN_FILE" in env, env.get("HELM_SA_TOKEN_FILE")
+commit = env.get("SOURCES_OFFICIAL_COMMIT", {}).get("value", "")
+assert len(commit) == 40 and all(c in "0123456789abcdef" for c in commit), commit
 kek = env.get("BUDDY_KEK", {})
 ref = kek.get("valueFrom", {}).get("secretKeyRef", {})
 assert ref.get("name") == "naslos-buddy-kek", ref
@@ -83,6 +83,17 @@ mounts = {m["name"] for m in dp["spec"]["template"]["spec"]["containers"][0].get
 assert "ldap-bind" in mounts, mounts
 assert "tmp" in mounts, mounts
 assert dp["spec"]["template"]["spec"]["containers"][0]["securityContext"]["readOnlyRootFilesystem"] is True
+pv = find("PersistentVolume", "naslos-datasets")
+if pv:
+    root = pv["spec"]["hostPath"]["path"]
+    buddy = ""
+    for volume in dp["spec"]["template"]["spec"].get("volumes", []):
+        if volume.get("name") == "buddy-data" and "hostPath" in volume:
+            buddy = volume["hostPath"]["path"]
+    if buddy and (buddy == root or buddy.startswith(root.rstrip("/") + "/")):
+        print(f"NOTICE: buddy.receiveHostPath {buddy} is inside the app datasets root {root} (D3/F1 open)")
+    if root in ("/", "/var", "/etc", "/home", "/root"):
+        raise AssertionError(f"unsafe apps.datasets.hostPath {root}")
 secret = find("Secret", "naslos-buddy-kek")
 assert secret, "generated buddy KEK Secret missing"
 raw = base64.b64decode(secret["data"]["kek"])
@@ -105,7 +116,9 @@ for kind, name in [
     if doc["spec"]["template"]["spec"].get("automountServiceAccountToken") is not False:
         raise AssertionError(f"{kind}/{name} automounts a service-account token")
 PY
+  py_status=$?
   rm -f "$f"
+  return $py_status
 }
 
 # SEC-2026-G1/G4/G8 guard: no unverified CLI download, no disabled SSH host-key
