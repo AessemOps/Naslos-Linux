@@ -23,12 +23,27 @@ pub fn write_error(status: StatusCode, msg: impl Into<String>) -> Response {
 }
 
 /// Caller-fixable input is 400; anything else is a 500 (NAS-003).
+///
+/// A 500's message can contain host paths, device names and zfs stderr, which
+/// the browser does not need. Log it with a reference id and return that id.
 pub fn write_client_error(err: &ZfsError) -> Response {
     if err.is_validation() {
-        write_error(StatusCode::BAD_REQUEST, err.to_string())
-    } else {
-        write_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        return write_error(StatusCode::BAD_REQUEST, err.to_string());
     }
+    let reference = error_reference();
+    tracing::error!(reference, error = %err, "agent command failed");
+    write_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("internal error (ref {reference})"),
+    )
+}
+
+pub(crate) fn error_reference() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() ^ d.as_secs() as u32)
+        .unwrap_or(0);
+    format!("{nanos:08x}")
 }
 
 /// Read a JSON body with a cap, mapping any failure to a 400 (the Go decoder

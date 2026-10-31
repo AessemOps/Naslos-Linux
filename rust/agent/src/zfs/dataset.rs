@@ -287,7 +287,7 @@ impl ZfsClient {
         keys.sort();
         for k in keys {
             argv.push("-o".into());
-            argv.push(format!("{}={}", k, options[k]));
+            argv.push(format!("{}={}", k, options[k].trim()));
         }
         argv.push(name.to_string());
 

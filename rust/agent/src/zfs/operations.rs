@@ -261,7 +261,9 @@ impl ZfsClient {
         // command sequence is deterministic.
         let mut opts = default_options();
         for (k, v) in &cfg.options {
-            opts.insert(k.clone(), v.clone());
+            // Validate and emit the same trimmed value; validation trims, so
+            // passing the raw string made zfs reject `" 100G "`.
+            opts.insert(k.clone(), v.trim().to_string());
         }
         let mut keys: Vec<&String> = opts.keys().collect();
         keys.sort();
@@ -315,12 +317,14 @@ impl ZfsClient {
     }
 
     /// Destroy a pool.
-    pub async fn destroy_pool(&self, name: &str) -> ZfsResult<()> {
+    pub async fn destroy_pool(&self, name: &str, force: bool) -> ZfsResult<()> {
         validate_pool_name(name)?;
-        match self
-            .host_exec(ZPOOL_BIN, &args(&["destroy", "-f", name]))
-            .await
-        {
+        let mut argv = vec!["destroy"];
+        if force {
+            argv.push("-f");
+        }
+        argv.push(name);
+        match self.host_exec(ZPOOL_BIN, &args(&argv)).await {
             Ok(_) => Ok(()),
             Err(e) => Err(ZfsError::Other(format!(
                 "destroying pool: {}: {}",
