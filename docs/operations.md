@@ -151,3 +151,47 @@ change.
 
 - [archive: architecture](architecture.md) for trust boundaries.
 - [identity-sso.md](identity-sso.md) for the password path and header trust.
+
+## Credential rotation after upgrading from 0.2.2 or earlier
+
+Installers up to 0.2.2 passed the first administrator password and the
+`naslos-proxy` shared secret as arguments of a `pods/exec` call. Talos writes
+the kube-apiserver audit log at `level: Metadata`
+(`bootstrap/vm/controlplane.yaml`, and the installer's generated config), and
+that level records the request URI — which contains the `exec` command and its
+arguments. Talos retains the audit log for 30 days.
+
+The engine no longer does this (0.2.3): admin creation sends the values on
+`curl`'s stdin and the password comes from stdin/env. Existing nodes still hold
+the old values in `/var/log/audit/kube/kube-apiserver.log`, so treat both as
+disclosed and rotate them after upgrading.
+
+### Administrator password
+
+1. Sign in to the UI as the administrator and change the password under
+   **Users**.
+2. If the node was exposed, also remove the TOTP device and re-enrol it:
+   `kubectl -n naslos exec -it naslos-authelia-0 -- authelia storage user totp delete <uid>`
+   then generate a new one (the UI/CLI prints a new otpauth URI).
+3. Confirm the old password fails at the Authelia portal, then sign in again.
+
+### Proxy shared secret
+
+The secret is the `secret` key of the `naslos-proxy` Secret (or the Secret named
+by `auth.proxySecretName`). It is consumed by Traefik's `proxy-identity`
+middleware and by the API as `PROXY_SHARED_SECRET`.
+
+1. Generate a new value, e.g. `openssl rand -base64 48`.
+2. Prefer a Secret you manage out of band:
+   `kubectl -n naslos create secret generic naslos-proxy --from-literal=secret="$NEW" --dry-run=client -o yaml | kubectl apply -f -`
+3. Restart both consumers so they pick up the new value:
+   `kubectl -n naslos rollout restart deploy/naslos-api deploy/naslos-traefik`
+   (an in-place `helm upgrade` with `--set auth.proxySecret="$NEW"` also works;
+   the chart reuses the existing Secret on upgrade only when the value is not
+   set).
+4. Expect a short forwardAuth outage while the pods roll. Verify with
+   `kubectl -n naslos rollout status deploy/naslos-api`, then
+   `curl -sk https://<domain>/api/health` through the proxy and one login.
+
+Do not commit either value. The audit log is retained by Talos and cannot be
+rewritten through the API; rotation is what removes its value.
