@@ -59,6 +59,8 @@ struct InstallBody {
     confirmed: bool,
     #[serde(default, rename = "privilegedConfirmed")]
     privileged_confirmed: bool,
+    #[serde(default)]
+    datasets: Vec<String>,
 }
 
 /// A privileged catalog entry moves the app into the PSA-privileged namespace,
@@ -66,7 +68,7 @@ struct InstallBody {
 fn require_privileged_confirmation(privileged: bool, confirmed: bool) -> Result<(), String> {
     if privileged && !confirmed {
         return Err(
-            "this app runs privileged (it is installed into the privileged namespace);              set privilegedConfirmed=true after reviewing that fact"
+            "this app runs privileged (it is installed into the privileged namespace); set privilegedConfirmed=true after reviewing that fact"
                 .to_string(),
         );
     }
@@ -105,6 +107,7 @@ pub async fn apps_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
         values: req.values.clone(),
         exposure: req.exposure.clone(),
         base_domain: req.base_domain.clone(),
+        datasets: req.datasets.clone(),
     };
     match state.app_jobs.enqueue(
         JobKind::Install,

@@ -10,6 +10,7 @@
     { href: '/disks', title: 'Disks', detail: 'Devices and pool creation', icon: '🩺' },
     { href: '/backups', title: 'Backups', detail: 'Buddy peers and schedules', icon: '☁️' },
     { href: '/apps', title: 'Apps', detail: 'Catalog, installs and exposure', icon: '🧩' },
+    { href: '/datasets', title: 'Datasets', detail: 'Datasets apps may mount', icon: '🗂️' },
     { href: '/terminal', title: 'Terminal', detail: 'Pod logs and shells', icon: '⌨️' }
   ];
 </script>
