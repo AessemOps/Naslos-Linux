@@ -244,22 +244,27 @@ pub struct Checker {
 
 #[derive(Debug, Deserialize)]
 struct ReleaseEntry {
-    tag_name: String,
+    // GitHub returns null for these fields on some drafts/edge cases; a null
+    // must not make the whole update check fail (the release is simply skipped
+    // when tag_name is absent).
     #[serde(default)]
-    html_url: String,
+    tag_name: Option<String>,
     #[serde(default)]
-    body: String,
+    html_url: Option<String>,
     #[serde(default)]
-    published_at: String,
+    body: Option<String>,
     #[serde(default)]
-    assets: Vec<Asset>,
+    published_at: Option<String>,
+    #[serde(default)]
+    assets: Option<Vec<Asset>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Asset {
-    name: String,
     #[serde(default)]
-    browser_download_url: String,
+    name: Option<String>,
+    #[serde(default)]
+    browser_download_url: Option<String>,
 }
 
 impl Checker {
@@ -355,7 +360,10 @@ impl Checker {
         let releases: Vec<ReleaseEntry> = self.fetch_releases().await?;
         let mut newer: Vec<(Version, ReleaseEntry)> = releases
             .into_iter()
-            .filter_map(|r| Version::parse_tag(&r.tag_name).map(|v| (v, r)))
+            .filter_map(|r| {
+                let version = r.tag_name.as_deref().and_then(Version::parse_tag)?;
+                Some((version, r))
+            })
             .filter(|(v, _)| {
                 Version::parse(&self.facts.naslos_version)
                     .map(|current| *v > current)
@@ -417,9 +425,9 @@ impl Checker {
             }
             let candidate = Candidate {
                 version: version.to_string(),
-                notes_url: release.html_url.clone(),
-                body: release.body.clone(),
-                published_at: release.published_at.clone(),
+                notes_url: release.html_url.clone().unwrap_or_default(),
+                body: release.body.clone().unwrap_or_default(),
+                published_at: release.published_at.clone().unwrap_or_default(),
                 pack_url,
                 pack_sha256: pack_sha,
                 pack_path: self
@@ -558,14 +566,20 @@ fn pack_assets(release: &ReleaseEntry, version: &Version) -> Option<(String, Str
     let pack = format!("naslos-install-pack-{version}.tar.gz");
     let mut pack_url = None;
     let mut sha_url = None;
-    for asset in &release.assets {
-        if asset.browser_download_url.is_empty() {
+    for asset in release.assets.as_deref().unwrap_or_default() {
+        let Some(name) = asset.name.as_deref() else {
+            continue;
+        };
+        let Some(url) = asset.browser_download_url.as_deref() else {
+            continue;
+        };
+        if url.is_empty() {
             continue;
         }
-        if asset.name == pack {
-            pack_url = Some(asset.browser_download_url.clone());
-        } else if asset.name == format!("{pack}.sha256") {
-            sha_url = Some(asset.browser_download_url.clone());
+        if name == pack {
+            pack_url = Some(url.to_string());
+        } else if name == format!("{pack}.sha256") {
+            sha_url = Some(url.to_string());
         }
     }
     Some((pack_url?, sha_url?))
@@ -837,6 +851,33 @@ mod tests {
         );
         assert_eq!(pod["containers"][0]["volumeMounts"][2]["name"], "state");
         assert_eq!(spec["metadata"]["labels"]["naslos.io/operation-id"], "1-ab");
+    }
+
+    #[test]
+    fn null_release_fields_do_not_break_the_check() {
+        let json = r#"[
+            {"tag_name": null, "html_url": null, "body": null, "published_at": null, "assets": null},
+            {"tag_name": "v0.3.1", "html_url": "https://example/0.3.1", "body": null,
+             "published_at": null, "assets": [
+                {"name": "naslos-install-pack-0.3.1.tar.gz", "browser_download_url": "https://example/pack"},
+                {"name": "naslos-install-pack-0.3.1.tar.gz.sha256", "browser_download_url": "https://example/sha"}
+             ]}
+        ]"#;
+        let releases: Vec<ReleaseEntry> = serde_json::from_str(json).unwrap();
+        let selected: Vec<_> = releases
+            .into_iter()
+            .filter_map(|r| {
+                let version = r.tag_name.as_deref().and_then(Version::parse_tag)?;
+                Some((version, r))
+            })
+            .collect();
+        assert_eq!(selected.len(), 1);
+        let (version, release) = &selected[0];
+        assert_eq!(version.to_string(), "0.3.1");
+        assert_eq!(release.html_url.as_deref(), Some("https://example/0.3.1"));
+        let (pack, sha) = pack_assets(release, version).expect("pack assets");
+        assert_eq!(pack, "https://example/pack");
+        assert_eq!(sha, "https://example/sha");
     }
 
     #[test]
