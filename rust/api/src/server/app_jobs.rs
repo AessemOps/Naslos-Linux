@@ -138,6 +138,17 @@ impl AppJobManager {
         None
     }
 
+    /// Whether any app lifecycle job is running. The system upgrader refuses
+    /// to start while one is: both drive Helm against the same cluster.
+    pub fn has_running(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .jobs
+            .values()
+            .any(|j| j.state() == JobState::Running)
+    }
+
     pub fn add(&self, job: Arc<AppJob>) {
         let mut inner = self.inner.lock().unwrap();
         Self::add_locked(&mut inner, job);

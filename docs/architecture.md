@@ -63,12 +63,13 @@ see the [document index](README.md).
 
 | Downstream | Protocol / port | Used for |
 | --- | --- | --- |
-| Talos API (each node) | Talos machinery API | disk discovery, `UserVolumeConfig` documents |
+| Talos API (each node) | Talos API via the bundled `talosctl` CLI | metrics, disk discovery, `UserVolumeConfig` documents, upgrade operations |
 | Kubernetes control plane | K8s API (in-cluster) | pod info, logs, exec |
 | `naslos-agent` :9090 (each node) | HTTP | `zpool`/`zfs` via `chroot /host` |
 | OpenLDAP :636 | LDAPS | users, groups, password modify |
 | Samba workload | agent-pushed `smbusers` mirror (+ `pdbedit -i smbpasswd:`) | NT-hash sync |
-| Helm SDK | in-process | app install / upgrade / uninstall |
+| Kubernetes API | `helm`/`kubectl` CLIs (in-cluster kubeconfig) | app install / upgrade / uninstall, routes, certificates |
+| GitHub releases (or a configured mirror) | HTTPS 443 | release check and install-pack download (`system.updates.source`) |
 | ntfy (external `ntfy.sh` or self-hosted) | HTTPS | push notifications |
 | Git chart hosts | HTTPS 443 / SSH 22 / git 9418 | clone configured chart repositories (`networkPolicy.gitEgress`) |
 | Public-IP sources + DNS provider APIs | HTTPS 443 (HTTP 80 for `http` providers) + DNS 53 | Dynamic DNS detection (HTTP + `dns:opendns`/`dns:google`) and record updates (`networkPolicy.ddnsEgress`, §3.9) |
@@ -181,9 +182,11 @@ see the [document index](README.md).
 | Package | Owning directory | Responsibility |
 | --- | --- | --- |
 | `auth` | `rust/api/src/auth.rs` | Middleware: accepts `Remote-User/-Groups/-Email/-Name` only from `TRAEFIK_CIDR` **and** with the `X-Naslos-Proxy-Secret` injected by Traefik; `RequireAdmin` checks `naslos_admins` |
-| `talos` | `rust/api/src/talos.rs` | Talos machinery client, disk discovery, `VolumeAdvisor`, `UserVolumeConfig` documents |
+| `talos` | `rust/api/src/talos.rs` | Talos API adapter over the bundled `talosctl` CLI: metrics, disk discovery, `VolumeAdvisor`, `UserVolumeConfig` documents |
 | `catalog` | `rust/api/src/catalog.rs` | Built-in app store + JSON Schema per app; loads external JSON catalog overrides |
 | `helm` | `rust/api/src/helm.rs` | Helm CLI adapter (bundled `helm`): install/upgrade/uninstall/list/get/rollback, chart repo cache |
+| `system` | `rust/api/src/system.rs` | Release facts, update check/stepping rule, upgrader Job spec and operation status |
+| `upgrade` | `rust/api/src/upgrade/` | The `naslos-upgrade` Job entrypoint: pack verification, etcd snapshot, Helm/Talos/Kubernetes operations, status ConfigMap |
 | `shares` | `rust/api/src/shares.rs` | Share CRUD + generated `smb.conf` and NFS-Ganesha config |
 | `identity` | `rust/api/src/identity.rs` | OpenLDAP client: persons/groups, SetPassword; NT-hash computed for the agent-pushed `smbusers` mirror |
 | `metrics` | `rust/api/src/metrics.rs` | SystemMetrics snapshot + dashboard projection |

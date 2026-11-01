@@ -30,6 +30,7 @@
   // posture with auth off) the extra link simply stays hidden.
   let isAdmin = false;
   let username = '';
+  let updateAvailable = false;
 
   onMount(async () => {
     try {
@@ -43,6 +44,15 @@
       isAdmin = groups.includes('naslos_admins');
     } catch {
       // Hidden when the identity cannot be read.
+    }
+    try {
+      const res = await fetch('/api/system/updates');
+      if (res.ok) {
+        const updates = await res.json();
+        updateAvailable = Boolean(updates?.available && updates?.stepping?.allowed);
+      }
+    } catch {
+      // No update badge when the API cannot answer (e.g. during a reboot).
     }
   });
 
@@ -91,6 +101,14 @@
       >
         <span class="text-lg">{item.icon}</span>
         <span class="font-medium">{item.name}</span>
+        {#if item.path === '/settings' && updateAvailable}
+          <span
+            class="ml-auto w-2 h-2 rounded-full bg-naslos-accent"
+            role="status"
+            aria-label="A system update is available"
+            title="A system update is available"
+          ></span>
+        {/if}
       </a>
     {/each}
 

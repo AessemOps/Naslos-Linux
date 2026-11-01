@@ -214,6 +214,21 @@ The actual ZFS work is delegated to `naslos-agent` on each node:
 | GET | `/api/metrics` | Full `SystemMetrics` object |
 | GET | `/api/dashboard` | Dashboard-formatted subset (home screen) |
 
+### System upgrades (`FR-UPD`, see [installer-contract.md §7](installer-contract.md#7-web-upgrades-fr-upd))
+
+| Route | Method | Body / result |
+| --- | --- | --- |
+| `/api/system/version` | GET | `{naslosVersion, chartVersion, talosVersion, kubernetesVersion, releaseTalosVersion, releaseKubernetesVersion, schematicId, profile, upgradable, updatesEnabled}` |
+| `/api/system/updates` | GET | Cached check: `{enabled, upgradable, current, checkedAt, source, available, stepping:{allowed,reason}, blocked, error}` |
+| `/api/system/updates/check` | POST | Run a check now; same shape as `GET /updates` |
+| `/api/system/operations` | POST | `{op:"naslos"\|"talos"\|"kubernetes", version?}` → `202 {operationId, job}`. `409` while an operation/app job/Buddy job runs; `412` for the profile, order, stepping or pool-health precondition |
+| `/api/system/operations/current` | GET | `{id, op, from, to, phase, steps[], message, startedAt, finishedAt, result, attempts, log}`; `phase:"idle"` when no operation exists |
+
+`available` is the verified candidate (`version`, `notesUrl`, `talosVersion`,
+`kubernetesVersion`, `apiImage`) or `null`. The API never returns the pack
+sha256 in this response; the Job receives it as the administrator-approved
+value. All routes are admin-only (owner router).
+
 ### Logs & terminal (WebSocket)
 
 | Method | Path | Description |
@@ -323,6 +338,16 @@ shell, never an arbitrary command.
 | `AUTHELIA_SSO_CONFIGMAP` / `AUTHELIA_POD` / `AUTHELIA_NAMESPACE` | `naslos-authelia-sso` / `naslos-authelia-0` / release ns | Where the API writes the SSO fragments and the Authelia pod it deletes on a promotion (the StatefulSet recreates it) |
 | `EXPOSURE_LOCAL_ONLY_CIDR` | — | LAN CIDR an `localOnly` app is restricted to |
 | `PLATFORM_RELEASE` | release name | Release to exclude from the installed-app list/backfill |
+| `NASLOS_RELEASE_PROFILE` / `_VERSION` / `_CHART_VERSION` / `_TALOS_VERSION` / `_SCHEMATIC_ID` / `_KUBERNETES_VERSION` | — | Pack release facts (only an installer-profile release sets them) |
+| `NASLOS_API_IMAGE` | — | Running API image, used by the Talos/Kubernetes operation Jobs |
+| `SYSTEM_UPDATES_ENABLED` | `true` | Run the daily release check |
+| `SYSTEM_UPDATES_SOURCE` | GitHub releases API | Base URL of the release source (a mirror may serve `releases.json`) |
+| `SYSTEM_UPDATES_INTERVAL_HOURS` | `24` | Check interval |
+| `SYSTEM_UPDATES_CACHE` | `/var/lib/naslos/updates` | Verified pack/check cache |
+| `SYSTEM_UPGRADER_SERVICE_ACCOUNT` / `_CONFIGMAP` | `naslos-upgrader` / `naslos-system-operation` | Job identity and status object |
+| `SYSTEM_UPGRADER_TALOS_SECRET` / `_STATE_PVC` | `api.talosConfigSecret` / `naslos-shares-config` | Job mounts |
+| `SYSTEM_UPGRADER_BACKOFF_LIMIT` / `_TTL_SECONDS` | `3` / `3600` | Job retry/retention |
+| `NASLOS_WORKLOAD_NAMESPACE` | `naslos-privileged` | Where the agent/samba/nfs/terminal workloads live |
 
 The `naslos-agent` uses `NODE_NAME` (from `spec.nodeName`) and listens on `:9090`.
 

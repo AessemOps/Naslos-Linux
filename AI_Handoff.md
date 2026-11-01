@@ -11,6 +11,16 @@ in `docs/spec.md`.
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
+## In progress — 0.3.0 web upgrades (not deployed yet)
+
+Branch `feat/system-upgrades` implements the plan
+`.kilo/plans/1793472068625-web-ui-system-upgrades.md`: pack `release.*` +
+`kubernetesVersion`, the `naslos-upgrade` Job (Naslos → Talos → Kubernetes),
+`/api/system/*`, the Settings → System page, and the installer's explicit
+Kubernetes pin + `--resume` chart convergence. Nothing below changes until a
+`v0.3.0` pack is released and the node is bootstrapped with it; the live state
+is still the 0.2.x deployment described next.
+
 ## Current instance (2026-10-31) — clean install from the desktop installer, v0.2.1
 
 `192.168.1.117` was reset to maintenance and provisioned end to end by the

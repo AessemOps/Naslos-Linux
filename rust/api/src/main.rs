@@ -36,6 +36,12 @@ async fn main() {
     let collector = state.clone();
     tokio::spawn(async move { run_metrics_collector(collector).await });
 
+    // Daily release check (FR-UPD). The first check runs immediately so a
+    // restarted API does not wait a full interval to offer an update.
+    if let Some(updates) = state.updates.clone() {
+        tokio::spawn(async move { run_update_checker(updates).await });
+    }
+
     // Populate the catalog at startup. The chart seeds the official source,
     // but a clean install used to show an empty app catalog until an admin
     // clicked Refresh (found in the 0.2.1 clean-install drill).
@@ -134,6 +140,23 @@ async fn run_metrics_collector(state: Arc<AppState>) {
     loop {
         ticker.tick().await;
         collect_once(&state, &talos).await;
+    }
+}
+
+/// Check for a newer release immediately, then every `SYSTEM_UPDATES_INTERVAL_HOURS`.
+async fn run_update_checker(checker: std::sync::Arc<naslos_api::system::Checker>) {
+    let mut ticker = tokio::time::interval(checker.interval());
+    ticker.tick().await;
+    loop {
+        let check = checker.check().await;
+        if !check.error.is_empty() {
+            tracing::warn!("update check: {}", check.error);
+        } else if let Some(candidate) = &check.available {
+            tracing::info!("update available: {}", candidate.version);
+        } else if !check.blocked.is_empty() {
+            tracing::info!("no eligible update: {}", check.blocked);
+        }
+        ticker.tick().await;
     }
 }
 
