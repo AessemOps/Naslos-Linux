@@ -39,6 +39,11 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   (`make install-pack`), with a progress bar, first-admin + 2FA handoff and a
   recovery ZIP; the stable interfaces are in
   [docs/installer-contract.md](docs/installer-contract.md)
+- **Web upgrades** — installer-provisioned nodes update Naslos, then Talos,
+  then Kubernetes from Settings → System: verified release packs, one operation
+  at a time, etcd snapshots, Helm rollback, A/B rollback detection and a
+  progress panel that survives the reboot (see
+  [docs/installer-contract.md §7](docs/installer-contract.md#7-web-upgrades-fr-upd))
 - **Published images + release CI** — every PR runs the full gate sweep,
   supply-chain scan, secret scan and a Docker build of all images with an
   image CVE gate and SBOM; a semantic `vX.Y.Z` tag pushes

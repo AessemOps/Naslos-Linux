@@ -1,0 +1,150 @@
+{{- /*
+System upgrade plumbing (docs/installer-contract.md §7, spec FR-UPD).
+
+Only an installer-profile release is web-upgradable. The pack's
+values-installer.yaml carries `release.*`; `make install-vm` has no such block,
+so this file renders nothing there and the UI only reports versions.
+
+The upgrader Job runs outside the API pod (the API cannot upgrade its own
+release: it has no write access to this namespace and its pod is replaced
+mid-upgrade). It needs cluster-admin because it drives Talos and Helm for the
+whole node - the same blast radius as the admin talosconfig the API already
+mounts. The admission policy below narrows it to the API image and the
+`naslos-upgrade` entrypoint, so a compromised API cannot turn the ServiceAccount
+into an arbitrary pod launcher.
+*/}}
+{{- $release := .Values.release | default dict }}
+{{- $system := .Values.system | default dict }}
+{{- $upgrade := $system.upgrade | default dict }}
+{{- $updates := $system.updates | default dict }}
+{{- $sa := $upgrade.serviceAccount | default "naslos-upgrader" }}
+{{- $cm := $upgrade.configMap | default "naslos-system-operation" }}
+{{- if and .Values.ui.enabled $release.profile }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: upgrader
+---
+# Deliberately cluster-admin: the Job applies CRDs, installs/upgrades
+# cert-manager, runs `helm upgrade naslos`, takes etcd snapshots and calls
+# `talosctl upgrade`. The API already holds a full-admin talosconfig
+# (docs/architecture.md), so this adds no trust boundary the API does not
+# already cross; the admission policy and admin-only endpoints are the guard.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-upgrader
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: upgrader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+---
+# The API creates/inspects the operation Jobs and reads their state/logs. The
+# ConfigMap is scoped by resourceNames; Jobs and pods are namespaced to this
+# release namespace (the API has no other pod/log access here).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: naslos-api-system
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["{{ $cm }}"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-api-system
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: naslos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: naslos-api-system
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ .Release.Namespace }}
+{{- if ($upgrade.admissionPolicy | default dict).enabled }}
+---
+# Admission guard (FR-UPD): a pod using the upgrader ServiceAccount must run
+# the published API image and the `naslos-upgrade` entrypoint. It cannot be
+# used to launch a shell, a debug container or an arbitrary image, even by a
+# caller that can create Jobs.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ .Release.Name }}-upgrader-guard
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: upgrader
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  matchConditions:
+    - name: upgrader-service-account
+      expression: "object.spec.serviceAccountName == '{{ $sa }}'"
+  validations:
+    - expression: >-
+        object.spec.containers.all(c,
+        c.image.startsWith('ghcr.io/aessemops/naslos-api@sha256:'))
+      message: >-
+        pods using the naslos-upgrader ServiceAccount must run a
+        ghcr.io/aessemops/naslos-api@sha256: image
+    - expression: >-
+        object.spec.containers.all(c,
+        c.command.size() > 0 && c.command[0] == 'naslos-upgrade')
+      message: >-
+        pods using the naslos-upgrader ServiceAccount must run the
+        naslos-upgrade entrypoint
+    - expression: >-
+        !has(object.spec.initContainers) ||
+        object.spec.initContainers.all(c,
+        c.image.startsWith('ghcr.io/aessemops/naslos-api@sha256:') &&
+        c.command.size() > 0 && c.command[0] == 'naslos-upgrade')
+      message: >-
+        init containers using the naslos-upgrader ServiceAccount must run the
+        naslos-upgrade entrypoint
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ .Release.Name }}-upgrader-guard
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: upgrader
+spec:
+  policyName: {{ .Release.Name }}-upgrader-guard
+  validationActions: ["Deny"]
+{{- end }}
+{{- end }}

@@ -148,6 +148,8 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
             naslos_api::server::buddy_schedules::ScheduleStore::new(""),
         ),
         identity: None,
+        system: naslos_api::system::Config::default(),
+        updates: None,
     })
 }
 
@@ -309,6 +311,8 @@ async fn no_agent_configured_is_502() {
             naslos_api::server::buddy_schedules::ScheduleStore::new(""),
         ),
         identity: None,
+        system: naslos_api::system::Config::default(),
+        updates: None,
     });
     let (status, _b) = call(state, "GET", "/api/volumes/zfs", None).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);

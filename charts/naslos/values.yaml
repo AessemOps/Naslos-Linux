@@ -96,6 +96,29 @@ api:
       cpu: 500m
       memory: 256Mi
 
+# System upgrades (docs/installer-contract.md §7, spec FR-UPD).
+# The update check is a daily GitHub release lookup; `source` is a base URL so
+# a drill can serve a local mirror (never throwaway vX.Y.Z tags on the real
+# repository). Only an installer-profile node (the pack injects `release.*`)
+# may run an operation; `make install-vm` deployments only report versions.
+system:
+  updates:
+    enabled: true
+    source: "https://api.github.com/repos/AessemOps/Naslos-Linux/releases"
+    intervalHours: 24
+  upgrade:
+    # The ServiceAccount the upgrader Job runs as. The chart binds it to
+    # cluster-admin (it drives Talos and Helm for the whole node) and an
+    # admission policy restricts its pods to the API image + naslos-upgrade.
+    serviceAccount: naslos-upgrader
+    configMap: naslos-system-operation
+    # Job retention/retry: a Talos reboot kills the pod, so the Job must retry
+    # after the node comes back (idempotent) before declaring failure.
+    backoffLimit: 3
+    ttlSeconds: 3600
+    admissionPolicy:
+      enabled: true
+
 # UI configuration
 ui:
   enabled: true

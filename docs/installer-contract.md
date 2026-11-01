@@ -59,10 +59,14 @@ naslos-install-pack-<version>/
 | `chartAppVersion` | umbrella chart `appVersion` |
 | `talosVersion` | Talos version the pack targets (e.g. `v1.14.1`) |
 | `schematicId` | Image Factory schematic id for the ZFS installer/ISO |
+| `kubernetesVersion` | (additive) the Kubernetes version the installer generates and the web upgrader targets (e.g. `v1.37.0`) |
 | `isoUrls` | `{"metal-amd64": "https://factory.talos.dev/image/<schematicId>/<talosVersion>/metal-amd64.iso"}` |
 | `generatedAt` | UTC build timestamp |
 | `checksums` | map of every other member path → sha256 |
 | `images` | (additive; released packs) map of chart component → `ghcr.io/aessemops/naslos-<component>@sha256:…` for `api`, `agent`, `ui`, `samba`, `nfs`, `terminal`, `openldap`. The installer's parser ignores unknown fields, so its absence (a local pack) is fine |
+
+The packed `values-installer.yaml` also carries a `release` block with the same
+version facts plus the Kubernetes pin; the web upgrader reads it (§7).
 
 The installer MUST verify every `checksums` entry before use and MUST refuse a
 pack whose `talosVersion`/`schematicId` differ from the values it was built to
@@ -237,3 +241,156 @@ https://factory.talos.dev/image/4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfc
 
 The installer shows this link (and its checksum) and does not download or write
 USB media.
+
+
+## 7. Web upgrades (`FR-UPD`)
+
+Only a node installed from an **installer pack** is web-upgradable. A
+`make install-vm` deployment has no `release` block: the API reports versions
+and the UI disables Upgrade with a pointer to `make install-vm` (D2).
+
+### 7.1 Release facts
+
+`scripts/build-install-pack.sh` appends this block to the pack's
+`values-installer.yaml` (after digest pinning), and adds `kubernetesVersion` to
+`metadata.json`:
+
+```yaml
+release:
+  profile: installer
+  naslosVersion: 0.3.0
+  chartVersion: 0.3.0
+  talosVersion: v1.14.1
+  schematicId: 4dd8…
+  kubernetesVersion: v1.37.0
+```
+
+The chart renders them as `NASLOS_RELEASE_{PROFILE,VERSION,CHART_VERSION,TALOS_VERSION,SCHEMATIC_ID,KUBERNETES_VERSION}`.
+The in-tree `values-installer.yaml` deliberately has no `release` block, so a
+local `helm install` is not upgradable. The installer engine passes the pack's
+`kubernetesVersion` explicitly to `generate.NewInput` (never the machinery
+default).
+
+### 7.2 Source and verification
+
+The API resolves the newest **strict `vX.Y.Z`** GitHub release of
+`AessemOps/Naslos-Linux` newer than the running version. `system.updates.source`
+is a base URL: a GitHub API releases URL, a mirror serving `releases.json`, or a
+path ending in `.json`. A mirror serves a GitHub-shaped array
+(`{tag_name, html_url, body, published_at, assets:[{name,
+browser_download_url}]}`) with strict `vX.Y.Z` tags and **absolute** asset URLs.
+Each release must attach `naslos-install-pack-<X.Y.Z>.tar.gz` and its
+`.sha256`; the API verifies the tarball sha256 and then every member checksum
+from `metadata.json` before offering it. Nothing is cached unless it verifies.
+
+The **stepping rule** offers the newest release whose `talosVersion` and
+`kubernetesVersion` are each at most **one minor** ahead of the running
+versions. If the newest is further ahead, the API offers the next eligible
+release and reports why. A Naslos upgrade is blocked while the node's Talos or
+Kubernetes differs from the *current* release's pins.
+
+### 7.3 Operation Job
+
+The API creates `Job naslos-system-op-<id>` in the release namespace:
+
+| Field | Value |
+| --- | --- |
+| ServiceAccount | `naslos-upgrader` (ClusterRoleBinding `cluster-admin`) |
+| image | `naslos`: the target pack's `images.api` digest. `talos`/`kubernetes`: the running API image |
+| command | `["naslos-upgrade"]` (the binary is on `PATH` in the API image) |
+| args | `--op <naslos\|talos\|kubernetes> --operation-id <id> --from <running> --version <target> --pack-url <url> --sha256 <approved> --namespace <ns>` |
+| volumes | `naslos-talosconfig` at `/var/run/secrets/talos.dev`, the state PVC (`naslos-shares-config`) at `/var/lib/naslos`, an emptyDir at `/tmp` |
+| retry | `backoffLimit` 3, `ttlSecondsAfterFinished` 3600; a Talos reboot kills the pod and the retry re-enters idempotently |
+
+A `ValidatingAdmissionPolicy` + binding rejects any pod using the
+`naslos-upgrader` ServiceAccount unless every container (and init container)
+runs a `ghcr.io/aessemops/naslos-api@sha256:` image with
+`command[0] == "naslos-upgrade"`. This is defence in depth: the account is
+cluster-admin because the Job drives Talos, Helm and cert-manager.
+
+The API's Role in the release namespace grants only: Jobs
+get/list/create/delete, pods get/list, pods/log get, and `get` on the
+`naslos-system-operation` ConfigMap.
+
+### 7.4 Status and lock
+
+`ConfigMap naslos-system-operation` (release namespace) has one `data.state`
+JSON document:
+
+```json
+{"id":"…","op":"naslos","from":"0.3.0","to":"0.3.1","phase":"running",
+ "steps":[{"name":"helm","status":"running","message":"…","startedAt":"…","finishedAt":""}],
+ "message":"…","startedAt":"…","finishedAt":"","result":"","attempts":0}
+```
+
+`phase` is one of `pending`, `running`, `rebooting`, `succeeded`, `failed`. Any
+active phase is the lock: `POST /api/system/operations` returns `409` while it
+is present, and a second Job is never created. The ConfigMap lives in etcd, so
+it survives API restarts and the Talos reboot.
+
+### 7.5 Operations
+
+**`naslos`** (run on the target image):
+
+1. Re-download the pack, require the approved sha256, verify every member.
+2. Preflight: profile `installer`, `to > from`; the API already checked the
+   lock and that no app/Buddy job is running.
+3. `talosctl etcd snapshot` to `/var/lib/naslos/backups/etcd-<ts>.db`; keep the
+   last 3.
+4. Converge prerequisites like the engine: apply local-path, apply the
+   cert-manager CRDs server-side, `helm upgrade --install cert-manager
+   --set crds.enabled=false` and the OVH webhook, then wait for their
+   deployments.
+5. Read the current release values, rebuild **only** the engine overrides
+   (§7.6), and `helm upgrade naslos <pack chart> -f values.yaml -f
+   values-installer.yaml -f overrides --reset-values --wait=false`. Then wait
+   for OpenLDAP, Authelia, the API and the UI.
+6. Verify every running workload image equals the pack's digest; on any
+   failure `helm rollback naslos <previous revision>` and mark the operation
+   failed.
+
+**`talos`** (allowed only when the running Talos is older than the release pin):
+preflight, etcd snapshot, then
+`talosctl upgrade --image factory.talos.dev/installer/<schematic>:<version>
+--wait=false --drain=false`. The pod dies with the reboot. On retry, the
+operation re-reads `talosctl get version`: target reached → wait for the node
+Ready and the agent DaemonSet rollout (the agent is the pool-health source),
+patch `machine.install.image` to the new installer image, succeed; still the
+old version after a retry → the A/B slot rolled back → fail with the reason.
+
+**`kubernetes`** (allowed only when Talos equals the release pin and the
+running Kubernetes is older): preflight, etcd snapshot,
+`talosctl upgrade-k8s --to <version> --dry-run`, then the real upgrade, then
+verify the API server version. There is no automatic rollback; see
+`operations.md`.
+
+### 7.6 Override keys
+
+The upgrader rebuilds exactly the keys `Naslos-Installer/internal/helm/helm.go`
+`Overrides` owns; everything else comes from the new pack (the release stores
+fully merged values, including old image digests, so reusing them would keep
+old images):
+
+```
+domain
+sso.domains
+shares.discovery.name
+openldap.host
+api.talosConfigSecret
+networkPolicy.nodeCIDR
+networkPolicy.ingressPluginsCIDR
+networkPolicy.nfsClientCIDR
+```
+
+`rust/api/src/upgrade/overrides.rs` is unit-tested against a merged-values
+fixture; keep this list and `helm.Overrides` identical.
+
+### 7.7 API surface
+
+| Route | Methods | Notes |
+| --- | --- | --- |
+| `/api/system/version` | GET | running Naslos/chart/Talos/Kubernetes, release pins, profile, `upgradable` |
+| `/api/system/updates` | GET | cached check, candidate, stepping decision, notes URL |
+| `/api/system/updates/check` | POST | run a check now (admin) |
+| `/api/system/operations` | POST | `{op, version?}` → `202 {operationId}`; `409` lock/job conflict; `412` precondition |
+| `/api/system/operations/current` | GET | status JSON plus the Job pod's log tail |

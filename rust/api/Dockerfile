@@ -56,6 +56,9 @@ RUN apk add --no-cache ca-certificates git openssh-client \
 
 WORKDIR /app
 COPY --from=builder /build/target/release/naslos-api /app/naslos-api
+# The upgrader Job overrides the image command to `naslos-upgrade`; keep it on
+# PATH (the admission policy checks that exact command).
+COPY --from=builder /build/target/release/naslos-upgrade /usr/local/bin/naslos-upgrade
 
 ENV HOME=/home/naslos
 USER 65532:65532

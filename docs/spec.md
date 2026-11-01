@@ -714,6 +714,55 @@ implemented here).
   `check_image_digest_render` / `check_pack_digest_pinning`; workflow
   `.github/workflows/release.yml`)*
 
+### 3.11 System upgrades (`FR-UPD`)
+
+A node installed from an installer pack can be upgraded from the web UI. A
+`make install-vm` deployment is explicitly not web-upgradable.
+
+- **FR-UPD-01** — The pack's `values-installer.yaml` MUST carry
+  `release.{profile,naslosVersion,chartVersion,talosVersion,schematicId,kubernetesVersion}`
+  and `metadata.json` MUST carry `kubernetesVersion`. The chart MUST render the
+  facts as API env vars. Without `release.profile == "installer"` the API MUST
+  report `upgradable: false` and MUST refuse every operation (`412`).
+- **FR-UPD-02** — The API MUST check the newest strict `vX.Y.Z` GitHub release
+  (or a configured mirror), MUST download the pack and its `.sha256`, MUST
+  verify the tarball sha256 and every member checksum, and MUST cache nothing
+  that fails. The source is `system.updates.source`.
+- **FR-UPD-03** — The API MUST offer the newest release whose `talosVersion` and
+  `kubernetesVersion` are each at most one minor ahead of the running versions,
+  MUST name the blocking reason otherwise, and MUST block a Naslos upgrade while
+  the node's Talos/Kubernetes differ from the current release's pins.
+- **FR-UPD-04** — Operations MUST run in order **Naslos → Talos → Kubernetes**,
+  one at a time, each pinned by the installed release. The API MUST return
+  `409` while an operation, app job or Buddy job is running, and `412` when a
+  precondition fails (profile, order, stepping, pool health).
+- **FR-UPD-05** — Each operation MUST be an in-cluster Job running
+  `naslos-upgrade` with ServiceAccount `naslos-upgrader`; the Naslos operation
+  MUST run the image pinned by the target pack, while the Talos and Kubernetes
+  operations use the current image. The Job MUST take an etcd snapshot before
+  changing the node.
+- **FR-UPD-06** — A Naslos upgrade MUST rebuild only the installer's override
+  keys from the current release, MUST `helm upgrade --reset-values` from the
+  new pack, MUST verify the running images against the pack's digests, and MUST
+  roll back to the previous Helm revision on failure. A Talos upgrade MUST
+  detect the A/B rollback after reboot. A Kubernetes upgrade MUST dry-run first
+  and report that it has no automatic rollback.
+- **FR-UPD-07** — A `ValidatingAdmissionPolicy` MUST reject any pod using the
+  `naslos-upgrader` ServiceAccount unless every container runs a
+  `ghcr.io/aessemops/naslos-api@sha256:` image with the `naslos-upgrade`
+  entrypoint.
+- **FR-UPD-08** — The status/lock MUST live in the
+  `naslos-system-operation` ConfigMap (`phase`, `steps`, timestamps, result)
+  and MUST survive API restarts and node reboots. The API's RBAC MUST be
+  limited to the operation Jobs, their pods/logs and that ConfigMap.
+- **FR-UPD-09** — The API MUST expose admin-only `GET /api/system/version`,
+  `GET|POST /api/system/updates[/check]`,
+  `POST /api/system/operations` and `GET /api/system/operations/current`.
+- **FR-UPD-10** — The UI MUST show the version table, the available release and
+  notes link, the three ordered actions with disabled reasons, typed-version
+  confirmation dialogs (the Talos one warning about downtime), a progress panel
+  that keeps polling through the reboot, and an update badge.
+
 ---
 
 ## 4. API contracts (normative)
@@ -751,6 +800,11 @@ implemented here).
 | `/api/ddns` | GET, POST | Dynamic-DNS entries (credentials never returned) / create (§3.9) |
 | `/api/ddns/{id}` | GET, PUT, DELETE | Entry detail / update / delete (deletes its credential Secret) |
 | `/api/ddns/{id}/run` | POST | Force one reconcile even when the IP is unchanged |
+| `/api/system/version` | GET | Running Naslos/chart/Talos/Kubernetes, release pins, profile, `upgradable` (§3.11) |
+| `/api/system/updates` | GET | Cached update check, candidate, stepping decision |
+| `/api/system/updates/check` | POST | Run an update check now |
+| `/api/system/operations` | POST | Start an ordered upgrade operation (`202`; `409` lock; `412` precondition) |
+| `/api/system/operations/current` | GET | Operation status + Job log tail |
 | `/api/disks` | GET | Node disks |
 | `/api/disks/recommend` | POST | Topology advisor |
 | `/api/volumes/zfs` | GET | Pools (live via agent) |

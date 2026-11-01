@@ -277,6 +277,36 @@ impl Client {
         serde_json::from_str(out.trim()).map_err(|e| format!("parsing kubectl output: {e}"))
     }
 
+    /// The API server's `gitVersion` (for the System page).
+    pub async fn server_version(&self) -> Result<String, String> {
+        let out = self
+            .run(&["version".into(), "-o".into(), "json".into()], None)
+            .await?;
+        let value: serde_json::Value = serde_json::from_str(out.trim())
+            .map_err(|e| format!("parsing kubectl version: {e}"))?;
+        value
+            .pointer("/serverVersion/gitVersion")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| "kubectl version returned no serverVersion.gitVersion".to_string())
+    }
+
+    /// Tail one pod's log (the upgrader Job's progress).
+    pub async fn pod_logs(&self, namespace: &str, pod: &str, tail: u32) -> Result<String, String> {
+        self.run(
+            &[
+                "logs".into(),
+                pod.into(),
+                "-n".into(),
+                namespace.into(),
+                "--tail".into(),
+                tail.to_string(),
+            ],
+            None,
+        )
+        .await
+    }
+
     /// List pods in one namespace, or across every namespace when empty.
     pub async fn list_pods(&self, namespace: &str) -> Result<serde_json::Value, String> {
         if namespace.is_empty() {

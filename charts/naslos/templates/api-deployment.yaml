@@ -279,6 +279,52 @@ spec:
               value: {{ .Values.apps.refreshTTL | default "15m" | quote }}
             - name: PLATFORM_RELEASE
               value: {{ .Release.Name | quote }}
+            # Release facts for the web upgrader (docs/installer-contract.md §7).
+            # Only a pack's values-installer.yaml carries `release`; a
+            # make-install-vm deployment has none, reports its versions and
+            # keeps Upgrade disabled (D2).
+            {{- $release := .Values.release | default dict }}
+            - name: NASLOS_RELEASE_PROFILE
+              value: {{ $release.profile | default "" | quote }}
+            - name: NASLOS_RELEASE_VERSION
+              value: {{ $release.naslosVersion | default "" | quote }}
+            - name: NASLOS_RELEASE_CHART_VERSION
+              value: {{ $release.chartVersion | default "" | quote }}
+            - name: NASLOS_RELEASE_TALOS_VERSION
+              value: {{ $release.talosVersion | default "" | quote }}
+            - name: NASLOS_RELEASE_SCHEMATIC_ID
+              value: {{ $release.schematicId | default "" | quote }}
+            - name: NASLOS_RELEASE_KUBERNETES_VERSION
+              value: {{ $release.kubernetesVersion | default "" | quote }}
+            # The running API image, used for the Talos/Kubernetes operation
+            # Jobs (the Naslos operation runs the target release's image).
+            {{- $apiImage := .Values.api.image }}
+            {{- $apiImageRef := printf "%s:%s" $apiImage.repository ($apiImage.tag | default .Chart.AppVersion) }}
+            {{- if $apiImage.digest }}{{ $apiImageRef = printf "%s@%s" $apiImage.repository $apiImage.digest }}{{ end }}
+            - name: NASLOS_API_IMAGE
+              value: {{ $apiImageRef | quote }}
+            {{- $system := .Values.system | default dict }}
+            {{- $updates := $system.updates | default dict }}
+            - name: SYSTEM_UPDATES_ENABLED
+              value: {{ $updates.enabled | default true | quote }}
+            - name: SYSTEM_UPDATES_SOURCE
+              value: {{ $updates.source | default "https://api.github.com/repos/AessemOps/Naslos-Linux/releases" | quote }}
+            - name: SYSTEM_UPDATES_INTERVAL_HOURS
+              value: {{ $updates.intervalHours | default 24 | quote }}
+            - name: SYSTEM_UPGRADER_SERVICE_ACCOUNT
+              value: {{ ($system.upgrade | default dict).serviceAccount | default "naslos-upgrader" | quote }}
+            - name: SYSTEM_UPGRADER_CONFIGMAP
+              value: {{ ($system.upgrade | default dict).configMap | default "naslos-system-operation" | quote }}
+            - name: SYSTEM_UPGRADER_TALOS_SECRET
+              value: {{ .Values.api.talosConfigSecret | default "" | quote }}
+            - name: SYSTEM_UPGRADER_STATE_PVC
+              value: {{ ternary "naslos-shares-config" "" .Values.api.sharesConfig.enabled | quote }}
+            - name: SYSTEM_UPGRADER_BACKOFF_LIMIT
+              value: {{ ($system.upgrade | default dict).backoffLimit | default 3 | quote }}
+            - name: SYSTEM_UPGRADER_TTL_SECONDS
+              value: {{ ($system.upgrade | default dict).ttlSeconds | default 3600 | quote }}
+            - name: NASLOS_WORKLOAD_NAMESPACE
+              value: {{ include "naslos.workloadNamespace" . | quote }}
             # Apps hang off the primary domain; SSO_DOMAINS is the list Authelia
             # protects (a base domain outside it can never use auth).
             - name: NASLOS_DOMAIN

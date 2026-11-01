@@ -10,6 +10,10 @@ description = "Naslos HTTP API (Rust port of api/)"
 name = "naslos-api"
 path = "src/main.rs"
 
+[[bin]]
+name = "naslos-upgrade"
+path = "src/bin/naslos-upgrade.rs"
+
 [lib]
 name = "naslos_api"
 path = "src/lib.rs"
@@ -18,6 +22,7 @@ path = "src/lib.rs"
 aes-gcm = "0.10"
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+flate2 = "1"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 bytes = "1"

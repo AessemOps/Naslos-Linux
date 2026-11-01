@@ -23,13 +23,17 @@ pub mod kube;
 pub mod logsafe;
 pub mod metrics;
 pub mod notifications;
+pub mod pack;
 pub mod proc;
 pub mod providers;
 pub mod routing;
+pub mod semver;
 pub mod server;
 pub mod shares;
 pub mod state;
+pub mod system;
 pub mod talos;
+pub mod upgrade;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

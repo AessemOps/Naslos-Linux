@@ -336,6 +336,19 @@ pub struct Disk {
 }
 
 impl TalosClient {
+    /// The running Talos version (`spec.version` of `get version`).
+    pub async fn get_version(&self) -> Result<String, String> {
+        let out = self.run(&["get", "version", "-o", "json"]).await?;
+        first_json(&out)
+            .and_then(|v| {
+                v.get("spec")
+                    .and_then(|s| s.get("version"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .ok_or_else(|| "talosctl get version returned no spec.version".to_string())
+    }
+
     /// Discover disks via `talosctl get disks` + `get systemdisk`. The system
     /// disk is marked so the API can exclude it.
     pub async fn get_discovered_volumes(&self) -> Result<Vec<Disk>, String> {

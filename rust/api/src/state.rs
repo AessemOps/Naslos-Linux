@@ -84,6 +84,10 @@ pub struct AppState {
     pub buddy_jobs: Arc<crate::server::buddy_send::BuddyJobManager>,
     /// The scheduled-backup store (S6j).
     pub buddy_schedules: Arc<crate::server::buddy_schedules::ScheduleStore>,
+    /// Release facts and the upgrader Job wiring (FR-UPD).
+    pub system: crate::system::Config,
+    /// The release update checker; `None` when updates are disabled.
+    pub updates: Option<Arc<crate::system::Checker>>,
 }
 
 /// Holds the current catalog snapshot; refresh replaces it atomically.
@@ -210,6 +214,8 @@ impl AppState {
                 }
                 store
             },
+            system: crate::system::Config::from_env(),
+            updates: crate::system::Checker::from_env().map(Arc::new),
         })
     }
 
@@ -245,6 +251,8 @@ impl AppState {
             buddy: None,
             buddy_jobs: Arc::new(crate::server::buddy_send::BuddyJobManager::new()),
             buddy_schedules: Arc::new(crate::server::buddy_schedules::ScheduleStore::new("")),
+            system: crate::system::Config::default(),
+            updates: None,
         }
     }
 }

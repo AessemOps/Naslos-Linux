@@ -22,6 +22,7 @@ pub mod notifications;
 pub mod pods;
 pub mod providers;
 pub mod shares;
+pub mod system;
 pub mod users;
 pub mod ws;
 pub mod zfs;
@@ -119,6 +120,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(ddns::ddns_detail_get)
                 .put(ddns::ddns_detail_put)
                 .delete(ddns::ddns_detail_delete),
+        )
+        .route("/api/system/version", get(system::version))
+        .route("/api/system/updates", get(system::updates_get))
+        .route("/api/system/updates/check", post(system::updates_check))
+        .route("/api/system/operations", post(system::operation_post))
+        .route(
+            "/api/system/operations/current",
+            get(system::operation_current),
         )
         .route("/api/disks", get(disks::disks_get))
         .route("/api/disks/recommend", post(disks::disks_recommend))
