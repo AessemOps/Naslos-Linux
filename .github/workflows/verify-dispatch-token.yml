@@ -1,0 +1,33 @@
+name: verify dispatch token
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Probe INSTALLER_DISPATCH_TOKEN
+        env:
+          GH_TOKEN: ${{ secrets.INSTALLER_DISPATCH_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::INSTALLER_DISPATCH_TOKEN is empty or unset"
+            exit 1
+          fi
+          echo "token prefix: ${GH_TOKEN:0:4}"
+          echo "actor: $(gh api user --jq .login 2>&1)"
+          echo "permissions on AessemOps/Naslos-Installer: $(gh api repos/AessemOps/Naslos-Installer --jq '.permissions' 2>&1)"
+          code=$(curl -s -o /tmp/out -w '%{http_code}' -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -d '{"event_type":"naslos-token-check","client_payload":{"probe":"0.2.4"}}' \
+            https://api.github.com/repos/AessemOps/Naslos-Installer/dispatches)
+          echo "dispatch probe HTTP $code"
+          if [ "$code" = "204" ]; then
+            echo "RESULT: token can dispatch to Naslos-Installer"
+          else
+            echo "RESULT: token rejected ($code) $(cat /tmp/out)"
+            exit 1
+          fi
