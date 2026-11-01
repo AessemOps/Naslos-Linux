@@ -438,7 +438,10 @@ with a sibling `naslos-app.yaml` install-config. See
 
   ```json
   {
-    "cpu":     { "usagePercent": 1.7, "cores": 6, "loadAvg1": 0.1, "loadAvg5": 0.2, "loadAvg15": 0.1 },
+    "cpu":     { "usagePercent": 1.7, "cores": 6, "loadAvg1": 0.1, "loadAvg5": 0.2,
+                 "loadAvg15": 0.1, "model": "AMD Ryzen 5 3600 6-Core Processor",
+                 "temperatureC": 45.0,
+                 "perCore": [ { "core": 0, "usagePercent": 1.2, "frequencyMhz": 3600 } ] },
     "memory":  { "total": 10441696256, "used": 3108004864, "free": 3217534976,
                  "available": 7153684480, "usagePercent": 29.7, "swapTotal": 0, "swapUsed": 0 },
     "disk":    { "total": 43580284928, "used": 5165384704, "free": 38414900224, "usagePercent": 11.8 },
@@ -477,6 +480,16 @@ with a sibling `naslos-app.yaml` install-config. See
   addresses come from the node's Talos `AddressStatus` resources, and a failure to
   read them MUST NOT hide the rest of the metrics. Multi-node metric aggregation
   remains **[OPEN]** (this is a single-node product).
+- **FR-MET-11** — CPU detail MUST include the model name, logical core count,
+  1/5/15-minute load averages, and per-core usage derived from two
+  `/proc/stat` samples (a bounded delta, not the since-boot average). Per-core
+  frequency MUST be included when `/proc/cpuinfo` exposes it. The collector
+  MUST also publish the CPU temperature from a CPU-like `hwmon`
+  (`coretemp`/`k10temp`/`zenpower`/`cpu`) or, failing that, a thermal zone; an
+  absent sensor MUST be `temperatureC: null` and MUST NOT fail the metrics.
+- **FR-MET-12** — The dashboard MUST show the CPU model, load averages,
+  temperature (or an explicit "not exposed on this node" message), and one
+  usage bar per logical core. The per-core count MUST match `cpu.cores`.
 
 ### 3.6 Logs & terminal (`FR-LOG`)
 
@@ -887,7 +900,7 @@ A node installed from an installer pack can be upgraded from the web UI. A
 - **DM-2 Group**: `{ "cn", "description?", "members": ["uid", …] }` — `members` MUST be an array (possibly empty), `description` omitted when empty.
 - **DM-3 Pool**: `{ "name", "size", "alloc", "free", "usagePercent", "health" }` — sizes in bytes, parsed from human `zpool list` output.
 - **DM-4 Share**: `{ "name", "path", "protocol": "smb"|"nfs", "description", "readOnly": bool, "browseable": bool, "allowedHosts": [], "validUsers": [], "validGroups": [], "timeMachine": bool, "createdAt", "enabled": bool }` — `path` MUST be inside the ZFS base; the three list fields MUST be arrays (never `null`, including when read back from disk); `validUsers` entries render bare and `validGroups` entries render as `@group` in `smb.conf` (FR-SHR-07/12).
-- **DM-5 SystemMetrics**: see FR-MET-03. `updatedAt` is RFC 3339; before the first successful collection it is the Go zero time and consumers MUST treat it as "no data yet".
+- **DM-5 SystemMetrics**: see FR-MET-03. CPU also carries `model`, `temperatureC` (nullable), and `perCore[]` (`core`, `usagePercent`, optional `frequencyMhz`). `updatedAt` is RFC 3339; before the first successful collection it is the Go zero time and consumers MUST treat it as "no data yet".
 - **DM-6 DiskHealth**: `{ "smartctlAvailable": bool, "error": string, "temperatureWarningC": number, "wearWarningPercent": number, "disks": [{ "device", "size", "isSystemDisk", "model", "serial", "busPath", "type", "signatures": [], "inPool"?, "smart": { "available", "enabled", "health": "PASSED"|"FAILED"|"UNKNOWN", "temperatureC"?, "powerOnHours"?, "wearPercent"?, "reallocatedSectors"?, "pendingSectors"?, "uncorrectableSectors"?, "mediaErrors"?, "errorCount"?, "standby", "message" }, "zfs"?: { "pool", "vdev", "state", "readErrors", "writeErrors", "cksumErrors" } }] }` — `smart.available:false` is normal for virtio/USB/RAID devices and MUST NOT fail the endpoint (FR-DHK-02/03).
 
 ---
@@ -928,6 +941,7 @@ The authoritative executable acceptance suite is the Playwright suite in
 | `dashboard.spec.ts` — zfs pools | FR-STO-06, FR-MET-07 |
 | `disk-health.spec.ts` — per-disk inventory | FR-DHK-02/03/04 (API/UI shape, SMART-unavailable path) |
 | `dashboard.spec.ts` — auto-refresh | FR-MET-08 (5 s re-render without reload) |
+| `dashboard.spec.ts` — CPU detail | FR-MET-11/12 (model, load averages, one bar per core, unavailable-temperature note) |
 | `TestAddressesByLink`, `TestAddressesByLinkPrefersIPv4OverIPv6` | FR-MET-10 (routable IPv4 over IPv6, no loopback/link-local, no address for an unnamed link) |
 | Live dashboard shows each interface with its IP (`eth0` → the node's address) | FR-MET-10 |
 | `users.spec.ts` | FR-IDN-02, FR-IDN-08, **FR-IDN-14** (the edit dialog states the share timing and the stale-session caveat) |
