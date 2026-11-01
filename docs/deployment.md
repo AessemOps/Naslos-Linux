@@ -52,14 +52,18 @@
   missing.
 - **cert-manager + the OVH webhook.** `make install-vm` installs both as
   prerequisites (`make cert-manager`, then `make cert-manager-webhook-ovh`) in
-  the `cert-manager` namespace, outside the `naslos` default-deny policies. OVH
+  the `cert-manager` namespace, outside the `naslos` default-deny policies. The
+  desktop installer ships the same two charts plus the cert-manager CRDs in its
+  install pack and provisions them during the install
+  ([installer-contract.md](installer-contract.md) §2.1), so a fresh install can
+  issue trusted certificates without a follow-up `helm` run. OVH
   is not a cert-manager built-in DNS-01 solver, so OVH certificates need the
   webhook, and the OVH API token must grant
   `GET/POST/PUT/DELETE /domain/zone/<zone>/*` (the `/status`, `/record` and
-  `/refresh` subpaths). On a non-VM install the chart's optional
-  `certManager.enabled` subchart can install the controller, but the OVH webhook
-  is still required for OVH. Without either, apps still install and route; only
-  ACME certificates are unavailable.
+  `/refresh` subpaths). The chart's optional `certManager.enabled` subchart is
+  an alternative for non-VM installs; the webhook is still required for OVH.
+  Without them, apps still install and route; only ACME certificates are
+  unavailable.
 - **Wildcard DNS** for app subdomains: point `*.<domain>` at the node
   (router/dnsmasq/registrar). Without it, `<app>.<domain>` does not resolve.
 - **A chart repository** with `apps/<name>/` entries (see

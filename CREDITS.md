@@ -18,7 +18,7 @@ and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
-**Last reviewed: 2026-10-31.** Maintenance: update this file whenever a direct dependency changes in
+**Last reviewed: 2026-11-01.** Maintenance: update this file whenever a direct dependency changes in
 `rust/api/Cargo.toml`, `rust/agent/Cargo.toml`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
 It also lists the GitHub Actions used by the CI/release workflows.
 
@@ -134,6 +134,14 @@ The full transitive tree is pinned in
 | Traefik | 41.6.0 | MIT | https://github.com/traefik/traefik |
 | Authelia | 0.11.22 | Apache-2.0 | https://github.com/authelia/authelia |
 | cert-manager | v1.18.2 | Apache-2.0 | https://github.com/cert-manager/cert-manager |
+
+Vendored into the install pack (`bootstrap/cert-manager/`, copied to the pack by
+`scripts/build-install-pack.sh`): the cert-manager CRD manifest rendered from
+the chart above, and the standalone OVH solver chart.
+
+| Component | Version | License (SPDX) | Upstream |
+| --- | --- | --- | --- |
+| cert-manager-webhook-ovh | 0.9.17 | MIT | https://github.com/aureq/cert-manager-webhook-ovh |
 
 ## Integrated services
 

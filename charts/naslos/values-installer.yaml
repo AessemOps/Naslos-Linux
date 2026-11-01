@@ -118,13 +118,18 @@ networkPolicy:
   ddnsEgress: true
 
 # --- optional subsystems ---
-# cert-manager + the OVH webhook are NOT installed by the installer; real ACME
-# certificates stay a UI action on the Domains page (see the chart Makefile
-# targets `cert-manager` / `cert-manager-webhook-ovh`).
+# The installer provisions cert-manager and the OVH DNS-01 webhook from the
+# pack (manifests/cert-manager-crds.yaml + charts/cert-manager-webhook-ovh-*),
+# the same way `make install-vm` installs them, so the Domains page can issue
+# publicly trusted certificates once OVH credentials are entered.
+# certManager.enabled stays false: the engine installs cert-manager as its own
+# release, so enabling the subchart here would install it twice.
 certManager:
   enabled: false
+# RBAC that lets the webhook read a Domain's OVH credential Secret in the apps
+# namespace; it must be on or certificate issuance fails with a forbidden read.
 ovhWebhook:
-  enabled: false
+  enabled: true
 # Buddy Backup stays off until a receive dataset exists on the node; the UI can
 # enable it later once a pool/dataset is created.
 buddy:

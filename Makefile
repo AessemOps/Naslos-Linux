@@ -1,7 +1,7 @@
 .PHONY: all agent ui images push-images \
         buddyctl buddy-receiver-image \
         bootstrap bootstrap-vm dev-cluster crds \
-        cert-manager cert-manager-webhook-ovh \
+        cert-manager cert-manager-crds cert-manager-webhook-ovh \
         install install-vm install-pack uninstall clean
 
 DOCKER := docker
@@ -185,6 +185,29 @@ crds:
 	$(HELM) template cert-manager jetstack/cert-manager --version v1.18.2 \
 		--show-only templates/crds.yaml --set crds.enabled=true \
 		| $(KUBECTL) apply --server-side --force-conflicts -f -
+
+# Regenerate the cert-manager CRDs the install pack ships
+# (bootstrap/cert-manager/crds.yaml -> manifests/cert-manager-crds.yaml), from
+# the cert-manager chart vendored as a Naslos subchart. Offline, and the same
+# render `make crds` applies. scripts/audit.sh fails when the committed file
+# drifts from the pinned chart, so run this after bumping the subchart.
+cert-manager-crds:
+	{ printf '%s\n' \
+		'# cert-manager CRDs, vendored into the install pack for the desktop installer.' \
+		'#' \
+		'# Provenance: rendered from the cert-manager chart vendored as a Naslos subchart' \
+		'# (charts/naslos/charts/cert-manager-v1.18.2.tgz, upstream' \
+		'# https://github.com/cert-manager/cert-manager, Apache-2.0; see CREDITS.md):' \
+		'#' \
+		'#   helm template cert-manager charts/naslos/charts/cert-manager-v1.18.2.tgz \' \
+		'#     --namespace cert-manager --set crds.enabled=true \' \
+		'#     --show-only templates/crds.yaml > bootstrap/cert-manager/crds.yaml' \
+		'#' \
+		'# Regenerate with `make cert-manager-crds`; scripts/audit.sh fails when this' \
+		'# file drifts from the pinned chart. Hand edits are lost.' ; \
+	  $(HELM) template cert-manager charts/naslos/charts/cert-manager-v1.18.2.tgz \
+		--namespace cert-manager --set crds.enabled=true \
+		--show-only templates/crds.yaml ; } > bootstrap/cert-manager/crds.yaml
 
 # Install cert-manager and the OVH DNS-01 webhook, each as its own release in
 # the `cert-manager` namespace. CRDs come from `make crds` (crds.enabled=false
