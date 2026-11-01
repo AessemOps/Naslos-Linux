@@ -10,6 +10,8 @@
 # valid YAML until it does):
 #   {{NODE_SUBNET}}   the node's IPv4 /24, e.g. 192.168.1.0/24
 #   {{INSTALL_DISK}}  the install disk, e.g. /dev/vda (v1 assumes /dev/vda)
+#   {{INTERFACE}}     the node's real NIC name, detected by the engine (eth0 on
+#                     the VM; hardware often uses ens3/enp…)
 #
 # Differences from bootstrap/vm/naslos-vm.yaml (which stays the VM path):
 #   - no private-registry `machine.registries` mirror/auth block
@@ -39,7 +41,7 @@ machine:
       - name: zfs
   network:
     interfaces:
-      - interface: eth0
+      - interface: "{{INTERFACE}}"
         dhcp: true
         # No VIP: a single-node cluster does not need one, and vip == the
         # DHCP-assigned address breaks the VIP controller and kubelet.
