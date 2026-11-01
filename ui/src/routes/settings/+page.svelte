@@ -1,5 +1,6 @@
 <script lang="ts">
   const sections = [
+    { href: '/system', title: 'System', detail: 'Versions and upgrades', icon: '⬆️' },
     { href: '/users', title: 'Users', detail: 'Accounts, passwords and status', icon: '👤' },
     { href: '/groups', title: 'Groups', detail: 'Group membership', icon: '👥' },
     { href: '/shares', title: 'Shares', detail: 'SMB and NFS exports', icon: '📁' },

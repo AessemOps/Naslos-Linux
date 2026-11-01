@@ -18,3 +18,11 @@ paths = [
   '''^api/internal/identity/nthash_test\.go$''',
   '''^\.kilo/plans/1789420724996-security-audit\.md$''',
 ]
+
+# FR-UPD prose tripped the generic-api-key heuristic ("API image digest,
+# Talos/Kubernetes"). It is documentation, not a credential; the earlier commit
+# is already in this branch's history.
+[[allowlists]]
+description = "FR-UPD spec prose (false positive)"
+regexTarget = "match"
+regexes = ['''API image digest, Talos/Kubernetes''']

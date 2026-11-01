@@ -221,6 +221,16 @@ impl BuddyJobManager {
         inner.1 = kept;
     }
 
+    /// Whether a Buddy send/restore job is running.
+    pub fn has_running(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .0
+            .values()
+            .any(|j| j.state() == JobState::Running)
+    }
+
     pub fn get(&self, id: &str) -> Option<Arc<BuddyJob>> {
         self.inner.lock().unwrap().0.get(id).cloned()
     }

@@ -54,6 +54,10 @@ SCHEMATIC="bootstrap/schematic/naslos.yaml"
 
 TALOS_VERSION="v1.14.1"
 SCHEMATIC_ID="4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c"
+# Kubernetes the pack pins. The installer generates the machine config with this
+# explicit version (not the machinery default) and the web upgrader targets it;
+# `scripts/check-system-pins.sh` keeps it in step with kubectl/talosctl.
+KUBERNETES_VERSION="v1.37.0"
 ISO_URL="https://factory.talos.dev/image/${SCHEMATIC_ID}/${TALOS_VERSION}/metal-amd64.iso"
 
 for f in "$CHART_YAML" "$TEMPLATE" "$CILIUM" "$LOCAL_PATH" "$SCHEMATIC" \
@@ -120,13 +124,25 @@ if [ -n "$IMAGE_DIGESTS_FILE" ] || [ -n "$IMAGE_DIGESTS" ]; then
     images_json="$build_dir/images.json"
 fi
 
+# Release facts the web upgrader needs (D1/D4/D5). They live in the pack's
+# installer profile so every install/upgrade path carries them and the chart
+# can render them as API env vars; no engine-side state is involved.
+scripts/inject-release-facts.py \
+    --values "$pack_root/charts/naslos/values-installer.yaml" \
+    --profile installer \
+    --naslos-version "$VERSION" \
+    --chart-version "$chart_version" \
+    --talos-version "$TALOS_VERSION" \
+    --schematic-id "$SCHEMATIC_ID" \
+    --kubernetes-version "$KUBERNETES_VERSION"
+
 # metadata.json: versions, ISO URL, and a sha256 for every other member.
 python3 - "$pack_root" "$VERSION" "$chart_version" "$chart_app_version" \
-    "$TALOS_VERSION" "$SCHEMATIC_ID" "$ISO_URL" "$images_json" <<'PY'
+    "$TALOS_VERSION" "$SCHEMATIC_ID" "$KUBERNETES_VERSION" "$ISO_URL" "$images_json" <<'PY'
 import hashlib, json, os, sys, datetime
 
 (pack_root, version, chart_version, chart_app_version, talos_version,
- schematic_id, iso_url, images_json) = sys.argv[1:9]
+ schematic_id, kubernetes_version, iso_url, images_json) = sys.argv[1:10]
 
 checksums = {}
 for dirpath, _dirs, files in os.walk(pack_root):
@@ -146,6 +162,7 @@ metadata = {
     "chartAppVersion": chart_app_version,
     "talosVersion": talos_version,
     "schematicId": schematic_id,
+    "kubernetesVersion": kubernetes_version,
     "isoUrls": {"metal-amd64": iso_url},
     "generatedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "checksums": dict(sorted(checksums.items())),
@@ -163,7 +180,7 @@ tar -C "$build_dir" -czf "$tarball" "naslos-install-pack-$VERSION"
 ( cd "$OUTPUT_DIR" && sha256sum "naslos-install-pack-$VERSION.tar.gz" > "naslos-install-pack-$VERSION.tar.gz.sha256" )
 
 echo "built $tarball"
-echo "  talosVersion=$TALOS_VERSION schematicId=$SCHEMATIC_ID"
+echo "  talosVersion=$TALOS_VERSION schematicId=$SCHEMATIC_ID kubernetesVersion=$KUBERNETES_VERSION"
 if [ -n "$images_json" ]; then
     echo "  images pinned by digest ($(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$images_json"))"
 else

@@ -66,6 +66,7 @@ binaries (tar streaming, a PTY for terminal exec). Direct dependencies:
 | chrono | 0.4 | MIT OR Apache-2.0 | https://github.com/chronotope/chrono |
 | clap | 4 | MIT OR Apache-2.0 | https://github.com/clap-rs/clap |
 | ed25519-dalek | 2 | BSD-3-Clause | https://github.com/dalek-cryptography/ed25519-dalek |
+| flate2 | 1 | MIT OR Apache-2.0 | https://github.com/rust-lang/flate2-rs |
 | futures | 0.3 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
 | http-body-util | 0.1 | MIT | https://github.com/hyperium/http-body |
 | hyper-util | 0.1 | MIT | https://github.com/hyperium/hyper-util |

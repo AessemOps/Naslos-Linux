@@ -586,6 +586,7 @@ with tarfile.open(tars[0]) as tf:
 root = glob.glob(os.path.join(d, "x", "naslos-install-pack-*"))[0]
 m = json.load(open(os.path.join(root, "metadata.json")))
 assert m["talosVersion"] and m["schematicId"], "metadata must pin talosVersion + schematicId"
+assert m.get("kubernetesVersion"), "metadata must pin kubernetesVersion"
 assert "metal-amd64" in m["isoUrls"], "metadata must carry the metal-amd64 ISO URL"
 for rel in ["charts/naslos/values-installer.yaml",
             "machine-config/naslos-installer.yaml.tmpl",
@@ -599,6 +600,32 @@ for rel, sha in m["checksums"].items():
     p = os.path.join(root, rel)
     assert os.path.exists(p), f"checksum lists a missing member: {rel}"
     assert hashlib.sha256(open(p, "rb").read()).hexdigest() == sha, f"checksum mismatch: {rel}"
+
+# FR-UPD: the packed installer profile must carry the release facts the web
+# upgrader reads, and they must match metadata.json.
+vi = open(os.path.join(root, "charts/naslos/values-installer.yaml"), encoding="utf-8").read()
+fields, in_release = {}, False
+for line in vi.splitlines():
+    if line == "release:":
+        in_release = True
+        continue
+    if in_release:
+        if not line.startswith("  "):
+            break
+        key, _, value = line.strip().partition(":")
+        fields[key] = value.strip().strip('"')
+want = {
+    "profile": "installer",
+    "naslosVersion": m["naslosVersion"],
+    "chartVersion": m["chartVersion"],
+    "talosVersion": m["talosVersion"],
+    "schematicId": m["schematicId"],
+    "kubernetesVersion": m["kubernetesVersion"],
+}
+for key, value in want.items():
+    assert fields.get(key) == value, (
+        f"pack release.{key}={fields.get(key)!r}, want {value!r}"
+    )
 print("install pack ok")
 PY
   rc=$?
@@ -635,6 +662,42 @@ check_cert_manager_vendor() {
     return 1
   fi
   rm -rf "$d"
+}
+
+# FR-UPD: an installer-profile release must render the upgrader ServiceAccount,
+# the cluster-admin binding, the admission policy and the release env. The
+# in-tree values-installer has no `release` block (a local install is not
+# upgradable), so inject the facts the pack build writes.
+check_system_upgrade_render() {
+  f=$(mktemp) || return 1
+  if ! helm template naslos "$root/charts/naslos" -n naslos \
+    -f "$root/charts/naslos/values.yaml" \
+    -f "$root/charts/naslos/values-installer.yaml" \
+    --set release.profile=installer \
+    --set release.naslosVersion=0.3.0 \
+    --set release.chartVersion=0.3.0 \
+    --set release.talosVersion=v1.14.1 \
+    --set release.schematicId=abc \
+    --set release.kubernetesVersion=v1.37.0 >"$f" 2>/dev/null; then
+    rm -f "$f"
+    return 1
+  fi
+  rc=0
+  for needle in \
+    "name: naslos-upgrader" \
+    "kind: ValidatingAdmissionPolicy" \
+    "kind: ValidatingAdmissionPolicyBinding" \
+    "name: NASLOS_RELEASE_PROFILE" \
+    "name: NASLOS_API_IMAGE" \
+    "name: SYSTEM_UPGRADER_STATE_PVC" \
+    "command\[0\] == 'naslos-upgrade'"; do
+    if ! grep -q "$needle" "$f"; then
+      echo "missing from the rendered installer profile: $needle" >&2
+      rc=1
+    fi
+  done
+  rm -f "$f"
+  return "$rc"
 }
 
 # FR-INSTALL-13 (part 1): the chart's digest mechanism must render. With a
@@ -804,8 +867,10 @@ if have helm; then
   run "helm lint (installer profile, FR-INSTALL)" helm lint charts/naslos \
     -f charts/naslos/values.yaml -f charts/naslos/values-installer.yaml
   run "install pack builds + checksums (FR-INSTALL)" check_install_pack
+  run "talos/kubectl pins match the pack (FR-UPD)" scripts/check-system-pins.sh
   run "pack cert-manager material matches the pinned charts" check_cert_manager_vendor
   run "chart images render by digest (FR-INSTALL-13)" check_image_digest_render
+  run "system upgrade plumbing renders (FR-UPD)" check_system_upgrade_render
   run "install pack pins image digests (FR-INSTALL-13)" check_pack_digest_pinning
   run "authelia ldap password is a Secret file (AUDIT-M3)" check_authelia_ldap_secret
   run "authelia SSO fragments + scoped RBAC (FR-APP-15)" check_authelia_sso_fragments

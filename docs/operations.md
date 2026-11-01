@@ -31,6 +31,66 @@ kubectl exec -n naslos statefulset/naslos-openldap -- \
 (Stop the API or put LDAP in read-only mode first; the API reconnects
 automatically on the next operation.)
 
+## Upgrading
+
+### From the web UI (installer-provisioned nodes)
+
+Settings → **System** shows the running Naslos, chart, Talos and Kubernetes
+versions. **Check now** verifies the newest eligible release pack (sha256 plus
+every member checksum) and offers one step at a time:
+
+1. **Naslos** — runs the target release's API image in an upgrader Job. It
+   snapshots etcd, converges local-path/cert-manager, `helm upgrade --reset-values`
+   from the new pack, keeps only the installer overrides (`domain`, `sso.domains`,
+   `shares.discovery.name`, `openldap.host`, `api.talosConfigSecret`, the three
+   `networkPolicy` CIDRs), waits for the core workloads and verifies every image
+   digest. On failure it rolls Helm back to the previous revision.
+2. **Talos** — `talosctl upgrade` to the pack's pinned installer image; the node
+   reboots and the operation resumes afterwards. A/B rollback is detected and
+   reported as `failed`.
+3. **Kubernetes** — `talosctl upgrade-k8s --to <pin>` (dry-run first). There is
+   no automatic rollback.
+
+The operation lock and progress live in the `naslos-system-operation`
+ConfigMap, so an API restart or node reboot does not lose them. The UI keeps
+polling and shows "node rebooting, reconnecting…" during the Talos step.
+
+A `make install-vm` deployment is not web-upgradable; the page shows the
+versions and points at `make install-vm`.
+
+### From the CLI (bootstrap or no UI access)
+
+Run the installer against the existing state with `--resume`:
+
+```bash
+read -rs NASLOS_ADMIN_PASSWORD && export NASLOS_ADMIN_PASSWORD
+naslos-install --resume --node-ip <node> --domain <domain> --admin-user <uid> \
+  --install-disk <disk> --confirm-wipe <disk>
+```
+
+`--resume` re-runs the Helm step when the deployed chart is older than the
+pack's, which is the path from a 0.2.x node to the first web-upgradable release.
+The admin password is only required while the `admin` step is still pending.
+
+### Manual recovery
+
+- **Naslos Helm rollback**:
+  ```bash
+  kubectl -n naslos helm history naslos
+  kubectl -n naslos helm rollback naslos <previous-revision> --wait
+  ```
+  The upgrader does this automatically; do it by hand only if the Job itself
+  failed or the API is gone.
+- **Talos A/B rollback**: Talos boots the previous slot automatically. Confirm
+  with `talosctl -n <node> get version`; the operation reports `failed` with
+  "rolled back". Fix the cause (image/schematic) before retrying.
+- **Failed `upgrade-k8s`**: there is no automatic rollback. Check
+  `kubectl get nodes -o wide` and
+  `kubectl -n kube-system get pods`; re-run
+  `talosctl upgrade-k8s --to <version>` (it is idempotent) or restore the etcd
+  snapshot from `/var/lib/naslos/backups/etcd-<ts>.db` on the node if the
+  control plane does not return. Keep the three newest snapshots.
+
 ## Troubleshooting
 
 ### Cannot log in via web
