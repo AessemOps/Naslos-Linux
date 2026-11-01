@@ -29,6 +29,25 @@ pub struct CpuMetrics {
     pub load_avg5: f64,
     #[serde(rename = "loadAvg15")]
     pub load_avg15: f64,
+    #[serde(default)]
+    pub model: String,
+    #[serde(rename = "temperatureC")]
+    pub temperature_c: Option<f64>,
+    #[serde(default, rename = "perCore")]
+    pub per_core: Vec<CpuCore>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct CpuCore {
+    pub core: i64,
+    #[serde(rename = "usagePercent")]
+    pub usage_percent: f64,
+    #[serde(
+        default,
+        rename = "frequencyMhz",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub frequency_mhz: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -159,7 +178,16 @@ impl Manager {
             None => serde_json::Value::String(ZERO_TIME.to_string()),
         };
         serde_json::json!({
-            "cpu": { "usage": m.cpu.usage_percent, "cores": m.cpu.cores },
+            "cpu": {
+                "usage": m.cpu.usage_percent,
+                "cores": m.cpu.cores,
+                "model": m.cpu.model.clone(),
+                "temperatureC": m.cpu.temperature_c,
+                "loadAvg1": m.cpu.load_avg1,
+                "loadAvg5": m.cpu.load_avg5,
+                "loadAvg15": m.cpu.load_avg15,
+                "perCore": m.cpu.per_core.clone(),
+            },
             "memory": {
                 "usage": m.memory.usage_percent,
                 "total": m.memory.total,
@@ -208,7 +236,39 @@ impl Manager {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_zfs_size;
+    use super::{parse_zfs_size, CpuCore, CpuMetrics, Manager, SystemMetrics};
+
+    #[test]
+    fn dashboard_cpu_carries_temperature_and_per_core() {
+        let manager = Manager::new();
+        manager.update(SystemMetrics {
+            cpu: CpuMetrics {
+                usage_percent: 12.5,
+                cores: 2,
+                model: "Test CPU".into(),
+                temperature_c: Some(45.0),
+                per_core: vec![
+                    CpuCore {
+                        core: 0,
+                        usage_percent: 10.0,
+                        frequency_mhz: Some(3600),
+                    },
+                    CpuCore {
+                        core: 1,
+                        usage_percent: 15.0,
+                        frequency_mhz: None,
+                    },
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let view = manager.dashboard_data();
+        assert_eq!(view["cpu"]["model"], "Test CPU");
+        assert_eq!(view["cpu"]["temperatureC"], 45.0);
+        assert_eq!(view["cpu"]["perCore"].as_array().unwrap().len(), 2);
+        assert_eq!(view["cpu"]["perCore"][0]["frequencyMhz"], 3600);
+    }
 
     #[test]
     fn zpool_sizes_are_parsed() {

@@ -3,7 +3,16 @@
   import { onDestroy } from 'svelte';
 
   interface DashboardData {
-    cpu?: { usage: number; cores: number };
+    cpu?: {
+      usage: number;
+      cores: number;
+      model?: string;
+      temperatureC?: number | null;
+      loadAvg1?: number;
+      loadAvg5?: number;
+      loadAvg15?: number;
+      perCore?: Array<{ core: number; usagePercent: number; frequencyMhz?: number }>;
+    };
     memory?: { usage: number; total: number; used: number; available: number };
     disk?: { usage: number; total: number; used: number; free: number };
     zfs?: { poolCount: number; pools: any[] };
@@ -101,6 +110,23 @@
     return `${size.toFixed(1)} ${units[i]}`;
   }
 
+  function formatTemperature(value?: number | null): string {
+    return value === undefined || value === null || Number.isNaN(value)
+      ? '—'
+      : `${value.toFixed(1)} °C`;
+  }
+
+  function formatLoad(cpu?: DashboardData['cpu']): string {
+    if (!cpu) return '—';
+    return `${(cpu.loadAvg1 ?? 0).toFixed(2)} / ${(cpu.loadAvg5 ?? 0).toFixed(2)} / ${(cpu.loadAvg15 ?? 0).toFixed(2)}`;
+  }
+
+  function coreBarClass(usage: number): string {
+    if (usage >= 90) return 'bg-red-500';
+    if (usage >= 70) return 'bg-amber-400';
+    return 'bg-naslos-primary';
+  }
+
   function formatUptime(seconds: number): string {
     if (!seconds) return '—';
     const days = Math.floor(seconds / 86400);
@@ -140,7 +166,7 @@
       <div class="card">
         <div class="text-sm text-gray-400 mb-1">CPU Usage</div>
         <div class="text-3xl font-bold text-naslos-primary">{data.cpu?.usage?.toFixed(1) || '—'}%</div>
-        <div class="text-xs text-gray-500">{data.cpu?.cores || 0} cores</div>
+        <div class="text-xs text-gray-500">{data.cpu?.cores || 0} cores · {formatTemperature(data.cpu?.temperatureC)}</div>
       </div>
       <div class="card">
         <div class="text-sm text-gray-400 mb-1">Memory</div>
@@ -156,6 +182,62 @@
         <div class="text-sm text-gray-400 mb-1">Uptime</div>
         <div class="text-3xl font-bold text-purple-400">{formatUptime(data.system?.uptime || 0)}</div>
         <div class="text-xs text-gray-500">{data.system?.hostname || '—'}</div>
+      </div>
+    </div>
+
+    <!-- CPU detail: model, temperature, load averages and per-core usage. -->
+    <div class="card mb-6" data-testid="cpu-details">
+      <h2 class="text-xl font-bold mb-4">CPU</h2>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div>
+          <div class="text-sm text-gray-400">Model</div>
+          <div class="font-medium">{data.cpu?.model || '—'}</div>
+        </div>
+        <div>
+          <div class="text-sm text-gray-400">Temperature</div>
+          <div class="font-medium">{formatTemperature(data.cpu?.temperatureC)}</div>
+        </div>
+        <div>
+          <div class="text-sm text-gray-400">Load average</div>
+          <div class="font-medium font-mono text-sm">{formatLoad(data.cpu)}</div>
+        </div>
+        <div>
+          <div class="text-sm text-gray-400">Cores</div>
+          <div class="font-medium">{data.cpu?.cores || 0}</div>
+        </div>
+      </div>
+
+      {#if data.cpu?.temperatureC == null}
+        <p class="text-xs text-gray-500 mt-3" data-testid="cpu-temp-unavailable">
+          CPU temperature is not exposed on this node.
+        </p>
+      {/if}
+
+      <div class="mt-5">
+        <div class="text-sm text-gray-400 mb-2">Per-core usage</div>
+        {#if (data.cpu?.perCore?.length ?? 0) > 0}
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {#each data.cpu?.perCore ?? [] as core}
+              <div class="bg-naslos-dark rounded-lg p-3" data-testid="cpu-core">
+                <div class="flex items-center justify-between text-sm mb-1">
+                  <span>Core {core.core}</span>
+                  <span class="font-mono">{core.usagePercent.toFixed(1)}%</span>
+                </div>
+                <div class="w-full bg-naslos-border rounded-full h-2">
+                  <div
+                    class={`${coreBarClass(core.usagePercent)} h-2 rounded-full transition-all`}
+                    style={`width: ${Math.min(100, Math.max(0, core.usagePercent))}%`}
+                  ></div>
+                </div>
+                <div class="text-xs text-gray-500 mt-1">
+                  {core.frequencyMhz ? `${core.frequencyMhz} MHz` : 'frequency —'}
+                </div>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <p class="text-sm text-gray-500">Per-core data is unavailable.</p>
+        {/if}
       </div>
     </div>
 

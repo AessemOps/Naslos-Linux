@@ -11,23 +11,29 @@ in `docs/spec.md`.
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## Release 0.3.0 published (2026-11-01) — node reinstall pending
+## Current instance (2026-11-01) — fresh 0.3.1 install
 
-`v0.3.0` is tagged; the release has the digest-pinned
-`naslos-install-pack-0.3.0.tar.gz`, and **Naslos Installer v0.3.0** was
-published by the release dispatch. The node is still the 0.2.1 deployment
-described below until it is reinstalled/upgraded with the 0.3.0 installer.
+- Node `talos-4wf-d3g`, Talos v1.14.1 / k8s v1.37.0, **control-plane Ready**.
+- Helm release `naslos` (chart `naslos-0.3.1`, revision 1). Images are
+  digest-pinned from GHCR: API `sha256:9806852f…`, agent
+  `sha256:ee2d7391…`, UI `sha256:eeac7201…`, NFS `sha256:288a49c7…`, Samba
+  `sha256:76b20d48…`, terminal `sha256:155b4865…`.
+- Installed from **Naslos Installer v0.3.1**; the owner updated the credentials
+  after the install. The 0.3.1 pack includes the disk-health page and the NIC
+  detection fix (`{{INTERFACE}}`).
+- The upgrader null-release fix and the terminal Disconnect fix are on
+  `master` (PR #113) but are **not** in the deployed 0.3.1 images yet.
+- The VM has no CPU thermal zone/hwmon, so CPU temperature is reported as
+  unavailable; per-core load works.
 
-## In progress — 0.3.1 disk health (PR #112)
+## In progress — 0.3.2 CPU info (branch `feat/cpu-info`)
 
-Branch `feat/disk-health` implements
-`.kilo/plans/1793552820000-disk-health.md`: a pinned static `smartctl` in the
-agent image (read-only, `-n standby`), `/sys` mounted read-only, per-disk
-SMART + ZFS vdev data at `GET /api/disks/health`, the `/disks/health` page, and
-transition notifications for SMART failures, temperature/wear thresholds and
-vdev faults. Not deployed; 0.3.1 is the next release.
+Dashboard/`/api/metrics` CPU detail: model, 1/5/15 load, per-core usage from a
+two-sample `/proc/stat` delta, per-core frequency from `/proc/cpuinfo`, and
+temperature from a CPU `hwmon`/thermal zone when present (nullable otherwise).
+Plan: `.kilo/plans/1793600000002-cpu-info.md`.
 
-## Current instance (2026-10-31) — clean install from the desktop installer, v0.2.1
+## Historical — 0.2.1 clean install (2026-10-31)
 
 `192.168.1.117` was reset to maintenance and provisioned end to end by the
 **Naslos-Installer desktop app** (installer v0.2.3, embedding the `v0.2.1`

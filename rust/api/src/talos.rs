@@ -7,12 +7,14 @@
 //! `/var/run/secrets/talos.dev/config`. Endpoints come from `TALOS_ENDPOINTS`
 //! (the chart sets it; without it the Go client fatals at startup).
 
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::process::Stdio;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::metrics::{
-    CpuMetrics, DiskMetrics, MemoryMetrics, NetworkInterface, NetworkMetrics, SystemInfo,
+    CpuCore, CpuMetrics, DiskMetrics, MemoryMetrics, NetworkInterface, NetworkMetrics, SystemInfo,
     SystemMetrics,
 };
 
@@ -25,6 +27,10 @@ pub struct TalosClient {
     endpoints: Vec<String>,
     nodes: Vec<String>,
     talosconfig: Option<String>,
+    // Temperature probing is hardware-specific and missing paths are common
+    // (the VM has no thermal zone); cache the answer so the 5 s collector does
+    // not spawn a probe every tick.
+    temperature_cache: Mutex<Option<(Instant, Option<f64>)>>,
 }
 
 impl TalosClient {
@@ -55,6 +61,7 @@ impl TalosClient {
             endpoints,
             nodes,
             talosconfig,
+            temperature_cache: Mutex::new(None),
         })
     }
 
@@ -198,30 +205,115 @@ impl TalosClient {
                 cpu.load_avg15 = parts[2].parse().unwrap_or(0.0);
             }
         }
-        if let Ok(stat) = self.read("/proc/stat").await {
-            if let Some(line) = stat.lines().find(|l| l.starts_with("cpu ")) {
-                let vals: Vec<u64> = line
-                    .split_whitespace()
-                    .skip(1)
-                    .filter_map(|v| v.parse().ok())
-                    .collect();
-                if vals.len() >= 5 {
-                    let total: u64 = vals.iter().sum();
-                    let idle = vals[3] + vals.get(4).copied().unwrap_or(0);
-                    if total > 2 {
-                        // The deltas are unknown, so idle% is derived from the
-                        // double sample the Go client would take; a single read
-                        // yields instantaneous idle share, which is close enough
-                        // for a dashboard and never zero.
-                        cpu.usage_percent = (total - idle) as f64 / total as f64 * 100.0;
+
+        let info = self
+            .read("/proc/cpuinfo")
+            .await
+            .map(|raw| parse_cpuinfo(&raw))
+            .unwrap_or_default();
+
+        let first = self.read("/proc/stat").await.ok();
+        // A delta is the only honest way to get per-core load; a single read
+        // gives the idle share since boot. Keep the second read short so the
+        // 5 s collector stays responsive.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let second = self.read("/proc/stat").await.ok();
+
+        if let Some(first_raw) = &first {
+            let first = parse_proc_stat(first_raw);
+            let second_map = second.as_deref().map(parse_proc_stat).unwrap_or_default();
+            let have_delta = !second_map.is_empty();
+            let after = if have_delta { &second_map } else { &first };
+
+            if let (Some(before), Some(after)) = (first.get("cpu"), after.get("cpu")) {
+                cpu.usage_percent = if have_delta {
+                    after.usage_since(before)
+                } else {
+                    after.cumulative_usage()
+                };
+            }
+
+            let mut cores: Vec<CpuCore> = after
+                .iter()
+                .filter_map(|(key, times)| {
+                    let core = key.strip_prefix("cpu")?.parse::<i64>().ok()?;
+                    let usage_percent = if have_delta {
+                        first
+                            .get(key)
+                            .map(|before| times.usage_since(before))
+                            .unwrap_or_else(|| times.cumulative_usage())
+                    } else {
+                        times.cumulative_usage()
+                    };
+                    Some(CpuCore {
+                        core,
+                        usage_percent,
+                        frequency_mhz: info.frequencies.get(&core).copied(),
+                    })
+                })
+                .collect();
+            cores.sort_by_key(|c| c.core);
+            cpu.per_core = cores;
+        }
+
+        cpu.model = info.model;
+        cpu.cores = if cpu.per_core.is_empty() {
+            info.processors
+        } else {
+            cpu.per_core.len() as i64
+        };
+        cpu.temperature_c = self.cpu_temperature().await;
+        Ok(cpu)
+    }
+
+    /// Probe the host's thermal zones and CPU hwmon, cached for 30 s. A missing
+    /// sensor is normal (the VM has none) and returns `None`, not an error.
+    async fn cpu_temperature(&self) -> Option<f64> {
+        const TTL: Duration = Duration::from_secs(30);
+        if let Some((at, value)) = *self.temperature_cache.lock().unwrap() {
+            if at.elapsed() < TTL {
+                return value;
+            }
+        }
+        let value = self.read_cpu_temperature().await;
+        *self.temperature_cache.lock().unwrap() = Some((Instant::now(), value));
+        value
+    }
+
+    async fn read_cpu_temperature(&self) -> Option<f64> {
+        // Prefer a named CPU hwmon (coretemp/k10temp/…): a thermal zone can be
+        // the motherboard or ambient sensor. Fall back to thermal zones only
+        // when no CPU hwmon is present.
+        for hwmon in 0..4 {
+            let base = format!("/sys/class/hwmon/hwmon{hwmon}");
+            let Ok(name) = self.read(&format!("{base}/name")).await else {
+                continue;
+            };
+            let name = name.trim().to_ascii_lowercase();
+            if !["coretemp", "k10temp", "zenpower", "cpu"]
+                .iter()
+                .any(|needle| name.contains(needle))
+            {
+                continue;
+            }
+            for sensor in 1..=4 {
+                let path = format!("{base}/temp{sensor}_input");
+                if let Ok(raw) = self.read(&path).await {
+                    if let Some(temp) = parse_millidegrees(&raw) {
+                        return Some(temp);
                     }
                 }
             }
         }
-        if let Ok(n) = self.read("/proc/cpuinfo").await {
-            cpu.cores = n.lines().filter(|l| l.starts_with("processor")).count() as i64;
+        for zone in 0..4 {
+            let path = format!("/sys/class/thermal/thermal_zone{zone}/temp");
+            if let Ok(raw) = self.read(&path).await {
+                if let Some(temp) = parse_millidegrees(&raw) {
+                    return Some(temp);
+                }
+            }
         }
-        Ok(cpu)
+        None
     }
 
     async fn disk_metrics(&self) -> Result<DiskMetrics, String> {
@@ -289,6 +381,135 @@ impl TalosClient {
         }
         Ok(net)
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CpuTimes {
+    user: u64,
+    nice: u64,
+    system: u64,
+    idle: u64,
+    iowait: u64,
+    irq: u64,
+    softirq: u64,
+    steal: u64,
+}
+
+impl CpuTimes {
+    fn total(&self) -> u64 {
+        self.user
+            + self.nice
+            + self.system
+            + self.idle
+            + self.iowait
+            + self.irq
+            + self.softirq
+            + self.steal
+    }
+
+    fn idle_total(&self) -> u64 {
+        self.idle + self.iowait
+    }
+
+    fn usage_since(&self, before: &Self) -> f64 {
+        let total = self.total().saturating_sub(before.total());
+        let idle = self.idle_total().saturating_sub(before.idle_total());
+        if total == 0 {
+            0.0
+        } else {
+            (total.saturating_sub(idle)) as f64 / total as f64 * 100.0
+        }
+    }
+
+    fn cumulative_usage(&self) -> f64 {
+        let total = self.total();
+        if total == 0 {
+            0.0
+        } else {
+            (total.saturating_sub(self.idle_total())) as f64 / total as f64 * 100.0
+        }
+    }
+}
+
+fn parse_proc_stat(raw: &str) -> BTreeMap<String, CpuTimes> {
+    raw.lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let key = parts.next()?;
+            let is_core = key == "cpu"
+                || key
+                    .strip_prefix("cpu")
+                    .map(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+                    .unwrap_or(false);
+            if !is_core {
+                return None;
+            }
+            let vals: Vec<u64> = parts.take(8).filter_map(|v| v.parse().ok()).collect();
+            if vals.len() < 4 {
+                return None;
+            }
+            let at = |i: usize| vals.get(i).copied().unwrap_or(0);
+            Some((
+                key.to_string(),
+                CpuTimes {
+                    user: at(0),
+                    nice: at(1),
+                    system: at(2),
+                    idle: at(3),
+                    iowait: at(4),
+                    irq: at(5),
+                    softirq: at(6),
+                    steal: at(7),
+                },
+            ))
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Default)]
+struct CpuInfo {
+    model: String,
+    processors: i64,
+    frequencies: BTreeMap<i64, u64>,
+}
+
+fn parse_cpuinfo(raw: &str) -> CpuInfo {
+    let mut info = CpuInfo::default();
+    let mut current: Option<i64> = None;
+    for line in raw.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if key == "processor" {
+            current = value.parse().ok();
+            if current.is_some() {
+                info.processors += 1;
+            }
+        } else if key == "model name" && info.model.is_empty() {
+            info.model = value.to_string();
+        } else if key == "cpu MHz" {
+            if let (Some(core), Ok(mhz)) = (current, value.parse::<f64>()) {
+                if mhz.is_finite() && mhz > 0.0 {
+                    info.frequencies.insert(core, mhz.round() as u64);
+                }
+            }
+        }
+    }
+    info
+}
+
+fn parse_millidegrees(raw: &str) -> Option<f64> {
+    let value: f64 = raw.trim().parse().ok()?;
+    // thermal/hwmon report millidegrees; tolerate a driver that already
+    // reports degrees.
+    let celsius = if value.abs() > 1000.0 {
+        value / 1000.0
+    } else {
+        value
+    };
+    (celsius.is_finite() && (-40.0..200.0).contains(&celsius)).then_some(celsius)
 }
 
 /// Resolve the talosconfig path exactly like the Go client's default
@@ -705,6 +926,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn proc_stat_deltas_give_overall_and_per_core_usage() {
+        let before =
+            "cpu  100 0 100 800 0 0 0 0\ncpu0 50 0 50 400 0 0 0 0\ncpu1 50 0 50 400 0 0 0 0\n";
+        let after =
+            "cpu  150 0 150 900 0 0 0 0\ncpu0 75 0 75 450 0 0 0 0\ncpu1 75 0 75 450 0 0 0 0\n";
+        let first = parse_proc_stat(before);
+        let second = parse_proc_stat(after);
+        let overall = second["cpu"].usage_since(&first["cpu"]);
+        assert!((overall - 50.0).abs() < 0.01);
+        let core = second["cpu0"].usage_since(&first["cpu0"]);
+        assert!((core - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn cpuinfo_parses_model_processors_and_frequency() {
+        let raw = "processor\t: 0\nmodel name\t: QEMU Virtual CPU\ncpu MHz\t\t: 2400.000\n\nprocessor\t: 1\nmodel name\t: QEMU Virtual CPU\ncpu MHz\t\t: 2400.000\n";
+        let info = parse_cpuinfo(raw);
+        assert_eq!(info.model, "QEMU Virtual CPU");
+        assert_eq!(info.processors, 2);
+        assert_eq!(info.frequencies.get(&0), Some(&2400));
+        assert_eq!(info.frequencies.get(&1), Some(&2400));
+    }
+
+    #[test]
+    fn temperature_accepts_millidegrees_and_rejects_sentinels() {
+        assert_eq!(parse_millidegrees("45000"), Some(45.0));
+        assert_eq!(parse_millidegrees("45"), Some(45.0));
+        assert_eq!(parse_millidegrees("-273000"), None);
+        assert_eq!(parse_millidegrees("not-a-number"), None);
+    }
     #[test]
     fn all_json_skips_warning_preamble() {
         let out = "WARNING: server older\n{\"a\":1}\n{\"b\":2}\n";
