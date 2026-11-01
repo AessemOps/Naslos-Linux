@@ -1,4 +1,7 @@
 {{- if .Values.agent.enabled }}
+{{- $smartctl := get .Values.agent "smartctl" | default dict }}
+{{- $smartEnabled := true }}
+{{- if hasKey $smartctl "enabled" }}{{ $smartEnabled = $smartctl.enabled }}{{ end }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -64,6 +67,17 @@ spec:
               value: {{ .Values.agent.maxStreams | default 4 | quote }}
             - name: AGENT_STREAM_IDLE_TIMEOUT_SECS
               value: {{ .Values.agent.streamIdleTimeoutSecs | default 300 | quote }}
+            {{- if $smartEnabled }}
+            - name: SMARTCTL_BIN
+              value: /app/smartctl
+            - name: SMARTCTL_TIMEOUT_SECONDS
+              value: {{ dig "timeoutSeconds" 10 $smartctl | quote }}
+            - name: SMARTCTL_MAX_DISKS
+              value: {{ dig "maxDisks" 64 $smartctl | quote }}
+            {{- else }}
+            - name: SMARTCTL_BIN
+              value: ""
+            {{- end }}
           volumeMounts:
             # Host root for chroot /host zpool/zfs operations
             - name: host-root
@@ -78,6 +92,11 @@ spec:
             - name: host-var
               mountPath: /var
               mountPropagation: HostToContainer
+            {{- if $smartEnabled }}
+            - name: host-sys
+              mountPath: /sys
+              readOnly: true
+            {{- end }}
             {{- if .Values.agent.tls.enabled }}
             - name: agent-tls
               mountPath: /etc/naslos/agent-tls
@@ -120,6 +139,11 @@ spec:
         - name: host-var
           hostPath:
             path: /var
+        {{- if $smartEnabled }}
+        - name: host-sys
+          hostPath:
+            path: /sys
+        {{- end }}
         {{- if .Values.agent.tls.enabled }}
         - name: agent-tls
           secret:

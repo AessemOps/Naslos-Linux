@@ -1,5 +1,6 @@
 {{- if .Values.api.enabled }}
 {{- $ddns := get .Values "ddns" | default dict }}
+{{- $diskHealth := get .Values "diskHealth" | default dict }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -201,6 +202,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "naslos.agentTokenSecret" . | default "naslos-agent" }}
                   key: token
+            # Per-disk SMART/ZFS alert thresholds (health_watch.rs).
+            - name: DISK_HEALTH_ENABLED
+              value: {{ dig "enabled" true $diskHealth | quote }}
+            - name: DISK_HEALTH_TEMPERATURE_C
+              value: {{ dig "temperatureWarningC" 55 $diskHealth | quote }}
+            - name: DISK_HEALTH_WEAR_PERCENT
+              value: {{ dig "wearWarningPercent" 80 $diskHealth | quote }}
             - name: TERMINAL_MAX_SESSION_SECS
               value: {{ .Values.api.terminal.maxSessionSecs | default 28800 | quote }}
             - name: TERMINAL_IDLE_TIMEOUT_SECS

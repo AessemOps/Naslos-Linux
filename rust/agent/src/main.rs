@@ -3,7 +3,7 @@
 use clap::Parser;
 use naslos_agent::server::{Options, Server};
 use naslos_agent::shares::{self, SharesClient};
-use naslos_agent::zfs::{RealRunner, ZfsClient};
+use naslos_agent::zfs::{RealRunner, SmartClient, ZfsClient};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -91,10 +91,15 @@ async fn main() {
         tracing::warn!("the agent is serving plaintext (AGENT_ALLOW_PLAINTEXT=1)");
     }
 
+    // SMART is read-only and optional: without the bundled binary the endpoint
+    // still returns the ZFS half of the per-disk health page.
+    let smart = Arc::new(SmartClient::from_env(HOST_ROOT));
+
     let server = Server::new(
         cli.listen.clone(),
         zfs,
         shares_client,
+        Some(smart),
         Options {
             auth_token,
             tls_cert_file: tls_cert,

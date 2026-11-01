@@ -519,7 +519,8 @@ NASLOS_RECEIVER_URL=http://naslos-api.naslos.svc.cluster.local:8080 \
 | --- | --- | --- |
 | `api.*` | enabled, 1 replica, port 8080 | ClusterIP service |
 | `ui.*` | enabled, 1 replica, port 80 | ClusterIP service |
-| `agent.*` | privileged, host mounts | DaemonSet per node |
+| `agent.*` | privileged, host mounts | DaemonSet per node; `agent.smartctl.*` bundles the static SMART reader and mounts `/sys` read-only |
+| `diskHealth.*` | enabled, 55 °C, 80 % | per-disk SMART/ZFS notification thresholds |
 | `shares.*` | SMB/NFS on, AFP off | see [shares.md](shares.md) |
 | `traefik.*` | web :80, websecure :443 | LoadBalancer service, dashboard API on with `basePath: /traefik`; `values-vm` adds `ports.*.hostPort` |
 | `authelia.*` | domain `naslos.local` | config map; LDAP backend in template; portal at `/authelia` when ingress is on |

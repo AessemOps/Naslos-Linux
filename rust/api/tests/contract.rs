@@ -263,6 +263,7 @@ async fn same_origin_state_change_is_allowed() {
 async fn protected_routes_fail_closed_for_all_unauthenticated_shapes() {
     let routes = [
         ("GET", "/api/metrics"),
+        ("GET", "/api/disks/health"),
         ("GET", "/api/users"),
         ("POST", "/api/users"),
         ("GET", "/api/shares"),

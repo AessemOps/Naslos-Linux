@@ -5,7 +5,7 @@ pub mod error;
 mod handlers;
 
 use crate::shares::SharesClient;
-use crate::zfs::ZfsClient;
+use crate::zfs::{SmartClient, ZfsClient};
 use axum::routing::{get, post, put};
 use axum::{middleware, Router};
 use std::net::SocketAddr;
@@ -23,6 +23,7 @@ pub struct Options {
 pub struct AppState {
     pub zfs: Option<Arc<ZfsClient>>,
     pub shares: Option<Arc<SharesClient>>,
+    pub smart: Option<Arc<SmartClient>>,
     pub auth_token: String,
     /// Caps concurrent `zfs send`/`receive` streams. Each pins host processes
     /// and file descriptors, and an authenticated caller could otherwise start
@@ -62,6 +63,7 @@ impl Server {
         addr: impl Into<String>,
         zfs: Option<Arc<ZfsClient>>,
         shares: Option<Arc<SharesClient>>,
+        smart: Option<Arc<SmartClient>>,
         opts: Options,
     ) -> Self {
         Self {
@@ -69,6 +71,7 @@ impl Server {
             state: Arc::new(AppState {
                 zfs,
                 shares,
+                smart,
                 auth_token: opts.auth_token,
                 stream_slots: Arc::new(tokio::sync::Semaphore::new(max_streams())),
             }),
@@ -99,6 +102,7 @@ impl Server {
                 get(handlers::pool_detail_get).delete(handlers::pool_detail_delete),
             )
             .route("/api/v1/system/disk", get(handlers::disk_usage))
+            .route("/api/v1/disks/health", get(handlers::disks_health))
             .route("/api/v1/datasets", get(handlers::datasets_all_get))
             // The bare trailing-slash URL matched Go's prefix mux (rest == "")
             // and returned 400; matchit's {*rest} needs a non-empty segment, so

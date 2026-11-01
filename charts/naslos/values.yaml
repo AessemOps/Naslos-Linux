@@ -175,6 +175,13 @@ agent:
   maxStreams: 4
   # Longest tolerated gap between restore body chunks.
   streamIdleTimeoutSecs: 300
+  # Read-only SMART health for the per-disk page. The agent image bundles a
+  # static smartctl; the DaemonSet mounts /sys read-only so smartctl can detect
+  # the host's controllers. Disabling this keeps the ZFS half of the page.
+  smartctl:
+    enabled: true
+    timeoutSeconds: 10
+    maxDisks: 64
   # Use a Secret you manage out of band for the agent bearer token; it must have
   # a `token` key. Empty means the chart generates `naslos-agent`/`token`.
   tokenSecret: ""
@@ -190,6 +197,12 @@ agent:
     limits:
       cpu: 200m
       memory: 128Mi
+
+# Per-disk health (SMART + ZFS) notifications and page thresholds.
+diskHealth:
+  enabled: true
+  temperatureWarningC: 55
+  wearWarningPercent: 80
 
 # ZFS configuration
 zfs:

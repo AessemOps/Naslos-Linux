@@ -21,6 +21,7 @@ fn server_with(zfs: Option<ZfsClient>, shares: Option<SharesClient>, token: &str
         ":0",
         zfs.map(Arc::new),
         shares.map(Arc::new),
+        None,
         Options {
             auth_token: token.to_string(),
             ..Default::default()
@@ -269,4 +270,59 @@ async fn bare_trailing_slash_route_is_bad_request_not_not_found() {
         StatusCode::BAD_REQUEST,
         "route did not match"
     );
+}
+
+#[tokio::test]
+async fn disks_health_is_200_without_smartctl() {
+    // SMART unavailable is not an error: the VM's virtio disks take this path.
+    let (status, body) = send(&degraded(), get_auth("/api/v1/disks/health")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["smartctlAvailable"], false);
+    assert!(body["disks"].is_array());
+    assert!(body["error"].as_str().unwrap().contains("SMART"));
+}
+
+#[tokio::test]
+async fn disks_health_merges_smart_data() {
+    use naslos_agent::zfs::SmartClient;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    let host = FakeHost::new();
+    let script_dir = tempfile::tempdir().unwrap();
+    let script = script_dir.path().join("smartctl");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+cat <<'JSON'
+{"smartctl":{"exit_status":0},"device":{"name":"/dev/sdb"},
+ "smart_support":{"available":true,"enabled":true},
+ "smart_status":{"passed":true},"temperature":{"current":33},
+ "power_on_time":{"hours":42}}
+JSON
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let smart = SmartClient::new(host.root.clone(), script, Duration::from_secs(5), 10);
+    let server = Server::new(
+        ":0",
+        None,
+        None,
+        Some(Arc::new(smart)),
+        Options {
+            auth_token: TOKEN.to_string(),
+            ..Default::default()
+        },
+    );
+
+    let (status, body) = send(&server, get_auth("/api/v1/disks/health")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["smartctlAvailable"], true);
+    let disks = body["disks"].as_array().unwrap();
+    assert_eq!(disks.len(), 4);
+    assert_eq!(disks[0]["smart"]["health"], "PASSED");
+    assert_eq!(disks[0]["smart"]["temperatureC"], 33);
+    assert_eq!(disks[0]["smart"]["powerOnHours"], 42);
 }

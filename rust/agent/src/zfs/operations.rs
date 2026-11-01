@@ -2,12 +2,17 @@
 //! `zfs/operations.go`).
 
 use super::devices::{
-    args2, normalize_vdev_topology, validate_pool_name, vdev_label, vdev_minimum_disks,
+    args2, canonical_dev, is_whole_disk, normalize_vdev_topology, validate_pool_name, vdev_label,
+    vdev_minimum_disks,
 };
-use super::types::{ImportablePool, Pool, PoolConfig, PoolDevice, PoolHealth, PoolIOStats};
+use super::types::{
+    ImportablePool, Pool, PoolConfig, PoolDevice, PoolHealth, PoolIOStats, ZfsDiskHealth,
+};
 use super::{args, ZfsClient, WIPEFS_BIN, ZFS_BIN, ZPOOL_BIN};
 use crate::invalid;
 use crate::zfs::validation::{ZfsError, ZfsResult};
+use std::collections::HashMap;
+use std::path::Path;
 
 /// ZFS best-practice dataset options for Talos.
 pub fn default_options() -> std::collections::HashMap<String, String> {
@@ -475,66 +480,7 @@ impl ZfsClient {
             }
         };
 
-        let mut health = PoolHealth {
-            name: name.to_string(),
-            ..Default::default()
-        };
-        let mut in_config = false;
-        let mut header_seen = false;
-
-        for line in out.split('\n') {
-            let trimmed = line.trim();
-
-            if !in_config {
-                if let Some(idx) = trimmed.find(':') {
-                    if idx > 0 {
-                        let key = trimmed[..idx].trim();
-                        let val = trimmed[idx + 1..].trim();
-                        match key {
-                            "pool" => health.name = val.to_string(),
-                            "state" => health.state = val.to_string(),
-                            "scan" => health.scan = val.to_string(),
-                            "errors" => health.errors = val.to_string(),
-                            _ => {}
-                        }
-                    }
-                }
-                if trimmed == "config:" {
-                    in_config = true;
-                    header_seen = false;
-                }
-                continue;
-            }
-
-            if trimmed.is_empty() {
-                if header_seen {
-                    in_config = false;
-                }
-                continue;
-            }
-            if !header_seen {
-                header_seen = true;
-                continue;
-            }
-            let fields: Vec<&str> = trimmed.split_whitespace().collect();
-            if fields.len() < 5 {
-                continue;
-            }
-            let dev = PoolDevice {
-                name: fields[0].to_string(),
-                state: fields[1].to_string(),
-                read: fields[2].to_string(),
-                write: fields[3].to_string(),
-                cksum: fields[4].to_string(),
-                devices: None,
-            };
-            let indent = line.len() - line.trim_start().len();
-            if indent <= 1 {
-                health.config.push(dev);
-            } else if let Some(parent) = health.config.last_mut() {
-                parent.devices.get_or_insert_with(Vec::new).push(dev);
-            }
-        }
+        let mut health = parse_pool_health(name, &out);
 
         if let Ok(io_out) = self
             .host_exec(ZPOOL_BIN, &args(&["iostat", "-v", name, "1", "1"]))
@@ -545,6 +491,181 @@ impl ZfsClient {
 
         Ok(health)
     }
+
+    /// Per-disk ZFS membership and error counters, keyed by canonical
+    /// `/dev/<node>`. Best effort: a pool whose status cannot be read is
+    /// skipped, because the SMART half of the health page must still work.
+    pub async fn disk_health(&self) -> HashMap<String, ZfsDiskHealth> {
+        let pools = match self.pool_rows().await {
+            Ok(pools) => pools,
+            Err(e) => {
+                tracing::warn!("disk health: listing pools: {e}");
+                return HashMap::new();
+            }
+        };
+
+        let mut map = HashMap::new();
+        for pool in pools {
+            let Ok(out) = self.pool_status(&pool.name).await else {
+                continue;
+            };
+            let health = parse_pool_health(&pool.name, &out);
+            for dev in &health.config {
+                self.collect_disk_health(&pool.name, dev, None, &mut map);
+            }
+        }
+        map
+    }
+
+    fn collect_disk_health(
+        &self,
+        pool: &str,
+        dev: &PoolDevice,
+        parent: Option<&str>,
+        map: &mut HashMap<String, ZfsDiskHealth>,
+    ) {
+        if let Some(children) = &dev.devices {
+            // The first level is the pool row itself; its children are the
+            // real vdevs (mirror-0, raidz1-0, …). Do not label every leaf with
+            // the pool name.
+            let child_parent = if dev.name == pool {
+                parent
+            } else {
+                Some(dev.name.as_str())
+            };
+            for child in children {
+                self.collect_disk_health(pool, child, child_parent, map);
+            }
+            return;
+        }
+
+        let Some(device) = canonical_zfs_device(&self.host_root, &dev.name) else {
+            return;
+        };
+        map.insert(
+            device,
+            ZfsDiskHealth {
+                pool: pool.to_string(),
+                vdev: parent.unwrap_or(&dev.name).to_string(),
+                state: dev.state.clone(),
+                read_errors: parse_count(&dev.read),
+                write_errors: parse_count(&dev.write),
+                cksum_errors: parse_count(&dev.cksum),
+            },
+        );
+    }
+}
+
+/// Parse the fields of `zpool status` (everything before the I/O stats).
+pub fn parse_pool_health(name: &str, out: &str) -> PoolHealth {
+    let mut health = PoolHealth {
+        name: name.to_string(),
+        ..Default::default()
+    };
+    let mut in_config = false;
+    let mut header_seen = false;
+    let mut entries: Vec<(usize, PoolDevice)> = Vec::new();
+
+    for line in out.split('\n') {
+        let trimmed = line.trim();
+
+        if !in_config {
+            if let Some(idx) = trimmed.find(':') {
+                if idx > 0 {
+                    let key = trimmed[..idx].trim();
+                    let val = trimmed[idx + 1..].trim();
+                    match key {
+                        "pool" => health.name = val.to_string(),
+                        "state" => health.state = val.to_string(),
+                        "scan" => health.scan = val.to_string(),
+                        "errors" => health.errors = val.to_string(),
+                        _ => {}
+                    }
+                }
+            }
+            if trimmed == "config:" {
+                in_config = true;
+                header_seen = false;
+            }
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            if header_seen {
+                in_config = false;
+            }
+            continue;
+        }
+        if !header_seen {
+            header_seen = true;
+            continue;
+        }
+        let fields: Vec<&str> = trimmed.split_whitespace().collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let dev = PoolDevice {
+            name: fields[0].to_string(),
+            state: fields[1].to_string(),
+            read: fields[2].to_string(),
+            write: fields[3].to_string(),
+            cksum: fields[4].to_string(),
+            devices: None,
+        };
+        entries.push((line.len() - line.trim_start().len(), dev));
+    }
+
+    let mut index = 0;
+    health.config = build_device_tree(&entries, &mut index, 0);
+    health
+}
+
+/// Rebuild the indented `zpool status` config rows into the device tree. The
+/// previous one-level parser attached every deeper row to the pool row, which
+/// made a mirror/raidz leaf impossible to attribute to its vdev.
+fn build_device_tree(
+    entries: &[(usize, PoolDevice)],
+    index: &mut usize,
+    parent_indent: usize,
+) -> Vec<PoolDevice> {
+    let mut devices = Vec::new();
+    while *index < entries.len() {
+        let (indent, entry) = &entries[*index];
+        if *indent <= parent_indent {
+            break;
+        }
+        let mut dev = entry.clone();
+        *index += 1;
+        let children = build_device_tree(entries, index, *indent);
+        dev.devices = if children.is_empty() {
+            None
+        } else {
+            Some(children)
+        };
+        devices.push(dev);
+    }
+    devices
+}
+
+fn canonical_zfs_device(host_root: &Path, name: &str) -> Option<String> {
+    let candidate = if name.starts_with("/dev/") {
+        name.to_string()
+    } else if is_whole_disk(name) {
+        format!("/dev/{name}")
+    } else {
+        return None;
+    };
+    canonical_dev(host_root, &candidate).ok().or_else(|| {
+        if is_whole_disk(candidate.trim_start_matches("/dev/")) {
+            Some(candidate)
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_count(value: &str) -> u64 {
+    value.parse().unwrap_or(0)
 }
 
 /// Extract the pool's I/O counters from `zpool iostat -v`.

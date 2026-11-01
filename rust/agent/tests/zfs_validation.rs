@@ -759,3 +759,23 @@ async fn destroy_pool_only_forces_when_requested() {
     assert!(!recorded[0].contains("-f"), "{}", recorded[0]);
     assert!(recorded[1].contains("-f"), "{}", recorded[1]);
 }
+
+#[tokio::test]
+async fn disk_health_flattens_vdevs_to_whole_disks() {
+    let host = FakeHost::new();
+    let status = "  pool: tank\n state: DEGRADED\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\ttank        DEGRADED     0     0     0\n\t  mirror-0  DEGRADED     0     0     0\n\t    sdb     ONLINE       0     0     0\n\t    sdc     FAULTED      1     2     3\n\nerrors: No known data errors\n";
+    let runner = Arc::new(FakeRunner::new(&["tank\t10G\t1G\t9G\tDEGRADED\n", status]));
+    let c = client(&host, runner);
+
+    let health = c.disk_health().await;
+    assert_eq!(health.len(), 2);
+    let sdb = health.get("/dev/sdb").expect("sdb");
+    assert_eq!(sdb.pool, "tank");
+    assert_eq!(sdb.vdev, "mirror-0");
+    assert_eq!(sdb.state, "ONLINE");
+    let sdc = health.get("/dev/sdc").expect("sdc");
+    assert_eq!(sdc.state, "FAULTED");
+    assert_eq!(sdc.read_errors, 1);
+    assert_eq!(sdc.write_errors, 2);
+    assert_eq!(sdc.cksum_errors, 3);
+}
