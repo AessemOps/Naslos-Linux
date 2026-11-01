@@ -56,6 +56,16 @@ async fn spawn_mock(mock: MockAgent) -> String {
             }),
         )
         .route(
+            "/api/v1/disks/health",
+            get({
+                let default = default.clone();
+                move || {
+                    let (status, body) = (*default).clone();
+                    async move { (StatusCode::from_u16(status).unwrap(), Json(body)) }
+                }
+            }),
+        )
+        .route(
             "/api/v1/datasets",
             get({
                 let default = default.clone();
@@ -316,4 +326,63 @@ async fn no_agent_configured_is_502() {
     });
     let (status, _b) = call(state, "GET", "/api/volumes/zfs", None).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn disk_health_merges_the_agent_report() {
+    let base = spawn_mock(MockAgent {
+        default: (
+            200,
+            json!({
+                "smartctlAvailable": true,
+                "error": "",
+                "disks": [{
+                    "device": "/dev/sda",
+                    "smart": {
+                        "available": true,
+                        "enabled": true,
+                        "health": "PASSED",
+                        "temperatureC": 34,
+                        "powerOnHours": 1234
+                    },
+                    "zfs": {
+                        "pool": "tank",
+                        "vdev": "mirror-0",
+                        "state": "ONLINE",
+                        "readErrors": 0,
+                        "writeErrors": 0,
+                        "cksumErrors": 0
+                    }
+                }]
+            }),
+        ),
+        pools: None,
+    })
+    .await;
+    let (status, body) = call(state_with_agent(&base), "GET", "/api/disks/health", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["smartctlAvailable"], true);
+    let disks = body["disks"].as_array().unwrap();
+    assert_eq!(disks.len(), 1);
+    assert_eq!(disks[0]["device"], "/dev/sda");
+    assert_eq!(disks[0]["smart"]["health"], "PASSED");
+    assert_eq!(disks[0]["inPool"], "tank");
+    assert_eq!(disks[0]["zfs"]["vdev"], "mirror-0");
+}
+
+#[tokio::test]
+async fn disk_health_is_non_fatal_when_the_agent_fails() {
+    let base = spawn_mock(MockAgent {
+        default: (503, json!({ "error": "ZFS is not available on this node" })),
+        pools: None,
+    })
+    .await;
+    let (status, body) = call(state_with_agent(&base), "GET", "/api/disks/health", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["smartctlAvailable"], false);
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("ZFS is not available"));
+    assert!(body["disks"].is_array());
 }

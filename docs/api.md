@@ -146,6 +146,7 @@ are in-memory (a restart abandons a running job; the app record and
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/disks` | Discovered disks from Talos (`talosctl get discoveredvolumes`) |
+| GET | `/api/disks/health` | Per-disk SMART + ZFS health: Talos inventory merged with the agent's `smartctl` and `zpool status` data. `smartctlAvailable:false` is a normal 200 (virtio/USB/RAID); see FR-DHK |
 | POST | `/api/disks/recommend` | `{disks:[...]}` → `VolumeAdvisor` topology recommendation |
 | GET | `/api/volumes/zfs` | List ZFS pools via `naslos-agent` (`agent.ListPools`) |
 | POST | `/api/volumes/zfs` | Create pool `{name, topology, disks, options, wipeConfirmed}` via `naslos-agent` (validated: ZFS-safe name, non-empty disks, known topology; a disk with an existing filesystem needs `wipeConfirmed`, a `zfs_member` disk is refused) |
@@ -284,6 +285,7 @@ shell, never an arbitrary command.
 | GET | `/api/v1/pools` | `zpool list` |
 | POST | `/api/v1/pools` | Create pool `{name, topology, disks, options}` |
 | GET | `/api/v1/pools/{name}` | Structured health data (device tree, IO stats, scan, errors) |
+| GET | `/api/v1/disks/health` | Per-whole-disk SMART (read-only, `-n standby`) + ZFS vdev state/errors. Requires the agent bearer token; SMART unavailable is a 200 with `smartctlAvailable:false` |
 | DELETE | `/api/v1/pools/{name}` | Destroy pool |
 | GET | `/api/v1/pools/import` | List pools available for import (`zpool import` dry-run) |
 | POST | `/api/v1/pools/import` | Import pool(s): `{"name":"tank"}` or `{}` for all |
@@ -350,6 +352,22 @@ shell, never an arbitrary command.
 | `NASLOS_WORKLOAD_NAMESPACE` | `naslos-privileged` | Where the agent/samba/nfs/terminal workloads live |
 
 The `naslos-agent` uses `NODE_NAME` (from `spec.nodeName`) and listens on `:9090`.
+
+Disk-health controls:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DISK_HEALTH_ENABLED` | `true` | Emit per-disk SMART/ZFS notifications (the page still works when false) |
+| `DISK_HEALTH_TEMPERATURE_C` | `55` | Warning threshold for a disk temperature above this value |
+| `DISK_HEALTH_WEAR_PERCENT` | `80` | Warning threshold for wear at/above this percentage |
+
+Agent-side SMART controls:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SMARTCTL_BIN` | `/app/smartctl` | Bundled static smartctl; empty disables SMART (ZFS half remains) |
+| `SMARTCTL_TIMEOUT_SECONDS` | `10` | Per-disk smartctl deadline |
+| `SMARTCTL_MAX_DISKS` | `64` | Cap on disks probed per scan |
 
 ## API flow notes
 

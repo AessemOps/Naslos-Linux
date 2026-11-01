@@ -137,6 +137,10 @@ see the [document index](README.md).
   with `hostNetwork: true` and a `privileged` security context (no `hostPID`).
   It bind-mounts the host root at `/host` and runs every ZFS command through
   `chroot /host` — the only way to reach pools outside Talos's volume system.
+  The image also bundles a pinned **static `smartctl`** (Talos has neither the
+  binary nor a SMART API) and the pod mounts the host `/sys` read-only. SMART
+  runs directly against the host `/dev` nodes, never through `chroot`, and is
+  read-only (`-n standby`, no self-tests).
 - **OpenLDAP** — StatefulSet with two `local-path` PVCs (no ZFS LocalPV
   provisioner is installed): data under `/var/lib/ldap`, config under
   `/etc/ldap/slapd.d`. TLS certs come from the `naslos-openldap-tls` secret.

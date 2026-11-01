@@ -34,6 +34,7 @@ It also lists the GitHub Actions used by the CI/release workflows.
 | CoreDNS | Talos-bundled | Apache-2.0 | https://github.com/coredns/coredns |
 | OpenZFS | via `siderolabs/zfs` extension | CDDL-1.0 | https://github.com/openzfs/zfs |
 | `siderolabs/zfs` system extension | `bootstrap/schematic/naslos.yaml` | MPL-2.0 | https://github.com/siderolabs/extensions |
+| smartmontools (`smartctl`) | 7.5, static build, tarball sha256 `690b83ca331378da9ea0d9d61008c4b22dde391387b9bbad7f29387f2595f76e` | GPL-2.0-or-later | https://www.smartmontools.org/ |
 
 ## Base & build container images
 

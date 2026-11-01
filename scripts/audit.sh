@@ -204,6 +204,44 @@ check_build_integrity() {
   [ "$ok" -eq 1 ]
 }
 
+# The per-disk health page depends on a pinned smartctl inside the agent image
+# and a read-only /sys mount; a floating download or a missing mount would make
+# a fresh install silently lose SMART.
+check_agent_smartctl() {
+  ok=1
+  grep -q 'SMARTMONTOOLS_VERSION=7.5' "$root/agent/Dockerfile.rust" || ok=0
+  grep -q 'SMARTMONTOOLS_RELEASE=RELEASE_7_5' "$root/agent/Dockerfile.rust" || ok=0
+  grep -q 'SMARTMONTOOLS_SHA256=690b83ca331378da9ea0d9d61008c4b22dde391387b9bbad7f29387f2595f76e' "$root/agent/Dockerfile.rust" || ok=0
+  grep -q 'LDFLAGS=-static' "$root/agent/Dockerfile.rust" || ok=0
+  grep -q 'cp /tmp/smartmontools/smartctl /rootfs/app/smartctl' "$root/agent/Dockerfile.rust" || ok=0
+  grep -q 'smartmontools' "$root/CREDITS.md" || ok=0
+  f=$(mktemp) || return 1
+  if ! helm template naslos "$root/charts/naslos" -n naslos \
+    -f "$root/charts/naslos/values.yaml" -f "$root/charts/naslos/values-vm.yaml" \
+    --set openldap.bindPassword=lint-only \
+    --show-only templates/agent-daemonset.yaml >"$f" 2>/dev/null; then
+    rm -f "$f"
+    return 1
+  fi
+  grep -q 'name: SMARTCTL_BIN' "$f" || ok=0
+  grep -q 'mountPath: /sys' "$f" || ok=0
+  grep -q 'readOnly: true' "$f" || ok=0
+  rm -f "$f"
+  f=$(mktemp) || return 1
+  if ! helm template naslos "$root/charts/naslos" -n naslos \
+    -f "$root/charts/naslos/values.yaml" -f "$root/charts/naslos/values-vm.yaml" \
+    --set openldap.bindPassword=lint-only \
+    --show-only templates/api-deployment.yaml >"$f" 2>/dev/null; then
+    rm -f "$f"
+    return 1
+  fi
+  grep -q 'name: DISK_HEALTH_ENABLED' "$f" || ok=0
+  grep -q 'name: DISK_HEALTH_TEMPERATURE_C' "$f" || ok=0
+  grep -q 'name: DISK_HEALTH_WEAR_PERCENT' "$f" || ok=0
+  rm -f "$f"
+  [ "$ok" -eq 1 ]
+}
+
 check_authelia_ldap_secret() {
   f=$(mktemp) || return 1
   if ! helm template naslos "$root/charts/naslos" -n naslos \
@@ -884,6 +922,7 @@ if have helm; then
   run "security hardening renders (auth/KEK)" check_security_rendering
   run "api deployment renders with every optional feature off" check_all_off_volumes
   run "build integrity (checksums, host keys, lockfile)" check_build_integrity
+  run "agent smartctl is pinned and /sys is mounted" check_agent_smartctl
 else
   skip "helm lint" "helm is not installed"
 fi

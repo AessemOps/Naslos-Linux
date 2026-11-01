@@ -11,15 +11,21 @@ in `docs/spec.md`.
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## In progress — 0.3.0 web upgrades (not deployed yet)
+## Release 0.3.0 published (2026-11-01) — node reinstall pending
 
-Branch `feat/system-upgrades` implements the plan
-`.kilo/plans/1793472068625-web-ui-system-upgrades.md`: pack `release.*` +
-`kubernetesVersion`, the `naslos-upgrade` Job (Naslos → Talos → Kubernetes),
-`/api/system/*`, the Settings → System page, and the installer's explicit
-Kubernetes pin + `--resume` chart convergence. Nothing below changes until a
-`v0.3.0` pack is released and the node is bootstrapped with it; the live state
-is still the 0.2.x deployment described next.
+`v0.3.0` is tagged; the release has the digest-pinned
+`naslos-install-pack-0.3.0.tar.gz`, and **Naslos Installer v0.3.0** was
+published by the release dispatch. The node is still the 0.2.1 deployment
+described below until it is reinstalled/upgraded with the 0.3.0 installer.
+
+## In progress — 0.3.1 disk health (PR #112)
+
+Branch `feat/disk-health` implements
+`.kilo/plans/1793552820000-disk-health.md`: a pinned static `smartctl` in the
+agent image (read-only, `-n standby`), `/sys` mounted read-only, per-disk
+SMART + ZFS vdev data at `GET /api/disks/health`, the `/disks/health` page, and
+transition notifications for SMART failures, temperature/wear thresholds and
+vdev faults. Not deployed; 0.3.1 is the next release.
 
 ## Current instance (2026-10-31) — clean install from the desktop installer, v0.2.1
 

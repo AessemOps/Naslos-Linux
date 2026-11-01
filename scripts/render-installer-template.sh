@@ -7,7 +7,7 @@
 #
 # The installer template is a Talos machine-config patch, like
 # bootstrap/vm/naslos-vm.yaml, but it is parameterised for an arbitrary node
-# ({{NODE_SUBNET}}, {{INSTALL_DISK}}) and carries no private-registry mirror. It
+# ({{NODE_SUBNET}}, {{INSTALL_DISK}}, {{INTERFACE}}) and carries no private-registry mirror. It
 # is packed into `naslos-install-pack-<version>.tar.gz` as
 # `machine-config/naslos-installer.yaml.tmpl`.
 #
@@ -76,7 +76,7 @@ open(out_path, "w").write("\n".join(out_lines).rstrip("\n") + "\n")
 PY
 
 # The template must keep its engine placeholders after a render.
-for ph in '{{NODE_SUBNET}}' '{{INSTALL_DISK}}'; do
+for ph in '{{NODE_SUBNET}}' '{{INSTALL_DISK}}' '{{INTERFACE}}'; do
     grep -qF "$ph" "$out" || { echo "render-installer-template: template lost placeholder $ph" >&2; exit 1; }
 done
 

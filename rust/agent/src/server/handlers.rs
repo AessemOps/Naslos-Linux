@@ -7,7 +7,9 @@ use super::error::{
 use super::AppState;
 use crate::shares::Config;
 use crate::zfs::validation::ZfsError;
-use crate::zfs::{validate_pool_name, PoolConfig, SendStreamOptions};
+use crate::zfs::{
+    validate_pool_name, DiskHealth, DiskHealthReport, PoolConfig, SendStreamOptions, SmartInfo,
+};
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
@@ -774,5 +776,64 @@ pub async fn disk_usage() -> Response {
             "used": used.min(i64::MAX as u128) as i64,
             "usagePercent": usage,
         }),
+    )
+}
+
+/// `GET /api/v1/disks/health` — SMART per whole disk merged with the ZFS vdev
+/// state. SMART being unavailable is a normal 200: the VM's virtio disks have
+/// no SMART, and the page must still show the ZFS half.
+pub async fn disks_health(State(state): State<Arc<AppState>>) -> Response {
+    let report = match state.smart.as_ref() {
+        Some(smart) => smart.scan().await,
+        None => DiskHealthReport {
+            smartctl_available: false,
+            error: "SMART health is not configured on this agent".to_string(),
+            disks: Vec::new(),
+        },
+    };
+
+    let mut zfs = match state.zfs.as_ref() {
+        Some(zfs) => zfs.disk_health().await,
+        None => std::collections::HashMap::new(),
+    };
+
+    let mut disks: std::collections::BTreeMap<String, DiskHealth> = report
+        .disks
+        .into_iter()
+        .map(|disk| (disk.device.clone(), disk))
+        .collect();
+
+    for disk in disks.values_mut() {
+        disk.zfs = zfs.remove(&disk.device);
+    }
+    for (device, health) in zfs {
+        let message = if report.smartctl_available {
+            "SMART data was not reported for this disk".to_string()
+        } else if report.error.is_empty() {
+            "SMART is unavailable on this node".to_string()
+        } else {
+            report.error.clone()
+        };
+        disks.insert(
+            device.clone(),
+            DiskHealth {
+                device,
+                smart: SmartInfo {
+                    available: false,
+                    message,
+                    ..Default::default()
+                },
+                zfs: Some(health),
+            },
+        );
+    }
+
+    json_response(
+        StatusCode::OK,
+        &DiskHealthReport {
+            smartctl_available: report.smartctl_available,
+            error: report.error,
+            disks: disks.into_values().collect(),
+        },
     )
 }

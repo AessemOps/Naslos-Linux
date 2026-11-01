@@ -102,6 +102,15 @@ The UI offers **Import Pool** on the `/pools` page: a modal shows each importabl
 pool's name, topology (Mirror/RAIDZ1/etc.), state, and member disks with a
 per-pool Import action.
 
+## Disk health
+
+`GET /api/disks/health` merges the Talos disk inventory with per-disk SMART
+health from the privileged agent and the vdev state/error counters from
+`zpool status`. SMART is read-only and standby-safe; a virtio/USB/RAID disk
+without SMART is reported as unavailable while its ZFS state stays visible.
+See [operations.md](operations.md#disk-health) for thresholds and replacement
+guidance.
+
 ## Datasets & snapshots
 
 The agent exposes dataset and snapshot operations:

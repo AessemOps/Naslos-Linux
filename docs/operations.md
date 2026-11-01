@@ -91,6 +91,33 @@ The admin password is only required while the `admin` step is still pending.
   snapshot from `/var/lib/naslos/backups/etcd-<ts>.db` on the node if the
   control plane does not return. Keep the three newest snapshots.
 
+## Disk health
+
+**Disks → Disk Health** (`/disks/health`) shows every whole disk with its SMART
+health and, for pool members, the ZFS vdev state and read/write/cksum counters.
+It is read-only and refreshes every 60 s.
+
+- **SMART unavailable / standby** is normal on virtio disks (the VM), USB
+  bridges and some RAID controllers, and for a disk that was asleep when polled.
+  The ZFS half remains visible; the page never wakes a sleeping disk.
+- **FAILED** or a vdev `FAULTED`/`OFFLINE`/`UNAVAIL`/`REMOVED` is an error
+  notification (`disk_failure`). Replace the disk, then let the pool resilver.
+  Do not run a destructive SMART self-test on a disk that holds the only copy of
+  data.
+- **Temperature above 55 °C** or **wear at/above 80 %** is a warning
+  (`zfs_health`). Both thresholds are chart values
+  (`diskHealth.temperatureWarningC`, `diskHealth.wearWarningPercent`).
+- Alerts are transition-only: a persistent condition does not repeat every
+  minute, and clearing it sends one recovery notice. A removed disk is cleared
+  silently.
+- The agent image bundles a pinned static `smartctl` and mounts the host `/sys`
+  read-only. `SMARTCTL_BIN=""` (or `agent.smartctl.enabled=false`) disables
+  SMART while keeping the ZFS page.
+
+If the page shows `SMART is unavailable on this node`, check the agent pod logs
+for a smartctl error and confirm the image contains `/app/smartctl`. A real
+SATA/NVMe disk should report a health status; a virtio disk will not.
+
 ## Troubleshooting
 
 ### Cannot log in via web

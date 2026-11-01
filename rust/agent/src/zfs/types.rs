@@ -88,6 +88,20 @@ pub struct PoolDevice {
     pub devices: Option<Vec<PoolDevice>>,
 }
 
+/// A disk's membership and error counters from `zpool status`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ZfsDiskHealth {
+    pub pool: String,
+    pub vdev: String,
+    pub state: String,
+    #[serde(rename = "readErrors")]
+    pub read_errors: u64,
+    #[serde(rename = "writeErrors")]
+    pub write_errors: u64,
+    #[serde(rename = "cksumErrors")]
+    pub cksum_errors: u64,
+}
+
 /// `zpool iostat` counters for a pool.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PoolIOStats {
