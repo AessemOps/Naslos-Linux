@@ -207,9 +207,13 @@
   }
 
   function disconnect() {
-    if (ws) {
-      ws.close();
-      ws = null;
+    const socket = ws;
+    ws = null;
+    if (socket) {
+      socket.close();
+      // onclose deliberately ignores a socket that is no longer current, so
+      // the user-initiated close must print the message here.
+      if (term) term.writeln('\r\n\x1b[33mSession closed.\x1b[0m');
     }
     connected = false;
     connecting = false;
