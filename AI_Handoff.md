@@ -11,7 +11,7 @@ in `docs/spec.md`.
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## Current instance (2026-11-01) — fresh 0.3.1 install
+## Current instance (2026-11-01) — fresh 0.3.1 install (0.3.2 not yet deployed)
 
 - Node `talos-4wf-d3g`, Talos v1.14.1 / k8s v1.37.0, **control-plane Ready**.
 - Helm release `naslos` (chart `naslos-0.3.1`, revision 1). Images are
@@ -26,11 +26,13 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 - The VM has no CPU thermal zone/hwmon, so CPU temperature is reported as
   unavailable; per-core load works.
 
-## In progress — 0.3.2 CPU info (branch `feat/cpu-info`)
+## Release 0.3.2 (2026-11-01) — CPU detail and follow-up fixes
 
-Dashboard/`/api/metrics` CPU detail: model, 1/5/15 load, per-core usage from a
-two-sample `/proc/stat` delta, per-core frequency from `/proc/cpuinfo`, and
-temperature from a CPU `hwmon`/thermal zone when present (nullable otherwise).
+`v0.3.2` adds CPU model, load averages 1/5/15, per-core usage/frequency and
+temperature (nullable when the hardware exposes no sensor) to
+`/api/metrics`, `/api/dashboard` and the dashboard. It also carries the
+upgrader null-release fix and the terminal Disconnect fix from PR #113. The
+node is still the 0.3.1 install described above until it is upgraded.
 Plan: `.kilo/plans/1793600000002-cpu-info.md`.
 
 ## Historical — 0.2.1 clean install (2026-10-31)
