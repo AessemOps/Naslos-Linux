@@ -130,6 +130,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(system::operation_current),
         )
         .route("/api/disks", get(disks::disks_get))
+        .route("/api/disks/health", get(disks::disks_health_get))
         .route("/api/disks/recommend", post(disks::disks_recommend))
         .route(
             "/api/volumes/zfs",

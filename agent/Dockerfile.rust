@@ -3,7 +3,13 @@
 
 FROM rust:1.88-alpine AS builder
 
-RUN apk add --no-cache musl-dev busybox-static
+# smartmontools is GPL-2.0-or-later (see CREDITS.md). Pin both the release and
+# the tarball digest; a floating download would make the image unreproducible.
+ARG SMARTMONTOOLS_VERSION=7.5
+ARG SMARTMONTOOLS_RELEASE=RELEASE_7_5
+ARG SMARTMONTOOLS_SHA256=690b83ca331378da9ea0d9d61008c4b22dde391387b9bbad7f29387f2595f76e
+
+RUN apk add --no-cache musl-dev busybox-static build-base linux-headers curl tar
 # Static musl binary for the scratch runtime; the flag is target-scoped so proc
 # macros still build for the host.
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static"
@@ -27,14 +33,34 @@ COPY rust/agent/src agent/src
 RUN touch agent/src/main.rs agent/src/lib.rs \
     && cargo build --release --locked --target x86_64-unknown-linux-musl --package naslos-agent
 
-# Assemble the two files the agent needs on top of the static binary:
+# Build a static smartctl for the scratch runtime. The host's Talos root has no
+# smartctl and the Talos API exposes no SMART data, so the binary ships in the
+# agent image and reads the host's /dev directly (never chroot /host).
+RUN curl -fsSLo /tmp/smartmontools.tar.gz \
+        "https://github.com/smartmontools/smartmontools/releases/download/${SMARTMONTOOLS_RELEASE}/smartmontools-${SMARTMONTOOLS_VERSION}.tar.gz" \
+    && echo "${SMARTMONTOOLS_SHA256}  /tmp/smartmontools.tar.gz" | sha256sum -c - \
+    && mkdir -p /tmp/smartmontools \
+    && tar -xzf /tmp/smartmontools.tar.gz -C /tmp/smartmontools --strip-components=1 \
+    && cd /tmp/smartmontools \
+    && ./configure --prefix=/usr --sbindir=/usr/sbin --sysconfdir=/etc \
+        --localstatedir=/var --with-selinux=no --with-libcap-ng=no \
+        --with-libsystemd=no --without-systemdsystemunitdir \
+        --without-systemdenvfile --with-update-smart-drivedb=no \
+        LDFLAGS=-static \
+    && make -j"$(nproc)" smartctl \
+    && strip smartctl \
+    && file smartctl | grep -q 'statically linked' \
+    && ./smartctl --version
+
+# Assemble the files the agent needs on top of the static binary:
 #   - a static busybox with `chroot` (the agent runs zpool/zfs on the Talos host
 #     through `chroot /host`; distroless/scratch ship no chroot),
 #   - /tmp for any transient file.
-RUN mkdir -p /rootfs/bin /rootfs/tmp /rootfs/etc \
+RUN mkdir -p /rootfs/bin /rootfs/tmp /rootfs/etc /rootfs/app \
     && cp /bin/busybox.static /rootfs/bin/busybox \
     && ln -s busybox /rootfs/bin/chroot \
     && ln -s busybox /rootfs/bin/sh \
+    && cp /tmp/smartmontools/smartctl /rootfs/app/smartctl \
     && printf 'root:x:0:0:root:/root:/bin/sh\n' > /rootfs/etc/passwd \
     && printf 'root:x:0:\n' > /rootfs/etc/group
 

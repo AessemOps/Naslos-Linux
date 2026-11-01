@@ -24,13 +24,16 @@ offers exactly these, and the API only emits these.
 
 | Event | Meaning |
 | --- | --- |
-| `zfs_health` | A pool's health leaves `ONLINE` (and once when it recovers). Polled every 5 minutes by the API health watcher |
-| `disk_failure` | A disk that was present disappears from the node's inventory. Polled every 5 minutes |
+| `zfs_health` | A pool's health leaves `ONLINE`, a disk's SMART temperature crosses `DISK_HEALTH_TEMPERATURE_C` (default 55 °C), its wear reaches `DISK_HEALTH_WEAR_PERCENT` (default 80 %), or a vdev is `DEGRADED`; per-disk conditions send one recovery notice when they clear. Polled every 60 s |
+| `disk_failure` | SMART reports `FAILED`, or a ZFS vdev is `FAULTED`/`OFFLINE`/`UNAVAIL`/`REMOVED`; one recovery notice when it clears. Polled every 60 s. See [operations.md](operations.md#disk-health) |
 | `backup_success` | Buddy Backup run completed |
 | `backup_failure` | Buddy Backup run failed |
 
-The watcher interval is `HEALTH_NOTIFY_INTERVAL_SECONDS` (default 300). A pool or
-disk transition is reported once, not on every poll.
+The watcher interval is `HEALTH_INTERVAL_SECONDS` (default 60). A pool, disk or
+threshold transition is reported once, not on every poll. Per-disk conditions
+send one recovery notice; a pool returning to `ONLINE` is cleared silently.
+`DISK_HEALTH_ENABLED=false` disables the per-disk alerts while leaving the pool
+watcher and the Disk Health page working.
 
 ## Severity → priority mapping
 

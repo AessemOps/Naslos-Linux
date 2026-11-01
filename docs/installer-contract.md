@@ -76,13 +76,14 @@ expect. `naslosVersion` is recorded in the recovery README.
 
 `machine-config/naslos-installer.yaml.tmpl` is a Talos machine-config **patch**
 (one or more YAML documents) applied on top of the config generated from
-`pkg/machinery`. It contains exactly two engine placeholders that MUST be
+`pkg/machinery`. It contains exactly three engine placeholders that MUST be
 substituted before parsing:
 
 | Placeholder | Value |
 | --- | --- |
 | `{{NODE_SUBNET}}` | the node's IPv4 /24, e.g. `192.168.1.0/24` |
 | `{{INSTALL_DISK}}` | the install disk chosen by the operator, e.g. `/dev/vda` or `/dev/nvme0n1` |
+| `{{INTERFACE}}` | the node's real NIC name, detected from the maintenance-mode Talos link/address resources (e.g. `eth0`, `ens3`, `enp1s0`) |
 
 `{{INSTALL_DISK}}` MUST come from an explicit `--install-disk` argument; the
 engine MUST NOT default to a device name. A non-dry-run install MUST also

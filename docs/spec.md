@@ -188,6 +188,33 @@ Requirement IDs are stable: never renumber, only deprecate.
   that a share is serving (or that backs a share's path) MUST be refused with a
   conflict instead of removing the share's data.
 
+### 3.1.1 Disk health (`FR-DHK`)
+
+- **FR-DHK-01** — The agent MUST report per-whole-disk SMART health (health
+  status, temperature, power-on hours, wear, reallocated/pending/uncorrectable
+  sectors and media/error-log counts where the device exposes them) read-only,
+  and MUST NOT wake a standby disk (`smartctl -n standby`).
+- **FR-DHK-02** — Unsupported or unavailable SMART MUST be reported as
+  `available:false` with a reason, not as an endpoint error; the UI MUST show
+  the disk as unavailable/standby while keeping its ZFS data visible.
+- **FR-DHK-03** — `GET /api/disks/health` MUST merge the Talos disk inventory,
+  ZFS pool/vdev state and error counters, and the agent's SMART data. The
+  existing `GET /api/disks` wizard contract MUST stay unchanged.
+- **FR-DHK-04** — The UI MUST provide a per-disk health page with a summary,
+  a severity-sorted table (device, model/serial, pool/vdev, ZFS state, SMART
+  health, temperature, hours, wear, error counters) and a refresh control.
+- **FR-DHK-05** — The health watcher MUST notify on SMART `FAILED`, temperature
+  above `DISK_HEALTH_TEMPERATURE_C` (default 55 °C), wear at/above
+  `DISK_HEALTH_WEAR_PERCENT` (default 80 %) and ZFS vdev
+  `FAULTED|OFFLINE|UNAVAIL|REMOVED`/`DEGRADED` transitions, using the existing
+  `disk_failure`/`zfs_health` events. Repeated polls MUST NOT repeat an alert;
+  a recovered disk/condition MUST send at most one recovery notice.
+- **FR-DHK-06** — The agent image MUST bundle a pinned, checksum-verified
+  `smartctl`, and the DaemonSet MUST mount the host `/sys` read-only for device
+  detection. The agent endpoint MUST require the agent bearer token.
+- **FR-DHK-07** — Disk health MUST be read-only: no SMART self-tests, no
+  enabling SMART, no device writes, and no user-controlled command arguments.
+
 ### 3.2 Identity & SSO (`FR-IDN`)
 
 - **FR-IDN-01** — Users and groups MUST be stored in OpenLDAP under
@@ -806,6 +833,7 @@ A node installed from an installer pack can be upgraded from the web UI. A
 | `/api/system/operations` | POST | Start an ordered upgrade operation (`202`; `409` lock; `412` precondition) |
 | `/api/system/operations/current` | GET | Operation status + Job log tail |
 | `/api/disks` | GET | Node disks |
+| `/api/disks/health` | GET | Per-disk SMART + ZFS health (FR-DHK) |
 | `/api/disks/recommend` | POST | Topology advisor |
 | `/api/volumes/zfs` | GET | Pools (live via agent) |
 | `/api/volumes/zfs/import` | POST | Import existing pool |
@@ -845,6 +873,7 @@ A node installed from an installer pack can be upgraded from the web UI. A
 | `/api/v1/pools` | GET | List pools (via `zpool list`) |
 | `/api/v1/pools/import` | POST | `zpool import` |
 | `/api/v1/pools/{name}` | GET, DELETE | Status/iostat / destroy |
+| `/api/v1/disks/health` | GET | Per-disk SMART + ZFS health (FR-DHK) |
 | `/api/v1/datasets/{pool}` | GET, POST | List / create datasets |
 | `/api/v1/snapshots/{pool}` | GET, POST | List / create snapshots |
 | `/api/v1/shares/config` | PUT | Write the API-rendered share config to the host (atomic) |
@@ -859,6 +888,7 @@ A node installed from an installer pack can be upgraded from the web UI. A
 - **DM-3 Pool**: `{ "name", "size", "alloc", "free", "usagePercent", "health" }` — sizes in bytes, parsed from human `zpool list` output.
 - **DM-4 Share**: `{ "name", "path", "protocol": "smb"|"nfs", "description", "readOnly": bool, "browseable": bool, "allowedHosts": [], "validUsers": [], "validGroups": [], "timeMachine": bool, "createdAt", "enabled": bool }` — `path` MUST be inside the ZFS base; the three list fields MUST be arrays (never `null`, including when read back from disk); `validUsers` entries render bare and `validGroups` entries render as `@group` in `smb.conf` (FR-SHR-07/12).
 - **DM-5 SystemMetrics**: see FR-MET-03. `updatedAt` is RFC 3339; before the first successful collection it is the Go zero time and consumers MUST treat it as "no data yet".
+- **DM-6 DiskHealth**: `{ "smartctlAvailable": bool, "error": string, "temperatureWarningC": number, "wearWarningPercent": number, "disks": [{ "device", "size", "isSystemDisk", "model", "serial", "busPath", "type", "signatures": [], "inPool"?, "smart": { "available", "enabled", "health": "PASSED"|"FAILED"|"UNKNOWN", "temperatureC"?, "powerOnHours"?, "wearPercent"?, "reallocatedSectors"?, "pendingSectors"?, "uncorrectableSectors"?, "mediaErrors"?, "errorCount"?, "standby", "message" }, "zfs"?: { "pool", "vdev", "state", "readErrors", "writeErrors", "cksumErrors" } }] }` — `smart.available:false` is normal for virtio/USB/RAID devices and MUST NOT fail the endpoint (FR-DHK-02/03).
 
 ---
 
@@ -896,6 +926,7 @@ The authoritative executable acceptance suite is the Playwright suite in
 | --- | --- |
 | `dashboard.spec.ts` — live node metrics | FR-MET-03/04/05, FR-IDN-08 (live values, non-zero memory/cores, no zero-time) |
 | `dashboard.spec.ts` — zfs pools | FR-STO-06, FR-MET-07 |
+| `disk-health.spec.ts` — per-disk inventory | FR-DHK-02/03/04 (API/UI shape, SMART-unavailable path) |
 | `dashboard.spec.ts` — auto-refresh | FR-MET-08 (5 s re-render without reload) |
 | `TestAddressesByLink`, `TestAddressesByLinkPrefersIPv4OverIPv6` | FR-MET-10 (routable IPv4 over IPv6, no loopback/link-local, no address for an unnamed link) |
 | Live dashboard shows each interface with its IP (`eth0` → the node's address) | FR-MET-10 |

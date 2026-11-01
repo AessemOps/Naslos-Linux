@@ -136,6 +136,72 @@ pub struct PoolIoStats {
     pub write_bw: String,
 }
 
+/// SMART data for one whole disk (mirrors the agent's `SmartInfo`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SmartInfo {
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub health: String,
+    #[serde(default, rename = "temperatureC")]
+    pub temperature_c: Option<i64>,
+    #[serde(default, rename = "powerOnHours")]
+    pub power_on_hours: Option<u64>,
+    #[serde(default, rename = "wearPercent")]
+    pub wear_percent: Option<u8>,
+    #[serde(default, rename = "reallocatedSectors")]
+    pub reallocated_sectors: Option<u64>,
+    #[serde(default, rename = "pendingSectors")]
+    pub pending_sectors: Option<u64>,
+    #[serde(default, rename = "uncorrectableSectors")]
+    pub uncorrectable_sectors: Option<u64>,
+    #[serde(default, rename = "mediaErrors")]
+    pub media_errors: Option<u64>,
+    #[serde(default, rename = "errorCount")]
+    pub error_count: Option<u64>,
+    #[serde(default)]
+    pub standby: bool,
+    #[serde(default)]
+    pub message: String,
+}
+
+/// A disk's ZFS vdev state/error counters (mirrors the agent's
+/// `ZfsDiskHealth`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ZfsDiskHealth {
+    pub pool: String,
+    pub vdev: String,
+    pub state: String,
+    #[serde(rename = "readErrors")]
+    pub read_errors: u64,
+    #[serde(rename = "writeErrors")]
+    pub write_errors: u64,
+    #[serde(rename = "cksumErrors")]
+    pub cksum_errors: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiskHealth {
+    pub device: String,
+    #[serde(default)]
+    pub smart: SmartInfo,
+    #[serde(default)]
+    pub zfs: Option<ZfsDiskHealth>,
+}
+
+/// The agent's `/api/v1/disks/health` payload.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiskHealthReport {
+    #[serde(rename = "smartctlAvailable")]
+    pub smartctl_available: bool,
+    #[serde(default)]
+    pub error: String,
+    #[serde(default)]
+    pub disks: Vec<DiskHealth>,
+}
+
 /// The desired share configuration pushed to the node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SharesConfigRequest {
@@ -410,6 +476,14 @@ impl Client {
 
     pub async fn pool_health(&self, name: &str) -> Result<PoolHealth, AgentError> {
         self.do_json(self.request(reqwest::Method::GET, &format!("/api/v1/pools/{name}")))
+            .await
+    }
+
+    /// Per-disk SMART + ZFS health. The agent returns 200 with
+    /// `smartctlAvailable:false` when SMART is unsupported, so this is only an
+    /// error when the agent itself is unreachable or degraded.
+    pub async fn disk_health(&self) -> Result<DiskHealthReport, AgentError> {
+        self.do_json(self.request(reqwest::Method::GET, "/api/v1/disks/health"))
             .await
     }
 
