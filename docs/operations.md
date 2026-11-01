@@ -91,6 +91,21 @@ The admin password is only required while the `admin` step is still pending.
   snapshot from `/var/lib/naslos/backups/etcd-<ts>.db` on the node if the
   control plane does not return. Keep the three newest snapshots.
 
+## CPU metrics
+
+The dashboard's **CPU** card shows the model, 1/5/15-minute load averages,
+temperature, and one usage bar per logical core. The API derives per-core usage
+from two `/proc/stat` samples (a bounded delta) and reads frequency from
+`/proc/cpuinfo`. The collector runs every 5 s (`METRICS_INTERVAL_SECONDS`).
+
+- **Temperature is `—` / "not exposed on this node"** when the node has no CPU
+  hwmon (`coretemp`/`k10temp`/`zenpower`) or thermal zone. The Talos VM has no
+  sensor; physical hardware normally does. An absent sensor is not an error.
+- The package temperature is preferred from a CPU hwmon; a generic thermal zone
+  is only a fallback.
+- Per-core usage is a short delta (about 200 ms), not the since-boot average, so
+  the bars move with current load.
+
 ## Disk health
 
 **Disks → Disk Health** (`/disks/health`) shows every whole disk with its SMART
