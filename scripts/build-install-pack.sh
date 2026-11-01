@@ -11,7 +11,14 @@
 #   machine-config/naslos-installer.yaml.tmpl
 #   cilium/cilium.yaml
 #   manifests/local-path-v0.0.26.yaml
+#   manifests/cert-manager-crds.yaml   cert-manager CRDs (installed before it)
+#   charts/cert-manager-webhook-ovh-<ver>.tgz  OVH DNS-01 solver chart
 #   schematic/naslos.yaml
+#
+# cert-manager itself ships as the umbrella chart's vendored subchart; the
+# webhook is not a Naslos dependency, so its chart is carried at the pack root
+# and installed standalone by the engine (mirrors the Makefile's
+# `cert-manager` / `cert-manager-webhook-ovh` targets).
 #
 # The chart's subchart `.tgz`s must already be vendored under
 # charts/naslos/charts/ (they are committed); this script does not run
@@ -40,13 +47,17 @@ CHART_YAML="$CHART_DIR/Chart.yaml"
 TEMPLATE="bootstrap/installer/naslos-installer.yaml.tmpl"
 CILIUM="bootstrap/cilium/cilium.yaml"
 LOCAL_PATH="bootstrap/local-path/local-path-storage.yaml"
+CERT_MANAGER_CRDS="bootstrap/cert-manager/crds.yaml"
+OVH_WEBHOOK_CHART_VERSION="0.9.17"
+OVH_WEBHOOK_CHART="bootstrap/cert-manager/cert-manager-webhook-ovh-${OVH_WEBHOOK_CHART_VERSION}.tgz"
 SCHEMATIC="bootstrap/schematic/naslos.yaml"
 
 TALOS_VERSION="v1.14.1"
 SCHEMATIC_ID="4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c"
 ISO_URL="https://factory.talos.dev/image/${SCHEMATIC_ID}/${TALOS_VERSION}/metal-amd64.iso"
 
-for f in "$CHART_YAML" "$TEMPLATE" "$CILIUM" "$LOCAL_PATH" "$SCHEMATIC"; do
+for f in "$CHART_YAML" "$TEMPLATE" "$CILIUM" "$LOCAL_PATH" "$SCHEMATIC" \
+         "$CERT_MANAGER_CRDS" "$OVH_WEBHOOK_CHART"; do
     [ -f "$f" ] || { echo "build-install-pack: missing $f" >&2; exit 1; }
 done
 
@@ -94,6 +105,8 @@ rm -f "$pack_root/charts/naslos/.helmignore" 2>/dev/null || true
 cp "$TEMPLATE" "$pack_root/machine-config/naslos-installer.yaml.tmpl"
 cp "$CILIUM" "$pack_root/cilium/cilium.yaml"
 cp "$LOCAL_PATH" "$pack_root/manifests/local-path-v0.0.26.yaml"
+cp "$CERT_MANAGER_CRDS" "$pack_root/manifests/cert-manager-crds.yaml"
+cp "$OVH_WEBHOOK_CHART" "$pack_root/charts/cert-manager-webhook-ovh-${OVH_WEBHOOK_CHART_VERSION}.tgz"
 cp "$SCHEMATIC" "$pack_root/schematic/naslos.yaml"
 
 # FR-INSTALL-13: pin the copied installer profile's images by digest when a map

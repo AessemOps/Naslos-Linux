@@ -590,6 +590,8 @@ assert "metal-amd64" in m["isoUrls"], "metadata must carry the metal-amd64 ISO U
 for rel in ["charts/naslos/values-installer.yaml",
             "machine-config/naslos-installer.yaml.tmpl",
             "manifests/local-path-v0.0.26.yaml",
+            "manifests/cert-manager-crds.yaml",
+            "charts/cert-manager-webhook-ovh-0.9.17.tgz",
             "cilium/cilium.yaml",
             "schematic/naslos.yaml"]:
     assert os.path.exists(os.path.join(root, rel)), f"missing pack member {rel}"
@@ -602,6 +604,37 @@ PY
   rc=$?
   rm -rf "$d"
   return "$rc"
+}
+
+# The pack's cert-manager material must match the pinned upstream charts: the
+# CRD manifest is a render of the vendored cert-manager subchart, and the OVH
+# webhook chart is carried at the version the Makefile installs. A stale copy
+# here means the installer ships CRDs (or a solver) the VM path does not use.
+check_cert_manager_vendor() {
+  f=$(mktemp) || return 1
+  if ! helm template cert-manager "$root/charts/naslos/charts/cert-manager-v1.18.2.tgz" \
+    --namespace cert-manager --set crds.enabled=true \
+    --show-only templates/crds.yaml >"$f" 2>/dev/null; then
+    rm -f "$f"
+    return 1
+  fi
+  if ! sed -n '/^---$/,$p' "$root/bootstrap/cert-manager/crds.yaml" | diff -q - "$f" >/dev/null; then
+    rm -f "$f"
+    echo "cert-manager CRDs drift from the vendored chart; run 'make cert-manager-crds'" >&2
+    return 1
+  fi
+  rm -f "$f"
+  d=$(mktemp -d) || return 1
+  if ! tar -xzf "$root/bootstrap/cert-manager/cert-manager-webhook-ovh-0.9.17.tgz" \
+    -C "$d" cert-manager-webhook-ovh/Chart.yaml 2>/dev/null; then
+    rm -rf "$d"
+    return 1
+  fi
+  if ! grep -q '^version: 0.9.17$' "$d/cert-manager-webhook-ovh/Chart.yaml"; then
+    rm -rf "$d"
+    return 1
+  fi
+  rm -rf "$d"
 }
 
 # FR-INSTALL-13 (part 1): the chart's digest mechanism must render. With a
@@ -771,6 +804,7 @@ if have helm; then
   run "helm lint (installer profile, FR-INSTALL)" helm lint charts/naslos \
     -f charts/naslos/values.yaml -f charts/naslos/values-installer.yaml
   run "install pack builds + checksums (FR-INSTALL)" check_install_pack
+  run "pack cert-manager material matches the pinned charts" check_cert_manager_vendor
   run "chart images render by digest (FR-INSTALL-13)" check_image_digest_render
   run "install pack pins image digests (FR-INSTALL-13)" check_pack_digest_pinning
   run "authelia ldap password is a Secret file (AUDIT-M3)" check_authelia_ldap_secret

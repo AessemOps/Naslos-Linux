@@ -40,9 +40,11 @@ naslos-install-pack-<version>/
   metadata.json
   charts/naslos/                       umbrella chart + charts/*.tgz subcharts
   charts/naslos/values-installer.yaml
+  charts/cert-manager-webhook-ovh-<ver>.tgz   OVH DNS-01 solver (standalone chart)
   machine-config/naslos-installer.yaml.tmpl
   cilium/cilium.yaml
   manifests/local-path-v0.0.26.yaml
+  manifests/cert-manager-crds.yaml     cert-manager CRDs (apply before it)
   schematic/naslos.yaml
 ```
 
@@ -129,6 +131,30 @@ samba, nfs, **terminal**), `naslos-apps`, `naslos-apps-priv`.
 | `secret/naslos-openldap` (`admin-password`, `service-password`) | `naslos` | chart-generated LDAP credentials |
 | `secret/naslos-openldap-tls` (`ca.crt`, `ldap.crt`, `ldap.key`) | `naslos` | chart-generated LDAP TLS |
 | `deploy/naslos-api`, `secret/naslos-talosconfig` | `naslos` | health + node management |
+
+### 2.1 cert-manager and the OVH webhook
+
+The installer provisions the same certificate stack as `make install-vm`;
+otherwise a fresh install can only serve the chart's generated self-signed
+certificate and the Domains page cannot issue a publicly trusted one.
+
+1. Apply `manifests/cert-manager-crds.yaml` server-side (force-conflicts). The
+   CRDs must exist before any `Certificate`/`Issuer` is created.
+2. Install `charts/naslos/charts/cert-manager-v1.18.2.tgz` as the release
+   `cert-manager` in namespace `cert-manager` with `crds.enabled=false`.
+3. Install `charts/cert-manager-webhook-ovh-<ver>.tgz` as the release
+   `cert-manager-webhook-ovh` in the same namespace with
+   `groupName=ovh.naslos.local` (must equal the API's OVH provider
+   `webhook.groupName`), `certManager.namespace=cert-manager` and
+   `certManager.serviceAccountName=cert-manager`.
+4. Wait for both deployments before installing the Naslos release: the
+   `values-installer.yaml` profile sets `ovhWebhook.enabled: true`, whose RBAC
+   references the webhook ServiceAccount.
+
+No operator credential is needed at install time. The webhook is
+credential-less; OVH API credentials live in per-Domain Secrets written by the
+UI. The step needs image-pull egress to `quay.io` (cert-manager) and Docker Hub
+(`aureq/cert-manager-webhook-ovh`).
 
 `/var/lib/naslos/buddy-identity.json` is the Buddy Backup **KEK**: losing it
 makes every stored backup unreadable, and `helm uninstall` would delete it (the
