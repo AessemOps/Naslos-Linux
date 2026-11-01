@@ -157,7 +157,7 @@ pub async fn talos(cli: &Cli, writer: &mut Writer) -> Result<String, String> {
         align_install_image(cli, &meta).await?;
         wait_for_node(cli).await?;
         wait_for_agent(cli).await?;
-        return Ok(format!("Talos is at {}", target));
+        return Ok(format!("Talos is at {target}"));
     }
     if writer.attempts() > 0 {
         return Err(format!(
@@ -166,12 +166,11 @@ pub async fn talos(cli: &Cli, writer: &mut Writer) -> Result<String, String> {
     }
     if let Some(running) = running {
         if target < running {
-            return Err(format!("Talos {} is older than running {running}", target));
+            return Err(format!("Talos {target} is older than running {running}"));
         }
         if target.minor_distance(&running) > 1 {
             return Err(format!(
-                "Talos {} is more than one minor ahead of {running}",
-                target
+                "Talos {target} is more than one minor ahead of {running}"
             ));
         }
     }
@@ -755,8 +754,7 @@ async fn verify_images(cli: &Cli, meta: &PackMetadata) -> Result<(), String> {
             .unwrap_or_default();
         if !images.iter().any(|image| image == expected) {
             return Err(format!(
-                "{kind}/{name} runs {:?}, the pack pins {expected}",
-                images
+                "{kind}/{name} runs {images:?}, the pack pins {expected}"
             ));
         }
     }

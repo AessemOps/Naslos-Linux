@@ -738,8 +738,9 @@ A node installed from an installer pack can be upgraded from the web UI. A
   precondition fails (profile, order, stepping, pool health).
 - **FR-UPD-05** — Each operation MUST be an in-cluster Job running
   `naslos-upgrade` with ServiceAccount `naslos-upgrader`; the Naslos operation
-  MUST run the target pack's API image digest, Talos/Kubernetes the current
-  image. The Job MUST take an etcd snapshot before changing the node.
+  MUST run the image pinned by the target pack, while the Talos and Kubernetes
+  operations use the current image. The Job MUST take an etcd snapshot before
+  changing the node.
 - **FR-UPD-06** — A Naslos upgrade MUST rebuild only the installer's override
   keys from the current release, MUST `helm upgrade --reset-values` from the
   new pack, MUST verify the running images against the pack's digests, and MUST

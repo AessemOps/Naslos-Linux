@@ -215,15 +215,14 @@ pub fn stepping(
         if distance < 0 {
             return Stepping {
                 allowed: false,
-                reason: format!("{name} {} would be a downgrade from {running}", target),
+                reason: format!("{name} {target} would be a downgrade from {running}"),
             };
         }
         if distance > 1 {
             return Stepping {
                 allowed: false,
                 reason: format!(
-                    "{name} {} is {distance} minors ahead of {running}; upgrade to the next release first",
-                    target
+                    "{name} {target} is {distance} minors ahead of {running}; upgrade to the next release first"
                 ),
             };
         }
