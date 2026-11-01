@@ -35,6 +35,32 @@ test('dashboard shows live node metrics', async ({ page }) => {
   await expect(updatedValue).not.toContainText('0001-01-01');
 });
 
+test('dashboard shows CPU temperature, load averages and per-core usage', async ({ page, request }) => {
+  const res = await request.get('/api/metrics');
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const metrics = await res.json();
+  expect(metrics.cpu.cores, 'logical cores').toBeGreaterThan(0);
+  expect(metrics.cpu.model, 'CPU model').not.toBe('');
+  expect(Array.isArray(metrics.cpu.perCore), 'perCore is an array').toBeTruthy();
+  expect(metrics.cpu.perCore.length, 'one entry per logical core').toBe(metrics.cpu.cores);
+  expect(typeof metrics.cpu.loadAvg1).toBe('number');
+  expect(typeof metrics.cpu.loadAvg5).toBe('number');
+  expect(typeof metrics.cpu.loadAvg15).toBe('number');
+
+  await page.goto('/');
+  await expect(page.getByText('Loading dashboard...')).toBeHidden({ timeout: 10_000 });
+  const card = page.getByTestId('cpu-details');
+  await expect(card).toBeVisible();
+  await expect(card).toContainText('Load average');
+  await expect(card.getByTestId('cpu-core')).toHaveCount(metrics.cpu.cores);
+
+  if (metrics.cpu.temperatureC == null) {
+    await expect(page.getByTestId('cpu-temp-unavailable')).toBeVisible();
+  } else {
+    await expect(card).toContainText('°C');
+  }
+});
+
 test('dashboard shows each network interface with its address', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByText('Loading dashboard...')).toBeHidden({ timeout: 10_000 });

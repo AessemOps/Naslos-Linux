@@ -215,6 +215,13 @@ The actual ZFS work is delegated to `naslos-agent` on each node:
 | GET | `/api/metrics` | Full `SystemMetrics` object |
 | GET | `/api/dashboard` | Dashboard-formatted subset (home screen) |
 
+`SystemMetrics.cpu` carries `usagePercent`, `cores`, `loadAvg1/5/15`, `model`,
+`temperatureC` (nullable) and `perCore[]` (`core`, `usagePercent`, optional
+`frequencyMhz`). `/api/dashboard` exposes the same CPU fields as
+`cpu.{usage,cores,model,temperatureC,loadAvg1,loadAvg5,loadAvg15,perCore}`.
+Temperature is `null` when the node exposes no CPU sensor; the rest of the
+metrics are unaffected.
+
 ### System upgrades (`FR-UPD`, see [installer-contract.md §7](installer-contract.md#7-web-upgrades-fr-upd))
 
 | Route | Method | Body / result |
