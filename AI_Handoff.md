@@ -14,8 +14,8 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 ## Current instance (2026-11-01) — fresh 0.3.1 install (0.3.2 not yet deployed)
 
 - Node `talos-4wf-d3g`, Talos v1.14.1 / k8s v1.37.0, **control-plane Ready**.
-- Helm release `naslos` (chart `naslos-0.3.1`, revision 3). The **API image is
-  0.3.2** (`sha256:5c2527b4…`) deployed 2026-11-02; the agent/UI/other images
+- Helm release `naslos` (chart `naslos-0.3.1`, revision 4). The **API image is
+  0.3.3** (`sha256:3831d9b8…`) deployed 2026-11-02; the agent/UI/other images
   remain 0.3.1 (`agent ee2d7391…`, UI `eeac7201…`, NFS `288a49c7…`, Samba
   `76b20d48…`, terminal `155b4865…`).
 - Installed from **Naslos Installer v0.3.1**; the owner updated the credentials
@@ -34,9 +34,10 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 `v0.3.3` fixes the API updater's release-pack parsing: GitHub packs are tarred
 under `naslos-install-pack-<version>/`, and the API now strips that root before
 metadata/checksum verification. It also carries the 0.3.2 CPU detail, updater
-null-release fix and terminal Disconnect fix. The node has the 0.3.2 API image
-deployed; the 0.3.3 API image is deployed for the web upgrade, then the UI can
-move to the full 0.3.3 release. Plan:
+null-release fix and terminal Disconnect fix. The node has the 0.3.3 API image
+deployed; `/api/system/updates` now returns 0.3.3 as `available`, `allowed` and
+unblocked, so the owner can complete the web upgrade to the full 0.3.3 release.
+Plan:
 `.kilo/plans/1793600000002-cpu-info.md`.
 
 ## Historical — 0.2.1 clean install (2026-10-31)
