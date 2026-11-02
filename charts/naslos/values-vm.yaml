@@ -111,7 +111,7 @@ apps:
     auth: public
     # SEC-2026-D6: pin the NASLOS catalog to an audited commit. Bump this when
     # releasing a chart that needs newer catalog entries.
-    commit: 781f192de6a54db23f9fc098397d38a0b37d9fc0
+    commit: 260e8f5e393cf3675bd79b8fcf75c8bb7ffac47d
     credentialsSecret: ""
     # NaslosCharts currently has only a `main` branch, so map the channels onto
     # it; add real Prod/Develop/Experimental branches and drop this later.

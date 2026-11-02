@@ -32,9 +32,10 @@
   `docs/datasets-isolation.md` for the recommended per-app isolation design.
 - **Pinned catalog.** The VM and installer overlays set
   `apps.officialSource.commit` to a full SHA; the API checks out exactly that
-  commit and fails the sync if `HEAD` differs. Bump it when a release needs
-  catalog changes. Source definitions loaded from `sources.json` can carry the
-  same field.
+  commit and fails the sync if `HEAD` differs. Bump it to the new `main` SHA
+  after merging NaslosCharts catalog changes, otherwise new apps stay invisible
+  until the next release. Source definitions loaded from `sources.json` can
+  carry the same field.
 - **App-install identity.** The chart creates a `naslos-helm` ServiceAccount
   and token Secret in the release namespace, bound to a namespaced Role in
   `naslos-apps` that excludes Traefik, cert-manager and RBAC writes. Helm uses
