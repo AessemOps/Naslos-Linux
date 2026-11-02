@@ -734,6 +734,22 @@ check_system_upgrade_render() {
       rc=1
     fi
   done
+  # The API creates the upgrader Job with kubectl apply, so its namespaced
+  # Role must include patch (the 0.3.3 live upgrade failed without it).
+  python3 - "$f" <<'PY' || rc=1
+import sys, yaml
+docs = list(yaml.safe_load_all(open(sys.argv[1])))
+for doc in docs:
+    if not doc or doc.get("kind") != "Role":
+        continue
+    if doc.get("metadata", {}).get("name") != "naslos-api-system":
+        continue
+    for rule in doc.get("rules", []):
+        if "batch" in rule.get("apiGroups", []) and "jobs" in rule.get("resources", []):
+            if "patch" in rule.get("verbs", []):
+                raise SystemExit(0)
+raise SystemExit("naslos-api-system Role cannot patch jobs")
+PY
   rm -f "$f"
   return "$rc"
 }
