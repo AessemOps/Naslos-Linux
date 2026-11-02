@@ -609,6 +609,8 @@ pub struct JobOptions<'a> {
     pub release_name: &'a str,
     pub service_account: &'a str,
     pub talos_secret: &'a str,
+    /// Comma-separated node addresses (`talosctl --nodes`).
+    pub talos_nodes: &'a str,
     pub state_pvc: &'a str,
     pub workload_namespace: &'a str,
     pub backoff_limit: i64,
@@ -697,6 +699,7 @@ pub fn job_spec(o: &JobOptions<'_>) -> serde_json::Value {
                             {"name": "NASLOS_WORKLOAD_NAMESPACE", "value": o.workload_namespace},
                             {"name": "NASLOS_STATE_DIR", "value": "/var/lib/naslos"},
                             {"name": "TALOSCONFIG", "value": "/var/run/secrets/talos.dev/config"},
+                            {"name": "TALOS_NODES", "value": o.talos_nodes},
                             {"name": "HOME", "value": "/tmp"},
                             {"name": "HELM_CACHE_HOME", "value": "/tmp/helm/cache"},
                             {"name": "HELM_CONFIG_HOME", "value": "/tmp/helm/config"},
@@ -829,6 +832,7 @@ mod tests {
             release_name: "naslos",
             service_account: "naslos-upgrader",
             talos_secret: "naslos-talosconfig",
+            talos_nodes: "192.168.1.117",
             state_pvc: "naslos-shares-config",
             workload_namespace: "naslos-privileged",
             backoff_limit: 3,
@@ -850,6 +854,14 @@ mod tests {
             "talosconfig"
         );
         assert_eq!(pod["containers"][0]["volumeMounts"][2]["name"], "state");
+        let env = pod["containers"][0]["env"]
+            .as_array()
+            .expect("container env");
+        let talos_nodes = env
+            .iter()
+            .find(|entry| entry["name"] == "TALOS_NODES")
+            .expect("TALOS_NODES env");
+        assert_eq!(talos_nodes["value"], "192.168.1.117");
         assert_eq!(spec["metadata"]["labels"]["naslos.io/operation-id"], "1-ab");
     }
 
