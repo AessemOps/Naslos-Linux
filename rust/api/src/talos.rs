@@ -65,6 +65,13 @@ impl TalosClient {
         })
     }
 
+    /// The node addresses `talosctl -n` targets. The API forwards these to the
+    /// upgrader Job as `TALOS_NODES`: the mounted talosconfig carries endpoints
+    /// but no node list, and `etcd snapshot`/`upgrade` require one.
+    pub fn nodes(&self) -> &[String] {
+        &self.nodes
+    }
+
     /// Assemble the common flags for every invocation.
     fn base_args(&self) -> Vec<String> {
         let mut args = Vec::new();
