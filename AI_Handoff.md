@@ -11,21 +11,18 @@ in `docs/spec.md`.
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## Current instance (2026-11-01) — fresh 0.3.1 install (0.3.2 not yet deployed)
+## Current instance (2026-11-02) — 0.3.4
 
 - Node `talos-4wf-d3g`, Talos v1.14.1 / k8s v1.37.0, **control-plane Ready**.
-- Helm release `naslos` (chart `naslos-0.3.1`, revision 4). The **API image is
-  0.3.3** (`sha256:3831d9b8…`) deployed 2026-11-02; the agent/UI/other images
-  remain 0.3.1 (`agent ee2d7391…`, UI `eeac7201…`, NFS `288a49c7…`, Samba
-  `76b20d48…`, terminal `155b4865…`).
-- Installed from **Naslos Installer v0.3.1**; the owner updated the credentials
-  after the install. The 0.3.1 pack includes the disk-health page and the NIC
-  detection fix (`{{INTERFACE}}`).
-- The 0.3.2 API fixed the upgrader null-release parse error. It now reports
-  `blocked: release v0.3.2: install pack has no metadata.json` because
-  `pack.rs` did not strip the release tarball's top-level directory; the fix is
-  on branch `fix/pack-root` (PR pending). The terminal Disconnect fix is still
-  only in source, not the deployed 0.3.1 UI.
+- Helm release `naslos` (chart `naslos-0.3.4`, appVersion 0.3.4, revision 5).
+  All images are digest-pinned from the 0.3.4 pack: API `8b4d5b06…`, agent
+  `08133d5e…`, UI `de93d3dc…`, OpenLDAP `4fdacf40…`, Samba `2d9854ed…`, NFS
+  `1f66e2ef…`, terminal `bdaf9860…`.
+- Originally installed from **Naslos Installer v0.3.1**; upgraded through the web
+  UI from 0.3.1 to 0.3.4 on 2026-11-02 (operation
+  `1793636217-e843277f`, `phase: succeeded`, etcd snapshot
+  `/var/lib/naslos/backups/etcd-20261102T161659Z.db`). The update check now
+  reports `current: 0.3.4`, `available: null`, `no newer release`.
 - The VM has no CPU thermal zone/hwmon, so CPU temperature is reported as
   unavailable; per-core load works.
 
@@ -40,9 +37,9 @@ unblocked, so the owner can complete the web upgrade to the full 0.3.3 release.
 Plan:
 `.kilo/plans/1793600000002-cpu-info.md`.
 
-## Fix in progress — 0.3.4 (not yet released/deployed)
+## Release 0.3.4 (2026-11-02) — upgrader status + Talos-node fix
 
-Source on `plan/0.3.4-upgrader` (PR #116):
+`v0.3.4` (PR #116) fixes the two 0.3.1 → 0.3.3 upgrader failures:
 
 - The operation ConfigMap is written with `data`; server-side apply rejects
   `stringData`, which made every status write fail and left the UI without
@@ -51,9 +48,10 @@ Source on `plan/0.3.4-upgrader` (PR #116):
   `etcd snapshot`/`upgrade` work with a mounted talosconfig that has endpoints
   but no node list. The API returns `412` when no Talos client/node list is
   configured.
-- Chart/UI are bumped to 0.3.4; the installer is bumped for version parity.
-  Tag, pack and API deployment are still pending (plan
-  `.kilo/plans/1793600000004-0.3.4-upgrader.md`).
+- The release pack and installer `naslos-v0.3.4` are published. The API was
+  first hot-deployed from the 0.3.4 image digest, then the UI upgrade applied
+  the full 0.3.4 chart. Plan:
+  `.kilo/plans/1793600000004-0.3.4-upgrader.md`.
 
 ## Historical — 0.2.1 clean install (2026-10-31)
 
