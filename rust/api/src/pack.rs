@@ -199,7 +199,43 @@ fn read_entries(bytes: &[u8]) -> Result<Vec<Entry>, String> {
         }
         entries.push(Entry { path, is_dir, data });
     }
+    strip_single_pack_root(&mut entries);
     Ok(entries)
+}
+
+/// Release tarballs wrap the pack in `naslos-install-pack-<version>/`. The
+/// desktop installer tolerates that layout; the API must too, otherwise a
+/// valid GitHub release is reported as "install pack has no metadata.json".
+fn strip_single_pack_root(entries: &mut [Entry]) {
+    if entries
+        .iter()
+        .any(|e| e.path == "metadata.json" && !e.is_dir)
+    {
+        return;
+    }
+    let roots: HashSet<String> = entries
+        .iter()
+        .filter(|e| !e.is_dir)
+        .filter_map(|e| e.path.split_once('/').map(|(root, _)| root.to_string()))
+        .collect();
+    if roots.len() != 1 {
+        return;
+    }
+    let root = roots.into_iter().next().unwrap();
+    let prefix = format!("{root}/");
+    if !entries
+        .iter()
+        .any(|e| e.path == format!("{prefix}metadata.json"))
+    {
+        return;
+    }
+    for entry in entries.iter_mut() {
+        if entry.path == root {
+            entry.path = ".".to_string();
+        } else if let Some(rest) = entry.path.strip_prefix(&prefix) {
+            entry.path = rest.to_string();
+        }
+    }
 }
 
 /// Reject absolute paths, `..`, and any non-normal component so extraction can
@@ -284,6 +320,35 @@ mod tests {
             meta.api_image().unwrap(),
             "ghcr.io/aessemops/naslos-api@sha256:deadbeef"
         );
+        let dir = tempfile::tempdir().unwrap();
+        extract_pack(&bytes, dir.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("values.yaml")).unwrap(),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn verifies_and_extracts_a_release_pack_with_a_top_level_directory() {
+        let checksum = hex_sha256(b"hello");
+        let root = "naslos-install-pack-0.3.2";
+        let meta_path = format!("{root}/metadata.json");
+        let file_path = format!("{root}/values.yaml");
+        let meta = serde_json::json!({
+            "name": PACK_NAME,
+            "formatVersion": FORMAT_VERSION,
+            "naslosVersion": "0.3.2",
+            "chartVersion": "0.3.2",
+            "chartAppVersion": "0.3.2",
+            "talosVersion": "v1.14.1",
+            "schematicId": "abc",
+            "kubernetesVersion": "v1.37.0",
+            "checksums": {"values.yaml": checksum},
+        })
+        .to_string();
+        let bytes = make_pack(&[(meta_path.as_str(), &meta), (file_path.as_str(), "hello")]);
+        let parsed = verify_pack(&bytes).unwrap();
+        assert_eq!(parsed.naslos_version, "0.3.2");
         let dir = tempfile::tempdir().unwrap();
         extract_pack(&bytes, dir.path()).unwrap();
         assert_eq!(

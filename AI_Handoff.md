@@ -14,15 +14,18 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 ## Current instance (2026-11-01) — fresh 0.3.1 install (0.3.2 not yet deployed)
 
 - Node `talos-4wf-d3g`, Talos v1.14.1 / k8s v1.37.0, **control-plane Ready**.
-- Helm release `naslos` (chart `naslos-0.3.1`, revision 1). Images are
-  digest-pinned from GHCR: API `sha256:9806852f…`, agent
-  `sha256:ee2d7391…`, UI `sha256:eeac7201…`, NFS `sha256:288a49c7…`, Samba
-  `sha256:76b20d48…`, terminal `sha256:155b4865…`.
+- Helm release `naslos` (chart `naslos-0.3.1`, revision 3). The **API image is
+  0.3.2** (`sha256:5c2527b4…`) deployed 2026-11-02; the agent/UI/other images
+  remain 0.3.1 (`agent ee2d7391…`, UI `eeac7201…`, NFS `288a49c7…`, Samba
+  `76b20d48…`, terminal `155b4865…`).
 - Installed from **Naslos Installer v0.3.1**; the owner updated the credentials
   after the install. The 0.3.1 pack includes the disk-health page and the NIC
   detection fix (`{{INTERFACE}}`).
-- The upgrader null-release fix and the terminal Disconnect fix are on
-  `master` (PR #113) but are **not** in the deployed 0.3.1 images yet.
+- The 0.3.2 API fixed the upgrader null-release parse error. It now reports
+  `blocked: release v0.3.2: install pack has no metadata.json` because
+  `pack.rs` did not strip the release tarball's top-level directory; the fix is
+  on branch `fix/pack-root` (PR pending). The terminal Disconnect fix is still
+  only in source, not the deployed 0.3.1 UI.
 - The VM has no CPU thermal zone/hwmon, so CPU temperature is reported as
   unavailable; per-core load works.
 
