@@ -25,8 +25,8 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   reports `current: 0.3.4`, `available: null`, `no newer release`.
 - The official catalog source follows `NaslosCharts` `main` (no commit pin), so
   a catalog refresh picks up new charts. The live API env was updated to remove
-  the old pin and now lists 33 apps. The published 0.3.4 pack still carries the
-  old pin; a later pack ships the branch-tracking values.
+  the old pin and now lists 33 apps. The 0.3.4 pack still carries the old pin;
+  the 0.3.5 pack ships the branch-tracking values.
 - The VM has no CPU thermal zone/hwmon, so CPU temperature is reported as
   unavailable; per-core load works.
 
@@ -56,6 +56,16 @@ Plan:
   first hot-deployed from the 0.3.4 image digest, then the UI upgrade applied
   the full 0.3.4 chart. Plan:
   `.kilo/plans/1793600000004-0.3.4-upgrader.md`.
+
+## Release 0.3.5 (2026-11-02) — catalog follows `main`
+
+`v0.3.5` (PR #117) stops pinning the official catalog source to an audited
+commit. The VM and installer overlays leave `apps.officialSource.commit` empty,
+so each catalog refresh clones the channel branch (`main`) and new
+`NaslosCharts` apps appear without a Naslos release. A full 40-character SHA is
+still accepted per source and remains fail-closed (SEC-2026-D6); signature
+verification is still open. The audit guard accepts an empty pin but rejects a
+malformed one.
 
 ## Historical — 0.2.1 clean install (2026-10-31)
 
