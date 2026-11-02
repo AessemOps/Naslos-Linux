@@ -155,16 +155,7 @@ impl Writer {
             }
         }
 
-        let object = serde_json::json!({
-            "apiVersion": "v1",
-            "kind": "ConfigMap",
-            "metadata": {
-                "name": OPERATION_CONFIGMAP,
-                "namespace": self.namespace,
-                "labels": {"app.kubernetes.io/name": "naslos-system-op"},
-            },
-            "stringData": {"state": serde_json::to_string(&self.status).unwrap_or_default()},
-        });
+        let object = self.configmap_object();
         let mut args = self.kubectl_args();
         args.extend([
             "apply".into(),
@@ -180,6 +171,21 @@ impl Writer {
         {
             tracing::warn!("writing the operation status: {e}");
         }
+    }
+
+    fn configmap_object(&self) -> serde_json::Value {
+        // Server-side apply rejects `stringData` for a typed ConfigMap; `data`
+        // is the only field the schema accepts. The status JSON is small.
+        serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": OPERATION_CONFIGMAP,
+                "namespace": self.namespace,
+                "labels": {"app.kubernetes.io/name": "naslos-system-op"},
+            },
+            "data": {"state": serde_json::to_string(&self.status).unwrap_or_default()},
+        })
     }
 
     fn kubectl_args(&self) -> Vec<String> {
@@ -283,5 +289,23 @@ mod tests {
         assert_eq!(back.op, "naslos");
         assert_eq!(back.from, "0.3.0");
         assert_eq!(back.to, "0.3.1");
+    }
+
+    #[test]
+    fn configmap_uses_data_not_stringdata() {
+        let writer = Writer::new(
+            "naslos",
+            "/var/lib/naslos",
+            "123-abc",
+            crate::upgrade::Operation::Talos,
+            "v1.14.1",
+            "v1.14.2",
+        );
+        let object = writer.configmap_object();
+        assert!(object.get("stringData").is_none());
+        let state = object["data"]["state"].as_str().expect("data.state");
+        let status: OperationStatus = serde_json::from_str(state).expect("status json");
+        assert_eq!(status.id, "123-abc");
+        assert_eq!(status.op, "talos");
     }
 }

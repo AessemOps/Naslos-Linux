@@ -300,6 +300,7 @@ The API creates `Job naslos-system-op-<id>` in the release namespace:
 | image | `naslos`: the target pack's `images.api` digest. `talos`/`kubernetes`: the running API image |
 | command | `["naslos-upgrade"]` (the binary is on `PATH` in the API image) |
 | args | `--op <naslos\|talos\|kubernetes> --operation-id <id> --from <running> --version <target> --pack-url <url> --sha256 <approved> --namespace <ns>` |
+| env | `TALOS_NODES` (comma-separated node addresses). The mounted talosconfig has endpoints but no node list, and `etcd snapshot`/`upgrade` require `--nodes`. The API refuses the operation with `412` when no Talos client or node list is configured. |
 | volumes | `naslos-talosconfig` at `/var/run/secrets/talos.dev`, the state PVC (`naslos-shares-config`) at `/var/lib/naslos`, an emptyDir at `/tmp` |
 | retry | `backoffLimit` 3, `ttlSecondsAfterFinished` 3600; a Talos reboot kills the pod and the retry re-enters idempotently |
 
@@ -316,7 +317,8 @@ get/list/create/delete, pods get/list, pods/log get, and `get` on the
 ### 7.4 Status and lock
 
 `ConfigMap naslos-system-operation` (release namespace) has one `data.state`
-JSON document:
+JSON document. The upgrader writes it with `data` (not `stringData`), because
+server-side apply rejects `stringData` on the typed ConfigMap schema:
 
 ```json
 {"id":"…","op":"naslos","from":"0.3.0","to":"0.3.1","phase":"running",

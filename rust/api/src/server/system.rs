@@ -168,6 +168,10 @@ pub async fn operation_post(State(state): State<Arc<AppState>>, body: Body) -> R
             "this node was not provisioned from an installer pack; upgrade it with make install-vm",
         );
     }
+    let talos_nodes = match operation_nodes(state.talos.as_ref().map(|talos| talos.nodes())) {
+        Ok(nodes) => nodes,
+        Err(reason) => return precondition(&reason),
+    };
     let Some(checker) = state.updates.clone() else {
         return precondition("update checks are disabled");
     };
@@ -266,6 +270,7 @@ pub async fn operation_post(State(state): State<Arc<AppState>>, body: Body) -> R
         release_name: &state.system.release_name,
         service_account: state.system.service_account(),
         talos_secret: &state.system.talos_secret,
+        talos_nodes: &talos_nodes,
         state_pvc: &state.system.state_pvc,
         workload_namespace: &state.system.workload_namespace,
         backoff_limit: state.system.backoff_limit,
@@ -530,6 +535,41 @@ async fn check_pools(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
+/// The node list the upgrader Job needs for `talosctl etcd snapshot` and
+/// `talosctl upgrade`. Fail closed: a Job without nodes cannot snapshot.
+fn operation_nodes(nodes: Option<&[String]>) -> Result<String, String> {
+    let Some(nodes) = nodes else {
+        return Err("the Talos client is not configured; cannot run a system operation".into());
+    };
+    if nodes.is_empty() {
+        return Err(
+            "the Talos node list is empty; set TALOS_NODES or use a talosconfig with node endpoints"
+                .into(),
+        );
+    }
+    Ok(nodes.join(","))
+}
+
 fn system_namespace() -> String {
     std::env::var("NASLOS_NAMESPACE").unwrap_or_else(|_| "naslos".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_talos_nodes_is_a_precondition() {
+        assert!(operation_nodes(None).is_err());
+        assert!(operation_nodes(Some(&[])).is_err());
+    }
+
+    #[test]
+    fn talos_nodes_are_comma_separated() {
+        let nodes = vec!["192.168.1.117".to_string(), "192.168.1.118".to_string()];
+        assert_eq!(
+            operation_nodes(Some(&nodes)).unwrap(),
+            "192.168.1.117,192.168.1.118"
+        );
+    }
 }

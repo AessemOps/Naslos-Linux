@@ -826,9 +826,23 @@ async fn current_kubernetes_version(cli: &Cli) -> Result<String, String> {
         .ok_or_else(|| "kubectl version returned no serverVersion.gitVersion".to_string())
 }
 
-async fn run_talos(cli: &Cli, args: &[String], timeout: Duration) -> Result<String, String> {
-    let mut full = vec!["--talosconfig".to_string(), cli.talosconfig.clone()];
+/// `talosctl` gets the mounted talosconfig plus the node list from the Job
+/// environment. The mounted file has endpoints but no nodes, and
+/// `etcd snapshot`/`upgrade` refuse to run without `--nodes`.
+fn talos_args(talosconfig: &str, nodes: &str, args: &[String]) -> Vec<String> {
+    let mut full = vec!["--talosconfig".to_string(), talosconfig.to_string()];
+    let nodes = nodes.trim();
+    if !nodes.is_empty() {
+        full.push("--nodes".to_string());
+        full.push(nodes.to_string());
+    }
     full.extend(args.iter().cloned());
+    full
+}
+
+async fn run_talos(cli: &Cli, args: &[String], timeout: Duration) -> Result<String, String> {
+    let nodes = std::env::var("TALOS_NODES").unwrap_or_default();
+    let full = talos_args(&cli.talosconfig, &nodes, args);
     commands::run(&commands::talosctl(), &full, timeout).await
 }
 
@@ -854,4 +868,46 @@ fn kubeconfig_args() -> Vec<String> {
 fn write_json(path: &Path, value: &Value) -> Result<(), String> {
     let raw = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
     std::fs::write(path, raw).map_err(|e| format!("writing {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command() -> Vec<String> {
+        vec![
+            "etcd".into(),
+            "snapshot".into(),
+            "/var/lib/naslos/backups/etcd.db".into(),
+        ]
+    }
+
+    #[test]
+    fn talos_args_put_nodes_after_the_talosconfig() {
+        let full = talos_args(
+            "/var/run/secrets/talos.dev/config",
+            "10.0.0.1,10.0.0.2",
+            &command(),
+        );
+        assert_eq!(
+            full,
+            [
+                "--talosconfig",
+                "/var/run/secrets/talos.dev/config",
+                "--nodes",
+                "10.0.0.1,10.0.0.2",
+                "etcd",
+                "snapshot",
+                "/var/lib/naslos/backups/etcd.db",
+            ]
+        );
+    }
+
+    #[test]
+    fn talos_args_omit_nodes_without_a_node_list() {
+        let full = talos_args("/var/run/secrets/talos.dev/config", "  ", &command());
+        assert!(!full.iter().any(|arg| arg == "--nodes"));
+        assert_eq!(full[0], "--talosconfig");
+        assert_eq!(full[2], "etcd");
+    }
 }

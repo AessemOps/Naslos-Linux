@@ -40,6 +40,21 @@ unblocked, so the owner can complete the web upgrade to the full 0.3.3 release.
 Plan:
 `.kilo/plans/1793600000002-cpu-info.md`.
 
+## Fix in progress — 0.3.4 (not yet released/deployed)
+
+Source on `plan/0.3.4-upgrader` (PR #116):
+
+- The operation ConfigMap is written with `data`; server-side apply rejects
+  `stringData`, which made every status write fail and left the UI without
+  progress.
+- The upgrader Job receives `TALOS_NODES` and `talosctl` passes `--nodes`, so
+  `etcd snapshot`/`upgrade` work with a mounted talosconfig that has endpoints
+  but no node list. The API returns `412` when no Talos client/node list is
+  configured.
+- Chart/UI are bumped to 0.3.4; the installer is bumped for version parity.
+  Tag, pack and API deployment are still pending (plan
+  `.kilo/plans/1793600000004-0.3.4-upgrader.md`).
+
 ## Historical — 0.2.1 clean install (2026-10-31)
 
 `192.168.1.117` was reset to maintenance and provisioned end to end by the
