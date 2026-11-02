@@ -63,7 +63,10 @@ metadata:
 rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "list", "create", "delete"]
+    # The API creates the operation Job with `kubectl apply`, which needs
+    # patch as well as create; without it the web upgrade fails with
+    # "cannot patch resource jobs".
+    verbs: ["get", "list", "create", "delete", "patch"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
