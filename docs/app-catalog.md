@@ -60,10 +60,12 @@ privileged: false
 
 Each source is `{name, url, auth, credentialsSecret, channels, commit, official}`.
 `commit`, when set, must be a full 40-character SHA: the clone is checked out at
-exactly that commit and the sync fails if `HEAD` differs (SEC-2026-D6). The VM
-and installer profiles pin the official `NaslosCharts` source to an audited
-commit; bump `apps.officialSource.commit` when a release needs newer catalog
-entries. Signature verification is still a follow-up.
+exactly that commit and the sync fails if `HEAD` differs (SEC-2026-D6). When it
+is empty the source follows its channel branch, so a catalog refresh picks up
+new charts without a release. The VM and installer profiles leave the official
+`NaslosCharts` source unpinned so merged catalog changes appear on the next
+refresh; set `apps.officialSource.commit` when a reproducible/audited catalog is
+required. Signature verification is still a follow-up.
 
 | `auth` | Credential |
 | --- | --- |
