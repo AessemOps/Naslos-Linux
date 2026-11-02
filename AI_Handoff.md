@@ -29,14 +29,15 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 - The VM has no CPU thermal zone/hwmon, so CPU temperature is reported as
   unavailable; per-core load works.
 
-## Release 0.3.2 (2026-11-01) — CPU detail and follow-up fixes
+## Release 0.3.3 (2026-11-02) — release-pack root fix
 
-`v0.3.2` adds CPU model, load averages 1/5/15, per-core usage/frequency and
-temperature (nullable when the hardware exposes no sensor) to
-`/api/metrics`, `/api/dashboard` and the dashboard. It also carries the
-upgrader null-release fix and the terminal Disconnect fix from PR #113. The
-node is still the 0.3.1 install described above until it is upgraded.
-Plan: `.kilo/plans/1793600000002-cpu-info.md`.
+`v0.3.3` fixes the API updater's release-pack parsing: GitHub packs are tarred
+under `naslos-install-pack-<version>/`, and the API now strips that root before
+metadata/checksum verification. It also carries the 0.3.2 CPU detail, updater
+null-release fix and terminal Disconnect fix. The node has the 0.3.2 API image
+deployed; the 0.3.3 API image is deployed for the web upgrade, then the UI can
+move to the full 0.3.3 release. Plan:
+`.kilo/plans/1793600000002-cpu-info.md`.
 
 ## Historical — 0.2.1 clean install (2026-10-31)
 
