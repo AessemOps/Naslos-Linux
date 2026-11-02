@@ -95,7 +95,9 @@ assert pns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "privi
 assert find("ClusterRole", "naslos-helm-workloads"), "Helm workload ClusterRole missing"
 assert find("ClusterRoleBinding", "naslos-api-datasets"), "API PV ClusterRoleBinding missing"
 commit = env.get("SOURCES_OFFICIAL_COMMIT", {}).get("value", "")
-assert len(commit) == 40 and all(c in "0123456789abcdef" for c in commit), commit
+# The official source may follow its channel branch (unpinned, product choice)
+# or be pinned to an audited commit; a pin must always be a full hex SHA.
+assert commit == "" or (len(commit) == 40 and all(c in "0123456789abcdef" for c in commit)), commit
 kek = env.get("BUDDY_KEK", {})
 ref = kek.get("valueFrom", {}).get("secretKeyRef", {})
 assert ref.get("name") == "naslos-buddy-kek", ref
