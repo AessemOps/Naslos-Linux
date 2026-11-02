@@ -23,6 +23,10 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `1793636217-e843277f`, `phase: succeeded`, etcd snapshot
   `/var/lib/naslos/backups/etcd-20261102T161659Z.db`). The update check now
   reports `current: 0.3.4`, `available: null`, `no newer release`.
+- The official catalog source follows `NaslosCharts` `main` (no commit pin), so
+  a catalog refresh picks up new charts. The live API env was updated to remove
+  the old pin and now lists 33 apps. The published 0.3.4 pack still carries the
+  old pin; a later pack ships the branch-tracking values.
 - The VM has no CPU thermal zone/hwmon, so CPU temperature is reported as
   unavailable; per-core load works.
 
