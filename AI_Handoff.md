@@ -65,7 +65,8 @@ so each catalog refresh clones the channel branch (`main`) and new
 `NaslosCharts` apps appear without a Naslos release. A full 40-character SHA is
 still accepted per source and remains fail-closed (SEC-2026-D6); signature
 verification is still open. The audit guard accepts an empty pin but rejects a
-malformed one.
+malformed one. The `v0.3.5` pack and installer `naslos-v0.3.5` are published;
+the node is still on 0.3.4 until the web upgrade is run.
 
 ## Historical — 0.2.1 clean install (2026-10-31)
 
