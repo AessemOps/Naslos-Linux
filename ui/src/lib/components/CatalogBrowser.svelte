@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import AppIcon from '$lib/components/AppIcon.svelte';
   import AppInstallModal from '$lib/components/AppInstallModal.svelte';
 
   interface CatalogEntry {
@@ -8,6 +9,7 @@
     description: string;
     category: string;
     icon: string;
+    iconUrl: string;
     version: string;
     tags: string[];
     source: string;
@@ -131,7 +133,7 @@
           }}
         >
           <div class="flex items-start gap-4">
-            <div class="text-4xl">{app.icon}</div>
+            <AppIcon icon={app.icon} iconUrl={app.iconUrl} alt={app.displayName} />
             <div class="flex-1 min-w-0">
               <h3 class="font-bold text-lg truncate">{app.displayName}</h3>
               <p class="text-sm text-gray-400 line-clamp-2 mb-2">{app.description}</p>
