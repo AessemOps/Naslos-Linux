@@ -1,6 +1,7 @@
 <script lang="ts">
   import { modal } from '$lib/actions/modal';
   import { onMount, createEventDispatcher } from 'svelte';
+  import AppIcon from './AppIcon.svelte';
   import SchemaForm from './SchemaForm.svelte';
   import ExposureForm from './ExposureForm.svelte';
   import { trackAppJob } from '$lib/stores/appJobs';
@@ -20,6 +21,7 @@
     displayName: string;
     description: string;
     icon: string;
+    iconUrl: string;
     version: string;
     chart: string;
     source: string;
@@ -156,7 +158,7 @@
       <div class="p-12 text-center text-gray-400">Loading app...</div>
     {:else if app}
       <div class="p-6 border-b border-naslos-border flex items-center gap-4">
-        <div class="text-4xl">{app.icon}</div>
+        <AppIcon icon={app.icon} iconUrl={app.iconUrl} alt={app.displayName} />
         <div class="flex-1">
           <h2 class="text-xl font-bold">{app.displayName}</h2>
           <p class="text-sm text-gray-400">{app.description}</p>

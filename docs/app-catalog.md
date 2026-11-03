@@ -30,7 +30,7 @@ name: jellyfin                 # required, must equal the folder name (DNS-1123)
 displayName: Jellyfin
 description: Free media system
 category: media
-icon: "📺"
+icon: "📺"                    # short text fallback shown when the chart has no icon
 website: https://jellyfin.org
 version: 10.9.0                # informational; Chart.yaml's version wins
 tags: [media, streaming]
@@ -55,6 +55,14 @@ exposure:                      # defaults shown in the install UI
 # (e.g. gluetun in the Prowlarr/qBittorrent charts).
 privileged: false
 ```
+
+The API also reads the chart's `Chart.yaml` metadata: its `version` overrides
+the manifest `version`, and its standard Helm `icon` URL is exposed as
+`iconUrl` on `/api/catalog` and `/api/catalog/<name>`. The catalog grid and the
+install dialog render that image when it is an absolute `https` URL and fall
+back to the manifest `icon` text (`📦` if neither is set). The chart's
+`security-headers` middleware allows `https:` in `img-src` for these images;
+all other content sources stay locked to the appliance origin.
 
 ## Repositories (sources)
 

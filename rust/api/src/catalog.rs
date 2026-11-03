@@ -23,6 +23,8 @@ pub struct App {
     pub description: String,
     pub category: String,
     pub icon: String,
+    #[serde(default, rename = "iconUrl")]
+    pub icon_url: String,
     pub version: String,
     pub chart: String,
     pub repository: String,
@@ -84,6 +86,8 @@ pub struct CatalogEntry {
     pub description: String,
     pub category: String,
     pub icon: String,
+    #[serde(default, rename = "iconUrl")]
+    pub icon_url: String,
     pub version: String,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -194,6 +198,7 @@ impl Catalog {
                 description: app.description.clone(),
                 category: app.category.clone(),
                 icon: app.icon.clone(),
+                icon_url: app.icon_url.clone(),
                 version: app.version.clone(),
                 tags: app.tags.clone(),
                 source: app.source.clone(),
@@ -308,23 +313,29 @@ fn load_app(ref_: &SourceRef, folder: &str) -> Result<App, String> {
         schema,
         ..Default::default()
     };
-    if let Some(v) = read_chart_version(&Path::new(&ref_.dir).join("apps").join(folder)) {
-        app.version = v;
+    if let Some(meta) = read_chart_meta(&Path::new(&ref_.dir).join("apps").join(folder)) {
+        if !meta.version.is_empty() {
+            app.version = meta.version;
+        }
+        if !meta.icon.is_empty() {
+            app.icon_url = meta.icon;
+        }
     }
     app.ports = service_ports(&app.services);
     Ok(app)
 }
 
-fn read_chart_version(dir: &Path) -> Option<String> {
+fn read_chart_meta(dir: &Path) -> Option<ChartMeta> {
     let data = std::fs::read(dir.join(CHART_FILE)).ok()?;
-    #[derive(Deserialize)]
-    struct Meta {
-        #[serde(default)]
-        version: String,
-    }
-    serde_yaml::from_slice::<Meta>(&data)
-        .ok()
-        .map(|m| m.version)
+    serde_yaml::from_slice::<ChartMeta>(&data).ok()
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ChartMeta {
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    icon: String,
 }
 
 fn validate_manifest(m: &Manifest, folder: &str) -> Result<(), String> {
@@ -478,6 +489,30 @@ mod tests {
         assert_eq!(app.version, "1.2.3", "Chart.yaml version wins");
         assert_eq!(app.ports, vec![80]);
         assert_eq!(app.services[0].scheme, "http");
+    }
+
+    #[test]
+    fn chart_icon_is_exposed_for_the_card() {
+        let dir = tempfile::tempdir().unwrap();
+        write_app(
+            dir.path(),
+            "nginx",
+            "name: nginx\nicon: \"NG\"\n",
+            "apiVersion: v2\nname: nginx\nversion: 1.2.3\nicon: https://example.test/nginx.png\n",
+        );
+        let c = Catalog::load(&[ref_(
+            "official",
+            "Prod",
+            &dir.path().display().to_string(),
+            true,
+        )]);
+        let app = c.get("nginx").unwrap();
+        assert_eq!(
+            app.icon, "NG",
+            "the manifest text icon is kept as a fallback"
+        );
+        assert_eq!(app.icon_url, "https://example.test/nginx.png");
+        assert_eq!(c.list()[0].icon_url, "https://example.test/nginx.png");
     }
 
     #[test]

@@ -78,8 +78,8 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/catalog` | List catalog entries (summary incl. `source`, `channel`, `channels`) |
-| GET | `/api/catalog/{name}` | Full entry incl. JSON Schema, `services`, `exposure`, `chartPath` |
+| GET | `/api/catalog` | List catalog entries (summary incl. `source`, `channel`, `channels`, `iconUrl`) |
+| GET | `/api/catalog/{name}` | Full entry incl. JSON Schema, `services`, `exposure`, `chartPath`, `iconUrl` |
 | GET | `/api/apps` | Installed-app records with live status and URL |
 | POST | `/api/apps` | Enqueue an install job: `{name, values, exposure?, baseDomain?, confirmed:true, privilegedConfirmed?:true}`. `confirmed` is always required; an app whose catalog entry declares `privileged: true` additionally requires `privilegedConfirmed:true` (SEC-2026-D8). Values are merged with the catalog defaults and validated against its JSON schema; a violation is a 400 (SEC-2026-D7). `datasets` is a list of registered dataset names; with per-app isolation enabled each new app gets a reserved namespace and a claim per dataset (SEC-2026-D3) → `202 {jobId, state}`. The runner re-checks `privilegedConfirmed` against the catalog it resolves at job time. |
 | GET | `/api/apps/{name}` | Record + release status |
