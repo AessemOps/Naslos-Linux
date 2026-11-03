@@ -68,6 +68,18 @@ verification is still open. The audit guard accepts an empty pin but rejects a
 malformed one. The `v0.3.5` pack and installer `naslos-v0.3.5` are published;
 the node is still on 0.3.4 until the web upgrade is run.
 
+## Release 0.3.6 (2026-11-03) — catalog chart icons
+
+`v0.3.6` (PR #118) surfaces the standard Helm `Chart.yaml` `icon` URL that
+`NaslosCharts` now ships on every app. The API reads the chart metadata and
+returns `iconUrl` on `/api/catalog` and `/api/catalog/{name}`; the catalog grid
+and install dialog render it as an image and fall back to the `naslos-app.yaml`
+text icon when the URL is missing or fails to load. CSP `img-src` allows
+`https:` for these remote images; every other content source stays same-origin.
+The `v0.3.6` pack and installer `naslos-v0.3.6` are published; the node is
+still on 0.3.4 until the web upgrade is run. Plan:
+`.kilo/plans/1793643558691-catalog-chart-icons.md`.
+
 ## Historical — 0.2.1 clean install (2026-10-31)
 
 `192.168.1.117` was reset to maintenance and provisioned end to end by the
