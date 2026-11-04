@@ -14,11 +14,14 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 ## Current instance (2026-11-04) — 0.3.6
 
 - Node `talos-4wf-d3g`, Talos v1.14.1 / k8s v1.37.0, **control-plane Ready**.
+- Helm release `naslos` (chart `naslos-0.3.6`, appVersion 0.3.6, revision 7,
+  deployed 2026-11-04 21:49 UTC). All images are digest-pinned from the 0.3.6
+  pack: API `13990248…`, agent `963cd0b7…`, UI `caa6acfc…`, OpenLDAP `d3ed65a0…`,
+  Samba `68f6b5e1…`, NFS `e5888838…`, terminal `3ae72187…`.
 - `/api/system/version` reports chart `0.3.6`, naslos `0.3.6`, profile
-  `installer` (Talos v1.14.1, k8s v1.37.0). The local `bootstrap/vm/kubeconfig`
-  and `talosconfig` no longer authenticate against the node, so `kubectl`/helm
-  revision and image digests cannot be read from this workstation; query the
-  API through an authenticated session instead.
+  `installer` (Talos v1.14.1, k8s v1.37.0). The recovery bundle from
+  `naslos-recovery-naslos.local-20261101T224411Z.zip` is imported into
+  `bootstrap/vm/`, so `kubectl`/`talosctl` work again.
 - Originally installed from **Naslos Installer v0.3.1**; upgraded through the web
   UI to 0.3.6. The update check reports `current: 0.3.6`, `available: null`,
   `no newer release`.
