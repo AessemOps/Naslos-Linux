@@ -17,7 +17,9 @@ test('dashboard shows live node metrics', async ({ page }) => {
 
   // --- UI: stat cards show the collected values ---
   const cpuCard = page.locator('.card').filter({ hasText: 'CPU Usage' });
-  await expect(cpuCard.getByText(/cores$/)).not.toHaveText('0 cores');
+  // The card now renders "<cores> cores · <temperature>", so match the cores
+  // phrase anywhere in the line and compare it against the API snapshot.
+  await expect(cpuCard.getByText(/cores/)).toContainText(`${metrics.cpu.cores} cores`);
 
   const memCard = page.locator('.card').filter({ hasText: 'Memory' });
   await expect(memCard).not.toContainText('0 B / 0 B');
