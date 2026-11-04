@@ -11,24 +11,25 @@ in `docs/spec.md`.
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## Current instance (2026-11-02) — 0.3.4
+## Current instance (2026-11-04) — 0.3.6
 
 - Node `talos-4wf-d3g`, Talos v1.14.1 / k8s v1.37.0, **control-plane Ready**.
-- Helm release `naslos` (chart `naslos-0.3.4`, appVersion 0.3.4, revision 5).
-  All images are digest-pinned from the 0.3.4 pack: API `8b4d5b06…`, agent
-  `08133d5e…`, UI `de93d3dc…`, OpenLDAP `4fdacf40…`, Samba `2d9854ed…`, NFS
-  `1f66e2ef…`, terminal `bdaf9860…`.
+- `/api/system/version` reports chart `0.3.6`, naslos `0.3.6`, profile
+  `installer` (Talos v1.14.1, k8s v1.37.0). The local `bootstrap/vm/kubeconfig`
+  and `talosconfig` no longer authenticate against the node, so `kubectl`/helm
+  revision and image digests cannot be read from this workstation; query the
+  API through an authenticated session instead.
 - Originally installed from **Naslos Installer v0.3.1**; upgraded through the web
-  UI from 0.3.1 to 0.3.4 on 2026-11-02 (operation
-  `1793636217-e843277f`, `phase: succeeded`, etcd snapshot
-  `/var/lib/naslos/backups/etcd-20261102T161659Z.db`). The update check now
-  reports `current: 0.3.4`, `available: null`, `no newer release`.
+  UI to 0.3.6. The update check reports `current: 0.3.6`, `available: null`,
+  `no newer release`.
 - The official catalog source follows `NaslosCharts` `main` (no commit pin), so
-  a catalog refresh picks up new charts. The live API env was updated to remove
-  the old pin and now lists 33 apps. The 0.3.4 pack still carries the old pin;
-  the 0.3.5 pack ships the branch-tracking values.
+  a catalog refresh picks up new charts; the API lists 33 apps.
 - The VM has no CPU thermal zone/hwmon, so CPU temperature is reported as
   unavailable; per-core load works.
+- Live drill 2026-11-04 on 0.3.6: Playwright **55 passed, 3 skipped, 0 failed**
+  (the two backup send/verify tests skip without a peer). The drill caught a
+  stale dashboard locator (`cores$` no longer matched the card now that it also
+  shows the temperature); fixed in `ui/tests/dashboard.spec.ts`.
 
 ## Release 0.3.3 (2026-11-02) — release-pack root fix
 
