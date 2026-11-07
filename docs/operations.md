@@ -58,6 +58,14 @@ polling and shows "node rebooting, reconnecting…" during the Talos step.
 A `make install-vm` deployment is not web-upgradable; the page shows the
 versions and points at `make install-vm`.
 
+### Rebooting the node (not an upgrade)
+
+Settings → **System** → **Reboot node** asks for `reboot` and then runs
+`talosctl reboot` through the API. Shares and apps are offline until the node
+returns; the page polls `/api/system/version` and shows "node rebooting,
+reconnecting…". Unlike the upgrade operations this works on `make install-vm`
+nodes too and does not write the operation ConfigMap.
+
 ### From the CLI (bootstrap or no UI access)
 
 Run the installer against the existing state with `--resume`:

@@ -112,7 +112,8 @@
   // A disk with a filesystem signature must be confirmed individually; a
   // `zfs_member` signature is never overridable (it may be a recoverable pool).
   function isZfsMember(disk: Disk) {
-    return (disk.signatures || []).includes('zfs_member');
+    const sigs = disk.signatures || [];
+    return sigs.includes('zfs') || sigs.includes('zfs_member');
   }
 
   function needsWipeConfirm(disk: Disk) {

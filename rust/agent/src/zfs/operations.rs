@@ -91,10 +91,17 @@ impl ZfsClient {
         Ok(pools)
     }
 
-    /// Member devices of a pool, parsed from `zpool status`.
+    /// Member devices of a pool, parsed from `zpool status -L`.
+    ///
+    /// `-L` prints the kernel device name (`sdc2`) rather than the stored
+    /// partuuid, so a pool imported by partuuid still yields usable `/dev/…`
+    /// paths instead of bare GUIDs (which the parser below discards).
     pub async fn pool_disks(&self, name: &str) -> ZfsResult<Vec<String>> {
         validate_pool_name(name)?;
-        let out = match self.host_exec(ZPOOL_BIN, &args2("status", name)).await {
+        let out = match self
+            .host_exec(ZPOOL_BIN, &args(&["status", "-L", name]))
+            .await
+        {
             Ok(out) => out,
             Err(e) => return Err(ZfsError::Other(e.message)),
         };
@@ -322,6 +329,11 @@ impl ZfsClient {
     }
 
     /// Destroy a pool.
+    ///
+    /// A pool whose datasets are mounted or held open fails with `pool is
+    /// busy`; the caller must stop its consumers first. Do not force-unmount
+    /// datasets here: that takes shares offline and is not atomic if the
+    /// destroy still fails.
     pub async fn destroy_pool(&self, name: &str, force: bool) -> ZfsResult<()> {
         validate_pool_name(name)?;
         let mut argv = vec!["destroy"];
@@ -333,7 +345,8 @@ impl ZfsClient {
             Ok(_) => Ok(()),
             Err(e) => Err(ZfsError::Other(format!(
                 "destroying pool: {}: {}",
-                e.output, e.message
+                e.output.trim(),
+                e.message
             ))),
         }
     }

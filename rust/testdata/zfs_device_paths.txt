@@ -1,0 +1,9 @@
+# Shared by rust/api/src/server/zfs.rs and rust/agent/src/zfs/devices.rs.
+# Format: input|expected (empty expected means the path is not a partition).
+/dev/sdc2|/dev/sdc
+/dev/nvme0n1p1|/dev/nvme0n1
+/dev/mmcblk0p1|/dev/mmcblk0
+/dev/sdc|
+/dev/zd32|
+/dev/mmcblk0boot0|
+/dev/mmcblk0rpmb|

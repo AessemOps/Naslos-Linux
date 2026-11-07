@@ -124,6 +124,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/system/version", get(system::version))
         .route("/api/system/updates", get(system::updates_get))
         .route("/api/system/updates/check", post(system::updates_check))
+        .route("/api/system/reboot", post(system::reboot_post))
         .route("/api/system/operations", post(system::operation_post))
         .route(
             "/api/system/operations/current",

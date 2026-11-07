@@ -134,12 +134,44 @@ pub fn is_whole_disk(name: &str) -> bool {
         // nvme0n1 is a disk; nvme0n1p1 is a partition.
         return !name.contains('p');
     }
+    if name.starts_with("mmcblk") {
+        // eMMC boot/RPMB areas are block devices but not wipeable disks.
+        if name.contains("boot") || name.contains("rpmb") {
+            return false;
+        }
+        return !name.contains('p');
+    }
     if name.starts_with("sd") || name.starts_with("vd") || name.starts_with("hd") {
         // sda/vdb are disks; sda1/vdb12 are partitions.
         let rest = &name[1..];
         return !rest.chars().any(|c| c.is_ascii_digit());
     }
     false
+}
+
+/// Map a partition device (`/dev/sdc2`, `/dev/nvme0n1p1`) to its whole disk.
+///
+/// Pool membership is recorded for the partition that carries the ZFS label,
+/// but the disk wizard selects whole disks. Without this mapping a pool whose
+/// vdev is `/dev/sdc2` would not reserve `/dev/sdc`, and a create could wipe
+/// the pool's label.
+pub(crate) fn whole_disk_path(dev: &str) -> Option<String> {
+    let name = dev.strip_prefix("/dev/")?;
+    if name.starts_with("nvme") || name.starts_with("mmcblk") {
+        let pos = name.rfind('p')?;
+        let base = &name[..pos];
+        if base.chars().last().is_some_and(|c| c.is_ascii_digit()) {
+            return Some(format!("/dev/{base}"));
+        }
+        return None;
+    }
+    if name.starts_with("sd") || name.starts_with("vd") || name.starts_with("hd") {
+        let base = name.trim_end_matches(|c: char| c.is_ascii_digit());
+        if base.len() < name.len() && base.len() > 2 {
+            return Some(format!("/dev/{base}"));
+        }
+    }
+    None
 }
 
 impl ZfsClient {
@@ -172,6 +204,9 @@ impl ZfsClient {
             if let Some(disks) = pool.disks {
                 for disk in disks {
                     let key = canonical_dev(&self.host_root, &disk).unwrap_or(disk);
+                    if let Some(whole) = whole_disk_path(&key) {
+                        members.entry(whole).or_insert_with(|| pool.name.clone());
+                    }
                     members.insert(key, pool.name.clone());
                 }
             }
@@ -186,6 +221,9 @@ impl ZfsClient {
         for pool in pools {
             for disk in pool.disks.unwrap_or_default() {
                 let key = canonical_dev(&self.host_root, &disk).unwrap_or(disk);
+                if let Some(whole) = whole_disk_path(&key) {
+                    members.entry(whole).or_insert_with(|| pool.name.clone());
+                }
                 members.insert(key, pool.name.clone());
             }
         }
@@ -327,4 +365,52 @@ impl ZfsClient {
 /// `[a, b]` as `Vec<String>`.
 pub(crate) fn args2(a: &str, b: &str) -> Vec<String> {
     vec![a.to_string(), b.to_string()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn whole_disk_mapping_reserves_partition_owners() {
+        assert_eq!(whole_disk_path("/dev/sdc2").as_deref(), Some("/dev/sdc"));
+        assert_eq!(
+            whole_disk_path("/dev/nvme0n1p1").as_deref(),
+            Some("/dev/nvme0n1")
+        );
+        assert_eq!(
+            whole_disk_path("/dev/mmcblk0p1").as_deref(),
+            Some("/dev/mmcblk0")
+        );
+        assert_eq!(whole_disk_path("/dev/mmcblk0boot0"), None);
+        assert_eq!(whole_disk_path("/dev/mmcblk0rpmb"), None);
+        assert_eq!(whole_disk_path("/dev/sdc"), None);
+        assert_eq!(whole_disk_path("/dev/zd32"), None);
+    }
+
+    #[test]
+    fn emmc_boot_and_rpmb_are_not_whole_disks() {
+        assert!(!is_whole_disk("mmcblk0boot0"));
+        assert!(!is_whole_disk("mmcblk0boot1"));
+        assert!(!is_whole_disk("mmcblk0rpmb"));
+        assert!(is_whole_disk("mmcblk0"));
+        assert!(!is_whole_disk("mmcblk0p1"));
+    }
+    #[test]
+    fn whole_disk_paths_match_shared_fixture() {
+        for line in include_str!("../../../testdata/zfs_device_paths.txt").lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (input, expected) = line
+                .split_once('|')
+                .expect("fixture line is input|expected");
+            let want = match expected.trim() {
+                "" => None,
+                value => Some(value.to_string()),
+            };
+            assert_eq!(whole_disk_path(input.trim()), want, "for {input}");
+        }
+    }
 }
