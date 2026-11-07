@@ -125,6 +125,13 @@ impl TalosClient {
         self.run(&["read", clean]).await
     }
 
+    /// Reboot the node through the Talos API. The request is acknowledged
+    /// before the node goes down; callers must tolerate the API connection
+    /// dropping immediately afterwards.
+    pub async fn reboot(&self) -> Result<(), String> {
+        self.run(&["reboot"]).await.map(|_| ())
+    }
+
     /// Collect CPU, memory, disk, network and system info, tolerating per-field
     /// failures exactly like the Go `GetSystemMetrics`.
     pub async fn get_system_metrics(&self) -> SystemMetrics {
@@ -661,7 +668,14 @@ impl TalosClient {
                     .filter(|s| !s.is_empty())
             };
             // `name` is the filesystem type (ext4, xfs, vfat, zfs_member, ...).
-            let Some(name) = text("name") else { continue };
+            // Talos reports a ZFS member as `zfs`; canonicalize it so the API,
+            // UI and docs share one value.
+            let Some(name) = text("name").map(|name| match name {
+                "zfs" => "zfs_member",
+                other => other,
+            }) else {
+                continue;
+            };
             // Prefer the parent disk: `usable` is keyed by whole disk.
             let Some(target) = text("parent_dev_path")
                 .or_else(|| text("parent"))

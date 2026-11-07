@@ -167,7 +167,8 @@
   }
 
   function isZfsMember(device: string): boolean {
-    return diskSignatures(device).includes('zfs_member');
+    const sigs = diskSignatures(device);
+    return sigs.includes('zfs') || sigs.includes('zfs_member');
   }
 
   // A disk with data needs the explicit "Force" acknowledgement before the API

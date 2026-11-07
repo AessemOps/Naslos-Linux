@@ -229,6 +229,7 @@ metrics are unaffected.
 | `/api/system/version` | GET | `{naslosVersion, chartVersion, talosVersion, kubernetesVersion, releaseTalosVersion, releaseKubernetesVersion, schematicId, profile, upgradable, updatesEnabled}` |
 | `/api/system/updates` | GET | Cached check: `{enabled, upgradable, current, checkedAt, source, available, stepping:{allowed,reason}, blocked, error}` |
 | `/api/system/updates/check` | POST | Run a check now; same shape as `GET /updates` |
+| `/api/system/reboot` | POST | `?confirm=reboot` → `202 {status:"rebooting"}`. Plain Talos reboot (works on installer and `make install-vm` nodes). `400` without the confirmation token; `409` while a system operation, app job or Buddy job is active; `503` when the API has no Talos client. The response can be lost when the node goes down; poll `GET /system/version`. |
 | `/api/system/operations` | POST | `{op:"naslos"\|"talos"\|"kubernetes", version?}` → `202 {operationId, job}`. `409` while an operation/app job/Buddy job runs; `412` for the profile, order, stepping or pool-health precondition |
 | `/api/system/operations/current` | GET | `{id, op, from, to, phase, steps[], message, startedAt, finishedAt, result, attempts, log}`; `phase:"idle"` when no operation exists |
 

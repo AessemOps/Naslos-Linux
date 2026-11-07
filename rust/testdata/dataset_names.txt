@@ -1,0 +1,13 @@
+# Shared by the API and agent dataset validators.
+# Format: kind|name|ok (kind is "strict" or "path").
+strict|media|ok
+strict|media/2026|ok
+strict|.system|err
+strict|../x|err
+path|Data/media|ok
+path|Data/.system|ok
+path|Data/.system/configs-ae32c386|ok
+path|Data/../etc|err
+path|Data/..|err
+path|/Data/x|err
+path|Data/x@snap|err
