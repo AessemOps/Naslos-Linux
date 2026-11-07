@@ -25,17 +25,17 @@ RUN touch agent/src/lib.rs agent/src/main.rs api/src/lib.rs api/src/main.rs \
 
 FROM alpine:3.24
 
-# Pinned to the versions the repo runs against (node Talos v1.14.1, K8s v1.37,
+# Pinned to the versions the repo runs against (node Talos v1.14.5, K8s v1.37,
 # Helm v4.3). `git` powers the chart-repository cache; `openssh-client` is for
 # SSH-authenticated sources.
 ARG KUBECTL_VERSION=v1.37.0
 ARG HELM_VERSION=v4.3.0
-ARG TALOSCTL_VERSION=v1.14.1
+ARG TALOSCTL_VERSION=v1.14.5
 # SHA-256 of each downloaded artifact for the versions above (SEC-2026-G1).
 # Bump the version and the digest together; the build fails on a mismatch.
 ARG KUBECTL_SHA256=6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
 ARG HELM_SHA256=86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
-ARG TALOSCTL_SHA256=7233ece94c94296a033a6ddb5efe0baf508a94c71de7e6c7b286500705924208
+ARG TALOSCTL_SHA256=ff432b68986709e6b69c563a08a2ced4232d5196b0dccd6d2e783e9d714d7d7d
 
 RUN apk add --no-cache ca-certificates git openssh-client \
     && wget -q -O /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \

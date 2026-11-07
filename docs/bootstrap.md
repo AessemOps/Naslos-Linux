@@ -43,15 +43,15 @@ make dev-cluster
 
 The validated schematic is
 `4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c`, with
-`siderolabs/zfs` at Talos **v1.14.1** (amd64 only). The boot ISO the desktop
+`siderolabs/zfs` at Talos **v1.14.5** (amd64 only). The boot ISO the desktop
 installer points at is
 
 ```
-https://factory.talos.dev/image/4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c/v1.14.1/metal-amd64.iso
+https://factory.talos.dev/image/4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c/v1.14.5/metal-amd64.iso
 ```
 
 (likewise the installer image
-`factory.talos.dev/installer/<schematic>:v1.14.1`). Both are in the install
+`factory.talos.dev/installer/<schematic>:v1.14.5`). Both are in the install
 pack's `metadata.json`; see [installer-contract.md](installer-contract.md).
 
 ## First boot sequence

@@ -52,7 +52,7 @@ OVH_WEBHOOK_CHART_VERSION="0.9.17"
 OVH_WEBHOOK_CHART="bootstrap/cert-manager/cert-manager-webhook-ovh-${OVH_WEBHOOK_CHART_VERSION}.tgz"
 SCHEMATIC="bootstrap/schematic/naslos.yaml"
 
-TALOS_VERSION="v1.14.1"
+TALOS_VERSION="v1.14.5"
 SCHEMATIC_ID="4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c"
 # Kubernetes the pack pins. The installer generates the machine config with this
 # explicit version (not the machinery default) and the web upgrader targets it;
