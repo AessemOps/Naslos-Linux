@@ -11,28 +11,30 @@ in `docs/spec.md`.
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## Current instance (2026-11-04) — 0.3.6
+## Current instance (2026-11-07) — 0.3.7
 
-- Node `talos-4wf-d3g`, Talos v1.14.1 / k8s v1.37.0, **control-plane Ready**.
-- Helm release `naslos` (chart `naslos-0.3.6`, appVersion 0.3.6, revision 7,
-  deployed 2026-11-04 21:49 UTC). All images are digest-pinned from the 0.3.6
-  pack: API `13990248…`, agent `963cd0b7…`, UI `caa6acfc…`, OpenLDAP `d3ed65a0…`,
-  Samba `68f6b5e1…`, NFS `e5888838…`, terminal `3ae72187…`.
-- `/api/system/version` reports chart `0.3.6`, naslos `0.3.6`, profile
-  `installer` (Talos v1.14.1, k8s v1.37.0). The recovery bundle from
-  `naslos-recovery-naslos.local-20261101T224411Z.zip` is imported into
-  `bootstrap/vm/`, so `kubectl`/`talosctl` work again.
-- Originally installed from **Naslos Installer v0.3.1**; upgraded through the web
-  UI to 0.3.6. The update check reports `current: 0.3.6`, `available: null`,
+- Node `talos-zgr-9yg` at `192.168.1.38`, Talos v1.14.5 / k8s v1.37.0,
+  **control-plane Ready**.
+- Helm release `naslos` (chart `naslos-0.3.7`, appVersion 0.3.7, revision 2,
+  deployed 2026-11-07 09:14 UTC). All images are digest-pinned from the 0.3.7
+  pack: API `c0a67b26…`, agent `659c01e0…`, UI `92e5c7c8…`; OpenLDAP, Samba,
+  NFS and terminal come from the same pack.
+- `/api/system/version` reports chart `0.3.7`, naslos `0.3.7`, profile
+  `installer`, Talos v1.14.5, k8s v1.37.0. The node was reinstalled on
+  2026-11-06 (`talos-zgr-9yg`, `192.168.1.38`); the recovery bundle from
+  `naslos-recovery-naslos.local-20261106T221226Z.zip` is imported into
+  `bootstrap/vm/` and points at `.38`.
+- Upgraded through the web UI to 0.3.7, then Talos v1.14.1 → v1.14.5 with
+  `talosctl upgrade --image factory.talos.dev/installer/4dd8e3a8…f63c:v1.14.5`
+  (the 0.3.7 pack pin); `machine.install.image` is aligned to v1.14.5.
+- The update check reports `current: 0.3.7`, `available: null`,
   `no newer release`.
 - The official catalog source follows `NaslosCharts` `main` (no commit pin), so
   a catalog refresh picks up new charts; the API lists 33 apps.
-- The VM has no CPU thermal zone/hwmon, so CPU temperature is reported as
-  unavailable; per-core load works.
-- Live drill 2026-11-04 on 0.3.6: Playwright **55 passed, 3 skipped, 0 failed**
-  (the two backup send/verify tests skip without a peer). The drill caught a
-  stale dashboard locator (`cores$` no longer matched the card now that it also
-  shows the temperature); fixed in `ui/tests/dashboard.spec.ts`.
+- The VM has no CPU thermal zone/hwmon, so CPU temperature is unavailable;
+  per-core load works.
+- Live check 2026-11-07: `/api/health` OK, `Data` pool ONLINE (10.9T, 6.05T
+  used), API/UI/agent/samba/nfs pods Running. Playwright has not been rerun.
 
 ## Release 0.3.3 (2026-11-02) — release-pack root fix
 
@@ -83,6 +85,22 @@ text icon when the URL is missing or fails to load. CSP `img-src` allows
 The `v0.3.6` pack and installer `naslos-v0.3.6` are published; the node is
 still on 0.3.4 until the web upgrade is run. Plan:
 `.kilo/plans/1793643558691-catalog-chart-icons.md`.
+
+## Release 0.3.7 (2026-11-07) — UI reboot + ZFS safety
+
+`v0.3.7` (PR #120) adds a confirmed **Reboot node** action to Settings → System
+(`POST /api/system/reboot`, blocked while an operation/app/Buddy job runs) and
+hardens ZFS: existing dot-prefixed datasets (TrueNAS `.system`) are manageable,
+`disks:null` no longer breaks the pools page, partition members reserve their
+whole disks, Talos `zfs` signatures and eMMC boot/RPMB devices are handled
+safely. The release pack targets Talos **v1.14.5**; installer `naslos-v0.3.7`
+is published. The live node is upgraded.
+
+Known gap (for the next release): after the Naslos step reaches the release,
+`GET /api/system/updates` returns `available:null`, so the UI's Talos step is
+blocked; the Talos upgrade was applied directly with `talosctl` and
+`machine.install.image` patched. The update checker should synthesize a
+current-release candidate when Talos/Kubernetes are behind.
 
 ## Historical — 0.2.1 clean install (2026-10-31)
 
