@@ -114,11 +114,11 @@ pub async fn reboot_post(
         return unavailable("Talos is not configured for this API");
     };
     match talos.reboot().await {
-        Ok(()) => json(StatusCode::ACCEPTED, serde_json::json!({ "status": "rebooting" })),
-        Err(e) => json(
-            StatusCode::BAD_GATEWAY,
-            serde_json::json!({ "error": e }),
+        Ok(()) => json(
+            StatusCode::ACCEPTED,
+            serde_json::json!({ "status": "rebooting" }),
         ),
+        Err(e) => json(StatusCode::BAD_GATEWAY, serde_json::json!({ "error": e })),
     }
 }
 

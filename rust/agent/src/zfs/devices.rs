@@ -205,9 +205,7 @@ impl ZfsClient {
                 for disk in disks {
                     let key = canonical_dev(&self.host_root, &disk).unwrap_or(disk);
                     if let Some(whole) = whole_disk_path(&key) {
-                        members
-                            .entry(whole)
-                            .or_insert_with(|| pool.name.clone());
+                        members.entry(whole).or_insert_with(|| pool.name.clone());
                     }
                     members.insert(key, pool.name.clone());
                 }
@@ -224,9 +222,7 @@ impl ZfsClient {
             for disk in pool.disks.unwrap_or_default() {
                 let key = canonical_dev(&self.host_root, &disk).unwrap_or(disk);
                 if let Some(whole) = whole_disk_path(&key) {
-                    members
-                        .entry(whole)
-                        .or_insert_with(|| pool.name.clone());
+                    members.entry(whole).or_insert_with(|| pool.name.clone());
                 }
                 members.insert(key, pool.name.clone());
             }
@@ -407,7 +403,9 @@ mod tests {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let (input, expected) = line.split_once('|').expect("fixture line is input|expected");
+            let (input, expected) = line
+                .split_once('|')
+                .expect("fixture line is input|expected");
             let want = match expected.trim() {
                 "" => None,
                 value => Some(value.to_string()),
@@ -415,5 +413,4 @@ mod tests {
             assert_eq!(whole_disk_path(input.trim()), want, "for {input}");
         }
     }
-
 }

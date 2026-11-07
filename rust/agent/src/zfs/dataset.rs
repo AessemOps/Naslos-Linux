@@ -210,9 +210,13 @@ pub fn validate_dataset_path(name: &str) -> ZfsResult<()> {
 /// Validate a path for a *new* dataset: every component after the pool must
 /// pass the strict creation charset.
 pub fn validate_new_dataset_path(name: &str) -> ZfsResult<()> {
-    validate_dataset_path(name)?;
     let parts: Vec<&str> = name.split('/').collect();
-    validate_dataset_name(&parts[1..].join("/"))
+    if parts.len() >= 2 {
+        // Run the strict check first so a new name never gets the looser
+        // "invalid dataset path" message meant for existing `.system` trees.
+        validate_dataset_name(&parts[1..].join("/"))?;
+    }
+    validate_dataset_path(name)
 }
 
 impl ZfsClient {
@@ -519,5 +523,4 @@ mod tests {
         }
         assert!(validate_dataset_name(&"a".repeat(201)).is_err());
     }
-
 }

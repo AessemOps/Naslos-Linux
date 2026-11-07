@@ -793,10 +793,7 @@ mod tests {
         assert!(validate_dataset_name(".system").is_err());
         assert!(validate_dataset_path("Data/../etc").is_err());
         assert!(validate_dataset_path("Data/..").is_err());
-        assert_eq!(
-            whole_disk_path("/dev/sdc2").as_deref(),
-            Some("/dev/sdc")
-        );
+        assert_eq!(whole_disk_path("/dev/sdc2").as_deref(), Some("/dev/sdc"));
         assert_eq!(
             whole_disk_path("/dev/nvme0n1p1").as_deref(),
             Some("/dev/nvme0n1")
@@ -876,7 +873,9 @@ mod tests {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let (input, expected) = line.split_once('|').expect("fixture line is input|expected");
+            let (input, expected) = line
+                .split_once('|')
+                .expect("fixture line is input|expected");
             let want = match expected.trim() {
                 "" => None,
                 value => Some(value.to_string()),
@@ -905,5 +904,4 @@ mod tests {
         }
         assert!(validate_dataset_name(&"a".repeat(201)).is_err());
     }
-
 }

@@ -691,10 +691,9 @@ mod tests {
         .expect("null disks must decode");
         assert!(pool.disks.is_empty());
 
-        let importable: ImportablePool = serde_json::from_str(
-            r#"{"name":"Data","state":"ONLINE","topology":"","disks":null}"#,
-        )
-        .expect("null importable disks must decode");
+        let importable: ImportablePool =
+            serde_json::from_str(r#"{"name":"Data","state":"ONLINE","topology":"","disks":null}"#)
+                .expect("null importable disks must decode");
         assert!(importable.disks.is_empty());
     }
 
