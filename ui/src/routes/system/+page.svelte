@@ -72,7 +72,12 @@
   let confirmOp: Op | null = null;
   let confirmText = '';
   let starting = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined; 
+  let rebootConfirm = false;
+  let rebootText = '';
+  let rebooting = false;
+  let rebootTimer: ReturnType<typeof setTimeout> | undefined;
+  let destroyed = false;
 
   const activePhases = ['pending', 'running', 'rebooting'];
 
@@ -208,6 +213,94 @@
     confirmOp = op;
   }
 
+  function beginReboot() {
+    if (isActive(operation?.phase)) return;
+    rebootText = '';
+    rebootConfirm = true;
+  }
+
+  async function rebootNode() {
+    if (rebootText !== 'reboot') return;
+    rebootConfirm = false;
+    rebooting = true;
+    message = 'Rebooting the node...';
+    messageType = 'info';
+
+    let requested = false;
+    let failure = '';
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await fetch('/api/system/reboot?confirm=reboot', {
+        method: 'POST',
+        signal: controller.signal
+      });
+      const body = await res.json().catch(() => null);
+      if (res.ok) {
+        requested = true;
+      } else if (body && typeof body.error === 'string' && body.error) {
+        failure = body.error;
+      } else if (res.status === 502) {
+        // The proxy lost the API as the node went down; keep polling.
+        requested = true;
+      } else {
+        failure = `HTTP ${res.status}`;
+      }
+    } catch (e) {
+      // Abort or dropped connection: the reboot may be underway.
+      requested = true;
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (destroyed) return;
+    if (!requested) {
+      rebooting = false;
+      message = 'Could not reboot the node: ' + failure;
+      messageType = 'error';
+      return;
+    }
+    waitForReboot();
+  }
+
+  function waitForReboot() {
+    const started = Date.now();
+    let sawDown = false;
+    const poll = async () => {
+      if (destroyed) return;
+      try {
+        const res = await fetch('/api/system/version', { cache: 'no-store' });
+        if (!res.ok) {
+          sawDown = true;
+        } else if (sawDown) {
+          rebooting = false;
+          message = 'Node is back online.';
+          messageType = 'success';
+          await refresh();
+          return;
+        }
+      } catch (e) {
+        // The API is down with the node.
+        sawDown = true;
+      }
+      if (destroyed) return;
+      if (!sawDown && Date.now() - started > 2 * 60 * 1000) {
+        rebooting = false;
+        message = 'Reboot was requested, but the API never went down. Check the node.';
+        messageType = 'error';
+        return;
+      }
+      if (Date.now() - started > 10 * 60 * 1000) {
+        rebooting = false;
+        message = 'The node has not come back yet. Check the node console.';
+        messageType = 'error';
+        return;
+      }
+      rebootTimer = setTimeout(poll, 5000);
+    };
+    rebootTimer = setTimeout(poll, 5000);
+  }
+
   async function start() {
     if (!confirmOp || !updates?.available) return;
     if (confirmText !== updates.available.version) return;
@@ -255,7 +348,9 @@
 
   onMount(refresh);
   onDestroy(() => {
+    destroyed = true;
     if (timer) clearTimeout(timer);
+    if (rebootTimer) clearTimeout(rebootTimer);
   });
 </script>
 
@@ -307,6 +402,30 @@
           run from this page.
         </p>
       {/if}
+    </section>
+
+    <section class="card mb-6">
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <h2 class="text-lg font-bold">Node</h2>
+          <p class="text-sm text-gray-400 mt-1">
+            Reboot the Talos node. Shares and apps go offline until it returns.
+          </p>
+          {#if rebooting}
+            <p class="text-sm text-amber-400 mt-2">node rebooting, reconnecting...</p>
+          {:else if isActive(operation?.phase)}
+            <p class="text-sm text-amber-400 mt-2">an operation is running</p>
+          {/if}
+        </div>
+        <button
+          type="button"
+          class="btn"
+          on:click={beginReboot}
+          disabled={rebooting || isActive(operation?.phase)}
+        >
+          {rebooting ? 'Rebooting...' : 'Reboot node'}
+        </button>
+      </div>
     </section>
 
     <section class="card mb-6">
@@ -432,6 +551,36 @@
     {/if}
   {/if}
 </div>
+
+{#if rebootConfirm}
+  <div class="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
+    <div class="card w-full max-w-md">
+      <h2 class="text-xl font-bold mb-2">Reboot node</h2>
+      <p class="text-sm text-gray-400 mb-4">
+        Shares and apps go offline while the Talos node reboots. This cannot be undone.
+      </p>
+      <label class="label" for="confirm-reboot">Type reboot to confirm</label>
+      <input
+        id="confirm-reboot"
+        type="text"
+        class="input w-full"
+        bind:value={rebootText}
+        autocomplete="off"
+      />
+      <div class="flex justify-end gap-3 mt-6">
+        <button type="button" class="btn" on:click={() => (rebootConfirm = false)}>Cancel</button>
+        <button
+          type="button"
+          class="btn btn-primary"
+          on:click={rebootNode}
+          disabled={rebootText !== 'reboot' || isActive(operation?.phase)}
+        >
+          Reboot
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#if confirmOp && updates?.available}
   <div class="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">

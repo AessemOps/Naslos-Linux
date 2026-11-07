@@ -11,7 +11,7 @@ use crate::system::{
     ReleaseFacts,
 };
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use serde::Deserialize;
@@ -51,6 +51,75 @@ pub async fn version(State(state): State<Arc<AppState>>) -> Response {
             "updatesEnabled": state.updates.is_some(),
         }),
     )
+}
+
+#[derive(Default, Deserialize)]
+pub struct RebootQuery {
+    #[serde(default)]
+    confirm: String,
+}
+
+/// `POST /api/system/reboot?confirm=reboot`
+///
+/// A plain node reboot, deliberately independent of the release/upgrade
+/// machinery so it also works on a `make install-vm` node. The response may be
+/// lost when the node goes down; the UI polls `/api/system/version` after it.
+pub async fn reboot_post(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<RebootQuery>,
+) -> Response {
+    if query.confirm != "reboot" {
+        return json(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({ "error": "rebooting requires confirm=reboot" }),
+        );
+    }
+    // A reboot is a node-level action: never interrupt an upgrade, an app
+    // install/upgrade or a Buddy transfer, and never race the operation lock.
+    if state.app_jobs.has_running() {
+        return json(
+            StatusCode::CONFLICT,
+            serde_json::json!({ "error": "an app install/upgrade is running" }),
+        );
+    }
+    if state.buddy_jobs.has_running() {
+        return json(
+            StatusCode::CONFLICT,
+            serde_json::json!({ "error": "a Buddy backup job is running" }),
+        );
+    }
+    if let Some(current) = read_status(&state).await {
+        if active_phase(&current.phase) {
+            return json(
+                StatusCode::CONFLICT,
+                serde_json::json!({
+                    "error": "another system operation is running",
+                    "operationId": current.id,
+                }),
+            );
+        }
+    }
+    if let Some(job) = read_job_status(&state).await {
+        if job.get("phase").and_then(serde_json::Value::as_str) == Some("pending") {
+            return json(
+                StatusCode::CONFLICT,
+                serde_json::json!({
+                    "error": "another system operation is starting",
+                    "operationId": job.get("id").and_then(serde_json::Value::as_str).unwrap_or(""),
+                }),
+            );
+        }
+    }
+    let Some(talos) = state.talos.clone() else {
+        return unavailable("Talos is not configured for this API");
+    };
+    match talos.reboot().await {
+        Ok(()) => json(StatusCode::ACCEPTED, serde_json::json!({ "status": "rebooting" })),
+        Err(e) => json(
+            StatusCode::BAD_GATEWAY,
+            serde_json::json!({ "error": e }),
+        ),
+    }
 }
 
 /// `GET /api/system/updates`
