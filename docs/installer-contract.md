@@ -57,7 +57,7 @@ naslos-install-pack-<version>/
 | `naslosVersion` | product/app version (`Chart.yaml` `appVersion`) |
 | `chartVersion` | umbrella chart version |
 | `chartAppVersion` | umbrella chart `appVersion` |
-| `talosVersion` | Talos version the pack targets (e.g. `v1.14.1`) |
+| `talosVersion` | Talos version the pack targets (e.g. `v1.14.5`) |
 | `schematicId` | Image Factory schematic id for the ZFS installer/ISO |
 | `kubernetesVersion` | (additive) the Kubernetes version the installer generates and the web upgrader targets (e.g. `v1.37.0`) |
 | `isoUrls` | `{"metal-amd64": "https://factory.talos.dev/image/<schematicId>/<talosVersion>/metal-amd64.iso"}` |
@@ -234,10 +234,10 @@ still drives the wizard.
 ## 6. ISO
 
 For the pinned schematic (`4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c`)
-and Talos `v1.14.1` (amd64 only):
+and Talos `v1.14.5` (amd64 only):
 
 ```
-https://factory.talos.dev/image/4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c/v1.14.1/metal-amd64.iso
+https://factory.talos.dev/image/4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c/v1.14.5/metal-amd64.iso
 ```
 
 The installer shows this link (and its checksum) and does not download or write
@@ -261,7 +261,7 @@ release:
   profile: installer
   naslosVersion: 0.3.0
   chartVersion: 0.3.0
-  talosVersion: v1.14.1
+  talosVersion: v1.14.5
   schematicId: 4dd8…
   kubernetesVersion: v1.37.0
 ```

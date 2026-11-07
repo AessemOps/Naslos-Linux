@@ -49,7 +49,7 @@ machine:
   # Image Factory installer for the Naslos ZFS schematic, pinned to the Talos
   # version the pack targets (metadata.json.talosVersion).
   install:
-    image: factory.talos.dev/installer/4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c:v1.14.1
+    image: factory.talos.dev/installer/4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c:v1.14.5
     disk: "{{INSTALL_DISK}}"
     wipe: true
     # ZFS ARC is NOT capped here: neither machine.kernel.modules[].parameters nor

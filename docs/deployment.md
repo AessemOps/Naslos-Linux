@@ -372,7 +372,7 @@ REGISTRY=docker.io/myuser REGISTRY_HTTP_SECRET=mypassword IMAGE_TAG=latest \
 
 | Fix | Where | Why |
 | --- | --- | --- |
-| ZFS installer `factory.talos.dev/installer/4dd8e3a8…f63c:v1.14.1` in `machine.install` | `bootstrap/vm/naslos-vm.yaml` | This is the Image Factory image for `bootstrap/schematic/naslos.yaml` (the official `siderolabs/zfs` extension). Pinned to v1.14.1 to match the validated node. Storage for Kubernetes PVCs is local-path; ZFS pools are agent-managed. |
+| ZFS installer `factory.talos.dev/installer/4dd8e3a8…f63c:v1.14.5` in `machine.install` | `bootstrap/vm/naslos-vm.yaml` | This is the Image Factory image for `bootstrap/schematic/naslos.yaml` (the official `siderolabs/zfs` extension). Pinned to v1.14.5 to match the validated node. Storage for Kubernetes PVCs is local-path; ZFS pools are agent-managed. |
 | `taints: $patch: delete` in `KubeNodeConfig` | `bootstrap/vm/naslos-vm.yaml` | Talos v1.14 default-applies `control-plane:NoSchedule` on a single-node cluster; with the taint, every workload without a toleration stays Pending. |
 | No VIP on `eth0` (plain DHCP + reservation) | `bootstrap/vm/naslos-vm.yaml` | VIP == DHCP address fights kubelet node-IP selection (`no suitable node IP found`). |
 | `UnattendedInstallConfig` strip after `gen config` | `Makefile` (`bootstrap-vm`) | v1.14 `gen config` emits a stock UIC doc that is mutually exclusive with `machine.install` — apply fails with "UnattendedInstallConfig config is incompatible with v1alpha1 config". |
