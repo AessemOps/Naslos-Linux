@@ -49,6 +49,9 @@ pub async fn disks_get(State(state): State<Arc<AppState>>) -> Response {
         if let Ok(pools) = client.list_pools().await {
             for p in pools {
                 for d in p.disks {
+                    if let Some(whole) = super::zfs::whole_disk_path(&d) {
+                        in_pool.entry(whole).or_insert_with(|| p.name.clone());
+                    }
                     in_pool.insert(d, p.name.clone());
                 }
             }

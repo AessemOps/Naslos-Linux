@@ -98,6 +98,9 @@ pub fn validate_dataset_name(name: &str) -> Result<(), String> {
     if trimmed != name {
         return Err("dataset name must not start or end with whitespace".into());
     }
+    if trimmed.len() > 200 {
+        return Err("dataset name must be 200 characters or fewer".into());
+    }
     if trimmed.starts_with('/') {
         return Err("dataset name must be relative to its pool, not a path".into());
     }
@@ -115,18 +118,41 @@ pub fn validate_dataset_name(name: &str) -> Result<(), String> {
 }
 
 /// Validate a full dataset path (`pool/name[/…]`).
+///
+/// This is deliberately more permissive than [`validate_dataset_name`]: it is
+/// used for datasets that already exist and must support names ZFS allows but
+/// the UI no longer creates, notably TrueNAS's `.system` tree. It still rejects
+/// absolute paths, snapshots, and empty/`.`/`..` components.
 pub fn validate_dataset_path(name: &str) -> Result<(), String> {
-    if name.is_empty() {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
         return Err("dataset name is required".into());
     }
-    let parts: Vec<&str> = name.split('/').collect();
+    if trimmed != name {
+        return Err("dataset name must not start or end with whitespace".into());
+    }
+    if trimmed.starts_with('/') {
+        return Err("dataset name must be relative to its pool, not an absolute path".into());
+    }
+    if trimmed.contains('@') {
+        return Err("dataset name must not contain '@' (that is a snapshot)".into());
+    }
+    let parts: Vec<&str> = trimmed.split('/').collect();
     if parts.len() < 2 {
-        return Err(format!("dataset {name:?} must be <pool>/<name>"));
+        return Err(format!("dataset {trimmed:?} must be <pool>/<name>"));
     }
     if !is_valid_pool_name(parts[0]) {
         return Err(format!("invalid pool name {:?}", parts[0]));
     }
-    validate_dataset_name(&parts[1..].join("/"))
+    for part in &parts[1..] {
+        if part.is_empty() || *part == "." || *part == ".." {
+            return Err(format!("invalid dataset path {trimmed:?}"));
+        }
+        if part.chars().any(char::is_control) {
+            return Err(format!("invalid dataset path {trimmed:?}"));
+        }
+    }
+    Ok(())
 }
 
 /// Validate a dataset create request's options.
@@ -167,12 +193,34 @@ pub fn validate_dataset_create_options(options: &HashMap<String, String>) -> Res
     Ok(())
 }
 
+/// Map a partition device (`/dev/sdc2`, `/dev/nvme0n1p1`) to its whole disk.
+/// Returns `None` for a whole disk or a non-partition device.
+pub(crate) fn whole_disk_path(dev: &str) -> Option<String> {
+    let name = dev.strip_prefix("/dev/")?;
+    if name.starts_with("nvme") || name.starts_with("mmcblk") {
+        let pos = name.rfind('p')?;
+        let base = &name[..pos];
+        if base.chars().last().is_some_and(|c| c.is_ascii_digit()) {
+            return Some(format!("/dev/{base}"));
+        }
+        return None;
+    }
+    if name.starts_with("sd") || name.starts_with("vd") || name.starts_with("hd") {
+        let base = name.trim_end_matches(|c: char| c.is_ascii_digit());
+        if base.len() < name.len() && base.len() > 2 {
+            return Some(format!("/dev/{base}"));
+        }
+    }
+    None
+}
+
 /// The pure part of the disk check.
 ///
 /// `signatures` maps a whole disk to the filesystem types found on it;
 /// `wipe_confirmed` lists the disks the operator explicitly accepted erasing.
-/// A `zfs_member` signature is never overridable: `wipefs --all` would destroy
-/// the label of a pool that `zpool import` could still recover.
+/// A ZFS signature (`zfs` in Talos's discovered volume names, `zfs_member` on
+/// other tools) is never overridable: `wipefs --all` would destroy the label of
+/// a pool that `zpool import` could still recover.
 pub fn validate_disk_selection(
     disks: &[String],
     usable: &std::collections::HashSet<String>,
@@ -200,7 +248,7 @@ pub fn validate_disk_selection(
             ));
         }
         if let Some(sigs) = signatures.get(dev) {
-            if sigs.iter().any(|s| s == "zfs_member") {
+            if sigs.iter().any(|s| s == "zfs" || s == "zfs_member") {
                 return Err(format!(
                     "disk {dev} holds a ZFS pool label; import or destroy that pool first"
                 ));
@@ -578,6 +626,9 @@ async fn validate_add_disks(
             .map_err(|e| format!("cannot verify disk ownership: {e}"))?;
         for p in pools {
             for d in p.disks {
+                if let Some(whole) = whole_disk_path(&d) {
+                    in_pool.entry(whole).or_insert_with(|| p.name.clone());
+                }
                 in_pool.insert(d, p.name.clone());
             }
         }
@@ -735,6 +786,23 @@ mod tests {
         assert!(validate_dataset_name("../x").is_err());
         assert!(validate_dataset_path("tank/media").is_ok());
         assert!(validate_dataset_path("media").is_err());
+        // Existing ZFS/TrueNAS system datasets are dot-prefixed; manage them
+        // (delete/snapshot/backup) even though new ones cannot be created.
+        assert!(validate_dataset_path("Data/.system").is_ok());
+        assert!(validate_dataset_path("Data/.system/configs-ae32c386").is_ok());
+        assert!(validate_dataset_name(".system").is_err());
+        assert!(validate_dataset_path("Data/../etc").is_err());
+        assert!(validate_dataset_path("Data/..").is_err());
+        assert_eq!(
+            whole_disk_path("/dev/sdc2").as_deref(),
+            Some("/dev/sdc")
+        );
+        assert_eq!(
+            whole_disk_path("/dev/nvme0n1p1").as_deref(),
+            Some("/dev/nvme0n1")
+        );
+        assert_eq!(whole_disk_path("/dev/sdc"), None);
+        assert_eq!(whole_disk_path("/dev/zd32"), None);
     }
 
     #[test]
@@ -786,16 +854,56 @@ mod tests {
         )
         .is_ok());
 
-        // A ZFS label is never overridable.
-        let mut zfs = HashMap::new();
-        zfs.insert("/dev/sdb".to_string(), vec!["zfs_member".to_string()]);
-        assert!(validate_disk_selection(
-            &["/dev/sdb".into()],
-            &usable,
-            &in_pool,
-            &zfs,
-            &["/dev/sdb".to_string()]
-        )
-        .is_err());
+        // A ZFS label is never overridable, whether Talos reports it as
+        // `zfs` (discoveredvolumes) or another tool as `zfs_member`.
+        for sig in ["zfs", "zfs_member"] {
+            let mut zfs = HashMap::new();
+            zfs.insert("/dev/sdb".to_string(), vec![sig.to_string()]);
+            assert!(validate_disk_selection(
+                &["/dev/sdb".into()],
+                &usable,
+                &in_pool,
+                &zfs,
+                &["/dev/sdb".to_string()]
+            )
+            .is_err());
+        }
     }
+    #[test]
+    fn whole_disk_paths_match_shared_fixture() {
+        for line in include_str!("../../../testdata/zfs_device_paths.txt").lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (input, expected) = line.split_once('|').expect("fixture line is input|expected");
+            let want = match expected.trim() {
+                "" => None,
+                value => Some(value.to_string()),
+            };
+            assert_eq!(whole_disk_path(input.trim()), want, "for {input}");
+        }
+    }
+
+    #[test]
+    fn dataset_validation_matches_shared_fixture() {
+        for line in include_str!("../../../testdata/dataset_names.txt").lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut parts = line.split('|');
+            let kind = parts.next().expect("kind");
+            let name = parts.next().expect("name");
+            let expected = parts.next().expect("ok/err") == "ok";
+            let actual = match kind {
+                "strict" => validate_dataset_name(name).is_ok(),
+                "path" => validate_dataset_path(name).is_ok(),
+                other => panic!("unknown fixture kind {other}"),
+            };
+            assert_eq!(actual, expected, "for {kind} {name}");
+        }
+        assert!(validate_dataset_name(&"a".repeat(201)).is_err());
+    }
+
 }

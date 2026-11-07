@@ -163,14 +163,31 @@ pub fn validate_dataset_options(
 
 /// Validate a full dataset path: an existing-looking pool plus one or more
 /// components.
+///
+/// More permissive than [`validate_dataset_name`] because it also covers
+/// datasets that already exist and predate the creation rules (for example
+/// TrueNAS's `.system` tree). It rejects absolute paths, snapshots, and
+/// empty/`.`/`..` components.
 pub fn validate_dataset_path(name: &str) -> ZfsResult<()> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err(ZfsError::Validation("dataset name is required".into()));
     }
+    if trimmed != name {
+        return Err(invalid!(
+            "dataset {:?} must not start or end with whitespace",
+            name
+        ));
+    }
     if trimmed.starts_with('/') {
         return Err(invalid!(
             "dataset {:?} must be relative to its pool, not an absolute path",
+            name
+        ));
+    }
+    if trimmed.contains('@') {
+        return Err(invalid!(
+            "dataset {:?} must not contain '@' (that is a snapshot)",
             name
         ));
     }
@@ -179,6 +196,22 @@ pub fn validate_dataset_path(name: &str) -> ZfsResult<()> {
         return Err(invalid!("dataset {:?} must be <pool>/<name>", name));
     }
     validate_pool_name(parts[0])?;
+    for part in &parts[1..] {
+        if part.is_empty() || *part == "." || *part == ".." {
+            return Err(invalid!("invalid dataset path {:?}", name));
+        }
+        if part.chars().any(char::is_control) {
+            return Err(invalid!("invalid dataset path {:?}", name));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a path for a *new* dataset: every component after the pool must
+/// pass the strict creation charset.
+pub fn validate_new_dataset_path(name: &str) -> ZfsResult<()> {
+    validate_dataset_path(name)?;
+    let parts: Vec<&str> = name.split('/').collect();
     validate_dataset_name(&parts[1..].join("/"))
 }
 
@@ -279,7 +312,7 @@ impl ZfsClient {
         name: &str,
         options: &std::collections::HashMap<String, String>,
     ) -> ZfsResult<()> {
-        validate_dataset_path(name)?;
+        validate_new_dataset_path(name)?;
         validate_dataset_options(options)?;
 
         let mut argv: Vec<String> = vec!["create".into(), "-p".into()];
@@ -444,4 +477,47 @@ pub fn is_busy_error(out: &str) -> bool {
 /// Build `Vec<String>` from `&str` items.
 pub(crate) fn strings(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| s.to_string()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn existing_dataset_path_allows_leading_dot() {
+        assert!(validate_dataset_path("Data/.system").is_ok());
+        assert!(validate_dataset_path("Data/.system/configs-ae32c386").is_ok());
+        assert!(validate_dataset_path("Data/../etc").is_err());
+        assert!(validate_dataset_path("Data/..").is_err());
+        assert!(validate_dataset_path("/Data/x").is_err());
+        assert!(validate_dataset_path("Data/x@snap").is_err());
+    }
+
+    #[test]
+    fn new_dataset_path_keeps_strict_charset() {
+        assert!(validate_new_dataset_path("Data/media").is_ok());
+        assert!(validate_new_dataset_path("Data/.system").is_err());
+        assert!(validate_new_dataset_path("Data/.system/configs").is_err());
+    }
+    #[test]
+    fn dataset_validation_matches_shared_fixture() {
+        for line in include_str!("../../../testdata/dataset_names.txt").lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut parts = line.split('|');
+            let kind = parts.next().expect("kind");
+            let name = parts.next().expect("name");
+            let expected = parts.next().expect("ok/err") == "ok";
+            let actual = match kind {
+                "strict" => validate_dataset_name(name).is_ok(),
+                "path" => validate_dataset_path(name).is_ok(),
+                other => panic!("unknown fixture kind {other}"),
+            };
+            assert_eq!(actual, expected, "for {kind} {name}");
+        }
+        assert!(validate_dataset_name(&"a".repeat(201)).is_err());
+    }
+
 }

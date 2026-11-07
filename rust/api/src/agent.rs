@@ -44,6 +44,16 @@ impl std::fmt::Display for AgentError {
 
 impl std::error::Error for AgentError {}
 
+/// The agent emits `null` for `disks` when a pool's member list cannot be read
+/// (the field mirrors Go's no-`omitempty` slice). `#[serde(default)]` alone
+/// only covers a *missing* field, so `null` would fail the whole response.
+fn deserialize_vec_or_null<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// A ZFS pool (mirrors the agent's `Pool` JSON shape).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Pool {
@@ -54,7 +64,7 @@ pub struct Pool {
     pub health: String,
     #[serde(default)]
     pub topology: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec_or_null")]
     pub disks: Vec<String>,
     #[serde(default)]
     pub mountpoint: String,
@@ -96,7 +106,7 @@ pub struct ImportablePool {
     pub name: String,
     pub state: String,
     pub topology: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec_or_null")]
     pub disks: Vec<String>,
 }
 
@@ -668,6 +678,24 @@ mod tests {
         // The pattern substitutes the namespace.
         let url = DEFAULT_BASE_URL_PATTERN.replace("{}", "naslos");
         assert_eq!(url, "https://naslos-agent.naslos.svc.cluster.local:9090");
+    }
+
+    /// A pool whose member list could not be read carries `disks:null`; that
+    /// must not fail the whole `/api/volumes/zfs` response (it did on a pool
+    /// imported by partuuid, whose `zpool status` shows GUIDs).
+    #[test]
+    fn null_pool_disks_decode_as_empty() {
+        let pool: Pool = serde_json::from_str(
+            r#"{"name":"Data","size":"10.9T","alloc":"6.08T","free":"4.83T","health":"ONLINE","topology":"","disks":null,"mountpoint":""}"#,
+        )
+        .expect("null disks must decode");
+        assert!(pool.disks.is_empty());
+
+        let importable: ImportablePool = serde_json::from_str(
+            r#"{"name":"Data","state":"ONLINE","topology":"","disks":null}"#,
+        )
+        .expect("null importable disks must decode");
+        assert!(importable.disks.is_empty());
     }
 
     // ---- Streaming deadlines (W1) --------------------------------------
