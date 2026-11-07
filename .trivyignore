@@ -10,6 +10,7 @@ CVE-2026-78667 exp:2027-01-31
 CVE-2026-78669 exp:2027-01-31
 CVE-2026-97031 exp:2027-01-31
 CVE-2026-56851 exp:2027-01-31
+CVE-2026-78661 exp:2027-01-31
 # hickory-resolver 0.24 O(n^2) encoding: client-only against two hard-coded
 # public resolvers for DDNS discovery (see rust/deny.toml).
 GHSA-5j98-2g5x-46v6 exp:2027-03-31
