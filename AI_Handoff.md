@@ -27,9 +27,11 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 - Upgraded through the web UI to 0.3.7, then Talos v1.14.1 → v1.14.5 with
   `talosctl upgrade --image factory.talos.dev/installer/4dd8e3a8…f63c:v1.14.5`
   (the 0.3.7 pack pin); `machine.install.image` is aligned to v1.14.5.
-- Storage: `Data` (10.9T, `sdc` + `sdb` cache) is ONLINE; `ssd-storage`
-  (238G, single `nvme0n1`) is a fresh pool created 2026-11-07 after wiping the
-  old unavailable TrueNAS `ssd-storage` labels.
+- Storage: `Data` (10.9T, `sdc` + `sdb` cache) is ONLINE; its datasets are
+  mounted under `/var/mnt/Data` (mountpoints normalized from the TrueNAS
+  `/Data` tree on 2026-11-07). `ssd-storage` (238G, single `nvme0n1`) is a
+  fresh pool created 2026-11-07 after wiping the old unavailable TrueNAS
+  `ssd-storage` labels.
 - The update check reports `current: 0.3.7`, `available: null`,
   `no newer release`.
 - The official catalog source follows `NaslosCharts` `main` (no commit pin), so
