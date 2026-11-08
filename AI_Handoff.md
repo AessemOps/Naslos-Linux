@@ -48,8 +48,9 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
 - **Reinstall SearXNG** (or another app) if needed; the install form's
   "Internet access" toggle defaults on, so the app gets `<app>-internet`.
-- **SMB account-case fix** is on branch `fix/smb-account-case-merge`, not in a
-  release image. The live passdb was remediated manually on 2026-11-08.
+- **SMB account-case fix** merged to `master` in PR #123 (canonical lowercase
+  keys, load-time merge, group-by-name rendering, startup apply); it is not yet
+  in a release image. The live passdb was remediated manually on 2026-11-08.
 - **External access to `shail.ovh`** relies on the OVH router forwarding 80/443
   to `192.168.1.38`. Verify the forward target (the node's LAN IP changed from
   the old `.117`) and use a static DHCP lease; NAT loopback is needed for LAN
