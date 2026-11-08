@@ -19,20 +19,26 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart `0.3.9`, appVersion `0.3.9`,
-  revision 5, deployed 2026-11-08 17:13 UTC (web-UI upgrade from 0.3.7). Images
-  are digest-pinned from the 0.3.9 pack: API `f997d266…`, agent `a07b2ae4…`, UI
-  `ed0b0b5d…`, OpenLDAP `1fdf1114…`, Samba `b9dfed58…`, NFS `1a7ee8ec…`,
-  terminal `f1f56d15…`. `/api/system/version` reports chart/naslos `0.3.9`,
+- **Deployed release:** Helm `naslos` chart `0.3.11`, appVersion `0.3.11`,
+  revision 7, deployed 2026-11-08 19:58 UTC (web-UI upgrade from 0.3.10). Images
+  are digest-pinned from the 0.3.11 pack: API `eee29073…`, agent `90f1ccaa…`, UI
+  `61834558…`, OpenLDAP `48715059…`, Samba `a0e6065b…`, NFS `793fdc1a…`,
+  terminal `9f259038…`. `/api/system/version` reports chart/naslos `0.3.11`,
   profile `installer`, Talos v1.14.5, k8s v1.37.0.
-- **Latest release:** `v0.3.10` (2026-11-08) and installer `naslos-v0.3.10`
-  are published; the node is on `0.3.9` until the operator upgrades from
-  Settings → System. `v0.3.9` was the previous release, `v0.3.8` was superseded.
+- **Latest release:** `v0.3.11` (2026-11-08) and installer `naslos-v0.3.11`
+  are published; the node is on `0.3.11`. `v0.3.10` and `v0.3.9` were the
+  previous releases, `v0.3.8` was superseded.
 - **Release notes since 0.3.7:**
-  - `0.3.10` (published) — public Traefik ingress
+  - `0.3.11` (deployed) — multiple datasets per app (install and reconfigure),
+    every attached dataset mounted at `/datasets/<name>` with a one-time
+    `datasetsLayout: v2` migration, PVC quota 12, and the 12 dataset catalog
+    charts bumped to `0.1.2`. The node had no dataset-carrying apps, so the
+    migration had nothing to rewrite. Plan:
+    `.kilo/plans/2026-11-08-multiple-app-datasets.md`.
+  - `0.3.10` — public Traefik ingress
     (`networkPolicy.publicIngressCIDR`, needed for internet-facing app domains)
     and the SMB account-case fix.
-  - `0.3.9` (deployed) — per-app Internet access (default on) with a per-app
+  - `0.3.9` — per-app Internet access (default on) with a per-app
     `<app>-internet` NetworkPolicy; opt-out is enforced for isolated baseline
     apps. Plan: `.kilo/plans/2026-11-08-app-internet-access.md`.
   - `0.3.8` (superseded) — pool-backed app storage, `zd*` disk filtering, agent
@@ -47,21 +53,21 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   timeouts; `searxng-internet` policy applied). The `shail.ovh` domain (OVH,
   production, `sso: true`) and the `naslos-shail-ovh-tls` wildcard secret are
   present.
-- **Update check:** current `0.3.9`; `v0.3.10` is available.
+- **Update check:** current `0.3.11`; no newer release is available.
 
 ### Open items
 
-- **Upgrade to 0.3.10** from Settings → System. It applies the SMB
-  account-case fix and the declarative public Traefik ingress; no Talos or
-  Kubernetes step is needed.
-- **SMB account-case fix** is in `v0.3.10` (merged in PR #123). The live passdb
-  was remediated manually on 2026-11-08; the release fix lands on upgrade.
+- **Multi-dataset follow-up:** the node has no app with datasets, so there is
+  no migrated record to verify. The first install/reconfigure that attaches
+  datasets exercises the new `/datasets/<name>` path; run the two-dataset live
+  drill (install, check both mounts, remove one, verify claim/attachment cleanup)
+  when an app is available.
+- **SMB account-case fix** is deployed (`v0.3.10`, PR #123); the live passdb
+  was remediated manually on 2026-11-08.
 - **External ingress:** the OVH router forwards 80/443 to `192.168.1.38`
-  (verified by packet capture: public SYNs arrive). Public access was blocked
-  by `naslos-traefik-ingress` allowing only `192.168.1.0/24`; the live policy
-  is patched to allow `0.0.0.0/0` and `https://search.shail.ovh/` is reachable
-  externally. The durable fix (`networkPolicy.publicIngressCIDR: 0.0.0.0/0`)
-  is in `v0.3.10`; the live patch holds until the upgrade.
+  (verified by packet capture: public SYNs arrive). The durable fix
+  (`networkPolicy.publicIngressCIDR: 0.0.0.0/0`) is deployed in `v0.3.10`;
+  `https://search.shail.ovh/` is reachable externally.
 - **Playwright** has not been rerun since the bare-metal switch.
 
 ## How to operate
