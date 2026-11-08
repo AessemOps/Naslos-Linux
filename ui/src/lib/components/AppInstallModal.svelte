@@ -49,13 +49,17 @@
   let confirmed = false;
   let unsafeConfirmed = false;
   let privilegedConfirmed = false;
-  let managedDatasets: { name: string; hostPath: string; shared: boolean }[] = [];
-  let selectedDataset = '';
+  let managedDatasets: { name: string; hostPath: string; shared: boolean; attachedTo?: string[] }[] = [];
+  let selectedDatasets: string[] = [];
   let storagePools: string[] = [];
   let selectedPool = '';
   let activeStep: 'config' | 'exposure' | 'review' | 'confirm' = 'config';
 
-  $: selectedDatasetInfo = managedDatasets.find((d) => d.name === selectedDataset);
+  function datasetBlocked(dataset: { name: string; shared: boolean; attachedTo?: string[] }): boolean {
+    return !dataset.shared && (dataset.attachedTo?.length ?? 0) > 0 && !(dataset.attachedTo ?? []).includes(appName);
+  }
+
+  $: sharedSelected = managedDatasets.filter((d) => d.shared && selectedDatasets.includes(d.name));
 
   const dispatch = createEventDispatcher();
 
@@ -131,7 +135,7 @@
           baseDomain,
           confirmed: true,
           privilegedConfirmed,
-          datasets: selectedDataset ? [selectedDataset] : [],
+          datasets: selectedDatasets,
           pool: selectedPool
         })
       });
@@ -189,21 +193,42 @@
         {#if activeStep === 'config'}
           <SchemaForm {app} bind:values />
           <div class="mt-4">
-            <label class="label" for="install-dataset">Dataset</label>
-            <select id="install-dataset" class="input w-full" bind:value={selectedDataset}>
-              <option value="">No dataset</option>
-              {#each managedDatasets as dataset (dataset.name)}
-                <option value={dataset.name}>{dataset.name} — {dataset.hostPath} ({dataset.shared ? 'shared' : 'private'})</option>
-              {/each}
-            </select>
-            <p class="text-xs text-gray-500 mt-1">
-              Registered in Datasets. A private dataset is attached to this app only; a shared dataset can be
-              attached to several apps.
-            </p>
-            {#if selectedDatasetInfo?.shared}
-              <p role="alert" class="text-xs text-amber-300 mt-1">
-                This dataset is shared: every app attached to it can read and modify its data.
+            <span class="label">Datasets</span>
+            {#if managedDatasets.length === 0}
+              <p class="text-xs text-gray-500">
+                No datasets are registered yet. Register one under Datasets to attach it to this app.
               </p>
+            {:else}
+              <div class="space-y-2">
+                {#each managedDatasets as dataset (dataset.name)}
+                  <label class="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      class="mt-1"
+                      value={dataset.name}
+                      bind:group={selectedDatasets}
+                      disabled={datasetBlocked(dataset)}
+                    />
+                    <span class="text-sm">
+                      <span class="font-mono">{dataset.name}</span> — {dataset.hostPath}
+                      ({dataset.shared ? 'shared' : 'private'})
+                      {#if datasetBlocked(dataset)}
+                        <span class="text-amber-300">attached to {dataset.attachedTo?.join(', ')}</span>
+                      {/if}
+                    </span>
+                  </label>
+                {/each}
+              </div>
+              <p class="text-xs text-gray-500 mt-1">
+                Each selected dataset is mounted at <span class="font-mono">/datasets/&lt;name&gt;</span>. A private
+                dataset is attached to this app only; a shared dataset can be attached to several apps.
+              </p>
+              {#each sharedSelected as dataset (dataset.name)}
+                <p role="alert" class="text-xs text-amber-300 mt-1">
+                  Dataset <span class="font-mono">{dataset.name}</span> is shared: every app attached to it can read
+                  and modify its data.
+                </p>
+              {/each}
             {/if}
           </div>
           <div class="mt-4">
@@ -227,7 +252,7 @@
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Source</span><span class="font-medium text-sm">{app.source} / {app.channel}</span></div>
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Chart</span><span class="font-medium text-sm">{app.chart}</span></div>
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Version</span><span class="font-medium">{app.version}</span></div>
-            <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Dataset</span><span class="font-medium text-sm">{selectedDataset ? `${selectedDataset} (${selectedDatasetInfo?.shared ? 'shared' : 'private'})` : 'none'}</span></div>
+            <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Datasets</span><span class="font-medium text-sm text-right">{selectedDatasets.length ? selectedDatasets.map((name) => `${name} → /datasets/${name}`).join(', ') : 'none'}</span></div>
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Storage pool</span><span class="font-medium text-sm">{selectedPool || 'default (local-path)'}</span></div>
             <div class="flex justify-between py-2 border-b border-naslos-border">
               <span class="text-gray-400">Exposure</span>

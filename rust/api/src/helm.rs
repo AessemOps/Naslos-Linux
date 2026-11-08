@@ -157,6 +157,8 @@ impl Client {
             "--wait".into(),
             "--timeout".into(),
             WAIT_TIMEOUT.into(),
+            // Remove a failed install instead of leaving a partial release.
+            "--atomic".into(),
         ];
         full.append(&mut args);
         self.run(&full).await?;
@@ -182,6 +184,9 @@ impl Client {
             "--timeout".into(),
             WAIT_TIMEOUT.into(),
             "--reset-values".into(),
+            // Roll back to the previous revision on a failed wait so the
+            // caller can safely clean up only the claims it just created.
+            "--atomic".into(),
         ];
         full.append(&mut args);
         self.run(&full).await?;
