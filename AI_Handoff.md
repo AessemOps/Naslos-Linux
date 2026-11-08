@@ -11,7 +11,7 @@ in `docs/spec.md`.
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## Current instance (2026-11-07) — 0.3.7
+## Current instance (2026-11-08) — 0.3.7 (0.3.8 released)
 
 - Node `talos-zgr-9yg` at `192.168.1.38`, Talos v1.14.5 / k8s v1.37.0,
   **control-plane Ready**.
@@ -37,8 +37,8 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   local-path provisioner/StorageClass. A live drill installed `actual-budget`
   into `ssd-storage` (PV under `/var/mnt/ssd-storage/apps`), then removed it;
   the provisioner `naslos-pool-ssd-storage-119d1720` and its StorageClass
-  remain. This is a live API/UI hotfix plus manually applied RBAC; it is **not**
-  in the v0.3.7 release and needs the next release to become durable.
+  remain. The feature is included in **v0.3.8** (PR #121); the operator's
+  web-UI update replaces the live API/UI hotfixes with the release images.
 - Ownership was normalized on 2026-11-07: all `Data` datasets (including the
   `canmount=noauto` `Data/ix-apps` tree) are `admin:naslos_users`
   (10001:10000), directories 2770/setgid and files 0660. `ssd-storage` and its
@@ -108,6 +108,18 @@ text icon when the URL is missing or fails to load. CSP `img-src` allows
 The `v0.3.6` pack and installer `naslos-v0.3.6` are published; the node is
 still on 0.3.4 until the web upgrade is run. Plan:
 `.kilo/plans/1793643558691-catalog-chart-icons.md`.
+
+## Release 0.3.8 (2026-11-08) — app storage pools + drill fixes
+
+`v0.3.8` (PR #121) adds pool-backed app persistence: the install dialog's
+**Storage pool** creates a per-pool local-path provisioner/StorageClass and
+puts the chart's `persistence.*` PVCs under `/var/mnt/<pool>/apps`. It also
+hides `zd*`/virtual block devices from the disk inventory, fixes the agent's
+share-folder view (`/var` instead of the stale `/host` bind), and runs the API
+with the `naslos_users` supplemental group. The release pack targets Talos
+v1.14.5; installer `naslos-v0.3.8` is dispatched. The operator updates the
+instance from Settings → System; no Talos or Kubernetes step is needed (both
+are current).
 
 ## Release 0.3.7 (2026-11-07) — UI reboot + ZFS safety
 
