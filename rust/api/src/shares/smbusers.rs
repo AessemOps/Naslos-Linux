@@ -4,6 +4,7 @@
 //! NT hash is captured at password-change time and recorded here; the accounts
 //! render into an `smbpasswd`-format file the agent writes next to smb.conf.
 
+use crate::identity::normalize_uid;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::path::Path;
@@ -52,6 +53,10 @@ pub struct NssGroup {
 pub struct SambaUserStore {
     path: String,
     users: HashMap<String, SambaUser>,
+    /// Whether the persisted mirror was read successfully (an empty path is
+    /// treated as loaded). A missing or corrupt file must not be rendered and
+    /// pushed as "no accounts" over a working node mirror.
+    loaded: bool,
 }
 
 impl SambaUserStore {
@@ -59,6 +64,7 @@ impl SambaUserStore {
         let mut s = Self {
             path: path.to_string(),
             users: HashMap::new(),
+            loaded: false,
         };
         s.load();
         s
@@ -72,6 +78,7 @@ impl SambaUserStore {
 
     fn load(&mut self) {
         if self.path.is_empty() {
+            self.loaded = true;
             return;
         }
         let Ok(data) = std::fs::read(&self.path) else {
@@ -80,9 +87,45 @@ impl SambaUserStore {
         let Ok(list) = serde_json::from_slice::<Vec<SambaUser>>(&data) else {
             return;
         };
-        for u in list {
-            if !u.uid.is_empty() {
-                self.users.insert(u.uid.clone(), u);
+        self.loaded = true;
+        let mut changed = false;
+        for mut u in list {
+            let uid = normalize_uid(&u.uid);
+            if uid.is_empty() {
+                changed = true;
+                continue;
+            }
+            if u.uid != uid {
+                u.uid = uid.clone();
+                changed = true;
+            }
+            // A legacy mirror could hold the same POSIX account under two
+            // casings (the uid typed at creation and the canonical LDAP uid).
+            // Keep the newest password: a stale duplicate with the same
+            // uidNumber makes `pdbedit -i` skip the real hash. Disablement is
+            // not timestamped, so it wins: a duplicate marked disabled must
+            // never be resurrected by the merge.
+            let existing = self.users.get(&uid).cloned();
+            match existing {
+                Some(existing) => {
+                    changed = true;
+                    let mut keep = if u.password_set_at > existing.password_set_at {
+                        u
+                    } else {
+                        existing.clone()
+                    };
+                    keep.uid = uid.clone();
+                    keep.enabled = existing.enabled && keep.enabled;
+                    self.users.insert(uid, keep);
+                }
+                None => {
+                    self.users.insert(uid, u);
+                }
+            }
+        }
+        if changed {
+            if let Err(e) = self.save() {
+                tracing::warn!("could not compact the SMB account mirror: {e}");
             }
         }
     }
@@ -134,16 +177,21 @@ impl SambaUserStore {
     }
 
     pub fn get(&self, uid: &str) -> Option<&SambaUser> {
-        self.users.get(uid)
+        self.users.get(&normalize_uid(uid))
     }
 
     pub fn count(&self) -> usize {
         self.users.len()
     }
 
+    /// Whether the persisted mirror was read successfully.
+    pub fn loaded(&self) -> bool {
+        self.loaded
+    }
+
     /// Record the account's NT hash and POSIX identity.
     pub fn upsert(&mut self, id: &PosixIdentity, nt_hash: &str) -> Result<(), String> {
-        let uid = id.uid.trim().to_string();
+        let uid = normalize_uid(&id.uid);
         if uid.is_empty() {
             return Err("uid is required".to_string());
         }
@@ -194,7 +242,7 @@ impl SambaUserStore {
 
     /// Mirror an LDAP enable/disable into the SMB account.
     pub fn set_enabled(&mut self, uid: &str, enabled: bool) -> Result<(), String> {
-        let Some(u) = self.users.get_mut(uid) else {
+        let Some(u) = self.users.get_mut(&normalize_uid(uid)) else {
             return Ok(());
         };
         u.enabled = enabled;
@@ -203,7 +251,7 @@ impl SambaUserStore {
 
     /// Drop an account.
     pub fn remove(&mut self, uid: &str) -> Result<(), String> {
-        if self.users.remove(uid).is_none() {
+        if self.users.remove(&normalize_uid(uid)).is_none() {
             return Ok(());
         }
         self.save()
@@ -235,12 +283,17 @@ impl SambaUserStore {
     }
 
     /// `/var/lib/extrausers/group` entries (accounts + LDAP groups).
+    ///
+    /// Keyed by group **name**, not gid: the primary-gid entry for
+    /// `naslos_users` (10000) and the LDAP group of the same name used to render
+    /// as two lines with the same name and different gids.
     pub fn render_group(&self, extra_groups: &[NssGroup]) -> String {
         struct Entry {
-            name: String,
+            gid: i32,
             members: std::collections::BTreeSet<String>,
         }
-        let mut groups: std::collections::BTreeMap<i32, Entry> = std::collections::BTreeMap::new();
+        let mut groups: std::collections::BTreeMap<String, Entry> =
+            std::collections::BTreeMap::new();
 
         for u in self.list() {
             if u.uid_number <= 0 {
@@ -257,9 +310,9 @@ impl SambaUserStore {
                 format!("group{gid}")
             };
             groups
-                .entry(gid)
+                .entry(name)
                 .or_insert_with(|| Entry {
-                    name,
+                    gid,
                     members: std::collections::BTreeSet::new(),
                 })
                 .members
@@ -267,32 +320,27 @@ impl SambaUserStore {
         }
 
         for g in extra_groups {
-            if g.name.is_empty() {
+            let name = normalize_uid(&g.name);
+            if name.is_empty() {
                 continue;
             }
-            let gid = if g.gid <= 0 {
-                group_gid(&g.name)
-            } else {
-                g.gid
-            };
-            let entry = groups.entry(gid).or_insert_with(|| Entry {
-                name: g.name.clone(),
+            let gid = if g.gid <= 0 { group_gid(&name) } else { g.gid };
+            let entry = groups.entry(name).or_insert_with(|| Entry {
+                gid,
                 members: std::collections::BTreeSet::new(),
             });
-            if entry.name == format!("group{gid}") {
-                entry.name = g.name.clone();
-            }
             for m in &g.members {
-                if !m.is_empty() {
-                    entry.members.insert(m.clone());
+                let member = normalize_uid(m);
+                if !member.is_empty() {
+                    entry.members.insert(member);
                 }
             }
         }
 
         let mut sb = String::from("# Generated by Naslos - do not edit.\n");
-        for (gid, e) in &groups {
+        for (name, e) in &groups {
             let members: Vec<&str> = e.members.iter().map(|s| s.as_str()).collect();
-            sb.push_str(&format!("{}:x:{}:{}\n", e.name, gid, members.join(",")));
+            sb.push_str(&format!("{}:x:{}:{}\n", name, e.gid, members.join(",")));
         }
         sb
     }
@@ -440,6 +488,158 @@ mod tests {
         let g = group_gid("naslos_admins");
         assert!((20000..28000).contains(&g));
         assert_eq!(g, group_gid("naslos_admins"));
+    }
+
+    #[test]
+    fn load_merges_case_variants_and_keeps_the_newest_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("smbusers.json");
+        let old = SambaUser {
+            uid: "Elisa".into(),
+            uid_number: 10003,
+            gid_number: 10000,
+            gecos: "Elisa".into(),
+            nt_hash: "783A3D4FCDFBAFC2B2AF6FA38792FB99".into(),
+            password_set_at: Some(
+                DateTime::parse_from_rfc3339("2026-11-06T22:57:37Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+            enabled: true,
+        };
+        let new = SambaUser {
+            uid: "elisa".into(),
+            uid_number: 10003,
+            gid_number: 10000,
+            gecos: "elisa".into(),
+            nt_hash: "29401A4C5D1899F6B43359AEB6FAD7BF".into(),
+            password_set_at: Some(
+                DateTime::parse_from_rfc3339("2026-11-08T16:21:13Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+            enabled: true,
+        };
+        std::fs::write(&path, serde_json::to_vec(&vec![old, new.clone()]).unwrap()).unwrap();
+
+        let store = SambaUserStore::new(path.to_str().unwrap());
+        let list = store.list();
+        assert_eq!(list.len(), 1, "{list:?}");
+        assert_eq!(list[0].uid, "elisa");
+        assert_eq!(list[0].nt_hash, new.nt_hash);
+        assert!(store.render_smbpasswd().contains("elisa:10003:"));
+        assert!(!store.render_smbpasswd().contains("Elisa:"));
+
+        // The compacted file is persisted, so a restart cannot resurrect it.
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(!persisted.contains("\"Elisa\""), "{persisted}");
+    }
+
+    #[test]
+    fn load_merge_keeps_a_disabled_duplicate_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("smbusers.json");
+        let disabled_old = SambaUser {
+            uid: "Elisa".into(),
+            uid_number: 10003,
+            gid_number: 10000,
+            gecos: "Elisa".into(),
+            nt_hash: "783A3D4FCDFBAFC2B2AF6FA38792FB99".into(),
+            password_set_at: Some(
+                DateTime::parse_from_rfc3339("2026-11-06T22:57:37Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+            enabled: false,
+        };
+        let enabled_new = SambaUser {
+            uid: "elisa".into(),
+            uid_number: 10003,
+            gid_number: 10000,
+            gecos: "elisa".into(),
+            nt_hash: "29401A4C5D1899F6B43359AEB6FAD7BF".into(),
+            password_set_at: Some(
+                DateTime::parse_from_rfc3339("2026-11-08T16:21:13Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+            enabled: true,
+        };
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&vec![disabled_old, enabled_new.clone()]).unwrap(),
+        )
+        .unwrap();
+
+        let store = SambaUserStore::new(path.to_str().unwrap());
+        let merged = store.get("elisa").unwrap();
+        assert_eq!(merged.nt_hash, enabled_new.nt_hash);
+        assert!(!merged.enabled, "disablement must win the merge");
+        assert!(store.render_smbpasswd().contains("[DU         ]"));
+    }
+
+    #[test]
+    fn load_reports_an_unreadable_mirror() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.json");
+        assert!(!SambaUserStore::new(missing.to_str().unwrap()).loaded());
+
+        let corrupt = dir.path().join("corrupt.json");
+        std::fs::write(&corrupt, "{not json").unwrap();
+        assert!(!SambaUserStore::new(corrupt.to_str().unwrap()).loaded());
+
+        // An empty path is an in-memory test store, not a failed load.
+        assert!(SambaUserStore::new("").loaded());
+    }
+
+    #[test]
+    fn mutators_use_the_canonical_uid() {
+        let mut store = SambaUserStore::new("");
+        store
+            .upsert(
+                &PosixIdentity {
+                    uid: "Elisa".into(),
+                    uid_num: 10003,
+                    gid_num: 10000,
+                    ..Default::default()
+                },
+                "8846F7EAEE8FB117AD06BDD830B7586C",
+            )
+            .unwrap();
+        assert!(store.get("elisa").is_some());
+        assert_eq!(store.list()[0].uid, "elisa");
+        store.set_enabled("ELISA", false).unwrap();
+        assert!(!store.get("Elisa").unwrap().enabled);
+        store.remove("eLiSa").unwrap();
+        assert_eq!(store.count(), 0);
+    }
+
+    #[test]
+    fn ldap_group_merges_with_the_primary_gid_group() {
+        let mut store = SambaUserStore::new("");
+        for uid in ["florentin", "elisa"] {
+            store
+                .upsert(
+                    &PosixIdentity {
+                        uid: uid.into(),
+                        uid_num: 10002,
+                        gid_num: 10000,
+                        ..Default::default()
+                    },
+                    "8846F7EAEE8FB117AD06BDD830B7586C",
+                )
+                .unwrap();
+        }
+        let out = store.render_group(&[NssGroup {
+            name: "naslos_users".into(),
+            gid: crate::shares::group_gid("naslos_users"),
+            members: vec!["elisa".into()],
+        }]);
+        assert_eq!(out.matches("naslos_users:").count(), 1, "{out}");
+        assert!(
+            out.contains("naslos_users:x:10000:elisa,florentin\n"),
+            "{out}"
+        );
     }
 
     #[test]
