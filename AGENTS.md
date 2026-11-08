@@ -46,11 +46,11 @@ helm lint charts/naslos -f charts/naslos/values.yaml -f charts/naslos/values-ins
 # Install pack for the desktop installer (FR-INSTALL; docs/installer-contract.md)
 make install-pack
 
-# Full sweep (go + UI + other checks)
+# Full sweep (Rust + UI + other checks)
 sh scripts/audit.sh
 ```
 
-Playwright e2e runs against the **live VM** at `https://naslos.local` and needs
+Playwright e2e runs against the **live production node** at `https://naslos.local` and needs
 the gitignored `ui/.env.playwright.local` (admin password + TOTP secret). Run the
 local binary, not a bare `npx playwright` (npx can resolve a different global
 Playwright and fail with "did not expect test.describe() to be called here"):
@@ -136,7 +136,7 @@ via `storageState`; a target that does not challenge is an error.
   record it where the next session will read it (handoff/plan).
 - **Every fix must be in a fresh install.** A fix belongs in the declarative
   install path — the `Makefile` (targets/prerequisites), `charts/naslos/`
-  (`values.yaml`, the VM overlay `values-vm.yaml` and the installer overlay
+  (`values.yaml`, the node overlay `values-vm.yaml` and the installer overlay
   `values-installer.yaml`), or
   `scripts/deploy-vm.sh` — and in the images built at install time, never only
   in the live cluster. A change applied with a one-off `kubectl`, a live `helm
@@ -164,12 +164,17 @@ via `storageState`; a target that does not challenge is an error.
   commands, or the install/deploy path updates the README **in the same change**.
 - Third-party attribution lives in [`CREDITS.md`](CREDITS.md).
 
-## Deploying to the VM
+## Deploying to the production node
 
-- **Always bump image tag suffixes.** The registry reuses tags and the chart
-  pulls with `IfNotPresent`, so a retag alone can keep running old code. Build
-  and push with a fresh `IMAGE_TAG` (e.g. `0.1.0-r30`), then set it in
-  `charts/naslos/values-vm.yaml` (or `--set`).
+- The production instance is the bare-metal node `talos-zgr-9yg` at
+  `192.168.1.38` (the old `192.168.1.117` VM is powered off). The
+  `bootstrap/vm/*`, `values-vm.yaml`, `install-vm` and `deploy-vm.sh` names are
+  historical paths for this single node, not a VM; they point at `.38`.
+- **Always bump image tag suffixes.** The private registry reuses tags and the
+  chart pulls with `IfNotPresent`, so a retag alone can keep running old code.
+  Build and push with a fresh `IMAGE_TAG` (e.g. `0.1.0-r30`), then set it in
+  `charts/naslos/values-vm.yaml` (or `--set`). Released packs pull
+  digest-pinned images from GHCR instead.
 - `make install-vm` renders `-f values.yaml -f values-vm.yaml` (it is **not**
   `--reuse-values`) and now also installs its prerequisites first: `crds`,
   `cert-manager`, and `cert-manager-webhook-ovh`.
@@ -182,15 +187,20 @@ via `storageState`; a target that does not challenge is an error.
   `/status`, `/record` and `/refresh` subpaths).
 - Verify after deploy: `kubectl -n naslos rollout status deploy/naslos-api`,
   `curl -sk https://naslos.local/api/health`, and the relevant Playwright spec.
-- Record the new tags and revision in `AI_Handoff.md` → "Deployed right now".
+- Record the new tags and revision in `AI_Handoff.md` → "Production instance".
 
 ## Environment facts
 
-- Node `192.168.1.117`, UI `https://naslos.local` (the only listener; no
-  NodePort), private registry `192.168.1.2:30095`, `TALOSCONFIG=bootstrap/vm/talosconfig`.
+- Production node: bare-metal `talos-zgr-9yg` at `192.168.1.38` (Talos v1.14.5,
+  k8s v1.37.0); the old `192.168.1.117` VM is powered off. UI
+  `https://naslos.local` (the only listener; no NodePort), private registry
+  `192.168.1.2:30095` (local dev builds),
+  `TALOSCONFIG=bootstrap/vm/talosconfig` (historical path, endpoint `.38`).
 - Namespaces: `naslos` (authenticated services), `naslos-privileged`
-  (agent/samba/nfs/terminal), `naslos-apps` (installed apps, PSA baseline),
-  `naslos-apps-priv` (privileged apps), `cert-manager`.
+  (agent/samba/nfs/terminal), the shared app namespaces `naslos-apps` (PSA
+  baseline) and `naslos-apps-priv` (privileged), the per-app pools
+  `naslos-app-1..8` (baseline) and `naslos-app-p1..4` (privileged), and
+  `cert-manager`.
 - Auth is Authelia forwardAuth only (`/authelia`, 2FA for `naslos_admins`); the
   UI signs out by `POST /authelia/api/logout`. There is no unauthenticated
   posture or bypass.
