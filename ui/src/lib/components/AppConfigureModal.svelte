@@ -9,26 +9,48 @@
   let app: { schema: { properties: Record<string, any>; required?: string[] } } | null = null;
   let values: Record<string, any> = {};
   let redactedKeys: string[] = [];
+  let managedDatasets: { name: string; hostPath: string; shared: boolean; attachedTo?: string[] }[] = [];
+  let selectedDatasets: string[] = [];
+  // Legacy records predate per-app isolation and cannot gain datasets without
+  // a reinstall (the API rejects a dataset change for an empty namespace).
+  let legacy = false;
   let loading = true;
   let saving = false;
   let error = '';
 
   const dispatch = createEventDispatcher();
 
+  function datasetBlocked(dataset: { name: string; shared: boolean; attachedTo?: string[] }): boolean {
+    return (
+      !dataset.shared &&
+      (dataset.attachedTo?.length ?? 0) > 0 &&
+      !(dataset.attachedTo ?? []).includes(appName)
+    );
+  }
+
+  $: sharedSelected = managedDatasets.filter((d) => d.shared && selectedDatasets.includes(d.name));
+
   async function load() {
     try {
-      const [catalogRes, installedRes] = await Promise.all([
+      const [catalogRes, installedRes, registryRes] = await Promise.all([
         fetch(`/api/catalog/${encodeURIComponent(appName)}`),
-        fetch(`/api/apps/${encodeURIComponent(appName)}`)
+        fetch(`/api/apps/${encodeURIComponent(appName)}`),
+        fetch('/api/datasets/registry')
       ]);
       if (!catalogRes.ok) {
         throw new Error(`catalog HTTP ${catalogRes.status}`);
       }
       app = await catalogRes.json();
+      if (registryRes.ok) {
+        const registry = await registryRes.json();
+        if (Array.isArray(registry)) managedDatasets = registry;
+      }
       if (installedRes.ok) {
         const installed = await installedRes.json();
         values = { ...(installed.values || {}) };
         redactedKeys = Array.isArray(installed.redactedKeys) ? installed.redactedKeys : [];
+        selectedDatasets = Array.isArray(installed.datasets) ? [...installed.datasets] : [];
+        legacy = !installed.namespace;
       }
     } catch (e) {
       error = 'Failed to load app configuration: ' + e;
@@ -41,10 +63,14 @@
     saving = true;
     error = '';
     try {
+      const body: Record<string, unknown> = { values };
+      // Omitting datasets keeps the stored selection; legacy records must not
+      // be sent a different list (the API rejects it).
+      if (!legacy) body.datasets = selectedDatasets;
       const res = await fetch(`/api/apps/${encodeURIComponent(appName)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ values })
+        body: JSON.stringify(body)
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -76,6 +102,47 @@
         <p class="text-gray-400">Loading configuration...</p>
       {:else if app}
         <SchemaForm {app} {redactedKeys} bind:values />
+        <div class="mt-4">
+          <span class="label">Datasets</span>
+          {#if legacy}
+            <p class="text-xs text-amber-300">
+              This app predates per-app isolation. Reinstall it to attach or change datasets.
+            </p>
+          {:else if managedDatasets.length === 0}
+            <p class="text-xs text-gray-500">No datasets are registered yet.</p>
+          {:else}
+            <div class="space-y-2">
+              {#each managedDatasets as dataset (dataset.name)}
+                <label class="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    class="mt-1"
+                    value={dataset.name}
+                    bind:group={selectedDatasets}
+                    disabled={datasetBlocked(dataset)}
+                  />
+                  <span class="text-sm">
+                    <span class="font-mono">{dataset.name}</span> — {dataset.hostPath}
+                    ({dataset.shared ? 'shared' : 'private'})
+                    {#if datasetBlocked(dataset)}
+                      <span class="text-amber-300">attached to {dataset.attachedTo?.join(', ')}</span>
+                    {/if}
+                  </span>
+                </label>
+              {/each}
+            </div>
+            <p class="text-xs text-gray-500 mt-1">
+              Each selected dataset is mounted at <span class="font-mono">/datasets/&lt;name&gt;</span>. Removing one
+              detaches it after the upgrade succeeds.
+            </p>
+            {#each sharedSelected as dataset (dataset.name)}
+              <p role="alert" class="text-xs text-amber-300 mt-1">
+                Dataset <span class="font-mono">{dataset.name}</span> is shared: every app attached to it can read
+                and modify its data.
+              </p>
+            {/each}
+          {/if}
+        </div>
       {/if}
       {#if error}<div role="alert" class="mt-4 p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
     </div>

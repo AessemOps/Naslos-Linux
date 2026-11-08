@@ -71,16 +71,42 @@ RoleBindings to two ClusterRoles:
 
 The API receives the pool in `APPS_NAMESPACE_POOL` /
 `APPS_PRIVILEGED_NAMESPACE_POOL`, assigns a free namespace to each new install,
-and records it in `apps.json` (`namespace`). For each selected registry dataset
-it creates:
+and records it in `apps.json` (`namespace`). An app may attach any number of
+registry datasets, at install and on reconfigure. For each selected dataset the
+API creates (baseline apps):
 
 - a `PersistentVolume` with `hostPath` = that dataset only and
   `storageClassName: naslos-app-data` (no provisioner);
-- a `PersistentVolumeClaim` in the app namespace bound to it by `volumeName`;
-- Helm values `datasetsClaim` (first claim) and `datasetsClaims` (all claims).
+- a `PersistentVolumeClaim` in the app namespace bound to it by `volumeName`.
 
-Privileged apps receive the specific `hostPath` value instead (their charts
-mount it directly; they are already in a privileged namespace).
+Every attached dataset is exposed to the chart as one entry of the
+platform-owned `datasets` Helm value:
+
+```json
+"datasets": [
+  { "name": "media",     "mountPath": "/datasets/media",     "claim": "naslos-ds-sonarr-media" },
+  { "name": "downloads", "mountPath": "/datasets/downloads", "claim": "naslos-ds-sonarr-downloads" }
+]
+```
+
+Charts mount each entry at `/datasets/<name>`. The legacy `datasetsClaim`
+(first claim), `datasetsClaims` (all claims) and `hostPath` (first privileged
+path) values are still injected so older chart releases keep working, but the
+API strips all three keys from client-supplied values and re-injects them from
+the record, so a client cannot point a chart at an arbitrary claim or path.
+
+Privileged apps receive `hostPath` entries instead of claims (their charts
+mount the dataset directories directly; they are already in a privileged
+namespace).
+
+### Reconcile and rollback
+
+`PUT /api/apps/{name}` accepts `datasets` (omitted = unchanged, `[]` = detach
+all, a list = reconcile). New claims/attachments are created before the Helm
+upgrade and are the only rollback candidates if it fails; removed claims are
+deleted and detached only after the upgrade succeeds. A claim-name collision
+with another app or dataset fails closed (the existing PV/PVC labels must name
+this app and dataset).`
 
 A copy of the TLS Secret is written into the app namespace before the
 IngressRoute, because Traefik only reads a route's Secret from its own
@@ -99,12 +125,28 @@ they are migrated.
 
 ### Catalog compatibility
 
-The claim's root is the selected dataset, not `/var/mnt`. A chart that mounts
-`datasetsClaim` at `/data` therefore sees the dataset at `/data`, so catalog
-values that assumed `/data/<pool>/<dataset>` must use `/data/<subdir>` (or the
-dataset root). The current NaslosCharts values that default to `/var/mnt` must
-be pointed at the selected dataset path. This is a catalog change per app, not
-a platform one; until it lands, an isolated install may need value overrides.
+Charts read the `datasets` value and mount each entry at `/datasets/<name>`;
+the claim's root is the selected dataset, not `/var/mnt`. Every catalog app
+that consumed `datasetsClaim`/`hostPath` is updated in the same change as this
+contract. With no dataset attached, the chart keeps its legacy fallback
+(single `datasetsClaim` mounted at the chart's old path, or `hostPath` for
+privileged apps), so zero-dataset installs are unchanged.
+
+The old static `naslos-datasets` PVC is no longer the dataset contract: an
+in-app path that pointed at `/data/<pool>/<dataset>` now lives at
+`/datasets/<name>` (the dataset root). That is an operator-visible path change;
+data does not move (same `hostPath`).
+
+### Layout migration
+
+Records that already have datasets must be rewritten once from the
+single-claim layout to `/datasets/<name>`. The API does this at startup, after
+the catalog refresh, by upgrading each such record (`datasetsLayout: "v2"` marks
+it done). A chart is only migrated when its templates mention
+`.Values.datasets`; otherwise it is skipped and retried on the next API start.
+Legacy records without a `namespace` (and orphaned records) are never migrated,
+and a dataset change on such a record is rejected with "reinstall the app into
+an isolated namespace".
 
 ## 4. Options
 
@@ -159,9 +201,9 @@ Existing records have no `namespace` and stay in `naslos-apps` on the shared
 PVC. To isolate one:
 
 1. Register the dataset it actually uses (`/datasets`).
-2. Reinstall it with the dataset selected (the UI install flow). The API
-   allocates a per-app namespace and claim; chart values must use the claim
-   root (see the catalog caveat).
+2. Reinstall it with its datasets selected (the UI install flow). The API
+   allocates a per-app namespace and one claim per dataset; the chart mounts
+   them at `/datasets/<name>` (see the catalog caveat).
 3. Verify the app and its route, then uninstall the legacy release (the shared
    PVC is untouched). Repeat for every app.
 4. When no record lacks a namespace, delete the `naslos-datasets` PVC/PV and set

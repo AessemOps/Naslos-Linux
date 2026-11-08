@@ -14,6 +14,7 @@
     description: string;
     url: string;
     orphaned: boolean;
+    datasets?: string[];
     lastError?: string;
     exposure: {
       subdomain: string;
@@ -134,6 +135,9 @@
               <p class="text-sm text-gray-400">{app.exposure?.subdomain || 'cluster-internal only'}</p>
             {/if}
             <p class="text-xs text-gray-500 mt-1">v{app.version} • {app.chart} • {app.namespace}</p>
+            {#if app.datasets?.length}
+              <p class="text-xs text-gray-400 mt-1">datasets: {app.datasets.join(', ')}</p>
+            {/if}
             {#if app.lastError}<p class="text-xs text-amber-400 mt-1">{app.lastError}</p>{/if}
           </div>
           <div class="flex gap-2">

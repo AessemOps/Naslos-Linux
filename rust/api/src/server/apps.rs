@@ -136,6 +136,7 @@ pub async fn apps_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
         &req.base_domain,
         Some(install),
         None,
+        None,
         state.app_manager.clone(),
     ) {
         Ok(job) => accepted(&job),
@@ -167,6 +168,9 @@ pub async fn app_detail_get(
 struct UpgradeBody {
     #[serde(default)]
     values: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Omitted keeps the stored dataset list; `[]` detaches every dataset.
+    #[serde(default)]
+    datasets: Option<Vec<String>>,
 }
 
 pub async fn app_detail_put(
@@ -184,14 +188,18 @@ pub async fn app_detail_put(
     if let Err(e) = manager.get(&name) {
         return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e }));
     }
-    let job =
-        match state
-            .app_jobs
-            .enqueue(JobKind::Upgrade, &name, "", None, req.values, Some(manager))
-        {
-            Ok(job) => job,
-            Err(conflict) => return conflict_response(&conflict),
-        };
+    let job = match state.app_jobs.enqueue(
+        JobKind::Upgrade,
+        &name,
+        "",
+        None,
+        req.values,
+        req.datasets,
+        Some(manager),
+    ) {
+        Ok(job) => job,
+        Err(conflict) => return conflict_response(&conflict),
+    };
     accepted(&job)
 }
 
@@ -205,10 +213,15 @@ pub async fn app_detail_delete(
     if let Err(e) = manager.get(&name) {
         return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e }));
     }
-    let job = match state
-        .app_jobs
-        .enqueue(JobKind::Uninstall, &name, "", None, None, Some(manager))
-    {
+    let job = match state.app_jobs.enqueue(
+        JobKind::Uninstall,
+        &name,
+        "",
+        None,
+        None,
+        None,
+        Some(manager),
+    ) {
         Ok(job) => job,
         Err(conflict) => return conflict_response(&conflict),
     };

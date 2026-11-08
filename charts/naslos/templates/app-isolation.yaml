@@ -228,7 +228,7 @@ spec:
     requests.memory: 4Gi
     limits.cpu: "4"
     limits.memory: 8Gi
-    persistentvolumeclaims: "4"
+    persistentvolumeclaims: {{ $.Values.apps.isolation.pvcQuota | quote }}
 ---
 apiVersion: v1
 kind: LimitRange
@@ -344,7 +344,7 @@ spec:
     requests.memory: 8Gi
     limits.cpu: "8"
     limits.memory: 16Gi
-    persistentvolumeclaims: "4"
+    persistentvolumeclaims: {{ $.Values.apps.isolation.pvcQuota | quote }}
 ---
 apiVersion: v1
 kind: LimitRange

@@ -80,6 +80,9 @@ pub struct AppJob {
     pub app: String,
     pub request: Option<InstallRequest>,
     pub values: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Dataset selection for an upgrade. `None` keeps the record's list and
+    /// `Some(vec![])` detaches every dataset.
+    pub datasets: Option<Vec<String>>,
     pub result: Mutex<Option<View>>,
 }
 
@@ -194,7 +197,7 @@ impl AppJobManager {
     /// Register and start a lifecycle job, refusing a second job for the same
     /// app while one is running. The check and insert happen under one lock, so
     /// two concurrent requests cannot both pass (SEC-2026-D14).
-    #[allow(clippy::result_large_err)]
+    #[allow(clippy::result_large_err, clippy::too_many_arguments)]
     pub fn enqueue(
         self: &Arc<Self>,
         kind: JobKind,
@@ -202,6 +205,7 @@ impl AppJobManager {
         base_domain: &str,
         request: Option<InstallRequest>,
         values: Option<serde_json::Map<String, serde_json::Value>>,
+        datasets: Option<Vec<String>>,
         manager: Option<Arc<crate::apps::Manager>>,
     ) -> Result<JobPublic, JobPublic> {
         let mut inner = self.inner.lock().unwrap();
@@ -229,6 +233,7 @@ impl AppJobManager {
             app: app.to_string(),
             request,
             values,
+            datasets,
             result: Mutex::new(None),
         });
         let snapshot = job.snapshot();
@@ -270,7 +275,12 @@ async fn run_job(
             manager.install(req, progress_ref).await.map(Some)
         }
         JobKind::Upgrade => manager
-            .upgrade(&job.app, job.values.as_ref(), progress_ref)
+            .upgrade(
+                &job.app,
+                job.values.as_ref(),
+                job.datasets.as_deref(),
+                progress_ref,
+            )
             .await
             .map(Some),
         JobKind::Uninstall => manager
@@ -320,6 +330,7 @@ mod tests {
             app: app.into(),
             request: None,
             values: None,
+            datasets: None,
             result: Mutex::new(None),
         });
         manager.add(job.clone());

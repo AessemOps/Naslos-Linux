@@ -47,6 +47,7 @@ async fn main() {
     // clicked Refresh (found in the 0.2.1 clean-install drill).
     if let Some(charts) = state.charts.clone() {
         let catalog = state.catalog.clone();
+        let app_manager = state.app_manager.clone();
         tokio::spawn(async move {
             match charts.refresh_all().await {
                 Ok(()) => tracing::info!("chart catalog refreshed at startup"),
@@ -55,6 +56,15 @@ async fn main() {
             catalog.store(std::sync::Arc::new(naslos_api::state::build_catalog(
                 &charts,
             )));
+            // Rewrite records from the single-claim layout to the
+            // `/datasets/<name>` layout once the new catalog (and its charts)
+            // is visible. Chained here, not spawned separately, so the
+            // migration never resolves the previous catalog snapshot.
+            if let Some(manager) = app_manager {
+                if let Err(e) = manager.migrate_dataset_layout(None).await {
+                    tracing::warn!("dataset layout migration: {e}");
+                }
+            }
         });
     }
 

@@ -116,10 +116,10 @@ app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
 | --- | --- | --- |
 | List catalog | `GET /api/catalog` | Source/channel-tagged summaries |
 | Catalog detail | `GET /api/catalog/{name}` | Full entry incl. `schema`, `services`, `exposure` |
-| Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed, privilegedConfirmed?, datasets?}` | `confirmed` MUST be `true`; a catalog entry with `privileged: true` also requires `privilegedConfirmed: true`, and the UI shows a second, red confirmation (SEC-2026-D8). Defaults are merged and the result is validated against the catalog's JSON schema before Helm runs; a violation is a 400 (SEC-2026-D7). `datasets` selects registered datasets; with `apps.isolation.enabled` the app gets its own namespace and a claim per dataset, and the chart receives `datasetsClaim`/`datasetsClaims` (baseline) or `hostPath` (privileged). Chart loaded from the clone. Enqueues an install job → `202 {jobId, state}` |
+| Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed, privilegedConfirmed?, datasets?}` | `confirmed` MUST be `true`; a catalog entry with `privileged: true` also requires `privilegedConfirmed: true`, and the UI shows a second, red confirmation (SEC-2026-D8). Defaults are merged and the result is validated against the catalog's JSON schema before Helm runs; a violation is a 400 (SEC-2026-D7). `datasets` selects any number of registered datasets; with `apps.isolation.enabled` the app gets its own namespace, a PV/PVC per dataset (baseline) or host paths (privileged), and the chart receives the platform-owned `datasets` value (one `{name, mountPath: "/datasets/<name>", claim|hostPath}` entry each, plus the legacy `datasetsClaim`/`datasetsClaims` or first `hostPath`). Chart loaded from the clone. Enqueues an install job → `202 {jobId, state}` |
 | List installed | `GET /api/apps` | Records + live status, orphan flag, URL |
 | Detail | `GET /api/apps/{name}` | Record + status |
-| Reconfigure | `PUT /api/apps/{name} {values}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}` |
+| Reconfigure | `PUT /api/apps/{name} {values, datasets?}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}`. `datasets` omitted keeps the selection, `[]` detaches all, a list reconciles adds/removes; removed claims are deleted after Helm succeeds |
 | Exposure | `GET`/`PUT /api/apps/{name}/exposure` | Orthogonal toggles + `baseDomain`, re-renders the route (synchronous) |
 | Route targets | `GET /api/apps/{name}/services` | Services the release rendered (discovery fallback / UI picker) |
 | Uninstall | `DELETE /api/apps/{name}` | Enqueues an uninstall job (`helm uninstall` + route delete + record delete) → `202 {jobId, state}` |
@@ -248,11 +248,13 @@ Apps use `local-path-provisioner`, the only provisioner installed; the
 [storage-zfs.md](storage-zfs.md#storage-classes--app-data).
 
 PSA `baseline` (the `naslos-apps` namespace) forbids `hostPath` volumes, but
-Naslos datasets are host directories. The chart therefore publishes them as a
-static RWX `naslos-datasets` PV/PVC (`apps.datasets`, backed by
-`apps.datasets.hostPath`, default `/var/mnt`) that managed apps mount via a
-normal `persistentVolumeClaim` volume. Privileged apps (`naslos-apps-priv`) may
-mount the host path directly and share the same data.
+Naslos datasets are host directories. The API creates one PV/PVC per selected
+registry dataset and the chart mounts every attached dataset at
+`/datasets/<name>` through the platform-injected `datasets` value. Privileged
+apps (`naslos-apps-priv`) receive the dataset host paths instead and mount them
+directly. With no dataset attached, charts keep their legacy single-volume
+fallback: the static RWX `naslos-datasets` PV/PVC (`apps.datasets`) for baseline
+charts, or `hostPath` for privileged charts.
 
 ## Operational notes
 
@@ -274,10 +276,9 @@ mount the host path directly and share the same data.
   cluster-scoped resources. The API creates and reconciles the app route and
   certificate itself. A chart that ships its own `IngressRoute` now fails
   (403) instead of silently becoming same-origin with the UI.
-- Charts can still create Secrets/PVCs and mount the shared `naslos-datasets`
-  PVC; per-app dataset isolation is the remaining open item (D3/F1). The threat
-  model, options and migration plan are in
-  [datasets-isolation.md](datasets-isolation.md).
+- Charts can create their own Secrets/PVCs; the platform mounts the datasets
+  the operator attached to the app at `/datasets/<name>`. The threat model and
+  migration notes are in [datasets-isolation.md](datasets-isolation.md).
 - SSH chart sources require a pinned `known_hosts` (SEC-2026-B1).
 
 ## Install integrity

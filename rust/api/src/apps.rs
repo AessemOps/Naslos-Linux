@@ -14,6 +14,14 @@ use crate::helm;
 
 const RELEASE_NAME_TEMPLATE: &str = "{{ .Release.Name }}";
 
+/// A record whose dataset mounts use the platform-chosen `/datasets/<name>`
+/// layout carries this marker so the startup migration runs once.
+pub const DATASETS_LAYOUT_V2: &str = "v2";
+
+/// The Helm keys the API owns. They are stripped from client-supplied values
+/// and re-injected from the reconciled dataset selection.
+pub const PLATFORM_DATASET_KEYS: [&str; 3] = ["datasets", "datasetsClaim", "datasetsClaims"];
+
 /// Resolve the release-name template in a declared service.
 pub fn render_service_name(name: &str, release: &str) -> String {
     name.trim()
@@ -151,6 +159,14 @@ pub struct Record {
     /// Registry datasets attached to this app (D3/F1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub datasets: Vec<String>,
+    /// Marks a record migrated to the `/datasets/<name>` mount layout. Empty
+    /// for records that predate the layout change or carry no datasets.
+    #[serde(
+        default,
+        rename = "datasetsLayout",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub datasets_layout: String,
     #[serde(rename = "createdAt")]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(rename = "updatedAt")]
@@ -633,18 +649,24 @@ impl Manager {
         // Load the chart defaults so pool-backed installs can override every
         // persistence key, including keys the catalog schema does not expose.
         let chart_values = self.helm.show_values(&chart_dir).await?;
+        // The API owns the dataset Helm values: never let a client point a
+        // chart at an arbitrary claim or host path, and keep schema validation
+        // from seeing platform-managed keys.
+        let mut client_values = req.values.clone().unwrap_or_default();
+        strip_dataset_values(&mut client_values);
         let mut values = merge_values(&chart_values, app.default_values.as_object());
-        values = merge_values(&serde_json::Value::Object(values), req.values.as_ref());
+        values = merge_values(&serde_json::Value::Object(values), Some(&client_values));
         validate_install_values(&app, &values)?;
+        let datasets = normalize_dataset_names(&req.datasets)?;
         let (namespace, _reservation) = self.reserve_namespace(app.privileged)?;
         let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
         // Reject an unenforceable opt-out before creating any storage.
         self.validate_internet(&namespace, &exposure)?;
-        let dataset_values = self
-            .provision_datasets(&req.name, &namespace, app.privileged, &req.datasets)
+        let provision = self
+            .provision_datasets(&req.name, &namespace, app.privileged, &datasets, &[])
             .await?;
-        for (key, value) in dataset_values {
-            values.insert(key, value);
+        for (key, value) in &provision.values {
+            values.insert(key.clone(), value.clone());
         }
         self.provision_pool_storage(&req.pool, &mut values).await?;
 
@@ -663,8 +685,7 @@ impl Manager {
             .await
         {
             // Do not leak a PV/PVC when Helm fails before the record exists.
-            self.delete_claims(&req.name, &namespace, &req.datasets)
-                .await;
+            self.rollback_provision(&req.name, &provision).await;
             return Err(e);
         }
 
@@ -693,7 +714,12 @@ impl Manager {
             exposure,
             base_domain: base_domain.clone(),
             namespace,
-            datasets: req.datasets.clone(),
+            datasets: datasets.clone(),
+            datasets_layout: if datasets.is_empty() {
+                String::new()
+            } else {
+                DATASETS_LAYOUT_V2.to_string()
+            },
             privileged: app.privileged,
             created_at: Some(now),
             updated_at: Some(now),
@@ -704,11 +730,15 @@ impl Manager {
         self.view(&rec.name).await
     }
 
-    /// Upgrade reconciles an installed app against its chart, replacing values.
+    /// Upgrade reconciles an installed app against its chart, replacing values
+    /// and, when `datasets` is given, reconciling the attached datasets.
+    ///
+    /// `None` keeps the stored selection; `Some(&[])` detaches every dataset.
     pub async fn upgrade(
         &self,
         name: &str,
         values: Option<&serde_json::Map<String, serde_json::Value>>,
+        datasets: Option<&[String]>,
         progress: Option<&ProgressFn>,
     ) -> Result<View, String> {
         report(
@@ -722,11 +752,25 @@ impl Manager {
                 "app {name:?} is orphaned and cannot be reconfigured"
             ));
         }
+        let desired = match datasets {
+            Some(list) => normalize_dataset_names(list)?,
+            None => rec.datasets.clone(),
+        };
+        if desired != rec.datasets && rec.namespace.is_empty() {
+            return Err(format!(
+                "app {name:?} predates per-app isolation; reinstall it into an isolated namespace to change its datasets"
+            ));
+        }
         let catalog = (self.catalog)().ok_or("catalog is not available")?;
         let app = catalog.get(name)?;
         let chart_dir = self.resolve_chart(&app).await?;
         crate::chartsrepo::assert_regular_tree(&chart_dir)?;
-        let mut merged = merge_values(&serde_json::Value::Object(rec.values.clone()), values);
+        let mut client_values = values.cloned().unwrap_or_default();
+        strip_dataset_values(&mut client_values);
+        let mut merged = merge_values(
+            &serde_json::Value::Object(rec.values.clone()),
+            Some(&client_values),
+        );
 
         // A redacted secret comes back as `null`; keep the stored value.
         for key in secret_value_keys(&app.schema) {
@@ -739,22 +783,139 @@ impl Manager {
         // `install` validated the catalog schema; `upgrade` did not.
         validate_install_values(&app, &merged)?;
 
-        report(progress, STAGE_INSTALLING, &format!("Upgrading {name}"));
-        self.helm_for(&rec)
-            .upgrade_dir(name, &chart_dir, &serde_json::Value::Object(merged.clone()))
+        let removed: Vec<String> = rec
+            .datasets
+            .iter()
+            .filter(|n| !desired.contains(n))
+            .cloned()
+            .collect();
+        let provision = self
+            .provision_datasets(
+                name,
+                &self.target_namespace(&rec),
+                app.privileged,
+                &desired,
+                &rec.datasets,
+            )
             .await?;
+
+        // Reconcile the platform-owned keys after validation (the catalog
+        // schema never sees them). When every dataset is detached, fall back to
+        // the chart's own values for the legacy single-claim contract.
+        merged.remove("datasets");
+        merged.remove("datasetsClaims");
+        if desired.is_empty() {
+            if !rec.datasets.is_empty() {
+                let chart_defaults = self.helm.show_values(&chart_dir).await?;
+                let fallback = if app.privileged {
+                    "hostPath"
+                } else {
+                    "datasetsClaim"
+                };
+                match chart_defaults.get(fallback) {
+                    Some(value) => {
+                        merged.insert(fallback.to_string(), value.clone());
+                    }
+                    None => {
+                        merged.remove(fallback);
+                    }
+                }
+            }
+        } else {
+            for (key, value) in &provision.values {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+
+        report(progress, STAGE_INSTALLING, &format!("Upgrading {name}"));
+        if let Err(e) = self
+            .helm_for(&rec)
+            .upgrade_dir(name, &chart_dir, &serde_json::Value::Object(merged.clone()))
+            .await
+        {
+            // Only the resources and attachments this operation created are
+            // rollback candidates; pre-existing ones are left alone.
+            self.rollback_provision(name, &provision).await;
+            return Err(e);
+        }
 
         report(
             progress,
             STAGE_FINALIZING,
             "Recording the new configuration",
         );
+        // Removed datasets are cleaned up only after Helm accepted the new
+        // values; failures here leave the claims behind rather than the app
+        // pointing at deleted storage.
+        if !removed.is_empty() {
+            self.delete_claims(name, &self.target_namespace(&rec), &removed)
+                .await;
+        }
         rec.values = merged;
+        rec.datasets = desired;
+        rec.datasets_layout = DATASETS_LAYOUT_V2.to_string();
         rec.chart_version = app.version.clone();
         rec.updated_at = Some(Utc::now());
         rec.last_error.clear();
         self.store.upsert(rec)?;
         self.view(name).await
+    }
+
+    /// Upgrade every installed app with datasets to the `/datasets/<name>`
+    /// mount layout, once. Charts that do not read `.Values.datasets` yet are
+    /// skipped so a premature API deploy cannot lock the old layout in.
+    pub async fn migrate_dataset_layout(
+        &self,
+        progress: Option<&ProgressFn>,
+    ) -> Result<(), String> {
+        let Some(catalog) = (self.catalog)() else {
+            tracing::warn!("dataset layout migration skipped: catalog is not available");
+            return Ok(());
+        };
+        for rec in self.store.list() {
+            if rec.orphaned || rec.datasets.is_empty() || rec.datasets_layout == DATASETS_LAYOUT_V2
+            {
+                continue;
+            }
+            if rec.namespace.is_empty() {
+                tracing::warn!(
+                    "app {:?}: cannot migrate the dataset layout without an isolated namespace; reinstall it",
+                    rec.name
+                );
+                continue;
+            }
+            let app = match catalog.get(&rec.name) {
+                Ok(app) => app,
+                Err(e) => {
+                    tracing::warn!("app {:?}: dataset layout migration skipped: {e}", rec.name);
+                    continue;
+                }
+            };
+            let chart_dir = match self.resolve_chart(&app).await {
+                Ok(dir) => dir,
+                Err(e) => {
+                    tracing::warn!("app {:?}: dataset layout migration skipped: {e}", rec.name);
+                    continue;
+                }
+            };
+            if !chart_tree_mentions_datasets(std::path::Path::new(&chart_dir)) {
+                tracing::info!(
+                    "app {:?}: chart does not read .Values.datasets yet; leaving the layout unchanged",
+                    rec.name
+                );
+                continue;
+            }
+            report(
+                progress,
+                STAGE_PREPARING,
+                &format!("Migrating datasets for {}", rec.name),
+            );
+            if let Err(e) = self.upgrade(&rec.name, None, None, progress).await {
+                // Leave the record unmarked so the next start retries.
+                tracing::warn!("app {:?}: dataset layout migration failed: {e}", rec.name);
+            }
+        }
+        Ok(())
     }
 
     /// SetExposure updates the exposure settings and re-renders the route.
@@ -981,22 +1142,20 @@ impl Manager {
     /// Create the per-app PV/PVCs for the selected registry datasets and return
     /// the Helm values the chart needs. Baseline apps get a claim bound to the
     /// dataset; privileged apps get the specific host path (they can mount it).
+    ///
+    /// `existing` is the dataset list the record already carried. Only claims
+    /// and registry attachments created by this call are rollback candidates.
     async fn provision_datasets(
         &self,
         app: &str,
         namespace: &str,
         privileged: bool,
         selected: &[String],
-    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        let mut values = serde_json::Map::new();
+        existing: &[String],
+    ) -> Result<DatasetProvision, String> {
+        let mut provision = DatasetProvision::default();
         if selected.is_empty() {
-            return Ok(values);
-        }
-        if selected.len() > 1 {
-            return Err(
-                "installed apps currently support one dataset; attach the others with a future chart that reads datasetsClaims"
-                    .to_string(),
-            );
+            return Ok(provision);
         }
         if !self.isolation_enabled() {
             return Err(
@@ -1010,98 +1169,164 @@ impl Manager {
         let Some(kube) = &self.kube else {
             return Err("the Kubernetes client is not configured".to_string());
         };
+        for name in selected {
+            if registry.get(name).is_none() {
+                return Err(format!("dataset {name:?} is not registered"));
+            }
+        }
         // Reserve each dataset before creating a claim. The reservation is
         // persisted, so two concurrent installs cannot both claim a private
-        // dataset.
-        let mut attached: Vec<String> = Vec::new();
+        // dataset. Only newly attached entries are detached on failure.
         for name in selected {
+            let already = existing.iter().any(|e| e == name);
             if let Err(e) = registry.attach(name, app) {
-                for done in &attached {
-                    let _ = registry.detach(done, app);
-                }
+                self.rollback_provision(app, &provision).await;
                 return Err(e);
             }
-            attached.push(name.clone());
+            if !already {
+                provision.newly_attached.push(name.clone());
+            }
         }
-        let mut claims = Vec::new();
-        let mut created: Vec<(String, String)> = Vec::new();
-        for name in selected {
-            let record = registry.get(name).unwrap();
-            let object_name = format!("naslos-ds-{app}-{name}");
-            if object_name.len() > 253 {
-                return Err(format!("dataset claim name {object_name:?} is too long"));
-            }
-            if privileged {
-                // Privileged charts mount the specific dataset path directly;
-                // no claim is needed.
-                values.insert("hostPath".to_string(), serde_json::json!(record.host_path));
-                continue;
-            }
-            let pv = serde_json::json!({
-                "apiVersion": "v1",
-                "kind": "PersistentVolume",
-                "metadata": {
-                    "name": object_name,
-                    "labels": {
-                        "naslos.local/managed-dataset": name,
-                        "naslos.local/app": app,
-                    },
-                },
-                "spec": {
-                    "capacity": { "storage": "10Ti" },
-                    "accessModes": ["ReadWriteOnce"],
-                    "persistentVolumeReclaimPolicy": "Retain",
-                    "storageClassName": "naslos-app-data",
-                    "hostPath": { "path": record.host_path, "type": "Directory" },
-                },
-            });
-            let pvc = serde_json::json!({
-                "apiVersion": "v1",
-                "kind": "PersistentVolumeClaim",
-                "metadata": {
-                    "name": object_name,
-                    "namespace": namespace,
-                    "labels": {
-                        "naslos.local/managed-dataset": name,
-                        "naslos.local/app": app,
-                    },
-                },
-                "spec": {
-                    "accessModes": ["ReadWriteOnce"],
-                    "storageClassName": "naslos-app-data",
-                    "volumeName": object_name,
-                    "resources": { "requests": { "storage": "10Ti" } },
-                },
-            });
-            if let Err(e) = kube.apply(&pv).await {
-                self.rollback_claims(&created).await;
-                for done in &attached {
-                    let _ = registry.detach(done, app);
+
+        if !privileged {
+            for name in selected {
+                let Some(record) = registry.get(name) else {
+                    self.rollback_provision(app, &provision).await;
+                    return Err(format!("dataset {name:?} is not registered"));
+                };
+                let object_name = claim_name(app, name);
+                if object_name.len() > 253 {
+                    self.rollback_provision(app, &provision).await;
+                    return Err(format!("dataset claim name {object_name:?} is too long"));
                 }
-                return Err(format!("creating dataset PV {object_name}: {e}"));
-            }
-            if let Err(e) = kube.apply(&pvc).await {
-                let _ = kube.delete("pv", &object_name, "").await;
-                self.rollback_claims(&created).await;
-                for done in &attached {
-                    let _ = registry.detach(done, app);
+                let pv_existed = match self
+                    .dataset_object_exists(kube, "pv", &object_name, "", app, name)
+                    .await
+                {
+                    Ok(existed) => existed,
+                    Err(e) => {
+                        self.rollback_provision(app, &provision).await;
+                        return Err(e);
+                    }
+                };
+                let pvc_existed = match self
+                    .dataset_object_exists(kube, "pvc", &object_name, namespace, app, name)
+                    .await
+                {
+                    Ok(existed) => existed,
+                    Err(e) => {
+                        self.rollback_provision(app, &provision).await;
+                        return Err(e);
+                    }
+                };
+                let pv = serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "PersistentVolume",
+                    "metadata": {
+                        "name": object_name,
+                        "labels": {
+                            "naslos.local/managed-dataset": name,
+                            "naslos.local/app": app,
+                        },
+                    },
+                    "spec": {
+                        "capacity": { "storage": "10Ti" },
+                        "accessModes": ["ReadWriteOnce"],
+                        "persistentVolumeReclaimPolicy": "Retain",
+                        "storageClassName": "naslos-app-data",
+                        "hostPath": { "path": record.host_path, "type": "Directory" },
+                    },
+                });
+                let pvc = serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "PersistentVolumeClaim",
+                    "metadata": {
+                        "name": object_name,
+                        "namespace": namespace,
+                        "labels": {
+                            "naslos.local/managed-dataset": name,
+                            "naslos.local/app": app,
+                        },
+                    },
+                    "spec": {
+                        "accessModes": ["ReadWriteOnce"],
+                        "storageClassName": "naslos-app-data",
+                        "volumeName": object_name,
+                        "resources": { "requests": { "storage": "10Ti" } },
+                    },
+                });
+                if let Err(e) = kube.apply(&pv).await {
+                    self.rollback_provision(app, &provision).await;
+                    return Err(format!("creating dataset PV {object_name}: {e}"));
                 }
-                return Err(format!("creating dataset PVC {object_name}: {e}"));
+                if !pv_existed {
+                    provision
+                        .created
+                        .push(("pv".to_string(), object_name.clone(), String::new()));
+                }
+                if let Err(e) = kube.apply(&pvc).await {
+                    self.rollback_provision(app, &provision).await;
+                    return Err(format!("creating dataset PVC {object_name}: {e}"));
+                }
+                if !pvc_existed {
+                    provision.created.push((
+                        "pvc".to_string(),
+                        object_name.clone(),
+                        namespace.to_string(),
+                    ));
+                }
             }
-            created.push((object_name.clone(), namespace.to_string()));
-            claims.push(serde_json::json!(object_name));
         }
-        if !claims.is_empty() {
-            values.insert(
-                "datasetsClaim".to_string(),
-                claims.first().cloned().unwrap_or_default(),
-            );
-            values.insert(
-                "datasetsClaims".to_string(),
-                serde_json::Value::Array(claims),
-            );
+        provision.values = dataset_helm_values(app, privileged, selected, registry)?;
+        Ok(provision)
+    }
+
+    /// Whether a PV/PVC with this claim name already exists, failing closed when
+    /// it belongs to another app or dataset.
+    async fn dataset_object_exists(
+        &self,
+        kube: &crate::kube::Client,
+        kind: &str,
+        name: &str,
+        namespace: &str,
+        app: &str,
+        dataset: &str,
+    ) -> Result<bool, String> {
+        let object = kube
+            .get_json(kind, name, namespace)
+            .await
+            .map_err(|e| format!("reading {kind} {name}: {e}"))?;
+        let Some(object) = object else {
+            return Ok(false);
+        };
+        let labels = object.pointer("/metadata/labels");
+        let owner = labels
+            .and_then(|l| l.get("naslos.local/app"))
+            .and_then(|v| v.as_str());
+        let managed = labels
+            .and_then(|l| l.get("naslos.local/managed-dataset"))
+            .and_then(|v| v.as_str());
+        if owner != Some(app) || managed != Some(dataset) {
+            return Err(format!(
+                "{kind} {name:?} already exists and is not owned by app {app:?} dataset {dataset:?}; refusing to overwrite it"
+            ));
         }
-        Ok(values)
+        Ok(true)
+    }
+
+    /// Delete every PV/PVC created by one provisioning attempt and detach the
+    /// registry entries it newly attached.
+    async fn rollback_provision(&self, app: &str, provision: &DatasetProvision) {
+        if let Some(kube) = &self.kube {
+            for (kind, name, namespace) in &provision.created {
+                let _ = kube.delete(kind, name, namespace).await;
+            }
+        }
+        if let Some(registry) = &self.datasets {
+            for name in &provision.newly_attached {
+                let _ = registry.detach(name, app);
+            }
+        }
     }
 
     /// Ensure a pool-scoped local-path provisioner and point every chart
@@ -1162,15 +1387,6 @@ impl Manager {
         Ok(())
     }
 
-    async fn rollback_claims(&self, created: &[(String, String)]) {
-        if let Some(kube) = &self.kube {
-            for (name, namespace) in created {
-                let _ = kube.delete("pvc", name, namespace).await;
-                let _ = kube.delete("pv", name, "").await;
-            }
-        }
-    }
-
     async fn delete_claims(&self, app: &str, namespace: &str, datasets: &[String]) {
         if let Some(registry) = &self.datasets {
             for name in datasets {
@@ -1181,7 +1397,7 @@ impl Manager {
             return;
         };
         for name in datasets {
-            let object_name = format!("naslos-ds-{app}-{name}");
+            let object_name = claim_name(app, name);
             let _ = kube.delete("pvc", &object_name, namespace).await;
             let _ = kube.delete("pv", &object_name, "").await;
         }
@@ -1487,6 +1703,142 @@ pub fn merge_values(
         }
     }
     out
+}
+
+/// The PV/PVC name for one app/dataset pair.
+pub fn claim_name(app: &str, dataset: &str) -> String {
+    format!("naslos-ds-{app}-{dataset}")
+}
+
+/// Trim and dedupe a dataset selection, preserving order. An empty name is a
+/// client error; registry existence is checked by the provisioning step.
+pub fn normalize_dataset_names(selected: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in selected {
+        let name = raw.trim();
+        if name.is_empty() {
+            return Err("dataset names must not be empty".to_string());
+        }
+        if !out.iter().any(|existing| existing == name) {
+            out.push(name.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// Remove the Helm values the API owns from client-supplied values.
+pub fn strip_dataset_values(values: &mut serde_json::Map<String, serde_json::Value>) {
+    for key in PLATFORM_DATASET_KEYS {
+        values.remove(key);
+    }
+}
+
+/// Build the Helm values for a dataset selection: one entry per dataset plus
+/// the legacy single-claim keys (baseline) or the first host path (privileged)
+/// so older chart releases keep working.
+pub fn dataset_helm_values(
+    app: &str,
+    privileged: bool,
+    names: &[String],
+    registry: &crate::datasets::Registry,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let mut values = serde_json::Map::new();
+    if names.is_empty() {
+        return Ok(values);
+    }
+    let mut entries = Vec::new();
+    let mut claims = Vec::new();
+    let mut first_host_path: Option<String> = None;
+    for name in names {
+        let record = registry
+            .get(name)
+            .ok_or_else(|| format!("dataset {name:?} is not registered"))?;
+        let mount_path = format!("/datasets/{name}");
+        if privileged {
+            if first_host_path.is_none() {
+                first_host_path = Some(record.host_path.clone());
+            }
+            entries.push(serde_json::json!({
+                "name": name,
+                "mountPath": mount_path,
+                "hostPath": record.host_path,
+            }));
+        } else {
+            let claim = claim_name(app, name);
+            claims.push(serde_json::json!(claim));
+            entries.push(serde_json::json!({
+                "name": name,
+                "mountPath": mount_path,
+                "claim": claim,
+            }));
+        }
+    }
+    values.insert("datasets".to_string(), serde_json::Value::Array(entries));
+    if privileged {
+        if let Some(host_path) = first_host_path {
+            values.insert("hostPath".to_string(), serde_json::Value::String(host_path));
+        }
+    } else {
+        values.insert(
+            "datasetsClaim".to_string(),
+            claims.first().cloned().unwrap_or_default(),
+        );
+        values.insert(
+            "datasetsClaims".to_string(),
+            serde_json::Value::Array(claims),
+        );
+    }
+    Ok(values)
+}
+
+/// Whether a chart tree references the platform `datasets` value. A chart must
+/// be updated before the startup migration rewrites its mount layout.
+pub fn chart_tree_mentions_datasets(root: &std::path::Path) -> bool {
+    // `.Values.datasets` must not match the legacy `.Values.datasetsClaim`.
+    fn mentions(data: &str) -> bool {
+        const NEEDLE: &str = ".Values.datasets";
+        let mut rest = data;
+        while let Some(idx) = rest.find(NEEDLE) {
+            let after = &rest[idx + NEEDLE.len()..];
+            match after.chars().next() {
+                Some(c) if c.is_alphanumeric() || c == '_' => rest = after,
+                _ => return true,
+            }
+        }
+        false
+    }
+    fn walk(dir: &std::path::Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if walk(&path) {
+                    return true;
+                }
+                continue;
+            }
+            if let Ok(data) = std::fs::read_to_string(&path) {
+                if mentions(&data) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    walk(root)
+}
+
+/// What one `provision_datasets` call created, so a failed Helm run only rolls
+/// back that call's work.
+#[derive(Debug, Default)]
+pub struct DatasetProvision {
+    pub values: serde_json::Map<String, serde_json::Value>,
+    /// `(kind, name, namespace)` for every PV/PVC this call created.
+    pub created: Vec<(String, String, String)>,
+    /// Registry datasets this call attached for the first time.
+    pub newly_attached: Vec<String>,
 }
 
 pub fn validate_release_name(name: &str) -> Result<(), String> {
@@ -1854,5 +2206,133 @@ mod value_schema_tests {
             "naslos-pool-ssd"
         );
         assert_eq!(values["other"]["storageClass"], "keep-me");
+    }
+}
+
+#[cfg(test)]
+mod dataset_layout_tests {
+    use super::{
+        chart_tree_mentions_datasets, claim_name, dataset_helm_values, normalize_dataset_names,
+        strip_dataset_values,
+    };
+    use crate::datasets::{ManagedDataset, Registry};
+    use serde_json::json;
+
+    fn registry(names: &[&str]) -> Registry {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::new(&dir.path().join("d.json").display().to_string(), "");
+        for name in names {
+            registry
+                .add(ManagedDataset {
+                    name: (*name).into(),
+                    host_path: format!("/var/mnt/tank/{name}"),
+                    shared: false,
+                    warning_acknowledged: false,
+                    created_at: None,
+                    attached_to: Vec::new(),
+                })
+                .unwrap();
+        }
+        std::mem::forget(dir);
+        registry
+    }
+
+    #[test]
+    fn selection_is_trimmed_deduped_and_order_preserving() {
+        let selected = vec![
+            " media ".to_string(),
+            "downloads".to_string(),
+            "media".to_string(),
+        ];
+        assert_eq!(
+            normalize_dataset_names(&selected).unwrap(),
+            vec!["media", "downloads"]
+        );
+        assert!(normalize_dataset_names(&["  ".to_string()]).is_err());
+    }
+
+    #[test]
+    fn claim_names_use_the_platform_prefix() {
+        assert_eq!(claim_name("sonarr", "media"), "naslos-ds-sonarr-media");
+    }
+
+    #[test]
+    fn baseline_entries_carry_a_claim_per_dataset() {
+        let registry = registry(&["media", "downloads"]);
+        let values = dataset_helm_values(
+            "sonarr",
+            false,
+            &["media".to_string(), "downloads".to_string()],
+            &registry,
+        )
+        .unwrap();
+        let entries = values["datasets"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["mountPath"], "/datasets/media");
+        assert_eq!(entries[0]["claim"], "naslos-ds-sonarr-media");
+        assert_eq!(entries[1]["claim"], "naslos-ds-sonarr-downloads");
+        assert_eq!(values["datasetsClaim"], "naslos-ds-sonarr-media");
+        assert_eq!(values["datasetsClaims"].as_array().unwrap().len(), 2);
+        assert!(values.get("hostPath").is_none());
+    }
+
+    #[test]
+    fn privileged_entries_carry_the_host_path_and_legacy_value() {
+        let registry = registry(&["media", "downloads"]);
+        let values = dataset_helm_values(
+            "jackett",
+            true,
+            &["media".to_string(), "downloads".to_string()],
+            &registry,
+        )
+        .unwrap();
+        let entries = values["datasets"].as_array().unwrap();
+        assert_eq!(entries[0]["hostPath"], "/var/mnt/tank/media");
+        assert_eq!(entries[1]["mountPath"], "/datasets/downloads");
+        assert_eq!(values["hostPath"], "/var/mnt/tank/media");
+        assert!(values.get("datasetsClaim").is_none());
+    }
+
+    #[test]
+    fn an_unregistered_dataset_is_refused() {
+        let registry = registry(&["media"]);
+        let err =
+            dataset_helm_values("sonarr", false, &["missing".to_string()], &registry).unwrap_err();
+        assert!(err.contains("not registered"), "{err}");
+    }
+
+    #[test]
+    fn platform_keys_are_stripped_from_client_values() {
+        let mut values = serde_json::Map::new();
+        values.insert("port".into(), json!(8080));
+        values.insert("datasets".into(), json!([{"name": "evil"}]));
+        values.insert("datasetsClaim".into(), json!("someone-elses-claim"));
+        values.insert("datasetsClaims".into(), json!(["x"]));
+        strip_dataset_values(&mut values);
+        assert_eq!(values["port"], 8080);
+        assert!(values.get("datasets").is_none());
+        assert!(values.get("datasetsClaim").is_none());
+        assert!(values.get("datasetsClaims").is_none());
+    }
+
+    #[test]
+    fn chart_support_scanner_reads_the_template_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("templates")).unwrap();
+        std::fs::write(
+            dir.path().join("templates/app.yaml"),
+            "volumeMounts:\n{{- range .Values.datasets }}\n",
+        )
+        .unwrap();
+        assert!(chart_tree_mentions_datasets(dir.path()));
+
+        let legacy = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(legacy.path().join("templates")).unwrap();
+        std::fs::write(
+            legacy.path().join("templates/app.yaml"),
+            "claimName: {{ .Values.datasetsClaim }}\n",
+        )
+        .unwrap();
+        assert!(!chart_tree_mentions_datasets(legacy.path()));
     }
 }
