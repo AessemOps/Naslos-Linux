@@ -155,6 +155,11 @@ casings (the name typed at creation and the canonical uid); `load` merges them,
 keeping the entry with the newest `passwordSetAt`, and persists the compacted
 file.
 
+`pdbedit -i` only creates or updates, so the samba entrypoint also **prunes**
+passdb accounts that are no longer in the rendered file. A deleted user
+therefore disappears from the passdb as well as from the NSS files; the prune
+never runs against a missing or empty account file.
+
 ### POSIX identity (why NSS is involved)
 
 Samba attaches an SMB session to a **UNIX uid**, so an account that exists in
@@ -219,7 +224,7 @@ specific mismatch is otherwise silent.
 | Change password | new password works, old one stops working |
 | Disable user | `NT_STATUS_ACCOUNT_DISABLED` (passdb flag `[DU]`) |
 | Enable user | logs in again with the same password (hash retained) |
-| Delete user | removed from the NSS files and the rendered account file; the old passdb record stays but cannot resolve a uid, so login is denied |
+| Delete user | account removed from the passdb and the NSS files |
 | Create / edit / delete share | smbd reloads and serves the change |
 
 ## UI (Shares page)

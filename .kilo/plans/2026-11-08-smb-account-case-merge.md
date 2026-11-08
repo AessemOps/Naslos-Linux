@@ -42,7 +42,13 @@ Evidence from the node:
 5. A merged duplicate keeps the newest password but disablement wins
    (`enabled = existing.enabled && new.enabled`), so migration cannot resurrect
    an account an admin disabled.
-5. Docs (`docs/shares.md`) record the case rule and the duplicate-uid pitfall.
+6. The samba entrypoint prunes passdb accounts that are no longer in the
+   rendered file, so deleting a user removes the stale passdb record instead of
+   leaving an unresolvable one behind. Pruning only runs when the account file
+   is non-empty; the agent writes it atomically (temp + rename), so a partial
+   list is never observed.
+7. Docs (`docs/shares.md`) record the case rule, the duplicate-uid pitfall and
+   the prune behavior.
 
 ## Tests
 
@@ -51,13 +57,17 @@ Evidence from the node:
 - `render_group` emits one `naslos_users` line when an LDAP group has the same
   name as the primary group.
 
-## Found while drilling (not fixed here)
+## Deletion prune (found while drilling, fixed here)
 
-Deleting a user removes it from the rendered `smbusers` file and the NSS files,
-but `pdbedit -i` never prunes an existing passdb record. The record is harmless
-(its uid no longer resolves, so login is denied) but it lingers; the live drill
-removed the test record with `pdbedit -x -u <uid>`. A future change can carry an
-explicit prune list instead of implicit deletion from the file.
+Deleting a user removed it from the rendered `smbusers` file and the NSS files,
+but `pdbedit -i` never prunes an existing passdb record. The record was harmless
+(its uid no longer resolved, so login was denied) but it lingered. The samba
+entrypoint now reconciles the passdb to the rendered file after each import:
+`pdbedit -x -u <name>` removes accounts whose canonical name is absent. A
+missing/empty file skips the prune, and the agent's atomic write means the
+rendered list is never partial. Drill: `smbprune` was created, logged in, deleted
+through the API, and `pdbedit -x` removed the stale record as the entrypoint
+would.
 
 ## Live remediation (already required for the reported node)
 
