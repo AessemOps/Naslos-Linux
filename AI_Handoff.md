@@ -25,9 +25,13 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `ed0b0b5d…`, OpenLDAP `1fdf1114…`, Samba `b9dfed58…`, NFS `1a7ee8ec…`,
   terminal `f1f56d15…`. `/api/system/version` reports chart/naslos `0.3.9`,
   profile `installer`, Talos v1.14.5, k8s v1.37.0.
-- **Latest release:** `v0.3.9` (2026-11-08) is deployed; installer
-  `naslos-v0.3.9` is published. `v0.3.8` was superseded by it.
+- **Latest release:** `v0.3.10` (2026-11-08) and installer `naslos-v0.3.10`
+  are published; the node is on `0.3.9` until the operator upgrades from
+  Settings → System. `v0.3.9` was the previous release, `v0.3.8` was superseded.
 - **Release notes since 0.3.7:**
+  - `0.3.10` (published) — public Traefik ingress
+    (`networkPolicy.publicIngressCIDR`, needed for internet-facing app domains)
+    and the SMB account-case fix.
   - `0.3.9` (deployed) — per-app Internet access (default on) with a per-app
     `<app>-internet` NetworkPolicy; opt-out is enforced for isolated baseline
     apps. Plan: `.kilo/plans/2026-11-08-app-internet-access.md`.
@@ -43,19 +47,21 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   timeouts; `searxng-internet` policy applied). The `shail.ovh` domain (OVH,
   production, `sso: true`) and the `naslos-shail-ovh-tls` wildcard secret are
   present.
-- **Update check:** current `0.3.9`; no newer release.
+- **Update check:** current `0.3.9`; `v0.3.10` is available.
 
 ### Open items
 
-- **SMB account-case fix** merged to `master` in PR #123 (canonical lowercase
-  keys, load-time merge, group-by-name rendering, startup apply); it is not yet
-  in a release image. The live passdb was remediated manually on 2026-11-08.
+- **Upgrade to 0.3.10** from Settings → System. It applies the SMB
+  account-case fix and the declarative public Traefik ingress; no Talos or
+  Kubernetes step is needed.
+- **SMB account-case fix** is in `v0.3.10` (merged in PR #123). The live passdb
+  was remediated manually on 2026-11-08; the release fix lands on upgrade.
 - **External ingress:** the OVH router forwards 80/443 to `192.168.1.38`
   (verified by packet capture: public SYNs arrive). Public access was blocked
   by `naslos-traefik-ingress` allowing only `192.168.1.0/24`; the live policy
   is patched to allow `0.0.0.0/0` and `https://search.shail.ovh/` is reachable
-  externally. The durable fix is `networkPolicy.publicIngressCIDR: 0.0.0.0/0`
-  in the node/installer overlays.
+  externally. The durable fix (`networkPolicy.publicIngressCIDR: 0.0.0.0/0`)
+  is in `v0.3.10`; the live patch holds until the upgrade.
 - **Playwright** has not been rerun since the bare-metal switch.
 
 ## How to operate
