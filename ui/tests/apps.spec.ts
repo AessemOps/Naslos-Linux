@@ -103,15 +103,18 @@ test.describe('apps', () => {
     test.skip(!Array.isArray(catalog) || catalog.length === 0, 'no catalog entries; add and refresh a source first');
 
     const app = catalog[0];
-    // Attach two datasets so the multi-dataset path (one claim per dataset,
-    // both injected into the chart's `datasets` value) is exercised.
-    const datasets = [
-      await ensureTestDataset(request, 'e2e-apps-a'),
-      await ensureTestDataset(request, 'e2e-apps-b')
-    ];
-    test.skip(!datasets[0] || !datasets[1], 'no ZFS pool dataset is available for the app claims');
-
+    // Created datasets are tracked before the skip assertion so the finally
+    // cleanup runs even when the second dataset cannot be created.
+    const datasets: { name: string; dataset: string }[] = [];
     try {
+      // Attach two datasets so the multi-dataset path (one claim per dataset,
+      // both injected into the chart's `datasets` value) is exercised.
+      for (const name of ['e2e-apps-a', 'e2e-apps-b']) {
+        const ds = await ensureTestDataset(request, name);
+        if (ds) datasets.push(ds);
+      }
+      test.skip(datasets.length < 2, 'no ZFS pool dataset is available for the app claims');
+
       // A previous interrupted run may still own the release; remove it before
       // installing so the test is idempotent.
       const existing = await request.delete(`/api/apps/${app.name}`);
@@ -160,7 +163,7 @@ test.describe('apps', () => {
         expect(await waitForJob(request, removeJob.jobId, 120_000)).not.toBe('running');
       }
       for (const dataset of datasets) {
-        if (dataset) await removeTestDataset(request, dataset.name, dataset.dataset);
+        await removeTestDataset(request, dataset.name, dataset.dataset);
       }
     }
   });

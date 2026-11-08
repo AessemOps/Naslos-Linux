@@ -297,6 +297,10 @@ pub struct Manager {
     /// `_mu` was never taken, so two concurrent installs picked the same
     /// "isolated" namespace; reservations are the fix.
     reservations: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// One async lock per app. HTTP lifecycle jobs are serialised by
+    /// `AppJobManager`; the startup layout migration runs outside it and takes
+    /// the same lock so it cannot race a user install/upgrade/uninstall.
+    app_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// Frees a namespace reservation when the install finishes, succeeds or not.
@@ -514,6 +518,7 @@ impl Manager {
             datasets: cfg.datasets,
             pool_provisioner_image: cfg.pool_provisioner_image,
             reservations: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            app_locks: Mutex::new(HashMap::new()),
         })
     }
 
@@ -528,6 +533,30 @@ impl Manager {
             &self.helm
         };
         base.for_namespace(namespace)
+    }
+
+    fn app_lock(&self, name: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.app_locks.lock().unwrap();
+        locks
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
+    /// Whether a namespace is one of the configured per-app isolation pools.
+    /// A record installed while isolation was disabled lives in the shared
+    /// namespace and must not gain datasets.
+    fn is_isolated_namespace(&self, namespace: &str) -> bool {
+        !namespace.is_empty()
+            && (self.namespace_pool.iter().any(|n| n == namespace)
+                || self
+                    .privileged_namespace_pool
+                    .iter()
+                    .any(|n| n == namespace))
+    }
+
+    pub fn record_is_isolated(&self, rec: &Record) -> bool {
+        self.is_isolated_namespace(&rec.namespace)
     }
 
     fn target_namespace(&self, rec: &Record) -> String {
@@ -626,6 +655,8 @@ impl Manager {
         progress: Option<&ProgressFn>,
     ) -> Result<View, String> {
         validate_release_name(&req.name)?;
+        let lock = self.app_lock(&req.name);
+        let _guard = lock.lock().await;
         report(
             progress,
             STAGE_PREPARING,
@@ -715,7 +746,9 @@ impl Manager {
             base_domain: base_domain.clone(),
             namespace,
             datasets: datasets.clone(),
-            datasets_layout: if datasets.is_empty() {
+            datasets_layout: if datasets.is_empty()
+                || !chart_tree_mentions_datasets(std::path::Path::new(&chart_dir))
+            {
                 String::new()
             } else {
                 DATASETS_LAYOUT_V2.to_string()
@@ -741,6 +774,8 @@ impl Manager {
         datasets: Option<&[String]>,
         progress: Option<&ProgressFn>,
     ) -> Result<View, String> {
+        let lock = self.app_lock(name);
+        let _guard = lock.lock().await;
         report(
             progress,
             STAGE_PREPARING,
@@ -756,9 +791,19 @@ impl Manager {
             Some(list) => normalize_dataset_names(list)?,
             None => rec.datasets.clone(),
         };
-        if desired != rec.datasets && rec.namespace.is_empty() {
+        if desired != rec.datasets && !self.is_isolated_namespace(&rec.namespace) {
             return Err(format!(
-                "app {name:?} predates per-app isolation; reinstall it into an isolated namespace to change its datasets"
+                "app {name:?} does not run in an isolated namespace; reinstall it into one to change its datasets"
+            ));
+        }
+        // An isolated app's chart has no fallback volume: the shared
+        // `naslos-datasets` claim only exists in the legacy apps namespace.
+        if desired.is_empty()
+            && !rec.datasets.is_empty()
+            && self.is_isolated_namespace(&rec.namespace)
+        {
+            return Err(format!(
+                "app {name:?} needs at least one dataset; keep one or uninstall the app to remove its storage"
             ));
         }
         let catalog = (self.catalog)().ok_or("catalog is not available")?;
@@ -783,6 +828,8 @@ impl Manager {
         // `install` validated the catalog schema; `upgrade` did not.
         validate_install_values(&app, &merged)?;
 
+        let chart_supports_datasets =
+            chart_tree_mentions_datasets(std::path::Path::new(&chart_dir));
         let removed: Vec<String> = rec
             .datasets
             .iter()
@@ -812,12 +859,16 @@ impl Manager {
                 } else {
                     "datasetsClaim"
                 };
-                match chart_defaults.get(fallback) {
-                    Some(value) => {
-                        merged.insert(fallback.to_string(), value.clone());
-                    }
-                    None => {
-                        merged.remove(fallback);
+                // Honour a hostPath the operator submitted in this request;
+                // otherwise restore the chart default.
+                if !client_values.contains_key(fallback) {
+                    match chart_defaults.get(fallback) {
+                        Some(value) => {
+                            merged.insert(fallback.to_string(), value.clone());
+                        }
+                        None => {
+                            merged.remove(fallback);
+                        }
                     }
                 }
             }
@@ -853,7 +904,9 @@ impl Manager {
         }
         rec.values = merged;
         rec.datasets = desired;
-        rec.datasets_layout = DATASETS_LAYOUT_V2.to_string();
+        if chart_supports_datasets {
+            rec.datasets_layout = DATASETS_LAYOUT_V2.to_string();
+        }
         rec.chart_version = app.version.clone();
         rec.updated_at = Some(Utc::now());
         rec.last_error.clear();
@@ -877,9 +930,9 @@ impl Manager {
             {
                 continue;
             }
-            if rec.namespace.is_empty() {
+            if !self.is_isolated_namespace(&rec.namespace) {
                 tracing::warn!(
-                    "app {:?}: cannot migrate the dataset layout without an isolated namespace; reinstall it",
+                    "app {:?}: cannot migrate the dataset layout outside an isolated namespace; reinstall it",
                     rec.name
                 );
                 continue;
@@ -963,6 +1016,8 @@ impl Manager {
 
     /// Uninstall removes the release, its route and its record.
     pub async fn uninstall(&self, name: &str, progress: Option<&ProgressFn>) -> Result<(), String> {
+        let lock = self.app_lock(name);
+        let _guard = lock.lock().await;
         report(
             progress,
             STAGE_PREPARING,
@@ -1169,10 +1224,13 @@ impl Manager {
         let Some(kube) = &self.kube else {
             return Err("the Kubernetes client is not configured".to_string());
         };
+        // Resolve every record before touching the registry or the cluster.
+        let mut records = Vec::with_capacity(selected.len());
         for name in selected {
-            if registry.get(name).is_none() {
-                return Err(format!("dataset {name:?} is not registered"));
-            }
+            let record = registry
+                .get(name)
+                .ok_or_else(|| format!("dataset {name:?} is not registered"))?;
+            records.push(record);
         }
         // Reserve each dataset before creating a claim. The reservation is
         // persisted, so two concurrent installs cannot both claim a private
@@ -1189,11 +1247,7 @@ impl Manager {
         }
 
         if !privileged {
-            for name in selected {
-                let Some(record) = registry.get(name) else {
-                    self.rollback_provision(app, &provision).await;
-                    return Err(format!("dataset {name:?} is not registered"));
-                };
+            for (name, record) in selected.iter().zip(records.iter()) {
                 let object_name = claim_name(app, name);
                 if object_name.len() > 253 {
                     self.rollback_provision(app, &provision).await;
@@ -1318,8 +1372,14 @@ impl Manager {
     /// registry entries it newly attached.
     async fn rollback_provision(&self, app: &str, provision: &DatasetProvision) {
         if let Some(kube) = &self.kube {
-            for (kind, name, namespace) in &provision.created {
-                let _ = kube.delete(kind, name, namespace).await;
+            // Claims first: a bound PV carries the `pv-protection` finalizer
+            // and a waiting `kubectl delete` would block until the timeout.
+            for kind in ["pvc", "pv"] {
+                for (created_kind, name, namespace) in &provision.created {
+                    if created_kind == kind {
+                        let _ = kube.delete(kind, name, namespace).await;
+                    }
+                }
             }
         }
         if let Some(registry) = &self.datasets {
@@ -1398,8 +1458,20 @@ impl Manager {
         };
         for name in datasets {
             let object_name = claim_name(app, name);
-            let _ = kube.delete("pvc", &object_name, namespace).await;
-            let _ = kube.delete("pv", &object_name, "").await;
+            // App/dataset names both contain `-`, so two pairs can produce the
+            // same claim name. Only delete objects this app and dataset own.
+            if let Ok(true) = self
+                .dataset_object_exists(kube, "pvc", &object_name, namespace, app, name)
+                .await
+            {
+                let _ = kube.delete("pvc", &object_name, namespace).await;
+            }
+            if let Ok(true) = self
+                .dataset_object_exists(kube, "pv", &object_name, "", app, name)
+                .await
+            {
+                let _ = kube.delete("pv", &object_name, "").await;
+            }
         }
     }
 

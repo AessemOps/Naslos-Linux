@@ -102,9 +102,12 @@ namespace).
 ### Reconcile and rollback
 
 `PUT /api/apps/{name}` accepts `datasets` (omitted = unchanged, `[]` = detach
-all, a list = reconcile). New claims/attachments are created before the Helm
-upgrade and are the only rollback candidates if it fails; removed claims are
-deleted and detached only after the upgrade succeeds. A claim-name collision
+all, a list = reconcile). An isolated app must keep at least one dataset: its
+chart has no fallback volume (the shared `naslos-datasets` claim only exists in
+the legacy apps namespace), so detaching the last one fails with a reinstall
+hint. New claims/attachments are created before the Helm upgrade and are the
+only rollback candidates if it fails; removed claims are deleted and detached
+only after the upgrade succeeds. A claim-name collision
 with another app or dataset fails closed (the existing PV/PVC labels must name
 this app and dataset).`
 

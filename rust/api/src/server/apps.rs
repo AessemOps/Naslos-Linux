@@ -158,6 +158,9 @@ pub async fn app_detail_get(
             // record with a coarse status, with secret values masked.
             let mut view = manager.public_record(&rec);
             view["status"] = serde_json::json!("unknown");
+            // Whether the record runs in a per-app isolation namespace. The
+            // UI uses this to block dataset edits that require a reinstall.
+            view["isolated"] = serde_json::json!(manager.record_is_isolated(&rec));
             json(StatusCode::OK, view)
         }
         Err(e) => json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),

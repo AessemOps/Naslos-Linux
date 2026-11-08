@@ -11,9 +11,11 @@
   let redactedKeys: string[] = [];
   let managedDatasets: { name: string; hostPath: string; shared: boolean; attachedTo?: string[] }[] = [];
   let selectedDatasets: string[] = [];
-  // Legacy records predate per-app isolation and cannot gain datasets without
-  // a reinstall (the API rejects a dataset change for an empty namespace).
+  // Records outside a per-app isolation namespace cannot gain datasets without
+  // a reinstall (the API rejects a dataset change for them).
   let legacy = false;
+  // An isolated app's chart has no fallback volume, so it must keep a dataset.
+  let hasDatasets = false;
   let loading = true;
   let saving = false;
   let error = '';
@@ -29,6 +31,10 @@
   }
 
   $: sharedSelected = managedDatasets.filter((d) => d.shared && selectedDatasets.includes(d.name));
+  $: datasetError =
+    !legacy && hasDatasets && selectedDatasets.length === 0
+      ? 'An isolated app needs at least one dataset. Keep one or uninstall the app to remove its storage.'
+      : '';
 
   async function load() {
     try {
@@ -50,7 +56,8 @@
         values = { ...(installed.values || {}) };
         redactedKeys = Array.isArray(installed.redactedKeys) ? installed.redactedKeys : [];
         selectedDatasets = Array.isArray(installed.datasets) ? [...installed.datasets] : [];
-        legacy = !installed.namespace;
+        hasDatasets = selectedDatasets.length > 0;
+        legacy = installed.isolated === false;
       }
     } catch (e) {
       error = 'Failed to load app configuration: ' + e;
@@ -144,11 +151,12 @@
           {/if}
         </div>
       {/if}
+      {#if datasetError}<div role="alert" class="mt-4 p-3 rounded-lg bg-amber-900/30 border border-amber-700 text-amber-200 text-sm">{datasetError}</div>{/if}
       {#if error}<div role="alert" class="mt-4 p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
     </div>
     <div class="p-6 border-t border-naslos-border flex justify-end gap-3">
       <button class="btn btn-secondary" on:click={() => dispatch('close')}>Cancel</button>
-      <button class="btn btn-primary" on:click={save} disabled={saving || loading}>{saving ? 'Saving...' : 'Save'}</button>
+      <button class="btn btn-primary" on:click={save} disabled={saving || loading || !!datasetError}>{saving ? 'Saving...' : 'Save'}</button>
     </div>
   </div>
 </div>
