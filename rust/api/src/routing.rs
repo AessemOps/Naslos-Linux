@@ -308,7 +308,7 @@ impl KubeRouter {
     }
 
     /// Reconcile the Authelia portal routes for non-primary SSO domains.
-    pub async fn reconcile_portals(&self, domains: &[String], primary: &str) -> Result<(), String> {
+    pub async fn sync_portals(&self, domains: &[String], primary: &str) -> Result<(), String> {
         if self.opts.authelia_service.is_empty() {
             return Ok(());
         }
@@ -482,6 +482,10 @@ impl KubeRouter {
 
 #[async_trait::async_trait]
 impl Router for KubeRouter {
+    async fn reconcile_portals(&self, domains: &[String], primary: &str) -> Result<(), String> {
+        self.sync_portals(domains, primary).await
+    }
+
     async fn apply(
         &self,
         rec: &Record,
