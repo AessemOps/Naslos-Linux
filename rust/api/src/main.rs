@@ -80,6 +80,29 @@ async fn main() {
         });
     }
 
+    // Push the rendered share configuration (including the SMB account mirror)
+    // at startup. Loading the account store compacts legacy case-variant
+    // entries, but the node only sees the fix after an apply.
+    {
+        let shares_state = state.clone();
+        tokio::spawn(async move {
+            for attempt in 1..=5u32 {
+                match naslos_api::server::shares::apply_shares_config(&shares_state).await {
+                    Ok(_) => {
+                        tracing::info!("share configuration applied at startup");
+                        break;
+                    }
+                    Err(e) if attempt < 5 => {
+                        tracing::warn!("startup share apply (attempt {attempt}): {e}");
+                        tokio::time::sleep(std::time::Duration::from_secs(2 * u64::from(attempt)))
+                            .await;
+                    }
+                    Err(e) => tracing::warn!("startup share apply failed: {e}"),
+                }
+            }
+        });
+    }
+
     // Scheduled buddy backups: catch-up + interval.
     {
         let scheduler_state = state.clone();

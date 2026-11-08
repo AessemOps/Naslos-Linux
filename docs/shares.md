@@ -149,6 +149,12 @@ Trigger points: user create (with a password), password change, delete, and
 enable/disable (a disabled account keeps its hash but is flagged `[DU]`, so
 re-enabling requires no new password).
 
+Account keys are canonicalised to the LDAP uid (trim + lowercase) on load and on
+every write. A legacy mirror could contain the same POSIX account under two
+casings (the name typed at creation and the canonical uid); `load` merges them,
+keeping the entry with the newest `passwordSetAt`, and persists the compacted
+file.
+
 ### POSIX identity (why NSS is involved)
 
 Samba attaches an SMB session to a **UNIX uid**, so an account that exists in
@@ -197,6 +203,13 @@ specific mismatch is otherwise silent.
    `SMB_CONF_PATH` in its entrypoint for this reason.
 2. **A resolvable POSIX account is required** — handled by the extrausers
    mirror above. Verify with `getent passwd <uid>` inside the samba pod.
+3. **One passdb record per POSIX uid.** `pdbedit -i smbpasswd:<file>` processes
+   the file top-down. If two names map to the same `uidNumber` (for example
+   `Elisa` and `elisa`), the first record creates the account and the later one
+   is skipped, so a newer password hash silently never reaches the passdb. The
+   store's canonical keys and load-time merge prevent this; check
+   `pdbedit -L -w` (with `SMB_CONF_PATH` set) against the rendered file when a
+   password "does not work" only over SMB.
 
 ### Verified behaviour
 
@@ -206,7 +219,7 @@ specific mismatch is otherwise silent.
 | Change password | new password works, old one stops working |
 | Disable user | `NT_STATUS_ACCOUNT_DISABLED` (passdb flag `[DU]`) |
 | Enable user | logs in again with the same password (hash retained) |
-| Delete user | account removed from passdb and NSS files |
+| Delete user | removed from the NSS files and the rendered account file; the old passdb record stays but cannot resolve a uid, so login is denied |
 | Create / edit / delete share | smbd reloads and serves the change |
 
 ## UI (Shares page)
