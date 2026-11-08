@@ -76,6 +76,11 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Per-app outbound-Internet NetworkPolicy (internet access is on by default
+  # and the API owns the additive allow in each app namespace).
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Copy the domain TLS Secret into the app namespace for its IngressRoute.
   - apiGroups: [""]
     resources: ["secrets"]
@@ -315,6 +320,10 @@ spec:
         - namespaceSelector:
             matchLabels:
               naslos.local/apps: "true"
+    # Outbound Internet for VPN endpoints and indexers/downloads, but never
+    # the cluster/metadata ranges (a compromised privileged app must not reach
+    # the API, kubelet, or a cloud metadata service). Privileged namespaces
+    # always allow Internet, so the per-app toggle's opt-out is rejected there.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

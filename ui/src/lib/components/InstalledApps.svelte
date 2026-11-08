@@ -20,6 +20,7 @@
       tls: boolean;
       auth: boolean;
       localOnly: boolean;
+      internet: boolean;
     };
   }
 

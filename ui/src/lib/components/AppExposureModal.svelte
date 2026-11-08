@@ -8,6 +8,7 @@
     tls: boolean;
     auth: boolean;
     localOnly: boolean;
+    internet: boolean;
     service?: string;
     port?: number;
     scheme?: string;
@@ -15,7 +16,7 @@
 
   export let appName: string;
 
-  let exposure: Exposure = { subdomain: '', tls: true, auth: true, localOnly: false };
+  let exposure: Exposure = { subdomain: '', tls: true, auth: true, localOnly: false, internet: true };
   let baseDomain = '';
   let selectableDomains: string[] = [];
   let ssoDomains: string[] = [];

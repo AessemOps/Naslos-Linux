@@ -4,6 +4,7 @@
     tls: boolean;
     auth: boolean;
     localOnly: boolean;
+    internet: boolean;
     service?: string;
     port?: number;
     scheme?: string;
@@ -154,6 +155,22 @@
       <span class="font-medium">Local network only</span>
       <span class="block text-xs text-gray-500">
         Allow only clients from the configured LAN CIDR.
+      </span>
+    </span>
+  </label>
+
+  <label class="flex items-start gap-3 cursor-pointer">
+    <input
+      type="checkbox"
+      class="mt-1"
+      checked={exposure.internet}
+      on:change={(e) => set('internet', (e.currentTarget as HTMLInputElement).checked)}
+    />
+    <span>
+      <span class="font-medium">Internet access</span>
+      <span class="block text-xs text-gray-500">
+        Let the app reach the public Internet (search engines, APIs, updates).
+        Turn it off to keep it isolated to cluster DNS and other apps.
       </span>
     </span>
   </label>

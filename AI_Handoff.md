@@ -683,10 +683,14 @@ Pool `test` (stripe of `/dev/vdb`+`/dev/vdc`, 79 G) with datasets `test/drill` a
     "violates PodSecurity baseline: hostPath volumes"), so managed app charts
     mount the platform's `naslos-datasets` RWX PVC; `hostPath` and `NET_ADMIN`
     only work in `naslos-apps-priv` (a chart opts in with `privileged: true`).
-12. **The node has Internet; pods do not, by default.** `naslos-workload-egress`
+12. **The node has Internet; platform pods do not, by default.** `naslos-workload-egress`
     is default-deny, so the API cannot clone a chart repo until
     `networkPolicy.gitEgress: true` (on in `values-vm.yaml`; ports 443/22/9418).
-    Image pulls are kubelet traffic and unaffected by pod policy.
+    Image pulls are kubelet traffic and unaffected by pod policy. **Apps are the
+    exception:** per-app exposure defaults `internet: true` and the API applies
+    `<app>-internet` in the app namespace. Turning "Internet access" off is
+    enforced only for a baseline app in its own isolated namespace; privileged
+    and legacy shared namespaces always allow Internet and reject the opt-out.
 13. **Channels are a source property, and authoritative.** A source that declares
     channels uses exactly those (no defaults merge). NaslosCharts has only `main`,
     so `values-vm.yaml` sets `apps.officialSource.channels: {Prod: main}`;

@@ -146,7 +146,8 @@ spec:
               naslos.local/apps: "true"
     # Outbound Internet for VPN endpoints and indexers/downloads, but never
     # the cluster/metadata ranges (a compromised privileged app must not reach
-    # the API, kubelet, or a cloud metadata service).
+    # the API, kubelet, or a cloud metadata service). Privileged namespaces
+    # always allow Internet, so the per-app toggle's opt-out is rejected there.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

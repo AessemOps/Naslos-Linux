@@ -23,7 +23,7 @@ pub fn render_service_name(name: &str, release: &str) -> String {
 }
 
 /// The exposure configuration of an installed app.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Exposure {
     #[serde(default)]
     pub subdomain: String,
@@ -33,12 +33,35 @@ pub struct Exposure {
     pub auth: bool,
     #[serde(default, rename = "localOnly")]
     pub local_only: bool,
+    /// Outbound Internet access (default on). Off keeps the app on the
+    /// namespace's DNS + app-to-app-only egress policy.
+    #[serde(default = "default_true")]
+    pub internet: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub service: String,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub port: i64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub scheme: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for Exposure {
+    fn default() -> Self {
+        Self {
+            subdomain: String::new(),
+            tls: false,
+            auth: false,
+            local_only: false,
+            internet: true,
+            service: String::new(),
+            port: 0,
+            scheme: String::new(),
+        }
+    }
 }
 
 fn is_zero(n: &i64) -> bool {
@@ -58,6 +81,8 @@ pub struct ExposurePatch {
     pub auth: Option<bool>,
     #[serde(default, rename = "localOnly")]
     pub local_only: Option<bool>,
+    #[serde(default)]
+    pub internet: Option<bool>,
     #[serde(default)]
     pub service: Option<String>,
     #[serde(default)]
@@ -80,6 +105,9 @@ impl ExposurePatch {
         }
         if let Some(v) = self.local_only {
             merged.local_only = v;
+        }
+        if let Some(v) = self.internet {
+            merged.internet = v;
         }
         if let Some(v) = &self.service {
             merged.service = v.clone();
@@ -609,6 +637,9 @@ impl Manager {
         values = merge_values(&serde_json::Value::Object(values), req.values.as_ref());
         validate_install_values(&app, &values)?;
         let (namespace, _reservation) = self.reserve_namespace(app.privileged)?;
+        let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
+        // Reject an unenforceable opt-out before creating any storage.
+        self.validate_internet(&namespace, &exposure)?;
         let dataset_values = self
             .provision_datasets(&req.name, &namespace, app.privileged, &req.datasets)
             .await?;
@@ -616,7 +647,6 @@ impl Manager {
             values.insert(key, value);
         }
         self.provision_pool_storage(&req.pool, &mut values).await?;
-        let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
 
         report(
             progress,
@@ -749,13 +779,14 @@ impl Manager {
         if merged.auth && !self.auth_allowed(&base_domain) {
             return Err("auth requires the domain to be in the SSO domain list".to_string());
         }
+        let namespace = self.target_namespace(&rec);
+        self.validate_internet(&namespace, &merged)?;
         if let Some(service) = &patch.service {
             if !service.is_empty() {
                 merged.service = render_service_name(service, &rec.name);
             }
         }
         if merged.service.is_empty() {
-            let namespace = self.target_namespace(&rec);
             merged = self
                 .fill_discovered_service(&rec.name, &namespace, merged)
                 .await;
@@ -928,6 +959,23 @@ impl Manager {
 
     fn isolation_enabled(&self) -> bool {
         !self.namespace_pool.is_empty() || !self.privileged_namespace_pool.is_empty()
+    }
+
+    /// An app can only opt out of Internet access when it has a dedicated
+    /// baseline namespace: the per-app policy is namespace-scoped, and a
+    /// privileged namespace's base policy always allows public egress.
+    fn internet_opt_out_supported(&self, namespace: &str) -> bool {
+        self.namespace_pool.iter().any(|n| n == namespace)
+    }
+
+    fn validate_internet(&self, namespace: &str, exposure: &Exposure) -> Result<(), String> {
+        if !exposure.internet && !self.internet_opt_out_supported(namespace) {
+            return Err(
+                "Internet access can only be turned off for a baseline app with per-app isolation (apps.isolation.enabled); privileged app namespaces always allow outbound Internet"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     /// Create the per-app PV/PVCs for the selected registry datasets and return
@@ -1255,8 +1303,11 @@ pub struct InstallRequest {
     pub name: String,
     #[serde(default)]
     pub values: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Install-time exposure overrides. A patch (not the persisted struct) so
+    /// an omitted field keeps the catalog default instead of deserializing a
+    /// bool to `false`/an `internet` default of `true`.
     #[serde(default)]
-    pub exposure: Option<Exposure>,
+    pub exposure: Option<ExposurePatch>,
     #[serde(default, rename = "baseDomain")]
     pub base_domain: String,
     /// Registered datasets to attach (D3/F1); empty keeps the app claim-less.
@@ -1324,7 +1375,7 @@ fn report(progress: Option<&ProgressFn>, stage: &str, message: &str) {
 /// caller's overrides.
 pub fn exposure_for(
     app: &crate::catalog::App,
-    override_: Option<&Exposure>,
+    override_: Option<&ExposurePatch>,
     release: &str,
 ) -> Exposure {
     let mut e = Exposure {
@@ -1332,6 +1383,7 @@ pub fn exposure_for(
         tls: app.exposure.tls,
         auth: app.exposure.auth,
         local_only: app.exposure.local_only,
+        internet: app.exposure.internet,
         ..Default::default()
     };
     if !app.services.is_empty() {
@@ -1340,20 +1392,35 @@ pub fn exposure_for(
         e.scheme = app.services[0].scheme.clone();
     }
     if let Some(o) = override_ {
-        if !o.subdomain.is_empty() {
-            e.subdomain = o.subdomain.clone();
+        if let Some(v) = &o.subdomain {
+            if !v.is_empty() {
+                e.subdomain = v.clone();
+            }
         }
-        e.tls = o.tls;
-        e.auth = o.auth;
-        e.local_only = o.local_only;
-        if !o.service.is_empty() {
-            e.service = render_service_name(&o.service, release);
+        if let Some(v) = o.tls {
+            e.tls = v;
         }
-        if o.port != 0 {
-            e.port = o.port;
+        if let Some(v) = o.auth {
+            e.auth = v;
         }
-        if !o.scheme.is_empty() {
-            e.scheme = o.scheme.clone();
+        if let Some(v) = o.local_only {
+            e.local_only = v;
+        }
+        if let Some(v) = o.internet {
+            e.internet = v;
+        }
+        if let Some(v) = &o.service {
+            if !v.is_empty() {
+                e.service = render_service_name(v, release);
+            }
+        }
+        if let Some(v) = o.port {
+            if v != 0 {
+                e.port = v;
+            }
+        }
+        if let Some(v) = &o.scheme {
+            e.scheme = v.clone();
         }
     }
     if e.scheme.is_empty() {
@@ -1610,7 +1677,7 @@ mod tests {
 
 #[cfg(test)]
 mod exposure_patch_tests {
-    use super::{Exposure, ExposurePatch};
+    use super::{exposure_for, Exposure, ExposurePatch};
 
     #[test]
     fn omitted_fields_keep_the_stored_value() {
@@ -1619,6 +1686,7 @@ mod exposure_patch_tests {
             tls: true,
             auth: true,
             local_only: false,
+            internet: true,
             service: "plex".into(),
             port: 32400,
             scheme: "http".into(),
@@ -1628,7 +1696,38 @@ mod exposure_patch_tests {
         assert_eq!(merged.subdomain, "media");
         assert!(merged.tls, "TLS must not be disabled by an omitted field");
         assert!(merged.auth, "auth must not be disabled by an omitted field");
+        assert!(merged.internet, "Internet must stay on by default");
         assert_eq!(merged.port, 32400);
+    }
+
+    #[test]
+    fn internet_defaults_on_and_can_be_disabled() {
+        assert!(Exposure::default().internet);
+        let current = Exposure::default();
+        let patch: ExposurePatch = serde_json::from_str(r#"{"internet":false}"#).unwrap();
+        assert!(!patch.apply(&current).internet);
+        let merged: Exposure = serde_json::from_str(r#"{"subdomain":"search"}"#).unwrap();
+        assert!(
+            merged.internet,
+            "a record without the field keeps Internet on"
+        );
+    }
+
+    #[test]
+    fn install_patch_keeps_the_catalog_internet_default() {
+        let app = crate::catalog::App {
+            exposure: crate::catalog::ExposureDefaults {
+                internet: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(!exposure_for(&app, None, "x").internet);
+        // A partial install patch must not force the serde default (true).
+        let patch: ExposurePatch = serde_json::from_str(r#"{"subdomain":"search"}"#).unwrap();
+        assert!(!exposure_for(&app, Some(&patch), "x").internet);
+        let patch: ExposurePatch = serde_json::from_str(r#"{"internet":true}"#).unwrap();
+        assert!(exposure_for(&app, Some(&patch), "x").internet);
     }
 }
 
