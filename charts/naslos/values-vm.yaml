@@ -1,4 +1,5 @@
-# Naslos Helm values for the single-node VM (192.168.1.117).
+# Naslos Helm values for the production bare-metal node (192.168.1.38).
+# The `vm` name is historical: the old 192.168.1.117 VM is powered off.
 #
 # This is the production posture: Traefik on the node's 80/443 with Authelia
 # forwardAuth, the portal at https://naslos.local/authelia, and no
@@ -150,7 +151,7 @@ ingress:
 
 # NetworkPolicy CIDRs for this node (AUDIT-M4). These are inert under flannel but
 # must be right before a policy CNI is installed: the agent, samba, nfs and the
-# Talos API are hostNetwork at the node IP 192.168.1.117, and Traefik's hostPort
+# Talos API are hostNetwork at the node IP 192.168.1.38, and Traefik's hostPort
 # entry traffic also arrives from the node address. `nodeCIDR` is what lets the
 # API reach the agent (:9090) and the Talos API (:50000) once enforced.
 networkPolicy:
