@@ -53,6 +53,31 @@ import_users() {
   fi
 }
 
+# prune_users removes passdb accounts that are no longer in the rendered file.
+# `pdbedit -i` only creates or updates, so a deleted LDAP user would otherwise
+# leave a stale passdb record behind (it can no longer resolve a uid, but the
+# record lingers). The agent writes the rendered file atomically, so this never
+# sees a partial account list; a missing/empty file is left alone.
+prune_users() {
+  [ -s "$USERS_FILE" ] || return 0
+
+  desired="$(awk -F: '!/^#/ && NF > 1 { print tolower($1) }' "$USERS_FILE" | sort -u)"
+
+  pdbedit -L 2>/dev/null | cut -d: -f1 | while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    lname="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+    if printf '%s\n' "$desired" | grep -qxF "$lname"; then
+      continue
+    fi
+    if pdbedit -x -u "$name" >/tmp/pdbedit-delete.out 2>&1; then
+      log "removed SMB account $name (no longer rendered)"
+    else
+      log "WARN: could not remove SMB account $name:"
+      sed 's/^/  /' /tmp/pdbedit-delete.out | tail -3
+    fi
+  done
+}
+
 # check_nss verifies every mirrored account resolves through NSS. Samba needs a
 # UNIX uid to attach a session to, so an account that exists in the passdb but
 # not in NSS can never log in - it fails with NT_STATUS_ACCESS_DENIED after
@@ -212,6 +237,7 @@ fi
 
 # Sync accounts before accepting logins.
 import_users
+prune_users
 check_nss
 check_share_paths
 
@@ -235,6 +261,7 @@ start_discovery
     if [ "$CUR_USERS_HASH" != "$USERS_HASH" ]; then
       USERS_HASH="$CUR_USERS_HASH"
       import_users
+      prune_users
       check_nss
     fi
 

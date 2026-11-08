@@ -58,6 +58,15 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   per-core load works.
 - Live check 2026-11-07: `/api/health` OK, `Data` pool ONLINE (10.9T, 6.05T
   used), API/UI/agent/samba/nfs pods Running. Playwright has not been rerun.
+- **SMB login fix (2026-11-08).** `elisa` could not authenticate over SMB: the
+  mirror held `Elisa` (created with the typed uid) and `elisa` (canonical LDAP
+  uid) for the same uidNumber 10003, and `pdbedit -i` kept the first (stale)
+  hash. Live remediation compacted `/var/lib/naslos/smbusers.json`, restarted
+  the API, re-applied the share config, and the passdb now carries her
+  newest hash (LCT-6AF0A179); a temporary mixed-case test account logged in and
+  was removed. The durable fix (canonical lowercase keys, load-time merge,
+  group-by-name rendering, startup apply) is on branch
+  `fix/smb-account-case-merge`, not yet in a release image.
 
 ## Release 0.3.3 (2026-11-02) — release-pack root fix
 

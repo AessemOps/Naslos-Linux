@@ -80,6 +80,59 @@ async fn main() {
         });
     }
 
+    // Push the rendered share configuration (including the SMB account mirror)
+    // at startup. Loading the account store compacts legacy case-variant
+    // entries, but the node only sees the fix after an apply.
+    {
+        let shares_state = state.clone();
+        tokio::spawn(async move {
+            // Never render "empty" state over a working node: a missing or
+            // corrupt state file must not wipe the account/share mirror.
+            let shares_loaded = shares_state.shares.lock().unwrap().loaded();
+            let users_loaded = shares_state.samba_users.lock().unwrap().loaded();
+            if !shares_loaded || !users_loaded {
+                tracing::error!(
+                    "skipping startup share apply: stored share/account state did not load"
+                );
+                return;
+            }
+
+            for attempt in 1..=5u32 {
+                // Rendering without LDAP would drop naslos_admins/apps_user
+                // from the extrausers group file, so wait for a live read.
+                if let Some(identity) = &shares_state.identity {
+                    if let Err(e) = identity.ready().await {
+                        tracing::warn!(
+                            "startup share apply (attempt {attempt}): LDAP not ready: {e}"
+                        );
+                        if attempt < 5 {
+                            tokio::time::sleep(std::time::Duration::from_secs(
+                                2 * u64::from(attempt),
+                            ))
+                            .await;
+                            continue;
+                        }
+                        tracing::warn!("startup share apply skipped: LDAP not ready");
+                        return;
+                    }
+                }
+
+                match naslos_api::server::shares::apply_shares_config(&shares_state).await {
+                    Ok(_) => {
+                        tracing::info!("share configuration applied at startup");
+                        break;
+                    }
+                    Err(e) if attempt < 5 => {
+                        tracing::warn!("startup share apply (attempt {attempt}): {e}");
+                        tokio::time::sleep(std::time::Duration::from_secs(2 * u64::from(attempt)))
+                            .await;
+                    }
+                    Err(e) => tracing::warn!("startup share apply failed: {e}"),
+                }
+            }
+        });
+    }
+
     // Scheduled buddy backups: catch-up + interval.
     {
         let scheduler_state = state.clone();

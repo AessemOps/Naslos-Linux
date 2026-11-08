@@ -140,6 +140,10 @@ pub struct Manager {
     shares: HashMap<String, Share>,
     config_path: String,
     zfs_base: String,
+    /// Whether the persisted share list was read successfully (an empty path
+    /// is treated as loaded). A missing or corrupt file must not be rendered
+    /// and pushed as "no shares" over a working node configuration.
+    loaded: bool,
 }
 
 /// The directory tree shares may live under (overridable for development).
@@ -163,6 +167,7 @@ impl Manager {
             shares: HashMap::new(),
             config_path: config_path.to_string(),
             zfs_base: base,
+            loaded: false,
         };
         m.load();
         m
@@ -176,8 +181,14 @@ impl Manager {
         &self.zfs_base
     }
 
+    /// Whether the persisted share list was read successfully.
+    pub fn loaded(&self) -> bool {
+        self.loaded
+    }
+
     fn load(&mut self) {
         if self.config_path.is_empty() {
+            self.loaded = true;
             return;
         }
         let Ok(data) = std::fs::read(&self.config_path) else {
@@ -186,6 +197,7 @@ impl Manager {
         let Ok(list) = serde_json::from_slice::<Vec<Share>>(&data) else {
             return;
         };
+        self.loaded = true;
         for mut s in list {
             if s.name.is_empty() {
                 continue;
@@ -609,6 +621,24 @@ mod tests {
             share.path = path.into();
             assert!(validate_share_fields(&share).is_err(), "{path}");
         }
+    }
+
+    #[test]
+    fn manager_reports_whether_the_share_file_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("shares.json");
+        assert!(!Manager::new(missing.to_str().unwrap(), "/var/mnt").loaded());
+
+        let corrupt = dir.path().join("corrupt.json");
+        std::fs::write(&corrupt, "{not json").unwrap();
+        assert!(!Manager::new(corrupt.to_str().unwrap(), "/var/mnt").loaded());
+
+        let empty = dir.path().join("empty.json");
+        std::fs::write(&empty, "[]").unwrap();
+        assert!(Manager::new(empty.to_str().unwrap(), "/var/mnt").loaded());
+
+        // An empty path is an in-memory test manager, not a failed load.
+        assert!(Manager::new("", "/var/mnt").loaded());
     }
 
     #[test]

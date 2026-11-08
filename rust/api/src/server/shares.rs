@@ -282,15 +282,19 @@ fn require_share_path_exist(state: &AppState, path: &str) -> Result<(), String> 
 }
 
 /// Convert LDAP groups into the extrausers form (members reduced to uids).
-async fn ldap_nss_groups(state: &AppState) -> Vec<NssGroup> {
+///
+/// A failed lookup is an error, not an empty list: rendering without the LDAP
+/// groups would drop `naslos_admins`/`apps_user` from the node's extrausers
+/// file and break every `valid users = @<group>` share.
+async fn ldap_nss_groups(state: &AppState) -> Result<Vec<NssGroup>, String> {
     let Some(identity) = state.identity.clone() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    let Ok(groups) = identity.list_groups().await else {
-        tracing::warn!("could not read LDAP groups for share access lists");
-        return Vec::new();
-    };
-    groups
+    let groups = identity
+        .list_groups()
+        .await
+        .map_err(|e| format!("reading LDAP groups for share access lists: {e}"))?;
+    Ok(groups
         .into_iter()
         .map(|g| NssGroup {
             members: g
@@ -308,7 +312,7 @@ async fn ldap_nss_groups(state: &AppState) -> Vec<NssGroup> {
             gid: crate::shares::group_gid(&g.cn),
             name: g.cn,
         })
-        .collect()
+        .collect())
 }
 
 /// Render the share configuration and push it to the agent.
@@ -320,7 +324,7 @@ pub async fn apply_shares_config(
     // Resolve LDAP group membership BEFORE locking the account store: a
     // std::sync::MutexGuard must never be held across an await (the handler
     // future would stop being Send).
-    let nss_groups = ldap_nss_groups(state).await;
+    let nss_groups = ldap_nss_groups(state).await?;
     let (samba_users, nss_passwd, nss_group, nss_shadow) = {
         let store = state.samba_users.lock().unwrap();
         (
