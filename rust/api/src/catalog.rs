@@ -65,7 +65,7 @@ pub struct Service {
 }
 
 /// The exposure toggles shown by the install UI.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExposureDefaults {
     #[serde(default)]
     pub subdomain: String,
@@ -75,6 +75,27 @@ pub struct ExposureDefaults {
     pub auth: bool,
     #[serde(default, rename = "localOnly")]
     pub local_only: bool,
+    /// Outbound Internet access. On unless the manifest opts out: most apps
+    /// (search engines, indexers, updaters, API clients) need it, and the
+    /// namespace NetworkPolicy is the enforcement point.
+    #[serde(default = "default_true")]
+    pub internet: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for ExposureDefaults {
+    fn default() -> Self {
+        Self {
+            subdomain: String::new(),
+            tls: false,
+            auth: false,
+            local_only: false,
+            internet: true,
+        }
+    }
 }
 
 /// The catalog index response.
@@ -489,6 +510,26 @@ mod tests {
         assert_eq!(app.version, "1.2.3", "Chart.yaml version wins");
         assert_eq!(app.ports, vec![80]);
         assert_eq!(app.services[0].scheme, "http");
+    }
+
+    #[test]
+    fn exposure_defaults_to_internet_on_and_can_opt_out() {
+        let dir = tempfile::tempdir().unwrap();
+        write_app(dir.path(), "on", "name: on\n", "");
+        write_app(
+            dir.path(),
+            "off",
+            "name: off\nexposure:\n  internet: false\n",
+            "",
+        );
+        let c = Catalog::load(&[ref_(
+            "official",
+            "Prod",
+            &dir.path().display().to_string(),
+            true,
+        )]);
+        assert!(c.get("on").unwrap().exposure.internet);
+        assert!(!c.get("off").unwrap().exposure.internet);
     }
 
     #[test]

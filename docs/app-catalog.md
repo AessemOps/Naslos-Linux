@@ -50,6 +50,7 @@ exposure:                      # defaults shown in the install UI
   tls: true
   auth: true
   localOnly: false
+  internet: true               # on by default; false = DNS + app-to-app only
 # Optional. Install into the privileged apps namespace (PSA privileged) instead
 # of naslos-apps (baseline). Required for a VPN sidecar that needs NET_ADMIN
 # (e.g. gluetun in the Prowlarr/qBittorrent charts).
@@ -145,8 +146,9 @@ A Helm release found in the platform namespace without a catalog match is
 
 ## Exposure → routing
 
-The API owns one `IngressRoute` per app plus the middlewares it references, all
-in `naslos-apps`, and converges them on startup.
+The API owns one `IngressRoute` per app plus the middlewares it references, and
+one Internet-egress `NetworkPolicy` per app, all in the app's namespace, and
+converges them on startup.
 
 | Setting | Effect |
 | --- | --- |
@@ -155,6 +157,13 @@ in `naslos-apps`, and converges them on startup.
 | `tls` | on ⇒ `websecure` + TLS Secret; off ⇒ `web` (plain HTTP), no redirect |
 | `auth` | on ⇒ Authelia forwardAuth middleware; only offered when the selected `baseDomain` is in the effective SSO list |
 | `localOnly` | on ⇒ `IPAllowList` limited to `EXPOSURE_LOCAL_ONLY_CIDR` |
+| `internet` | on (default) ⇒ additive `<app>-internet` `NetworkPolicy` allowing public egress (never the cluster, LAN or metadata ranges); off ⇒ only the base DNS + app-to-app policy |
+
+The opt-out is enforced only for a baseline app with a dedicated namespace
+(`apps.isolation.enabled`, the install default). Privileged namespaces (their
+base policy always allows Internet) and the legacy shared `naslos-apps`
+namespace (a namespace-wide policy cannot target one app) reject
+`internet: false` with a 400 instead of silently leaving egress open.
 
 The API's `security-headers` middleware deliberately omits
 `stsIncludeSubdomains`, so a TLS-off app subdomain is not HSTS-forced by the

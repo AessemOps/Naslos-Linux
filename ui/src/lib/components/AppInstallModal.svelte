@@ -11,6 +11,7 @@
     tls: boolean;
     auth: boolean;
     localOnly: boolean;
+    internet: boolean;
     service?: string;
     port?: number;
     scheme?: string;
@@ -41,7 +42,7 @@
   let installing = false;
   let error = '';
   let values: Record<string, any> = {};
-  let exposure: Exposure = { subdomain: '', tls: true, auth: true, localOnly: false };
+  let exposure: Exposure = { subdomain: '', tls: true, auth: true, localOnly: false, internet: true };
   let baseDomain = '';
   let selectableDomains: string[] = [];
   let ssoDomains: string[] = [];
@@ -83,6 +84,7 @@
           tls: app.exposure?.tls ?? true,
           auth: app.exposure?.auth ?? true,
           localOnly: app.exposure?.localOnly ?? false,
+          internet: app.exposure?.internet ?? true,
           service: app.services?.[0]?.name,
           port: app.services?.[0]?.port,
           scheme: app.services?.[0]?.scheme || 'http'
@@ -231,7 +233,7 @@
               <span class="text-gray-400">Exposure</span>
               <span class="font-medium text-sm text-right">
                 {exposure.subdomain ? `${exposure.subdomain}.${baseDomain}` : 'cluster-internal only'}<br />
-                TLS {exposure.tls ? 'on' : 'off'} · Auth {exposure.auth ? 'on' : 'off'} · Local-only {exposure.localOnly ? 'on' : 'off'}
+                TLS {exposure.tls ? 'on' : 'off'} · Auth {exposure.auth ? 'on' : 'off'} · Local-only {exposure.localOnly ? 'on' : 'off'} · Internet {exposure.internet ? 'on' : 'off'}
               </span>
             </div>
             {#each valueEntries as [key, value]}<div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">{key}</span><span class="font-medium text-sm">{secretKeys.has(key) && value ? '••••••' : (value || '(empty)')}</span></div>{/each}
