@@ -617,8 +617,11 @@ any of the 7 chart images is missing from the digest map. A local
 `values-installer.yaml` is the installer profile: it parameterises the image
 repository base and **must not** reference the private VM registry. The engine
 overrides `domain`, `sso.domains`, `shares.discovery.name`, `openldap.host` and
-the `networkPolicy.*` CIDRs at install time; it must **not** override a
-digest-pinned image reference.
+the three LAN `networkPolicy` CIDRs (`nodeCIDR`, `ingressPluginsCIDR`,
+`nfsClientCIDR`) at install time; it must **not** override a digest-pinned image
+reference. `networkPolicy.publicIngressCIDR` comes from the packed
+`values-installer.yaml` (`0.0.0.0/0`) to allow public app domains through
+Traefik.
 
 ## Uninstall
 

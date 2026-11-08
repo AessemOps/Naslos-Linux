@@ -27,6 +27,7 @@ changes. Set networkPolicy.enabled=false to skip rendering entirely.
 {{- $wns := include "naslos.workloadNamespace" . }}
 {{- $split := ne $wns $ns }}
 {{- $ingressCIDR := .Values.networkPolicy.ingressPluginsCIDR | default "10.244.0.0/16" }}
+{{- $publicIngressCIDR := .Values.networkPolicy.publicIngressCIDR | default "" }}
 {{- $probeCIDR := .Values.networkPolicy.probeCIDR | default "" }}
 {{- $dnsCIDR := .Values.networkPolicy.dnsCIDR | default "169.254.0.0/16" }}
 {{- $nodeCIDR := .Values.networkPolicy.nodeCIDR | default "" }}
@@ -124,6 +125,13 @@ spec:
     - from:
         - ipBlock:
             cidr: {{ $ingressCIDR | quote }}
+        {{- with $publicIngressCIDR }}
+        # Public exposure: an internet-facing node sets
+        # networkPolicy.publicIngressCIDR=0.0.0.0/0. The proxy still enforces
+        # Authelia and the per-app exposure rules behind this allow.
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
         {{- with $probeCIDR }}
         - ipBlock:
             cidr: {{ . | quote }}
