@@ -16,6 +16,11 @@
   let legacy = false;
   // An isolated app's chart has no fallback volume, so it must keep a dataset.
   let hasDatasets = false;
+  // Same platform group choices as the install form.
+  const groupOptions = [
+    { value: 10000, label: 'naslos_users (10000) — dataset access' },
+    { value: 1000, label: 'default (1000)' }
+  ];
   let loading = true;
   let saving = false;
   let error = '';
@@ -108,7 +113,7 @@
       {#if loading}
         <p class="text-gray-400">Loading configuration...</p>
       {:else if app}
-        <SchemaForm {app} {redactedKeys} bind:values />
+        <SchemaForm {app} {redactedKeys} bind:values {groupOptions} />
         <div class="mt-4">
           <span class="label">Datasets</span>
           {#if legacy}
@@ -140,7 +145,8 @@
             </div>
             <p class="text-xs text-gray-500 mt-1">
               Each selected dataset is mounted at <span class="font-mono">/datasets/&lt;name&gt;</span>. Removing one
-              detaches it after the upgrade succeeds.
+              detaches it after the upgrade succeeds. Datasets are owned by group
+              <span class="font-mono">naslos_users (10000)</span>; set PGID to 10000 if the app must read them.
             </p>
             {#each sharedSelected as dataset (dataset.name)}
               <p role="alert" class="text-xs text-amber-300 mt-1">
