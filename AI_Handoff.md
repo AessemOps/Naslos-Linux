@@ -19,16 +19,21 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart `0.3.12`, appVersion `0.3.12`,
-  revision 8, deployed 2026-11-08 21:49 UTC (web-UI upgrade from 0.3.11). Images
-  are digest-pinned from the 0.3.12 pack: API `9ffd8c3b…`, agent `c8da5d2d…`, UI
-  `7f79d295…`, OpenLDAP `a8b955a1…`, Samba `4f5b8c1c…`, NFS `7fe27a7e…`,
-  terminal `28040f19…`. `/api/system/version` reports chart/naslos `0.3.12`,
+- **Deployed release:** Helm `naslos` chart `0.3.13`, appVersion `0.3.13`,
+  revision 9, deployed 2026-11-08 22:54 UTC (web-UI upgrade from 0.3.12). Images
+  are digest-pinned from the 0.3.13 pack: API `0e1e7e6e…`, agent `446492fe…`, UI
+  `6189b011…`, OpenLDAP `5e86cc1a…`, Samba `f3dcff30…`, NFS `b3f41e6b…`,
+  terminal `558be7a9…`. `/api/system/version` reports chart/naslos `0.3.13`,
   profile `installer`, Talos v1.14.5, k8s v1.37.0.
-- **Latest release:** `v0.3.12` (2026-11-08); installer `naslos-v0.3.12` is
-  rebuilt by the release dispatch. The node is on `0.3.12`. `v0.3.11`,
-  `v0.3.10` and `v0.3.9` were the previous releases, `v0.3.8` was superseded.
+- **Latest release:** `v0.3.13` (2026-11-08) and installer `naslos-v0.3.13`
+  are published; the node is on `0.3.13`. `v0.3.12`, `v0.3.11`, `v0.3.10` and
+  `v0.3.9` were the previous releases, `v0.3.8` was superseded.
 - **Release notes since 0.3.7:**
+  - `0.3.13` (deployed) — SSO portal routes for promoted domains
+    (FR-APP-15): `Manager::reconcile_routes` now calls
+    `Router::reconcile_portals`, so `https://shail.ovh/authelia/` serves the
+    Authelia portal instead of Traefik's 404 and Radarr/Sonarr (auth on) can
+    redirect there. PR #131.
   - `0.3.12` (deployed) — numeric catalog values are coerced server-side
     (browser forms send PUID/PGID as strings), integer fields render as
     numbers, the install/configure forms offer a PGID group select
@@ -55,23 +60,30 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   provisioner/StorageClass remains from the storage-pool drill.
 - **Apps/domains:** `searxng` (`naslos-app-1`, `search.shail.ovh`; 57-result
   live test, `searxng-internet`), `audiobookshelf` (`naslos-app-2`,
-  `audio.shail.ovh`, dataset `audiobooks` mounted at
-  `/datasets/audiobooks/AudioBooks`), `calibre-web` (`naslos-app-3`,
-  `calibre.shail.ovh`, dataset `ebooks`), and `jellyfin` (`naslos-app-4`,
-  `jelly.shail.ovh`, datasets `animes`/`movies`/`series`/`ukrmovies`, wizard
-  complete, reads all four trees). `audiobookshelf`, `calibre-web` and
-  `jellyfin` run as `10001:10000`; the two LinuxServer apps needed a one-off
-  `chown -R 10001:10000 /config` after the UID/GID switch. The `shail.ovh`
-  domain (OVH, production, `sso: true`) and `naslos-shail-ovh-tls` are present.
-- **Update check:** current `0.3.12`; no newer release is available.
+  `audio.shail.ovh`, `audiobooks`), `calibre-web` (`naslos-app-3`,
+  `calibre.shail.ovh`, `ebooks`), `jellyfin` (`naslos-app-4`, `jelly.shail.ovh`,
+  `animes`/`movies`/`series`/`ukrmovies`, wizard complete), `radarr`
+  (`naslos-app-5`, `radarr.shail.ovh`, `movies`), `sonarr` (`naslos-app-6`,
+  `sonarr.shail.ovh`, `animes`/`series`), and `flaresolverr`
+  (`http://flaresolverr.naslos.local`, internal). Every dataset app runs as
+  `10001:10000` (PGID `naslos_users`); the LinuxServer apps needed a one-off
+  `chown -R 10001:10000 /config` after the UID/GID switch. Datasets under
+  `/var/mnt/Data` are recursively group-owned `naslos_users` (10000). The
+  `shail.ovh` domain (OVH, production, `sso: true`) and
+  `naslos-shail-ovh-tls` are present.
+- **Update check:** current `0.3.13`; no newer release is available.
 
 ### Open items
 
-- **Multi-dataset live drill:** four apps now mount datasets (Jellyfin has four),
-  which exercises the per-dataset claims and `/datasets/<name>` mounts. Still
-  to verify: remove one dataset from an installed app and confirm its claim and
-  registry attachment are cleaned up, and attach a second dataset to an existing
-  app.
+- **Multi-dataset live drill:** six apps now mount datasets (Jellyfin and Sonarr
+  have several), which exercises the per-dataset claims and
+  `/datasets/<name>` mounts. Still to verify: remove one dataset from an
+  installed app and confirm its claim and registry attachment are cleaned up,
+  and attach a second dataset to an existing app.
+- **SSO portal:** verified live after 0.3.13 — `https://shail.ovh/authelia/`
+  returns the Authelia page and `radarr.shail.ovh`/`sonarr.shail.ovh` redirect
+  there (`rd` back to the app). Log in and confirm the full forwardAuth round
+  trip.
 - **UI cache after upgrades:** `ui/nginx.conf` sends no `Cache-Control` for
   `index.html`, so an already-open SPA tab keeps the old bundle until a hard
   reload. Add `index.html: no-cache` plus immutable caching for
