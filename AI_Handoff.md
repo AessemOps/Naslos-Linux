@@ -19,36 +19,35 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart `0.3.7`, appVersion `0.3.7`,
-  revision 2, deployed 2026-11-07 09:14 UTC. Images are digest-pinned from the
-  0.3.7 pack (API `c0a67b26…`, agent `659c01e0…`, UI `92e5c7c8…`; OpenLDAP,
-  Samba, NFS and terminal from the same pack). `/api/system/version` reports
-  chart/naslos `0.3.7`, profile `installer`, Talos v1.14.5, k8s v1.37.0.
-- **Latest release:** `v0.3.9` (2026-11-08) and installer `naslos-v0.3.9` are
-  published. The node has **not** been upgraded yet; the operator updates from
-  Settings → System. `v0.3.8` was also released on 2026-11-08.
+- **Deployed release:** Helm `naslos` chart `0.3.9`, appVersion `0.3.9`,
+  revision 5, deployed 2026-11-08 17:13 UTC (web-UI upgrade from 0.3.7). Images
+  are digest-pinned from the 0.3.9 pack: API `f997d266…`, agent `a07b2ae4…`, UI
+  `ed0b0b5d…`, OpenLDAP `1fdf1114…`, Samba `b9dfed58…`, NFS `1a7ee8ec…`,
+  terminal `f1f56d15…`. `/api/system/version` reports chart/naslos `0.3.9`,
+  profile `installer`, Talos v1.14.5, k8s v1.37.0.
+- **Latest release:** `v0.3.9` (2026-11-08) is deployed; installer
+  `naslos-v0.3.9` is published. `v0.3.8` was superseded by it.
 - **Release notes since 0.3.7:**
-  - `0.3.9` — per-app Internet access (default on) with a per-app
+  - `0.3.9` (deployed) — per-app Internet access (default on) with a per-app
     `<app>-internet` NetworkPolicy; opt-out is enforced for isolated baseline
     apps. Plan: `.kilo/plans/2026-11-08-app-internet-access.md`.
-  - `0.3.8` — pool-backed app storage, `zd*` disk filtering, agent share-folder
-    view, `naslos_users` supplemental group.
+  - `0.3.8` (superseded) — pool-backed app storage, `zd*` disk filtering, agent
+    share-folder view, `naslos_users` supplemental group.
 - **Storage:** `Data` (10.9T, `sdc` + `sdb` cache) is ONLINE with datasets under
   `/var/mnt/Data` (normalized from the old TrueNAS `/Data` tree); `ssd-storage`
   (238G, `nvme0n1`) hosts app data. Ownership is `admin:naslos_users`
   (10001:10000), directories setgid. The `naslos-pool-ssd-storage-*`
   provisioner/StorageClass remains from the storage-pool drill.
-- **Apps/domains:** SearXNG is installed in `naslos-app-1` and exposed at
-  `search.shail.ovh`; the `shail.ovh` + `*.shail.ovh` Let's Encrypt wildcard
-  certificate is Ready. The per-app Internet fix is in **0.3.9**, so on the
-  still-deployed 0.3.7 the baseline app namespace has no public egress and
-  SearXNG searches time out until the upgrade.
-- **Update check:** current `0.3.7`; `v0.3.9` is the newest published release.
+- **Apps/domains:** no app is currently installed (`apps.json` is empty); the
+  SearXNG test install in `naslos-app-1` was removed after the upgrade. The
+  `shail.ovh` domain (OVH, production, `sso: true`) and the
+  `naslos-shail-ovh-tls` wildcard secret remain in `naslos-app-1`.
+- **Update check:** current `0.3.9`; no newer release.
 
 ### Open items
 
-- **Upgrade to 0.3.9** from Settings → System (fixes SearXNG egress). The
-  0.3.8/0.3.9 packs are published; no Talos or Kubernetes step is needed.
+- **Reinstall SearXNG** (or another app) if needed; the install form's
+  "Internet access" toggle defaults on, so the app gets `<app>-internet`.
 - **SMB account-case fix** is on branch `fix/smb-account-case-merge`, not in a
   release image. The live passdb was remediated manually on 2026-11-08.
 - **External access to `shail.ovh`** relies on the OVH router forwarding 80/443
