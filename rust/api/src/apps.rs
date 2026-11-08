@@ -244,6 +244,12 @@ pub trait Router: Send + Sync {
         sso_domains: &[String],
     ) -> Result<(), String>;
     async fn delete(&self, namespace: &str, name: &str) -> Result<(), String>;
+    /// Ensure the Authelia portal is routed on every non-primary SSO domain.
+    /// The primary domain's portal is part of the platform chart.
+    async fn reconcile_portals(&self, domains: &[String], primary: &str) -> Result<(), String> {
+        let _ = (domains, primary);
+        Ok(())
+    }
 }
 
 /// A synchronous progress observer.
@@ -1136,6 +1142,13 @@ impl Manager {
             {
                 errs.push(format!("app {:?}: {e}", rec.name));
             }
+        }
+        // A non-primary SSO domain (e.g. the public app domain) needs its own
+        // `/authelia` portal route: the forwardAuth redirect points at
+        // `https://<base-domain>/authelia/`. Without this the redirect hits
+        // Traefik's default 404.
+        if let Err(e) = router.reconcile_portals(&sso, &self.base_domain).await {
+            errs.push(format!("sso portals: {e}"));
         }
         if errs.is_empty() {
             Ok(())
