@@ -662,7 +662,7 @@ networkPolicy:
   # `dnsCIDR`: cluster DNS; Cilium forwards from link-local regardless of CIDR.
   #
   # Set nodeCIDR/ingressPluginsCIDR/probeCIDR to the node subnet before
-  # installing a policy CNI. The VM's node is 192.168.1.117 (so 192.168.1.0/24).
+  # installing a policy CNI. The production node is 192.168.1.38 (so 192.168.1.0/24).
   nodeCIDR: ""
   ingressPluginsCIDR: "192.168.1.0/24"
   probeCIDR: ""
