@@ -19,17 +19,22 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart `0.3.11`, appVersion `0.3.11`,
-  revision 7, deployed 2026-11-08 19:58 UTC (web-UI upgrade from 0.3.10). Images
-  are digest-pinned from the 0.3.11 pack: API `eee29073…`, agent `90f1ccaa…`, UI
-  `61834558…`, OpenLDAP `48715059…`, Samba `a0e6065b…`, NFS `793fdc1a…`,
-  terminal `9f259038…`. `/api/system/version` reports chart/naslos `0.3.11`,
+- **Deployed release:** Helm `naslos` chart `0.3.12`, appVersion `0.3.12`,
+  revision 8, deployed 2026-11-08 21:49 UTC (web-UI upgrade from 0.3.11). Images
+  are digest-pinned from the 0.3.12 pack: API `9ffd8c3b…`, agent `c8da5d2d…`, UI
+  `7f79d295…`, OpenLDAP `a8b955a1…`, Samba `4f5b8c1c…`, NFS `7fe27a7e…`,
+  terminal `28040f19…`. `/api/system/version` reports chart/naslos `0.3.12`,
   profile `installer`, Talos v1.14.5, k8s v1.37.0.
-- **Latest release:** `v0.3.11` (2026-11-08) and installer `naslos-v0.3.11`
-  are published; the node is on `0.3.11`. `v0.3.10` and `v0.3.9` were the
-  previous releases, `v0.3.8` was superseded.
+- **Latest release:** `v0.3.12` (2026-11-08); installer `naslos-v0.3.12` is
+  rebuilt by the release dispatch. The node is on `0.3.12`. `v0.3.11`,
+  `v0.3.10` and `v0.3.9` were the previous releases, `v0.3.8` was superseded.
 - **Release notes since 0.3.7:**
-  - `0.3.11` (deployed) — multiple datasets per app (install and reconfigure),
+  - `0.3.12` (deployed) — numeric catalog values are coerced server-side
+    (browser forms send PUID/PGID as strings), integer fields render as
+    numbers, the install/configure forms offer a PGID group select
+    (`naslos_users` 10000 / default 1000), and selecting a dataset defaults
+    PUID/PGID to 10001/10000 so the app can read the dataset trees. PR #130.
+  - `0.3.11` — multiple datasets per app (install and reconfigure),
     every attached dataset mounted at `/datasets/<name>` with a one-time
     `datasetsLayout: v2` migration, PVC quota 12, and the 12 dataset catalog
     charts bumped to `0.1.2`. The node had no dataset-carrying apps, so the
@@ -48,20 +53,32 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   (238G, `nvme0n1`) hosts app data. Ownership is `admin:naslos_users`
   (10001:10000), directories setgid. The `naslos-pool-ssd-storage-*`
   provisioner/StorageClass remains from the storage-pool drill.
-- **Apps/domains:** SearXNG is installed in `naslos-app-1` at
-  `search.shail.ovh` and works (live test 2026-11-08: 57 results, no engine
-  timeouts; `searxng-internet` policy applied). The `shail.ovh` domain (OVH,
-  production, `sso: true`) and the `naslos-shail-ovh-tls` wildcard secret are
-  present.
-- **Update check:** current `0.3.11`; no newer release is available.
+- **Apps/domains:** `searxng` (`naslos-app-1`, `search.shail.ovh`; 57-result
+  live test, `searxng-internet`), `audiobookshelf` (`naslos-app-2`,
+  `audio.shail.ovh`, dataset `audiobooks` mounted at
+  `/datasets/audiobooks/AudioBooks`), `calibre-web` (`naslos-app-3`,
+  `calibre.shail.ovh`, dataset `ebooks`), and `jellyfin` (`naslos-app-4`,
+  `jelly.shail.ovh`, datasets `animes`/`movies`/`series`/`ukrmovies`, wizard
+  complete, reads all four trees). `audiobookshelf`, `calibre-web` and
+  `jellyfin` run as `10001:10000`; the two LinuxServer apps needed a one-off
+  `chown -R 10001:10000 /config` after the UID/GID switch. The `shail.ovh`
+  domain (OVH, production, `sso: true`) and `naslos-shail-ovh-tls` are present.
+- **Update check:** current `0.3.12`; no newer release is available.
 
 ### Open items
 
-- **Multi-dataset follow-up:** the node has no app with datasets, so there is
-  no migrated record to verify. The first install/reconfigure that attaches
-  datasets exercises the new `/datasets/<name>` path; run the two-dataset live
-  drill (install, check both mounts, remove one, verify claim/attachment cleanup)
-  when an app is available.
+- **Multi-dataset live drill:** four apps now mount datasets (Jellyfin has four),
+  which exercises the per-dataset claims and `/datasets/<name>` mounts. Still
+  to verify: remove one dataset from an installed app and confirm its claim and
+  registry attachment are cleaned up, and attach a second dataset to an existing
+  app.
+- **UI cache after upgrades:** `ui/nginx.conf` sends no `Cache-Control` for
+  `index.html`, so an already-open SPA tab keeps the old bundle until a hard
+  reload. Add `index.html: no-cache` plus immutable caching for
+  `_app/immutable` in a follow-up release.
+- **Audiobookshelf setup:** the old `/var/mnt/Data/ix-apps` tree is empty
+  (0 files), so no old database/users were imported; the app starts fresh and
+  the library path is `/datasets/audiobooks/AudioBooks`.
 - **SMB account-case fix** is deployed (`v0.3.10`, PR #123); the live passdb
   was remediated manually on 2026-11-08.
 - **External ingress:** the OVH router forwards 80/443 to `192.168.1.38`
