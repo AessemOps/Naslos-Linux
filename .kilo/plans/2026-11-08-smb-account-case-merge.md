@@ -33,9 +33,15 @@ Evidence from the node:
    newest `passwordSetAt`, and persists the compacted JSON.
 3. `render_group` keys groups by name so the LDAP `naslos_users` group merges
    into the primary-gid entry (one line per group name).
-4. The API re-applies the share config once at startup (with a short retry), so
+4. The API re-applies the share config once at startup (with a short retry) so
    a migrated account file reaches the node without waiting for the next user
-   or share change.
+   or share change. The apply is gated: it is skipped when the persisted shares
+   or account mirror did not load (a missing/corrupt file must not overwrite a
+   working node with "empty"), and it waits for a successful LDAP group read
+   (a degraded group file would drop `naslos_admins`/`apps_user`).
+5. A merged duplicate keeps the newest password but disablement wins
+   (`enabled = existing.enabled && new.enabled`), so migration cannot resurrect
+   an account an admin disabled.
 5. Docs (`docs/shares.md`) record the case rule and the duplicate-uid pitfall.
 
 ## Tests

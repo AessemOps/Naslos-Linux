@@ -53,6 +53,10 @@ pub struct NssGroup {
 pub struct SambaUserStore {
     path: String,
     users: HashMap<String, SambaUser>,
+    /// Whether the persisted mirror was read successfully (an empty path is
+    /// treated as loaded). A missing or corrupt file must not be rendered and
+    /// pushed as "no accounts" over a working node mirror.
+    loaded: bool,
 }
 
 impl SambaUserStore {
@@ -60,6 +64,7 @@ impl SambaUserStore {
         let mut s = Self {
             path: path.to_string(),
             users: HashMap::new(),
+            loaded: false,
         };
         s.load();
         s
@@ -73,6 +78,7 @@ impl SambaUserStore {
 
     fn load(&mut self) {
         if self.path.is_empty() {
+            self.loaded = true;
             return;
         }
         let Ok(data) = std::fs::read(&self.path) else {
@@ -81,6 +87,7 @@ impl SambaUserStore {
         let Ok(list) = serde_json::from_slice::<Vec<SambaUser>>(&data) else {
             return;
         };
+        self.loaded = true;
         let mut changed = false;
         for mut u in list {
             let uid = normalize_uid(&u.uid);
@@ -92,17 +99,24 @@ impl SambaUserStore {
                 u.uid = uid.clone();
                 changed = true;
             }
-            match self.users.get(&uid) {
-                // A legacy mirror could hold the same POSIX account under two
-                // casings (the uid typed at creation and the canonical LDAP
-                // uid). Keep the newest password: a stale duplicate with the
-                // same uidNumber makes `pdbedit -i` skip the real hash.
-                Some(existing) if existing.password_set_at >= u.password_set_at => {
+            // A legacy mirror could hold the same POSIX account under two
+            // casings (the uid typed at creation and the canonical LDAP uid).
+            // Keep the newest password: a stale duplicate with the same
+            // uidNumber makes `pdbedit -i` skip the real hash. Disablement is
+            // not timestamped, so it wins: a duplicate marked disabled must
+            // never be resurrected by the merge.
+            let existing = self.users.get(&uid).cloned();
+            match existing {
+                Some(existing) => {
                     changed = true;
-                }
-                Some(_) => {
-                    changed = true;
-                    self.users.insert(uid, u);
+                    let mut keep = if u.password_set_at > existing.password_set_at {
+                        u
+                    } else {
+                        existing.clone()
+                    };
+                    keep.uid = uid.clone();
+                    keep.enabled = existing.enabled && keep.enabled;
+                    self.users.insert(uid, keep);
                 }
                 None => {
                     self.users.insert(uid, u);
@@ -168,6 +182,11 @@ impl SambaUserStore {
 
     pub fn count(&self) -> usize {
         self.users.len()
+    }
+
+    /// Whether the persisted mirror was read successfully.
+    pub fn loaded(&self) -> bool {
+        self.loaded
     }
 
     /// Record the account's NT hash and POSIX identity.
@@ -514,6 +533,63 @@ mod tests {
         // The compacted file is persisted, so a restart cannot resurrect it.
         let persisted = std::fs::read_to_string(&path).unwrap();
         assert!(!persisted.contains("\"Elisa\""), "{persisted}");
+    }
+
+    #[test]
+    fn load_merge_keeps_a_disabled_duplicate_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("smbusers.json");
+        let disabled_old = SambaUser {
+            uid: "Elisa".into(),
+            uid_number: 10003,
+            gid_number: 10000,
+            gecos: "Elisa".into(),
+            nt_hash: "783A3D4FCDFBAFC2B2AF6FA38792FB99".into(),
+            password_set_at: Some(
+                DateTime::parse_from_rfc3339("2026-11-06T22:57:37Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+            enabled: false,
+        };
+        let enabled_new = SambaUser {
+            uid: "elisa".into(),
+            uid_number: 10003,
+            gid_number: 10000,
+            gecos: "elisa".into(),
+            nt_hash: "29401A4C5D1899F6B43359AEB6FAD7BF".into(),
+            password_set_at: Some(
+                DateTime::parse_from_rfc3339("2026-11-08T16:21:13Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+            enabled: true,
+        };
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&vec![disabled_old, enabled_new.clone()]).unwrap(),
+        )
+        .unwrap();
+
+        let store = SambaUserStore::new(path.to_str().unwrap());
+        let merged = store.get("elisa").unwrap();
+        assert_eq!(merged.nt_hash, enabled_new.nt_hash);
+        assert!(!merged.enabled, "disablement must win the merge");
+        assert!(store.render_smbpasswd().contains("[DU         ]"));
+    }
+
+    #[test]
+    fn load_reports_an_unreadable_mirror() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.json");
+        assert!(!SambaUserStore::new(missing.to_str().unwrap()).loaded());
+
+        let corrupt = dir.path().join("corrupt.json");
+        std::fs::write(&corrupt, "{not json").unwrap();
+        assert!(!SambaUserStore::new(corrupt.to_str().unwrap()).loaded());
+
+        // An empty path is an in-memory test store, not a failed load.
+        assert!(SambaUserStore::new("").loaded());
     }
 
     #[test]
