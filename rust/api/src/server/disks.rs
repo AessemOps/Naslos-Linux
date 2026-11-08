@@ -13,10 +13,24 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Keep only disks usable for ZFS: drop loop devices, optical drives and the
-/// system disk.
+/// Virtual block devices are exposed under /dev but are not disks an operator
+/// can plug in: ZFS zvols (`zd*`), loop/ram/zram, device-mapper and software
+/// RAID. The disk inventory and health page must never offer them for a pool.
+fn is_virtual_device(device: &str) -> bool {
+    let name = device.strip_prefix("/dev/").unwrap_or(device);
+    name.starts_with("zd")
+        || name.starts_with("loop")
+        || name.starts_with("ram")
+        || name.starts_with("zram")
+        || name.starts_with("dm-")
+        || name.starts_with("md")
+        || name.starts_with("sr")
+}
+
+/// Keep only disks usable for ZFS: drop virtual devices, optical drives and
+/// the system disk.
 fn is_real_disk(d: &crate::talos::Disk) -> bool {
-    if d.system_disk || d.cdrom {
+    if d.system_disk || d.cdrom || is_virtual_device(&d.device_name) {
         return false;
     }
     matches!(d.disk_type.as_str(), "SSD" | "HDD" | "NVME" | "SD")
@@ -242,7 +256,7 @@ pub async fn disks_health_get(State(state): State<Arc<AppState>>) -> Response {
 
     let mut entries: std::collections::BTreeMap<String, DiskHealthEntry> = talos_disks
         .into_iter()
-        .filter(|d| !d.cdrom && !d.device_name.starts_with("/dev/loop"))
+        .filter(|d| !d.cdrom && !is_virtual_device(&d.device_name))
         .map(|d| {
             let entry = DiskHealthEntry {
                 device: d.device_name.clone(),
@@ -302,4 +316,42 @@ pub async fn disks_health_get(State(state): State<Arc<AppState>>) -> Response {
         })
         .unwrap_or_else(|_| serde_json::json!({ "smartctlAvailable": false, "error": "serialization failed", "disks": [] })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::talos::Disk;
+
+    fn disk(name: &str, kind: &str) -> Disk {
+        Disk {
+            device_name: name.to_string(),
+            disk_type: kind.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn zfs_zvols_are_not_physical_disks() {
+        assert!(is_virtual_device("/dev/zd0"));
+        assert!(is_virtual_device("/dev/zd16"));
+        assert!(!is_real_disk(&disk("/dev/zd0", "SSD")));
+        assert!(!is_real_disk(&disk("/dev/zd16", "SSD")));
+        assert!(!is_virtual_device("/dev/sdc"));
+        assert!(is_real_disk(&disk("/dev/sdc", "HDD")));
+        assert!(is_real_disk(&disk("/dev/nvme0n1", "NVME")));
+    }
+
+    #[test]
+    fn other_virtual_devices_are_excluded() {
+        for name in [
+            "/dev/loop0",
+            "/dev/zram0",
+            "/dev/dm-0",
+            "/dev/md0",
+            "/dev/sr0",
+        ] {
+            assert!(is_virtual_device(name), "{name}");
+        }
+    }
 }
