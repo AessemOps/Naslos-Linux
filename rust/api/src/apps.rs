@@ -228,6 +228,8 @@ pub struct Config {
     pub privileged_namespace_pool: Vec<String>,
     pub kube: Option<Arc<crate::kube::Client>>,
     pub datasets: Option<Arc<crate::datasets::Registry>>,
+    /// Image for a pool-scoped local-path provisioner, created on demand.
+    pub pool_provisioner_image: String,
 }
 
 /// Coordinates records and lifecycle operations.
@@ -246,6 +248,7 @@ pub struct Manager {
     privileged_namespace_pool: Vec<String>,
     kube: Option<Arc<crate::kube::Client>>,
     datasets: Option<Arc<crate::datasets::Registry>>,
+    pool_provisioner_image: String,
     /// Namespaces reserved by installs that have not recorded a release yet.
     /// `_mu` was never taken, so two concurrent installs picked the same
     /// "isolated" namespace; reservations are the fix.
@@ -264,6 +267,186 @@ impl Drop for NamespaceReservation {
             set.remove(&self.namespace);
         }
     }
+}
+
+const POOL_PROVISIONER_NAMESPACE: &str = "local-path-storage";
+const POOL_PROVISIONER_SA: &str = "local-path-provisioner-service-account";
+
+/// Validate a pool name used in a StorageClass path. Pool names are restricted
+/// by the agent; this is the second gate before the name becomes a filesystem
+/// path and a Kubernetes object name.
+fn validate_pool_for_storage(pool: &str) -> Result<(), String> {
+    if pool.is_empty() || pool.len() > 63 {
+        return Err("pool name must be 1..63 characters".into());
+    }
+    let mut chars = pool.chars();
+    let first = chars.next().unwrap_or(' ');
+    if !first.is_ascii_alphanumeric() {
+        return Err(format!("invalid pool name {pool:?}"));
+    }
+    if !pool
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+    {
+        return Err(format!("invalid pool name {pool:?}"));
+    }
+    Ok(())
+}
+
+/// The per-pool StorageClass / provisioner name. Kubernetes object names are
+/// lowercase, so slug the pool and append a short hash of the exact name to
+/// avoid collisions between e.g. `Data` and `data`.
+pub fn pool_storage_class(pool: &str) -> String {
+    let mut slug: String = pool
+        .to_ascii_lowercase()
+        .chars()
+        .take(40)
+        .map(|c| {
+            if c.is_ascii_lowercase() || c.is_ascii_digit() {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    while slug.contains("--") {
+        slug = slug.replace("--", "-");
+    }
+    let slug = slug.trim_matches('-');
+    let hash = crate::pack::hex_sha256(pool.as_bytes());
+    let suffix = &hash[..8];
+    if slug.is_empty() {
+        format!("naslos-pool-{suffix}")
+    } else {
+        format!("naslos-pool-{slug}-{suffix}")
+    }
+}
+
+/// Set every `persistence.<key>.storageClass` in the chart values. Charts in
+/// the catalog use this shape (including nested `postgres.persistence`); the
+/// managed-dataset claim uses its own `naslos-app-data` class and is untouched.
+pub fn set_persistence_storage_class(value: &mut serde_json::Value, class: &str) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Object(persistence)) = map.get_mut("persistence") {
+                if persistence.contains_key("storageClass") {
+                    persistence.insert(
+                        "storageClass".to_string(),
+                        serde_json::Value::String(class.to_string()),
+                    );
+                }
+                for child in persistence.values_mut() {
+                    if let Some(child) = child.as_object_mut() {
+                        child.insert(
+                            "storageClass".to_string(),
+                            serde_json::Value::String(class.to_string()),
+                        );
+                    }
+                }
+            }
+            for child in map.values_mut() {
+                set_persistence_storage_class(child, class);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                set_persistence_storage_class(item, class);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pool_provisioner_objects(
+    pool: &str,
+    class: &str,
+    image: &str,
+) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
+    let path = format!("/var/mnt/{pool}/apps");
+    let config = serde_json::json!({
+        "nodePathMap": [{
+            "node": "DEFAULT_PATH_FOR_NON_LISTED_NODES",
+            "paths": [path],
+        }],
+    })
+    .to_string();
+    let setup = "#!/bin/sh\nset -eu\nmkdir -m 0777 -p \"$VOL_DIR\"\n";
+    let teardown = "#!/bin/sh\nset -eu\nrm -rf \"$VOL_DIR\"\n";
+    let helper = "apiVersion: v1\nkind: Pod\nmetadata:\n  name: helper-pod\nspec:\n  priorityClassName: system-node-critical\n  tolerations:\n  - key: node.kubernetes.io/disk-pressure\n    operator: Exists\n    effect: NoSchedule\n  containers:\n  - name: helper-pod\n    image: busybox\n    imagePullPolicy: IfNotPresent\n";
+    let configmap = serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": format!("{class}-config"),
+            "namespace": POOL_PROVISIONER_NAMESPACE,
+            "labels": { "naslos.local/pool": pool, "app.kubernetes.io/component": "app-pool-storage" },
+        },
+        "data": {
+            "config.json": config,
+            "setup": setup,
+            "teardown": teardown,
+            "helperPod.yaml": helper,
+        },
+    });
+    let deployment = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": format!("{class}-provisioner"),
+            "namespace": POOL_PROVISIONER_NAMESPACE,
+            "labels": { "naslos.local/pool": pool, "app.kubernetes.io/component": "app-pool-storage" },
+        },
+        "spec": {
+            "replicas": 1,
+            "selector": { "matchLabels": { "app": format!("{class}-provisioner") } },
+            "template": {
+                "metadata": { "labels": { "app": format!("{class}-provisioner"), "naslos.local/pool": pool } },
+                "spec": {
+                    "serviceAccountName": POOL_PROVISIONER_SA,
+                    "containers": [{
+                        "name": "local-path-provisioner",
+                        "image": image,
+                        "imagePullPolicy": "IfNotPresent",
+                        "command": [
+                            "local-path-provisioner",
+                            "--debug",
+                            "start",
+                            "--config",
+                            "/etc/config/config.json",
+                            "--provisioner-name",
+                            class,
+                            "--configmap-name",
+                            format!("{class}-config"),
+                        ],
+                        "env": [{
+                            "name": "POD_NAMESPACE",
+                            "valueFrom": { "fieldRef": { "fieldPath": "metadata.namespace" } },
+                        }],
+                        "volumeMounts": [{
+                            "name": "config-volume",
+                            "mountPath": "/etc/config/",
+                        }],
+                    }],
+                    "volumes": [{
+                        "name": "config-volume",
+                        "configMap": { "name": format!("{class}-config") },
+                    }],
+                },
+            },
+        },
+    });
+    let storage_class = serde_json::json!({
+        "apiVersion": "storage.k8s.io/v1",
+        "kind": "StorageClass",
+        "metadata": {
+            "name": class,
+            "labels": { "naslos.local/pool": pool, "app.kubernetes.io/component": "app-pool-storage" },
+        },
+        "provisioner": class,
+        "volumeBindingMode": "WaitForFirstConsumer",
+        "reclaimPolicy": "Delete",
+    });
+    (configmap, deployment, storage_class)
 }
 
 impl Manager {
@@ -285,6 +468,7 @@ impl Manager {
             privileged_namespace_pool: cfg.privileged_namespace_pool,
             kube: cfg.kube,
             datasets: cfg.datasets,
+            pool_provisioner_image: cfg.pool_provisioner_image,
             reservations: Arc::new(Mutex::new(std::collections::HashSet::new())),
         })
     }
@@ -418,7 +602,11 @@ impl Manager {
         let chart_dir = self.resolve_chart(&app).await?;
         crate::chartsrepo::assert_regular_tree(&chart_dir)?;
 
-        let mut values = merge_values(&app.default_values, req.values.as_ref());
+        // Load the chart defaults so pool-backed installs can override every
+        // persistence key, including keys the catalog schema does not expose.
+        let chart_values = self.helm.show_values(&chart_dir).await?;
+        let mut values = merge_values(&chart_values, app.default_values.as_object());
+        values = merge_values(&serde_json::Value::Object(values), req.values.as_ref());
         validate_install_values(&app, &values)?;
         let (namespace, _reservation) = self.reserve_namespace(app.privileged)?;
         let dataset_values = self
@@ -427,6 +615,7 @@ impl Manager {
         for (key, value) in dataset_values {
             values.insert(key, value);
         }
+        self.provision_pool_storage(&req.pool, &mut values).await?;
         let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
 
         report(
@@ -867,6 +1056,64 @@ impl Manager {
         Ok(values)
     }
 
+    /// Ensure a pool-scoped local-path provisioner and point every chart
+    /// persistence PVC at it. The provisioner's hostPath PVs land under
+    /// `/var/mnt/<pool>/apps`.
+    async fn provision_pool_storage(
+        &self,
+        pool: &str,
+        values: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        if pool.is_empty() {
+            return Ok(());
+        }
+        validate_pool_for_storage(pool)?;
+        let kube = self
+            .kube
+            .as_ref()
+            .ok_or("storage pools require a Kubernetes client")?;
+        let class = pool_storage_class(pool);
+        let (configmap, deployment, storage_class) =
+            pool_provisioner_objects(pool, &class, &self.pool_provisioner_image);
+        kube.apply(&configmap)
+            .await
+            .map_err(|e| format!("creating pool provisioner config: {e}"))?;
+        kube.apply(&deployment)
+            .await
+            .map_err(|e| format!("creating pool provisioner: {e}"))?;
+        kube.apply(&storage_class)
+            .await
+            .map_err(|e| format!("creating pool StorageClass: {e}"))?;
+
+        let deployment_name = format!("{class}-provisioner");
+        let mut ready = false;
+        for _ in 0..30 {
+            if let Ok(Some(status)) = kube
+                .get_json("deployment", &deployment_name, POOL_PROVISIONER_NAMESPACE)
+                .await
+            {
+                let replicas = status
+                    .pointer("/status/readyReplicas")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                if replicas >= 1 {
+                    ready = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        if !ready {
+            return Err(format!(
+                "pool provisioner {deployment_name} did not become ready"
+            ));
+        }
+        let mut as_value = serde_json::Value::Object(values.clone());
+        set_persistence_storage_class(&mut as_value, &class);
+        *values = as_value.as_object().cloned().unwrap_or_default();
+        Ok(())
+    }
+
     async fn rollback_claims(&self, created: &[(String, String)]) {
         if let Some(kube) = &self.kube {
             for (name, namespace) in created {
@@ -1015,6 +1262,9 @@ pub struct InstallRequest {
     /// Registered datasets to attach (D3/F1); empty keeps the app claim-less.
     #[serde(default)]
     pub datasets: Vec<String>,
+    /// ZFS pool for the chart's own persistence PVCs; empty uses local-path.
+    #[serde(default)]
+    pub pool: String,
     /// The operator reviewed the privileged warning. Re-checked at run time.
     #[serde(default, rename = "privilegedConfirmed")]
     pub privileged_confirmed: bool,
@@ -1384,7 +1634,10 @@ mod exposure_patch_tests {
 
 #[cfg(test)]
 mod value_schema_tests {
-    use super::{pick_namespace, secret_value_keys, validate_install_values};
+    use super::{
+        pick_namespace, pool_storage_class, secret_value_keys, set_persistence_storage_class,
+        validate_install_values, validate_pool_for_storage,
+    };
     use crate::catalog::App;
     use serde_json::json;
 
@@ -1459,5 +1712,48 @@ mod value_schema_tests {
         );
         used.insert("naslos-apps-3".to_string());
         assert_eq!(pick_namespace(&pool, &used), None);
+    }
+    #[test]
+    fn pool_storage_class_is_safe_and_case_aware() {
+        let data = pool_storage_class("Data");
+        let lower = pool_storage_class("data");
+        assert!(data.starts_with("naslos-pool-data-"));
+        assert!(lower.starts_with("naslos-pool-data-"));
+        assert_ne!(data, lower);
+        assert!(data.len() <= 63);
+        assert!(data
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+        assert!(validate_pool_for_storage("Data").is_ok());
+        assert!(validate_pool_for_storage("a/b").is_err());
+        assert!(validate_pool_for_storage("../etc").is_err());
+    }
+
+    #[test]
+    fn persistence_storage_class_covers_top_level_and_nested() {
+        let mut values = serde_json::json!({
+            "persistence": {
+                "data": { "size": "2Gi", "storageClass": "" },
+                "config": { "size": "1Gi" }
+            },
+            "postgres": {
+                "persistence": { "storageClass": "" }
+            },
+            "other": { "storageClass": "keep-me" }
+        });
+        set_persistence_storage_class(&mut values, "naslos-pool-ssd");
+        assert_eq!(
+            values["persistence"]["data"]["storageClass"],
+            "naslos-pool-ssd"
+        );
+        assert_eq!(
+            values["persistence"]["config"]["storageClass"],
+            "naslos-pool-ssd"
+        );
+        assert_eq!(
+            values["postgres"]["persistence"]["storageClass"],
+            "naslos-pool-ssd"
+        );
+        assert_eq!(values["other"]["storageClass"], "keep-me");
     }
 }

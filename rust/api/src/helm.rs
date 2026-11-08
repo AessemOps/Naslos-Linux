@@ -131,6 +131,15 @@ impl Client {
         Ok((vec!["-f".into(), path], Some(file)))
     }
 
+    /// The chart's own `values.yaml` defaults (used to discover persistence
+    /// keys before a pool-backed install).
+    pub async fn show_values(&self, chart_dir: &str) -> Result<serde_json::Value, String> {
+        let out = self
+            .run(&["show".into(), "values".into(), chart_dir.to_string()])
+            .await?;
+        serde_yaml::from_str(&out).map_err(|e| format!("parsing chart values: {e}"))
+    }
+
     /// Install a chart from a local directory (`--wait`, 5m timeout).
     pub async fn install_dir(
         &self,

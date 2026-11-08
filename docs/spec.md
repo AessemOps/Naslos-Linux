@@ -390,6 +390,12 @@ with a sibling `naslos-app.yaml` install-config. See
   a default-deny NetworkPolicy; each selected registered dataset MUST be exposed
   through a PV/PVC whose `hostPath` is that dataset only. The API MUST never
   hand a chart the `/var/mnt` root. *(chart render gate + dataset tests)*
+- **FR-APP-21** — An app install MAY select a ZFS pool for the chart's own
+  persistence PVCs. When `pool` is set the API MUST reject a pool that does not
+  exist, provision a pool-scoped local-path provisioner and StorageClass
+  (`naslos-pool-<slug>-<hash>`, path `/var/mnt/<pool>/apps`), and set every
+  chart `persistence.*.storageClass` to that class. The default (no pool)
+  remains `local-path`. *(apps tests, live drill)*
 - **FR-APP-19** — Chart installs MUST run as a namespaced identity that cannot
   create Traefik `IngressRoute`/`Middleware` or cert-manager objects; the API
   MUST own the app's route and certificate. *(chart render gate:
@@ -1009,6 +1015,7 @@ Dynamic DNS and the provider registry are verified by
 | `TestLoadBuiltins`, `TestOverrideReplacesBuiltinAndSkipsInvalid` | FR-DNS-01 (YAML providers, override merge, invalid file skipped and recorded) |
 | `TestOVHSolverShape`, `TestSolverMissingConfigIsAnError` | FR-DNS-01/05 (solver rendering and substitution) |
 | `TestSpecOVH`, `TestSpecCloudflareSolverShape`, `TestSpecRFC2136SolverShape`, `TestSpecPassthroughIsUnchanged` | FR-APP-13, FR-DNS-05 (OVH supported; existing solvers byte-identical) |
+| `apps::value_schema_tests::pool_storage_class_is_safe_and_case_aware`, `persistence_storage_class_covers_top_level_and_nested` | FR-APP-21 (pool StorageClass naming and persistence overrides) |
 | `TestManagerUpdateSkipsUnchangedAndHidesSecrets`, `TestDdnsNeverReturnsCredentialValues` | FR-DNS-02/03/06 (skip-when-unchanged, force-run, no credential values) |
 | `TestManagerRecordsCredentialErrors`, `TestDetectIPValidatesResponse` | FR-DNS-03 (errors recorded, IP response validated) |
 | `TestOVHDriverUpdate`, `TestCloudflareDriverCreateAndUpdate`, `TestHTTPDriverRendersAndAuthenticates` | FR-DNS-01 (drivers: URL/method/body/signature/auth) |

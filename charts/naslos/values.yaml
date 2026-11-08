@@ -353,6 +353,12 @@ apps:
   # Namespace for apps that declare `privileged: true` (VPN sidecars needing
   # NET_ADMIN, which PSA baseline forbids).
   privilegedNamespace: naslos-apps-priv
+  # Store app persistence PVCs in a ZFS pool. On first install into a pool the
+  # API creates a pool-scoped local-path provisioner + StorageClass under
+  # `local-path-storage`; chart values are pointed at that class.
+  poolStorage:
+    enabled: true
+    provisionerImage: rancher/local-path-provisioner:v0.0.26
   # Per-app namespaces + per-dataset PV/PVCs (D3/F1, Option A). The pool is
   # fixed-size; the API assigns new installs to a free namespace and creates one
   # claim per selected managed dataset. Existing apps stay in the legacy

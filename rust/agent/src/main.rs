@@ -59,7 +59,11 @@ async fn main() {
         );
         None
     } else {
-        Some(Arc::new(SharesClient::new(HOST_ROOT)))
+        // Share config and folder validation read /var (a hostPath with
+        // HostToContainer propagation). The /host root bind does not receive
+        // newly mounted ZFS datasets, so /host/var/mnt/Data was stale and the
+        // New Share dialog saw every dataset as missing.
+        Some(Arc::new(SharesClient::new("/")))
     };
 
     // There is no opt-out: the agent is privileged and must prove callers are
