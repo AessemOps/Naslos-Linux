@@ -244,6 +244,15 @@ pub trait Router: Send + Sync {
         sso_domains: &[String],
     ) -> Result<(), String>;
     async fn delete(&self, namespace: &str, name: &str) -> Result<(), String>;
+    /// Grant the app's public-Internet egress policy before its release
+    /// exists. Install calls this before the Helm wait so an app whose first
+    /// start needs the public network (Bazarr fetches releases and
+    /// announcements) can pass its readiness probe; `apply` repeats it once
+    /// the install succeeds.
+    async fn ensure_internet(&self, name: &str, namespace: &str) -> Result<(), String> {
+        let _ = (name, namespace);
+        Ok(())
+    }
     /// Ensure the Authelia portal is routed on every non-primary SSO domain.
     /// The primary domain's portal is part of the platform chart.
     async fn reconcile_portals(&self, domains: &[String], primary: &str) -> Result<(), String> {
@@ -708,6 +717,24 @@ impl Manager {
         }
         self.provision_pool_storage(&req.pool, &mut values).await?;
 
+        // Grant public egress before the install wait. A dedicated baseline
+        // namespace is default-deny for egress and the `<app>-internet` policy
+        // is normally reconciled only after a successful install, but apps
+        // such as Bazarr block on public startup calls (release and
+        // announcement checks) and would never pass readiness, so Helm would
+        // roll every attempt back. Shared and privileged namespaces keep the
+        // post-install behavior: their policy is namespace-scoped and must not
+        // exist before the app does.
+        let precreated_internet = self.preinstall_internet(&namespace, &exposure);
+        if precreated_internet {
+            if let Some(router) = &self.router {
+                if let Err(e) = router.ensure_internet(&req.name, &namespace).await {
+                    self.rollback_provision(&req.name, &provision).await;
+                    return Err(format!("creating the Internet egress policy: {e}"));
+                }
+            }
+        }
+
         report(
             progress,
             STAGE_INSTALLING,
@@ -724,6 +751,12 @@ impl Manager {
         {
             // Do not leak a PV/PVC when Helm fails before the record exists.
             self.rollback_provision(&req.name, &provision).await;
+            // Nor hand the reserved namespace's egress allow to the next app.
+            if precreated_internet {
+                if let Some(router) = &self.router {
+                    let _ = router.delete(&namespace, &req.name).await;
+                }
+            }
             return Err(e);
         }
 
@@ -1197,6 +1230,12 @@ impl Manager {
     /// privileged namespace's base policy always allows public egress.
     fn internet_opt_out_supported(&self, namespace: &str) -> bool {
         self.namespace_pool.iter().any(|n| n == namespace)
+    }
+
+    /// Whether to apply the Internet policy before the install wait. Only a
+    /// dedicated baseline namespace qualifies; see `install`.
+    fn preinstall_internet(&self, namespace: &str, exposure: &Exposure) -> bool {
+        preinstall_internet(namespace, exposure, &self.namespace_pool)
     }
 
     fn validate_internet(&self, namespace: &str, exposure: &Exposure) -> Result<(), String> {
@@ -1732,6 +1771,14 @@ pub fn exposure_for(
     e
 }
 
+/// Whether an install may pre-create the Internet egress policy: the app must
+/// want it and run in a dedicated baseline namespace. The shared apps
+/// namespace and privileged namespaces are excluded because the policy selects
+/// every pod in its namespace.
+pub fn preinstall_internet(namespace: &str, exposure: &Exposure, baseline_pool: &[String]) -> bool {
+    exposure.internet && baseline_pool.iter().any(|n| n == namespace)
+}
+
 /// Coerce numeric strings for schema fields typed `integer`/`number`. Browser
 /// forms submit every input as a string, and the catalog schema rejects
 /// `"10001"` for an integer; doing this server-side keeps older UI builds and
@@ -2108,6 +2155,22 @@ mod tests {
         assert!(validate_subdomain("").is_ok());
         assert!(validate_subdomain("media").is_ok());
         assert!(validate_subdomain("Bad").is_err());
+    }
+
+    #[test]
+    fn preinstall_internet_only_for_dedicated_baseline_namespaces() {
+        let pool = vec!["naslos-app-1".to_string(), "naslos-app-2".to_string()];
+        let on = Exposure::default();
+        assert!(preinstall_internet("naslos-app-1", &on, &pool));
+        // Shared and privileged namespaces are namespace-scoped selectors.
+        assert!(!preinstall_internet("naslos-apps", &on, &pool));
+        assert!(!preinstall_internet("naslos-apps-priv", &on, &pool));
+        // An Internet opt-out must not create the policy.
+        let off = Exposure {
+            internet: false,
+            ..Exposure::default()
+        };
+        assert!(!preinstall_internet("naslos-app-1", &off, &pool));
     }
 
     #[test]

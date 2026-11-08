@@ -380,7 +380,11 @@ with a sibling `naslos-app.yaml` install-config. See
 - **FR-APP-11** — The API MUST own one Traefik `IngressRoute` per app plus its
   middlewares and the per-app Internet-egress `NetworkPolicy` in the app
   namespace, and MUST reconcile them on startup and delete them on uninstall.
-  *(routing tests; startup call in `main.rs` after SEC-2026-H9)*
+  When an app installs into a dedicated (isolated) baseline namespace with
+  `internet` on, the API MUST apply the egress policy **before** the Helm
+  install wait, and remove it again if the install fails, so an app whose first
+  start requires the public network can become ready. *(routing tests; startup
+  call in `main.rs` after SEC-2026-H9)*
 - **FR-APP-16** — When a manifest declares no route target, the API MUST
   discover the release's Services from its Helm labels, route to one, and expose
   the candidates for the operator to pick. *(discovery_test.go)*
