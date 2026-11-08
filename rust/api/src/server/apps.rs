@@ -1,7 +1,7 @@
 //! Installed-app handlers and the async job endpoints (port of
 //! `server/apps.go` app part and `server/app_jobs.go`).
 
-use crate::apps::{Exposure, InstallRequest};
+use crate::apps::{ExposurePatch, InstallRequest};
 use crate::json;
 use crate::state::AppState;
 use axum::body::Body;
@@ -52,7 +52,7 @@ struct InstallBody {
     #[serde(default)]
     values: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(default)]
-    exposure: Option<Exposure>,
+    exposure: Option<ExposurePatch>,
     #[serde(default, rename = "baseDomain")]
     base_domain: String,
     #[serde(default)]

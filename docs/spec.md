@@ -366,15 +366,21 @@ with a sibling `naslos-app.yaml` install-config. See
   fall back to the stale clone when the remote is unreachable. *(chartsrepo
   tests)*
 - **FR-APP-10** — Exposure MUST be orthogonal toggles: `baseDomain`, `subdomain`,
-  `tls`, `auth`, `localOnly`. The `baseDomain` MUST be selectable among the
-  configured domains (primary first, default the primary) and an unconfigured one
-  MUST be rejected. Turning `tls` off MUST NOT inherit subdomain HSTS; an empty
-  `subdomain` MUST remove the route (cluster-internal only); `auth` MUST be
-  offered only when the selected base domain is in the effective SSO list.
+  `tls`, `auth`, `localOnly`, `internet`. The `baseDomain` MUST be selectable
+  among the configured domains (primary first, default the primary) and an
+  unconfigured one MUST be rejected. Turning `tls` off MUST NOT inherit
+  subdomain HSTS; an empty `subdomain` MUST remove the route (cluster-internal
+  only); `auth` MUST be offered only when the selected base domain is in the
+  effective SSO list. `internet` MUST default to on. Turning it off MUST be
+  accepted only for an app in a dedicated (isolated) baseline namespace, where
+  the app MUST be denied public egress while keeping cluster DNS and
+  app-to-app traffic; the API MUST reject the opt-out for privileged or shared
+  namespaces, whose policy always allows public egress.
   *(routing tests, apps tests, server tests)*
 - **FR-APP-11** — The API MUST own one Traefik `IngressRoute` per app plus its
-  middlewares in `naslos-apps`, and MUST reconcile them on startup and delete
-  them on uninstall. *(routing tests; startup call in `main.rs` after SEC-2026-H9)*
+  middlewares and the per-app Internet-egress `NetworkPolicy` in the app
+  namespace, and MUST reconcile them on startup and delete them on uninstall.
+  *(routing tests; startup call in `main.rs` after SEC-2026-H9)*
 - **FR-APP-16** — When a manifest declares no route target, the API MUST
   discover the release's Services from its Helm labels, route to one, and expose
   the candidates for the operator to pick. *(discovery_test.go)*

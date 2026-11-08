@@ -21,6 +21,9 @@ pub struct Spec {
     pub tls: bool,
     pub auth: bool,
     pub local_only: bool,
+    /// Whether the app may reach the public Internet. The base namespace
+    /// policy grants only DNS + app-to-app; this adds an additive allow.
+    pub internet: bool,
     pub service: String,
     pub port: i64,
     pub scheme: String,
@@ -113,6 +116,61 @@ pub fn render(spec: &Spec) -> Result<Vec<serde_json::Value>, String> {
         "spec": route_spec,
     }));
     Ok(objects)
+}
+
+/// Name of the per-app Internet-egress NetworkPolicy.
+pub fn internet_policy_name(name: &str) -> String {
+    format!("{name}-internet")
+}
+
+/// The additive Egress policy that grants public Internet access. It never
+/// opens the cluster, LAN or link-local ranges, so an app cannot use it to
+/// reach the API, kubelet, the host or a metadata service. It also repeats the
+/// base DNS and app-to-app allows so it stays correct where the chart's base
+/// policies are disabled (`networkPolicy.enabled=false`).
+pub fn internet_policy(spec: &Spec) -> serde_json::Value {
+    serde_json::json!({
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": internet_policy_name(&spec.name),
+            "namespace": spec.namespace,
+        },
+        "spec": {
+            "podSelector": {},
+            "policyTypes": ["Egress"],
+            "egress": [
+                {
+                    "to": [
+                        { "ipBlock": { "cidr": "0.0.0.0/0", "except": [
+                            "10.0.0.0/8",
+                            "172.16.0.0/12",
+                            "192.168.0.0/16",
+                            "169.254.0.0/16"
+                        ]}},
+                        { "ipBlock": { "cidr": "::/0", "except": [
+                            "fc00::/7",
+                            "fe80::/10"
+                        ]}}
+                    ]
+                },
+                {
+                    "to": [{ "namespaceSelector": { "matchLabels": {
+                        "kubernetes.io/metadata.name": "kube-system"
+                    }}}],
+                    "ports": [
+                        { "port": 53, "protocol": "UDP" },
+                        { "port": 53, "protocol": "TCP" }
+                    ]
+                },
+                {
+                    "to": [{ "namespaceSelector": { "matchLabels": {
+                        "naslos.local/apps": "true"
+                    }}}]
+                }
+            ]
+        }
+    })
 }
 
 fn security_headers_middleware(namespace: &str) -> serde_json::Value {
@@ -224,6 +282,7 @@ impl KubeRouter {
             tls: rec.exposure.tls,
             auth: rec.exposure.auth,
             local_only: rec.exposure.local_only,
+            internet: rec.exposure.internet,
             service: rec.exposure.service.clone(),
             port: rec.exposure.port,
             scheme: rec.exposure.scheme.clone(),
@@ -431,23 +490,62 @@ impl Router for KubeRouter {
         sso_domains: &[String],
     ) -> Result<(), String> {
         let spec = self.spec_for(rec, namespace, base_domain);
+        let mut errs = Vec::new();
+        // Internet access is independent of routing: an app can be
+        // cluster-internal and still need outbound access. A policy failure
+        // must not stop the route from converging (and vice versa).
+        if spec.internet {
+            if let Err(e) = self.apply_object(&internet_policy(&spec)).await {
+                errs.push(e);
+            }
+        } else if let Err(e) = self
+            .kube
+            .delete(
+                "networkpolicy",
+                &internet_policy_name(&rec.name),
+                &spec.namespace,
+            )
+            .await
+        {
+            errs.push(e);
+        }
         if spec.auth && !sso_domains.iter().any(|d| d == base_domain) {
-            return Err(format!(
+            errs.push(format!(
                 "base domain {base_domain:?} is not in the SSO domain list; auth is unavailable"
             ));
+        } else {
+            match render(&spec) {
+                Ok(objects) if objects.is_empty() => {
+                    if let Err(e) = self.delete_route(&spec.namespace, &rec.name).await {
+                        errs.push(e);
+                    }
+                }
+                Ok(objects) => {
+                    if spec.tls
+                        && !spec.tls_secret.is_empty()
+                        && spec.namespace != self.opts.namespace
+                    {
+                        if let Err(e) = self
+                            .copy_tls_secret(&spec.namespace, &spec.tls_secret)
+                            .await
+                        {
+                            errs.push(e);
+                        }
+                    }
+                    for obj in &objects {
+                        if let Err(e) = self.apply_object(obj).await {
+                            errs.push(e);
+                        }
+                    }
+                }
+                Err(e) => errs.push(e),
+            }
         }
-        if spec.tls && !spec.tls_secret.is_empty() && spec.namespace != self.opts.namespace {
-            self.copy_tls_secret(&spec.namespace, &spec.tls_secret)
-                .await?;
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            Err(errs.join("; "))
         }
-        let objects = render(&spec)?;
-        if objects.is_empty() {
-            return self.delete(&spec.namespace, &rec.name).await;
-        }
-        for obj in &objects {
-            self.apply_object(obj).await?;
-        }
-        Ok(())
     }
 
     async fn delete(&self, namespace: &str, name: &str) -> Result<(), String> {
@@ -456,9 +554,18 @@ impl Router for KubeRouter {
         } else {
             namespace.to_string()
         };
-        self.kube.delete("ingressroute", name, &namespace).await?;
         self.kube
-            .delete("middleware", &format!("{name}-ipallowlist"), &namespace)
+            .delete("networkpolicy", &internet_policy_name(name), &namespace)
+            .await?;
+        self.delete_route(&namespace, name).await
+    }
+}
+
+impl KubeRouter {
+    async fn delete_route(&self, namespace: &str, name: &str) -> Result<(), String> {
+        self.kube.delete("ingressroute", name, namespace).await?;
+        self.kube
+            .delete("middleware", &format!("{name}-ipallowlist"), namespace)
             .await
     }
 }
@@ -654,6 +761,50 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("naslos-authelia.naslos.svc.cluster.local:80"));
+    }
+
+    #[test]
+    fn internet_policy_allows_public_but_not_private_ranges() {
+        let p = internet_policy(&spec());
+        assert_eq!(p["kind"], "NetworkPolicy");
+        assert_eq!(p["metadata"]["name"], "nginx-internet");
+        assert_eq!(p["metadata"]["namespace"], "naslos-apps");
+        assert_eq!(p["spec"]["policyTypes"][0], "Egress");
+        let egress = &p["spec"]["egress"];
+        let to = &egress[0]["to"];
+        assert_eq!(to[0]["ipBlock"]["cidr"], "0.0.0.0/0");
+        let except: Vec<&str> = to[0]["ipBlock"]["except"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for cidr in [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+        ] {
+            assert!(except.contains(&cidr), "must exclude {cidr}");
+        }
+        let v6: Vec<&str> = to[1]["ipBlock"]["except"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(v6.contains(&"fc00::/7"));
+        assert!(v6.contains(&"fe80::/10"));
+        // The policy repeats the base DNS and app-to-app allows so it stays
+        // correct when `networkPolicy.enabled=false`.
+        assert_eq!(
+            egress[1]["to"][0]["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"],
+            "kube-system"
+        );
+        assert_eq!(
+            egress[2]["to"][0]["namespaceSelector"]["matchLabels"]["naslos.local/apps"],
+            "true"
+        );
     }
 
     #[test]
