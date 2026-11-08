@@ -38,16 +38,15 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   (238G, `nvme0n1`) hosts app data. Ownership is `admin:naslos_users`
   (10001:10000), directories setgid. The `naslos-pool-ssd-storage-*`
   provisioner/StorageClass remains from the storage-pool drill.
-- **Apps/domains:** no app is currently installed (`apps.json` is empty); the
-  SearXNG test install in `naslos-app-1` was removed after the upgrade. The
-  `shail.ovh` domain (OVH, production, `sso: true`) and the
-  `naslos-shail-ovh-tls` wildcard secret remain in `naslos-app-1`.
+- **Apps/domains:** SearXNG is installed in `naslos-app-1` at
+  `search.shail.ovh` and works (live test 2026-11-08: 57 results, no engine
+  timeouts; `searxng-internet` policy applied). The `shail.ovh` domain (OVH,
+  production, `sso: true`) and the `naslos-shail-ovh-tls` wildcard secret are
+  present.
 - **Update check:** current `0.3.9`; no newer release.
 
 ### Open items
 
-- **Reinstall SearXNG** (or another app) if needed; the install form's
-  "Internet access" toggle defaults on, so the app gets `<app>-internet`.
 - **SMB account-case fix** merged to `master` in PR #123 (canonical lowercase
   keys, load-time merge, group-by-name rendering, startup apply); it is not yet
   in a release image. The live passdb was remediated manually on 2026-11-08.
@@ -163,6 +162,15 @@ sh scripts/audit.sh
     when it is absent from `sources.json` — to change its URL/channels/auth,
     delete it (`DELETE /api/sources/naslos`) and restart the API so it re-seeds
     from env.
+15. **Live hotfixes survive Helm upgrades.** The 0.3.9 upgrade initially kept
+    the 0.3.7 `hotfix-bin` API command (`/hotfix-bin/hotfix/naslos-api`) and the
+    UI `naslos-ui-nginx` ConfigMap/PVC root (`/var/lib/naslos/ui-html`), so the
+    node reported 0.3.9 while running the old API/UI and the new app feature
+    was inactive. They were removed on 2026-11-08: the API now runs
+    `/app/naslos-api` from the image and the UI serves `/usr/share/nginx/html`.
+    If an upgrade behaves like the old version, check the Deployment `command`
+    and the UI nginx root first. Never ship a fix as a live `kubectl patch`;
+    put it in the image/chart.
 
 ## History
 
