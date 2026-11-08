@@ -652,7 +652,10 @@ networkPolicy:
   #
   # `ingressPluginsCIDR`: where the entry traffic reaches Traefik from. Traefik
   #   binds hostPort 80/443, so this is the node/LAN address family, NOT the pod
-  #   CIDR.
+  #   CIDR. The installer always sets this to the node's /24.
+  # `publicIngressCIDR`: an extra Traefik-ingress allow for an internet-facing
+  #   node. Set 0.0.0.0/0 to accept public sources; the proxy still enforces
+  #   Authelia and the per-app exposure rules. Empty keeps the LAN-only posture.
   # `probeCIDR`: where kubelet probes originate (the node). Leaving this empty
   #   emits no probe ipBlock; do NOT set it to the pod CIDR (10.244.0.0/16) -
   #   that would admit every pod in the cluster.
@@ -665,6 +668,7 @@ networkPolicy:
   # installing a policy CNI. The production node is 192.168.1.38 (so 192.168.1.0/24).
   nodeCIDR: ""
   ingressPluginsCIDR: "192.168.1.0/24"
+  publicIngressCIDR: ""
   probeCIDR: ""
   serviceCIDR: 10.96.0.0/12
   dnsCIDR: 169.254.0.0/16

@@ -117,6 +117,11 @@ plus overrides:
 | `networkPolicy.nfsClientCIDR` | the LAN allowed to mount NFS |
 | `<comp>.image.repository` / `.tag` | the published image base for the pack version. **A released pack** already pins `<comp>.image.digest` (or a full `openldap.image` reference): the engine MUST NOT override a digest-pinned reference with a repository/tag, and MUST leave `.image.digest`/`openldap.image` as the pack sets them (FR-INSTALL-13) |
 
+`networkPolicy.publicIngressCIDR` is **not** an engine override: it comes from
+the packed `values-installer.yaml` (`0.0.0.0/0`) and adds the public
+Traefik-ingress allow for internet-facing nodes. The engine MUST leave it as
+the pack sets it; the LAN `ingressPluginsCIDR` still limits non-public entry.
+
 The chart generates `naslos-openldap`/`naslos-openldap-tls` itself (no
 out-of-band step). The internal LDAP suffix (`openldap.baseDN`) is fixed at
 `dc=naslos,dc=local` and must not follow the public domain: it is baked into the

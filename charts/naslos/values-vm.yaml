@@ -156,7 +156,10 @@ ingress:
 # API reach the agent (:9090) and the Talos API (:50000) once enforced.
 networkPolicy:
   nodeCIDR: 192.168.1.0/24
+  # The installer sets ingressPluginsCIDR to the node's /24; this extra allow
+  # is what makes the public app domains reachable from the Internet.
   ingressPluginsCIDR: 192.168.1.0/24
+  publicIngressCIDR: 0.0.0.0/0
   nfsClientCIDR: 192.168.1.0/24
   # The app installer clones git chart repositories from the API pod, so allow
   # outbound git (HTTPS/SSH/git://) to the Internet. Narrow gitEgressCIDRs to a
