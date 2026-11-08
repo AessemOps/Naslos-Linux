@@ -1,0 +1,69 @@
+{{- /*
+Per-pool app storage. On first install into a ZFS pool the API creates a
+pool-scoped local-path provisioner (ConfigMap + Deployment in
+local-path-storage) and a StorageClass. These permissions are limited to
+StorageClass objects and Deployments/ConfigMaps in the provisioner namespace.
+*/}}
+{{- if .Values.apps.poolStorage.enabled }}
+{{- $rels := .Release.Namespace }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: naslos-api-pool-storage
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: api
+rules:
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: naslos-api-pool-storage
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: api
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: naslos-api-pool-storage
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ $rels }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: naslos-api-pool-provisioners
+  namespace: local-path-storage
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: api
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: naslos-api-pool-provisioners
+  namespace: local-path-storage
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: api
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: naslos-api-pool-provisioners
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ $rels }}
+{{- end }}
