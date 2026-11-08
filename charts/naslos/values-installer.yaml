@@ -112,7 +112,11 @@ ddns:
 # enforced, so a wrong value locks out the API server or the UI.
 networkPolicy:
   nodeCIDR: 192.168.1.0/24
+  # The engine overrides ingressPluginsCIDR with the node's /24; this extra
+  # allow keeps public app domains reachable from the Internet. The proxy
+  # still enforces Authelia and the per-app exposure rules.
   ingressPluginsCIDR: 192.168.1.0/24
+  publicIngressCIDR: 0.0.0.0/0
   nfsClientCIDR: 192.168.1.0/24
   gitEgress: true
   ddnsEgress: true

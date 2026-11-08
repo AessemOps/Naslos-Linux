@@ -51,10 +51,12 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 - **SMB account-case fix** merged to `master` in PR #123 (canonical lowercase
   keys, load-time merge, group-by-name rendering, startup apply); it is not yet
   in a release image. The live passdb was remediated manually on 2026-11-08.
-- **External access to `shail.ovh`** relies on the OVH router forwarding 80/443
-  to `192.168.1.38`. Verify the forward target (the node's LAN IP changed from
-  the old `.117`) and use a static DHCP lease; NAT loopback is needed for LAN
-  clients using the public name.
+- **External ingress:** the OVH router forwards 80/443 to `192.168.1.38`
+  (verified by packet capture: public SYNs arrive). Public access was blocked
+  by `naslos-traefik-ingress` allowing only `192.168.1.0/24`; the live policy
+  is patched to allow `0.0.0.0/0` and `https://search.shail.ovh/` is reachable
+  externally. The durable fix is `networkPolicy.publicIngressCIDR: 0.0.0.0/0`
+  in the node/installer overlays.
 - **Playwright** has not been rerun since the bare-metal switch.
 
 ## How to operate
