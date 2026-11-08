@@ -233,6 +233,17 @@ transient by design.
   on that port (the open M4 residual). The agent's old ClusterRole was removed
   (AUDIT-M5) — it has no Kubernetes API permissions at all.
 
+## App storage pools
+
+New installs can put the chart's config/database PVCs on a ZFS pool. In the
+install dialog choose **Storage pool**; the API creates a pool-scoped
+local-path provisioner in `local-path-storage` and a
+`naslos-pool-<slug>-<hash>` StorageClass, then points every
+`persistence.*.storageClass` at it. The provisioned PVs land under
+`/var/mnt/<pool>/apps`. Leave the selector on **Default (local-path)** for the
+previous behaviour. The dataset selector is separate: it controls the app's
+media/data claim, not its persistence PVCs.
+
 ## Privileged workloads and why (AUDIT-L3)
 
 There are two namespaces, separated by AUDIT-M6: the hostNetwork/privileged

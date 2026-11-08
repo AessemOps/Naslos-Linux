@@ -61,6 +61,8 @@ struct InstallBody {
     privileged_confirmed: bool,
     #[serde(default)]
     datasets: Vec<String>,
+    #[serde(default)]
+    pool: String,
 }
 
 /// A privileged catalog entry moves the app into the PSA-privileged namespace,
@@ -102,12 +104,30 @@ pub async fn apps_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
             req.base_domain
         ));
     }
+    if !req.pool.is_empty() {
+        let Some(agent) = state.agent.as_ref() else {
+            return app_unavailable();
+        };
+        match agent.list_pools().await {
+            Ok(pools) if !pools.iter().any(|pool| pool.name == req.pool) => {
+                return bad_request(&format!("storage pool {:?} does not exist", req.pool));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return json(
+                    StatusCode::BAD_GATEWAY,
+                    serde_json::json!({ "error": format!("listing storage pools: {e}") }),
+                );
+            }
+        }
+    }
     let install = InstallRequest {
         name: req.name.clone(),
         values: req.values.clone(),
         exposure: req.exposure.clone(),
         base_domain: req.base_domain.clone(),
         datasets: req.datasets.clone(),
+        pool: req.pool.clone(),
         privileged_confirmed: req.privileged_confirmed,
     };
     match state.app_jobs.enqueue(

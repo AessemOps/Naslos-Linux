@@ -50,6 +50,8 @@
   let privilegedConfirmed = false;
   let managedDatasets: { name: string; hostPath: string; shared: boolean }[] = [];
   let selectedDataset = '';
+  let storagePools: string[] = [];
+  let selectedPool = '';
   let activeStep: 'config' | 'exposure' | 'review' | 'confirm' = 'config';
 
   $: selectedDatasetInfo = managedDatasets.find((d) => d.name === selectedDataset);
@@ -58,14 +60,21 @@
 
   async function loadApp() {
     try {
-      const [res, registryRes] = await Promise.all([
+      const [res, registryRes, poolsRes] = await Promise.all([
         fetch(`/api/catalog/${encodeURIComponent(appName)}`),
-        fetch('/api/datasets/registry')
+        fetch('/api/datasets/registry'),
+        fetch('/api/volumes/zfs')
       ]);
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
       if (registryRes.ok) managedDatasets = await registryRes.json();
+      if (poolsRes.ok) {
+        const pools = await poolsRes.json();
+        storagePools = Array.isArray(pools)
+          ? pools.map((pool: any) => pool.name).filter((name: any) => typeof name === 'string')
+          : [];
+      }
       app = await res.json();
       if (app) {
         values = { ...app.defaultValues };
@@ -120,7 +129,8 @@
           baseDomain,
           confirmed: true,
           privilegedConfirmed,
-          datasets: selectedDataset ? [selectedDataset] : []
+          datasets: selectedDataset ? [selectedDataset] : [],
+          pool: selectedPool
         })
       });
       if (!res.ok) {
@@ -194,6 +204,19 @@
               </p>
             {/if}
           </div>
+          <div class="mt-4">
+            <label class="label" for="install-pool">Storage pool</label>
+            <select id="install-pool" class="input w-full" bind:value={selectedPool}>
+              <option value="">Default (local-path)</option>
+              {#each storagePools as pool (pool)}
+                <option value={pool}>{pool}</option>
+              {/each}
+            </select>
+            <p class="text-xs text-gray-500 mt-1">
+              App config, database and upload PVCs are created under /var/mnt/&lt;pool&gt;/apps.
+              The dataset above is separate: it controls the app's media/data volume.
+            </p>
+          </div>
         {:else if activeStep === 'exposure'}
           <ExposureForm bind:exposure bind:baseDomain {selectableDomains} {ssoDomains} />
         {:else if activeStep === 'review'}
@@ -203,6 +226,7 @@
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Chart</span><span class="font-medium text-sm">{app.chart}</span></div>
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Version</span><span class="font-medium">{app.version}</span></div>
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Dataset</span><span class="font-medium text-sm">{selectedDataset ? `${selectedDataset} (${selectedDatasetInfo?.shared ? 'shared' : 'private'})` : 'none'}</span></div>
+            <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Storage pool</span><span class="font-medium text-sm">{selectedPool || 'default (local-path)'}</span></div>
             <div class="flex justify-between py-2 border-b border-naslos-border">
               <span class="text-gray-400">Exposure</span>
               <span class="font-medium text-sm text-right">

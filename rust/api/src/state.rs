@@ -523,6 +523,8 @@ fn build_app_manager(
         privileged_namespace_pool,
         kube: kube.cloned(),
         datasets,
+        pool_provisioner_image: std::env::var("APPS_POOL_PROVISIONER_IMAGE")
+            .unwrap_or_else(|_| "rancher/local-path-provisioner:v0.0.26".to_string()),
     };
     match crate::apps::Manager::new(cfg) {
         Ok(m) => Some(Arc::new(m)),

@@ -20,6 +20,11 @@ spec:
         app.kubernetes.io/name: naslos-api
     spec:
       serviceAccountName: naslos-api
+      securityContext:
+        # SMB accounts share GID 10000 (naslos_users). Give the API's naslos
+        # user the same supplementary group so it can read/write the imported
+        # Data pool with the share ownership model.
+        supplementalGroups: [10000]
       initContainers:
         # Best-effort ordering guard: wait briefly for OpenLDAP so a cold start
         # (both pods restarting together) does not serve identity errors in the
@@ -275,6 +280,10 @@ spec:
             {{- end }}
             - name: APPS_CONFIG
               value: {{ .Values.api.appsFile | default "/var/lib/naslos/apps.json" | quote }}
+            {{- if .Values.apps.poolStorage.enabled }}
+            - name: APPS_POOL_PROVISIONER_IMAGE
+              value: {{ .Values.apps.poolStorage.provisionerImage | default "rancher/local-path-provisioner:v0.0.26" | quote }}
+            {{- end }}
             - name: SOURCES_CONFIG
               value: {{ .Values.api.sourcesFile | default "/var/lib/naslos/sources.json" | quote }}
             - name: DATASETS_CONFIG
