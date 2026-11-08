@@ -687,6 +687,7 @@ impl Manager {
         strip_dataset_values(&mut client_values);
         let mut values = merge_values(&chart_values, app.default_values.as_object());
         values = merge_values(&serde_json::Value::Object(values), Some(&client_values));
+        coerce_schema_numbers(&app.schema, &mut values);
         validate_install_values(&app, &values)?;
         let datasets = normalize_dataset_names(&req.datasets)?;
         let (namespace, _reservation) = self.reserve_namespace(app.privileged)?;
@@ -825,6 +826,7 @@ impl Manager {
                 }
             }
         }
+        coerce_schema_numbers(&app.schema, &mut merged);
         // `install` validated the catalog schema; `upgrade` did not.
         validate_install_values(&app, &merged)?;
 
@@ -1717,6 +1719,43 @@ pub fn exposure_for(
     e
 }
 
+/// Coerce numeric strings for schema fields typed `integer`/`number`. Browser
+/// forms submit every input as a string, and the catalog schema rejects
+/// `"10001"` for an integer; doing this server-side keeps older UI builds and
+/// direct API clients working.
+pub fn coerce_schema_numbers(
+    schema: &serde_json::Value,
+    values: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) else {
+        return;
+    };
+    for (key, property) in properties {
+        let Some(kind) = property.get("type").and_then(|t| t.as_str()) else {
+            continue;
+        };
+        let Some(value) = values.get_mut(key) else {
+            continue;
+        };
+        let Some(raw) = value.as_str() else {
+            continue;
+        };
+        match kind {
+            "integer" => {
+                if let Ok(parsed) = raw.trim().parse::<i64>() {
+                    *value = serde_json::json!(parsed);
+                }
+            }
+            "number" => {
+                if let Ok(parsed) = raw.trim().parse::<f64>() {
+                    *value = serde_json::json!(parsed);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Deep-merge overlay into base and return a new map.
 /// Validate the merged install values against the catalog's JSON schema
 /// (SEC-2026-D7). A missing/null schema means the catalog does not constrain
@@ -2406,5 +2445,43 @@ mod dataset_layout_tests {
         )
         .unwrap();
         assert!(!chart_tree_mentions_datasets(legacy.path()));
+    }
+}
+
+#[cfg(test)]
+mod value_coercion_tests {
+    use super::coerce_schema_numbers;
+    use serde_json::json;
+
+    #[test]
+    fn numeric_strings_are_coerced_for_integer_and_number_fields() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "puid": { "type": "integer" },
+                "ratio": { "type": "number" },
+                "name": { "type": "string" }
+            }
+        });
+        let mut values = serde_json::Map::new();
+        values.insert("puid".into(), json!("10001"));
+        values.insert("ratio".into(), json!("1.5"));
+        values.insert("name".into(), json!("42"));
+        coerce_schema_numbers(&schema, &mut values);
+        assert_eq!(values["puid"], json!(10001));
+        assert_eq!(values["ratio"], json!(1.5));
+        assert_eq!(values["name"], json!("42"));
+    }
+
+    #[test]
+    fn unparseable_numeric_strings_stay_for_schema_validation() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "pgid": { "type": "integer" } }
+        });
+        let mut values = serde_json::Map::new();
+        values.insert("pgid".into(), json!("not-a-number"));
+        coerce_schema_numbers(&schema, &mut values);
+        assert_eq!(values["pgid"], json!("not-a-number"));
     }
 }

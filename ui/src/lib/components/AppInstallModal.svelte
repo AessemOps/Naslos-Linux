@@ -54,12 +54,29 @@
   let storagePools: string[] = [];
   let selectedPool = '';
   let activeStep: 'config' | 'exposure' | 'review' | 'confirm' = 'config';
+  // Naslos datasets are group-owned by `naslos_users` (10000). The schema's
+  // upstream default (1000) cannot read them, so offer the platform groups.
+  const groupOptions = [
+    { value: 10000, label: 'naslos_users (10000) — dataset access' },
+    { value: 1000, label: 'default (1000)' }
+  ];
+  // Apply the dataset owner once when the first dataset is selected. The user
+  // can still change PUID/PGID afterwards.
+  let datasetOwnerApplied = false;
 
   function datasetBlocked(dataset: { name: string; shared: boolean; attachedTo?: string[] }): boolean {
     return !dataset.shared && (dataset.attachedTo?.length ?? 0) > 0 && !(dataset.attachedTo ?? []).includes(appName);
   }
 
   $: sharedSelected = managedDatasets.filter((d) => d.shared && selectedDatasets.includes(d.name));
+  $: if (app && selectedDatasets.length > 0 && !datasetOwnerApplied) {
+    datasetOwnerApplied = true;
+    const props = app.schema?.properties ?? {};
+    const next = { ...values };
+    if (props.pgid && Number(next.pgid ?? 0) === Number(props.pgid.default ?? 0)) next.pgid = 10000;
+    if (props.puid && Number(next.puid ?? 0) === Number(props.puid.default ?? 0)) next.puid = 10001;
+    values = next;
+  }
 
   const dispatch = createEventDispatcher();
 
@@ -191,7 +208,7 @@
       </div>
       <div class="flex-1 overflow-y-auto p-6">
         {#if activeStep === 'config'}
-          <SchemaForm {app} bind:values />
+          <SchemaForm {app} bind:values {groupOptions} />
           <div class="mt-4">
             <span class="label">Datasets</span>
             {#if managedDatasets.length === 0}
@@ -222,6 +239,8 @@
               <p class="text-xs text-gray-500 mt-1">
                 Each selected dataset is mounted at <span class="font-mono">/datasets/&lt;name&gt;</span>. A private
                 dataset is attached to this app only; a shared dataset can be attached to several apps.
+                Datasets are owned by group <span class="font-mono">naslos_users (10000)</span>; selecting one sets
+                PUID/PGID to 10001/10000 so the app can read it.
               </p>
               {#each sharedSelected as dataset (dataset.name)}
                 <p role="alert" class="text-xs text-amber-300 mt-1">

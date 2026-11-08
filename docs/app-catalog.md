@@ -228,8 +228,15 @@ while any installed app has `auth` on that domain.
 | `type: string` | input |
 | `format: password` / `email` | password / email input |
 | `type: boolean` | toggle |
+| `type: integer` / `type: number` | numeric input, submitted as a number (the API also coerces numeric strings) |
+| `pgid` (`integer`) | group select with `naslos_users (10000)` and `default (1000)` |
 | `type: object` (nested) | nested section |
 | `required`, `default` | marked / prefilled |
+
+Naslos datasets are owned by `admin:naslos_users` (10001:10000). An app that
+mounts a dataset must run with group `10000`; the install form sets PUID/PGID
+to `10001`/`10000` when the first dataset is selected, and the group select can
+change it on install or reconfigure.
 
 ## Adding an app
 
