@@ -32,6 +32,24 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `/Data` tree on 2026-11-07). `ssd-storage` (238G, single `nvme0n1`) is a
   fresh pool created 2026-11-07 after wiping the old unavailable TrueNAS
   `ssd-storage` labels.
+- Apps can target a ZFS pool: the install dialog's **Storage pool** puts the
+  chart's persistence PVCs under `/var/mnt/<pool>/apps` through a pool-scoped
+  local-path provisioner/StorageClass. A live drill installed `actual-budget`
+  into `ssd-storage` (PV under `/var/mnt/ssd-storage/apps`), then removed it;
+  the provisioner `naslos-pool-ssd-storage-119d1720` and its StorageClass
+  remain. This is a live API/UI hotfix plus manually applied RBAC; it is **not**
+  in the v0.3.7 release and needs the next release to become durable.
+- Ownership was normalized on 2026-11-07: all `Data` datasets (including the
+  `canmount=noauto` `Data/ix-apps` tree) are `admin:naslos_users`
+  (10001:10000), directories 2770/setgid and files 0660. `ssd-storage` and its
+  `apps` directory are 10001:10000 with 2775/0664 so app containers at UID 1000
+  can still traverse while SMB/API get group write. The API's `naslos` user
+  (65532) has supplemental GID 10000; API and SMB write tests passed.
+- The agent's `SharesClient` now reads the host `/var` (hostPath with
+  HostToContainer propagation) instead of the stale `/host` root bind, so the
+  New Share folder browser sees datasets mounted after the agent started.
+  Verified `GET /api/shares/folders?path=/var/mnt/Data/Animes` returns
+  `["Animes"]`.
 - The update check reports `current: 0.3.7`, `available: null`,
   `no newer release`.
 - The official catalog source follows `NaslosCharts` `main` (no commit pin), so
