@@ -22,7 +22,10 @@ async function waitForJob(request: APIRequestContext, jobId: string, timeout: nu
 // The installer profile disables the shared /var/mnt PV: an app must attach a
 // registered dataset, and the API then creates its per-app claim. Keep this E2E
 // test self-contained by creating and registering a small dataset on the pool.
-async function ensureTestDataset(request: APIRequestContext): Promise<{ name: string; dataset: string } | null> {
+async function ensureTestDataset(
+  request: APIRequestContext,
+  name: string
+): Promise<{ name: string; dataset: string } | null> {
   const res = await request.get('/api/datasets');
   if (!res.ok()) return null;
   const datasets = await res.json();
@@ -37,7 +40,6 @@ async function ensureTestDataset(request: APIRequestContext): Promise<{ name: st
   );
   if (!poolRoot) return null;
 
-  const name = 'e2e-apps';
   const dataset = `${poolRoot.name}/${name}`;
   const created = await request.post('/api/datasets', {
     data: { pool: poolRoot.name, name, options: {} }
@@ -101,10 +103,18 @@ test.describe('apps', () => {
     test.skip(!Array.isArray(catalog) || catalog.length === 0, 'no catalog entries; add and refresh a source first');
 
     const app = catalog[0];
-    const dataset = await ensureTestDataset(request);
-    test.skip(!dataset, 'no ZFS pool dataset is available for the app claim');
-
+    // Created datasets are tracked before the skip assertion so the finally
+    // cleanup runs even when the second dataset cannot be created.
+    const datasets: { name: string; dataset: string }[] = [];
     try {
+      // Attach two datasets so the multi-dataset path (one claim per dataset,
+      // both injected into the chart's `datasets` value) is exercised.
+      for (const name of ['e2e-apps-a', 'e2e-apps-b']) {
+        const ds = await ensureTestDataset(request, name);
+        if (ds) datasets.push(ds);
+      }
+      test.skip(datasets.length < 2, 'no ZFS pool dataset is available for the app claims');
+
       // A previous interrupted run may still own the release; remove it before
       // installing so the test is idempotent.
       const existing = await request.delete(`/api/apps/${app.name}`);
@@ -120,12 +130,19 @@ test.describe('apps', () => {
           values: app.defaultValues || {},
           exposure: { subdomain: '', tls: false, auth: false, localOnly: false },
           confirmed: true,
-          datasets: [dataset!.name]
+          datasets: [datasets[0]!.name, datasets[1]!.name]
         }
       });
       expect(created.status(), await created.text()).toBe(202);
       const installJob = await created.json();
       expect(await waitForJob(request, installJob.jobId, 280_000)).toBe('succeeded');
+
+      const detail = await request.get(`/api/apps/${encodeURIComponent(app.name)}`);
+      expect(detail.ok(), await detail.text()).toBeTruthy();
+      const record = await detail.json();
+      expect([...(record.datasets ?? [])].sort()).toEqual(
+        [datasets[0]!.name, datasets[1]!.name].sort()
+      );
 
       await page.goto('/apps');
       await page.getByRole('button', { name: 'Installed', exact: true }).click();
@@ -145,7 +162,9 @@ test.describe('apps', () => {
         const removeJob = await removed.json();
         expect(await waitForJob(request, removeJob.jobId, 120_000)).not.toBe('running');
       }
-      await removeTestDataset(request, dataset!.name, dataset!.dataset);
+      for (const dataset of datasets) {
+        await removeTestDataset(request, dataset.name, dataset.dataset);
+      }
     }
   });
 

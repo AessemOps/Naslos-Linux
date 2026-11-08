@@ -368,6 +368,9 @@ apps:
     namePrefix: naslos-app
     namespaces: 8
     privilegedNamespaces: 4
+    # Per-namespace PVC quota. A chart may use several PVCs for its own state
+    # (gameyfin uses 5) and each attached dataset adds one more.
+    pvcQuota: 12
   # Dataset access for baseline apps. PSA `baseline` forbids hostPath, but Naslos
   # datasets are host directories, so the platform exposes them as a static RWX
   # PV and the `naslos-datasets` PVC that apps mount. Privileged apps mount the
