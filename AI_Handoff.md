@@ -19,14 +19,14 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart `0.3.15`, appVersion `0.3.15`,
-  revision 14, deployed 2026-11-09 18:58 UTC (system updater from 0.3.14).
-  Images are digest-pinned from the 0.3.15 pack: API `fba9f104…`, agent
-  `d783334e…`, UI `a028d786…`, OpenLDAP `6a03938a…`, Samba `831bfdbf…`, NFS
-  `878cc0f0…`, terminal `cf895981…`. `/api/system/version` reports
-  chart/naslos `0.3.15`, profile `installer`, Talos v1.14.5, k8s v1.37.0.
+- **Deployed release:** Helm `naslos` chart `0.3.16`, appVersion `0.3.16`,
+  revision 15, deployed 2026-11-09 21:38 UTC (system updater from 0.3.15).
+  Images are digest-pinned from the 0.3.16 pack: API `a346e762…`, agent
+  `51d341c3…`, UI `a1e48fa4…`, OpenLDAP `5c39f01d…`, Samba `1d259145…`, NFS
+  `c45e4511…`, terminal `4be0d6fa…`. `/api/system/version` reports
+  chart/naslos `0.3.16`, profile `installer`, Talos v1.14.5, k8s v1.37.0.
 - **Latest release:** `v0.3.17` (2026-11-09) and installer `naslos-v0.3.17`
-  are published; the node is still on `0.3.15` (not upgraded). `v0.3.16`,
+  are published; the node is still on `0.3.16` (not upgraded). `v0.3.16`,
   `v0.3.15`, `v0.3.14`, `v0.3.13`, `v0.3.12`, `v0.3.11`, `v0.3.10` and
   `v0.3.9` were the previous releases, `v0.3.8` was superseded.
 - **Release notes since 0.3.7:**
@@ -34,7 +34,7 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
     error by granting read-only `pods` in the per-app isolation ClusterRole
     (bound by RoleBinding in each pool namespace only), guarded by an audit
     assertion. Same Installed rework as 0.3.16. PR #136.
-  - `0.3.16` (released, not deployed) — Apps → Installed rework: compact rows
+  - `0.3.16` (deployed) — Apps → Installed rework: compact rows
     with live CPU/RAM/network from the kubelet `stats/summary`, catalog update
     badges with a one-click tracked upgrade, a right-side detail drawer with
     client-side sparklines, a background catalog refresh at `CHARTS_TTL`, and a
@@ -96,7 +96,7 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `shail.ovh` domain (OVH, production, `sso: true`) and
   `naslos-shail-ovh-tls` are present. The baseline namespace pool is **full
   (8/8)**; the privileged pool has `naslos-app-p2..p4` free.
-- **Update check:** current deployed `0.3.15`; `v0.3.17` is available.
+- **Update check:** current deployed `0.3.16`; `v0.3.17` is available.
 
 ### Open items
 
