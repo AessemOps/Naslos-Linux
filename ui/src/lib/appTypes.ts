@@ -1,0 +1,64 @@
+export interface AppExposure {
+  subdomain: string;
+  tls: boolean;
+  auth: boolean;
+  localOnly: boolean;
+  internet: boolean;
+  service?: string;
+  port?: number;
+  scheme?: string;
+}
+
+/** The installed-app view returned by `GET /api/apps`. */
+export interface AppView {
+  name: string;
+  namespace: string;
+  chart: string;
+  status: string;
+  url: string;
+  orphaned: boolean;
+  description?: string;
+  chartVersion?: string;
+  chartPath?: string;
+  source?: string;
+  channel?: string;
+  datasets?: string[];
+  lastError?: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  exposure: AppExposure;
+  displayName: string;
+  icon: string;
+  iconUrl: string;
+  installedVersion: string;
+  latestVersion: string;
+  latestSource: string;
+  latestChannel: string;
+  updateAvailable: boolean;
+}
+
+/** One row of `GET /api/apps/usage`. */
+export interface AppUsage {
+  name: string;
+  namespace: string;
+  pods: number;
+  cpuMillicores: number | null;
+  memoryBytes: number | null;
+  networkRxBytesPerSec: number | null;
+  networkTxBytesPerSec: number | null;
+}
+
+export interface UsageReport {
+  available: boolean;
+  sampledAt: string;
+  error: string;
+  apps: AppUsage[];
+}
+
+/** Client-side 5-minute sparkline history for one app. */
+export interface AppUsageHistory {
+  cpu: number[];
+  memory: number[];
+  rx: number[];
+  tx: number[];
+}

@@ -307,6 +307,20 @@ impl Client {
         .await
     }
 
+    /// Fetch a raw API-server path through `kubectl get --raw` (the kubelet
+    /// proxy paths in `app_usage`). Callers must validate any name they
+    /// interpolate into `path`; node names are DNS-1123 subdomains.
+    pub async fn get_raw(&self, path: &str) -> Result<String, String> {
+        if !path.starts_with('/')
+            || path.contains("..")
+            || path.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Err(format!("invalid raw API path {path:?}"));
+        }
+        self.run(&["get".into(), "--raw".into(), path.to_string()], None)
+            .await
+    }
+
     /// List pods in one namespace, or across every namespace when empty.
     pub async fn list_pods(&self, namespace: &str) -> Result<serde_json::Value, String> {
         if namespace.is_empty() {
@@ -354,6 +368,18 @@ mod tests {
             namespace: "naslos".into(),
         };
         assert!(c.base_args().is_empty());
+    }
+
+    #[tokio::test]
+    async fn raw_paths_are_validated_before_running_kubectl() {
+        let c = Client {
+            binary: "kubectl".into(),
+            kubeconfig: None,
+            namespace: "naslos".into(),
+        };
+        assert!(c.get_raw("api/v1/nodes").await.is_err());
+        assert!(c.get_raw("/api/v1/nodes/a b").await.is_err());
+        assert!(c.get_raw("/api/../v1/nodes").await.is_err());
     }
 
     #[test]

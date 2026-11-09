@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import CatalogBrowser from '$lib/components/CatalogBrowser.svelte';
   import InstalledApps from '$lib/components/InstalledApps.svelte';
   import SourceList from '$lib/components/SourceList.svelte';
+  import { appUpdates, startAppUpdates } from '$lib/stores/appUpdates';
 
   let activeTab: 'catalog' | 'installed' | 'sources' = 'catalog';
 
@@ -10,6 +12,11 @@
     { id: 'installed', label: 'Installed' },
     { id: 'sources', label: 'Sources' }
   ] as const;
+
+  onMount(() => {
+    const stop = startAppUpdates();
+    return stop;
+  });
 </script>
 
 <div class="max-w-6xl mx-auto">
@@ -27,6 +34,12 @@
         on:click={() => activeTab = tab.id}
       >
         {tab.label}
+        {#if tab.id === 'installed' && $appUpdates.count > 0}
+          <span
+            class="ml-1.5 inline-flex items-center justify-center rounded-full bg-naslos-accent text-white text-[10px] leading-none px-1.5 py-0.5"
+            aria-hidden="true">{$appUpdates.count}</span
+          >
+        {/if}
       </button>
     {/each}
   </div>

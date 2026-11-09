@@ -4,7 +4,10 @@
 # apps namespace; installing a chart also needs to create the workloads it
 # renders, plus the API-owned IngressRoutes/middlewares and cert-manager CRs.
 # This is a namespaced Role: the API gets no cluster-scoped write, no
-# pods/exec, no node or proxy-secret access here.
+# pods/exec and no proxy-secret access here. The only cluster-scoped grants are
+# the read-only ClusterIssuers role below and the separate node metrics
+# ClusterRole at the end of this file (the kubelet stats proxy that feeds the
+# Installed tab's live usage; FR-APP-22).
 #
 # Secret CRUD here is also what lets DOMAIN and DYNAMIC-DNS credentials be
 # written to naslos-apps (docs/dynamic-dns.md); no new RBAC is needed and no
@@ -211,6 +214,46 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: naslos-api-apps
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.ui.enabled }}
+---
+# Kubelet access for the Installed tab's live CPU/RAM/network usage (FR-APP-22).
+# There is no metrics-server on the appliance, so the API reads the dependency-
+# free `/stats/summary` through the API server proxy. Only `get` on
+# `nodes/proxy` is granted (never a write verb), but that subresource is broader
+# than a metrics-only grant: the same proxy reaches pod specs, container logs
+# and the kubelet's exec/run/attach upgrade endpoints, and RBAC cannot narrow
+# kubelet subpaths. This is an accepted risk - the API is already owner-gated
+# and holds platform admin credentials - documented in docs/monitoring.md;
+# revisit it if a dedicated metrics identity is introduced.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: naslos-api-node-metrics
+  labels:
+    app.kubernetes.io/name: naslos
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: naslos-api-node-metrics
+  labels:
+    app.kubernetes.io/name: naslos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: naslos-api-node-metrics
 subjects:
   - kind: ServiceAccount
     name: naslos-api

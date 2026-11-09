@@ -2,41 +2,42 @@
   import { onMount } from 'svelte';
   import AppExposureModal from './AppExposureModal.svelte';
   import AppConfigureModal from './AppConfigureModal.svelte';
-  import { appJobs, trackAppJob } from '$lib/stores/appJobs';
-
-  interface AppView {
-    name: string;
-    namespace: string;
-    chart: string;
-    version: string;
-    status: string;
-    updatedAt: string;
-    description: string;
-    url: string;
-    orphaned: boolean;
-    datasets?: string[];
-    lastError?: string;
-    exposure: {
-      subdomain: string;
-      tls: boolean;
-      auth: boolean;
-      localOnly: boolean;
-      internet: boolean;
-    };
-  }
+  import InstalledAppRow from './InstalledAppRow.svelte';
+  import AppDetailDrawer from './AppDetailDrawer.svelte';
+  import AppUpdateModal from './AppUpdateModal.svelte';
+  import { appJobs } from '$lib/stores/appJobs';
+  import { appUpdates, refreshAppUpdates, startAppUpdates } from '$lib/stores/appUpdates';
+  import { formatBytes, formatBytesPerSec, formatMillicores } from '$lib/format';
+  import type { AppView, AppUsage, AppUsageHistory, UsageReport } from '$lib/appTypes';
 
   let apps: AppView[] = [];
   let loading = true;
   let error = '';
+  let selected: AppView | null = null;
   let editingExposure: string | null = null;
   let editingConfig: string | null = null;
+  let updating: AppView | null = null;
   // Apps with a job currently running: their actions are disabled and a badge
   // marks them as in-flight.
   let runningJobApps = new Set<string>();
   let previousRunning = new Set<string>();
 
-  async function loadApps() {
-    loading = true;
+  // Live usage from `/api/apps/usage` plus a client-side 5-minute history.
+  let usageAvailable = false;
+  let usageError = '';
+  let usageByName: Record<string, AppUsage> = {};
+  let historyByName: Record<string, AppUsageHistory> = {};
+  let usageInFlight = false;
+  let usageSeq = 0;
+  let usageTimer: ReturnType<typeof setInterval> | null = null;
+
+  let refreshing = false;
+  let refreshMessage = '';
+  let refreshError = '';
+  let lastUpdatesSignature: string | null = null;
+
+  async function loadApps(initial = false) {
+    if (initial) loading = true;
     error = '';
     try {
       const res = await fetch('/api/apps');
@@ -50,37 +51,108 @@
       apps = [];
     } finally {
       loading = false;
-    }
-  }
-
-  async function uninstallApp(name: string) {
-    if (!confirm(`Are you sure you want to uninstall ${name}? This will remove all app data.`)) {
-      return;
-    }
-    error = '';
-    try {
-      const res = await fetch(`/api/apps/${encodeURIComponent(name)}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `HTTP ${res.status}`);
+      // Keep the drawer in sync, and close it when the app disappeared.
+      if (selected) {
+        selected = apps.find((a) => a.name === selected!.name) ?? null;
       }
-      // The uninstall runs as a background job; the list refetches when it ends.
-      const data = await res.json();
-      if (data.jobId) trackAppJob(data.jobId);
-    } catch (e) {
-      error = `Failed to uninstall ${name}: ` + e;
     }
   }
 
-  function statusClass(status: string): string {
-    switch (status) {
-      case 'running': return 'bg-green-900/50 text-green-400';
-      case 'failed': return 'bg-red-900/50 text-red-400';
-      case 'pending': return 'bg-yellow-900/50 text-yellow-400';
-      case 'missing': return 'bg-amber-900/50 text-amber-400';
-      default: return 'bg-gray-900/50 text-gray-400';
+  function pushSample(values: number[], value: number | null | undefined): number[] {
+    if (value == null || !Number.isFinite(value)) return values;
+    return [...values, value].slice(-60);
+  }
+
+  function applyUsage(report: UsageReport) {
+    const next: Record<string, AppUsage> = {};
+    for (const usage of report.apps ?? []) {
+      next[usage.name] = usage;
+    }
+    usageByName = next;
+
+    const nextHistory: Record<string, AppUsageHistory> = {};
+    for (const [name, usage] of Object.entries(next)) {
+      const previous = historyByName[name] ?? { cpu: [], memory: [], rx: [], tx: [] };
+      nextHistory[name] = {
+        cpu: pushSample(previous.cpu, usage.cpuMillicores),
+        memory: pushSample(previous.memory, usage.memoryBytes),
+        rx: pushSample(previous.rx, usage.networkRxBytesPerSec),
+        tx: pushSample(previous.tx, usage.networkTxBytesPerSec)
+      };
+    }
+    historyByName = nextHistory;
+  }
+
+  async function pollUsage() {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    if (usageInFlight) return;
+    usageInFlight = true;
+    const seq = ++usageSeq;
+    try {
+      const res = await fetch('/api/apps/usage');
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const report = (await res.json()) as UsageReport;
+      // A slower earlier poll must not overwrite a newer sample.
+      if (seq !== usageSeq) return;
+      usageAvailable = Boolean(report.available);
+      usageError = report.error || '';
+      if (usageAvailable) {
+        applyUsage(report);
+      } else {
+        usageByName = {};
+      }
+    } catch (e) {
+      if (seq === usageSeq) {
+        usageAvailable = false;
+        usageError = `Usage is unavailable: ${e}`;
+        usageByName = {};
+      }
+    } finally {
+      usageInFlight = false;
     }
   }
+
+  async function checkNow() {
+    if (refreshing) return;
+    refreshing = true;
+    refreshMessage = '';
+    refreshError = '';
+    try {
+      const res = await fetch('/api/sources/refresh', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const errors = Array.isArray(data.errors) ? data.errors.join('; ') : data.error;
+        refreshError = errors || `Refresh failed (HTTP ${res.status})`;
+      } else {
+        refreshMessage = `Catalog refreshed — ${data.catalog ?? 0} apps available`;
+      }
+      // The updates store subscription reloads the list when the catalog
+      // signature changed; refreshing it first avoids a second /api/apps read.
+      await refreshAppUpdates();
+      await pollUsage();
+    } catch (e) {
+      refreshError = 'Refresh failed: ' + e;
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  $: updateCount = $appUpdates.count;
+  $: aggregate = (() => {
+    let cpu = 0;
+    let memory = 0;
+    let rx = 0;
+    let tx = 0;
+    for (const usage of Object.values(usageByName)) {
+      if (usage.cpuMillicores != null) cpu += usage.cpuMillicores;
+      if (usage.memoryBytes != null) memory += usage.memoryBytes;
+      if (usage.networkRxBytesPerSec != null) rx += usage.networkRxBytesPerSec;
+      if (usage.networkTxBytesPerSec != null) tx += usage.networkTxBytesPerSec;
+    }
+    return { cpu, memory, rx, tx };
+  })();
 
   // Follow the shared job store: mark in-flight apps, and reload once a job for
   // a listed app finishes so its status/record reflects the outcome.
@@ -95,9 +167,52 @@
     if (finished) loadApps();
   });
 
+  const unsubscribeUpdates = appUpdates.subscribe((updates) => {
+    const signature = updates.apps.map((a) => `${a.name}:${a.latestVersion}`).join(',');
+    if (lastUpdatesSignature === null) {
+      lastUpdatesSignature = signature;
+      return;
+    }
+    if (signature !== lastUpdatesSignature) {
+      lastUpdatesSignature = signature;
+      if (apps.length > 0) loadApps();
+    }
+  });
+
+  function onVisibility() {
+    if (document.visibilityState === 'visible') {
+      void refreshAppUpdates();
+      void pollUsage();
+    }
+  }
+
+  function openFromDrawer(kind: 'exposure' | 'config') {
+    if (!selected) return;
+    const name = selected.name;
+    selected = null;
+    if (kind === 'exposure') editingExposure = name;
+    else editingConfig = name;
+  }
+
+  function openUpdateFromDrawer() {
+    if (!selected) return;
+    updating = selected;
+    selected = null;
+  }
+
   onMount(() => {
-    loadApps();
-    return () => unsubscribeJobs();
+    const stopUpdates = startAppUpdates();
+    document.addEventListener('visibilitychange', onVisibility);
+    void loadApps(true);
+    void pollUsage();
+    usageTimer = setInterval(() => void pollUsage(), 5000);
+    return () => {
+      unsubscribeJobs();
+      unsubscribeUpdates();
+      stopUpdates();
+      document.removeEventListener('visibilitychange', onVisibility);
+      if (usageTimer !== null) clearInterval(usageTimer);
+    };
   });
 </script>
 
@@ -115,50 +230,82 @@
       <p class="text-gray-400 mb-4">Browse the catalog to install your first app.</p>
     </div>
   {:else}
-    <div class="space-y-3">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+      <div class="text-sm text-gray-400">
+        <span class="font-medium text-gray-200">{apps.length} apps</span>
+        <span class="mx-1">·</span>
+        <span class:text-amber-300={updateCount > 0}>{updateCount} updates</span>
+        {#if usageAvailable}
+          <span class="mx-1">·</span>
+          <span class="tabular-nums">
+            CPU {formatMillicores(aggregate.cpu)} · RAM {formatBytes(aggregate.memory)} · ↓ {formatBytesPerSec(
+              aggregate.rx
+            )}
+            ↑ {formatBytesPerSec(aggregate.tx)}
+          </span>
+        {/if}
+      </div>
+      <div class="flex items-center gap-2">
+        {#if refreshMessage}
+          <span class="text-xs text-green-400" role="status">{refreshMessage}</span>
+        {/if}
+        {#if refreshError}
+          <span class="text-xs text-red-300" role="alert">{refreshError}</span>
+        {/if}
+        <button class="btn btn-secondary text-sm" disabled={refreshing} on:click={checkNow}>
+          {refreshing ? 'Checking…' : 'Check now'}
+        </button>
+      </div>
+    </div>
+
+    {#if !usageAvailable && usageError}
+      <p class="text-xs text-gray-500 mb-3">{usageError}</p>
+    {/if}
+
+    <div class="card p-0 divide-y divide-naslos-border overflow-hidden">
       {#each apps as app (app.name)}
-        <div class="card flex items-center gap-4">
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-3 mb-1">
-              <h3 class="font-bold">{app.name}</h3>
-              <span class={`text-xs px-2 py-0.5 rounded ${statusClass(app.status)}`}>{app.status}</span>
-              {#if app.orphaned}
-                <span class="text-xs px-2 py-0.5 rounded bg-amber-900/50 text-amber-300" title="Found in the cluster without a catalog entry">orphaned</span>
-              {/if}
-              {#if runningJobApps.has(app.name)}
-                <span class="text-xs px-2 py-0.5 rounded bg-yellow-900/50 text-yellow-300" title="A lifecycle job is running for this app">job running</span>
-              {/if}
-            </div>
-            {#if app.url}
-              <a class="text-sm text-naslos-accent hover:underline" href={app.url} target="_blank" rel="noreferrer">{app.url}</a>
-            {:else}
-              <p class="text-sm text-gray-400">{app.exposure?.subdomain || 'cluster-internal only'}</p>
-            {/if}
-            <p class="text-xs text-gray-500 mt-1">v{app.version} • {app.chart} • {app.namespace}</p>
-            {#if app.datasets?.length}
-              <p class="text-xs text-gray-400 mt-1">datasets: {app.datasets.join(', ')}</p>
-            {/if}
-            {#if app.lastError}<p class="text-xs text-amber-400 mt-1">{app.lastError}</p>{/if}
-          </div>
-          <div class="flex gap-2">
-            <button class="btn btn-secondary" disabled={runningJobApps.has(app.name)} on:click={() => editingExposure = app.name}>Exposure</button>
-            <button
-              class="btn btn-secondary"
-              disabled={app.orphaned || runningJobApps.has(app.name)}
-              title={app.orphaned ? 'Orphaned releases cannot be reconfigured' : ''}
-              on:click={() => editingConfig = app.name}
-            >Configure</button>
-            <button class="btn btn-danger" disabled={runningJobApps.has(app.name)} on:click={() => uninstallApp(app.name)}>Uninstall</button>
-          </div>
-        </div>
+        <InstalledAppRow
+          {app}
+          usage={usageByName[app.name]}
+          jobRunning={runningJobApps.has(app.name)}
+          on:open={() => (selected = app)}
+          on:update={() => (updating = app)}
+        />
       {/each}
     </div>
   {/if}
 
+  {#if selected}
+    <AppDetailDrawer
+      app={selected}
+      usage={usageByName[selected.name]}
+      history={historyByName[selected.name]}
+      jobRunning={runningJobApps.has(selected.name)}
+      on:close={() => (selected = null)}
+      on:update={openUpdateFromDrawer}      on:configure={() => openFromDrawer('config')}
+      on:exposure={() => openFromDrawer('exposure')}
+    />
+  {/if}
+
+  {#if updating}
+    <AppUpdateModal app={updating} on:close={() => (updating = null)} />
+  {/if}
   {#if editingExposure}
-    <AppExposureModal appName={editingExposure} on:close={() => { editingExposure = null; loadApps(); }} />
+    <AppExposureModal
+      appName={editingExposure}
+      on:close={() => {
+        editingExposure = null;
+        loadApps();
+      }}
+    />
   {/if}
   {#if editingConfig}
-    <AppConfigureModal appName={editingConfig} on:close={() => { editingConfig = null; loadApps(); }} />
+    <AppConfigureModal
+      appName={editingConfig}
+      on:close={() => {
+        editingConfig = null;
+        loadApps();
+      }}
+    />
   {/if}
 </div>

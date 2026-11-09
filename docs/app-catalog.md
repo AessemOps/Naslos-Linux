@@ -95,7 +95,11 @@ transports (`file://`, `ext::`) are refused as well.
 - Clones live in `CHARTS_CACHE_DIR` (`/var/lib/naslos/charts`) with one working
   tree per `(source, channel)`. A refresh uses `CHARTS_TTL` (default `15m`);
   when the remote is unreachable the stale clone is served and `lastError` is
-  recorded. `POST /api/sources/refresh` forces a refresh.
+  recorded. The API also refreshes every source in the background at that TTL
+  (rebuilding the catalog snapshot each cycle), so new chart versions surface
+  without pressing Refresh; a failed cycle keeps the previous snapshot.
+  `POST /api/sources/refresh` forces a refresh now (the Installed tab's
+  **Check now** button).
 - The clone guard rejects path traversal and refuses repositories beyond the
   size/file-count limits.
 - **Charts may not contain links.** Git checks out with `core.symlinks=false`
@@ -125,6 +129,8 @@ app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
 | Uninstall | `DELETE /api/apps/{name}` | Enqueues an uninstall job (`helm uninstall` + route delete + record delete) → `202 {jobId, state}` |
 | Job list | `GET /api/apps/jobs` | Running plus the last ~20 finished lifecycle jobs |
 | Job detail | `GET /api/apps/jobs/{id}` | `state` (`running`/`succeeded`/`failed`), `stage` (`preparing`/`installing`/`finalizing`), `message`, `error` |
+| Update summary | `GET /api/apps/updates` | Record-only `{count, apps:[{name, installedVersion, latestVersion}]}` from `record.chartVersion` + the catalog (no Helm calls) |
+| Usage | `GET /api/apps/usage` | Live per-app CPU/RAM/network from the kubelet summary proxy (see [monitoring.md](monitoring.md)); always `200`, `available:false` when unreadable |
 
 Install/upgrade/uninstall run as **background jobs** (FR-APP-18): a cold
 install's Helm `--wait` can take minutes, so the handler validates, enqueues and
@@ -143,6 +149,27 @@ UI's picker.
 Installed-app records are persisted in `APPS_CONFIG` (`/var/lib/naslos/apps.json`).
 A Helm release found in the platform namespace without a catalog match is
 **backfilled as orphaned** (shown, but not reconfigurable).
+
+### Installed tab and updates
+
+The Installed tab is one compact row per app: icon, display name, the API's
+release status (`running`, `failed`, `pending`, `stopped`, `superseded`, `missing`), the
+installed version, live CPU/RAM/network and any last error. Rows with a newer
+chart show an amber `→ v<latest>` button; the update action confirms
+`installed → latest`, then calls `PUT /api/apps/{name}` with `{}` (stored values
+and datasets are preserved) and tracks the resulting upgrade job. Because
+upgrade resolves the catalog winner, the confirmation also warns when the
+app's recorded source/channel differs from the catalog entry that would be used.
+
+The header reports the app/update counts, aggregate live usage and a **Check
+now** button (`POST /api/sources/refresh`). `/api/apps/updates` feeds the
+Installed tab badge and the Apps sidebar dot (no Helm calls, so it can lag the
+per-row live value briefly); `/api/apps/usage` is polled every 5s only while the
+tab is visible and drives the row values plus the drawer's 5-minute sparklines
+(client-side history only). The right-side detail drawer shows version/source,
+usage tiles, URL, chart, timestamps, datasets, exposure summary and the
+Open/Configure/Exposure/Uninstall actions; opening Configure or Exposure closes
+the drawer first so overlays never stack.
 
 ## Exposure → routing
 
