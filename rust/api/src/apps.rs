@@ -719,6 +719,11 @@ impl Manager {
         validate_release_name(&req.name)?;
         let lock = self.app_lock(&req.name);
         let _guard = lock.lock().await;
+        // Reject a duplicate install before reserving a namespace: otherwise a
+        // second Install of an existing app fails later with a misleading
+        // "no free per-app namespace" (the namespace pool can be full) and the
+        // operator is not told the real reason.
+        ensure_not_installed(&self.store, &req.name)?;
         report(
             progress,
             STAGE_PREPARING,
@@ -2151,6 +2156,19 @@ pub fn validate_release_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Refuse an Install for a release the platform already records. The caller
+/// must reconfigure the existing app; reinstalling it would also discard its
+/// stored values and, when the namespace pool is full, fail with the wrong
+/// error.
+fn ensure_not_installed(store: &Store, name: &str) -> Result<(), String> {
+    if store.get(name).is_ok() {
+        return Err(format!(
+            "app {name:?} is already installed; reconfigure or uninstall it instead"
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_subdomain(subdomain: &str) -> Result<(), String> {
     if subdomain.is_empty() || is_dns1123_label(subdomain) {
         Ok(())
@@ -2272,6 +2290,20 @@ mod tests {
         assert!(validate_release_name("").is_err());
         assert!(validate_release_name("Bad_Name").is_err());
         assert!(validate_release_name(&"a".repeat(54)).is_err());
+    }
+
+    #[test]
+    fn duplicate_install_is_rejected() {
+        let store = Store::new("");
+        assert!(ensure_not_installed(&store, "bazarr").is_ok());
+        store
+            .upsert(Record {
+                name: "bazarr".to_string(),
+                ..Record::default()
+            })
+            .unwrap();
+        let err = ensure_not_installed(&store, "bazarr").unwrap_err();
+        assert!(err.contains("already installed"), "{err}");
     }
 
     #[test]
