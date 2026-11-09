@@ -20,11 +20,11 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
 - **Deployed release:** Helm `naslos` chart `0.3.13`, appVersion `0.3.13`,
-  revision 10, deployed 2026-11-08 23:16 UTC (API-only branch build validating
+  revision 12, deployed 2026-11-09 17:22 UTC (API-only branch build validating
   the app-install egress fix; every other image is still digest-pinned from the
   0.3.13 pack). API
-  `ghcr.io/aessemops/naslos-api:sha-30368272c7513cd1a0cd166cf4e76afd1f63d4da`
-  (branch `fix/app-install-internet-egress`; the private registry
+  `ghcr.io/aessemops/naslos-api@sha256:7080ea8908045cdd33e646f5f803b796c37a6568a932f0680eafaabe5c6b5f9a`
+  (branch `fix/app-install-internet-egress`, PR #132; the private registry
   `192.168.1.2:30095` was unreachable, so the image came from a release
   `publish=false` dry run), agent `446492fe…`, UI `6189b011…`, OpenLDAP
   `5e86cc1a…`, Samba `f3dcff30…`, NFS `b3f41e6b…`, terminal `558be7a9…`.
@@ -83,10 +83,19 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
 ### Open items
 
-- **App-install egress fix on a branch, not yet released.** PR branch
-  `fix/app-install-internet-egress` pre-creates `<app>-internet` before the
-  Helm wait; bazarr installs successfully on the live node with it. The node's
-  API runs the branch dry-run image until the next `vX.Y.Z` release.
+- **App-install egress fix on a branch, not yet released.** PR #132
+  (`fix/app-install-internet-egress`) pre-creates `<app>-internet` before the
+  Helm wait, labels API-created policies, deletes only the policy on install
+  failure, and sweeps orphaned policies before reusing a namespace and at
+  startup. Verified live: bazarr installed and Ready; a planted
+  `stale-internet` policy in `naslos-app-1` was removed on rollout while
+  `searxng-internet`/`bazarr-internet` stayed. The node runs the PR build by
+  digest until the next `vX.Y.Z` release; reproduce the override with:
+  `helm -n naslos get values naslos -o yaml > /tmp/naslos-values.yaml` then
+  `helm -n naslos upgrade naslos charts/naslos -f /tmp/naslos-values.yaml`
+  `--set api.image.repository=ghcr.io/aessemops/naslos-api`
+  `--set api.image.digest=sha256:7080ea8908045cdd33e646f5f803b796c37a6568a932f0680eafaabe5c6b5f9a`
+  `--wait --timeout 5m`.
 - **Private dev registry outage.** `192.168.1.2:30095` was unreachable from
   both the workstation and the node on 2026-11-08 23:05 UTC; that is why the
   branch API image came from GHCR instead of the usual local tag.
@@ -215,8 +224,11 @@ sh scripts/audit.sh
     reconciled only after a successful install, so an app that blocks on
     startup network calls (Bazarr fetches releases and announcements) could
     never become ready and Helm always rolled it back. The fix (branch
-    `fix/app-install-internet-egress`, pending release) applies the egress
-    policy before the Helm wait and removes it if the install fails.
+    `fix/app-install-internet-egress`, PR #132, pending release) applies the
+    egress policy before the Helm wait, labels it
+    (`naslos.local/managed-by=naslos-api`), deletes only that policy on
+    failure, and sweeps labeled policies with no record before a reserved
+    namespace is reused and at startup.
 13. **Channels are a source property, and authoritative.** A source that
     declares channels uses exactly those (no defaults merge). NaslosCharts has
     only `main`, so the node overlay sets `apps.officialSource.channels: {Prod:
