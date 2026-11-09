@@ -20,7 +20,9 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
 - **Deployed release:** Helm `naslos` chart `0.3.16`, appVersion `0.3.16`,
-  revision 15, deployed 2026-11-09 21:38 UTC (system updater from 0.3.15).
+  revision 16, deployed 2026-11-10 00:08 UTC. Revision 16 is a values-only
+  upgrade on the same chart and images: `apps.isolation.namespaces` 8 → 12 to
+  free the full baseline pool (chart default and `values-vm.yaml` now say 12).
   Images are digest-pinned from the 0.3.16 pack: API `a346e762…`, agent
   `51d341c3…`, UI `a1e48fa4…`, OpenLDAP `5c39f01d…`, Samba `1d259145…`, NFS
   `c45e4511…`, terminal `4be0d6fa…`. `/api/system/version` reports
@@ -94,15 +96,17 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `chown -R 10001:10000 /config` after the UID/GID switch. Datasets under
   `/var/mnt/Data` are recursively group-owned `naslos_users` (10000). The
   `shail.ovh` domain (OVH, production, `sso: true`) and
-  `naslos-shail-ovh-tls` are present. The baseline namespace pool is **full
-  (8/8)**; the privileged pool has `naslos-app-p2..p4` free.
+  `naslos-shail-ovh-tls` are present. The baseline namespace pool has **12
+  slots** with `naslos-app-9..12` free (raised from 8); the privileged pool has
+  `naslos-app-p2..p4` free.
 - **Update check:** current deployed `0.3.16`; `v0.3.17` is available.
 
 ### Open items
 
-- **Baseline namespace pool is full (8/8).** Installing another baseline app
-  needs a larger `apps.isolation.namespaces` (chart value, requires a platform
-  upgrade); privileged apps still have `naslos-app-p2..p4`.
+- **Baseline namespace pool:** 12 slots, `naslos-app-9..12` free after the
+  2026-11-10 raise. A future full pool again needs a larger
+  `apps.isolation.namespaces` (chart value, requires a platform upgrade);
+  privileged apps still have `naslos-app-p2..p4`.
 - **Multi-dataset live drill:** six apps now mount datasets (Jellyfin and Sonarr
   have several), which exercises the per-dataset claims and
   `/datasets/<name>` mounts. Still to verify: remove one dataset from an
@@ -210,7 +214,7 @@ sh scripts/audit.sh
     remains a manual fallback.
 11. **PSA is enforced per namespace.** `naslos` and `naslos-privileged` are
     `privileged`; the shared `naslos-apps` is **`baseline`** and
-    `naslos-apps-priv` is `privileged`; the per-app pools `naslos-app-1..8` are
+    `naslos-apps-priv` is `privileged`; the per-app pools `naslos-app-1..12` are
     `baseline` and `naslos-app-p1..4` are `privileged`. Baseline **forbids
     `hostPath` volumes**, so managed app charts mount the platform's
     `naslos-datasets` RWX PVC; `hostPath` and `NET_ADMIN` only work in the
