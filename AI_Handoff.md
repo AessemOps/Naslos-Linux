@@ -19,16 +19,21 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart `0.3.14`, appVersion `0.3.14`,
-  revision 13, deployed 2026-11-09 17:57 UTC (system updater from 0.3.13).
-  Images are digest-pinned from the 0.3.14 pack: API `59097be1…`, agent
-  `039e50b4…`, UI `c5248da7…`, OpenLDAP `3c45306b…`, Samba `ace65283…`, NFS
-  `e61763df…`, terminal `05ff41b2…`. `/api/system/version` reports
-  chart/naslos `0.3.14`, profile `installer`, Talos v1.14.5, k8s v1.37.0.
-- **Latest release:** `v0.3.14` (2026-11-09) and installer `naslos-v0.3.14`
-  are published; the node is on `0.3.14`. `v0.3.13`, `v0.3.12`, `v0.3.11`,
-  `v0.3.10` and `v0.3.9` were the previous releases, `v0.3.8` was superseded.
+- **Deployed release:** Helm `naslos` chart `0.3.15`, appVersion `0.3.15`,
+  revision 14, deployed 2026-11-09 18:58 UTC (system updater from 0.3.14).
+  Images are digest-pinned from the 0.3.15 pack: API `fba9f104…`, agent
+  `d783334e…`, UI `a028d786…`, OpenLDAP `6a03938a…`, Samba `831bfdbf…`, NFS
+  `878cc0f0…`, terminal `cf895981…`. `/api/system/version` reports
+  chart/naslos `0.3.15`, profile `installer`, Talos v1.14.5, k8s v1.37.0.
+- **Latest release:** `v0.3.15` (2026-11-09) and installer `naslos-v0.3.15`
+  are published; the node is on `0.3.15`. `v0.3.14`, `v0.3.13`, `v0.3.12`,
+  `v0.3.11`, `v0.3.10` and `v0.3.9` were the previous releases, `v0.3.8` was
+  superseded.
 - **Release notes since 0.3.7:**
+  - `0.3.15` (deployed) — a duplicate Install of an already-recorded app is
+    rejected before namespace reservation with `app "<name>" is already
+    installed; reconfigure or uninstall it instead`, instead of a misleading
+    `no free per-app namespace` when the baseline pool is full. PR #133.
   - `0.3.14` (deployed) — app installs into a dedicated baseline namespace get
     their `<app>-internet` egress policy **before** the Helm wait (Bazarr and
     other apps whose first start calls the public network), with ownership
@@ -70,20 +75,25 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `audio.shail.ovh`, `audiobooks`), `calibre-web` (`naslos-app-3`,
   `calibre.shail.ovh`, `ebooks`), `jellyfin` (`naslos-app-4`, `jelly.shail.ovh`,
   `animes`/`movies`/`series`/`ukrmovies`, wizard complete), `radarr`
-  (`naslos-app-5`, `radarr.shail.ovh`, `movies`), `sonarr` (`naslos-app-6`,
-  `sonarr.shail.ovh`, `animes`/`series`), `flaresolverr`
-  (`http://flaresolverr.naslos.local`, internal), and `bazarr`
-  (`naslos-app-8`, `http://bazarr.naslos.local`, `movies`/`series`; installed
-  to prove the pre-install egress fix). Every dataset app
-  runs as `10001:10000` (PGID `naslos_users`); the LinuxServer apps needed a
-  one-off `chown -R 10001:10000 /config` after the UID/GID switch. Datasets
-  under `/var/mnt/Data` are recursively group-owned `naslos_users` (10000). The
+  (`naslos-app-5`, `radarr.shail.ovh`, `movies`/`ukrmovies`), `sonarr`
+  (`naslos-app-6`, `sonarr.shail.ovh`, `animes`/`series`), `flaresolverr`
+  (`http://flaresolverr.naslos.local`, internal), `bazarr` (`naslos-app-8`,
+  `https://bazarr.shail.ovh`, `animes`/`movies`/`series`/`ukrmovies`), and
+  `qbittorrent` (`naslos-app-p1`, `https://qbit.shail.ovh`, privileged,
+  `animes`/`downloads`/`movies`/`series`/`ukrmovies`). Every dataset app runs
+  as `10001:10000` (PGID `naslos_users`); the LinuxServer apps needed a one-off
+  `chown -R 10001:10000 /config` after the UID/GID switch. Datasets under
+  `/var/mnt/Data` are recursively group-owned `naslos_users` (10000). The
   `shail.ovh` domain (OVH, production, `sso: true`) and
-  `naslos-shail-ovh-tls` are present.
-- **Update check:** current `0.3.14`; no newer release is available.
+  `naslos-shail-ovh-tls` are present. The baseline namespace pool is **full
+  (8/8)**; the privileged pool has `naslos-app-p2..p4` free.
+- **Update check:** current `0.3.15`; no newer release is available.
 
 ### Open items
 
+- **Baseline namespace pool is full (8/8).** Installing another baseline app
+  needs a larger `apps.isolation.namespaces` (chart value, requires a platform
+  upgrade); privileged apps still have `naslos-app-p2..p4`.
 - **Multi-dataset live drill:** six apps now mount datasets (Jellyfin and Sonarr
   have several), which exercises the per-dataset claims and
   `/datasets/<name>` mounts. Still to verify: remove one dataset from an
