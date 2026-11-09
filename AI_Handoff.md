@@ -11,7 +11,7 @@ rules and conventions are in [`AGENTS.md`](AGENTS.md).
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## Production instance (2026-11-08)
+## Production instance (2026-11-09)
 
 - **Hardware:** the production NAS is the bare-metal node `talos-zgr-9yg` at
   `192.168.1.38` (Talos v1.14.5, Kubernetes v1.37.0, control-plane Ready). The
@@ -19,22 +19,23 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart `0.3.13`, appVersion `0.3.13`,
-  revision 12, deployed 2026-11-09 17:22 UTC (API-only branch build validating
-  the app-install egress fix; every other image is still digest-pinned from the
-  0.3.13 pack). API
-  `ghcr.io/aessemops/naslos-api@sha256:7080ea8908045cdd33e646f5f803b796c37a6568a932f0680eafaabe5c6b5f9a`
-  (branch `fix/app-install-internet-egress`, PR #132; the private registry
-  `192.168.1.2:30095` was unreachable, so the image came from a release
-  `publish=false` dry run), agent `446492fe…`, UI `6189b011…`, OpenLDAP
-  `5e86cc1a…`, Samba `f3dcff30…`, NFS `b3f41e6b…`, terminal `558be7a9…`.
-  `/api/system/version` reports chart/naslos `0.3.13`, profile `installer`,
-  Talos v1.14.5, k8s v1.37.0. The next `vX.Y.Z` release replaces the branch
-  API image with the pack digest.
-- **Latest release:** `v0.3.13` (2026-11-08) and installer `naslos-v0.3.13`
-  are published; the node is on `0.3.13`. `v0.3.12`, `v0.3.11`, `v0.3.10` and
-  `v0.3.9` were the previous releases, `v0.3.8` was superseded.
+- **Deployed release:** Helm `naslos` chart `0.3.14`, appVersion `0.3.14`,
+  revision 13, deployed 2026-11-09 17:57 UTC (system updater from 0.3.13).
+  Images are digest-pinned from the 0.3.14 pack: API `59097be1…`, agent
+  `039e50b4…`, UI `c5248da7…`, OpenLDAP `3c45306b…`, Samba `ace65283…`, NFS
+  `e61763df…`, terminal `05ff41b2…`. `/api/system/version` reports
+  chart/naslos `0.3.14`, profile `installer`, Talos v1.14.5, k8s v1.37.0.
+- **Latest release:** `v0.3.14` (2026-11-09) and installer `naslos-v0.3.14`
+  are published; the node is on `0.3.14`. `v0.3.13`, `v0.3.12`, `v0.3.11`,
+  `v0.3.10` and `v0.3.9` were the previous releases, `v0.3.8` was superseded.
 - **Release notes since 0.3.7:**
+  - `0.3.14` (deployed) — app installs into a dedicated baseline namespace get
+    their `<app>-internet` egress policy **before** the Helm wait (Bazarr and
+    other apps whose first start calls the public network), with ownership
+    labels, policy-only cleanup on failure, and an orphan sweep before
+    namespace reuse and at startup. Public GHCR image references no longer trip
+    gitleaks. PR #132. Plan:
+    `.kilo/plans/2026-11-08-app-install-internet-egress.md`.
   - `0.3.13` (deployed) — SSO portal routes for promoted domains
     (FR-APP-15): `Manager::reconcile_routes` now calls
     `Router::reconcile_portals`, so `https://shail.ovh/authelia/` serves the
@@ -73,32 +74,16 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `sonarr.shail.ovh`, `animes`/`series`), `flaresolverr`
   (`http://flaresolverr.naslos.local`, internal), and `bazarr`
   (`naslos-app-8`, `http://bazarr.naslos.local`, `movies`/`series`; installed
-  live on the branch API to prove the pre-install egress fix). Every dataset app
+  to prove the pre-install egress fix). Every dataset app
   runs as `10001:10000` (PGID `naslos_users`); the LinuxServer apps needed a
   one-off `chown -R 10001:10000 /config` after the UID/GID switch. Datasets
   under `/var/mnt/Data` are recursively group-owned `naslos_users` (10000). The
   `shail.ovh` domain (OVH, production, `sso: true`) and
   `naslos-shail-ovh-tls` are present.
-- **Update check:** current `0.3.13`; no newer release is available.
+- **Update check:** current `0.3.14`; no newer release is available.
 
 ### Open items
 
-- **App-install egress fix on a branch, not yet released.** PR #132
-  (`fix/app-install-internet-egress`) pre-creates `<app>-internet` before the
-  Helm wait, labels API-created policies, deletes only the policy on install
-  failure, and sweeps orphaned policies before reusing a namespace and at
-  startup. Verified live: bazarr installed and Ready; a planted
-  `stale-internet` policy in `naslos-app-1` was removed on rollout while
-  `searxng-internet`/`bazarr-internet` stayed. The node runs the PR build by
-  digest until the next `vX.Y.Z` release; reproduce the override with:
-  `helm -n naslos get values naslos -o yaml > /tmp/naslos-values.yaml` then
-  `helm -n naslos upgrade naslos charts/naslos -f /tmp/naslos-values.yaml`
-  `--set api.image.repository=ghcr.io/aessemops/naslos-api`
-  `--set api.image.digest=sha256:7080ea8908045cdd33e646f5f803b796c37a6568a932f0680eafaabe5c6b5f9a`
-  `--wait --timeout 5m`.
-- **Private dev registry outage.** `192.168.1.2:30095` was unreachable from
-  both the workstation and the node on 2026-11-08 23:05 UTC; that is why the
-  branch API image came from GHCR instead of the usual local tag.
 - **Multi-dataset live drill:** six apps now mount datasets (Jellyfin and Sonarr
   have several), which exercises the per-dataset claims and
   `/datasets/<name>` mounts. Still to verify: remove one dataset from an
@@ -223,9 +208,8 @@ sh scripts/audit.sh
     wait:** the isolation policy is default-deny and the app policy used to be
     reconciled only after a successful install, so an app that blocks on
     startup network calls (Bazarr fetches releases and announcements) could
-    never become ready and Helm always rolled it back. The fix (branch
-    `fix/app-install-internet-egress`, PR #132, pending release) applies the
-    egress policy before the Helm wait, labels it
+    never become ready and Helm always rolled it back. The fix (0.3.14+,
+    PR #132) applies the egress policy before the Helm wait, labels it
     (`naslos.local/managed-by=naslos-api`), deletes only that policy on
     failure, and sweeps labeled policies with no record before a reserved
     namespace is reused and at startup.
