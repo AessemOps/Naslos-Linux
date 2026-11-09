@@ -206,6 +206,145 @@ pub struct View {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub redacted_keys: Vec<String>,
+    /// Catalog display name, falling back to the release name.
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default, rename = "iconUrl")]
+    pub icon_url: String,
+    /// Live Helm chart version when the release is readable, else the
+    /// record's `chartVersion`; empty when neither is known.
+    #[serde(rename = "installedVersion")]
+    pub installed_version: String,
+    #[serde(default, rename = "latestVersion")]
+    pub latest_version: String,
+    #[serde(default, rename = "latestSource")]
+    pub latest_source: String,
+    #[serde(default, rename = "latestChannel")]
+    pub latest_channel: String,
+    #[serde(default, rename = "updateAvailable")]
+    pub update_available: bool,
+}
+
+/// One app with a newer chart in the catalog (the record-only summary used by
+/// the tab badge and the sidebar dot).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UpdateSummary {
+    pub name: String,
+    #[serde(rename = "installedVersion")]
+    pub installed_version: String,
+    #[serde(rename = "latestVersion")]
+    pub latest_version: String,
+}
+
+/// A chart version that may carry a prerelease/build suffix. `crate::semver`
+/// is strict (release tags only), but catalog charts legitimately use
+/// `0.1.3-rc1`, so those are compared with semver precedence instead of plain
+/// inequality.
+struct LooseVersion {
+    core: crate::semver::Version,
+    prerelease: Option<Vec<String>>,
+}
+
+fn parse_loose_version(input: &str) -> Option<LooseVersion> {
+    let input = input.trim();
+    let input = input.strip_prefix('v').unwrap_or(input);
+    // Build metadata never affects precedence.
+    let input = input.split('+').next().unwrap_or(input);
+    let (core, prerelease) = match input.split_once('-') {
+        Some((core, prerelease)) if !prerelease.is_empty() => (core, Some(prerelease)),
+        Some(_) => return None,
+        None => (input, None),
+    };
+    let core = crate::semver::Version::parse(core)?;
+    Some(LooseVersion {
+        core,
+        prerelease: prerelease.map(|pre| pre.split('.').map(str::to_string).collect()),
+    })
+}
+
+fn compare_prerelease(left: &[String], right: &[String]) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    for (left, right) in left.iter().zip(right) {
+        let ord = match (left.parse::<u64>().ok(), right.parse::<u64>().ok()) {
+            (Some(left), Some(right)) => left.cmp(&right),
+            // Numeric identifiers always have lower precedence than
+            // alphanumeric ones.
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => left.cmp(right),
+        };
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
+fn compare_loose(left: &LooseVersion, right: &LooseVersion) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match left.core.cmp(&right.core) {
+        Ordering::Equal => match (&left.prerelease, &right.prerelease) {
+            (None, None) => Ordering::Equal,
+            // A release outranks any prerelease of the same core version.
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(left), Some(right)) => compare_prerelease(left, right),
+        },
+        other => other,
+    }
+}
+
+/// Whether the catalog offers a newer version than the installed one. Semver
+/// precedence (including prerelease/build forms charts actually use) is used
+/// when both parse, so a downgrade is never reported as an update; otherwise
+/// compare the trimmed strings with any leading `v` stripped. An empty latest
+/// version never reports an update.
+pub fn update_available(installed: &str, latest: &str) -> bool {
+    let installed = installed.trim();
+    let latest = latest.trim();
+    if installed.is_empty() || latest.is_empty() {
+        return false;
+    }
+    match (parse_loose_version(installed), parse_loose_version(latest)) {
+        (Some(installed), Some(latest)) => {
+            compare_loose(&latest, &installed) == std::cmp::Ordering::Greater
+        }
+        _ => installed.trim_start_matches('v') != latest.trim_start_matches('v'),
+    }
+}
+
+/// Fill the catalog-derived and live-version fields on a view. `live_version`
+/// is Helm's release version when it could be read.
+fn enrich_view(
+    view: &mut View,
+    live_version: Option<&str>,
+    catalog_app: Option<&crate::catalog::App>,
+) {
+    let live = live_version.map(str::trim).filter(|v| !v.is_empty());
+    view.installed_version = live.unwrap_or(view.record.chart_version.trim()).to_string();
+    view.display_name = catalog_app
+        .map(|app| app.display_name.trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(view.record.name.as_str())
+        .to_string();
+    view.icon = catalog_app.map(|app| app.icon.clone()).unwrap_or_default();
+    view.icon_url = catalog_app
+        .map(|app| app.icon_url.clone())
+        .unwrap_or_default();
+    view.latest_version = catalog_app
+        .map(|app| app.version.trim().to_string())
+        .unwrap_or_default();
+    view.latest_source = catalog_app
+        .map(|app| app.source.clone())
+        .unwrap_or_default();
+    view.latest_channel = catalog_app
+        .map(|app| app.channel.clone())
+        .unwrap_or_default();
+    view.update_available = !view.record.orphaned
+        && catalog_app.is_some()
+        && update_available(&view.installed_version, &view.latest_version);
 }
 
 /// A Service rendered by an installed release.
@@ -316,6 +455,8 @@ pub struct Manager {
     kube: Option<Arc<crate::kube::Client>>,
     datasets: Option<Arc<crate::datasets::Registry>>,
     pool_provisioner_image: String,
+    /// CPU/RAM/network cache for the Installed tab (`GET /api/apps/usage`).
+    usage: crate::app_usage::UsageCollector,
     /// Namespaces reserved by installs that have not recorded a release yet.
     /// `_mu` was never taken, so two concurrent installs picked the same
     /// "isolated" namespace; reservations are the fix.
@@ -540,6 +681,7 @@ impl Manager {
             kube: cfg.kube,
             datasets: cfg.datasets,
             pool_provisioner_image: cfg.pool_provisioner_image,
+            usage: crate::app_usage::UsageCollector::default(),
             reservations: Arc::new(Mutex::new(std::collections::HashSet::new())),
             app_locks: Mutex::new(HashMap::new()),
         })
@@ -1174,6 +1316,7 @@ impl Manager {
 
     /// All records with live status, looked up in each record's namespace.
     pub async fn list(&self) -> Result<Vec<View>, String> {
+        let catalog = (self.catalog)();
         let mut views = Vec::new();
         let mut first_err: Option<String> = None;
         for rec in self.store.list() {
@@ -1185,13 +1328,18 @@ impl Manager {
                 url: self.url_for(&rec),
                 record: rec.clone(),
                 redacted_keys: Vec::new(),
+                ..Default::default()
             };
             view.redacted_keys = self.redact_record_values(&mut view.record);
+            let mut live_version: Option<String> = None;
             match self.helm_for(&rec).get(&rec.name).await {
                 Ok(rel) => {
                     view.status = rel.status.clone();
                     if !rel.chart.is_empty() {
                         view.chart = rel.chart;
+                    }
+                    if !rel.version.is_empty() {
+                        live_version = Some(rel.version);
                     }
                 }
                 Err(e) => {
@@ -1200,6 +1348,8 @@ impl Manager {
                     }
                 }
             }
+            let catalog_app = catalog.as_ref().and_then(|c| c.get(&rec.name).ok());
+            enrich_view(&mut view, live_version.as_deref(), catalog_app.as_ref());
             views.push(view);
         }
         if views.is_empty() {
@@ -1657,7 +1807,7 @@ impl Manager {
         self.charts.app_dir(&app.source, &app.channel, &app.name)
     }
 
-    async fn view(&self, name: &str) -> Result<View, String> {
+    pub async fn view(&self, name: &str) -> Result<View, String> {
         let rec = self.store.get(name)?;
         let ns = self.display_namespace(&rec);
         let mut view = View {
@@ -1667,15 +1817,74 @@ impl Manager {
             url: self.url_for(&rec),
             record: rec.clone(),
             redacted_keys: Vec::new(),
+            ..Default::default()
         };
         view.redacted_keys = self.redact_record_values(&mut view.record);
+        let mut live_version: Option<String> = None;
         if let Ok(rel) = self.helm_for(&rec).get(name).await {
             view.status = rel.status.clone();
             if !rel.chart.is_empty() {
                 view.chart = rel.chart;
             }
+            if !rel.version.is_empty() {
+                live_version = Some(rel.version);
+            }
         }
+        let catalog_app = (self.catalog)().and_then(|c| c.get(name).ok());
+        enrich_view(&mut view, live_version.as_deref(), catalog_app.as_ref());
         Ok(view)
+    }
+
+    /// The `(app name, workload namespace)` pairs the usage collector attributes
+    /// pods to.
+    pub fn targets(&self) -> Vec<(String, String)> {
+        self.store
+            .list()
+            .into_iter()
+            .map(|rec| {
+                let namespace = self.display_namespace(&rec);
+                (rec.name, namespace)
+            })
+            .collect()
+    }
+
+    /// Record-only update summary for the tab badge and sidebar dot (no Helm
+    /// calls). Orphaned apps and names without a catalog entry are skipped.
+    pub fn update_summaries(&self) -> (usize, Vec<UpdateSummary>) {
+        let Some(catalog) = (self.catalog)() else {
+            return (0, Vec::new());
+        };
+        let mut apps: Vec<UpdateSummary> = self
+            .store
+            .list()
+            .into_iter()
+            .filter(|rec| !rec.orphaned)
+            .filter_map(|rec| {
+                let app = catalog.get(&rec.name).ok()?;
+                if !update_available(rec.chart_version.trim(), app.version.trim()) {
+                    return None;
+                }
+                Some(UpdateSummary {
+                    name: rec.name.clone(),
+                    installed_version: rec.chart_version.trim().to_string(),
+                    latest_version: app.version.trim().to_string(),
+                })
+            })
+            .collect();
+        apps.sort_by(|a, b| a.name.cmp(&b.name));
+        let count = apps.len();
+        (count, apps)
+    }
+
+    /// Live usage for every recorded app. Never fails: an unavailable kube
+    /// client or a kubelet read error is reported as `available:false`.
+    pub async fn usage(&self) -> crate::app_usage::UsageReport {
+        let Some(kube) = &self.kube else {
+            return crate::app_usage::UsageReport::unavailable(
+                "no Kubernetes client is configured",
+            );
+        };
+        self.usage.collect(kube, &self.targets()).await
     }
 
     /// Mask secret values in a record for API responses (returns the keys).
@@ -1699,17 +1908,6 @@ impl Manager {
         }
         redacted.sort();
         redacted
-    }
-
-    /// A record ready for `GET /api/apps/{name}` (secrets masked).
-    pub fn public_record(&self, rec: &Record) -> serde_json::Value {
-        let mut masked = rec.clone();
-        let redacted = self.redact_record_values(&mut masked);
-        let mut value = serde_json::to_value(&masked).unwrap_or_default();
-        if !redacted.is_empty() {
-            value["redactedKeys"] = serde_json::json!(redacted);
-        }
-        value
     }
 
     fn url_for(&self, rec: &Record) -> String {
@@ -2290,6 +2488,87 @@ mod tests {
         assert!(validate_release_name("").is_err());
         assert!(validate_release_name("Bad_Name").is_err());
         assert!(validate_release_name(&"a".repeat(54)).is_err());
+    }
+
+    #[test]
+    fn update_available_compares_versions() {
+        assert!(update_available("0.1.2", "0.1.3"));
+        assert!(!update_available("0.1.3", "0.1.2"));
+        assert!(!update_available("0.1.3", "0.1.3"));
+        // A downgrade in the catalog is not an update.
+        assert!(!update_available("v0.2.0", "0.1.9"));
+        // `v` prefix and whitespace are tolerated on both sides.
+        assert!(update_available(" v0.1.2 ", "0.1.3"));
+        // Pre-release chart versions use semver precedence: a release is
+        // newer than its rc, but a lower rc is not newer than a higher one.
+        assert!(update_available("0.1.3-rc1", "0.1.3"));
+        assert!(!update_available("0.1.3", "0.1.3-rc1"));
+        assert!(update_available("0.1.3-rc1", "0.1.3-rc2"));
+        assert!(!update_available("0.1.3-rc1", "v0.1.3-rc1"));
+        // Build metadata never changes precedence.
+        assert!(!update_available("0.1.3+abc", "0.1.3"));
+        // Unknown versions never report an update.
+        assert!(!update_available("", "0.1.3"));
+        assert!(!update_available("0.1.2", ""));
+        assert!(!update_available("", ""));
+    }
+
+    #[test]
+    fn enrich_view_uses_catalog_and_live_version() {
+        let app = crate::catalog::App {
+            name: "jellyfin".to_string(),
+            display_name: "Jellyfin".to_string(),
+            icon: "🎬".to_string(),
+            icon_url: "https://example.test/jellyfin.png".to_string(),
+            version: "0.1.3".to_string(),
+            source: "official".to_string(),
+            channel: "Prod".to_string(),
+            ..Default::default()
+        };
+        let mut view = View {
+            record: Record {
+                name: "jellyfin".to_string(),
+                chart_version: "0.1.2".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        enrich_view(&mut view, Some("0.1.2"), Some(&app));
+        assert_eq!(view.display_name, "Jellyfin");
+        assert_eq!(view.icon, "🎬");
+        assert_eq!(view.icon_url, "https://example.test/jellyfin.png");
+        assert_eq!(view.installed_version, "0.1.2");
+        assert_eq!(view.latest_version, "0.1.3");
+        assert_eq!(view.latest_source, "official");
+        assert_eq!(view.latest_channel, "Prod");
+        assert!(view.update_available);
+
+        // No catalog entry: fall back to the release name, never a badge.
+        let mut view = View {
+            record: Record {
+                name: "orphan".to_string(),
+                chart_version: "9.9.9".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        enrich_view(&mut view, None, None);
+        assert_eq!(view.display_name, "orphan");
+        assert_eq!(view.installed_version, "9.9.9");
+        assert!(!view.update_available);
+
+        // An orphaned record never advertises an update even with a catalog hit.
+        let mut view = View {
+            record: Record {
+                name: "jellyfin".to_string(),
+                chart_version: "0.1.2".to_string(),
+                orphaned: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        enrich_view(&mut view, None, Some(&app));
+        assert!(!view.update_available);
     }
 
     #[test]

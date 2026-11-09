@@ -3,6 +3,8 @@
   export let iconUrl = '';
   export let alt = '';
   export let size = 'text-4xl';
+  /// Tailwind size classes for the image variant (rows use a smaller icon).
+  export let imgClass = 'h-10 w-10';
 
   let failed = false;
 
@@ -13,7 +15,7 @@
   <img
     src={iconUrl}
     {alt}
-    class="h-10 w-10 shrink-0 rounded object-contain"
+    class={`${imgClass} shrink-0 rounded object-contain`}
     loading="lazy"
     on:error={() => (failed = true)}
   />

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
+  import { appUpdates, startAppUpdates } from '$lib/stores/appUpdates';
 
   interface NavItem {
     name: string;
@@ -33,8 +34,7 @@
   let username = '';
   let updateAvailable = false;
 
-  onMount(async () => {
-    try {
+  onMount(async () => {    try {
       const res = await fetch('/api/auth/me');
       if (!res.ok) return;
       const data = await res.json();
@@ -55,6 +55,13 @@
     } catch {
       // No update badge when the API cannot answer (e.g. during a reboot).
     }
+  });
+
+  // The update summary is shared with the Apps page (Installed tab badge) and
+  // polls every 60s while the document is visible.
+  onMount(() => {
+    const stop = startAppUpdates();
+    return stop;
   });
 
   // The session belongs to Authelia's forwardAuth portal, so signing out is a
@@ -108,6 +115,13 @@
             role="status"
             aria-label="A system update is available"
             title="A system update is available"
+          ></span>
+        {:else if item.path === '/apps' && $appUpdates.count > 0}
+          <span
+            class="ml-auto w-2 h-2 rounded-full bg-naslos-accent"
+            role="status"
+            aria-label={`${$appUpdates.count} app update${$appUpdates.count === 1 ? '' : 's'} available`}
+            title={`${$appUpdates.count} app update${$appUpdates.count === 1 ? '' : 's'} available`}
           ></span>
         {/if}
       </a>

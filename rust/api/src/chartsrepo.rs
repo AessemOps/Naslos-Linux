@@ -735,6 +735,12 @@ impl Manager {
         self.store.list()
     }
 
+    /// The cache freshness window (the `CHARTS_TTL` value). The background
+    /// catalog refresher sleeps for this long between full refreshes.
+    pub fn ttl(&self) -> Duration {
+        self.ttl
+    }
+
     pub fn get_source(&self, name: &str) -> Result<Source, String> {
         self.store.get(name)
     }

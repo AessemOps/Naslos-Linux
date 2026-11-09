@@ -414,6 +414,27 @@ with a sibling `naslos-app.yaml` install-config. See
   (`naslos-pool-<slug>-<hash>`, path `/var/mnt/<pool>/apps`), and set every
   chart `persistence.*.storageClass` to that class. The default (no pool)
   remains `local-path`. *(apps tests, live drill)*
+- **FR-APP-22** — The Installed apps view MUST show catalog identity, the
+  installed and latest chart versions, an update signal and live per-app usage.
+  `GET /api/apps` MUST add `displayName`, `icon`, `iconUrl`,
+  `installedVersion` (live Helm version when readable, else the record),
+  `latestVersion`, `latestSource`, `latestChannel` and `updateAvailable`;
+  `GET /api/apps/updates` MUST return the record-only
+  `{count, apps:[{name, installedVersion, latestVersion}]}` summary without
+  Helm calls; `GET /api/apps/usage` MUST aggregate the kubelet
+  `stats/summary` (CPU `usageNanoCores`, memory `workingSetBytes`, cumulative
+  `network.rxBytes`/`txBytes`) per app, answer **200** even when unavailable
+  (`available:false` + `error`), and report unknown numeric values as `null`. Update availability MUST be false for an empty latest version, an
+  orphaned record or a missing catalog entry, and MUST NOT report a downgrade
+  as an update. The upgrade action MUST be `PUT /api/apps/{name}` with `{}`.
+  Reading `nodes`/`nodes/proxy` MUST be a separate read-only ClusterRole
+  (`get`/`list` on nodes, `get` on nodes/proxy) with no write or exec.
+  *(apps update tests, app_usage tests, chart render gate)*
+- **FR-APP-23** — The catalog MUST be refreshed in the background at
+  `CHARTS_TTL` (default 15m) and the snapshot rebuilt each cycle; a failed
+  refresh MUST keep the previous snapshot and fall back to the stale clone. The
+  one-time dataset-layout migration MUST stay chained to the first refresh.
+  *(chartsrepo tests, `main.rs` refresher)*
 - **FR-APP-19** — Chart installs MUST run as a namespaced identity that cannot
   create Traefik `IngressRoute`/`Middleware` or cert-manager objects; the API
   MUST own the app's route and certificate. *(chart render gate:
@@ -1034,6 +1055,8 @@ Dynamic DNS and the provider registry are verified by
 | `TestOVHSolverShape`, `TestSolverMissingConfigIsAnError` | FR-DNS-01/05 (solver rendering and substitution) |
 | `TestSpecOVH`, `TestSpecCloudflareSolverShape`, `TestSpecRFC2136SolverShape`, `TestSpecPassthroughIsUnchanged` | FR-APP-13, FR-DNS-05 (OVH supported; existing solvers byte-identical) |
 | `apps::value_schema_tests::pool_storage_class_is_safe_and_case_aware`, `persistence_storage_class_covers_top_level_and_nested` | FR-APP-21 (pool StorageClass naming and persistence overrides) |
+| `apps::tests::update_available_compares_versions`, `apps::tests::enrich_view_uses_catalog_and_live_version` | FR-APP-22 (update signal, catalog identity, orphan/empty rules) |
+| `app_usage::tests::*` | FR-APP-22 (summary parsing, rate baselines, pod→app attribution, aggregation) |
 | `apps::dataset_layout_tests::*` | FR-APP-20 (selection normalisation, one claim/hostPath entry per dataset, client value stripping, chart support scan) |
 | `TestManagerUpdateSkipsUnchangedAndHidesSecrets`, `TestDdnsNeverReturnsCredentialValues` | FR-DNS-02/03/06 (skip-when-unchanged, force-run, no credential values) |
 | `TestManagerRecordsCredentialErrors`, `TestDetectIPValidatesResponse` | FR-DNS-03 (errors recorded, IP response validated) |

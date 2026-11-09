@@ -6,6 +6,7 @@
 //! handlers return a documented 501.
 
 pub mod agent;
+pub mod app_usage;
 pub mod apps;
 pub mod auth;
 pub mod authelia;

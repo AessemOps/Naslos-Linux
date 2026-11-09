@@ -154,14 +154,18 @@ pub async fn app_detail_get(
     };
     match manager.get(&name) {
         Ok(rec) => {
-            // A live status view (the manager's view() is private); report the
-            // record with a coarse status, with secret values masked.
-            let mut view = manager.public_record(&rec);
-            view["status"] = serde_json::json!("unknown");
-            // Whether the record runs in a per-app isolation namespace. The
-            // UI uses this to block dataset edits that require a reinstall.
-            view["isolated"] = serde_json::json!(manager.record_is_isolated(&rec));
-            json(StatusCode::OK, view)
+            let isolated = manager.record_is_isolated(&rec);
+            match manager.view(&name).await {
+                Ok(view) => {
+                    let mut value = serde_json::to_value(&view).unwrap_or_default();
+                    // Whether the record runs in a per-app isolation namespace.
+                    // The UI uses this to block dataset edits that require a
+                    // reinstall.
+                    value["isolated"] = serde_json::json!(isolated);
+                    json(StatusCode::OK, value)
+                }
+                Err(e) => json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
+            }
         }
         Err(e) => json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
     }
@@ -309,6 +313,45 @@ pub async fn app_exposure_put(
         Ok(view) => json(StatusCode::OK, serde_json::to_value(view).unwrap()),
         Err(e) => bad_request(&e),
     }
+}
+
+/// `GET /api/apps/updates`
+///
+/// Record-only summary (no Helm calls) for the Installed tab badge and the
+/// sidebar dot. Always 200: a missing app manager reports zero updates.
+pub async fn app_updates_get(State(state): State<Arc<AppState>>) -> Response {
+    let Some(manager) = state.app_manager.clone() else {
+        return json(
+            StatusCode::OK,
+            serde_json::json!({ "count": 0, "apps": [] }),
+        );
+    };
+    let (count, apps) = manager.update_summaries();
+    json(
+        StatusCode::OK,
+        serde_json::json!({ "count": count, "apps": apps }),
+    )
+}
+
+/// `GET /api/apps/usage`
+///
+/// Bulk CPU/RAM/network for every installed app, cached server-side (~4s).
+/// Always 200: `available:false` carries the reason so the UI hides the
+/// metrics column instead of treating a missing kube client as an error.
+pub async fn app_usage_get(State(state): State<Arc<AppState>>) -> Response {
+    let Some(manager) = state.app_manager.clone() else {
+        return json(
+            StatusCode::OK,
+            serde_json::to_value(crate::app_usage::UsageReport::unavailable(
+                "app management is not available",
+            ))
+            .unwrap_or_default(),
+        );
+    };
+    json(
+        StatusCode::OK,
+        serde_json::to_value(manager.usage().await).unwrap_or_default(),
+    )
 }
 
 /// `GET /api/apps/jobs`
