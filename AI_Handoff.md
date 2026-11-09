@@ -25,11 +25,16 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `d783334e…`, UI `a028d786…`, OpenLDAP `6a03938a…`, Samba `831bfdbf…`, NFS
   `878cc0f0…`, terminal `cf895981…`. `/api/system/version` reports
   chart/naslos `0.3.15`, profile `installer`, Talos v1.14.5, k8s v1.37.0.
-- **Latest release:** `v0.3.15` (2026-11-09) and installer `naslos-v0.3.15`
-  are published; the node is on `0.3.15`. `v0.3.14`, `v0.3.13`, `v0.3.12`,
-  `v0.3.11`, `v0.3.10` and `v0.3.9` were the previous releases, `v0.3.8` was
-  superseded.
+- **Latest release:** `v0.3.16` (2026-11-09) and installer `naslos-v0.3.16`
+  are published; the node is still on `0.3.15` (not upgraded). `v0.3.15`,
+  `v0.3.14`, `v0.3.13`, `v0.3.12`, `v0.3.11`, `v0.3.10` and `v0.3.9` were the
+  previous releases, `v0.3.8` was superseded.
 - **Release notes since 0.3.7:**
+  - `0.3.16` (released, not deployed) — Apps → Installed rework: compact rows
+    with live CPU/RAM/network from the kubelet `stats/summary`, catalog update
+    badges with a one-click tracked upgrade, a right-side detail drawer with
+    client-side sparklines, a background catalog refresh at `CHARTS_TTL`, and a
+    read-only `naslos-api-node-metrics` ClusterRole/Binding. PR #134.
   - `0.3.15` (deployed) — a duplicate Install of an already-recorded app is
     rejected before namespace reservation with `app "<name>" is already
     installed; reconfigure or uninstall it instead`, instead of a misleading
@@ -87,7 +92,7 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `shail.ovh` domain (OVH, production, `sso: true`) and
   `naslos-shail-ovh-tls` are present. The baseline namespace pool is **full
   (8/8)**; the privileged pool has `naslos-app-p2..p4` free.
-- **Update check:** current `0.3.15`; no newer release is available.
+- **Update check:** current deployed `0.3.15`; `v0.3.16` is available.
 
 ### Open items
 
