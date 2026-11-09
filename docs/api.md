@@ -80,13 +80,15 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | --- | --- | --- |
 | GET | `/api/catalog` | List catalog entries (summary incl. `source`, `channel`, `channels`, `iconUrl`) |
 | GET | `/api/catalog/{name}` | Full entry incl. JSON Schema, `services`, `exposure`, `chartPath`, `iconUrl` |
-| GET | `/api/apps` | Installed-app records with live status and URL |
+| GET | `/api/apps` | Installed-app records with live status and URL, plus `displayName`, `icon`, `iconUrl`, `installedVersion` (live Helm version when readable), `latestVersion`, `latestSource`, `latestChannel` and `updateAvailable` from the current catalog snapshot |
 | POST | `/api/apps` | Enqueue an install job: `{name, values, exposure?, baseDomain?, confirmed:true, privilegedConfirmed?:true, pool?: "<zfs pool>"}`. `exposure.internet` defaults to `true`; `false` installs the app with DNS + app-to-app egress only and is rejected for privileged or shared namespaces. With `internet` on and a dedicated baseline namespace, the `<app>-internet` egress policy is applied before the Helm wait (and removed on failure, with a startup/reuse sweep for leftovers) so an app whose first start calls the public network (e.g. Bazarr) can become ready. `pool` puts every chart persistence PVC under `/var/mnt/<pool>/apps` through a pool-scoped StorageClass; the pool must exist. An Install for a name the platform already records is rejected with an `already installed; reconfigure or uninstall it` job error. `confirmed` is always required; an app whose catalog entry declares `privileged: true` additionally requires `privilegedConfirmed:true` (SEC-2026-D8). Values are merged with the catalog defaults and validated against its JSON schema; a violation is a 400 (SEC-2026-D7). `datasets` is a list of registered dataset names (any number; duplicates are collapsed); with per-app isolation enabled each new app gets a reserved namespace, a PV/PVC per dataset for baseline apps, and every dataset is injected into the chart's `datasets` Helm value as `/datasets/<name>` (SEC-2026-D3) → `202 {jobId, state}`. The runner re-checks `privilegedConfirmed` against the catalog it resolves at job time. |
-| GET | `/api/apps/{name}` | Record + release status |
-| PUT | `/api/apps/{name}` | Enqueue an upgrade job: `{values, datasets?}` → `202 {jobId, state}`. An omitted `datasets` keeps the stored selection, `[]` detaches every dataset (an isolated app must keep at least one; the job fails otherwise) and a non-empty list reconciles adds/removes. A dataset change on a record outside a per-app isolation namespace fails the upgrade job with a reinstall message (the request itself is still `202`). New claims are created before Helm; removed claims are deleted and detached only after the upgrade succeeds |
+| GET | `/api/apps/{name}` | Record + release status, catalog fields (`displayName`, `icon`, versions) and `isolated` |
+| PUT | `/api/apps/{name}` | Enqueue an upgrade job: `{values, datasets?}` → `202 {jobId, state}`. An omitted `datasets` keeps the stored selection, `[]` detaches every dataset (an isolated app must keep at least one; the job fails otherwise) and a non-empty list reconciles adds/removes. A dataset change on a record outside a per-app isolation namespace fails the upgrade job with a reinstall message (the request itself is still `202`). New claims are created before Helm; removed claims are deleted and detached only after the upgrade succeeds. `{}` keeps stored values and datasets and is the update path used by the Installed UI |
 | DELETE | `/api/apps/{name}` | Enqueue an uninstall job (removes the release, its route and record) → `202 {jobId, state}` |
 | GET | `/api/apps/jobs` | Lifecycle jobs: running plus the last ~20 finished |
 | GET | `/api/apps/jobs/{id}` | One job's `state`, `stage`, `message` and `error` (the poll target) |
+| GET | `/api/apps/updates` | Record-only update summary `{count, apps:[{name, installedVersion, latestVersion}]}` (no Helm calls); drives the Installed tab badge and the Apps sidebar dot |
+| GET | `/api/apps/usage` | Bulk CPU/RAM/network for every installed app, always `200`: `{available, sampledAt, error, apps:[{name, namespace, pods, cpuMillicores, memoryBytes, networkRxBytesPerSec, networkTxBytesPerSec}]}`. Numeric fields are `null` when unknown (no pods, or no network baseline yet). `available:false` + `error` when the kube client, RBAC or kubelet read fails, so the UI hides the metrics column instead of erroring. Network rates come from the summary's cumulative counters, so they are `null` until two samples exist. Server-cached ~4s with single-flight collection |
 | GET | `/api/apps/{name}/exposure` | Exposure settings, the app's own `baseDomain` (fallback primary), `primaryDomain`, `selectableDomains`, `ssoDomains` and `authAllowed` |
 | PUT | `/api/apps/{name}/exposure` | Partial update `{exposure, baseDomain?}`, re-render the route and the per-app Internet `NetworkPolicy`; omitted exposure fields keep their stored value (SEC-2026-D11), and an unconfigured `baseDomain` is rejected (400). `exposure.internet` defaults to `true`; `false` removes the app's public-egress policy and is rejected with a 400 for privileged or shared namespaces |
 | GET | `/api/apps/{name}/services` | Services the release rendered (route-target discovery/picker) |
@@ -98,8 +100,9 @@ polls `GET /api/apps/jobs/{id}`. A job reports `kind` (`install`/`upgrade`/
 (`preparing`/`installing`/`finalizing`) and `message`, and a failed job carries
 `error`. A second job for an app that already has one running is `409`. Jobs
 are in-memory (a restart abandons a running job; the app record and
-`reconcileApps` are the durable outcome). `/api/apps/jobs` is matched before
-`/api/apps/{name}`, so `jobs` is never an app name.
+`reconcileApps` are the durable outcome). `/api/apps/jobs`,
+`/api/apps/updates` and `/api/apps/usage` are matched before
+`/api/apps/{name}`, so `jobs`/`updates`/`usage` are never parsed as app names.
 
 ### Chart repositories (sources)
 

@@ -93,6 +93,37 @@ test.describe('apps', () => {
     expect(Array.isArray(data.jobs)).toBeTruthy();
   });
 
+  test('GET /api/apps/usage and /api/apps/updates are bulk shapes, not app names', async ({ request }) => {
+    const usageRes = await request.get('/api/apps/usage');
+    expect(usageRes.ok(), await usageRes.text()).toBeTruthy();
+    const usage = await usageRes.json();
+    expect(typeof usage.available).toBe('boolean');
+    expect(typeof usage.sampledAt).toBe('string');
+    expect(Array.isArray(usage.apps)).toBeTruthy();
+    if (usage.available) {
+      for (const app of usage.apps) {
+        expect(typeof app.name).toBe('string');
+        expect(typeof app.namespace).toBe('string');
+        expect(typeof app.pods).toBe('number');
+        for (const key of [
+          'cpuMillicores',
+          'memoryBytes',
+          'networkRxBytesPerSec',
+          'networkTxBytesPerSec'
+        ]) {
+          expect(app[key] === null || typeof app[key] === 'number', `${app.name}.${key}`).toBeTruthy();
+        }
+      }
+    }
+
+    const updatesRes = await request.get('/api/apps/updates');
+    expect(updatesRes.ok(), await updatesRes.text()).toBeTruthy();
+    const updates = await updatesRes.json();
+    expect(typeof updates.count).toBe('number');
+    expect(Array.isArray(updates.apps)).toBeTruthy();
+    expect(updates.apps.length).toBe(updates.count);
+  });
+
   test('installs and uninstalls an app from the official source', async ({ page, request }) => {
     // A cold catalog install pulls the app image server-side, so the async job
     // can exceed the default 30s test timeout.
@@ -147,11 +178,19 @@ test.describe('apps', () => {
       await page.goto('/apps');
       await page.getByRole('button', { name: 'Installed', exact: true }).click();
       await expect(page.getByText('Loading installed apps...')).toBeHidden({ timeout: 10_000 });
-      await expect(page.getByRole('heading', { name: app.name, exact: true })).toBeVisible();
+      const displayName = app.displayName || app.name;
+      await expect(page.getByRole('heading', { name: displayName, exact: true })).toBeVisible();
 
-      // The exposure modal offers a base-domain picker (FR-APP-10); the API
-      // always returns the primary in selectableDomains, so the select renders.
-      await page.getByRole('button', { name: 'Exposure', exact: true }).first().click();
+      // When the API can read the kubelet, the compact row shows live usage.
+      const usageRes = await request.get('/api/apps/usage');
+      const usage = usageRes.ok() ? await usageRes.json() : { available: false };
+      if (usage.available) {
+        await expect(page.getByText(/CPU .* · RAM/).first()).toBeVisible();
+      }
+
+      // The exposure form now lives behind the detail drawer.
+      await page.getByRole('button', { name: `Open ${displayName} details`, exact: true }).click();
+      await page.getByRole('button', { name: 'Exposure', exact: true }).click();
       await expect(page.locator('#exposure-domain')).toBeVisible();
       await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     } finally {

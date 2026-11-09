@@ -42,30 +42,14 @@ async fn main() {
         tokio::spawn(async move { run_update_checker(updates).await });
     }
 
-    // Populate the catalog at startup. The chart seeds the official source,
+    // Populate and keep the catalog fresh. The chart seeds the official source,
     // but a clean install used to show an empty app catalog until an admin
-    // clicked Refresh (found in the 0.2.1 clean-install drill).
+    // clicked Refresh (found in the 0.2.1 clean-install drill). The refresher
+    // repeats at the chart cache TTL (`CHARTS_TTL`, default 15m).
     if let Some(charts) = state.charts.clone() {
         let catalog = state.catalog.clone();
         let app_manager = state.app_manager.clone();
-        tokio::spawn(async move {
-            match charts.refresh_all().await {
-                Ok(()) => tracing::info!("chart catalog refreshed at startup"),
-                Err(e) => tracing::warn!("startup catalog refresh: {e}"),
-            }
-            catalog.store(std::sync::Arc::new(naslos_api::state::build_catalog(
-                &charts,
-            )));
-            // Rewrite records from the single-claim layout to the
-            // `/datasets/<name>` layout once the new catalog (and its charts)
-            // is visible. Chained here, not spawned separately, so the
-            // migration never resolves the previous catalog snapshot.
-            if let Some(manager) = app_manager {
-                if let Err(e) = manager.migrate_dataset_layout(None).await {
-                    tracing::warn!("dataset layout migration: {e}");
-                }
-            }
-        });
+        tokio::spawn(async move { run_catalog_refresher(charts, catalog, app_manager).await });
     }
 
     // ZFS/agent health watcher (notifications on transitions).
@@ -203,6 +187,52 @@ async fn run_metrics_collector(state: Arc<AppState>) {
     loop {
         ticker.tick().await;
         collect_once(&state, &talos).await;
+    }
+}
+
+/// Refresh every chart source at the catalog TTL (`CHARTS_TTL`), rebuilding the
+/// snapshot each cycle so the Installed tab sees new chart versions without a
+/// manual Refresh. A failed refresh keeps the previous snapshot: `refresh_all`
+/// falls back to the cached clone and the loop just tries again next cycle.
+///
+/// The one-time dataset-layout migration stays chained to the first cycle, so
+/// it never resolves a stale catalog (it used to run right after the startup
+/// refresh only).
+async fn run_catalog_refresher(
+    charts: std::sync::Arc<naslos_api::chartsrepo::Manager>,
+    catalog: std::sync::Arc<naslos_api::state::CatalogHolder>,
+    app_manager: Option<std::sync::Arc<naslos_api::apps::Manager>>,
+) {
+    let mut first = true;
+    let mut last_error: Option<String> = None;
+    loop {
+        match charts.refresh_all().await {
+            Ok(()) => {
+                if last_error.take().is_some() {
+                    tracing::info!("chart catalog refresh recovered");
+                }
+            }
+            Err(e) => {
+                // An unreachable remote is expected on an isolated node; log
+                // when the failure changes, not every TTL.
+                if last_error.as_deref() != Some(e.as_str()) {
+                    tracing::warn!("chart catalog refresh: {e}");
+                    last_error = Some(e);
+                }
+            }
+        }
+        catalog.store(std::sync::Arc::new(naslos_api::state::build_catalog(
+            &charts,
+        )));
+        if first {
+            first = false;
+            if let Some(manager) = &app_manager {
+                if let Err(e) = manager.migrate_dataset_layout(None).await {
+                    tracing::warn!("dataset layout migration: {e}");
+                }
+            }
+        }
+        tokio::time::sleep(charts.ttl()).await;
     }
 }
 

@@ -77,6 +77,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/apps", get(apps::apps_get).post(apps::apps_post))
         .route("/api/apps/jobs", get(apps::app_jobs_get))
         .route("/api/apps/jobs/{id}", get(apps::app_job_detail_get))
+        // Registered before `{name}`: axum matches in order here, so these
+        // would otherwise be parsed as app names.
+        .route("/api/apps/updates", get(apps::app_updates_get))
+        .route("/api/apps/usage", get(apps::app_usage_get))
         .route(
             "/api/apps/{name}",
             get(apps::app_detail_get)

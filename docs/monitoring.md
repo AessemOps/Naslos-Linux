@@ -54,6 +54,22 @@ talosctl read /proc/spl/kstat/zfs/arcstats                     # ARC c_max / siz
 `kubectl top` is only available if a metrics-server is installed; the summary API
 is always present and is the source of truth for the baseline.
 
+The API reads the same summary endpoint for the Installed apps view — it does
+not install a metrics-server. `GET /api/apps/usage` calls
+`/api/v1/nodes/<node>/proxy/stats/summary` for per-pod CPU (`usageNanoCores`),
+memory (`workingSetBytes`) and cumulative network counters (`network.rxBytes` /
+`txBytes`), converts the counters to rates against the previous sample, and
+aggregates per app in memory (one read per node, cached ~4s, single-flight).
+This requires a read-only ClusterRole/Binding (`naslos-api-node-metrics`:
+`get`/`list` on `nodes`, `get` on `nodes/proxy`). `nodes/proxy` GET is broader
+than metrics: the same proxy reaches pod specs, container logs and the
+kubelet's exec/run/attach upgrade endpoints, and RBAC cannot restrict kubelet
+subpaths. That is an accepted risk — the API is already owner-gated with
+platform admin credentials and no write verb is granted — but it should be
+revisited if a dedicated metrics identity is introduced. When the grant or a
+kubelet read fails the endpoint still answers `200 {available:false, error}`,
+and the UI hides the metrics column.
+
 ## Relating to the dashboard UI
 
 The SvelteKit home screen (`ui/src/lib/components/Dashboard.svelte`) renders
