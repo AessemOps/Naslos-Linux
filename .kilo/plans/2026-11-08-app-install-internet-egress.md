@@ -45,13 +45,19 @@ current behavior: their policy is namespace-scoped and must not be created
 before the app exists.
 
 - `routing.rs`: extract `internet_policy_for(name, namespace)` and keep
-  `internet_policy(spec)` as a wrapper.
-- `apps.rs`: add `Router::ensure_internet(name, namespace)` (default no-op,
-  implemented by `KubeRouter`); call it in `install` after storage provisioning
-  and before `helm install`. If Helm still fails, delete the pre-created policy
-  so the reserved namespace does not hand public egress to the next app.
-- `spec.md` FR-APP-11: record that the policy MUST exist before the install
-  wait for a dedicated baseline namespace.
+  `internet_policy(spec)` as a wrapper; label API-created policies
+  (`naslos.local/managed-by=naslos-api`, `naslos.local/app=<release>`).
+- `apps.rs`: add `Router::ensure_internet` / `Router::delete_internet` (default
+  no-ops, implemented by `KubeRouter`); call `ensure_internet` in `install`
+  after storage provisioning and before `helm install`. On any failure delete
+  only the pre-created policy (never the release's route), and roll back an
+  install whose record cannot be persisted.
+- `apps.rs`: sweep labeled policies that no record backs before a reserved
+  namespace is reused and at startup (`reconcile_routes`), so an API restart
+  during the Helm wait cannot leave a namespace-wide egress allow for the next
+  app.
+- `spec.md` FR-APP-11 and `docs/api.md`: record the pre-install policy, the
+  failure cleanup and the reuse/startup sweep.
 
 ## Verification
 

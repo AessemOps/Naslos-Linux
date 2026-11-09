@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use crate::catalog::Catalog;
 use crate::chartsrepo::is_dns1123_label;
 use crate::helm;
+use crate::routing::{internet_policy_name, APP_LABEL, MANAGED_BY_LABEL, MANAGED_BY_VALUE};
 
 const RELEASE_NAME_TEMPLATE: &str = "{{ .Release.Name }}";
 
@@ -244,6 +245,13 @@ pub trait Router: Send + Sync {
         sso_domains: &[String],
     ) -> Result<(), String>;
     async fn delete(&self, namespace: &str, name: &str) -> Result<(), String>;
+    /// Delete only the app's public-Internet egress policy. Install rollback
+    /// uses this: the pre-created policy is the only routing object that
+    /// attempt created, and `delete` would also remove a live route.
+    async fn delete_internet(&self, name: &str, namespace: &str) -> Result<(), String> {
+        let _ = (name, namespace);
+        Ok(())
+    }
     /// Grant the app's public-Internet egress policy before its release
     /// exists. Install calls this before the Helm wait so an app whose first
     /// start needs the public network (Bazarr fetches releases and
@@ -634,6 +642,45 @@ impl Manager {
         ))
     }
 
+    /// Delete API-created Internet policies in `namespace` that no record
+    /// backs. An install reserves the namespace before it records a release,
+    /// so an attempt that dies between pre-creating the policy and recording
+    /// (API restart, crash) would otherwise leave a namespace-wide public
+    /// egress allow for the next app in that namespace.
+    async fn prune_orphan_internet_policies(&self, namespace: &str) {
+        let Some(kube) = &self.kube else {
+            return;
+        };
+        let active: std::collections::HashSet<String> = self
+            .store
+            .list()
+            .iter()
+            .filter(|r| self.target_namespace(r) == namespace)
+            .map(|r| r.name.clone())
+            .collect();
+        let list = match kube
+            .list_json(
+                "networkpolicy",
+                namespace,
+                Some(&format!("{MANAGED_BY_LABEL}={MANAGED_BY_VALUE}")),
+            )
+            .await
+        {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::warn!("app internet policy sweep for {namespace}: {e}");
+                return;
+            }
+        };
+        for name in orphan_internet_policies(&list, &active) {
+            if let Err(e) = kube.delete("networkpolicy", &name, namespace).await {
+                tracing::warn!("removing orphaned Internet policy {namespace}/{name}: {e}");
+            } else {
+                tracing::info!("removed orphaned Internet policy {namespace}/{name}");
+            }
+        }
+    }
+
     pub fn records(&self) -> Vec<Record> {
         self.store.list()
     }
@@ -709,6 +756,9 @@ impl Manager {
         let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
         // Reject an unenforceable opt-out before creating any storage.
         self.validate_internet(&namespace, &exposure)?;
+        // A namespace whose previous install died before recording a release
+        // can still carry that attempt's namespace-wide egress allow.
+        self.prune_orphan_internet_policies(&namespace).await;
         let provision = self
             .provision_datasets(&req.name, &namespace, app.privileged, &datasets, &[])
             .await?;
@@ -729,6 +779,14 @@ impl Manager {
         if precreated_internet {
             if let Some(router) = &self.router {
                 if let Err(e) = router.ensure_internet(&req.name, &namespace).await {
+                    // The apply may have reached the server before the client
+                    // timed out; do not leave a namespace-wide allow behind.
+                    if let Err(cleanup) = router.delete_internet(&req.name, &namespace).await {
+                        tracing::warn!(
+                            "app {:?}: cleaning up the Internet policy after a failed create: {cleanup}",
+                            req.name
+                        );
+                    }
                     self.rollback_provision(&req.name, &provision).await;
                     return Err(format!("creating the Internet egress policy: {e}"));
                 }
@@ -752,9 +810,15 @@ impl Manager {
             // Do not leak a PV/PVC when Helm fails before the record exists.
             self.rollback_provision(&req.name, &provision).await;
             // Nor hand the reserved namespace's egress allow to the next app.
+            // Delete only the policy: no route of this release exists yet.
             if precreated_internet {
                 if let Some(router) = &self.router {
-                    let _ = router.delete(&namespace, &req.name).await;
+                    if let Err(cleanup) = router.delete_internet(&req.name, &namespace).await {
+                        tracing::warn!(
+                            "app {:?}: cleaning up the Internet policy after a failed install: {cleanup}",
+                            req.name
+                        );
+                    }
                 }
             }
             return Err(e);
@@ -798,7 +862,27 @@ impl Manager {
             updated_at: Some(now),
             ..Default::default()
         };
-        self.store.upsert(rec.clone())?;
+        if let Err(e) = self.store.upsert(rec.clone()) {
+            // Helm succeeded but the platform cannot record the release.
+            // Undo the install so a retry is not blocked by an unmanaged
+            // release and no namespace-wide egress allow is left behind.
+            if let Err(cleanup) = self.helm_for(&rec).uninstall(&req.name).await {
+                tracing::warn!(
+                    "app {:?}: rolling back an unrecorded install: {cleanup}",
+                    req.name
+                );
+            }
+            if let Some(router) = &self.router {
+                if let Err(cleanup) = router.delete(&rec.namespace, &req.name).await {
+                    tracing::warn!(
+                        "app {:?}: removing routing for an unrecorded install: {cleanup}",
+                        req.name
+                    );
+                }
+            }
+            self.rollback_provision(&req.name, &provision).await;
+            return Err(format!("recording the install: {e}"));
+        }
         self.apply_route(&rec, &req.base_domain).await;
         self.view(&rec.name).await
     }
@@ -1155,6 +1239,12 @@ impl Manager {
 
     /// Re-apply routing for every non-orphaned record.
     pub async fn reconcile_routes(&self) -> Result<(), String> {
+        // Drop egress policies a previous process pre-created for an install
+        // that never recorded a release. This runs even when routing is
+        // disabled: the policy is a namespace-wide egress allow.
+        for namespace in &self.namespace_pool {
+            self.prune_orphan_internet_policies(namespace).await;
+        }
         let Some(router) = &self.router else {
             return Ok(());
         };
@@ -1779,6 +1869,40 @@ pub fn preinstall_internet(namespace: &str, exposure: &Exposure, baseline_pool: 
     exposure.internet && baseline_pool.iter().any(|n| n == namespace)
 }
 
+/// NetworkPolicy names from a `kubectl -o json` list that the API created for
+/// an app with no record in the namespace. Policies without the API labels are
+/// ignored so an operator-managed policy is never deleted.
+pub fn orphan_internet_policies(
+    list: &serde_json::Value,
+    active: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let Some(items) = list.get("items").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let meta = item.get("metadata");
+        let labels = meta.and_then(|m| m.get("labels"));
+        let managed = labels
+            .and_then(|l| l.get(MANAGED_BY_LABEL))
+            .and_then(|v| v.as_str());
+        let app = labels
+            .and_then(|l| l.get(APP_LABEL))
+            .and_then(|v| v.as_str());
+        let name = meta.and_then(|m| m.get("name")).and_then(|v| v.as_str());
+        let (Some(app), Some(name)) = (app, name) else {
+            continue;
+        };
+        if managed != Some(MANAGED_BY_VALUE) || name != internet_policy_name(app) {
+            continue;
+        }
+        if !active.contains(app) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
 /// Coerce numeric strings for schema fields typed `integer`/`number`. Browser
 /// forms submit every input as a string, and the catalog schema rejects
 /// `"10001"` for an integer; doing this server-side keeps older UI builds and
@@ -2171,6 +2295,24 @@ mod tests {
             ..Exposure::default()
         };
         assert!(!preinstall_internet("naslos-app-1", &off, &pool));
+    }
+
+    #[test]
+    fn orphan_internet_policy_sweep_ignores_unlabeled_and_active_policies() {
+        let list = serde_json::json!({"items": [
+            {"metadata": {"name": "old-internet", "labels": {
+                MANAGED_BY_LABEL: MANAGED_BY_VALUE, APP_LABEL: "old"}}},
+            {"metadata": {"name": "live-internet", "labels": {
+                MANAGED_BY_LABEL: MANAGED_BY_VALUE, APP_LABEL: "live"}}},
+            {"metadata": {"name": "manual-internet", "labels": {}}},
+            {"metadata": {"name": "old-misnamed", "labels": {
+                MANAGED_BY_LABEL: MANAGED_BY_VALUE, APP_LABEL: "old"}}}
+        ]});
+        let active = std::collections::HashSet::from(["live".to_string()]);
+        assert_eq!(
+            orphan_internet_policies(&list, &active),
+            vec!["old-internet".to_string()]
+        );
     }
 
     #[test]
