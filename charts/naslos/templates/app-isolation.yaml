@@ -73,6 +73,12 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "watch"]
+  # Live per-app usage attribution lists pods in each recorded app namespace.
+  # This ClusterRole is bound by a RoleBinding in the pool namespaces only, so
+  # it grants no cluster-wide pod access.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
