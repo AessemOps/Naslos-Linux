@@ -566,6 +566,20 @@ assert ("Role", "naslos-api-apps", "naslos-apps-priv") in roles, \
 assert api_env.get("APPS_PRIVILEGED_NAMESPACE") == "naslos-apps-priv", \
     "the API must know the privileged apps namespace"
 
+# Live app usage lists pods per recorded app namespace (never cluster-wide); the
+# isolation ClusterRole is bound by RoleBinding in each pool namespace, so it
+# must grant read-only pods there.
+isolation_role = next(
+    (d for d in docs if d.get("kind") == "ClusterRole" and d["metadata"]["name"] == "naslos-api-app-isolation"),
+    None,
+)
+assert isolation_role, "the API app-isolation ClusterRole is missing"
+pod_rules = [r for r in isolation_role.get("rules", []) if "pods" in r.get("resources", [])]
+assert pod_rules, "the API app-isolation ClusterRole must grant pods for live usage"
+pod_verbs = {v for rule in pod_rules for v in rule.get("verbs", [])}
+assert {"get", "list"} <= pod_verbs and not (pod_verbs & {"create", "update", "patch", "delete"}), \
+    f"the app-isolation pod grant must be read-only, got {pod_verbs}"
+
 # Backfill reads Helm labels from workloads rather than listing Secrets; the
 # platform read Role must exist and must NOT grant secret access.
 assert ("Role", "naslos-api-platform-read", "naslos") in roles, \
