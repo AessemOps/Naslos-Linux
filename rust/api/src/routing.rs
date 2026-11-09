@@ -123,18 +123,36 @@ pub fn internet_policy_name(name: &str) -> String {
     format!("{name}-internet")
 }
 
+/// Label marking a policy the API created, so a sweep can find and remove one
+/// a failed install left behind.
+pub const MANAGED_BY_LABEL: &str = "naslos.local/managed-by";
+/// Value of `MANAGED_BY_LABEL` on API-created policies.
+pub const MANAGED_BY_VALUE: &str = "naslos-api";
+/// App (release) the policy belongs to.
+pub const APP_LABEL: &str = "naslos.local/app";
+
 /// The additive Egress policy that grants public Internet access. It never
 /// opens the cluster, LAN or link-local ranges, so an app cannot use it to
 /// reach the API, kubelet, the host or a metadata service. It also repeats the
 /// base DNS and app-to-app allows so it stays correct where the chart's base
 /// policies are disabled (`networkPolicy.enabled=false`).
 pub fn internet_policy(spec: &Spec) -> serde_json::Value {
+    internet_policy_for(&spec.name, &spec.namespace)
+}
+
+/// The same policy built from the release name and namespace alone, so the API
+/// can grant egress before the Helm release (and its Record) exists.
+pub fn internet_policy_for(name: &str, namespace: &str) -> serde_json::Value {
     serde_json::json!({
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
         "metadata": {
-            "name": internet_policy_name(&spec.name),
-            "namespace": spec.namespace,
+            "name": internet_policy_name(name),
+            "namespace": namespace,
+            "labels": {
+                MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+                APP_LABEL: name,
+            },
         },
         "spec": {
             "podSelector": {},
@@ -552,6 +570,17 @@ impl Router for KubeRouter {
         }
     }
 
+    async fn ensure_internet(&self, name: &str, namespace: &str) -> Result<(), String> {
+        self.apply_object(&internet_policy_for(name, namespace))
+            .await
+    }
+
+    async fn delete_internet(&self, name: &str, namespace: &str) -> Result<(), String> {
+        self.kube
+            .delete("networkpolicy", &internet_policy_name(name), namespace)
+            .await
+    }
+
     async fn delete(&self, namespace: &str, name: &str) -> Result<(), String> {
         let namespace = if namespace.is_empty() {
             self.opts.namespace.clone()
@@ -809,6 +838,17 @@ mod tests {
             egress[2]["to"][0]["namespaceSelector"]["matchLabels"]["naslos.local/apps"],
             "true"
         );
+    }
+
+    #[test]
+    fn internet_policy_for_builds_the_same_egress_before_a_release_exists() {
+        let p = internet_policy_for("bazarr", "naslos-app-8");
+        assert_eq!(p["kind"], "NetworkPolicy");
+        assert_eq!(p["metadata"]["name"], "bazarr-internet");
+        assert_eq!(p["metadata"]["namespace"], "naslos-app-8");
+        assert_eq!(p["metadata"]["labels"][MANAGED_BY_LABEL], MANAGED_BY_VALUE);
+        assert_eq!(p["metadata"]["labels"][APP_LABEL], "bazarr");
+        assert_eq!(p["spec"], internet_policy(&spec())["spec"]);
     }
 
     #[test]

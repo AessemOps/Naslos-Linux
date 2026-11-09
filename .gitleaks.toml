@@ -42,3 +42,13 @@ paths = [
 description = "FR-UPD spec prose (false positive)"
 regexTarget = "match"
 regexes = ['''API image digest, Talos/Kubernetes''']
+
+# Public image references in the handoff/plan trip generic-api-key on the hex
+# commit tag or digest suffix. They name public GHCR artifacts, not credentials.
+[[allowlists]]
+description = "public GHCR image tags and digests"
+regexTarget = "match"
+regexes = [
+  '''naslos-[a-z-]+:(sha-)?[0-9a-f]{7,64}''',
+  '''ghcr\.io/aessemops/naslos-[a-z-]+@sha256:[0-9a-f]{64}''',
+]
