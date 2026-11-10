@@ -204,6 +204,125 @@ pub async fn app_namespaces_put(State(state): State<Arc<AppState>>, body: Body) 
     }
 }
 
+/// `GET /api/apps/{name}/pods`
+///
+/// The pods (and containers) the drawer's live log stream can attach to. An
+/// isolated app owns its whole namespace; a legacy app in the shared namespace
+/// is filtered by the chart's `app.kubernetes.io/instance` label.
+pub async fn app_pods_get(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Response {
+    let Some(manager) = state.app_manager.clone() else {
+        return app_unavailable();
+    };
+    let rec = match manager.get(&name) {
+        Ok(rec) => rec,
+        Err(e) => return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
+    };
+    let Some(kube) = state.kube.clone() else {
+        return json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": "cannot reach the Kubernetes API: no client configured" }),
+        );
+    };
+    let namespace = manager.record_namespace(&rec);
+    let isolated = manager.record_is_isolated(&rec);
+    let list = match kube.list_json("pods", &namespace, None).await {
+        Ok(list) => list,
+        Err(e) => {
+            return json(
+                StatusCode::BAD_GATEWAY,
+                serde_json::json!({ "error": format!("listing pods: {e}") }),
+            )
+        }
+    };
+    let mut pods: Vec<serde_json::Value> = list
+        .get("items")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|pod| pod_summary(pod, &rec.name, isolated))
+                .collect()
+        })
+        .unwrap_or_default();
+    // Running pods first, then by name: the drawer defaults to the first entry.
+    pods.sort_by(|a, b| {
+        let running = |p: &serde_json::Value| p["phase"].as_str() != Some("Running");
+        running(a).cmp(&running(b)).then_with(|| {
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
+        })
+    });
+    json(
+        StatusCode::OK,
+        serde_json::json!({ "namespace": namespace, "pods": pods }),
+    )
+}
+
+fn pod_summary(pod: &serde_json::Value, app: &str, isolated: bool) -> Option<serde_json::Value> {
+    let instance = pod
+        .pointer("/metadata/labels/app.kubernetes.io~1instance")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !isolated && instance != app {
+        return None;
+    }
+    let name = pod.pointer("/metadata/name")?.as_str()?.to_string();
+    let phase = pod
+        .pointer("/status/phase")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown");
+    let started_at = pod.pointer("/status/startTime").and_then(|v| v.as_str());
+    // Status carries readiness/restarts; a pending pod has none yet, so fall
+    // back to the spec so the container picker still works.
+    let mut containers: Vec<serde_json::Value> = pod
+        .pointer("/status/containerStatuses")
+        .and_then(|v| v.as_array())
+        .map(|statuses| {
+            statuses
+                .iter()
+                .filter_map(|c| {
+                    let name = c.get("name")?.as_str()?;
+                    Some(serde_json::json!({
+                        "name": name,
+                        "ready": c.get("ready").and_then(|v| v.as_bool()).unwrap_or(false),
+                        "restartCount": c.get("restartCount").and_then(|v| v.as_u64()).unwrap_or(0),
+                    }))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if containers.is_empty() {
+        containers = pod
+            .pointer("/spec/containers")
+            .and_then(|v| v.as_array())
+            .map(|specs| {
+                specs
+                    .iter()
+                    .filter_map(|c| {
+                        let name = c.get("name")?.as_str()?;
+                        Some(serde_json::json!({
+                            "name": name,
+                            "ready": false,
+                            "restartCount": 0,
+                        }))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    Some(serde_json::json!({
+        "name": name,
+        "phase": phase,
+        "startedAt": started_at,
+        "containers": containers,
+    }))
+}
+
 #[derive(Default, serde::Deserialize)]
 struct UpgradeBody {
     #[serde(default)]
@@ -436,12 +555,58 @@ fn conflict_response(conflict: &super::app_jobs::JobPublic) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::require_privileged_confirmation;
+    use super::{pod_summary, require_privileged_confirmation};
+    use serde_json::json;
 
     #[test]
     fn privileged_installs_need_a_second_confirmation() {
         assert!(require_privileged_confirmation(false, false).is_ok());
         assert!(require_privileged_confirmation(true, false).is_err());
         assert!(require_privileged_confirmation(true, true).is_ok());
+    }
+
+    fn pod(instance: &str, phase: &str, with_status: bool) -> serde_json::Value {
+        let status = if with_status {
+            json!({
+                "phase": phase,
+                "startTime": "2026-11-10T00:00:00Z",
+                "containerStatuses": [
+                    { "name": "demo", "ready": true, "restartCount": 2 }
+                ]
+            })
+        } else {
+            json!({ "phase": phase })
+        };
+        json!({
+            "metadata": {
+                "name": "demo-abc",
+                "labels": { "app.kubernetes.io/instance": instance }
+            },
+            "spec": { "containers": [{ "name": "demo" }] },
+            "status": status
+        })
+    }
+
+    #[test]
+    fn isolated_namespace_lists_every_pod_with_status() {
+        let summary = pod_summary(&pod("other", "Running", true), "demo", true).unwrap();
+        assert_eq!(summary["name"], "demo-abc");
+        assert_eq!(summary["phase"], "Running");
+        assert_eq!(summary["containers"][0]["name"], "demo");
+        assert_eq!(summary["containers"][0]["restartCount"], 2);
+    }
+
+    #[test]
+    fn shared_namespace_filters_by_instance_label() {
+        assert!(pod_summary(&pod("other", "Running", true), "demo", false).is_none());
+        assert!(pod_summary(&pod("demo", "Running", true), "demo", false).is_some());
+    }
+
+    #[test]
+    fn pending_pod_falls_back_to_spec_containers() {
+        let summary = pod_summary(&pod("demo", "Pending", false), "demo", true).unwrap();
+        assert_eq!(summary["phase"], "Pending");
+        assert_eq!(summary["containers"][0]["name"], "demo");
+        assert_eq!(summary["containers"][0]["ready"], false);
     }
 }

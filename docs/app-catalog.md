@@ -126,6 +126,7 @@ app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
 | Reconfigure | `PUT /api/apps/{name} {values, datasets?}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}`. `datasets` omitted keeps the selection, `[]` detaches all (an isolated app must keep at least one), a list reconciles adds/removes; removed claims are deleted after Helm succeeds. A dataset change on a record outside a per-app isolation namespace fails the job with a reinstall message |
 | Exposure | `GET`/`PUT /api/apps/{name}/exposure` | Orthogonal toggles + `baseDomain`, re-renders the route (synchronous) |
 | Route targets | `GET /api/apps/{name}/services` | Services the release rendered (discovery fallback / UI picker) |
+| Logs | `GET /api/apps/{name}/pods` + `GET /api/ws/logs` | Pods/containers of the app for the drawer's live log pane (read-only; tail 200 + follow). The API's `pods/log` grant is `get`-only in the app namespace |
 | Uninstall | `DELETE /api/apps/{name}` | Enqueues an uninstall job (`helm uninstall` + route delete + record delete) → `202 {jobId, state}` |
 | Job list | `GET /api/apps/jobs` | Running plus the last ~20 finished lifecycle jobs |
 | Job detail | `GET /api/apps/jobs/{id}` | `state` (`running`/`succeeded`/`failed`), `stage` (`preparing`/`installing`/`finalizing`), `message`, `error` |

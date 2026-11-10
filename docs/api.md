@@ -94,6 +94,7 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 | GET | `/api/apps/{name}/exposure` | Exposure settings, the app's own `baseDomain` (fallback primary), `primaryDomain`, `selectableDomains`, `ssoDomains` and `authAllowed` |
 | PUT | `/api/apps/{name}/exposure` | Partial update `{exposure, baseDomain?}`, re-render the route and the per-app Internet `NetworkPolicy`; omitted exposure fields keep their stored value (SEC-2026-D11), and an unconfigured `baseDomain` is rejected (400). `exposure.internet` defaults to `true`; `false` removes the app's public-egress policy and is rejected with a 400 for privileged or shared namespaces |
 | GET | `/api/apps/{name}/services` | Services the release rendered (route-target discovery/picker) |
+| GET | `/api/apps/{name}/pods` | Pods and containers the drawer's log stream can attach to: `{namespace, pods:[{name, phase, startedAt, containers:[{name, ready, restartCount}]}]}`. Running pods first; a legacy app in the shared namespace is filtered by `app.kubernetes.io/instance` |
 
 Install/upgrade/uninstall are **asynchronous** (FR-APP-18): the handler
 validates and enqueues, then answers `202 {jobId, state:"running"}`; the UI
@@ -261,7 +262,10 @@ closed). Unsafe methods additionally require a same-origin browser context
 present, `Content-Type: application/json`; otherwise the API returns 403/415.
 Non-browser clients that send neither header are unaffected.
 
-`/api/ws/logs` reads the pod log stream (tail 200 lines, follow).
+`/api/ws/logs` reads the pod log stream (tail 200 lines, follow); the Installed
+drawer uses it with a pod from `/api/apps/{name}/pods`. The API pod needs the
+`pods/log` subresource (`get`) in the app namespace, granted by the per-namespace
+isolation ClusterRole.
 `/api/ws/exec` uses the Kubernetes `remotecommand` SPDY executor over a websocket.
 
 Both WebSocket endpoints refuse an upgrade whose `Origin` does not match the

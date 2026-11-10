@@ -579,6 +579,12 @@ assert pod_rules, "the API app-isolation ClusterRole must grant pods for live us
 pod_verbs = {v for rule in pod_rules for v in rule.get("verbs", [])}
 assert {"get", "list"} <= pod_verbs and not (pod_verbs & {"create", "update", "patch", "delete"}), \
     f"the app-isolation pod grant must be read-only, got {pod_verbs}"
+# The Installed drawer streams app logs through the API's kubectl, so the same
+# ClusterRole needs the pods/log subresource (read-only).
+log_rules = [r for r in isolation_role.get("rules", []) if "pods/log" in r.get("resources", [])]
+assert log_rules, "the API app-isolation ClusterRole must grant pods/log for live app logs"
+log_verbs = {v for rule in log_rules for v in rule.get("verbs", [])}
+assert log_verbs == {"get"}, f"the app-isolation log grant must be read-only, got {log_verbs}"
 
 # Backfill reads Helm labels from workloads rather than listing Secrets; the
 # platform read Role must exist and must NOT grant secret access.

@@ -819,6 +819,12 @@ impl Manager {
         self.is_isolated_namespace(&rec.namespace)
     }
 
+    /// The namespace a record's workloads run in (its isolated slot, the
+    /// privileged namespace, or the legacy shared namespace).
+    pub fn record_namespace(&self, rec: &Record) -> String {
+        self.target_namespace(rec)
+    }
+
     fn target_namespace(&self, rec: &Record) -> String {
         if !rec.namespace.is_empty() {
             rec.namespace.clone()
