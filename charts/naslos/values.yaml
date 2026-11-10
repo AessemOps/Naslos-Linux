@@ -366,7 +366,10 @@ apps:
   isolation:
     enabled: false
     namePrefix: naslos-app
-    namespaces: 8
+    # Baseline pool size. The API refuses a new install when every namespace is
+    # taken ("no free per-app namespace"); raise this and upgrade the platform
+    # to grow the pool.
+    namespaces: 12
     privilegedNamespaces: 4
     # Per-namespace PVC quota. A chart may use several PVCs for its own state
     # (gameyfin uses 5) and each attached dataset adds one more.

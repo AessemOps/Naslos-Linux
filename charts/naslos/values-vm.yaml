@@ -95,7 +95,9 @@ apps:
   namespace: naslos-apps
   isolation:
     enabled: true
-    namespaces: 8
+    # 12 baseline slots: the 8-slot pool was full (searxng, audiobookshelf,
+    # calibre-web, jellyfin, radarr, sonarr, flaresolverr, bazarr).
+    namespaces: 12
     privilegedNamespaces: 4
   datasets:
     # D3/F1 is still open on this profile: the Buddy store is nested under the
