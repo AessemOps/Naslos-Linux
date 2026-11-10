@@ -440,6 +440,15 @@ with a sibling `naslos-app.yaml` install-config. See
   refresh MUST keep the previous snapshot and fall back to the stale clone. The
   one-time dataset-layout migration MUST stay chained to the first refresh.
   *(chartsrepo tests, `main.rs` refresher)*
+- **FR-APP-24** — The app detail drawer MUST show the app's live logs: a
+  read-only log stream for a pod/container of the app, with pod and container
+  pickers, a follow toggle and a bounded buffer. `GET /api/apps/{name}/pods`
+  MUST list only pods in that record's namespace (filtered by
+  `app.kubernetes.io/instance` when the namespace is shared) with their phase,
+  start time and containers; streaming MUST reuse the owner-gated
+  `/api/ws/logs` socket. The API's `pods/log` access MUST be `get`-only and, for
+  isolated apps, granted by the per-namespace isolation ClusterRole.
+  *(chart render gate + audit assertion, live drill)*
 - **FR-APP-19** — Chart installs MUST run as a namespaced identity that cannot
   create Traefik `IngressRoute`/`Middleware` or cert-manager objects; the API
   MUST own the app's route and certificate. *(chart render gate:
