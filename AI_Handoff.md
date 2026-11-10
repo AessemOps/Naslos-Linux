@@ -11,7 +11,7 @@ rules and conventions are in [`AGENTS.md`](AGENTS.md).
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## Production instance (2026-11-09)
+## Production instance (2026-11-10)
 
 - **Hardware:** the production NAS is the bare-metal node `talos-zgr-9yg` at
   `192.168.1.38` (Talos v1.14.5, Kubernetes v1.37.0, control-plane Ready). The
@@ -19,20 +19,24 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart `0.3.16`, appVersion `0.3.16`,
-  revision 16, deployed 2026-11-10 00:08 UTC. Revision 16 is a values-only
-  upgrade on the same chart and images: `apps.isolation.namespaces` 8 → 12 to
-  free the full baseline pool (chart default and `values-vm.yaml` now say 12).
-  Images are digest-pinned from the 0.3.16 pack: API `a346e762…`, agent
-  `51d341c3…`, UI `a1e48fa4…`, OpenLDAP `5c39f01d…`, Samba `1d259145…`, NFS
-  `c45e4511…`, terminal `4be0d6fa…`. `/api/system/version` reports
-  chart/naslos `0.3.16`, profile `installer`, Talos v1.14.5, k8s v1.37.0.
-- **Latest release:** `v0.3.17` (2026-11-09) and installer `naslos-v0.3.17`
-  are published; the node is still on `0.3.16` (not upgraded). `v0.3.16`,
-  `v0.3.15`, `v0.3.14`, `v0.3.13`, `v0.3.12`, `v0.3.11`, `v0.3.10` and
+- **Deployed release:** Helm `naslos` chart `0.3.18`, appVersion `0.3.18`,
+  revision 18, deployed 2026-11-10 18:36 UTC (system updater from 0.3.17).
+  Images are digest-pinned from the 0.3.18 pack: API `da7151be…`, agent
+  `4880f45e…`, UI `b7378e32…`, OpenLDAP `55a97ac4…`, Samba `d759be31…`, NFS
+  `bc316a4b…`, terminal `25d047c5…`. `/api/system/version` reports
+  chart/naslos `0.3.18`, profile `installer`, Talos v1.14.5, k8s v1.37.0.
+- **Latest release:** `v0.3.18` (2026-11-10) and installer `naslos-v0.3.18`
+  are published and the node runs it. `v0.3.17`, `v0.3.16`, `v0.3.15`,
+  `v0.3.14`, `v0.3.13`, `v0.3.12`, `v0.3.11`, `v0.3.10` and
   `v0.3.9` were the previous releases, `v0.3.8` was superseded.
 - **Release notes since 0.3.7:**
-  - `0.3.17` (released, not deployed) — fixes the 0.3.16 live-usage Forbidden
+  - `0.3.18` (deployed) — owner-adjustable per-app namespace pool: the chart
+    provisions 32 baseline slots but hands out 20 by default; Apps → Installed
+    shows `used/limit` and raises or lowers the limit
+    (`GET`/`PUT /api/apps/namespaces`, persisted in `APPS_POOL_CONFIG`). Also
+    fixes the full-pool error text. PR #140. Plan:
+    `.kilo/plans/2026-11-10-app-namespace-pool-limit.md`.
+  - `0.3.17` (deployed) — fixes the 0.3.16 live-usage Forbidden
     error by granting read-only `pods` in the per-app isolation ClusterRole
     (bound by RoleBinding in each pool namespace only), guarded by an audit
     assertion. Same Installed rework as 0.3.16. PR #136.
@@ -96,17 +100,18 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `chown -R 10001:10000 /config` after the UID/GID switch. Datasets under
   `/var/mnt/Data` are recursively group-owned `naslos_users` (10000). The
   `shail.ovh` domain (OVH, production, `sso: true`) and
-  `naslos-shail-ovh-tls` are present. The baseline namespace pool has **12
-  slots** with `naslos-app-9..12` free (raised from 8); the privileged pool has
-  `naslos-app-p2..p4` free.
-- **Update check:** current deployed `0.3.16`; `v0.3.17` is available.
+  `naslos-shail-ovh-tls` are present. The baseline pool has **32 provisioned
+  slots with a usable limit of 20** (`GET /api/apps/namespaces`: 8 used, 12
+  available); the privileged pool has 2 used of 4, `naslos-app-p2..p4` free.
+- **Update check:** current deployed `0.3.18`; no update is offered.
 
 ### Open items
 
-- **Baseline namespace pool:** 12 slots, `naslos-app-9..12` free after the
-  2026-11-10 raise. A future full pool again needs a larger
-  `apps.isolation.namespaces` (chart value, requires a platform upgrade);
-  privileged apps still have `naslos-app-p2..p4`.
+- **Baseline namespace pool:** 20 usable of 32 provisioned slots after the
+  2026-11-10 release. The limit is owner-editable in **Apps → Installed**
+  (`PUT /api/apps/namespaces`); a limit above the provisioned count still needs
+  a chart change (`apps.isolation.namespaces`) and a platform upgrade.
+  Privileged apps still have `naslos-app-p2..p4`.
 - **Multi-dataset live drill:** six apps now mount datasets (Jellyfin and Sonarr
   have several), which exercises the per-dataset claims and
   `/datasets/<name>` mounts. Still to verify: remove one dataset from an
@@ -214,7 +219,7 @@ sh scripts/audit.sh
     remains a manual fallback.
 11. **PSA is enforced per namespace.** `naslos` and `naslos-privileged` are
     `privileged`; the shared `naslos-apps` is **`baseline`** and
-    `naslos-apps-priv` is `privileged`; the per-app pools `naslos-app-1..12` are
+    `naslos-apps-priv` is `privileged`; the per-app pools `naslos-app-1..32` are
     `baseline` and `naslos-app-p1..4` are `privileged`. Baseline **forbids
     `hostPath` volumes**, so managed app charts mount the platform's
     `naslos-datasets` RWX PVC; `hostPath` and `NET_ADMIN` only work in the
