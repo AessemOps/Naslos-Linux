@@ -266,7 +266,7 @@ spec:
             {{- if .Values.apps.isolation.enabled }}
             {{- $isoPrefix := .Values.apps.isolation.namePrefix | default "naslos-app" }}
             {{- $baseNames := list }}
-            {{- range $i := until (int (.Values.apps.isolation.namespaces | default 8)) }}
+            {{- range $i := until (int (.Values.apps.isolation.namespaces | default 32)) }}
             {{- $baseNames = append $baseNames (printf "%s-%d" $isoPrefix (add $i 1)) }}
             {{- end }}
             {{- $privNames := list }}
@@ -275,6 +275,13 @@ spec:
             {{- end }}
             - name: APPS_NAMESPACE_POOL
               value: {{ join "," $baseNames | quote }}
+            # Initial number of slots handed out. The chart provisions the whole
+            # pool above; the owner can raise this up to the provisioned count
+            # from Apps → Installed (persisted in APPS_POOL_CONFIG).
+            - name: APPS_NAMESPACE_LIMIT
+              value: {{ .Values.apps.isolation.defaultLimit | default 20 | quote }}
+            - name: APPS_POOL_CONFIG
+              value: {{ .Values.api.poolSettingsFile | default "/var/lib/naslos/app-pool.json" | quote }}
             - name: APPS_PRIVILEGED_NAMESPACE_POOL
               value: {{ join "," $privNames | quote }}
             {{- end }}

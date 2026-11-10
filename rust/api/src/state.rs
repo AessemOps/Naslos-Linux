@@ -507,6 +507,15 @@ fn build_app_manager(
     let namespace_pool = parse_pool(std::env::var("APPS_NAMESPACE_POOL").unwrap_or_default());
     let privileged_namespace_pool =
         parse_pool(std::env::var("APPS_PRIVILEGED_NAMESPACE_POOL").unwrap_or_default());
+    // The chart provisions the whole pool; `APPS_NAMESPACE_LIMIT` is only the
+    // initial usable count (the owner can raise it from the UI up to the
+    // provisioned count). Both live on the state volume so the choice survives
+    // restarts and platform upgrades.
+    let namespace_pool_limit = std::env::var("APPS_NAMESPACE_LIMIT")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok());
+    let pool_settings_path = std::env::var("APPS_POOL_CONFIG")
+        .unwrap_or_else(|_| "/var/lib/naslos/app-pool.json".to_string());
     let cfg = crate::apps::Config {
         store_path: std::env::var("APPS_CONFIG")
             .unwrap_or_else(|_| "/var/lib/naslos/apps.json".to_string()),
@@ -521,6 +530,8 @@ fn build_app_manager(
         sso_domains,
         namespace_pool,
         privileged_namespace_pool,
+        namespace_pool_limit,
+        pool_settings_path,
         kube: kube.cloned(),
         datasets,
         pool_provisioner_image: std::env::var("APPS_POOL_PROVISIONER_IMAGE")
