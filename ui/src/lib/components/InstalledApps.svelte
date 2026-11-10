@@ -8,7 +8,7 @@
   import { appJobs } from '$lib/stores/appJobs';
   import { appUpdates, refreshAppUpdates, startAppUpdates } from '$lib/stores/appUpdates';
   import { formatBytes, formatBytesPerSec, formatMillicores } from '$lib/format';
-  import type { AppView, AppUsage, AppUsageHistory, UsageReport } from '$lib/appTypes';
+  import type { AppView, AppUsage, AppUsageHistory, UsageReport, AppNamespaces } from '$lib/appTypes';
 
   let apps: AppView[] = [];
   let loading = true;
@@ -36,6 +36,68 @@
   let refreshError = '';
   let lastUpdatesSignature: string | null = null;
 
+  // Per-app namespace slots: the chart provisions a fixed pool and the owner
+  // decides how many of those slots are usable. Raising it here takes effect
+  // immediately; it can never go below the installed apps.
+  let pools: AppNamespaces | null = null;
+  let poolsError = '';
+  let editingLimit = false;
+  let limitDraft = 0;
+  let savingLimit = false;
+  let limitError = '';
+  let limitMessage = '';
+
+  async function loadPools() {
+    try {
+      const res = await fetch('/api/apps/namespaces');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      pools = (await res.json()) as AppNamespaces;
+      poolsError = '';
+    } catch (e) {
+      poolsError = `Namespace slots are unavailable: ${e}`;
+      pools = null;
+    }
+  }
+
+  function startLimitEdit() {
+    if (!pools) return;
+    limitDraft = pools.baseline.limit;
+    limitError = '';
+    limitMessage = '';
+    editingLimit = true;
+  }
+
+  function cancelLimitEdit() {
+    editingLimit = false;
+    limitError = '';
+  }
+
+  async function saveLimit() {
+    if (!pools || savingLimit) return;
+    savingLimit = true;
+    limitError = '';
+    limitMessage = '';
+    try {
+      const res = await fetch('/api/apps/namespaces', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: Number(limitDraft) })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        limitError = data.error || `Could not change the limit (HTTP ${res.status})`;
+      } else {
+        pools = data as AppNamespaces;
+        editingLimit = false;
+        limitMessage = `Limit set to ${pools.baseline.limit} slots`;
+      }
+    } catch (e) {
+      limitError = 'Could not change the limit: ' + e;
+    } finally {
+      savingLimit = false;
+    }
+  }
+
   async function loadApps(initial = false) {
     if (initial) loading = true;
     error = '';
@@ -46,6 +108,7 @@
       }
       const data = await res.json();
       apps = Array.isArray(data) ? data : [];
+      void loadPools();
     } catch (e) {
       error = 'Failed to load installed apps: ' + e;
       apps = [];
@@ -204,6 +267,7 @@
     const stopUpdates = startAppUpdates();
     document.addEventListener('visibilitychange', onVisibility);
     void loadApps(true);
+    void loadPools();
     void pollUsage();
     usageTimer = setInterval(() => void pollUsage(), 5000);
     return () => {
@@ -260,6 +324,75 @@
 
     {#if !usageAvailable && usageError}
       <p class="text-xs text-gray-500 mb-3">{usageError}</p>
+    {/if}
+
+    {#if pools && pools.baseline.provisioned > 0}
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-2 text-sm">
+        <span class="text-gray-400">
+          Namespace slots
+          <span class="text-gray-200 font-medium tabular-nums"
+            >{pools.baseline.used}/{pools.baseline.limit}</span
+          >
+          used
+          <span class="mx-1">·</span>
+          <span class="text-gray-500">{pools.baseline.provisioned} provisioned</span>
+          {#if pools.privileged.provisioned > 0}
+            <span class="mx-1">·</span>
+            <span class="text-gray-500"
+              >privileged {pools.privileged.used}/{pools.privileged.provisioned}</span
+            >
+          {/if}
+        </span>
+        <div class="flex items-center gap-2">
+          {#if limitMessage}
+            <span class="text-xs text-green-400" role="status">{limitMessage}</span>
+          {/if}
+          <button
+            class="btn btn-secondary text-xs"
+            type="button"
+            on:click={editingLimit ? cancelLimitEdit : startLimitEdit}
+          >
+            {editingLimit ? 'Close' : 'Adjust limit'}
+          </button>
+        </div>
+      </div>
+
+      {#if editingLimit}
+        <form
+          class="card mb-3 flex flex-wrap items-end gap-3"
+          on:submit|preventDefault={saveLimit}
+        >
+          <div>
+            <label class="label" for="app-slot-limit">Usable app namespace slots</label>
+            <input
+              id="app-slot-limit"
+              class="input w-28"
+              type="number"
+              min={Math.max(1, pools.baseline.used)}
+              max={pools.baseline.provisioned}
+              bind:value={limitDraft}
+            />
+          </div>
+          <p class="text-xs text-gray-500 max-w-md pb-2">
+            Between {Math.max(1, pools.baseline.used)} (in use) and
+            {pools.baseline.provisioned} (provisioned). Raising the limit takes effect
+            immediately; more than {pools.baseline.provisioned} needs a platform upgrade.
+          </p>
+          {#if limitError}
+            <p class="text-xs text-red-300 pb-2" role="alert">{limitError}</p>
+          {/if}
+          <button
+            class="btn btn-primary text-sm"
+            type="submit"
+            disabled={savingLimit || Number(limitDraft) < Math.max(1, pools.baseline.used)}
+          >
+            {savingLimit ? 'Saving…' : 'Save limit'}
+          </button>
+        </form>
+      {/if}
+      {#if poolsError}
+        <p class="text-xs text-amber-300 mb-2" role="alert">{poolsError}</p>
+      {/if}
     {/if}
 
     <div class="card p-0 divide-y divide-naslos-border overflow-hidden">

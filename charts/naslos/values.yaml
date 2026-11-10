@@ -79,6 +79,8 @@ api:
   # configured chart sources and base domains, plus the git clone cache. All live
   # on the state volume beside shares.json.
   appsFile: /var/lib/naslos/apps.json
+  # Owner-set usable app-namespace limit (survives upgrades; the UI writes it).
+  poolSettingsFile: /var/lib/naslos/app-pool.json
   sourcesFile: /var/lib/naslos/sources.json
   domainsFile: /var/lib/naslos/domains.json
   chartsCacheDir: /var/lib/naslos/charts
@@ -366,10 +368,12 @@ apps:
   isolation:
     enabled: false
     namePrefix: naslos-app
-    # Baseline pool size. The API refuses a new install when every namespace is
-    # taken ("no free per-app namespace"); raise this and upgrade the platform
-    # to grow the pool.
-    namespaces: 12
+    # Baseline namespaces the chart provisions. The API hands out only the
+    # first `defaultLimit` slots; an owner can raise that limit up to this
+    # count in Apps → Installed without a platform upgrade. Growing the
+    # provisioned pool itself still needs a chart change and an upgrade.
+    namespaces: 32
+    defaultLimit: 20
     privilegedNamespaces: 4
     # Per-namespace PVC quota. A chart may use several PVCs for its own state
     # (gameyfin uses 5) and each attached dataset adds one more.
