@@ -3,6 +3,7 @@
   import { modal } from '$lib/actions/modal';
   import { trackAppJob } from '$lib/stores/appJobs';
   import AppIcon from './AppIcon.svelte';
+  import AppLogs from './AppLogs.svelte';
   import Sparkline from './Sparkline.svelte';
   import { formatBytes, formatBytesPerSec, formatMillicores } from '$lib/format';
   import { statusClass, statusLabel } from '$lib/appStatus';
@@ -61,7 +62,7 @@
   <div class="absolute inset-0 bg-black/60" on:click={() => dispatch('close')}></div>
 
   <aside
-    class="absolute inset-y-0 right-0 w-full max-w-md bg-naslos-surface border-l border-naslos-border shadow-xl flex flex-col"
+    class="absolute inset-y-0 right-0 w-full max-w-xl bg-naslos-surface border-l border-naslos-border shadow-xl flex flex-col"
   >
     <div class="p-4 border-b border-naslos-border flex items-start gap-3">
       <AppIcon icon={app.icon} iconUrl={app.iconUrl} alt="" size="text-3xl" imgClass="h-9 w-9" />
@@ -167,6 +168,11 @@
           <p class="text-xs text-gray-500 mt-2 tabular-nums">{usage.pods} pods sampled</p>
         {/if}
       </section>
+
+      <!-- Live logs -->
+      {#key app.name}
+        <AppLogs {app} />
+      {/key}
 
       <!-- Details -->
       <section class="space-y-2 text-sm">

@@ -50,6 +50,25 @@ export interface AppNamespaces {
   privileged: NamespacePool;
 }
 
+/** Pods the drawer's live log stream can attach to (`GET /api/apps/{name}/pods`). */
+export interface AppPodContainer {
+  name: string;
+  ready: boolean;
+  restartCount: number;
+}
+
+export interface AppPod {
+  name: string;
+  phase: string;
+  startedAt?: string | null;
+  containers: AppPodContainer[];
+}
+
+export interface AppPods {
+  namespace: string;
+  pods: AppPod[];
+}
+
 /** One row of `GET /api/apps/usage`. */
 export interface AppUsage {
   name: string;
