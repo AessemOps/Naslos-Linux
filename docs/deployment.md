@@ -21,7 +21,12 @@
   a quota, a default-deny NetworkPolicy and the reduced Helm/API RoleBindings.
   New installs are assigned a free namespace and get one PV/PVC per selected
   dataset (`naslos-app-data` StorageClass). Legacy records stay in
-  `naslos-apps` until reinstalled. See `docs/datasets-isolation.md`.
+  `naslos-apps` until reinstalled. See `docs/datasets-isolation.md`. The pool is
+  fixed: when every slot is taken, an install fails with
+  `no free per-app namespace is available; raise apps.isolation.namespaces`.
+  Raise the value (default `12`) in the values file and upgrade the release;
+  the new `naslos-app-N` slots are created by the chart and the API picks them
+  up from `APPS_NAMESPACE_POOL` on restart.
 - **Dataset exposure (legacy).** `apps.datasets.hostPath` (default `/var/mnt`) is
   mounted into legacy baseline apps. Fresh installs set
   `apps.datasets.enabled=false` in the installer overlay and use only per-app
