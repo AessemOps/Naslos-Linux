@@ -10,7 +10,7 @@ creates one PV/PVC per registry dataset, pointing at that dataset only.
 {{- if .Values.apps.isolation.enabled }}
 {{- $rels := .Release.Namespace }}
 {{- $prefix := .Values.apps.isolation.namePrefix | default "naslos-app" }}
-{{- $baseline := int (.Values.apps.isolation.namespaces | default 8) }}
+{{- $baseline := int (.Values.apps.isolation.namespaces | default 32) }}
 {{- $privileged := int (.Values.apps.isolation.privilegedNamespaces | default 4) }}
 {{- $helmSA := printf "system:serviceaccount:%s:naslos-helm" $rels }}
 {{- $apiSA := printf "system:serviceaccount:%s:naslos-api" $rels }}

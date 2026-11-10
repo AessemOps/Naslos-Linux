@@ -130,6 +130,7 @@ app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
 | Job list | `GET /api/apps/jobs` | Running plus the last ~20 finished lifecycle jobs |
 | Job detail | `GET /api/apps/jobs/{id}` | `state` (`running`/`succeeded`/`failed`), `stage` (`preparing`/`installing`/`finalizing`), `message`, `error` |
 | Update summary | `GET /api/apps/updates` | Record-only `{count, apps:[{name, installedVersion, latestVersion}]}` from `record.chartVersion` + the catalog (no Helm calls) |
+| Slots | `GET`/`PUT /api/apps/namespaces` | `{baseline:{provisioned,limit,used,available}, privileged:{...}}`; `PUT {limit}` raises or lowers the usable baseline slots up to the chart-provisioned pool (never below the installed count). The Installed tab shows usage and edits the limit |
 | Usage | `GET /api/apps/usage` | Live per-app CPU/RAM/network from the kubelet summary proxy (see [monitoring.md](monitoring.md)); always `200`, `available:false` when unreadable |
 
 Install/upgrade/uninstall run as **background jobs** (FR-APP-18): a cold

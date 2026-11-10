@@ -19,6 +19,7 @@
             "enabled": { "type": "boolean" },
             "namePrefix": { "type": "string" },
             "namespaces": { "type": "integer" },
+            "defaultLimit": { "type": "integer" },
             "privilegedNamespaces": { "type": "integer" }
           }
         },

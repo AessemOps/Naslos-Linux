@@ -37,6 +37,19 @@ export interface AppView {
   updateAvailable: boolean;
 }
 
+/** Slot accounting from `GET /api/apps/namespaces`. */
+export interface NamespacePool {
+  provisioned: number;
+  limit: number;
+  used: number;
+  available: number;
+}
+
+export interface AppNamespaces {
+  baseline: NamespacePool;
+  privileged: NamespacePool;
+}
+
 /** One row of `GET /api/apps/usage`. */
 export interface AppUsage {
   name: string;

@@ -82,6 +82,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/apps/updates", get(apps::app_updates_get))
         .route("/api/apps/usage", get(apps::app_usage_get))
         .route(
+            "/api/apps/namespaces",
+            get(apps::app_namespaces_get).put(apps::app_namespaces_put),
+        )
+        .route(
             "/api/apps/{name}",
             get(apps::app_detail_get)
                 .put(apps::app_detail_put)

@@ -95,9 +95,11 @@ apps:
   namespace: naslos-apps
   isolation:
     enabled: true
-    # 12 baseline slots: the 8-slot pool was full (searxng, audiobookshelf,
-    # calibre-web, jellyfin, radarr, sonarr, flaresolverr, bazarr).
-    namespaces: 12
+    # 32 provisioned baseline slots, 20 usable by default. The owner can raise
+    # the usable limit up to 32 from Apps → Installed without another platform
+    # upgrade.
+    namespaces: 32
+    defaultLimit: 20
     privilegedNamespaces: 4
   datasets:
     # D3/F1 is still open on this profile: the Buddy store is nested under the

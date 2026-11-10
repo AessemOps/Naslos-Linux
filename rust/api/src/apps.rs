@@ -432,6 +432,13 @@ pub struct Config {
     /// keep the legacy shared-namespace behaviour.
     pub namespace_pool: Vec<String>,
     pub privileged_namespace_pool: Vec<String>,
+    /// Initial baseline limit when no owner setting is stored. The chart
+    /// provisions the whole pool; only the first `limit` slots are handed out,
+    /// and the owner can raise that up to the provisioned count from the UI.
+    pub namespace_pool_limit: Option<usize>,
+    /// Where the owner-set baseline limit is persisted (beside the other app
+    /// state files). Empty disables persistence.
+    pub pool_settings_path: String,
     pub kube: Option<Arc<crate::kube::Client>>,
     pub datasets: Option<Arc<crate::datasets::Registry>>,
     /// Image for a pool-scoped local-path provisioner, created on demand.
@@ -452,6 +459,9 @@ pub struct Manager {
     sso_domains: Option<SsoDomainsFn>,
     namespace_pool: Vec<String>,
     privileged_namespace_pool: Vec<String>,
+    /// Owner-set usable baseline slots (<= `namespace_pool.len()`).
+    namespace_pool_limit: Mutex<usize>,
+    pool_settings_path: String,
     kube: Option<Arc<crate::kube::Client>>,
     datasets: Option<Arc<crate::datasets::Registry>>,
     pool_provisioner_image: String,
@@ -665,6 +675,16 @@ impl Manager {
     pub fn new(cfg: Config) -> Result<Self, String> {
         let mut store = Store::new(&cfg.store_path);
         store.load()?;
+        // The owner's saved limit wins; otherwise the chart's default. Clamp to
+        // the provisioned pool so a smaller chart (or a downgrade) cannot hand
+        // out a slot that does not exist.
+        let stored_limit = load_pool_settings(&cfg.pool_settings_path);
+        let limit = clamp_pool_limit(
+            stored_limit
+                .or(cfg.namespace_pool_limit)
+                .unwrap_or(cfg.namespace_pool.len()),
+            cfg.namespace_pool.len(),
+        );
         Ok(Self {
             store,
             helm: cfg.helm,
@@ -678,6 +698,8 @@ impl Manager {
             sso_domains: cfg.sso_domains,
             namespace_pool: cfg.namespace_pool,
             privileged_namespace_pool: cfg.privileged_namespace_pool,
+            namespace_pool_limit: Mutex::new(limit),
+            pool_settings_path: cfg.pool_settings_path,
             kube: cfg.kube,
             datasets: cfg.datasets,
             pool_provisioner_image: cfg.pool_provisioner_image,
@@ -685,6 +707,79 @@ impl Manager {
             reservations: Arc::new(Mutex::new(std::collections::HashSet::new())),
             app_locks: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// The number of baseline slots currently handed out.
+    fn baseline_limit(&self) -> usize {
+        self.namespace_pool_limit
+            .lock()
+            .map(|l| *l)
+            .unwrap_or_else(|_| self.namespace_pool.len())
+            .min(self.namespace_pool.len())
+    }
+
+    /// Slot accounting for both pools: provisioned namespaces, the usable
+    /// limit, and how many are taken by records or in-flight installs.
+    pub fn pool_status(&self) -> serde_json::Value {
+        let recorded: Vec<String> = self
+            .store
+            .list()
+            .iter()
+            .map(|r| self.display_namespace(r))
+            .collect();
+        let reservations = self
+            .reservations
+            .lock()
+            .map(|r| r.clone())
+            .unwrap_or_default();
+        let used_in = |pool: &[String]| -> usize {
+            pool.iter()
+                .filter(|ns| recorded.iter().any(|r| r == *ns) || reservations.contains(*ns))
+                .count()
+        };
+        let baseline_limit = self.baseline_limit();
+        let baseline_used = used_in(&self.namespace_pool);
+        let privileged_used = used_in(&self.privileged_namespace_pool);
+        serde_json::json!({
+            "baseline": {
+                "provisioned": self.namespace_pool.len(),
+                "limit": baseline_limit,
+                "used": baseline_used,
+                "available": baseline_limit.saturating_sub(baseline_used),
+            },
+            "privileged": {
+                "provisioned": self.privileged_namespace_pool.len(),
+                "limit": self.privileged_namespace_pool.len(),
+                "used": privileged_used,
+                "available": self
+                    .privileged_namespace_pool
+                    .len()
+                    .saturating_sub(privileged_used),
+            },
+        })
+    }
+
+    /// Change how many baseline slots are usable and persist it. The limit can
+    /// grow up to the chart-provisioned pool (no platform upgrade needed) and
+    /// shrink only down to the number of apps already installed.
+    pub fn set_namespace_limit(&self, limit: usize) -> Result<serde_json::Value, String> {
+        let provisioned = self.namespace_pool.len();
+        let used = self.pool_status()["baseline"]["used"].as_u64().unwrap_or(0) as usize;
+        validate_pool_limit(limit, provisioned, used)?;
+        if !self.pool_settings_path.is_empty() {
+            let data = serde_json::to_vec_pretty(&PoolSettings { limit: Some(limit) })
+                .map_err(|e| format!("encoding app namespace settings: {e}"))?;
+            crate::chartsrepo::write_atomic(&self.pool_settings_path, &data, 0o600, 0o750)?;
+        }
+        {
+            // Drop the guard before `pool_status()` relocks it.
+            let mut current = self
+                .namespace_pool_limit
+                .lock()
+                .map_err(|_| "app namespace limit is poisoned".to_string())?;
+            *current = limit;
+        }
+        Ok(self.pool_status())
     }
 
     fn helm_for(&self, rec: &Record) -> helm::Client {
@@ -743,6 +838,11 @@ impl Manager {
         &self,
         privileged: bool,
     ) -> Result<(String, Option<NamespaceReservation>), String> {
+        let limit = if privileged {
+            self.privileged_namespace_pool.len()
+        } else {
+            self.baseline_limit()
+        };
         let pool = if privileged {
             &self.privileged_namespace_pool
         } else {
@@ -771,8 +871,12 @@ impl Manager {
             .collect();
         used.extend(reservations.iter().cloned());
 
-        let namespace = pick_namespace(pool, &used).ok_or_else(|| {
-            "no free per-app namespace is available; raise apps.isolation.namespaces".to_string()
+        let usable = &pool[..limit.min(pool.len())];
+        let namespace = pick_namespace(usable, &used).ok_or_else(|| {
+            format!(
+                "no free app namespace slot is available (limit {limit} of {} provisioned); raise the limit in Apps → Installed",
+                pool.len()
+            )
         })?;
         reservations.insert(namespace.clone());
         Ok((
@@ -1961,6 +2065,37 @@ fn pick_namespace(pool: &[String], used: &std::collections::HashSet<String>) -> 
     pool.iter().find(|ns| !used.contains(*ns)).cloned()
 }
 
+/// A persisted limit larger than the provisioned pool (chart downgrade) is
+/// clamped so the API never hands out a namespace that does not exist.
+fn clamp_pool_limit(limit: usize, provisioned: usize) -> usize {
+    if provisioned == 0 {
+        limit
+    } else {
+        limit.clamp(1, provisioned)
+    }
+}
+
+/// Reject a limit that is outside the provisioned pool or below the apps that
+/// are already installed (lowering it further would orphan running slots).
+fn validate_pool_limit(limit: usize, provisioned: usize, used: usize) -> Result<(), String> {
+    if provisioned == 0 {
+        return Err(
+            "per-app isolation is disabled; there is no app namespace pool to size".to_string(),
+        );
+    }
+    if limit == 0 || limit > provisioned {
+        return Err(format!(
+            "the app namespace limit must be between 1 and {provisioned}"
+        ));
+    }
+    if limit < used {
+        return Err(format!(
+            "{used} app(s) already use a slot; the limit cannot be lower than {used}"
+        ));
+    }
+    Ok(())
+}
+
 /// Property names the catalog marks as secrets (`format: password` or
 /// `writeOnly: true`), at any nesting depth.
 pub fn secret_value_keys(schema: &serde_json::Value) -> std::collections::HashSet<String> {
@@ -2478,6 +2613,29 @@ pub fn default_store_path() -> String {
     std::env::var("APPS_CONFIG").unwrap_or_else(|_| "/var/lib/naslos/apps.json".to_string())
 }
 
+/// Persisted owner setting for how many provisioned baseline slots are usable.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct PoolSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limit: Option<usize>,
+}
+
+/// Read the saved limit. A missing file means "use the chart default"; a
+/// corrupt file is ignored (with a warning) rather than failing startup.
+fn load_pool_settings(path: &str) -> Option<usize> {
+    if path.is_empty() {
+        return None;
+    }
+    let data = std::fs::read(path).ok()?;
+    match serde_json::from_slice::<PoolSettings>(&data) {
+        Ok(settings) => settings.limit,
+        Err(e) => {
+            tracing::warn!("ignoring app namespace settings {path}: {e}");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2726,8 +2884,9 @@ mod exposure_patch_tests {
 #[cfg(test)]
 mod value_schema_tests {
     use super::{
-        pick_namespace, pool_storage_class, secret_value_keys, set_persistence_storage_class,
-        validate_install_values, validate_pool_for_storage,
+        clamp_pool_limit, load_pool_settings, pick_namespace, pool_storage_class,
+        secret_value_keys, set_persistence_storage_class, validate_install_values,
+        validate_pool_for_storage, validate_pool_limit,
     };
     use crate::catalog::App;
     use serde_json::json;
@@ -2804,6 +2963,36 @@ mod value_schema_tests {
         used.insert("naslos-apps-3".to_string());
         assert_eq!(pick_namespace(&pool, &used), None);
     }
+
+    #[test]
+    fn pool_limit_is_clamped_to_the_provisioned_pool() {
+        assert_eq!(clamp_pool_limit(0, 20), 1);
+        assert_eq!(clamp_pool_limit(7, 20), 7);
+        assert_eq!(clamp_pool_limit(50, 20), 20);
+    }
+
+    #[test]
+    fn pool_limit_validation_rejects_out_of_range_and_below_used() {
+        assert!(validate_pool_limit(0, 20, 0).is_err());
+        assert!(validate_pool_limit(21, 20, 0).is_err());
+        assert!(validate_pool_limit(3, 20, 4).is_err());
+        assert!(validate_pool_limit(4, 20, 4).is_ok());
+        assert!(validate_pool_limit(20, 20, 4).is_ok());
+        assert!(validate_pool_limit(5, 0, 0).is_err());
+    }
+
+    #[test]
+    fn pool_settings_round_trip_and_tolerate_garbage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app-pool.json");
+        let path = path.to_str().unwrap();
+        assert_eq!(load_pool_settings(path), None);
+        crate::chartsrepo::write_atomic(path, br#"{"limit":17}"#, 0o600, 0o750).unwrap();
+        assert_eq!(load_pool_settings(path), Some(17));
+        std::fs::write(path, b"not json").unwrap();
+        assert_eq!(load_pool_settings(path), None);
+    }
+
     #[test]
     fn pool_storage_class_is_safe_and_case_aware() {
         let data = pool_storage_class("Data");

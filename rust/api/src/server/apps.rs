@@ -171,6 +171,39 @@ pub async fn app_detail_get(
     }
 }
 
+/// `GET /api/apps/namespaces`
+pub async fn app_namespaces_get(State(state): State<Arc<AppState>>) -> Response {
+    let Some(manager) = state.app_manager.clone() else {
+        return app_unavailable();
+    };
+    json(StatusCode::OK, manager.pool_status())
+}
+
+#[derive(Default, serde::Deserialize)]
+struct NamespaceLimitBody {
+    #[serde(default)]
+    limit: usize,
+}
+
+/// `PUT /api/apps/namespaces` — size the usable per-app namespace pool.
+///
+/// The chart provisions the full pool; raising the limit up to the provisioned
+/// count takes effect immediately (no platform upgrade), and it can never drop
+/// below the apps already installed.
+pub async fn app_namespaces_put(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    let Some(manager) = state.app_manager.clone() else {
+        return app_unavailable();
+    };
+    let req: NamespaceLimitBody = match super::zfs::read_json(body).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    match manager.set_namespace_limit(req.limit) {
+        Ok(status) => json(StatusCode::OK, status),
+        Err(e) => bad_request(&e),
+    }
+}
+
 #[derive(Default, serde::Deserialize)]
 struct UpgradeBody {
     #[serde(default)]

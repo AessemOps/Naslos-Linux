@@ -71,7 +71,13 @@ RoleBindings to two ClusterRoles:
 
 The API receives the pool in `APPS_NAMESPACE_POOL` /
 `APPS_PRIVILEGED_NAMESPACE_POOL`, assigns a free namespace to each new install,
-and records it in `apps.json` (`namespace`). An app may attach any number of
+and records it in `apps.json` (`namespace`). The chart provisions more slots
+than the usable default (`apps.isolation.namespaces` vs `defaultLimit`): the
+API hands out only the first `limit` slots, and the owner can raise that limit
+from **Apps → Installed** (`PUT /api/apps/namespaces`) up to the provisioned
+count without a platform upgrade. The choice is persisted in
+`APPS_POOL_CONFIG` beside `apps.json`; lowering it below the installed app
+count is rejected. An app may attach any number of
 registry datasets, at install and on reconfigure. For each selected dataset the
 API creates (baseline apps):
 

@@ -398,7 +398,12 @@ with a sibling `naslos-app.yaml` install-config. See
   `privileged_installs_need_a_second_confirmation`)*
 - **FR-APP-20** — With per-app isolation enabled, an installed app MUST run in
   its own namespace (a fixed pool is prepared by the chart) with PSA, quota and
-  a default-deny NetworkPolicy. An app MAY select any number of registered
+  a default-deny NetworkPolicy. The chart MUST provision more slots than are
+  usable by default, and the owner MAY raise or lower the usable limit from the
+  UI up to the provisioned count without a platform upgrade (persisted across
+  restarts and upgrades, never below the installed app count); exceeding the
+  provisioned count requires a platform upgrade. An app MAY select any number of
+  registered
   datasets at install and on reconfigure, and each MUST be exposed through a
   PV/PVC whose `hostPath` is that dataset only (privileged apps receive the host
   path directly). The API MUST inject the authoritative `datasets` list — one
@@ -407,7 +412,7 @@ with a sibling `naslos-app.yaml` install-config. See
   never hand a chart the `/var/mnt` root. Records that carry datasets MUST be
   migrated once to that layout, and a record without a per-app namespace MUST
   NOT gain or change datasets without a reinstall. *(chart render gate +
-  `apps::dataset_layout_tests`)*
+  `apps::dataset_layout_tests` + `apps::value_schema_tests` pool-limit tests)*
 - **FR-APP-21** — An app install MAY select a ZFS pool for the chart's own
   persistence PVCs. When `pool` is set the API MUST reject a pool that does not
   exist, provision a pool-scoped local-path provisioner and StorageClass
