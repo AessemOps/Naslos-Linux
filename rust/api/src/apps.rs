@@ -1008,6 +1008,7 @@ impl Manager {
         values = merge_values(&serde_json::Value::Object(values), Some(&client_values));
         coerce_schema_numbers(&app.schema, &mut values);
         validate_install_values(&app, &values)?;
+        validate_resource_quantities(&values)?;
         let datasets = normalize_dataset_names(&req.datasets)?;
         let (namespace, _reservation) = self.reserve_namespace(app.privileged)?;
         let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
@@ -1209,6 +1210,7 @@ impl Manager {
         coerce_schema_numbers(&app.schema, &mut merged);
         // `install` validated the catalog schema; `upgrade` did not.
         validate_install_values(&app, &merged)?;
+        validate_resource_quantities(&merged)?;
 
         let chart_supports_datasets =
             chart_tree_mentions_datasets(std::path::Path::new(&chart_dir));
@@ -2314,6 +2316,104 @@ fn validate_install_values(
     }
 }
 
+/// The container resource maps inside a chart's `resources` value: the value
+/// itself for flat charts, or each component entry for multi-container charts.
+fn resource_groups(
+    resources: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<(&str, &serde_json::Map<String, serde_json::Value>)> {
+    let has_sections = |entry: &serde_json::Map<String, serde_json::Value>| {
+        entry.get("requests").is_some_and(|v| v.is_object())
+            || entry.get("limits").is_some_and(|v| v.is_object())
+    };
+    if has_sections(resources) {
+        return vec![("resources", resources)];
+    }
+    resources
+        .iter()
+        .filter_map(|(key, value)| {
+            value
+                .as_object()
+                .filter(|entry| has_sections(entry))
+                .map(|entry| (key.as_str(), entry))
+        })
+        .collect()
+}
+
+/// A Kubernetes quantity in the forms the catalog charts use: a non-negative
+/// decimal number with an optional decimal (`m`, `k`, `M`, …) or binary
+/// (`Ki`, `Mi`, `Gi`, …) suffix.
+fn is_valid_quantity(raw: &str) -> bool {
+    let text = raw.trim();
+    let number_end = text
+        .char_indices()
+        .find(|(_, c)| !(c.is_ascii_digit() || *c == '.' || *c == '+' || *c == '-'))
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    let (number, suffix) = text.split_at(number_end);
+    let Ok(parsed) = number.parse::<f64>() else {
+        return false;
+    };
+    if !parsed.is_finite() || parsed < 0.0 {
+        return false;
+    }
+    matches!(
+        suffix,
+        "" | "n"
+            | "u"
+            | "m"
+            | "k"
+            | "M"
+            | "G"
+            | "T"
+            | "P"
+            | "E"
+            | "Ki"
+            | "Mi"
+            | "Gi"
+            | "Ti"
+            | "Pi"
+            | "Ei"
+    )
+}
+
+/// Reject invalid CPU/memory quantities before Helm hands them to Kubernetes,
+/// where the failure would surface as an opaque `--wait` timeout. Other keys
+/// under `requests`/`limits` (e.g. `ephemeral-storage`) are left to Kubernetes.
+pub fn validate_resource_quantities(
+    values: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let Some(resources) = values.get("resources").and_then(|v| v.as_object()) else {
+        return Ok(());
+    };
+    for (group, entry) in resource_groups(resources) {
+        for section in ["requests", "limits"] {
+            let Some(quantities) = entry.get(section).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for (field, raw) in quantities {
+                if field != "cpu" && field != "memory" {
+                    continue;
+                }
+                let text = match raw {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    _ => {
+                        return Err(format!(
+                        "resources {group}.{section}.{field} must be a quantity string or number"
+                    ))
+                    }
+                };
+                if !is_valid_quantity(&text) {
+                    return Err(format!(
+                        "resources {group}.{section}.{field} has invalid quantity {text:?}; use a Kubernetes quantity such as 100m, 0.5 or 256Mi"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn merge_values(
     base: &serde_json::Value,
     overlay: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -3207,5 +3307,74 @@ mod value_coercion_tests {
         values.insert("pgid".into(), json!("not-a-number"));
         coerce_schema_numbers(&schema, &mut values);
         assert_eq!(values["pgid"], json!("not-a-number"));
+    }
+}
+
+#[cfg(test)]
+mod resource_quantity_tests {
+    use super::validate_resource_quantities;
+    use serde_json::json;
+
+    fn values(resources: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        let mut map = serde_json::Map::new();
+        map.insert("resources".into(), resources);
+        map
+    }
+
+    #[test]
+    fn flat_quantities_are_accepted() {
+        let map = values(json!({
+            "requests": { "cpu": "100m", "memory": "256Mi" },
+            "limits": { "cpu": "2", "memory": "2Gi" }
+        }));
+        assert!(validate_resource_quantities(&map).is_ok());
+    }
+
+    #[test]
+    fn decimal_numbers_and_fractions_are_accepted() {
+        let map = values(json!({
+            "requests": { "cpu": 0.5, "memory": "1.5Gi" },
+            "limits": { "cpu": "1500m", "memory": 1024 }
+        }));
+        assert!(validate_resource_quantities(&map).is_ok());
+    }
+
+    #[test]
+    fn per_component_resources_are_accepted() {
+        let map = values(json!({
+            "affine": { "requests": { "cpu": "100m" }, "limits": { "memory": "1Gi" } },
+            "postgres": { "limits": { "cpu": "2", "memory": "4Gi" } }
+        }));
+        assert!(validate_resource_quantities(&map).is_ok());
+    }
+
+    #[test]
+    fn invalid_quantities_are_refused() {
+        for bad in ["100mm", "2 GB", "-1", "lots", "1.2.3"] {
+            let map = values(json!({ "limits": { "memory": bad } }));
+            let err = validate_resource_quantities(&map).unwrap_err();
+            assert!(err.contains("invalid quantity"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_non_quantity_type_is_refused() {
+        let map = values(json!({ "limits": { "cpu": true } }));
+        let err = validate_resource_quantities(&map).unwrap_err();
+        assert!(err.contains("quantity string or number"), "{err}");
+    }
+
+    #[test]
+    fn unrelated_resource_keys_are_not_validated() {
+        let map = values(json!({
+            "requests": { "ephemeral-storage": "not-a-quantity" }
+        }));
+        assert!(validate_resource_quantities(&map).is_ok());
+    }
+
+    #[test]
+    fn missing_resources_is_fine() {
+        let map = serde_json::Map::new();
+        assert!(validate_resource_quantities(&map).is_ok());
     }
 }
