@@ -195,8 +195,11 @@ errorAny: "badauth,notfqdn"
 ```
 
 The driver refuses a target that is not a public address (loopback, private,
-link-local or cluster service ranges) — an admin-supplied URL cannot be used as
-an SSRF pivot.
+link-local, CGNAT, benchmarking, reserved or cluster service ranges) — an
+admin-supplied URL cannot be used as an SSRF pivot. The host is resolved once,
+every answer is checked, and the request connects to the vetted address
+(`reqwest::ClientBuilder::resolve`), so a DNS rebind between the check and the
+connection cannot redirect it (`AUD-2611-T7-2`).
 
 ## Configuration (chart)
 

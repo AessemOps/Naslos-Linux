@@ -223,7 +223,10 @@ adapting `detect_dns_ip` to the 0.26 builder API, removing the obsolete
 Covered by R1.3. If an ignore is chosen instead of an upgrade, add a dated
 re-check and a reachability note.
 
-### R2.12 — Notification webhook SSRF (`AUD-2611-T7-1`, NL)
+### R2.12 — Notification webhook SSRF (`AUD-2611-T7-1`, NL) — **DONE on `fix/ssrf-guards`**
+
+Uses the shared `blocked_ip`, validates on save, and pins the resolved address at
+send time.
 
 - Files: `rust/api/src/notifications.rs`.
 - Fix: resolve the host once, reject loopback/private/link-local/ULA/CGNAT/
@@ -235,7 +238,10 @@ re-check and a reachability note.
 - Verify: unit tests; no live send.
 - Docs: `docs/api.md` (notifications), `docs/operations.md`.
 
-### R2.13 — DDNS DNS-rebinding guard (`AUD-2611-T7-2`, NL)
+### R2.13 — DDNS DNS-rebinding guard (`AUD-2611-T7-2`, NL) — **DONE on `fix/ssrf-guards`**
+
+`blocked_ip` covers the reserved ranges; the generic HTTP driver pins the
+connection to the vetted address.
 
 - Files: `rust/api/src/ddns/drivers.rs`.
 - Fix: resolve once, validate every address, and connect to the vetted IP
