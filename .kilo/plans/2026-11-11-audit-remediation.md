@@ -50,7 +50,12 @@ Repos: **NL** = `Naslos-Linux`, **NC** = `NaslosCharts`.
   on a scratch namespace and confirm the default exposure shows Authelia required.
 - Docs: `NaslosCharts/README.md` (contract), `docs/AUDIT-2026-11-11.md` verdict.
 
-### R1.3 — Make the release gate green (`AUD-2611-A-1`, `AUD-2611-T3-1`, NL)
+### R1.3 — Make the release gate green (`AUD-2611-A-1`, `AUD-2611-T3-1`, NL) — **DONE in PR #147**
+
+Implemented by upgrading `hickory-resolver` to 0.26.3 (`rust/api/Cargo.toml`),
+adapting `detect_dns_ip` to the 0.26 builder API, removing the obsolete
+`RUSTSEC-2026-0119` ignore, and bumping `CREDITS.md`. `cargo audit`,
+`cargo deny check` and `sh scripts/audit.sh` are green on the branch.
 
 - Files: `rust/Cargo.lock`, `rust/deny.toml`, `scripts/audit.sh`,
   `.trivyignore` (if a dated ignore is chosen).
