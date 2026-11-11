@@ -449,6 +449,15 @@ with a sibling `naslos-app.yaml` install-config. See
   `/api/ws/logs` socket. The API's `pods/log` access MUST be `get`-only and, for
   isolated apps, granted by the per-namespace isolation ClusterRole.
   *(chart render gate + audit assertion, live drill)*
+- **FR-APP-25** — The app detail drawer MUST let the owner edit the app's
+  container CPU/memory requests and limits for the chart's `resources` values,
+  in both the flat (`resources.requests|limits`) and per-component
+  (`resources.<component>.requests|limits`) layouts the catalog charts use.
+  Saving MUST enqueue the normal upgrade job (`PUT /api/apps/{name}` with
+  `{values:{resources}}`), preserving resource keys the form does not edit. The
+  API MUST reject an invalid CPU/memory quantity (anything other than a
+  non-negative decimal with an optional decimal or binary suffix) on install and
+  upgrade before Helm runs. *(apps::resource_quantity_tests, UI check)*
 - **FR-APP-19** — Chart installs MUST run as a namespaced identity that cannot
   create Traefik `IngressRoute`/`Middleware` or cert-manager objects; the API
   MUST own the app's route and certificate. *(chart render gate:
@@ -1072,6 +1081,7 @@ Dynamic DNS and the provider registry are verified by
 | `apps::tests::update_available_compares_versions`, `apps::tests::enrich_view_uses_catalog_and_live_version` | FR-APP-22 (update signal, catalog identity, orphan/empty rules) |
 | `app_usage::tests::*` | FR-APP-22 (summary parsing, rate baselines, pod→app attribution, aggregation) |
 | `apps::dataset_layout_tests::*` | FR-APP-20 (selection normalisation, one claim/hostPath entry per dataset, client value stripping, chart support scan) |
+| `apps::resource_quantity_tests::*` | FR-APP-25 (flat and per-component resources, quantity grammar, non-quantity types, unrelated keys) |
 | `TestManagerUpdateSkipsUnchangedAndHidesSecrets`, `TestDdnsNeverReturnsCredentialValues` | FR-DNS-02/03/06 (skip-when-unchanged, force-run, no credential values) |
 | `TestManagerRecordsCredentialErrors`, `TestDetectIPValidatesResponse` | FR-DNS-03 (errors recorded, IP response validated) |
 | `TestOVHDriverUpdate`, `TestCloudflareDriverCreateAndUpdate`, `TestHTTPDriverRendersAndAuthenticates` | FR-DNS-01 (drivers: URL/method/body/signature/auth) |

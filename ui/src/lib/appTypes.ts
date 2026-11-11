@@ -23,6 +23,9 @@ export interface AppView {
   source?: string;
   channel?: string;
   datasets?: string[];
+  /** Stored Helm values, with catalog secrets masked as `null`. */
+  values?: Record<string, unknown>;
+  redactedKeys?: string[];
   lastError?: string;
   createdAt?: string | null;
   updatedAt?: string | null;

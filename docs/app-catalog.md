@@ -123,7 +123,7 @@ app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
 | Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed, privilegedConfirmed?, datasets?}` | `confirmed` MUST be `true`; a catalog entry with `privileged: true` also requires `privilegedConfirmed: true`, and the UI shows a second, red confirmation (SEC-2026-D8). Defaults are merged and the result is validated against the catalog's JSON schema before Helm runs; a violation is a 400 (SEC-2026-D7). `datasets` selects any number of registered datasets; with `apps.isolation.enabled` the app gets its own namespace, a PV/PVC per dataset (baseline) or host paths (privileged), and the chart receives the platform-owned `datasets` value (one `{name, mountPath: "/datasets/<name>", claim|hostPath}` entry each, plus the legacy `datasetsClaim`/`datasetsClaims` or first `hostPath`). Chart loaded from the clone. Enqueues an install job → `202 {jobId, state}` |
 | List installed | `GET /api/apps` | Records + live status, orphan flag, URL |
 | Detail | `GET /api/apps/{name}` | Record + status |
-| Reconfigure | `PUT /api/apps/{name} {values, datasets?}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}`. `datasets` omitted keeps the selection, `[]` detaches all (an isolated app must keep at least one), a list reconciles adds/removes; removed claims are deleted after Helm succeeds. A dataset change on a record outside a per-app isolation namespace fails the job with a reinstall message |
+| Reconfigure | `PUT /api/apps/{name} {values, datasets?}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}`. `datasets` omitted keeps the selection, `[]` detaches all (an isolated app must keep at least one), a list reconciles adds/removes; removed claims are deleted after Helm succeeds. The merged values are validated against the catalog schema and their `resources` CPU/memory quantities before Helm. A dataset change on a record outside a per-app isolation namespace fails the job with a reinstall message |
 | Exposure | `GET`/`PUT /api/apps/{name}/exposure` | Orthogonal toggles + `baseDomain`, re-renders the route (synchronous) |
 | Route targets | `GET /api/apps/{name}/services` | Services the release rendered (discovery fallback / UI picker) |
 | Logs | `GET /api/apps/{name}/pods` + `GET /api/ws/logs` | Pods/containers of the app for the drawer's live log pane (read-only; tail 200 + follow). The API's `pods/log` grant is `get`-only in the app namespace |
@@ -169,9 +169,13 @@ Installed tab badge and the Apps sidebar dot (no Helm calls, so it can lag the
 per-row live value briefly); `/api/apps/usage` is polled every 5s only while the
 tab is visible and drives the row values plus the drawer's 5-minute sparklines
 (client-side history only). The right-side detail drawer shows version/source,
-usage tiles, URL, chart, timestamps, datasets, exposure summary and the
-Open/Configure/Exposure/Uninstall actions; opening Configure or Exposure closes
-the drawer first so overlays never stack.
+usage tiles, editable CPU/memory requests and limits (the chart's `resources`
+value, flat or per component), live logs, URL, chart, timestamps, datasets,
+exposure summary and the Open/Configure/Exposure/Uninstall actions; opening
+Configure or Exposure closes the drawer first so overlays never stack. Saving
+resources writes `{values:{resources}}` through `PUT /api/apps/{name}`, so the
+change runs the normal upgrade job (the app restarts) and an invalid quantity
+is rejected before Helm.
 
 ## Exposure → routing
 
@@ -329,8 +333,9 @@ charts, or `hostPath` for privileged charts.
   job re-resolves the (refreshable) catalog. `Manager::install` refuses a
   privileged app whose request did not carry the confirmation, so a catalog
   refresh between confirm and execution cannot silently escalate.
-- **Upgrade validates values.** `PUT /api/apps/{name}` now runs the same
-  `schema` validation as install before calling Helm.
+- **Upgrade validates values.** `PUT /api/apps/{name}` runs the same `schema`
+  validation as install before calling Helm, plus the `resources` CPU/memory
+  quantity check used by the drawer's resource editor.
 - **Secret values are not returned.** Catalog fields marked
   `format: password` (or `writeOnly: true`) are masked as `null` in
   `GET /api/apps` and `GET /api/apps/{name}`, with the names listed in
