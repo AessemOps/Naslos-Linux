@@ -112,7 +112,12 @@ adapting `detect_dns_ip` to the 0.26 builder API, removing the obsolete
   NFS, attempt share create, expect 400; remove symlink).
 - Docs: `docs/shares.md`, `docs/spec.md` FR-SHR-05.
 
-### R2.3 — Do not report a successful change when the agent did not apply it (`AUD-2611-T10-1`, `T10-2`, NL)
+### R2.3 — Do not report a successful change when the agent did not apply it (`AUD-2611-T10-1`, `T10-2`, NL) — **DONE on `fix/apply-failures`**
+
+Share create/update/delete roll back and answer `502` when the node rejects the
+config. User delete removes SMB first and refuses the LDAP delete if that push
+fails; disable and group changes return `502` when the mirror is stale.
+Integration tests use a fake agent (create-rollback, delete-rollback).
 
 - Files: `rust/api/src/server/users.rs`, `rust/api/src/server/shares.rs`,
   `rust/api/src/shares/*`.

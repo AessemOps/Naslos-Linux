@@ -241,10 +241,23 @@ pub async fn user_detail_delete(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    if let Err(e) = client.delete_person(&uid).await {
-        return bad_request(&e);
+    // Revoke the SMB account first: if the node rejects the new mirror, the
+    // user must not be reported as deleted while still able to mount shares
+    // (AUD-2611-T10-1).
+    if let Err(e) = remove_smb_user(&state, &uid).await {
+        return json(
+            StatusCode::BAD_GATEWAY,
+            serde_json::json!({ "error": format!("user was not deleted: {e}") }),
+        );
     }
-    let _ = remove_smb_user(&state, &uid).await;
+    if let Err(e) = client.delete_person(&uid).await {
+        return json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({
+                "error": format!("SMB access was removed but deleting the LDAP user failed: {e}")
+            }),
+        );
+    }
     json(
         StatusCode::OK,
         serde_json::json!({ "status": "user deleted" }),
@@ -328,6 +341,12 @@ pub async fn user_enable_post(
         tracing::warn!(
             "could not mirror SMB account state for {}: {e}",
             crate::logsafe::field(&uid)
+        );
+        return json(
+            StatusCode::BAD_GATEWAY,
+            serde_json::json!({
+                "error": format!("the LDAP account was updated but the SMB mirror failed: {e}")
+            }),
         );
     }
     let status = if enabled {
@@ -442,6 +461,12 @@ pub async fn group_detail_put(
     }
     if let Err(e) = super::shares::apply_shares_config(&state).await {
         tracing::warn!("group membership changed but pushing it to the node failed: {e}");
+        return json(
+            StatusCode::BAD_GATEWAY,
+            serde_json::json!({
+                "error": format!("group membership changed in LDAP but the node was not updated: {e}")
+            }),
+        );
     }
     json(
         StatusCode::OK,

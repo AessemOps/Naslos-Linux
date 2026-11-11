@@ -358,6 +358,13 @@ impl Manager {
         self.save()
     }
 
+    /// Put `share` back (used to roll a handler back when the node rejected the
+    /// rendered config, AUD-2611-T10-2).
+    pub fn restore(&mut self, share: Share) -> Result<(), String> {
+        self.shares.insert(share.name.clone(), share);
+        self.save()
+    }
+
     /// Validate that `path` is inside the ZFS base and is a directory.
     pub fn validate_path(&self, path: &str) -> Result<(), String> {
         let clean = self.normalize_path(path)?;
