@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use crate::catalog::Catalog;
 use crate::chartsrepo::is_dns1123_label;
 use crate::helm;
-use crate::routing::{internet_policy_name, APP_LABEL, MANAGED_BY_LABEL, MANAGED_BY_VALUE};
+use crate::routing::{
+    internet_policy_name, validate_protected_paths, APP_LABEL, MANAGED_BY_LABEL, MANAGED_BY_VALUE,
+};
 
 const RELEASE_NAME_TEMPLATE: &str = "{{ .Release.Name }}";
 
@@ -42,6 +44,14 @@ pub struct Exposure {
     pub auth: bool,
     #[serde(default, rename = "localOnly")]
     pub local_only: bool,
+    /// Path prefixes that require Authelia even when `auth` is false. The app
+    /// itself stays public; only the listed paths get forwardAuth.
+    #[serde(
+        default,
+        rename = "protectedPaths",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub protected_paths: Vec<String>,
     /// Outbound Internet access (default on). Off keeps the app on the
     /// namespace's DNS + app-to-app-only egress policy.
     #[serde(default = "default_true")]
@@ -65,6 +75,7 @@ impl Default for Exposure {
             tls: false,
             auth: false,
             local_only: false,
+            protected_paths: Vec::new(),
             internet: true,
             service: String::new(),
             port: 0,
@@ -90,6 +101,8 @@ pub struct ExposurePatch {
     pub auth: Option<bool>,
     #[serde(default, rename = "localOnly")]
     pub local_only: Option<bool>,
+    #[serde(default, rename = "protectedPaths")]
+    pub protected_paths: Option<Vec<String>>,
     #[serde(default)]
     pub internet: Option<bool>,
     #[serde(default)]
@@ -114,6 +127,9 @@ impl ExposurePatch {
         }
         if let Some(v) = self.local_only {
             merged.local_only = v;
+        }
+        if let Some(v) = &self.protected_paths {
+            merged.protected_paths = v.clone();
         }
         if let Some(v) = self.internet {
             merged.internet = v;
@@ -1012,6 +1028,7 @@ impl Manager {
         let datasets = normalize_dataset_names(&req.datasets)?;
         let (namespace, _reservation) = self.reserve_namespace(app.privileged)?;
         let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
+        validate_protected_paths(&exposure.protected_paths)?;
         // Reject an unenforceable opt-out before creating any storage.
         self.validate_internet(&namespace, &exposure)?;
         // A namespace whose previous install died before recording a release
@@ -1365,6 +1382,7 @@ impl Manager {
         let mut rec = self.store.get(name)?;
         let mut merged = patch.apply(&rec.exposure);
         validate_subdomain(&merged.subdomain)?;
+        validate_protected_paths(&merged.protected_paths)?;
         let base_domain = if base_domain.is_empty() {
             if rec.base_domain.is_empty() {
                 self.base_domain.clone()
@@ -2161,6 +2179,7 @@ pub fn exposure_for(
         tls: app.exposure.tls,
         auth: app.exposure.auth,
         local_only: app.exposure.local_only,
+        protected_paths: app.exposure.protected_paths.clone(),
         internet: app.exposure.internet,
         ..Default::default()
     };
@@ -2946,6 +2965,7 @@ mod exposure_patch_tests {
             service: "plex".into(),
             port: 32400,
             scheme: "http".into(),
+            ..Exposure::default()
         };
         let patch: ExposurePatch = serde_json::from_str(r#"{"subdomain":"media"}"#).unwrap();
         let merged = patch.apply(&current);
@@ -2984,6 +3004,30 @@ mod exposure_patch_tests {
         assert!(!exposure_for(&app, Some(&patch), "x").internet);
         let patch: ExposurePatch = serde_json::from_str(r#"{"internet":true}"#).unwrap();
         assert!(exposure_for(&app, Some(&patch), "x").internet);
+    }
+
+    #[test]
+    fn protected_paths_are_copied_and_patched_as_a_set() {
+        let app = crate::catalog::App {
+            exposure: crate::catalog::ExposureDefaults {
+                protected_paths: vec!["/preferences".into(), "/stats".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let base = exposure_for(&app, None, "x");
+        assert_eq!(base.protected_paths, vec!["/preferences", "/stats"]);
+
+        let patch: ExposurePatch =
+            serde_json::from_str(r#"{"protectedPaths":["/preferences"]}"#).unwrap();
+        assert_eq!(
+            patch.apply(&base).protected_paths,
+            vec!["/preferences".to_string()]
+        );
+
+        // Omitted protectedPaths keeps the stored set.
+        let patch: ExposurePatch = serde_json::from_str(r#"{"subdomain":"search"}"#).unwrap();
+        assert_eq!(patch.apply(&base).protected_paths, base.protected_paths);
     }
 }
 

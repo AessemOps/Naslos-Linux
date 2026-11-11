@@ -21,6 +21,8 @@ pub struct Spec {
     pub tls: bool,
     pub auth: bool,
     pub local_only: bool,
+    /// Path prefixes that require forwardAuth even when `auth` is false.
+    pub protected_paths: Vec<String>,
     /// Whether the app may reach the public Internet. The base namespace
     /// policy grants only DNS + app-to-app; this adds an additive allow.
     pub internet: bool,
@@ -45,6 +47,28 @@ impl Spec {
     }
 }
 
+/// Validate the path prefixes that may be guarded by forwardAuth. They are
+/// interpolated into a Traefik rule, so only a conservative path alphabet is
+/// allowed.
+pub fn validate_protected_paths(paths: &[String]) -> Result<(), String> {
+    for path in paths {
+        if !path.starts_with('/') || path.len() < 2 {
+            return Err(format!(
+                "protected path {path:?} must be a path starting with '/'"
+            ));
+        }
+        if !path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '.' | '~'))
+        {
+            return Err(format!(
+                "protected path {path:?} contains characters that are not allowed"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Render the IngressRoute and middlewares for a spec.
 pub fn render(spec: &Spec) -> Result<Vec<serde_json::Value>, String> {
     if spec.host().is_empty() {
@@ -56,55 +80,97 @@ pub fn render(spec: &Spec) -> Result<Vec<serde_json::Value>, String> {
             spec.name
         ));
     }
+    validate_protected_paths(&spec.protected_paths)?;
     let scheme = if spec.scheme.is_empty() {
         "http"
     } else {
         &spec.scheme
     };
 
-    let mut middlewares = vec![serde_json::json!({
+    // A public app can still have specific paths behind Authelia. `auth`
+    // protects the whole host; `protected_paths` protects only those prefixes
+    // and leaves search/static assets open.
+    let forward_auth = spec.auth || !spec.protected_paths.is_empty();
+    if forward_auth && spec.authelia_service.is_empty() {
+        return Err(format!(
+            "app {:?} requests auth but no Authelia service is configured",
+            spec.name
+        ));
+    }
+    if spec.local_only && spec.local_only_cidr.is_empty() {
+        return Err(format!(
+            "app {:?} is local-only but no LAN CIDR is configured",
+            spec.name
+        ));
+    }
+
+    let security = serde_json::json!({
         "name": SECURITY_HEADERS_NAME, "namespace": spec.namespace
-    })];
+    });
+    let allowlist = serde_json::json!({
+        "name": format!("{}-ipallowlist", spec.name), "namespace": spec.namespace
+    });
+
+    let mut public_middlewares = vec![security.clone()];
     if spec.auth {
-        if spec.authelia_service.is_empty() {
-            return Err(format!(
-                "app {:?} requests auth but no Authelia service is configured",
-                spec.name
-            ));
-        }
-        middlewares.push(serde_json::json!({
+        public_middlewares.push(serde_json::json!({
             "name": FORWARD_AUTH_NAME, "namespace": spec.namespace
         }));
     }
     if spec.local_only {
-        if spec.local_only_cidr.is_empty() {
-            return Err(format!(
-                "app {:?} is local-only but no LAN CIDR is configured",
-                spec.name
-            ));
-        }
-        middlewares.push(serde_json::json!({
-            "name": format!("{}-ipallowlist", spec.name), "namespace": spec.namespace
-        }));
+        public_middlewares.push(allowlist.clone());
     }
 
     let entry_point = if spec.tls { "websecure" } else { "web" };
     let mut objects = vec![security_headers_middleware(&spec.namespace)];
-    if spec.auth {
+    if forward_auth {
         objects.push(forward_auth_middleware(spec));
     }
     if spec.local_only {
         objects.push(ip_allowlist_middleware(spec));
     }
 
+    let service = serde_json::json!({
+        "name": spec.service, "port": spec.port, "scheme": scheme
+    });
+    let mut routes = Vec::new();
+
+    if !spec.auth && !spec.protected_paths.is_empty() {
+        let paths = spec
+            .protected_paths
+            .iter()
+            .map(|path| format!("PathPrefix(`{path}`)"))
+            .collect::<Vec<_>>()
+            .join(" || ");
+        let mut protected_middlewares = vec![
+            security,
+            serde_json::json!({ "name": FORWARD_AUTH_NAME, "namespace": spec.namespace }),
+        ];
+        if spec.local_only {
+            protected_middlewares.push(allowlist);
+        }
+        routes.push(serde_json::json!({
+            "match": format!("Host(`{}`) && ({paths})", spec.host()),
+            "kind": "Rule",
+            // Explicit priority: the public catch-all must not shadow the
+            // protected prefix route.
+            "priority": 100,
+            "middlewares": protected_middlewares,
+            "services": [service.clone()],
+        }));
+    }
+
+    routes.push(serde_json::json!({
+        "match": format!("Host(`{}`)", spec.host()),
+        "kind": "Rule",
+        "priority": 1,
+        "middlewares": public_middlewares,
+        "services": [service],
+    }));
+
     let mut route_spec = serde_json::json!({
         "entryPoints": [entry_point],
-        "routes": [{
-            "match": format!("Host(`{}`)", spec.host()),
-            "kind": "Rule",
-            "middlewares": middlewares,
-            "services": [{ "name": spec.service, "port": spec.port, "scheme": scheme }],
-        }],
+        "routes": routes,
     });
     if spec.tls && !spec.tls_secret.is_empty() {
         route_spec["tls"] = serde_json::json!({ "secretName": spec.tls_secret });
@@ -300,6 +366,7 @@ impl KubeRouter {
             tls: rec.exposure.tls,
             auth: rec.exposure.auth,
             local_only: rec.exposure.local_only,
+            protected_paths: rec.exposure.protected_paths.clone(),
             internet: rec.exposure.internet,
             service: rec.exposure.service.clone(),
             port: rec.exposure.port,
@@ -794,6 +861,45 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("naslos-authelia.naslos.svc.cluster.local:80"));
+    }
+
+    #[test]
+    fn render_public_app_with_protected_paths() {
+        let mut s = spec();
+        s.authelia_service = "naslos-authelia".into();
+        s.authelia_port = 80;
+        s.authelia_namespace = "naslos".into();
+        s.protected_paths = vec!["/preferences".into(), "/stats".into()];
+        let objects = render(&s).unwrap();
+        // security headers + forwardAuth + route
+        assert_eq!(objects.len(), 3);
+        let route = objects.last().unwrap();
+        let routes = route["spec"]["routes"].as_array().unwrap();
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0]["priority"], 100);
+        assert_eq!(
+            routes[0]["match"],
+            "Host(`nginx.naslos.local`) && (PathPrefix(`/preferences`) || PathPrefix(`/stats`))"
+        );
+        let protected = routes[0]["middlewares"].as_array().unwrap();
+        assert_eq!(protected[0]["name"], SECURITY_HEADERS_NAME);
+        assert_eq!(protected[1]["name"], FORWARD_AUTH_NAME);
+        // The catch-all stays public: search and static assets need no login.
+        assert_eq!(routes[1]["match"], "Host(`nginx.naslos.local`)");
+        let public = routes[1]["middlewares"].as_array().unwrap();
+        assert_eq!(public.len(), 1);
+        assert_eq!(public[0]["name"], SECURITY_HEADERS_NAME);
+    }
+
+    #[test]
+    fn render_rejects_protected_path_rule_injection() {
+        let mut s = spec();
+        s.authelia_service = "naslos-authelia".into();
+        s.authelia_port = 80;
+        s.protected_paths = vec!["/preferences`) || Host(`evil".into()];
+        assert!(render(&s).is_err());
+        s.protected_paths = vec!["preferences".into()];
+        assert!(render(&s).is_err());
     }
 
     #[test]

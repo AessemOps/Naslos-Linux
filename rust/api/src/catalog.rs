@@ -75,6 +75,14 @@ pub struct ExposureDefaults {
     pub auth: bool,
     #[serde(default, rename = "localOnly")]
     pub local_only: bool,
+    /// Path prefixes that require Authelia even when the app itself is public.
+    /// `PathPrefix` semantics: `/preferences` also covers `/preferences/...`.
+    #[serde(
+        default,
+        rename = "protectedPaths",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub protected_paths: Vec<String>,
     /// Outbound Internet access. On unless the manifest opts out: most apps
     /// (search engines, indexers, updaters, API clients) need it, and the
     /// namespace NetworkPolicy is the enforcement point.
@@ -93,6 +101,7 @@ impl Default for ExposureDefaults {
             tls: false,
             auth: false,
             local_only: false,
+            protected_paths: Vec::new(),
             internet: true,
         }
     }
