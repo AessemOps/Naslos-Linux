@@ -19,6 +19,168 @@
   let uninstalling = false;
   let actionError = '';
 
+  interface ResourceGroup {
+    key: string;
+    label: string;
+    requestsCpu: string;
+    requestsMemory: string;
+    limitsCpu: string;
+    limitsMemory: string;
+  }
+
+  let resourceGroups: ResourceGroup[] = [];
+  let resourcesFlat = true;
+  // The recorded `resources` value, kept so keys the form does not edit are
+  // preserved when it is written back.
+  let resourcesSource: Record<string, any> = {};
+  let resourcesFor = '';
+  let editingResources = false;
+  let savingResources = false;
+  let resourceError = '';
+  let resourceMessage = '';
+
+  function isRecord(value: unknown): value is Record<string, any> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  function quantity(value: unknown): string {
+    return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+  }
+
+  function hasSections(value: Record<string, any>): boolean {
+    return isRecord(value.requests) || isRecord(value.limits);
+  }
+
+  function groupsFor(source: Record<string, any>): { flat: boolean; groups: ResourceGroup[] } {
+    const components = Object.entries(source).filter(
+      ([, value]) => isRecord(value) && hasSections(value)
+    );
+    const flat = hasSections(source) || components.length === 0;
+    const entries: [string, Record<string, any>][] = flat ? [['', source]] : components;
+    return {
+      flat,
+      groups: entries.map(([key, value]) => {
+        const requests = isRecord(value.requests) ? value.requests : {};
+        const limits = isRecord(value.limits) ? value.limits : {};
+        return {
+          key,
+          label: key || 'App container',
+          requestsCpu: quantity(requests.cpu),
+          requestsMemory: quantity(requests.memory),
+          limitsCpu: quantity(limits.cpu),
+          limitsMemory: quantity(limits.memory)
+        };
+      })
+    };
+  }
+
+  function resetResources() {
+    const raw = app.values?.resources;
+    resourcesSource = isRecord(raw) ? JSON.parse(JSON.stringify(raw)) : {};
+    const parsed = groupsFor(resourcesSource);
+    resourcesFlat = parsed.flat;
+    resourceGroups = parsed.groups;
+    editingResources = false;
+    resourceError = '';
+    resourceMessage = '';
+  }
+
+  function cancelResourceEdit() {
+    const parsed = groupsFor(resourcesSource);
+    resourcesFlat = parsed.flat;
+    resourceGroups = parsed.groups;
+    editingResources = false;
+    resourceError = '';
+  }
+
+  const QUANTITY = /^([0-9]+(\.[0-9]*)?|\.[0-9]+)([numkMGTPE]|Ki|Mi|Gi|Ti|Pi|Ei)?$/;
+
+  function validateResources(): string {
+    for (const group of resourceGroups) {
+      const fields: [string, string][] = [
+        ['CPU request', group.requestsCpu],
+        ['memory request', group.requestsMemory],
+        ['CPU limit', group.limitsCpu],
+        ['memory limit', group.limitsMemory]
+      ];
+      for (const [label, raw] of fields) {
+        const text = raw.trim();
+        if (text && !QUANTITY.test(text)) {
+          return `${group.label}: ${label} “${text}” is not a Kubernetes quantity (e.g. 100m, 0.5, 256Mi).`;
+        }
+      }
+    }
+    return '';
+  }
+
+  function buildResources(): Record<string, any> {
+    const out: Record<string, any> = JSON.parse(JSON.stringify(resourcesSource));
+    for (const group of resourceGroups) {
+      let target: Record<string, any> = out;
+      if (!resourcesFlat) {
+        if (!isRecord(out[group.key])) out[group.key] = {};
+        target = out[group.key];
+      }
+      const fields: [string, string, string][] = [
+        ['requests', 'cpu', group.requestsCpu],
+        ['requests', 'memory', group.requestsMemory],
+        ['limits', 'cpu', group.limitsCpu],
+        ['limits', 'memory', group.limitsMemory]
+      ];
+      for (const [section, field, raw] of fields) {
+        const value = raw.trim();
+        if (!isRecord(target[section])) {
+          if (!value) continue;
+          target[section] = {};
+        }
+        if (value) {
+          target[section][field] = value;
+        } else {
+          delete target[section][field];
+          if (Object.keys(target[section]).length === 0) delete target[section];
+        }
+      }
+    }
+    return out;
+  }
+
+  async function saveResources() {
+    if (savingResources || jobRunning) return;
+    const invalid = validateResources();
+    if (invalid) {
+      resourceError = invalid;
+      return;
+    }
+    savingResources = true;
+    resourceError = '';
+    resourceMessage = '';
+    try {
+      const resources = buildResources();
+      const res = await fetch(`/api/apps/${encodeURIComponent(app.name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ values: { resources } })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      if (data.jobId) trackAppJob(data.jobId);
+      resourcesSource = resources;
+      editingResources = false;
+      resourceMessage = 'Resource change queued — the app will restart.';
+    } catch (e: any) {
+      resourceError = e?.message || String(e);
+    } finally {
+      savingResources = false;
+    }
+  }
+
+  $: if (app.name !== resourcesFor) {
+    resourcesFor = app.name;
+    resetResources();
+  }
+
   $: displayName = app.displayName || app.name;
   $: sourceSwitch =
     !!app.latestSource &&
@@ -166,6 +328,121 @@
             </div>
           </div>
           <p class="text-xs text-gray-500 mt-2 tabular-nums">{usage.pods} pods sampled</p>
+        {/if}
+      </section>
+
+      <!-- Resources -->
+      <section>
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-xs uppercase tracking-wide text-gray-500">Resources</h3>
+          <button
+            type="button"
+            class="text-xs px-2 py-1 rounded bg-naslos-dark border border-naslos-border hover:border-naslos-accent disabled:opacity-50"
+            disabled={jobRunning || savingResources || app.orphaned}
+            title={app.orphaned ? 'Orphaned releases cannot be reconfigured' : ''}
+            on:click={editingResources
+              ? cancelResourceEdit
+              : () => {
+                  editingResources = true;
+                  resourceError = '';
+                  resourceMessage = '';
+                }}
+          >
+            {editingResources ? 'Cancel' : 'Adjust'}
+          </button>
+        </div>
+        <div class="space-y-2">
+          {#each resourceGroups as group (group.key)}
+            <div class="rounded-lg border border-naslos-border p-3">
+              {#if resourceGroups.length > 1 || !resourcesFlat}
+                <div class="text-sm font-medium mb-2">{group.label}</div>
+              {/if}
+              {#if editingResources}
+                <div class="grid grid-cols-2 gap-2">
+                  <label class="text-xs text-gray-400">
+                    CPU request
+                    <input
+                      class="input w-full"
+                      value={group.requestsCpu}
+                      placeholder="e.g. 100m"
+                      on:input={(e) => (group.requestsCpu = e.currentTarget.value)}
+                    />
+                  </label>
+                  <label class="text-xs text-gray-400">
+                    Memory request
+                    <input
+                      class="input w-full"
+                      value={group.requestsMemory}
+                      placeholder="e.g. 256Mi"
+                      on:input={(e) => (group.requestsMemory = e.currentTarget.value)}
+                    />
+                  </label>
+                  <label class="text-xs text-gray-400">
+                    CPU limit
+                    <input
+                      class="input w-full"
+                      value={group.limitsCpu}
+                      placeholder="e.g. 2"
+                      on:input={(e) => (group.limitsCpu = e.currentTarget.value)}
+                    />
+                  </label>
+                  <label class="text-xs text-gray-400">
+                    Memory limit
+                    <input
+                      class="input w-full"
+                      value={group.limitsMemory}
+                      placeholder="e.g. 2Gi"
+                      on:input={(e) => (group.limitsMemory = e.currentTarget.value)}
+                    />
+                  </label>
+                </div>
+              {:else}
+                <div class="grid grid-cols-2 gap-2 text-xs tabular-nums">
+                  <div>
+                    <span class="text-gray-500">CPU request</span>
+                    <span class="text-gray-200">{group.requestsCpu || '—'}</span>
+                  </div>
+                  <div>
+                    <span class="text-gray-500">Memory request</span>
+                    <span class="text-gray-200">{group.requestsMemory || '—'}</span>
+                  </div>
+                  <div>
+                    <span class="text-gray-500">CPU limit</span>
+                    <span class="text-gray-200">{group.limitsCpu || '—'}</span>
+                  </div>
+                  <div>
+                    <span class="text-gray-500">Memory limit</span>
+                    <span class="text-gray-200">{group.limitsMemory || '—'}</span>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+        {#if editingResources}
+          <p class="text-xs text-gray-500 mt-2">
+            Applied with a Helm upgrade. Blank fields are omitted; CPU accepts fractions
+            (<span class="font-mono">0.5</span>) or millicores (<span class="font-mono">500m</span>), memory a
+            binary unit (<span class="font-mono">512Mi</span>).
+          </p>
+        {/if}
+        {#if resourceError}
+          <p class="text-xs text-red-300 mt-2 break-words" role="alert">{resourceError}</p>
+        {/if}
+        {#if resourceMessage}
+          <p class="text-xs text-green-400 mt-2" role="status">{resourceMessage}</p>
+        {/if}
+        {#if editingResources}
+          <div class="flex justify-end mt-2">
+            <button
+              class="btn btn-primary text-sm"
+              type="button"
+              disabled={savingResources || jobRunning}
+              on:click={saveResources}
+            >
+              {savingResources ? 'Saving…' : 'Save resources'}
+            </button>
+          </div>
         {/if}
       </section>
 
