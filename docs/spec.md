@@ -457,7 +457,11 @@ with a sibling `naslos-app.yaml` install-config. See
   `{values:{resources}}`), preserving resource keys the form does not edit. The
   API MUST reject an invalid CPU/memory quantity (anything other than a
   non-negative decimal with an optional decimal or binary suffix) on install and
-  upgrade before Helm runs. *(apps::resource_quantity_tests, UI check)*
+  upgrade before Helm runs, and MUST reject aggregate totals above the app
+  namespace's `naslos-app-quota`. `GET /api/apps/{name}/quota` MUST report that
+  quota (`{available, namespace, hard}`) so the drawer shows the effective cap.
+  The quota itself MUST be configurable (`apps.isolation.quota`).
+  *(apps::resource_quantity_tests, UI check)*
 - **FR-APP-19** — Chart installs MUST run as a namespaced identity that cannot
   create Traefik `IngressRoute`/`Middleware` or cert-manager objects; the API
   MUST own the app's route and certificate. *(chart render gate:

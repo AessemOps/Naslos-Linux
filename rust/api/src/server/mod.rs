@@ -97,6 +97,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/apps/{name}/services", get(apps::app_services_get))
         .route("/api/apps/{name}/pods", get(apps::app_pods_get))
+        .route("/api/apps/{name}/quota", get(apps::app_quota_get))
         .route(
             "/api/sources",
             get(catalog::sources_get).post(catalog::sources_post),
