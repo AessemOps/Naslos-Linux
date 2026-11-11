@@ -10,7 +10,29 @@ Repos: **NL** = `Naslos-Linux`, **NC** = `NaslosCharts`.
 
 ## Batch R1 — High (do first)
 
-### R1.1 — Prowlarr (and the *arr family) must not default to public + no login (`AUD-2611-N-2`, NC)
+### R1.1 — Stop a Buddy-disabled install from crashing the API (`AUD-2611-T6-1`, NL)
+
+- Files: `rust/api/src/server/mod.rs`, `rust/api/src/server/buddy.rs`,
+  `charts/naslos/templates/api-deployment.yaml` (only if the route gate moves
+  there).
+- Fix: mount `/api/buddy/v1/*` only when `state.buddy` is `Some`, or change every
+  handler to take `State<Arc<AppState>>` and return `503 Service Unavailable`
+  when the receiver is absent. Remove the `.expect(...)` from the `BuddyState`
+  `FromRef` implementation (it is the panic source). Do not rely on
+  `panic = "unwind"`.
+- Failing-before test: build the router with `buddy: None` and assert
+  `GET /api/buddy/v1/status` returns `503` (today it panics/aborts; a
+  `#[should_panic]`/process test would not be usable because of `abort`). Add a
+  router-construction test that asserts the routes are not present when
+  `buddy` is `None`.
+- Verify: `cargo test -p naslos-api`; then, on a node with
+  `buddy.enabled: false`, `curl -s -o /dev/null -w '%{http_code}'
+  https://naslos.local/api/buddy/v1/status` from an authenticated session
+  returns 503/404, not a pod restart. **Do not probe the live node before the
+  fix** — the request restarts the API pod.
+- Docs: `docs/buddy-backup.md`, `AI_Handoff.md` (operational note), this report.
+
+### R1.2 — Prowlarr (and the *arr family) must not default to public + no login (`AUD-2611-N-2`, NC)
 
 - Files: `apps/prowlarr/naslos-app.yaml`, `apps/radarr/naslos-app.yaml`,
   `apps/sonarr/naslos-app.yaml`, `apps/qbittorrent/naslos-app.yaml`,
@@ -28,7 +50,7 @@ Repos: **NL** = `Naslos-Linux`, **NC** = `NaslosCharts`.
   on a scratch namespace and confirm the default exposure shows Authelia required.
 - Docs: `NaslosCharts/README.md` (contract), `docs/AUDIT-2026-11-11.md` verdict.
 
-### R1.2 — Make the release gate green (`AUD-2611-A-1`, `AUD-2611-T3-1`, NL)
+### R1.3 — Make the release gate green (`AUD-2611-A-1`, `AUD-2611-T3-1`, NL)
 
 - Files: `rust/Cargo.lock`, `rust/deny.toml`, `scripts/audit.sh`,
   `.trivyignore` (if a dated ignore is chosen).
@@ -193,13 +215,44 @@ Repos: **NL** = `Naslos-Linux`, **NC** = `NaslosCharts`.
 
 ### R2.11 — DNS resolver CVE follow-up (`AUD-2611-T3-1`)
 
-Covered by R1.2. If an ignore is chosen instead of an upgrade, add a dated
+Covered by R1.3. If an ignore is chosen instead of an upgrade, add a dated
 re-check and a reachability note.
+
+### R2.12 — Notification webhook SSRF (`AUD-2611-T7-1`, NL)
+
+- Files: `rust/api/src/notifications.rs`.
+- Fix: resolve the host once, reject loopback/private/link-local/ULA/CGNAT/
+  `0.0.0.0/8`, pin the resolved IP for the request (reqwest `resolve`), and keep
+  `Policy::none()`. Apply the same `blocked_ip` helper the DDNS driver uses.
+- Failing-before test: `notification_url`/send with `http://127.0.0.1/`,
+  `http://10.0.0.1/` and a hostname resolving to `127.0.0.1` must fail; today
+  only link-local fails.
+- Verify: unit tests; no live send.
+- Docs: `docs/api.md` (notifications), `docs/operations.md`.
+
+### R2.13 — DDNS DNS-rebinding guard (`AUD-2611-T7-2`, NL)
+
+- Files: `rust/api/src/ddns/drivers.rs`.
+- Fix: resolve once, validate every address, and connect to the vetted IP
+  (reqwest `ClientBuilder::resolve` / a custom connector) so the guard and the
+  connection cannot disagree; extend `blocked_ip` to the reserved ranges above.
+- Failing-before test: a hostname that resolves to `127.0.0.1` only on the
+  second lookup must be rejected (today the guard sees one answer and reqwest
+  gets another). Reserved-range table test.
+- Verify: unit tests with a stub resolver.
+- Docs: `docs/dynamic-dns.md`.
 
 ## Batch R3 — Low / Info (schedule normally)
 
 | ID | Repo | Fix | Test |
 | --- | --- | --- | --- |
+| T6-2 / C20 | NL | Stop returning the peer-name list to non-owner peers on `/status`. | unit test |
+| T6-3 | NL | Enforce `Content-Length` and stream the receiver response through `take(MAX_MANIFEST_BYTES)` instead of `resp.bytes()`. | unit test with an oversized body |
+| T6-4 | NL | Require a minimum enrollment-token length/entropy (refuse to start with a weak token) and rate-limit `/enroll`. | unit test + config check |
+| T6-5 | NL | Verify the remote manifest signature before using `to_guid` as the incremental base. | unit test with a forged manifest |
+| T6-6 / C15 | NL | Drop the empty-audience acceptance on `/status`; bind it to the receiver audience. | unit test |
+| T7-3 | NL | Read provider/public-IP responses through `take(limit)` (no full buffer). | unit test with an oversized body |
+| T7-4 | NL | Always run `validate_credentials_secret`/`acmeEmail` and make `fields` required; restrict the passthrough solver to a typed allowlist. | unit test |
 | T1-2 | NL | Put `security-headers` before `forwardauth-authelia` on the UI route (or add a `redirect-headers` middleware) so the auth 302 carries HSTS. | render assertion on middleware order |
 | T1-3 | NL | Document that `protectedPaths` must match the app's routing case; optionally add a case-insensitive matcher or normalize to the app's route. | live drill (needs approval) |
 | T2-1 | NL | Require `privilegedConfirmed` on upgrade when the catalog flips `privileged` or adds hostPath; compare old/new chart values. | unit test on the diff path |
