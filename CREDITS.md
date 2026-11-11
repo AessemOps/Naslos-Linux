@@ -18,7 +18,7 @@ and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
-**Last reviewed: 2026-11-01.** Maintenance: update this file whenever a direct dependency changes in
+**Last reviewed: 2026-11-11.** Maintenance: update this file whenever a direct dependency changes in
 `rust/api/Cargo.toml`, `rust/agent/Cargo.toml`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
 It also lists the GitHub Actions used by the CI/release workflows.
 
@@ -72,7 +72,7 @@ binaries (tar streaming, a PTY for terminal exec). Direct dependencies:
 | http-body-util | 0.1 | MIT | https://github.com/hyperium/http-body |
 | hyper-util | 0.1 | MIT | https://github.com/hyperium/hyper-util |
 | getrandom | 0.2 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
-| hickory-resolver | 0.24 | MIT OR Apache-2.0 | https://github.com/hickory-dns/hickory-dns |
+| hickory-resolver | 0.26 | MIT OR Apache-2.0 | https://github.com/hickory-dns/hickory-dns |
 | include_dir | 0.7 | MIT | https://github.com/Michael-F-Bryan/include_dir |
 | ipnet | 2 | MIT OR Apache-2.0 | https://github.com/krisprice/ipnet |
 | ldap3 | 0.12 | MIT OR Apache-2.0 | https://github.com/inejge/ldap3 |

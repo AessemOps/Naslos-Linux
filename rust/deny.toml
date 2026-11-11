@@ -10,7 +10,6 @@ ignore = [
   { id = "RUSTSEC-2025-0134", reason = "Reviewed 2026-10-24. rustls-pemfile is unmaintained; it only parses the mounted LDAP CA PEM. Migration to rustls-pki-types tracked in docs/AUDIT-2026-10-24.md" },
   { id = "RUSTSEC-2017-0008", reason = "Reviewed 2026-10-24. serial is an optional portable-pty dependency; portable-pty is used only for the kubectl exec PTY" },
   { id = "RUSTSEC-2024-0449", reason = "Reviewed 2026-10-24. unsafe-libyaml is reachable only through serde_yaml (chart values/config); no untrusted YAML is parsed by the API" },
-  { id = "RUSTSEC-2026-0119", reason = "Reviewed 2026-10-24, re-check by 2027-03-31. hickory-resolver 0.24 O(n^2) encoding: used only against two hard-coded public resolvers (8.8.8.8, 208.67.222.222) for DDNS IP discovery; messages are not attacker-controlled. Upgrade tracked in docs/AUDIT-2026-10-24.md" },
   { id = "RUSTSEC-2026-0441", reason = "Reviewed 2026-11-07. pin-utils is an unmaintained transitive dependency of portable-pty 0.8 (nix 0.25) used only for the kubectl exec PTY; no safe upgrade is available in that line. Revisit with the portable-pty/nix upgrade" },
 ]
 
