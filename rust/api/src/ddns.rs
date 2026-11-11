@@ -362,8 +362,9 @@ fn ip_matches_family(ip: &str, want_v6: bool) -> bool {
 
 /// Resolve the public IP through a well-known DNS echo service.
 async fn detect_dns_ip(name: &str, want_v6: bool) -> Result<String, String> {
-    use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
-    use hickory_resolver::TokioAsyncResolver;
+    use hickory_resolver::config::{NameServerConfig, ResolverConfig};
+    use hickory_resolver::net::runtime::TokioRuntimeProvider;
+    use hickory_resolver::TokioResolver;
 
     let (server, host, use_txt) = match name.trim() {
         "opendns" => ("208.67.222.222", "myip.opendns.com", false),
@@ -371,18 +372,19 @@ async fn detect_dns_ip(name: &str, want_v6: bool) -> Result<String, String> {
         other => return Err(format!("unknown DNS source {other:?}")),
     };
     let ip: IpAddr = server.parse().map_err(|_| "bad DNS server".to_string())?;
-    let group = NameServerConfigGroup::from_ips_clear(&[ip], 53, true);
-    let resolver = TokioAsyncResolver::tokio(
-        ResolverConfig::from_parts(None, vec![], group),
-        ResolverOpts::default(),
-    );
+    let resolver = TokioResolver::builder_with_config(
+        ResolverConfig::from_name_servers(vec![NameServerConfig::udp_and_tcp(ip)]),
+        TokioRuntimeProvider::default(),
+    )
+    .build()
+    .map_err(|e| format!("dns:{name}: {e}"))?;
     if use_txt {
         let txts = resolver
             .txt_lookup(host)
             .await
             .map_err(|e| format!("dns:{name}: {e}"))?;
-        for txt in txts.iter() {
-            let value = txt.to_string().trim_matches('"').trim().to_string();
+        for record in txts.answers() {
+            let value = record.data.to_string().trim_matches('"').trim().to_string();
             if let Ok(parsed) = value.parse::<IpAddr>() {
                 return Ok(parsed.to_string());
             }

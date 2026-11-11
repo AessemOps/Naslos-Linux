@@ -898,7 +898,7 @@ if [ -d "$root/rust" ]; then
     fi
     run "cargo test (rust workspace)" cargo test --release --locked
     if have cargo-audit; then
-      run "cargo audit (rust workspace)" cargo audit --ignore RUSTSEC-2026-0119 --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0387
+      run "cargo audit (rust workspace)" cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0387
     else
       skip "cargo audit" "cargo-audit not installed (cargo install cargo-audit)"
     fi
