@@ -378,6 +378,14 @@ apps:
     # Per-namespace PVC quota. A chart may use several PVCs for its own state
     # (gameyfin uses 5) and each attached dataset adds one more.
     pvcQuota: 12
+    # Per-namespace resource quota for the app's pods. The drawer's resource
+    # editor and the API validate the chart's `resources` totals against these
+    # values, so raising an app above them needs a platform upgrade.
+    quota:
+      requestsCpu: "2"
+      requestsMemory: 4Gi
+      limitsCpu: "8"
+      limitsMemory: 8Gi
   # Dataset access for baseline apps. PSA `baseline` forbids hostPath, but Naslos
   # datasets are host directories, so the platform exposes them as a static RWX
   # PV and the `naslos-datasets` PVC that apps mount. Privileged apps mount the

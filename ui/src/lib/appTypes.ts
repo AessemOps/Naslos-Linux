@@ -40,6 +40,18 @@ export interface AppView {
   updateAvailable: boolean;
 }
 
+/** Per-app namespace quota from `GET /api/apps/{name}/quota`. */
+export interface AppResourceQuota {
+  available: boolean;
+  namespace?: string;
+  hard?: {
+    'requests.cpu'?: string;
+    'requests.memory'?: string;
+    'limits.cpu'?: string;
+    'limits.memory'?: string;
+  };
+}
+
 /** Slot accounting from `GET /api/apps/namespaces`. */
 export interface NamespacePool {
   provisioned: number;

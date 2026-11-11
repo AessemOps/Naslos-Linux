@@ -387,6 +387,27 @@ pub async fn app_detail_delete(
     accepted(&job)
 }
 
+/// `GET /api/apps/{name}/quota`
+///
+/// The per-app namespace quota the resource editor must respect. `{available:
+/// false}` when the app has no dedicated quota (legacy shared namespace).
+pub async fn app_quota_get(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Response {
+    let Some(manager) = state.app_manager.clone() else {
+        return app_unavailable();
+    };
+    if let Err(e) = manager.get(&name) {
+        return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e }));
+    }
+    match manager.resource_quota(&name).await {
+        Ok(Some(quota)) => json(StatusCode::OK, quota),
+        Ok(None) => json(StatusCode::OK, serde_json::json!({ "available": false })),
+        Err(e) => json(StatusCode::BAD_GATEWAY, serde_json::json!({ "error": e })),
+    }
+}
+
 /// `GET /api/apps/{name}/services`
 pub async fn app_services_get(
     State(state): State<Arc<AppState>>,
