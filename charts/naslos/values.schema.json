@@ -20,7 +20,17 @@
             "namePrefix": { "type": "string" },
             "namespaces": { "type": "integer" },
             "defaultLimit": { "type": "integer" },
-            "privilegedNamespaces": { "type": "integer" }
+            "privilegedNamespaces": { "type": "integer" },
+            "quota": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "requestsCpu": { "type": "string" },
+                "requestsMemory": { "type": "string" },
+                "limitsCpu": { "type": "string" },
+                "limitsMemory": { "type": "string" }
+              }
+            }
           }
         },
         "datasets": {

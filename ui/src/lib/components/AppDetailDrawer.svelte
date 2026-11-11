@@ -7,7 +7,7 @@
   import Sparkline from './Sparkline.svelte';
   import { formatBytes, formatBytesPerSec, formatMillicores } from '$lib/format';
   import { statusClass, statusLabel } from '$lib/appStatus';
-  import type { AppView, AppUsage, AppUsageHistory } from '$lib/appTypes';
+  import type { AppView, AppUsage, AppUsageHistory, AppResourceQuota } from '$lib/appTypes';
 
   export let app: AppView;
   export let usage: AppUsage | undefined = undefined;
@@ -38,6 +38,7 @@
   let savingResources = false;
   let resourceError = '';
   let resourceMessage = '';
+  let quota: AppResourceQuota | null = null;
 
   function isRecord(value: unknown): value is Record<string, any> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -93,7 +94,72 @@
     resourceError = '';
   }
 
-  const QUANTITY = /^([0-9]+(\.[0-9]*)?|\.[0-9]+)([numkMGTPE]|Ki|Mi|Gi|Ti|Pi|Ei)?$/;
+  const QUANTITY = /^([0-9]+(?:\.[0-9]*)?|\.[0-9]+)([numkMGTPE]|Ki|Mi|Gi|Ti|Pi|Ei)?$/;
+  const QUANTITY_MULTIPLIERS: Record<string, number> = {
+    '': 1,
+    n: 1e-9,
+    u: 1e-6,
+    m: 1e-3,
+    k: 1e3,
+    M: 1e6,
+    G: 1e9,
+    T: 1e12,
+    P: 1e15,
+    E: 1e18,
+    Ki: 1024,
+    Mi: 1024 ** 2,
+    Gi: 1024 ** 3,
+    Ti: 1024 ** 4,
+    Pi: 1024 ** 5,
+    Ei: 1024 ** 6
+  };
+
+  function parseQuantity(raw: string): number | null {
+    const text = raw.trim();
+    if (!text) return 0;
+    const match = QUANTITY.exec(text);
+    if (!match) return null;
+    const multiplier = QUANTITY_MULTIPLIERS[match[2] ?? ''];
+    return multiplier === undefined ? null : Number(match[1]) * multiplier;
+  }
+
+  function draftTotals() {
+    const totals = { requestsCpu: 0, requestsMemory: 0, limitsCpu: 0, limitsMemory: 0 };
+    for (const group of resourceGroups) {
+      const fields: [keyof typeof totals, string][] = [
+        ['requestsCpu', group.requestsCpu],
+        ['requestsMemory', group.requestsMemory],
+        ['limitsCpu', group.limitsCpu],
+        ['limitsMemory', group.limitsMemory]
+      ];
+      for (const [key, raw] of fields) {
+        const value = parseQuantity(raw);
+        if (value !== null) totals[key] += value;
+      }
+    }
+    return totals;
+  }
+
+  function quotaViolation(): string {
+    const hard = quota?.hard;
+    if (!quota?.available || !hard) return '';
+    const totals = draftTotals();
+    const checks: [keyof typeof hard, number, string][] = [
+      ['requests.cpu', totals.requestsCpu, 'CPU requests'],
+      ['requests.memory', totals.requestsMemory, 'memory requests'],
+      ['limits.cpu', totals.limitsCpu, 'CPU limits'],
+      ['limits.memory', totals.limitsMemory, 'memory limits']
+    ];
+    for (const [key, total, label] of checks) {
+      const allowed = hard[key];
+      if (!allowed) continue;
+      const limit = parseQuantity(allowed);
+      if (limit !== null && total > limit + 1e-9) {
+        return `${label} exceed the namespace quota (${allowed}). Lower the values or raise apps.isolation.quota with a platform upgrade.`;
+      }
+    }
+    return '';
+  }
 
   function validateResources(): string {
     for (const group of resourceGroups) {
@@ -110,7 +176,20 @@
         }
       }
     }
-    return '';
+    return quotaViolation();
+  }
+
+  async function loadQuota() {
+    const name = app.name;
+    quota = null;
+    try {
+      const res = await fetch(`/api/apps/${encodeURIComponent(name)}/quota`);
+      if (!res.ok) return;
+      const data = (await res.json()) as AppResourceQuota;
+      if (app.name === name) quota = data.available ? data : null;
+    } catch {
+      // The quota is advisory; the API still validates on upgrade.
+    }
   }
 
   function buildResources(): Record<string, any> {
@@ -179,6 +258,7 @@
   $: if (app.name !== resourcesFor) {
     resourcesFor = app.name;
     resetResources();
+    void loadQuota();
   }
 
   $: displayName = app.displayName || app.name;
@@ -419,6 +499,12 @@
             </div>
           {/each}
         </div>
+        {#if quota?.available && quota.hard}
+          <p class="text-xs text-gray-500 mt-2">
+            Namespace quota: {quota.hard['limits.cpu'] || '—'} CPU and {quota.hard['limits.memory'] || '—'} memory
+            limits, {quota.hard['requests.cpu'] || '—'} CPU and {quota.hard['requests.memory'] || '—'} requests.
+          </p>
+        {/if}
         {#if editingResources}
           <p class="text-xs text-gray-500 mt-2">
             Applied with a Helm upgrade. Blank fields are omitted; CPU accepts fractions

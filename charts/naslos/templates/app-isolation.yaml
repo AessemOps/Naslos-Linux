@@ -87,6 +87,11 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Read the per-app namespace quota so the resource editor and the upgrade
+  # job can reject values that the quota would refuse to admit.
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["get"]
   # Per-app outbound-Internet NetworkPolicy (internet access is on by default
   # and the API owns the additive allow in each app namespace).
   - apiGroups: ["networking.k8s.io"]
@@ -235,10 +240,10 @@ metadata:
   namespace: {{ $ns }}
 spec:
   hard:
-    requests.cpu: "2"
-    requests.memory: 4Gi
-    limits.cpu: "4"
-    limits.memory: 8Gi
+    requests.cpu: {{ $.Values.apps.isolation.quota.requestsCpu | quote }}
+    requests.memory: {{ $.Values.apps.isolation.quota.requestsMemory | quote }}
+    limits.cpu: {{ $.Values.apps.isolation.quota.limitsCpu | quote }}
+    limits.memory: {{ $.Values.apps.isolation.quota.limitsMemory | quote }}
     persistentvolumeclaims: {{ $.Values.apps.isolation.pvcQuota | quote }}
 ---
 apiVersion: v1

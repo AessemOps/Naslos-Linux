@@ -1011,6 +1011,7 @@ impl Manager {
         validate_resource_quantities(&values)?;
         let datasets = normalize_dataset_names(&req.datasets)?;
         let (namespace, _reservation) = self.reserve_namespace(app.privileged)?;
+        self.validate_resource_quota(&namespace, &values).await?;
         let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
         // Reject an unenforceable opt-out before creating any storage.
         self.validate_internet(&namespace, &exposure)?;
@@ -1211,6 +1212,8 @@ impl Manager {
         // `install` validated the catalog schema; `upgrade` did not.
         validate_install_values(&app, &merged)?;
         validate_resource_quantities(&merged)?;
+        self.validate_resource_quota(&self.target_namespace(&rec), &merged)
+            .await?;
 
         let chart_supports_datasets =
             chart_tree_mentions_datasets(std::path::Path::new(&chart_dir));
@@ -1603,6 +1606,93 @@ impl Manager {
             );
         }
         Ok(())
+    }
+
+    /// Compare the chart's aggregate `resources` totals with the per-app
+    /// namespace quota before Helm. The quota's admission error is otherwise
+    /// only visible as a `--wait` timeout after a failed rollout. Fails open
+    /// when the quota cannot be read, so a rolling API/chart upgrade does not
+    /// block installs.
+    async fn validate_resource_quota(
+        &self,
+        namespace: &str,
+        values: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let Some(kube) = &self.kube else {
+            return Ok(());
+        };
+        let quota = match kube
+            .get_json("resourcequota", "naslos-app-quota", namespace)
+            .await
+        {
+            Ok(Some(quota)) => quota,
+            Ok(None) => return Ok(()),
+            Err(e) => {
+                tracing::warn!("app namespace {namespace}: reading the resource quota: {e}");
+                return Ok(());
+            }
+        };
+        let Some(hard) = quota.pointer("/spec/hard").and_then(|v| v.as_object()) else {
+            return Ok(());
+        };
+        let totals = resource_totals(values);
+        let checks: [(&str, f64, bool); 4] = [
+            ("requests.cpu", totals.requests_cpu, true),
+            ("requests.memory", totals.requests_memory, false),
+            ("limits.cpu", totals.limits_cpu, true),
+            ("limits.memory", totals.limits_memory, false),
+        ];
+        let mut problems = Vec::new();
+        for (key, requested, cpu) in checks {
+            let Some(allowed) = hard
+                .get(key)
+                .and_then(|v| v.as_str())
+                .and_then(quantity_number)
+            else {
+                continue;
+            };
+            if requested > allowed + 1e-9 {
+                let requested = if cpu {
+                    format_cores(requested)
+                } else {
+                    format_bytes(requested)
+                };
+                let allowed_raw = hard.get(key).and_then(|v| v.as_str()).unwrap_or("?");
+                problems.push(format!("{key} {requested} > quota {allowed_raw}"));
+            }
+        }
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "resources exceed the per-app namespace quota in {namespace}: {}. Raise apps.isolation.quota in the platform chart to allow it.",
+                problems.join("; ")
+            ))
+        }
+    }
+
+    /// The per-app namespace quota the resource editor must respect.
+    pub async fn resource_quota(&self, name: &str) -> Result<Option<serde_json::Value>, String> {
+        let rec = self.store.get(name)?;
+        let namespace = self.target_namespace(&rec);
+        let Some(kube) = &self.kube else {
+            return Ok(None);
+        };
+        let Some(quota) = kube
+            .get_json("resourcequota", "naslos-app-quota", &namespace)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let hard = quota
+            .pointer("/spec/hard")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        Ok(Some(serde_json::json!({
+            "available": true,
+            "namespace": namespace,
+            "hard": hard,
+        })))
     }
 
     /// Create the per-app PV/PVCs for the selected registry datasets and return
@@ -2341,8 +2431,8 @@ fn resource_groups(
 
 /// A Kubernetes quantity in the forms the catalog charts use: a non-negative
 /// decimal number with an optional decimal (`m`, `k`, `M`, …) or binary
-/// (`Ki`, `Mi`, `Gi`, …) suffix.
-fn is_valid_quantity(raw: &str) -> bool {
+/// (`Ki`, `Mi`, `Gi`, …) suffix, returned in base units (cores or bytes).
+fn quantity_number(raw: &str) -> Option<f64> {
     let text = raw.trim();
     let number_end = text
         .char_indices()
@@ -2350,30 +2440,98 @@ fn is_valid_quantity(raw: &str) -> bool {
         .map(|(i, _)| i)
         .unwrap_or(text.len());
     let (number, suffix) = text.split_at(number_end);
-    let Ok(parsed) = number.parse::<f64>() else {
-        return false;
-    };
+    let parsed = number.parse::<f64>().ok()?;
     if !parsed.is_finite() || parsed < 0.0 {
-        return false;
+        return None;
     }
-    matches!(
-        suffix,
-        "" | "n"
-            | "u"
-            | "m"
-            | "k"
-            | "M"
-            | "G"
-            | "T"
-            | "P"
-            | "E"
-            | "Ki"
-            | "Mi"
-            | "Gi"
-            | "Ti"
-            | "Pi"
-            | "Ei"
-    )
+    let multiplier = match suffix {
+        "" => 1.0,
+        "n" => 1e-9,
+        "u" => 1e-6,
+        "m" => 1e-3,
+        "k" => 1e3,
+        "M" => 1e6,
+        "G" => 1e9,
+        "T" => 1e12,
+        "P" => 1e15,
+        "E" => 1e18,
+        "Ki" => 1024.0,
+        "Mi" => 1024.0 * 1024.0,
+        "Gi" => 1024.0 * 1024.0 * 1024.0,
+        "Ti" => 1024f64.powi(4),
+        "Pi" => 1024f64.powi(5),
+        "Ei" => 1024f64.powi(6),
+        _ => return None,
+    };
+    Some(parsed * multiplier)
+}
+
+fn is_valid_quantity(raw: &str) -> bool {
+    quantity_number(raw).is_some()
+}
+
+/// The aggregate resource demand of a chart's `resources` value, in cores and
+/// bytes. Multi-container charts sum every component group.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct ResourceTotals {
+    requests_cpu: f64,
+    requests_memory: f64,
+    limits_cpu: f64,
+    limits_memory: f64,
+}
+
+fn resource_totals(values: &serde_json::Map<String, serde_json::Value>) -> ResourceTotals {
+    let mut totals = ResourceTotals::default();
+    let Some(resources) = values.get("resources").and_then(|v| v.as_object()) else {
+        return totals;
+    };
+    for (_, entry) in resource_groups(resources) {
+        for section in ["requests", "limits"] {
+            let Some(quantities) = entry.get(section).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for (field, raw) in quantities {
+                if field != "cpu" && field != "memory" {
+                    continue;
+                }
+                let value = match raw {
+                    serde_json::Value::String(s) => quantity_number(s),
+                    serde_json::Value::Number(n) => n.as_f64(),
+                    _ => None,
+                };
+                let Some(value) = value else {
+                    continue;
+                };
+                match (section, field.as_str()) {
+                    ("requests", "cpu") => totals.requests_cpu += value,
+                    ("requests", "memory") => totals.requests_memory += value,
+                    ("limits", "cpu") => totals.limits_cpu += value,
+                    ("limits", "memory") => totals.limits_memory += value,
+                    _ => {}
+                }
+            }
+        }
+    }
+    totals
+}
+
+fn format_cores(cores: f64) -> String {
+    if cores >= 1.0 {
+        let rounded = (cores * 1000.0).round() / 1000.0;
+        format!("{rounded}")
+    } else {
+        format!("{}m", (cores * 1000.0).round() as i64)
+    }
+}
+
+fn format_bytes(bytes: f64) -> String {
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    if bytes >= GIB {
+        format!("{:.2}Gi", bytes / GIB)
+    } else {
+        format!("{:.0}Mi", bytes / MIB)
+    }
 }
 
 /// Reject invalid CPU/memory quantities before Helm hands them to Kubernetes,
@@ -3312,7 +3470,7 @@ mod value_coercion_tests {
 
 #[cfg(test)]
 mod resource_quantity_tests {
-    use super::validate_resource_quantities;
+    use super::{quantity_number, resource_totals, validate_resource_quantities};
     use serde_json::json;
 
     fn values(resources: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -3376,5 +3534,41 @@ mod resource_quantity_tests {
     fn missing_resources_is_fine() {
         let map = serde_json::Map::new();
         assert!(validate_resource_quantities(&map).is_ok());
+    }
+
+    #[test]
+    fn quantities_parse_decimal_and_binary_suffixes() {
+        assert_eq!(quantity_number("100m"), Some(0.1));
+        assert_eq!(quantity_number("0.5"), Some(0.5));
+        assert_eq!(quantity_number("2"), Some(2.0));
+        assert_eq!(quantity_number("1Gi"), Some(1024.0 * 1024.0 * 1024.0));
+        assert_eq!(quantity_number("256Mi"), Some(256.0 * 1024.0 * 1024.0));
+        assert_eq!(quantity_number("-1"), None);
+        assert_eq!(quantity_number("100mm"), None);
+    }
+
+    #[test]
+    fn totals_sum_flat_resources() {
+        let map = values(json!({
+            "requests": { "cpu": "100m", "memory": "256Mi" },
+            "limits": { "cpu": "2", "memory": "2Gi" }
+        }));
+        let totals = resource_totals(&map);
+        assert!((totals.requests_cpu - 0.1).abs() < 1e-9);
+        assert_eq!(totals.requests_memory, 256.0 * 1024.0 * 1024.0);
+        assert_eq!(totals.limits_cpu, 2.0);
+        assert_eq!(totals.limits_memory, 2.0 * 1024.0 * 1024.0 * 1024.0);
+    }
+
+    #[test]
+    fn totals_sum_every_component_group() {
+        let map = values(json!({
+            "app": { "requests": { "cpu": "250m" }, "limits": { "cpu": "2" } },
+            "postgres": { "requests": { "cpu": 1 }, "limits": { "cpu": "4" } }
+        }));
+        let totals = resource_totals(&map);
+        assert_eq!(totals.requests_cpu, 1.25);
+        assert_eq!(totals.limits_cpu, 6.0);
+        assert_eq!(totals.requests_memory, 0.0);
     }
 }

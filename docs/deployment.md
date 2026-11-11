@@ -18,7 +18,8 @@
 - **Per-app isolation.** With `apps.isolation.enabled=true` (VM and installer
   overlays) the chart creates `apps.isolation.namespaces` baseline and
   `apps.isolation.privilegedNamespaces` privileged app namespaces, each with PSA,
-  a quota, a default-deny NetworkPolicy and the reduced Helm/API RoleBindings.
+  a quota (`apps.isolation.quota.*` for the baseline pool), a default-deny
+  NetworkPolicy and the reduced Helm/API RoleBindings.
   New installs are assigned a free namespace and get one PV/PVC per selected
   dataset (`naslos-app-data` StorageClass). Legacy records stay in
   `naslos-apps` until reinstalled. See `docs/datasets-isolation.md`.
