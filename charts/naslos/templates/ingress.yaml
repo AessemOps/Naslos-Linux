@@ -26,6 +26,8 @@ spec:
           port: {{ .Values.ui.service.port }}
   tls:
     secretName: {{ .Values.ingress.tls.secretName | default "naslos-tls" }}
+    options:
+      name: naslos-tls
 ---
 # HTTP to HTTPS redirect
 apiVersion: traefik.io/v1alpha1
