@@ -193,7 +193,10 @@ adapting `detect_dns_ip` to the 0.26 builder API, removing the obsolete
   PVC cannot see the Buddy path.
 - Docs: `docs/datasets-isolation.md`, `AI_Handoff.md`.
 
-### R2.9 — Refresh the handoff page (`AUD-2611-T11-1`, NL)
+### R2.9 — Refresh the handoff page (`AUD-2611-T11-1`, NL) — **DONE on `docs/handoff-0.3.21`**
+
+Updated to 0.3.21/revision 21, the live digest prefixes, the 0.3.20/0.3.21
+release notes, the current app and pool counts, and the open audit PRs.
 
 - Files: `AI_Handoff.md`.
 - Fix: update to chart 0.3.21 / revision 21 / digest-pinned images, add the
