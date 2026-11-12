@@ -10,7 +10,11 @@ Repos: **NL** = `Naslos-Linux`, **NC** = `NaslosCharts`.
 
 ## Batch R1 — High (do first)
 
-### R1.1 — Stop a Buddy-disabled install from crashing the API (`AUD-2611-T6-1`, NL)
+### R1.1 — Stop a Buddy-disabled install from crashing the API (`AUD-2611-T6-1`, NL) — **DONE on `fix/buddy-disabled-routes`**
+
+Implemented as designed: `build_router` mounts the peer routes only when
+`state.buddy.is_some()`; otherwise `/api/buddy/v1` and `/api/buddy/v1/{*rest}`
+answer `503`, and router tests cover both the 503 and the public health route.
 
 - Files: `rust/api/src/server/mod.rs`, `rust/api/src/server/buddy.rs`,
   `charts/naslos/templates/api-deployment.yaml` (only if the route gate moves
