@@ -544,6 +544,9 @@ error instead of writing damaged data. The Rust buddy suite in
 - **The receiver exists only when configured.** `BUDDY_RECEIVE_PATH` unset means
   no receiver and no backing directory (the chart sets it only with
   `buddy.enabled=true`); there is no fallback to the state/config volume.
+  The peer routes are mounted only when a receiver exists: a disabled instance
+  answers `/api/buddy/v1/*` with `503 Service Unavailable` (it used to panic
+  the API process on the first request; AUD-2611-T6-1).
 - **tar payloads lose symlinks, devices and xattrs** in v1, and only regular files
   and directories are archived. For filesystems that need all of it, send a ZFS
   stream (`--kind zfs-send`), which preserves everything by construction.

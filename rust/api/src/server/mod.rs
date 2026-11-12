@@ -41,24 +41,38 @@ pub const NOT_PORTED_STATUS: u16 = 501;
 
 pub fn build_router(state: Arc<AppState>) -> Router {
     // Public: health probes.
-    let public: Router<Arc<AppState>> = Router::new()
+    let mut public: Router<Arc<AppState>> = Router::new()
         .route("/api/health", get(handlers::health))
-        .route("/api/ready", get(handlers::ready))
-        // Buddy peers authenticate with their own Ed25519 key, not the proxy.
-        .route("/api/buddy/v1/status", get(buddy::status))
-        .route("/api/buddy/v1/enroll", post(buddy::enroll))
-        .route("/api/buddy/v1/backups", get(buddy::backups))
-        .route(
-            "/api/buddy/v1/chunks/{*source}",
-            get(buddy::chunks).put(buddy::chunks),
-        )
-        .route("/api/buddy/v1/chains/{*source}", get(buddy::chains))
-        .route("/api/buddy/v1/sequence/{*source}", get(buddy::sequence))
-        .route(
-            "/api/buddy/v1/manifest/{*source}",
-            get(buddy::manifest).put(buddy::manifest),
-        )
-        .route("/api/buddy/v1/prune/{*source}", post(buddy::prune));
+        .route("/api/ready", get(handlers::ready));
+
+    // Buddy peers authenticate with their own Ed25519 key, not the proxy.
+    //
+    // Mount the receiver routes only when a receiver exists. The `BuddyState`
+    // extractor requires one, and the release profile is `panic = "abort"`, so
+    // mounting them unconditionally turned any request into an API-process
+    // abort on a Buddy-disabled install (AUD-2611-T6-1). A disabled install
+    // answers 503 instead.
+    if state.buddy.is_some() {
+        public = public
+            .route("/api/buddy/v1/status", get(buddy::status))
+            .route("/api/buddy/v1/enroll", post(buddy::enroll))
+            .route("/api/buddy/v1/backups", get(buddy::backups))
+            .route(
+                "/api/buddy/v1/chunks/{*source}",
+                get(buddy::chunks).put(buddy::chunks),
+            )
+            .route("/api/buddy/v1/chains/{*source}", get(buddy::chains))
+            .route("/api/buddy/v1/sequence/{*source}", get(buddy::sequence))
+            .route(
+                "/api/buddy/v1/manifest/{*source}",
+                get(buddy::manifest).put(buddy::manifest),
+            )
+            .route("/api/buddy/v1/prune/{*source}", post(buddy::prune));
+    } else {
+        public = public
+            .route("/api/buddy/v1", any(buddy_disabled))
+            .route("/api/buddy/v1/{*rest}", any(buddy_disabled));
+    }
 
     // Auth-but-not-admin (any authenticated user).
     let user: Router<Arc<AppState>> = Router::new()
@@ -270,6 +284,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .method_not_allowed_fallback(method_not_allowed)
 }
 
+/// Answer for the Buddy peer routes on an install where the receiver is off
+/// (`BUDDY_RECEIVE_PATH` unset / `buddy.enabled=false`).
+async fn buddy_disabled() -> Response {
+    crate::json(
+        StatusCode::SERVICE_UNAVAILABLE,
+        serde_json::json!({ "error": "Buddy Backup is disabled on this instance" }),
+    )
+}
+
 async fn not_found() -> Response {
     crate::json(
         StatusCode::NOT_FOUND,
@@ -282,4 +305,43 @@ async fn method_not_allowed() -> Response {
         StatusCode::METHOD_NOT_ALLOWED,
         serde_json::json!({ "error": "method not allowed" }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn buddy_routes_are_unavailable_when_the_receiver_is_disabled() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state);
+        for uri in [
+            "/api/buddy/v1/status",
+            "/api/buddy/v1/enroll",
+            "/api/buddy/v1/chunks/media/app",
+            "/api/buddy/v1/manifest/media/app",
+        ] {
+            let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{uri} must be 503 when the receiver is disabled"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn health_stays_public_when_buddy_is_disabled() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let request = Request::builder()
+            .uri("/api/health")
+            .body(Body::empty())
+            .unwrap();
+        let response = build_router(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }
