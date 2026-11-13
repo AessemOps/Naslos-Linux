@@ -358,6 +358,13 @@ impl Manager {
         self.save()
     }
 
+    /// Put `share` back (used to roll a handler back when the node rejected the
+    /// rendered config, AUD-2611-T10-2).
+    pub fn restore(&mut self, share: Share) -> Result<(), String> {
+        self.shares.insert(share.name.clone(), share);
+        self.save()
+    }
+
     /// Validate that `path` is inside the ZFS base and is a directory.
     ///
     /// Every component below the base must be a real directory, not a symlink:

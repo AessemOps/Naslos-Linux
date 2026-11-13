@@ -42,7 +42,15 @@ pub async fn shares_post(State(state): State<Arc<AppState>>, body: Body) -> Resp
         Ok(s) => s,
         Err(e) => return bad_request(&e),
     };
-    let _ = apply_shares_config(&state).await;
+    if let Err(e) = apply_shares_config(&state).await {
+        // The node never got the new share: roll the record back so the next
+        // create does not see a phantom share, and report the failure.
+        let _ = state.shares.lock().unwrap().delete(&created.name);
+        return json(
+            StatusCode::BAD_GATEWAY,
+            serde_json::json!({ "error": format!("share was not applied to the node: {e}") }),
+        );
+    }
     json(StatusCode::CREATED, serde_json::to_value(created).unwrap())
 }
 
@@ -73,11 +81,20 @@ pub async fn share_detail_put(
             return bad_request(&e);
         }
     }
+    let previous = state.shares.lock().unwrap().get(&name).ok();
     let updated = match state.shares.lock().unwrap().update(&name, &req) {
         Ok(s) => s,
         Err(e) => return bad_request(&e),
     };
-    let _ = apply_shares_config(&state).await;
+    if let Err(e) = apply_shares_config(&state).await {
+        if let Some(previous) = previous {
+            let _ = state.shares.lock().unwrap().restore(previous);
+        }
+        return json(
+            StatusCode::BAD_GATEWAY,
+            serde_json::json!({ "error": format!("share change was not applied to the node: {e}") }),
+        );
+    }
     json(StatusCode::OK, serde_json::to_value(updated).unwrap())
 }
 
@@ -85,10 +102,20 @@ pub async fn share_detail_delete(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Response {
+    let previous = match state.shares.lock().unwrap().get(&name) {
+        Ok(share) => share,
+        Err(e) => return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
+    };
     if let Err(e) = state.shares.lock().unwrap().delete(&name) {
         return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e }));
     }
-    let _ = apply_shares_config(&state).await;
+    if let Err(e) = apply_shares_config(&state).await {
+        let _ = state.shares.lock().unwrap().restore(previous);
+        return json(
+            StatusCode::BAD_GATEWAY,
+            serde_json::json!({ "error": format!("share deletion was not applied to the node: {e}") }),
+        );
+    }
     json(
         StatusCode::OK,
         serde_json::json!({ "status": "share deleted", "name": name }),
