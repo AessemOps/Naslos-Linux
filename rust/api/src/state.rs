@@ -143,6 +143,10 @@ impl AppState {
                 .unwrap_or_else(|_| "/var/lib/naslos/datasets.json".to_string()),
             &std::env::var("BUDDY_RECEIVE_HOST_PATH").unwrap_or_default(),
         ));
+        let providers = Arc::new(crate::providers::Registry::load(
+            &std::env::var("DDNS_PROVIDERS_DIR").unwrap_or_default(),
+        ));
+        let ddns = build_ddns(&providers, &kube, &apps_namespace);
         let app_manager = build_app_manager(
             &charts,
             &catalog,
@@ -151,6 +155,7 @@ impl AppState {
             &sso_domains,
             &apps_namespace,
             Some(datasets_registry.clone()),
+            ddns.as_ref().map(|manager| manager.store_arc()),
         );
 
         let certs: Option<Arc<dyn crate::certs::Reconciler>> = kube.as_ref().map(|k| {
@@ -164,11 +169,6 @@ impl AppState {
             Arc::new(crate::authelia::KubeSyncer::new(k.clone(), &ns))
                 as Arc<dyn crate::authelia::Syncer>
         });
-        let providers = Arc::new(crate::providers::Registry::load(
-            &std::env::var("DDNS_PROVIDERS_DIR").unwrap_or_default(),
-        ));
-        let ddns = build_ddns(&providers, &kube, &apps_namespace);
-
         Ok(Self {
             proxy_secret,
             trusted_cidrs,
@@ -425,6 +425,7 @@ fn parse_go_duration(s: &str) -> Option<std::time::Duration> {
 /// Build the installed-app manager (S4e). Routing (S5) and Service discovery
 /// (kube) are wired as `None` for now, so installs record + render but do not
 /// yet route; that is documented in the plan.
+#[allow(clippy::too_many_arguments)]
 fn build_app_manager(
     charts: &Option<Arc<crate::chartsrepo::Manager>>,
     catalog: &Arc<CatalogHolder>,
@@ -433,6 +434,7 @@ fn build_app_manager(
     sso_seed: &[String],
     apps_namespace: &str,
     datasets: Option<Arc<crate::datasets::Registry>>,
+    ddns_store: Option<Arc<crate::ddns::Store>>,
 ) -> Option<Arc<crate::apps::Manager>> {
     let charts = charts.clone()?;
     let apps_ns = apps_namespace.to_string();
@@ -516,6 +518,14 @@ fn build_app_manager(
         .and_then(|v| v.trim().parse::<usize>().ok());
     let pool_settings_path = std::env::var("APPS_POOL_CONFIG")
         .unwrap_or_else(|_| "/var/lib/naslos/app-pool.json".to_string());
+    let app_dns: Option<Arc<dyn crate::apps::AppDns>> = kube.map(|k| {
+        Arc::new(crate::dnsrecords::DnsService::new(
+            Some(k.clone()),
+            &apps_ns,
+            domains.clone(),
+            ddns_store.clone(),
+        )) as Arc<dyn crate::apps::AppDns>
+    });
     let cfg = crate::apps::Config {
         store_path: std::env::var("APPS_CONFIG")
             .unwrap_or_else(|_| "/var/lib/naslos/apps.json".to_string()),
@@ -536,6 +546,7 @@ fn build_app_manager(
         datasets,
         pool_provisioner_image: std::env::var("APPS_POOL_PROVISIONER_IMAGE")
             .unwrap_or_else(|_| "rancher/local-path-provisioner:v0.0.26".to_string()),
+        app_dns,
     };
     match crate::apps::Manager::new(cfg) {
         Ok(m) => Some(Arc::new(m)),

@@ -49,6 +49,7 @@
   let baseDomain = '';
   let selectableDomains: string[] = [];
   let ssoDomains: string[] = [];
+  let appRecordDomains = new Set<string>();
   let confirmed = false;
   let unsafeConfirmed = false;
   let privilegedConfirmed = false;
@@ -171,6 +172,11 @@
           Array.isArray(domainData.ssoDomains) && domainData.ssoDomains.length > 0
             ? domainData.ssoDomains
             : [baseDomain].filter(Boolean);
+        appRecordDomains = new Set(
+          domains
+            .filter((domain: any) => domain.appRecordsDdnsEntry)
+            .map((domain: any) => domain.baseDomain)
+        );
       }
     } catch (e) {
       error = 'Failed to load app details: ' + e;
@@ -326,6 +332,12 @@
           </div>
         {:else if activeStep === 'exposure'}
           <ExposureForm bind:exposure bind:baseDomain {selectableDomains} {ssoDomains} />
+          {#if exposure.subdomain && appRecordDomains.has(baseDomain)}
+            <p class="mt-4 p-3 rounded-lg border border-naslos-border bg-naslos-dark/40 text-xs text-gray-300">
+              A CNAME <span class="font-mono">{exposure.subdomain}.{baseDomain}</span> will be created on
+              this domain and removed when the app is uninstalled or the subdomain changes.
+            </p>
+          {/if}
         {:else if activeStep === 'review'}
           <div class="space-y-3">
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">App</span><span class="font-medium">{app.displayName}</span></div>
