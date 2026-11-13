@@ -140,6 +140,27 @@ impl Client {
         serde_yaml::from_str(&out).map_err(|e| format!("parsing chart values: {e}"))
     }
 
+    /// Render a chart with the values an install/upgrade would use. Used to
+    /// discover the names the chart itself sets on the containers that consume
+    /// the platform env Secret (FR-APP-26).
+    pub async fn template_dir(
+        &self,
+        name: &str,
+        chart_dir: &str,
+        values: &serde_json::Value,
+    ) -> Result<String, String> {
+        let (mut args, _guard) = Self::values_args(values)?;
+        let mut full = vec![
+            "template".to_string(),
+            name.to_string(),
+            chart_dir.to_string(),
+            "-n".into(),
+            self.namespace.clone(),
+        ];
+        full.append(&mut args);
+        self.run(&full).await
+    }
+
     /// Install a chart from a local directory (`--wait`, 5m timeout).
     pub async fn install_dir(
         &self,

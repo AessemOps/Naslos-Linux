@@ -83,6 +83,8 @@ pub struct AppJob {
     /// Dataset selection for an upgrade. `None` keeps the record's list and
     /// `Some(vec![])` detaches every dataset.
     pub datasets: Option<Vec<String>>,
+    /// Environment variables for an upgrade. `None` keeps the stored Secret.
+    pub env: Option<Vec<crate::app_env::EnvVar>>,
     pub result: Mutex<Option<View>>,
 }
 
@@ -206,6 +208,7 @@ impl AppJobManager {
         request: Option<InstallRequest>,
         values: Option<serde_json::Map<String, serde_json::Value>>,
         datasets: Option<Vec<String>>,
+        env: Option<Vec<crate::app_env::EnvVar>>,
         manager: Option<Arc<crate::apps::Manager>>,
     ) -> Result<JobPublic, JobPublic> {
         let mut inner = self.inner.lock().unwrap();
@@ -234,6 +237,7 @@ impl AppJobManager {
             request,
             values,
             datasets,
+            env,
             result: Mutex::new(None),
         });
         let snapshot = job.snapshot();
@@ -279,6 +283,7 @@ async fn run_job(
                 &job.app,
                 job.values.as_ref(),
                 job.datasets.as_deref(),
+                job.env.as_deref(),
                 progress_ref,
             )
             .await
@@ -331,6 +336,7 @@ mod tests {
             request: None,
             values: None,
             datasets: None,
+            env: None,
             result: Mutex::new(None),
         });
         manager.add(job.clone());

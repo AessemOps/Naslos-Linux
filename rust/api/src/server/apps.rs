@@ -63,6 +63,8 @@ struct InstallBody {
     datasets: Vec<String>,
     #[serde(default)]
     pool: String,
+    #[serde(default)]
+    env: Vec<crate::app_env::EnvVar>,
 }
 
 /// A privileged catalog entry moves the app into the PSA-privileged namespace,
@@ -90,7 +92,17 @@ pub async fn apps_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
     }
     let privileged = match state.catalog.load() {
         Some(catalog) => match catalog.get(&req.name) {
-            Ok(app) => app.privileged,
+            Ok(app) => {
+                if !req.env.is_empty()
+                    && !app
+                        .capabilities
+                        .iter()
+                        .any(|capability| capability == crate::app_env::CAPABILITY)
+                {
+                    return bad_request("this chart does not support custom environment variables");
+                }
+                app.privileged
+            }
             Err(e) => return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
         },
         None => return app_unavailable(),
@@ -129,12 +141,14 @@ pub async fn apps_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
         datasets: req.datasets.clone(),
         pool: req.pool.clone(),
         privileged_confirmed: req.privileged_confirmed,
+        env: req.env.clone(),
     };
     match state.app_jobs.enqueue(
         JobKind::Install,
         &req.name,
         &req.base_domain,
         Some(install),
+        None,
         None,
         None,
         state.app_manager.clone(),
@@ -162,6 +176,10 @@ pub async fn app_detail_get(
                     // The UI uses this to block dataset edits that require a
                     // reinstall.
                     value["isolated"] = serde_json::json!(isolated);
+                    // Values come from the env Secret; secret variables are
+                    // masked. Only the detail endpoint reads the Secret.
+                    value["env"] =
+                        serde_json::json!(manager.env_detail(&name).await.unwrap_or_default());
                     json(StatusCode::OK, value)
                 }
                 Err(e) => json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
@@ -330,6 +348,9 @@ struct UpgradeBody {
     /// Omitted keeps the stored dataset list; `[]` detaches every dataset.
     #[serde(default)]
     datasets: Option<Vec<String>>,
+    /// Omitted keeps the stored environment; `[]` removes every variable.
+    #[serde(default)]
+    env: Option<Vec<crate::app_env::EnvVar>>,
 }
 
 pub async fn app_detail_put(
@@ -354,6 +375,7 @@ pub async fn app_detail_put(
         None,
         req.values,
         req.datasets,
+        req.env,
         Some(manager),
     ) {
         Ok(job) => job,
@@ -376,6 +398,7 @@ pub async fn app_detail_delete(
         JobKind::Uninstall,
         &name,
         "",
+        None,
         None,
         None,
         None,

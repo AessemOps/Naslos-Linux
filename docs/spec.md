@@ -462,6 +462,26 @@ with a sibling `naslos-app.yaml` install-config. See
   quota (`{available, namespace, hard}`) so the drawer shows the effective cap.
   The quota itself MUST be configurable (`apps.isolation.quota`).
   *(apps::resource_quantity_tests, UI check)*
+- **FR-APP-26** — A chart MAY declare `capabilities: [env]`. For such a chart
+  the owner MUST be able to set custom environment variables per installed app.
+  Values MUST live only in a platform-owned Secret `naslos-env-<release>` in the
+  app's namespace (labels `app.kubernetes.io/managed-by: naslos`,
+  `naslos.io/app: <name>`), MUST NOT be written to the app record or Helm
+  values, and MUST NOT be returned by `GET /api/apps`; `GET /api/apps/{name}`
+  MUST return the names, with `null` values for `secret` variables. The API
+  MUST validate names (`^[A-Za-z_][A-Za-z0-9_.-]*$`, ≤128 bytes, unique, no
+  `NASLOS_` prefix) and size (≤100 variables, ≤32 KiB per value, <512 KiB in
+  total), and MUST reject a non-empty list when the chart lacks the capability
+  (400). It MUST write the Secret before Helm, delete it when the install fails
+  or the app is uninstalled, and change the `naslosEnvChecksum` Helm value on
+  every value change so the pod template annotation rolls the workload. Names
+  the chart itself sets on the containers that mount the Secret MUST be rejected
+  after rendering it (`env var X is set by the chart`). An upgrade MUST treat an
+  omitted `env` as unchanged and a `secret` variable with `value: null` as
+  keep-stored; it MUST snapshot and restore the Secret across a failed Helm
+  operation, and a chart that drops the capability MUST keep the Secret and
+  record a warning instead of failing. *(app_env tests, catalog tests, apps
+  record tests, Playwright)*
 - **FR-APP-19** — Chart installs MUST run as a namespaced identity that cannot
   create Traefik `IngressRoute`/`Middleware` or cert-manager objects; the API
   MUST own the app's route and certificate. *(chart render gate:
