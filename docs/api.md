@@ -185,6 +185,7 @@ Error contract for the ZFS endpoints:
 | Bad request (name/topology/disks validation) | `400` | `{"error":"invalid pool name ..."}` |
 | Node has no ZFS (agent degraded mode) | `503` (forwarded from agent) | `{"error":"ZFS is not available on this node ..."}` |
 | Agent unreachable | `502` | `{"error":"contacting agent at ...: ..."}` |
+| Agent rejected the rendered share/user config | `502` | the change is reported as failed; a share create/update/delete is rolled back so the stored list matches what the node serves (AUD-2611-T10-1/T10-2) |
 
 The actual ZFS work is delegated to `naslos-agent` on each node:
 `chroot /host zpool …` / `chroot /host zfs …`.
@@ -220,7 +221,7 @@ The actual ZFS work is delegated to `naslos-agent` on each node:
 | --- | --- | --- |
 | GET | `/api/notifications` | ntfy settings |
 | PUT | `/api/notifications` | Update ntfy settings |
-| POST | `/api/notifications/test` | Send a test notification |
+| POST | `/api/notifications/test` | Send a test notification (target must resolve to a public address; the host is resolved once and pinned at send time) |
 | GET | `/api/metrics` | Full `SystemMetrics` object |
 | GET | `/api/dashboard` | Dashboard-formatted subset (home screen) |
 

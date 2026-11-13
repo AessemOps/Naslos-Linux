@@ -10,7 +10,11 @@ Repos: **NL** = `Naslos-Linux`, **NC** = `NaslosCharts`.
 
 ## Batch R1 — High (do first)
 
-### R1.1 — Stop a Buddy-disabled install from crashing the API (`AUD-2611-T6-1`, NL)
+### R1.1 — Stop a Buddy-disabled install from crashing the API (`AUD-2611-T6-1`, NL) — **DONE on `fix/buddy-disabled-routes`**
+
+Implemented as designed: `build_router` mounts the peer routes only when
+`state.buddy.is_some()`; otherwise `/api/buddy/v1` and `/api/buddy/v1/{*rest}`
+answer `503`, and router tests cover both the 503 and the public health route.
 
 - Files: `rust/api/src/server/mod.rs`, `rust/api/src/server/buddy.rs`,
   `charts/naslos/templates/api-deployment.yaml` (only if the route gate moves
@@ -101,7 +105,12 @@ not in scope.
 - Docs: `docs/operations.md` (account lifecycle), `docs/spec.md` FR-IDN,
   `AI_Handoff.md` gotchas.
 
-### R2.2 — Canonicalise share paths before apply (`AUD-2611-T5-1` / `B5` / `H4`, NL)
+### R2.2 — Canonicalise share paths before apply (`AUD-2611-T5-1` / `B5` / `H4`, NL) — **DONE on `fix/share-symlink`**
+
+Implemented with a no-follow component walk (`symlink_metadata`) in
+`validate_path`; a symlink at any level below the ZFS base is rejected. A
+regression test covers a direct and an intermediate link. Residual TOCTOU
+(after validation) is documented in the report.
 
 - Files: `rust/api/src/shares/mod.rs`, `rust/api/src/shares/render.rs`,
   `rust/agent/src/shares/folders.rs`.
@@ -119,7 +128,12 @@ not in scope.
   NFS, attempt share create, expect 400; remove symlink).
 - Docs: `docs/shares.md`, `docs/spec.md` FR-SHR-05.
 
-### R2.3 — Do not report a successful change when the agent did not apply it (`AUD-2611-T10-1`, `T10-2`, NL)
+### R2.3 — Do not report a successful change when the agent did not apply it (`AUD-2611-T10-1`, `T10-2`, NL) — **DONE on `fix/apply-failures`**
+
+Share create/update/delete roll back and answer `502` when the node rejects the
+config. User delete removes SMB first and refuses the LDAP delete if that push
+fails; disable and group changes return `502` when the mirror is stale.
+Integration tests use a fake agent (create-rollback, delete-rollback).
 
 - Files: `rust/api/src/server/users.rs`, `rust/api/src/server/shares.rs`,
   `rust/api/src/shares/*`.
@@ -136,7 +150,11 @@ not in scope.
   stopping the agent (needs approval) and confirming the UI reports the failure.
 - Docs: `docs/api.md` (error contract), `docs/shares.md`, `AI_Handoff.md`.
 
-### R2.4 — Reject a malformed ZFS import body (`AUD-2611-T4-1`, NL)
+### R2.4 — Reject a malformed ZFS import body (`AUD-2611-T4-1`, NL) — **DONE on `fix/zfs-import-body`**
+
+Decode errors now propagate and an explicit, validated pool name is required.
+Severity corrected to Low: the agent's `all: true` guard means the old path never
+imported everything; it only produced a confusing 400.
 
 - Files: `rust/api/src/server/zfs.rs`.
 - Fix: return `400` on a decode error; require an explicit `{"all": true}` for
@@ -178,7 +196,10 @@ not in scope.
 - Verify: `helm template` diff, `scripts/audit.sh` security-rendering check.
 - Docs: `docs/deployment.md`, `AI_Handoff.md` gotchas.
 
-### R2.7 — Keep the Buddy KEK on uninstall (`AUD-2611-T8-2`, NL)
+### R2.7 — Keep the Buddy KEK on uninstall (`AUD-2611-T8-2`, NL) — **DONE on `fix/chart-hardening`**
+
+Added `helm.sh/resource-policy: keep` to `naslos-buddy-kek` and documented the
+out-of-band backup requirement.
 
 - Files: `charts/naslos/templates/buddy-kek.yaml`.
 - Fix: add `helm.sh/resource-policy: keep` to `naslos-buddy-kek` (matching the
@@ -230,7 +251,10 @@ not in scope.
 Covered by R1.3. If an ignore is chosen instead of an upgrade, add a dated
 re-check and a reachability note.
 
-### R2.12 — Notification webhook SSRF (`AUD-2611-T7-1`, NL)
+### R2.12 — Notification webhook SSRF (`AUD-2611-T7-1`, NL) — **DONE on `fix/ssrf-guards`**
+
+Uses the shared `blocked_ip`, validates on save, and pins the resolved address at
+send time.
 
 - Files: `rust/api/src/notifications.rs`.
 - Fix: resolve the host once, reject loopback/private/link-local/ULA/CGNAT/
@@ -242,7 +266,10 @@ re-check and a reachability note.
 - Verify: unit tests; no live send.
 - Docs: `docs/api.md` (notifications), `docs/operations.md`.
 
-### R2.13 — DDNS DNS-rebinding guard (`AUD-2611-T7-2`, NL)
+### R2.13 — DDNS DNS-rebinding guard (`AUD-2611-T7-2`, NL) — **DONE on `fix/ssrf-guards`**
+
+`blocked_ip` covers the reserved ranges; the generic HTTP driver pins the
+connection to the vetted address.
 
 - Files: `rust/api/src/ddns/drivers.rs`.
 - Fix: resolve once, validate every address, and connect to the vetted IP
@@ -268,8 +295,8 @@ re-check and a reachability note.
 | T1-2 | NL | Put `security-headers` before `forwardauth-authelia` on the UI route (or add a `redirect-headers` middleware) so the auth 302 carries HSTS. | render assertion on middleware order |
 | T1-3 | NL | Document that `protectedPaths` must match the app's routing case; optionally add a case-insensitive matcher or normalize to the app's route. | live drill (needs approval) |
 | T2-1 | NL | Require `privilegedConfirmed` on upgrade when the catalog flips `privileged` or adds hostPath; compare old/new chart values. | unit test on the diff path |
-| T2-2 | NL | Drive the privileged-pool quota from values like the baseline pool. | `helm template` |
-| T3-4 / T8-6 / F9 | NL | Add the `naslos-tls` TLSOption to the UI route; document cert rotation (delete + re-apply) and the 3650-day lifetime. | render assertion |
+| T2-2 | NL | DONE (`fix/chart-hardening`): `apps.isolation.privilegedQuota` drives the privileged pool. | `helm template` |
+| T3-4 / T8-6 / F9 | NL | DONE (`fix/chart-hardening`): the UI route pins `naslos-tls`. Still open: document/automate cert rotation (delete + re-apply) and the 3650-day lifetime. | render assertion |
 | T4-2 | NL | Timeout the post-EOF `zfs receive` wait and kill the child. | unit test with a hung child |
 | T4-3 / F15 | NL | Restrict host firewall 9090 to the API pod IP; document rotation. | live `nft`/Cilium check (needs approval) |
 | T5-2 | NL | Escape/validate `SMB_DISCOVERY_NAME` before the `sed`. | entrypoint test |

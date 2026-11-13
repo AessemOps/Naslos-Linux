@@ -396,10 +396,23 @@ pub async fn pools_post(State(state): State<Arc<AppState>>, body: Body) -> Respo
     }
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 struct ImportBody {
     #[serde(default)]
     name: String,
+}
+
+/// The pool name to import. An empty (or malformed) body is an error: the
+/// agent refuses an empty name (import-all needs an explicit `all`), and the
+/// API must never synthesize one by accident (AUD-2611-T4-1).
+fn import_pool_name(req: ImportBody) -> Result<String, String> {
+    if req.name.trim().is_empty() {
+        return Err("name is required".to_string());
+    }
+    if !is_valid_pool_name(&req.name) {
+        return Err(format!("invalid pool name {:?}", req.name));
+    }
+    Ok(req.name)
 }
 
 pub async fn import_get(State(state): State<Arc<AppState>>) -> Response {
@@ -418,25 +431,22 @@ pub async fn import_post(State(state): State<Arc<AppState>>, body: Body) -> Resp
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    // Decode errors are ignored (Go), so an empty body imports everything.
-    let req: ImportBody = read_json(body).await.unwrap_or_default();
-    if !req.name.is_empty() && !is_valid_pool_name(&req.name) {
-        return bad_request(&format!("invalid pool name {:?}", req.name));
-    }
-    match client.import_pool(&req.name).await {
-        Ok(()) => {
-            if req.name.is_empty() {
-                json(
-                    StatusCode::OK,
-                    serde_json::json!({ "status": "all pools imported" }),
-                )
-            } else {
-                json(
-                    StatusCode::OK,
-                    serde_json::json!({ "status": "pool imported", "pool": req.name }),
-                )
-            }
-        }
+    // A malformed body must not degrade to an empty name: the agent refuses
+    // that (it requires an explicit `all`), but the API should say so itself
+    // instead of hiding the decode error (AUD-2611-T4-1).
+    let req: ImportBody = match read_json(body).await {
+        Ok(req) => req,
+        Err(resp) => return resp,
+    };
+    let name = match import_pool_name(req) {
+        Ok(name) => name,
+        Err(e) => return bad_request(&e),
+    };
+    match client.import_pool(&name).await {
+        Ok(()) => json(
+            StatusCode::OK,
+            serde_json::json!({ "status": "pool imported", "pool": name }),
+        ),
         Err(e) => write_agent_error(&e),
     }
 }
@@ -903,5 +913,25 @@ mod tests {
             assert_eq!(actual, expected, "for {kind} {name}");
         }
         assert!(validate_dataset_name(&"a".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn import_requires_an_explicit_pool_name() {
+        assert!(import_pool_name(ImportBody {
+            name: String::new()
+        })
+        .is_err());
+        assert!(import_pool_name(ImportBody { name: "  ".into() }).is_err());
+        assert!(import_pool_name(ImportBody {
+            name: "../tank".into()
+        })
+        .is_err());
+        assert_eq!(
+            import_pool_name(ImportBody {
+                name: "tank".into()
+            })
+            .unwrap(),
+            "tank"
+        );
     }
 }

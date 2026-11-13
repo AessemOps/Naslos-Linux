@@ -74,7 +74,10 @@ use by `buddyctl identity`:
   permissions are `0600`, which is not the same as at-rest encryption.
 - **The KEK is in a Secret by default.** With `buddy.enabled=true` the chart
   generates `naslos-buddy-kek` (or uses `buddy.kekSecret` if you set one) and
-  mounts it as `BUDDY_KEK`. The API strips the `kek` field from an existing
+  mounts it as `BUDDY_KEK`. The generated Secret carries
+  `helm.sh/resource-policy: keep`, so `helm uninstall` does not delete the key
+  that unwraps the received chunks; back it up out of band and remove it
+  explicitly when you really mean to destroy the backup store. The API strips the `kek` field from an existing
   `buddy-identity.json` on load, so a read of the state volume no longer yields
   the key that unwraps every backup. The resume state still holds each
   in-flight chain's DEK in plaintext until that push finishes.
@@ -544,6 +547,9 @@ error instead of writing damaged data. The Rust buddy suite in
 - **The receiver exists only when configured.** `BUDDY_RECEIVE_PATH` unset means
   no receiver and no backing directory (the chart sets it only with
   `buddy.enabled=true`); there is no fallback to the state/config volume.
+  The peer routes are mounted only when a receiver exists: a disabled instance
+  answers `/api/buddy/v1/*` with `503 Service Unavailable` (it used to panic
+  the API process on the first request; AUD-2611-T6-1).
 - **tar payloads lose symlinks, devices and xattrs** in v1, and only regular files
   and directories are archived. For filesystems that need all of it, send a ZFS
   stream (`--kind zfs-send`), which preserves everything by construction.

@@ -84,11 +84,21 @@ Validation (`Manager.Create`):
 - `path` must be on a **dataset** (or in a subfolder of one) and must exist as a
   folder: a path on the ephemeral partition is refused (see "Share paths must be
   on a ZFS dataset"), and so is a folder that is not there yet;
+- `path` must contain **no symlink component** below the ZFS base. The rendered
+  Samba/Ganesha config is resolved by the host-side server, so a link planted in
+  a writable share (e.g. `media/link -> /etc`) would otherwise export its target.
+  Each component is inspected with `symlink_metadata` (no follow), so the check
+  works with the API's read-only `/var/mnt` view (`AUD-2611-T5-1`);
 - protocol must be `smb` or `nfs` (AFP is not served — see below);
 - duplicate names rejected.
 
 An existing share can be repointed at another folder (`PUT /api/shares/{name}`
 with `path`); the new path is validated exactly like a create.
+
+A create/update/delete only reports success after the **node accepted the
+rendered config**. If the agent rejects it, the API answers `502` with the agent
+error and rolls the change back, so the stored share list always matches what
+Samba/Ganesha are serving (`AUD-2611-T10-2`).
 
 ## Folders in the pool (share paths)
 

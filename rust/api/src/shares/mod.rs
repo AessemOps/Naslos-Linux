@@ -358,7 +358,19 @@ impl Manager {
         self.save()
     }
 
+    /// Put `share` back (used to roll a handler back when the node rejected the
+    /// rendered config, AUD-2611-T10-2).
+    pub fn restore(&mut self, share: Share) -> Result<(), String> {
+        self.shares.insert(share.name.clone(), share);
+        self.save()
+    }
+
     /// Validate that `path` is inside the ZFS base and is a directory.
+    ///
+    /// Every component below the base must be a real directory, not a symlink:
+    /// the rendered Samba/Ganesha config is resolved by the host-side server, so
+    /// a symlink planted inside a writable share would otherwise export its
+    /// target (AUD-2611-T5-1 / SEC-2026-B5).
     pub fn validate_path(&self, path: &str) -> Result<(), String> {
         let clean = self.normalize_path(path)?;
         let meta = std::fs::metadata(&clean).map_err(|e| {
@@ -370,6 +382,31 @@ impl Manager {
         })?;
         if !meta.is_dir() {
             return Err(format!("path is not a directory: {clean}"));
+        }
+        self.reject_symlinks(&clean)
+    }
+
+    /// Reject any symlink component between the ZFS base and `clean`.
+    ///
+    /// `symlink_metadata` inspects the link itself instead of following it, so
+    /// this is independent of where the link points and works with the
+    /// read-only `/var/mnt` mount the API already has.
+    fn reject_symlinks(&self, clean: &str) -> Result<(), String> {
+        let base = clean_path(&self.zfs_base);
+        let Some(rest) = clean.strip_prefix(&format!("{base}/")) else {
+            return Err(format!("share path must be a directory inside {base}"));
+        };
+        let mut current = std::path::PathBuf::from(&base);
+        for part in rest.split('/').filter(|p| !p.is_empty()) {
+            current.push(part);
+            let meta = std::fs::symlink_metadata(&current)
+                .map_err(|e| format!("stat {}: {e}", current.display()))?;
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "share path may not contain a symlink: {}",
+                    current.display()
+                ));
+            }
         }
         Ok(())
     }
@@ -639,6 +676,34 @@ mod tests {
 
         // An empty path is an in-memory test manager, not a failed load.
         assert!(Manager::new("", "/var/mnt").loaded());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn share_path_rejects_symlink_components() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("data");
+        std::fs::create_dir_all(base.join("media")).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(outside.join("sub")).unwrap();
+        symlink(&outside, base.join("link")).unwrap();
+
+        let mgr = Manager::new("", base.to_str().unwrap());
+        assert!(mgr
+            .validate_path(base.join("media").to_str().unwrap())
+            .is_ok());
+
+        let err = mgr
+            .validate_path(base.join("link").to_str().unwrap())
+            .unwrap_err();
+        assert!(err.contains("symlink"), "{err}");
+
+        let err = mgr
+            .validate_path(base.join("link/sub").to_str().unwrap())
+            .unwrap_err();
+        assert!(err.contains("symlink"), "{err}");
     }
 
     #[test]
