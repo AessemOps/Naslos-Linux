@@ -2,8 +2,8 @@ apiVersion: v2
 name: naslos
 description: Naslos - A user-friendly NAS distribution for Talos Linux
 type: application
-version: 0.3.21
-appVersion: "0.3.21"
+version: 0.3.22
+appVersion: "0.3.22"
 keywords:
   - nas
   - talos
