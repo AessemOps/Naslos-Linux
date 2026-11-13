@@ -31,6 +31,12 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   it. `v0.3.21`, `v0.3.20`, `v0.3.19`, `v0.3.18`, `v0.3.17`, `v0.3.16`,
   `v0.3.15`, `v0.3.14`, `v0.3.13`, `v0.3.12`, `v0.3.11`, `v0.3.10` and
   `v0.3.9` were the previous releases, `v0.3.8` was superseded.
+- **In flight (not deployed):** custom per-app environment variables (#158),
+  automatic per-domain app CNAMEs pointing at a DDNS hostname (#159, stacked on
+  #158), and the NaslosCharts `env` capability wiring (NaslosCharts #20, stacked
+  on #19). Deploy only after the chart PRs and both platform PRs land, with a
+  fresh `IMAGE_TAG` in `values-vm.yaml`; then run the env and DNS live drills
+  from `.kilo/plans/1794606775292-app-env-and-dns-records.md`.
 - **Release notes since 0.3.7:**
   - `0.3.22` (published, not yet applied) — audit remediation: Buddy-disabled
     installs answer 503 instead of aborting the API (#148); share paths reject

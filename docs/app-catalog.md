@@ -144,6 +144,19 @@ failing the upgrade. `GET /api/apps/{name}` returns
 `env: [{name, value, secret}]` (secret values are `null`); `GET /api/apps` does
 not read the Secret.
 
+## App DNS records
+
+When a base domain sets `appRecordsDdnsEntry` (see
+[dynamic-dns.md](dynamic-dns.md#app-records-fr-dns-09)), every exposed app on
+that domain gets a CNAME `<subdomain>.<baseDomain>` pointing at the DDNS entry's
+hostname. The toggle is per domain and only offered for `ovh` and `cloudflare`
+domains. The record is created after install, follows exposure changes,
+subdomain/domain changes (delete + create), and uninstall (delete); a name held
+by a different record is left untouched and surfaced as a DNS error on the app
+(`GET /api/apps/{name}` → `dns`). `POST /api/apps/{name}/dns/reconcile` retries
+manually; failed records also retry on the catalog-refresh cadence. A chart
+install or exposure change never fails because DNS failed.
+
 ## Install / manage lifecycle
 
 Apps install into the `naslos-apps` namespace (PSA `baseline`), separate from

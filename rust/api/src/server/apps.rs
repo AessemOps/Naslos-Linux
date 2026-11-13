@@ -472,8 +472,26 @@ pub async fn app_exposure_get(
             "ssoDomains": super::domains::effective_sso_domains(&state),
             "authAllowed": manager.auth_allowed(&rec.base_domain),
             "lastError": rec.last_error,
+            "dns": rec.dns,
         }),
     )
+}
+
+/// `POST /api/apps/{name}/dns/reconcile`
+pub async fn app_dns_reconcile_post(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Response {
+    let Some(manager) = state.app_manager.clone() else {
+        return app_unavailable();
+    };
+    match manager.reconcile_dns(&name).await {
+        Ok(view) => json(
+            StatusCode::OK,
+            serde_json::to_value(view).unwrap_or_default(),
+        ),
+        Err(e) => json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
+    }
 }
 
 #[derive(Default, serde::Deserialize)]

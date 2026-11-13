@@ -12,6 +12,8 @@
     primary?: boolean;
     sso?: boolean;
     lastError?: string;
+    appRecordsDdnsEntry?: string;
+    appRecordsSupported?: boolean;
   }
 
   let domains: Domain[] = [];
@@ -23,12 +25,13 @@
   let busy: string | null = null;
   let showForm = false;
   let editing: Domain | null = null;
+  let ddnsEntries: { id: string; zone: string; record: string }[] = [];
 
   async function load() {
     loading = true;
     error = '';
     try {
-      const res = await fetch('/api/domains');
+      const [res, ddnsRes] = await Promise.all([fetch('/api/domains'), fetch('/api/ddns')]);
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
@@ -37,6 +40,10 @@
       baseDomain = data.baseDomain || '';
       certManager = !!data.certManager;
       ssoDomains = Array.isArray(data.ssoDomains) ? data.ssoDomains : [];
+      if (ddnsRes.ok) {
+        const ddns = await ddnsRes.json();
+        ddnsEntries = Array.isArray(ddns.entries) ? ddns.entries : [];
+      }
     } catch (e) {
       error = 'Failed to load domains: ' + e;
       domains = [];
@@ -47,6 +54,12 @@
 
   // The effective SSO list is the source of truth (the primary is always in it,
   // and a chart-declared SSO_DOMAINS entry cannot be demoted from here).
+  function appRecordsTarget(domain: Domain): string {
+    const entry = ddnsEntries.find((item) => item.id === domain.appRecordsDdnsEntry);
+    if (!entry) return domain.appRecordsDdnsEntry || '';
+    return entry.record === '@' || !entry.record ? entry.zone : `${entry.record}.${entry.zone}`;
+  }
+
   function isSSO(domain: Domain): boolean {
     return domain.baseDomain === baseDomain || ssoDomains.includes(domain.baseDomain);
   }
@@ -156,6 +169,13 @@
             <p class="text-xs text-gray-500">
               Secret {domain.credentialsSecret || '(none)'}{domain.acmeEmail ? ` • ${domain.acmeEmail}` : ''}
             </p>
+            {#if domain.appRecordsDdnsEntry}
+              <p class="text-xs text-emerald-300 mt-1">
+                App DNS records → <span class="font-mono">{appRecordsTarget(domain)}</span>
+              </p>
+            {:else if domain.appRecordsSupported}
+              <p class="text-xs text-gray-500 mt-1">App DNS records disabled</p>
+            {/if}
             {#if domain.lastError}<p class="text-xs text-amber-400 mt-1">{domain.lastError}</p>{/if}
           </div>
           <div class="flex gap-2">
