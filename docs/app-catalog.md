@@ -55,6 +55,9 @@ exposure:                      # defaults shown in the install UI
 # of naslos-apps (baseline). Required for a VPN sidecar that needs NET_ADMIN
 # (e.g. gluetun in the Prowlarr/qBittorrent charts).
 privileged: false
+# Optional chart capabilities. `env` = the chart mounts the platform env Secret
+# into its main container(s); see "Environment variables".
+capabilities: [env]
 ```
 
 The API also reads the chart's `Chart.yaml` metadata: its `version` overrides
@@ -109,6 +112,38 @@ transports (`file://`, `ext::`) are refused as well.
   the Helm loader reads chart files; a symlinked file would have let a chart
   render `/var/lib/naslos/buddy-identity.json` into a manifest.
 
+## Environment variables
+
+A manifest that declares `capabilities: [env]` (every chart in the official
+repository does) lets an operator add custom environment variables per installed
+app. The platform stores them in a Secret named `naslos-env-<release>` in the
+app's namespace and never writes them into the app record or Helm values. The
+chart mounts it on its main container(s) only:
+
+```yaml
+envFrom:
+  - secretRef: { name: naslos-env-{{ .Release.Name }}, optional: true }
+```
+
+and rolls on the platform-owned annotation:
+
+```yaml
+metadata:
+  annotations:
+    naslos.io/env-checksum: {{ .Values.naslosEnvChecksum | default "" | quote }}
+```
+
+Install and reconfigure validate names (`^[A-Za-z_][A-Za-z0-9_.-]*$`, ≤128
+bytes, unique, no `NASLOS_` prefix) and size (≤100 variables, ≤32 KiB per value,
+<512 KiB total). Chart-set names on the containers that mount the Secret are
+reserved and fail the job with `env var X is set by the chart`. The Secret is
+written before Helm and removed if the install fails or the app is uninstalled;
+an upgrade snapshots it and restores the previous data when Helm fails. A chart
+that drops the capability keeps the Secret and records a warning instead of
+failing the upgrade. `GET /api/apps/{name}` returns
+`env: [{name, value, secret}]` (secret values are `null`); `GET /api/apps` does
+not read the Secret.
+
 ## Install / manage lifecycle
 
 Apps install into the `naslos-apps` namespace (PSA `baseline`), separate from
@@ -119,11 +154,11 @@ app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
 | Action | API | Behavior |
 | --- | --- | --- |
 | List catalog | `GET /api/catalog` | Source/channel-tagged summaries |
-| Catalog detail | `GET /api/catalog/{name}` | Full entry incl. `schema`, `services`, `exposure` |
-| Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed, privilegedConfirmed?, datasets?}` | `confirmed` MUST be `true`; a catalog entry with `privileged: true` also requires `privilegedConfirmed: true`, and the UI shows a second, red confirmation (SEC-2026-D8). Defaults are merged and the result is validated against the catalog's JSON schema before Helm runs; a violation is a 400 (SEC-2026-D7). `datasets` selects any number of registered datasets; with `apps.isolation.enabled` the app gets its own namespace, a PV/PVC per dataset (baseline) or host paths (privileged), and the chart receives the platform-owned `datasets` value (one `{name, mountPath: "/datasets/<name>", claim|hostPath}` entry each, plus the legacy `datasetsClaim`/`datasetsClaims` or first `hostPath`). Chart loaded from the clone. Enqueues an install job → `202 {jobId, state}` |
+| Catalog detail | `GET /api/catalog/{name}` | Full entry incl. `schema`, `services`, `exposure`, `capabilities` |
+| Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed, privilegedConfirmed?, datasets?, env?}` | `confirmed` MUST be `true`; a catalog entry with `privileged: true` also requires `privilegedConfirmed: true`, and the UI shows a second, red confirmation (SEC-2026-D8). Defaults are merged and the result is validated against the catalog's JSON schema inside the install job; a violation fails the job (the request is still `202`) (SEC-2026-D7). `env` is rejected with a 400 when the chart lacks the `env` capability. `datasets` selects any number of registered datasets; with `apps.isolation.enabled` the app gets its own namespace, a PV/PVC per dataset (baseline) or host paths (privileged), and the chart receives the platform-owned `datasets` value (one `{name, mountPath: "/datasets/<name>", claim|hostPath}` entry each, plus the legacy `datasetsClaim`/`datasetsClaims` or first `hostPath`). Chart loaded from the clone. Enqueues an install job → `202 {jobId, state}` |
 | List installed | `GET /api/apps` | Records + live status, orphan flag, URL |
 | Detail | `GET /api/apps/{name}` | Record + status |
-| Reconfigure | `PUT /api/apps/{name} {values, datasets?}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}`. `datasets` omitted keeps the selection, `[]` detaches all (an isolated app must keep at least one), a list reconciles adds/removes; removed claims are deleted after Helm succeeds. The merged values are validated against the catalog schema and their `resources` CPU/memory quantities and namespace quota before Helm. A dataset change on a record outside a per-app isolation namespace fails the job with a reinstall message |
+| Reconfigure | `PUT /api/apps/{name} {values, datasets?, env?}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}`. An omitted `env` keeps the variables, `[]` removes them; a submitted list replaces them (a `secret` with `value:null` keeps the stored value). `datasets` omitted keeps the selection, `[]` detaches all (an isolated app must keep at least one), a list reconciles adds/removes; removed claims are deleted after Helm succeeds. The merged values are validated against the catalog schema and their `resources` CPU/memory quantities and namespace quota before Helm. A dataset change on a record outside a per-app isolation namespace fails the job with a reinstall message |
 | Exposure | `GET`/`PUT /api/apps/{name}/exposure` | Orthogonal toggles + `baseDomain`, re-renders the route (synchronous) |
 | Route targets | `GET /api/apps/{name}/services` | Services the release rendered (discovery fallback / UI picker) |
 | Logs | `GET /api/apps/{name}/pods` + `GET /api/ws/logs` | Pods/containers of the app for the drawer's live log pane (read-only; tail 200 + follow). The API's `pods/log` grant is `get`-only in the app namespace |

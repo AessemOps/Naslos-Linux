@@ -49,6 +49,9 @@ pub struct App {
     pub exposure: ExposureDefaults,
     #[serde(default, skip_serializing_if = "is_false")]
     pub privileged: bool,
+    /// Chart capabilities the API may rely on (e.g. `env`).
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -169,6 +172,8 @@ struct Manifest {
     exposure: ExposureDefaults,
     #[serde(default)]
     privileged: bool,
+    #[serde(default)]
+    capabilities: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -335,6 +340,7 @@ fn load_app(ref_: &SourceRef, folder: &str) -> Result<App, String> {
         services: normalize_services(&m.services),
         exposure: m.exposure.clone(),
         privileged: m.privileged,
+        capabilities: normalize_list(&m.capabilities),
         repository: ref_.name.clone(),
         source: ref_.name.clone(),
         channel: ref_.channel.clone(),
@@ -519,6 +525,19 @@ mod tests {
         assert_eq!(app.version, "1.2.3", "Chart.yaml version wins");
         assert_eq!(app.ports, vec![80]);
         assert_eq!(app.services[0].scheme, "http");
+    }
+
+    #[test]
+    fn manifest_capabilities_are_exposed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_app(dir.path(), "app", "name: app\ncapabilities: [env]\n", "");
+        let c = Catalog::load(&[ref_(
+            "official",
+            "Prod",
+            &dir.path().display().to_string(),
+            true,
+        )]);
+        assert_eq!(c.get("app").unwrap().capabilities, vec!["env"]);
     }
 
     #[test]

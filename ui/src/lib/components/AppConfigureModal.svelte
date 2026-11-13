@@ -2,11 +2,16 @@
   import { modal } from '$lib/actions/modal';
   import { onMount, createEventDispatcher } from 'svelte';
   import SchemaForm from './SchemaForm.svelte';
+  import EnvVarEditor from './EnvVarEditor.svelte';
+  import type { EnvRow } from '$lib/appEnv';
   import { trackAppJob } from '$lib/stores/appJobs';
 
   export let appName: string;
 
-  let app: { schema: { properties: Record<string, any>; required?: string[] } } | null = null;
+  let app: {
+    schema: { properties: Record<string, any>; required?: string[] };
+    capabilities?: string[];
+  } | null = null;
   let values: Record<string, any> = {};
   let redactedKeys: string[] = [];
   let managedDatasets: { name: string; hostPath: string; shared: boolean; attachedTo?: string[] }[] = [];
@@ -24,8 +29,51 @@
   let loading = true;
   let saving = false;
   let error = '';
+  let env: EnvRow[] = [];
+  /// Names whose value is already in the env Secret (an empty secret field
+  /// means "keep it").
+  let storedNames = new Set<string>();
+  let envUnsupported = false;
 
   const dispatch = createEventDispatcher();
+
+  $: envSupported = app?.capabilities?.includes('env') ?? false;
+
+  function envPayload(): EnvRow[] | null {
+    if (!envSupported) return [];
+    const out: EnvRow[] = [];
+    const seen = new Set<string>();
+    for (const row of env) {
+      const name = row.name.trim();
+      if (!name) {
+        error = 'Every environment variable needs a name.';
+        return null;
+      }
+      if (name.length > 128 || !/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) {
+        error = `Invalid environment variable name ${name}.`;
+        return null;
+      }
+      if (name.startsWith('NASLOS_')) {
+        error = `Environment variable ${name} uses the reserved NASLOS_ prefix.`;
+        return null;
+      }
+      if (seen.has(name)) {
+        error = `Environment variable ${name} is defined twice.`;
+        return null;
+      }
+      seen.add(name);
+      if (row.value === null || row.value === '') {
+        if (!(row.secret && storedNames.has(name))) {
+          error = `Environment variable ${name} needs a value.`;
+          return null;
+        }
+        out.push({ name, value: null, secret: true });
+      } else {
+        out.push({ name, value: row.value, secret: row.secret });
+      }
+    }
+    return out;
+  }
 
   function datasetBlocked(dataset: { name: string; shared: boolean; attachedTo?: string[] }): boolean {
     return (
@@ -63,6 +111,14 @@
         selectedDatasets = Array.isArray(installed.datasets) ? [...installed.datasets] : [];
         hasDatasets = selectedDatasets.length > 0;
         legacy = installed.isolated === false;
+        const installedEnv = Array.isArray(installed.env) ? installed.env : [];
+        env = installedEnv.map((row: any) => ({
+          name: String(row.name ?? ''),
+          value: row.value === null || row.value === undefined ? null : String(row.value),
+          secret: !!row.secret
+        }));
+        storedNames = new Set(env.map((row) => row.name));
+        envUnsupported = installedEnv.length > 0 && !(app?.capabilities?.includes('env') ?? false);
       }
     } catch (e) {
       error = 'Failed to load app configuration: ' + e;
@@ -72,6 +128,8 @@
   }
 
   async function save() {
+    const submittedEnv = envPayload();
+    if (submittedEnv === null) return;
     saving = true;
     error = '';
     try {
@@ -79,6 +137,8 @@
       // Omitting datasets keeps the stored selection; legacy records must not
       // be sent a different list (the API rejects it).
       if (!legacy) body.datasets = selectedDatasets;
+      // Omitting env keeps the stored Secret; an array replaces it.
+      if (envSupported) body.env = submittedEnv;
       const res = await fetch(`/api/apps/${encodeURIComponent(appName)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -114,6 +174,17 @@
         <p class="text-gray-400">Loading configuration...</p>
       {:else if app}
         <SchemaForm {app} {redactedKeys} bind:values {groupOptions} />
+        {#if envSupported}
+          <div class="mt-4">
+            <span class="label">Environment variables</span>
+            <EnvVarEditor bind:env {storedNames} />
+          </div>
+        {:else if envUnsupported}
+          <p class="mt-4 text-xs text-amber-300">
+            This chart no longer supports custom environment variables. The existing values are kept in the
+            app Secret but are no longer mounted into the containers.
+          </p>
+        {/if}
         <div class="mt-4">
           <span class="label">Datasets</span>
           {#if legacy}

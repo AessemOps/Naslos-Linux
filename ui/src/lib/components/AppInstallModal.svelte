@@ -4,6 +4,8 @@
   import AppIcon from './AppIcon.svelte';
   import SchemaForm from './SchemaForm.svelte';
   import ExposureForm from './ExposureForm.svelte';
+  import EnvVarEditor from './EnvVarEditor.svelte';
+  import type { EnvRow } from '$lib/appEnv';
   import { trackAppJob } from '$lib/stores/appJobs';
 
   interface Exposure {
@@ -32,6 +34,7 @@
     defaultValues: Record<string, any>;
     exposure: Exposure;
     services: { name: string; port: number; scheme: string }[];
+    capabilities?: string[];
     privileged?: boolean;
   }
 
@@ -54,6 +57,8 @@
   let storagePools: string[] = [];
   let selectedPool = '';
   let activeStep: 'config' | 'exposure' | 'review' | 'confirm' = 'config';
+  let env: EnvRow[] = [];
+  let envError = '';
   // Naslos datasets are group-owned by `naslos_users` (10000). The schema's
   // upstream default (1000) cannot read them, so offer the platform groups.
   const groupOptions = [
@@ -79,6 +84,42 @@
   }
 
   const dispatch = createEventDispatcher();
+
+  $: envSupported = app?.capabilities?.includes('env') ?? false;
+
+  /// Build the request payload, validating names and values client-side.
+  function envPayload(): { name: string; value: string | null; secret: boolean }[] | null {
+    envError = '';
+    if (!envSupported) return [];
+    const out: { name: string; value: string | null; secret: boolean }[] = [];
+    const seen = new Set<string>();
+    for (const row of env) {
+      const name = row.name.trim();
+      if (!name) {
+        envError = 'Every environment variable needs a name.';
+        return null;
+      }
+      if (name.length > 128 || !/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) {
+        envError = `Invalid environment variable name ${name}.`;
+        return null;
+      }
+      if (name.startsWith('NASLOS_')) {
+        envError = `Environment variable ${name} uses the reserved NASLOS_ prefix.`;
+        return null;
+      }
+      if (seen.has(name)) {
+        envError = `Environment variable ${name} is defined twice.`;
+        return null;
+      }
+      seen.add(name);
+      if (row.value === null || row.value === '') {
+        envError = `Environment variable ${name} needs a value.`;
+        return null;
+      }
+      out.push({ name, value: row.value, secret: row.secret });
+    }
+    return out;
+  }
 
   async function loadApp() {
     try {
@@ -139,6 +180,11 @@
   }
 
   async function install() {
+    const submittedEnv = envPayload();
+    if (submittedEnv === null) {
+      error = envError;
+      return;
+    }
     installing = true;
     error = '';
     try {
@@ -153,7 +199,8 @@
           confirmed: true,
           privilegedConfirmed,
           datasets: selectedDatasets,
-          pool: selectedPool
+          pool: selectedPool,
+          env: submittedEnv
         })
       });
       if (!res.ok) {
@@ -181,6 +228,10 @@
   );
   $: unsafeExposure =
     !!exposure.subdomain && (!exposure.tls || !exposure.auth);
+  $: envReview = env
+    .filter((row) => row.name.trim())
+    .map((row) => `${row.name.trim()}=${row.secret ? '••••••' : (row.value ?? '')}`)
+    .join(', ');
   onMount(loadApp);
 </script>
 
@@ -209,6 +260,16 @@
       <div class="flex-1 overflow-y-auto p-6">
         {#if activeStep === 'config'}
           <SchemaForm {app} bind:values {groupOptions} />
+          {#if envSupported}
+            <details class="mt-4 border border-naslos-border rounded-lg p-4" open={env.length > 0}>
+              <summary class="cursor-pointer text-sm font-medium">
+                Environment variables{env.length ? ` (${env.length})` : ''}
+              </summary>
+              <div class="mt-3">
+                <EnvVarEditor bind:env requireValues />
+              </div>
+            </details>
+          {/if}
           <div class="mt-4">
             <span class="label">Datasets</span>
             {#if managedDatasets.length === 0}
@@ -273,6 +334,9 @@
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Version</span><span class="font-medium">{app.version}</span></div>
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Datasets</span><span class="font-medium text-sm text-right">{selectedDatasets.length ? selectedDatasets.map((name) => `${name} → /datasets/${name}`).join(', ') : 'none'}</span></div>
             <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Storage pool</span><span class="font-medium text-sm">{selectedPool || 'default (local-path)'}</span></div>
+            {#if envReview}
+              <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Environment</span><span class="font-medium text-sm text-right font-mono">{envReview}</span></div>
+            {/if}
             <div class="flex justify-between py-2 border-b border-naslos-border">
               <span class="text-gray-400">Exposure</span>
               <span class="font-medium text-sm text-right">
