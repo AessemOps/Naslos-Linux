@@ -123,12 +123,16 @@ data:
         # a template action calling an undefined "input" function, which
         # fatals with a "function not defined" error before the LDAP config
         # is even validated.
+        # Disabled accounts are excluded at the IdP: the API marks them with
+        # shadowExpire=1 (active users have -1 or no value), so the filter must
+        # test it or a disabled account keeps authenticating
+        # (AUD-2611-T1-1 / SEC-2026-A6).
         # Require an explicit Naslos group. The UI lets you create a user with
         # no groups, and the apex catch-all rule is one_factor, so without this
         # such an account could authenticate to the proxy and reach operator
         # surfaces (the /traefik deny is the second layer). Admins are in
         # naslos_admins, ordinary users in naslos_users.
-        users_filter: (&(objectClass=inetOrgPerson)({username_attribute}={input})(|(memberOf=cn=naslos_users,ou=groups,{{ .Values.openldap.baseDN | default "dc=naslos,dc=local" }})(memberOf=cn=naslos_admins,ou=groups,{{ .Values.openldap.baseDN | default "dc=naslos,dc=local" }})))
+        users_filter: (&(objectClass=inetOrgPerson)({username_attribute}={input})(|(memberOf=cn=naslos_users,ou=groups,{{ .Values.openldap.baseDN | default "dc=naslos,dc=local" }})(memberOf=cn=naslos_admins,ou=groups,{{ .Values.openldap.baseDN | default "dc=naslos,dc=local" }}))(!(shadowExpire=1)))
         additional_groups_dn: ou=groups
         groups_filter: (&(objectClass=groupOfNames)(member={dn}))
         group_name_attribute: cn

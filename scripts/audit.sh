@@ -323,6 +323,8 @@ assert "$ssoDomains" not in configuration, \
 body = "\n".join(l for l in configuration.splitlines() if not l.strip().startswith("#"))
 assert not re.search(r"^\s*default_redirection_url\s*:", body, re.M), \
     "authelia-config must not set the legacy global default_redirection_url"
+assert "shadowExpire=1" in cfg["data"]["configuration.yml"], \
+    "users_filter must exclude disabled accounts (shadowExpire=1)"
 
 sts = find("StatefulSet", "naslos-authelia")
 assert sts is not None, "Authelia must be a StatefulSet (a deterministic restart target)"
