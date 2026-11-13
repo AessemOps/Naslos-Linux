@@ -18,6 +18,7 @@ pub mod chartsrepo;
 pub mod config;
 pub mod datasets;
 pub mod ddns;
+pub mod dnsrecords;
 pub mod health_watch;
 pub mod helm;
 pub mod identity;

@@ -34,7 +34,9 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   refreshes in the background at the cache TTL, and domains and wildcard ACME
   certificates are managed from the UI. Per-app custom environment variables
   are stored in a Kubernetes Secret and mounted only into the app's main
-  container(s) (see [docs/app-catalog.md](docs/app-catalog.md)).
+  container(s), and a base domain can opt into automatic per-app CNAMEs pointing
+  at a DDNS hostname (see [docs/app-catalog.md](docs/app-catalog.md) and
+  [docs/dynamic-dns.md](docs/dynamic-dns.md)).
 - **Logs & terminal** — stream logs and open an interactive shell (`bash` by default; `sh`/`ash`/`zsh` where installed) in any pod from the UI
 - **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served)
 - **ntfy notifications** — push alerts on backup and ZFS/agent health transitions

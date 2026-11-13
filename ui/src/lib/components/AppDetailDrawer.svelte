@@ -18,6 +18,8 @@
 
   let uninstalling = false;
   let actionError = '';
+  let dnsBusy = false;
+  let dnsMessage = '';
 
   interface ResourceGroup {
     key: string;
@@ -275,6 +277,26 @@
     if (!value) return 'unknown';
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? 'unknown' : date.toLocaleString();
+  }
+
+  async function retryDns() {
+    dnsBusy = true;
+    dnsMessage = '';
+    try {
+      const res = await fetch(`/api/apps/${encodeURIComponent(app.name)}/dns/reconcile`, {
+        method: 'POST'
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      app = { ...app, ...data };
+      dnsMessage = app.dns?.status === 'ok' ? 'DNS record is up to date.' : 'DNS reconcile ran.';
+    } catch (e: any) {
+      dnsMessage = e?.message || String(e);
+    } finally {
+      dnsBusy = false;
+    }
   }
 
   async function uninstallApp() {
@@ -549,6 +571,25 @@
           {:else}
             <span class="text-gray-400">{exposure.subdomain || 'cluster-internal only'}</span>
           {/if}
+        </div>
+        <div class="flex justify-between gap-3">
+          <span class="text-gray-500">DNS</span>
+          <div class="text-right min-w-0">
+            {#if app.dns}
+              <p class="font-mono text-xs truncate">{app.dns.fqdn} → {app.dns.target}</p>
+              <p class="text-xs" class:text-emerald-300={app.dns.status === 'ok'} class:text-red-300={app.dns.status !== 'ok'}>
+                {app.dns.status}{#if app.dns.error}: {app.dns.error}{/if}
+              </p>
+              <button class="text-xs text-naslos-accent hover:underline mt-1" on:click={retryDns} disabled={dnsBusy}>
+                {dnsBusy ? 'Retrying…' : 'Retry'}
+              </button>
+            {:else if exposure.subdomain}
+              <p class="text-xs text-gray-400">No app DNS record (enable it on the base domain)</p>
+            {:else}
+              <p class="text-xs text-gray-400">cluster-internal</p>
+            {/if}
+            {#if dnsMessage}<p class="text-xs text-gray-400 mt-1">{dnsMessage}</p>{/if}
+          </div>
         </div>
         <div class="flex justify-between gap-3">
           <span class="text-gray-500">Chart</span>
