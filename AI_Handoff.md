@@ -26,11 +26,22 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   OpenLDAP `c7f44155…`, Samba `2c522e81…`, NFS `438277e7…`, terminal
   `9f39590d…`. `/api/system/version` reports chart/naslos `0.3.21`, profile
   `installer`, Talos v1.14.5, k8s v1.37.0.
-- **Latest release:** `v0.3.21` (2026-11-11) and installer `naslos-v0.3.21`
-  are published and the node runs it. `v0.3.20`, `v0.3.19`, `v0.3.18`,
-  `v0.3.17`, `v0.3.16`, `v0.3.15`, `v0.3.14`, `v0.3.13`, `v0.3.12`, `v0.3.11`,
-  `v0.3.10` and `v0.3.9` were the previous releases, `v0.3.8` was superseded.
+- **Latest release:** `v0.3.22` (2026-11-13) and installer `naslos-v0.3.22`
+  are published; the node still runs `v0.3.21` until the system updater applies
+  it. `v0.3.21`, `v0.3.20`, `v0.3.19`, `v0.3.18`, `v0.3.17`, `v0.3.16`,
+  `v0.3.15`, `v0.3.14`, `v0.3.13`, `v0.3.12`, `v0.3.11`, `v0.3.10` and
+  `v0.3.9` were the previous releases, `v0.3.8` was superseded.
 - **Release notes since 0.3.7:**
+  - `0.3.22` (published, not yet applied) — audit remediation: Buddy-disabled
+    installs answer 503 instead of aborting the API (#148); share paths reject
+    symlinks (#149); notifications/DDNS pin the vetted address (#152); disabled
+    accounts are excluded from Authelia's login (#154); share/user mutations
+    report apply failures and roll back (#153); ZFS import requires a pool name
+    (#151); Buddy KEK kept on uninstall, privileged quota from values, UI route
+    pins the TLSOption (#150); `hickory-resolver` 0.26.3 (#147); audit report
+    and remediation plan; handoff refreshed (#155). Catalog: Prowlarr's
+    safer default is proposed in NaslosCharts #19 (still open, independent of
+    the platform pack).
   - `0.3.21` (deployed) — per-path Authelia protection: an app with
     `exposure.auth: false` can keep selected prefixes behind Authelia via
     `protectedPaths` (a priority-100 `PathPrefix` route; the catch-all stays
@@ -122,7 +133,7 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `naslos-shail-ovh-tls` are present. The baseline pool has **32 provisioned
   slots with a usable limit of 20** (`GET /api/apps/namespaces`: 9 used, 11
   available); the privileged pool has 2 used of 4, `naslos-app-p3..p4` free.
-- **Update check:** current deployed `0.3.21`; no update is offered.
+- **Update check:** current deployed `0.3.21`; **`v0.3.22` is offered** by the system updater.
 
 ### Open items
 
