@@ -98,7 +98,12 @@ adapting `detect_dns_ip` to the 0.26 builder API, removing the obsolete
 - Docs: `docs/operations.md` (account lifecycle), `docs/spec.md` FR-IDN,
   `AI_Handoff.md` gotchas.
 
-### R2.2 — Canonicalise share paths before apply (`AUD-2611-T5-1` / `B5` / `H4`, NL)
+### R2.2 — Canonicalise share paths before apply (`AUD-2611-T5-1` / `B5` / `H4`, NL) — **DONE on `fix/share-symlink`**
+
+Implemented with a no-follow component walk (`symlink_metadata`) in
+`validate_path`; a symlink at any level below the ZFS base is rejected. A
+regression test covers a direct and an intermediate link. Residual TOCTOU
+(after validation) is documented in the report.
 
 - Files: `rust/api/src/shares/mod.rs`, `rust/api/src/shares/render.rs`,
   `rust/agent/src/shares/folders.rs`.
