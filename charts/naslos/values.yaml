@@ -386,6 +386,14 @@ apps:
       requestsMemory: 4Gi
       limitsCpu: "8"
       limitsMemory: 8Gi
+    # Privileged apps need more headroom (VPN sidecars, DinD runners) and had
+    # these values hard-coded; keep them configurable like the baseline pool
+    # (AUD-2611-T2-2).
+    privilegedQuota:
+      requestsCpu: "4"
+      requestsMemory: 8Gi
+      limitsCpu: "8"
+      limitsMemory: 16Gi
   # Dataset access for baseline apps. PSA `baseline` forbids hostPath, but Naslos
   # datasets are host directories, so the platform exposes them as a static RWX
   # PV and the `naslos-datasets` PVC that apps mount. Privileged apps mount the

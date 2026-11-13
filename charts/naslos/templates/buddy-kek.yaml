@@ -28,6 +28,11 @@ metadata:
   labels:
     app.kubernetes.io/name: naslos-api
     app.kubernetes.io/component: buddy
+  annotations:
+    # The KEK unwraps every stored DEK. `helm uninstall` must not take it with
+    # the release while the received chunks (and the namespace) are kept, or
+    # the backups become undecryptable forever (AUD-2611-T8-2).
+    helm.sh/resource-policy: keep
 type: Opaque
 data:
   {{ $key }}: {{ $value | b64enc | quote }}
