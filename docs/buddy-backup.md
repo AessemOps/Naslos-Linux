@@ -74,7 +74,10 @@ use by `buddyctl identity`:
   permissions are `0600`, which is not the same as at-rest encryption.
 - **The KEK is in a Secret by default.** With `buddy.enabled=true` the chart
   generates `naslos-buddy-kek` (or uses `buddy.kekSecret` if you set one) and
-  mounts it as `BUDDY_KEK`. The API strips the `kek` field from an existing
+  mounts it as `BUDDY_KEK`. The generated Secret carries
+  `helm.sh/resource-policy: keep`, so `helm uninstall` does not delete the key
+  that unwraps the received chunks; back it up out of band and remove it
+  explicitly when you really mean to destroy the backup store. The API strips the `kek` field from an existing
   `buddy-identity.json` on load, so a read of the state volume no longer yields
   the key that unwraps every backup. The resume state still holds each
   in-flight chain's DEK in plaintext until that push finishes.

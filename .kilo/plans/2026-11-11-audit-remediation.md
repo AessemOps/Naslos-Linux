@@ -180,7 +180,10 @@ regression test covers a direct and an intermediate link. Residual TOCTOU
 - Verify: `helm template` diff, `scripts/audit.sh` security-rendering check.
 - Docs: `docs/deployment.md`, `AI_Handoff.md` gotchas.
 
-### R2.7 — Keep the Buddy KEK on uninstall (`AUD-2611-T8-2`, NL)
+### R2.7 — Keep the Buddy KEK on uninstall (`AUD-2611-T8-2`, NL) — **DONE on `fix/chart-hardening`**
+
+Added `helm.sh/resource-policy: keep` to `naslos-buddy-kek` and documented the
+out-of-band backup requirement.
 
 - Files: `charts/naslos/templates/buddy-kek.yaml`.
 - Fix: add `helm.sh/resource-policy: keep` to `naslos-buddy-kek` (matching the
@@ -270,8 +273,8 @@ re-check and a reachability note.
 | T1-2 | NL | Put `security-headers` before `forwardauth-authelia` on the UI route (or add a `redirect-headers` middleware) so the auth 302 carries HSTS. | render assertion on middleware order |
 | T1-3 | NL | Document that `protectedPaths` must match the app's routing case; optionally add a case-insensitive matcher or normalize to the app's route. | live drill (needs approval) |
 | T2-1 | NL | Require `privilegedConfirmed` on upgrade when the catalog flips `privileged` or adds hostPath; compare old/new chart values. | unit test on the diff path |
-| T2-2 | NL | Drive the privileged-pool quota from values like the baseline pool. | `helm template` |
-| T3-4 / T8-6 / F9 | NL | Add the `naslos-tls` TLSOption to the UI route; document cert rotation (delete + re-apply) and the 3650-day lifetime. | render assertion |
+| T2-2 | NL | DONE (`fix/chart-hardening`): `apps.isolation.privilegedQuota` drives the privileged pool. | `helm template` |
+| T3-4 / T8-6 / F9 | NL | DONE (`fix/chart-hardening`): the UI route pins `naslos-tls`. Still open: document/automate cert rotation (delete + re-apply) and the 3650-day lifetime. | render assertion |
 | T4-2 | NL | Timeout the post-EOF `zfs receive` wait and kill the child. | unit test with a hung child |
 | T4-3 / F15 | NL | Restrict host firewall 9090 to the API pod IP; document rotation. | live `nft`/Cilium check (needs approval) |
 | T5-2 | NL | Escape/validate `SMB_DISCOVERY_NAME` before the `sed`. | entrypoint test |

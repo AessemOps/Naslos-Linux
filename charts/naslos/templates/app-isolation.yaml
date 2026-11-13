@@ -356,10 +356,10 @@ metadata:
   namespace: {{ $ns }}
 spec:
   hard:
-    requests.cpu: "4"
-    requests.memory: 8Gi
-    limits.cpu: "8"
-    limits.memory: 16Gi
+    requests.cpu: {{ $.Values.apps.isolation.privilegedQuota.requestsCpu | quote }}
+    requests.memory: {{ $.Values.apps.isolation.privilegedQuota.requestsMemory | quote }}
+    limits.cpu: {{ $.Values.apps.isolation.privilegedQuota.limitsCpu | quote }}
+    limits.memory: {{ $.Values.apps.isolation.privilegedQuota.limitsMemory | quote }}
     persistentvolumeclaims: {{ $.Values.apps.isolation.pvcQuota | quote }}
 ---
 apiVersion: v1
