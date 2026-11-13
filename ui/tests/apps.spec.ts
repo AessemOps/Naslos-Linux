@@ -219,3 +219,131 @@ test.describe('apps', () => {
     expect(res.status()).toBe(404);
   });
 });
+
+// The env editor is pure UI: mock the catalog so this test never installs
+// anything on the node (FR-APP-26).
+test.describe('app environment variables', () => {
+  test('sends custom env vars from the install form', async ({ page }) => {
+    const app = {
+      name: 'envdemo',
+      displayName: 'Env Demo',
+      description: 'Environment capability fixture',
+      icon: 'E',
+      iconUrl: '',
+      version: '1.0.0',
+      chart: 'envdemo',
+      source: 'official',
+      channel: 'Prod',
+      chartPath: 'apps/envdemo',
+      capabilities: ['env'],
+      schema: { type: 'object', properties: {}, required: [] },
+      defaultValues: {},
+      exposure: { subdomain: 'envdemo', tls: false, auth: true, localOnly: false, internet: true },
+      services: [{ name: '{{ .Release.Name }}', port: 8080, scheme: 'http' }]
+    };
+
+    let posted: any = null;
+    await page.route(/\/api\//, async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const path = url.pathname;
+      if (path === '/api/catalog') {
+        return route.fulfill({ json: [app] });
+      }
+      if (path === '/api/catalog/envdemo') {
+        return route.fulfill({ json: app });
+      }
+      if (path === '/api/domains') {
+        return route.fulfill({
+          json: {
+            baseDomain: 'naslos.local',
+            domains: [],
+            selectableDomains: ['naslos.local'],
+            ssoDomains: ['naslos.local']
+          }
+        });
+      }
+      if (path === '/api/datasets/registry' || path === '/api/volumes/zfs') {
+        return route.fulfill({ json: [] });
+      }
+      if (path === '/api/apps/updates') {
+        return route.fulfill({ json: { count: 0, apps: [] } });
+      }
+      if (path === '/api/apps/usage') {
+        return route.fulfill({ json: { available: false, apps: [] } });
+      }
+      if (path === '/api/apps' && request.method() === 'POST') {
+        posted = request.postDataJSON();
+        return route.fulfill({ json: { jobId: 'job-env', state: 'running' } });
+      }
+      return route.fulfill({ json: [] });
+    });
+
+    await page.goto('/apps');
+    await page.getByRole('button', { name: 'Install Env Demo' }).click();
+    await expect(page.getByRole('heading', { name: 'Env Demo' })).toBeVisible();
+
+    await page.locator('summary', { hasText: 'Environment variables' }).click();
+    await page.getByRole('button', { name: '+ Add variable' }).click();
+    await page.getByLabel('Environment variable name').fill('FOO');
+    await page.getByLabel('Environment variable value').fill('bar');
+
+    await page.getByRole('button', { name: 'Exposure →' }).click();
+    await page.getByRole('button', { name: 'Review →' }).click();
+    await expect(page.getByText('FOO=bar')).toBeVisible();
+    await page.getByRole('button', { name: 'Confirm →' }).click();
+    await page.getByLabel('I have reviewed the source and confirm this install.').check();
+    await page.getByRole('button', { name: 'Install', exact: true }).click();
+
+    await expect.poll(() => posted?.env).toEqual([{ name: 'FOO', value: 'bar', secret: false }]);
+  });
+
+  test('masks secret values in the review step', async ({ page }) => {
+    const app = {
+      name: 'envdemo',
+      displayName: 'Env Demo',
+      description: 'Environment capability fixture',
+      icon: 'E',
+      iconUrl: '',
+      version: '1.0.0',
+      chart: 'envdemo',
+      source: 'official',
+      channel: 'Prod',
+      chartPath: 'apps/envdemo',
+      capabilities: ['env'],
+      schema: { type: 'object', properties: {}, required: [] },
+      defaultValues: {},
+      exposure: { subdomain: 'envdemo', tls: false, auth: true, localOnly: false, internet: true },
+      services: [{ name: '{{ .Release.Name }}', port: 8080, scheme: 'http' }]
+    };
+    await page.route(/\/api\//, async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/api/catalog') return route.fulfill({ json: [app] });
+      if (path === '/api/catalog/envdemo') return route.fulfill({ json: app });
+      if (path === '/api/domains') {
+        return route.fulfill({
+          json: {
+            baseDomain: 'naslos.local',
+            domains: [],
+            selectableDomains: ['naslos.local'],
+            ssoDomains: ['naslos.local']
+          }
+        });
+      }
+      return route.fulfill({ json: [] });
+    });
+
+    await page.goto('/apps');
+    await page.getByRole('button', { name: 'Install Env Demo' }).click();
+    await page.locator('summary', { hasText: 'Environment variables' }).click();
+    await page.getByRole('button', { name: '+ Add variable' }).click();
+    await page.getByLabel('Environment variable name').fill('TOKEN');
+    await page.getByLabel('Environment variable value').fill('s3cret');
+    await page.getByLabel('secret').check();
+
+    await page.getByRole('button', { name: 'Exposure →' }).click();
+    await page.getByRole('button', { name: 'Review →' }).click();
+    await expect(page.getByText('TOKEN=••••••')).toBeVisible();
+    await expect(page.getByText('TOKEN=s3cret')).toBeHidden();
+  });
+});

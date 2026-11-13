@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::app_env::{self, EnvMeta, EnvVar};
 use crate::catalog::Catalog;
 use crate::chartsrepo::is_dns1123_label;
 use crate::helm;
@@ -24,6 +25,9 @@ pub const DATASETS_LAYOUT_V2: &str = "v2";
 /// The Helm keys the API owns. They are stripped from client-supplied values
 /// and re-injected from the reconciled dataset selection.
 pub const PLATFORM_DATASET_KEYS: [&str; 3] = ["datasets", "datasetsClaim", "datasetsClaims"];
+
+/// Platform-owned Helm values that are never accepted from a client.
+pub const PLATFORM_ENV_KEYS: [&str; 1] = [app_env::CHECKSUM_VALUE];
 
 /// Resolve the release-name template in a declared service.
 pub fn render_service_name(name: &str, release: &str) -> String {
@@ -198,6 +202,10 @@ pub struct Record {
         skip_serializing_if = "String::is_empty"
     )]
     pub last_error: String,
+    /// Names (and secret flags) of the app's custom environment variables. The
+    /// values live only in the `naslos-env-<release>` Secret.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<EnvMeta>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -459,6 +467,20 @@ pub struct Config {
     pub datasets: Option<Arc<crate::datasets::Registry>>,
     /// Image for a pool-scoped local-path provisioner, created on demand.
     pub pool_provisioner_image: String,
+}
+
+/// What reconciling the env Secret did, so a failed Helm call can undo it.
+#[derive(Default)]
+struct EnvOutcome {
+    /// New variable metadata; `None` keeps the record's existing list.
+    meta: Option<Vec<EnvMeta>>,
+    /// Previous Secret data (`None` when it did not exist).
+    previous: Option<std::collections::BTreeMap<String, String>>,
+    /// Whether this call created/updated (or deleted) the Secret.
+    wrote: bool,
+    /// A non-fatal problem worth surfacing on the app (e.g. chart capability
+    /// removed, Secret deleted out of band).
+    warning: String,
 }
 
 /// Coordinates records and lifecycle operations.
@@ -977,6 +999,159 @@ impl Manager {
         self.sso_domains().iter().any(|d| d == base)
     }
 
+    /// Reconcile the per-app env Secret and inject its checksum into `values`.
+    ///
+    /// `incoming` is the submitted list for an install/update; `None` keeps the
+    /// stored Secret (upgrades that do not touch environment variables). The
+    /// returned outcome carries the previous Secret data so the caller can
+    /// restore it when the Helm operation fails.
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_env(
+        &self,
+        rec_name: &str,
+        namespace: &str,
+        app: &crate::catalog::App,
+        chart_dir: &str,
+        values: &mut serde_json::Map<String, serde_json::Value>,
+        incoming: Option<&[EnvVar]>,
+        stored: &[EnvMeta],
+        helm: &helm::Client,
+    ) -> Result<EnvOutcome, String> {
+        let supported = app
+            .capabilities
+            .iter()
+            .any(|capability| capability == app_env::CAPABILITY);
+        if !supported {
+            if incoming.map(|vars| !vars.is_empty()).unwrap_or(false) {
+                return Err(format!(
+                    "chart {:?} does not support custom environment variables",
+                    app.name
+                ));
+            }
+            let mut outcome = EnvOutcome::default();
+            if !stored.is_empty() {
+                outcome.warning = "the chart no longer supports custom environment variables; the existing naslos-env Secret is kept but is no longer mounted"
+                    .to_string();
+            }
+            return Ok(outcome);
+        }
+
+        let existing_secret = match &self.kube {
+            Some(kube) => app_env::read_secret(kube, namespace, rec_name).await?,
+            None => None,
+        };
+        let existing = existing_secret.clone().unwrap_or_default();
+        let (data, meta) = match incoming {
+            Some(vars) => (
+                app_env::resolve(&existing, vars)?,
+                Some(EnvMeta::from_vars(vars)),
+            ),
+            None => (existing.clone(), None),
+        };
+
+        let rendered = helm
+            .template_dir(
+                rec_name,
+                chart_dir,
+                &serde_json::Value::Object(values.clone()),
+            )
+            .await
+            .map_err(|e| format!("rendering the chart to check environment variables: {e}"))?;
+        let reserved = app_env::chart_env_names(&rendered, &app_env::secret_name(rec_name))?;
+        for name in data.keys() {
+            if reserved.contains(name) {
+                return Err(format!("env var {name} is set by the chart"));
+            }
+        }
+
+        // Injected on every reconcile so a hand-deleted Secret self-heals and
+        // an unchanged Secret does not trigger a rollout.
+        values.insert(
+            app_env::CHECKSUM_VALUE.to_string(),
+            serde_json::Value::String(app_env::checksum(&data)),
+        );
+
+        let Some(kube) = &self.kube else {
+            if meta.as_ref().map(|m| !m.is_empty()).unwrap_or(false) {
+                return Err(
+                    "cannot store environment variables: no Kubernetes client is configured"
+                        .to_string(),
+                );
+            }
+            return Ok(EnvOutcome {
+                meta,
+                previous: existing_secret,
+                wrote: false,
+                warning: String::new(),
+            });
+        };
+
+        let wrote = meta.is_some();
+        if wrote {
+            if data.is_empty() {
+                app_env::delete_secret(kube, namespace, rec_name).await?;
+            } else {
+                app_env::write_secret(kube, namespace, rec_name, rec_name, &data).await?;
+            }
+        }
+
+        let warning = if !stored.is_empty() && existing_secret.is_none() {
+            "the naslos-env Secret is missing; environment variables will be empty".to_string()
+        } else {
+            String::new()
+        };
+        Ok(EnvOutcome {
+            meta,
+            previous: existing_secret,
+            wrote,
+            warning,
+        })
+    }
+
+    /// Restore the env Secret after a failed Helm operation.
+    async fn restore_env(
+        &self,
+        namespace: &str,
+        release: &str,
+        previous: Option<&std::collections::BTreeMap<String, String>>,
+    ) {
+        let Some(kube) = &self.kube else {
+            return;
+        };
+        let result = match previous {
+            Some(data) => app_env::write_secret(kube, namespace, release, release, data).await,
+            None => app_env::delete_secret(kube, namespace, release).await,
+        };
+        if let Err(e) = result {
+            tracing::warn!("app {release}: restoring the environment Secret failed: {e}");
+        }
+    }
+
+    /// Environment variables with values for `GET /api/apps/{name}`. Secret
+    /// values are always `null`; a missing Secret reports `null` values.
+    pub async fn env_detail(&self, name: &str) -> Result<Vec<serde_json::Value>, String> {
+        let rec = self.store.get(name)?;
+        if rec.env.is_empty() {
+            return Ok(Vec::new());
+        }
+        let data = match &self.kube {
+            Some(kube) => app_env::read_secret(kube, &self.target_namespace(&rec), name).await?,
+            None => None,
+        };
+        Ok(rec
+            .env
+            .iter()
+            .map(|meta| {
+                let value = if meta.secret {
+                    None
+                } else {
+                    data.as_ref().and_then(|data| data.get(&meta.name)).cloned()
+                };
+                serde_json::json!({ "name": meta.name, "value": value, "secret": meta.secret })
+            })
+            .collect())
+    }
+
     /// Install resolves the chart from the catalog, installs it, records the
     /// exposure and applies routing.
     pub async fn install(
@@ -1043,6 +1218,29 @@ impl Manager {
         }
         self.provision_pool_storage(&req.pool, &mut values).await?;
 
+        // Write the env Secret before Helm: the chart mounts it optionally, so
+        // the first pod starts with the variables already present.
+        let env_helm = self.helm_client(app.privileged, &namespace);
+        let env_outcome = match self
+            .prepare_env(
+                &req.name,
+                &namespace,
+                &app,
+                &chart_dir,
+                &mut values,
+                Some(&req.env),
+                &[],
+                &env_helm,
+            )
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                self.rollback_provision(&req.name, &provision).await;
+                return Err(e);
+            }
+        };
+
         // Grant public egress before the install wait. A dedicated baseline
         // namespace is default-deny for egress and the `<app>-internet` policy
         // is normally reconciled only after a successful install, but apps
@@ -1083,8 +1281,13 @@ impl Manager {
             )
             .await
         {
-            // Do not leak a PV/PVC when Helm fails before the record exists.
+            // Do not leak a PV/PVC or a Secret when Helm fails before the
+            // record exists.
             self.rollback_provision(&req.name, &provision).await;
+            if env_outcome.wrote {
+                self.restore_env(&namespace, &req.name, env_outcome.previous.as_ref())
+                    .await;
+            }
             // Nor hand the reserved namespace's egress allow to the next app.
             // Delete only the policy: no route of this release exists yet.
             if precreated_internet {
@@ -1109,6 +1312,11 @@ impl Manager {
             .fill_discovered_service(&req.name, &namespace, exposure)
             .await;
 
+        // Platform-owned keys are never persisted in the app record; they are
+        // recomputed on every install/upgrade.
+        for key in PLATFORM_ENV_KEYS {
+            values.remove(key);
+        }
         let now = Utc::now();
         let base_domain = if req.base_domain.is_empty() {
             self.base_domain.clone()
@@ -1134,6 +1342,7 @@ impl Manager {
                 DATASETS_LAYOUT_V2.to_string()
             },
             privileged: app.privileged,
+            env: env_outcome.meta.unwrap_or_default(),
             created_at: Some(now),
             updated_at: Some(now),
             ..Default::default()
@@ -1157,6 +1366,10 @@ impl Manager {
                 }
             }
             self.rollback_provision(&req.name, &provision).await;
+            if env_outcome.wrote {
+                self.restore_env(&rec.namespace, &req.name, env_outcome.previous.as_ref())
+                    .await;
+            }
             return Err(format!("recording the install: {e}"));
         }
         self.apply_route(&rec, &req.base_domain).await;
@@ -1172,6 +1385,7 @@ impl Manager {
         name: &str,
         values: Option<&serde_json::Map<String, serde_json::Value>>,
         datasets: Option<&[String]>,
+        env: Option<&[EnvVar]>,
         progress: Option<&ProgressFn>,
     ) -> Result<View, String> {
         let lock = self.app_lock(name);
@@ -1282,15 +1496,43 @@ impl Manager {
             }
         }
 
+        let env_helm = self.helm_for(&rec);
+        let env_outcome = match self
+            .prepare_env(
+                name,
+                &self.target_namespace(&rec),
+                &app,
+                &chart_dir,
+                &mut merged,
+                env,
+                &rec.env,
+                &env_helm,
+            )
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                self.rollback_provision(name, &provision).await;
+                return Err(e);
+            }
+        };
+
         report(progress, STAGE_INSTALLING, &format!("Upgrading {name}"));
-        if let Err(e) = self
-            .helm_for(&rec)
+        if let Err(e) = env_helm
             .upgrade_dir(name, &chart_dir, &serde_json::Value::Object(merged.clone()))
             .await
         {
             // Only the resources and attachments this operation created are
             // rollback candidates; pre-existing ones are left alone.
             self.rollback_provision(name, &provision).await;
+            if env_outcome.wrote {
+                self.restore_env(
+                    &self.target_namespace(&rec),
+                    name,
+                    env_outcome.previous.as_ref(),
+                )
+                .await;
+            }
             return Err(e);
         }
 
@@ -1306,14 +1548,21 @@ impl Manager {
             self.delete_claims(name, &self.target_namespace(&rec), &removed)
                 .await;
         }
+        // The checksum is platform-owned and recomputed, never persisted.
+        for key in PLATFORM_ENV_KEYS {
+            merged.remove(key);
+        }
         rec.values = merged;
         rec.datasets = desired;
+        if let Some(meta) = env_outcome.meta {
+            rec.env = meta;
+        }
         if chart_supports_datasets {
             rec.datasets_layout = DATASETS_LAYOUT_V2.to_string();
         }
         rec.chart_version = app.version.clone();
         rec.updated_at = Some(Utc::now());
-        rec.last_error.clear();
+        rec.last_error = env_outcome.warning;
         self.store.upsert(rec)?;
         self.view(name).await
     }
@@ -1367,7 +1616,7 @@ impl Manager {
                 STAGE_PREPARING,
                 &format!("Migrating datasets for {}", rec.name),
             );
-            if let Err(e) = self.upgrade(&rec.name, None, None, progress).await {
+            if let Err(e) = self.upgrade(&rec.name, None, None, None, progress).await {
                 // Leave the record unmarked so the next start retries.
                 tracing::warn!("app {:?}: dataset layout migration failed: {e}", rec.name);
             }
@@ -1441,6 +1690,12 @@ impl Manager {
         if let Some(router) = &self.router {
             router.delete(&self.target_namespace(&rec), name).await?;
         }
+        // The Secret is not part of the Helm release; remove it explicitly.
+        if let Some(kube) = &self.kube {
+            if let Err(e) = app_env::delete_secret(kube, &self.target_namespace(&rec), name).await {
+                tracing::warn!("app {name}: removing the environment Secret failed: {e}");
+            }
+        }
         if let Err(e) = self.delete_datasets(&rec).await {
             tracing::warn!("app {name}: dataset cleanup failed: {e}");
         }
@@ -1464,6 +1719,9 @@ impl Manager {
                 ..Default::default()
             };
             view.redacted_keys = self.redact_record_values(&mut view.record);
+            // The list endpoint does not read the env Secret; keep the
+            // variable names for the detail endpoint only.
+            view.record.env.clear();
             let mut live_version: Option<String> = None;
             match self.helm_for(&rec).get(&rec.name).await {
                 Ok(rel) => {
@@ -2174,6 +2432,9 @@ pub struct InstallRequest {
     /// The operator reviewed the privileged warning. Re-checked at run time.
     #[serde(default, rename = "privilegedConfirmed")]
     pub privileged_confirmed: bool,
+    /// Custom environment variables (requires the chart's `env` capability).
+    #[serde(default)]
+    pub env: Vec<EnvVar>,
 }
 
 /// First namespace in `pool` that is neither recorded nor reserved.
@@ -2647,6 +2908,9 @@ pub fn strip_dataset_values(values: &mut serde_json::Map<String, serde_json::Val
     for key in PLATFORM_DATASET_KEYS {
         values.remove(key);
     }
+    for key in PLATFORM_ENV_KEYS {
+        values.remove(key);
+    }
 }
 
 /// Build the Helm values for a dataset selection: one entry per dataset plus
@@ -3024,6 +3288,17 @@ mod tests {
             .unwrap();
         let err = ensure_not_installed(&store, "bazarr").unwrap_err();
         assert!(err.contains("already installed"), "{err}");
+    }
+
+    #[test]
+    fn records_without_an_env_list_still_load() {
+        let rec: Record = serde_json::from_str(r#"{"name":"radarr","values":{}}"#).unwrap();
+        assert!(rec.env.is_empty());
+        let round = serde_json::to_string(&rec).unwrap();
+        assert!(
+            !round.contains("\"env\""),
+            "empty env stays out of the JSON"
+        );
     }
 
     #[test]
