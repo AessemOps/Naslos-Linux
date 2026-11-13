@@ -11,7 +11,7 @@ rules and conventions are in [`AGENTS.md`](AGENTS.md).
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## Production instance (2026-11-10)
+## Production instance (2026-11-11)
 
 - **Hardware:** the production NAS is the bare-metal node `talos-zgr-9yg` at
   `192.168.1.38` (Talos v1.14.5, Kubernetes v1.37.0, control-plane Ready). The
@@ -19,17 +19,27 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart `0.3.19`, appVersion `0.3.19`,
-  revision 19, deployed 2026-11-10 21:03 UTC (system updater from 0.3.18).
-  Images are digest-pinned from the 0.3.19 pack: API `ef369856…`, agent
-  `e08ae32b…`, UI `23508cee…`, OpenLDAP `18866bdc…`, Samba `26f0a8be…`, NFS
-  `6345c5b4…`, terminal `cd2fc626…`. `/api/system/version` reports
-  chart/naslos `0.3.19`, profile `installer`, Talos v1.14.5, k8s v1.37.0.
-- **Latest release:** `v0.3.19` (2026-11-10) and installer `naslos-v0.3.19`
-  are published and the node runs it. `v0.3.18`, `v0.3.17`, `v0.3.16`,
-  `v0.3.15`, `v0.3.14`, `v0.3.13`, `v0.3.12`, `v0.3.11`, `v0.3.10` and
-  `v0.3.9` were the previous releases, `v0.3.8` was superseded.
+- **Deployed release:** Helm `naslos` chart `0.3.21`, appVersion `0.3.21`,
+  revision 21, deployed 2026-11-11 01:44 UTC (system updater from 0.3.20 at
+  01:05, which came from 0.3.19 at 2026-11-10 21:03). Images are digest-pinned
+  from the 0.3.21 pack: API `36de5918…`, agent `f11c052f…`, UI `03d0cac4…`,
+  OpenLDAP `c7f44155…`, Samba `2c522e81…`, NFS `438277e7…`, terminal
+  `9f39590d…`. `/api/system/version` reports chart/naslos `0.3.21`, profile
+  `installer`, Talos v1.14.5, k8s v1.37.0.
+- **Latest release:** `v0.3.21` (2026-11-11) and installer `naslos-v0.3.21`
+  are published and the node runs it. `v0.3.20`, `v0.3.19`, `v0.3.18`,
+  `v0.3.17`, `v0.3.16`, `v0.3.15`, `v0.3.14`, `v0.3.13`, `v0.3.12`, `v0.3.11`,
+  `v0.3.10` and `v0.3.9` were the previous releases, `v0.3.8` was superseded.
 - **Release notes since 0.3.7:**
+  - `0.3.21` (deployed) — per-path Authelia protection: an app with
+    `exposure.auth: false` can keep selected prefixes behind Authelia via
+    `protectedPaths` (a priority-100 `PathPrefix` route; the catch-all stays
+    public). #145. Also enforces the per-app `ResourceQuota` on install and
+    update (`validate_resource_quota`), so a chart whose requests/limits
+    exceed `apps.isolation.quota` is rejected before Helm. #146.
+  - `0.3.20` (deployed) — edit an installed app's resource requests/limits
+    from the Installed drawer (`PUT /api/apps/{name}` values merge); the
+    quota added in 0.3.21 validates it. #144.
   - `0.3.19` (deployed) — live app logs in the Installed drawer: the detail
     drawer streams a pod's logs (`GET /api/apps/{name}/pods` + the existing
     `/api/ws/logs`, tail 200 + follow) with pod/container pickers and a follow
@@ -98,20 +108,33 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `animes`/`movies`/`series`/`ukrmovies`, wizard complete), `radarr`
   (`naslos-app-5`, `radarr.shail.ovh`, `movies`/`ukrmovies`), `sonarr`
   (`naslos-app-6`, `sonarr.shail.ovh`, `animes`/`series`), `flaresolverr`
-  (`http://flaresolverr.naslos.local`, internal), `bazarr` (`naslos-app-8`,
-  `https://bazarr.shail.ovh`, `animes`/`movies`/`series`/`ukrmovies`), and
-  `qbittorrent` (`naslos-app-p1`, `https://qbit.shail.ovh`, privileged,
+  (`naslos-app-7`, `http://flaresolverr.naslos.local`, internal), `bazarr`
+  (`naslos-app-8`, `https://bazarr.shail.ovh`,
+  `animes`/`movies`/`series`/`ukrmovies`), `seerr` (`naslos-app-9`,
+  `https://serve.shail.ovh`), `prowlarr` (`naslos-app-p2`,
+  `https://prowlarr.shail.ovh`, privileged), and `qbittorrent`
+  (`naslos-app-p1`, `https://qbit.shail.ovh`, privileged,
   `animes`/`downloads`/`movies`/`series`/`ukrmovies`). Every dataset app runs
   as `10001:10000` (PGID `naslos_users`); the LinuxServer apps needed a one-off
   `chown -R 10001:10000 /config` after the UID/GID switch. Datasets under
   `/var/mnt/Data` are recursively group-owned `naslos_users` (10000). The
   `shail.ovh` domain (OVH, production, `sso: true`) and
   `naslos-shail-ovh-tls` are present. The baseline pool has **32 provisioned
-  slots with a usable limit of 20** (`GET /api/apps/namespaces`: 8 used, 12
-  available); the privileged pool has 2 used of 4, `naslos-app-p2..p4` free.
-- **Update check:** current deployed `0.3.19`; no update is offered.
+  slots with a usable limit of 20** (`GET /api/apps/namespaces`: 9 used, 11
+  available); the privileged pool has 2 used of 4, `naslos-app-p3..p4` free.
+- **Update check:** current deployed `0.3.21`; no update is offered.
 
 ### Open items
+
+- **Audit 2026-11-11:** the full read-only audit is
+  [`docs/AUDIT-2026-11-11.md`](docs/AUDIT-2026-11-11.md) with the ordered fix
+  plan in [`.kilo/plans/2026-11-11-audit-remediation.md`](.kilo/plans/2026-11-11-audit-remediation.md).
+  Open remediation PRs on the branch series: #148 (Buddy-disabled API crash),
+  #149 (share symlinks), #150 (chart hardening), #151 (ZFS import body),
+  #152 (SSRF pinning), #153 (apply failures), #154 (disabled accounts), plus
+  NaslosCharts #19 (Prowlarr exposure default). The live node still runs
+  0.3.21, so `AUD-2611-T6-1` (Buddy-disabled crash) remains live until the
+  next release; do not probe `/api/buddy/v1/*` before then.
 
 - **Baseline namespace pool:** 20 usable of 32 provisioned slots after the
   2026-11-10 release. The limit is owner-editable in **Apps → Installed**
