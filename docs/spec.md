@@ -775,6 +775,27 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   as YAML where a built-in driver suffices. Every built-in DDNS provider MUST
   resolve to a known driver. *(ddns test: `TestBuiltinProvidersHaveKnownDrivers`)*
 
+- **FR-DNS-09** — App DNS records MUST be opt-in per domain:
+  `appRecordsDdnsEntry` names a non-wildcard DDNS entry, and only domains whose
+  provider is `ovh` or `cloudflare` may set it (otherwise 400). Every exposed
+  app (non-empty `subdomain`, including `localOnly` apps) on such a domain MUST
+  get a CNAME `<subdomain>.<baseDomain>` whose target is the DDNS entry's
+  hostname. The API MUST write it with the domain's cert-manager credentials
+  (OVH ZoneDNS keys with TTL 0 and an absolute target plus a zone refresh;
+  Cloudflare `proxied:false` with TTL auto), resolve the registered zone by
+  walking `baseDomain` upward, and reject a target equal to the app hostname.
+  Only records the platform created (or adopted because an existing CNAME
+  already had the exact target) MUST be updated or deleted; any other record at
+  the name MUST be left untouched and reported as a DNS error on the app. DNS
+  failures MUST NOT fail install/exposure/uninstall. The record MUST be
+  reconciled after install and exposure changes, on startup, when the linked
+  DDNS entry or the domain changes, on manual
+  `POST /api/apps/{name}/dns/reconcile`, and retried on the catalog-refresh
+  cadence while in error; deleting a DDNS entry referenced by a domain MUST be
+  a 409. Uninstall, exposure removal and domain removal MUST delete owned
+  records; a chart/domain update removes the old record before creating the new
+  one. *(dnsrecords tests, apps tests, server tests)*
+
 ### 3.10 Installer & first-run provisioning (`FR-INSTALL`)
 
 The desktop installer (`Naslos-Installer`, a separate repo) provisions a

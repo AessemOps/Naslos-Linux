@@ -28,12 +28,18 @@
   let showForm = false;
   let editing: Entry | null = null;
   let busy = '';
+  let usedTargets = new Set<string>();
+  let targetDomains = new Map<string, string[]>();
 
   async function load() {
     loading = true;
     error = '';
     try {
-      const [ddnsRes, providerRes] = await Promise.all([fetch('/api/ddns'), fetch('/api/providers')]);
+      const [ddnsRes, providerRes, domainsRes] = await Promise.all([
+        fetch('/api/ddns'),
+        fetch('/api/providers'),
+        fetch('/api/domains')
+      ]);
       if (!ddnsRes.ok) {
         throw new Error(`HTTP ${ddnsRes.status}`);
       }
@@ -44,6 +50,20 @@
       if (providerRes.ok) {
         const providersData = await providerRes.json();
         providers = Array.isArray(providersData.providers) ? providersData.providers : [];
+      }
+      if (domainsRes.ok) {
+        const domainData = await domainsRes.json();
+        const domains = Array.isArray(domainData.domains) ? domainData.domains : [];
+        usedTargets = new Set(
+          domains.map((domain: any) => domain.appRecordsDdnsEntry).filter(Boolean)
+        );
+        targetDomains = new Map();
+        for (const domain of domains) {
+          if (!domain.appRecordsDdnsEntry) continue;
+          const list = targetDomains.get(domain.appRecordsDdnsEntry) || [];
+          list.push(domain.baseDomain);
+          targetDomains.set(domain.appRecordsDdnsEntry, list);
+        }
       }
     } catch (e) {
       error = 'Failed to load dynamic DNS: ' + e;
@@ -67,18 +87,26 @@
   }
 
   async function remove(id: string) {
-    if (!confirm('Remove this dynamic DNS entry? Its credential Secret is deleted too.')) {
+    const domains = targetDomains.get(id) || [];
+    if (
+      !confirm(
+        domains.length
+          ? `This entry is the app-record target for ${domains.join(', ')}. Disable app records there first. Remove it anyway?`
+          : 'Remove this dynamic DNS entry? Its credential Secret is deleted too.'
+      )
+    ) {
       return;
     }
     busy = id;
     try {
       const res = await fetch(`/api/ddns/${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
       }
       await load();
-    } catch (e) {
-      error = `Failed to remove ${id}: ` + e;
+    } catch (e: any) {
+      error = `Failed to remove ${id}: ${e.message || e}`;
     } finally {
       busy = '';
     }
@@ -146,6 +174,12 @@
               <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{providerName(entry.provider)}</span>
               <span class={`text-xs px-2 py-0.5 rounded ${statusClass(entry.lastStatus)}`}>{entry.lastStatus || 'never run'}</span>
               {#if !entry.enabled}<span class="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400">disabled</span>{/if}
+              {#if usedTargets.has(entry.id)}
+                <span
+                  class="text-xs px-2 py-0.5 rounded bg-emerald-900/50 text-emerald-300"
+                  title={`App DNS records on ${(targetDomains.get(entry.id) || []).join(', ')}`}
+                >app records target</span>
+              {/if}
             </div>
             <p class="text-xs text-gray-500">
               {#if entry.lastIP}IP {entry.lastIP}{/if}{entry.ttl ? ` • TTL ${entry.ttl}` : ''}{entry.nextRunAt ? ` • next ${new Date(entry.nextRunAt).toLocaleTimeString()}` : ''}

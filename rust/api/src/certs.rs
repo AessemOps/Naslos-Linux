@@ -58,6 +58,14 @@ pub struct Domain {
     pub primary: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub sso: bool,
+    /// DDNS entry whose hostname app CNAMEs point at. `None` disables app
+    /// records for this domain (FR-DNS-09).
+    #[serde(
+        rename = "appRecordsDdnsEntry",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub app_records_ddns_entry: Option<String>,
     #[serde(rename = "createdAt", default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(rename = "updatedAt", default, skip_serializing_if = "Option::is_none")]

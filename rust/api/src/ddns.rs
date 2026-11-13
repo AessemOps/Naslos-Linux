@@ -423,7 +423,7 @@ pub struct Options {
 /// Detects the public IP and keeps entries converged.
 pub struct Manager {
     registry: Arc<Registry>,
-    store: Store,
+    store: Arc<Store>,
     apps_namespace: String,
     kube: Option<Arc<crate::kube::Client>>,
     ip_sources: Vec<String>,
@@ -439,7 +439,7 @@ impl Manager {
     pub fn new(opts: Options) -> Self {
         let mut m = Self {
             registry: opts.registry,
-            store: Store::new(&opts.store_path),
+            store: Arc::new(Store::new(&opts.store_path)),
             apps_namespace: opts.apps_namespace,
             kube: opts.kube,
             ip_sources: opts.ip_sources,
@@ -470,6 +470,11 @@ impl Manager {
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    /// The shared store, for consumers built beside the manager (app DNS).
+    pub fn store_arc(&self) -> Arc<Store> {
+        self.store.clone()
     }
 
     pub fn interval(&self) -> Duration {

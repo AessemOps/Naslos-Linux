@@ -10,6 +10,27 @@ export interface AppExposure {
 }
 
 /** The installed-app view returned by `GET /api/apps`. */
+/** The CNAME the platform maintains for an exposed app (FR-DNS-09). */
+export interface AppDnsState {
+  fqdn: string;
+  target: string;
+  provider: string;
+  zone: string;
+  recordId: string;
+  owned: boolean;
+  status: 'ok' | 'error' | string;
+  error?: string;
+  updatedAt?: string;
+  baseDomain?: string;
+}
+
+/** One custom environment variable from `GET /api/apps/{name}`. */
+export interface AppEnvVar {
+  name: string;
+  value: string | null;
+  secret: boolean;
+}
+
 export interface AppView {
   name: string;
   namespace: string;
@@ -38,6 +59,8 @@ export interface AppView {
   latestSource: string;
   latestChannel: string;
   updateAvailable: boolean;
+  env?: AppEnvVar[];
+  dns?: AppDnsState;
 }
 
 /** Per-app namespace quota from `GET /api/apps/{name}/quota`. */

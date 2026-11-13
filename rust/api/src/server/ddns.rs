@@ -143,6 +143,18 @@ pub async fn ddns_detail_delete(
         Ok(e) => e,
         Err(e) => return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
     };
+    let referencing = referencing_domains(&state.domains.list(), &id);
+    if !referencing.is_empty() {
+        return json(
+            StatusCode::CONFLICT,
+            serde_json::json!({
+                "error": format!(
+                    "this DDNS entry is the target for app DNS records on {}; disable app records on those domains first",
+                    referencing.join(", ")
+                ),
+            }),
+        );
+    }
     if let Err(e) = manager.store().delete(&id) {
         return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e }));
     }
@@ -344,12 +356,34 @@ async fn upsert(state: &Arc<AppState>, existing: Option<Entry>, req: DdnsRequest
             serde_json::json!({ "error": e }),
         );
     }
+    // A target change updates every app CNAME that points at this entry.
+    if let Some(apps) = &state.app_manager {
+        let domains: Vec<String> = state
+            .domains
+            .list()
+            .into_iter()
+            .filter(|domain| domain.app_records_ddns_entry.as_deref() == Some(entry.id.as_str()))
+            .map(|domain| domain.base_domain)
+            .collect();
+        for domain in domains {
+            apps.reconcile_dns_for_domain(&domain).await;
+        }
+    }
     let status = if existing.is_some() {
         StatusCode::OK
     } else {
         StatusCode::CREATED
     };
     json(status, serde_json::to_value(entry).unwrap())
+}
+
+/// Base domains that use this DDNS entry for automatic app records.
+fn referencing_domains(domains: &[crate::certs::Domain], id: &str) -> Vec<String> {
+    domains
+        .iter()
+        .filter(|domain| domain.app_records_ddns_entry.as_deref() == Some(id))
+        .map(|domain| domain.base_domain.clone())
+        .collect()
 }
 
 /// Split a comma-separated public-IP source list, falling back to a legacy
@@ -381,6 +415,24 @@ mod tests {
         assert!(validate_record_label("").is_ok());
         assert!(validate_record_label("*.home").is_ok());
         assert!(validate_record_label("bad label").is_err());
+    }
+
+    #[test]
+    fn app_record_targets_cannot_be_deleted() {
+        let domains = vec![
+            crate::certs::Domain {
+                base_domain: "example.com".into(),
+                app_records_ddns_entry: Some("abc".into()),
+                ..Default::default()
+            },
+            crate::certs::Domain {
+                base_domain: "other.com".into(),
+                app_records_ddns_entry: Some("def".into()),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(referencing_domains(&domains, "abc"), vec!["example.com"]);
+        assert!(referencing_domains(&domains, "zzz").is_empty());
     }
 
     #[test]

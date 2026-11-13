@@ -69,3 +69,51 @@ test.describe('domains & SSL', () => {
     expect(res.status()).toBe(400);
   });
 });
+
+test.describe('app DNS records', () => {
+  test('unsupported providers cannot opt into app records', async ({ request }) => {
+    const res = await request.put('/api/domains/app-records-test.invalid', {
+      data: {
+        baseDomain: 'app-records-test.invalid',
+        dnsProvider: 'passthrough',
+        acmeEmail: 'nobody@example.com',
+        environment: 'staging',
+        solver: {},
+        appRecordsDdnsEntry: 'abc'
+      }
+    });
+    expect(res.status()).toBe(400);
+    expect(await res.text()).toContain('cannot create app DNS records');
+  });
+
+  test('the app-records toggle explains why it is unavailable', async ({ page }) => {
+    await page.route('**/api/domains', (route) =>
+      route.fulfill({
+        json: {
+          domains: [],
+          baseDomain: 'naslos.local',
+          certManager: true,
+          selectableDomains: ['naslos.local'],
+          ssoDomains: ['naslos.local']
+        }
+      })
+    );
+    await page.route('**/api/ddns', (route) =>
+      route.fulfill({ json: { entries: [], enabled: true } })
+    );
+    await page.route('**/api/providers', (route) =>
+      route.fulfill({
+        json: {
+          providers: [
+            { name: 'cloudflare', displayName: 'Cloudflare', certManager: true, fields: [] }
+          ]
+        }
+      })
+    );
+
+    await page.goto('/domains');
+    await page.getByRole('button', { name: '+ Add Domain' }).click();
+    await expect(page.getByLabel(/Create DNS records for apps/)).toBeDisabled();
+    await expect(page.getByText('No non-wildcard DDNS entry exists yet')).toBeVisible();
+  });
+});
