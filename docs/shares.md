@@ -95,6 +95,11 @@ Validation (`Manager.Create`):
 An existing share can be repointed at another folder (`PUT /api/shares/{name}`
 with `path`); the new path is validated exactly like a create.
 
+A create/update/delete only reports success after the **node accepted the
+rendered config**. If the agent rejects it, the API answers `502` with the agent
+error and rolls the change back, so the stored share list always matches what
+Samba/Ganesha are serving (`AUD-2611-T10-2`).
+
 ## Folders in the pool (share paths)
 
 Share paths are not limited to dataset roots: any folder inside a dataset is a
