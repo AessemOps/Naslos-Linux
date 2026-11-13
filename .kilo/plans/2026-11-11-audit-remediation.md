@@ -77,7 +77,14 @@ adapting `detect_dns_ip` to the 0.26 builder API, removing the obsolete
 
 ## Batch R2 — Medium (security and correctness)
 
-### R2.1 — Revoke access when an account is disabled (`AUD-2611-T1-1` / `A6`, NL)
+### R2.1 — Revoke access when an account is disabled (`AUD-2611-T1-1` / `A6`, NL) — **DONE on `fix/disabled-accounts`**
+
+Taken option 3 from the plan: the Authelia `users_filter` now excludes
+`shadowExpire=1` (active users are `-1`/unset), with an `audit.sh` assertion and
+an API-doc note. No schema change, so it is reversible with enable/disable.
+Residual: an existing Authelia session survives until its expiry/inactivity
+limit; forcing revocation of live sessions needs a session-store purge and is
+not in scope.
 
 - Files: `charts/naslos/templates/authelia-config.yaml`,
   `rust/api/src/identity/ops.rs`, `openldap/image/entrypoint.sh`.

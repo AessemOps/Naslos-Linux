@@ -55,6 +55,8 @@ the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
 - `uid` is case-insensitive and auto-normalized to lowercase.
 - On creation, `uidNumber` is derived from a hash of the uid; all users get `gidNumber=10000`.
 - `enabled` is derived from `shadowExpire`: `-1` or unset = enabled; `0` = expired/disabled; `1` = disabled.
+  Authelia's LDAP `users_filter` excludes `shadowExpire=1`, so a disabled account cannot start a new
+  SSO session (an existing session lasts until its normal expiry/inactivity limit).
 - An empty `groups` array is returned on success (never `null`) to prevent UI freezes.
 
 ### Groups
