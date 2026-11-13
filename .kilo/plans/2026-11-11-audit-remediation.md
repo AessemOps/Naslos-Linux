@@ -138,7 +138,11 @@ regression test covers a direct and an intermediate link. Residual TOCTOU
   stopping the agent (needs approval) and confirming the UI reports the failure.
 - Docs: `docs/api.md` (error contract), `docs/shares.md`, `AI_Handoff.md`.
 
-### R2.4 — Reject a malformed ZFS import body (`AUD-2611-T4-1`, NL)
+### R2.4 — Reject a malformed ZFS import body (`AUD-2611-T4-1`, NL) — **DONE on `fix/zfs-import-body`**
+
+Decode errors now propagate and an explicit, validated pool name is required.
+Severity corrected to Low: the agent's `all: true` guard means the old path never
+imported everything; it only produced a confusing 400.
 
 - Files: `rust/api/src/server/zfs.rs`.
 - Fix: return `400` on a decode error; require an explicit `{"all": true}` for
