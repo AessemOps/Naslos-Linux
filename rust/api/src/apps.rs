@@ -531,6 +531,20 @@ struct EnvOutcome {
     warning: String,
 }
 
+/// What reconciling the env Secret did, so a failed Helm call can undo it.
+#[derive(Default)]
+struct EnvOutcome {
+    /// New variable metadata; `None` keeps the record's existing list.
+    meta: Option<Vec<EnvMeta>>,
+    /// Previous Secret data (`None` when it did not exist).
+    previous: Option<std::collections::BTreeMap<String, String>>,
+    /// Whether this call created/updated (or deleted) the Secret.
+    wrote: bool,
+    /// A non-fatal problem worth surfacing on the app (e.g. chart capability
+    /// removed, Secret deleted out of band).
+    warning: String,
+}
+
 /// Coordinates records and lifecycle operations.
 pub struct Manager {
     store: Store,
