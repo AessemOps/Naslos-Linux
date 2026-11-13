@@ -218,7 +218,7 @@ The actual ZFS work is delegated to `naslos-agent` on each node:
 | --- | --- | --- |
 | GET | `/api/notifications` | ntfy settings |
 | PUT | `/api/notifications` | Update ntfy settings |
-| POST | `/api/notifications/test` | Send a test notification |
+| POST | `/api/notifications/test` | Send a test notification (target must resolve to a public address; the host is resolved once and pinned at send time) |
 | GET | `/api/metrics` | Full `SystemMetrics` object |
 | GET | `/api/dashboard` | Dashboard-formatted subset (home screen) |
 

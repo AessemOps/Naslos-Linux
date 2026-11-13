@@ -747,6 +747,37 @@ impl Driver for HttpDriver {
         }
         let target = guard_url(&rendered_url)?;
         default_guard(&target).map_err(|e| format!("refusing to call {target}: {e}"))?;
+        // `default_guard` resolves the host, but reqwest would resolve it again
+        // when it connects (DNS rebinding between the check and the request).
+        // Resolve once here and pin the connection to the vetted address.
+        let host = target
+            .host_str()
+            .ok_or_else(|| format!("{target} has no host"))?
+            .to_string();
+        let port = target.port_or_known_default().unwrap_or(443);
+        use std::net::ToSocketAddrs;
+        let addrs: Vec<std::net::SocketAddr> = (host.as_str(), port)
+            .to_socket_addrs()
+            .map_err(|e| format!("cannot resolve {host:?}: {e}"))?
+            .collect();
+        let Some(pinned) = addrs.first().copied() else {
+            return Err(format!("{host:?} did not resolve"));
+        };
+        if addrs.iter().any(|a| blocked_ip(&a.ip())) {
+            return Err(format!("refusing to call {target}: non-public address"));
+        }
+        let client = if host.parse::<std::net::IpAddr>().is_ok() {
+            // A literal address cannot be rebound; the shared client is fine.
+            self.client.clone()
+        } else {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .redirect(reqwest::redirect::Policy::none())
+                .user_agent(super::USER_AGENT)
+                .resolve(&host, pinned)
+                .build()
+                .map_err(|e| format!("building the pinned HTTP client: {e}"))?
+        };
 
         let method = {
             let m = config_value(&r.config, "method").to_uppercase();
@@ -771,7 +802,7 @@ impl Driver for HttpDriver {
             render_template(&body_template, r)?
         };
 
-        let mut rb = self.client.request(reqwest_method, target.clone());
+        let mut rb = client.request(reqwest_method, target.clone());
         if !body.is_empty() {
             let content_type = {
                 let ct = config_value(&r.config, "contentType");
@@ -990,11 +1021,24 @@ fn default_guard(url: &reqwest::Url) -> Result<(), String> {
 pub(crate) fn blocked_ip(ip: &std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
                 || v4.is_multicast()
                 || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                // 0.0.0.0/8 ("this network")
+                || o[0] == 0
+                // 100.64.0.0/10 (CGNAT / carrier-grade NAT)
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+                // 192.0.0.0/24 (IETF protocol assignments)
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+                // 198.18.0.0/15 (benchmarking)
+                || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+                // 240.0.0.0/4 (reserved) and 255.255.255.255
+                || o[0] >= 240
         }
         std::net::IpAddr::V6(v6) => {
             // IPv4-mapped addresses (::ffff:127.0.0.1) must be judged as IPv4,
@@ -1078,6 +1122,14 @@ mod tests {
             "fd12:3456::1",
             "fe80::1",
             "64:ff9b::7f00:1",
+            "100.64.0.1",
+            "100.127.255.254",
+            "192.0.0.1",
+            "198.18.0.1",
+            "198.19.255.254",
+            "0.1.2.3",
+            "240.0.0.1",
+            "255.255.255.255",
         ] {
             assert!(blocked_ip(&bad.parse::<IpAddr>().unwrap()), "{bad}");
         }

@@ -149,9 +149,12 @@ impl Manager {
             return Ok(());
         }
         let target = notification_url(&settings.server_url, &settings.topic)?;
+        // Resolve once more at send time and pin the connection to the vetted
+        // address, so the host cannot be rebound between validation and the
+        // request (AUD-2611-T7-1).
+        let client = self.pinned_client(&target)?;
 
-        let mut rb = self
-            .client
+        let mut rb = client
             .post(&target)
             .header("Title", &notif.title)
             .header("X-Priority", severity_to_priority(&notif.severity))
@@ -173,6 +176,40 @@ impl Manager {
             return Err(format!("ntfy returned status {}", resp.status().as_u16()));
         }
         Ok(())
+    }
+
+    /// A client pinned to the checked address of `target`; a literal address
+    /// uses the shared client (it cannot be rebound).
+    fn pinned_client(&self, target: &str) -> Result<reqwest::Client, String> {
+        let parsed =
+            reqwest::Url::parse(target).map_err(|e| format!("invalid ntfy target: {e}"))?;
+        let host = parsed.host_str().ok_or("ntfy target has no host")?;
+        let port = parsed.port_or_known_default().unwrap_or(443);
+        if host.parse::<std::net::IpAddr>().is_ok() {
+            return Ok(self.client.clone());
+        }
+        use std::net::ToSocketAddrs;
+        let addrs: Vec<std::net::SocketAddr> = (host, port)
+            .to_socket_addrs()
+            .map_err(|e| format!("cannot resolve the ntfy host {host:?}: {e}"))?
+            .collect();
+        let Some(pinned) = addrs.first().copied() else {
+            return Err(format!("{host:?} did not resolve"));
+        };
+        if addrs
+            .iter()
+            .any(|addr| crate::ddns::drivers::blocked_ip(&addr.ip()))
+        {
+            return Err(format!(
+                "refusing to send notifications to {host} (resolves to a non-public address)"
+            ));
+        }
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve(host, pinned)
+            .build()
+            .map_err(|e| format!("building the ntfy client: {e}"))
     }
 
     /// Send a test notification.
@@ -207,14 +244,22 @@ pub fn notification_url(server_url: &str, topic: &str) -> Result<String, String>
         .ok_or("ntfy server URL has no host")?
         .to_string();
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        let link_local = match ip {
-            std::net::IpAddr::V4(v4) => v4.is_link_local(),
-            std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
-        };
-        if link_local {
+        if crate::ddns::drivers::blocked_ip(&ip) {
             return Err(format!(
-                "refusing to send notifications to a link-local address ({host})"
+                "refusing to send notifications to a non-public address ({host})"
             ));
+        }
+    } else {
+        use std::net::ToSocketAddrs;
+        let addrs = (host.as_str(), 443)
+            .to_socket_addrs()
+            .map_err(|e| format!("cannot resolve the ntfy host {host:?}: {e}"))?;
+        for addr in addrs {
+            if crate::ddns::drivers::blocked_ip(&addr.ip()) {
+                return Err(format!(
+                    "refusing to send notifications to {host} (resolves to a non-public address)"
+                ));
+            }
         }
     }
     if topic.is_empty() {
@@ -272,12 +317,16 @@ mod tests {
             "https://ntfy.sh/naslos-alerts"
         );
         assert_eq!(
-            notification_url("https://ntfy.example/", "topic").unwrap(),
-            "https://ntfy.example/topic"
+            notification_url("https://1.1.1.1/", "topic").unwrap(),
+            "https://1.1.1.1/topic"
         );
         assert!(notification_url("ftp://ntfy.sh", "t").is_err());
         assert!(notification_url("https://ntfy.sh", "bad/topic").is_err());
         assert!(notification_url("https://169.254.169.254", "t").is_err());
+        assert!(notification_url("http://127.0.0.1", "t").is_err());
+        assert!(notification_url("http://10.0.0.5", "t").is_err());
+        assert!(notification_url("http://192.168.1.10", "t").is_err());
+        assert!(notification_url("http://100.64.0.1", "t").is_err());
     }
 
     #[test]
