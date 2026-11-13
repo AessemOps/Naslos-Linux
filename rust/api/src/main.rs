@@ -224,6 +224,11 @@ async fn run_catalog_refresher(
         catalog.store(std::sync::Arc::new(naslos_api::state::build_catalog(
             &charts,
         )));
+        if let Some(manager) = &app_manager {
+            // Records that failed (provider outage, transient API error) are
+            // retried on the same cadence as the catalog refresh.
+            manager.reconcile_dns_errors().await;
+        }
         if first {
             first = false;
             if let Some(manager) = &app_manager {

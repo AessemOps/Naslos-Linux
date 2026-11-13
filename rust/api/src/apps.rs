@@ -92,6 +92,39 @@ fn is_zero(n: &i64) -> bool {
     *n == 0
 }
 
+/// The CNAME this platform maintains for an exposed app (FR-DNS-09).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct DnsState {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fqdn: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub target: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub zone: String,
+    #[serde(rename = "recordId", default, skip_serializing_if = "String::is_empty")]
+    pub record_id: String,
+    /// Whether this platform created (or adopted) the record.
+    #[serde(default)]
+    pub owned: bool,
+    /// `ok` or `error`. Errors never fail the app operation.
+    #[serde(default)]
+    pub status: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+    #[serde(rename = "updatedAt", default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<DateTime<Utc>>,
+    /// The base domain the record lives under (needed to delete an old record
+    /// after the app moved domains).
+    #[serde(
+        rename = "baseDomain",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub base_domain: String,
+}
+
 /// A partial exposure update. Omitted fields keep their stored value instead
 /// of defaulting to `false`, which used to silently disable TLS/auth on a
 /// partial PUT (SEC-2026-D11).
@@ -206,6 +239,9 @@ pub struct Record {
     /// values live only in the `naslos-env-<release>` Secret.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<EnvMeta>,
+    /// The CNAME the platform maintains for the app's exposed hostname.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns: Option<DnsState>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -432,6 +468,16 @@ pub trait Router: Send + Sync {
     }
 }
 
+/// Maintains the DNS record for an exposed app (FR-DNS-09).
+#[async_trait::async_trait]
+pub trait AppDns: Send + Sync {
+    /// Converge the app's CNAME. `None` means no record is desired (absent or
+    /// removed); errors are returned as an error state, never as a failure.
+    async fn reconcile(&self, rec: &Record, base_domain: &str) -> Option<DnsState>;
+    /// Delete the record this platform owns, if any.
+    async fn remove(&self, rec: &Record) -> Result<(), String>;
+}
+
 /// A synchronous progress observer.
 pub type ProgressFn = dyn Fn(&str, &str) + Send + Sync;
 
@@ -467,6 +513,22 @@ pub struct Config {
     pub datasets: Option<Arc<crate::datasets::Registry>>,
     /// Image for a pool-scoped local-path provisioner, created on demand.
     pub pool_provisioner_image: String,
+    /// App CNAME maintenance (FR-DNS-09); absent when DNS is unavailable.
+    pub app_dns: Option<Arc<dyn AppDns>>,
+}
+
+/// What reconciling the env Secret did, so a failed Helm call can undo it.
+#[derive(Default)]
+struct EnvOutcome {
+    /// New variable metadata; `None` keeps the record's existing list.
+    meta: Option<Vec<EnvMeta>>,
+    /// Previous Secret data (`None` when it did not exist).
+    previous: Option<std::collections::BTreeMap<String, String>>,
+    /// Whether this call created/updated (or deleted) the Secret.
+    wrote: bool,
+    /// A non-fatal problem worth surfacing on the app (e.g. chart capability
+    /// removed, Secret deleted out of band).
+    warning: String,
 }
 
 /// What reconciling the env Secret did, so a failed Helm call can undo it.
@@ -503,6 +565,7 @@ pub struct Manager {
     kube: Option<Arc<crate::kube::Client>>,
     datasets: Option<Arc<crate::datasets::Registry>>,
     pool_provisioner_image: String,
+    app_dns: Option<Arc<dyn AppDns>>,
     /// CPU/RAM/network cache for the Installed tab (`GET /api/apps/usage`).
     usage: crate::app_usage::UsageCollector,
     /// Namespaces reserved by installs that have not recorded a release yet.
@@ -741,6 +804,7 @@ impl Manager {
             kube: cfg.kube,
             datasets: cfg.datasets,
             pool_provisioner_image: cfg.pool_provisioner_image,
+            app_dns: cfg.app_dns,
             usage: crate::app_usage::UsageCollector::default(),
             reservations: Arc::new(Mutex::new(std::collections::HashSet::new())),
             app_locks: Mutex::new(HashMap::new()),
@@ -1204,6 +1268,9 @@ impl Manager {
         let (namespace, _reservation) = self.reserve_namespace(app.privileged)?;
         self.validate_resource_quota(&namespace, &values).await?;
         let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
+        // The catalog's default subdomain was never validated on the install
+        // path; an invalid host must not reach routing or an app CNAME.
+        validate_subdomain(&exposure.subdomain)?;
         validate_protected_paths(&exposure.protected_paths)?;
         // Reject an unenforceable opt-out before creating any storage.
         self.validate_internet(&namespace, &exposure)?;
@@ -1373,6 +1440,7 @@ impl Manager {
             return Err(format!("recording the install: {e}"));
         }
         self.apply_route(&rec, &req.base_domain).await;
+        self.reconcile_app_dns(&rec).await;
         self.view(&rec.name).await
     }
 
@@ -1665,6 +1733,7 @@ impl Manager {
         rec.last_error.clear();
         self.store.upsert(rec.clone())?;
         self.apply_route(&rec, &base_domain).await;
+        self.reconcile_app_dns(&rec).await;
         self.view(name).await
     }
 
@@ -1689,6 +1758,11 @@ impl Manager {
         report(progress, STAGE_FINALIZING, "Removing the route and record");
         if let Some(router) = &self.router {
             router.delete(&self.target_namespace(&rec), name).await?;
+        }
+        if let Some(dns) = &self.app_dns {
+            if let Err(e) = dns.remove(&rec).await {
+                tracing::warn!("app {name}: removing its DNS record failed: {e}");
+            }
         }
         // The Secret is not part of the Helm release; remove it explicitly.
         if let Some(kube) = &self.kube {
@@ -1783,6 +1857,99 @@ impl Manager {
         Ok(())
     }
 
+    fn dns_base_domain(&self, rec: &Record) -> String {
+        if rec.base_domain.is_empty() {
+            self.base_domain.clone()
+        } else {
+            rec.base_domain.clone()
+        }
+    }
+
+    /// Converge one app's CNAME and persist the result.
+    async fn reconcile_app_dns(&self, rec: &Record) {
+        let Some(dns) = &self.app_dns else {
+            return;
+        };
+        let state = dns.reconcile(rec, &self.dns_base_domain(rec)).await;
+        if let Err(e) = self.store.update(&rec.name, |r| r.dns = state) {
+            tracing::warn!("app {:?}: recording DNS state: {e}", rec.name);
+        }
+    }
+
+    /// The manual retry endpoint: converge DNS now and return the fresh view.
+    pub async fn reconcile_dns(&self, name: &str) -> Result<View, String> {
+        let rec = self.store.get(name)?;
+        if rec.orphaned {
+            return Err(format!("app {name:?} is orphaned and cannot be reconciled"));
+        }
+        self.reconcile_app_dns(&rec).await;
+        self.view(name).await
+    }
+
+    /// Reconcile every app whose exposure uses `base_domain`.
+    pub async fn reconcile_dns_for_domain(&self, base_domain: &str) {
+        if self.app_dns.is_none() {
+            return;
+        }
+        for rec in self.store.list() {
+            if rec.orphaned {
+                continue;
+            }
+            if self.dns_base_domain(&rec) == base_domain {
+                self.reconcile_app_dns(&rec).await;
+            }
+        }
+    }
+
+    /// Delete every record this platform owns under `base_domain` (used before
+    /// a domain or its credentials are removed).
+    pub async fn remove_dns_for_domain(&self, base_domain: &str) {
+        let Some(dns) = &self.app_dns else {
+            return;
+        };
+        for rec in self.store.list() {
+            let owned = rec.dns.as_ref().map(|state| state.owned).unwrap_or(false);
+            if !owned || self.dns_base_domain(&rec) != base_domain {
+                continue;
+            }
+            match dns.remove(&rec).await {
+                Ok(()) => {
+                    let _ = self.store.update(&rec.name, |r| r.dns = None);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "app {:?}: removing its DNS record before the domain changes: {e}",
+                        rec.name
+                    );
+                    let _ = self.store.update(&rec.name, |r| {
+                        if let Some(state) = &mut r.dns {
+                            state.status = "error".to_string();
+                            state.error = e.clone();
+                            state.updated_at = Some(Utc::now());
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    /// Retry records that failed (called from the catalog refresher loop).
+    pub async fn reconcile_dns_errors(&self) {
+        if self.app_dns.is_none() {
+            return;
+        }
+        for rec in self.store.list() {
+            let failed = rec
+                .dns
+                .as_ref()
+                .map(|state| state.status == "error")
+                .unwrap_or(false);
+            if failed {
+                self.reconcile_app_dns(&rec).await;
+            }
+        }
+    }
+
     /// Re-apply routing for every non-orphaned record.
     pub async fn reconcile_routes(&self) -> Result<(), String> {
         // Drop egress policies a previous process pre-created for an install
@@ -1790,6 +1957,13 @@ impl Manager {
         // disabled: the policy is a namespace-wide egress allow.
         for namespace in &self.namespace_pool {
             self.prune_orphan_internet_policies(namespace).await;
+        }
+        if self.app_dns.is_some() {
+            for rec in self.store.list() {
+                if !rec.orphaned {
+                    self.reconcile_app_dns(&rec).await;
+                }
+            }
         }
         let Some(router) = &self.router else {
             return Ok(());

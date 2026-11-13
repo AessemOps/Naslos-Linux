@@ -17,12 +17,25 @@
   let error = '';
   let providers: any[] = [];
   let fieldValues: Record<string, string> = { ...(domain?.providerConfig || {}) };
+  let ddnsEntries: { id: string; provider: string; zone: string; record: string }[] = [];
+  let ddnsEnabled = false;
+  let ddnsLoaded = false;
+  let appRecordsEntry = domain?.appRecordsDdnsEntry || '';
+  let appRecordsEnabled = !!appRecordsEntry;
 
   const dispatch = createEventDispatcher();
 
   onMount(async () => {
     try {
-      const res = await fetch('/api/providers');
+      const [res, ddnsRes] = await Promise.all([fetch('/api/providers'), fetch('/api/ddns')]);
+      if (ddnsRes.ok) {
+        const ddns = await ddnsRes.json();
+        ddnsEnabled = ddns.enabled !== false;
+        ddnsEntries = (Array.isArray(ddns.entries) ? ddns.entries : []).filter(
+          (entry: any) => typeof entry.record === 'string' && !entry.record.startsWith('*.')
+        );
+      }
+      ddnsLoaded = true;
       if (!res.ok) return;
       const data = await res.json();
       providers = (Array.isArray(data.providers) ? data.providers : []).filter((p: any) => p.certManager);
@@ -31,6 +44,7 @@
       }
       fieldValues = defaultsFor(dnsProvider, fieldValues);
     } catch {
+      ddnsLoaded = true;
       // The hardcoded fallbacks below keep the form usable if the API is down.
     }
   });
@@ -45,6 +59,26 @@
     currentFields.filter((f: any) => f.scope !== 'ddns'),
     fieldValues
   );
+  $: appRecordsSupported = ['ovh', 'cloudflare'].includes(dnsProvider);
+  $: appRecordsUnavailable =
+    !appRecordsSupported || !ddnsEnabled || ddnsEntries.length === 0;
+  $: if (ddnsLoaded && appRecordsUnavailable) {
+    appRecordsEnabled = false;
+  }
+  $: if (appRecordsEnabled && !appRecordsEntry && ddnsEntries.length > 0) {
+    appRecordsEntry = ddnsEntries[0].id;
+  }
+  $: if (
+    ddnsLoaded &&
+    appRecordsEnabled &&
+    appRecordsEntry &&
+    !ddnsEntries.some((entry) => entry.id === appRecordsEntry)
+  ) {
+    appRecordsEntry = ddnsEntries.length > 0 ? ddnsEntries[0].id : '';
+  }
+  function entryLabel(entry: { zone: string; record: string }): string {
+    return entry.record === '@' || !entry.record ? entry.zone : `${entry.record}.${entry.zone}`;
+  }
 
   function defaultsFor(name: string, seed: Record<string, string>): Record<string, string> {
     const next: Record<string, string> = { ...seed };
@@ -71,7 +105,8 @@
         dnsProvider,
         credentialsSecret,
         acmeEmail,
-        environment
+        environment,
+        appRecordsDdnsEntry: appRecordsEnabled && appRecordsEntry ? appRecordsEntry : null
       };
       if (dnsProvider === 'passthrough') {
         try {
@@ -162,6 +197,44 @@
           <option value="staging">Staging</option>
           <option value="production">Production</option>
         </select>
+      </div>
+
+      <div class="border-t border-naslos-border pt-4">
+        <label class="flex items-start gap-2 cursor-pointer" class:opacity-60={appRecordsUnavailable}>
+          <input
+            type="checkbox"
+            class="mt-1"
+            bind:checked={appRecordsEnabled}
+            disabled={appRecordsUnavailable}
+          />
+          <span class="text-sm">
+            Create DNS records for apps
+            <span class="block text-xs text-gray-500">
+              Every exposed app on this domain gets a CNAME pointing at the selected DDNS
+              hostname (TLS is unaffected: the wildcard certificate already covers app hosts).
+            </span>
+          </span>
+        </label>
+        {#if appRecordsUnavailable}
+          <p class="text-xs text-amber-300 mt-2">
+            {#if !appRecordsSupported}
+              Only OVH (ZoneDNS API keys) and Cloudflare domains can create app records.
+            {:else if !ddnsEnabled}
+              Dynamic DNS is disabled; enable it and add an entry first.
+            {:else}
+              No non-wildcard DDNS entry exists yet; add one under DNS first.
+            {/if}
+          </p>
+        {:else if appRecordsEnabled}
+          <div class="mt-3">
+            <label class="label" for="domain-app-target">App records target</label>
+            <select id="domain-app-target" class="input" bind:value={appRecordsEntry}>
+              {#each ddnsEntries as entry (entry.id)}
+                <option value={entry.id}>{entryLabel(entry)} ({entry.provider})</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
       </div>
       {#if error}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
     </div>

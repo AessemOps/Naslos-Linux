@@ -201,6 +201,34 @@ every answer is checked, and the request connects to the vetted address
 (`reqwest::ClientBuilder::resolve`), so a DNS rebind between the check and the
 connection cannot redirect it (`AUD-2611-T7-2`).
 
+## App records (FR-DNS-09)
+
+A base domain can opt into automatic CNAMEs for exposed apps by naming a DDNS
+entry in `appRecordsDdnsEntry`. Only `ovh` (ZoneDNS API keys) and `cloudflare`
+(`api-token`) domains qualify, and the entry must not be a wildcard. Every
+installed app with a non-empty `subdomain` on that domain then gets
+`<subdomain>.<baseDomain>` → the DDNS entry's hostname (`record` `@`/empty uses
+the zone itself).
+
+| Aspect | Behavior |
+| --- | --- |
+| Credentials | The domain's cert-manager Secret in `naslos-apps`: OVH `applicationKey`/`applicationSecret`/`consumerKey` + `providerConfig.endpoint`, Cloudflare `api-token` |
+| Zone discovery | The API walks `baseDomain` upward (`media.example.com` → `example.com`) and uses the first zone the provider serves; positive results are cached |
+| OVH writes | CNAME target absolute (`host.`), TTL 0 (zone default), then `POST /domain/zone/<zone>/refresh`. Record ids come from the list endpoint as bare numbers; the API fetches each record for its type/target |
+| Cloudflare writes | `proxied:false`, TTL auto (`1`), content without a trailing dot |
+| Ownership | Only records Naslos created (or adopted because an existing CNAME already had the exact target) are updated or deleted. Any other record at the name is left alone and the app records `dns.status: error` |
+| Changes | Reconcile runs after install/exposure changes, on startup, when the entry or domain changes, on `POST /api/apps/{name}/dns/reconcile`, and on the catalog-refresh cadence while in error. A changed subdomain/base domain deletes the old record before creating the new one |
+| Cleanup | Uninstall, exposure removal and domain removal delete owned records; a held record is reported as an error and retried rather than silently abandoned |
+
+`GET /api/apps/{name}` and `GET /api/apps/{name}/exposure` return `dns`:
+`{fqdn, target, provider, zone, recordId, owned, status, error, updatedAt,
+baseDomain}`. `GET /api/domains` marks each domain with `appRecordsSupported`,
+and `DELETE /api/ddns/{id}` is a **409** while a domain references the entry.
+
+TLS is unaffected: the domain's wildcard certificate already covers
+`*.<baseDomain>`, and the `_acme-challenge` TXT records cert-manager writes are
+unrelated to app CNAMEs.
+
 ## Configuration (chart)
 
 | Value | Default | Meaning |

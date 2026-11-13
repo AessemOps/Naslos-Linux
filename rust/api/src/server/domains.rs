@@ -102,10 +102,21 @@ async fn sync_sso_state(state: &AppState) -> Result<(), String> {
 
 /// `GET|POST /api/domains`
 pub async fn domains_get(State(state): State<Arc<AppState>>) -> Response {
+    let domains: Vec<serde_json::Value> = state
+        .domains
+        .list()
+        .iter()
+        .map(|domain| {
+            let mut value = serde_json::to_value(domain).unwrap_or_default();
+            value["appRecordsSupported"] =
+                serde_json::json!(crate::dnsrecords::provider_supported(&domain.dns_provider));
+            value
+        })
+        .collect();
     json(
         StatusCode::OK,
         serde_json::json!({
-            "domains": state.domains.list(),
+            "domains": domains,
             "certManager": state.certs.is_some(),
             "baseDomain": state.base_domain,
             "selectableDomains": selectable_domains(&state),
@@ -129,7 +140,12 @@ pub async fn domain_detail_get(
     Path(name): Path<String>,
 ) -> Response {
     match state.domains.get(&name) {
-        Ok(d) => json(StatusCode::OK, serde_json::to_value(d).unwrap()),
+        Ok(d) => {
+            let mut value = serde_json::to_value(&d).unwrap_or_default();
+            value["appRecordsSupported"] =
+                serde_json::json!(crate::dnsrecords::provider_supported(&d.dns_provider));
+            json(StatusCode::OK, value)
+        }
         Err(e) => json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
     }
 }
@@ -157,6 +173,11 @@ pub async fn domain_detail_delete(
         Ok(d) => d,
         Err(e) => return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
     };
+    // Remove owned app records before the domain (and its credentials) goes
+    // away, so the provider API is still reachable.
+    if let Some(manager) = &state.app_manager {
+        manager.remove_dns_for_domain(&name).await;
+    }
     if let Some(certs) = &state.certs {
         if let Err(e) = certs.delete(&domain).await {
             return json(StatusCode::BAD_GATEWAY, serde_json::json!({ "error": e }));
@@ -265,6 +286,18 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
     if domain.environment.is_empty() {
         domain.environment = "staging".to_string();
     }
+    if domain
+        .app_records_ddns_entry
+        .as_deref()
+        .map(str::trim)
+        .map(|id| id.is_empty())
+        .unwrap_or(false)
+    {
+        domain.app_records_ddns_entry = None;
+    }
+    if let Err(e) = validate_app_records(state, &domain) {
+        return bad_request(&e);
+    }
     let existing = state.domains.get(&domain.base_domain).ok();
     if let Some(fields) = &req.fields {
         if let Err(e) = apply_domain_fields(state, &mut domain, fields, existing.as_ref()).await {
@@ -297,7 +330,39 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
             serde_json::json!({ "error": e }),
         );
     }
-    json(status, serde_json::to_value(domain).unwrap())
+    if let Some(manager) = &state.app_manager {
+        manager.reconcile_dns_for_domain(&domain.base_domain).await;
+    }
+    let mut value = serde_json::to_value(&domain).unwrap_or_default();
+    value["appRecordsSupported"] =
+        serde_json::json!(crate::dnsrecords::provider_supported(&domain.dns_provider));
+    json(status, value)
+}
+
+/// Validate the opt-in link between a domain and a DDNS entry.
+fn validate_app_records(state: &AppState, domain: &Domain) -> Result<(), String> {
+    let Some(entry_id) = domain
+        .app_records_ddns_entry
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(());
+    };
+    if !crate::dnsrecords::provider_supported(&domain.dns_provider) {
+        return Err(format!(
+            "provider {:?} cannot create app DNS records; use ovh or cloudflare",
+            domain.dns_provider
+        ));
+    }
+    let Some(manager) = &state.ddns else {
+        return Err("dynamic DNS is not enabled; app DNS records need a DDNS entry".to_string());
+    };
+    let entry = manager.store().get(entry_id)?;
+    if entry.record.trim().starts_with("*.") {
+        return Err("a wildcard DDNS entry cannot be an app-record target".to_string());
+    }
+    Ok(())
 }
 
 /// Split a submitted field map into the non-secret providerConfig and a

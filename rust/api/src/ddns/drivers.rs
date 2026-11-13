@@ -327,7 +327,11 @@ impl OvhDriver {
 
         let ttl = normalize_ttl(r.ttl);
         if let Some(first) = records.first() {
-            let id = first.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            // `GET /record?subDomain=` returns an array of bare numeric ids,
+            // not objects: reading `first["id"]` produced 0 and every update
+            // went to `/record/0`.
+            let id = record_id(first)
+                .ok_or_else(|| "OVH returned a record list without ids".to_string())?;
             let update_url = format!("{base}/domain/zone/{zone}/record/{id}");
             let body = serde_json::json!({ "target": r.ip, "ttl": ttl }).to_string();
             let resp = self
@@ -411,7 +415,21 @@ impl Driver for OvhDriver {
     }
 }
 
-fn ovh_base(endpoint: &str) -> Result<String, String> {
+/// An OVH record id: bare (list endpoints) or inside an object (detail/create).
+pub fn record_id(value: &serde_json::Value) -> Option<String> {
+    if let Some(id) = value.as_i64() {
+        return Some(id.to_string());
+    }
+    if let Some(id) = value.as_str() {
+        return Some(id.to_string());
+    }
+    value
+        .get("id")
+        .and_then(|id| id.as_i64().map(|n| n.to_string()))
+}
+
+/// The OVH API base for an endpoint value.
+pub fn ovh_base(endpoint: &str) -> Result<String, String> {
     match endpoint {
         "" | "ovh-eu" => Ok("https://eu.api.ovh.com/1.0".to_string()),
         "ovh-ca" => Ok("https://ca.api.ovh.com/1.0".to_string()),
@@ -1075,6 +1093,17 @@ fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ovh_record_ids_accept_bare_numbers() {
+        assert_eq!(record_id(&serde_json::json!(42)).as_deref(), Some("42"));
+        assert_eq!(
+            record_id(&serde_json::json!({ "id": 7 })).as_deref(),
+            Some("7")
+        );
+        assert_eq!(record_id(&serde_json::json!("9")).as_deref(), Some("9"));
+        assert_eq!(record_id(&serde_json::json!(null)), None);
+    }
 
     #[test]
     fn ovh_signature_shape() {
