@@ -2,8 +2,9 @@
 System upgrade plumbing (docs/installer-contract.md §7, spec FR-UPD).
 
 Only an installer-profile release is web-upgradable. The pack's
-values-installer.yaml carries `release.*`; `make install-vm` has no such block,
-so this file renders nothing there and the UI only reports versions.
+values-installer.yaml carries `release.*`; a plain `make install-vm` renders
+nothing here and the UI only reports versions. The production VM profile sets
+the same facts explicitly so its web upgrader is wired.
 
 The upgrader Job runs outside the API pod (the API cannot upgrade its own
 release: it has no write access to this namespace and its pod is replaced
