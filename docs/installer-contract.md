@@ -251,9 +251,12 @@ USB media.
 
 ## 7. Web upgrades (`FR-UPD`)
 
-Only a node installed from an **installer pack** is web-upgradable. A
+Only a node with `release.profile: installer` is web-upgradable. A plain
 `make install-vm` deployment has no `release` block: the API reports versions
-and the UI disables Upgrade with a pointer to `make install-vm` (D2).
+and the UI disables Upgrade with a pointer to `make install-vm` (D2). The
+production VM profile (`charts/naslos/values-vm.yaml`) sets the facts
+explicitly so its web upgrader is wired; keep them in step with the deployed
+release.
 
 ### 7.1 Release facts
 

@@ -189,6 +189,19 @@ networkPolicy:
 ovhWebhook:
   enabled: true
 
+# Web-upgrader release facts (docs/installer-contract.md §7). This production
+# node was installed with `make install-vm`, but the chart carries the full
+# upgrader wiring; declaring the facts makes `profile: installer` true so the
+# API polls releases, the System page enables web upgrades and the upgrader
+# SA/RBAC/Job resources render. Keep these in step with the deployed release.
+release:
+  profile: installer
+  naslosVersion: "0.3.23"
+  chartVersion: "0.3.23"
+  talosVersion: "v1.14.5"
+  kubernetesVersion: "v1.37.0"
+  schematicId: "4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c"
+
 # Buddy Backup receive side (AUDIT-H2). The dataset exists on the node; before
 # this was set the release ran buddy.enabled=false while the peer API was live,
 # so BUDDY_RECEIVE_PATH was unset and received chunks landed on the 64 MiB
