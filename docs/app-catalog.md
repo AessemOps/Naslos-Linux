@@ -211,11 +211,17 @@ and datasets are preserved) and tracks the resulting upgrade job. Because
 upgrade resolves the catalog winner, the confirmation also warns when the
 app's recorded source/channel differs from the catalog entry that would be used.
 
-The header reports the app/update counts, aggregate live usage and a **Check
-now** button (`POST /api/sources/refresh`). `/api/apps/updates` feeds the
-Installed tab badge and the Apps sidebar dot (no Helm calls, so it can lag the
-per-row live value briefly); `/api/apps/usage` is polled every 5s only while the
-tab is visible and drives the row values plus the drawer's 5-minute sparklines
+The header reports the app/update counts, aggregate live usage, an **Update all
+(N)** action when at least one listed app has an update, and a **Check now**
+button (`POST /api/sources/refresh`). Update all opens a confirmation listing
+each `installed → latest` pair (repeating the source-switch warning where it
+applies), snapshots the target list, then enqueues one `PUT /api/apps/{name}`
+with `{}` per app and tracks every job in the shared drawer; apps already
+running a job are omitted, and enqueue failures are reported in the header.
+`/api/apps/updates` feeds the Installed tab badge and the Apps sidebar dot (no
+Helm calls, so it can lag the per-row live value briefly); `/api/apps/usage` is
+polled every 5s only while the tab is visible and drives the row values plus the
+drawer's 5-minute sparklines
 (client-side history only). The right-side detail drawer shows version/source,
 usage tiles, editable CPU/memory requests and limits (the chart's `resources`
 value, flat or per component), live logs, URL, chart, timestamps, datasets,
