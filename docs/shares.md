@@ -572,7 +572,7 @@ shares:
     enabled: true
     workgroup: "NASLOS"
     timeMachine: true
-    image: { repository: ghcr.io/aessemops/naslos-samba, tag: "0.3.22" }
+    image: { repository: ghcr.io/aessemops/naslos-samba, tag: "0.3.23" }
   # Network advertisement (mDNS + WSD) so the server shows up when browsing.
   discovery:
     enabled: true
@@ -583,7 +583,7 @@ shares:
   confCheckInterval: 3
   nfs:
     enabled: true
-    image: { repository: ghcr.io/aessemops/naslos-nfs,   tag: "0.3.22" }
+    image: { repository: ghcr.io/aessemops/naslos-nfs,   tag: "0.3.23" }
   afp:
     enabled: false      # deprecated in favor of SMB Time Machine
 ```

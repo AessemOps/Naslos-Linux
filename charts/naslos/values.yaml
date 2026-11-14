@@ -12,7 +12,7 @@ api:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-api
-    tag: "0.3.22"
+    tag: "0.3.23"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -126,7 +126,7 @@ ui:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    tag: "0.3.22"
+    tag: "0.3.23"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -157,7 +157,7 @@ agent:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-agent
-    tag: "0.3.22"
+    tag: "0.3.23"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -591,7 +591,7 @@ openldap:
   #   ghcr.io/aessemops/naslos-openldap@sha256:<digest>
   # Used by the OpenLDAP StatefulSet, the bootstrap Job, the backup CronJob and
   # the API's wait-for-ldap init container.
-  image: ghcr.io/aessemops/naslos-openldap:0.3.22
+  image: ghcr.io/aessemops/naslos-openldap:0.3.23
   imagePullPolicy: IfNotPresent
   # LDAP hostname used as Authelia's TLS `server_name` (and added as a
   # certificate SAN). The internal directory suffix is fixed at
@@ -779,7 +779,7 @@ terminal:
   # The terminal's endpoints are owner routes like any other, so they are gated
   # by `auth` above (previously a separate terminal.requireAuth switch).
   # digest (NAS-022): pin the exact image; empty means "use the tag".
-  image: { repository: ghcr.io/aessemops/naslos-terminal, tag: "0.3.22", digest: "", pullPolicy: IfNotPresent }
+  image: { repository: ghcr.io/aessemops/naslos-terminal, tag: "0.3.23", digest: "", pullPolicy: IfNotPresent }
   resources:
     requests:
       cpu: 10m
