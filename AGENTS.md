@@ -72,6 +72,12 @@ via `storageState`; a target that does not challenge is an error.
   first; `origin/master` may be ahead of a stale local `master`.
 - Commit messages follow Conventional Commits (`feat(scope): …`,
   `fix(scope): …`, `docs(scope): …`, `chore(scope): …`).
+- **Never put production node identifiers in a PR or commit.** PR titles,
+  bodies and review comments, commit messages, and issues MUST NOT contain the
+  node's URL or domains (`naslos.local`, public app domains) or its IP addresses
+  (e.g. `192.168.1.38`, `192.168.1.117`). Refer to "the production node" or use
+  a placeholder; real host/IP values stay in the private handoff or local
+  config.
 - Write a plan in `.kilo/plans/` for any non-trivial change and commit it.
 - Only commit/push/create PRs when the work is complete and verified. Never
   force-push, skip hooks, or amend a failed commit — add a new commit.
