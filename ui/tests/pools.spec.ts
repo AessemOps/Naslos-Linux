@@ -121,9 +121,17 @@ test('the add drive dialog shows in-use disks as unavailable', async ({ page, re
   const dialog = page.locator('.fixed.inset-0');
   await expect(dialog.getByRole('heading', { name: `Add Drive to ${pool.name}` })).toBeVisible();
 
+  // ZFS reports vdev members; the wizard lists whole disks, so map a
+  // partition back to the device the inventory shows.
+  const wholeDisk = (device: string): string => {
+    if (/^\/dev\/nvme\d+n\d+p\d+$/.test(device)) return device.replace(/p\d+$/, '');
+    if (/^\/dev\/sd[a-z]+\d+$/.test(device)) return device.replace(/\d+$/, '');
+    return device;
+  };
+
   // Every disk this test's pool owns must be marked, unselectable, and the
   // submit button must stay disabled.
-  for (const disk of pool.disks) {
+  for (const disk of new Set(pool.disks.map(wholeDisk))) {
     const row = dialog.locator('label').filter({ hasText: disk });
     await expect(row.getByText(`in pool ${pool.name}`)).toBeVisible();
     await expect(row.locator('input[type="checkbox"]')).toBeDisabled();
