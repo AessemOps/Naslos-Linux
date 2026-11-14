@@ -259,3 +259,36 @@ subjects:
     name: naslos-api
     namespace: {{ .Release.Namespace }}
 {{- end }}
+
+---
+# Day-2 network changes (FR-NET): after an MTU change the API rolls the Cilium
+# DaemonSet so it re-detects the interface MTU. Scoped to the one named
+# DaemonSet in kube-system; nothing else is writable cluster-wide.
+{{- if .Values.api.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: naslos-api-cilium-restart
+  labels:
+    app.kubernetes.io/name: naslos
+rules:
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    resourceNames: ["cilium"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: naslos-api-cilium-restart
+  labels:
+    app.kubernetes.io/name: naslos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: naslos-api-cilium-restart
+subjects:
+  - kind: ServiceAccount
+    name: naslos-api
+    namespace: {{ .Release.Namespace }}
+{{- end }}

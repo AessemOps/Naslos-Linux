@@ -72,9 +72,12 @@ schematic is the only thing that changes the OS image.
 - **Talos**: `talosctl upgrade` upgrades the OS. The extension is re-imported
   from the Image Factory; pools are re-imported by `zfs-service` on the new boot.
 - **Naslos**: Helm chart upgrades (`helm upgrade … charts/naslos`) redeploy the
-  API/UI and agent workloads; machine-config patches are applied out-of-band with
-  `talosctl apply-config` / `scripts/deploy-vm.sh` (the API does not reapply
-  them).
+  API/UI and agent workloads; install-time machine-config patches are applied
+  out-of-band with `talosctl apply-config` / `scripts/deploy-vm.sh`. The only
+  in-product machine-config writes are the guarded day-2 host network changes
+  from Settings → Network (`FR-NET`): a `talosctl patch machineconfig` for
+  links, addressing, MTU and DNS, with a saved-config revert. Nothing else in
+  the API patches the machine config.
 
 ## Where it lives
 
