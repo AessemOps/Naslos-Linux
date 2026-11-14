@@ -11,7 +11,7 @@ rules and conventions are in [`AGENTS.md`](AGENTS.md).
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## Production instance (2026-11-11)
+## Production instance (2026-11-14)
 
 - **Hardware:** the production NAS is the bare-metal node `talos-zgr-9yg` at
   `192.168.1.38` (Talos v1.14.5, Kubernetes v1.37.0, control-plane Ready). The
@@ -19,24 +19,25 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart `0.3.21`, appVersion `0.3.21`,
-  revision 21, deployed 2026-11-11 01:44 UTC (system updater from 0.3.20 at
-  01:05, which came from 0.3.19 at 2026-11-10 21:03). Images are digest-pinned
-  from the 0.3.21 pack: API `36de5918…`, agent `f11c052f…`, UI `03d0cac4…`,
-  OpenLDAP `c7f44155…`, Samba `2c522e81…`, NFS `438277e7…`, terminal
-  `9f39590d…`. `/api/system/version` reports chart/naslos `0.3.21`, profile
-  `installer`, Talos v1.14.5, k8s v1.37.0.
+- **Deployed release:** Helm `naslos` chart `0.3.22`, appVersion `0.3.22`,
+  revision 28, deployed 2026-11-14 00:54 UTC from `master` with
+  `make install-vm`. Every image is `ghcr.io/aessemops/naslos-*:sha-edc06365af3a2271bb32678210731e84027724c1`
+  (public GHCR packages from a `publish=false` dry run); `/api/system/version`
+  reports Talos v1.14.5 and k8s v1.37.0. The private registry
+  `192.168.1.2:30095` is retired — do not build/push local images.
 - **Latest release:** `v0.3.22` (2026-11-13) and installer `naslos-v0.3.22`
-  are published; the node still runs `v0.3.21` until the system updater applies
-  it. `v0.3.21`, `v0.3.20`, `v0.3.19`, `v0.3.18`, `v0.3.17`, `v0.3.16`,
-  `v0.3.15`, `v0.3.14`, `v0.3.13`, `v0.3.12`, `v0.3.11`, `v0.3.10` and
-  `v0.3.9` were the previous releases, `v0.3.8` was superseded.
-- **In flight (not deployed):** custom per-app environment variables (#158),
-  automatic per-domain app CNAMEs pointing at a DDNS hostname (#159, stacked on
-  #158), and the NaslosCharts `env` capability wiring (NaslosCharts #20, stacked
-  on #19). Deploy only after the chart PRs and both platform PRs land, with a
-  fresh `IMAGE_TAG` in `values-vm.yaml`; then run the env and DNS live drills
-  from `.kilo/plans/1794606775292-app-env-and-dns-records.md`.
+  are published. The node runs the `master` dry-run build above (ahead of the
+  pack); the system updater may later replace it with the release digests.
+- **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
+  #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
+  pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
+  env create/update/keep-secret/reserved-name/remove on `calibre-web`, and CNAME
+  create/`409`/delete on OVH `shail.ovh` via a temporary `drill.shail.ovh`.
+  Two OVH bugs were found and fixed during the drill: zone discovery must treat
+  403 as an unowned zone and probe `/record?subDomain=` (the app key lacks the
+  zone-root right). Also fixed the Helm 4 `--server-side=true` flags, the agent
+  probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
+  `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
   - `0.3.22` (published, not yet applied) — audit remediation: Buddy-disabled
     installs answer 503 instead of aborting the API (#148); share paths reject
