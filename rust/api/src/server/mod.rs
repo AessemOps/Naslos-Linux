@@ -18,6 +18,7 @@ pub mod ddns;
 pub mod disks;
 pub mod domains;
 pub mod handlers;
+pub mod network;
 pub mod notifications;
 pub mod pods;
 pub mod providers;
@@ -220,6 +221,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/notifications/test",
             post(notifications::notification_test_post),
         )
+        // Host network settings (FR-NET). Literal change routes before the
+        // `{id}` wildcard, and all of them before the `/api/{*rest}` fallback.
+        .route("/api/network", get(network::network_get))
+        .route("/api/network/changes", post(network::change_post))
+        .route(
+            "/api/network/changes/{id}/revert",
+            post(network::change_revert_post),
+        )
+        .route("/api/network/changes/{id}", get(network::change_detail_get))
         .route("/api/buddy/status", get(buddy_owner::status))
         .route(
             "/api/buddy/peers",

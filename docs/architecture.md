@@ -340,5 +340,7 @@ Talos upgrades are unaffected because:
 - The ZFS extension is in the Image Factory schematic.
 - Naslos components are Kubernetes workloads (survive node reboots).
 - ZFS pools are not in Talos's volume system.
-- Machine-config patches are applied out-of-band with `talosctl apply-config` /
-  `scripts/deploy-vm.sh`; the API does not reapply them.
+- Install-time machine-config patches are applied out-of-band with
+  `talosctl apply-config` / `scripts/deploy-vm.sh`. The one in-product exception
+  is the guarded day-2 network change path (`FR-NET`) described in
+  [deployment.md](deployment.md#day-2-network-changes-fr-net).

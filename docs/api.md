@@ -233,6 +233,50 @@ The actual ZFS work is delegated to `naslos-agent` on each node:
 Temperature is `null` when the node exposes no CPU sensor; the rest of the
 metrics are unaffected.
 
+### Host network settings (`FR-NET`)
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/network` | Inventory: hostname + source, resolver mode (`inherit`/explicit) and host-DNS flags, the primary link, and every physical link with live addresses, routes, effective config, speed/duplex and ring/WOL features |
+| POST | `/api/network/changes` | Start one guarded change: `{link, addressing:"dhcp"/"static", addresses[], gateway?, mtu?, confirmLowMtu?, nameservers:{mode,servers}, searchDomains:{mode,domains}}` -> `202 {id, phase}`. Omitted fields are unchanged |
+| GET | `/api/network/changes/{id}` | `{id, phase, link, target, deadline, error}`; phases `applying -> verifying -> awaiting -> applied / reverted / failed` |
+| POST | `/api/network/changes/{id}/revert` | Apply the saved previous full machine config now -> `202` |
+
+Validation is server-side and errors use `{"error": "..."}`: `400` invalid
+input, `409` while a change is pending (or a system upgrade operation is
+running), `404` unknown change, `503` when the API has no Talos client, and
+`502` when the machine config cannot be parsed. A patch the node
+rejects does not fail the POST: the change ends in `failed` and the detail
+route reports the node's error. A change applies a certSANs union patch, then
+`talosctl patch machineconfig --mode=try`, verifies the target address inside
+the 60-second guard window, confirms with a different certSANs update, and
+keeps the record `awaiting` for five minutes. Reverting re-applies the saved
+full config, not a reverse patch. When the target address changes, the browser
+and the operator's DNS or `/etc/hosts` entry must move to it; see
+[deployment.md](deployment.md#day-2-network-changes).
+
+`GET /api/network` shape (abridged):
+
+```json
+{
+  "hostname": { "value": "<hostname>", "source": "auto-stable" },
+  "resolvers": { "inherit": true, "nameservers": [], "searchDomains": [],
+                 "searchInherit": true,
+                 "hostDns": { "enabled": true, "forwardKubeDnsToHost": false } },
+  "primaryLink": "<ifname>",
+  "links": [{ "name": "<ifname>", "kind": "ether", "up": true, "mac": "<mac>",
+              "mtu": 1500, "speedMbps": 2500, "duplex": "full",
+              "addresses": [{ "address": "<cidr>", "source": "static" }],
+              "gateway": "<ip>",
+              "config": { "addressing": "static", "addresses": ["<cidr>"],
+                          "routes": [{ "destination": null, "gateway": "<ip>" }],
+                          "mtu": 1500 },
+              "features": { "wol": [], "ringRx": 256, "ringTx": 256 } }],
+  "appliance": { "domain": "<domain>", "lanCidr": "<cidr>" },
+  "pending": null
+}
+```
+
 ### System upgrades (`FR-UPD`, see [installer-contract.md §7](installer-contract.md#7-web-upgrades-fr-upd))
 
 | Route | Method | Body / result |
@@ -346,6 +390,7 @@ shell, never an arbitrary command.
 | `DOMAINS_CONFIG` | `/var/lib/naslos/domains.json` | Base domains |
 | `DDNS_ENABLED` | `true` | Wire the DDNS reconcile loop |
 | `DDNS_CONFIG` | `/var/lib/naslos/ddns.json` | Dynamic-DNS entry store |
+| `NETWORK_STATE` | `/var/lib/naslos/network.json` | In-flight host-network change record and its previous-config snapshot (`FR-NET`) |
 | `DDNS_PROVIDERS_DIR` | — | Override directory for provider `*.yaml` files |
 | `DDNS_IP_SOURCE` / `DDNS_IPV6_SOURCE` | `https://api.ipify.org` / `https://api6.ipify.org` | Public-IP detection URLs |
 | `DDNS_IP_SOURCES` / `DDNS_IPV6_SOURCES` | — | Comma-separated source lists (HTTP URLs or `dns:opendns`/`dns:google`) |

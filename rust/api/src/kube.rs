@@ -202,6 +202,28 @@ impl Client {
         self.delete("pod", name, namespace).await
     }
 
+    /// Roll a workload (e.g. the Cilium DaemonSet after an MTU change). `kind`
+    /// is a literal supplied by the caller, never operator input.
+    pub async fn rollout_restart(
+        &self,
+        namespace: &str,
+        kind: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        self.run(
+            &[
+                "rollout".into(),
+                "restart".into(),
+                format!("{kind}/{name}"),
+                "-n".into(),
+                namespace.into(),
+            ],
+            None,
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// Merge-patch a resource (used for the SSO ConfigMap's `data` keys, so the
     /// chart's ownership of other fields is untouched).
     pub async fn patch_merge(

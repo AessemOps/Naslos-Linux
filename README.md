@@ -41,6 +41,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 - **Logs & terminal** — stream logs and open an interactive shell (`bash` by default; `sh`/`ash`/`zsh` where installed) in any pod from the UI
 - **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served)
 - **ntfy notifications** — push alerts on backup and ZFS/agent health transitions
+- **Network settings** — day-2 host link addressing, MTU and DNS changes from the UI, applied with a machine-side `--mode=try` guard, an API watchdog and a saved-config revert (see [docs/deployment.md](docs/deployment.md#day-2-network-changes-fr-net))
 - **Monitoring dashboard** — live metrics API (`/api/metrics`) + home dashboard; no bundled metrics stack
 - **Desktop installer** — a one-app installer (separate
   [Naslos-Installer](https://github.com/AessemOps/Naslos-Installer) repo) that

@@ -72,6 +72,12 @@ impl TalosClient {
         &self.nodes
     }
 
+    /// The configured Talos API endpoints (from `TALOS_ENDPOINTS` or the
+    /// talosconfig context).
+    pub fn endpoints(&self) -> &[String] {
+        &self.endpoints
+    }
+
     /// Assemble the common flags for every invocation.
     fn base_args(&self) -> Vec<String> {
         let mut args = Vec::new();
@@ -92,8 +98,34 @@ impl TalosClient {
 
     /// Run `talosctl <args>` and return stdout. Non-zero exit is an error.
     async fn run(&self, args: &[&str]) -> Result<String, String> {
+        let owned: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        self.run_owned(&owned).await
+    }
+
+    /// Run `talosctl <args>` with an endpoint/node override for a single call.
+    ///
+    /// The override replaces the configured endpoints and nodes rather than
+    /// appending to them: a stale talosconfig endpoint would otherwise make
+    /// `talosctl` contact the old address and fail. This is what lets a change
+    /// be verified and confirmed at its new address.
+    pub async fn run_at(&self, endpoint: &str, args: &[&str]) -> Result<String, String> {
+        let mut full = Vec::new();
+        if let Some(cfg) = &self.talosconfig {
+            full.push("--talosconfig".to_string());
+            full.push(cfg.clone());
+        }
+        full.push("-e".into());
+        full.push(endpoint.to_string());
+        full.push("-n".into());
+        full.push(endpoint.to_string());
+        full.extend(args.iter().map(|s| (*s).to_string()));
+        self.run_owned(&full).await
+    }
+
+    /// Run `talosctl <args>` with fully owned arguments.
+    async fn run_owned(&self, args: &[String]) -> Result<String, String> {
         let mut full = self.base_args();
-        full.extend(args.iter().map(|s| s.to_string()));
+        full.extend(args.iter().cloned());
 
         let mut cmd = tokio::process::Command::new(&self.binary);
         crate::proc::scrub(&mut cmd);
@@ -395,6 +427,183 @@ impl TalosClient {
         }
         Ok(net)
     }
+}
+
+/// Node networking reads and machine-config writes used by the day-2 network
+/// settings page (FR-NET). Reads are tolerant (`-o json` stream parsing);
+/// writes always go through a temp file so no operator input reaches argv.
+impl TalosClient {
+    /// Raw `talosctl get links -o json` values.
+    pub async fn links(&self) -> Result<Vec<serde_json::Value>, String> {
+        let out = self.run(&["get", "links", "-o", "json"]).await?;
+        Ok(all_json(&out))
+    }
+
+    /// Raw `talosctl get addresses -o json` values.
+    pub async fn addresses(&self) -> Result<Vec<serde_json::Value>, String> {
+        let out = self.run(&["get", "addresses", "-o", "json"]).await?;
+        Ok(all_json(&out))
+    }
+
+    /// Raw `talosctl get routes -o json` values.
+    pub async fn routes(&self) -> Result<Vec<serde_json::Value>, String> {
+        let out = self.run(&["get", "routes", "-o", "json"]).await?;
+        Ok(all_json(&out))
+    }
+
+    /// Raw `talosctl get resolvers -o json` values.
+    pub async fn resolvers(&self) -> Result<Vec<serde_json::Value>, String> {
+        let out = self.run(&["get", "resolvers", "-o", "json"]).await?;
+        Ok(all_json(&out))
+    }
+
+    /// Raw `talosctl get ethernetstatus -o json` values (rings/features/WOL).
+    pub async fn ethernet_status(&self) -> Result<Vec<serde_json::Value>, String> {
+        let out = self.run(&["get", "ethernetstatus", "-o", "json"]).await?;
+        Ok(all_json(&out))
+    }
+
+    /// The running machine configuration as (multi-document) YAML.
+    pub async fn machine_config(&self) -> Result<String, String> {
+        self.run(&["get", "machineconfig", "-o", "yaml"]).await
+    }
+
+    /// The running hostname, from the kernel.
+    pub async fn hostname(&self) -> Option<String> {
+        let raw = self.read("/proc/sys/kernel/hostname").await.ok()?;
+        let value = raw.trim().to_string();
+        (!value.is_empty()).then_some(value)
+    }
+
+    /// The machine configuration as seen from a specific address. Used to
+    /// verify a change at its new address before confirming it.
+    pub async fn machine_config_at(&self, endpoint: &str) -> Result<String, String> {
+        self.run_at(endpoint, &["get", "machineconfig", "-o", "yaml"])
+            .await
+    }
+
+    /// Negotiated link speed in Mbps from sysfs. `None` when the driver does not
+    /// expose it (virtual links often do not).
+    pub async fn link_speed(&self, ifname: &str) -> Option<u64> {
+        let raw = self
+            .read(&format!("/sys/class/net/{ifname}/speed"))
+            .await
+            .ok()?;
+        raw.trim().parse::<u64>().ok().filter(|v| *v > 0)
+    }
+
+    /// Negotiated duplex from sysfs (`full`/`half`).
+    pub async fn link_duplex(&self, ifname: &str) -> Option<String> {
+        let raw = self
+            .read(&format!("/sys/class/net/{ifname}/duplex"))
+            .await
+            .ok()?;
+        let value = raw.trim().to_ascii_lowercase();
+        (!value.is_empty()).then_some(value)
+    }
+
+    /// Apply a multi-document machine-config patch live.
+    pub async fn patch_config(&self, patch: &str, mode: &str) -> Result<(), String> {
+        self.patch_config_inner(None, patch, mode).await
+    }
+
+    /// Apply a patch while overriding the endpoint (the node may only be
+    /// reachable at its new address).
+    pub async fn patch_config_at(
+        &self,
+        endpoint: &str,
+        patch: &str,
+        mode: &str,
+    ) -> Result<(), String> {
+        self.patch_config_inner(Some(endpoint), patch, mode).await
+    }
+
+    async fn patch_config_inner(
+        &self,
+        endpoint: Option<&str>,
+        patch: &str,
+        mode: &str,
+    ) -> Result<(), String> {
+        let file = write_temp("patch", patch)?;
+        let reference = format!("@{}", file.path().display());
+        let args = [
+            "patch".to_string(),
+            "machineconfig".to_string(),
+            "--patch".to_string(),
+            reference,
+            "--mode".to_string(),
+            mode.to_string(),
+        ];
+        match endpoint {
+            Some(ep) => self.run_at_owned(ep, &args).await.map(|_| ()),
+            None => self.run_owned(&args).await.map(|_| ()),
+        }
+    }
+
+    /// Apply a full machine configuration (the saved snapshot on revert).
+    pub async fn replace_config(&self, config: &str, mode: &str) -> Result<(), String> {
+        self.replace_config_inner(None, config, mode).await
+    }
+
+    /// Apply a full machine configuration at an explicit endpoint.
+    pub async fn replace_config_at(
+        &self,
+        endpoint: &str,
+        config: &str,
+        mode: &str,
+    ) -> Result<(), String> {
+        self.replace_config_inner(Some(endpoint), config, mode)
+            .await
+    }
+
+    async fn replace_config_inner(
+        &self,
+        endpoint: Option<&str>,
+        config: &str,
+        mode: &str,
+    ) -> Result<(), String> {
+        let file = write_temp("config", config)?;
+        let args = [
+            "apply-config".to_string(),
+            "--file".to_string(),
+            file.path().display().to_string(),
+            "--mode".to_string(),
+            mode.to_string(),
+        ];
+        match endpoint {
+            Some(ep) => self.run_at_owned(ep, &args).await.map(|_| ()),
+            None => self.run_owned(&args).await.map(|_| ()),
+        }
+    }
+
+    async fn run_at_owned(&self, endpoint: &str, args: &[String]) -> Result<String, String> {
+        let mut full = Vec::new();
+        if let Some(cfg) = &self.talosconfig {
+            full.push("--talosconfig".to_string());
+            full.push(cfg.clone());
+        }
+        full.push("-e".into());
+        full.push(endpoint.to_string());
+        full.push("-n".into());
+        full.push(endpoint.to_string());
+        full.extend(args.iter().cloned());
+        self.run_owned(&full).await
+    }
+}
+
+/// Write a payload to a private temp file for a `talosctl --patch @file` /
+/// `apply-config --file` argument. The file is removed when the value drops.
+fn write_temp(prefix: &str, data: &str) -> Result<tempfile::NamedTempFile, String> {
+    use std::io::Write;
+    let mut file = tempfile::Builder::new()
+        .prefix(&format!("naslos-{prefix}-"))
+        .tempfile()
+        .map_err(|e| format!("creating a temp {prefix} file: {e}"))?;
+    file.write_all(data.as_bytes())
+        .map_err(|e| format!("writing the temp {prefix} file: {e}"))?;
+    file.flush()
+        .map_err(|e| format!("flushing the temp {prefix} file: {e}"))?;
+    Ok(file)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
