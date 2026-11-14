@@ -110,10 +110,11 @@ test('the terminal lists pods, preselects the shell container and runs commands'
   await expect(screen(page)).toContainText('0', { timeout: 15_000 });
 
   // Host tooling is reachable from the terminal: the `zpool` wrapper chroots
-  // into /host and reports the real pool.
+  // into /host and reports the real pools (the node's names vary, HEALTH does
+  // not).
   await page.keyboard.type('zpool list');
   await page.keyboard.press('Enter');
-  await expect(screen(page)).toContainText('test', { timeout: 20_000 });
+  await expect(screen(page)).toContainText('ONLINE', { timeout: 20_000 });
 
   await page.click('button:has-text("Disconnect")');
   await expect(screen(page)).toContainText('Session closed', { timeout: 15_000 });
