@@ -304,16 +304,17 @@ spec:
             - name: PLATFORM_RELEASE
               value: {{ .Release.Name | quote }}
             # Release facts for the web upgrader (docs/installer-contract.md §7).
-            # Only a pack's values-installer.yaml carries `release`; a
-            # make-install-vm deployment has none, reports its versions and
-            # keeps Upgrade disabled (D2).
+            # A pack's values-installer.yaml carries `release`; a
+            # make-install-vm deployment has none, so fall back to the chart
+            # metadata to report the running version and keep Upgrade disabled
+            # (profile is not `installer`, D2).
             {{- $release := .Values.release | default dict }}
             - name: NASLOS_RELEASE_PROFILE
-              value: {{ $release.profile | default "" | quote }}
+              value: {{ $release.profile | default "make-install" | quote }}
             - name: NASLOS_RELEASE_VERSION
-              value: {{ $release.naslosVersion | default "" | quote }}
+              value: {{ $release.naslosVersion | default .Chart.AppVersion | quote }}
             - name: NASLOS_RELEASE_CHART_VERSION
-              value: {{ $release.chartVersion | default "" | quote }}
+              value: {{ $release.chartVersion | default .Chart.Version | quote }}
             - name: NASLOS_RELEASE_TALOS_VERSION
               value: {{ $release.talosVersion | default "" | quote }}
             - name: NASLOS_RELEASE_SCHEMATIC_ID
