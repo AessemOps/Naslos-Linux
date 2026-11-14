@@ -25,9 +25,10 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   (public GHCR packages from a `publish=false` dry run); `/api/system/version`
   reports Talos v1.14.5 and k8s v1.37.0. The private registry
   `192.168.1.2:30095` is retired — do not build/push local images.
-- **Latest release:** `v0.3.22` (2026-11-13) and installer `naslos-v0.3.22`
-  are published. The node runs the `master` dry-run build above (ahead of the
-  pack); the system updater may later replace it with the release digests.
+- **Latest release:** `v0.3.23` (2026-11-14) and installer `naslos-v0.3.23`
+  are published. The node runs the `master` dry-run build above (revision 29,
+  `sha-78eac917…`); the system updater may later replace it with the release
+  digests.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
@@ -39,6 +40,15 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.3.23` (2026-11-14) — per-app custom environment variables
+    (`capabilities: [env]`, `naslos-env-<release>` Secret, checksum-driven
+    rollout) and opt-in automatic app CNAMEs per domain (OVH ZoneDNS /
+    Cloudflare, ownership/adoption/conflict rules, retries, 409 on referenced
+    DDNS entries). Images now come only from public GHCR packages; the local
+    registry is retired. Includes the OVH 403/apex-record zone-discovery fixes,
+    the Helm 4 `--server-side=true` install fix, the agent probe cleanup, and
+    the `/api/system/updates` disabled-shape fix. Live drills passed for both
+    features; the full Playwright suite is green (61 passed, 2 skipped).
   - `0.3.22` (published, not yet applied) — audit remediation: Buddy-disabled
     installs answer 503 instead of aborting the API (#148); share paths reject
     symlinks (#149); notifications/DDNS pin the vetted address (#152); disabled
