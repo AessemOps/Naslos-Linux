@@ -425,6 +425,10 @@ spec:
             # restart (they used to be in-memory only).
             - name: NOTIFICATIONS_CONFIG
               value: {{ .Values.api.notificationsFile | default "/var/lib/naslos/notifications.json" | quote }}
+            # Day-2 host network changes (FR-NET): the in-flight change record
+            # and its previous-config snapshot live on the same state volume.
+            - name: NETWORK_STATE
+              value: {{ .Values.api.networkStateFile | default "/var/lib/naslos/network.json" | quote }}
             {{- if .Values.buddy.enabled }}
             # Buddy Backup receive side (docs/buddy-backup.md): peers push
             # encrypted chunks that this instance stores but cannot read. The

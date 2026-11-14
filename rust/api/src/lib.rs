@@ -25,6 +25,7 @@ pub mod identity;
 pub mod kube;
 pub mod logsafe;
 pub mod metrics;
+pub mod network;
 pub mod notifications;
 pub mod pack;
 pub mod proc;

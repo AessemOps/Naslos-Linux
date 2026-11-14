@@ -5,6 +5,7 @@
     { href: '/groups', title: 'Groups', detail: 'Group membership', icon: '👥' },
     { href: '/shares', title: 'Shares', detail: 'SMB and NFS exports', icon: '📁' },
     { href: '/notifications', title: 'Notifications', detail: 'ntfy alerts and thresholds', icon: '🔔' },
+    { href: '/settings/network', title: 'Network', detail: 'Links, addressing, MTU and DNS', icon: '🔌' },
     { href: '/dns', title: 'Dynamic DNS', detail: 'Providers and records', icon: '🌐' },
     { href: '/domains', title: 'Domains & TLS', detail: 'Base domains and certificates', icon: '🔐' },
     { href: '/pools', title: 'Pools', detail: 'ZFS pools and datasets', icon: '💾' },

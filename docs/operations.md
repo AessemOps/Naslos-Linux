@@ -99,6 +99,36 @@ The admin password is only required while the `admin` step is still pending.
   snapshot from `/var/lib/naslos/backups/etcd-<ts>.db` on the node if the
   control plane does not return. Keep the three newest snapshots.
 
+## Network recovery
+
+Settings → Network applies changes with a machine-side `--mode=try` guard
+(60 s) and an API watchdog (5 min). If a change leaves the node unreachable and
+both guards failed, recover the saved configuration instead of reinstalling:
+
+1. **Read the saved snapshot.** It is the `pending.previousConfig` field in
+   `NETWORK_STATE` (`/var/lib/naslos/network.json` on the `naslos-shares-config`
+   PVC). With a running API pod:
+   ```bash
+   kubectl -n naslos exec deploy/naslos-api -- cat /var/lib/naslos/network.json
+   ```
+   If the API pod cannot start, mount the PVC in a debug pod and read the same
+   file.
+2. **Apply the snapshot from a workstation** that has the admin talosconfig:
+   save the `previousConfig` string as `previous.yaml`, then
+   ```bash
+   talosctl apply-config --file previous.yaml --nodes <node> --mode=no-reboot
+   ```
+   `no-reboot` is deliberate: the snapshot restores the working link state
+   immediately.
+3. **Console / ISO fallback.** If the Talos API is also unreachable, boot the
+   node's maintenance ISO or use the console and apply the same file with
+   `talosctl apply-config`. Only after the node is reachable again should you
+   diagnose from the UI.
+
+The change record is a crash-recovery aid, not a backup: it holds one pending or
+just-finished change. The install-time machine config remains in
+`bootstrap/vm/controlplane.yaml` and the installer recovery ZIP.
+
 ## CPU metrics
 
 The dashboard's **CPU** card shows the model, 1/5/15-minute load averages,

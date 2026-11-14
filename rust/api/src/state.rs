@@ -76,6 +76,8 @@ pub struct AppState {
     pub ddns: Option<Arc<crate::ddns::Manager>>,
     /// The ntfy notification manager (S6a).
     pub notifications: Arc<crate::notifications::Manager>,
+    /// The day-2 host network change manager (FR-NET).
+    pub network: Arc<crate::network::Manager>,
     /// The operator-registered datasets an app may mount (D3/F1).
     pub datasets_registry: Arc<crate::datasets::Registry>,
     /// The buddy receiver (S6e). Absent when buddy is disabled.
@@ -169,11 +171,13 @@ impl AppState {
             Arc::new(crate::authelia::KubeSyncer::new(k.clone(), &ns))
                 as Arc<dyn crate::authelia::Syncer>
         });
+        let talos = crate::talos::TalosClient::from_env().map(Arc::new);
+        let network = crate::network::Manager::from_env(talos.clone(), kube.clone());
         Ok(Self {
             proxy_secret,
             trusted_cidrs,
             metrics: Manager::new(),
-            talos: crate::talos::TalosClient::from_env().map(Arc::new),
+            talos,
             agent: match crate::agent::Client::from_env() {
                 Ok(client) => Some(Arc::new(client)),
                 Err(e) => {
@@ -204,6 +208,7 @@ impl AppState {
             apps_namespace,
             ddns,
             notifications: Arc::new(crate::notifications::Manager::from_env()),
+            network,
             datasets_registry,
             buddy: build_buddy_receiver(),
             buddy_jobs: Arc::new(crate::server::buddy_send::BuddyJobManager::new()),
@@ -247,6 +252,7 @@ impl AppState {
             apps_namespace: "naslos-apps".to_string(),
             ddns: None,
             notifications: Arc::new(crate::notifications::Manager::new("")),
+            network: crate::network::Manager::new("", Arc::new(crate::network::UnavailableNode)),
             datasets_registry: Arc::new(crate::datasets::Registry::new("", "")),
             buddy: None,
             buddy_jobs: Arc::new(crate::server::buddy_send::BuddyJobManager::new()),
