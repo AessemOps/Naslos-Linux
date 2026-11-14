@@ -104,12 +104,13 @@ via `storageState`; a target that does not challenge is an error.
   (no-push Docker build of all 8 images) and `pack` (`make install-pack` +
   checksum).
 - `.github/workflows/release.yml` — on a `vX.Y.Z` tag: `guard` (the tag must
-  equal `Chart.yaml` `version`/`appVersion` and `ui/package.json` `version` via
-  `scripts/check-release-version.sh`) → build + push all 8 images to
-  `ghcr.io/aessemops/naslos-*` (linux/amd64) → build the install pack with every
-  chart image pinned by digest (FR-INSTALL-13) → attach the pack to the release
-  → dispatch `Naslos-Installer`. Bump the three version fields in the release
-  commit or `guard` fails.
+  equal `Chart.yaml` `version`/`appVersion` and `ui/package.json` `version`, and
+  every image tag in `values.yaml`/`values-installer.yaml` must match
+  `appVersion`, via `scripts/check-release-version.sh`) → build + push all 8
+  images to `ghcr.io/aessemops/naslos-*` (linux/amd64) → build the install pack
+  with every chart image pinned by digest (FR-INSTALL-13) → attach the pack to
+  the release → dispatch `Naslos-Installer`. Bump the version fields and image
+  tags in the release commit or `guard` fails.
 - Release prerequisites (operator, documented in `docs/deployment.md`): the
   `INSTALLER_DISPATCH_TOKEN` secret (the dispatch is skipped without it) and the
   GHCR packages made **public** (the provisioned node has no `imagePullSecret`).
@@ -170,11 +171,11 @@ via `storageState`; a target that does not challenge is an error.
   `192.168.1.38` (the old `192.168.1.117` VM is powered off). The
   `bootstrap/vm/*`, `values-vm.yaml`, `install-vm` and `deploy-vm.sh` names are
   historical paths for this single node, not a VM; they point at `.38`.
-- **Always bump image tag suffixes.** The private registry reuses tags and the
-  chart pulls with `IfNotPresent`, so a retag alone can keep running old code.
-  Build and push with a fresh `IMAGE_TAG` (e.g. `0.1.0-r30`), then set it in
-  `charts/naslos/values-vm.yaml` (or `--set`). Released packs pull
-  digest-pinned images from GHCR instead.
+- **Images come only from public GHCR** (`ghcr.io/aessemops/naslos-*`); the old
+  private registry `192.168.1.2:30095` is retired and must not be referenced or
+  pushed to. Released packs pull digest-pinned GHCR images. If you must override
+  a tag locally, still bump the suffix: the chart pulls with `IfNotPresent`, so
+  a retag alone can keep running old code.
 - `make install-vm` renders `-f values.yaml -f values-vm.yaml` (it is **not**
   `--reuse-values`) and now also installs its prerequisites first: `crds`,
   `cert-manager`, and `cert-manager-webhook-ovh`.
@@ -193,13 +194,13 @@ via `storageState`; a target that does not challenge is an error.
 
 - Production node: bare-metal `talos-zgr-9yg` at `192.168.1.38` (Talos v1.14.5,
   k8s v1.37.0); the old `192.168.1.117` VM is powered off. UI
-  `https://naslos.local` (the only listener; no NodePort), private registry
-  `192.168.1.2:30095` (local dev builds),
+  `https://naslos.local` (the only listener; no NodePort), images from public
+  GHCR only (the old private registry `192.168.1.2:30095` is retired),
   `TALOSCONFIG=bootstrap/vm/talosconfig` (historical path, endpoint `.38`).
 - Namespaces: `naslos` (authenticated services), `naslos-privileged`
   (agent/samba/nfs/terminal), the shared app namespaces `naslos-apps` (PSA
   baseline) and `naslos-apps-priv` (privileged), the per-app pools
-  `naslos-app-1..8` (baseline) and `naslos-app-p1..4` (privileged), and
+  `naslos-app-1..32` (baseline) and `naslos-app-p1..4` (privileged), and
   `cert-manager`.
 - Auth is Authelia forwardAuth only (`/authelia`, 2FA for `naslos_admins`); the
   UI signs out by `POST /authelia/api/logout`. There is no unauthenticated
