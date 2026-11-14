@@ -30,7 +30,8 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   Authelia auth, local-only) rendered as Traefik routes; install/upgrade/
   uninstall run as background jobs with live progress; the Installed tab shows
   compact rows with live CPU/RAM/network usage and update badges (one-click
-  upgrade with a version confirmation) plus a per-app detail drawer; the catalog
+  per-app or **Update all** bulk upgrades with a version confirmation) plus a
+  per-app detail drawer; the catalog
   refreshes in the background at the cache TTL, and domains and wildcard ACME
   certificates are managed from the UI. Per-app custom environment variables
   are stored in a Kubernetes Secret and mounted only into the app's main

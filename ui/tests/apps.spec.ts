@@ -347,3 +347,92 @@ test.describe('app environment variables', () => {
     await expect(page.getByText('TOKEN=s3cret')).toBeHidden();
   });
 });
+
+// The bulk update action is pure UI over the existing per-app upgrade path:
+// mock the list and assert one PUT per updateable app.
+test.describe('installed app updates', () => {
+  test('updates every app with an available update', async ({ page }) => {
+    const updated: string[] = [];
+    const appView = (name: string, displayName: string) => ({
+      name,
+      namespace: `naslos-app-${name}`,
+      chart: name,
+      status: 'running',
+      url: '',
+      orphaned: false,
+      exposure: { subdomain: '', tls: false, auth: false, localOnly: false, internet: true },
+      displayName,
+      icon: 'A',
+      iconUrl: '',
+      installedVersion: '1.0.0',
+      latestVersion: '2.0.0',
+      latestSource: 'official',
+      latestChannel: 'Prod',
+      updateAvailable: true
+    });
+    const apps = [appView('demo-a', 'Demo A'), appView('demo-b', 'Demo B')];
+
+    await page.route(/\/api\//, async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path === '/api/apps/updates') {
+        return route.fulfill({
+          json: {
+            count: 2,
+            apps: [
+              { name: 'demo-a', installedVersion: '1.0.0', latestVersion: '2.0.0' },
+              { name: 'demo-b', installedVersion: '1.0.0', latestVersion: '2.0.0' }
+            ]
+          }
+        });
+      }
+      if (path === '/api/apps/usage') {
+        return route.fulfill({ json: { available: false, apps: [] } });
+      }
+      if (path === '/api/apps/namespaces') {
+        return route.fulfill({
+          json: {
+            baseline: { provisioned: 0, limit: 0, used: 0, available: 0 },
+            privileged: { provisioned: 0, limit: 0, used: 0, available: 0 }
+          }
+        });
+      }
+      if (path === '/api/apps') {
+        return route.fulfill({ json: apps });
+      }
+      const job = /^\/api\/apps\/jobs\/([^/]+)$/.exec(path);
+      if (job) {
+        return route.fulfill({
+          json: {
+            id: decodeURIComponent(job[1]),
+            kind: 'upgrade',
+            app: decodeURIComponent(job[1]).replace(/^job-/, ''),
+            state: 'succeeded',
+            stage: 'finalizing',
+            message: 'done',
+            startedAt: new Date().toISOString(),
+            finishedAt: new Date().toISOString()
+          }
+        });
+      }
+      const update = /^\/api\/apps\/([^/]+)$/.exec(path);
+      if (update && request.method() === 'PUT') {
+        const name = decodeURIComponent(update[1]);
+        updated.push(name);
+        return route.fulfill({ status: 202, json: { jobId: `job-${name}`, state: 'running' } });
+      }
+      return route.fulfill({ json: [] });
+    });
+
+    await page.goto('/apps');
+    await page.getByRole('button', { name: 'Installed', exact: true }).click();
+    await expect(page.getByText('Loading installed apps...')).toBeHidden({ timeout: 10_000 });
+
+    await page.getByRole('button', { name: 'Update all (2)' }).click();
+    await expect(page.getByRole('heading', { name: 'Update 2 apps' })).toBeVisible();
+    await page.getByRole('button', { name: 'Update 2', exact: true }).click();
+
+    await expect(page.getByText('Started 2 updates')).toBeVisible();
+    expect(updated.sort()).toEqual(['demo-a', 'demo-b']);
+  });
+});
