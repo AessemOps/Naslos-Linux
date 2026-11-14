@@ -20,17 +20,20 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
 - **Deployed release:** Helm `naslos` chart `0.3.23`, appVersion `0.3.23`,
-  revision 31, deployed 2026-11-14 10:58 UTC from `master` with
-  `make install-vm`. Images are digest-pinned from `v0.3.23`: API `fa9c8956…`,
-  agent `4f680bfc…`, UI `485df9ad…`, OpenLDAP `e57e3fbf…`, Samba `b785ee38…`,
-  NFS `4d8806ea…`, terminal `a000ca0c…` (public GHCR). `/api/system/version`
-  now reports Naslos/chart 0.3.23, profile `make-install`, Talos v1.14.5 and
-  k8s v1.37.0; the chart falls back to its own version so a make-install node
-  is not blank. The private registry `192.168.1.2:30095` is retired — do not
+  revision 32, deployed 2026-11-14 11:18 UTC from `master` with
+  `make install-vm`. API/agent/OpenLDAP/Samba/NFS/terminal are digest-pinned
+  from `v0.3.23`: API `fa9c8956…`, agent `4f680bfc…`, OpenLDAP `e57e3fbf…`,
+  Samba `b785ee38…`,
+  NFS `4d8806ea…`, terminal `a000ca0c…` (public GHCR). The UI is the
+  post-0.3.23 `sha-6ebab2db…` build (`bc8f5013…`) with the corrected System
+  message. `/api/system/version` reports Naslos/chart 0.3.23, profile
+  `make-install`, Talos v1.14.5 and k8s v1.37.0; the chart falls back to its own
+  version so a make-install node is not blank. The private registry `192.168.1.2:30095` is retired — do not
   build/push local images.
 - **Latest release:** `v0.3.23` (2026-11-14) and installer `naslos-v0.3.23`
-  are published; the node runs those exact digests. Full Playwright suite green
-  on revision 30 (61 passed, 2 skipped); the system spec is green on revision 31.
+  are published; the node runs those exact digests plus the post-release UI
+  message fix. Full Playwright suite green on revision 30 (61 passed, 2
+  skipped); the system spec is green on revision 32.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
