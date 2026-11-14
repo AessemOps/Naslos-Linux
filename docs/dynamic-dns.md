@@ -213,7 +213,7 @@ the zone itself).
 | Aspect | Behavior |
 | --- | --- |
 | Credentials | The domain's cert-manager Secret in `naslos-apps`: OVH `applicationKey`/`applicationSecret`/`consumerKey` + `providerConfig.endpoint`, Cloudflare `api-token` |
-| Zone discovery | The API walks `baseDomain` upward (`media.example.com` → `example.com`) and uses the first zone the provider serves; positive results are cached |
+| Zone discovery | The API walks `baseDomain` upward (`media.example.com` → `example.com`) and uses the first zone the provider serves; positive results are cached. OVH is probed with `GET /domain/zone/<zone>/record?subDomain=` (200 = served), because the cert-manager app key is scoped to `/domain/zone/<zone>/*` and the zone root answers 403 even for an owned zone |
 | OVH writes | CNAME target absolute (`host.`), TTL 0 (zone default), then `POST /domain/zone/<zone>/refresh`. Record ids come from the list endpoint as bare numbers; the API fetches each record for its type/target |
 | Cloudflare writes | `proxied:false`, TTL auto (`1`), content without a trailing dot |
 | Ownership | Only records Naslos created (or adopted because an existing CNAME already had the exact target) are updated or deleted. Any other record at the name is left alone and the app records `dns.status: error` |
