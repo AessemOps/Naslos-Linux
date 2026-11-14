@@ -11,7 +11,7 @@ HELM := helm
 
 VM_IP := 192.168.1.96
 VM_CONFIG_DIR := bootstrap/vm
-REGISTRY ?= 192.168.1.2:30095
+REGISTRY ?= ghcr.io/aessemops
 IMAGE_TAG ?= 0.1.0
 # Version of the install pack (defaults to the chart version when empty).
 PACK_VERSION ?=
@@ -220,6 +220,7 @@ cert-manager:
 		-n $(CERT_MANAGER_NAMESPACE) --create-namespace \
 		--version $(CERT_MANAGER_CHART_VERSION) \
 		--set crds.enabled=false \
+		--server-side=true \
 		--force-conflicts
 
 cert-manager-webhook-ovh:
@@ -232,6 +233,7 @@ cert-manager-webhook-ovh:
 		--set groupName=$(OVH_WEBHOOK_GROUP) \
 		--set certManager.namespace=$(CERT_MANAGER_NAMESPACE) \
 		--set certManager.serviceAccountName=cert-manager \
+		--server-side=true \
 		--force-conflicts
 
 # Install Naslos Helm chart.
@@ -246,6 +248,7 @@ install: crds
 	$(HELM) dependency update $(CHART_DIR)
 	$(HELM) upgrade --install naslos $(CHART_DIR) -n naslos --create-namespace \
 		--skip-crds \
+		--server-side=true \
 		--force-conflicts \
 		--take-ownership \
 		$(AUTHELIA_CONFIG_FLAG)
@@ -278,6 +281,7 @@ install-vm: crds cert-manager cert-manager-webhook-ovh
 		-f $(CHART_DIR)/values.yaml \
 		-f $(CHART_DIR)/values-vm.yaml \
 		--skip-crds \
+		--server-side=true \
 		--force-conflicts \
 		--take-ownership \
 		$(AUTHELIA_CONFIG_FLAG) \

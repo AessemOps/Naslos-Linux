@@ -97,35 +97,40 @@
 
 | Image | Where it comes from |
 | --- | --- |
-| `192.168.1.2:30095/naslos-api` | `make api-image` (`rust/api/Dockerfile`) |
-| `192.168.1.2:30095/naslos-ui` | `make ui-image` (`ui/Dockerfile`) |
-| `192.168.1.2:30095/naslos-agent` | `make agent-image` (`agent/Dockerfile.rust`) |
-| `192.168.1.2:30095/naslos-openldap` | `openldap/image/Dockerfile` |
+| `ghcr.io/aessemops/naslos-api` | `.github/image-matrix.json` → `rust/api/Dockerfile` |
+| `ghcr.io/aessemops/naslos-ui` | `ui/Dockerfile` |
+| `ghcr.io/aessemops/naslos-agent` | `agent/Dockerfile.rust` |
+| `ghcr.io/aessemops/naslos-openldap` | `openldap/image/Dockerfile` |
+
+The GHCR packages are public, so a node needs no `imagePullSecret`. Pull a
+specific build by its immutable `:sha-<commit>` tag (a dry-run release) or by
+the digest a real release pins. `values-vm.yaml` carries the `sha-<commit>` tags
+for the current node; a fresh image needs a new tag because the chart pulls with
+`IfNotPresent`. There is no local/private registry in the install path.
 
 ### Pinning a digest (recommended for a real release)
 
-A tag is mutable. The registry reuses `0.1.0` and the chart pulls with
-`IfNotPresent`, so `helm upgrade` after a retag can keep running old code
-(NAS-022). Pin the exact image instead:
+A tag is mutable. The chart pulls with `IfNotPresent`, so `helm upgrade` after a
+retag can keep running old code (NAS-022). Pin the exact image instead:
 
 ```bash
-make image-digests                      # prints "image -> repo@sha256:…" per component
-helm upgrade naslos charts/naslos -n naslos --reuse-values \
-  --set api.image.digest=sha256:… --set ui.image.digest=sha256:…
+# Digests of the images a release built (or a dry run pushed as :sha-<commit>)
+docker buildx imagetools inspect ghcr.io/aessemops/naslos-api:sha-<commit>
 ```
 
-`<component>.image.digest` accepts the value with or without the `sha256:`
-prefix and takes precedence over `tag`; leave it empty to keep the tag behaviour
-(and therefore the "always retag" rule). **A pinned digest wins over a tag on the
-next upgrade too** — with `--reuse-values` the stored digest is kept, so switching
-back to tags needs an explicit `--set api.image.digest=` (empty). `openldap.image` is a full image
+then set `<component>.image.digest=sha256:…` (or the release pack, which pins
+every image by digest). `digest` accepts the value with or without the `sha256:`
+prefix and takes precedence over `tag`; leave it empty to keep the tag behaviour.
+**A pinned digest wins over a tag on the next upgrade too** — with
+`--reuse-values` the stored digest is kept, so switching back to tags needs an
+explicit `--set api.image.digest=` (empty). `openldap.image` is a full image
 reference, so pin it there directly (`repo@sha256:…`).
 
 ## GHCR images + release tags
 
-The VM path above uses the private registry `192.168.1.2:30095`. A **release**
-publishes the same images publicly so the desktop installer's node can pull them
-anonymously:
+Every Naslos image lives in GHCR. A **release** publishes the same images
+publicly (with immutable digests) so the desktop installer's node and the VM pull
+them anonymously; a dry run publishes `:sha-<commit>` only:
 
 - `.github/workflows/ci.yml` runs on every PR/push to `master`: the full
   `scripts/audit.sh` sweep (with `gitleaks` installed so the secret scan does not
@@ -223,47 +228,17 @@ kubectl port-forward -n naslos svc/naslos-ui 8080:80
 For a bare-metal or virtual-machine Talos node without a cloud LoadBalancer,
 use the VM-specific bootstrap and install targets.
 
-### 1. Generate/build (one-time)
+### 1. Get images
 
-Build the Naslos container images and push them to a registry reachable by the VM.
-The default registry is `192.168.1.2:30095`; override it if you are using a different
-registry.
+Images are built and published by CI, not on the node or the operator's
+workstation. Either consume a released `:X.Y.Z` image (digest-pinned by the
+install pack) or run Actions → `release` → Run workflow with `publish=false`
+to publish immutable `:sha-<commit>` tags for the current `master`, then put
+those tags in `charts/naslos/values-vm.yaml` (all eight images from the same
+commit). A new commit means new tags: the chart pulls with `IfNotPresent`.
 
-This is a private plain-HTTP registry; the VM bootstrap patch
-(`bootstrap/vm/naslos-vm.yaml`) configures Talos to use it as an insecure
-mirror with the registry password `secret` (either an empty username or the
-placeholder `_`, depending on what your registry's basic-auth accepts —
-`scripts/deploy-vm.sh` tries both when pushing).
-
-On the build host, Docker must also be told the registry is insecure.
-`scripts/deploy-vm.sh` tries to merge it into `/etc/docker/daemon.json` as a
-best-effort step: it uses `sudo` when you are not root, skips the write with a
-warning when neither root nor `sudo`/`jq` is available, and never aborts the
-deploy on this step. If you push manually, make sure `192.168.1.2:30095`
-is listed under `insecure-registries` and that the Docker daemon was
-restarted afterwards (`sudo systemctl restart docker`).
-
-```bash
-# Build locally
-make images
-
-# Push (the registry password is `secret`;
-# `deploy-vm.sh` logs in automatically with the empty/`_` username fallback)
-make push-images
-
-# Or use a custom registry/tag
-make push-images REGISTRY=docker.io/myuser IMAGE_TAG=latest
-```
-
-If your registry requires a different HTTP password, set `REGISTRY_HTTP_SECRET`
-before running `scripts/deploy-vm.sh`:
-
-```bash
-REGISTRY_HTTP_SECRET=mysecret ./scripts/deploy-vm.sh
-```
-
-If you prefer a private registry other than the default, set `REGISTRY` and
-also pass the image overrides when installing (see step 3).
+The packages are public, so no registry login is needed on the node or the
+build host. There is no local/private registry fallback.
 
 ### 2. Generate the VM Talos config
 
@@ -340,10 +315,11 @@ https://naslos.local
 
 ### Automated deployment script
 
-For convenience, `scripts/deploy-vm.sh` runs the full flow (build images,
-generate config, apply, bootstrap, install). It defaults to the private HTTP
-registry `192.168.1.2:30095` and **requires** `REGISTRY_HTTP_SECRET` (there is no
-default). Review it before running:
+`scripts/deploy-vm.sh` is the historical fresh-node bootstrap helper (config
+generation, apply, bootstrap, install). It now defaults to GHCR and does not
+push images; for an existing node use `make install-vm` with
+`charts/naslos/values-vm.yaml`, which is the supported path. Review it before
+running:
 
 ```bash
 chmod +x scripts/deploy-vm.sh
