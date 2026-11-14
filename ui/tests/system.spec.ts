@@ -21,7 +21,7 @@ test('system page reports versions and gates the upgrade operations', async ({ p
     if (version.profile === 'installer') {
       await expect(page.getByText(/release facts are incomplete/).first()).toBeVisible();
     } else {
-      await expect(page.getByText(/make install-vm/).first()).toBeVisible();
+      await expect(page.getByText(/It reports its versions here/)).toBeVisible();
     }
     await expect(naslos).toBeDisabled();
   } else {

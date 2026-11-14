@@ -51,8 +51,9 @@ agent:
 ui:
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    tag: "0.3.23"
-    digest: "sha256:485df9ad85fe7d71cf5e9e5ea97a098048e50cefe8689882bb03138889240883"
+    # Post-0.3.23 UI: the System page distinguishes a make-install node.
+    tag: "sha-6ebab2dbce1346efb2306c6fc63e252e18e3ff18"
+    digest: "sha256:bc8f5013814aec5656dcc49d97e4fb1354bcd09006072afdb97c5c177fac9737"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
