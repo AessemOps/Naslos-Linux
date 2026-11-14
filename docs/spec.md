@@ -916,6 +916,46 @@ A node installed from an installer pack can be upgraded from the web UI. A
   confirmation dialogs (the Talos one warning about downtime), a progress panel
   that keeps polling through the reboot, and an update badge.
 
+### 3.12 Host network configuration (`FR-NET`)
+
+Day-2 host networking is edited through the API and the UI, not by hand-editing
+the machine config. Talos remains the single source of truth; the API persists
+only the in-flight change and the previous config snapshot.
+
+- **FR-NET-01** — The API MUST expose the node's inventory on
+  `GET /api/network`: hostname (value and source), resolver mode (inherited or
+  explicit), every physical (`ether`) link with its live addresses, MTU, speed,
+  duplex, ring/WOL features, and the effective per-link addressing, routes and
+  MTU from the machine config. Loopback, VLAN, bond and bridge links are not
+  editable.
+- **FR-NET-02** — A change MUST be validated server-side before any patch is
+  written: the link must be an existing physical link; a static change needs
+  1–4 unicast, non-loopback, non-link-local, non-multicast, non-unspecified CIDR
+  addresses with a valid prefix; a gateway must be unicast, inside one of the
+  configured subnets and distinct from every configured address; MTU must be
+  576–9216 and below 1280 only with explicit confirmation; DNS lists are 1–3
+  nameservers and at most 6 DNS-1123 search domains. The API MUST return `409`
+  while another change is pending or a system upgrade operation is running.
+- **FR-NET-03** — A change MUST be applied with `talosctl patch machineconfig
+  --mode=try` after a certSANs union patch, verified at the target address,
+  confirmed with a genuinely different certSANs update, and reverted to the
+  saved full config if it does not verify inside the guard window. A pending
+  record MUST survive an API restart: on boot the watchdog either continues or
+  reverts it, and MUST never leave a dead pending record that blocks later
+  changes. An operator revert MUST win over an in-flight confirmation.
+- **FR-NET-04** — The node hostname MUST be read-only in this surface, with the
+  install-time explanation that the stable auto hostname stays authoritative and
+  that renaming would break local-path volume node affinity.
+- **FR-NET-05** — The install path MUST stay DHCP with an auto hostname. Static
+  addressing, custom DNS and MTU are runtime day-2 operations, not installer
+  fields.
+- **FR-NET-06** — A static address outside the current kubelet subnets MUST be
+  added to `KubeNodeConfig.nodeIP.validSubnets` in the same change. A legacy
+  `machine.network.interfaces` entry for the edited link MUST be removed in the
+  same patch. `ResolverConfig.hostDNS` MUST be preserved by every resolver
+  patch. After an MTU change is confirmed the API MUST restart the CNI so it
+  re-detects the interface MTU.
+
 ---
 
 ## 4. API contracts (normative)
@@ -972,6 +1012,10 @@ A node installed from an installer pack can be upgraded from the web UI. A
 | `/api/shares/config/samba` `/nfs` | GET | Generated configs |
 | `/api/notifications` | GET | Notification settings/state |
 | `/api/notifications/test` | POST | Send test push |
+| `/api/network` | GET | Host network inventory: hostname, resolvers and physical links (§3.12) |
+| `/api/network/changes` | POST | Start a guarded network change (`202`; `409` while pending or during an upgrade) |
+| `/api/network/changes/{id}` | GET | Change phase, target address, deadline and error |
+| `/api/network/changes/{id}/revert` | POST | Apply the saved previous config now (`202`) |
 | `/api/buddy/v1/status` `/backups` | GET | Receiver report to a peer: free space, stored bytes, quota, sources, last backup (§3.8) |
 | `/api/buddy/v1/chains/{source}` | GET | Every stored chain of a source, newest first (a restore replays them in order) |
 | `/api/buddy/v1/chunks/{source}` | GET, PUT | List / fetch / upload one sealed chunk (`?chain=&index=`) |
@@ -1063,6 +1107,8 @@ The authoritative executable acceptance suite is the Playwright suite in
 | `shares.spec.ts` — smb:// address | FR-SHR-09 |
 | `shares.spec.ts` — group restriction + AFP absent | FR-SHR-07, FR-SHR-02 (no AFP offered) |
 | `logo.spec.ts` | NFR-5, asset served as real PNG (SPA-fallback guard) |
+| `network.spec.ts` — inventory and client validation | FR-NET-01/02 (hostname, resolver and link shape; invalid CIDR/gateway blocked in the browser with no POST) |
+| `network.spec.ts` — hub navigation | The Settings → Network card reaches `/settings/network` |
 
 Share serving, the account mirror and group access involve the node, so they
 are additionally verified against the live VM (not by Playwright):

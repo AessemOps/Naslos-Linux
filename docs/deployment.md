@@ -381,11 +381,63 @@ REGISTRY=docker.io/myuser REGISTRY_HTTP_SECRET=mypassword IMAGE_TAG=latest \
 | `local-path` patched as default StorageClass | `scripts/deploy-vm.sh` | Chart PVCs don't set `storageClassName`; without a default class they never bind. |
 | Helm ownership labels/annotations on the pre-created `naslos` namespace | `scripts/deploy-vm.sh`, `Makefile` (`--take-ownership`) | `helm --create-namespace` fails with "invalid ownership metadata" on an existing namespace; the namespaces and the old kubectl-created OpenLDAP Secrets are adopted into the release with `--take-ownership`. |
 | Chart-generated OpenLDAP Secrets (lookup-guarded) | `charts/naslos/templates/openldap-secrets.yaml` | Previously `openldap/generate-secrets.sh` + standalone manifests outside Helm; the chart now generates them on first install and re-emits the existing bytes on upgrade so OpenLDAP is never re-keyed. |
-| `TALOS_ENDPOINTS` env on the API pod | `charts/naslos/templates/api-deployment.yaml` (+ `api.talosEndpoints`) | The talos client fatals at startup with "failed to determine endpoints" without it. |
+| Talos admin `talosconfig` mounted into the API pod | `charts/naslos/templates/api-deployment.yaml` (`api.talosConfigSecret`) | The API resolves its endpoints from the talosconfig context; the chart does not set `TALOS_ENDPOINTS` (`TALOS_ENDPOINTS` is only an optional override). Without the mount, node management and metrics are disabled. |
 | Agent degraded mode when ZFS is missing | `rust/agent/src/main.rs` + `rust/agent/src/server/` | The agent used to `log.Fatalf` without `/dev/zfs`; now it starts and ZFS endpoints return 503 instead of crash-looping. |
 | No `olcTLSCipherSuite` in the slapd config LDIF | `openldap/image/entrypoint.sh` | Debian's OpenLDAP is built against GnuTLS, which rejects OpenSSL cipher strings (`HIGH:!aNULL:!MD5`) — `slapadd -n 0` fails on `cn=config` with an opaque error. |
 | LDIF continuation lines with a single leading space | `openldap/image/entrypoint.sh` | Four-space continuations corrupt `olcAccess` values. |
 | `--skip-crds` on Helm install | `Makefile` (`install`, `install-vm`) | Avoids CRD ownership conflicts with previously kubectl-applied CRDs. |
+
+## Day-2 network changes (`FR-NET`)
+
+The install path is deliberately DHCP with an auto hostname
+(`bootstrap/vm/naslos-vm.yaml`,
+`bootstrap/installer/naslos-installer.yaml.tmpl` and the installer wizard).
+Static addressing, custom DNS and MTU are day-2 operations from
+**Settings → Network** (`/settings/network`); they are not installer fields.
+
+Use the page to:
+
+- switch one physical link between DHCP and static addressing (1–4 CIDR
+  addresses, optional gateway);
+- set an MTU (576–9216; below 1280 needs an explicit confirmation);
+- replace the resolver list or search domains, or return them to DHCP.
+
+The install-time `hostDNS` setting is preserved by every resolver patch and the
+UI shows it read-only. The hostname is read-only too: renaming the node breaks
+the `kubernetes.io/hostname` node affinity on every local-path volume, so a
+rename is not offered.
+
+### Guard windows and re-pointing
+
+A change runs `talosctl patch machineconfig --mode=try`. Talos applies it
+immediately and reverts after 60 seconds unless another configuration update
+lands. The API verifies the new state inside that window, confirms it with a
+certSANs update, and then keeps a five-minute record so the operator can revert.
+If the API pod restarts mid-change, the watchdog resumes or reverts the saved
+record instead of leaving a pending change that blocks every later edit.
+
+When an address changes, the browser loses the page and `https://<name>` only
+works again once DNS (or `/etc/hosts`) points at the new address. Re-point it
+from a machine still on the LAN; the Traefik hostPorts follow the node IP
+automatically.
+
+### Subnet and CNI caveats
+
+- A static address outside the kubelet's current subnet is added to
+  `KubeNodeConfig.nodeIP.validSubnets` in the same change. Without that the
+  kubelet can pick the wrong node IP after the next restart.
+- After an MTU change is confirmed the API rolls the Cilium DaemonSet, because
+  the CNI detects the device MTU at agent start. Cilium's `devices: ""` means it
+  auto-detects the interface.
+- Resolver changes take effect through the host resolver (`hostDNS.enabled`), so
+  no chart restart is needed.
+
+### Recovering by hand
+
+If the page is unreachable and the guard did not restore the node, follow
+[operations.md → Network recovery](operations.md#network-recovery). The saved
+snapshot lives in `NETWORK_STATE` (`/var/lib/naslos/network.json` on the state
+PVC).
 
 ## The posture: Authelia + Traefik (`values-vm.yaml`)
 
