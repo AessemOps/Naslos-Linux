@@ -20,16 +20,17 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
 - **Deployed release:** Helm `naslos` chart `0.3.23`, appVersion `0.3.23`,
-  revision 30, deployed 2026-11-14 10:33 UTC from `master` with
+  revision 31, deployed 2026-11-14 10:58 UTC from `master` with
   `make install-vm`. Images are digest-pinned from `v0.3.23`: API `fa9c8956…`,
   agent `4f680bfc…`, UI `485df9ad…`, OpenLDAP `e57e3fbf…`, Samba `b785ee38…`,
   NFS `4d8806ea…`, terminal `a000ca0c…` (public GHCR). `/api/system/version`
-  reports empty release facts (make-install profile) plus Talos v1.14.5 and
-  k8s v1.37.0. The private registry `192.168.1.2:30095` is retired — do not
+  now reports Naslos/chart 0.3.23, profile `make-install`, Talos v1.14.5 and
+  k8s v1.37.0; the chart falls back to its own version so a make-install node
+  is not blank. The private registry `192.168.1.2:30095` is retired — do not
   build/push local images.
 - **Latest release:** `v0.3.23` (2026-11-14) and installer `naslos-v0.3.23`
   are published; the node runs those exact digests. Full Playwright suite green
-  on revision 30 (61 passed, 2 skipped).
+  on revision 30 (61 passed, 2 skipped); the system spec is green on revision 31.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:

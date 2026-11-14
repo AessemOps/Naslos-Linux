@@ -180,7 +180,11 @@
 
   function disabledReason(op: Op): string {
     if (!version) return 'loading';
-    if (!version.upgradable) return 'no installer release facts; bootstrap with the 0.3.0 installer or use make install-vm';
+    if (!version.upgradable) {
+      return version.profile === 'installer'
+        ? 'installer release facts are incomplete; reinstall from a current pack or use make install-vm'
+        : 'this is a make install-vm deployment; apply releases with make install-vm';
+    }
     if (isActive(operation?.phase)) return 'an operation is running';
     const candidate = updates?.available;
     if (!candidate) return 'check for updates first';
@@ -393,13 +397,17 @@
       </dl>
       {#if !version.upgradable}
         <p class="text-sm text-amber-400 mt-4">
-          This node has no installer release facts: it is either a
-          <span class="font-mono">make install-vm</span> deployment or an install
-          from a pre-0.3.0 pack. It reports versions but web upgrades are
-          disabled. Use <span class="font-mono">make install-vm</span> for a VM
-          deployment, or bootstrap an installer node once with the 0.3.0
-          installer <span class="font-mono">--resume</span>; after that, upgrades
-          run from this page.
+          {#if version.profile === 'installer'}
+            The installer release facts are incomplete (Naslos, Talos or
+            Kubernetes version missing), so web upgrades are disabled. Reinstall
+            from a current pack, or use <span class="font-mono">make install-vm</span>.
+          {:else}
+            This is a <span class="font-mono">make install-vm</span> deployment.
+            It reports its versions here, but web upgrades are disabled; apply
+            releases with <span class="font-mono">make install-vm</span>. An
+            installer node can use the web upgrader after bootstrapping with the
+            0.3.0 installer <span class="font-mono">--resume</span>.
+          {/if}
         </p>
       {/if}
     </section>
