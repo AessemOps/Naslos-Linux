@@ -122,18 +122,25 @@ pub async fn reboot_post(
     }
 }
 
+/// The documented shape when update checks are disabled (no release feed).
+fn disabled_updates(release: &crate::system::ReleaseFacts) -> serde_json::Value {
+    serde_json::json!({
+        "enabled": false,
+        "upgradable": release.upgradable(),
+        "current": release.naslos_version,
+        "checkedAt": "",
+        "source": "",
+        "available": null,
+        "stepping": {"allowed": false, "reason": "update checks are disabled"},
+        "blocked": "update checks are disabled",
+        "error": "",
+    })
+}
+
 /// `GET /api/system/updates`
 pub async fn updates_get(State(state): State<Arc<AppState>>) -> Response {
     let Some(checker) = state.updates.clone() else {
-        return json(
-            StatusCode::OK,
-            serde_json::json!({
-                "enabled": false,
-                "upgradable": false,
-                "available": null,
-                "blocked": "update checks are disabled",
-            }),
-        );
+        return json(StatusCode::OK, disabled_updates(&state.system.release));
     };
     let check = checker.load_cached();
     let talos = running_talos(&state).await;
@@ -144,15 +151,7 @@ pub async fn updates_get(State(state): State<Arc<AppState>>) -> Response {
 /// `POST /api/system/updates/check`
 pub async fn updates_check(State(state): State<Arc<AppState>>) -> Response {
     let Some(checker) = state.updates.clone() else {
-        return json(
-            StatusCode::OK,
-            serde_json::json!({
-                "enabled": false,
-                "upgradable": false,
-                "available": null,
-                "blocked": "update checks are disabled",
-            }),
-        );
+        return json(StatusCode::OK, disabled_updates(&state.system.release));
     };
     let check = checker.check().await;
     let talos = running_talos(&state).await;
@@ -640,5 +639,14 @@ mod tests {
             operation_nodes(Some(&nodes)).unwrap(),
             "192.168.1.117,192.168.1.118"
         );
+    }
+
+    #[test]
+    fn disabled_updates_keep_the_documented_shape() {
+        let value = disabled_updates(&crate::system::ReleaseFacts::default());
+        assert_eq!(value["enabled"], false);
+        assert!(value.get("stepping").is_some());
+        assert!(value.get("available").is_some());
+        assert!(value.get("blocked").is_some());
     }
 }

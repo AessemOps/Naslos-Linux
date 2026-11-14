@@ -18,7 +18,7 @@ test('system page reports versions and gates the upgrade operations', async ({ p
   if (!version.upgradable) {
     // The live VM is either a `make install-vm` deployment or an install from
     // a pre-0.3.0 pack: versions render, upgrades are disabled with the path.
-    await expect(page.getByText(/no installer release facts/)).toBeVisible();
+    await expect(page.getByText(/no installer release facts/).first()).toBeVisible();
     await expect(naslos).toBeDisabled();
   } else {
     // An installer node may or may not have an update; either way the button is

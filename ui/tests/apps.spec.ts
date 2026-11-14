@@ -238,7 +238,7 @@ test.describe('app environment variables', () => {
       capabilities: ['env'],
       schema: { type: 'object', properties: {}, required: [] },
       defaultValues: {},
-      exposure: { subdomain: 'envdemo', tls: false, auth: true, localOnly: false, internet: true },
+      exposure: { subdomain: 'envdemo', tls: true, auth: true, localOnly: false, internet: true },
       services: [{ name: '{{ .Release.Name }}', port: 8080, scheme: 'http' }]
     };
 
@@ -313,7 +313,7 @@ test.describe('app environment variables', () => {
       capabilities: ['env'],
       schema: { type: 'object', properties: {}, required: [] },
       defaultValues: {},
-      exposure: { subdomain: 'envdemo', tls: false, auth: true, localOnly: false, internet: true },
+      exposure: { subdomain: 'envdemo', tls: true, auth: true, localOnly: false, internet: true },
       services: [{ name: '{{ .Release.Name }}', port: 8080, scheme: 'http' }]
     };
     await page.route(/\/api\//, async (route) => {
