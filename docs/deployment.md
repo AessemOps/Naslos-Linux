@@ -305,6 +305,19 @@ make install-vm HELM_FLAGS="\
   --set ui.image.tag=latest"
 ```
 
+### Web upgrader on a make-install node
+
+The chart carries the full upgrader wiring (ServiceAccount, cluster-admin
+binding, admission policy, Role). It renders only when `release.profile` is
+set; a plain `make install-vm` leaves it off and the System page reports
+versions with Upgrade disabled.
+
+The production profile (`charts/naslos/values-vm.yaml`) sets
+`release.profile: installer` plus the running Naslos/chart/Talos/Kubernetes
+versions and schematic id, so the API polls releases and the System page can
+apply them. Bump those facts with every deployed release; without them the
+updater will not start (`Checker::from_env` ignores a non-installer profile).
+
 ### 4. Access the UI
 
 The UI is reached through the proxy only:
