@@ -33,7 +33,8 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   upgrader is enabled: SA `naslos-upgrader` + cluster-admin binding, the
   `naslos-api-system` Role/RoleBinding, and the upgrader admission policy are
   present, and a GitHub check returns `enabled:true, current:0.3.23, no newer
-  release`. The private registry `192.168.1.2:30095` is retired — do not
+  release`; the operations endpoint correctly answers 412 until a check offers
+  a release. The private registry `192.168.1.2:30095` is retired — do not
   build/push local images.
 - **Latest release:** `v0.3.23` (2026-11-14) and installer `naslos-v0.3.23`
   are published; the node runs those exact digests plus the post-release UI
