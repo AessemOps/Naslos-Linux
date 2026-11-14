@@ -110,7 +110,6 @@ spec:
               port: 9090
               {{- if .Values.agent.tls.enabled }}
               scheme: HTTPS
-              insecureSkipTLSVerify: true
               {{- end }}
             initialDelaySeconds: 2
             periodSeconds: 10
@@ -120,7 +119,6 @@ spec:
               port: 9090
               {{- if .Values.agent.tls.enabled }}
               scheme: HTTPS
-              insecureSkipTLSVerify: true
               {{- end }}
             initialDelaySeconds: 10
             periodSeconds: 30

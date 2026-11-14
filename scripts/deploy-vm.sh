@@ -7,8 +7,8 @@
 #
 # Environment variables:
 #   VM_IP          Target Talos node IP (default: 192.168.1.96)
-#   REGISTRY       Container registry for Naslos images (default: 192.168.1.2:30095)
-#   REGISTRY_HTTP_SECRET  HTTP basic-auth password for the registry (required; no default)
+#   REGISTRY       Container registry for Naslos images (default: ghcr.io/aessemops)
+#   REGISTRY_HTTP_SECRET  HTTP basic-auth password for a non-GHCR registry (optional)
 #   IMAGE_TAG      Image tag (default: 0.1.0)
 #   SKIP_BOOTSTRAP Set to "1" to skip talosctl bootstrap (default: 0)
 #   SKIP_IMAGES    Set to "1" to skip docker build/push (images already in registry)
@@ -19,9 +19,9 @@
 set -euo pipefail
 
 VM_IP="${VM_IP:-192.168.1.96}"
-REGISTRY="${REGISTRY:-192.168.1.2:30095}"
+REGISTRY="${REGISTRY:-ghcr.io/aessemops}"
 # No default (NAS-010): the previous fallback was the literal "secret".
-REGISTRY_HTTP_SECRET="${REGISTRY_HTTP_SECRET:?set REGISTRY_HTTP_SECRET to the registry password - there is no default}"
+REGISTRY_HTTP_SECRET="${REGISTRY_HTTP_SECRET:-}"
 IMAGE_TAG="${IMAGE_TAG:-0.1.0}"
 SKIP_BOOTSTRAP="${SKIP_BOOTSTRAP:-0}"
 SKIP_IMAGES="${SKIP_IMAGES:-0}"

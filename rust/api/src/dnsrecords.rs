@@ -127,7 +127,9 @@ impl RecordApi for OvhRecords {
         let (status, body) = self.call("GET", &self.zone_url(zone), "").await?;
         match status {
             200 => Ok(true),
-            404 => Ok(false),
+            // OVH answers 403 (not 404) for a zone outside the app key's
+            // scope; walking further up the base domain may still find one.
+            403 | 404 => Ok(false),
             _ => Err(format!("OVH returned HTTP {status}: {}", body.trim())),
         }
     }
@@ -1107,6 +1109,7 @@ mod tests {
 
         assert!(api.zone_exists("example.com").await.unwrap());
         assert!(!api.zone_exists("other.com").await.unwrap());
+        assert!(!api.zone_exists("forbidden.com").await.unwrap());
 
         let found = api.find("example.com", "radarr.example.com").await.unwrap();
         assert_eq!(found.len(), 1);
