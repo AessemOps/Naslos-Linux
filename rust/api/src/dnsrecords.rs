@@ -124,11 +124,14 @@ use crate::ddns::drivers::record_id;
 #[async_trait::async_trait]
 impl RecordApi for OvhRecords {
     async fn zone_exists(&self, zone: &str) -> Result<bool, String> {
-        let (status, body) = self.call("GET", &self.zone_url(zone), "").await?;
+        // The cert-manager app key is granted `/domain/zone/<zone>/*`, not the
+        // zone root (which answers 403 for an existing zone too), so probe the
+        // apex record list. OVH wants an empty `subDomain` for the apex and
+        // answers 403/404 for a zone outside the key's scope.
+        let url = format!("{}/record?subDomain=", self.zone_url(zone));
+        let (status, body) = self.call("GET", &url, "").await?;
         match status {
             200 => Ok(true),
-            // OVH answers 403 (not 404) for a zone outside the app key's
-            // scope; walking further up the base domain may still find one.
             403 | 404 => Ok(false),
             _ => Err(format!("OVH returned HTTP {status}: {}", body.trim())),
         }
