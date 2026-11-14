@@ -24,7 +24,7 @@
 api:
   image:
     repository: ghcr.io/aessemops/naslos-api
-    tag: "sha-37a939513b4c295c86859735e9649f0fa92e3206"
+    tag: "sha-edc06365af3a2271bb32678210731e84027724c1"
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -44,32 +44,32 @@ agent:
     repository: ghcr.io/aessemops/naslos-agent
     # Immutable commit tag from the release dry run; pullPolicy IfNotPresent
     # still needs a new tag per commit (NAS-022).
-    tag: "sha-37a939513b4c295c86859735e9649f0fa92e3206"
+    tag: "sha-edc06365af3a2271bb32678210731e84027724c1"
 ui:
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    tag: "sha-37a939513b4c295c86859735e9649f0fa92e3206"
+    tag: "sha-edc06365af3a2271bb32678210731e84027724c1"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
     image:
       repository: ghcr.io/aessemops/naslos-samba
-      tag: "sha-37a939513b4c295c86859735e9649f0fa92e3206"
+      tag: "sha-edc06365af3a2271bb32678210731e84027724c1"
   nfs:
     image:
       repository: ghcr.io/aessemops/naslos-nfs
       # The NFS image needs CAP_SYS_RESOURCE for PR_SET_IO_FLUSHER (added in
       # nfs-daemonset.yaml); with that, Ganesha 6.5 starts with the same
       # rendered ganesha.conf as 4.x.
-      tag: "sha-37a939513b4c295c86859735e9649f0fa92e3206"
+      tag: "sha-edc06365af3a2271bb32678210731e84027724c1"
 terminal:
   image:
     repository: ghcr.io/aessemops/naslos-terminal
-    tag: "sha-37a939513b4c295c86859735e9649f0fa92e3206"
+    tag: "sha-edc06365af3a2271bb32678210731e84027724c1"
 openldap:
   # Debian 13 / slapd 2.6.10 with /var/run/slapd created in the image and
   # LDAPS-only listening (LDAP_TLS_ENFORCE; no plaintext ldap:///).
-  image: ghcr.io/aessemops/naslos-openldap:sha-37a939513b4c295c86859735e9649f0fa92e3206
+  image: ghcr.io/aessemops/naslos-openldap:sha-edc06365af3a2271bb32678210731e84027724c1
   # OpenLDAP host is the service name for internal cluster references.
   host: naslos-openldap
   # No bindPassword here. The chart reads the service password from the
