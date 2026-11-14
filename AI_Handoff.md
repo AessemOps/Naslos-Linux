@@ -19,16 +19,17 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart `0.3.22`, appVersion `0.3.22`,
-  revision 28, deployed 2026-11-14 00:54 UTC from `master` with
-  `make install-vm`. Every image is `ghcr.io/aessemops/naslos-*:sha-edc06365af3a2271bb32678210731e84027724c1`
-  (public GHCR packages from a `publish=false` dry run); `/api/system/version`
-  reports Talos v1.14.5 and k8s v1.37.0. The private registry
-  `192.168.1.2:30095` is retired — do not build/push local images.
+- **Deployed release:** Helm `naslos` chart `0.3.23`, appVersion `0.3.23`,
+  revision 30, deployed 2026-11-14 10:33 UTC from `master` with
+  `make install-vm`. Images are digest-pinned from `v0.3.23`: API `fa9c8956…`,
+  agent `4f680bfc…`, UI `485df9ad…`, OpenLDAP `e57e3fbf…`, Samba `b785ee38…`,
+  NFS `4d8806ea…`, terminal `a000ca0c…` (public GHCR). `/api/system/version`
+  reports empty release facts (make-install profile) plus Talos v1.14.5 and
+  k8s v1.37.0. The private registry `192.168.1.2:30095` is retired — do not
+  build/push local images.
 - **Latest release:** `v0.3.23` (2026-11-14) and installer `naslos-v0.3.23`
-  are published. The node runs the `master` dry-run build above (revision 29,
-  `sha-78eac917…`); the system updater may later replace it with the release
-  digests.
+  are published; the node runs those exact digests. Full Playwright suite green
+  on revision 30 (61 passed, 2 skipped).
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
