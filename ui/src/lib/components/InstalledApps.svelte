@@ -5,6 +5,7 @@
   import InstalledAppRow from './InstalledAppRow.svelte';
   import AppDetailDrawer from './AppDetailDrawer.svelte';
   import AppUpdateModal from './AppUpdateModal.svelte';
+  import AppUpdateAllModal from './AppUpdateAllModal.svelte';
   import { appJobs } from '$lib/stores/appJobs';
   import { appUpdates, refreshAppUpdates, startAppUpdates } from '$lib/stores/appUpdates';
   import { formatBytes, formatBytesPerSec, formatMillicores } from '$lib/format';
@@ -35,6 +36,13 @@
   let refreshMessage = '';
   let refreshError = '';
   let lastUpdatesSignature: string | null = null;
+
+  // Bulk update: the modal receives a snapshot so enqueued jobs that start
+  // running cannot shrink the target list while the loop runs.
+  let bulkOpen = false;
+  let bulkTargets: AppView[] = [];
+  let bulkMessage = '';
+  let bulkError = '';
 
   // Per-app namespace slots: the chart provisions a fixed pool and the owner
   // decides how many of those slots are usable. Raising it here takes effect
@@ -203,6 +211,9 @@
   }
 
   $: updateCount = $appUpdates.count;
+  $: updateableApps = apps.filter(
+    (app) => app.updateAvailable && !runningJobApps.has(app.name)
+  );
   $: aggregate = (() => {
     let cpu = 0;
     let memory = 0;
@@ -227,7 +238,12 @@
     }
     previousRunning = running;
     runningJobApps = running;
-    if (finished) loadApps();
+    if (finished) {
+      loadApps();
+      // The record's chart version changes when an upgrade succeeds, so the
+      // update badge should clear without waiting for the next 60s poll.
+      void refreshAppUpdates();
+    }
   });
 
   const unsubscribeUpdates = appUpdates.subscribe((updates) => {
@@ -261,6 +277,32 @@
     if (!selected) return;
     updating = selected;
     selected = null;
+  }
+
+  function openBulkUpdate() {
+    if (bulkOpen) return;
+    bulkTargets = updateableApps.slice();
+    if (bulkTargets.length === 0) return;
+    bulkMessage = '';
+    bulkError = '';
+    bulkOpen = true;
+  }
+
+  function onBulkDone(event: CustomEvent) {
+    bulkOpen = false;
+    const { started, failed } = event.detail as {
+      started: string[];
+      failed: { name: string; error: string }[];
+    };
+    if (started.length > 0) {
+      bulkMessage = `Started ${started.length} update${started.length === 1 ? '' : 's'}`;
+    }
+    if (failed.length > 0) {
+      bulkError =
+        `${failed.length} update${failed.length === 1 ? '' : 's'} could not start: ` +
+        failed.map((failure) => `${failure.name} (${failure.error})`).join('; ');
+    }
+    void refreshAppUpdates();
   }
 
   onMount(() => {
@@ -310,11 +352,27 @@
         {/if}
       </div>
       <div class="flex items-center gap-2">
+        {#if bulkMessage}
+          <span class="text-xs text-green-400" role="status">{bulkMessage}</span>
+        {/if}
+        {#if bulkError}
+          <span class="text-xs text-red-300" role="alert">{bulkError}</span>
+        {/if}
         {#if refreshMessage}
           <span class="text-xs text-green-400" role="status">{refreshMessage}</span>
         {/if}
         {#if refreshError}
           <span class="text-xs text-red-300" role="alert">{refreshError}</span>
+        {/if}
+        {#if updateableApps.length > 0}
+          <button
+            class="btn btn-primary text-sm"
+            type="button"
+            disabled={bulkOpen}
+            on:click={openBulkUpdate}
+          >
+            Update all ({updateableApps.length})
+          </button>
         {/if}
         <button class="btn btn-secondary text-sm" disabled={refreshing} on:click={checkNow}>
           {refreshing ? 'Checking…' : 'Check now'}
@@ -422,6 +480,13 @@
 
   {#if updating}
     <AppUpdateModal app={updating} on:close={() => (updating = null)} />
+  {/if}
+  {#if bulkOpen}
+    <AppUpdateAllModal
+      apps={bulkTargets}
+      on:close={() => (bulkOpen = false)}
+      on:done={onBulkDone}
+    />
   {/if}
   {#if editingExposure}
     <AppExposureModal
