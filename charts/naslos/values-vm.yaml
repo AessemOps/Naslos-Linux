@@ -11,9 +11,9 @@
 #   helm upgrade --install naslos charts/naslos -n naslos --create-namespace \
 #     -f charts/naslos/values.yaml -f charts/naslos/values-vm.yaml
 
-# Registry default for the VM deployment (private HTTP registry).
-# scripts/deploy-vm.sh passes explicit --set overrides as well, so these
-# values mainly serve direct `make install-vm` / `helm` invocations.
+# Images come from GitHub Container Registry (ghcr.io/aessemops). The public
+# packages need no imagePullSecret; the former private registry at
+# 192.168.1.2:30095 is offline and must not be used.
 
 # The tags below are the ones actually deployed on the VM. `scripts/deploy-vm.sh`
 # overrides them with its IMAGE_TAG at install time, but a bare `make install-vm`
@@ -23,8 +23,8 @@
 # the API back to old code).
 api:
   image:
-    repository: 192.168.1.2:30095/naslos-api
-    tag: "0.1.0-r34"
+    repository: ghcr.io/aessemops/naslos-api
+    tag: "sha-37a939513b4c295c86859735e9649f0fa92e3206"
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -41,38 +41,35 @@ api:
   #   key: ca.crt
 agent:
   image:
-    repository: 192.168.1.2:30095/naslos-agent
-    # r10 = the Rust agent (Phase 1 of the Go-to-Rust plan). The registry reuses
-    # tags and the DaemonSet pulls IfNotPresent, so the suffix must change for a
-    # new binary to roll out (agent/Dockerfile.rust).
-    tag: "0.1.0-r10"
+    repository: ghcr.io/aessemops/naslos-agent
+    # Immutable commit tag from the release dry run; pullPolicy IfNotPresent
+    # still needs a new tag per commit (NAS-022).
+    tag: "sha-37a939513b4c295c86859735e9649f0fa92e3206"
 ui:
   image:
-    repository: 192.168.1.2:30095/naslos-ui
-    tag: "0.1.0-r24"
+    repository: ghcr.io/aessemops/naslos-ui
+    tag: "sha-37a939513b4c295c86859735e9649f0fa92e3206"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
     image:
-      repository: 192.168.1.2:30095/naslos-samba
-      tag: "0.1.0-r3"
+      repository: ghcr.io/aessemops/naslos-samba
+      tag: "sha-37a939513b4c295c86859735e9649f0fa92e3206"
   nfs:
     image:
-      repository: 192.168.1.2:30095/naslos-nfs
-      # r3 = Debian 13 / Ganesha 6.5. It needs CAP_SYS_RESOURCE for
-      # PR_SET_IO_FLUSHER (added in nfs-daemonset.yaml); with that, Ganesha 6.5
-      # starts with the same rendered ganesha.conf as 4.x.
-      tag: "0.1.0-r3"
+      repository: ghcr.io/aessemops/naslos-nfs
+      # The NFS image needs CAP_SYS_RESOURCE for PR_SET_IO_FLUSHER (added in
+      # nfs-daemonset.yaml); with that, Ganesha 6.5 starts with the same
+      # rendered ganesha.conf as 4.x.
+      tag: "sha-37a939513b4c295c86859735e9649f0fa92e3206"
 terminal:
   image:
-    repository: 192.168.1.2:30095/naslos-terminal
-    tag: "0.1.0-r3"
+    repository: ghcr.io/aessemops/naslos-terminal
+    tag: "sha-37a939513b4c295c86859735e9649f0fa92e3206"
 openldap:
-  # r5 = Debian 13 / slapd 2.6.10, with /var/run/slapd created in the image
-  # (Debian 13's slapd needs it for its pid file; tmpfiles.d never runs in a
-  # container) and LDAPS-only listening (LDAP_TLS_ENFORCE; no plaintext
-  # ldap:///). r4 was the previous tag.
-  image: 192.168.1.2:30095/naslos-openldap:0.1.0-r5
+  # Debian 13 / slapd 2.6.10 with /var/run/slapd created in the image and
+  # LDAPS-only listening (LDAP_TLS_ENFORCE; no plaintext ldap:///).
+  image: ghcr.io/aessemops/naslos-openldap:sha-37a939513b4c295c86859735e9649f0fa92e3206
   # OpenLDAP host is the service name for internal cluster references.
   host: naslos-openldap
   # No bindPassword here. The chart reads the service password from the
@@ -187,7 +184,9 @@ ovhWebhook:
 # Buddy Backup receive side (AUDIT-H2). The dataset exists on the node; before
 # this was set the release ran buddy.enabled=false while the peer API was live,
 # so BUDDY_RECEIVE_PATH was unset and received chunks landed on the 64 MiB
-# shares PVC instead of here (lost when that PVC was recreated).
+# shares PVC instead of here (lost when that PVC was recreated). The old
+# /var/mnt/test path was removed from the pool; keep the store on the SSD
+# dataset and create it before deploying (owner 10001:10000, mode 2770).
 buddy:
   enabled: true
-  receiveHostPath: /var/mnt/test/naslos-buddy
+  receiveHostPath: /var/mnt/ssd-storage/naslos-buddy
