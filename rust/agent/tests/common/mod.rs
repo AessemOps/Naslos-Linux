@@ -77,7 +77,8 @@ impl Runner for FakeRunner {
     }
 }
 
-/// A fake `/host` tree containing `/dev/{sdb,sdc,sdd,sde}`.
+/// A fake `/host` tree containing `/dev/{sdb,sdc,sdd,sde}` and the partition
+/// nodes `sdb1`/`sdc2` that a real ZFS member uses.
 pub struct FakeHost {
     _dir: tempfile::TempDir,
     pub root: std::path::PathBuf,
@@ -88,7 +89,7 @@ impl FakeHost {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         std::fs::create_dir_all(root.join("dev")).unwrap();
-        for name in ["sdb", "sdc", "sdd", "sde"] {
+        for name in ["sdb", "sdc", "sdd", "sde", "sdb1", "sdc2"] {
             std::fs::write(root.join("dev").join(name), b"").unwrap();
         }
         Self { _dir: dir, root }
