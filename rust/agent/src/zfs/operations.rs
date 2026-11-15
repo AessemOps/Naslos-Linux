@@ -3,7 +3,7 @@
 
 use super::devices::{
     args2, canonical_dev, is_whole_disk, normalize_vdev_topology, validate_pool_name, vdev_label,
-    vdev_minimum_disks,
+    vdev_minimum_disks, whole_disk_path,
 };
 use super::types::{
     ImportablePool, Pool, PoolConfig, PoolDevice, PoolHealth, PoolIOStats, ZfsDiskHealth,
@@ -147,6 +147,21 @@ impl ZfsClient {
         match self.host_exec(ZPOOL_BIN, &args2("status", name)).await {
             Ok(out) => Ok(out),
             Err(e) => Err(ZfsError::Other(format!("pool status: {}", e.message))),
+        }
+    }
+
+    /// `zpool status -L`: the config rows name the kernel device (`sdc2`)
+    /// instead of the stored GUID/path. Disk membership needs this, because a
+    /// pool imported by GUID would otherwise list opaque ids that cannot be
+    /// matched to a whole disk.
+    async fn pool_status_kernel(&self, name: &str) -> ZfsResult<String> {
+        validate_pool_name(name)?;
+        match self
+            .host_exec(ZPOOL_BIN, &args(&["status", "-L", name]))
+            .await
+        {
+            Ok(out) => Ok(out),
+            Err(e) => Err(ZfsError::Other(format!("pool status -L: {}", e.message))),
         }
     }
 
@@ -519,7 +534,7 @@ impl ZfsClient {
 
         let mut map = HashMap::new();
         for pool in pools {
-            let Ok(out) = self.pool_status(&pool.name).await else {
+            let Ok(out) = self.pool_status_kernel(&pool.name).await else {
                 continue;
             };
             let health = parse_pool_health(&pool.name, &out);
@@ -555,6 +570,10 @@ impl ZfsClient {
         let Some(device) = canonical_zfs_device(&self.host_root, &dev.name) else {
             return;
         };
+        // A pool member is normally a partition (`sdc2`, `nvme0n1p1`), but the
+        // health page lists whole disks. Attribute the member to the disk that
+        // carries the ZFS label instead of dropping it.
+        let device = whole_disk_path(&device).unwrap_or(device);
         map.insert(
             device,
             ZfsDiskHealth {
@@ -615,6 +634,18 @@ pub fn parse_pool_health(name: &str, out: &str) -> PoolHealth {
         }
         let fields: Vec<&str> = trimmed.split_whitespace().collect();
         if fields.len() < 5 {
+            // Group rows (`cache`, `logs`, `spares`, `special`, `dedup`) have no
+            // counters. Keep them in the tree so their members are attributed
+            // to the group vdev instead of falling back to the pool row.
+            if fields.len() == 1 && is_vdev_group(fields[0]) {
+                entries.push((
+                    line.len() - line.trim_start().len(),
+                    PoolDevice {
+                        name: fields[0].to_string(),
+                        ..Default::default()
+                    },
+                ));
+            }
             continue;
         }
         let dev = PoolDevice {
@@ -663,13 +694,16 @@ fn build_device_tree(
 fn canonical_zfs_device(host_root: &Path, name: &str) -> Option<String> {
     let candidate = if name.starts_with("/dev/") {
         name.to_string()
-    } else if is_whole_disk(name) {
+    } else if is_whole_disk(name) || whole_disk_path(&format!("/dev/{name}")).is_some() {
+        // Whole disks and partitions (`sdc`, `sdc2`); GUIDs and vdev labels
+        // (`mirror-0`, `cache`) are rejected.
         format!("/dev/{name}")
     } else {
         return None;
     };
     canonical_dev(host_root, &candidate).ok().or_else(|| {
-        if is_whole_disk(candidate.trim_start_matches("/dev/")) {
+        let bare = candidate.trim_start_matches("/dev/");
+        if is_whole_disk(bare) || whole_disk_path(&candidate).is_some() {
             Some(candidate)
         } else {
             None
@@ -679,6 +713,14 @@ fn canonical_zfs_device(host_root: &Path, name: &str) -> Option<String> {
 
 fn parse_count(value: &str) -> u64 {
     value.parse().unwrap_or(0)
+}
+
+/// Non-leaf `zpool status` config rows that group spare/log/special vdevs.
+fn is_vdev_group(name: &str) -> bool {
+    matches!(
+        name,
+        "cache" | "logs" | "spares" | "spare" | "special" | "dedup"
+    )
 }
 
 /// Extract the pool's I/O counters from `zpool iostat -v`.
