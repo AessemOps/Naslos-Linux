@@ -296,6 +296,32 @@ pub async fn disks_health_get(State(state): State<Arc<AppState>>) -> Response {
         entry.zfs = disk.zfs;
     }
 
+    // The agent's per-disk ZFS map is the primary source, but keep the pool
+    // name visible when a member could not be attributed to a whole disk (an
+    // older agent, or a vdev the status parser skipped). `list_pools` resolves
+    // partitions to their whole disk, so the Pool column is never empty for a
+    // disk that really belongs to a pool.
+    if let Some(agent) = state.agent.as_ref() {
+        if let Ok(pools) = agent.list_pools().await {
+            let mut owner: HashMap<String, String> = HashMap::new();
+            for pool in pools {
+                for dev in pool.disks {
+                    if let Some(whole) = super::zfs::whole_disk_path(&dev) {
+                        owner.entry(whole).or_insert_with(|| pool.name.clone());
+                    }
+                    owner.entry(dev).or_insert_with(|| pool.name.clone());
+                }
+            }
+            for entry in entries.values_mut() {
+                if entry.zfs.is_none() && entry.in_pool.is_none() {
+                    if let Some(pool) = owner.get(&entry.device) {
+                        entry.in_pool = Some(pool.clone());
+                    }
+                }
+            }
+        }
+    }
+
     let mut disks: Vec<DiskHealthEntry> = entries.into_values().collect();
     disks.sort_by(|a, b| a.device.cmp(&b.device));
 

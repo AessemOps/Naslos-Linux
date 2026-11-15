@@ -379,6 +379,40 @@ async fn disk_health_merges_the_agent_report() {
 }
 
 #[tokio::test]
+async fn disk_health_fills_the_pool_when_the_agent_omits_membership() {
+    // An older agent reports SMART without the ZFS half. The partition member
+    // (/dev/sdb1) must still surface the pool on its whole disk (/dev/sdb).
+    let base = spawn_mock(MockAgent {
+        default: (
+            200,
+            json!({
+                "smartctlAvailable": true,
+                "error": "",
+                "disks": [{
+                    "device": "/dev/sdb",
+                    "smart": { "available": true, "enabled": true, "health": "PASSED" }
+                }]
+            }),
+        ),
+        pools: Some((
+            200,
+            json!([{
+                "name": "Data", "size": "11T", "alloc": "1T", "free": "10T",
+                "health": "ONLINE", "disks": ["/dev/sdb1"]
+            }]),
+        )),
+    })
+    .await;
+    let (status, body) = call(state_with_agent(&base), "GET", "/api/disks/health", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let disks = body["disks"].as_array().unwrap();
+    assert_eq!(disks.len(), 1);
+    assert_eq!(disks[0]["device"], "/dev/sdb");
+    assert_eq!(disks[0]["inPool"], "Data");
+    assert!(disks[0].get("zfs").is_none());
+}
+
+#[tokio::test]
 async fn disk_health_is_non_fatal_when_the_agent_fails() {
     let base = spawn_mock(MockAgent {
         default: (503, json!({ "error": "ZFS is not available on this node" })),
