@@ -143,11 +143,7 @@ impl ZfsClient {
 
     /// Detailed `zpool status` output.
     pub async fn pool_status(&self, name: &str) -> ZfsResult<String> {
-        validate_pool_name(name)?;
-        match self.host_exec(ZPOOL_BIN, &args2("status", name)).await {
-            Ok(out) => Ok(out),
-            Err(e) => Err(ZfsError::Other(format!("pool status: {}", e.message))),
-        }
+        self.pool_status_with(name, false).await
     }
 
     /// `zpool status -L`: the config rows name the kernel device (`sdc2`)
@@ -155,13 +151,19 @@ impl ZfsClient {
     /// pool imported by GUID would otherwise list opaque ids that cannot be
     /// matched to a whole disk.
     async fn pool_status_kernel(&self, name: &str) -> ZfsResult<String> {
+        self.pool_status_with(name, true).await
+    }
+
+    async fn pool_status_with(&self, name: &str, kernel_names: bool) -> ZfsResult<String> {
         validate_pool_name(name)?;
-        match self
-            .host_exec(ZPOOL_BIN, &args(&["status", "-L", name]))
-            .await
-        {
+        let argv = if kernel_names {
+            args(&["status", "-L", name])
+        } else {
+            args2("status", name)
+        };
+        match self.host_exec(ZPOOL_BIN, &argv).await {
             Ok(out) => Ok(out),
-            Err(e) => Err(ZfsError::Other(format!("pool status -L: {}", e.message))),
+            Err(e) => Err(ZfsError::Other(format!("pool status: {}", e.message))),
         }
     }
 
@@ -497,16 +499,7 @@ impl ZfsClient {
 
     /// Structured health from `zpool status` plus `zpool iostat`.
     pub async fn pool_health(&self, name: &str) -> ZfsResult<PoolHealth> {
-        validate_pool_name(name)?;
-        let out = match self.host_exec(ZPOOL_BIN, &args2("status", name)).await {
-            Ok(out) => out,
-            Err(e) => {
-                return Err(ZfsError::Other(format!(
-                    "getting pool status: {}",
-                    e.message
-                )))
-            }
-        };
+        let out = self.pool_status(name).await?;
 
         let mut health = parse_pool_health(name, &out);
 
@@ -537,7 +530,9 @@ impl ZfsClient {
             let Ok(out) = self.pool_status_kernel(&pool.name).await else {
                 continue;
             };
-            let health = parse_pool_health(&pool.name, &out);
+            // Group rows are needed to label a cache/log member, but they must
+            // not appear in the pool page's `PoolHealth.config`.
+            let health = parse_pool_health_with(&pool.name, &out, true);
             for dev in &health.config {
                 self.collect_disk_health(&pool.name, dev, None, &mut map);
             }
@@ -574,22 +569,69 @@ impl ZfsClient {
         // health page lists whole disks. Attribute the member to the disk that
         // carries the ZFS label instead of dropping it.
         let device = whole_disk_path(&device).unwrap_or(device);
-        map.insert(
-            device,
-            ZfsDiskHealth {
-                pool: pool.to_string(),
-                vdev: parent.unwrap_or(&dev.name).to_string(),
-                state: dev.state.clone(),
-                read_errors: parse_count(&dev.read),
-                write_errors: parse_count(&dev.write),
-                cksum_errors: parse_count(&dev.cksum),
-            },
-        );
+        let member = ZfsDiskHealth {
+            pool: pool.to_string(),
+            vdev: parent.unwrap_or(&dev.name).to_string(),
+            state: dev.state.clone(),
+            read_errors: parse_count(&dev.read),
+            write_errors: parse_count(&dev.write),
+            cksum_errors: parse_count(&dev.cksum),
+        };
+        match map.get_mut(&device) {
+            Some(existing) => merge_disk_health(existing, member),
+            None => {
+                map.insert(device, member);
+            }
+        }
+    }
+}
+
+/// Merge two members that live on the same physical disk (for example a data
+/// partition plus a log or cache partition). The worse state wins, the error
+/// counters add up, and the vdev labels are kept so neither member disappears.
+fn merge_disk_health(existing: &mut ZfsDiskHealth, incoming: ZfsDiskHealth) {
+    if state_severity(&incoming.state) > state_severity(&existing.state) {
+        existing.pool = incoming.pool.clone();
+        existing.state = incoming.state.clone();
+        existing.vdev = merge_labels(&incoming.vdev, &existing.vdev);
+    } else {
+        existing.vdev = merge_labels(&existing.vdev, &incoming.vdev);
+    }
+    existing.read_errors = existing.read_errors.saturating_add(incoming.read_errors);
+    existing.write_errors = existing.write_errors.saturating_add(incoming.write_errors);
+    existing.cksum_errors = existing.cksum_errors.saturating_add(incoming.cksum_errors);
+}
+
+fn merge_labels(first: &str, second: &str) -> String {
+    let mut labels: Vec<&str> = first.split(", ").collect();
+    if !labels.contains(&second) {
+        labels.push(second);
+    }
+    labels.join(", ")
+}
+
+/// Higher is worse. Unknown/empty states rank below ONLINE so a real state
+/// always wins a merge.
+fn state_severity(state: &str) -> u8 {
+    match state.to_ascii_uppercase().as_str() {
+        "FAULTED" | "REMOVED" => 6,
+        "UNAVAIL" => 5,
+        "OFFLINE" => 4,
+        "DEGRADED" => 3,
+        "ONLINE" => 2,
+        _ => 1,
     }
 }
 
 /// Parse the fields of `zpool status` (everything before the I/O stats).
 pub fn parse_pool_health(name: &str, out: &str) -> PoolHealth {
+    parse_pool_health_with(name, out, false)
+}
+
+/// Like [`parse_pool_health`], but optionally keeps the non-leaf group rows
+/// (`cache`, `logs`, `spares`, `special`, `dedup`) so disk membership can
+/// attribute a member to its group instead of the pool row.
+fn parse_pool_health_with(name: &str, out: &str, keep_groups: bool) -> PoolHealth {
     let mut health = PoolHealth {
         name: name.to_string(),
         ..Default::default()
@@ -635,9 +677,9 @@ pub fn parse_pool_health(name: &str, out: &str) -> PoolHealth {
         let fields: Vec<&str> = trimmed.split_whitespace().collect();
         if fields.len() < 5 {
             // Group rows (`cache`, `logs`, `spares`, `special`, `dedup`) have no
-            // counters. Keep them in the tree so their members are attributed
-            // to the group vdev instead of falling back to the pool row.
-            if fields.len() == 1 && is_vdev_group(fields[0]) {
+            // counters. Disk membership keeps them so its members are
+            // attributed to the group vdev; the pool page does not.
+            if keep_groups && fields.len() == 1 && is_vdev_group(fields[0]) {
                 entries.push((
                     line.len() - line.trim_start().len(),
                     PoolDevice {

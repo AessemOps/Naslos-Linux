@@ -9,6 +9,7 @@ use naslos_agent::zfs::dataset::{
     is_busy_error, validate_dataset_name, validate_dataset_options, validate_dataset_path,
 };
 use naslos_agent::zfs::devices::{is_whole_disk, normalize_vdev_topology, validate_pool_name};
+use naslos_agent::zfs::operations::parse_pool_health;
 use naslos_agent::zfs::PoolConfig;
 use naslos_agent::zfs::{ZfsClient, ZfsError};
 use std::collections::HashMap;
@@ -804,4 +805,46 @@ async fn disk_health_maps_partition_members_to_whole_disks() {
     let sdb = health.get("/dev/sdb").expect("sdb1 belongs to sdb");
     assert_eq!(sdb.pool, "Data");
     assert_eq!(sdb.vdev, "cache");
+}
+
+/// One physical disk can carry more than one ZFS member (for example a data
+/// partition plus a log partition). The per-disk map must keep the worse
+/// state and all counters instead of letting the last member overwrite.
+#[tokio::test]
+async fn disk_health_merges_members_on_one_disk() {
+    let host = FakeHost::new();
+    let status = "  pool: tank\n state: DEGRADED\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\ttank        DEGRADED     0     0     0\n\t  sdb1      FAULTED      1     2     3\n\tlogs\n\t  sdb2      ONLINE       4     5     6\n\nerrors: No known data errors\n";
+    let runner = Arc::new(FakeRunner::new(&["tank\t10G\t1G\t9G\tDEGRADED\n", status]));
+    let c = client(&host, runner);
+
+    let health = c.disk_health().await;
+    let sdb = health.get("/dev/sdb").expect("merged sdb");
+    assert_eq!(sdb.state, "FAULTED", "the worse member must win");
+    assert_eq!(sdb.pool, "tank");
+    assert_eq!(sdb.vdev, "sdb1, logs", "both vdev labels must survive");
+    assert_eq!(sdb.read_errors, 5);
+    assert_eq!(sdb.write_errors, 7);
+    assert_eq!(sdb.cksum_errors, 9);
+}
+
+/// Group rows are only needed for disk membership; the pool page's config
+/// must keep its previous shape (no `cache` pseudo-device, no extra entry).
+#[test]
+fn pool_health_config_omits_group_rows() {
+    let status = "  pool: Data\n state: ONLINE\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\tData        ONLINE       0     0     0\n\t  sdc2      ONLINE       0     0     0\n\tcache\n\t  sdb1      ONLINE       0     0     0\n\nerrors: No known data errors\n";
+    let health = parse_pool_health("Data", status);
+    assert_eq!(
+        health.config.len(),
+        1,
+        "cache must not be a top-level entry"
+    );
+    assert_eq!(health.config[0].name, "Data");
+    let children: Vec<&str> = health.config[0]
+        .devices
+        .as_ref()
+        .expect("pool children")
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    assert_eq!(children, vec!["sdc2", "sdb1"]);
 }
