@@ -89,7 +89,7 @@ impl FakeHost {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         std::fs::create_dir_all(root.join("dev")).unwrap();
-        for name in ["sdb", "sdc", "sdd", "sde", "sdb1", "sdc2"] {
+        for name in ["sdb", "sdc", "sdd", "sde", "sdb1", "sdb2", "sdc2"] {
             std::fs::write(root.join("dev").join(name), b"").unwrap();
         }
         Self { _dir: dir, root }
