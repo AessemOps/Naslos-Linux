@@ -47,3 +47,25 @@ Two independent causes, both in the membership path:
 Ships with the next Naslos release; no chart/UI change is required. After the
 release, the page must show `Data` (linked) plus vdev `sdc2` for `/dev/sdc` and
 vdev `cache` for `/dev/sdb`.
+
+## Review follow-ups (2026-11-15)
+
+The first PR (#177) merged before the review fixes landed. A follow-up branch
+applies them:
+
+- **One disk, several members.** Two ZFS members on one physical disk (a data
+  partition plus a log/cache partition) used to overwrite each other in the
+  per-whole-disk map. The merge now keeps the worse state, adds the error
+  counters, and keeps both vdev labels (`sdb1, logs`).
+- **Group rows stay internal.** `parse_pool_health` (the pool page) keeps its
+  previous shape; only `disk_health` parses with `keep_groups`, so `cache` is a
+  vdev label there but not a top-level `PoolHealth.config` entry.
+- **No duplicate enumeration.** The API only calls `list_pools` when the agent
+  report succeeded and a non-system disk is still without membership.
+- **One status wrapper.** `pool_status`/`pool_status_kernel` share
+  `pool_status_with(name, -L)`, and `pool_health` uses `pool_status`, so no
+  test-only wrapper remains.
+
+Tests: `disk_health_merges_members_on_one_disk` and
+`pool_health_config_omits_group_rows` (agent); the existing API fallback test
+still covers the gated `list_pools` path.

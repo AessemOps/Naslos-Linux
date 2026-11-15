@@ -232,9 +232,13 @@ pub async fn disks_health_get(State(state): State<Arc<AppState>>) -> Response {
         }
     };
 
+    let mut agent_report_ok = false;
     let report = match state.agent.as_ref() {
         Some(agent) => match agent.disk_health().await {
-            Ok(report) => report,
+            Ok(report) => {
+                agent_report_ok = true;
+                report
+            }
             Err(e) => {
                 errors.push(e.message.clone());
                 crate::agent::DiskHealthReport {
@@ -296,26 +300,31 @@ pub async fn disks_health_get(State(state): State<Arc<AppState>>) -> Response {
         entry.zfs = disk.zfs;
     }
 
-    // The agent's per-disk ZFS map is the primary source, but keep the pool
-    // name visible when a member could not be attributed to a whole disk (an
-    // older agent, or a vdev the status parser skipped). `list_pools` resolves
-    // partitions to their whole disk, so the Pool column is never empty for a
-    // disk that really belongs to a pool.
-    if let Some(agent) = state.agent.as_ref() {
-        if let Ok(pools) = agent.list_pools().await {
-            let mut owner: HashMap<String, String> = HashMap::new();
-            for pool in pools {
-                for dev in pool.disks {
-                    if let Some(whole) = super::zfs::whole_disk_path(&dev) {
-                        owner.entry(whole).or_insert_with(|| pool.name.clone());
+    // The agent's per-disk ZFS map is the primary source. Only when a
+    // non-system disk still has no membership (an older agent, or a vdev the
+    // status parser skipped) ask for the pool list, so the normal new-agent
+    // path does not pay for a second ZFS enumeration on every poll.
+    let needs_pool_names = agent_report_ok
+        && entries
+            .values()
+            .any(|e| !e.is_system_disk && e.zfs.is_none() && e.in_pool.is_none());
+    if needs_pool_names {
+        if let Some(agent) = state.agent.as_ref() {
+            if let Ok(pools) = agent.list_pools().await {
+                let mut owner: HashMap<String, String> = HashMap::new();
+                for pool in pools {
+                    for dev in pool.disks {
+                        if let Some(whole) = super::zfs::whole_disk_path(&dev) {
+                            owner.entry(whole).or_insert_with(|| pool.name.clone());
+                        }
+                        owner.entry(dev).or_insert_with(|| pool.name.clone());
                     }
-                    owner.entry(dev).or_insert_with(|| pool.name.clone());
                 }
-            }
-            for entry in entries.values_mut() {
-                if entry.zfs.is_none() && entry.in_pool.is_none() {
-                    if let Some(pool) = owner.get(&entry.device) {
-                        entry.in_pool = Some(pool.clone());
+                for entry in entries.values_mut() {
+                    if entry.zfs.is_none() && entry.in_pool.is_none() {
+                        if let Some(pool) = owner.get(&entry.device) {
+                            entry.in_pool = Some(pool.clone());
+                        }
                     }
                 }
             }
