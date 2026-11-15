@@ -765,6 +765,7 @@ async fn disk_health_flattens_vdevs_to_whole_disks() {
     let host = FakeHost::new();
     let status = "  pool: tank\n state: DEGRADED\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\ttank        DEGRADED     0     0     0\n\t  mirror-0  DEGRADED     0     0     0\n\t    sdb     ONLINE       0     0     0\n\t    sdc     FAULTED      1     2     3\n\nerrors: No known data errors\n";
     let runner = Arc::new(FakeRunner::new(&["tank\t10G\t1G\t9G\tDEGRADED\n", status]));
+    let calls = runner.calls();
     let c = client(&host, runner);
 
     let health = c.disk_health().await;
@@ -778,4 +779,29 @@ async fn disk_health_flattens_vdevs_to_whole_disks() {
     assert_eq!(sdc.read_errors, 1);
     assert_eq!(sdc.write_errors, 2);
     assert_eq!(sdc.cksum_errors, 3);
+    assert!(
+        ran_command(&calls, "zpool status -L tank"),
+        "disk membership must resolve kernel device names, got {:?}",
+        calls.lock().unwrap()
+    );
+}
+
+/// A GUID-imported pool reports partitions (`sdc2`, `sdb1`) with `-L`; the
+/// health map must still attribute them to the whole disks the page lists.
+#[tokio::test]
+async fn disk_health_maps_partition_members_to_whole_disks() {
+    let host = FakeHost::new();
+    let status = "  pool: Data\n state: ONLINE\nconfig:\n\n\tNAME        STATE     READ WRITE CKSUM\n\tData        ONLINE       0     0     0\n\t  sdc2      ONLINE       0     0     0\n\tcache\n\t  sdb1      ONLINE       0     0     0\n\nerrors: No known data errors\n";
+    let runner = Arc::new(FakeRunner::new(&["Data\t11T\t1T\t10T\tONLINE\n", status]));
+    let c = client(&host, runner);
+
+    let health = c.disk_health().await;
+    assert_eq!(health.len(), 2, "partition members must not be dropped");
+    let sdc = health.get("/dev/sdc").expect("sdc2 belongs to sdc");
+    assert_eq!(sdc.pool, "Data");
+    assert_eq!(sdc.vdev, "sdc2");
+    assert_eq!(sdc.state, "ONLINE");
+    let sdb = health.get("/dev/sdb").expect("sdb1 belongs to sdb");
+    assert_eq!(sdb.pool, "Data");
+    assert_eq!(sdb.vdev, "cache");
 }
