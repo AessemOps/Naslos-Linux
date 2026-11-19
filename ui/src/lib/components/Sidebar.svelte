@@ -21,6 +21,7 @@
     { name: 'Domains', path: '/domains', icon: '🌐' },
     { name: 'Dynamic DNS', path: '/dns', icon: '🌍' },
     { name: 'Shares', path: '/shares', icon: '🔗' },
+    { name: 'Virtual Machines', path: '/vms', icon: '🖥️' },
     { name: 'Backups', path: '/backups', icon: '💾' },
     { name: 'Terminal', path: '/terminal', icon: '💻' },
     { name: 'Notifications', path: '/notifications', icon: '🔔' },
