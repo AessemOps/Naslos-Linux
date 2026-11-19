@@ -69,16 +69,6 @@ impl Qmp {
         self.execute("quit", None).await.map(|_| ())
     }
 
-    /// `query-status`: `{"status": "running"|"paused"|…}`.
-    pub async fn status(&self) -> Result<String, String> {
-        let value = self.execute("query-status", None).await?;
-        Ok(value
-            .get("status")
-            .and_then(|s| s.as_str())
-            .unwrap_or_default()
-            .to_string())
-    }
-
     /// `query-balloon`: the guest's current memory usage in MiB, once the
     /// balloon driver inside the guest is up (`None` before that).
     pub async fn balloon_actual_mib(&self) -> Result<Option<u64>, String> {
@@ -209,14 +199,18 @@ mod tests {
         let socket = dir.path().join("test.qmp");
         let server = spawn_qmp(&socket).await;
         let qmp = Qmp::new(&socket);
-        let status = qmp.status().await.expect("query-status must work");
-        assert_eq!(status, "running");
+        // The mock answers set_password with {"return":{...}} after skipping
+        // one event, which covers request framing, event skipping and
+        // response parsing in a single round trip.
+        qmp.set_vnc_password("pw12345")
+            .await
+            .expect("set_password must round-trip");
         server.abort();
     }
 
     #[tokio::test]
     async fn a_dead_socket_reports_an_error() {
         let qmp = Qmp::new("/nonexistent/qmp.sock");
-        assert!(qmp.status().await.is_err());
+        assert!(qmp.set_vnc_password("pw").await.is_err());
     }
 }

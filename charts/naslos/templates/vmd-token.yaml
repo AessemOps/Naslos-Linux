@@ -18,7 +18,7 @@ have a `token` key.
 {{- $secretName := "" }}
 {{- $virt := get .Values "virt" | default dict }}
 {{- if $virt }}{{ $secretName = index $virt "tokenSecret" | default "" }}{{ end }}
-{{- if and .Values.virt.enabled (not $secretName) }}
+{{- if and $virt.enabled (not $secretName) }}
 {{- $wns := include "naslos.workloadNamespace" . }}
 {{- $vmdToken := "" }}
 {{- $inWorkloadNs := lookup "v1" "Secret" $wns "naslos-vmd" }}

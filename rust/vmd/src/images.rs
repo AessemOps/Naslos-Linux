@@ -8,7 +8,7 @@
 //! public addresses only, http(s) only, redirects re-validated hop by hop
 //! (FR-DNS-07 pattern).
 
-use crate::model::{isos_dir, library_path, valid_library_name, ImageEntry};
+use crate::model::{isos_dir, library_path, valid_library_name, valid_pool_component, ImageEntry};
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
@@ -18,8 +18,12 @@ use std::path::Path;
 pub const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 
 /// List the library of one pool. A missing directory is an empty library,
-/// not an error (the API bootstraps it on first use).
+/// not an error (the API bootstraps it on first use). An invalid pool
+/// component yields an empty list: the handlers reject it with 400 first.
 pub async fn list(pool: &str) -> Vec<ImageEntry> {
+    if !valid_pool_component(pool) {
+        return Vec::new();
+    }
     let dir = isos_dir(pool);
     let mut out = Vec::new();
     let Ok(entries) = tokio::fs::read_dir(&dir).await else {
@@ -41,14 +45,6 @@ pub async fn list(pool: &str) -> Vec<ImageEntry> {
     out
 }
 
-/// Whether a library file exists.
-pub async fn exists(pool: &str, name: &str) -> bool {
-    tokio::fs::metadata(library_path(pool, name))
-        .await
-        .map(|m| m.is_file())
-        .unwrap_or(false)
-}
-
 /// Write one upload chunk at `offset` (truncate first when offset is 0).
 /// `final_chunk` fsyncs and returns the total size.
 pub async fn write_chunk(
@@ -58,6 +54,9 @@ pub async fn write_chunk(
     final_chunk: bool,
     body: axum::body::Body,
 ) -> Result<u64, String> {
+    if !valid_pool_component(pool) {
+        return Err(format!("pool {pool:?} is not a valid dataset component"));
+    }
     if !valid_library_name(name) {
         return Err(format!("{name:?} is not a valid library file name"));
     }
@@ -322,9 +321,10 @@ pub fn blocked_ip(ip: &IpAddr) -> bool {
             v6.is_loopback()
                 || v6.is_multicast()
                 || v6.is_unspecified()
-                || (first & 0xffc0) == 0xfe80
-                || (first & 0xfe00) == 0xfc00
-                || (first == 0x0064 && v6.segments()[1] == 0xff9b)
+                || (first & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || (first & 0xffc0) == 0xfec0 // deprecated site-local fec0::/10
+                || (first & 0xfe00) == 0xfc00 // ULA fc00::/7
+                || (first == 0x0064 && v6.segments()[1] == 0xff9b) // NAT64
                 || first == 0x2002
                 || (first == 0x2001 && v6.segments()[1] == 0x0db8)
         }
@@ -333,6 +333,9 @@ pub fn blocked_ip(ip: &IpAddr) -> bool {
 
 /// Delete a library file.
 pub async fn delete(pool: &str, name: &str) -> Result<(), String> {
+    if !valid_pool_component(pool) {
+        return Err(format!("pool {pool:?} is not a valid dataset component"));
+    }
     if !valid_library_name(name) {
         return Err(format!("{name:?} is not a valid library file name"));
     }
@@ -364,6 +367,7 @@ mod tests {
             "::1",
             "fe80::1",
             "fc00::1",
+            "fec0::1",
         ] {
             let ip: IpAddr = bad.parse().unwrap();
             assert!(blocked_ip(&ip), "{bad} must be blocked");

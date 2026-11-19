@@ -207,7 +207,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "naslos.agentTokenSecret" . | default "naslos-agent" }}
                   key: token
-            {{- if .Values.virt.enabled }}
+            {{- $virt := get .Values "virt" | default dict }}
+            {{- if $virt.enabled }}
             # ---- Virtual machines (FR-VMT, docs/virtual-machines.md) ----
             # The API is the brain: it validates, persists vms.json and pushes
             # the desired state; naslos-vmd applies it to QEMU.
@@ -216,9 +217,9 @@ spec:
             - name: VMD_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.virt.tokenSecret | default "naslos-vmd" }}
+                  name: {{ $virt.tokenSecret | default "naslos-vmd" }}
                   key: token
-            {{- if .Values.virt.tls.enabled }}
+            {{- if $virt.tls.enabled }}
             # PF-M5: pin the chart-generated vmd CA so the TLS channel is
             # verified rather than opportunistic.
             - name: VMD_CA_FILE
@@ -503,7 +504,7 @@ spec:
               mountPath: /etc/naslos/agent-tls
               readOnly: true
             {{- end }}
-            {{- if and .Values.virt.enabled .Values.virt.tls.enabled }}
+            {{- if and $virt.enabled $virt.tls.enabled }}
             - name: vmd-tls
               mountPath: /etc/naslos/vmd-tls
               readOnly: true
@@ -576,7 +577,7 @@ spec:
               - key: ca.crt
                 path: ca.crt
         {{- end }}
-        {{- if and .Values.virt.enabled .Values.virt.tls.enabled }}
+        {{- if and $virt.enabled $virt.tls.enabled }}
         - name: vmd-tls
           secret:
             # CA-only copy in the API namespace (the vmd server key stays in

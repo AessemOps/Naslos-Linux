@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
+
   // ISO/disk-image library (FR-VMT): chunked browser upload with progress,
   // server-side URL import (the SSRF guard lives in vmd) and delete.
   export let pool: string;
@@ -122,12 +124,24 @@
     }
   }
 
+  // Import pollers: torn down with the component (closing the panel must not
+  // leave a dead timer fetching the library for the whole import), and skipped
+  // while the tab is hidden.
+  let importTimers: ReturnType<typeof setInterval>[] = [];
+
   function pollImport(name: string) {
     const timer = setInterval(async () => {
+      if (document.visibilityState !== 'visible') return;
       await load();
       if (!importing.includes(name)) clearInterval(timer);
     }, 3000);
+    importTimers.push(timer);
   }
+
+  onDestroy(() => {
+    for (const timer of importTimers) clearInterval(timer);
+    importTimers = [];
+  });
 
   async function remove(name: string) {
     if (!confirm(`Delete ${name} from the ${pool} library?`)) return;

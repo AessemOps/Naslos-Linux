@@ -7,7 +7,7 @@
 //! enforce exactly the same rules (SEC-1: no unvalidated string ever reaches a
 //! QEMU command line).
 
-use naslos_vmd::model::{DesiredConfig, DesiredState, VmSpec};
+use naslos_vmd::model::{DesiredConfig, DesiredState, NetMode, VmSpec};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
@@ -105,10 +105,6 @@ impl Store {
             .cloned()
     }
 
-    pub fn contains(&self, name: &str) -> bool {
-        self.inner.lock().unwrap().iter().any(|vm| vm.name == name)
-    }
-
     /// Insert a new record (validated, unique).
     pub fn create(&self, spec: VmSpec) -> Result<VmSpec, String> {
         naslos_vmd::model::validate_vm(&spec)?;
@@ -150,6 +146,30 @@ impl Store {
         let removed = inner.remove(index);
         self.save_locked(&inner)?;
         Ok(removed)
+    }
+
+    /// Reject a spec whose NAT host ports collide with another VM's (a
+    /// whole-config push fails on vmd for exactly this; catching it here
+    /// keeps `vms.json` free of configs that would poison every later push).
+    pub fn validate_cross_vm_ports(&self, name: &str, spec: &VmSpec) -> Result<(), String> {
+        let inner = self.inner.lock().unwrap();
+        for other in inner.iter() {
+            if other.name == name {
+                continue;
+            }
+            if spec.net.mode != NetMode::Nat || other.net.mode != NetMode::Nat {
+                continue;
+            }
+            for fwd in &spec.net.forwards {
+                if other.net.forwards.iter().any(|f| f.host == fwd.host) {
+                    return Err(format!(
+                        "host port {} is already forwarded by VM {:?}",
+                        fwd.host, other.name
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Set one VM's desired runtime state (start/stop actions).
@@ -374,5 +394,30 @@ mod tests {
     fn dataset_names_are_scoped_under_the_pool() {
         assert_eq!(vm_dataset("tank", "alpha"), "tank/vms/alpha");
         assert_eq!(isos_dataset("tank"), "tank/vms/isos");
+    }
+
+    #[test]
+    fn cross_vm_port_conflicts_are_caught_before_persisting() {
+        let (_dir, store) = store();
+        store.create(spec("alpha")).unwrap();
+        let mut beta = spec("beta");
+        beta.net.forwards = vec![PortForward {
+            host: 8082,
+            dst: 80,
+        }];
+        assert!(store.validate_cross_vm_ports("beta", &beta).is_ok());
+        beta.net.forwards = spec("alpha").net.forwards.clone();
+        let err = store.validate_cross_vm_ports("beta", &beta).unwrap_err();
+        assert!(err.contains("8081"), "{err}");
+        assert!(err.contains("alpha"), "{err}");
+        // Editing alpha itself may keep its own ports.
+        assert!(store
+            .validate_cross_vm_ports("alpha", &spec("alpha"))
+            .is_ok());
+        // LAN VMs have no host ports to collide with.
+        let mut lan = spec("beta");
+        lan.net.mode = NetMode::Lan;
+        lan.net.forwards = spec("alpha").net.forwards.clone();
+        assert!(store.validate_cross_vm_ports("beta", &lan).is_ok());
     }
 }

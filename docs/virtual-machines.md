@@ -17,7 +17,9 @@ naslos-api ── zfs create/destroy/rollback ──> naslos-agent ──> ZFS d
 | Piece | Role |
 | --- | --- |
 | `naslos-vmd` (`rust/vmd`, image `ghcr.io/aessemops/naslos-vmd`) | Privileged hostNetwork pod, one per node (`Recreate`). Validates, builds every QEMU argument from the validated model (golden-tested), supervises children, speaks QMP (graceful stop, VNC passwords, balloon stats), creates macvtap devices for LAN mode, generates cloud-init seeds, and serves the image library at `<pool>/vms/isos`. |
-| `naslos-api` (`rust/api/src/virt.rs`, `server/virt.rs`) | The brain: validates every record, persists `vms.json` on the state PVC, renders the whole desired config and pushes it (`PUT /api/v1/vms/config` on vmd, revision-gated). State is always derived live from vmd and never persisted. |
+| `naslos-api` (`rust/api/src/virt.rs`, `server/virt.rs`) | The brain: validates every record, persists `vms.json` on the state PVC, renders the whole desired config and pushes it (`PUT /api/v1/vms/config` on vmd, revision-tagged: an identical
+  revision is a no-op). State is always derived live from vmd and never
+  persisted. |
 | `naslos-agent` | Still the only ZFS writer: VM datasets are created/destroyed/snapshotted/rolled-back through the existing dataset APIs. |
 | QEMU (`qemu-system-x86_64`, Debian package) | The hypervisor, unmodified distro binaries; q35 machine, virtio defaults, OVMF (UEFI) firmware by default with a per-VM writable vars copy, SeaBIOS selectable for legacy guests. |
 
@@ -160,7 +162,7 @@ boots straight to SSH.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `virt.enabled` | `true` | Deploy the supervisor + wire the API client. |
-| `virt.image` | `ghcr.io/aessemops/naslos-vmd:0.4.0` | Ninth image, same digest-pin discipline (FR-INSTALL-13). |
+| `virt.image` | `ghcr.io/aessemops/naslos-vmd:0.4.0` | Ninth CI image (buddy-receiver is the eighth); one of the 8 digest-pinned chart images in released packs (FR-INSTALL-13). |
 | `virt.tls.enabled` | `true` | Chart-generated vmd TLS + API CA pin. |
 | `virt.tokenSecret` | `""` | Bring-your-own Secret (needs a `token` key). |
 | `virt.vnc.firstDisplay` / `displays` | `1` / `16` | VNC display range (ports 5901..5916); bounds concurrent consoles. |

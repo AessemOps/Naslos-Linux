@@ -46,6 +46,8 @@ struct Running {
 #[derive(Default)]
 struct State {
     desired: DesiredConfig,
+    /// The last applied config revision: identical re-pushes are no-ops.
+    last_revision: String,
     running: HashMap<String, Running>,
     /// Last reported live state for VMs that are not running (or were removed
     /// from the desired config), so the API can still see exits and errors.
@@ -76,6 +78,7 @@ impl Supervisor {
             firmware: detect_firmware(),
             state: Mutex::new(State {
                 desired: DesiredConfig::default(),
+                last_revision: String::new(),
                 running: HashMap::new(),
                 ghosts: HashMap::new(),
             }),
@@ -100,7 +103,16 @@ impl Supervisor {
                 }
             }
         }
-        self.state.lock().await.desired = config;
+        {
+            let mut state = self.state.lock().await;
+            if !config.revision.is_empty() && state.last_revision == config.revision {
+                // The API re-renders the same config on watcher recoveries;
+                // an identical revision is a no-op.
+                return Ok(());
+            }
+            state.last_revision = config.revision.clone();
+            state.desired = config;
+        }
         self.reconcile().await
     }
 
@@ -208,105 +220,152 @@ impl Supervisor {
 
     /// Reap exited children, refresh per-VM state, and park ghosts.
     pub async fn poll(&self) {
-        let mut state = self.state.lock().await;
-        let mut reaped: Vec<String> = Vec::new();
-        for (name, running) in state.running.iter_mut() {
-            if running.exited.is_some() {
-                continue;
-            }
-            if let Ok(Some(status)) = running.child.try_wait() {
-                running.exited = Some(status);
-                if !running.stopping {
-                    running.unexpected_exit = true;
-                    running.last_error = format!(
-                        "QEMU exited unexpectedly with {status}; last log line: {}",
-                        tail_qemu_log(&vm_dir(&running.spec.pool, name))
-                    );
-                    tracing::warn!("VM {name} exited unexpectedly: {status}");
-                } else {
-                    running.last_error = String::new();
+        let mut to_unlink: Vec<String> = Vec::new();
+        {
+            let mut state = self.state.lock().await;
+            let mut reaped: Vec<String> = Vec::new();
+            for (name, running) in state.running.iter_mut() {
+                if running.exited.is_some() {
+                    continue;
                 }
-                reaped.push(name.clone());
+                if let Ok(Some(status)) = running.child.try_wait() {
+                    running.exited = Some(status);
+                    if !running.stopping {
+                        running.unexpected_exit = true;
+                        running.last_error = format!(
+                            "QEMU exited unexpectedly with {status}; last log line: {}",
+                            tail_qemu_log(&vm_dir(&running.spec.pool, name))
+                        );
+                        tracing::warn!("VM {name} exited unexpectedly: {status}");
+                    } else {
+                        running.last_error = String::new();
+                    }
+                    reaped.push(name.clone());
+                }
+            }
+            // Park reaped VMs as ghosts so their exit reason stays visible.
+            for name in reaped {
+                if let Some(running) = state.running.remove(&name) {
+                    to_unlink.push(name.clone());
+                    state.ghosts.insert(
+                        name.clone(),
+                        VmLive {
+                            name: name.clone(),
+                            state: "stopped".into(),
+                            pid: None,
+                            vnc_port: None,
+                            vnc_password: String::new(),
+                            cpu_percent: 0.0,
+                            mem_used_mib: 0,
+                            unexpected_exit: running.unexpected_exit,
+                            last_error: running.last_error.clone(),
+                        },
+                    );
+                }
             }
         }
-        // Park reaped VMs as ghosts so their exit reason stays visible.
-        for name in reaped {
-            if let Some(running) = state.running.remove(&name) {
-                let _ = netdev::remove_macvtap(&name).await;
-                state.ghosts.insert(
-                    name.clone(),
-                    VmLive {
-                        name: name.clone(),
-                        state: "stopped".into(),
-                        pid: None,
-                        vnc_port: None,
-                        vnc_password: String::new(),
-                        cpu_percent: 0.0,
-                        mem_used_mib: 0,
-                        unexpected_exit: running.unexpected_exit,
-                        last_error: running.last_error.clone(),
-                    },
-                );
-            }
+        // The macvtap teardown shells out to `ip`; it must never run under
+        // the supervisor mutex (the QMP probes in live() would queue behind
+        // it and a wedged child could freeze all VM management).
+        for name in &to_unlink {
+            let _ = netdev::remove_macvtap(name).await;
         }
     }
 
     /// Live state for every VM vmd knows about (desired, running or ghost).
+    /// The lock is held only to copy immutable snapshots; the per-VM QMP
+    /// probes run after releasing it, so a wedged QEMU cannot stall
+    /// reconciliation or lifecycle actions.
     pub async fn live(&self) -> Vec<VmLive> {
         self.poll().await;
-        let state = self.state.lock().await;
+        let (desired, running, ghosts) = {
+            let state = self.state.lock().await;
+            (
+                state.desired.vms.clone(),
+                state
+                    .running
+                    .iter()
+                    .map(|(name, r)| {
+                        (
+                            name.clone(),
+                            (
+                                r.exited.is_none(),
+                                RunningSnapshot {
+                                    pid: r.pid(),
+                                    vnc_display: r.vnc_display,
+                                    vnc_password: r.vnc_password.clone(),
+                                    started_at: r.started_at,
+                                    unexpected_exit: r.unexpected_exit,
+                                    last_error: r.last_error.clone(),
+                                },
+                            ),
+                        )
+                    })
+                    .collect::<Vec<(String, (bool, RunningSnapshot))>>(),
+                state.ghosts.clone(),
+            )
+        };
+        let lookup = |name: &str| -> Option<&(bool, RunningSnapshot)> {
+            running
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, snapshot)| snapshot)
+        };
+
         let mut out: Vec<VmLive> = Vec::new();
-        for vm in &state.desired.vms {
-            if let Some(running) = state.running.get(&vm.name) {
-                let alive = running.exited.is_none();
-                let (cpu, mem) = if alive {
-                    let mem = Qmp::new(self.run_dir.join(format!("{}.qmp", vm.name)))
-                        .balloon_actual_mib()
-                        .await
-                        .ok()
-                        .flatten()
-                        .unwrap_or(0);
-                    (
-                        cpu_percent(running.pid(), vm.cpu, running.started_at),
-                        mem as u32,
-                    )
-                } else {
-                    (0.0, 0)
-                };
-                out.push(VmLive {
-                    name: vm.name.clone(),
-                    state: if alive {
-                        "running".into()
+        for vm in &desired {
+            match lookup(&vm.name) {
+                Some((alive, snapshot)) => {
+                    let (cpu, mem) = if *alive {
+                        let mem = Qmp::new(self.run_dir.join(format!("{}.qmp", vm.name)))
+                            .balloon_actual_mib()
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or(0);
+                        (
+                            cpu_percent(snapshot.pid, vm.cpu, snapshot.started_at),
+                            mem as u32,
+                        )
                     } else {
-                        "stopped".into()
-                    },
-                    pid: alive.then(|| running.pid()),
-                    vnc_port: alive.then(|| 5900 + running.vnc_display),
-                    vnc_password: if alive {
-                        running.vnc_password.clone()
+                        (0.0, 0)
+                    };
+                    out.push(VmLive {
+                        name: vm.name.clone(),
+                        state: if *alive {
+                            "running".into()
+                        } else {
+                            "stopped".into()
+                        },
+                        pid: alive.then_some(snapshot.pid),
+                        vnc_port: alive.then_some(5900 + snapshot.vnc_display),
+                        vnc_password: if *alive {
+                            snapshot.vnc_password.clone()
+                        } else {
+                            String::new()
+                        },
+                        cpu_percent: cpu,
+                        mem_used_mib: mem,
+                        unexpected_exit: snapshot.unexpected_exit,
+                        last_error: snapshot.last_error.clone(),
+                    });
+                }
+                None => {
+                    if let Some(ghost) = ghosts.get(&vm.name) {
+                        out.push(ghost.clone());
                     } else {
-                        String::new()
-                    },
-                    cpu_percent: cpu,
-                    mem_used_mib: mem,
-                    unexpected_exit: running.unexpected_exit,
-                    last_error: running.last_error.clone(),
-                });
-                continue;
-            }
-            if let Some(ghost) = state.ghosts.get(&vm.name) {
-                out.push(ghost.clone());
-            } else {
-                out.push(VmLive {
-                    name: vm.name.clone(),
-                    state: "stopped".into(),
-                    ..Default::default()
-                });
+                        out.push(VmLive {
+                            name: vm.name.clone(),
+                            state: "stopped".into(),
+                            ..Default::default()
+                        });
+                    }
+                }
             }
         }
         // Ghosts of removed VMs (their exit reason was never reported).
-        for ghost in state.ghosts.values() {
-            if !state.desired.vms.iter().any(|vm| vm.name == ghost.name) {
+        for ghost in ghosts.values() {
+            if !desired.iter().any(|vm| vm.name == ghost.name) {
                 out.push(ghost.clone());
             }
         }
@@ -571,6 +630,13 @@ impl Supervisor {
             if self.wait_exit(name, GRACEFUL_STOP_SECS).await {
                 return Ok(());
             }
+        } else {
+            // Force: ask QEMU to quit cleanly first (it flushes block writes),
+            // then escalate to signals.
+            let _ = Qmp::new(&qmp_socket).quit().await;
+            if self.wait_exit(name, 5).await {
+                return Ok(());
+            }
         }
 
         // SIGTERM, then SIGKILL.
@@ -635,6 +701,18 @@ impl Running {
     fn pid(&self) -> u32 {
         self.child.id().unwrap_or(0)
     }
+}
+
+/// A copy of the per-VM fields a live report needs, made under the
+/// supervisor lock so the QMP work can happen after releasing it.
+#[derive(Debug, Clone)]
+struct RunningSnapshot {
+    pid: u32,
+    vnc_display: u16,
+    vnc_password: String,
+    started_at: std::time::Instant,
+    unexpected_exit: bool,
+    last_error: String,
 }
 
 /// Whether a running VM matches the desired spec (the recreate test).

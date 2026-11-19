@@ -842,9 +842,11 @@ virt:
     requests:
       cpu: 50m
       memory: 128Mi
-    limits:
-      cpu: "2"
-      memory: 512Mi
+    # Deliberately no limits: QEMU runs as a child of this pod, so guest RAM
+    # counts against the pod's cgroup memory limit — a limit below the
+    # declared guest memory (the wizard default is 2048Mi) would OOM-kill the
+    # VM. A shared CPU limit would also throttle every guest together. Size
+    # the node for the sum of declared VM memory plus QEMU overhead instead.
 
 # Buddy Backup (docs/buddy-backup.md): a key-authenticated API that lets another
 # Naslos instance - or the standalone naslos-buddy-receiver container - push

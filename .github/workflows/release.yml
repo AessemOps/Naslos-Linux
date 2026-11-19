@@ -216,7 +216,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Assemble the image digest map
-        # Only the 7 chart images go into the pack; buddy-receiver is published
+        # Only the 8 chart images go into the pack; buddy-receiver is published
         # for the standalone Docker use case and is not part of the chart.
         run: |
           scripts/collect-image-digests.sh \
@@ -226,7 +226,8 @@ jobs:
             dist/digests/digest-samba.txt \
             dist/digests/digest-nfs.txt \
             dist/digests/digest-terminal.txt \
-            dist/digests/digest-openldap.txt > dist/image-digests.json
+            dist/digests/digest-openldap.txt \
+            dist/digests/digest-vmd.txt > dist/image-digests.json
           cat dist/image-digests.json
 
       - name: Verify every digest resolves
