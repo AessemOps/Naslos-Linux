@@ -28,7 +28,6 @@
   let vms: VmView[] = [];
   let pools: string[] = [];
   let capabilities: any = null;
-  let capsError = '';
   let featureError = '';
   let loading = true;
 
@@ -76,15 +75,23 @@
       }
       capabilities = await res.json();
     } catch (e: any) {
-      capsError = e.message;
+      featureError = `Cannot load the node capabilities: ${e.message}`;
     }
   }
 
+  let refreshing = false;
+
   async function refresh() {
-    await Promise.all([loadVms()]);
-    if (selected) {
-      // Keep the drawer's VM in step with the list.
-      selected = vms.find((v) => v.name === selected!.name) ?? selected;
+    if (refreshing) return;
+    refreshing = true;
+    try {
+      await loadVms();
+      if (selected) {
+        // Keep the drawer's VM in step with the list.
+        selected = vms.find((v) => v.name === selected!.name) ?? selected;
+      }
+    } finally {
+      refreshing = false;
     }
   }
 

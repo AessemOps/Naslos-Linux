@@ -228,6 +228,11 @@ pub fn valid_library_name(file: &str) -> bool {
 /// so a bad render can never reach a QEMU command line (SEC-1 pattern).
 pub fn validate_vm(spec: &VmSpec) -> Result<(), String> {
     validate_name(&spec.name)?;
+    if spec.name == "isos" {
+        // `<pool>/vms/isos` is the image library dataset: a VM with that name
+        // would alias it, and deleting the VM would destroy the library.
+        return Err("the name \"isos\" is reserved for the image library dataset".to_string());
+    }
     if spec.pool.is_empty() || !valid_pool_component(&spec.pool) {
         return Err(format!(
             "pool {:?} is not a valid dataset component",
@@ -311,14 +316,20 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A pool name is a single dataset component (flat, no '/').
+/// A pool name is a single dataset component (flat, no '/', and never `.` or
+/// `..` — the traversal pair would escape the datasets root).
 pub fn valid_pool_component(pool: &str) -> bool {
-    !pool.is_empty()
-        && pool.len() <= 63
-        && !pool.contains('/')
-        && pool
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    if pool.is_empty() || pool.len() > 63 || pool.contains('/') || pool == "." || pool == ".." {
+        return false;
+    }
+    let bytes = pool.as_bytes();
+    // A leading alphanumeric keeps `.hidden`-style and `..x` components out.
+    if !bytes[0].is_ascii_alphanumeric() {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
 /// Linux interface names: alphanumeric plus a few separators, <= 15 chars for
@@ -451,6 +462,42 @@ mod tests {
     #[test]
     fn a_valid_spec_passes() {
         assert!(validate_vm(&vm()).is_ok());
+    }
+
+    #[test]
+    fn the_image_library_dataset_name_is_reserved() {
+        let mut spec = vm();
+        spec.name = "isos".into();
+        assert!(validate_vm(&spec)
+            .unwrap_err()
+            .contains("reserved for the image library"));
+    }
+
+    #[test]
+    fn pools_must_be_flat_components() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../tank",
+            ".hidden",
+            "-lead",
+            "a/b",
+            &"x".repeat(64),
+        ] {
+            assert!(
+                !valid_pool_component(bad),
+                "{bad:?} must not be a valid pool component"
+            );
+        }
+        for good in ["tank", "Data", "ssd-storage", "pool2", "a.b"] {
+            assert!(valid_pool_component(good), "{good:?} must be valid");
+        }
+        // A traversal pool is rejected at validation time, before any path is
+        // built from it.
+        let mut spec = vm();
+        spec.pool = "..".into();
+        assert!(validate_vm(&spec).is_err());
     }
 
     #[test]

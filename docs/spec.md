@@ -858,9 +858,9 @@ implemented here).
 - **FR-INSTALL-12** — The engine MUST stream step progress as newline-delimited
   JSON on stdout, ending in a `done` or `error` event; the shell MUST render a
   progress bar and MUST be able to cancel by killing the child. **[OPEN]**
-- **FR-INSTALL-13** — a released pack (`vX.Y.Z`) MUST pin each of the 9 chart
-  images (`api`, `agent`, `ui`, `samba`, `nfs`, `terminal`, `openldap`,
-  `buddy-receiver`, `vmd`) by digest
+- **FR-INSTALL-13** — a released pack (`vX.Y.Z`) MUST pin each of the 8 chart
+  images (`api`, `agent`, `ui`, `samba`, `nfs`, `terminal`, `openldap`, `vmd`)
+  by digest
   to the public registry (`ghcr.io/aessemops/naslos-*`), and the tag workflow
   MUST publish those images before it builds the pack, so a pack never
   references an unpublished image. The digest MUST win over the tag (VER-2), and
@@ -1335,7 +1335,7 @@ and checksum gate (`scripts/audit.sh` → `check_install_pack`), `helm lint` of
 `render-installer-template.sh --check` tripwire against `cilium.yaml`, and the
 released-pack digest pinning (FR-INSTALL-13: `check_image_digest_render` proves
 the chart renders `repository@sha256:…`, `check_pack_digest_pinning` proves the
-pack build pins all 9 images, records them in `metadata.json.images`, and fails
+pack build pins all 8 chart images, records them in `metadata.json.images`, and fails
 closed on a missing image). The engine-side steps are verified end to end from
 `Naslos-Installer`: boot the ISO
 from the pack's URL, run `naslos-install` headless, then check node Ready, pods

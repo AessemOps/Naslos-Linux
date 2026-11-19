@@ -71,6 +71,12 @@ pub async fn images_get(
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
     let pool = query.get("pool").cloned().unwrap_or_default();
+    if !crate::model::valid_pool_component(&pool) {
+        return write_error(
+            StatusCode::BAD_REQUEST,
+            format!("pool {pool:?} is not a valid dataset component"),
+        );
+    }
     let list = images::list(&pool).await;
     let registry = state.imports.lock().await;
     let importing: Vec<String> = registry.active.iter().cloned().collect();
@@ -91,6 +97,12 @@ pub async fn image_upload_post(
 ) -> Response {
     let pool = query.get("pool").cloned().unwrap_or_default();
     let name = query.get("name").cloned().unwrap_or_default();
+    if !crate::model::valid_pool_component(&pool) {
+        return write_error(
+            StatusCode::BAD_REQUEST,
+            format!("pool {pool:?} is not a valid dataset component"),
+        );
+    }
     let offset = match query.get("offset").map(|v| v.trim()) {
         None => 0u64,
         Some(raw) => match raw.parse::<u64>() {
@@ -180,6 +192,12 @@ pub async fn image_delete(
     Path(name): Path<String>,
 ) -> Response {
     let pool = query.get("pool").cloned().unwrap_or_default();
+    if !crate::model::valid_pool_component(&pool) {
+        return write_error(
+            StatusCode::BAD_REQUEST,
+            format!("pool {pool:?} is not a valid dataset component"),
+        );
+    }
     match images::delete(&pool, &name).await {
         Ok(()) => json_response(
             StatusCode::OK,

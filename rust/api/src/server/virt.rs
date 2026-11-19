@@ -94,6 +94,9 @@ pub async fn vms_post(State(state): State<Arc<AppState>>, body: Body) -> Respons
     if let Err(e) = naslos_vmd::model::validate_vm(&spec) {
         return bad_request(&e);
     }
+    if let Err(e) = state.vms.validate_cross_vm_ports(&spec.name, &spec) {
+        return bad_request(&e);
+    }
     let agent = match agent_client(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -183,11 +186,24 @@ pub async fn vm_detail_put(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    if let Err(e) = naslos_vmd::model::validate_vm(&spec) {
+        return bad_request(&e);
+    }
+    if let Err(e) = state.vms.validate_cross_vm_ports(&name, &spec) {
+        return bad_request(&e);
+    }
+    // The record only sticks if the supervisor accepts the whole config;
+    // otherwise restore the previous spec so vms.json is never left with a
+    // config that would fail every later push.
+    let previous = state.vms.get(&name);
     let updated = match state.vms.update(&name, spec) {
         Ok(vm) => vm,
         Err(e) => return bad_request(&e),
     };
     if let Err(e) = push_config(&state, false).await {
+        if let Some(previous) = previous {
+            let _ = state.vms.update(&name, previous);
+        }
         return json(
             StatusCode::BAD_GATEWAY,
             serde_json::json!({ "error": e.to_string() }),
@@ -469,6 +485,9 @@ pub async fn images_get(
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
     let pool = query.get("pool").cloned().unwrap_or_default();
+    if !naslos_vmd::model::valid_pool_component(&pool) {
+        return bad_request(&format!("pool {pool:?} is not a valid dataset component"));
+    }
     let client = match vmd_client(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -562,6 +581,12 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
     if req.url.trim().is_empty() {
         return bad_request("an import URL is required");
     }
+    if !naslos_vmd::model::valid_pool_component(&req.pool) {
+        return bad_request(&format!(
+            "pool {:?} is not a valid dataset component",
+            req.pool
+        ));
+    }
     if !naslos_vmd::model::valid_library_name(&req.name) {
         return bad_request(&format!("{:?} is not a valid library file name", req.name));
     }
@@ -597,6 +622,9 @@ pub async fn image_delete(
     Path(name): Path<String>,
 ) -> Response {
     let pool = query.get("pool").cloned().unwrap_or_default();
+    if !naslos_vmd::model::valid_pool_component(&pool) {
+        return bad_request(&format!("pool {pool:?} is not a valid dataset component"));
+    }
     let client = match vmd_client(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -856,8 +884,23 @@ async fn vnc_bridge(
 
 /// Render the whole desired config and push it to vmd. Public for the
 /// startup push in main.rs (boot semantics: autostart VMs start).
+///
+/// After a successful boot push, the autostart decision is persisted into
+/// the records: the pushed copy alone would leave `vms.json` saying
+/// `desired: stopped`, and the next plain push (any create/edit/action)
+/// would stop the just-started VM again.
 pub async fn apply_config(state: &AppState, boot: bool) -> Result<(), String> {
-    push_config(state, boot).await
+    push_config(state, boot).await?;
+    if boot {
+        for vm in state.vms.list() {
+            if vm.autostart && vm.desired != DesiredState::Running {
+                if let Err(e) = state.vms.set_desired(&vm.name, DesiredState::Running) {
+                    tracing::warn!("persisting autostart for {}: {e}", vm.name);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The VM events watcher (FR-VMT): polls vmd's live report and raises ntfy

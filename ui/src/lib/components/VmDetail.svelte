@@ -2,6 +2,7 @@
   // VM detail drawer: live state, lifecycle actions, snapshots, forwards and
   // the noVNC console.
   import VmConsole from './VmConsole.svelte';
+  import { onDestroy } from 'svelte';
 
   export let vm: any | null = null; // the live VmView
   export let close: () => void = () => {};
@@ -16,12 +17,27 @@
   let busy = false;
   let error = '';
   let notice = '';
+  // The page's 5s polling replaces the `vm` object wholesale; reload the
+  // snapshot list only when a different VM opens (and after snapshot
+  // actions), never from the polling path.
+  let snapshotsFor = '';
 
-  $: if (vm) {
+  $: if (vm && vm.name !== snapshotsFor) {
+    snapshotsFor = vm.name;
     error = '';
     notice = '';
     loadSnapshots();
   }
+
+  // Explicitly refresh after actions; the poll never does.
+  function reloadSnapshots() {
+    snapshotsFor = vm?.name ?? '';
+    loadSnapshots();
+  }
+
+  onDestroy(() => {
+    snapshotsFor = '';
+  });
 
   async function loadSnapshots() {
     if (!vm) return;

@@ -23,15 +23,30 @@ the agent" proved impossible for `zfs rollback`), and the UI `/vms` pages
 (noVNC pinned `@novnc/novnc@1.5.0` — 1.6+ top-level-await breaks the build
 target). Two plan deviations, both documented in docs/virtual-machines.md: the
 console bridge is WS↔TCP inside the API (websockify pattern) rather than
-QEMU-native websocket VNC, and the agent got the narrow rollback route. All
-gates pass locally (cargo fmt/clippy/test, `npm run check`/`build`, `helm
-lint`, `make install-pack` 0.4.0, `sh scripts/audit.sh` all-pass after adding
-the dated RUSTSEC-2026-0543 chrono unmaintained ignore per convention); the
-Playwright suite is green on the live node with `tests/vms.spec.ts`
-capability-skipping (the deployed 0.3.23 predates the routes). **Remaining
-before release:** push the vmd image (or run the release workflow), update the
-`values-vm.yaml` digests, `make install-vm`, live drill per
-docs/virtual-machines.md § "Live drill", then tag `v0.4.0`.
+QEMU-native websocket VNC, and the agent got the narrow rollback route.
+
+A full branch review (PR #180) found 5 critical + 7 warning issues, all fixed
+in the review commit: image-library pool traversal (validator now rejects
+`.`/`..`/leading-dot pools, pool checked in every image handler on both
+sides), the `isos` VM name reserved (it aliased the library dataset — delete
+destroyed every image), the vmd pod has **no memory/CPU limits** (guest RAM
+counts against the pod cgroup; 512Mi OOM-killed the default VM), autostart
+persistence (the boot push now persists desired=running so later pushes do not
+stop autostarted VMs), release plumbing pins the 8 chart images including vmd
+(pin-installer-values/audit/release digest lists — buddy-receiver stays
+push-only), PUT rollback + cross-VM port pre-checks, the supervisor lock no
+longer spans QMP I/O, deploy-vm.sh overrides the vmd image, `--reuse-values`
+from pre-0.4 renders with the feature off, the import poller no longer leaks,
+the drawer no longer re-fetches snapshots every poll, `fec0::/10` joined the
+SSRF blocklist, force-stop sends QMP `quit` before signals, revision pushes are
+honest no-ops on identical revisions, and the dead code the diff left behind
+was removed. All gates pass locally (497 Rust tests, fmt/clippy clean,
+`npm run check`/`build`, `helm lint`, pack build with vmd digests,
+`sh scripts/audit.sh` all-pass — the dated chrono-unmaintained ignore is in
+deny.toml per convention); the Playwright suite is green on the live node with
+`tests/vms.spec.ts` capability-skipping. **Remaining before release:** push the
+vmd image (or run the release workflow), update the `values-vm.yaml` digests,
+`make install-vm`, live drill per docs/virtual-machines.md, then tag `v0.4.0`.
 
 ## Production instance (2026-11-14)
 

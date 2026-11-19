@@ -4,7 +4,8 @@
 //! vmd runs one privileged hostNetwork pod (headless `naslos-vmd` Service on
 //! :9091) and reconciles QEMU processes against the desired state the API
 //! pushes. The API uses this client for `/api/virt/*`: capabilities, the
-//! live-state list, the revision-gated config push, console details and the
+//! live-state list, the revision-tagged config push (identical revisions are
+//! no-ops on the vmd side), console details and the
 //! image library relay.
 
 use serde::{Deserialize, Serialize};
@@ -249,8 +250,8 @@ impl Client {
 
     // ---- Desired state ---------------------------------------------------
 
-    /// Push the whole desired config (revision-gated, atomic on the vmd
-    /// side: it validates everything before applying).
+    /// Push the whole desired config (atomic on the vmd side: it validates
+    /// everything before applying, and an identical revision is a no-op).
     pub async fn push_config(&self, config: &DesiredConfig) -> Result<(), VmdError> {
         let rb = self
             .request(reqwest::Method::PUT, "/api/v1/vms/config")

@@ -18,7 +18,7 @@ Components map to the chart's `.image.digest`:
 `terminal`; `openldap` is a single full reference (`.openldap.image`). Each
 `<comp>.image.tag` is kept for humans - the chart's digest wins over the tag.
 
-`--require-all` fails closed: every one of the 7 chart images must be present.
+`--require-all` fails closed: every one of the 8 chart images must be present.
 """
 import argparse
 import json
@@ -39,6 +39,7 @@ DIGEST_IMAGES = {
     "samba": ("shares", "smb", "image"),
     "nfs": ("shares", "nfs", "image"),
     "terminal": ("terminal", "image"),
+    "vmd": ("virt", "image"),
 }
 # Component -> scalar full reference (not a repository/tag/digest map).
 OPENLDAP = "openldap"
