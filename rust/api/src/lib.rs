@@ -38,6 +38,8 @@ pub mod state;
 pub mod system;
 pub mod talos;
 pub mod upgrade;
+pub mod virt;
+pub mod vmd;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

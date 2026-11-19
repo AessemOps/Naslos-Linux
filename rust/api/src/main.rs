@@ -135,6 +135,40 @@ async fn main() {
         });
     }
 
+    // Virtual machines (FR-VMT): push the rendered desired state so vmd
+    // reconciles after any restart. The boot push marks autostart VMs
+    // desired-running (pod restart = VM restart for autostart-marked VMs,
+    // docs/virtual-machines.md). Retried because vmd may still be starting
+    // on a cold boot.
+    {
+        let vm_state = state.clone();
+        tokio::spawn(async move {
+            if vm_state.vmd.is_none() {
+                return;
+            }
+            for attempt in 1..=10u32 {
+                match naslos_api::server::virt::apply_config(&vm_state, true).await {
+                    Ok(()) => {
+                        tracing::info!("VM configuration pushed to the supervisor");
+                        break;
+                    }
+                    Err(e) if attempt < 10 => {
+                        tracing::warn!("startup VM push (attempt {attempt}): {e}");
+                        tokio::time::sleep(std::time::Duration::from_secs(2 * u64::from(attempt)))
+                            .await;
+                    }
+                    Err(e) => tracing::warn!("startup VM push skipped: {e}"),
+                }
+            }
+        });
+    }
+
+    // VM failure/unexpected-exit notifications (FR-VMT).
+    {
+        let watcher_state = state.clone();
+        tokio::spawn(async move { naslos_api::server::virt::run_vm_watcher(watcher_state).await });
+    }
+
     let app = build_router(state.clone());
 
     let addr = match parse_addr(&cli.listen) {

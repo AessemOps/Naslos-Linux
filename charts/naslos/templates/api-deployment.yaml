@@ -207,6 +207,32 @@ spec:
                 secretKeyRef:
                   name: {{ include "naslos.agentTokenSecret" . | default "naslos-agent" }}
                   key: token
+            {{- if .Values.virt.enabled }}
+            # ---- Virtual machines (FR-VMT, docs/virtual-machines.md) ----
+            # The API is the brain: it validates, persists vms.json and pushes
+            # the desired state; naslos-vmd applies it to QEMU.
+            - name: VMD_BASE_URL
+              value: {{ .Values.api.virtBaseURL | default (printf "%s://naslos-vmd.%s.svc.cluster.local:9091" (ternary "https" "http" .Values.virt.tls.enabled) (include "naslos.workloadNamespace" .)) | quote }}
+            - name: VMD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.virt.tokenSecret | default "naslos-vmd" }}
+                  key: token
+            {{- if .Values.virt.tls.enabled }}
+            # PF-M5: pin the chart-generated vmd CA so the TLS channel is
+            # verified rather than opportunistic.
+            - name: VMD_CA_FILE
+              value: /etc/naslos/vmd-tls/ca.crt
+            {{- end }}
+            - name: VMS_CONFIG
+              value: {{ .Values.api.vmsFile | default "/var/lib/naslos/vms.json" | quote }}
+            - name: VIRT_CONSOLE_MAX_SESSION_SECS
+              value: {{ dig "virtConsole" "maxSessionSecs" 14400 .Values.api | quote }}
+            - name: VIRT_CONSOLE_IDLE_TIMEOUT_SECS
+              value: {{ dig "virtConsole" "idleTimeoutSecs" 600 .Values.api | quote }}
+            - name: VIRT_CONSOLE_MAX_SESSIONS
+              value: {{ dig "virtConsole" "maxSessions" 4 .Values.api | quote }}
+            {{- end }}
             # Per-disk SMART/ZFS alert thresholds (health_watch.rs).
             - name: DISK_HEALTH_ENABLED
               value: {{ dig "enabled" true $diskHealth | quote }}
@@ -477,6 +503,11 @@ spec:
               mountPath: /etc/naslos/agent-tls
               readOnly: true
             {{- end }}
+            {{- if and .Values.virt.enabled .Values.virt.tls.enabled }}
+            - name: vmd-tls
+              mountPath: /etc/naslos/vmd-tls
+              readOnly: true
+            {{- end }}
             {{- if .Values.api.talosConfigSecret }}
             - name: talosconfig
               mountPath: /var/run/secrets/talos.dev
@@ -541,6 +572,16 @@ spec:
             # server key, lives in the privileged namespace and cannot be
             # mounted across namespaces).
             secretName: {{ .Values.agent.tls.secretName | default "naslos-agent-tls" }}-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
+        {{- if and .Values.virt.enabled .Values.virt.tls.enabled }}
+        - name: vmd-tls
+          secret:
+            # CA-only copy in the API namespace (the vmd server key stays in
+            # the privileged namespace).
+            secretName: {{ .Values.virt.tls.secretName | default "naslos-vmd-tls" }}-ca
             items:
               - key: ca.crt
                 path: ca.crt

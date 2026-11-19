@@ -104,6 +104,36 @@ spec:
         - protocol: TCP
           port: 9090
 ---
+# vmd: privileged, hostNetwork, the QEMU supervisor. Same caveat as the agent
+# above: host-network pods are exempt from pod-level NetworkPolicy, so this
+# records the intent (:9091 reachable by the API only) and the bearer token +
+# TLS channel are the actual enforcement.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-vmd-ingress
+  namespace: {{ $wns }}
+  labels:
+    app.kubernetes.io/name: naslos-vmd
+    app.kubernetes.io/component: virt
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-vmd
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: naslos-api
+      ports:
+        - protocol: TCP
+          port: 9091
+---
 # Traefik: the single entry point (hostPort 80/443). Under default-deny its own
 # inbound must be allowed or the proxy serves nothing once a policy CNI lands.
 # hostPort traffic arrives from the node address, so that is expressed as the
