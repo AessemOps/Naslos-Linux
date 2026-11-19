@@ -11,6 +11,28 @@ rules and conventions are in [`AGENTS.md`](AGENTS.md).
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
+## In flight — QEMU hypervisor (2026-11-19, branch `feature/virt-qemu-hypervisor`)
+
+The full FR-VMT feature (v0.4.0) is implemented and locally gated, **not yet
+deployed or released**: the `naslos-vmd` supervisor crate (QMP, golden-arg
+builder, macvtap, cloud-init, SSRF-guarded imports), the ninth image + chart
+wiring (virt-deployment, vmd token/TLS secrets, API env), the API `virt` module
+(`/api/virt/*`, `vms.json`, console bridge, chunked upload), the agent
+`/api/v1/rollback` endpoint (VM snapshot restore; the plan's "nothing new in
+the agent" proved impossible for `zfs rollback`), and the UI `/vms` pages
+(noVNC pinned `@novnc/novnc@1.5.0` — 1.6+ top-level-await breaks the build
+target). Two plan deviations, both documented in docs/virtual-machines.md: the
+console bridge is WS↔TCP inside the API (websockify pattern) rather than
+QEMU-native websocket VNC, and the agent got the narrow rollback route. All
+gates pass locally (cargo fmt/clippy/test, `npm run check`/`build`, `helm
+lint`, `make install-pack` 0.4.0, `sh scripts/audit.sh` all-pass after adding
+the dated RUSTSEC-2026-0543 chrono unmaintained ignore per convention); the
+Playwright suite is green on the live node with `tests/vms.spec.ts`
+capability-skipping (the deployed 0.3.23 predates the routes). **Remaining
+before release:** push the vmd image (or run the release workflow), update the
+`values-vm.yaml` digests, `make install-vm`, live drill per
+docs/virtual-machines.md § "Live drill", then tag `v0.4.0`.
+
 ## Production instance (2026-11-14)
 
 - **Hardware:** the production NAS is the bare-metal node `talos-zgr-9yg` at
@@ -202,7 +224,9 @@ A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
   (verified by packet capture: public SYNs arrive). The durable fix
   (`networkPolicy.publicIngressCIDR: 0.0.0.0/0`) is deployed in `v0.3.10`;
   `https://search.shail.ovh/` is reachable externally.
-- **Playwright** has not been rerun since the bare-metal switch.
+- **Playwright** was rerun on 2026-11-19 (65 passed, 9 skipped): the sidebar,
+  notifications-page and dataset/disk suites are green on the deployed
+  revision; `tests/vms.spec.ts` capability-skips until the 0.4.0 deploy.
 
 ## How to operate
 
@@ -212,6 +236,7 @@ cd rust && cargo fmt --all -- --check
 cd rust && cargo clippy -p naslos-api --all-targets -- -D warnings
 cd rust && cargo test -p naslos-api
 cd rust && cargo test -p naslos-agent
+cd rust && cargo test -p naslos-vmd
 cd ui   && npm run check && npm run build
 helm lint charts/naslos -f charts/naslos/values.yaml -f charts/naslos/values-vm.yaml
 helm lint charts/naslos -f charts/naslos/values.yaml -f charts/naslos/values-installer.yaml
