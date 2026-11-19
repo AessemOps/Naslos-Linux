@@ -39,6 +39,7 @@ SAMBA_IMAGE := $(REGISTRY)/naslos-samba:$(IMAGE_TAG)
 NFS_IMAGE := $(REGISTRY)/naslos-nfs:$(IMAGE_TAG)
 TERMINAL_IMAGE := $(REGISTRY)/naslos-terminal:$(IMAGE_TAG)
 BUDDY_RECEIVER_IMAGE := $(REGISTRY)/naslos-buddy-receiver:$(IMAGE_TAG)
+VMD_IMAGE := $(REGISTRY)/naslos-vmd:$(IMAGE_TAG)
 
 # Extra flags passed through to helm upgrade (e.g. image registry overrides).
 HELM_FLAGS :=
@@ -74,7 +75,7 @@ buddyctl:
 	cp rust/target/release/buddyctl bin/buddyctl
 
 # Build all Naslos container images locally.
-images: api-image agent-image ui-image openldap-image samba-image nfs-image terminal-image buddy-receiver-image
+images: api-image agent-image ui-image openldap-image samba-image nfs-image terminal-image buddy-receiver-image vmd-image
 
 api-image:
 	$(DOCKER) build -t $(API_IMAGE) -f rust/api/Dockerfile .
@@ -104,6 +105,11 @@ terminal-image:
 buddy-receiver-image:
 	$(DOCKER) build -t $(BUDDY_RECEIVER_IMAGE) --build-arg VERSION=$(IMAGE_TAG) -f rust/api/Dockerfile.receiver .
 
+# The QEMU/KVM supervisor (spec FR-VMT, docs/virtual-machines.md): the
+# privileged hostNetwork pod that runs and reconciles VMs on the node.
+vmd-image:
+	$(DOCKER) build -t $(VMD_IMAGE) -f vmd/Dockerfile .
+
 # Push all Naslos container images to REGISTRY (requires docker login / insecure-registry config for HTTP registries).
 push-images: images
 	$(DOCKER) push $(API_IMAGE)
@@ -114,6 +120,7 @@ push-images: images
 	$(DOCKER) push $(NFS_IMAGE)
 	$(DOCKER) push $(TERMINAL_IMAGE)
 	$(DOCKER) push $(BUDDY_RECEIVER_IMAGE)
+	$(DOCKER) push $(VMD_IMAGE)
 
 # Print the digests of the images built for IMAGE_TAG, for pinning them in
 # values (NAS-022: a tag is mutable, a digest is not). This reads the local
@@ -121,7 +128,8 @@ push-images: images
 # come from the push step (`docker buildx imagetools inspect`).
 image-digests:
 	@for image in $(API_IMAGE) $(AGENT_IMAGE) $(UI_IMAGE) $(OPENLDAP_IMAGE) \
-	              $(SAMBA_IMAGE) $(NFS_IMAGE) $(TERMINAL_IMAGE) $(BUDDY_RECEIVER_IMAGE); do \
+	              $(SAMBA_IMAGE) $(NFS_IMAGE) $(TERMINAL_IMAGE) $(BUDDY_RECEIVER_IMAGE) \
+	              $(VMD_IMAGE); do \
 		digest=$$($(DOCKER) inspect --format '{{index .RepoDigests 0}}' $$image 2>/dev/null); \
 		if [ -n "$$digest" ]; then echo "$$image -> $$digest"; \
 		else echo "$$image -> (not pushed yet: push first, a digest only exists remotely)"; fi; \

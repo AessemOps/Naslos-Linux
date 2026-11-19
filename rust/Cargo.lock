@@ -1895,6 +1895,7 @@ dependencies = [
  "jsonschema",
  "ldap3",
  "libc",
+ "naslos-vmd",
  "portable-pty",
  "reqwest",
  "rustls",
@@ -1912,6 +1913,34 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "naslos-vmd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "axum-server",
+ "bytes",
+ "clap",
+ "futures",
+ "getrandom 0.2.17",
+ "hyper-util",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
 ]
