@@ -125,6 +125,8 @@ impl Server {
                 "/api/v1/snapshots/{*dataset}",
                 get(handlers::snapshots_get).post(handlers::snapshots_post),
             )
+            .route("/api/v1/rollback/", post(handlers::rollback_post_empty))
+            .route("/api/v1/rollback/{*dataset}", post(handlers::rollback_post))
             .route(
                 "/api/v1/shares/config",
                 put(handlers::shares_config).post(handlers::shares_config),

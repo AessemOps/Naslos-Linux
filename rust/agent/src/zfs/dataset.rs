@@ -469,6 +469,27 @@ impl ZfsClient {
         }
         Ok(snaps)
     }
+
+    /// Roll a dataset back to one of its snapshots (`zfs rollback -r`). The
+    /// `-r` deletes snapshots newer than the target, which is the documented
+    /// meaning of a restore; the caller (the API's VM routes) refuses while
+    /// the dataset is in use, and ZFS itself refuses a rollback of a
+    /// dataset with newer snapshots when a hold exists.
+    pub async fn rollback(&self, dataset: &str, snap_name: &str) -> ZfsResult<()> {
+        validate_dataset_path(dataset)?;
+        super::backup::validate_snapshot_name(snap_name)?;
+        let name = format!("{dataset}@{snap_name}");
+        match self
+            .host_exec(ZFS_BIN, &strings(&["rollback", "-r", &name]))
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(ZfsError::Other(format!(
+                "rolling back to {name}: {}: {}",
+                e.output, e.message
+            ))),
+        }
+    }
 }
 
 /// The stale-mount "dataset is busy" signature that a forced unmount can clear.

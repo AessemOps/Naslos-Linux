@@ -930,6 +930,16 @@ impl Client {
         .await
     }
 
+    /// Roll a dataset back to one of its snapshots (`zfs rollback -r`).
+    pub async fn rollback_snapshot(&self, dataset: &str, name: &str) -> Result<(), AgentError> {
+        let path = format!("/api/v1/rollback/{}", escape_dataset_path(dataset));
+        self.do_empty(
+            self.request(reqwest::Method::POST, &path)
+                .json(&serde_json::json!({ "name": name })),
+        )
+        .await
+    }
+
     /// Stream a restore body into `zfs receive`. The reader is consumed as the
     /// request body; the call resolves when the agent finishes the receive.
     pub async fn receive_stream_body(
