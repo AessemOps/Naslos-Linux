@@ -1,0 +1,535 @@
+//! The vmd data model: the desired VM state the API renders, validates and
+//! pushes (`PUT /api/v1/vms/config`), plus the live-state reports vmd answers
+//! with. `state` is always derived from vmd and never persisted.
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Firmware {
+    #[default]
+    Uefi,
+    Bios,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DiskFormat {
+    #[default]
+    Qcow2,
+    Raw,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DiskBus {
+    #[default]
+    Virtio,
+    Sata,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NetMode {
+    #[default]
+    Nat,
+    Lan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DesiredState {
+    Running,
+    #[default]
+    Stopped,
+}
+
+fn default_format() -> DiskFormat {
+    DiskFormat::Qcow2
+}
+
+fn default_bus() -> DiskBus {
+    DiskBus::Virtio
+}
+
+fn default_mode() -> NetMode {
+    NetMode::Nat
+}
+
+fn default_firmware() -> Firmware {
+    Firmware::Uefi
+}
+
+fn default_cpu() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortForward {
+    pub host: u16,
+    pub dst: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct DiskSpec {
+    #[serde(rename = "sizeGB", default)]
+    pub size_gb: u32,
+    #[serde(default = "default_format")]
+    pub format: DiskFormat,
+    #[serde(default = "default_bus")]
+    pub bus: DiskBus,
+    /// Library file (`isos/<file>`) the disk is initialized from on first
+    /// start (a cloud image). The copy is resized to `sizeGB`.
+    #[serde(
+        rename = "sourceImage",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub source_image: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct NetSpec {
+    #[serde(default = "default_mode")]
+    pub mode: NetMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forwards: Vec<PortForward>,
+    /// Physical NIC for LAN (macvtap) mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudInitSpec {
+    #[serde(default)]
+    pub hostname: String,
+    #[serde(default)]
+    pub user: String,
+    #[serde(default, rename = "sshKeys", skip_serializing_if = "Vec::is_empty")]
+    pub ssh_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VmSpec {
+    pub name: String,
+    #[serde(default = "default_cpu")]
+    pub cpu: u32,
+    #[serde(rename = "memMiB", default)]
+    pub mem_mib: u32,
+    #[serde(default)]
+    pub autostart: bool,
+    #[serde(default = "default_firmware")]
+    pub firmware: Firmware,
+    #[serde(default)]
+    pub desired: DesiredState,
+    #[serde(default)]
+    pub disk: DiskSpec,
+    #[serde(default)]
+    pub net: NetSpec,
+    #[serde(rename = "cloudInit", default, skip_serializing_if = "Option::is_none")]
+    pub cloud_init: Option<CloudInitSpec>,
+    /// Library file to attach as a CD-ROM (`isos/<file>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iso: Option<String>,
+    /// ZFS pool the VM's dataset lives in.
+    #[serde(default)]
+    pub pool: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DesiredConfig {
+    pub revision: String,
+    #[serde(default)]
+    pub vms: Vec<VmSpec>,
+}
+
+/// One VM's live state, as reported by `GET /api/v1/vms`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct VmLive {
+    pub name: String,
+    /// `running` or `stopped`.
+    pub state: String,
+    pub pid: Option<u32>,
+    /// TCP port of the VNC server while running (5900 + display).
+    #[serde(rename = "vncPort")]
+    pub vnc_port: Option<u16>,
+    /// The VNC password vmd set via QMP; empty while stopped.
+    #[serde(rename = "vncPassword")]
+    pub vnc_password: String,
+    /// Live CPU usage percent (0 when not running).
+    #[serde(rename = "cpuPercent")]
+    pub cpu_percent: f64,
+    /// Live guest memory usage in MiB from the balloon (0 when not running).
+    #[serde(rename = "memUsedMiB")]
+    pub mem_used_mib: u32,
+    /// The QEMU exit was not requested by desired state.
+    #[serde(rename = "unexpectedExit")]
+    pub unexpected_exit: bool,
+    /// Last start error / exit reason.
+    #[serde(rename = "lastError")]
+    pub last_error: String,
+}
+
+/// A file in the ISO/image library.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageEntry {
+    pub name: String,
+    #[serde(rename = "sizeBytes")]
+    pub size_bytes: u64,
+}
+
+/// The pool datasets are mounted under on the host (`/var/mnt`), the datasets
+/// root every share path already uses.
+pub const DATASETS_ROOT: &str = "/var/mnt";
+
+/// Host path of a VM's dataset directory.
+pub fn vm_dir(pool: &str, name: &str) -> String {
+    format!("{DATASETS_ROOT}/{pool}/vms/{name}")
+}
+
+/// Host path of the image library of one pool.
+pub fn isos_dir(pool: &str) -> String {
+    format!("{DATASETS_ROOT}/{pool}/vms/isos")
+}
+
+/// A VM record references a library file as `isos/<file>` (the DM-7 shape);
+/// this validates the reference and returns the bare file name.
+pub fn library_file(reference: &str) -> Result<String, String> {
+    let Some(name) = reference.strip_prefix("isos/") else {
+        return Err(format!(
+            "library reference {reference:?} must start with \"isos/\""
+        ));
+    };
+    if !valid_library_name(name) {
+        return Err(format!("{name:?} is not a valid library file name"));
+    }
+    Ok(name.to_string())
+}
+
+/// Host path of a bare library file name under one pool.
+pub fn library_path(pool: &str, name: &str) -> String {
+    format!("{}/{name}", isos_dir(pool))
+}
+
+/// Library file names are flat basenames; no path traversal may reach the
+/// command line or the filesystem (SEC-1).
+pub fn valid_library_name(file: &str) -> bool {
+    if file.is_empty() || file.len() > 200 {
+        return false;
+    }
+    if file.starts_with('.') || file.contains('/') || file.contains('\\') {
+        return false;
+    }
+    file.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'))
+}
+
+/// Validate one VM spec. The API validates first; vmd re-validates everything
+/// so a bad render can never reach a QEMU command line (SEC-1 pattern).
+pub fn validate_vm(spec: &VmSpec) -> Result<(), String> {
+    validate_name(&spec.name)?;
+    if spec.pool.is_empty() || !valid_pool_component(&spec.pool) {
+        return Err(format!(
+            "pool {:?} is not a valid dataset component",
+            spec.pool
+        ));
+    }
+    if !(1..=64).contains(&spec.cpu) {
+        return Err(format!("cpu {} is out of range (1-64)", spec.cpu));
+    }
+    if !(16..=1_048_576).contains(&spec.mem_mib) {
+        return Err(format!(
+            "memMiB {} is out of range (16-1048576)",
+            spec.mem_mib
+        ));
+    }
+    if !(1..=16_384).contains(&spec.disk.size_gb) {
+        return Err(format!(
+            "disk sizeGB {} is out of range (1-16384)",
+            spec.disk.size_gb
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for fwd in &spec.net.forwards {
+        if fwd.host == 0 {
+            return Err("port forward host must not be 0".to_string());
+        }
+        if fwd.dst == 0 {
+            return Err("port forward dst must not be 0".to_string());
+        }
+        if !seen.insert(fwd.host) {
+            return Err(format!("duplicate host port {}", fwd.host));
+        }
+    }
+    if spec.net.mode == NetMode::Lan {
+        let nic = spec.net.nic.as_deref().unwrap_or_default();
+        if nic.is_empty() || !valid_interface_name(nic) {
+            return Err(format!(
+                "LAN mode needs a physical NIC ({nic:?} is not a valid interface name)"
+            ));
+        }
+        if !spec.net.forwards.is_empty() {
+            return Err("port forwards apply to NAT mode only".to_string());
+        }
+    }
+    if let Some(iso) = &spec.iso {
+        library_file(iso).map_err(|e| format!("iso {e}"))?;
+    }
+    if let Some(source) = &spec.disk.source_image {
+        library_file(source).map_err(|e| format!("disk sourceImage {e}"))?;
+    }
+    if let Some(ci) = &spec.cloud_init {
+        validate_cloud_init(ci)?;
+    }
+    Ok(())
+}
+
+/// DNS-1123 label (the chart/catalog convention).
+pub fn validate_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 63 {
+        return Err(format!("VM name {name:?} must be 1-63 characters"));
+    }
+    let bytes = name.as_bytes();
+    if !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit() {
+        return Err(format!(
+            "VM name {name:?} must start with a lowercase letter or digit"
+        ));
+    }
+    if !bytes[bytes.len() - 1].is_ascii_lowercase() && !bytes[bytes.len() - 1].is_ascii_digit() {
+        return Err(format!(
+            "VM name {name:?} must end with a lowercase letter or digit"
+        ));
+    }
+    if !bytes
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+    {
+        return Err(format!(
+            "VM name {name:?} must be a lowercase DNS-1123 label"
+        ));
+    }
+    Ok(())
+}
+
+/// A pool name is a single dataset component (flat, no '/').
+pub fn valid_pool_component(pool: &str) -> bool {
+    !pool.is_empty()
+        && pool.len() <= 63
+        && !pool.contains('/')
+        && pool
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+/// Linux interface names: alphanumeric plus a few separators, <= 15 chars for
+/// the created macvtap device names to stay inside IFNAMSIZ.
+pub fn valid_interface_name(nic: &str) -> bool {
+    !nic.is_empty()
+        && nic.len() <= 15
+        && nic
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+fn validate_cloud_init(ci: &CloudInitSpec) -> Result<(), String> {
+    if ci.hostname.is_empty() || ci.hostname.len() > 63 {
+        return Err("cloud-init hostname is required (1-63 characters)".to_string());
+    }
+    if !ci
+        .hostname
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.'))
+    {
+        return Err(format!(
+            "cloud-init hostname {:?} has invalid characters",
+            ci.hostname
+        ));
+    }
+    let user = ci.user.as_str();
+    if user.is_empty()
+        || user.len() > 32
+        || !user
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-'))
+        || user
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(true)
+    {
+        return Err(format!(
+            "cloud-init user {user:?} must be a lowercase POSIX user name (letters, digits, '_', '-')"
+        ));
+    }
+    if ci.ssh_keys.len() > 20 {
+        return Err("cloud-init accepts at most 20 SSH keys".to_string());
+    }
+    for key in &ci.ssh_keys {
+        if key.len() > 8192 || key.contains('\n') || !key.starts_with("ssh-") {
+            let shown: String = key.chars().take(24).collect();
+            return Err(format!(
+                "SSH key {shown:?}… does not look like a public key line (ssh-ed25519/ssh-rsa/…)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Snapshot names are DNS-ish with an optional timestamp suffix
+/// (`weekly-2026-11-19`). Flat, no `/`, no `@`.
+pub fn validate_snapshot_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 63 {
+        return Err(format!("snapshot name {name:?} must be 1-63 characters"));
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(format!(
+            "snapshot name {name:?} may only contain letters, digits, '-', '_' and '.'"
+        ));
+    }
+    Ok(())
+}
+
+/// The QEMU binary resolution (overridable for tests).
+pub fn qemu_binary() -> String {
+    std::env::var("VMD_QEMU_BIN").unwrap_or_else(|_| "qemu-system-x86_64".to_string())
+}
+
+/// `qemu-img` resolution (overridable for tests).
+pub fn qemu_img_binary() -> String {
+    std::env::var("VMD_QEMU_IMG_BIN").unwrap_or_else(|_| "qemu-img".to_string())
+}
+
+/// `genisoimage` resolution (overridable for tests).
+pub fn genisoimage_binary() -> String {
+    std::env::var("VMD_GENISOIMAGE_BIN").unwrap_or_else(|_| "genisoimage".to_string())
+}
+
+/// `ip` (iproute2) resolution, used for macvtap devices.
+pub fn ip_binary() -> String {
+    std::env::var("VMD_IP_BIN").unwrap_or_else(|_| "ip".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vm() -> VmSpec {
+        VmSpec {
+            name: "test-vm".into(),
+            cpu: 2,
+            mem_mib: 2048,
+            autostart: false,
+            firmware: Firmware::Uefi,
+            desired: DesiredState::Running,
+            disk: DiskSpec {
+                size_gb: 40,
+                format: DiskFormat::Qcow2,
+                bus: DiskBus::Virtio,
+                source_image: None,
+            },
+            net: NetSpec {
+                mode: NetMode::Nat,
+                forwards: vec![PortForward {
+                    host: 8081,
+                    dst: 80,
+                }],
+                nic: None,
+            },
+            cloud_init: Some(CloudInitSpec {
+                hostname: "test-vm".into(),
+                user: "admin".into(),
+                ssh_keys: vec!["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample test@example".into()],
+            }),
+            iso: Some("isos/debian-13.iso".into()),
+            pool: "tank".into(),
+        }
+    }
+
+    #[test]
+    fn a_valid_spec_passes() {
+        assert!(validate_vm(&vm()).is_ok());
+    }
+
+    #[test]
+    fn names_must_be_dns1123() {
+        for bad in ["", "UPPER", "-x", "x-", "a_b", "a b", &"x".repeat(64)] {
+            let mut spec = vm();
+            spec.name = bad.to_string();
+            assert!(validate_vm(&spec).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn ranges_are_enforced() {
+        for (cpu, ok) in [(0, false), (1, true), (64, true), (65, false)] {
+            let mut spec = vm();
+            spec.cpu = cpu;
+            assert_eq!(validate_vm(&spec).is_ok(), ok, "cpu {cpu}");
+        }
+        for (mib, ok) in [
+            (8, false),
+            (16, true),
+            (1_048_576, true),
+            (1_048_577, false),
+        ] {
+            let mut spec = vm();
+            spec.mem_mib = mib;
+            assert_eq!(validate_vm(&spec).is_ok(), ok, "mem {mib}");
+        }
+        for (gb, ok) in [(0, false), (1, true), (16_384, true), (16_385, false)] {
+            let mut spec = vm();
+            spec.disk.size_gb = gb;
+            assert_eq!(validate_vm(&spec).is_ok(), ok, "size {gb}");
+        }
+    }
+
+    #[test]
+    fn lan_mode_requires_a_nic_and_forbids_forwards() {
+        let mut spec = vm();
+        spec.net.mode = NetMode::Lan;
+        assert!(validate_vm(&spec).is_err());
+        spec.net.forwards.clear();
+        spec.net.nic = Some("eth0".into());
+        assert!(validate_vm(&spec).is_ok());
+        spec.net.nic = Some("../etc".into());
+        assert!(validate_vm(&spec).is_err());
+    }
+
+    #[test]
+    fn library_names_reject_traversal() {
+        assert!(valid_library_name("debian-13-netinst.iso"));
+        assert!(valid_library_name("ubuntu-24.04.qcow2"));
+        for bad in ["", ".hidden", "a/b", "..", "a\\b", "a b", &"x".repeat(201)] {
+            assert!(!valid_library_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn duplicate_host_ports_are_rejected() {
+        let mut spec = vm();
+        spec.net.forwards.push(PortForward {
+            host: 8081,
+            dst: 443,
+        });
+        assert!(validate_vm(&spec).is_err());
+    }
+
+    #[test]
+    fn cloud_init_users_and_keys_are_validated() {
+        let mut spec = vm();
+        let mut ci = spec.cloud_init.clone().unwrap();
+        ci.user = "Root!".into();
+        spec.cloud_init = Some(ci.clone());
+        assert!(validate_vm(&spec).is_err());
+        ci.user = "root".into();
+        ci.ssh_keys = vec!["not-a-key".into()];
+        spec.cloud_init = Some(ci.clone());
+        assert!(validate_vm(&spec).is_err());
+        ci.ssh_keys = (0..21).map(|i| format!("ssh-ed25519 AAAAkey{i}")).collect();
+        spec.cloud_init = Some(ci);
+        assert!(validate_vm(&spec).is_err());
+    }
+}

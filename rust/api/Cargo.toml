@@ -35,6 +35,7 @@ hickory-resolver = "0.26"
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
 include_dir = "0.7"
 ipnet = "2"
+naslos-vmd = { path = "../vmd", version = "0.1.0" }
 portable-pty = "0.8"
 tar = "0.4"
 libc = "0.2"
