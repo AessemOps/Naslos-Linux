@@ -12,7 +12,7 @@ api:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-api
-    tag: "0.3.25"
+    tag: "0.4.0"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -54,6 +54,19 @@ api:
     maxSessionSecs: 28800   # 8 h hard cap
     idleTimeoutSecs: 1800   # 30 min without input
     maxSessions: 8          # concurrent exec sessions across the API
+  # VM console session bounds (docs/virtual-machines.md); same rationale as the
+  # terminal limits above: the console websocket is not revalidated against
+  # Authelia after the upgrade.
+  virtConsole:
+    maxSessionSecs: 14400   # 4 h hard cap
+    idleTimeoutSecs: 600    # 10 min without console traffic
+    maxSessions: 4          # concurrent VNC bridges across the API
+  # Where the VM records (vms.json) are persisted, on the same state volume as
+  # shares.json/apps.json.
+  vmsFile: /var/lib/naslos/vms.json
+  # Base URL of the naslos-vmd Service (QEMU supervisor). Empty selects the
+  # in-namespace default https://naslos-vmd.<workloadNamespace>.svc.cluster.local:9091.
+  virtBaseURL: ""
   # Read-only hostPath to the ZFS datasets, mounted at /var/mnt so the API can
   # list and validate share paths for the shares UI. Set to "null"/empty on
   # multi-node clusters (a hostPath pins the pod to one node and would list
@@ -130,7 +143,7 @@ ui:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    tag: "0.3.25"
+    tag: "0.4.0"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -161,7 +174,7 @@ agent:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-agent
-    tag: "0.3.25"
+    tag: "0.4.0"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -237,7 +250,7 @@ shares:
     timeMachine: true
     image:
       repository: ghcr.io/aessemops/naslos-samba
-      tag: "0.3.25"
+      tag: "0.4.0"
       # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
       # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
       # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -271,7 +284,7 @@ shares:
     enabled: true
     image:
       repository: ghcr.io/aessemops/naslos-nfs
-      tag: "0.3.25"
+      tag: "0.4.0"
       # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
       # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
       # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -595,7 +608,7 @@ openldap:
   #   ghcr.io/aessemops/naslos-openldap@sha256:<digest>
   # Used by the OpenLDAP StatefulSet, the bootstrap Job, the backup CronJob and
   # the API's wait-for-ldap init container.
-  image: ghcr.io/aessemops/naslos-openldap:0.3.25
+  image: ghcr.io/aessemops/naslos-openldap:0.4.0
   imagePullPolicy: IfNotPresent
   # LDAP hostname used as Authelia's TLS `server_name` (and added as a
   # certificate SAN). The internal directory suffix is fixed at
@@ -783,7 +796,7 @@ terminal:
   # The terminal's endpoints are owner routes like any other, so they are gated
   # by `auth` above (previously a separate terminal.requireAuth switch).
   # digest (NAS-022): pin the exact image; empty means "use the tag".
-  image: { repository: ghcr.io/aessemops/naslos-terminal, tag: "0.3.25", digest: "", pullPolicy: IfNotPresent }
+  image: { repository: ghcr.io/aessemops/naslos-terminal, tag: "0.4.0", digest: "", pullPolicy: IfNotPresent }
   resources:
     requests:
       cpu: 10m
@@ -791,6 +804,47 @@ terminal:
     limits:
       cpu: 500m
       memory: 256Mi
+
+# Virtual machines (spec FR-VMT, docs/virtual-machines.md). A privileged
+# hostNetwork supervisor (naslos-vmd) runs QEMU/KVM on the node; the API is the
+# brain: it validates, persists vms.json on the state PVC and pushes the
+# desired state; vmd reconciles QEMU processes against it. VM datasets live
+# under <pool>/vms/<name> (created through the agent, the only ZFS writer) and
+# the ISO/image library under <pool>/vms/isos.
+virt:
+  enabled: true
+  image:
+    repository: ghcr.io/aessemops/naslos-vmd
+    tag: "0.4.0"
+    # Pin the exact image (NAS-022): repo@sha256:… is immutable; a mutable tag
+    # plus pullPolicy IfNotPresent can keep running old code after a retag.
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Serve vmd over TLS (the PF-M5 agent pattern): it is hostNetwork, so the
+  # bearer token would otherwise cross the LAN in cleartext. The chart
+  # generates a CA + server certificate into naslos-vmd-tls and pins it in the
+  # API client. Set false only for local development.
+  tls:
+    enabled: true
+  # Use a Secret you manage out of band for the vmd bearer token; it must have
+  # a `token` key. Empty means the chart generates `naslos-vmd`/`token`.
+  tokenSecret: ""
+  # VNC displays are allocated per running VM (QEMU listens on 5900+display,
+  # password-protected via QMP). The range bounds how many VMs can run with a
+  # console at once.
+  vnc:
+    firstDisplay: 1
+    displays: 16
+  # Headless Service fronting the vmd pod (port 9091).
+  service:
+    port: 9091
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "2"
+      memory: 512Mi
 
 # Buddy Backup (docs/buddy-backup.md): a key-authenticated API that lets another
 # Naslos instance - or the standalone naslos-buddy-receiver container - push

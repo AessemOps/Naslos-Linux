@@ -270,6 +270,11 @@ async fn protected_routes_fail_closed_for_all_unauthenticated_shapes() {
         ("POST", "/api/shares/apply"),
         ("DELETE", "/api/volumes/zfs/tank?confirm=tank"),
         ("POST", "/api/apps"),
+        ("GET", "/api/virt/capabilities"),
+        ("GET", "/api/virt/vms"),
+        ("POST", "/api/virt/vms"),
+        ("GET", "/api/virt/images?pool=tank"),
+        ("POST", "/api/virt/images/import"),
     ];
     for (method, path) in routes {
         for (secret, user) in [
@@ -377,6 +382,110 @@ async fn unknown_routes_return_json_404() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"], "not found");
+}
+
+// ---- Virtual machines (FR-VMT) -------------------------------------------
+
+#[tokio::test]
+async fn virt_routes_report_unavailable_without_a_supervisor() {
+    // No vmd client in the test state: capabilities and the image library
+    // answer 503 rather than pretending the feature works.
+    for path in ["/api/virt/capabilities", "/api/virt/images?pool=tank"] {
+        let (status, body, _r) = send(get(path, true, Some("admin"), Some("naslos_admins"))).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert!(body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("virtual machines"));
+    }
+    // The VM list still answers: records are the source of truth and vmd
+    // being unreachable is reported per-VM as state "unknown".
+    let (status, body, _r) = send(get(
+        "/api/virt/vms",
+        true,
+        Some("admin"),
+        Some("naslos_admins"),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn vm_routes_answer_404_for_an_unknown_vm() {
+    for path in [
+        "/api/virt/vms/ghost",
+        "/api/virt/vms/ghost/snapshots",
+        "/api/ws/vm/ghost/vnc",
+    ] {
+        let (status, body, _r) = send(get(path, true, Some("admin"), Some("naslos_admins"))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(body["error"], "VM \"ghost\" does not exist");
+    }
+}
+
+#[tokio::test]
+async fn vm_create_validates_before_touching_anything() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/virt/vms")
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins")
+        .header("Host", "naslos.local")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"name":"UPPER","cpu":2,"memMiB":2048,"pool":"tank","disk":{"sizeGB":40}}"#,
+        ))
+        .unwrap();
+    let (status, body, _r) = send(with_peer(req, [127, 0, 0, 1])).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("VM name"),
+        "the error should name the invalid field: {}",
+        body["error"]
+    );
+}
+
+#[tokio::test]
+async fn image_upload_accepts_octet_stream_bodies() {
+    // The chunked upload is the one non-JSON body the API accepts; the
+    // content-type carve-out is scoped to /api/virt/images/upload only.
+    let upload = Request::builder()
+        .method("POST")
+        .uri("/api/virt/images/upload?pool=tank&name=a.iso&offset=0")
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins")
+        .header("Host", "naslos.local")
+        .header("Content-Type", "application/octet-stream")
+        .body(Body::from(vec![0u8; 4]))
+        .unwrap();
+    let (status, _b, _r) = send(with_peer(upload, [127, 0, 0, 1])).await;
+    // No vmd client: 503 from the handler, NOT 415 from the middleware.
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    // The carve-out must not leak onto other POST routes.
+    let other = Request::builder()
+        .method("POST")
+        .uri("/api/shares/apply")
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins")
+        .header("Content-Type", "application/octet-stream")
+        .body(Body::from("{}"))
+        .unwrap();
+    let (status, _b, _r) = send(with_peer(other, [127, 0, 0, 1])).await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
+#[tokio::test]
+async fn console_websocket_refuses_foreign_origins_and_requires_auth() {
+    let path = "/api/ws/vm/some-vm/vnc";
+    let (status, _b, _r) = send(ws_request(path, None, Some("https://naslos.local"))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _b, _r) = send(ws_request(path, Some(SECRET), Some("https://evil.example"))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

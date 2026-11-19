@@ -74,6 +74,14 @@ terminal:
     repository: ghcr.io/aessemops/naslos-terminal
     tag: "0.3.23"
     digest: "sha256:a000ca0c5695b9a8d7e775e0343c2e361fae03df1455ae3aea0e179fb8f334b7"
+# Virtual machines (FR-VMT). The vmd image first exists at 0.4.0: pin its
+# digest from the v0.4.0 release before the live drill (NAS-022), like the
+# other images above.
+virt:
+  image:
+    repository: ghcr.io/aessemops/naslos-vmd
+    tag: "0.4.0"
+    digest: ""
 openldap:
   # Debian 13 / slapd 2.6.10 with /var/run/slapd created in the image and
   # LDAPS-only listening (LDAP_TLS_ENFORCE; no plaintext ldap:///).
