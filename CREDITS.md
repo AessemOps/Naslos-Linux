@@ -18,7 +18,7 @@ and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
-**Last reviewed: 2026-11-11.** Maintenance: update this file whenever a direct dependency changes in
+**Last reviewed: 2026-11-19.** Maintenance: update this file whenever a direct dependency changes in
 `rust/api/Cargo.toml`, `rust/agent/Cargo.toml`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
 It also lists the GitHub Actions used by the CI/release workflows.
 
@@ -40,20 +40,22 @@ It also lists the GitHub Actions used by the CI/release workflows.
 
 | Component | Pin | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
-| Debian (slim base) | `debian:trixie-slim` | Debian DFSG (mixed per package) | https://www.debian.org/ |
+| Debian (slim base) | `debian:trixie-slim`, `debian:bookworm-slim` (the vmd runtime) | Debian DFSG (mixed per package) | https://www.debian.org/ |
 | Alpine Linux | `alpine:3.24` | Alpine (musl MIT, BusyBox GPL-2.0-only, apk-tools GPL-2.0-only) | https://alpinelinux.org/ |
 | distroless static | `gcr.io/distroless/static-debian12:nonroot` | Apache-2.0 | https://github.com/GoogleContainerTools/distroless |
 | nginx unprivileged | `nginxinc/nginx-unprivileged:1.30.6-alpine-slim` | BSD-2-Clause | https://github.com/nginxinc/docker-nginx-unprivileged |
-| Rust toolchain | `rust:1.88-alpine` | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
+| Rust toolchain | `rust:1.88-alpine`, `rust:1.88-slim` (the vmd builder) | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
 | Node.js toolchain | `node:24-bookworm-slim` | MIT | https://nodejs.org/ |
 
-## Rust crates — direct (`rust/agent` + `rust/api`)
+## Rust crates — direct (`rust/agent` + `rust/api` + `rust/vmd`)
 
 The privileged agent was ported from Go to Rust (Phase 1 of the Go→Rust plan,
 `.kilo/plans/1791069821704-go-to-rust-migration.md`). The Phase 2 API port
 (`rust/api`, `naslos-api`) reuses axum, axum-server, clap, hyper-util, serde,
 tracing, chrono and ipnet; Phase 3 added the `buddyctl` / `buddy-receiver`
-binaries (tar streaming, a PTY for terminal exec). Direct dependencies:
+binaries (tar streaming, a PTY for terminal exec). The QEMU supervisor
+(`rust/vmd`, `naslos-vmd`, `.kilo/plans/1795118719895-qemu-hypervisor.md`)
+adds the same set plus the agent-pattern token/TLS server. Direct dependencies:
 
 | Component | Version | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
@@ -107,6 +109,7 @@ Runtime dependencies:
 | --- | --- | --- | --- |
 | @xterm/xterm | ^6.0.0 | MIT | https://github.com/xtermjs/xterm.js |
 | @xterm/addon-fit | ^0.11.0 | MIT | https://github.com/xtermjs/xterm.js |
+| @novnc/novnc | ^1.5.0 (pinned: >=1.6 uses a top-level `await` the UI build target does not support, and QEMU's VNC never streams H.264) | MPL-2.0 | https://github.com/novnc/noVNC |
 
 Build / development dependencies (not redistributed as packages, but used to
 produce the shipped static assets):
@@ -217,6 +220,22 @@ authoritative copyright file ships in the image at
 | --- | --- | --- |
 | slapd, ldap-utils (OpenLDAP) | OpenLDAP Public License (OLDAP-2.8 style) | https://www.openldap.org/ |
 | openssl | Apache-2.0 | https://www.openssl.org/ |
+
+### vmd image (`vmd/Dockerfile`)
+
+| Package | License (SPDX) | Upstream |
+| --- | --- | --- |
+| qemu-system-x86 (QEMU) | GPL-2.0 | https://www.qemu.org/ |
+| qemu-utils (`qemu-img`) | GPL-2.0 | https://www.qemu.org/ |
+| ovmf (OVMF/edk2 firmware) | BSD-2-Clause-Patent | https://github.com/tianocore/edk2 |
+| seabios | LGPL-3.0 | https://www.seabios.org/ |
+| genisoimage | GPL-3.0-or-later | https://www.debian.org/ |
+| iproute2 | GPL-2.0-or-later | https://git.kernel.org/pub/scm/network/iproute2/iproute2.git |
+| ca-certificates | GPL-2.0-or-later AND MPL-2.0 | https://tracker.debian.org/pkg/ca-certificates |
+
+QEMU is invoked as an unmodified distro binary; Naslos only orchestrates it
+(the GPLv2 section 2(e) aggregation case — the Naslos sources and images remain
+AGPL, no QEMU code is linked or modified).
 
 ### terminal image (`terminal/image/Dockerfile`)
 
