@@ -173,3 +173,91 @@ recomposition, migrating to Svelte runes, any API/chart behavior change
 
 None blocking. The Phase 0 scorecard may append per-route tasks; sidebar group
 composition is adjustable during implementation.
+
+---
+
+## Phase 0 scorecard (audit results, 2026-11-20)
+
+Severity-ordered. `P0` = a11y/functional defect, `P1` = consistency/UX debt,
+`P2` = polish. The pre-audited findings #1–#12 above are confirmed and folded
+into this table; line numbers re-verified on the audit pass.
+
+### Token/theme design decisions (drives Phase 1)
+
+The codebase has 460 `text-gray-*` uses, 78 inline status-color combos, and
+~37 `text-white`/`hover:text-white` uses. Rewriting every call site is not
+reviewable in one PR, so the theme layer is **CSS-variable palette remapping**:
+
+1. Tailwind `naslos.*` colors become `rgb(var(--n-*) / <alpha-value>)` so every
+   `bg-green-900/50`-style opacity keeps working.
+2. The **used** shades of `gray/green/red/yellow/amber/blue/purple/emerald`
+   remap to per-theme vars (dark = today's exact values, light = ≥4.5:1 ink
+   variants for text shades, light tints for the 900-shade badge backgrounds).
+   Usage was tallied first: `text-gray` uses slots 100–600 only,
+   `bg-gray`/`border-gray` use 600/800/900 only (one `bg-gray-600` step dot),
+   so slot roles never conflict except `gray-600` (4 text uses → retargeted to
+   `text-gray-500` in Phase 5). The 460 existing muted-text call sites become
+   light-readable with zero churn; status colors become light-readable the same
+   way. Vivid button colors (`bg-red-600/700`, `bg-green-500`) stay fixed.
+3. A new `naslos.strong` token (white in dark, near-black ink in light) replaces
+   `text-white`/`hover:text-white` where the background is a theme surface
+   (modal `×`, copy buttons, Toast dismiss, dashboard modal emphasis).
+   `text-white` on colored buttons stays literal.
+4. Dark theme keeps the exact current palette (no visual rebrand); the light
+   palette is slate-based with white cards on `slate-50` page bg.
+
+### Scorecard
+
+| # | Sev | Evidence | Finding | Fix |
+| --- | --- | --- | --- | --- |
+| 1 | P0 | `pools/+page.svelte:149`, `pools/[name]/+page.svelte:394,444`, `settings/network/+page.svelte:722`, `system/+page.svelte:564,594`, `VmWizard.svelte:112`, `VmDetail.svelte:115` | 7 raw modals/drawers: no focus trap, no Escape, no `role=dialog` (system/network ones have no backdrop close either) | `Modal.svelte` wrapper (`use:modal` + backdrop self-click + 40px close button + heading); adopt in the 5 centered dialogs; VmWizard/VmDetail drawer get `use:modal` in place |
+| 2 | P0 | `pools/+page.svelte:150`, `Dashboard.svelte:283` | `bg-naslos-card` class does not exist in the palette → import/delete modal panels render transparent over the backdrop | use `bg-naslos-surface` via `Modal.svelte` |
+| 3 | P0 | `Sidebar.svelte:106` | Active state exact-match only; `/pools/tank`, `/settings/network` lose highlight | longest-prefix match |
+| 4 | P0 | `app.html` | No theme bootstrap; a light preference would FOUC | inline pre-paint script → `data-theme` |
+| 5 | P0 | `InfoBubble.svelte:54-56` | `group-hover:block` bypasses the `open` state → `aria-expanded` lies; hover and keyboard paths disagree | visibility purely from `open`; 24px trigger |
+| 6 | P1 | 460 uses, worst: `Sidebar.svelte:96,140,155`, stat captions everywhere | `text-gray-500/600` captions fail 4.5:1 even in dark (≈3.7:1 on `#0f172a`); everything fails in light | var-remapped palette (dark keeps look but 500 maps to a passing slate; see decisions) |
+| 7 | P1 | `Sidebar.svelte:12-29`, `settings/+page.svelte:3-16`, empty states ×7, `shares/+page.svelte:96-101`, `AppIcon.svelte:23` | Emoji as icons (cross-platform rendering varies, no size/weight control) | `Icon.svelte` Lucide set |
+| 8 | P1 | `+layout.svelte:10` | Hardcoded `ml-64`; no collapse; 16-item flat nav | grouped collapsible sidebar + shared store + width var |
+| 9 | P1 | 37 loader strings, 14 asserted in specs (`dashboard…`, `shares…`, `users…`, `system state…`, `network inventory…`, `domains…`, `dynamic DNS…`, `disk health…`, `backups…`, `virtual machines…`, `catalog…`, `installed apps…`, `sources…`, `pools/groups/health data`) | Inconsistent loader markup and copy (`...` vs `…` vs none), no `aria-busy` | shared `LoadingState` (`role=status`, `aria-busy`, `data-testid=page-loading`); **per-page label text kept identical** in this PR so all 14 spec assertions stay green (standardising copy would churn 14 specs for zero user value; component enforces the pattern) |
+| 10 | P1 | 78 inline status combos, `appStatus.ts`, `pools/[name]:239-247`, `disks/health:145-156`, `vms:184-190`, `dns:81-87` | 6 divergent state→badge mappings; light-unreadable | `StatusBadge` + `.badge-*` theme classes |
+| 11 | P1 | `Dashboard.svelte:101-111` vs `lib/format.ts` | Local KB/MB formatter contradicts shared KiB/MiB; `formatBytes(0)`='0 B' both ways so `dashboard.spec.ts:25` unaffected | delete local, import shared |
+| 12 | P1 | `pools/+page.svelte:173`, `pools/[name]/+page.svelte:326` | `btn-sm` referenced, never defined | define `.btn-sm` |
+| 13 | P1 | `Dashboard.svelte:255-259`, `pools/[name]/+page.svelte:344-348`, modal `×` ×13, `Toast.svelte:16`, `AppJobsDrawer.svelte:35` | Sub-40px hit areas on destructive/closing controls | 40px targets via `.icon-btn` class |
+| 14 | P1 | `app.css` | No `prefers-reduced-motion`; hardcoded `#3b82f6` ring | reduce-motion rule + token ring |
+| 15 | P1 | `settings/+page.svelte` | 14-card directory duplicates nav; no theme home | "Appearance" panel (theme toggle, non-navigating) above the grid + copy fixes |
+| 16 | P1 | `Sidebar.svelte:156` | Version line `text-gray-600` ≈2.2:1 — unreadable | token text |
+| 17 | P2 | `backups/+page.svelte:101-108`, `disks/health:170-180` | Two more local byte formatters (KB/MB) | shared `formatBytes` |
+| 18 | P2 | `Dashboard.svelte:168-183` | Stat colors arbitrary green/blue/purple (light-unreadable as-is) | var-remapped families keep hues readable both themes |
+| 19 | P2 | `users/+page.svelte:127`, `groups`, `shares`, `domains`, `dns` | Empty states use emoji + inconsistent card markup | `EmptyState` (copy preserved where specs assert it) |
+| 20 | P2 | `AppJobsDrawer.svelte:37,45` | Text `▾/▸` toggle; state badge not tokenized | chevron icons + StatusBadge |
+| 21 | P2 | `system/+page.svelte:365-373` | Message banner uses `class:border-*` only — no tone text/bg, invisible distinction | `.callout-*` classes |
+| 22 | P2 | `pools/[name]/+page.svelte:133,138-143` | Dataset delete uses native `alert()`/`confirm()` (jarring, unstyled, untestable without dialog handlers) | keep `confirm()` this PR (specs accept dialogs); recorded as follow-up for a `ConfirmModal` |
+| 23 | P2 | `terminal/+page.svelte:227-231` | xterm theme hardcoded dark colors (fine: terminal panes stay dark in light theme — deliberate) | keep; document |
+| 24 | P2 | `shares/+page.svelte:96-103` | Protocol icons 🪟/🐧/🍎 (AFP unreachable in form anyway) | Lucide `monitor`/`server` icons via `Icon` |
+
+### Spec-locked anchors (must not change)
+
+Verified from all 19 specs — every one of these is load-bearing and Phase 3–5
+work preserves them: `<aside>` + `img[alt="Naslos logo"]` + heading `Naslos`
+(`logo.spec.ts`); `.card` class; `.fixed.inset-0` modal backdrops; `div.bg-naslos-dark`
+dataset rows; h1 headings per page; `+ New User/Group/Share`, `+ Add Domain/Entry/Source`
+labels; `Install {name}` / `Update all (n)` / step buttons in the app install
+wizard; `cpu-details`, `cpu-core`, `cpu-temp-unavailable` testids; loader
+strings (see #9); `Select` order on `/terminal` (namespace, pod, container);
+`getByLabel('Addressing'/'Addresses'/'Gateway'/'MTU (optional)')` on network;
+InfoBubble `aria-label="API rights required"` + `role="tooltip"` with
+`DNS.*Edit` content; `sign out` role button; sidebar dots' `role="status"`.
+
+### Deliberate deviations from the original plan text
+
+1. **Loader copy stays per-page** (see #9) instead of one global string —
+   14 green spec assertions stay untouched; the shared component still
+   enforces one markup/aria pattern.
+2. **`use:modal` callers are not converted** to `Modal.svelte` in this PR
+   (they are already a11y-complete); conversion would be pure churn across 13
+   components. `Modal.svelte` is adopted by the raw modals and new code.
+3. **Native `confirm()` flows stay** (see #22): `e2e.spec.ts`,
+   `groups.spec.ts`, `backups.spec.ts` accept native dialogs; replacing them
+   would require rewriting their dialog plumbing. Follow-up task recorded.
+4. **Icon count is ~34, not ~24** (nav 16 + Traefik + shell/theme 6 + states 9
+   + settings-hub specific 6) to cover the audited surfaces.
