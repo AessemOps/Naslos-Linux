@@ -533,44 +533,68 @@ impl Client {
         let signed_path = format!("{}{}", super::PATH_PREFIX, path);
         let uri = format!("{}{}", self.dial_base().await, signed_path);
         let digest = body_digest(body);
-        let auth = sign_request_for(
-            &self.identity,
-            method.as_str(),
-            &signed_path,
-            &digest,
-            audience,
-            Utc::now(),
-        )?;
 
-        let mut rb = self
-            .http
-            .request(method.clone(), &uri)
-            .header(super::auth::HEADER_KEY_ID, auth.key_id)
-            .header(super::auth::HEADER_TIMESTAMP, auth.timestamp)
-            .header(super::auth::HEADER_NONCE, auth.nonce)
-            .header(super::auth::HEADER_SIGNATURE, auth.signature);
-        if !body.is_empty() {
-            rb = rb
-                .header("Content-Type", "application/json")
-                .body(body.to_vec());
-        }
-        let resp = rb.send().await.map_err(|e| e.to_string())?;
-        let status = resp.status().as_u16();
-        let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-        if bytes.len() > MAX_MANIFEST_BYTES {
-            return Err(format!(
-                "{} {path}: response exceeded the {MAX_MANIFEST_BYTES}-byte cap",
-                method.as_str()
-            ));
-        }
-        if status >= 400 {
-            return Err(format!(
-                "{} {path}: {}",
+        // The receiver may refuse with "too many unexpired signed requests
+        // for this key; retry after the replay window" while its replay
+        // cache is full (NONCE_TTL is a sliding window). The refusal is
+        // explicitly retryable and the request was never accepted, so
+        // re-issue it with a FRESH nonce and timestamp, backing off to let
+        // the window drain — otherwise a send that outruns the receiver's
+        // nonce budget dies mid-chain. Every other error is final.
+        const REPLAY_BACKOFF_SECS: [u64; 6] = [2, 5, 10, 20, 40, 60];
+        let mut attempt = 0usize;
+        loop {
+            let auth = sign_request_for(
+                &self.identity,
                 method.as_str(),
-                describe_error(status, &bytes)
-            ));
+                &signed_path,
+                &digest,
+                audience,
+                Utc::now(),
+            )?;
+            let mut rb = self
+                .http
+                .request(method.clone(), &uri)
+                .header(super::auth::HEADER_KEY_ID, auth.key_id)
+                .header(super::auth::HEADER_TIMESTAMP, auth.timestamp)
+                .header(super::auth::HEADER_NONCE, auth.nonce)
+                .header(super::auth::HEADER_SIGNATURE, auth.signature);
+            if !body.is_empty() {
+                rb = rb
+                    .header("Content-Type", "application/json")
+                    .body(body.to_vec());
+            }
+            let resp = rb.send().await.map_err(|e| e.to_string())?;
+            let status = resp.status().as_u16();
+            let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+            if status == 401
+                && attempt < REPLAY_BACKOFF_SECS.len()
+                && String::from_utf8_lossy(&bytes).contains("retry after the replay window")
+            {
+                let wait = REPLAY_BACKOFF_SECS[attempt];
+                tracing::warn!(
+                    "buddy: the receiver's replay window is full; retrying {} {path} in {wait}s",
+                    method.as_str()
+                );
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                continue;
+            }
+            if bytes.len() > MAX_MANIFEST_BYTES {
+                return Err(format!(
+                    "{} {path}: response exceeded the {MAX_MANIFEST_BYTES}-byte cap",
+                    method.as_str()
+                ));
+            }
+            if status >= 400 {
+                return Err(format!(
+                    "{} {path}: {}",
+                    method.as_str(),
+                    describe_error(status, &bytes)
+                ));
+            }
+            return Ok((bytes.to_vec(), status));
         }
-        Ok((bytes.to_vec(), status))
     }
 
     pub async fn status(&self) -> Result<Status, String> {

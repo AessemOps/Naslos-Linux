@@ -23,7 +23,14 @@ pub const HEADER_SIGNATURE: &str = "X-Buddy-Signature";
 pub const MAX_CLOCK_SKEW: Duration = Duration::from_secs(5 * 60);
 /// How long a nonce stays unusable.
 const NONCE_TTL: Duration = Duration::from_secs(2 * 5 * 60);
-const MAX_NONCES_PER_KEY: usize = 4096;
+/// Unexpired nonces held per peer key. A nonce lives NONCE_TTL (10 min), so
+/// this is a sliding rate budget: a chunked send issues one signed request
+/// per ~1 MiB chunk, and the old 4096 cap throttled a legitimate LAN-speed
+/// sender to ~6.8 MiB/s and hard-failed anything bigger once the window
+/// filled (found by the live drill: a multi-GiB send died at ~4 GiB). 65536
+/// absorbs ~109 chunk requests per second sustained — LAN-rate backups —
+/// while still bounding a flood to a few MB of nonce memory per key.
+const MAX_NONCES_PER_KEY: usize = 65536;
 const NONCE_FILE_COMPACT_THRESHOLD: usize = 1024;
 
 /// The exact string a sender signs and a receiver rebuilds.
@@ -92,6 +99,9 @@ pub struct Authenticator {
     seen: Mutex<HashMap<String, HashMap<String, i64>>>,
     nonce_file: Mutex<Option<String>>,
     warned: Mutex<bool>,
+    /// Unexpired nonces kept per key before requests are refused. Kept as a
+    /// field so the refusal can be tested at a small value.
+    max_nonces_per_key: usize,
 }
 
 impl Authenticator {
@@ -101,7 +111,16 @@ impl Authenticator {
             seen: Mutex::new(HashMap::new()),
             nonce_file: Mutex::new(None),
             warned: Mutex::new(false),
+            max_nonces_per_key: MAX_NONCES_PER_KEY,
         }
+    }
+
+    /// Test-only: shrink the per-key nonce cap.
+    #[cfg(test)]
+    pub(crate) fn with_nonce_cap(peers: Arc<PeerStore>, cap: usize) -> Self {
+        let mut a = Self::new(peers);
+        a.max_nonces_per_key = cap;
+        a
     }
 
     /// Make the replay cache survive a restart by recording nonces under `dir`
@@ -285,7 +304,7 @@ impl Authenticator {
             // Never evict an unexpired nonce: doing so makes a captured
             // request replayable again. Refuse instead and let the peer retry
             // after the window (NONCE_TTL) drains.
-            if nonces.len() >= MAX_NONCES_PER_KEY {
+            if nonces.len() >= self.max_nonces_per_key {
                 return Err(
                     "too many unexpired signed requests for this key; retry after the replay window"
                         .to_string(),
@@ -365,6 +384,44 @@ mod tests {
             )
             .unwrap();
         assert_eq!(peer.name, "peer-a");
+    }
+
+    #[test]
+    fn replay_refusal_at_the_cap_carries_the_retry_wording() {
+        // The cap refusal is the one error the sender is allowed to retry:
+        // it must fire exactly at the cap and keep the "retry after the
+        // replay window" wording the client keys its backoff on.
+        let id = new_identity("naslos-a").unwrap();
+        let store = Arc::new(PeerStore::new(""));
+        store
+            .add(Peer {
+                name: "peer-a".to_string(),
+                public_key: id.public_key.clone(),
+                enabled: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let auth = Authenticator::with_nonce_cap(store, 2);
+        let path = format!("{}/status", crate::buddy::PATH_PREFIX);
+        let now = Utc::now();
+        for i in 0..2 {
+            let digest = body_digest(b"");
+            let headers = sign_request_for(&id, "GET", &path, &digest, "receiver", now).unwrap();
+            assert!(
+                auth.verify(&headers, &digest, "GET", &path, "receiver", now)
+                    .is_ok(),
+                "request {i} is below the cap and must pass"
+            );
+        }
+        let digest = body_digest(b"");
+        let headers = sign_request_for(&id, "GET", &path, &digest, "receiver", now).unwrap();
+        let err = auth
+            .verify(&headers, &digest, "GET", &path, "receiver", now)
+            .unwrap_err();
+        assert!(
+            err.contains("too many unexpired") && err.contains("retry after the replay window"),
+            "the refusal must stay retryable-worded, got: {err}"
+        );
     }
 
     #[test]

@@ -38,6 +38,26 @@ async function firstDataset(request: any): Promise<string | null> {
   return (child ?? body[0]).name;
 }
 
+async function sendDataset(request: any): Promise<string | null> {
+  // A dedicated empty dataset per run: its full-send stream is tiny, so the
+  // drill finishes in seconds. Reusing a real dataset instead (the first
+  // child, which on a filled instance is a whole media library) would chunk
+  // that library into the receiver and time the suite out.
+  const res = await request.get('/api/datasets');
+  if (!res.ok()) return null;
+  const body = await res.json();
+  const pool = (Array.isArray(body) ? body : [])
+    .find((d: any) => typeof d?.name === 'string' && !d.name.includes('/'))?.name;
+  if (!pool) return null;
+  const name = `buddy-uitest-${Date.now().toString().slice(-6)}`;
+  const created = await request.post('/api/datasets', {
+    data: { pool, name, options: {} }
+  });
+  // 409 is a leftover from an interrupted run; the dataset is usable.
+  if (![201, 409].includes(created.status())) return null;
+  return `${pool}/${name}`;
+}
+
 test('backups page shows the instance identity', async ({ page, request }) => {
   const identity = await buddyIdentity(request);
 
@@ -107,48 +127,52 @@ test('receiver section reports free space or the setup pointer', async ({ page, 
 test('a manual send reaches succeeded with chunks', async ({ page, request }) => {
   const identity = await buddyIdentity(request);
   test.skip(!identity.exists, 'no backup identity on this instance');
-  const dataset = await firstDataset(request);
-  test.skip(dataset === null, 'no ZFS dataset available for a send');
+  const dataset = (await sendDataset(request))!;
+  if (dataset === null) test.skip(true, 'no ZFS dataset available for a send');
   // The poll below waits up to 120s for the chunked send; the default 30s
-  // test timeout would kill the test mid-chain on a large first dataset.
+  // test timeout would kill the test mid-chain.
   test.setTimeout(180_000);
 
-  await page.goto('/backups');
-  const receiver = receiverURL(page);
-  // The receiver only accepts sources inside the authorized peer's scope, so use
-  // this instance's own name as the prefix: that is what a self-enrolled peer
-  // allows, and what a user of the page would pick too.
-  const source = `${identity.name ?? 'uitest'}/uitest-manual${Date.now().toString().slice(-6)}`;
+  try {
+    await page.goto('/backups');
+    const receiver = receiverURL(page);
+    // The receiver only accepts sources inside the authorized peer's scope, so use
+    // this instance's own name as the prefix: that is what a self-enrolled peer
+    // allows, and what a user of the page would pick too.
+    const source = `${identity.name ?? 'uitest'}/uitest-manual${Date.now().toString().slice(-6)}`;
 
-  // Self-send: the instance backs itself up to its own receiver. When the
-  // instance's key is not authorized there the job fails fast with an
-  // unknown-key error, which is a setup state, not a page defect.
-  const started = await request.post('/api/buddy/send', {
-    data: { dataset, source, receiver }
-  });
-  expect(started.status(), await started.text()).toBe(202);
-  const { jobId } = await started.json();
+    // Self-send: the instance backs itself up to its own receiver. When the
+    // instance's key is not authorized there the job fails fast with an
+    // unknown-key error, which is a setup state, not a page defect.
+    const started = await request.post('/api/buddy/send', {
+      data: { dataset, source, receiver }
+    });
+    expect(started.status(), await started.text()).toBe(202);
+    const { jobId } = await started.json();
 
-  let job: any = null;
-  const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline) {
-    const detail = await request.get(`/api/buddy/jobs/${jobId}`);
-    expect(detail.ok(), await detail.text()).toBeTruthy();
-    job = await detail.json();
-    if (job.state !== 'running') break;
-    await new Promise((r) => setTimeout(r, 1000));
+    let job: any = null;
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      const detail = await request.get(`/api/buddy/jobs/${jobId}`);
+      expect(detail.ok(), await detail.text()).toBeTruthy();
+      job = await detail.json();
+      if (job.state !== 'running') break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    test.skip(job.state === 'failed' && /unknown key|not authorized|not configured|out of scope/i.test(job.error ?? ''),
+      `receiver not set up for self-send: ${job.error}`);
+    expect(job.state, job.error).toBe('succeeded');
+    expect(job.result.chunks, 'send stored no chunks').toBeGreaterThan(0);
+  } finally {
+    await request.delete(`/api/datasets?name=${encodeURIComponent(dataset)}&recursive=true`);
   }
-  test.skip(job.state === 'failed' && /unknown key|not authorized|not configured|out of scope/i.test(job.error ?? ''),
-    `receiver not set up for self-send: ${job.error}`);
-  expect(job.state, job.error).toBe('succeeded');
-  expect(job.result.chunks, 'send stored no chunks').toBeGreaterThan(0);
 });
 
 test('Back up now drives a job from the page and Verify reads it back', async ({ page, request }) => {
   const identity = await buddyIdentity(request);
   test.skip(!identity.exists, 'no backup identity on this instance');
-  const dataset = await firstDataset(request);
-  test.skip(dataset === null, 'no ZFS dataset available for a send');
+  const dataset = (await sendDataset(request))!;
+  if (dataset === null) test.skip(true, 'no ZFS dataset available for a send');
   // Chain render (60s) + verify digest (30s) cannot fit the 30s default.
   test.setTimeout(180_000);
 
@@ -188,6 +212,7 @@ test('Back up now drives a job from the page and Verify reads it back', async ({
     await expect(page.getByText(/[0-9a-f]{64}/)).toBeVisible({ timeout: 30_000 });
   } finally {
     await request.delete(`/api/buddy/schedules?id=${encodeURIComponent(id)}`);
+    await request.delete(`/api/datasets?name=${encodeURIComponent(dataset)}&recursive=true`);
   }
 });
 
