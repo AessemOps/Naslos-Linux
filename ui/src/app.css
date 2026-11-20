@@ -2,19 +2,160 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------------
+   Design tokens. Every Tailwind color family used by the UI resolves here
+   (see tailwind.config.js), so a data-theme flip on <html> re-paints the
+   whole app. Dark values are the exact pre-overhaul palette; the light values
+   pick WCAG-AA ink for text shades and soft tints for the 900/950
+   badge backgrounds.
+   --------------------------------------------------------------------------- */
+:root {
+  /* Brand */
+  --n-primary: 37 99 235;
+  --n-secondary: 30 64 175;
+  --n-accent: 59 130 246;
+  --n-dark: 15 23 42;
+  --n-surface: 30 41 59;
+  --n-border: 51 65 85;
+  --n-strong: 255 255 255;
+
+  /* Neutral text scale (dark: current light inks) */
+  --gray-100: 243 244 246;
+  --gray-200: 229 231 235;
+  --gray-300: 209 213 219;
+  --gray-400: 156 163 175;
+  --gray-500: 148 163 184; /* slate-400: 6.5:1 on the dark bg (was gray-500 3.7:1) */
+  --gray-600: 75 85 99; /* bg/border role only (step dot, stopped badge) */
+  --gray-800: 31 41 55;
+  --gray-900: 17 24 39;
+
+  /* Status text shades (dark) */
+  --green-200: 187 247 208;
+  --green-300: 134 239 172;
+  --green-400: 74 222 128;
+  --green-900: 20 83 45;
+  --red-200: 254 202 202;
+  --red-300: 252 165 165;
+  --red-400: 248 113 113;
+  --red-900: 127 29 29;
+  --red-950: 69 10 10;
+  --yellow-300: 253 224 71;
+  --yellow-400: 250 204 21;
+  --yellow-500: 234 179 8;
+  --yellow-900: 113 63 18;
+  --amber-200: 253 230 138;
+  --amber-300: 252 211 77;
+  --amber-400: 251 191 36;
+  --amber-900: 120 53 15;
+  --amber-950: 69 26 3;
+  --blue-300: 147 197 253;
+  --blue-400: 96 165 250;
+  --blue-900: 30 58 138;
+  --purple-300: 216 180 254;
+  --purple-400: 192 132 252;
+  --purple-900: 88 28 135;
+  --emerald-200: 167 243 208;
+  --emerald-300: 110 231 183;
+  --emerald-900: 6 78 59;
+
+  /* Semantic status surfaces (badges, callouts) */
+  --n-ok-bg: rgb(20 83 45 / 0.5);
+  --n-ok-text: var(--green-400);
+  --n-warn-bg: rgb(113 63 18 / 0.5);
+  --n-warn-text: var(--yellow-400);
+  --n-bad-bg: rgb(127 29 29 / 0.5);
+  --n-bad-text: var(--red-400);
+  --n-info-bg: rgb(30 58 138 / 0.5);
+  --n-info-text: var(--blue-400);
+  --n-neutral-bg: rgb(17 24 39 / 0.5);
+  --n-neutral-text: var(--gray-400);
+}
+
+[data-theme='light'] {
+  --n-dark: 248 250 252; /* slate-50 page background */
+  --n-surface: 255 255 255;
+  --n-border: 203 213 225; /* slate-300 */
+  --n-secondary: 29 78 216;
+  /* Links and accent chips double as text in light, so accent darkens to the
+     primary ink instead of blue-400 (2.6:1 on white). */
+  --n-accent: 37 99 235;
+  --n-strong: 15 23 42;
+
+  /* Neutral text scale (light: slate inks, all ≥ 4.5:1 on white) */
+  --gray-100: 15 23 42;
+  --gray-200: 30 41 59;
+  --gray-300: 51 65 85;
+  --gray-400: 71 85 105; /* slate-600, 7:1 */
+  --gray-500: 71 85 105;
+  --gray-600: 203 213 225; /* bg/border role only */
+  --gray-800: 226 232 240;
+  --gray-900: 241 245 249;
+
+  /* Status text shades (light: AA ink grades) */
+  --green-200: 22 101 52;
+  --green-300: 21 128 61;
+  --green-400: 21 128 61;
+  --green-900: 220 252 231;
+  --red-200: 153 27 27;
+  --red-300: 185 28 28;
+  --red-400: 185 28 28;
+  --red-900: 254 226 226;
+  --red-950: 254 226 226;
+  --yellow-300: 133 77 14;
+  --yellow-400: 146 64 14;
+  --yellow-500: 161 98 7;
+  --yellow-900: 254 249 195;
+  --amber-200: 180 83 9;
+  --amber-300: 180 83 9;
+  --amber-400: 180 83 9;
+  --amber-900: 254 243 199;
+  --amber-950: 255 251 235;
+  --blue-300: 29 78 216;
+  --blue-400: 29 78 216;
+  --blue-900: 219 234 254;
+  --purple-300: 126 34 206;
+  --purple-400: 109 40 217;
+  --purple-900: 237 233 254;
+  --emerald-200: 6 95 70;
+  --emerald-300: 4 120 87;
+  --emerald-900: 209 250 229;
+
+  /* Semantic status surfaces, light tints */
+  --n-ok-bg: rgb(220 252 231 / 0.9);
+  --n-ok-text: rgb(21 128 61);
+  --n-warn-bg: rgb(254 243 199 / 0.9);
+  --n-warn-text: rgb(180 83 9);
+  --n-bad-bg: rgb(254 226 226 / 0.9);
+  --n-bad-text: rgb(185 28 28);
+  --n-info-bg: rgb(219 234 254 / 0.9);
+  --n-info-text: rgb(29 78 216);
+  --n-neutral-bg: rgb(241 245 249 / 0.9);
+  --n-neutral-text: rgb(71 85 105);
+}
+
 @layer base {
   :focus-visible {
-    outline: 2px solid #3b82f6;
+    outline: 2px solid rgb(var(--n-accent));
     outline-offset: 2px;
   }
   body {
     @apply bg-naslos-dark text-gray-100 antialiased;
   }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
 @layer components {
   .btn {
-    @apply px-4 py-2 rounded-lg font-medium transition-colors;
+    @apply px-4 py-2 rounded-lg font-medium transition-colors cursor-pointer;
   }
   .btn-primary {
     @apply bg-naslos-primary hover:bg-naslos-secondary text-white;
@@ -25,6 +166,15 @@
   .btn-secondary {
     @apply bg-naslos-surface hover:bg-naslos-border text-gray-200 border border-naslos-border;
   }
+  .btn-sm {
+    @apply px-2.5 py-1.5 text-sm min-h-[36px];
+  }
+  /* Icon-only control: keeps a 40x40 hit area while the glyph stays small. */
+  .icon-btn {
+    @apply inline-flex items-center justify-center rounded-lg transition-colors cursor-pointer;
+    min-width: 40px;
+    min-height: 40px;
+  }
   .card {
     @apply bg-naslos-surface rounded-xl border border-naslos-border p-6;
   }
@@ -33,5 +183,51 @@
   }
   .label {
     @apply text-sm font-medium text-gray-400 mb-1 block;
+  }
+  .skeleton {
+    @apply rounded-lg bg-naslos-border/40 animate-pulse;
+  }
+
+  /* Status badges. Tone classes reference the semantic surface vars so both
+     themes read without per-call-site color logic. */
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap;
+  }
+  .badge-ok {
+    background: var(--n-ok-bg);
+    color: var(--n-ok-text);
+  }
+  .badge-warn {
+    background: var(--n-warn-bg);
+    color: var(--n-warn-text);
+  }
+  .badge-bad {
+    background: var(--n-bad-bg);
+    color: var(--n-bad-text);
+  }
+  .badge-info {
+    background: var(--n-info-bg);
+    color: var(--n-info-text);
+  }
+  .badge-neutral {
+    background: var(--n-neutral-bg);
+    color: var(--n-neutral-text);
+  }
+
+  /* Inline callouts (page-level messages). */
+  .callout {
+    @apply p-4 rounded-lg border mb-4;
+  }
+  .callout-ok {
+    @apply border-green-700 bg-green-900/20 text-green-300;
+  }
+  .callout-bad {
+    @apply border-red-700 bg-red-900/20 text-red-300;
+  }
+  .callout-warn {
+    @apply border-amber-700 bg-amber-900/20 text-amber-300;
+  }
+  .callout-info {
+    @apply border-naslos-border bg-naslos-dark text-gray-300;
   }
 }
