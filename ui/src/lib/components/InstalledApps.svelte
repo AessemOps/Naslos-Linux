@@ -2,10 +2,12 @@
   import { onMount } from 'svelte';
   import AppExposureModal from './AppExposureModal.svelte';
   import AppConfigureModal from './AppConfigureModal.svelte';
+  import EmptyState from './EmptyState.svelte';
   import InstalledAppRow from './InstalledAppRow.svelte';
   import AppDetailDrawer from './AppDetailDrawer.svelte';
   import AppUpdateModal from './AppUpdateModal.svelte';
   import AppUpdateAllModal from './AppUpdateAllModal.svelte';
+  import LoadingState from './LoadingState.svelte';
   import { appJobs } from '$lib/stores/appJobs';
   import { appUpdates, refreshAppUpdates, startAppUpdates } from '$lib/stores/appUpdates';
   import { formatBytes, formatBytesPerSec, formatMillicores } from '$lib/format';
@@ -324,17 +326,13 @@
 
 <div>
   {#if error}
-    <div role="alert" class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
+    <div role="alert" class="callout callout-bad">{error}</div>
   {/if}
 
   {#if loading}
-    <p class="text-gray-400">Loading installed apps...</p>
+    <LoadingState label="Loading installed apps..." />
   {:else if apps.length === 0 && !error}
-    <div class="card text-center py-12">
-      <div class="text-5xl mb-4">📦</div>
-      <h2 class="text-xl font-bold mb-2">No Apps Installed</h2>
-      <p class="text-gray-400 mb-4">Browse the catalog to install your first app.</p>
-    </div>
+    <EmptyState icon="package" title="No Apps Installed" detail="Browse the catalog to install your first app." />
   {:else}
     <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
       <div class="text-sm text-gray-400">

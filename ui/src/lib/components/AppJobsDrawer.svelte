@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { appJobs, dismissAppJob, type AppJob, type AppJobKind, type AppJobState } from '$lib/stores/appJobs';
+  import { appJobs, dismissAppJob, type AppJob, type AppJobKind } from '$lib/stores/appJobs';
+  import Icon from './Icon.svelte';
+  import StatusBadge from './StatusBadge.svelte';
 
   let open = true;
 
@@ -16,25 +18,18 @@
         return 'Uninstall';
     }
   }
-
-  function stateClass(state: AppJobState): string {
-    switch (state) {
-      case 'succeeded':
-        return 'bg-green-900/50 text-green-400';
-      case 'failed':
-        return 'bg-red-900/50 text-red-400';
-      default:
-        return 'bg-yellow-900/50 text-yellow-400';
-    }
-  }
 </script>
 
 {#if jobs.length > 0}
   <div class="fixed bottom-4 right-4 z-40 w-80">
     <div class="bg-naslos-surface border border-naslos-border rounded-xl shadow-lg overflow-hidden">
-      <button class="w-full flex items-center justify-between px-3 py-2 text-sm" on:click={() => (open = !open)}>
+      <button
+        class="w-full flex items-center justify-between px-3 py-2 text-sm cursor-pointer"
+        aria-expanded={open}
+        on:click={() => (open = !open)}
+      >
         <span class="font-medium">App jobs{running > 0 ? ` (${running} running)` : ''}</span>
-        <span class="text-gray-400">{open ? '▾' : '▸'}</span>
+        <span class="text-gray-400" aria-hidden="true"><Icon name={open ? 'chevron-down' : 'chevron-right'} size={16} /></span>
       </button>
       {#if open}
         <div class="max-h-64 overflow-y-auto divide-y divide-naslos-border">
@@ -42,7 +37,7 @@
             <div class="px-3 py-2 text-sm">
               <div class="flex items-center justify-between gap-2">
                 <span class="font-medium truncate">{job.app}</span>
-                <span class={`text-xs px-2 py-0.5 rounded ${stateClass(job.state)}`}>{job.state}</span>
+                <StatusBadge state={job.state} />
               </div>
               <p class="text-xs text-gray-400 mt-0.5">
                 {kindLabel(job.kind)}{job.state === 'running' ? ` · ${job.stage}` : ''}
@@ -62,7 +57,7 @@
                   <span></span>
                 {/if}
                 <button
-                  class="text-xs text-gray-500 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                  class="text-xs py-1.5 text-gray-500 hover:text-naslos-strong disabled:opacity-40 disabled:cursor-not-allowed"
                   disabled={job.state === 'running'}
                   title={job.state === 'running' ? 'Wait for the job to finish' : 'Dismiss'}
                   on:click={() => dismissAppJob(job.id)}

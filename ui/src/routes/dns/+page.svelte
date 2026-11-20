@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
   import DdnsForm from '$lib/components/DdnsForm.svelte';
 
   interface Entry {
@@ -156,13 +158,9 @@
   {/if}
 
   {#if loading}
-    <p class="text-gray-400">Loading dynamic DNS...</p>
+    <LoadingState label="Loading dynamic DNS..." />
   {:else if entries.length === 0}
-    <div class="card text-center py-12">
-      <div class="text-5xl mb-4">🌍</div>
-      <h2 class="text-xl font-bold mb-2">No Dynamic DNS Entries</h2>
-      <p class="text-gray-400">Add an entry to keep a record pointed at your public IP.</p>
-    </div>
+    <EmptyState icon="earth" title="No Dynamic DNS Entries" detail="Add an entry to keep a record pointed at your public IP." />
   {:else}
     <div class="space-y-3">
       {#each entries as entry (entry.id)}

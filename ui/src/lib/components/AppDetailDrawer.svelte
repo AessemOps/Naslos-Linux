@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import { modal } from '$lib/actions/modal';
+  import Icon from '$lib/components/Icon.svelte';
   import { trackAppJob } from '$lib/stores/appJobs';
   import AppIcon from './AppIcon.svelte';
   import AppLogs from './AppLogs.svelte';
@@ -337,8 +338,8 @@
           <span class="text-xs text-gray-500 font-mono truncate">{app.namespace}</span>
         </div>
       </div>
-      <button class="text-gray-400 hover:text-white text-2xl" aria-label="Close details" on:click={() => dispatch('close')}>
-        ×
+      <button class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border" aria-label="Close details" on:click={() => dispatch('close')}>
+        <Icon name="x" />
       </button>
     </div>
 

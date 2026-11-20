@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import { modal } from '$lib/actions/modal';
+  import Icon from '$lib/components/Icon.svelte';
   import { trackAppJob } from '$lib/stores/appJobs';
   import AppIcon from './AppIcon.svelte';
   import type { AppView } from '$lib/appTypes';
@@ -51,8 +52,8 @@
   <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-md">
     <div class="p-6 border-b border-naslos-border flex items-center justify-between">
       <h2 class="text-xl font-bold">Update {displayName}</h2>
-      <button class="text-gray-400 hover:text-white text-2xl" aria-label="Close" on:click={() => dispatch('close')}>
-        ×
+      <button class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border" aria-label="Close" on:click={() => dispatch('close')}>
+        <Icon name="x" />
       </button>
     </div>
 

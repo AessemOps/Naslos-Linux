@@ -1,6 +1,9 @@
 <script lang="ts">
-  import { modal } from '$lib/actions/modal';
   import { onDestroy } from 'svelte';
+  import LoadingState from './LoadingState.svelte';
+  import Modal from './Modal.svelte';
+  import StatusBadge from './StatusBadge.svelte';
+  import { formatBytes } from '$lib/format';
 
   interface DashboardData {
     cpu?: {
@@ -98,18 +101,6 @@
     }
   }
 
-  function formatBytes(bytes: number): string {
-    if (!bytes) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let i = 0;
-    let size = bytes;
-    while (size >= 1024 && i < units.length - 1) {
-      size /= 1024;
-      i++;
-    }
-    return `${size.toFixed(1)} ${units[i]}`;
-  }
-
   function formatTemperature(value?: number | null): string {
     return value === undefined || value === null || Number.isNaN(value)
       ? '—'
@@ -156,7 +147,7 @@
   <p class="text-gray-400 mb-8">Overview of your Naslos system.</p>
 
   {#if loading}
-    <p class="text-gray-400">Loading dashboard...</p>
+    <LoadingState label="Loading dashboard..." />
   {:else}
     {#if error}
       <p role="alert" class="text-red-400 mb-4">{error}</p>
@@ -251,9 +242,9 @@
               <div class="flex items-center justify-between mb-2">
                 <a href="/pools/{pool.name}" class="font-bold hover:text-naslos-primary transition-colors">{pool.name}</a>
                 <div class="flex items-center gap-2">
-                  <span class={`text-xs px-2 py-0.5 rounded ${pool.health === 'ONLINE' ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>{pool.health}</span>
+                  <StatusBadge state={pool.health} />
                   <button
-                    class="text-xs px-2 py-0.5 rounded bg-red-900/30 text-red-400 hover:bg-red-900/60 transition-colors"
+                    class="btn btn-sm rounded bg-red-900/30 text-red-400 hover:bg-red-900/60 transition-colors"
                     on:click={() => confirmDelete(pool.name)}
                     title="Delete pool '{pool.name}'"
                   >Delete</button>
@@ -278,33 +269,29 @@
 
     <!-- Delete Confirmation Modal -->
     {#if deleteTarget}
-      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-      <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" use:modal={{ onClose: cancelDelete }}>
-        <div class="bg-naslos-card border border-naslos-border rounded-lg p-6 max-w-md w-full mx-4">
-          <h3 class="text-xl font-bold mb-2">Delete Pool</h3>
-          <p class="text-gray-400 mb-4">
-            Are you sure you want to delete pool <strong class="text-white">{deleteTarget}</strong>?
-            This will destroy the pool and all data on it. This action cannot be undone.
-          </p>
-          <label class="block mb-4">
-            <span class="text-sm text-gray-300">Type <span class="font-mono text-white">{deleteTarget}</span> to confirm</span>
-            <input class="input w-full mt-1" bind:value={deleteConfirmText} autocomplete="off" />
-          </label>
-          {#if deleteError}
-            <p role="alert" class="text-red-400 text-sm mb-4">{deleteError}</p>
-          {/if}
-          <div class="flex justify-end gap-3">
-            <button class="btn btn-secondary" on:click={cancelDelete} disabled={deleting}>Cancel</button>
-            <button
-              class="btn bg-red-600 hover:bg-red-700 text-white"
-              on:click={deletePool}
-              disabled={deleting || deleteConfirmText !== deleteTarget}
-            >
-              {deleting ? 'Deleting…' : 'Delete Pool'}
-            </button>
-          </div>
+      <Modal title="Delete Pool" onClose={cancelDelete}>
+        <p class="text-gray-400">
+          Are you sure you want to delete pool <strong class="text-naslos-strong">{deleteTarget}</strong>?
+          This will destroy the pool and all data on it. This action cannot be undone.
+        </p>
+        <label class="block">
+          <span class="text-sm text-gray-300">Type <span class="font-mono text-naslos-strong">{deleteTarget}</span> to confirm</span>
+          <input class="input w-full mt-1" bind:value={deleteConfirmText} autocomplete="off" />
+        </label>
+        {#if deleteError}
+          <p role="alert" class="text-red-400 text-sm">{deleteError}</p>
+        {/if}
+        <div slot="footer">
+          <button class="btn btn-secondary" on:click={cancelDelete} disabled={deleting}>Cancel</button>
+          <button
+            class="btn btn-danger"
+            on:click={deletePool}
+            disabled={deleting || deleteConfirmText !== deleteTarget}
+          >
+            {deleting ? 'Deleting…' : 'Delete Pool'}
+          </button>
         </div>
-      </div>
+      </Modal>
     {/if}
 
     <!-- System Info -->

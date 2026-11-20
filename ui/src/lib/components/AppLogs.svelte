@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte';
   import type { AppPod, AppPods, AppView } from '$lib/appTypes';
+  import Icon from './Icon.svelte';
 
   export let app: AppView;
 
@@ -139,10 +140,10 @@
       </label>
       <button
         type="button"
-        class="text-gray-400 hover:text-white"
+        class="icon-btn text-gray-400 hover:text-naslos-strong hover:bg-naslos-border"
         title="Reload pods and reconnect"
         aria-label="Reload pods and reconnect"
-        on:click={loadPods}>↻</button
+        on:click={loadPods}><Icon name="refresh-cw" size={16} /></button
       >
     </div>
   </div>
