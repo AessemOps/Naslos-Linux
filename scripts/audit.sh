@@ -823,6 +823,7 @@ check_pack_digest_pinning() {
   "samba": "ghcr.io/aessemops/naslos-samba@sha256:${hex}",
   "nfs": "ghcr.io/aessemops/naslos-nfs@sha256:${hex}",
   "terminal": "ghcr.io/aessemops/naslos-terminal@sha256:${hex}",
+  "vmd": "ghcr.io/aessemops/naslos-vmd@sha256:${hex}",
   "openldap": "ghcr.io/aessemops/naslos-openldap@sha256:${hex}"
 }
 EOF
@@ -842,14 +843,15 @@ root = glob.glob(os.path.join(d, "x", "naslos-install-pack-*"))[0]
 m = json.load(open(os.path.join(root, "metadata.json")))
 assert m["formatVersion"] == 1, "the images map must be additive (formatVersion stays 1)"
 images = m.get("images")
-assert isinstance(images, dict) and len(images) == 7, f"metadata.images must pin 7 images: {images!r}"
+assert isinstance(images, dict) and len(images) == 8, f"metadata.images must pin 8 images: {images!r}"
 for comp, ref in images.items():
     assert ref == f"ghcr.io/aessemops/naslos-{comp}@sha256:{hex}", f"bad metadata image {comp}: {ref}"
 
 v = yaml.safe_load(open(os.path.join(root, "charts/naslos/values-installer.yaml")))
 for comp, path in [("api", ("api", "image")), ("agent", ("agent", "image")),
                    ("ui", ("ui", "image")), ("samba", ("shares", "smb", "image")),
-                   ("nfs", ("shares", "nfs", "image")), ("terminal", ("terminal", "image"))]:
+                   ("nfs", ("shares", "nfs", "image")), ("terminal", ("terminal", "image")),
+                   ("vmd", ("virt", "image"))]:
     node = v
     for key in path:
         node = node[key]

@@ -11,6 +11,7 @@ ignore = [
   { id = "RUSTSEC-2017-0008", reason = "Reviewed 2026-10-24. serial is an optional portable-pty dependency; portable-pty is used only for the kubectl exec PTY" },
   { id = "RUSTSEC-2024-0449", reason = "Reviewed 2026-10-24. unsafe-libyaml is reachable only through serde_yaml (chart values/config); no untrusted YAML is parsed by the API" },
   { id = "RUSTSEC-2026-0441", reason = "Reviewed 2026-11-07. pin-utils is an unmaintained transitive dependency of portable-pty 0.8 (nix 0.25) used only for the kubectl exec PTY; no safe upgrade is available in that line. Revisit with the portable-pty/nix upgrade" },
+  { id = "RUSTSEC-2026-0543", reason = "Reviewed 2026-11-19. chrono is unmaintained (no vulnerability; timestamps/LDAP formatting only). No safe upgrade exists in the 0.4 line; migrating to jiff is a separate tracked change, not part of the virt release" },
 ]
 
 [licenses]

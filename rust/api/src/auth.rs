@@ -208,6 +208,14 @@ fn request_body_is_json(req: &Request) -> bool {
     if is_safe_method(req.method()) {
         return true;
     }
+    // The chunked image upload (FR-VMT) streams raw `application/octet-stream`
+    // bodies. This is the only route exempt from the JSON requirement: the
+    // same-origin (CSRF) checks above still apply, and octet-stream is not a
+    // CORS-safelisted content type either, so a cross-origin POST still
+    // forces a preflight.
+    if req.uri().path().starts_with("/api/virt/images/upload") {
+        return true;
+    }
     let declared = req
         .headers()
         .get(CONTENT_LENGTH)

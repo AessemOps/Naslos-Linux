@@ -39,6 +39,14 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   at a DDNS hostname (see [docs/app-catalog.md](docs/app-catalog.md) and
   [docs/dynamic-dns.md](docs/dynamic-dns.md)).
 - **Logs & terminal** — stream logs and open an interactive shell (`bash` by default; `sh`/`ash`/`zsh` where installed) in any pod from the UI
+- **Virtual machines** — a first-party QEMU/KVM hypervisor on the node
+  (`rust/vmd` supervisor): VM datasets under `<pool>/vms/<name>` with quota =
+  declared disk, UEFI/BIOS firmware, NAT with editable port forwards plus
+  optional macvtap LAN attachment, browser console (noVNC over an
+  owner-gated websocket bridge), cloud-init NoCloud seeds (keys only, no
+  passwords), an ISO/cloud-image library with chunked browser upload and
+  SSRF-guarded URL import, and ZFS snapshots/rollback per VM
+  (see [docs/virtual-machines.md](docs/virtual-machines.md))
 - **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served)
 - **ntfy notifications** — push alerts on backup and ZFS/agent health transitions
 - **Network settings** — day-2 host link addressing, MTU and DNS changes from the UI, applied with a machine-side `--mode=try` guard, an API watchdog and a saved-config revert (see [docs/deployment.md](docs/deployment.md#day-2-network-changes-fr-net))
@@ -58,7 +66,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 - **Published images + release CI** — every PR runs the full gate sweep,
   supply-chain scan, secret scan and a Docker build of all images with an
   image CVE gate and SBOM; a semantic `vX.Y.Z` tag pushes
-  all 8 images to `ghcr.io/aessemops/naslos-*` and publishes the install pack
+  all 9 images to `ghcr.io/aessemops/naslos-*` and publishes the install pack
   with every chart image pinned by digest (`FR-INSTALL-13`). See
   [docs/deployment.md](docs/deployment.md)
 
@@ -67,11 +75,13 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 ```
 rust/agent/  Rust DaemonSet, privileged — executes zpool/zfs via chroot /host
 rust/api/    Rust API — Talos/K8s/ZFS orchestration + buddyctl/buddy-receiver
-ui/          SvelteKit + Tailwind — dashboard, wizards, terminal
-charts/      naslos umbrella chart (api, ui, agent, openldap, samba, nfs, terminal, Traefik/Authelia)
+rust/vmd/    Rust QEMU/KVM supervisor (naslos-vmd) — privileged, QMP-controlled
+ui/          SvelteKit + Tailwind — dashboard, wizards, terminal, VM console
+charts/      naslos umbrella chart (api, ui, agent, vmd, openldap, samba, nfs, terminal, Traefik/Authelia)
 samba/       Samba image + config
 nfs/         NFS-Ganesha image + config
 terminal/    web-terminal image
+vmd/         naslos-vmd image (QEMU supervisor runtime)
 openldap/    OpenLDAP SSO image (identity store; the workloads live in charts/naslos)
 bootstrap/   schematic + ISO generator, Cilium manifest, VM + installer machine-config patches
 scripts/     deploy-vm.sh, render-cilium.sh, build-install-pack.sh, audit.sh

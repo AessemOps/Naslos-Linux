@@ -858,8 +858,9 @@ implemented here).
 - **FR-INSTALL-12** — The engine MUST stream step progress as newline-delimited
   JSON on stdout, ending in a `done` or `error` event; the shell MUST render a
   progress bar and MUST be able to cancel by killing the child. **[OPEN]**
-- **FR-INSTALL-13** — a released pack (`vX.Y.Z`) MUST pin each of the 7 chart
-  images (`api`, `agent`, `ui`, `samba`, `nfs`, `terminal`, `openldap`) by digest
+- **FR-INSTALL-13** — a released pack (`vX.Y.Z`) MUST pin each of the 8 chart
+  images (`api`, `agent`, `ui`, `samba`, `nfs`, `terminal`, `openldap`, `vmd`)
+  by digest
   to the public registry (`ghcr.io/aessemops/naslos-*`), and the tag workflow
   MUST publish those images before it builds the pack, so a pack never
   references an unpublished image. The digest MUST win over the tag (VER-2), and
@@ -951,10 +952,94 @@ only the in-flight change and the previous config snapshot.
   fields.
 - **FR-NET-06** — A static address outside the current kubelet subnets MUST be
   added to `KubeNodeConfig.nodeIP.validSubnets` in the same change. A legacy
-  `machine.network.interfaces` entry for the edited link MUST be removed in the
-  same patch. `ResolverConfig.hostDNS` MUST be preserved by every resolver
+  `machine.network.interfaces` entry for the edited link MUST be removed in
+  the same patch. `ResolverConfig.hostDNS` MUST be preserved by every resolver
   patch. After an MTU change is confirmed the API MUST restart the CNI so it
   re-detects the interface MTU.
+
+### 3.13 Virtual machines (`FR-VMT`)
+
+Naslos 0.4 ships a first-party hypervisor: a QEMU/KVM supervisor pod
+(`naslos-vmd`) reconciles VMs on the node while the API stays the brain —
+the exact shares pattern: the API validates, persists records
+(`vms.json` on the state PVC) and pushes the whole desired state; vmd
+diffs it against the running QEMU processes and starts/stops/recreates as
+needed. The agent remains the only ZFS writer: VM datasets
+(`<pool>/vms/<name>`) are created/destroyed through the existing agent
+dataset APIs, so `make install-vm` on a clean node reproduces everything.
+KubeVirt was rejected for this (Kubernetes 1.37 vs KubeVirt support skew,
+bare-metal K8s required) and libvirt/Incus for daemon weight; the supervisor
+is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
+
+- **FR-VMT-01** — The node's virtualization capabilities MUST be reported on
+  `GET /api/virt/capabilities`: KVM availability, CPU model, nested
+  virtualization, `/dev/net/tun`, macvtap support and the physical NIC list.
+  The UI MUST surface a missing-KVM banner and disable LAN mode when macvtap
+  is unavailable; a pre-0.4 node (no supervisor) must render the page with a
+  clear message, never a crash.
+- **FR-VMT-02** — VM creation MUST be validated server-side before any host
+  change: DNS-1123 name, pool existence, vCPU/memory/disk ranges, unique
+  host ports across all VMs, firmware/disk-format/bus/net-mode enums, library
+  references (`isos/<file>`), and cloud-init fields (hostname, POSIX user,
+  ≤20 SSH public keys, no passwords). vmd MUST re-validate the same rules
+  before building any QEMU command line (SEC-1: no unvalidated string ever
+  reaches `exec`).
+- **FR-VMT-03** — A VM's dataset MUST be a child of its pool
+  (`<pool>/vms/<name>`) with `quota` equal to the declared disk size, created
+  through the agent; the first start creates the disk image blank (`qcow2`
+  sparse by default, `raw` optional) or seeds it from a library cloud image
+  and resizes it to the declared size. Deleting a VM MUST refuse while it is
+  running and MUST destroy the dataset only after the record is removed,
+  restoring the record if the destroy fails.
+- **FR-VMT-04** — Networking v1: NAT (slirp) with per-VM editable TCP port
+  forwards exposed on the node, plus optional macvtap LAN attachment (the
+  guest gets its own DHCP address). The UI MUST document the macvtap
+  host-isolation caveat (the NAS host itself cannot talk to the guest); a
+  full host bridge is out of scope for v1 and no Talos machine-config change
+  is made.
+- **FR-VMT-05** — Boot media: an install ISO attaches as a CD-ROM from the
+  per-pool image library (`<pool>/vms/isos`). UEFI (OVMF, with a per-VM
+  writable vars copy) is the default firmware; BIOS (SeaBIOS) remains a
+  select option for legacy guests. The `sata` bus option maps to the q35
+  built-in AHCI controller (Windows guests without virtio drivers).
+- **FR-VMT-06** — cloud-init (NoCloud): the seed MUST carry only hostname,
+  user and SSH public keys; password authentication MUST be disabled in the
+  seed (`ssh_pwauth: false`, `lock_passwd: true`). Seeds are regenerated on
+  every start; the instance-id changes with the seed content so an edited
+  seed re-runs on the next boot.
+- **FR-VMT-07** — The image library MUST support (a) browser upload in
+  chunks, relays to the supervisor without landing the file in API memory,
+  (b) server-side URL import restricted to public http(s) targets — the
+  FR-DNS-07 SSRF guard (redirects re-validated hop by hop, connection pinned
+  to the vetted address), optional sha256 verification — and (c) delete.
+  The library lives at `<pool>/vms/isos`, flat file names only.
+- **FR-VMT-08** — The console MUST be reachable from the browser:
+  `GET /api/ws/vm/{name}/vnc` (plain GET) is a preflight returning the VNC
+  port, the per-boot VNC password and `ready to attach`; the same route with
+  a websocket upgrade bridges RFB bytes to QEMU's VNC listener (noVNC
+  client, `@novnc/novnc`). The bridge MUST enforce the `/api/ws/exec`
+  posture: same-origin check, finite session caps (max session, idle
+  timeout, concurrent session semaphore). The credentials MUST appear only
+  in the preflight response, never in list/detail payloads.
+- **FR-VMT-09** — Snapshots MUST be ordinary ZFS snapshots of the VM dataset
+  (created/listed via the agent, crash-consistent while the VM runs, backed
+  up by Buddy like any dataset). Restore MUST refuse a running VM and MUST
+  roll the dataset back (`zfs rollback -r`, deleting newer snapshots).
+- **FR-VMT-10** — `state` MUST be derived live from the supervisor, never
+  persisted. The API MUST push the desired config at its own startup with
+  `desired=running` for autostart-marked VMs (pod restart = VM restart for
+  autostart VMs), and the supervisor MUST wait (bounded) for a fresh VM's
+  dataset mountpoint to appear before starting (the mount-propagation trap).
+  Failed starts and unexpected exits MUST raise ntfy events (`vm_failed`,
+  `vm_exited_unexpected`, notifications the owner enables explicitly).
+- **FR-VMT-11** — The console channel and the supervisor API MUST be
+  authenticated and TLS-protected exactly like the agent (NAS-002/PF-M5):
+  chart-generated token Secret, chart-generated CA + server certificate,
+  bearer-token check on every route but the health probe, no plaintext
+  opt-out short of an explicit `VMD_ALLOW_PLAINTEXT=1` for development. The
+  QEMU VNC listener MUST be password-protected (the password is set over
+  QMP per boot and handed to the browser only through the owner-gated
+  preflight).
 
 ---
 
@@ -1008,6 +1093,17 @@ only the in-flight change and the previous config snapshot.
 | `/api/shares/{name}` | PUT, DELETE | Update / delete |
 | `/api/shares/paths` | GET | Shareable dataset paths + ZFS base |
 | `/api/shares/status` | GET | Rendered revision + what the node has applied |
+| `/api/virt/capabilities` | GET | Node virtualization preflight (FR-VMT-01) |
+| `/api/virt/vms` | GET, POST | VM records merged with live state / create (dataset + record + push) |
+| `/api/virt/vms/{name}` | GET, PUT, DELETE | Detail / update / delete (refuses a running VM) |
+| `/api/virt/vms/{name}/start` `stop` `force-stop` `restart` | POST | Lifecycle actions (stop = graceful ACPI; restart = force-stop + start) |
+| `/api/virt/vms/{name}/snapshots` | GET, POST | List / create a ZFS snapshot of the VM dataset |
+| `/api/virt/vms/{name}/snapshots/{snap}/restore` | POST | `zfs rollback -r`; refuses a running VM |
+| `/api/virt/images?pool=` | GET | Per-pool library listing (imports + last errors included) |
+| `/api/virt/images/upload?pool=&name=&offset=&final=` | POST | One upload chunk (`application/octet-stream`, the only non-JSON body) |
+| `/api/virt/images/import` | POST | Server-side URL import (202; SSRF-guarded in the supervisor) |
+| `/api/virt/images/{name}?pool=` | DELETE | Delete a library file |
+| `/api/ws/vm/{name}/vnc` | GET | Console preflight (plain) / RFB bridge (websocket upgrade) |
 | `/api/shares/apply` | POST | Re-render and push the configuration to the node |
 | `/api/shares/config/samba` `/nfs` | GET | Generated configs |
 | `/api/notifications` | GET | Notification settings/state |
@@ -1059,6 +1155,7 @@ only the in-flight change and the previous config snapshot.
 - **DM-4 Share**: `{ "name", "path", "protocol": "smb"|"nfs", "description", "readOnly": bool, "browseable": bool, "allowedHosts": [], "validUsers": [], "validGroups": [], "timeMachine": bool, "createdAt", "enabled": bool }` — `path` MUST be inside the ZFS base; the three list fields MUST be arrays (never `null`, including when read back from disk); `validUsers` entries render bare and `validGroups` entries render as `@group` in `smb.conf` (FR-SHR-07/12).
 - **DM-5 SystemMetrics**: see FR-MET-03. CPU also carries `model`, `temperatureC` (nullable), and `perCore[]` (`core`, `usagePercent`, optional `frequencyMhz`). `updatedAt` is RFC 3339; before the first successful collection it is the Go zero time and consumers MUST treat it as "no data yet".
 - **DM-6 DiskHealth**: `{ "smartctlAvailable": bool, "error": string, "temperatureWarningC": number, "wearWarningPercent": number, "disks": [{ "device", "size", "isSystemDisk", "model", "serial", "busPath", "type", "signatures": [], "inPool"?, "smart": { "available", "enabled", "health": "PASSED"|"FAILED"|"UNKNOWN", "temperatureC"?, "powerOnHours"?, "wearPercent"?, "reallocatedSectors"?, "pendingSectors"?, "uncorrectableSectors"?, "mediaErrors"?, "errorCount"?, "standby", "message" }, "zfs"?: { "pool", "vdev", "state", "readErrors", "writeErrors", "cksumErrors" } }] }` — `smart.available:false` is normal for virtio/USB/RAID devices and MUST NOT fail the endpoint (FR-DHK-02/03).
+- **DM-7 Vm**: `{ "name", "pool", "cpu", "memMiB", "autostart": bool, "firmware": "uefi"|"bios", "desired": "running"|"stopped", "disk": { "sizeGB", "format": "qcow2"|"raw", "bus": "virtio"|"sata", "sourceImage"?: "isos/<file>" }, "net": { "mode": "nat"|"lan", "forwards": [{ "host", "dst" }], "nic"? }, "cloudInit"?: { "hostname", "user", "sshKeys": [] }, "iso"?: "isos/<file>" | null }`. `name` is a DNS-1123 label; live fields (`state`: "running"|"stopped"|"unknown", `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) are merged in responses and MUST NOT be persisted; the console credentials (`vncPort`, `vncPassword`) appear only in the `/api/ws/vm/{name}/vnc` preflight, never in list or detail payloads (FR-VMT).
 
 ---
 
@@ -1178,6 +1275,14 @@ Dynamic DNS and the provider registry are verified by
 | `TestOVHDriverUpdate`, `TestCloudflareDriverCreateAndUpdate`, `TestHTTPDriverRendersAndAuthenticates` | FR-DNS-01 (drivers: URL/method/body/signature/auth) |
 | `TestHTTPDriverRejectsNonPublicTargets` | FR-DNS-07 (SSRF guard) |
 | `helm lint` + `scripts/audit.sh` DDNS assertions | FR-DNS-03/04 (env wired, egress port-scoped, no release-namespace Secret access) |
+| `naslos_vmd::model::tests::*` | FR-VMT-02 (name/range/enum/cloud-init validation, library traversal guards) |
+| `naslos_vmd::args::tests::*` (golden argv) | FR-VMT-02/05 (SEC-1: the exact QEMU command line is a pinned, reviewable diff) |
+| `naslos_vmd::qmp::tests::*`, `naslos_vmd::supervisor::tests::*` | FR-VMT-10 (QMP round-trip incl. event skipping, reconcile invariants, force-stop guards) |
+| `naslos_vmd::images::tests::*` | FR-VMT-07 (SSRF guard covers mapped/ULA addresses, scheme allowlist, upload name guards, redirect resolution) |
+| `naslos_vmd::cloudinit::tests::*` | FR-VMT-06 (no password fields, pwauth disabled, instance-id tracks the seed) |
+| `naslos_api::virt::tests::*` | FR-VMT-10 (store round-trip + revalidation, boot render marks autostart VMs, views survive a dead supervisor, credentials stay out of payloads) |
+| `contract.rs` virt tests (fail-closed shapes, octet-stream scoped to the upload route only, console origin/auth) | FR-VMT-08/11 |
+| `ui/tests/vms.spec.ts` (capability-skip) | FR-VMT-01 (banner on KVM-less nodes, list contract, preflight 409 on a stopped VM) |
 
 Historical verification (2026-09-14, retired .96 VM, through its UI NodePort —
 that listener was removed on 2026-09-19, and the same checks now run through the
@@ -1230,7 +1335,7 @@ and checksum gate (`scripts/audit.sh` → `check_install_pack`), `helm lint` of
 `render-installer-template.sh --check` tripwire against `cilium.yaml`, and the
 released-pack digest pinning (FR-INSTALL-13: `check_image_digest_render` proves
 the chart renders `repository@sha256:…`, `check_pack_digest_pinning` proves the
-pack build pins all 7 images, records them in `metadata.json.images`, and fails
+pack build pins all 8 chart images, records them in `metadata.json.images`, and fails
 closed on a missing image). The engine-side steps are verified end to end from
 `Naslos-Installer`: boot the ISO
 from the pack's URL, run `naslos-install` headless, then check node Ready, pods
