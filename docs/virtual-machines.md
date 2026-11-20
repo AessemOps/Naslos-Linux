@@ -128,7 +128,10 @@ boots straight to SSH.
   set `desired=running` (pod restart = VM restart for autostart VMs — flip
   autostart off before a maintenance restart if you want a VM to stay
   down). vmd waits bounded (60 s) for a fresh dataset mountpoint to appear
-  (the mount-propagation trap) before starting.
+  before starting: the agent mounts the dataset via `chroot /host`, and its
+  host-root bind is Bidirectional so the mount reaches the host and
+  propagates into vmd's `/var/mnt` without a pod restart (a pre-Bidirectional
+  agent left the mount pod-local and this wait was the 60s failure).
 - A VM that fails to start or exits unexpectedly raises an ntfy
   notification (`vm_failed` / `vm_exited_unexpected`) — enable them on the
   Notifications page. Transitions only: one message per failure.

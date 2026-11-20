@@ -79,10 +79,18 @@ spec:
               value: ""
             {{- end }}
           volumeMounts:
-            # Host root for chroot /host zpool/zfs operations
+            # Host root for chroot /host zpool/zfs operations. BIDIRECTIONAL is
+            # load-bearing: zfs create/mount run inside this chroot, and the new
+            # dataset mounts must propagate UP to the host's real /var/mnt so
+            # HostToContainer consumers (samba, nfs, vmd, terminal, app pods)
+            # see them. HostToContainer here left every dataset created through
+            # the agent mounted only in the agent pod's namespace: vmd's
+            # wait_for_dir timed out after 60s, and shares/apps of new datasets
+            # silently used a plain directory on the pool root instead of the
+            # dataset (AI_Handoff gotcha #5).
             - name: host-root
               mountPath: /host
-              mountPropagation: HostToContainer
+              mountPropagation: Bidirectional
             - name: host-dev
               mountPath: /dev
               mountPropagation: HostToContainer
