@@ -432,3 +432,64 @@ async fn disk_health_is_non_fatal_when_the_agent_fails() {
         .contains("ZFS is not available"));
     assert!(body["disks"].is_array());
 }
+
+// ---- VM delete (FR-VMT support) -------------------------------------------
+
+#[tokio::test]
+async fn vm_delete_destroys_the_dataset_recursively() {
+    // A VM dataset owns its snapshots, so the delete must pass
+    // recursive=true: a non-recursive destroy fails with "filesystem has
+    // children" the moment the VM ever had one (found by the live drill —
+    // deleting a VM after its snapshot step always 502'd). The mock agent
+    // records the request line; this harness has no vmd, so the post-destroy
+    // config push 502s after the destroy already succeeded.
+    let uris: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = uris.clone();
+    let app = Router::new().route(
+        "/api/v1/datasets/{*rest}",
+        axum::routing::delete(move |req: Request<Body>| {
+            let recorder = recorder.clone();
+            async move {
+                let line = format!("{} {}", req.method(), req.uri());
+                recorder.lock().unwrap().push(line);
+                (StatusCode::OK, Json(json!({ "status": "destroyed" })))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let state = state_with_agent(&format!("http://{addr}"));
+
+    let spec = naslos_vmd::model::VmSpec {
+        name: "drill-vm".into(),
+        pool: "tank".into(),
+        cpu: 1,
+        mem_mib: 256,
+        autostart: false,
+        firmware: naslos_vmd::model::Firmware::default(),
+        desired: naslos_vmd::model::DesiredState::default(),
+        disk: naslos_vmd::model::DiskSpec {
+            size_gb: 2,
+            ..Default::default()
+        },
+        net: naslos_vmd::model::NetSpec::default(),
+        cloud_init: None,
+        iso: None,
+    };
+    state.vms.create(spec).expect("seed record");
+
+    let (status, _body) = call(state.clone(), "DELETE", "/api/virt/vms/drill-vm", None).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "no vmd in this harness");
+    let uris = uris.lock().unwrap();
+    let destroy = uris
+        .iter()
+        .find(|u| u.starts_with("DELETE /api/v1/datasets/tank/vms/drill-vm"))
+        .expect("the agent must receive the dataset destroy");
+    assert!(
+        destroy.contains("recursive=true"),
+        "the VM dataset destroy must be recursive (snapshots belong to the VM), got: {destroy}"
+    );
+}

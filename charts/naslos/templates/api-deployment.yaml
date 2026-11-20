@@ -184,6 +184,17 @@ spec:
             # release namespace, so the default targets that.
             - name: AGENT_BASE_URL
               value: {{ .Values.api.agentBaseURL | default (printf "%s://naslos-agent.%s.svc.cluster.local:9090" (ternary "https" "http" .Values.agent.tls.enabled) (include "naslos.workloadNamespace" .)) | quote }}
+            # The buddy sender recognizes receiver URLs that point back at
+            # this instance (a self-send): the node's hostPort is not
+            # reachable from pods on the same node (Cilium hostPort), so
+            # those URLs are dialed through the API's own loopback listener
+            # instead. 8080 is the API's listen port (containerPort above).
+            - name: NASLOS_NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: NASLOS_API_PORT
+              value: "8080"
             {{- if .Values.agent.tls.enabled }}
             # PF-M5: pin the chart-generated agent CA so the TLS channel is
             # verified rather than opportunistic; the bearer token no longer
