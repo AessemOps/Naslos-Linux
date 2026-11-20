@@ -109,6 +109,9 @@ test('a manual send reaches succeeded with chunks', async ({ page, request }) =>
   test.skip(!identity.exists, 'no backup identity on this instance');
   const dataset = await firstDataset(request);
   test.skip(dataset === null, 'no ZFS dataset available for a send');
+  // The poll below waits up to 120s for the chunked send; the default 30s
+  // test timeout would kill the test mid-chain on a large first dataset.
+  test.setTimeout(180_000);
 
   await page.goto('/backups');
   const receiver = receiverURL(page);
@@ -146,6 +149,8 @@ test('Back up now drives a job from the page and Verify reads it back', async ({
   test.skip(!identity.exists, 'no backup identity on this instance');
   const dataset = await firstDataset(request);
   test.skip(dataset === null, 'no ZFS dataset available for a send');
+  // Chain render (60s) + verify digest (30s) cannot fit the 30s default.
+  test.setTimeout(180_000);
 
   await page.goto('/backups');
   const receiver = receiverURL(page);
@@ -165,6 +170,16 @@ test('Back up now drives a job from the page and Verify reads it back', async ({
     // The button starts the same async job the API drill uses; the page polls it
     // and renders the finished chain, so this exercises the progress path.
     await row.getByRole('button', { name: 'Back up now' }).click();
+    // A receiver that has not authorized this instance's own key yet is a
+    // setup state, not a page defect — skip the same way the manual-send
+    // test does.
+    const outcome = page
+      .getByText(/Chain [0-9a-f]{16}: \d+ chunks/)
+      .or(page.locator('[role="alert"]'));
+    await expect(outcome.first()).toBeVisible({ timeout: 60_000 });
+    const seen = (await outcome.first().textContent()) ?? '';
+    test.skip(/unknown key|not authorized|not configured|out of scope/i.test(seen),
+      `receiver not set up for self-send: ${seen}`);
     await expect(page.getByText(/Chain [0-9a-f]{16}: \d+ chunks/)).toBeVisible({ timeout: 60_000 });
 
     // Verify decrypts and hashes the stored chain without touching ZFS.
