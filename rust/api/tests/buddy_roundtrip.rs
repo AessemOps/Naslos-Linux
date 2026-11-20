@@ -215,3 +215,110 @@ async fn self_receiver_url_dials_the_loopback_listener() {
     let entry = naslos_api::buddy::client::base_points_at_node("https://127.0.0.1", node).await;
     assert!(entry, "the standard entryport must count as this node");
 }
+
+#[tokio::test]
+async fn a_replay_window_refusal_is_retried_with_a_fresh_nonce() {
+    // The receiver's replay cache refuses with "retry after the replay
+    // window" when a key outruns its unexpired-nonce budget; the sender
+    // must re-issue the request with a FRESH nonce instead of failing the
+    // whole send. The middleware below rewrites the first chunk PUT into
+    // that refusal; the push must still complete, and the retried PUT
+    // must carry a different nonce.
+    use axum::http::StatusCode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Arc::new(new_identity("sender").unwrap());
+    let peers = Arc::new(PeerStore::new(""));
+    peers
+        .add(Peer {
+            name: "sender".into(),
+            public_key: identity.public_key.clone(),
+            enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+    let store = Arc::new(Store::new(&dir.path().display().to_string()));
+    let auth = Arc::new(Authenticator::new(peers.clone()));
+    let receiver = Receiver::new(store, peers, auth, "naslos-test");
+    let mut st = AppState::for_test("proxy");
+    st.buddy = Some(Arc::new(receiver));
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let nonces: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let nonces_seen = nonces.clone();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = build_router(Arc::new(st)).layer(axum::middleware::from_fn(
+        move |req: axum::http::Request<axum::body::Body>,
+              next: axum::middleware::Next| {
+            let put_count = put_count.clone();
+            let nonces = nonces.clone();
+            async move {
+                let is_chunk_put = req.method() == "PUT"
+                    && req.uri().path().starts_with("/api/buddy/v1/chunks/");
+                let nonce = req
+                    .headers()
+                    .get("X-Buddy-Nonce")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                let seen = next.run(req).await;
+                if is_chunk_put {
+                    nonces.lock().unwrap().push(nonce);
+                    let n = put_count.fetch_add(1, Ordering::SeqCst);
+                    if n == 0 {
+                        // The first chunk PUT becomes the retryable refusal.
+                        use axum::response::IntoResponse;
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            axum::Json(serde_json::json!({
+                                "error": "too many unexpired signed requests for this key; retry after the replay window"
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+                seen
+            }
+        },
+    ));
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let client = Client::new(&format!("http://{addr}"), identity);
+    let plaintext = vec![0u8; 256 * 1024];
+    let mut reader: &[u8] = &plaintext;
+    let (result, err) = client
+        .push(PushOptions {
+            source: "naslos-test/data",
+            kind: "tar",
+            reader: &mut reader,
+            state: None,
+            from_snapshot: "",
+            to_snapshot: "snap-1",
+            from_guid: "",
+            to_guid: "guid-1",
+            prune_keep: 0,
+            progress: None,
+            before_publish: None,
+            save_state: &|_| Ok(()),
+        })
+        .await;
+    assert!(
+        err.is_none(),
+        "push must survive the replay refusal: {err:?}"
+    );
+    assert!(result.chunks >= 1, "chunks must be stored: {result:?}");
+    let nonces = nonces_seen.lock().unwrap().clone();
+    assert!(
+        nonces.len() >= 2,
+        "the first chunk PUT must have been issued twice, saw {nonces:?}"
+    );
+    assert_ne!(
+        nonces[0], nonces[1],
+        "the retry must re-sign with a fresh nonce"
+    );
+}

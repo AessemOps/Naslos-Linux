@@ -55,6 +55,13 @@ for a self-send to be accepted. Receiver URLs on any other port are never
 rewritten: a non-443/80 port means a different listener (typically the
 standalone receiver flavour).
 
+Related rate note: every peer request consumes a slot in the receiver's
+replay cache for 10 minutes (per-key budget, never evicted early — that is
+what makes captured requests unrepeatable). A sender that outruns the budget
+gets a 401 "retry after the replay window" and re-issues the request with a
+fresh nonce after a short backoff; sustained send speed converges to
+budget ÷ 600s per key.
+
 ## 2. Key material
 
 Everything lives in one file per instance — `~/.naslos/buddy-identity.json` by
