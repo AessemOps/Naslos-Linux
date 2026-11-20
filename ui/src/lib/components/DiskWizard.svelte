@@ -332,7 +332,7 @@
                   <div class="flex items-center gap-2">
                     <span class="font-medium">{opt.label}</span>
                     {#if opt.value === recommendation.topology}
-                      <span class="text-xs px-2 py-0.5 rounded bg-naslos-primary/20 text-naslos-primary">Recommended</span>
+                      <span class="text-xs px-2 py-0.5 rounded bg-naslos-primary/20 text-naslos-link">Recommended</span>
                     {/if}
                   </div>
                   <p class="text-sm text-gray-400">{opt.desc}</p>

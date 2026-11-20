@@ -152,7 +152,7 @@
     <div class="min-w-0">
       <!-- Kept in the DOM (sr-only) when collapsed so the brand heading is
            always exposed to assistive tech. -->
-      <h1 class="text-2xl font-bold text-naslos-primary {$sidebarCollapsed ? 'sr-only' : ''}">Naslos</h1>
+      <h1 class="text-2xl font-bold text-naslos-link {$sidebarCollapsed ? 'sr-only' : ''}">Naslos</h1>
       <p class="text-xs text-gray-500 mt-1 {$sidebarCollapsed ? 'sr-only' : ''}">Talos Linux NAS</p>
     </div>
     {#if !$sidebarCollapsed}

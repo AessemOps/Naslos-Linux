@@ -282,7 +282,7 @@
               </td>
               <td class="px-3 py-3 whitespace-nowrap">
                 {#if disk.zfs}
-                  <a class="text-naslos-primary hover:underline" href={`/pools/${disk.zfs.pool}`}>
+                  <a class="text-naslos-link hover:underline" href={`/pools/${disk.zfs.pool}`}>
                     {disk.zfs.pool}
                   </a>
                   <div class="text-xs text-gray-500">{disk.zfs.vdev}</div>

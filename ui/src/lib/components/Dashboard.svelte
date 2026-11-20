@@ -156,7 +156,7 @@
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
       <div class="card">
         <div class="text-sm text-gray-400 mb-1">CPU Usage</div>
-        <div class="text-3xl font-bold text-naslos-primary">{data.cpu?.usage?.toFixed(1) || '—'}%</div>
+        <div class="text-3xl font-bold text-naslos-link">{data.cpu?.usage?.toFixed(1) || '—'}%</div>
         <div class="text-xs text-gray-500">{data.cpu?.cores || 0} cores · {formatTemperature(data.cpu?.temperatureC)}</div>
       </div>
       <div class="card">
@@ -240,7 +240,7 @@
           {#each data.zfs?.pools ?? [] as pool}
             <div class="bg-naslos-dark rounded-lg p-4">
               <div class="flex items-center justify-between mb-2">
-                <a href="/pools/{pool.name}" class="font-bold hover:text-naslos-primary transition-colors">{pool.name}</a>
+                <a href="/pools/{pool.name}" class="font-bold hover:text-naslos-link transition-colors">{pool.name}</a>
                 <div class="flex items-center gap-2">
                   <StatusBadge state={pool.health} />
                   <button

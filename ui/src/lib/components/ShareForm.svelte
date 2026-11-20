@@ -279,7 +279,7 @@
         {#if browseDir}
           <div class="mt-2 p-3 rounded-lg border border-naslos-border bg-naslos-dark">
             <div class="flex items-center justify-between gap-2">
-              <code class="text-xs text-naslos-primary break-all">{browseDir}</code>
+              <code class="text-xs text-naslos-link break-all">{browseDir}</code>
               <button
                 type="button"
                 class="text-xs px-2 py-1.5 rounded border border-naslos-border text-gray-300 hover:text-naslos-strong hover:bg-naslos-border disabled:opacity-40 disabled:cursor-not-allowed"

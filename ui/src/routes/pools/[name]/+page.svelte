@@ -249,7 +249,7 @@
 
 <div>
   <div class="mb-6">
-    <a href="/pools" class="text-sm text-gray-400 hover:text-naslos-primary flex items-center gap-1 w-fit">
+    <a href="/pools" class="text-sm text-gray-400 hover:text-naslos-link flex items-center gap-1 w-fit">
       <Icon name="chevron-left" size={14} />
       Back to Pools
     </a>
@@ -283,7 +283,7 @@
       </div>
       <div class="card">
         <div class="text-sm text-gray-400 mb-1">Devices</div>
-        <div class="text-2xl font-bold text-naslos-primary">{health.config.length}</div>
+        <div class="text-2xl font-bold text-naslos-link">{health.config.length}</div>
       </div>
     </div>
 
@@ -387,7 +387,7 @@
 {#if showDatasetModal}
   <Modal title="New Dataset" onClose={() => (showDatasetModal = false)}>
     <p class="text-sm text-gray-400">
-      A dataset inside <span class="text-naslos-primary">{poolName}</span> becomes a folder you can share.
+      A dataset inside <span class="text-naslos-link">{poolName}</span> becomes a folder you can share.
       Nested names work: <code class="text-xs">photos/2026</code>.
     </p>
 

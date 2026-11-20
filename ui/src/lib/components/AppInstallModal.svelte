@@ -259,7 +259,7 @@
       <div class="px-6 pt-4 flex gap-4">
         {#each [['config', 'Configuration'], ['exposure', 'Exposure'], ['review', 'Review'], ['confirm', 'Confirm']] as [step, label]}
           <button
-            class={`text-sm font-medium pb-2 border-b-2 ${activeStep === step ? 'border-naslos-primary text-naslos-primary' : 'border-transparent text-gray-400'}`}
+            class={`text-sm font-medium pb-2 border-b-2 ${activeStep === step ? 'border-naslos-primary text-naslos-link' : 'border-transparent text-gray-400'}`}
             on:click={() => activeStep = step as typeof activeStep}
           >{label}</button>
         {/each}

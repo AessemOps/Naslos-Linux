@@ -138,7 +138,7 @@
               {pool.disks.length} disk{pool.disks.length > 1 ? 's' : ''}: {pool.disks.join(', ')}
             </div>
           {/if}
-          <div class="mt-3 text-xs text-naslos-primary flex items-center gap-1">
+          <div class="mt-3 text-xs text-naslos-link flex items-center gap-1">
             View health details
             <Icon name="chevron-right" size={14} />
           </div>
