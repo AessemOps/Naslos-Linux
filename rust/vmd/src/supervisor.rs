@@ -85,8 +85,16 @@ impl Supervisor {
         }
     }
 
-    /// Accept a new desired config, validate every VM and reconcile.
-    pub async fn apply(&self, config: DesiredConfig) -> Result<(), String> {
+    /// Accept a new desired config, validate every VM, install it, and kick
+    /// off a detached reconcile. Taking `Arc<Self>` is what allows the
+    /// reconcile to outlive this request: axum drops the handler future when
+    /// its client disconnects (a browser or API timeout), and a synchronous
+    /// reconcile died with it mid-start/mid-stop — a cancelled stop left the
+    /// QEMU process running with the desired state already recorded, and a
+    /// cancelled first start left the revision installed so every later
+    /// re-push was a no-op. Reconcile errors are recorded per VM in the live
+    /// view (ghosts) instead of being returned to the caller.
+    pub async fn apply(self: Arc<Self>, config: DesiredConfig) -> Result<(), String> {
         let mut seen = std::collections::HashSet::new();
         let mut host_ports = std::collections::HashSet::new();
         for vm in &config.vms {
@@ -113,7 +121,13 @@ impl Supervisor {
             state.last_revision = config.revision.clone();
             state.desired = config;
         }
-        self.reconcile().await
+        let supervisor = Arc::clone(&self);
+        tokio::spawn(async move {
+            if let Err(errors) = supervisor.reconcile().await {
+                tracing::warn!("reconcile errors: {errors}");
+            }
+        });
+        Ok(())
     }
 
     /// Diff desired against running: start, stop and recreate as needed.
@@ -867,12 +881,12 @@ mod tests {
         }
     }
 
-    fn supervisor() -> Supervisor {
+    fn supervisor() -> Arc<Supervisor> {
         let dir = tempfile::tempdir().unwrap();
         // Leak the tempdir: the supervisor outlives the test, but the OS
         // cleans /tmp anyway and no assertion needs the path afterwards.
         let run_dir = dir.keep();
-        Supervisor::new(false, 1, 16, run_dir)
+        Arc::new(Supervisor::new(false, 1, 16, run_dir))
     }
 
     #[test]
@@ -891,13 +905,13 @@ mod tests {
         let mut config = DesiredConfig::default();
         config.vms.push(spec("dup"));
         config.vms.push(spec("dup"));
-        assert!(sup.apply(config).await.is_err());
+        assert!(sup.clone().apply(config).await.is_err());
 
         let mut config = DesiredConfig::default();
         let mut bad = spec("ok-vm");
         bad.cpu = 0;
         config.vms.push(bad);
-        assert!(sup.apply(config).await.is_err());
+        assert!(sup.clone().apply(config).await.is_err());
     }
 
     #[tokio::test]
@@ -908,7 +922,31 @@ mod tests {
         let mut other = spec("vm-b");
         other.net.forwards = spec("vm-a").net.forwards.clone();
         config.vms.push(other);
-        assert!(sup.apply(config).await.is_err());
+        assert!(sup.clone().apply(config).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn apply_returns_before_reconcile_completes() {
+        // A desired-running VM whose dataset directory does not exist makes
+        // the reconcile block in its bounded 60 s dataset wait. Before the
+        // reconcile was detached, apply blocked with it — and a client
+        // disconnect (axum drops the handler future) aborted the start
+        // mid-flight while the revision was already installed, so every
+        // later re-push of the same revision was a no-op and the VM never
+        // started. apply must install the config and return promptly.
+        let sup = supervisor();
+        let mut config = DesiredConfig::default();
+        config.vms.push(spec("blocked-start"));
+        let applied =
+            tokio::time::timeout(std::time::Duration::from_secs(5), sup.clone().apply(config))
+                .await;
+        assert!(applied.is_ok(), "apply must not block on the reconcile");
+        assert!(applied.unwrap().is_ok());
+        // The desired state is installed synchronously; the detached
+        // reconcile is what would eventually record the wait error.
+        let live = sup.live().await;
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].name, "blocked-start");
     }
 
     #[tokio::test]
@@ -918,7 +956,7 @@ mod tests {
         let sup = supervisor();
         let mut config = DesiredConfig::default();
         config.vms.push(spec("idle"));
-        sup.apply(config).await.unwrap();
+        sup.clone().apply(config).await.unwrap();
         let live = sup.live().await;
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].name, "idle");

@@ -37,7 +37,10 @@ pub async fn vms_config_put(State(state): State<Arc<AppState>>, body: Body) -> R
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    match state.supervisor.apply(config).await {
+    // apply installs the config synchronously (validation errors are 409s)
+    // and runs the reconcile detached: the reconciler must survive this
+    // request's lifetime (a client timeout cancels the handler future).
+    match Arc::clone(&state.supervisor).apply(config).await {
         Ok(()) => json_response(StatusCode::OK, &serde_json::json!({ "status": "applied" })),
         Err(e) => write_error(StatusCode::CONFLICT, e),
     }
