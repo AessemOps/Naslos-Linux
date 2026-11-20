@@ -1931,6 +1931,7 @@ dependencies = [
  "hyper-util",
  "libc",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",

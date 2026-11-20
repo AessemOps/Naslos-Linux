@@ -90,11 +90,7 @@ impl Server {
         let addr = parse_addr(&self.addr)?;
         let tls = !self.tls_cert_file.is_empty() && !self.tls_key_file.is_empty();
         if tls {
-            let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-                &self.tls_cert_file,
-                &self.tls_key_file,
-            )
-            .await?;
+            let config = tls_config(&self.tls_cert_file, &self.tls_key_file).await?;
             let mut server = axum_server::bind_rustls(addr, config);
             configure_http(server.http_builder());
             server.serve(self.router().into_make_service()).await?;
@@ -105,6 +101,26 @@ impl Server {
         }
         Ok(())
     }
+}
+
+/// Install the process-level rustls crypto provider (ring, like the API
+/// crate). Load-bearing: the dependency graph enables both the ring and
+/// aws-lc-rs providers (axum-server pulls one, reqwest the other), and rustls
+/// 0.23 panics at the first config build when it must guess — the released
+/// 0.4.1 binary died exactly there. `install_default` is idempotent.
+pub fn ensure_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+/// Build the TLS server config exactly as `start` does. Split out so the
+/// provider install is part of the tested TLS path, not an easy-to-drop
+/// line in `main`.
+async fn tls_config(
+    cert_file: &str,
+    key_file: &str,
+) -> anyhow::Result<axum_server::tls_rustls::RustlsConfig> {
+    ensure_crypto_provider();
+    Ok(axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_file, key_file).await?)
 }
 
 /// Install a timer (axum-server sets none) and a header-read timeout, the
@@ -136,6 +152,19 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use std::path::PathBuf;
     use tower::ServiceExt;
+
+    #[test]
+    fn tls_path_installs_a_process_crypto_provider() {
+        // Regression for the released 0.4.1 binary: with both rustls crypto
+        // providers compiled (axum-server pulls ring, reqwest pulls aws-lc-rs),
+        // ServerConfig::builder() panics when no process provider is
+        // installed. If tls_config ever stops installing one, this panics
+        // again; with it, the config build resolves through the installed
+        // provider. install_default is idempotent, so a provider installed by
+        // an earlier test in this binary does not mask a dropped install.
+        ensure_crypto_provider();
+        let _ = rustls::ServerConfig::builder();
+    }
 
     fn test_server() -> Server {
         let supervisor = Arc::new(Supervisor::new(
