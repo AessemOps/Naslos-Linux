@@ -1,6 +1,8 @@
 <script lang="ts">
   // Create/edit wizard (FR-VMT). Everything is validated server-side too;
   // this form just keeps the payload shapes honest.
+  import { modal } from '$lib/actions/modal';
+
   export let open: boolean;
   export let vm: any | null; // null = create, object = edit
   export let pools: string[] = [];
@@ -109,7 +111,8 @@
 </script>
 
 {#if open}
-  <div class="fixed inset-0 bg-black/60 z-40 flex items-start justify-center overflow-y-auto py-8">
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 bg-black/60 z-40 flex items-start justify-center overflow-y-auto py-8" use:modal={{ onClose: close }} on:click|self={close}>
     <div class="card w-full max-w-2xl">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-xl font-bold">{isEdit ? `Edit ${vm.name}` : 'New virtual machine'}</h2>

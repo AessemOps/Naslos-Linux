@@ -63,7 +63,7 @@
     {/if}
     <button
       type="button"
-      class="text-gray-400 hover:text-white px-2 py-1 rounded"
+      class="text-gray-400 hover:text-naslos-strong px-2 py-1.5 rounded"
       aria-label={`Open ${displayName} details`}
       on:click={() => dispatch('open')}
     >

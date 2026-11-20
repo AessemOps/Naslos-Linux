@@ -1,5 +1,6 @@
 <script lang="ts">
   import { modal } from '$lib/actions/modal';
+  import Icon from '$lib/components/Icon.svelte';
   import { onMount, createEventDispatcher } from 'svelte';
   import AppIcon from './AppIcon.svelte';
   import SchemaForm from './SchemaForm.svelte';
@@ -253,7 +254,7 @@
           <h2 class="text-xl font-bold">{app.displayName}</h2>
           <p class="text-sm text-gray-400">{app.description}</p>
         </div>
-        <button class="text-gray-400 hover:text-white text-2xl" aria-label="Close" on:click={() => dispatch('close')}>×</button>
+        <button class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border" aria-label="Close" on:click={() => dispatch('close')}><Icon name="x" /></button>
       </div>
       <div class="px-6 pt-4 flex gap-4">
         {#each [['config', 'Configuration'], ['exposure', 'Exposure'], ['review', 'Review'], ['confirm', 'Confirm']] as [step, label]}

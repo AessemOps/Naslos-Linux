@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
+  import Modal from '$lib/components/Modal.svelte';
 
   interface Resolver {
     address: string;
@@ -457,14 +459,15 @@
 
   {#if message}
     <div
-      class={`p-4 rounded-lg border mb-6 ${messageType === 'success' ? 'bg-green-900/30 border-green-700 text-green-300' : 'bg-red-900/30 border-red-700 text-red-300'}`}
+      class={`callout ${messageType === 'success' ? 'callout-ok' : 'callout-bad'} mb-6`}
+      role={messageType === 'success' ? 'status' : 'alert'}
     >
       <span>{message}</span>
     </div>
   {/if}
 
   {#if loading}
-    <p class="text-gray-400">Loading network inventory...</p>
+    <LoadingState label="Loading network inventory..." />
   {:else}
     {#if inventory.pending}
       <div class="card border-amber-700 space-y-3 mb-6">
@@ -719,28 +722,25 @@
 </div>
 
 {#if showConfirm}
-  <div class="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" role="presentation">
-    <div class="card max-w-lg w-full space-y-4" role="dialog" aria-modal="true" aria-labelledby="network-confirm-title">
-      <h2 id="network-confirm-title" class="text-xl font-bold">Confirm the network change</h2>
-      <p class="text-sm text-gray-300">{confirmSummary}</p>
-      {#if confirmKind === 'link'}
-        <div class="p-3 rounded-lg bg-amber-900/30 border border-amber-700 text-amber-200 text-sm space-y-2">
-          <p>
-            If this change moves the node's address, this browser will lose the page. Re-point DNS
-            or your <span class="font-mono">/etc/hosts</span> entry at the new address afterwards.
-          </p>
-          <p>
-            The node starts a 60 second guarded apply and reverts by itself if the new address never
-            answers. The API adds a five minute watchdog and a saved full-config revert.
-          </p>
-        </div>
-      {/if}
-      <div class="flex gap-3">
-        <button class="btn btn-primary" on:click={confirmApply} disabled={saving}>Apply</button>
-        <button class="btn btn-secondary" on:click={() => (showConfirm = false)} disabled={saving}>
-          Cancel
-        </button>
+  <Modal title="Confirm the network change" onClose={() => (showConfirm = false)}>
+    <p class="text-sm text-gray-300">{confirmSummary}</p>
+    {#if confirmKind === 'link'}
+      <div class="p-3 rounded-lg bg-amber-900/30 border border-amber-700 text-amber-200 text-sm space-y-2">
+        <p>
+          If this change moves the node's address, this browser will lose the page. Re-point DNS
+          or your <span class="font-mono">/etc/hosts</span> entry at the new address afterwards.
+        </p>
+        <p>
+          The node starts a 60 second guarded apply and reverts by itself if the new address never
+          answers. The API adds a five minute watchdog and a saved full-config revert.
+        </p>
       </div>
+    {/if}
+    <div slot="footer">
+      <button class="btn btn-primary" on:click={confirmApply} disabled={saving}>Apply</button>
+      <button class="btn btn-secondary" on:click={() => (showConfirm = false)} disabled={saving}>
+        Cancel
+      </button>
     </div>
-  </div>
+  </Modal>
 {/if}

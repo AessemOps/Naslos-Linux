@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import AppIcon from '$lib/components/AppIcon.svelte';
   import AppInstallModal from '$lib/components/AppInstallModal.svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
 
   interface CatalogEntry {
     name: string;
@@ -103,16 +105,16 @@
 
   <!-- App grid -->
   {#if loading}
-    <p class="text-gray-400">Loading catalog...</p>
+    <LoadingState label="Loading catalog..." />
   {:else if loadError}
-    <div role="alert" class="card border-red-700 bg-red-900/30 text-red-300 p-4">{loadError}</div>
+    <div role="alert" class="callout callout-bad">{loadError}</div>
   {:else if apps.length === 0}
-    <div class="card text-center py-12" role="status">
-      <div class="text-5xl mb-4">🗂️</div>
-      <h2 class="text-xl font-bold mb-2">No Apps In The Catalog</h2>
-      <p class="text-gray-400 mb-2">
-        Add a chart repository in the Sources tab, then refresh it.
-      </p>
+    <div role="status">
+      <EmptyState
+        icon="folder-tree"
+        title="No Apps In The Catalog"
+        detail="Add a chart repository in the Sources tab, then refresh it."
+      />
     </div>
   {:else if filteredApps.length === 0}
     <p class="text-gray-400">No apps match these filters.</p>

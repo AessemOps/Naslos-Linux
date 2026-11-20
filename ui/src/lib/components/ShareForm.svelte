@@ -1,5 +1,6 @@
 <script lang="ts">
   import { modal } from '$lib/actions/modal';
+  import Icon from '$lib/components/Icon.svelte';
   import { onMount, createEventDispatcher } from 'svelte';
 
   interface Share {
@@ -247,7 +248,7 @@
   <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
     <div class="p-6 border-b border-naslos-border flex items-center justify-between">
       <h2 class="text-xl font-bold">{share ? 'Edit Share' : 'New Share'}</h2>
-      <button class="text-gray-400 hover:text-white text-2xl" on:click={() => dispatch('close')}>×</button>
+      <button class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border" aria-label="Close" on:click={() => dispatch('close')}><Icon name="x" /></button>
     </div>
 
     <div class="flex-1 overflow-y-auto p-6 space-y-4">
@@ -281,7 +282,7 @@
               <code class="text-xs text-naslos-primary break-all">{browseDir}</code>
               <button
                 type="button"
-                class="text-xs px-2 py-1 rounded border border-naslos-border text-gray-300 hover:text-white hover:bg-naslos-border disabled:opacity-40 disabled:cursor-not-allowed"
+                class="text-xs px-2 py-1.5 rounded border border-naslos-border text-gray-300 hover:text-naslos-strong hover:bg-naslos-border disabled:opacity-40 disabled:cursor-not-allowed"
                 on:click={goUp}
                 disabled={browseDir === baseDir}
                 title="Go up one folder (stops at the dataset)"
@@ -293,10 +294,10 @@
                 {#each subfolders as folder}
                   <button
                     type="button"
-                    class="text-xs px-2 py-1 rounded border border-naslos-border text-gray-300 hover:text-white hover:bg-naslos-border"
+                    class="text-xs px-2 py-1.5 rounded border border-naslos-border text-gray-300 hover:text-naslos-strong hover:bg-naslos-border"
                     on:click={() => enterFolder(folder)}
                     title="Use this folder for the share"
-                  >📁 {folder}</button>
+                  ><span class="inline-flex items-center gap-1"><Icon name="folder" size={14} />{folder}</span></button>
                 {/each}
               </div>
             {:else}

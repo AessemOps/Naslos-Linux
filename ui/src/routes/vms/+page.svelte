@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import Icon from '$lib/components/Icon.svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
+  import StatusBadge from '$lib/components/StatusBadge.svelte';
   import VmWizard from '$lib/components/VmWizard.svelte';
   import VmDetail from '$lib/components/VmDetail.svelte';
   import VmImages from '$lib/components/VmImages.svelte';
@@ -181,14 +184,6 @@
     }
   }
 
-  function stateBadge(state: string): string {
-    switch (state) {
-      case 'running': return 'bg-green-900/40 text-green-300 border-green-700';
-      case 'stopped': return 'bg-gray-800/60 text-gray-300 border-gray-600';
-      default: return 'bg-yellow-900/40 text-yellow-300 border-yellow-700';
-    }
-  }
-
   async function openCreate() {
     if (pools.length === 0) await loadPools();
     editing = null;
@@ -264,7 +259,7 @@
   {/if}
 
   {#if loading}
-    <p class="text-sm text-gray-400">Loading virtual machines…</p>
+    <LoadingState label="Loading virtual machines…" />
   {:else}
     <div class="card overflow-x-auto p-0">
       <table class="w-full text-sm">
@@ -284,11 +279,14 @@
             <tr class="border-b border-naslos-border/50 hover:bg-naslos-border/20 cursor-pointer"
               on:click={() => (selected = vm)}>
               <td class="px-4 py-3 font-medium">
-                {vm.name}
-                {#if vm.unexpectedExit}<span class="text-red-400" title={vm.lastError}> ⚠</span>{/if}
+                <span class="inline-flex items-center gap-1">{vm.name}
+                  {#if vm.unexpectedExit}
+                    <span class="text-red-400" title={vm.lastError}><Icon name="triangle-alert" size={16} /></span>
+                  {/if}
+                </span>
               </td>
               <td class="px-4 py-3">
-                <span class="px-2 py-0.5 rounded-full border text-xs {stateBadge(vm.state)}">{vm.state}</span>
+                <StatusBadge state={vm.state} />
               </td>
               <td class="px-4 py-3">
                 {vm.cpu}{#if vm.state === 'running'} ({vm.cpuPercent?.toFixed(1) ?? '0'}%){/if}

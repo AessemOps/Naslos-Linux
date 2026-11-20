@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import { modal } from '$lib/actions/modal';
+  import Icon from '$lib/components/Icon.svelte';
   import { trackAppJob } from '$lib/stores/appJobs';
   import AppIcon from './AppIcon.svelte';
   import type { AppView } from '$lib/appTypes';
@@ -69,12 +70,12 @@
     <div class="p-6 border-b border-naslos-border flex items-center justify-between">
       <h2 class="text-xl font-bold">Update {total} {total === 1 ? 'app' : 'apps'}</h2>
       <button
-        class="text-gray-400 hover:text-white text-2xl disabled:opacity-40 disabled:hover:text-gray-400"
+        class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border disabled:opacity-40 disabled:cursor-not-allowed"
         aria-label="Close"
         disabled={saving}
         on:click={requestClose}
       >
-        ×
+        <Icon name="x" />
       </button>
     </div>
 

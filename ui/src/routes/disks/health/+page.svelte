@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
+  import { formatBytes } from '$lib/format';
 
   interface SmartInfo {
     available: boolean;
@@ -145,13 +147,13 @@
   function toneBadge(t: Tone): string {
     switch (t) {
       case 'bad':
-        return 'bg-red-900/50 text-red-300';
+        return 'badge-bad';
       case 'warn':
-        return 'bg-amber-900/50 text-amber-300';
+        return 'badge-warn';
       case 'ok':
-        return 'bg-green-900/50 text-green-400';
+        return 'badge-ok';
       default:
-        return 'bg-naslos-border text-gray-400';
+        return 'badge-neutral';
     }
   }
 
@@ -165,18 +167,6 @@
 
   function zfsLabel(disk: DiskHealthEntry): string {
     return disk.zfs?.state || '—';
-  }
-
-  function formatSize(bytes: number): string {
-    if (!bytes) return '—';
-    const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
-    let value = bytes;
-    let unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit++;
-    }
-    return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
   }
 
   function valueOrDash(value: number | undefined): string {
@@ -230,7 +220,7 @@
   {/if}
 
   {#if loading}
-    <p class="text-gray-400">Loading disk health…</p>
+    <LoadingState label="Loading disk health…" />
   {:else if disks.length === 0 && !error}
     <div class="p-8 rounded-lg border border-naslos-border bg-naslos-surface text-center text-gray-400">
       No whole disks were reported by the node.
@@ -284,7 +274,7 @@
                 {#if disk.isSystemDisk}
                   <span class="ml-2 text-xs px-1.5 py-0.5 rounded bg-naslos-border text-gray-300">system</span>
                 {/if}
-                <div class="text-xs text-gray-500">{disk.type || '—'} · {formatSize(disk.size)}</div>
+                <div class="text-xs text-gray-500">{disk.type || '—'} · {formatBytes(disk.size)}</div>
               </td>
               <td class="px-3 py-3">
                 <div>{disk.model || 'Unknown model'}</div>
@@ -303,7 +293,7 @@
                 {/if}
               </td>
               <td class="px-3 py-3">
-                <span class={`inline-block px-2 py-0.5 rounded text-xs ${toneBadge(t)}`}>
+                <span class={`badge ${toneBadge(t)}`}>
                   {zfsLabel(disk)}
                 </span>
                 {#if disk.zfs}
@@ -313,7 +303,7 @@
                 {/if}
               </td>
               <td class="px-3 py-3">
-                <span class={`inline-block px-2 py-0.5 rounded text-xs ${toneBadge(t)}`}>
+                <span class={`badge ${toneBadge(t)}`}>
                   {smartLabel(disk)}
                 </span>
                 {#if disk.smart.enabled === false && disk.smart.available}
@@ -343,7 +333,7 @@
                   <p>Error log: {disk.smart.errorCount}</p>
                 {/if}
                 {#if !disk.smart.message && disk.smart.mediaErrors === undefined && disk.smart.errorCount === undefined}
-                  <span class="text-gray-600">—</span>
+                  <span class="text-gray-500">—</span>
                 {/if}
               </td>
             </tr>

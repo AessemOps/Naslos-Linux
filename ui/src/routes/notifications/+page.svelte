@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
 
   interface Settings {
     enabled: boolean;
@@ -124,7 +125,7 @@
   <p class="text-gray-400 mb-6">Configure ntfy push notifications for system events.</p>
 
   {#if loading}
-    <p class="text-gray-400">Loading settings...</p>
+    <LoadingState label="Loading settings..." />
   {:else}
     <div class="space-y-6">
       <div class="card">
@@ -191,7 +192,12 @@
         </select>
       </div>
 
-      {#if message}<div class={`p-4 rounded-lg border ${messageType === 'success' ? 'bg-green-900/30 border-green-700 text-green-300' : 'bg-red-900/30 border-red-700 text-red-300'}`}><span>{message}</span></div>{/if}
+      {#if message}
+        <div
+          class={`callout ${messageType === 'success' ? 'callout-ok' : 'callout-bad'}`}
+          role={messageType === 'success' ? 'status' : 'alert'}
+        ><span>{message}</span></div>
+      {/if}
 
       <div class="flex gap-3">
         <button class="btn btn-primary" on:click={save} disabled={saving}>{saving ? 'Saving...' : 'Save Settings'}</button>
