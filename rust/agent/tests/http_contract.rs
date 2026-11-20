@@ -326,3 +326,35 @@ JSON
     assert_eq!(disks[0]["smart"]["temperatureC"], 33);
     assert_eq!(disks[0]["smart"]["powerOnHours"], 42);
 }
+
+// ---- Rollback (FR-VMT support) -------------------------------------------
+
+#[tokio::test]
+async fn rollback_route_matches_multi_segment_dataset_paths() {
+    // The VM restore path calls POST /api/v1/rollback/<pool>/vms/<name> with
+    // real slashes; the catch-all route must match all segments, not 404
+    // (found live: every restore answered 404 with an empty body, which the
+    // API surfaced as "agent: ").
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[""]));
+    let zfs = ZfsClient::new(runner.clone(), host.root.clone());
+    let server = server_with(Some(zfs), None, TOKEN);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/rollback/Data/vms/e2e-vmd-drill")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"name":"drill-snap"}"#))
+        .unwrap();
+    let (status, body) = send(&server, req).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let calls = runner.argv();
+    let calls = calls.lock().unwrap();
+    assert!(
+        calls
+            .iter()
+            .any(|argv| argv.contains(&"rollback".to_string())
+                && argv.last().map(String::as_str) == Some("Data/vms/e2e-vmd-drill@drill-snap")),
+        "expected a zfs rollback call, got {calls:?}"
+    );
+}
