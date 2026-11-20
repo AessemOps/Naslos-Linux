@@ -348,14 +348,20 @@ sh scripts/audit.sh
    the private key and the key-encryption key: losing it makes every stored
    backup unreadable, and `helm uninstall` would delete it (CR-02). Back it up
    separately.
-5. **Platform mount-propagation trap.** A dataset created from inside a pod is
-   mounted in that pod's namespace only; in the host namespace its mountpoint is
-   a plain directory on the parent. `zfs send` of such a dataset captures
-   nothing — the API refuses it (`requireMountedDataset`), and the agent's
-   `UsedBytes`-based guard also refuses a published stream that is a small
-   fraction of the dataset's used space. The fix is a node reboot (or `zfs mount
-   <dataset>` on the host). Shares have the same trap for newly created
-   datasets.
+5. **Platform mount-propagation trap (root cause found and fixed
+   2026-11-20).** The agent runs zfs via `chroot /host`, and its host-root
+   bind was `HostToContainer` — so every dataset created through the agent
+   mounted only in the agent pod's namespace: the host saw a plain directory
+   on the parent, shares of new datasets served pool-root bytes instead of
+   the dataset (violating FR-SHR-01), and vmd's `wait_for_dir` timed out
+   after 60 s on every VM create. The chart now declares the agent's
+   host-root bind **Bidirectional**, so chroot-created mounts propagate up
+   to the host and on to every HostToContainer consumer. Datasets created
+   while a pre-fix agent ran (anything created after the last host mount
+   event, not just VM datasets) still need one convergence: run `zfs mount
+   -a` on the host (a privileged nsenter one-shot) or reboot. `zfs send`
+   guards (`requireMountedDataset`, UsedBytes) remain in place for any
+   dataset still mounted pod-side.
 6. **The receive dataset's ownership is fixed by the
    `fix-receive-dataset-ownership` init container** (uid 65532). Manual
    fallback: `chown 65532:65532 /var/mnt/<pool>/naslos-buddy`.
