@@ -59,17 +59,20 @@
   --emerald-300: 110 231 183;
   --emerald-900: 6 78 59;
 
-  /* Semantic status surfaces (badges, callouts) */
+  /* Semantic status surfaces (badges, callouts). The *-text vars must be
+     complete colors: they sit in plain `color:`, not a Tailwind rgb()
+     wrapper, so referencing the triplet vars above would be invalid and
+     silently fall back to the inherited body color. */
   --n-ok-bg: rgb(20 83 45 / 0.5);
-  --n-ok-text: var(--green-400);
+  --n-ok-text: rgb(74 222 128);
   --n-warn-bg: rgb(113 63 18 / 0.5);
-  --n-warn-text: var(--yellow-400);
+  --n-warn-text: rgb(250 204 21);
   --n-bad-bg: rgb(127 29 29 / 0.5);
-  --n-bad-text: var(--red-400);
+  --n-bad-text: rgb(248 113 113);
   --n-info-bg: rgb(30 58 138 / 0.5);
-  --n-info-text: var(--blue-400);
+  --n-info-text: rgb(96 165 250);
   --n-neutral-bg: rgb(17 24 39 / 0.5);
-  --n-neutral-text: var(--gray-400);
+  --n-neutral-text: rgb(156 163 175);
 }
 
 [data-theme='light'] {
