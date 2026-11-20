@@ -102,10 +102,13 @@ a **v0.4.3 release** to ship all of it.
   newer release`; the operations endpoint correctly answers 412 until a
   check offers a release. The private registry `192.168.1.2:30095` is
   retired — do not build/push local images.
-- **Latest release:** `v0.4.2` (2026-11-20, PR #182: the vmd rustls provider
-  fix, API uninstall tolerance, auth.setup TOTP window retry) and installer
-  `naslos-v0.4.2` are published; the pack
-  `naslos-install-pack-0.4.2.tar.gz` is attached. Before that, `v0.4.1`
+- **Latest release:** `v0.4.3` (2026-11-20) and installer `naslos-v0.4.3`
+  are published; the pack `naslos-install-pack-0.4.3.tar.gz` is attached.
+  It ships upstream image-release detection for catalog apps (PR #184) plus
+  the platform fixes merged since v0.4.2 (PR #183). The node still runs the
+  v0.4.2 release until the next `make install-vm`. Before that, `v0.4.2`
+  (2026-11-20, PR #182: the vmd rustls provider fix, API uninstall tolerance,
+  auth.setup TOTP window retry) shipped the same day. Earlier, `v0.4.1`
   (the UI/UX overhaul, PR #181) shipped the same day; its first release
   attempt failed the pack job because the release workflow raced CI (the
   green-CI gate saw `audit` still running); the packless tag was deleted and
