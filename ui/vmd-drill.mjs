@@ -129,8 +129,15 @@ step('start VM');
     const vms = await (await ctx.get('/api/virt/vms')).json();
     const vm = Array.isArray(vms) ? vms.find((v) => v.name === VM) : vms;
     if (vm && vm.state === 'running') {
-      console.log(`   state: running, vncPort=${vm.vncPort}, unexpectedExit=${vm.unexpectedExit}`);
-      ok(vm.vncPort > 0, 'VNC port assigned');
+      console.log(`   state: running, unexpectedExit=${vm.unexpectedExit}`);
+      // The listing never carries console credentials (they only exist on
+      // the /api/ws/vm/{name}/vnc preflight; see vms.spec.ts).
+      ok(vm.vncPort === undefined, 'listing does not leak the console port');
+      const pre = await ctx.get(`/api/ws/vm/${VM}/vnc`);
+      const body = await pre.json();
+      ok(pre.status() === 200, `console preflight: ${pre.status()} ${JSON.stringify(body)}`);
+      ok(body.vncPort > 0, `vncPort assigned: ${body.vncPort}`);
+      ok(typeof body.vncPassword === 'string' && body.vncPassword.length > 0, 'per-boot VNC password present');
       running = true;
       break;
     }
