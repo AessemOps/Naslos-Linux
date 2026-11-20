@@ -28,7 +28,7 @@ green on the deployed drill build: **66 passed, 10 skipped** — the skips are
 the vms capability-skips plus the network API-contract test, which now skips
 while the deployed API (still digest-pinned to v0.3.23) predates the
 `/api/network` routes. **At release:** the drill UI pin in `values-vm.yaml`
-(currently the `sha-ddba099` dry-run build, digest `f78ed73e…`) is superseded
+(currently the `sha-90d24d3` dry-run build, digest `23397552…`) is superseded
 by bumping to the next version (`0.4.1`): update `charts/naslos/Chart.yaml`
 version/appVersion, `ui/package.json` + its lock, and every image tag in
 `charts/naslos/values.yaml` + `values-installer.yaml` (there is no
@@ -90,7 +90,7 @@ vmd image (or run the release workflow), update the `values-vm.yaml` digests,
   API/agent/OpenLDAP/Samba/NFS/terminal are digest-pinned from `v0.3.23`:
   API `fa9c8956…`, agent `4f680bfc…`, OpenLDAP `e57e3fbf…`, Samba `b785ee38…`,
   NFS `4d8806ea…`, terminal `a000ca0c…` (public GHCR). The UI is the
-  UI/UX overhaul drill build `sha-ddba099…` (`f78ed73e…`) from the release
+  UI/UX overhaul drill build `sha-90d24d3…` (`23397552…`) from the release
   workflow dry run (`publish=false`); it is swapped for the released
   tag/digest at the next version bump (see the in-flight note above).
   `/api/system/version` reports the `release.*` facts from `values-vm.yaml`:
