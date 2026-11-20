@@ -32,50 +32,47 @@ the network API-contract tests now RUN (the 0.4.1 API serves `/api/network`)
 and the vms capability-skips remain while the supervisor is parked (see
 below).
 
-## In flight — QEMU hypervisor (2026-11-19, branch `feature/virt-qemu-hypervisor`)
+## Live and drilled — QEMU hypervisor (v0.4.2; platform fixes on `fix/agent-mount-propagation`)
 
-The full FR-VMT feature (v0.4.0) is implemented and locally gated, **not yet
-deployed or released**: the `naslos-vmd` supervisor crate (QMP, golden-arg
-builder, macvtap, cloud-init, SSRF-guarded imports), the ninth image + chart
-wiring (virt-deployment, vmd token/TLS secrets, API env), the API `virt` module
-(`/api/virt/*`, `vms.json`, console bridge, chunked upload), the agent
-`/api/v1/rollback` endpoint (VM snapshot restore; the plan's "nothing new in
-the agent" proved impossible for `zfs rollback`), and the UI `/vms` pages
-(noVNC pinned `@novnc/novnc@1.5.0` — 1.6+ top-level-await breaks the build
-target). Two plan deviations, both documented in docs/virtual-machines.md: the
-console bridge is WS↔TCP inside the API (websockify pattern) rather than
-QEMU-native websocket VNC, and the agent got the narrow rollback route.
+The full FR-VMT feature shipped in v0.4.0/v0.4.1 and is **enabled and drilled
+end-to-end on the node** since v0.4.2 fixed the vmd startup panic (an explicit
+rustls ring provider — the crate graph compiles both providers and never
+installed one). `values-vm.yaml` sets `virt.enabled: true`; the supervisor
+runs as the ninth image. The operator drill from docs/virtual-machines.md is
+automated in `ui/vmd-drill.mjs` (freshen the session with the `setup` project
+first) and **passed in full on 2026-11-20**: capabilities (KVM + NICs),
+SSRF-refused private import (TEST-NET-1), 204 MB cloud-image import,
+create/start (console preflight answers `vncPort` + per-boot password — the
+listing never carries console credentials by design), graceful ACPI stop,
+snapshot + restore while stopped, restore refused 409 while running,
+force-stop, recursive delete, image cleanup.
 
-A full branch review (PR #180) found 5 critical + 7 warning issues, all fixed
-in the review commit: image-library pool traversal (validator now rejects
-`.`/`..`/leading-dot pools, pool checked in every image handler on both
-sides), the `isos` VM name reserved (it aliased the library dataset — delete
-destroyed every image), the vmd pod has **no memory/CPU limits** (guest RAM
-counts against the pod cgroup; 512Mi OOM-killed the default VM), autostart
-persistence (the boot push now persists desired=running so later pushes do not
-stop autostarted VMs), release plumbing pins the 8 chart images including vmd
-(pin-installer-values/audit/release digest lists — buddy-receiver stays
-push-only), PUT rollback + cross-VM port pre-checks, the supervisor lock no
-longer spans QMP I/O, deploy-vm.sh overrides the vmd image, `--reuse-values`
-from pre-0.4 renders with the feature off, the import poller no longer leaks,
-the drawer no longer re-fetches snapshots every poll, `fec0::/10` joined the
-SSRF blocklist, force-stop sends QMP `quit` before signals, revision pushes are
-honest no-ops on identical revisions, and the dead code the diff left behind
-was removed. All gates pass locally (497 Rust tests, fmt/clippy clean,
-`npm run check`/`build`, `helm lint`, pack build with vmd digests,
-`sh scripts/audit.sh` all-pass — the dated chrono-unmaintained ignore is in
-deny.toml per convention); the Playwright suite is green on the live node with
-`tests/vms.spec.ts` capability-skipping. **Supervisor parked on the node
-(2026-11-20):** the release exists (v0.4.0/v0.4.1 images pushed and
-digest-pinned in the installer values), but enabling it on the node exposed
-that the released vmd binary panicked at its first TLS handshake — the crate
-graph compiles both rustls crypto providers (axum-server pulls ring, reqwest
-pulls aws-lc-rs) and never installs one. The node overlay runs
-`virt.enabled: false` until the fix (branch `fix/release-drill-defects`:
-explicit ring provider install on the tested TLS path) ships in the next
-release; `vms.spec.ts` then capability-skips via the 404/503 shapes. Enabling
-later = set `virt.enabled: true`, pin the fixed image's digest, `make
-install-vm`, live drill per docs/virtual-machines.md.
+The drill exposed **four platform defects**, all fixed on the branch
+`fix/agent-mount-propagation` (deployed as drill builds, pending v0.4.3):
+
+1. **Mount propagation** — the agent's host-root bind was `HostToContainer`,
+   so chroot-created dataset mounts stayed pod-side; the chart bind is now
+   Bidirectional (gotcha #5).
+2. **vmd reconcile cancellation** — axum dropped the handler future when the
+   client disconnected, aborting synchronous reconciles mid-flight; `apply()`
+   now installs the config synchronously and spawns the reconcile detached
+   (`rust/vmd/src/supervisor.rs`, test
+   `apply_returns_before_reconcile_completes`).
+3. **Stale agent hotfix command** — the live DaemonSet still executed
+   `/hotfix-bin/naslos-agent` from an ancient kubectl patch that survived
+   every helm upgrade (gotcha #15's class, second occurrence); the chart now
+   pins `command: ["/app/naslos-agent"]` so the field is managed and any
+   future out-of-band patch self-reverts. The leftover volume/mount was
+   patched away once; `/var/naslos-hotfix` on the host is inert.
+4. **VM delete was not recursive** — a VM dataset owns its snapshots, so a
+   flat destroy failed with "filesystem has children" after any snapshot;
+   `vm_detail_delete` now destroys recursively (regression test in
+   `rust/api/tests/zfs_agent.rs`).
+
+The same session surfaced and fixed **three buddy defects** (see the same
+branch): self-send transport (loopback rewrite, gotcha #17), the replay-window
+budget (gotcha #18), and the UI drills' dataset choice. The branch needs a
+**v0.4.3 release** to ship all of it.
 
 ## Production instance (2026-11-20)
 
@@ -85,31 +82,39 @@ install-vm`, live drill per docs/virtual-machines.md.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.4.1`**, revision 44
-  (2026-11-20), deployed from master with `make install-vm` after the v0.4.1
-  release. Every image is digest-pinned from `v0.4.1` (public GHCR):
-  API `c7e3a45f…`, agent `93e22723…`, UI `45172a40…`, OpenLDAP `ae21d3fb…`,
-  Samba `456402b3…`, NFS `66998ad8…`, terminal `6c983503…` (vmd is NOT
-  deployed — see the virt note above). `/api/system/version` reports the
-  `release.*` facts from `values-vm.yaml`: Naslos/chart 0.4.1, profile
-  `installer` (the web-upgrader facts), Talos v1.14.5 and k8s v1.37.0 (a
-  node without them falls back to `.Chart.AppVersion` and reports
-  `make-install`). The web upgrader is enabled: SA `naslos-upgrader` +
-  cluster-admin binding, the `naslos-api-system` Role/RoleBinding, and the
-  upgrader admission policy are present, and a GitHub check returns
-  `enabled:true, current:0.4.1, no newer release`; the operations endpoint
-  correctly answers 412 until a check offers a release. The private registry
-  `192.168.1.2:30095` is retired — do not build/push local images.
-- **Latest release:** `v0.4.1` (2026-11-20, the UI/UX overhaul + the 0.4.0
-  virtual machines train) and installer `naslos-v0.4.1` are published; the
-  pack `naslos-install-pack-0.4.1.tar.gz` is attached to the release. The
-  first release attempt failed its pack job because the release workflow
-  raced CI (the green-CI gate saw `audit` still running); the packless tag
-  was deleted and re-pushed once CI was green, per the documented rule.
-  Full Playwright suite green on the release (revision 44): **67 passed,
-  9 skipped, 0 failed** — the network API-contract tests run against the
-  0.4.1 API, and the skips are the vms capability-skips plus the
-  link-dependent network mutations.
+- **Deployed release:** Helm `naslos` chart **`naslos-0.4.2`**, revision 50
+  (2026-11-20), deployed from the drill branch with `make install-vm`.
+  Images digest-pinned (public GHCR): agent `4c1b2185…`, UI `1afaf755…`,
+  OpenLDAP `fdac7fee…`, Samba `7284669e…`, NFS `110f6a13…`, terminal
+  `3dfbea9f…` — all from the v0.4.2 release. **Two drill builds carry the
+  unreleased fixes until v0.4.3:** API `sha-0701822…` (digest
+  `9e6fff7e…` — recursive VM delete, buddy loopback + replay retry) and vmd
+  `sha-4b40034…` (digest `d1d907c0…` — detached reconcile). `virt.enabled:
+  true`. `/api/system/version` reports the `release.*` facts from
+  `values-vm.yaml`: Naslos/chart 0.4.2, profile `installer` (the
+  web-upgrader facts), Talos v1.14.5 and k8s v1.37.0 (a node without them
+  falls back to `.Chart.AppVersion` and reports `make-install`). The web
+  upgrader is enabled: SA `naslos-upgrader` + cluster-admin binding, the
+  `naslos-api-system` Role/RoleBinding, and the upgrader admission policy
+  are present, and a GitHub check returns `enabled:true, current:0.4.2, no
+  newer release`; the operations endpoint correctly answers 412 until a
+  check offers a release. The private registry `192.168.1.2:30095` is
+  retired — do not build/push local images.
+- **Latest release:** `v0.4.2` (2026-11-20, PR #182: the vmd rustls provider
+  fix, API uninstall tolerance, auth.setup TOTP window retry) and installer
+  `naslos-v0.4.2` are published; the pack
+  `naslos-install-pack-0.4.2.tar.gz` is attached. Before that, `v0.4.1`
+  (the UI/UX overhaul, PR #181) shipped the same day; its first release
+  attempt failed the pack job because the release workflow raced CI (the
+  green-CI gate saw `audit` still running); the packless tag was deleted and
+  re-pushed once CI was green, per the documented rule. Full Playwright
+  suite green on revision 50 with the drill builds: **71 passed, 5 skipped,
+  0 failed** — the skips are state preconditions (VM console tests with no
+  VM present, link-dependent network mutations); the buddy self-send tests
+  now run for real (the node's own identity is self-enrolled as a peer,
+  scope `naslos/`). The vmd drill passed end-to-end (see the virt section
+  above); a **v0.4.3** release is needed to ship the four virt + three
+  buddy platform fixes on `fix/agent-mount-propagation`.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
@@ -348,14 +353,20 @@ sh scripts/audit.sh
    the private key and the key-encryption key: losing it makes every stored
    backup unreadable, and `helm uninstall` would delete it (CR-02). Back it up
    separately.
-5. **Platform mount-propagation trap.** A dataset created from inside a pod is
-   mounted in that pod's namespace only; in the host namespace its mountpoint is
-   a plain directory on the parent. `zfs send` of such a dataset captures
-   nothing — the API refuses it (`requireMountedDataset`), and the agent's
-   `UsedBytes`-based guard also refuses a published stream that is a small
-   fraction of the dataset's used space. The fix is a node reboot (or `zfs mount
-   <dataset>` on the host). Shares have the same trap for newly created
-   datasets.
+5. **Platform mount-propagation trap (root cause found and fixed
+   2026-11-20).** The agent runs zfs via `chroot /host`, and its host-root
+   bind was `HostToContainer` — so every dataset created through the agent
+   mounted only in the agent pod's namespace: the host saw a plain directory
+   on the parent, shares of new datasets served pool-root bytes instead of
+   the dataset (violating FR-SHR-01), and vmd's `wait_for_dir` timed out
+   after 60 s on every VM create. The chart now declares the agent's
+   host-root bind **Bidirectional**, so chroot-created mounts propagate up
+   to the host and on to every HostToContainer consumer. Datasets created
+   while a pre-fix agent ran (anything created after the last host mount
+   event, not just VM datasets) still need one convergence: run `zfs mount
+   -a` on the host (a privileged nsenter one-shot) or reboot. `zfs send`
+   guards (`requireMountedDataset`, UsedBytes) remain in place for any
+   dataset still mounted pod-side.
 6. **The receive dataset's ownership is fixed by the
    `fix-receive-dataset-ownership` init container** (uid 65532). Manual
    fallback: `chown 65532:65532 /var/mnt/<pool>/naslos-buddy`.
@@ -413,15 +424,20 @@ sh scripts/audit.sh
     when it is absent from `sources.json` — to change its URL/channels/auth,
     delete it (`DELETE /api/sources/naslos`) and restart the API so it re-seeds
     from env.
-15. **Live hotfixes survive Helm upgrades.** The 0.3.9 upgrade initially kept
-    the 0.3.7 `hotfix-bin` API command (`/hotfix-bin/hotfix/naslos-api`) and the
-    UI `naslos-ui-nginx` ConfigMap/PVC root (`/var/lib/naslos/ui-html`), so the
-    node reported 0.3.9 while running the old API/UI and the new app feature
-    was inactive. They were removed on 2026-11-08: the API now runs
-    `/app/naslos-api` from the image and the UI serves `/usr/share/nginx/html`.
-    If an upgrade behaves like the old version, check the Deployment `command`
-    and the UI nginx root first. Never ship a fix as a live `kubectl patch`;
-    put it in the image/chart.
+15. **Live hotfixes survive Helm upgrades — second occurrence found
+    2026-11-20.** Helm only reverts fields its manifests manage, so an
+    out-of-band `kubectl patch` outlives every upgrade. First occurrence
+    (0.3.9, removed 2026-11-08): the API kept the `/hotfix-bin/hotfix/naslos-api`
+    command and the UI served the old nginx root. Second occurrence (found by
+    the VM snapshot-restore 404s): the **agent** DaemonSet still executed
+    `/hotfix-bin/naslos-agent` from a `hostPath: /var/naslos-hotfix` patch — a
+    pre-virt binary — while the image was correct. The chart now pins
+    `command: ["/app/naslos-agent"]` so the field is helm-managed and any future
+    command patch self-reverts; the stale volume/mount were patched away once
+    and `/var/naslos-hotfix` on the host is inert. If an upgrade behaves like
+    the old version, check the Deployment/DaemonSet `command` and extra
+    volumes first. Never ship a fix as a live `kubectl patch`; put it in the
+    image/chart.
 16. **Wait for Authelia after `make install-vm` before running Playwright.**
     Every helm upgrade restarts OpenLDAP, and Authelia's startup check treats
     an unreachable LDAP backend as fatal (`dial tcp …:636: no route to host`
@@ -433,6 +449,27 @@ sh scripts/audit.sh
     restart count before trusting a suite result. Authelia has no
     wait-for-ldap init container (the API does); adding one is a chart
     improvement, not urgent.
+17. **Cilium hostPorts are not reachable from pods on the same node** (found
+    2026-11-20 via the buddy self-send). A pod dialing the node's own
+    `https://<node>` (:443, Traefik's hostPort) times out at TCP connect —
+    hostNetwork ports (agent :9090, vmd :9091) answer fine, so the difference
+    is the hostPort plumbing, not the egress policy (even policy-free pods
+    time out). The buddy sender therefore rewrites receiver URLs that resolve
+    back to the node (host literal or DNS match against `NASLOS_NODE_IP`
+    from the downward API; only the 443/80 entryports) to the API's own
+    loopback listener, which serves the same `/api/buddy/v1/*` routes with
+    the same Ed25519 auth — signatures cover the path, never the host. Any
+    future in-cluster consumer of the node's public URL needs the same
+    loopback/service treatment; never "fix" this by opening netpols (the
+    drop is below the policy layer).
+18. **The buddy replay window is a rate budget, not just replay protection**
+    (found 2026-11-20 by a multi-GiB self-send). Every signed request holds a
+    per-key nonce slot for 10 minutes, never evicted early; beyond the cap the
+    receiver answers 401 "retry after the replay window", which the sender
+    now honors with a fresh nonce and backoff (cap raised to 65536 ≈ LAN-rate
+    chunk streams; sustained ceiling ≈ cap/600s requests per key). Two
+    same-key sends run concurrently at their combined budget. The refusal
+    wording is contract — the sender keys its retry on it.
 
 ## History
 
