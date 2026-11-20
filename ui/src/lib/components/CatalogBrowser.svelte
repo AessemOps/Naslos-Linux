@@ -121,20 +121,18 @@
   {:else}
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       {#each filteredApps as app}
-        <div
-          class="card hover:border-naslos-accent transition-colors cursor-pointer"
-          role="button"
-          tabindex="0"
-          aria-label={`Install ${app.displayName}`}
-          on:click={() => openInstall(app.name)}
-          on:keydown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              openInstall(app.name);
-            }
-          }}
-        >
-          <div class="flex items-start gap-4">
+        <div class="card hover:border-naslos-accent transition-colors relative">
+          <!-- A stretched real button keeps the card keyboard-operable and its
+               accessible name exactly 'Install <app>' without tripping
+               label-content-name-mismatch (the visible card text stays outside
+               the button, so name and content cannot disagree). -->
+          <button
+            type="button"
+            class="absolute inset-0 z-10 rounded-xl cursor-pointer"
+            aria-label={`Install ${app.displayName}`}
+            on:click={() => openInstall(app.name)}
+          ></button>
+          <div class="flex items-start gap-4 pointer-events-none">
             <AppIcon icon={app.icon} iconUrl={app.iconUrl} alt={app.displayName} />
             <div class="flex-1 min-w-0">
               <h3 class="font-bold text-lg truncate">{app.displayName}</h3>
