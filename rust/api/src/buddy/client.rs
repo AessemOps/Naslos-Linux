@@ -321,6 +321,74 @@ pub struct Client {
     http: reqwest::Client,
     pub sequence_dir: String,
     audience: tokio::sync::Mutex<AudienceCache>,
+    /// Cached loopback decision for `base_url`: 0 undecided, 1 = the receiver
+    /// is this very node (dial the loopback listener), 2 = a real remote.
+    self_dial: std::sync::atomic::AtomicU8,
+}
+
+/// The node's own address, injected by the chart via the downward API.
+/// Unset (the CLI, local dev) means "never rewrite".
+fn node_ip() -> Option<std::net::IpAddr> {
+    std::env::var("NASLOS_NODE_IP").ok()?.parse().ok()
+}
+
+/// The port this process's own HTTP listener answers on.
+fn loopback_port() -> u16 {
+    std::env::var("NASLOS_API_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8080)
+}
+
+/// Split `scheme://authority` off the front of a URL; the remainder
+/// (path, query, fragment) is returned as-is.
+fn split_authority(url: &str) -> Option<(String, String)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    Some((
+        format!("{scheme}://{}", &rest[..end]),
+        rest[end..].to_string(),
+    ))
+}
+
+/// Whether a receiver base URL points back at this node. Only the Traefik
+/// entryports count (443 for https, 80 for http — an explicit other port is
+/// a different listener, e.g. a standalone receiver, and stays remote).
+/// Public so the roundtrip test can pin the entryport rule directly.
+pub async fn base_points_at_node(base: &str, node: std::net::IpAddr) -> bool {
+    let Some((authority, _)) = split_authority(base) else {
+        return false;
+    };
+    let authority = authority.split_once("://").map(|x| x.1).unwrap_or("");
+    let (host, port) = match authority.rsplit_once(':') {
+        // An IPv6 literal contains ']'; those URL shapes are not this
+        // node's, treat them as remote.
+        Some((h, p)) if !h.contains(']') => (h, p),
+        _ => (authority, ""),
+    };
+    let https = base.starts_with("https://");
+    let port: u16 = if port.is_empty() {
+        if https {
+            443
+        } else {
+            80
+        }
+    } else {
+        match port.parse() {
+            Ok(p) => p,
+            Err(_) => return false,
+        }
+    };
+    if port != if https { 443 } else { 80 } {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip == node;
+    }
+    match tokio::net::lookup_host(format!("{host}:{port}")).await {
+        Ok(addrs) => addrs.into_iter().any(|a| a.ip() == node),
+        Err(_) => false,
+    }
 }
 
 impl Client {
@@ -335,6 +403,46 @@ impl Client {
                 .unwrap_or_default(),
             sequence_dir: String::new(),
             audience: tokio::sync::Mutex::new(AudienceCache::default()),
+            self_dial: std::sync::atomic::AtomicU8::new(0),
+        }
+    }
+
+    /// The base URL to dial. A receiver that resolves back to this very
+    /// node is dialed through the API's own loopback listener instead of
+    /// the node's hostPort: Cilium's hostPort plumbing is not reachable
+    /// from pods on the same node, so a self-send through the public URL
+    /// would time out. The receiver's Ed25519 auth is untouched — the
+    /// signature covers the path, never the host — so this is a pure
+    /// transport shortcut that serves the exact same routes.
+    async fn dial_base(&self) -> String {
+        let Some(node) = node_ip() else {
+            return self.base_url.clone();
+        };
+        match self.self_dial.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => return self.loopback_base(),
+            2 => return self.base_url.clone(),
+            _ => {}
+        }
+        let self_dial = if base_points_at_node(&self.base_url, node).await {
+            1
+        } else {
+            2
+        };
+        self.self_dial
+            .store(self_dial, std::sync::atomic::Ordering::Relaxed);
+        if self_dial == 1 {
+            self.loopback_base()
+        } else {
+            self.base_url.clone()
+        }
+    }
+
+    /// The loopback rewrite of `base_url`: same path, authority replaced
+    /// with this process's own listener.
+    fn loopback_base(&self) -> String {
+        match split_authority(&self.base_url) {
+            Some((_, rest)) => format!("http://127.0.0.1:{}{}", loopback_port(), rest),
+            None => self.base_url.clone(),
         }
     }
 
@@ -423,7 +531,7 @@ impl Client {
         // Sign the full URI (prefix included): the receiver rebuilds the path it
         // signed, so a prefix-stripping proxy cannot change what it means.
         let signed_path = format!("{}{}", super::PATH_PREFIX, path);
-        let uri = format!("{}{}", self.base_url, signed_path);
+        let uri = format!("{}{}", self.dial_base().await, signed_path);
         let digest = body_digest(body);
         let auth = sign_request_for(
             &self.identity,

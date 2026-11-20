@@ -42,6 +42,19 @@ Two receiver flavours speak the identical protocol:
 A sender cannot tell them apart, which is deliberate: the protocol is the
 interface.
 
+**Self-send** (an instance backing itself up to its own receiver, a common way
+to try the feature) has one transport note: a receiver URL that resolves back
+to the sender's own node is dialed through the API's loopback listener instead
+of the node's public HTTPS port. The node's port is a hostPort, and the CNI
+(Cilium) does not answer hostPorts for pods on the same node, so the literal
+hairpin would time out. The loopback serves the same `/api/buddy/v1/` routes
+with the same Ed25519 peer authentication (request signatures cover the path,
+never the host), so nothing about the protocol changes — only the socket. The
+instance's own identity still has to be enrolled as a peer of its own receiver
+for a self-send to be accepted. Receiver URLs on any other port are never
+rewritten: a non-443/80 port means a different listener (typically the
+standalone receiver flavour).
+
 ## 2. Key material
 
 Everything lives in one file per instance — `~/.naslos/buddy-identity.json` by
