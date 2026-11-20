@@ -44,7 +44,7 @@ It also lists the GitHub Actions used by the CI/release workflows.
 | Alpine Linux | `alpine:3.24` | Alpine (musl MIT, BusyBox GPL-2.0-only, apk-tools GPL-2.0-only) | https://alpinelinux.org/ |
 | distroless static | `gcr.io/distroless/static-debian12:nonroot` | Apache-2.0 | https://github.com/GoogleContainerTools/distroless |
 | nginx unprivileged | `nginxinc/nginx-unprivileged:1.30.6-alpine-slim` | BSD-2-Clause | https://github.com/nginxinc/docker-nginx-unprivileged |
-| Rust toolchain | `rust:1.88-alpine`, `rust:1.88-slim` (the vmd builder) | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
+| Rust toolchain | `rust:1.100-alpine`, `rust:1.100-slim` (the vmd builder) | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
 | Node.js toolchain | `node:24-bookworm-slim` | MIT | https://nodejs.org/ |
 
 ## Rust crates — direct (`rust/agent` + `rust/api` + `rust/vmd`)
@@ -175,7 +175,7 @@ used instead.
 | docker/build-push-action | v7.4.0 | Apache-2.0 | https://github.com/docker/build-push-action |
 | gitleaks (CLI) | v8.30.1 | MIT | https://github.com/gitleaks/gitleaks |
 | cargo-audit | 0.22.2 | Apache-2.0 OR MIT | https://github.com/rustsec/rustsec |
-| cargo-deny | 0.20.2 | Apache-2.0 OR MIT | https://github.com/EmbarkStudios/cargo-deny |
+| cargo-deny | 0.22.0 | Apache-2.0 OR MIT | https://github.com/EmbarkStudios/cargo-deny |
 | Trivy | 0.76.1 | Apache-2.0 | https://github.com/aquasecurity/trivy |
 
 ## Ported & adapted code

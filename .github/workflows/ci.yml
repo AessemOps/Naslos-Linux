@@ -42,7 +42,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # stable
         with:
-          toolchain: "1.88"
+          toolchain: "1.100.0"
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -52,10 +52,10 @@ jobs:
         run: |
           set -euo pipefail
           cargo install cargo-audit --locked
-          # Pin the version whose declared rust-version matches the pinned
-          # 1.88 toolchain: a floating install now resolves cargo-deny 0.22.0,
-          # which refuses to build on rustc < 1.95 (2026-11-20).
-          cargo install cargo-deny --version 0.20.2 --locked
+          # Pinned (not floating) for determinism, current as of 2026-11-20:
+          # 0.22.0 declares rust-version 1.95, satisfied by the pinned
+          # toolchain above. Bump deliberately, with the gate re-run.
+          cargo install cargo-deny --version 0.22.0 --locked
           version=0.76.1
           base="https://github.com/aquasecurity/trivy/releases/download/v${version}"
           tarball="trivy_${version}_Linux-64bit.tar.gz"
@@ -82,7 +82,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # stable
         with:
-          toolchain: "1.88"
+          toolchain: "1.100.0"
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2

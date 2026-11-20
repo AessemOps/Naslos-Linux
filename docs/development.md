@@ -36,7 +36,7 @@ UI dev (hot reload): `cd ui && npm run dev` — Vite proxies `/api` to
 `http://localhost:8080`.
 
 Container images are built upstream from these binaries (see
-[deployment.md](deployment.md#images)). Node/Rust versions: node 20+, Rust 1.88+.
+[deployment.md](deployment.md#images)). Node/Rust versions: node 20+, Rust 1.100+.
 
 ## Testing
 
