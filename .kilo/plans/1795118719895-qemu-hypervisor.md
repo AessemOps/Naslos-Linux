@@ -172,7 +172,7 @@ timeouts found during implementation.
 | Risk | Mitigation |
 | --- | --- |
 | No VT-x/AMD-V on the node's CPU (or disabled in BIOS) | Capabilities preflight; UI shows an explanatory unavailable state; vmd idles harmlessly |
-| Mount-propagation trap (dataset mounted in pod ns) | Datasets are created through the agent (host ns), vmd sees them via HostToContainer; vmd boot reconcile waits bounded for paths |
+| Mount-propagation trap (dataset mounted in pod ns) | Confirmed live and fixed: `HostToContainer` kept chroot-created mounts pod-side; the agent's host-root bind is **Bidirectional** (chart), and pre-fix datasets converged once via host `zfs mount -a` |
 | Pod restart kills VMs (qemu children) | Documented behavior; autostart reconcile; `Recreate` strategy prevents split-brain pods |
 | VNC websocket port collisions | vmd allocates from a chart-configured range; port shown in VM detail |
 | Windows guests without virtio drivers | Disk bus selectable (virtio default, sata option) + docs note |
@@ -187,3 +187,26 @@ timeouts found during implementation.
   maturity + final image size during task 2.
 - Exact QEMU version pin + how firmware blobs are shipped (distro package).
 - cloud-init seed lifetime after first boot (detach vs keep) — decide by test.
+## 7. Execution record (live drill, 2026-11-20)
+
+The feature shipped across v0.4.0/v0.4.1 and went **live** with v0.4.2 (the
+vmd rustls provider fix). The operator drill (docs/virtual-machines.md step 7,
+now automated as `ui/vmd-drill.mjs`) passed end-to-end on the production node
+after the branch `fix/agent-mount-propagation` fixed what the drill exposed:
+
+1. Agent host-root bind `HostToContainer → Bidirectional` (chroot zfs mounts
+   propagate to the host; §5's mitigation guess was wrong in the direction
+   that matters).
+2. vmd `apply()` runs the reconcile detached from the request lifetime
+   (axum handler cancellation was aborting starts/stops mid-flight).
+3. Chart pins the agent `command: ["/app/naslos-agent"]` — an ancient live
+   kubectl hotfix patch (`/hotfix-bin/naslos-agent`) had survived every helm
+   upgrade and was serving a pre-virt binary (rollback route 404).
+4. `vm_detail_delete` destroys the dataset recursively (snapshots belong to
+   the VM; a flat destroy failed with "filesystem has children").
+
+The same session's Playwright gate found three buddy defects, fixed on the
+same branch: the self-send loopback rewrite (Cilium hostPorts unreachable
+from same-node pods), the replay-window retry + cap raise (multi-GiB sends
+died at ~4 GiB), and the UI drills' dedicated tiny dataset. All are
+committed with regression tests; the branch awaits a v0.4.3 release.
