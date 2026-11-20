@@ -425,6 +425,9 @@ apps:
     allowBuddyStore: false
   # TTL after which a cached repository clone is refreshed.
   refreshTTL: 15m
+  # How long a registry tag→digest lookup is cached before the image-release
+  # check asks the registry again (FR-APP-27).
+  imageCheckTTL: 1h
   # TLS Secret the app IngressRoutes reference (written by the app-domain
   # cert-manager Certificate). TLS apps need this Secret to exist.
   tlsSecret: naslos-apps-tls
@@ -734,6 +737,13 @@ networkPolicy:
   # 0.0.0.0/0).
   ddnsEgress: false
   ddnsEgressCIDRs: []
+  # App image release detection (FR-APP-27): the API resolves the digest a
+  # registry serves for an installed chart's image tag. Port-scoped to HTTPS
+  # (443), not a general all-port opening; narrow it with imageEgressCIDRs
+  # (default 0.0.0.0/0). On by default because the Installed tab's image
+  # update signal depends on it.
+  imageEgress: true
+  imageEgressCIDRs: []
   # CiliumNetworkPolicy for what upstream NetworkPolicy cannot express: allowing
   # pods to reach the node host / API server. Only rendered when the CNI is
   # Cilium; harmless (an unused CR) elsewhere, but set false on a non-Cilium

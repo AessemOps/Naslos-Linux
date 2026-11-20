@@ -192,6 +192,9 @@ networkPolicy:
   # calls the provider APIs (OVH, Cloudflare) from the API pod. Port-scoped to
   # 80/443; narrow ddnsEgressCIDRs for an egress-restricted network.
   ddnsEgress: true
+  # App image release checks resolve registry tags over HTTPS from the API pod.
+  # Port-scoped to 443; narrow imageEgressCIDRs for an egress-restricted network.
+  imageEgress: true
 
 # OVH certificates (spec FR-APP-13/FR-DNS-05). OVH is not a cert-manager
 # built-in DNS-01 solver, so `make install-vm` installs cert-manager and the

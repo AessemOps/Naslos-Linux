@@ -418,7 +418,7 @@ pub fn build_catalog(charts: &crate::chartsrepo::Manager) -> crate::catalog::Cat
 }
 
 /// Parse a Go duration string ("15m", "1h30m", "30s") into a `Duration`.
-fn parse_go_duration(s: &str) -> Option<std::time::Duration> {
+pub(crate) fn parse_go_duration(s: &str) -> Option<std::time::Duration> {
     let s = s.trim();
     if s.is_empty() {
         return None;

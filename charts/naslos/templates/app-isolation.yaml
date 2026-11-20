@@ -79,6 +79,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  # Force a re-pull when an upstream image is released (FR-APP-27): read the
+  # release workloads and patch their pod template to `imagePullPolicy: Always`
+  # plus a roll annotation. No create/delete, so the workload stays chart-owned.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "patch"]
   # Stream an app's logs in the Installed drawer (read-only subresource; the
   # API pod runs the bundled kubectl against its own ServiceAccount).
   - apiGroups: [""]

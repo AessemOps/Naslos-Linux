@@ -44,6 +44,7 @@
           }
         },
         "refreshTTL": { "type": "string" },
+        "imageCheckTTL": { "type": "string" },
         "tlsSecret": { "type": "string" },
         "localOnlyCIDR": { "type": "string" },
         "officialSource": {
@@ -279,6 +280,11 @@
         },
         "ddnsEgress": { "type": "boolean" },
         "ddnsEgressCIDRs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "imageEgress": { "type": "boolean" },
+        "imageEgressCIDRs": {
           "type": "array",
           "items": { "type": "string" }
         },
