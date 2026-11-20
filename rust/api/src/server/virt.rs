@@ -241,13 +241,16 @@ pub async fn vm_detail_delete(
     };
 
     // Remove the record first, then the dataset; a failed destroy restores
-    // the record so nothing is orphaned.
+    // the record so nothing is orphaned. Recursive: the dataset owns the VM's
+    // snapshots, and a non-recursive destroy fails with "filesystem has
+    // children" the moment the VM ever had one — found by deleting a VM
+    // after the live drill's snapshot step.
     let removed = match state.vms.remove(&name) {
         Ok(vm) => vm,
         Err(e) => return bad_request(&e),
     };
     if let Err(e) = agent
-        .destroy_dataset(&virt::vm_dataset(&removed.pool, &removed.name), false)
+        .destroy_dataset(&virt::vm_dataset(&removed.pool, &removed.name), true)
         .await
     {
         let _ = state.vms.create(removed.clone());
