@@ -4,8 +4,20 @@ import { test, expect } from '@playwright/test';
 // production node, so a default apply would reconfigure it. CI never sets this.
 const APPLY_ENABLED = process.env.NETWORK_APPLY_TEST === '1';
 
+// The node's API image is digest-pinned to the last release; /api/network
+// arrives with the next one. Until then the API-contract tests skip (the same
+// capability-skip vms.spec uses for a pre-feature release), while the page
+// still renders its sections with the API's error message.
+async function networkApiPresent(request: any): Promise<boolean> {
+  const res = await request.get('/api/network');
+  return res.status() !== 404;
+}
+
 test.describe('network settings', () => {
-  test('the API reports an inventory with links, hostname and resolvers', async ({ request }) => {
+  test('the API reports an inventory with links, hostname and resolvers', async ({ page, request }) => {
+    test.skip(!(await networkApiPresent(request)),
+      'the deployed API predates the guarded network settings routes');
+
     const res = await request.get('/api/network');
     expect(res.ok(), await res.text()).toBeTruthy();
     const data = await res.json();
