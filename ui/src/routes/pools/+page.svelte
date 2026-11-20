@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import ErrorState from '$lib/components/ErrorState.svelte';
   import LoadingState from '$lib/components/LoadingState.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
@@ -33,6 +34,8 @@
   let importingName = '';
 
   async function loadPools() {
+    loading = true;
+    error = '';
     try {
       const res = await fetch('/api/volumes/zfs');
       if (res.ok) {
@@ -113,7 +116,7 @@
   {#if loading}
     <LoadingState label="Loading pools..." />
   {:else if error}
-    <p role="alert" class="text-red-400">{error}</p>
+    <ErrorState message={error} retry={loadPools} />
   {:else if pools.length === 0}
     <div class="card text-center py-12">
       <p class="text-gray-400 mb-4">No ZFS pools configured yet.</p>
@@ -128,7 +131,7 @@
         <a href="/pools/{pool.name}" class="card hover:border-naslos-accent transition-colors">
           <div class="flex items-center justify-between mb-3">
             <span class="font-bold text-lg">{pool.name}</span>
-            <StatusBadge state={pool.health} />
+            <StatusBadge state={pool.health} unknownTone="bad" />
           </div>
           <div class="text-sm text-gray-400 mb-2">
             {pool.size} total · {pool.free} free

@@ -71,8 +71,11 @@ async function scan(
 ) {
   await page.goto(route);
   if (LOADED_ROUTES.has(route)) {
+    // 5s per route keeps the total settle budget (15 x 5s) inside the 180s
+    // test cap: a stalled route fails fast with the route/theme in the
+    // message instead of a generic suite timeout.
     await page
-      .waitForSelector('[data-testid="page-loading"]', { state: 'detached', timeout: 20_000 })
+      .waitForSelector('[data-testid="page-loading"]', { state: 'detached', timeout: 5_000 })
       .catch(() => {
         // A route that failed to load is still worth scanning; its error
         // state is part of the UI contract (FR-MET-09).
