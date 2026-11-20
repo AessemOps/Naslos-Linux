@@ -17,6 +17,11 @@ path = "src/lib.rs"
 [dependencies]
 axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
+# Explicit, not just transitive: the crate graph pulls rustls via axum-server
+# (ring) and reqwest (aws-lc-rs), which leaves both crypto providers compiled
+# and makes rustls refuse to guess at startup. Declaring ring here mirrors the
+# API crate and keeps the provider choice deliberate.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"

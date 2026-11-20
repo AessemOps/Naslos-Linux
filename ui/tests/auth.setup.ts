@@ -144,7 +144,16 @@ setup('authenticate', async ({ page, context }) => {
       try {
         await page.waitForURL(leftPortal, { timeout: 5_000 });
       } catch {
-        throw new Error(`Authelia login did not complete. Messages: ${notices || '(none)'}`);
+        // A spent code can show no readable notice (Authelia dismisses its
+        // rejection within seconds), so "no message" is not proof the code
+        // was fresh: a suite run that starts right after another login in the
+        // same 30 s TOTP window burns its first code deterministically. Wait
+        // for the next window and try exactly once more, same as the explicit
+        // reuse path above — a third blind submission would trip regulation.
+        await page.waitForTimeout(31_000 - (Date.now() % 30_000));
+        if (!(await attemptLogin(currentCode()))) {
+          throw new Error(`Authelia login did not complete. Messages: ${notices || '(none)'}`);
+        }
       }
     }
   }
