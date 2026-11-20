@@ -1723,6 +1723,14 @@ impl Manager {
         self.view(name).await
     }
 
+    /// A Helm error meaning the release is absent. Helm words a missing
+    /// release identically in v3 and v4 (`Release not loaded: NAME: release:
+    /// not found`); matching both fragments keeps the tolerance working across
+    /// SDK upgrades.
+    fn release_missing(err: &str) -> bool {
+        err.contains("Release not loaded") || err.contains("release: not found")
+    }
+
     /// Uninstall removes the release, its route and its record.
     pub async fn uninstall(&self, name: &str, progress: Option<&ProgressFn>) -> Result<(), String> {
         let lock = self.app_lock(name);
@@ -1739,7 +1747,17 @@ impl Manager {
                 STAGE_INSTALLING,
                 &format!("Removing the {name} release"),
             );
-            self.helm_for(&rec).uninstall(name).await?;
+            match self.helm_for(&rec).uninstall(name).await {
+                Ok(()) => {}
+                // A record whose release is already gone must stay removable:
+                // treating this as fatal stranded the record (the release is
+                // gone, nothing can ever remove the record again) and the
+                // stranded record 409-blocks reinstalling the app forever.
+                // The route, DNS, Secret, dataset claims and the record are
+                // still cleaned up below, which converges the divergence.
+                Err(e) if Self::release_missing(&e) => {}
+                Err(e) => return Err(e),
+            }
         }
         report(progress, STAGE_FINALIZING, "Removing the route and record");
         if let Some(router) = &self.router {
@@ -3346,6 +3364,26 @@ fn load_pool_settings(path: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_missing_matches_helm_wording() {
+        // The exact strings observed from the helm SDK (v3 and v4 alike).
+        assert!(Manager::release_missing(
+            "helm uninstall: Error: uninstall: Release not loaded: actual-budget: release: not found"
+        ));
+        // Fragments stay matched if the SDK gains or drops a prefix.
+        assert!(Manager::release_missing(
+            "Release not loaded: x: release: not found"
+        ));
+        assert!(Manager::release_missing("release: not found"));
+        // Anything else stays a real failure: the tolerance must not swallow
+        // permission, timeout or config errors.
+        assert!(!Manager::release_missing(
+            "helm uninstall: context deadline exceeded"
+        ));
+        assert!(!Manager::release_missing("forbidden: secrets is forbidden"));
+        assert!(!Manager::release_missing(""));
+    }
 
     #[test]
     fn release_name_validation() {
