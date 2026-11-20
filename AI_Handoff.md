@@ -11,6 +11,27 @@ rules and conventions are in [`AGENTS.md`](AGENTS.md).
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
+## In flight — UI/UX overhaul (2026-11-20, branch `feature/ui-ux-overhaul`)
+
+The audited overhaul from
+[`.kilo/plans/2026-11-20-ui-ux-review-and-overhaul.md`](.kilo/plans/2026-11-20-ui-ux-review-and-overhaul.md)
+is implemented and drilled on the node: a CSS-variable token layer with a
+persisted light/dark theme (pre-paint bootstrap in `app.html`, toggle in the
+sidebar footer and an Appearance card on `/settings`), ~34 hand-adapted Lucide
+icons replacing every emoji, a grouped collapsible sidebar (longest-prefix
+active match, `naslos:sidebar` persistence), shared `Modal`/`LoadingState`/
+`EmptyState`/`ErrorState`/`StatusBadge` components (the 7 raw modals converted
+or given `use:modal`), a `naslos.link` ink token because the brand primary
+fails AA as dark-theme text, and an axe a11y spec (`@axe-core/playwright`
+4.14.0, dev-only) scanning all 18 routes in both themes. The full suite is
+green on the deployed drill build: **66 passed, 10 skipped** — the skips are
+the vms capability-skips plus the network API-contract test, which now skips
+while the deployed API (still digest-pinned to v0.3.23) predates the
+`/api/network` routes. **At release:** run `make bump-version` for `v0.4.0`
+(replaces the drill UI pin in `values-vm.yaml`, which currently points at the
+`sha-ddba099` dry-run build, digest `f78ed73e…`), release, then `make
+install-vm` from the released tags.
+
 ## In flight — QEMU hypervisor (2026-11-19, branch `feature/virt-qemu-hypervisor`)
 
 The full FR-VMT feature (v0.4.0) is implemented and locally gated, **not yet
@@ -48,7 +69,7 @@ deny.toml per convention); the Playwright suite is green on the live node with
 vmd image (or run the release workflow), update the `values-vm.yaml` digests,
 `make install-vm`, live drill per docs/virtual-machines.md, then tag `v0.4.0`.
 
-## Production instance (2026-11-14)
+## Production instance (2026-11-20)
 
 - **Hardware:** the production NAS is the bare-metal node `talos-zgr-9yg` at
   `192.168.1.38` (Talos v1.14.5, Kubernetes v1.37.0, control-plane Ready). The
@@ -57,13 +78,16 @@ vmd image (or run the release workflow), update the `values-vm.yaml` digests,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
 - **Deployed release:** Helm `naslos` chart `0.3.23`, appVersion `0.3.23`,
-  revision 32, deployed 2026-11-14 11:18 UTC from `master` with
-  `make install-vm`. API/agent/OpenLDAP/Samba/NFS/terminal are digest-pinned
+  revision 39 (2026-11-20, up from revision 32 during the UI/UX drill), deployed
+  from `feature/ui-ux-overhaul` with `make install-vm`. API/agent/OpenLDAP/
+  Samba/NFS/terminal are digest-pinned
   from `v0.3.23`: API `fa9c8956…`, agent `4f680bfc…`, OpenLDAP `e57e3fbf…`,
   Samba `b785ee38…`,
   NFS `4d8806ea…`, terminal `a000ca0c…` (public GHCR). The UI is the
-  post-0.3.23 `sha-6ebab2db…` build (`bc8f5013…`) with the corrected System
-  message. `/api/system/version` reports Naslos/chart 0.3.23, profile
+  UI/UX overhaul drill build `sha-ddba099…` (`f78ed73e…`) from the release
+  workflow dry run (`publish=false`); it is replaced by the released `v0.4.0`
+  tags at the next `make bump-version` + release + `make install-vm`.
+  `/api/system/version` reports Naslos/chart 0.3.23, profile
   `make-install`, Talos v1.14.5 and k8s v1.37.0; the chart falls back to its own
   version so a plain make-install node is not blank. `values-vm.yaml` now
   declares `release.profile: installer` with the running facts, so the web
@@ -198,7 +222,8 @@ vmd image (or run the release workflow), update the `values-vm.yaml` digests,
   `naslos-shail-ovh-tls` are present. The baseline pool has **32 provisioned
   slots with a usable limit of 20** (`GET /api/apps/namespaces`: 9 used, 11
   available); the privileged pool has 2 used of 4, `naslos-app-p3..p4` free.
-- **Update check:** current deployed `0.3.21`; **`v0.3.22` is offered** by the system updater.
+- **Update check:** current deployed `0.3.23`; the GitHub check reports no
+  newer release (the `v0.3.22` offer was resolved by deploying 0.3.23).
 
 ### Open items
 
@@ -239,9 +264,15 @@ vmd image (or run the release workflow), update the `values-vm.yaml` digests,
   (verified by packet capture: public SYNs arrive). The durable fix
   (`networkPolicy.publicIngressCIDR: 0.0.0.0/0`) is deployed in `v0.3.10`;
   `https://search.shail.ovh/` is reachable externally.
-- **Playwright** was rerun on 2026-11-19 (65 passed, 9 skipped): the sidebar,
-  notifications-page and dataset/disk suites are green on the deployed
-  revision; `tests/vms.spec.ts` capability-skips until the 0.4.0 deploy.
+- **Playwright** was rerun on 2026-11-20 against the UI/UX overhaul drill
+  build (revision 39): **66 passed, 10 skipped** — the full suite plus the new
+  `tests/a11y.spec.ts` axe scans (18 routes × both themes). Skips:
+  `tests/vms.spec.ts` (the supervisor is not deployed on the node yet) and the
+  network API-contract test (the deployed v0.3.23 API predates `/api/network`;
+  it skips instead of failing and un-skips with the 0.4.0 API). A
+  keyboard-only drill passed: sidebar collapse/expand via the toggle, modal
+  focus trap + Escape + focus restoration, theme toggle `aria-pressed` round
+  trip.
 
 ## How to operate
 

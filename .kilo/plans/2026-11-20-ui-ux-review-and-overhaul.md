@@ -261,3 +261,34 @@ InfoBubble `aria-label="API rights required"` + `role="tooltip"` with
    would require rewriting their dialog plumbing. Follow-up task recorded.
 4. **Icon count is ~34, not ~24** (nav 16 + Traefik + shell/theme 6 + states 9
    + settings-hub specific 6) to cover the audited surfaces.
+
+---
+
+## Execution record (2026-11-20)
+
+Implemented on `feature/ui-ux-overhaul`; all phases landed:
+
+- Gates: `npm run check`/`build` clean, `sh scripts/audit.sh` all-pass,
+  release guard passes for `0.4.0`.
+- Drill: three release dry runs (`publish=false`) built
+  `ghcr.io/.../naslos-ui:sha-<commit>`; the node ran each via a
+  `values-vm.yaml` UI pin and `make install-vm` (final: revision 39,
+  `sha-ddba099` / `f78ed73e…`).
+- Playwright on the final build: **66 passed, 10 skipped, 0 failed**,
+  including `tests/a11y.spec.ts` (axe, 18 routes × dark + light).
+  Skips: the vms capability-skips and the network API-contract test, which
+  now capability-skips while the deployed v0.3.23 API predates
+  `/api/network`.
+- The drill found and fixed three real defects: catalog cards tripping
+  `label-content-name-mismatch` (replaced the div[role=button] with a
+  stretched real `<button>`), every `text-naslos-primary` text failing AA in
+  dark (new `naslos.link` ink token), and badge text vars referencing
+  Tailwind triplets (invalid raw CSS colors — dark badges silently fell back
+  to body ink).
+- Keyboard-only manual drill passed: sidebar collapse/expand, modal focus
+  trap + Escape + focus restoration, theme `aria-pressed` round trip;
+  `curl -sk https://naslos.local/api/health` answered `{"status":"ok"}`.
+- Follow-ups recorded (not in this PR): replace the native `confirm()`/
+  `alert()` flows with a `ConfirmModal`; `index.html` no-cache header;
+  the UI drill pin is superseded by the `v0.4.0` release tags
+  (`make bump-version`, release, `make install-vm`).
