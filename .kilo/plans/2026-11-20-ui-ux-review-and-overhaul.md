@@ -272,9 +272,9 @@ Implemented on `feature/ui-ux-overhaul`; all phases landed:
   release guard passes for `0.4.0`.
 - Drill: three release dry runs (`publish=false`) built
   `ghcr.io/.../naslos-ui:sha-<commit>`; the node ran each via a
-  `values-vm.yaml` UI pin and `make install-vm` (final: revision 39,
-  `sha-ddba099` / `f78ed73e…`).
-- Playwright on the final build: **66 passed, 10 skipped, 0 failed**,
+  `values-vm.yaml` UI pin and `make install-vm` (final: revision 41,
+  `sha-90d24d3` / `23397552…`).
+- Playwright on the final build: **65 passed, 11 skipped, 0 failed**,
   including `tests/a11y.spec.ts` (axe, 18 routes × dark + light).
   Skips: the vms capability-skips and the network API-contract test, which
   now capability-skips while the deployed v0.3.23 API predates

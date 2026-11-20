@@ -24,7 +24,8 @@ active match, `naslos:sidebar` persistence), shared `Modal`/`LoadingState`/
 or given `use:modal`), a `naslos.link` ink token because the brand primary
 fails AA as dark-theme text, and an axe a11y spec (`@axe-core/playwright`
 4.14.0, dev-only) scanning all 18 routes in both themes. The full suite is
-green on the deployed drill build: **66 passed, 10 skipped** — the skips are
+green on the deployed drill build: **65 passed, 11 skipped, 0 failed** (final
+build `sha-90d24d3`, revision 41) — the skips are
 the vms capability-skips plus the network API-contract test, which now skips
 while the deployed API (still digest-pinned to v0.3.23) predates the
 `/api/network` routes. **At release:** the drill UI pin in `values-vm.yaml`
@@ -85,7 +86,7 @@ vmd image (or run the release workflow), update the `values-vm.yaml` digests,
   single node, not a VM.
 - **Deployed release:** Helm `naslos` chart **`naslos-0.4.0`** (the chart
   itself is the 0.4.0 scaffolding from master; only the images below are
-  older), revision 39 (2026-11-20, up from revision 32 during the UI/UX
+  older), revision 41 (2026-11-20, up from revision 32 during the UI/UX
   drill), deployed from `feature/ui-ux-overhaul` with `make install-vm`.
   API/agent/OpenLDAP/Samba/NFS/terminal are digest-pinned from `v0.3.23`:
   API `fa9c8956…`, agent `4f680bfc…`, OpenLDAP `e57e3fbf…`, Samba `b785ee38…`,
@@ -272,11 +273,13 @@ vmd image (or run the release workflow), update the `values-vm.yaml` digests,
   (`networkPolicy.publicIngressCIDR: 0.0.0.0/0`) is deployed in `v0.3.10`;
   `https://search.shail.ovh/` is reachable externally.
 - **Playwright** was rerun on 2026-11-20 against the UI/UX overhaul drill
-  build (revision 39): **66 passed, 10 skipped** — the full suite plus the new
+  build (revision 41, `sha-90d24d3`): **65 passed, 11 skipped, 0 failed** —
+  the full suite plus the new
   `tests/a11y.spec.ts` axe scans (18 routes × both themes). Skips:
-  `tests/vms.spec.ts` (the supervisor is not deployed on the node yet) and the
+  `tests/vms.spec.ts` (the supervisor is not deployed on the node yet), the
   network API-contract test (the deployed v0.3.23 API predates `/api/network`;
-  it skips instead of failing and un-skips with the 0.4.0 API). A
+  it skips instead of failing and un-skips with the 0.4.0 API) and its
+  three link-dependent mutations. A
   keyboard-only drill passed: sidebar collapse/expand via the toggle, modal
   focus trap + Escape + focus restoration, theme toggle `aria-pressed` round
   trip.
@@ -405,6 +408,17 @@ sh scripts/audit.sh
     If an upgrade behaves like the old version, check the Deployment `command`
     and the UI nginx root first. Never ship a fix as a live `kubectl patch`;
     put it in the image/chart.
+16. **Wait for Authelia after `make install-vm` before running Playwright.**
+    Every helm upgrade restarts OpenLDAP, and Authelia's startup check treats
+    an unreachable LDAP backend as fatal (`dial tcp …:636: no route to host`
+    → exit 1), so `naslos-authelia-0` crash-loops for one backoff cycle until
+    OpenLDAP answers. During that window the portal challenge is flaky and
+    `tests/auth.setup.ts` fails fast with `expected the Authelia portal, landed
+    on https://naslos.local/`. Settling takes ~1 minute; check
+    `kubectl -n naslos get pod naslos-authelia-0` shows `Ready` with a stable
+    restart count before trusting a suite result. Authelia has no
+    wait-for-ldap init container (the API does); adding one is a chart
+    improvement, not urgent.
 
 ## History
 
