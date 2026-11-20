@@ -11,6 +11,9 @@ CVE-2026-78669 exp:2027-01-31
 CVE-2026-97031 exp:2027-01-31
 CVE-2026-56851 exp:2027-01-31
 CVE-2026-78661 exp:2027-01-31
+# Go stdlib MaxBytesReader HTTP/1 server issue (fixed in Go 1.26.11/1.27.4,
+# 2026-11-20): same vendored-client rationale as the block above.
+CVE-2026-97054 exp:2027-01-31
 # hickory-resolver 0.24 O(n^2) encoding: client-only against two hard-coded
 # public resolvers for DDNS discovery (see rust/deny.toml).
 GHSA-5j98-2g5x-46v6 exp:2027-03-31
@@ -18,5 +21,26 @@ GHSA-5j98-2g5x-46v6 exp:2027-03-31
 # nginxinc/nginx-unprivileged:1.30.6-alpine-slim ships musl 1.2.6-r2 and
 # zlib 1.3.2-r0; Alpine 3.24 has the fixes (musl 1.2.6-r3, zlib 1.3.2-r1) but
 # the upstream image has not been rebuilt. It serves static files only.
+#
+# nginx 1.30.6-r1: six CVEs whose vulnerable paths this deployment never
+# configures. The UI nginx listens on plain 8080 (`listen 8080` — no TLS, no
+# http2, no QUIC) behind Traefik, serves static files and proxies /api to an
+# upstream resolved once at startup through the pod resolver:
+#   CVE-2026-113425 mail proxy use-after-free
+#   CVE-2026-121810 HTTP/3 use-after-free
+#   CVE-2026-123007 HTTP/2 flow-control window overflow
+#   CVE-2026-123633 HTTP/2 use-after-free
+#   CVE-2026-118899 crafted-TLS denial of service
+#   CVE-2026-123634 in-process resolver use-after-free
+# All six are fixed in nginx 1.30.7-r0, but
+# nginxinc/nginx-unprivileged:1.30.7-alpine-slim is not published yet (checked
+# 2026-11-20; the newest stable tag is 1.30.6). Bump the base tag when it
+# ships and drop these lines.
+CVE-2026-113425 exp:2027-01-31
+CVE-2026-121810 exp:2027-01-31
+CVE-2026-123007 exp:2027-01-31
+CVE-2026-123633 exp:2027-01-31
+CVE-2026-118899 exp:2027-01-31
+CVE-2026-123634 exp:2027-01-31
 CVE-2026-107891 exp:2027-01-31
 CVE-2026-85091 exp:2027-01-31
