@@ -11,11 +11,11 @@ rules and conventions are in [`AGENTS.md`](AGENTS.md).
 
 A single-node NAS appliance on Talos Linux (Kubernetes) with a web UI.
 
-## In flight — UI/UX overhaul (2026-11-20, branch `feature/ui-ux-overhaul`)
+## Shipped — UI/UX overhaul (v0.4.1, 2026-11-20, was `feature/ui-ux-overhaul` PR #181)
 
 The audited overhaul from
 [`.kilo/plans/2026-11-20-ui-ux-review-and-overhaul.md`](.kilo/plans/2026-11-20-ui-ux-review-and-overhaul.md)
-is implemented and drilled on the node: a CSS-variable token layer with a
+shipped in **v0.4.1**: a CSS-variable token layer with a
 persisted light/dark theme (pre-paint bootstrap in `app.html`, toggle in the
 sidebar footer and an Appearance card on `/settings`), ~34 hand-adapted Lucide
 icons replacing every emoji, a grouped collapsible sidebar (longest-prefix
@@ -23,21 +23,14 @@ active match, `naslos:sidebar` persistence), shared `Modal`/`LoadingState`/
 `EmptyState`/`ErrorState`/`StatusBadge` components (the 7 raw modals converted
 or given `use:modal`), a `naslos.link` ink token because the brand primary
 fails AA as dark-theme text, and an axe a11y spec (`@axe-core/playwright`
-4.14.0, dev-only) scanning all 18 routes in both themes. The full suite is
-green on the deployed drill build: **65 passed, 11 skipped, 0 failed** (final
-build `sha-90d24d3`, revision 41) — the skips are
-the vms capability-skips plus the network API-contract test, which now skips
-while the deployed API (still digest-pinned to v0.3.23) predates the
-`/api/network` routes. **At release:** the drill UI pin in `values-vm.yaml`
-(currently the `sha-90d24d3` dry-run build, digest `23397552…`) is superseded
-by bumping to the next version (`0.4.1`): update `charts/naslos/Chart.yaml`
-version/appVersion, `ui/package.json` + its lock, and every image tag in
-`charts/naslos/values.yaml` + `values-installer.yaml` (there is no
-bump-version make target; the release guard checks these locations), tag
-`v0.4.1`, then swap the `values-vm.yaml` UI pin for the released tag/digest
-in the same change and `make install-vm`. Note `v0.4.0` is already tagged at
-master and predates this overhaul, and `values-vm.yaml` is outside the
-release guard, so the swap must be explicit.
+4.14.0, dev-only) scanning all 18 routes in both themes. Drilled green on the
+`sha-90d24d3` build (revision 41, 65 passed), then **released as v0.4.1**
+(2026-11-20): the version bump, tag and pack landed on master, all nine
+images are digest-pinned from the release, and the node runs the release
+(revision 44). Suite on the release: **67 passed, 9 skipped, 0 failed** —
+the network API-contract tests now RUN (the 0.4.1 API serves `/api/network`)
+and the vms capability-skips remain while the supervisor is parked (see
+below).
 
 ## In flight — QEMU hypervisor (2026-11-19, branch `feature/virt-qemu-hypervisor`)
 
@@ -72,9 +65,17 @@ was removed. All gates pass locally (497 Rust tests, fmt/clippy clean,
 `npm run check`/`build`, `helm lint`, pack build with vmd digests,
 `sh scripts/audit.sh` all-pass — the dated chrono-unmaintained ignore is in
 deny.toml per convention); the Playwright suite is green on the live node with
-`tests/vms.spec.ts` capability-skipping. **Remaining before release:** push the
-vmd image (or run the release workflow), update the `values-vm.yaml` digests,
-`make install-vm`, live drill per docs/virtual-machines.md, then tag `v0.4.0`.
+`tests/vms.spec.ts` capability-skipping. **Supervisor parked on the node
+(2026-11-20):** the release exists (v0.4.0/v0.4.1 images pushed and
+digest-pinned in the installer values), but enabling it on the node exposed
+that the released vmd binary panicked at its first TLS handshake — the crate
+graph compiles both rustls crypto providers (axum-server pulls ring, reqwest
+pulls aws-lc-rs) and never installs one. The node overlay runs
+`virt.enabled: false` until the fix (branch `fix/release-drill-defects`:
+explicit ring provider install on the tested TLS path) ships in the next
+release; `vms.spec.ts` then capability-skips via the 404/503 shapes. Enabling
+later = set `virt.enabled: true`, pin the fixed image's digest, `make
+install-vm`, live drill per docs/virtual-machines.md.
 
 ## Production instance (2026-11-20)
 
@@ -84,31 +85,31 @@ vmd image (or run the release workflow), update the `values-vm.yaml` digests,
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.4.0`** (the chart
-  itself is the 0.4.0 scaffolding from master; only the images below are
-  older), revision 41 (2026-11-20, up from revision 32 during the UI/UX
-  drill), deployed from `feature/ui-ux-overhaul` with `make install-vm`.
-  API/agent/OpenLDAP/Samba/NFS/terminal are digest-pinned from `v0.3.23`:
-  API `fa9c8956…`, agent `4f680bfc…`, OpenLDAP `e57e3fbf…`, Samba `b785ee38…`,
-  NFS `4d8806ea…`, terminal `a000ca0c…` (public GHCR). The UI is the
-  UI/UX overhaul drill build `sha-90d24d3…` (`23397552…`) from the release
-  workflow dry run (`publish=false`); it is swapped for the released
-  tag/digest at the next version bump (see the in-flight note above).
-  `/api/system/version` reports the `release.*` facts from `values-vm.yaml`:
-  Naslos/chart 0.3.23, profile `installer` (the web-upgrader facts), Talos
-  v1.14.5 and k8s v1.37.0. `values-vm.yaml`
-  declares `release.profile: installer` with the running facts (a node without
-  them falls back to `.Chart.AppVersion` and reports `make-install`), so the
-  web upgrader is enabled: SA `naslos-upgrader` + cluster-admin binding, the
-  `naslos-api-system` Role/RoleBinding, and the upgrader admission policy are
-  present, and a GitHub check returns `enabled:true, current:0.3.23, no newer
-  release`; the operations endpoint correctly answers 412 until a check offers
-  a release. The private registry `192.168.1.2:30095` is retired — do not
-  build/push local images.
-- **Latest release:** `v0.3.23` (2026-11-14) and installer `naslos-v0.3.23`
-  are published; the node runs those exact digests plus the post-release UI
-  message fix. Full Playwright suite green on revision 30 (61 passed, 2
-  skipped); the system spec is green on revision 33 with web upgrades enabled.
+- **Deployed release:** Helm `naslos` chart **`naslos-0.4.1`**, revision 44
+  (2026-11-20), deployed from master with `make install-vm` after the v0.4.1
+  release. Every image is digest-pinned from `v0.4.1` (public GHCR):
+  API `c7e3a45f…`, agent `93e22723…`, UI `45172a40…`, OpenLDAP `ae21d3fb…`,
+  Samba `456402b3…`, NFS `66998ad8…`, terminal `6c983503…` (vmd is NOT
+  deployed — see the virt note above). `/api/system/version` reports the
+  `release.*` facts from `values-vm.yaml`: Naslos/chart 0.4.1, profile
+  `installer` (the web-upgrader facts), Talos v1.14.5 and k8s v1.37.0 (a
+  node without them falls back to `.Chart.AppVersion` and reports
+  `make-install`). The web upgrader is enabled: SA `naslos-upgrader` +
+  cluster-admin binding, the `naslos-api-system` Role/RoleBinding, and the
+  upgrader admission policy are present, and a GitHub check returns
+  `enabled:true, current:0.4.1, no newer release`; the operations endpoint
+  correctly answers 412 until a check offers a release. The private registry
+  `192.168.1.2:30095` is retired — do not build/push local images.
+- **Latest release:** `v0.4.1` (2026-11-20, the UI/UX overhaul + the 0.4.0
+  virtual machines train) and installer `naslos-v0.4.1` are published; the
+  pack `naslos-install-pack-0.4.1.tar.gz` is attached to the release. The
+  first release attempt failed its pack job because the release workflow
+  raced CI (the green-CI gate saw `audit` still running); the packless tag
+  was deleted and re-pushed once CI was green, per the documented rule.
+  Full Playwright suite green on the release (revision 44): **67 passed,
+  9 skipped, 0 failed** — the network API-contract tests run against the
+  0.4.1 API, and the skips are the vms capability-skips plus the
+  link-dependent network mutations.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
@@ -272,17 +273,30 @@ vmd image (or run the release workflow), update the `values-vm.yaml` digests,
   (verified by packet capture: public SYNs arrive). The durable fix
   (`networkPolicy.publicIngressCIDR: 0.0.0.0/0`) is deployed in `v0.3.10`;
   `https://search.shail.ovh/` is reachable externally.
-- **Playwright** was rerun on 2026-11-20 against the UI/UX overhaul drill
-  build (revision 41, `sha-90d24d3`): **65 passed, 11 skipped, 0 failed** —
-  the full suite plus the new
-  `tests/a11y.spec.ts` axe scans (18 routes × both themes). Skips:
-  `tests/vms.spec.ts` (the supervisor is not deployed on the node yet), the
-  network API-contract test (the deployed v0.3.23 API predates `/api/network`;
-  it skips instead of failing and un-skips with the 0.4.0 API) and its
-  three link-dependent mutations. A
+- **Playwright** was rerun on 2026-11-20 against the v0.4.1 release
+  (revision 44, all images released digests): **67 passed, 9 skipped,
+  0 failed** — the full suite plus the `tests/a11y.spec.ts` axe scans
+  (18 routes × both themes); the network API-contract tests now run against
+  the 0.4.1 API, and the skips are the vms capability-skips (supervisor
+  parked) plus the link-dependent network mutations. The same day's drill
+  build (revision 41, `sha-90d24d3`) was 65 passed with the network contract
+  test skipping against the then-0.3.23 API. A
   keyboard-only drill passed: sidebar collapse/expand via the toggle, modal
   focus trap + Escape + focus restoration, theme toggle `aria-pressed` round
   trip.
+- **v0.4.1 release-drill defects (fixed on `fix/release-drill-defects`,
+  PR open):** (1) the released vmd panicked at its first TLS handshake —
+  both rustls crypto providers compiled, none installed; the node runs
+  `virt.enabled: false` until the fix ships. (2) The API's uninstall treated
+  a missing Helm release as fatal and stranded the app record — observed as
+  `actual-budget` 409-blocking reinstall after a morning test cycle; the
+  stale record was removed from `/var/lib/naslos/apps.json` inside the API
+  pod (12 records remain) and the API restarted to reload it, which
+  unblocked the apps spec. (3) `tests/auth.setup.ts` burned its first TOTP
+  code when a run started in the same 30 s window as a previous login and
+  Authelia's rejection notice auto-dismissed before it was read — two
+  back-to-back suite runs failed at setup this way; space runs by one
+  window until the setup hardening merges.
 
 ## How to operate
 
