@@ -111,11 +111,19 @@ Runtime dependencies:
 | @xterm/addon-fit | ^0.11.0 | MIT | https://github.com/xtermjs/xterm.js |
 | @novnc/novnc | ^1.5.0 (pinned: >=1.6 uses a top-level `await` the UI build target does not support, and QEMU's VNC never streams H.264) | MPL-2.0 | https://github.com/novnc/noVNC |
 
+Adapted assets (no dependency; path data copied into the source tree with a
+provenance header in `ui/src/lib/components/Icon.svelte`):
+
+| Component | Version | License (SPDX) | Upstream |
+| --- | --- | --- | --- |
+| Lucide icons | v0.545.0 (selection of ~34 icon paths, hand-adapted) | ISC | https://github.com/lucide-icons/lucide |
+
 Build / development dependencies (not redistributed as packages, but used to
 produce the shipped static assets):
 
 | Component | Version | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
+| @axe-core/playwright | 4.14.0 (dev-only; powers `ui/tests/a11y.spec.ts`, never shipped) | MPL-2.0 | https://github.com/dequelabs/axe-core-npm |
 | @playwright/test | ^1.63.0 | Apache-2.0 | https://github.com/microsoft/playwright |
 | @sveltejs/kit | ^2.0.0 | MIT | https://github.com/sveltejs/kit |
 | @sveltejs/adapter-static | ^3.0.0 | MIT | https://github.com/sveltejs/kit |
