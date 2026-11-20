@@ -51,7 +51,10 @@ RUN curl -fsSLo /tmp/smartmontools.tar.gz \
         LDFLAGS=-static \
     && make -j"$(nproc)" smartctl \
     && strip smartctl \
-    && file smartctl | grep -q 'statically linked' \
+    # Newer Alpine/GCC defaults produce a static-PIE binary, which `file`
+    # reports as "static-pie linked" instead of "statically linked"; both
+    # are fully static (no interpreter), which is what scratch needs.
+    && file smartctl | grep -Eq 'statically linked|static-pie linked' \
     && ./smartctl --version
 
 # Assemble the files the agent needs on top of the static binary:
