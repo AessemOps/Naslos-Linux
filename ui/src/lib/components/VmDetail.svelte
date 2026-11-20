@@ -2,6 +2,7 @@
   // VM detail drawer: live state, lifecycle actions, snapshots, forwards and
   // the noVNC console.
   import VmConsole from './VmConsole.svelte';
+  import { modal } from '$lib/actions/modal';
   import { onDestroy } from 'svelte';
 
   export let vm: any | null = null; // the live VmView
@@ -112,8 +113,9 @@
 </script>
 
 {#if vm}
-  <div class="fixed inset-0 bg-black/60 z-40 flex items-start justify-end overflow-y-auto">
-    <div class="card w-full max-w-3xl min-h-full rounded-none" role="dialog" aria-label={`VM ${vm.name}`}>
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 bg-black/60 z-40 flex items-start justify-end overflow-y-auto" use:modal={{ onClose: close }} on:click|self={close}>
+    <div class="card w-full max-w-3xl min-h-full rounded-none">
       <div class="flex items-center justify-between mb-4">
         <div>
           <h2 class="text-xl font-bold">{vm.name}</h2>

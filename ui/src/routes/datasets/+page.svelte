@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
 
   interface ManagedDataset {
     name: string;
@@ -131,8 +132,8 @@
     whole <span class="font-mono">/var/mnt</span> tree.
   </p>
 
-  {#if error}<div role="alert" class="card border-red-700 bg-red-900/20 text-red-300 p-4 mb-4">{error}</div>{/if}
-  {#if success}<div role="status" class="card border-green-700 bg-green-900/20 text-green-200 p-4 mb-4">{success}</div>{/if}
+  {#if error}<div role="alert" class="callout callout-bad">{error}</div>{/if}
+  {#if success}<div role="status" class="callout callout-ok">{success}</div>{/if}
 
   <div class="card mb-8">
     <h2 class="text-xl font-bold mb-4">Register a dataset</h2>
@@ -182,7 +183,7 @@
 
   <h2 class="text-xl font-bold mb-4">Registered datasets</h2>
   {#if loading}
-    <p class="text-gray-400">Loading…</p>
+    <LoadingState label="Loading…" />
   {:else if managed.length === 0}
     <div class="card text-gray-400">No datasets are registered yet.</div>
   {:else}
@@ -193,9 +194,9 @@
             <div class="flex items-center gap-2 flex-wrap">
               <h3 class="font-bold">{dataset.name}</h3>
               {#if dataset.shared}
-                <span class="text-xs px-2 py-0.5 rounded bg-amber-900/50 text-amber-300">Shared</span>
+                <span class="badge badge-warn">Shared</span>
               {:else}
-                <span class="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-300">Private</span>
+                <span class="badge badge-neutral">Private</span>
               {/if}
             </div>
             <p class="text-sm text-gray-400 font-mono truncate">{dataset.hostPath}</p>

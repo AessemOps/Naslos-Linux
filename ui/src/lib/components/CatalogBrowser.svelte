@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import AppIcon from '$lib/components/AppIcon.svelte';
   import AppInstallModal from '$lib/components/AppInstallModal.svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
 
   interface CatalogEntry {
     name: string;
@@ -103,36 +105,34 @@
 
   <!-- App grid -->
   {#if loading}
-    <p class="text-gray-400">Loading catalog...</p>
+    <LoadingState label="Loading catalog..." />
   {:else if loadError}
-    <div role="alert" class="card border-red-700 bg-red-900/30 text-red-300 p-4">{loadError}</div>
+    <div role="alert" class="callout callout-bad">{loadError}</div>
   {:else if apps.length === 0}
-    <div class="card text-center py-12" role="status">
-      <div class="text-5xl mb-4">🗂️</div>
-      <h2 class="text-xl font-bold mb-2">No Apps In The Catalog</h2>
-      <p class="text-gray-400 mb-2">
-        Add a chart repository in the Sources tab, then refresh it.
-      </p>
+    <div role="status">
+      <EmptyState
+        icon="folder-tree"
+        title="No Apps In The Catalog"
+        detail="Add a chart repository in the Sources tab, then refresh it."
+      />
     </div>
   {:else if filteredApps.length === 0}
     <p class="text-gray-400">No apps match these filters.</p>
   {:else}
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       {#each filteredApps as app}
-        <div
-          class="card hover:border-naslos-accent transition-colors cursor-pointer"
-          role="button"
-          tabindex="0"
-          aria-label={`Install ${app.displayName}`}
-          on:click={() => openInstall(app.name)}
-          on:keydown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              openInstall(app.name);
-            }
-          }}
-        >
-          <div class="flex items-start gap-4">
+        <div class="card hover:border-naslos-accent transition-colors relative">
+          <!-- A stretched real button keeps the card keyboard-operable and its
+               accessible name exactly 'Install <app>' without tripping
+               label-content-name-mismatch (the visible card text stays outside
+               the button, so name and content cannot disagree). -->
+          <button
+            type="button"
+            class="absolute inset-0 z-10 rounded-xl cursor-pointer"
+            aria-label={`Install ${app.displayName}`}
+            on:click={() => openInstall(app.name)}
+          ></button>
+          <div class="flex items-start gap-4 pointer-events-none">
             <AppIcon icon={app.icon} iconUrl={app.iconUrl} alt={app.displayName} />
             <div class="flex-1 min-w-0">
               <h3 class="font-bold text-lg truncate">{app.displayName}</h3>

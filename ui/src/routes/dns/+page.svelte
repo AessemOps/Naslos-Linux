@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
+  import StatusBadge from '$lib/components/StatusBadge.svelte';
   import DdnsForm from '$lib/components/DdnsForm.svelte';
 
   interface Entry {
@@ -78,14 +81,6 @@
     return p?.displayName || name;
   }
 
-  function statusClass(status?: string): string {
-    switch (status) {
-      case 'ok': return 'bg-green-900/50 text-green-400';
-      case 'error': return 'bg-red-900/50 text-red-400';
-      default: return 'bg-gray-900/50 text-gray-400';
-    }
-  }
-
   async function remove(id: string) {
     const domains = targetDomains.get(id) || [];
     if (
@@ -156,13 +151,9 @@
   {/if}
 
   {#if loading}
-    <p class="text-gray-400">Loading dynamic DNS...</p>
+    <LoadingState label="Loading dynamic DNS..." />
   {:else if entries.length === 0}
-    <div class="card text-center py-12">
-      <div class="text-5xl mb-4">🌍</div>
-      <h2 class="text-xl font-bold mb-2">No Dynamic DNS Entries</h2>
-      <p class="text-gray-400">Add an entry to keep a record pointed at your public IP.</p>
-    </div>
+    <EmptyState icon="earth" title="No Dynamic DNS Entries" detail="Add an entry to keep a record pointed at your public IP." />
   {:else}
     <div class="space-y-3">
       {#each entries as entry (entry.id)}
@@ -172,7 +163,7 @@
               <h3 class="font-bold">{entry.record === '@' || !entry.record ? entry.zone : `${entry.record}.${entry.zone}`}</h3>
               <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{entry.recordType}</span>
               <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{providerName(entry.provider)}</span>
-              <span class={`text-xs px-2 py-0.5 rounded ${statusClass(entry.lastStatus)}`}>{entry.lastStatus || 'never run'}</span>
+              <StatusBadge state={entry.lastStatus || 'never run'} />
               {#if !entry.enabled}<span class="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400">disabled</span>{/if}
               {#if usedTargets.has(entry.id)}
                 <span

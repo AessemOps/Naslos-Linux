@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
+  import Modal from '$lib/components/Modal.svelte';
 
   interface VersionInfo {
     naslosVersion: string;
@@ -364,16 +366,21 @@
 
   {#if message}
     <div
-      class="card mb-6"
-      class:border-red-500={messageType === 'error'}
-      class:border-green-500={messageType === 'success'}
+      class={`callout mb-6 ${
+        messageType === 'success'
+          ? 'callout-ok'
+          : messageType === 'error'
+            ? 'callout-bad'
+            : 'callout-info'
+      }`}
+      role={messageType === 'success' ? 'status' : 'alert'}
     >
       <p class="text-sm">{message}</p>
     </div>
   {/if}
 
   {#if loading}
-    <p class="text-gray-400">Loading system state...</p>
+    <LoadingState label="Loading system state..." />
   {:else if version}
     <section class="card mb-6">
       <h2 class="text-lg font-bold mb-4">Versions</h2>
@@ -561,68 +568,62 @@
 </div>
 
 {#if rebootConfirm}
-  <div class="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
-    <div class="card w-full max-w-md">
-      <h2 class="text-xl font-bold mb-2">Reboot node</h2>
-      <p class="text-sm text-gray-400 mb-4">
-        Shares and apps go offline while the Talos node reboots. This cannot be undone.
-      </p>
-      <label class="label" for="confirm-reboot">Type reboot to confirm</label>
-      <input
-        id="confirm-reboot"
-        type="text"
-        class="input w-full"
-        bind:value={rebootText}
-        autocomplete="off"
-      />
-      <div class="flex justify-end gap-3 mt-6">
-        <button type="button" class="btn" on:click={() => (rebootConfirm = false)}>Cancel</button>
-        <button
-          type="button"
-          class="btn btn-primary"
-          on:click={rebootNode}
-          disabled={rebootText !== 'reboot' || isActive(operation?.phase)}
-        >
-          Reboot
-        </button>
-      </div>
+  <Modal title="Reboot node" onClose={() => (rebootConfirm = false)}>
+    <p class="text-sm text-gray-400">
+      Shares and apps go offline while the Talos node reboots. This cannot be undone.
+    </p>
+    <label class="label" for="confirm-reboot">Type reboot to confirm</label>
+    <input
+      id="confirm-reboot"
+      type="text"
+      class="input w-full"
+      bind:value={rebootText}
+      autocomplete="off"
+    />
+    <div slot="footer">
+      <button type="button" class="btn btn-secondary" on:click={() => (rebootConfirm = false)}>Cancel</button>
+      <button
+        type="button"
+        class="btn btn-primary"
+        on:click={rebootNode}
+        disabled={rebootText !== 'reboot' || isActive(operation?.phase)}
+      >
+        Reboot
+      </button>
     </div>
-  </div>
+  </Modal>
 {/if}
 
 {#if confirmOp && updates?.available}
-  <div class="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
-    <div class="card w-full max-w-md">
-      <h2 class="text-xl font-bold mb-2">{opTitle[confirmOp]}</h2>
-      <p class="text-sm text-gray-400 mb-4">
-        This upgrades the node to <span class="font-mono">{updates.available.version}</span>.
-        {#if confirmOp === 'talos'}
-          Shares and apps go offline while the node reboots.
-        {:else if confirmOp === 'kubernetes'}
-          The control plane restarts; there is no automatic rollback.
-        {/if}
-      </p>
-      <label class="label" for="confirm-version">Type {updates.available.version} to confirm</label>
-      <input
-        id="confirm-version"
-        type="text"
-        class="input w-full"
-        bind:value={confirmText}
-        autocomplete="off"
-      />
-      <div class="flex justify-end gap-3 mt-6">
-        <button type="button" class="btn" on:click={() => (confirmOp = null)} disabled={starting}>
-          Cancel
-        </button>
-        <button
-          type="button"
-          class="btn btn-primary"
-          on:click={start}
-          disabled={starting || confirmText !== updates.available.version}
-        >
-          {starting ? 'Starting…' : 'Start upgrade'}
-        </button>
-      </div>
+  <Modal title={opTitle[confirmOp]} onClose={() => (confirmOp = null)}>
+    <p class="text-sm text-gray-400">
+      This upgrades the node to <span class="font-mono">{updates.available.version}</span>.
+      {#if confirmOp === 'talos'}
+        Shares and apps go offline while the node reboots.
+      {:else if confirmOp === 'kubernetes'}
+        The control plane restarts; there is no automatic rollback.
+      {/if}
+    </p>
+    <label class="label" for="confirm-version">Type {updates.available.version} to confirm</label>
+    <input
+      id="confirm-version"
+      type="text"
+      class="input w-full"
+      bind:value={confirmText}
+      autocomplete="off"
+    />
+    <div slot="footer">
+      <button type="button" class="btn btn-secondary" on:click={() => (confirmOp = null)} disabled={starting}>
+        Cancel
+      </button>
+      <button
+        type="button"
+        class="btn btn-primary"
+        on:click={start}
+        disabled={starting || confirmText !== updates.available.version}
+      >
+        {starting ? 'Starting…' : 'Start upgrade'}
+      </button>
     </div>
-  </div>
+  </Modal>
 {/if}

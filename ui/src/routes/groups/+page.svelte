@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
   import GroupForm from '$lib/components/GroupForm.svelte';
 
   interface Group {
@@ -107,14 +109,11 @@
   {/if}
 
   {#if loading}
-    <p class="text-gray-400">Loading groups...</p>
+    <LoadingState label="Loading groups..." />
   {:else if groups.length === 0}
-    <div class="card text-center py-12">
-      <div class="text-5xl mb-4">👥</div>
-      <h2 class="text-xl font-bold mb-2">No Groups</h2>
-      <p class="text-gray-400 mb-4">Create groups to organize users and control access.</p>
+    <EmptyState icon="users" title="No Groups" detail="Create groups to organize users and control access.">
       <button class="btn btn-primary" on:click={newGroup}>Create Group</button>
-    </div>
+    </EmptyState>
   {:else}
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       {#each groups as group}

@@ -10,6 +10,9 @@
   let open = false;
   let pinned = false;
 
+  // Visibility is driven purely by the `open` state (no group-hover bypass),
+  // so aria-expanded always tells the truth: focus opens, toggle-click pins,
+  // Escape or blur closes.
   function onFocus() {
     if (!pinned) open = true;
   }
@@ -34,10 +37,10 @@
 </script>
 
 {#if items.length > 0}
-  <span class="group relative inline-flex">
+  <span class="relative inline-flex">
     <button
       type="button"
-      class="inline-flex h-4 w-4 items-center justify-center rounded-full text-sm leading-none text-gray-400 hover:text-white focus:text-white focus:outline-none"
+      class="inline-flex h-6 w-6 items-center justify-center rounded-full text-sm leading-none text-gray-400 hover:text-naslos-strong focus:text-naslos-strong focus:outline-none"
       aria-label={label}
       aria-expanded={open}
       aria-controls={id}
@@ -53,7 +56,7 @@
       role="tooltip"
       class="absolute left-0 top-full z-10 mt-2 w-72 rounded-lg border border-naslos-border bg-naslos-surface p-3 text-xs text-gray-300 shadow-lg before:absolute before:-top-2 before:left-0 before:h-2 before:w-full before:content-[''] {open
         ? 'block'
-        : 'hidden'} group-hover:block"
+        : 'hidden'}"
     >
       <p class="mb-1 font-semibold text-gray-200">{label}</p>
       <ul class="list-disc space-y-1 pl-4">

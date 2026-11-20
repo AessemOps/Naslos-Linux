@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
   import DomainForm from '$lib/components/DomainForm.svelte';
   import CertificateStatus from '$lib/components/CertificateStatus.svelte';
 
@@ -129,17 +131,13 @@
   {/if}
 
   {#if loading}
-    <p class="text-gray-400">Loading domains...</p>
+    <LoadingState label="Loading domains..." />
   {:else if domains.length === 0}
-    <div class="card text-center py-12">
-      <div class="text-5xl mb-4">🌐</div>
-      <h2 class="text-xl font-bold mb-2">No Domains Configured</h2>
-      <p class="text-gray-400 mb-2">
-        App subdomains hang off the primary domain
-        {baseDomain ? `(${baseDomain})` : ''}. Add another domain here to request
-        a wildcard certificate for it.
-      </p>
-    </div>
+    <EmptyState
+      icon="globe"
+      title="No Domains Configured"
+      detail="App subdomains hang off the primary domain {baseDomain ? `(${baseDomain})` : ''}. Add another domain here to request a wildcard certificate for it."
+    />
   {:else}
     <div class="space-y-3">
       {#each domains as domain (domain.baseDomain)}
@@ -159,7 +157,7 @@
                 >SSO on — disable</button>
               {:else}
                 <button
-                  class="text-xs px-2 py-0.5 rounded border border-naslos-border text-gray-300 hover:text-white disabled:opacity-60"
+                  class="text-xs px-2 py-1.5 rounded border border-naslos-border text-gray-300 hover:text-naslos-strong disabled:opacity-60"
                   disabled={busy === domain.baseDomain}
                   on:click={() => setSSO(domain, true)}
                 >Make SSO</button>

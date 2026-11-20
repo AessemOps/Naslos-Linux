@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
+  import StatusBadge from '$lib/components/StatusBadge.svelte';
   import UserForm from '$lib/components/UserForm.svelte';
 
   interface User {
@@ -88,14 +91,11 @@
   {/if}
 
   {#if loading}
-    <p class="text-gray-400">Loading users...</p>
+    <LoadingState label="Loading users..." />
   {:else if users.length === 0}
-    <div class="card text-center py-12">
-      <div class="text-5xl mb-4">👤</div>
-      <h2 class="text-xl font-bold mb-2">No Users</h2>
-      <p class="text-gray-400 mb-4">Create your first user to enable authentication.</p>
+    <EmptyState icon="user" title="No Users" detail="Create your first user to enable authentication.">
       <button class="btn btn-primary" on:click={newUser}>Create User</button>
-    </div>
+    </EmptyState>
   {:else}
     <div class="card p-0 overflow-hidden">
       <table class="w-full table-fixed">
@@ -124,9 +124,7 @@
                 </div>
               </td>
               <td class="p-4 align-top">
-                <span class={`text-xs px-2 py-1 rounded ${user.enabled ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>
-                  {user.enabled ? 'Active' : 'Disabled'}
-                </span>
+                <StatusBadge state={user.enabled ? 'active' : 'disabled'} label={user.enabled ? 'Active' : 'Disabled'} />
               </td>
               <td class="p-4 align-top">
                 <div class="flex gap-2 flex-wrap">

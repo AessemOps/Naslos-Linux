@@ -1,6 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
+  import Icon from '$lib/components/Icon.svelte';
+  import ErrorState from '$lib/components/ErrorState.svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
+  import Modal from '$lib/components/Modal.svelte';
+  import PageHeader from '$lib/components/PageHeader.svelte';
+  import StatusBadge from '$lib/components/StatusBadge.svelte';
 
   interface PoolDevice {
     name: string;
@@ -62,6 +68,8 @@
   const poolName = $page.params.name;
 
   async function loadHealth() {
+    loading = true;
+    error = '';
     try {
       const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(poolName ?? '')}/health`);
       if (res.ok) {
@@ -236,17 +244,6 @@
     }
   }
 
-  function stateBadge(state: string): string {
-    switch (state) {
-      case 'ONLINE': return 'bg-green-900/50 text-green-400';
-      case 'DEGRADED': return 'bg-yellow-900/50 text-yellow-400';
-      case 'FAULTED': return 'bg-red-900/50 text-red-400';
-      case 'OFFLINE': return 'bg-gray-900/50 text-gray-400';
-      case 'UNAVAIL': return 'bg-red-900/50 text-red-400';
-      default: return 'bg-naslos-border text-gray-300';
-    }
-  }
-
   onMount(() => {
     loadHealth();
     loadDatasets();
@@ -255,24 +252,23 @@
 
 <div>
   <div class="mb-6">
-    <a href="/pools" class="text-sm text-gray-400 hover:text-naslos-primary">← Back to Pools</a>
+    <a href="/pools" class="text-sm text-gray-400 hover:text-naslos-link flex items-center gap-1 w-fit">
+      <Icon name="chevron-left" size={14} />
+      Back to Pools
+    </a>
   </div>
 
-  <div class="flex items-start justify-between gap-4 mb-8">
-    <div>
-      <h1 class="text-3xl font-bold mb-2">{poolName}</h1>
-      <p class="text-gray-400">Pool health, datasets and devices.</p>
-    </div>
-    <div class="flex gap-2 shrink-0">
+  <PageHeader title={poolName} subtitle="Pool health, datasets and devices.">
+    <div slot="actions" class="flex gap-2">
       <button class="btn btn-secondary" on:click={openAddDrive}>Add Drive</button>
       <button class="btn btn-primary" on:click={() => { showDatasetModal = true; datasetError = ''; }}>New Dataset</button>
     </div>
-  </div>
+  </PageHeader>
 
   {#if loading}
-    <p class="text-gray-400">Loading health data...</p>
+    <LoadingState label="Loading health data..." />
   {:else if error}
-    <p role="alert" class="text-red-400">{error}</p>
+    <ErrorState message={error} retry={loadHealth} />
   {:else if health}
     <!-- Status Overview -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
@@ -290,7 +286,7 @@
       </div>
       <div class="card">
         <div class="text-sm text-gray-400 mb-1">Devices</div>
-        <div class="text-2xl font-bold text-naslos-primary">{health.config.length}</div>
+        <div class="text-2xl font-bold text-naslos-link">{health.config.length}</div>
       </div>
     </div>
 
@@ -342,7 +338,7 @@
                 {ds.used || '0'} used · {ds.avail || '0'} free
               </div>
               <button
-                class="text-xs px-2 py-1 rounded border border-naslos-border text-red-300 hover:bg-red-900/30 whitespace-nowrap"
+                class="btn btn-sm rounded border border-naslos-border text-red-300 hover:bg-red-900/30 whitespace-nowrap"
                 on:click={() => deleteDataset(ds.name, false)}
                 title="Destroy this dataset"
               >Delete</button>
@@ -361,7 +357,7 @@
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-3">
                 <span class="font-medium">{dev.name}</span>
-                <span class="text-xs px-2 py-0.5 rounded {stateBadge(dev.state)}">{dev.state}</span>
+                <StatusBadge state={dev.state} />
               </div>
               <div class="text-xs text-gray-500">
                 Read: {dev.read || '0'} · Write: {dev.write || '0'} · Cksum: {dev.cksum || '0'}
@@ -372,9 +368,9 @@
                 {#each dev.devices as child}
                   <div class="flex items-center justify-between text-sm">
                     <div class="flex items-center gap-2">
-                      <span class="text-gray-500">└</span>
+                      <span class="text-gray-500" aria-hidden="true">└</span>
                       <span>{child.name}</span>
-                      <span class="text-xs px-2 py-0.5 rounded {stateBadge(child.state)}">{child.state}</span>
+                      <StatusBadge state={child.state} />
                     </div>
                     <div class="text-xs text-gray-500">
                       Read: {child.read || '0'} · Write: {child.write || '0'} · Cksum: {child.cksum || '0'}
@@ -388,146 +384,127 @@
       </div>
     </div>
   {/if}
+</div>
 
 <!-- New Dataset modal -->
 {#if showDatasetModal}
-  <div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" role="presentation" on:click|self={() => showDatasetModal = false}>
-    <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-md">
-      <div class="p-6 border-b border-naslos-border flex items-center justify-between">
-        <h2 class="text-xl font-bold">New Dataset</h2>
-        <button class="text-gray-400 hover:text-white text-2xl" on:click={() => showDatasetModal = false}>&times;</button>
-      </div>
+  <Modal title="New Dataset" onClose={() => (showDatasetModal = false)}>
+    <p class="text-sm text-gray-400">
+      A dataset inside <span class="text-naslos-link">{poolName}</span> becomes a folder you can share.
+      Nested names work: <code class="text-xs">photos/2026</code>.
+    </p>
 
-      <div class="p-6 space-y-4">
-        <p class="text-sm text-gray-400">
-          A dataset inside <span class="text-naslos-primary">{poolName}</span> becomes a folder you can share.
-          Nested names work: <code class="text-xs">photos/2026</code>.
-        </p>
-
-        <div>
-          <label class="label" for="pool-field-1">Name *</label>
-          <input id="pool-field-1" type="text" bind:value={datasetName} placeholder="e.g. media" class="input w-full" />
-        </div>
-
-        <div>
-          <label class="label" for="pool-field-2">Compression</label>
-          <select id="pool-field-2" bind:value={datasetCompression} class="input w-full">
-            <option value="lz4">lz4 (fast, good default)</option>
-            <option value="zstd">zstd (better ratio, more CPU)</option>
-            <option value="off">off</option>
-            <option value="gzip">gzip</option>
-          </select>
-        </div>
-
-        <div>
-          <label class="label" for="pool-field-3">Quota</label>
-          <input id="pool-field-3" type="text" bind:value={datasetQuota} placeholder="e.g. 500G (empty = pool-wide limit)" class="input w-full" />
-        </div>
-
-        {#if datasetError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{datasetError}</div>{/if}
-      </div>
-
-      <div class="p-6 border-t border-naslos-border flex justify-end gap-3">
-        <button class="btn btn-secondary" on:click={() => showDatasetModal = false}>Cancel</button>
-        <button class="btn btn-primary" on:click={createDataset} disabled={datasetSaving || !datasetName.trim()}>
-          {datasetSaving ? 'Creating...' : 'Create Dataset'}
-        </button>
-      </div>
+    <div>
+      <label class="label" for="pool-field-1">Name *</label>
+      <input id="pool-field-1" type="text" bind:value={datasetName} placeholder="e.g. media" class="input w-full" />
     </div>
-  </div>
-{/if}
 
-</div>
+    <div>
+      <label class="label" for="pool-field-2">Compression</label>
+      <select id="pool-field-2" bind:value={datasetCompression} class="input w-full">
+        <option value="lz4">lz4 (fast, good default)</option>
+        <option value="zstd">zstd (better ratio, more CPU)</option>
+        <option value="off">off</option>
+        <option value="gzip">gzip</option>
+      </select>
+    </div>
+
+    <div>
+      <label class="label" for="pool-field-3">Quota</label>
+      <input id="pool-field-3" type="text" bind:value={datasetQuota} placeholder="e.g. 500G (empty = pool-wide limit)" class="input w-full" />
+    </div>
+
+    {#if datasetError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{datasetError}</div>{/if}
+
+    <div slot="footer">
+      <button class="btn btn-secondary" on:click={() => (showDatasetModal = false)}>Cancel</button>
+      <button class="btn btn-primary" on:click={createDataset} disabled={datasetSaving || !datasetName.trim()}>
+        {datasetSaving ? 'Creating...' : 'Create Dataset'}
+      </button>
+    </div>
+  </Modal>
+{/if}
 
 <!-- Add Drive modal -->
 {#if showAddDriveModal}
-  <div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" role="presentation" on:click|self={() => showAddDriveModal = false}>
-    <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg">
-      <div class="p-6 border-b border-naslos-border flex items-center justify-between">
-        <h2 class="text-xl font-bold">Add Drive to {poolName}</h2>
-        <button class="text-gray-400 hover:text-white text-2xl" on:click={() => showAddDriveModal = false}>&times;</button>
+  <Modal wide title="Add Drive to {poolName}" onClose={() => (showAddDriveModal = false)}>
+    <p class="text-sm text-gray-400">
+      The selected disks become a new vdev in this pool. Existing data is not redistributed, and a disk
+      that already belongs to a pool cannot be selected.
+    </p>
+
+    {#if disksError}
+      <p role="alert" class="text-red-400 text-sm">{disksError}</p>
+    {:else if disks.length === 0}
+      <p class="text-gray-400 text-sm">No disks detected.</p>
+    {:else}
+      <div class="space-y-2">
+        {#each disks as disk}
+          <label
+            class="flex items-center gap-3 p-3 rounded-lg border border-naslos-border {disk.inPool ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-naslos-dark'}"
+          >
+            <input
+              type="checkbox"
+              class="w-4 h-4 rounded"
+              disabled={!!disk.inPool || isZfsMember(disk.device)}
+              checked={selectedDisks.includes(disk.device)}
+              on:change={() => toggleDisk(disk.device)}
+            />
+            <div class="flex-1">
+              <div class="font-medium">{disk.device}</div>
+              <div class="text-xs text-gray-500">
+                {(disk.size / 1024 / 1024 / 1024).toFixed(1)} GB · {disk.type || 'disk'}
+              </div>
+            </div>
+            {#if disk.inPool}
+              <span class="badge badge-neutral">in pool {disk.inPool}</span>
+            {:else if isZfsMember(disk.device)}
+              <span class="badge badge-bad">holds a ZFS pool</span>
+            {:else if (disk.signatures || []).length > 0}
+              <span class="badge badge-warn">contains {(disk.signatures || []).join(', ')}</span>
+            {:else}
+              <span class="badge badge-ok">available</span>
+            {/if}
+          </label>
+        {/each}
       </div>
+    {/if}
 
-      <div class="p-6 space-y-4 max-h-[65vh] overflow-y-auto">
-        <p class="text-sm text-gray-400">
-          The selected disks become a new vdev in this pool. Existing data is not redistributed, and a disk
-          that already belongs to a pool cannot be selected.
-        </p>
-
-        {#if disksError}
-          <p role="alert" class="text-red-400 text-sm">{disksError}</p>
-        {:else if disks.length === 0}
-          <p class="text-gray-400 text-sm">No disks detected.</p>
-        {:else}
-          <div class="space-y-2">
-            {#each disks as disk}
-              <label
-                class="flex items-center gap-3 p-3 rounded-lg border border-naslos-border {disk.inPool ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-naslos-dark'}"
-              >
-                <input
-                  type="checkbox"
-                  class="w-4 h-4 rounded"
-                  disabled={!!disk.inPool || isZfsMember(disk.device)}
-                  checked={selectedDisks.includes(disk.device)}
-                  on:change={() => toggleDisk(disk.device)}
-                />
-                <div class="flex-1">
-                  <div class="font-medium">{disk.device}</div>
-                  <div class="text-xs text-gray-500">
-                    {(disk.size / 1024 / 1024 / 1024).toFixed(1)} GB · {disk.type || 'disk'}
-                  </div>
-                </div>
-                {#if disk.inPool}
-                  <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-400">in pool {disk.inPool}</span>
-                {:else if isZfsMember(disk.device)}
-                  <span class="text-xs px-2 py-0.5 rounded bg-red-900/40 text-red-300">holds a ZFS pool</span>
-                {:else if (disk.signatures || []).length > 0}
-                  <span class="text-xs px-2 py-0.5 rounded bg-amber-900/40 text-amber-300">contains {(disk.signatures || []).join(', ')}</span>
-                {:else}
-                  <span class="text-xs px-2 py-0.5 rounded bg-green-900/40 text-green-400">available</span>
-                {/if}
-              </label>
-            {/each}
-          </div>
-        {/if}
-
-        <div>
-          <label class="label" for="pool-field-4">Topology</label>
-          <select id="pool-field-4" bind:value={addTopology} class="input w-full">
-            <option value="single">Stripe (no redundancy)</option>
-            <option value="mirror">Mirror (2+ disks, survives 1 failure)</option>
-            <option value="raidz1">RAIDZ1 (2+ disks, survives 1 failure)</option>
-            <option value="raidz2">RAIDZ2 (3+ disks, survives 2 failures)</option>
-            <option value="raidz3">RAIDZ3 (4+ disks, survives 3 failures)</option>
-          </select>
-          <p class="text-xs mt-1 {addTopology === 'single' ? 'text-yellow-400' : 'text-gray-500'}">
-            {topologyHint()} Needs at least {topologyDisksNeeded[addTopology] || 1} disk{topologyDisksNeeded[addTopology] > 1 ? 's' : ''}.
-          </p>
-        </div>
-
-        <label class="flex items-center gap-3 cursor-pointer">
-          <input type="checkbox" bind:checked={addForce} class="w-4 h-4 rounded" />
-          <span class="text-gray-300 text-sm">Force: overwrite any existing signature on the disks (required when a selected disk already contains data)</span>
-        </label>
-        {#if addForce}
-          <p role="alert" class="text-xs text-red-400">
-            Forcing writes over whatever is on the disks. If a disk holds another pool's label, that pool is destroyed.
-          </p>
-        {/if}
-
-        {#if addError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{addError}</div>{/if}
-      </div>
-
-      <div class="p-6 border-t border-naslos-border flex justify-end gap-3">
-        <button class="btn btn-secondary" on:click={() => showAddDriveModal = false}>Cancel</button>
-        <button
-          class="btn btn-primary"
-          on:click={addDevices}
-          disabled={addSaving || selectedDisks.length < (topologyDisksNeeded[addTopology] || 1) || (needsWipeConfirm() && !addForce)}
-        >
-          {addSaving ? 'Adding...' : `Add ${selectedDisks.length || ''} disk${selectedDisks.length === 1 ? '' : 's'}`}
-        </button>
-      </div>
+    <div>
+      <label class="label" for="pool-field-4">Topology</label>
+      <select id="pool-field-4" bind:value={addTopology} class="input w-full">
+        <option value="single">Stripe (no redundancy)</option>
+        <option value="mirror">Mirror (2+ disks, survives 1 failure)</option>
+        <option value="raidz1">RAIDZ1 (2+ disks, survives 1 failure)</option>
+        <option value="raidz2">RAIDZ2 (3+ disks, survives 2 failures)</option>
+        <option value="raidz3">RAIDZ3 (4+ disks, survives 3 failures)</option>
+      </select>
+      <p class="text-xs mt-1 {addTopology === 'single' ? 'text-yellow-400' : 'text-gray-500'}">
+        {topologyHint()} Needs at least {topologyDisksNeeded[addTopology] || 1} disk{topologyDisksNeeded[addTopology] > 1 ? 's' : ''}.
+      </p>
     </div>
-  </div>
+
+    <label class="flex items-center gap-3 cursor-pointer">
+      <input type="checkbox" bind:checked={addForce} class="w-4 h-4 rounded" />
+      <span class="text-gray-300 text-sm">Force: overwrite any existing signature on the disks (required when a selected disk already contains data)</span>
+    </label>
+    {#if addForce}
+      <p role="alert" class="text-xs text-red-400">
+        Forcing writes over whatever is on the disks. If a disk holds another pool's label, that pool is destroyed.
+      </p>
+    {/if}
+
+    {#if addError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{addError}</div>{/if}
+
+    <div slot="footer">
+      <button class="btn btn-secondary" on:click={() => (showAddDriveModal = false)}>Cancel</button>
+      <button
+        class="btn btn-primary"
+        on:click={addDevices}
+        disabled={addSaving || selectedDisks.length < (topologyDisksNeeded[addTopology] || 1) || (needsWipeConfirm() && !addForce)}
+      >
+        {addSaving ? 'Adding...' : `Add ${selectedDisks.length || ''} disk${selectedDisks.length === 1 ? '' : 's'}`}
+      </button>
+    </div>
+  </Modal>
 {/if}

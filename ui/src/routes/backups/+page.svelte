@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
+  import { formatBytes } from '$lib/format';
 
   interface Identity {
     exists: boolean;
@@ -97,15 +99,6 @@
   let restoreResult = '';
   let restoreError = '';
   let restoring = false;
-
-  function fmtBytes(n: number): string {
-    if (n == null || isNaN(n)) return '—';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let v = n;
-    let i = 0;
-    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-    return `${v.toFixed(1)} ${units[i]}`;
-  }
 
   function fmtTime(s?: string): string {
     if (!s) return '—';
@@ -392,17 +385,17 @@
   {#if error}<div role="alert" class="p-4 mb-4 rounded-lg border bg-red-900/30 border-red-700 text-red-300"><span>{error}</span></div>{/if}
 
   {#if loading}
-    <p class="text-gray-400">Loading backups...</p>
+    <LoadingState label="Loading backups..." />
   {:else}
     <!-- Identity -->
     <div class="card mb-6">
       <h2 class="text-lg font-bold mb-2">This instance</h2>
       {#if identity?.exists}
         <p class="text-sm text-gray-400">Name: <span class="text-gray-200">{identity.name}</span></p>
-        <p class="text-sm text-gray-400">Fingerprint: <code class="text-naslos-primary select-all">{identity.fingerprint}</code></p>
+        <p class="text-sm text-gray-400">Fingerprint: <code class="text-naslos-link select-all">{identity.fingerprint}</code></p>
         <div class="flex items-center gap-2 mt-2">
           <code class="text-xs bg-naslos-dark border border-naslos-border rounded px-2 py-1 text-gray-300 select-all break-all">{identity.publicKey}</code>
-          <button class="text-xs px-2 py-1 rounded border border-naslos-border text-gray-300 hover:text-white" on:click={copyKey}>{copied === 'key' ? 'Copied' : 'Copy'}</button>
+          <button class="text-xs px-2 py-1.5 rounded border border-naslos-border text-gray-300 hover:text-naslos-strong" on:click={copyKey}>{copied === 'key' ? 'Copied' : 'Copy'}</button>
         </div>
         <p class="text-xs text-yellow-400/90 mt-2">Back this identity file up somewhere your buddies cannot reach: losing it means losing the ability to read your backups.</p>
       {:else}
@@ -461,13 +454,13 @@
         </table>
       {/if}
       <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
-        <select bind:value={newSchedule.dataset} class="input">
+        <select bind:value={newSchedule.dataset} class="input" aria-label="Schedule dataset">
           <option value="">Dataset…</option>
           {#each sendableDatasets as d}<option value={d.name}>{d.name}</option>{/each}
         </select>
         <textarea bind:value={newSchedule.receivers} placeholder="Buddy URLs, one per line (https://…)" rows="2" class="input"></textarea>
         <input type="text" bind:value={newSchedule.source} placeholder="Source name naslos-a/data" class="input" />
-        <select bind:value={newSchedule.cadence} class="input">
+        <select bind:value={newSchedule.cadence} class="input" aria-label="Schedule cadence">
           <option value="hourly">Hourly</option>
           <option value="daily">Daily</option>
           <option value="weekly">Weekly</option>
@@ -483,7 +476,7 @@
           {:else if verifyError}<p role="alert" class="text-red-300">{verifyError}</p>
           {:else if verifyChains.length > 0}
             <ul class="mt-1 space-y-1">
-              {#each verifyChains as c}<li><code class="text-xs text-naslos-primary">{c.chain}</code> <span class="text-gray-400 text-xs">{c.sha256} ({fmtBytes(c.bytes)})</span></li>{/each}
+              {#each verifyChains as c}<li><code class="text-xs text-naslos-link">{c.chain}</code> <span class="text-gray-400 text-xs">{c.sha256} ({formatBytes(c.bytes)})</span></li>{/each}
             </ul>
           {/if}
         </div>
@@ -494,7 +487,7 @@
     <div class="card mb-6">
       <h2 class="text-lg font-bold mb-2">Back up now</h2>
       <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
-        <select bind:value={adhoc.dataset} class="input">
+        <select bind:value={adhoc.dataset} class="input" aria-label="Backup dataset">
           <option value="">Dataset…</option>
           {#each sendableDatasets as d}<option value={d.name}>{d.name}</option>{/each}
         </select>
@@ -505,7 +498,7 @@
       {#if jobError}<p role="alert" class="text-sm text-red-300 mt-2">{jobError}</p>{/if}
       {#if activeJob}
         <div class="mt-3 text-sm">
-          <p>Job <code class="text-naslos-primary">{activeJob.id}</code>: <span class="font-medium">{activeJob.state}</span>
+          <p>Job <code class="text-naslos-link">{activeJob.id}</code>: <span class="font-medium">{activeJob.state}</span>
             {#if activeJob.incremental}<span class="ml-2 text-xs px-2 py-0.5 rounded bg-blue-900/50 text-blue-300">incremental</span>{/if}
             {#if activeJob.resumed || activeJob.result?.resumed}<span class="ml-2 text-xs px-2 py-0.5 rounded bg-purple-900/50 text-purple-300">resumed</span>{/if}
           </p>
@@ -513,10 +506,10 @@
             <div class="w-full bg-naslos-dark border border-naslos-border rounded h-3 mt-2 overflow-hidden">
               <div class="bg-naslos-primary h-3 transition-all" style={`width: ${activeJob.estimatedBytes ? Math.min(100, ((activeJob.progress?.plainBytes ?? 0) / activeJob.estimatedBytes) * 100) : 8}%`}></div>
             </div>
-            <p class="text-xs text-gray-400 mt-1">{fmtBytes(activeJob.progress?.plainBytes ?? 0)} sent · {activeJob.progress?.uploaded ?? 0} uploaded · {activeJob.progress?.skipped ?? 0} skipped</p>
+            <p class="text-xs text-gray-400 mt-1">{formatBytes(activeJob.progress?.plainBytes ?? 0)} sent · {activeJob.progress?.uploaded ?? 0} uploaded · {activeJob.progress?.skipped ?? 0} skipped</p>
             <button class="btn btn-danger text-xs mt-2" on:click={cancelJob}>Cancel</button>
           {:else if activeJob.result}
-            <p class="text-xs text-gray-400 mt-1">Chain {activeJob.result.chain}: {activeJob.result.chunks} chunks, {fmtBytes(activeJob.result.plainBytes)}.</p>
+            <p class="text-xs text-gray-400 mt-1">Chain {activeJob.result.chain}: {activeJob.result.chunks} chunks, {formatBytes(activeJob.result.plainBytes)}.</p>
           {:else if activeJob.error}
             <p role="alert" class="text-sm text-red-300 mt-1">{activeJob.error}</p>
           {/if}
@@ -547,7 +540,7 @@
       {#if receiverMissing}
         <p class="text-sm text-gray-400">Buddy Backup is not configured on this instance. Create the receive dataset and set <code>buddy.receiveHostPath</code> — see docs/buddy-backup.md §5.1.</p>
       {:else if receiver}
-        <p class="text-sm text-gray-400">Free: {fmtBytes(receiver.freeBytes)} · Stored: {fmtBytes(receiver.usedBytes)}
+        <p class="text-sm text-gray-400">Free: {formatBytes(receiver.freeBytes)} · Stored: {formatBytes(receiver.usedBytes)}
           {#if receiver.enrollmentOpen}<span class="ml-2 text-xs px-2 py-0.5 rounded bg-green-900/50 text-green-300">enrollment open</span>{/if}
         </p>
         <h3 class="font-bold mt-3 mb-1 text-sm">Peers</h3>
@@ -562,7 +555,7 @@
         {:else}
           <table class="w-full text-sm table-fixed">
             <thead><tr class="text-left text-gray-500"><th class="py-1 align-top">Source</th><th class="py-1 align-top">Chain</th><th class="py-1 align-top">Stored</th></tr></thead>
-            <tbody>{#each receiver.backups as b}<tr class="border-t border-naslos-border"><td class="py-1 pr-2 align-top truncate">{b.source}</td><td class="py-1 pr-2 align-top truncate">{b.chain}</td><td class="py-1 align-top">{fmtBytes(b.storedBytes ?? 0)}</td></tr>{/each}</tbody>
+            <tbody>{#each receiver.backups as b}<tr class="border-t border-naslos-border"><td class="py-1 pr-2 align-top truncate">{b.source}</td><td class="py-1 pr-2 align-top truncate">{b.chain}</td><td class="py-1 align-top">{formatBytes(b.storedBytes ?? 0)}</td></tr>{/each}</tbody>
           </table>
         {/if}
       {/if}
