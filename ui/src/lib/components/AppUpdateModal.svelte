@@ -14,6 +14,7 @@
   let error = '';
 
   $: displayName = app.displayName || app.name;
+  $: imageOnly = !app.updateAvailable && !!app.imageUpdateAvailable;
   $: sourceSwitch =
     !!app.latestSource &&
     (app.latestSource !== (app.source ?? '') || app.latestChannel !== (app.channel ?? ''));
@@ -63,7 +64,11 @@
         <div class="text-sm text-gray-400">
           <p class="text-base font-semibold text-gray-100">{displayName}</p>
           <p class="tabular-nums">
-            v{app.installedVersion || 'unknown'} → v{app.latestVersion || 'unknown'}
+            {#if imageOnly}
+              new image{app.imageLatest ? ` → ${app.imageLatest}` : ''}
+            {:else}
+              v{app.installedVersion || 'unknown'} → v{app.latestVersion || 'unknown'}
+            {/if}
           </p>
         </div>
       </div>
@@ -90,7 +95,11 @@
     <div class="p-6 border-t border-naslos-border flex justify-end gap-2">
       <button class="btn btn-secondary" disabled={saving} on:click={() => dispatch('close')}>Cancel</button>
       <button class="btn btn-primary" disabled={saving} on:click={confirmUpdate}>
-        {saving ? 'Starting…' : `Update to v${app.latestVersion || 'unknown'}`}
+        {saving
+          ? 'Starting…'
+          : imageOnly
+            ? 'Update image'
+            : `Update to v${app.latestVersion || 'unknown'}`}
       </button>
     </div>
   </div>

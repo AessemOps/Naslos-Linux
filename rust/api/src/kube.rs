@@ -72,6 +72,16 @@ impl Client {
     }
 
     async fn run(&self, args: &[String], stdin: Option<String>) -> Result<String, String> {
+        self.run_with_timeout(args, stdin, Duration::from_secs(60))
+            .await
+    }
+
+    async fn run_with_timeout(
+        &self,
+        args: &[String],
+        stdin: Option<String>,
+        timeout: Duration,
+    ) -> Result<String, String> {
         let mut full = self.base_args();
         full.extend(args.iter().cloned());
 
@@ -96,7 +106,7 @@ impl Client {
             }
         }
 
-        let output = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
+        let output = tokio::time::timeout(timeout, child.wait_with_output())
             .await
             .map_err(|_| "kubectl: timed out".to_string())?
             .map_err(|e| format!("kubectl: {e}"))?;
@@ -224,6 +234,34 @@ impl Client {
         .map(|_| ())
     }
 
+    /// Wait for a workload rollout to finish. The `kubectl` process timeout is
+    /// slightly longer than the rollout timeout so the CLI can report the
+    /// failure instead of being killed.
+    pub async fn rollout_status(
+        &self,
+        namespace: &str,
+        kind: &str,
+        name: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let seconds = timeout.as_secs().max(1);
+        self.run_with_timeout(
+            &[
+                "rollout".into(),
+                "status".into(),
+                format!("{kind}/{name}"),
+                "-n".into(),
+                namespace.into(),
+                "--timeout".into(),
+                format!("{seconds}s"),
+            ],
+            None,
+            timeout + Duration::from_secs(10),
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// Merge-patch a resource (used for the SSO ConfigMap's `data` keys, so the
     /// chart's ownership of other fields is untouched).
     pub async fn patch_merge(
@@ -243,6 +281,34 @@ impl Client {
                 namespace.into(),
                 "--type".into(),
                 "merge".into(),
+                "-p".into(),
+                data,
+            ],
+            None,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Strategic-merge-patch a resource. Unlike a merge patch this merges the
+    /// container list by name, which is what the app image re-pull needs.
+    pub async fn patch_strategic(
+        &self,
+        kind: &str,
+        name: &str,
+        namespace: &str,
+        patch: &serde_json::Value,
+    ) -> Result<(), String> {
+        let data = serde_json::to_string(patch).map_err(|e| e.to_string())?;
+        self.run(
+            &[
+                "patch".into(),
+                kind.into(),
+                name.into(),
+                "-n".into(),
+                namespace.into(),
+                "--type".into(),
+                "strategic".into(),
                 "-p".into(),
                 data,
             ],

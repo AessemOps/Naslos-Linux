@@ -423,18 +423,23 @@ with a sibling `naslos-app.yaml` install-config. See
   installed and latest chart versions, an update signal and live per-app usage.
   `GET /api/apps` MUST add `displayName`, `icon`, `iconUrl`,
   `installedVersion` (live Helm version when readable, else the record),
-  `latestVersion`, `latestSource`, `latestChannel` and `updateAvailable`;
-  `GET /api/apps/updates` MUST return the record-only
-  `{count, apps:[{name, installedVersion, latestVersion}]}` summary without
-  Helm calls; `GET /api/apps/usage` MUST aggregate the kubelet
-  `stats/summary` (CPU `usageNanoCores`, memory `workingSetBytes`, cumulative
-  `network.rxBytes`/`txBytes`) per app, answer **200** even when unavailable
-  (`available:false` + `error`), and report unknown numeric values as `null`. Update availability MUST be false for an empty latest version, an
-  orphaned record or a missing catalog entry, and MUST NOT report a downgrade
-  as an update. The upgrade action MUST be `PUT /api/apps/{name}` with `{}`.
-  Reading `nodes`/`nodes/proxy` MUST be a separate read-only ClusterRole
-  (`get`/`list` on nodes, `get` on nodes/proxy) with no write or exec.
-  *(apps update tests, app_usage tests, chart render gate)*
+  `latestVersion`, `latestSource`, `latestChannel`, `updateAvailable`,
+  `imageUpdateAvailable`, `imageCurrent` and `imageLatest` (the last two are
+  short running/served digests when an image update is offered);
+  `GET /api/apps/updates` MUST return the
+  `{count, apps:[{name, installedVersion, latestVersion, imageUpdate}]}`
+  summary without Helm calls (an image-only update uses the cached drift
+  snapshot from FR-APP-27, never a registry call); `GET /api/apps/usage` MUST
+  aggregate the kubelet `stats/summary` (CPU `usageNanoCores`, memory
+  `workingSetBytes`, cumulative `network.rxBytes`/`txBytes`) per app, answer
+  **200** even when unavailable (`available:false` + `error`), and report
+  unknown numeric values as `null`. Chart update availability MUST be false
+  for an empty latest version, an orphaned record or a missing catalog entry,
+  and MUST NOT report a downgrade as an update. The upgrade action MUST be
+  `PUT /api/apps/{name}` with `{}`. Reading `nodes`/`nodes/proxy` MUST be a
+  separate read-only ClusterRole (`get`/`list` on nodes, `get` on
+  nodes/proxy) with no write or exec. *(apps update tests, app_usage tests,
+  chart render gate)*
 - **FR-APP-23** — The catalog MUST be refreshed in the background at
   `CHARTS_TTL` (default 15m) and the snapshot rebuilt each cycle; a failed
   refresh MUST keep the previous snapshot and fall back to the stale clone. The
@@ -482,6 +487,24 @@ with a sibling `naslos-app.yaml` install-config. See
   operation, and a chart that drops the capability MUST keep the Secret and
   record a warning instead of failing. *(app_env tests, catalog tests, apps
   record tests, Playwright)*
+- **FR-APP-27** — The Installed view MUST offer an update when the registry
+  serves a different digest for an installed app's image tag (a floating tag
+  such as `latest`), not only when the catalog chart version changes. The API
+  MUST compare the running pod's `imageID` digest with the tag's top-level
+  registry digest *or* its `linux/amd64` manifest digest (runtimes report
+  either), cache lookups for `IMAGE_CHECK_TTL` (default 1h), normalize
+  `docker.io`/`index.docker.io` to `registry-1.docker.io`, and never report an
+  update for a digest-pinned image, an unreadable registry, or a catalog chart
+  older than the installed one. The background catalog cycle and the manual
+  Refresh MUST rebuild the per-app drift snapshot; list and update-summary
+  requests MUST NOT make registry calls, and the manual Refresh MUST NOT block
+  its HTTP response on the registry scan. Every successful upgrade with a known
+  drift MUST force a re-pull of only the drifted containers
+  (`imagePullPolicy: Always` plus a `naslos.io/image-refresh` pod annotation),
+  wait for the bounded rollout, and record a failed pull/rollout in the app's
+  `lastError` while keeping the drift for retry. The chart MUST allow API-only
+  egress to HTTPS registries (`networkPolicy.imageEgress`, default on).
+  *(images tests, apps update tests, chart render gate, live drill)*
 - **FR-APP-19** — Chart installs MUST run as a namespaced identity that cannot
   create Traefik `IngressRoute`/`Middleware` or cert-manager objects; the API
   MUST own the app's route and certificate. *(chart render gate:
@@ -1266,7 +1289,8 @@ Dynamic DNS and the provider registry are verified by
 | `TestOVHSolverShape`, `TestSolverMissingConfigIsAnError` | FR-DNS-01/05 (solver rendering and substitution) |
 | `TestSpecOVH`, `TestSpecCloudflareSolverShape`, `TestSpecRFC2136SolverShape`, `TestSpecPassthroughIsUnchanged` | FR-APP-13, FR-DNS-05 (OVH supported; existing solvers byte-identical) |
 | `apps::value_schema_tests::pool_storage_class_is_safe_and_case_aware`, `persistence_storage_class_covers_top_level_and_nested` | FR-APP-21 (pool StorageClass naming and persistence overrides) |
-| `apps::tests::update_available_compares_versions`, `apps::tests::enrich_view_uses_catalog_and_live_version` | FR-APP-22 (update signal, catalog identity, orphan/empty rules) |
+| `apps::tests::update_available_compares_versions`, `apps::tests::enrich_view_uses_catalog_and_live_version`, `apps::tests::enrich_view_reports_image_drift_separately_from_a_chart_update` | FR-APP-22 (update signal, catalog identity, orphan/empty rules) |
+| `images::tests::*`, `apps::tests::image_pull_patch_targets_only_the_drifted_container` | FR-APP-27 (reference parsing, index/platform digest matching, realm validation, digest cache, targeted re-pull patch) |
 | `app_usage::tests::*` | FR-APP-22 (summary parsing, rate baselines, pod→app attribution, aggregation) |
 | `apps::dataset_layout_tests::*` | FR-APP-20 (selection normalisation, one claim/hostPath entry per dataset, client value stripping, chart support scan) |
 | `apps::resource_quantity_tests::*` | FR-APP-25 (flat and per-component resources, quantity grammar, non-quantity types, unrelated keys) |

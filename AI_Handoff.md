@@ -71,8 +71,10 @@ The drill exposed **four platform defects**, all fixed on the branch
 
 The same session surfaced and fixed **three buddy defects** (see the same
 branch): self-send transport (loopback rewrite, gotcha #17), the replay-window
-budget (gotcha #18), and the UI drills' dataset choice. The branch needs a
-**v0.4.3 release** to ship all of it.
+budget (gotcha #18), and the UI drills' dataset choice. The branch also adds
+upstream image release detection for installed apps (FR-APP-27: registry
+tag→digest drift, `new image` badge, forced re-pull on update). The branch needs
+a **v0.4.3 release** to ship all of it.
 
 ## Production instance (2026-11-20)
 

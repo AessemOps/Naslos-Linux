@@ -50,15 +50,17 @@
   </div>
 
   <div class="flex items-center gap-2 shrink-0">
-    {#if app.updateAvailable}
+    {#if app.updateAvailable || app.imageUpdateAvailable}
       <button
         type="button"
         class="text-xs px-2 py-1 rounded bg-amber-900/50 text-amber-300 hover:bg-amber-800/60 tabular-nums"
-        aria-label={`Update ${displayName} to ${app.latestVersion}`}
+        aria-label={app.updateAvailable
+          ? `Update ${displayName} to ${app.latestVersion}`
+          : `Update ${displayName} to the newly released image`}
         disabled={jobRunning}
         on:click={() => dispatch('update')}
       >
-        → v{app.latestVersion}
+        {app.updateAvailable ? `→ v${app.latestVersion}` : 'new image'}
       </button>
     {/if}
     <button

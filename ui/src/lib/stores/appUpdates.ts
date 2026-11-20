@@ -4,6 +4,7 @@
     name: string;
     installedVersion: string;
     latestVersion: string;
+    imageUpdate?: boolean;
   }
 
   export interface AppUpdates {
