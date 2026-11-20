@@ -385,6 +385,38 @@ pub async fn snapshots_post_empty() -> Response {
     write_error(StatusCode::BAD_REQUEST, "dataset path is required")
 }
 
+/// `POST /api/v1/rollback/{dataset}` — roll a dataset back to a snapshot
+/// (`zfs rollback -r`). Used by the VM snapshot-restore route; the API
+/// refuses the restore while the VM is running.
+pub async fn rollback_post(
+    State(state): State<Arc<AppState>>,
+    Path(dataset): Path<String>,
+    body: Body,
+) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    let req: SnapshotRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
+        Ok(req) => req,
+        Err(resp) => return resp,
+    };
+    match zfs.rollback(&dataset, &req.name).await {
+        Ok(()) => {
+            tracing::info!("rolled back {} to snapshot {}", dataset, req.name);
+            json_response(
+                StatusCode::OK,
+                &json!({ "status": "rolled back", "dataset": dataset, "name": req.name }),
+            )
+        }
+        Err(e) => write_client_error(&e),
+    }
+}
+
+/// `/api/v1/rollback/` POST with an empty dataset segment.
+pub async fn rollback_post_empty() -> Response {
+    write_error(StatusCode::BAD_REQUEST, "dataset path is required")
+}
+
 // ---- Shares --------------------------------------------------------------
 
 #[derive(Default, Deserialize)]

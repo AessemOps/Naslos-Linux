@@ -42,6 +42,11 @@ pub struct AppState {
     pub talos: Option<Arc<crate::talos::TalosClient>>,
     /// The agent client (S2). Absent when `AGENT_TOKEN` is unset.
     pub agent: Option<Arc<crate::agent::Client>>,
+    /// The QEMU supervisor client (FR-VMT). Absent when `VMD_TOKEN` is unset
+    /// (virt disabled).
+    pub vmd: Option<Arc<crate::vmd::Client>>,
+    /// The VM records (vms.json on the state PVC).
+    pub vms: Arc<crate::virt::Store>,
     /// The share definitions (S3b); interior-mutable for the CRUD handlers.
     pub shares: std::sync::Mutex<crate::shares::Manager>,
     /// The SMB account mirror (S3c).
@@ -185,6 +190,14 @@ impl AppState {
                     None
                 }
             },
+            vmd: match crate::vmd::Client::from_env() {
+                Ok(client) => Some(Arc::new(client)),
+                Err(e) => {
+                    tracing::info!("vmd client unavailable: {e}");
+                    None
+                }
+            },
+            vms: Arc::new(crate::virt::Store::from_env()),
             shares: std::sync::Mutex::new(crate::shares::Manager::from_env()),
             samba_users: std::sync::Mutex::new(crate::shares::SambaUserStore::from_env()),
             identity: match crate::identity::Client::from_env() {
@@ -235,6 +248,8 @@ impl AppState {
             metrics: Manager::new(),
             talos: None,
             agent: None,
+            vmd: None,
+            vms: Arc::new(crate::virt::Store::new("")),
             shares: std::sync::Mutex::new(crate::shares::Manager::new("", "/var/mnt")),
             samba_users: std::sync::Mutex::new(crate::shares::SambaUserStore::new("")),
             identity: None,

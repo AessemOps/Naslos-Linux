@@ -398,6 +398,9 @@ make install-vm VM_IP="$VM_IP" HELM_FLAGS="$HELM_FLAGS \
   --set shares.nfs.image.tag=$IMAGE_TAG \
   --set terminal.image.repository=$REGISTRY/naslos-terminal \
   --set terminal.image.tag=$IMAGE_TAG \
+  --set virt.image.repository=$REGISTRY/naslos-vmd \
+  --set virt.image.tag=$IMAGE_TAG \
+  --set virt.image.digest= \
   --set openldap.image=$REGISTRY/naslos-openldap:$IMAGE_TAG"
 
 echo ""

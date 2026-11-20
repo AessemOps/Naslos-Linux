@@ -25,6 +25,7 @@ pub mod providers;
 pub mod shares;
 pub mod system;
 pub mod users;
+pub mod virt;
 pub mod ws;
 pub mod zfs;
 
@@ -185,6 +186,37 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .post(zfs::datasets_post)
                 .delete(zfs::datasets_delete),
         )
+        .route("/api/virt/capabilities", get(virt::capabilities_get))
+        .route("/api/virt/vms", get(virt::vms_get).post(virt::vms_post))
+        .route(
+            "/api/virt/vms/{name}",
+            get(virt::vm_detail_get)
+                .put(virt::vm_detail_put)
+                .delete(virt::vm_detail_delete),
+        )
+        .route("/api/virt/vms/{name}/start", post(virt::vm_start_post))
+        .route("/api/virt/vms/{name}/stop", post(virt::vm_stop_post))
+        .route(
+            "/api/virt/vms/{name}/force-stop",
+            post(virt::vm_force_stop_post),
+        )
+        .route("/api/virt/vms/{name}/restart", post(virt::vm_restart_post))
+        .route(
+            "/api/virt/vms/{name}/snapshots",
+            get(virt::vm_snapshots_get).post(virt::vm_snapshot_post),
+        )
+        .route(
+            "/api/virt/vms/{name}/snapshots/{snap}/restore",
+            post(virt::vm_snapshot_restore_post),
+        )
+        .route("/api/virt/images", get(virt::images_get))
+        .route("/api/virt/images/upload", post(virt::image_upload_post))
+        .route("/api/virt/images/import", post(virt::image_import_post))
+        .route(
+            "/api/virt/images/{name}",
+            axum::routing::delete(virt::image_delete),
+        )
+        .route("/api/ws/vm/{name}/vnc", get(virt::vm_vnc_ws))
         .route("/api/ws/logs", get(ws::logs_ws))
         .route("/api/pods", get(pods::pods_get))
         .route("/api/namespaces", get(pods::namespaces_get))

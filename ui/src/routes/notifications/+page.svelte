@@ -33,7 +33,9 @@
     { id: 'zfs_health', label: 'ZFS Pool Health' },
     { id: 'disk_failure', label: 'Disk Failure' },
     { id: 'backup_failure', label: 'Backup Failure' },
-    { id: 'backup_success', label: 'Backup Success' }
+    { id: 'backup_success', label: 'Backup Success' },
+    { id: 'vm_failed', label: 'VM Failed to Start' },
+    { id: 'vm_exited_unexpected', label: 'VM Unexpected Exit' }
   ];
 
   const severityLevels = [

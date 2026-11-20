@@ -1,0 +1,175 @@
+{{- /*
+The QEMU/KVM supervisor (FR-VMT): one privileged, hostNetwork pod that owns
+every QEMU process on the node.
+
+Recreate (not RollingUpdate): two vmd pods would fight over the same QEMU
+children, VNC ports and macvtap devices. Pod restart = VM restart for
+autostart-marked VMs: the API re-pushes the config on its own startup and the
+supervisor reconciles (documented in docs/virtual-machines.md).
+
+Mounts:
+  /dev      HostToContainer - /dev/kvm (acceleration) and /dev/net/tun plus the
+             per-VM /dev/tapN macvtap devices QEMU is handed fds for.
+  /var/mnt  RW HostToContainer - the VM datasets and image libraries. RW is
+             required (blank disks, cloud-init seeds, upload chunks); the mount
+             propagation makes datasets created later (through the host-side
+             agent) appear without a pod restart.
+  /sys      read-only - NIC inventory for the capabilities report.
+  /run/vmd  emptyDir - QMP unix sockets.
+
+No Kubernetes API access: like the agent, vmd has no RBAC at all.
+*/}}
+{{- /* The `get` guard keeps a `helm upgrade --reuse-values` from a pre-0.4
+     release (whose values have no `virt` map) rendering at all instead of
+     failing on a nil dereference; the documented path renders the values
+     files, where `virt` always exists. */}}
+{{- $virt := get .Values "virt" | default dict }}
+{{- if $virt.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: naslos-vmd
+  namespace: {{ include "naslos.workloadNamespace" . }}
+  labels:
+    app.kubernetes.io/name: naslos-vmd
+    app.kubernetes.io/component: virt
+spec:
+  replicas: 1
+  # Two vmd pods must never coexist (split-brain over QEMU children, VNC
+  # ports and macvtap devices); terminate the old pod before the new one.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-vmd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: naslos-vmd
+    spec:
+      serviceAccountName: naslos-vmd
+      # vmd never calls the Kubernetes API.
+      automountServiceAccountToken: false
+      # hostNetwork: the API reaches vmd at the node's own address (the
+      # headless Service advertises it), and QEMU's NAT hostfwd binds the
+      # node's ports so LAN clients reach the forwards without any routing.
+      hostNetwork: true
+      containers:
+        - name: vmd
+          image: {{ include "naslos.image" $virt.image }}
+          imagePullPolicy: {{ $virt.image.pullPolicy }}
+          securityContext:
+            # QEMU supervision needs /dev/kvm, /dev/net/tun, macvtap creation
+            # (CAP_NET_ADMIN) and writes into the VM datasets.
+            privileged: true
+          env:
+            # Every request but /health must carry the shared bearer token
+            # (NAS-002 pattern). No opt-out.
+            - name: VMD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $virt.tokenSecret | default "naslos-vmd" }}
+                  key: token
+            {{- if $virt.tls.enabled }}
+            # PF-M5: serve HTTPS with the chart-generated vmd certificate. The
+            # API pins the same CA via VMD_CA_FILE.
+            - name: VMD_TLS_CERT
+              value: /etc/naslos/vmd-tls/tls.crt
+            - name: VMD_TLS_KEY
+              value: /etc/naslos/vmd-tls/tls.key
+            {{- else }}
+            # vmd refuses to serve its token in cleartext unless this is
+            # explicit. Turning TLS off here is that choice.
+            - name: VMD_ALLOW_PLAINTEXT
+              value: "1"
+            {{- end }}
+            # VNC display range: QEMU listens on 5900 + display per running VM.
+            - name: VMD_VNC_FIRST_DISPLAY
+              value: {{ $virt.vnc.firstDisplay | default 1 | quote }}
+            - name: VMD_VNC_DISPLAYS
+              value: {{ $virt.vnc.displays | default 16 | quote }}
+          volumeMounts:
+            - name: host-dev
+              mountPath: /dev
+              mountPropagation: HostToContainer
+            - name: host-var-mnt
+              mountPath: /var/mnt
+              mountPropagation: HostToContainer
+            - name: host-sys
+              mountPath: /sys
+              readOnly: true
+            - name: vmd-run
+              mountPath: /run/vmd
+            {{- if $virt.tls.enabled }}
+            - name: vmd-tls
+              mountPath: /etc/naslos/vmd-tls
+              readOnly: true
+            {{- end }}
+          # /health is the only unauthenticated route; it proves the listener
+          # and the TLS material are usable (SEC-2026-F10 pattern).
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9091
+              {{- if $virt.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9091
+              {{- if $virt.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.virt.resources | nindent 12 }}
+      volumes:
+        - name: host-dev
+          hostPath:
+            path: /dev
+        - name: host-var-mnt
+          hostPath:
+            path: /var/mnt
+            type: Directory
+        - name: host-sys
+          hostPath:
+            path: /sys
+        - name: vmd-run
+          emptyDir: {}
+        {{- if $virt.tls.enabled }}
+        - name: vmd-tls
+          secret:
+            secretName: {{ $virt.tls.secretName | default "naslos-vmd-tls" }}
+        {{- end }}
+---
+# Headless Service (the agent pattern): vmd is hostNetwork, so the endpoint is
+# the node's own address and the API's VMD_BASE_URL resolves to it directly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: naslos-vmd
+  namespace: {{ include "naslos.workloadNamespace" . }}
+  labels:
+    app.kubernetes.io/name: naslos-vmd
+    app.kubernetes.io/component: virt
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: naslos-vmd
+  ports:
+    - name: {{ if $virt.tls.enabled }}https{{ else }}http{{ end }}
+      port: {{ $virt.service.port | default 9091 }}
+      targetPort: 9091
+      protocol: TCP
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: naslos-vmd
+  namespace: {{ include "naslos.workloadNamespace" . }}
+# No ClusterRole/ClusterRoleBinding: vmd never calls the Kubernetes API.
+{{- end }}

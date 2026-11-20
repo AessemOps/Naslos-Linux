@@ -309,7 +309,10 @@ address inside `TRAEFIK_CIDR`; a request without `ConnectInfo` is refused (fail
 closed). Unsafe methods additionally require a same-origin browser context
 (`Sec-Fetch-Site: same-origin` or a matching `Origin`) and, when a body is
 present, `Content-Type: application/json`; otherwise the API returns 403/415.
-Non-browser clients that send neither header are unaffected.
+Non-browser clients that send neither header are unaffected. The one exception
+is `POST /api/virt/images/upload`, which streams `application/octet-stream`
+chunks; the same-origin checks still apply and octet-stream is not a
+CORS-safelisted content type, so cross-origin posts still force a preflight.
 
 `/api/ws/logs` reads the pod log stream (tail 200 lines, follow); the Installed
 drawer uses it with a pod from `/api/apps/{name}/pods`. The API pod needs the
@@ -336,6 +339,23 @@ container, 409 pod not running). The terminal calls this before opening the
 socket, because a browser cannot read the HTTP status of a failed websocket
 handshake. `shell` is limited to `bash`, `sh`, `ash`, `zsh` - the endpoint runs a
 shell, never an arbitrary command.
+
+### Virtual machines (`FR-VMT`, see [virtual-machines.md](virtual-machines.md))
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/virt/capabilities` | Node preflight: KVM, CPU model, nested, tun, macvtap, physical NICs. 503 when the supervisor is not deployed/reachable |
+| GET | `/api/virt/vms` | VM records merged with live state (`running`/`stopped`/`unknown`; live `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) |
+| POST | `/api/virt/vms` | Create: validates, creates `<pool>/vms/<name>` (quota = disk size) + the pool's `vms/isos` library via the agent, stores the record, pushes the desired config; rolls the record back if the push fails |
+| GET/PUT/DELETE | `/api/virt/vms/{name}` | Detail (merged view) / update (name immutable; the supervisor recreates the QEMU process when the rendered args change) / delete (409 while running; destroys the dataset, restoring the record if the destroy fails) |
+| POST | `/api/virt/vms/{name}/start` `stop` `force-stop` `restart` | Lifecycle. `stop` = graceful ACPI shutdown (vmd escalates to SIGTERM/SIGKILL); `restart` = force-stop + start |
+| GET/POST | `/api/virt/vms/{name}/snapshots` | List / create a ZFS snapshot of the VM dataset (validated name) |
+| POST | `/api/virt/vms/{name}/snapshots/{snap}/restore` | `zfs rollback -r`; 409 while running (newer snapshots are deleted, stated in the response) |
+| GET | `/api/virt/images?pool=` | Per-pool library listing plus in-flight imports and their last errors |
+| POST | `/api/virt/images/upload?pool=&name=&offset=&final=` | One upload chunk, `application/octet-stream` (the API's only non-JSON body, scoped to this route), streamed through to the supervisor |
+| POST | `/api/virt/images/import` | Server-side URL import → `202`; the SSRF guard lives in the supervisor; errors surface in the listing |
+| DELETE | `/api/virt/images/{name}?pool=` | Delete a library file |
+| GET | `/api/ws/vm/{name}/vnc` | Console: plain GET = preflight (`vncPort`, per-boot `vncPassword`, `ready to attach`; 409 while stopped); websocket upgrade = RFB bridge to QEMU's VNC (same-origin check, session caps like `/api/ws/exec`) |
 
 ### Static assets
 
@@ -416,9 +436,18 @@ shell, never an arbitrary command.
 | `SYSTEM_UPGRADER_SERVICE_ACCOUNT` / `_CONFIGMAP` | `naslos-upgrader` / `naslos-system-operation` | Job identity and status object |
 | `SYSTEM_UPGRADER_TALOS_SECRET` / `_STATE_PVC` | `api.talosConfigSecret` / `naslos-shares-config` | Job mounts |
 | `SYSTEM_UPGRADER_BACKOFF_LIMIT` / `_TTL_SECONDS` | `3` / `3600` | Job retry/retention |
-| `NASLOS_WORKLOAD_NAMESPACE` | `naslos-privileged` | Where the agent/samba/nfs/terminal workloads live |
+| `NASLOS_WORKLOAD_NAMESPACE` | `naslos-privileged` | Where the agent/samba/nfs/terminal/vmd workloads live |
+| `VMD_BASE_URL` | `https://naslos-vmd.<workload ns>.svc.cluster.local:9091` | The QEMU supervisor the API pushes desired state to. Absent client (no `VMD_TOKEN`) disables `/api/virt/*` with 503 |
+| `VMD_TOKEN` | — | Bearer token the supervisor requires (from the `naslos-vmd` Secret, key `token`) |
+| `VMD_CA_FILE` | — | The chart-generated vmd CA, pinned by the API client; **required** for an `https://` `VMD_BASE_URL` (fail closed, PF-M5) |
+| `VMS_CONFIG` | `/var/lib/naslos/vms.json` | VM records on the state PVC (`api.vmsFile` value) |
+| `VIRT_CONSOLE_MAX_SESSION_SECS` / `_IDLE_TIMEOUT_SECS` / `_MAX_SESSIONS` | `14400` / `600` / `4` | Console bridge session caps (`api.virtConsole` values) |
 
 The `naslos-agent` uses `NODE_NAME` (from `spec.nodeName`) and listens on `:9090`.
+The `naslos-vmd` supervisor listens on `:9091` (see
+[virtual-machines.md](virtual-machines.md) for its own variables:
+`VMD_TOKEN`, `VMD_TLS_CERT`/`VMD_TLS_KEY` or `VMD_ALLOW_PLAINTEXT=1`,
+`VMD_VNC_FIRST_DISPLAY`/`VMD_VNC_DISPLAYS`, `VMD_RUN_DIR`).
 
 Disk-health controls:
 

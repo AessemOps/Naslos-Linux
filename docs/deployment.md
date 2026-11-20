@@ -135,14 +135,14 @@ them anonymously; a dry run publishes `:sha-<commit>` only:
 - `.github/workflows/ci.yml` runs on every PR/push to `master`: the full
   `scripts/audit.sh` sweep (with `gitleaks` installed so the secret scan does not
   skip), a `supply-chain` job (`cargo audit`, `cargo deny`, `trivy fs`), a
-  gitleaks scan, a no-push Docker build of all 8 images with a Trivy
+  gitleaks scan, a no-push Docker build of all 9 images with a Trivy
   HIGH/CRITICAL gate and a CycloneDX SBOM per image, and a local install-pack
   build.
 - `.github/workflows/release.yml` runs on a strict-semver **`vX.Y.Z`** tag:
   `guard` (the tag must equal `charts/naslos/Chart.yaml` `version`/`appVersion`
   and `ui/package.json` `version`; `scripts/check-release-version.sh` also
   requires every image tag in `values.yaml` and `values-installer.yaml` to match
-  `appVersion`) → build + push all 8 images to
+  `appVersion`) → build + push all 9 images to
   `ghcr.io/aessemops/naslos-*` (linux/amd64) → build the install pack with every
   chart image **pinned by digest** (FR-INSTALL-13) → require green
   `audit`/`supply-chain`/`gitleaks` check runs for the commit, verify the pack
@@ -663,7 +663,7 @@ A **released** pack also pins each chart image by digest to
 images first, then `scripts/pin-installer-values.py` rewrites the packed
 `values-installer.yaml` and `metadata.json.images` records the exact
 references. A digest wins over a tag (VER-2), and the pack build fails closed if
-any of the 7 chart images is missing from the digest map. A local
+any of the 9 chart images is missing from the digest map. A local
 `make install-pack` has no digest map and keeps the tag placeholders. See
 "GHCR images + release tags" above.
 

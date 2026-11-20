@@ -35,7 +35,7 @@
 #   OUTPUT_DIR         output directory (default: dist)
 #   IMAGE_DIGESTS_FILE JSON {"api":"repo@sha256:...", ...} or `component=ref` lines
 #   IMAGE_DIGESTS      same content inline (`api=repo@sha256:...,agent=...`)
-#                      Supplying either is fail-closed: all 7 chart images required.
+#                      Supplying either is fail-closed: all 8 chart images required.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -71,7 +71,7 @@ chart_app_version=$(awk -v q="'" '/^appVersion:/ {gsub(/"/, "", $2); gsub(q, "",
 VERSION="${PACK_VERSION:-$chart_version}"
 
 # Optional digest map (FR-INSTALL-13). Supplying one is fail-closed: the pack
-# must pin all 7 chart images or the build fails (pin-installer-values.py).
+# must pin all 8 chart images or the build fails (pin-installer-values.py).
 IMAGE_DIGESTS_FILE="${IMAGE_DIGESTS_FILE:-}"
 IMAGE_DIGESTS="${IMAGE_DIGESTS:-}"
 

@@ -4,7 +4,7 @@
 # SDKs, so this image ships pinned `helm`, `kubectl` and `talosctl` plus `git`
 # for the chart-repository cache. That adds image size, not idle RSS.
 
-FROM rust:1.88-alpine AS builder
+FROM rust:1.100-alpine AS builder
 RUN apk add --no-cache musl-dev
 
 WORKDIR /build
@@ -12,15 +12,19 @@ COPY rust/Cargo.toml Cargo.toml
 COPY rust/Cargo.lock Cargo.lock
 COPY rust/agent/Cargo.toml agent/Cargo.toml
 COPY rust/api/Cargo.toml api/Cargo.toml
+COPY rust/vmd/Cargo.toml vmd/Cargo.toml
 # Warm the dependency cache before copying sources (placeholder crates, then
-# touched after the real COPY so they rebuild).
-RUN mkdir -p agent/src api/src \
+# touched after the real COPY so they rebuild). The placeholder set covers
+# every workspace member: cargo needs all manifests to load the workspace.
+RUN mkdir -p agent/src api/src vmd/src \
     && echo 'pub fn placeholder(){}' > agent/src/lib.rs && echo 'fn main(){}' > agent/src/main.rs \
     && echo 'pub fn placeholder(){}' > api/src/lib.rs && echo 'fn main(){}' > api/src/main.rs \
+    && echo 'pub fn placeholder(){}' > vmd/src/lib.rs && echo 'fn main(){}' > vmd/src/main.rs \
     && cargo build --release --locked --package naslos-api || true
 COPY rust/agent/src agent/src
 COPY rust/api/src api/src
-RUN touch agent/src/lib.rs agent/src/main.rs api/src/lib.rs api/src/main.rs \
+COPY rust/vmd/src vmd/src
+RUN touch agent/src/lib.rs agent/src/main.rs api/src/lib.rs api/src/main.rs vmd/src/lib.rs vmd/src/main.rs \
     && cargo build --release --locked --package naslos-api
 
 FROM alpine:3.24

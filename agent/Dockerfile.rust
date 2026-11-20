@@ -1,7 +1,7 @@
 # Naslos agent container image (Rust port).
 # Runs as a privileged DaemonSet and executes zpool/zfs via chroot /host.
 
-FROM rust:1.88-alpine AS builder
+FROM rust:1.100-alpine AS builder
 
 # smartmontools is GPL-2.0-or-later (see CREDITS.md). Pin both the release and
 # the tarball digest; a floating download would make the image unreproducible.
@@ -18,14 +18,16 @@ WORKDIR /build
 COPY rust/Cargo.toml Cargo.toml
 COPY rust/Cargo.lock Cargo.lock
 COPY rust/agent/Cargo.toml agent/Cargo.toml
-# The workspace also contains the API crate; cargo needs every member manifest
-# to load the workspace, even when only building the agent.
+# The workspace also contains the API and vmd crates; cargo needs every member
+# manifest to load the workspace, even when only building the agent.
 COPY rust/api/Cargo.toml api/Cargo.toml
+COPY rust/vmd/Cargo.toml vmd/Cargo.toml
 # Warm the dependency cache before copying sources so a code change does not
 # rebuild the whole graph.
-RUN mkdir -p agent/src api/src \
+RUN mkdir -p agent/src api/src vmd/src \
     && echo 'fn main() {}' > agent/src/main.rs && echo '' > agent/src/lib.rs \
     && echo 'pub fn placeholder() {}' > api/src/lib.rs && echo 'fn main() {}' > api/src/main.rs \
+    && echo 'pub fn placeholder() {}' > vmd/src/lib.rs && echo 'fn main() {}' > vmd/src/main.rs \
     && cargo build --release --locked --target x86_64-unknown-linux-musl --package naslos-agent || true
 COPY rust/agent/src agent/src
 # Bust the placeholder build (touch the lib too, so the dependency crate is
@@ -49,7 +51,10 @@ RUN curl -fsSLo /tmp/smartmontools.tar.gz \
         LDFLAGS=-static \
     && make -j"$(nproc)" smartctl \
     && strip smartctl \
-    && file smartctl | grep -q 'statically linked' \
+    # Newer Alpine/GCC defaults produce a static-PIE binary, which `file`
+    # reports as "static-pie linked" instead of "statically linked"; both
+    # are fully static (no interpreter), which is what scratch needs.
+    && file smartctl | grep -Eq 'statically linked|static-pie linked' \
     && ./smartctl --version
 
 # Assemble the files the agent needs on top of the static binary:
