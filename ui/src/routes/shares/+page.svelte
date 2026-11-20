@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
+  import Icon from '$lib/components/Icon.svelte';
+  import LoadingState from '$lib/components/LoadingState.svelte';
   import ShareForm from '$lib/components/ShareForm.svelte';
 
   interface Share {
@@ -95,10 +98,10 @@
 
   function protocolIcon(protocol: string): string {
     switch (protocol) {
-      case 'smb': return '🪟';
-      case 'nfs': return '🐧';
-      case 'afp': return '🍎';
-      default: return '📁';
+      case 'smb': return 'monitor';
+      case 'nfs': return 'hard-drive';
+      case 'afp': return 'folder';
+      default: return 'folder';
     }
   }
 
@@ -131,19 +134,16 @@
   {/if}
 
   {#if loading}
-    <p class="text-gray-400">Loading shares...</p>
+    <LoadingState label="Loading shares..." />
   {:else if shares.length === 0}
-    <div class="card text-center py-12">
-      <div class="text-5xl mb-4">🔗</div>
-      <h2 class="text-xl font-bold mb-2">No Shares Configured</h2>
-      <p class="text-gray-400 mb-4">Create your first share to start serving files to your network.</p>
+    <EmptyState icon="link" title="No Shares Configured" detail="Create your first share to start serving files to your network.">
       <button class="btn btn-primary" on:click={newShare}>Create Share</button>
-    </div>
+    </EmptyState>
   {:else}
     <div class="space-y-3">
       {#each shares as share}
         <div class="card flex items-center gap-4">
-          <div class="text-3xl">{protocolIcon(share.protocol)}</div>
+          <div class="text-gray-400" aria-hidden="true"><Icon name={protocolIcon(share.protocol)} size={28} /></div>
           <div class="flex-1">
             <div class="flex items-center gap-2 mb-1">
               <h3 class="font-bold">{share.name}</h3>
@@ -159,7 +159,7 @@
                 {#if (share.validUsers?.length ?? 0) > 0}
                   <span class="text-gray-400">users {share.validUsers.join(', ')}</span>
                 {/if}
-                {#if (share.validUsers?.length ?? 0) > 0 && (share.validGroups?.length ?? 0) > 0}<span class="text-gray-600"> · </span>{/if}
+                {#if (share.validUsers?.length ?? 0) > 0 && (share.validGroups?.length ?? 0) > 0}<span class="text-gray-500"> · </span>{/if}
                 {#if (share.validGroups?.length ?? 0) > 0}
                   <span class="text-gray-400">groups {share.validGroups.join(', ')}</span>
                 {/if}
@@ -167,9 +167,9 @@
             {/if}
             {#if connectURL(share)}
               <div class="flex items-center gap-2 mt-2">
-                <code class="text-xs bg-naslos-dark border border-naslos-border rounded px-2 py-1 text-naslos-primary select-all">{connectURL(share)}</code>
+                <code class="text-xs bg-naslos-dark border border-naslos-border rounded px-2 py-1 text-naslos-link select-all">{connectURL(share)}</code>
                 <button
-                  class="text-xs px-2 py-1 rounded border border-naslos-border text-gray-300 hover:text-white hover:bg-naslos-border transition-colors"
+                  class="text-xs px-2 py-1.5 rounded border border-naslos-border text-gray-300 hover:text-naslos-strong hover:bg-naslos-border transition-colors"
                   on:click={() => copyURL(connectURL(share))}
                   title="Copy the share address"
                 >{copied === connectURL(share) ? 'Copied' : 'Copy'}</button>

@@ -51,9 +51,12 @@ agent:
 ui:
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    # Post-0.3.23 UI: the System page distinguishes a make-install node.
-    tag: "sha-6ebab2dbce1346efb2306c6fc63e252e18e3ff18"
-    digest: "sha256:bc8f5013814aec5656dcc49d97e4fb1354bcd09006072afdb97c5c177fac9737"
+    # UI/UX overhaul drill build (sha-90d24d3, release dry run publish=false).
+    # Keep the tag and digest in sync with the same workflow run: the chart
+    # renders repo@digest when digest is set, and a stale tag would ErrImagePull
+    # the moment the digest is cleared.
+    tag: "sha-90d24d3af1bd64de9ecf22bf76b7ac7987b4c6fd"
+    digest: "sha256:23397552dbaaa674fd6d6332c932b897ff1c577f0564ff1faa8cb22e09c7d0b3"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:

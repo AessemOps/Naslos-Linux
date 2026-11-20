@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { formatBytes } from '$lib/format';
 
   interface Disk {
     device: string;
@@ -191,17 +192,6 @@
   }
 
   onMount(loadDisks);
-
-  function formatSize(bytes: number): string {
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let i = 0;
-    let size = bytes;
-    while (size >= 1024 && i < units.length - 1) {
-      size /= 1024;
-      i++;
-    }
-    return `${size.toFixed(1)} ${units[i]}`;
-  }
 </script>
 
 <div class="max-w-4xl mx-auto">
@@ -257,7 +247,7 @@
                   {/if}
                 </div>
                 <div class="text-sm text-gray-400">
-                  {formatSize(disk.size)} {disk.model ? `• ${disk.model}` : ''}
+                  {formatBytes(disk.size)} {disk.model ? `• ${disk.model}` : ''}
                 </div>
                 {#if needsWipeConfirm(disk) && selectedDisks.includes(disk.device)}
                   <label class="flex items-center gap-2 mt-2 text-sm text-amber-300">
@@ -332,7 +322,7 @@
                   <div class="flex items-center gap-2">
                     <span class="font-medium">{opt.label}</span>
                     {#if opt.value === recommendation.topology}
-                      <span class="text-xs px-2 py-0.5 rounded bg-naslos-primary/20 text-naslos-primary">Recommended</span>
+                      <span class="text-xs px-2 py-0.5 rounded bg-naslos-primary/20 text-naslos-link">Recommended</span>
                     {/if}
                   </div>
                   <p class="text-sm text-gray-400">{opt.desc}</p>
@@ -386,7 +376,7 @@
                     <span class="font-medium">{disk.device}</span>
                     <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{disk.type}</span>
                   </div>
-                  <p class="text-sm text-gray-400">{disk.model || 'Unknown'} · {formatSize(disk.size)}</p>
+                  <p class="text-sm text-gray-400">{disk.model || 'Unknown'} · {formatBytes(disk.size)}</p>
                 </div>
               </label>
             {/each}

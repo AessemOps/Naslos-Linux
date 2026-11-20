@@ -1,5 +1,6 @@
 <script lang="ts">
   import { modal } from '$lib/actions/modal';
+  import Icon from '$lib/components/Icon.svelte';
   import { onMount, createEventDispatcher } from 'svelte';
 
   interface User {
@@ -129,7 +130,7 @@
   <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
     <div class="p-6 border-b border-naslos-border flex items-center justify-between">
       <h2 class="text-xl font-bold">{user ? 'Edit User' : 'New User'}</h2>
-      <button class="text-gray-400 hover:text-white text-2xl" on:click={() => dispatch('close')}>×</button>
+      <button class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border" aria-label="Close" on:click={() => dispatch('close')}><Icon name="x" /></button>
     </div>
 
     <div class="flex-1 overflow-y-auto p-6 space-y-4">

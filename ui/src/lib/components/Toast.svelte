@@ -1,5 +1,6 @@
 <script lang="ts">
   import { appToasts, dismissToast } from '$lib/stores/appJobs';
+  import Icon from './Icon.svelte';
 </script>
 
 <div class="fixed top-4 right-4 z-[60] flex flex-col gap-2 w-80" aria-live="polite">
@@ -9,11 +10,18 @@
       role="status"
     >
       <div class="flex items-start justify-between gap-2">
-        <div class="min-w-0">
-          <p class="font-medium">{toast.title}</p>
-          {#if toast.detail}<p class="text-xs mt-1 break-words">{toast.detail}</p>{/if}
+        <div class="min-w-0 flex items-start gap-2">
+          <Icon name={toast.tone === 'success' ? 'circle-check' : 'triangle-alert'} size={18} />
+          <div class="min-w-0">
+            <p class="font-medium">{toast.title}</p>
+            {#if toast.detail}<p class="text-xs mt-1 break-words">{toast.detail}</p>{/if}
+          </div>
         </div>
-        <button class="text-gray-300 hover:text-white" aria-label="Dismiss" on:click={() => dismissToast(toast.id)}>×</button>
+        <button
+          class="icon-btn -m-1 text-gray-300 hover:text-naslos-strong"
+          aria-label="Dismiss"
+          on:click={() => dismissToast(toast.id)}
+        ><Icon name="x" size={16} /></button>
       </div>
     </div>
   {/each}

@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import EmptyState from './EmptyState.svelte';
+  import LoadingState from './LoadingState.svelte';
   import SourceForm from './SourceForm.svelte';
 
   interface Source {
@@ -84,17 +86,13 @@
   </div>
 
   {#if error}
-    <div role="alert" class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
+    <div role="alert" class="callout callout-bad">{error}</div>
   {/if}
 
   {#if loading}
-    <p class="text-gray-400">Loading sources...</p>
+    <LoadingState label="Loading sources..." />
   {:else if sources.length === 0}
-    <div class="card text-center py-12">
-      <div class="text-5xl mb-4">🔗</div>
-      <h2 class="text-xl font-bold mb-2">No Chart Repositories</h2>
-      <p class="text-gray-400 mb-4">Add a source, then refresh to populate the catalog.</p>
-    </div>
+    <EmptyState icon="link" title="No Chart Repositories" detail="Add a source, then refresh to populate the catalog." />
   {:else}
     <div class="space-y-3">
       {#each sources as source (source.name)}

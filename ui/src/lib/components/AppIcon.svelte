@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
+
   export let icon = '';
   export let iconUrl = '';
   export let alt = '';
@@ -20,5 +22,5 @@
     on:error={() => (failed = true)}
   />
 {:else}
-  <div class={`${size} shrink-0`} aria-hidden="true">{icon || '📦'}</div>
+  <div class={`${size} shrink-0`} aria-hidden="true">{#if icon}{icon}{:else}<Icon name="package" size={36} />{/if}</div>
 {/if}
