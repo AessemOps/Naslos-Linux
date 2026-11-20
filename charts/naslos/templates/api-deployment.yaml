@@ -339,6 +339,8 @@ spec:
               value: {{ .Values.api.chartsCacheDir | default "/var/lib/naslos/charts" | quote }}
             - name: CHARTS_TTL
               value: {{ .Values.apps.refreshTTL | default "15m" | quote }}
+            - name: IMAGE_CHECK_TTL
+              value: {{ .Values.apps.imageCheckTTL | default "1h" | quote }}
             - name: PLATFORM_RELEASE
               value: {{ .Release.Name | quote }}
             # Release facts for the web upgrader (docs/installer-contract.md §7).

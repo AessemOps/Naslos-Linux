@@ -214,7 +214,7 @@
 
   $: updateCount = $appUpdates.count;
   $: updateableApps = apps.filter(
-    (app) => app.updateAvailable && !runningJobApps.has(app.name)
+    (app) => (app.updateAvailable || app.imageUpdateAvailable) && !runningJobApps.has(app.name)
   );
   $: aggregate = (() => {
     let cpu = 0;
@@ -249,7 +249,9 @@
   });
 
   const unsubscribeUpdates = appUpdates.subscribe((updates) => {
-    const signature = updates.apps.map((a) => `${a.name}:${a.latestVersion}`).join(',');
+    const signature = updates.apps
+      .map((a) => `${a.name}:${a.latestVersion}:${a.imageUpdate ? 1 : 0}`)
+      .join(',');
     if (lastUpdatesSignature === null) {
       lastUpdatesSignature = signature;
       return;

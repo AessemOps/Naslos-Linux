@@ -5,6 +5,7 @@
 //! exposure settings the routing layer renders from.
 
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -285,9 +286,27 @@ pub struct View {
     pub latest_channel: String,
     #[serde(default, rename = "updateAvailable")]
     pub update_available: bool,
+    /// The running image's digest differs from the digest the registry serves
+    /// for its tag (a new upstream image was released).
+    #[serde(default, rename = "imageUpdateAvailable")]
+    pub image_update_available: bool,
+    /// Short digest the running pod pulled; empty when no image drift is known.
+    #[serde(
+        default,
+        rename = "imageCurrent",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub image_current: String,
+    /// Short digest the registry currently serves for the tag.
+    #[serde(
+        default,
+        rename = "imageLatest",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub image_latest: String,
 }
 
-/// One app with a newer chart in the catalog (the record-only summary used by
+/// One app with a newer chart or a newer upstream image (the summary used by
 /// the tab badge and the sidebar dot).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct UpdateSummary {
@@ -296,6 +315,9 @@ pub struct UpdateSummary {
     pub installed_version: String,
     #[serde(rename = "latestVersion")]
     pub latest_version: String,
+    /// The update is an upstream image release, not (only) a chart version.
+    #[serde(default, rename = "imageUpdate")]
+    pub image_update: bool,
 }
 
 /// A chart version that may carry a prerelease/build suffix. `crate::semver`
@@ -375,12 +397,13 @@ pub fn update_available(installed: &str, latest: &str) -> bool {
     }
 }
 
-/// Fill the catalog-derived and live-version fields on a view. `live_version`
-/// is Helm's release version when it could be read.
+/// Fill the catalog-derived, live-version and cached image-drift fields on a
+/// view. `live_version` is Helm's release version when it could be read.
 fn enrich_view(
     view: &mut View,
     live_version: Option<&str>,
     catalog_app: Option<&crate::catalog::App>,
+    image_drift: Option<&crate::images::ImageDrift>,
 ) {
     let live = live_version.map(str::trim).filter(|v| !v.is_empty());
     view.installed_version = live.unwrap_or(view.record.chart_version.trim()).to_string();
@@ -405,6 +428,83 @@ fn enrich_view(
     view.update_available = !view.record.orphaned
         && catalog_app.is_some()
         && update_available(&view.installed_version, &view.latest_version);
+    // Never advertise an image refresh when the catalog chart is *older* than
+    // the installed one: the update action resolves the catalog winner and
+    // would downgrade the release.
+    let catalog_not_older = !update_available(&view.latest_version, &view.installed_version);
+    view.image_update_available = !view.record.orphaned
+        && image_drift.is_some()
+        && catalog_app.is_some()
+        && catalog_not_older;
+    view.image_current = image_drift
+        .map(|drift| crate::images::short_digest(&drift.current))
+        .unwrap_or_default();
+    view.image_latest = image_drift
+        .map(|drift| crate::images::short_digest(&drift.latest))
+        .unwrap_or_default();
+}
+
+/// The release an app's pod belongs to, by its chart label.
+fn pod_instance(pod: &serde_json::Value) -> &str {
+    pod.pointer("/metadata/labels/app.kubernetes.io~1instance")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+}
+
+/// Build the strategic-merge patch that makes the drifted container pull its
+/// image again and roll: `Always` only on containers whose image is
+/// `reference`, plus a pod-template annotation. Returns `None` when no
+/// container matches, so unrelated sidecars and fixed-tag databases are left
+/// untouched.
+fn image_pull_patch(
+    workload: &serde_json::Value,
+    reference: &str,
+    roll: &str,
+) -> Option<serde_json::Value> {
+    let mut containers = Vec::new();
+    let mut init_containers = Vec::new();
+    for (key, target) in [
+        ("containers", &mut containers),
+        ("initContainers", &mut init_containers),
+    ] {
+        if let Some(specs) = workload
+            .pointer(&format!("/spec/template/spec/{key}"))
+            .and_then(|specs| specs.as_array())
+        {
+            for spec in specs {
+                let image = spec.get("image").and_then(|image| image.as_str());
+                if image != Some(reference) {
+                    continue;
+                }
+                if let Some(container) = spec.get("name").and_then(|name| name.as_str()) {
+                    target.push(serde_json::json!({
+                        "name": container,
+                        "imagePullPolicy": "Always",
+                    }));
+                }
+            }
+        }
+    }
+    if containers.is_empty() && init_containers.is_empty() {
+        return None;
+    }
+    let mut spec = serde_json::json!({});
+    if !containers.is_empty() {
+        spec["containers"] = serde_json::Value::Array(containers);
+    }
+    if !init_containers.is_empty() {
+        spec["initContainers"] = serde_json::Value::Array(init_containers);
+    }
+    Some(serde_json::json!({
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": { "naslos.io/image-refresh": roll },
+                },
+                "spec": spec,
+            }
+        }
+    }))
 }
 
 /// A Service rendered by an installed release.
@@ -554,6 +654,10 @@ pub struct Manager {
     app_dns: Option<Arc<dyn AppDns>>,
     /// CPU/RAM/network cache for the Installed tab (`GET /api/apps/usage`).
     usage: crate::app_usage::UsageCollector,
+    /// Registry tag→digest resolver, cached for `IMAGE_CHECK_TTL`.
+    image_digests: crate::images::ImageDigestCache,
+    /// Last upstream-image drift per app, refreshed on the catalog cycle.
+    image_drift: Mutex<HashMap<String, crate::images::ImageDrift>>,
     /// Namespaces reserved by installs that have not recorded a release yet.
     /// `_mu` was never taken, so two concurrent installs picked the same
     /// "isolated" namespace; reservations are the fix.
@@ -792,6 +896,8 @@ impl Manager {
             pool_provisioner_image: cfg.pool_provisioner_image,
             app_dns: cfg.app_dns,
             usage: crate::app_usage::UsageCollector::default(),
+            image_digests: crate::images::ImageDigestCache::from_env(),
+            image_drift: Mutex::new(HashMap::new()),
             reservations: Arc::new(Mutex::new(std::collections::HashSet::new())),
             app_locks: Mutex::new(HashMap::new()),
         })
@@ -1425,6 +1531,7 @@ impl Manager {
             }
             return Err(format!("recording the install: {e}"));
         }
+        self.clear_image_drift(&req.name);
         self.apply_route(&rec, &req.base_domain).await;
         self.reconcile_app_dns(&rec).await;
         self.view(&rec.name).await
@@ -1617,6 +1724,24 @@ impl Manager {
         rec.chart_version = app.version.clone();
         rec.updated_at = Some(Utc::now());
         rec.last_error = env_outcome.warning;
+        // Charts pull floating tags with `IfNotPresent`; without this the
+        // update button would run Helm successfully and keep the old image.
+        // Only an app with a known drift is touched, and a failed rollout
+        // keeps the drift (and the error) so the update is offered again.
+        if let Some(drift) = self.image_drift_for(name) {
+            report(progress, STAGE_FINALIZING, "Pulling the new app image");
+            match self.force_image_pull(&rec, &drift).await {
+                Ok(()) => self.clear_image_drift(name),
+                Err(e) => {
+                    let warning = format!("pulling the new app image: {e}");
+                    rec.last_error = if rec.last_error.is_empty() {
+                        warning
+                    } else {
+                        format!("{}; {warning}", rec.last_error)
+                    };
+                }
+            }
+        }
         self.store.upsert(rec)?;
         self.view(name).await
     }
@@ -1777,6 +1902,7 @@ impl Manager {
         if let Err(e) = self.delete_datasets(&rec).await {
             tracing::warn!("app {name}: dataset cleanup failed: {e}");
         }
+        self.clear_image_drift(name);
         self.store.delete(name)
     }
 
@@ -1818,7 +1944,13 @@ impl Manager {
                 }
             }
             let catalog_app = catalog.as_ref().and_then(|c| c.get(&rec.name).ok());
-            enrich_view(&mut view, live_version.as_deref(), catalog_app.as_ref());
+            let drift = self.image_drift_for(&rec.name);
+            enrich_view(
+                &mut view,
+                live_version.as_deref(),
+                catalog_app.as_ref(),
+                drift.as_ref(),
+            );
             views.push(view);
         }
         if views.is_empty() {
@@ -2487,8 +2619,211 @@ impl Manager {
             }
         }
         let catalog_app = (self.catalog)().and_then(|c| c.get(name).ok());
-        enrich_view(&mut view, live_version.as_deref(), catalog_app.as_ref());
+        let drift = self.image_drift_for(name);
+        enrich_view(
+            &mut view,
+            live_version.as_deref(),
+            catalog_app.as_ref(),
+            drift.as_ref(),
+        );
         Ok(view)
+    }
+
+    fn image_drift_for(&self, name: &str) -> Option<crate::images::ImageDrift> {
+        self.image_drift
+            .lock()
+            .ok()
+            .and_then(|drift| drift.get(name).cloned())
+    }
+
+    /// Manual "Check now": forget cached registry lookups first, then rebuild
+    /// the drift snapshot so a newly pushed tag is visible immediately.
+    pub async fn refresh_image_updates_now(&self) {
+        self.image_digests.clear();
+        self.refresh_image_updates().await;
+    }
+
+    fn clear_image_drift(&self, name: &str) {
+        if let Ok(mut drift) = self.image_drift.lock() {
+            drift.remove(name);
+        }
+    }
+
+    /// Re-resolve every installed app's container image tags and remember the
+    /// apps whose running digest no longer matches the registry.
+    ///
+    /// Called from the background catalog refresher and the manual Refresh
+    /// action, so the list and update-summary endpoints never make registry
+    /// calls themselves. Pods are listed once per namespace (isolated
+    /// namespaces are owned by one app; shared ones filter by the instance
+    /// label) and registry lookups run a few apps at a time.
+    pub async fn refresh_image_updates(&self) {
+        let Some(kube) = &self.kube else {
+            return;
+        };
+        let records: Vec<Record> = self
+            .store
+            .list()
+            .into_iter()
+            .filter(|rec| !rec.orphaned)
+            .collect();
+        if records.is_empty() {
+            if let Ok(mut drift) = self.image_drift.lock() {
+                drift.clear();
+            }
+            return;
+        }
+
+        let mut namespaces: Vec<String> = records
+            .iter()
+            .map(|rec| self.target_namespace(rec))
+            .collect();
+        namespaces.sort();
+        namespaces.dedup();
+        let mut pods_by_namespace: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+        for namespace in namespaces {
+            match kube.list_json("pods", &namespace, None).await {
+                Ok(list) => {
+                    let items = list
+                        .get("items")
+                        .and_then(|items| items.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    pods_by_namespace.insert(namespace, items);
+                }
+                Err(e) => {
+                    tracing::debug!("image check could not list pods in {namespace}: {e}");
+                }
+            }
+        }
+
+        let checks = records.into_iter().map(|rec| {
+            let namespace = self.target_namespace(&rec);
+            let isolated = self.is_isolated_namespace(&namespace);
+            let pods = pods_by_namespace
+                .get(&namespace)
+                .cloned()
+                .unwrap_or_default();
+            let app = rec.name.clone();
+            async move {
+                let mut drift = None;
+                'pods: for pod in pods {
+                    if !isolated && pod_instance(&pod) != app {
+                        continue;
+                    }
+                    let Some(specs) = pod
+                        .pointer("/spec/containers")
+                        .and_then(|containers| containers.as_array())
+                    else {
+                        continue;
+                    };
+                    let statuses = pod
+                        .pointer("/status/containerStatuses")
+                        .and_then(|statuses| statuses.as_array());
+                    for spec in specs {
+                        let Some(image) = spec.get("image").and_then(|image| image.as_str()) else {
+                            continue;
+                        };
+                        let name = spec
+                            .get("name")
+                            .and_then(|name| name.as_str())
+                            .unwrap_or("");
+                        let image_id = statuses
+                            .and_then(|statuses| {
+                                statuses.iter().find(|status| {
+                                    status.get("name").and_then(|n| n.as_str()).unwrap_or("")
+                                        == name
+                                })
+                            })
+                            .and_then(|status| status.get("imageID"))
+                            .and_then(|id| id.as_str())
+                            .unwrap_or("");
+                        let Some(current) = crate::images::running_digest(image_id) else {
+                            continue;
+                        };
+                        if let Some(found) = self.image_digests.check(image, &current).await {
+                            drift = Some(found);
+                            break 'pods;
+                        }
+                    }
+                }
+                (app, drift)
+            }
+        });
+        let results: Vec<(String, Option<crate::images::ImageDrift>)> =
+            futures::stream::iter(checks)
+                .buffer_unordered(4)
+                .collect()
+                .await;
+
+        let mut next: HashMap<String, crate::images::ImageDrift> = HashMap::new();
+        for (name, drift) in results {
+            if let Some(drift) = drift {
+                next.insert(name, drift);
+            }
+        }
+        if let Ok(mut drift) = self.image_drift.lock() {
+            *drift = next;
+        }
+    }
+
+    /// The instance-label selector for a record: none in a dedicated namespace
+    /// (the whole namespace belongs to the app), the label in a shared one.
+    fn release_selector(&self, rec: &Record) -> Option<String> {
+        let namespace = self.target_namespace(rec);
+        if self.is_isolated_namespace(&namespace) {
+            None
+        } else {
+            Some(format!("app.kubernetes.io/instance={}", rec.name))
+        }
+    }
+
+    /// Force the release's drifted container to pull again and roll.
+    ///
+    /// Charts set `IfNotPresent` on floating tags, so a Helm upgrade with
+    /// unchanged values leaves the old cached image running. Patching only the
+    /// container whose image actually drifted (plus a pod-template annotation)
+    /// makes the update action fetch the newly released digest without
+    /// changing unrelated sidecars or databases.
+    async fn force_image_pull(
+        &self,
+        rec: &Record,
+        drift: &crate::images::ImageDrift,
+    ) -> Result<(), String> {
+        let Some(kube) = &self.kube else {
+            return Ok(());
+        };
+        let namespace = self.target_namespace(rec);
+        let selector = self.release_selector(rec);
+        let roll = Utc::now().to_rfc3339();
+        let mut patched = false;
+        for kind in ["deployments", "statefulsets"] {
+            let list = kube
+                .list_json(kind, &namespace, selector.as_deref())
+                .await?;
+            let Some(items) = list.get("items").and_then(|items| items.as_array()) else {
+                continue;
+            };
+            for item in items {
+                let Some(name) = item.pointer("/metadata/name").and_then(|n| n.as_str()) else {
+                    continue;
+                };
+                let Some(patch) = image_pull_patch(item, &drift.reference, &roll) else {
+                    continue;
+                };
+                kube.patch_strategic(kind, name, &namespace, &patch).await?;
+                kube.rollout_status(&namespace, kind, name, std::time::Duration::from_secs(180))
+                    .await?;
+                patched = true;
+            }
+        }
+        if !patched {
+            return Err(format!(
+                "no workload container matches the drifting image {}",
+                drift.reference
+            ));
+        }
+        Ok(())
     }
 
     /// The `(app name, workload namespace)` pairs the usage collector attributes
@@ -2504,8 +2839,9 @@ impl Manager {
             .collect()
     }
 
-    /// Record-only update summary for the tab badge and sidebar dot (no Helm
-    /// calls). Orphaned apps and names without a catalog entry are skipped.
+    /// Update summary for the tab badge and sidebar dot (no Helm or registry
+    /// calls): chart updates come from records + catalog, image updates from
+    /// the drift snapshot refreshed on the catalog cycle.
     pub fn update_summaries(&self) -> (usize, Vec<UpdateSummary>) {
         let Some(catalog) = (self.catalog)() else {
             return (0, Vec::new());
@@ -2517,13 +2853,17 @@ impl Manager {
             .filter(|rec| !rec.orphaned)
             .filter_map(|rec| {
                 let app = catalog.get(&rec.name).ok()?;
-                if !update_available(rec.chart_version.trim(), app.version.trim()) {
+                let chart_update = update_available(rec.chart_version.trim(), app.version.trim());
+                let image_update = self.image_drift_for(&rec.name).is_some()
+                    && !update_available(app.version.trim(), rec.chart_version.trim());
+                if !chart_update && !image_update {
                     return None;
                 }
                 Some(UpdateSummary {
                     name: rec.name.clone(),
                     installed_version: rec.chart_version.trim().to_string(),
                     latest_version: app.version.trim().to_string(),
+                    image_update,
                 })
             })
             .collect();
@@ -3436,7 +3776,7 @@ mod tests {
             },
             ..Default::default()
         };
-        enrich_view(&mut view, Some("0.1.2"), Some(&app));
+        enrich_view(&mut view, Some("0.1.2"), Some(&app), None);
         assert_eq!(view.display_name, "Jellyfin");
         assert_eq!(view.icon, "🎬");
         assert_eq!(view.icon_url, "https://example.test/jellyfin.png");
@@ -3455,7 +3795,7 @@ mod tests {
             },
             ..Default::default()
         };
-        enrich_view(&mut view, None, None);
+        enrich_view(&mut view, None, None, None);
         assert_eq!(view.display_name, "orphan");
         assert_eq!(view.installed_version, "9.9.9");
         assert!(!view.update_available);
@@ -3470,8 +3810,83 @@ mod tests {
             },
             ..Default::default()
         };
-        enrich_view(&mut view, None, Some(&app));
+        enrich_view(&mut view, None, Some(&app), None);
         assert!(!view.update_available);
+    }
+
+    #[test]
+    fn enrich_view_reports_image_drift_separately_from_a_chart_update() {
+        let app = crate::catalog::App {
+            name: "radarr".to_string(),
+            version: "0.1.6".to_string(),
+            ..Default::default()
+        };
+        let drift = crate::images::ImageDrift {
+            reference: "lscr.io/linuxserver/radarr:latest".to_string(),
+            current: "sha256:51a9ac2a9eb47afc833541e5fd6c11b86eb9f810694c22fa2429e3078e9194b2"
+                .to_string(),
+            latest: "sha256:ff1b1f21a200e19f52017bd1544031143715b1ab262b823a9dcb916a71da0956"
+                .to_string(),
+        };
+        let mut view = View {
+            record: Record {
+                name: "radarr".to_string(),
+                chart_version: "0.1.6".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        enrich_view(&mut view, Some("0.1.6"), Some(&app), Some(&drift));
+        assert!(!view.update_available, "the chart is current");
+        assert!(view.image_update_available);
+        assert_eq!(view.image_current, "51a9ac2a9eb4");
+        assert_eq!(view.image_latest, "ff1b1f21a200");
+
+        // A catalog chart older than the installed one must not offer an
+        // "image update": the update action resolves the catalog winner and
+        // would downgrade the release.
+        let older = crate::catalog::App {
+            name: "radarr".to_string(),
+            version: "0.1.5".to_string(),
+            ..Default::default()
+        };
+        enrich_view(&mut view, Some("0.1.6"), Some(&older), Some(&drift));
+        assert!(!view.update_available);
+        assert!(!view.image_update_available);
+
+        // An orphan must never advertise an image update either.
+        view.record.orphaned = true;
+        enrich_view(&mut view, Some("0.1.6"), Some(&app), Some(&drift));
+        assert!(!view.image_update_available);
+    }
+
+    #[test]
+    fn image_pull_patch_targets_only_the_drifted_container() {
+        let workload = serde_json::json!({
+            "spec": { "template": { "spec": {
+                "containers": [
+                    { "name": "gluetun", "image": "qmcgaw/gluetun:latest" },
+                    { "name": "prowlarr", "image": "lscr.io/linuxserver/prowlarr:latest" }
+                ],
+                "initContainers": [ { "name": "init", "image": "busybox:latest" } ]
+            } } }
+        });
+        let patch =
+            image_pull_patch(&workload, "lscr.io/linuxserver/prowlarr:latest", "now").unwrap();
+        assert_eq!(
+            patch["spec"]["template"]["metadata"]["annotations"]["naslos.io/image-refresh"],
+            "now"
+        );
+        let containers = patch["spec"]["template"]["spec"]["containers"]
+            .as_array()
+            .unwrap();
+        assert_eq!(containers.len(), 1);
+        assert_eq!(containers[0]["name"], "prowlarr");
+        assert_eq!(containers[0]["imagePullPolicy"], "Always");
+        assert!(patch["spec"]["template"]["spec"]["initContainers"].is_null());
+
+        assert!(image_pull_patch(&workload, "example/app:v2", "now").is_none());
+        assert!(image_pull_patch(&serde_json::json!({}), "example/app:v2", "now").is_none());
     }
 
     #[test]

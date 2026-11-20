@@ -59,6 +59,10 @@ export interface AppView {
   latestSource: string;
   latestChannel: string;
   updateAvailable: boolean;
+  /** The registry serves a newer digest for the app's image tag. */
+  imageUpdateAvailable?: boolean;
+  imageCurrent?: string;
+  imageLatest?: string;
   env?: AppEnvVar[];
   dns?: AppDnsState;
 }

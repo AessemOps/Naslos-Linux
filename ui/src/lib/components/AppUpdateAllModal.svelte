@@ -24,6 +24,13 @@
     return app.displayName || app.name;
   }
 
+  function versionLabel(app: AppView): string {
+    if (app.updateAvailable) {
+      return `v${app.installedVersion || 'unknown'} → v${app.latestVersion || 'unknown'}`;
+    }
+    return app.imageLatest ? `new image → ${app.imageLatest}` : 'new image';
+  }
+
   function requestClose() {
     if (!saving) dispatch('close');
   }
@@ -90,7 +97,7 @@
             <AppIcon icon={app.icon} iconUrl={app.iconUrl} alt="" size="text-xl" imgClass="h-6 w-6" />
             <span class="min-w-0 flex-1 truncate text-sm font-medium">{displayName(app)}</span>
             <span class="text-xs text-gray-400 tabular-nums">
-              v{app.installedVersion || 'unknown'} → v{app.latestVersion || 'unknown'}
+              {versionLabel(app)}
             </span>
           </li>
         {/each}

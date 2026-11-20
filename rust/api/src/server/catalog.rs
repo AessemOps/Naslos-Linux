@@ -125,6 +125,11 @@ pub async fn sources_refresh(
     }
 
     let count = state.catalog.load().map(|c| c.list().len()).unwrap_or(0);
+    if let Some(manager) = state.app_manager.clone() {
+        // Registry checks are slow and independent of the catalog response; a
+        // spawned pass keeps "Check now" from blocking the UI for minutes.
+        tokio::spawn(async move { manager.refresh_image_updates_now().await });
+    }
     json(
         StatusCode::OK,
         serde_json::json!({ "status": "refreshed", "catalog": count }),

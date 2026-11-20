@@ -22,6 +22,7 @@ pub mod dnsrecords;
 pub mod health_watch;
 pub mod helm;
 pub mod identity;
+pub mod images;
 pub mod kube;
 pub mod logsafe;
 pub mod metrics;

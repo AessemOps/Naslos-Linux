@@ -435,4 +435,92 @@ test.describe('installed app updates', () => {
     await expect(page.getByText('Started 2 updates')).toBeVisible();
     expect(updated.sort()).toEqual(['demo-a', 'demo-b']);
   });
+
+  test('offers and applies an upstream image release', async ({ page }) => {
+    const updated: string[] = [];
+    const app = {
+      name: 'demo-image',
+      namespace: 'naslos-app-demo-image',
+      chart: 'demo-image',
+      status: 'running',
+      url: '',
+      orphaned: false,
+      exposure: { subdomain: '', tls: false, auth: false, localOnly: false, internet: true },
+      displayName: 'Demo Image',
+      icon: 'A',
+      iconUrl: '',
+      installedVersion: '1.0.0',
+      latestVersion: '1.0.0',
+      latestSource: 'official',
+      latestChannel: 'Prod',
+      updateAvailable: false,
+      imageUpdateAvailable: true,
+      imageCurrent: '123456abcdef',
+      imageLatest: 'abcdef123456'
+    };
+
+    await page.route(/\/api\//, async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path === '/api/apps/updates') {
+        return route.fulfill({
+          json: {
+            count: 1,
+            apps: [
+              { name: 'demo-image', installedVersion: '1.0.0', latestVersion: '1.0.0', imageUpdate: true }
+            ]
+          }
+        });
+      }
+      if (path === '/api/apps/usage') {
+        return route.fulfill({ json: { available: false, apps: [] } });
+      }
+      if (path === '/api/apps/namespaces') {
+        return route.fulfill({
+          json: {
+            baseline: { provisioned: 0, limit: 0, used: 0, available: 0 },
+            privileged: { provisioned: 0, limit: 0, used: 0, available: 0 }
+          }
+        });
+      }
+      if (path === '/api/apps') {
+        return route.fulfill({ json: [app] });
+      }
+      const job = /^\/api\/apps\/jobs\/([^/]+)$/.exec(path);
+      if (job) {
+        return route.fulfill({
+          json: {
+            id: decodeURIComponent(job[1]),
+            kind: 'upgrade',
+            app: 'demo-image',
+            state: 'succeeded',
+            stage: 'finalizing',
+            message: 'done',
+            startedAt: new Date().toISOString(),
+            finishedAt: new Date().toISOString()
+          }
+        });
+      }
+      const update = /^\/api\/apps\/([^/]+)$/.exec(path);
+      if (update && request.method() === 'PUT') {
+        updated.push(decodeURIComponent(update[1]));
+        return route.fulfill({ status: 202, json: { jobId: 'job-demo-image', state: 'running' } });
+      }
+      return route.fulfill({ json: [] });
+    });
+
+    await page.goto('/apps');
+    await page.getByRole('button', { name: 'Installed', exact: true }).click();
+    await expect(page.getByText('Loading installed apps...')).toBeHidden({ timeout: 10_000 });
+
+    await expect(
+      page.getByRole('button', { name: /newly released image/ })
+    ).toBeVisible();
+    await page.getByRole('button', { name: 'Update all (1)' }).click();
+    await expect(page.getByText('new image → abcdef123456')).toBeVisible();
+    await page.getByRole('button', { name: 'Update 1', exact: true }).click();
+
+    await expect(page.getByText('Started 1 update')).toBeVisible();
+    expect(updated).toEqual(['demo-image']);
+  });
 });
