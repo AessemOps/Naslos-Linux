@@ -392,7 +392,7 @@
       <h2 class="text-lg font-bold mb-2">This instance</h2>
       {#if identity?.exists}
         <p class="text-sm text-gray-400">Name: <span class="text-gray-200">{identity.name}</span></p>
-        <p class="text-sm text-gray-400">Fingerprint: <code class="text-naslos-primary select-all">{identity.fingerprint}</code></p>
+        <p class="text-sm text-gray-400">Fingerprint: <code class="text-naslos-link select-all">{identity.fingerprint}</code></p>
         <div class="flex items-center gap-2 mt-2">
           <code class="text-xs bg-naslos-dark border border-naslos-border rounded px-2 py-1 text-gray-300 select-all break-all">{identity.publicKey}</code>
           <button class="text-xs px-2 py-1.5 rounded border border-naslos-border text-gray-300 hover:text-naslos-strong" on:click={copyKey}>{copied === 'key' ? 'Copied' : 'Copy'}</button>
@@ -454,13 +454,13 @@
         </table>
       {/if}
       <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
-        <select bind:value={newSchedule.dataset} class="input">
+        <select bind:value={newSchedule.dataset} class="input" aria-label="Schedule dataset">
           <option value="">Dataset…</option>
           {#each sendableDatasets as d}<option value={d.name}>{d.name}</option>{/each}
         </select>
         <textarea bind:value={newSchedule.receivers} placeholder="Buddy URLs, one per line (https://…)" rows="2" class="input"></textarea>
         <input type="text" bind:value={newSchedule.source} placeholder="Source name naslos-a/data" class="input" />
-        <select bind:value={newSchedule.cadence} class="input">
+        <select bind:value={newSchedule.cadence} class="input" aria-label="Schedule cadence">
           <option value="hourly">Hourly</option>
           <option value="daily">Daily</option>
           <option value="weekly">Weekly</option>
@@ -476,7 +476,7 @@
           {:else if verifyError}<p role="alert" class="text-red-300">{verifyError}</p>
           {:else if verifyChains.length > 0}
             <ul class="mt-1 space-y-1">
-              {#each verifyChains as c}<li><code class="text-xs text-naslos-primary">{c.chain}</code> <span class="text-gray-400 text-xs">{c.sha256} ({formatBytes(c.bytes)})</span></li>{/each}
+              {#each verifyChains as c}<li><code class="text-xs text-naslos-link">{c.chain}</code> <span class="text-gray-400 text-xs">{c.sha256} ({formatBytes(c.bytes)})</span></li>{/each}
             </ul>
           {/if}
         </div>
@@ -487,7 +487,7 @@
     <div class="card mb-6">
       <h2 class="text-lg font-bold mb-2">Back up now</h2>
       <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
-        <select bind:value={adhoc.dataset} class="input">
+        <select bind:value={adhoc.dataset} class="input" aria-label="Backup dataset">
           <option value="">Dataset…</option>
           {#each sendableDatasets as d}<option value={d.name}>{d.name}</option>{/each}
         </select>
@@ -498,7 +498,7 @@
       {#if jobError}<p role="alert" class="text-sm text-red-300 mt-2">{jobError}</p>{/if}
       {#if activeJob}
         <div class="mt-3 text-sm">
-          <p>Job <code class="text-naslos-primary">{activeJob.id}</code>: <span class="font-medium">{activeJob.state}</span>
+          <p>Job <code class="text-naslos-link">{activeJob.id}</code>: <span class="font-medium">{activeJob.state}</span>
             {#if activeJob.incremental}<span class="ml-2 text-xs px-2 py-0.5 rounded bg-blue-900/50 text-blue-300">incremental</span>{/if}
             {#if activeJob.resumed || activeJob.result?.resumed}<span class="ml-2 text-xs px-2 py-0.5 rounded bg-purple-900/50 text-purple-300">resumed</span>{/if}
           </p>

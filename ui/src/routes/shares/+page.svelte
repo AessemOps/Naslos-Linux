@@ -167,7 +167,7 @@
             {/if}
             {#if connectURL(share)}
               <div class="flex items-center gap-2 mt-2">
-                <code class="text-xs bg-naslos-dark border border-naslos-border rounded px-2 py-1 text-naslos-primary select-all">{connectURL(share)}</code>
+                <code class="text-xs bg-naslos-dark border border-naslos-border rounded px-2 py-1 text-naslos-link select-all">{connectURL(share)}</code>
                 <button
                   class="text-xs px-2 py-1.5 rounded border border-naslos-border text-gray-300 hover:text-naslos-strong hover:bg-naslos-border transition-colors"
                   on:click={() => copyURL(connectURL(share))}

@@ -29,7 +29,12 @@ export default {
           // The strongest text color on a theme surface: white in dark,
           // near-black ink in light. Use where `text-white` would sit on a
           // surface that flips (modal close buttons, copy buttons, emphasis).
-          strong: rgb('--n-strong')
+          strong: rgb('--n-strong'),
+          // Link/accent ink for text on theme surfaces. The brand primary
+          // (#2563eb) fails AA as dark-theme text, so text usage goes through
+          // this token: blue-400 in dark (5.4:1 on the card surface),
+          // blue-700 in light (6.3:1 on white).
+          link: rgb('--n-link')
         },
         gray: shaded('gray', ['100', '200', '300', '400', '500', '600', '800', '900']),
         green: shaded('green', ['200', '300', '400', '900']),

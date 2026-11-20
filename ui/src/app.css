@@ -18,6 +18,7 @@
   --n-surface: 30 41 59;
   --n-border: 51 65 85;
   --n-strong: 255 255 255;
+  --n-link: 96 165 250;
 
   /* Neutral text scale (dark: current light inks) */
   --gray-100: 243 244 246;
@@ -80,6 +81,7 @@
      primary ink instead of blue-400 (2.6:1 on white). */
   --n-accent: 37 99 235;
   --n-strong: 15 23 42;
+  --n-link: 29 78 216;
 
   /* Neutral text scale (light: slate inks, all ≥ 4.5:1 on white) */
   --gray-100: 15 23 42;

@@ -187,7 +187,7 @@
 
       <div class="card space-y-4">
         <h2 class="text-lg font-bold">Minimum Severity</h2>
-        <select bind:value={settings.minSeverity} class="input w-full">
+        <select bind:value={settings.minSeverity} class="input w-full" aria-label="Minimum severity">
           {#each severityLevels as level}<option value={level.id}>{level.label}</option>{/each}
         </select>
       </div>
