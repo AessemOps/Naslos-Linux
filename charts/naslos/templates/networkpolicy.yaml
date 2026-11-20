@@ -532,6 +532,35 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: {{ $apriv }}
     {{- end }}
+{{- if .Values.networkPolicy.imageEgress }}
+---
+# App image release checks (FR-APP-27): the API resolves a chart image tag's
+# current digest over the registry's HTTPS API. Scoped to the API pod only, and
+# to port 443; narrow it with imageEgressCIDRs (default 0.0.0.0/0).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-api-image-egress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-api
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- range (.Values.networkPolicy.imageEgressCIDRs | default (list "0.0.0.0/0")) }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
 {{- if $split }}
 ---
 # AUDIT-M6: the same egress policy for the privileged namespace. Without it the

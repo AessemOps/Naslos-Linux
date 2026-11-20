@@ -350,7 +350,7 @@
         <div class="flex items-center gap-3 flex-wrap">
           <p class="tabular-nums text-sm">
             v{app.installedVersion || 'unknown'}
-            {#if app.latestVersion}
+            {#if app.updateAvailable && app.latestVersion}
               <span class="text-gray-500">→</span>
               v{app.latestVersion}
             {/if}
@@ -364,12 +364,26 @@
             >
               Update
             </button>
+          {:else if app.imageUpdateAvailable}
+            <button
+              type="button"
+              class="text-xs px-2 py-1 rounded bg-amber-900/50 text-amber-300 hover:bg-amber-800/60"
+              disabled={jobRunning}
+              on:click={() => dispatch('update')}
+            >
+              Update image
+            </button>
           {:else if !app.latestVersion}
             <span class="text-xs text-gray-500">not in the catalog</span>
           {:else}
             <span class="text-xs text-gray-500">up to date</span>
           {/if}
         </div>
+        {#if app.imageUpdateAvailable && app.imageLatest}
+          <p class="text-xs text-gray-500 mt-1 font-mono">
+            image {app.imageCurrent || '?'} → {app.imageLatest}
+          </p>
+        {/if}
         {#if app.latestSource}
           <p class="text-xs text-gray-500 mt-1 font-mono">
             catalog {app.latestSource}/{app.latestChannel} · record {app.source || '?'}/{app.channel || '?'}

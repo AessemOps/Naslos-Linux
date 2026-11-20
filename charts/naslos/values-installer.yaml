@@ -124,6 +124,7 @@ networkPolicy:
   nfsClientCIDR: 192.168.1.0/24
   gitEgress: true
   ddnsEgress: true
+  imageEgress: true
 
 # --- optional subsystems ---
 # The installer provisions cert-manager and the OVH DNS-01 webhook from the

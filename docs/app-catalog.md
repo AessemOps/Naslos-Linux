@@ -178,7 +178,7 @@ app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
 | Uninstall | `DELETE /api/apps/{name}` | Enqueues an uninstall job (`helm uninstall` + route delete + record delete) → `202 {jobId, state}` |
 | Job list | `GET /api/apps/jobs` | Running plus the last ~20 finished lifecycle jobs |
 | Job detail | `GET /api/apps/jobs/{id}` | `state` (`running`/`succeeded`/`failed`), `stage` (`preparing`/`installing`/`finalizing`), `message`, `error` |
-| Update summary | `GET /api/apps/updates` | Record-only `{count, apps:[{name, installedVersion, latestVersion}]}` from `record.chartVersion` + the catalog (no Helm calls) |
+| Update summary | `GET /api/apps/updates` | `{count, apps:[{name, installedVersion, latestVersion, imageUpdate}]}` from `record.chartVersion` + the catalog, plus the cached image-drift snapshot (no Helm or registry calls) |
 | Slots | `GET`/`PUT /api/apps/namespaces` | `{baseline:{provisioned,limit,used,available}, privileged:{...}}`; `PUT {limit}` raises or lowers the usable baseline slots up to the chart-provisioned pool (never below the installed count). The Installed tab shows usage and edits the limit |
 | Usage | `GET /api/apps/usage` | Live per-app CPU/RAM/network from the kubelet summary proxy (see [monitoring.md](monitoring.md)); always `200`, `available:false` when unreadable |
 
@@ -205,11 +205,33 @@ A Helm release found in the platform namespace without a catalog match is
 The Installed tab is one compact row per app: icon, display name, the API's
 release status (`running`, `failed`, `pending`, `stopped`, `superseded`, `missing`), the
 installed version, live CPU/RAM/network and any last error. Rows with a newer
-chart show an amber `→ v<latest>` button; the update action confirms
-`installed → latest`, then calls `PUT /api/apps/{name}` with `{}` (stored values
-and datasets are preserved) and tracks the resulting upgrade job. Because
+chart show an amber `→ v<latest>` button; rows whose floating image tag now
+resolves to a different registry digest show `new image` (the detail drawer
+prints the running and served short digests). Both use the same update action:
+it confirms the change, then calls `PUT /api/apps/{name}` with `{}` (stored
+values and datasets are preserved) and tracks the resulting upgrade job. Because
 upgrade resolves the catalog winner, the confirmation also warns when the
 app's recorded source/channel differs from the catalog entry that would be used.
+
+**Image releases (FR-APP-27).** Charts ship floating tags (`latest`, `stable`,
+`release`) with `imagePullPolicy: IfNotPresent`, so a Helm upgrade with unchanged
+values would not fetch a newly released image. A background pass on the same
+`CHARTS_TTL` cycle resolves each installed app's container image tags against
+its registry (anonymous Docker Registry v2). A multi-arch tag is matched
+against either the top-level index digest or its `linux/amd64` manifest,
+because runtimes report one or the other; the resolved digest is compared with
+the digest the running pod pulled. Drift is cached per app and surfaced as
+`imageUpdateAvailable` / `imageCurrent` / `imageLatest`; digest lookups cache for
+`IMAGE_CHECK_TTL` (chart `apps.imageCheckTTL`, default 1h), and `/api/apps` +
+`/api/apps/updates` make no registry calls. Digest-pinned images,
+unreadable/private registries and a catalog chart older than the installed one
+never report an image update. After a successful upgrade with a known drift the
+API strategically patches only the drifted containers to
+`imagePullPolicy: Always` with a `naslos.io/image-refresh` pod annotation, waits
+for the bounded rollout, and rolls the pods; a failed pull or rollout is
+recorded as the app's `lastError` and the drift is retried on the next cycle.
+The chart's `networkPolicy.imageEgress` (default on, port 443, API pod only) is
+the egress allow for a policy CNI.
 
 The header reports the app/update counts, aggregate live usage, an **Update all
 (N)** action when at least one listed app has an update, and a **Check now**

@@ -262,6 +262,9 @@ async fn run_catalog_refresher(
             // Records that failed (provider outage, transient API error) are
             // retried on the same cadence as the catalog refresh.
             manager.reconcile_dns_errors().await;
+            // Image digests move independently of chart versions; refresh the
+            // drift snapshot so the Installed tab can offer an update.
+            manager.refresh_image_updates().await;
         }
         if first {
             first = false;
