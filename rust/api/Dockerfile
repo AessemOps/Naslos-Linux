@@ -4,7 +4,7 @@
 # SDKs, so this image ships pinned `helm`, `kubectl` and `talosctl` plus `git`
 # for the chart-repository cache. That adds image size, not idle RSS.
 
-FROM rust:1.88-alpine AS builder
+FROM rust:1.100-alpine AS builder
 RUN apk add --no-cache musl-dev
 
 WORKDIR /build

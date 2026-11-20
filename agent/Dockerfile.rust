@@ -1,7 +1,7 @@
 # Naslos agent container image (Rust port).
 # Runs as a privileged DaemonSet and executes zpool/zfs via chroot /host.
 
-FROM rust:1.88-alpine AS builder
+FROM rust:1.100-alpine AS builder
 
 # smartmontools is GPL-2.0-or-later (see CREDITS.md). Pin both the release and
 # the tarball digest; a floating download would make the image unreproducible.
