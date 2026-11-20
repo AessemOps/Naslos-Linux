@@ -1,12 +1,10 @@
-<script lang="ts">
+<script context="module" lang="ts">
   // Icon paths adapted from Lucide v0.545.0 (ISC License, https://lucide.dev).
   // No runtime dependency: the inner SVG geometry for each icon is inlined
   // below so the UI ships its own copy; Lucide stays credited in CREDITS.md.
+  // The map lives in a module script so every Icon instance shares one
+  // object instead of reallocating it per mount.
   // All icons are 24x24, stroke-based, and inherit `currentColor`.
-  export let name: string;
-  export let size = 20;
-  export let label = '';
-
   const icons: Record<string, string> = {
     // Navigation
     dashboard:
@@ -83,6 +81,12 @@
       '<rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/>',
     'arrow-up': '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>'
   };
+</script>
+
+<script lang="ts">
+  export let name: string;
+  export let size = 20;
+  export let label = '';
 </script>
 
 <svg

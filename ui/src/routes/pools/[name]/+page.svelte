@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import Icon from '$lib/components/Icon.svelte';
+  import ErrorState from '$lib/components/ErrorState.svelte';
   import LoadingState from '$lib/components/LoadingState.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
@@ -67,6 +68,8 @@
   const poolName = $page.params.name;
 
   async function loadHealth() {
+    loading = true;
+    error = '';
     try {
       const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(poolName ?? '')}/health`);
       if (res.ok) {
@@ -265,7 +268,7 @@
   {#if loading}
     <LoadingState label="Loading health data..." />
   {:else if error}
-    <p role="alert" class="text-red-400">{error}</p>
+    <ErrorState message={error} retry={loadHealth} />
   {:else if health}
     <!-- Status Overview -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">

@@ -37,7 +37,9 @@
             <div class="px-3 py-2 text-sm">
               <div class="flex items-center justify-between gap-2">
                 <span class="font-medium truncate">{job.app}</span>
-                <StatusBadge state={job.state} />
+                <!-- A running job is in progress, not successful: override the
+                     'running'→ok mapping (kept for VMs) back to warn. -->
+                <StatusBadge state={job.state} tone={job.state === 'running' ? 'warn' : ''} />
               </div>
               <p class="text-xs text-gray-400 mt-0.5">
                 {kindLabel(job.kind)}{job.state === 'running' ? ` · ${job.stage}` : ''}

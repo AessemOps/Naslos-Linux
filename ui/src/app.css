@@ -189,9 +189,6 @@
   .label {
     @apply text-sm font-medium text-gray-400 mb-1 block;
   }
-  .skeleton {
-    @apply rounded-lg bg-naslos-border/40 animate-pulse;
-  }
 
   /* Status badges. Tone classes reference the semantic surface vars so both
      themes read without per-call-site color logic. */
@@ -228,9 +225,6 @@
   }
   .callout-bad {
     @apply border-red-700 bg-red-900/20 text-red-300;
-  }
-  .callout-warn {
-    @apply border-amber-700 bg-amber-900/20 text-amber-300;
   }
   .callout-info {
     @apply border-naslos-border bg-naslos-dark text-gray-300;

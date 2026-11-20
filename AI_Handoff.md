@@ -27,10 +27,16 @@ fails AA as dark-theme text, and an axe a11y spec (`@axe-core/playwright`
 green on the deployed drill build: **66 passed, 10 skipped** — the skips are
 the vms capability-skips plus the network API-contract test, which now skips
 while the deployed API (still digest-pinned to v0.3.23) predates the
-`/api/network` routes. **At release:** run `make bump-version` for `v0.4.0`
-(replaces the drill UI pin in `values-vm.yaml`, which currently points at the
-`sha-ddba099` dry-run build, digest `f78ed73e…`), release, then `make
-install-vm` from the released tags.
+`/api/network` routes. **At release:** the drill UI pin in `values-vm.yaml`
+(currently the `sha-ddba099` dry-run build, digest `f78ed73e…`) is superseded
+by bumping to the next version (`0.4.1`): update `charts/naslos/Chart.yaml`
+version/appVersion, `ui/package.json` + its lock, and every image tag in
+`charts/naslos/values.yaml` + `values-installer.yaml` (there is no
+bump-version make target; the release guard checks these locations), tag
+`v0.4.1`, then swap the `values-vm.yaml` UI pin for the released tag/digest
+in the same change and `make install-vm`. Note `v0.4.0` is already tagged at
+master and predates this overhaul, and `values-vm.yaml` is outside the
+release guard, so the swap must be explicit.
 
 ## In flight — QEMU hypervisor (2026-11-19, branch `feature/virt-qemu-hypervisor`)
 
@@ -77,21 +83,22 @@ vmd image (or run the release workflow), update the `values-vm.yaml` digests,
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart `0.3.23`, appVersion `0.3.23`,
-  revision 39 (2026-11-20, up from revision 32 during the UI/UX drill), deployed
-  from `feature/ui-ux-overhaul` with `make install-vm`. API/agent/OpenLDAP/
-  Samba/NFS/terminal are digest-pinned
-  from `v0.3.23`: API `fa9c8956…`, agent `4f680bfc…`, OpenLDAP `e57e3fbf…`,
-  Samba `b785ee38…`,
+- **Deployed release:** Helm `naslos` chart **`naslos-0.4.0`** (the chart
+  itself is the 0.4.0 scaffolding from master; only the images below are
+  older), revision 39 (2026-11-20, up from revision 32 during the UI/UX
+  drill), deployed from `feature/ui-ux-overhaul` with `make install-vm`.
+  API/agent/OpenLDAP/Samba/NFS/terminal are digest-pinned from `v0.3.23`:
+  API `fa9c8956…`, agent `4f680bfc…`, OpenLDAP `e57e3fbf…`, Samba `b785ee38…`,
   NFS `4d8806ea…`, terminal `a000ca0c…` (public GHCR). The UI is the
   UI/UX overhaul drill build `sha-ddba099…` (`f78ed73e…`) from the release
-  workflow dry run (`publish=false`); it is replaced by the released `v0.4.0`
-  tags at the next `make bump-version` + release + `make install-vm`.
-  `/api/system/version` reports Naslos/chart 0.3.23, profile
-  `make-install`, Talos v1.14.5 and k8s v1.37.0; the chart falls back to its own
-  version so a plain make-install node is not blank. `values-vm.yaml` now
-  declares `release.profile: installer` with the running facts, so the web
-  upgrader is enabled: SA `naslos-upgrader` + cluster-admin binding, the
+  workflow dry run (`publish=false`); it is swapped for the released
+  tag/digest at the next version bump (see the in-flight note above).
+  `/api/system/version` reports the `release.*` facts from `values-vm.yaml`:
+  Naslos/chart 0.3.23, profile `installer` (the web-upgrader facts), Talos
+  v1.14.5 and k8s v1.37.0. `values-vm.yaml`
+  declares `release.profile: installer` with the running facts (a node without
+  them falls back to `.Chart.AppVersion` and reports `make-install`), so the
+  web upgrader is enabled: SA `naslos-upgrader` + cluster-admin binding, the
   `naslos-api-system` Role/RoleBinding, and the upgrader admission policy are
   present, and a GitHub check returns `enabled:true, current:0.3.23, no newer
   release`; the operations endpoint correctly answers 412 until a check offers

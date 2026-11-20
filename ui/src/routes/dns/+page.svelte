@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import LoadingState from '$lib/components/LoadingState.svelte';
+  import StatusBadge from '$lib/components/StatusBadge.svelte';
   import DdnsForm from '$lib/components/DdnsForm.svelte';
 
   interface Entry {
@@ -78,14 +79,6 @@
   function providerName(name: string): string {
     const p = providers.find((item) => item.name === name);
     return p?.displayName || name;
-  }
-
-  function statusClass(status?: string): string {
-    switch (status) {
-      case 'ok': return 'bg-green-900/50 text-green-400';
-      case 'error': return 'bg-red-900/50 text-red-400';
-      default: return 'bg-gray-900/50 text-gray-400';
-    }
   }
 
   async function remove(id: string) {
@@ -170,7 +163,7 @@
               <h3 class="font-bold">{entry.record === '@' || !entry.record ? entry.zone : `${entry.record}.${entry.zone}`}</h3>
               <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{entry.recordType}</span>
               <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{providerName(entry.provider)}</span>
-              <span class={`text-xs px-2 py-0.5 rounded ${statusClass(entry.lastStatus)}`}>{entry.lastStatus || 'never run'}</span>
+              <StatusBadge state={entry.lastStatus || 'never run'} />
               {#if !entry.enabled}<span class="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400">disabled</span>{/if}
               {#if usedTargets.has(entry.id)}
                 <span

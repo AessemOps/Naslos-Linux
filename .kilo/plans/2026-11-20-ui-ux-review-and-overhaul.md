@@ -290,5 +290,21 @@ Implemented on `feature/ui-ux-overhaul`; all phases landed:
   `curl -sk https://naslos.local/api/health` answered `{"status":"ok"}`.
 - Follow-ups recorded (not in this PR): replace the native `confirm()`/
   `alert()` flows with a `ConfirmModal`; `index.html` no-cache header;
-  the UI drill pin is superseded by the `v0.4.0` release tags
-  (`make bump-version`, release, `make install-vm`).
+  the UI drill pin is superseded at the **next** version bump — `v0.4.0` is
+  already tagged at master and predates the overhaul, so the swap targets
+  `v0.4.1`: bump `charts/naslos/Chart.yaml` version/appVersion,
+  `ui/package.json` + lock, and every image tag in `values.yaml` +
+  `values-installer.yaml` (no bump-version make target exists), release, then
+  replace the `values-vm.yaml` UI pin and `make install-vm`.
+- Post-merge review (local `/review branch`) found and fixed: the
+  `values-vm.yaml` drill tag was a 39-char typo of the commit sha (the digest
+  kept the deployment correct), unmapped ZFS pool states failed open to
+  neutral (pools/dashboard now pass `unknownTone="bad"`; `suspended`/
+  `removed` map to bad; `offline` is neutral in the device tree, matching the
+  old gray), running app jobs rendered success-green (the jobs drawer now
+  overrides the tone to warn), `.skeleton`/`.callout-warn` were unreferenced
+  additions (removed), `ErrorState` was unwired (now used by both pools pages
+  with a Retry), the a11y settle budget shrank to 5 s per route, the Icon map
+  moved to a module script, the DNS badges adopted StatusBadge, and the
+  last two local byte formatters (DiskWizard, VmImages) deduplicated into
+  `lib/format.ts`.

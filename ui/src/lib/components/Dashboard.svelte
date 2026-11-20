@@ -242,7 +242,7 @@
               <div class="flex items-center justify-between mb-2">
                 <a href="/pools/{pool.name}" class="font-bold hover:text-naslos-link transition-colors">{pool.name}</a>
                 <div class="flex items-center gap-2">
-                  <StatusBadge state={pool.health} />
+                  <StatusBadge state={pool.health} unknownTone="bad" />
                   <button
                     class="btn btn-sm rounded bg-red-900/30 text-red-400 hover:bg-red-900/60 transition-colors"
                     on:click={() => confirmDelete(pool.name)}

@@ -51,8 +51,11 @@ agent:
 ui:
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    # UI/UX overhaul drill build (sha-ddba09, release dry run publish=false).
-    tag: "sha-ddba099d785fe5c1e29b2d94352364e3397f429"
+    # UI/UX overhaul drill build (sha-ddba099, release dry run publish=false).
+    # Keep the tag and digest in sync with the same workflow run: the chart
+    # renders repo@digest when digest is set, and a stale tag would ErrImagePull
+    # the moment the digest is cleared.
+    tag: "sha-ddba0998d5c22449305fa7a1298c27e9d7cff497"
     digest: "sha256:f78ed73e6f9a67d5f6a4756c58527ef0c2093dc1a802579768ce1f92d50b13f1"
 # Share services (SMB + NFS) for the single-node VM.
 shares:

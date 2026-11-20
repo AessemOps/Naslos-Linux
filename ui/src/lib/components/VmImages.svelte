@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import { formatBytes } from '$lib/format';
 
   // ISO/disk-image library (FR-VMT): chunked browser upload with progress,
   // server-side URL import (the SSRF guard lives in vmd) and delete.
@@ -159,12 +160,6 @@
       error = e.message;
     }
   }
-
-  function formatSize(bytes: number): string {
-    if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
-    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-    return `${Math.round(bytes / 1024)} KiB`;
-  }
 </script>
 
 <h2 class="text-lg font-bold mb-3">Images — {pool}/vms/isos</h2>
@@ -243,7 +238,7 @@
         {#each images as img}
           <tr class="border-b border-naslos-border/50">
             <td class="px-4 py-3 font-mono text-xs">{img.name}</td>
-            <td class="px-4 py-3">{formatSize(img.sizeBytes)}</td>
+            <td class="px-4 py-3">{formatBytes(img.sizeBytes)}</td>
             <td class="px-4 py-3 text-right">
               <button class="btn btn-secondary" on:click={() => remove(img.name)}>Delete</button>
             </td>
