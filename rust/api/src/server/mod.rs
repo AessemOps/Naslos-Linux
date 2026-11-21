@@ -13,6 +13,7 @@ pub mod buddy_restore;
 pub mod buddy_schedules;
 pub mod buddy_send;
 pub mod catalog;
+pub mod config_export;
 pub mod dataset_registry;
 pub mod ddns;
 pub mod disks;
@@ -121,6 +122,7 @@ fn owner_routes() -> Router<Arc<AppState>> {
                 .delete(ddns::ddns_detail_delete),
         )
         .route("/api/system/version", get(system::version))
+        .route("/api/system/config/export", get(config_export::export))
         .route("/api/system/updates", get(system::updates_get))
         .route("/api/system/updates/check", post(system::updates_check))
         .route("/api/system/reboot", post(system::reboot_post))
@@ -491,6 +493,10 @@ mod tests {
             (
                 axum::http::Method::GET,
                 "/api/ws/vm/mcp-probe/vnc".to_string(),
+            ),
+            (
+                axum::http::Method::GET,
+                "/api/system/config/export".to_string(),
             ),
             (axum::http::Method::GET, "/api/mcp".to_string()),
             (axum::http::Method::PUT, "/api/mcp".to_string()),

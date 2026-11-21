@@ -51,6 +51,11 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   default, with scoped bearer tokens (read / write / full), a `confirm` guard
   on destructive tools, audited calls and a Settings page
   (see [docs/mcp.md](docs/mcp.md))
+- **System config export** — download a versioned, secret-free JSON snapshot
+  of shares, snapshot/scrub and buddy schedules, domains, DDNS entries (without
+  credentials), app records and registered app datasets; import/restore is
+  planned. This is application config, not the installer recovery ZIP
+  (see [docs/api.md](docs/api.md#system-config-export-fr-cfg-see-specmd-315))
 - **Virtual machines** — a first-party QEMU/KVM hypervisor on the node
   (`rust/vmd` supervisor): VM datasets under `<pool>/vms/<name>` with quota =
   declared disk, UEFI/BIOS firmware, NAT with editable port forwards (LAN

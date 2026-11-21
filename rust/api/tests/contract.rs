@@ -697,3 +697,144 @@ async fn manual_scrub_validates_and_needs_the_agent() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(body["error"].as_str().unwrap_or_default().contains("agent"));
 }
+
+#[tokio::test]
+async fn config_export_requires_an_admin_and_emits_the_versioned_shape() {
+    // No proxy secret and no identity: fail closed.
+    let (status, _b, _r) = send(get("/api/system/config/export", false, None, None)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // A plain authenticated user is not an owner.
+    let (status, _b, _r) = send(get(
+        "/api/system/config/export",
+        true,
+        Some("viewer"),
+        Some("naslos_users"),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let st = state();
+    {
+        let mut shares = st.shares.lock().unwrap();
+        shares
+            .create(&naslos_api::shares::CreateShareRequest {
+                name: "media".into(),
+                path: "/var/mnt/tank/media".into(),
+                protocol: naslos_api::shares::Protocol::Smb,
+                description: "Media".into(),
+                browseable: Some(true),
+                enabled: Some(true),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    st.storage_schedules
+        .put(naslos_api::server::storage_schedules::StorageSchedule {
+            id: "snap-1".into(),
+            kind: naslos_api::server::storage_schedules::ScheduleKind::Snapshot,
+            target: "tank/media".into(),
+            cadence: naslos_api::schedule::Cadence::Daily,
+            run_at: "02:30".into(),
+            keep: 3,
+            last_error: "CANARY-SECRET-MUST-NOT-EXPORT".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    st.buddy_schedules
+        .put(naslos_api::server::buddy_schedules::ScheduleEntry {
+            id: "buddy-1".into(),
+            dataset: "tank/media".into(),
+            source: "tank/media".into(),
+            receiver: "peer-a".into(),
+            receiver_results: std::collections::HashMap::from([(
+                "peer-a".into(),
+                "CANARY-SECRET-MUST-NOT-EXPORT".into(),
+            )]),
+            cadence: naslos_api::schedule::Cadence::Weekly,
+            run_at: "Sun 03:00".into(),
+            prune_keep: 5,
+            enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+    st.domains
+        .upsert(naslos_api::certs::Domain {
+            base_domain: "example.test".into(),
+            dns_provider: "cloudflare".into(),
+            credentials_secret: "CANARY-SECRET-MUST-NOT-EXPORT".into(),
+            provider_config: std::collections::HashMap::from([(
+                "zone".into(),
+                "example.test".into(),
+            )]),
+            acme_email: "ops@example.test".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    st.datasets_registry
+        .add(naslos_api::datasets::ManagedDataset {
+            name: "media".into(),
+            host_path: "/var/mnt/tank/media".into(),
+            shared: false,
+            warning_acknowledged: false,
+            created_at: None,
+            attached_to: Vec::new(),
+        })
+        .unwrap();
+
+    let req = with_peer(
+        get(
+            "/api/system/config/export",
+            true,
+            Some("admin"),
+            Some("naslos_admins"),
+        ),
+        [127, 0, 0, 1],
+    );
+    let resp = build_router(st).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json")
+    );
+    let disposition = resp
+        .headers()
+        .get(axum::http::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        disposition.starts_with("attachment; filename=\"naslos-config-export-"),
+        "{disposition}"
+    );
+
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["kind"], "naslos-config-export");
+    assert_eq!(body["schemaVersion"], 1);
+    assert!(body["generatedAt"]
+        .as_str()
+        .unwrap_or_default()
+        .ends_with('Z'));
+
+    assert_eq!(body["shares"][0]["name"], "media");
+    assert_eq!(body["shares"][0]["protocol"], "smb");
+    assert_eq!(body["storageSchedules"][0]["kind"], "snapshot");
+    assert_eq!(body["storageSchedules"][0]["target"], "tank/media");
+    assert_eq!(
+        body["buddySchedules"][0]["receivers"],
+        serde_json::json!(["peer-a"])
+    );
+    assert_eq!(body["domains"][0]["baseDomain"], "example.test");
+    assert!(body["domains"][0].get("credentialsSecret").is_none());
+    assert_eq!(body["ddnsEntries"], serde_json::json!([]));
+    assert_eq!(body["apps"], serde_json::json!([]));
+    assert_eq!(body["datasetRegistry"][0]["name"], "media");
+
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(!raw.contains("CANARY-SECRET-MUST-NOT-EXPORT"), "{raw}");
+    assert!(!raw.contains("credentialsSecret"), "{raw}");
+    assert!(!raw.contains("receiverResults"), "{raw}");
+}
