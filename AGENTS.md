@@ -23,7 +23,6 @@ backups ("Buddy").
 | `charts/naslos/` | The Helm chart: api, ui, agent, samba, nfs, terminal, openldap, Traefik + Authelia (+ optional cert-manager) |
 | `openldap/ samba/ nfs/ terminal/` | Per-service images and config templates |
 | `docs/` | Per-topic reference (`spec.md`, `api.md`, `dynamic-dns.md`, `deployment.md`, `operations.md`, …) |
-| `.kilo/plans/` | Implementation plans (committed). Put new plans here. |
 | `.kilo/command/`, `.kilo/agent/` | Kilo project commands and agents (do not use `.kilocode/` or `.opencode/`) |
 
 ## Commands
@@ -78,7 +77,6 @@ via `storageState`; a target that does not challenge is an error.
   (e.g. `192.168.1.38`, `192.168.1.117`). Refer to "the production node" or use
   a placeholder; real host/IP values stay in the private handoff or local
   config.
-- Write a plan in `.kilo/plans/` for any non-trivial change and commit it.
 - Only commit/push/create PRs when the work is complete and verified. Never
   force-push, skip hooks, or amend a failed commit — add a new commit.
 - **Cross-repo installer order**: the desktop installer lives in

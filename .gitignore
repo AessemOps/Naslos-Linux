@@ -55,3 +55,6 @@ bootstrap/vm/talos-secrets.json
 
 # Rust build output
 /rust/target/
+
+# Kilo runtime/working directory
+.kilo/
