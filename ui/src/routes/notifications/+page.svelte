@@ -12,6 +12,14 @@
     minSeverity: string;
   }
 
+  interface WebhookSettings {
+    enabled: boolean;
+    url: string;
+    hasAuthToken: boolean;
+    enabledEvents: string[];
+    minSeverity: string;
+  }
+
   let settings: Settings = {
     enabled: false,
     serverUrl: 'https://ntfy.sh',
@@ -21,12 +29,25 @@
     enabledEvents: ['zfs_health', 'disk_failure'],
     minSeverity: 'warning'
   };
+  let webhook: WebhookSettings = {
+    enabled: false,
+    url: '',
+    hasAuthToken: false,
+    enabledEvents: ['zfs_health', 'disk_failure'],
+    minSeverity: 'warning'
+  };
   // The stored token is never sent back to the browser; this holds a replacement
   // the operator types, and clearAuthToken is the explicit request to erase it.
   let authToken = '';
   let clearAuthToken = false;
+  // Same write-only convention for the webhook channel: the stored token is
+  // never sent to the browser.
+  let webhookAuthToken = '';
+  let clearWebhookAuthToken = false;
   let loading = true;
+  let webhookLoading = true;
   let saving = false;
+  let webhookSaving = false;
   let message = '';
   let messageType = '';
 
@@ -117,12 +138,106 @@
     }
   }
 
-  onMount(loadSettings);
+  async function loadWebhook() {
+    try {
+      const res = await fetch('/api/notifications/webhook');
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      webhook = await res.json();
+      webhookAuthToken = '';
+      clearWebhookAuthToken = false;
+    } catch (e) {
+      message = 'Failed to load webhook settings: ' + e;
+      messageType = 'error';
+    } finally {
+      webhookLoading = false;
+    }
+  }
+
+  async function saveWebhook() {
+    webhookSaving = true;
+    message = '';
+    try {
+      const payload: Record<string, unknown> = { ...webhook };
+      if (webhookAuthToken.trim() !== '') {
+        payload.authToken = webhookAuthToken.trim();
+      } else if (clearWebhookAuthToken) {
+        payload.authToken = '';
+      }
+      const res = await fetch('/api/notifications/webhook', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      message = 'Webhook settings saved successfully!';
+      messageType = 'success';
+      await loadWebhook();
+    } catch (e) {
+      message = 'Error: ' + e;
+      messageType = 'error';
+    } finally {
+      webhookSaving = false;
+    }
+  }
+
+  async function sendWebhookTest() {
+    try {
+      const res = await fetch('/api/notifications/webhook/test', { method: 'POST' });
+      if (res.ok) {
+        message = 'Test webhook sent!';
+        messageType = 'success';
+      } else {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      message = 'Error: ' + e;
+      messageType = 'error';
+    }
+  }
+
+  async function removeWebhook() {
+    if (!confirm('Remove the webhook channel? Its URL and token are erased.')) return;
+    webhookSaving = true;
+    message = '';
+    try {
+      const res = await fetch('/api/notifications/webhook', { method: 'DELETE' });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      message = 'Webhook channel removed.';
+      messageType = 'success';
+      await loadWebhook();
+    } catch (e) {
+      message = 'Error: ' + e;
+      messageType = 'error';
+    } finally {
+      webhookSaving = false;
+    }
+  }
+
+  function toggleWebhookEvent(eventId: string) {
+    if (webhook.enabledEvents.includes(eventId)) {
+      webhook.enabledEvents = webhook.enabledEvents.filter(e => e !== eventId);
+    } else {
+      webhook.enabledEvents = [...webhook.enabledEvents, eventId];
+    }
+  }
+
+  onMount(() => {
+    loadSettings();
+    loadWebhook();
+  });
 </script>
 
 <div class="max-w-3xl mx-auto">
   <h1 class="text-3xl font-bold mb-2">Notifications</h1>
-  <p class="text-gray-400 mb-6">Configure ntfy push notifications for system events.</p>
+  <p class="text-gray-400 mb-6">Configure ntfy push notifications and the generic webhook channel. Each channel routes events and severities independently.</p>
 
   {#if loading}
     <LoadingState label="Loading settings..." />
@@ -190,6 +305,65 @@
         <select bind:value={settings.minSeverity} class="input w-full" aria-label="Minimum severity">
           {#each severityLevels as level}<option value={level.id}>{level.label}</option>{/each}
         </select>
+      </div>
+
+      <div class="card space-y-4">
+        <label class="flex items-center gap-4 cursor-pointer">
+          <input type="checkbox" bind:checked={webhook.enabled} class="w-5 h-5 rounded" />
+          <div>
+            <div class="font-medium">Webhook Channel</div>
+            <div class="text-sm text-gray-400">POST each selected event as JSON to an external webhook.</div>
+          </div>
+        </label>
+
+        {#if webhookLoading}
+          <LoadingState label="Loading webhook settings..." />
+        {:else}
+          <div>
+            <label class="label" for="webhook-field-1">Webhook URL</label>
+            <input id="webhook-field-1" type="text" bind:value={webhook.url} class="input w-full" placeholder="https://hooks.example.com/naslos" />
+            <p class="text-xs text-gray-500 mt-1">Only http/https public targets are accepted; loopback, private, link-local and metadata addresses are refused.</p>
+          </div>
+          <div>
+            <label class="label" for="webhook-field-2">Bearer Token (optional)</label>
+            <input
+              id="webhook-field-2"
+              type="password"
+              bind:value={webhookAuthToken}
+              class="input w-full"
+              placeholder={webhook.hasAuthToken ? 'Stored — leave blank to keep' : 'Bearer token'}
+            />
+            {#if webhook.hasAuthToken}
+              <label class="flex items-center gap-2 mt-2 text-sm text-gray-400">
+                <input type="checkbox" bind:checked={clearWebhookAuthToken} class="w-4 h-4 rounded" />
+                Clear the stored token
+              </label>
+            {/if}
+            <p class="text-xs text-gray-500 mt-1">Sent as an Authorization header. The stored token is never shown or returned.</p>
+          </div>
+          <div>
+            <div class="label">Events</div>
+            <div class="space-y-2">
+              {#each eventTypes as event}
+                <label class="flex items-center gap-3 p-2 rounded hover:bg-naslos-dark cursor-pointer">
+                  <input type="checkbox" checked={webhook.enabledEvents.includes(event.id)} on:change={() => toggleWebhookEvent(event.id)} class="w-4 h-4 rounded" />
+                  <span class="text-gray-300">{event.label}</span>
+                </label>
+              {/each}
+            </div>
+          </div>
+          <div>
+            <label class="label" for="webhook-field-3">Minimum Severity</label>
+            <select id="webhook-field-3" bind:value={webhook.minSeverity} class="input w-full">
+              {#each severityLevels as level}<option value={level.id}>{level.label}</option>{/each}
+            </select>
+          </div>
+          <div class="flex gap-3">
+            <button class="btn btn-primary" on:click={saveWebhook} disabled={webhookSaving}>{webhookSaving ? 'Saving...' : 'Save Webhook'}</button>
+            <button class="btn btn-secondary" on:click={sendWebhookTest} disabled={!webhook.enabled}>Send Test</button>
+            <button class="btn btn-danger" on:click={removeWebhook} disabled={webhookSaving}>Remove</button>
+          </div>
+        {/if}
       </div>
 
       {#if message}

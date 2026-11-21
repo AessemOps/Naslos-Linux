@@ -280,18 +280,13 @@ pub async fn check_once(state: &AppState, unhealthy: &mut HashSet<String>) {
 }
 
 async fn send(state: &AppState, event: &str, title: &str, message: &str, severity: &str) {
-    if !state.notifications.event_enabled(event) {
-        return;
-    }
     let notif = Notification {
         title: title.to_string(),
         message: message.to_string(),
         severity: severity.to_string(),
         tags: vec!["floppy_disk".to_string()],
     };
-    if let Err(e) = state.notifications.send(&notif).await {
-        tracing::warn!("health notification failed: {e}");
-    }
+    crate::webhook::deliver_logged(&state.notifications, &state.webhook, event, &notif).await;
 }
 
 #[cfg(test)]

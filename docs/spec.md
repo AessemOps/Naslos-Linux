@@ -661,6 +661,90 @@ with a sibling `naslos-app.yaml` install-config. See
 - **FR-NTF-02** — The API MUST expose `POST /api/notifications/test` to send
   a test notification.
 
+### 3.7.1 Alert channels (`FR-ALT`)
+
+These requirements generalize alerting beyond the single ntfy sink. They are
+additive: ntfy keeps its existing behavior (FR-NTF-01/02) and settings.
+
+- **FR-ALT-01** — Every alert channel MUST have its own enabled switch, routed
+  event set and minimum severity, and one event MUST be deliverable to any
+  subset of channels. Delivery to each channel MUST be independent: a failure
+  or timeout in one MUST NOT suppress or delay the others. *(webhook tests:
+  `routing_honours_events_and_severity`,
+  `a_failing_channel_does_not_suppress_the_other`,
+  `disabled_or_unrouted_events_are_dropped_without_network`)*
+- **FR-ALT-02** — The generic webhook channel MUST accept only `http`/`https`
+  targets, MUST refuse a URL with embedded credentials, and MUST refuse a
+  target that resolves to a loopback, private, link-local, CGNAT, metadata,
+  benchmark, reserved, ULA or IPv4-mapped non-public address. It MUST resolve
+  the host when the settings are saved and again at send time, pin the
+  connection to the vetted address, and follow no redirects. *(webhook tests:
+  `url_validation_accepts_public_http_targets`,
+  `url_validation_refuses_bad_schemes_and_credentials`,
+  `url_validation_refuses_non_public_targets`; contract test
+  `webhook_test_route_requires_enabled_and_guards_at_send_time`)*
+- **FR-ALT-03** — A webhook delivery MUST be a JSON `POST` whose stable shape
+  is `source`, `event`, `title`, `message`, `severity` and `tags`, and it MUST
+  NOT contain channel settings, credentials or the bearer token. *(webhook
+  test: `payload_shape_is_stable_and_carries_no_settings`)*
+- **FR-ALT-04** — Webhook delivery MUST be a single attempt with a finite
+  timeout, no retry queue and no unbounded buffering. A response body MUST be
+  read only up to a fixed bound and MUST NOT be surfaced in an error, a log or
+  an API response. Delivery errors MUST NOT contain the target URL, its path or
+  query, or the token. *(webhook tests:
+  `a_failing_channel_does_not_suppress_the_other`,
+  `test_action_is_not_gated_by_event_routing`; contract test
+  `webhook_channel_crud_never_returns_the_token`)*
+- **FR-ALT-05** — The webhook bearer token MUST be write-only: the settings
+  response MUST expose only `hasAuthToken`, an omitted token MUST keep the
+  stored value, an empty string MUST clear it, and the settings file MUST be
+  mode `0600`. *(webhook test:
+  `settings_survive_a_reload_and_the_token_stays_write_only`; contract test
+  `webhook_channel_crud_never_returns_the_token`)*
+- **FR-ALT-06** — The API MUST expose a webhook test action that sends a
+  non-routed `test` payload, requires the channel to be enabled, and reports a
+  disabled channel as a client error rather than a false success. *(webhook
+  tests: `test_action_requires_an_enabled_channel`,
+  `test_action_is_not_gated_by_event_routing`; contract test
+  `webhook_test_route_requires_enabled_and_guards_at_send_time`)*
+- **FR-ALT-07** — **[OPEN]** An SMTP/email channel MUST be configurable with
+  host, port, TLS mode, sender, recipients and credentials held in a Secret,
+  routed by the same event/severity rules as FR-ALT-01. *(no test yet;
+  backend not implemented)*
+- **FR-ALT-08** — **[OPEN]** SNMP traps MUST be a configurable channel
+  (version, target, community/credentials from a Secret) routed by the same
+  event/severity rules as FR-ALT-01. *(no test yet; backend not implemented)*
+- **FR-ALT-09** — **[OPEN]** Syslog forwarding MUST be a configurable channel
+  (`udp`/`tcp`/`tls`, target, facility) routed by the same event/severity rules
+  as FR-ALT-01. *(no test yet; backend not implemented)*
+
+### 3.7.2 Historical reporting (`FR-RPT`)
+
+Historical reporting is **not implemented in this pass**; the bounded design is
+normative in [reporting.md](reporting.md). The requirements below are `[OPEN]`
+until the store, API and UI land.
+
+- **FR-RPT-01** — **[OPEN]** A background recorder MUST persist a bounded local
+  time series for CPU, memory, network, ZFS pool usage and disk health/SMART
+  values. The store MUST be embedded (SQLite or fixed-size RRD-like
+  files) on the state volume; Naslos MUST NOT bundle, require or depend on
+  Prometheus, Grafana, or an external time-series service. *(no test yet;
+  design in reporting.md)*
+- **FR-RPT-02** — **[OPEN]** Recording MUST retain at most three resolutions —
+  raw/1-minute for 24 h, 5-minute rollups for 7 d and 1-hour rollups for 30 d —
+  and MUST prune anything older than 30 d. The number of recorded series MUST be
+  a fixed allowlist (no per-app, per-container or per-process cardinality), and
+  a query MUST be capped in points. *(no test yet; design in reporting.md)*
+- **FR-RPT-03** — **[OPEN]** History writes MUST be best-effort and MUST NOT
+  block or fail the live metrics collector. A missing, locked or corrupt history
+  database MUST degrade to "no history" and MUST be recreatable without
+  affecting live metrics, alerts, shares or the dashboard. *(no test yet;
+  design in reporting.md)*
+- **FR-RPT-04** — **[OPEN]** The API and UI MUST expose only the 24 h, 7 d and
+  30 d views over the fixed series allowlist, authenticated like every other
+  owner route, and MUST NOT return unbounded raw samples. *(no test yet;
+  design in reporting.md)*
+
 ### 3.8 Buddy Backup (`FR-BUD`)
 
 Buddy Backup lets one instance push encrypted backups to another instance, or to
@@ -1206,6 +1290,8 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 | `/api/shares/config/samba` `/nfs` | GET | Generated configs |
 | `/api/notifications` | GET | Notification settings/state |
 | `/api/notifications/test` | POST | Send test push |
+| `/api/notifications/webhook` | GET, PUT, DELETE | Webhook channel settings / update / reset (FR-ALT) |
+| `/api/notifications/webhook/test` | POST | Send a test webhook (FR-ALT-06) |
 | `/api/network` | GET | Host network inventory: hostname, resolvers and physical links (§3.12) |
 | `/api/network/changes` | POST | Start a guarded network change (`202`; `409` while pending or during an upgrade) |
 | `/api/network/changes/{id}` | GET | Change phase, target address, deadline and error |

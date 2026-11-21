@@ -59,7 +59,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   SSRF-guarded URL import, and ZFS snapshots/rollback per VM
   (see [docs/virtual-machines.md](docs/virtual-machines.md))
 - **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served)
-- **ntfy notifications** — push alerts on backup and ZFS/agent health transitions
+- **Alert channels** — ntfy push plus a generic JSON webhook, each with its own event routing and severity floor for backup, ZFS/agent health and VM events
 - **Network settings** — day-2 host link addressing, MTU and DNS changes from the UI, applied with a machine-side `--mode=try` guard, an API watchdog and a saved-config revert (see [docs/deployment.md](docs/deployment.md#day-2-network-changes-fr-net))
 - **Monitoring dashboard** — live metrics API (`/api/metrics`) + home dashboard; no bundled metrics stack
 - **Desktop installer** — a one-app installer (separate
@@ -114,7 +114,8 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [shares](docs/shares.md) | SMB / NFS / Time-Machine shares |
 | [app-catalog](docs/app-catalog.md) | Catalog, schema-driven forms, Helm lifecycle |
 | [monitoring](docs/monitoring.md) | Live metrics API + dashboard (no Prometheus) |
-| [notifications](docs/notifications.md) | ntfy alerts |
+| [reporting](docs/reporting.md) | Bounded 24 h/7 d/30 d history design (`[OPEN]`) |
+| [notifications](docs/notifications.md) | ntfy + webhook alert channels |
 | [deployment](docs/deployment.md) | Prerequisites, Make targets, Helm values |
 | [installer-contract](docs/installer-contract.md) | Install pack + interfaces for the desktop installer (FR-INSTALL) |
 | [operations](docs/operations.md) | Backups, restore, troubleshooting |
