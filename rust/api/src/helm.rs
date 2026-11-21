@@ -15,6 +15,31 @@ use std::time::Duration;
 /// Matches the Go client's `5 * time.Minute`.
 const WAIT_TIMEOUT: &str = "5m0s";
 
+/// Write flags shared by install and upgrade.
+///
+/// Helm v4 applies release objects server-side. The image-refresh pass also
+/// patches `imagePullPolicy` on the drifted container with `kubectl`, which
+/// makes `kubectl-patch` a second field manager on the Deployment; without
+/// `--force-conflicts` the next upgrade (and its automatic rollback) fails with
+/// `Apply failed with 1 conflict: ... imagePullPolicy` and leaves the release
+/// `failed`. Helm owns the app's objects, so it resolves the conflict.
+/// `--rollback-on-failure` is the Helm v4 name for the v3 `--atomic`; the old
+/// flag still works but prints a deprecation warning that reads like the
+/// failure in the app job log.
+fn write_flags(reset_values: bool) -> Vec<String> {
+    let mut flags = vec![
+        "--wait".to_string(),
+        "--timeout".to_string(),
+        WAIT_TIMEOUT.to_string(),
+        "--rollback-on-failure".to_string(),
+        "--force-conflicts".to_string(),
+    ];
+    if reset_values {
+        flags.push("--reset-values".to_string());
+    }
+    flags
+}
+
 /// An installed application.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct App {
@@ -175,12 +200,8 @@ impl Client {
             chart_dir.to_string(),
             "-n".into(),
             self.namespace.clone(),
-            "--wait".into(),
-            "--timeout".into(),
-            WAIT_TIMEOUT.into(),
-            // Remove a failed install instead of leaving a partial release.
-            "--atomic".into(),
         ];
+        full.extend(write_flags(false));
         full.append(&mut args);
         self.run(&full).await?;
         self.get(name).await
@@ -201,14 +222,8 @@ impl Client {
             chart_dir.to_string(),
             "-n".into(),
             self.namespace.clone(),
-            "--wait".into(),
-            "--timeout".into(),
-            WAIT_TIMEOUT.into(),
-            "--reset-values".into(),
-            // Roll back to the previous revision on a failed wait so the
-            // caller can safely clean up only the claims it just created.
-            "--atomic".into(),
         ];
+        full.extend(write_flags(true));
         full.append(&mut args);
         self.run(&full).await?;
         self.get(name).await
@@ -512,6 +527,21 @@ fn in_cluster_kubeconfig() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_flags_force_conflicts_and_avoid_the_deprecated_atomic_flag() {
+        let install = write_flags(false);
+        assert!(install.contains(&"--force-conflicts".to_string()));
+        assert!(install.contains(&"--rollback-on-failure".to_string()));
+        assert!(!install.contains(&"--atomic".to_string()));
+        assert!(!install.contains(&"--reset-values".to_string()));
+
+        let upgrade = write_flags(true);
+        assert!(upgrade.contains(&"--force-conflicts".to_string()));
+        assert!(upgrade.contains(&"--rollback-on-failure".to_string()));
+        assert!(upgrade.contains(&"--reset-values".to_string()));
+        assert!(!upgrade.contains(&"--atomic".to_string()));
+    }
 
     #[test]
     fn the_helm_sa_kubeconfig_uses_the_mounted_token() {
