@@ -228,12 +228,6 @@
       VMs would run emulated (very slow); vmd stays idle until the hardware is enabled.
     </div>
   {/if}
-  {#if capabilities && !capabilities.macvtap}
-    <div class="card mb-4 border-yellow-700 bg-yellow-900/10 text-yellow-300 text-sm">
-      macvtap is unavailable on this kernel, so LAN networking is disabled for new VMs; NAT with port
-      forwards still works.
-    </div>
-  {/if}
   {#if featureError}
     <div role="alert" class="card mb-4 border-red-700 bg-red-900/20 text-red-300 text-sm">{featureError}</div>
   {/if}
@@ -321,14 +315,14 @@
     {#if capabilities}
       <p class="text-xs text-gray-500 mt-2">
         Node: {capabilities.cpuModel || 'unknown CPU'} · KVM {capabilities.kvm ? 'yes' : 'no'}
-        {capabilities.nested ? ' (nested)' : ''} · tun {capabilities.tun ? 'yes' : 'no'} ·
+        {capabilities.nested ? ' (nested)' : ''} ·
         VNC range 5901+{#if capabilities.nics} · NICs {capabilities.nics.join(', ')}{/if}
       </p>
     {/if}
   {/if}
 </div>
 
-<VmWizard open={wizardOpen} vm={editing} pools={pools} capabilities={capabilities}
+<VmWizard open={wizardOpen} vm={editing} pools={pools}
   close={() => (wizardOpen = false)} submit={createOrUpdate} />
 
 {#if selected}

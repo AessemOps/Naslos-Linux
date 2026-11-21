@@ -72,7 +72,9 @@ pub const TOOLS: &[ToolDef] = &[
                 ),
                 (
                     "net",
-                    free_map("Network settings: mode (nat|macvtap), portForwards[].",)
+                    free_map(
+                        "Network settings: portForwards[] (NAT only; node port → guest port)."
+                    )
                 ),
                 (
                     "cloudInit",

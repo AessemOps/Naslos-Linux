@@ -5,13 +5,12 @@
 //! - the API is the brain; vmd only applies what it validated itself too
 //!   (SEC-1: a bad render never reaches a command line),
 //! - one vmd pod per node, so two supervisors never fight over QEMU
-//!   processes, VNC ports or macvtap devices (`Recreate` strategy),
+//!   processes or VNC ports (`Recreate` strategy),
 //! - `state` is always derived here, never persisted.
 
 use crate::args::{detect_firmware, qemu_args, BuildContext};
 use crate::cloudinit;
-use crate::model::{validate_vm, vm_dir, DesiredConfig, Firmware, NetMode, VmLive, VmSpec};
-use crate::netdev;
+use crate::model::{validate_vm, vm_dir, DesiredConfig, Firmware, VmLive, VmSpec};
 use crate::qmp::Qmp;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -32,9 +31,6 @@ struct Running {
     spec: VmSpec,
     vnc_display: u16,
     vnc_password: String,
-    /// The macvtap fd stays open for the child's lifetime; dropping it would
-    /// close the guest's link even while QEMU runs.
-    _tap: Option<std::fs::File>,
     started_at: std::time::Instant,
     exited: Option<std::process::ExitStatus>,
     /// The stop was requested by the reconciler (not an unexpected exit).
@@ -234,7 +230,6 @@ impl Supervisor {
 
     /// Reap exited children, refresh per-VM state, and park ghosts.
     pub async fn poll(&self) {
-        let mut to_unlink: Vec<String> = Vec::new();
         {
             let mut state = self.state.lock().await;
             let mut reaped: Vec<String> = Vec::new();
@@ -260,7 +255,6 @@ impl Supervisor {
             // Park reaped VMs as ghosts so their exit reason stays visible.
             for name in reaped {
                 if let Some(running) = state.running.remove(&name) {
-                    to_unlink.push(name.clone());
                     state.ghosts.insert(
                         name.clone(),
                         VmLive {
@@ -277,12 +271,6 @@ impl Supervisor {
                     );
                 }
             }
-        }
-        // The macvtap teardown shells out to `ip`; it must never run under
-        // the supervisor mutex (the QMP probes in live() would queue behind
-        // it and a wedged child could freeze all VM management).
-        for name in &to_unlink {
-            let _ = netdev::remove_macvtap(name).await;
         }
     }
 
@@ -394,27 +382,10 @@ impl Supervisor {
             }
         }
 
-        // LAN mode: create the macvtap device and open its fd before anything
-        // else can fail, so the cleanup wrapper below always knows the device.
-        let tap = match spec.net.mode {
-            NetMode::Lan => {
-                let nic = spec.net.nic.as_deref().unwrap_or_default();
-                let (_, ifindex) = netdev::ensure_macvtap(nic, &spec.name).await?;
-                Some(netdev::open_tap_fd(ifindex)?)
-            }
-            NetMode::Nat => None,
-        };
-
-        if let Err(e) = self.start_inner(spec, tap).await {
-            if spec.net.mode == NetMode::Lan {
-                let _ = netdev::remove_macvtap(&spec.name).await;
-            }
-            return Err(e);
-        }
-        Ok(())
+        self.start_inner(spec).await
     }
 
-    async fn start_inner(&self, spec: &VmSpec, tap: Option<std::fs::File>) -> Result<(), String> {
+    async fn start_inner(&self, spec: &VmSpec) -> Result<(), String> {
         let dir = vm_dir(&spec.pool, &spec.name);
         wait_for_dir(&dir).await?;
 
@@ -532,7 +503,6 @@ impl Supervisor {
             uefi_vars: Some(vars_path),
             cloud_init_seed: seed,
             iso_path,
-            macvtap_fd: tap.as_ref().map(netdev::tap_fd_number),
         };
         let argv = qemu_args(spec, &ctx)?;
 
@@ -552,22 +522,6 @@ impl Supervisor {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::from(log))
             .kill_on_drop(false);
-
-        // Pass the macvtap fd as fd 3 via dup2 in pre_exec: async-signal-safe
-        // (dup2 only) and the standard way to hand QEMU an opened tap.
-        if let Some(file) = tap.as_ref() {
-            let fd = netdev::tap_fd_number(file);
-            use std::os::unix::process::CommandExt;
-            unsafe {
-                command.as_std_mut().pre_exec(move || {
-                    if libc::dup2(fd, 3) != 3 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    libc::close(fd);
-                    Ok(())
-                });
-            }
-        }
 
         let child = command
             .spawn()
@@ -605,7 +559,6 @@ impl Supervisor {
                     spec: spec.clone(),
                     vnc_display: vnc_display_num,
                     vnc_password: password,
-                    _tap: tap,
                     started_at: std::time::Instant::now(),
                     exited: None,
                     stopping: false,
@@ -864,12 +817,11 @@ mod tests {
                 source_image: None,
             },
             net: NetSpec {
-                mode: NetMode::Nat,
                 forwards: vec![PortForward {
                     host: 8081,
                     dst: 80,
                 }],
-                nic: None,
+                ..NetSpec::default()
             },
             cloud_init: Some(CloudInitSpec {
                 hostname: name.into(),

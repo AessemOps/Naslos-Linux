@@ -28,12 +28,13 @@ pub enum DiskBus {
     Sata,
 }
 
+/// Guest networking is NAT (slirp) only; a host-bridge LAN mode is planned
+/// for a later release (see docs/spec.md FR-VMT-04).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum NetMode {
     #[default]
     Nat,
-    Lan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -50,10 +51,6 @@ fn default_format() -> DiskFormat {
 
 fn default_bus() -> DiskBus {
     DiskBus::Virtio
-}
-
-fn default_mode() -> NetMode {
-    NetMode::Nat
 }
 
 fn default_firmware() -> Firmware {
@@ -90,13 +87,12 @@ pub struct DiskSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct NetSpec {
-    #[serde(default = "default_mode")]
+    /// NAT is the only mode; the field stays on the wire for forward
+    /// compatibility with a future host-bridge mode.
+    #[serde(default)]
     pub mode: NetMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forwards: Vec<PortForward>,
-    /// Physical NIC for LAN (macvtap) mode.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nic: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -266,17 +262,6 @@ pub fn validate_vm(spec: &VmSpec) -> Result<(), String> {
             return Err(format!("duplicate host port {}", fwd.host));
         }
     }
-    if spec.net.mode == NetMode::Lan {
-        let nic = spec.net.nic.as_deref().unwrap_or_default();
-        if nic.is_empty() || !valid_interface_name(nic) {
-            return Err(format!(
-                "LAN mode needs a physical NIC ({nic:?} is not a valid interface name)"
-            ));
-        }
-        if !spec.net.forwards.is_empty() {
-            return Err("port forwards apply to NAT mode only".to_string());
-        }
-    }
     if let Some(iso) = &spec.iso {
         library_file(iso).map_err(|e| format!("iso {e}"))?;
     }
@@ -330,16 +315,6 @@ pub fn valid_pool_component(pool: &str) -> bool {
     bytes
         .iter()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
-}
-
-/// Linux interface names: alphanumeric plus a few separators, <= 15 chars for
-/// the created macvtap device names to stay inside IFNAMSIZ.
-pub fn valid_interface_name(nic: &str) -> bool {
-    !nic.is_empty()
-        && nic.len() <= 15
-        && nic
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 fn validate_cloud_init(ci: &CloudInitSpec) -> Result<(), String> {
@@ -418,11 +393,6 @@ pub fn genisoimage_binary() -> String {
     std::env::var("VMD_GENISOIMAGE_BIN").unwrap_or_else(|_| "genisoimage".to_string())
 }
 
-/// `ip` (iproute2) resolution, used for macvtap devices.
-pub fn ip_binary() -> String {
-    std::env::var("VMD_IP_BIN").unwrap_or_else(|_| "ip".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,7 +417,6 @@ mod tests {
                     host: 8081,
                     dst: 80,
                 }],
-                nic: None,
             },
             cloud_init: Some(CloudInitSpec {
                 hostname: "test-vm".into(),
@@ -531,18 +500,6 @@ mod tests {
             spec.disk.size_gb = gb;
             assert_eq!(validate_vm(&spec).is_ok(), ok, "size {gb}");
         }
-    }
-
-    #[test]
-    fn lan_mode_requires_a_nic_and_forbids_forwards() {
-        let mut spec = vm();
-        spec.net.mode = NetMode::Lan;
-        assert!(validate_vm(&spec).is_err());
-        spec.net.forwards.clear();
-        spec.net.nic = Some("eth0".into());
-        assert!(validate_vm(&spec).is_ok());
-        spec.net.nic = Some("../etc".into());
-        assert!(validate_vm(&spec).is_err());
     }
 
     #[test]

@@ -44,10 +44,6 @@ pub struct Capabilities {
     #[serde(default)]
     pub nested: bool,
     #[serde(default)]
-    pub tun: bool,
-    #[serde(default)]
-    pub macvtap: bool,
-    #[serde(default)]
     pub nics: Vec<String>,
 }
 

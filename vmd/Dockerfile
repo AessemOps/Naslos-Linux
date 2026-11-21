@@ -37,11 +37,10 @@ RUN touch vmd/src/main.rs vmd/src/lib.rs \
 
 FROM debian:bookworm-slim
 
-# qemu-system-x86: the hypervisor (QMP, VNC, slirp, macvtap via tap fds).
+# qemu-system-x86: the hypervisor (QMP, VNC, slirp NAT with port forwards).
 # qemu-utils: qemu-img for blank/cloud-image disks.
 # ovmf/seabios: UEFI (default) and BIOS firmware blobs.
 # genisoimage: the cloud-init NoCloud `cidata` seed.
-# iproute2: macvtap link creation.
 # ca-certificates: the URL importer verifies TLS.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -50,7 +49,6 @@ RUN apt-get update \
         ovmf \
         seabios \
         genisoimage \
-        iproute2 \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && qemu-system-x86_64 --version \
@@ -58,8 +56,7 @@ RUN apt-get update \
 
 COPY --from=builder /build/target/release/naslos-vmd /app/naslos-vmd
 
-# vmd is privileged by design: it opens /dev/kvm and /dev/net/tun, creates
-# macvtap devices on the physical NICs and writes VM datasets.
+# vmd is privileged by design: it opens /dev/kvm and writes VM datasets.
 USER root:root
 
 EXPOSE 9091

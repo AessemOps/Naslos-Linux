@@ -3,13 +3,12 @@ The QEMU/KVM supervisor (FR-VMT): one privileged, hostNetwork pod that owns
 every QEMU process on the node.
 
 Recreate (not RollingUpdate): two vmd pods would fight over the same QEMU
-children, VNC ports and macvtap devices. Pod restart = VM restart for
+children and VNC ports. Pod restart = VM restart for
 autostart-marked VMs: the API re-pushes the config on its own startup and the
 supervisor reconciles (documented in docs/virtual-machines.md).
 
 Mounts:
-  /dev      HostToContainer - /dev/kvm (acceleration) and /dev/net/tun plus the
-             per-VM /dev/tapN macvtap devices QEMU is handed fds for.
+  /dev      HostToContainer - /dev/kvm (acceleration).
   /var/mnt  RW HostToContainer - the VM datasets and image libraries. RW is
              required (blank disks, cloud-init seeds, upload chunks); the mount
              propagation makes datasets created later (through the host-side
@@ -35,8 +34,8 @@ metadata:
     app.kubernetes.io/component: virt
 spec:
   replicas: 1
-  # Two vmd pods must never coexist (split-brain over QEMU children, VNC
-  # ports and macvtap devices); terminate the old pod before the new one.
+  # Two vmd pods must never coexist (split-brain over QEMU children and VNC
+  # ports); terminate the old pod before the new one.
   strategy:
     type: Recreate
   selector:
@@ -59,8 +58,7 @@ spec:
           image: {{ include "naslos.image" $virt.image }}
           imagePullPolicy: {{ $virt.image.pullPolicy }}
           securityContext:
-            # QEMU supervision needs /dev/kvm, /dev/net/tun, macvtap creation
-            # (CAP_NET_ADMIN) and writes into the VM datasets.
+            # QEMU supervision needs /dev/kvm and writes into the VM datasets.
             privileged: true
           env:
             # Every request but /health must carry the shared bearer token

@@ -6,7 +6,6 @@
   export let open: boolean;
   export let vm: any | null; // null = create, object = edit
   export let pools: string[] = [];
-  export let capabilities: any = null;
   export let images: any[] = []; // library entries of the selected pool
 
   export let close: () => void = () => {};
@@ -31,7 +30,7 @@
       firmware: 'uefi',
       desired: 'stopped',
       disk: { sizeGB: 40, format: 'qcow2', bus: 'virtio', sourceImage: null },
-      net: { mode: 'nat', forwards: [], nic: null },
+      net: { mode: 'nat', forwards: [] },
       cloudInit: { enabled: true, hostname: '', user: 'admin', sshKeys: '' },
       iso: null,
       bootMode: 'iso'
@@ -44,7 +43,6 @@
   }
 
   $: isEdit = vm !== null;
-  $: lanSupported = capabilities?.macvtap !== false;
   $: isos = images.filter((i: any) => /\.(iso)$/i.test(i.name));
   $: diskImages = images.filter((i: any) => !/\.(iso)$/i.test(i.name));
 
@@ -78,10 +76,7 @@
         },
         net: {
           mode: form.net.mode,
-          forwards: form.net.mode === 'nat'
-            ? form.net.forwards.map((f: any) => ({ host: Number(f.host), dst: Number(f.dst) }))
-            : [],
-          nic: form.net.mode === 'lan' ? form.net.nic : null
+          forwards: form.net.forwards.map((f: any) => ({ host: Number(f.host), dst: Number(f.dst) }))
         },
         iso: form.bootMode === 'iso' ? form.iso : null
       };
@@ -204,45 +199,23 @@
       </p>
 
       <h3 class="text-sm font-semibold text-gray-300 mt-5 mb-2">Networking</h3>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div>
-          <label class="label" for="vm-net">Mode</label>
-          <select id="vm-net" class="input w-full" bind:value={form.net.mode}>
-            <option value="nat">NAT (port forwards)</option>
-            <option value="lan" disabled={!lanSupported}>LAN (own DHCP address{lanSupported ? '' : ' — macvtap unavailable'})</option>
-          </select>
+      <p class="text-xs text-gray-500">
+        NAT only: the guest shares the node's network and is reachable through these port forwards.
+      </p>
+      <div class="mt-3">
+        <div class="flex items-center justify-between">
+          <span class="label">Port forwards (node port → guest port)</span>
+          <button class="btn btn-secondary" on:click={addForward}>Add forward</button>
         </div>
-        {#if form.net.mode === 'lan'}
-          <div>
-            <label class="label" for="vm-nic">Physical NIC</label>
-            <select id="vm-nic" class="input w-full" bind:value={form.net.nic}>
-              <option value={null}>Choose…</option>
-              {#each (capabilities?.nics ?? []) as nic}
-                <option value={nic}>{nic}</option>
-              {/each}
-            </select>
-            <p class="text-xs text-yellow-500/80 mt-1">
-              The NAS host itself cannot talk to a LAN-mode guest (macvtap); use another device on the network.
-            </p>
+        {#each form.net.forwards as fwd, index}
+          <div class="flex items-center gap-2 mt-2">
+            <input type="number" min="1" max="65535" class="input w-32" bind:value={fwd.host} />
+            <span class="text-gray-400">→</span>
+            <input type="number" min="1" max="65535" class="input w-32" bind:value={fwd.dst} />
+            <button class="btn btn-secondary" on:click={() => removeForward(index)}>Remove</button>
           </div>
-        {/if}
+        {/each}
       </div>
-      {#if form.net.mode === 'nat'}
-        <div class="mt-3">
-          <div class="flex items-center justify-between">
-            <span class="label">Port forwards (node port → guest port)</span>
-            <button class="btn btn-secondary" on:click={addForward}>Add forward</button>
-          </div>
-          {#each form.net.forwards as fwd, index}
-            <div class="flex items-center gap-2 mt-2">
-              <input type="number" min="1" max="65535" class="input w-32" bind:value={fwd.host} />
-              <span class="text-gray-400">→</span>
-              <input type="number" min="1" max="65535" class="input w-32" bind:value={fwd.dst} />
-              <button class="btn btn-secondary" on:click={() => removeForward(index)}>Remove</button>
-            </div>
-          {/each}
-        </div>
-      {/if}
 
       <h3 class="text-sm font-semibold text-gray-300 mt-5 mb-2">Firmware &amp; autostart</h3>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">

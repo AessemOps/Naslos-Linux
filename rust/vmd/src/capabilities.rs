@@ -8,16 +8,10 @@ pub struct Capabilities {
     #[serde(rename = "cpuModel")]
     pub cpu_model: String,
     pub nested: bool,
-    pub tun: bool,
-    pub macvtap: bool,
     pub nics: Vec<String>,
 }
 
 /// Detect the node's virtualization capabilities.
-///
-/// `macvtap` is probed by creating and deleting one throwaway device: the
-/// module is only loaded (and /sys/module/macvtap only appears) after first
-/// use, so a passive check would always answer false on a fresh boot.
 pub fn detect() -> Capabilities {
     let kvm = std::path::Path::new("/dev/kvm").exists();
     let cpu_model = std::fs::read_to_string("/proc/cpuinfo")
@@ -42,35 +36,12 @@ pub fn detect() -> Capabilities {
             })
             .unwrap_or(false)
     });
-    let tun = std::path::Path::new("/dev/net/tun").exists();
-    let macvtap = probe_macvtap();
     Capabilities {
         kvm,
         cpu_model,
         nested,
-        tun,
-        macvtap,
         nics: physical_nics(),
     }
-}
-
-fn probe_macvtap() -> bool {
-    // std::process (not tokio): detect() is sync and runs on the blocking
-    // pool; the probe is two ~ms `ip` calls once per capabilities request.
-    let probe = "mtap-probe00";
-    let ok = std::process::Command::new(crate::model::ip_binary())
-        .args([
-            "link", "add", probe, "link", "lo", "type", "macvtap", "mode", "bridge",
-        ])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if ok {
-        let _ = std::process::Command::new(crate::model::ip_binary())
-            .args(["link", "del", probe])
-            .output();
-    }
-    ok
 }
 
 /// Physical (`ether`) links: everything under /sys/class/net that is not
