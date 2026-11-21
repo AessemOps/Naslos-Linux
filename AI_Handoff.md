@@ -122,30 +122,35 @@ retrying or using the browser path worked around it. Worth watching.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.5.0`**, revision 56
-  (2026-11-21), deployed with `make install-vm`; the node runs the v0.5.0
-  chart and release images, digest-pinned (public GHCR): API `11a5e3bb…`,
-  UI `36e7d304…`, agent `d55da198…`, OpenLDAP `b87e40ff…`, Samba
-  `b0ed23c1…`, NFS `eaf6455a…`, terminal `62924c71…`, vmd `71ddcd08…`.
+- **Deployed release:** Helm `naslos` chart **`naslos-0.5.1`**, revision 58
+  (2026-11-21), deployed with `make install-vm`; the node runs the v0.5.1
+  chart and release images, digest-pinned (public GHCR): API `e9a461fc…`,
+  UI `418f1240…`, agent `de15ccba…`, OpenLDAP `2f6d7077…`, Samba
+  `59088ce9…`, NFS `32cf601f…`, terminal `6c4fc507…`, vmd `fee36ced…`.
   `virt.enabled: true`. `/api/system/version` reports the `release.*`
-  facts from `values-vm.yaml`: Naslos/chart **0.5.0**, profile
-  `installer` (the web-upgrader facts), release Talos pin **v1.14.6** and
-  k8s v1.37.0, while the running Talos is still **v1.14.5** (the node has
-  not been upgraded yet). The web upgrader is enabled (SA
-  `naslos-upgrader` + cluster-admin binding, the `naslos-api-system`
-  Role/RoleBinding, and the upgrader admission policy). **Defect found
-  live:** the update check only looked at releases strictly newer than the
-  installed one, so after finishing the Naslos 0.5.0 step it answered
-  `no newer release` and the UI could not offer the pinned Talos v1.14.6
-  step; fixed in `0.5.1` (the installed release is now offered while
-  Talos/Kubernetes lag its pins). The private registry
-  `192.168.1.2:30095` is retired — do not build/push local images.
+  facts from `values-vm.yaml`: Naslos/chart **0.5.1**, profile
+  `installer`, release Talos pin **v1.14.6** and k8s v1.37.0, while the
+  running Talos is still **v1.14.5** (the Talos step has not been run).
+  The web upgrader is enabled (SA `naslos-upgrader` + cluster-admin
+  binding, the `naslos-api-system` Role/RoleBinding, and the upgrader
+  admission policy). **Web-upgrader fix verified live:** `POST
+  /api/system/updates/check` now returns `current`/`available` 0.5.1 with
+  `talosVersion: v1.14.6`, `stepping.allowed: true`, so the UI shows the
+  system upgrade and enables **Upgrade Talos**; before 0.5.1 it answered
+  `no newer release` once Naslos was current. The same deploy corrected
+  `values-vm.yaml`, which still advertised the release facts as 0.4.4
+  (the release guard now covers `values-vm.yaml` tags and facts). The
+  private registry `192.168.1.2:30095` is retired — do not build/push
+  local images.
 - **Latest release:** `v0.5.1` (2026-11-21) and installer `naslos-v0.5.1`
   are published; the pack `naslos-install-pack-0.5.1.tar.gz` is attached.
   It fixes the web upgrader so a node that already runs the newest release
   can still complete the pending Talos/Kubernetes steps: the update check
   now offers the installed release while its system pins lag, and the UI
-  labels that as a system upgrade. `v0.5.0` (2026-11-21) shipped the MCP
+  labels that as a system upgrade. It also bumps the node overlay's
+  release facts and folds `values-vm.yaml` into the release guard, so a
+  stale overlay cannot make the upgrader misread the installed version.
+  `v0.5.0` (2026-11-21) shipped the MCP
   server (PR #187), targeted Talos **v1.14.6** for fresh installs and web
   upgrades, and landed the Vite 8 / SvelteKit 3 / TypeScript 6 UI stack,
   the Tailwind 4 desktop wizard and the Rust `sha2` 0.11 / `getrandom` 0.4
