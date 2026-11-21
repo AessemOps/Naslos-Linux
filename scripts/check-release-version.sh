@@ -36,7 +36,7 @@ done
 # both files' in-tree tags must already match the chart version; otherwise a
 # direct `helm install` (or an unpinned pack) runs older images against a newer
 # chart.
-for values_file in values.yaml values-installer.yaml; do
+for values_file in values.yaml values-installer.yaml values-vm.yaml; do
     if ! python3 - "$root/charts/naslos/$values_file" "$chart_app_version" "$values_file" <<'PY'
 import re
 import sys
@@ -64,7 +64,22 @@ PY
     fi
 done
 
+# values-vm.yaml is the node overlay used by `make install-vm`; its advertised
+# release facts drive the web upgrader, so a stale value makes the node report
+# an older release than the chart it runs.
+vm="$root/charts/naslos/values-vm.yaml"
+for field in naslosVersion chartVersion; do
+    value=$(awk -v key="$field" '
+        /^release:/ { inside = 1; next }
+        inside && $1 == key ":" { gsub(/"/, "", $2); print $2; exit }
+    ' "$vm")
+    if [ "$value" != "$version" ]; then
+        printf 'release guard: values-vm.yaml release.%s is %s, expected %s\n' "$field" "${value:-<empty>}" "$version" >&2
+        fails=$((fails + 1))
+    fi
+done
+
 if [ "$fails" -ne 0 ]; then
     exit 1
 fi
-printf 'release guard: %s matches Chart.yaml version/appVersion, ui/package.json and image tags\n' "$version"
+printf 'release guard: %s matches Chart.yaml version/appVersion, ui/package.json, image tags and values-vm release facts\n' "$version"
