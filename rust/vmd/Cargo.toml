@@ -27,7 +27,7 @@ clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
 libc = "0.2"
-getrandom = "0.2"
+getrandom = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

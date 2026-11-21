@@ -1938,7 +1938,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "futures",
- "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "hickory-resolver",
  "http-body-util",
  "hyper-util",
@@ -1980,7 +1980,7 @@ dependencies = [
  "bytes",
  "clap",
  "futures",
- "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "hyper-util",
  "libc",
  "reqwest",
@@ -2907,7 +2907,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde_derive_internals",
- "syn 3.0.9",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -2997,7 +2997,7 @@ checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.9",
+ "syn 3.0.10",
 ]
 
 [[package]]
