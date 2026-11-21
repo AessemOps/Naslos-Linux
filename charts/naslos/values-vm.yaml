@@ -24,10 +24,10 @@
 api:
   image:
     repository: ghcr.io/aessemops/naslos-api
-    # Drill build (sha-9fe8f5c, release dry run publish=false) carrying the
-    # MCP server (FR-MCP) on top of everything in the v0.4.4 release, until
-    # the next release tag; the digest is the pin that actually gets pulled
-    # (FR-INSTALL-13).
+    # Drill build (sha-9fe8f5c; identical content ships in sha-dbdbd48's
+    # matrix, which rebuilt it unchanged) carrying the MCP server (FR-MCP)
+    # on top of everything in the v0.4.4 release, until the next release tag;
+    # the digest is the pin that actually gets pulled (FR-INSTALL-13).
     tag: "sha-9fe8f5c54a3a962bae6f2498cdf0b55648c07c88"
     digest: "sha256:3b7ee9fa69388d2deaebae608b4250f10c311f8baafd7868f5269b247e444546"
   # The API manages the node via the Talos API; without this it crashes at
@@ -53,11 +53,12 @@ agent:
 ui:
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    # Drill build (sha-9fe8f5c, release dry run publish=false) carrying the
-    # Settings -> MCP card and page (FR-MCP) on top of the v0.4.4 release,
-    # until the next release tag; the digest is the pin (FR-INSTALL-13).
-    tag: "sha-9fe8f5c54a3a962bae6f2498cdf0b55648c07c88"
-    digest: "sha256:bb27ea207072970f5ac19dc0c79dcfc2fd580b83d688b115702d3ead194ce3fa"
+    # Drill build (sha-dbdbd48, release dry run publish=false) carrying the
+    # Settings -> MCP card and page (FR-MCP) plus the update-badge a11y fix
+    # on top of the v0.4.4 release, until the next release tag; the digest is
+    # the pin (FR-INSTALL-13).
+    tag: "sha-dbdbd48551de28eb03efed7feb23b012d6d6aee2"
+    digest: "sha256:c4ec9638404e61b73e29c2d0428f9096b21e2e4275d215ea325fce854d96c346"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
