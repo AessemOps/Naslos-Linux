@@ -12,23 +12,14 @@ use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, TimeZone, Timelike, Utc, Weekday};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::buddy::keys::load_identity;
 use crate::buddy::peers::validate_source;
 use crate::json;
+use crate::schedule::{next_run as cadence_next_run, parse_run_at, Cadence};
 use crate::state::AppState;
-
-/// The scheduler interval for a schedule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Cadence {
-    #[default]
-    Hourly,
-    Daily,
-    Weekly,
-}
 
 /// One scheduled backup.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -232,97 +223,9 @@ impl ScheduleStore {
     }
 }
 
-fn parse_hhmm(text: &str) -> Option<(u32, u32)> {
-    if text.len() != 5 {
-        return None;
-    }
-    let (h, m) = text.split_once(':')?;
-    let h: u32 = h.parse().ok()?;
-    let m: u32 = m.parse().ok()?;
-    if h > 23 || m > 59 {
-        return None;
-    }
-    Some((h, m))
-}
-
-fn parse_run_at(cadence: Cadence, run_at: &str) -> Result<(Weekday, u32, u32), String> {
-    let text = run_at.trim();
-    match cadence {
-        Cadence::Hourly => Ok((Weekday::Sun, 0, 0)),
-        Cadence::Daily => parse_hhmm(text)
-            .map(|(h, m)| (Weekday::Sun, h, m))
-            .ok_or_else(|| "runAt must be HH:MM in UTC (e.g. 02:30)".to_string()),
-        Cadence::Weekly => {
-            let parts: Vec<&str> = text.split_whitespace().collect();
-            if parts.len() != 2 {
-                return Err("runAt must be \"Mon 02:30\" in UTC for weekly schedules".to_string());
-            }
-            let days = [
-                (Weekday::Mon, "mon"),
-                (Weekday::Tue, "tue"),
-                (Weekday::Wed, "wed"),
-                (Weekday::Thu, "thu"),
-                (Weekday::Fri, "fri"),
-                (Weekday::Sat, "sat"),
-                (Weekday::Sun, "sun"),
-            ];
-            let day = days
-                .iter()
-                .find(|(_, name)| name.eq_ignore_ascii_case(&parts[0].to_lowercase()))
-                .map(|(d, _)| *d)
-                .ok_or_else(|| {
-                    "runAt weekday must be one of Sun Mon Tue Wed Thu Fri Sat".to_string()
-                })?;
-            let (h, m) = parse_hhmm(parts[1])
-                .ok_or_else(|| "runAt time must be HH:MM in UTC (e.g. Mon 02:30)".to_string())?;
-            Ok((day, h, m))
-        }
-    }
-}
-
 /// The next run strictly after `now`.
 pub fn compute_next_run(e: &ScheduleEntry, now: DateTime<Utc>) -> DateTime<Utc> {
-    match e.cadence {
-        Cadence::Hourly => {
-            let truncated = now
-                .with_minute(0)
-                .and_then(|t| t.with_second(0))
-                .and_then(|t| t.with_nanosecond(0))
-                .unwrap_or(now);
-            truncated + ChronoDuration::hours(1)
-        }
-        Cadence::Daily => {
-            let Ok((_, h, m)) = parse_run_at(e.cadence, &e.run_at) else {
-                return now + ChronoDuration::hours(24);
-            };
-            let today = now.date_naive();
-            let mut next = Utc
-                .with_ymd_and_hms(today.year(), today.month(), today.day(), h, m, 0)
-                .single()
-                .unwrap_or(now);
-            if next <= now {
-                next += ChronoDuration::hours(24);
-            }
-            next
-        }
-        Cadence::Weekly => {
-            let Ok((weekday, h, m)) = parse_run_at(e.cadence, &e.run_at) else {
-                return now + ChronoDuration::hours(24 * 7);
-            };
-            let today = now.date_naive();
-            let mut next = Utc
-                .with_ymd_and_hms(today.year(), today.month(), today.day(), h, m, 0)
-                .single()
-                .unwrap_or(now);
-            if next <= now {
-                next += ChronoDuration::hours(24);
-            }
-            while next.weekday() != weekday {
-                next += ChronoDuration::hours(24);
-            }
-            next
-        }
-    }
+    cadence_next_run(e.cadence, &e.run_at, now)
 }
 
 /// Validate a schedule. The agent dataset check is best-effort.
@@ -544,6 +447,7 @@ pub async fn run_scheduler(state: Arc<AppState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Datelike, TimeZone, Weekday};
 
     #[test]
     fn run_at_parsing() {

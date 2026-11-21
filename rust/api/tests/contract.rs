@@ -529,3 +529,171 @@ async fn the_dataset_registry_requires_the_agent_for_registration() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(body["error"].as_str().unwrap_or_default().contains("agent"));
 }
+
+fn admin_json(method: &str, uri: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins")
+        .header("Sec-Fetch-Site", "same-origin")
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn storage_schedules_validate_and_round_trip() {
+    let st = state();
+
+    // A schedule needs an explicit kind.
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json(
+                "POST",
+                "/api/storage/schedules",
+                r#"{"target":"tank/data"}"#,
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap_or_default().contains("kind"));
+
+    // A client may not invent a schedule id: ids are server-generated because
+    // they become snapshot retention prefixes.
+    let invented =
+        r#"{"id":"a-b","kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30"}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", invented),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("unknown schedule id"));
+
+    // Snapshot targets are dataset paths; a bare pool or a traversal is refused.
+    for target in ["data", "../tank/data", "tank/data@snap"] {
+        let body_json = format!(
+            r#"{{"kind":"snapshot","target":"{target}","cadence":"daily","runAt":"02:30"}}"#
+        );
+        let (status, body, _r) = send_state(
+            st.clone(),
+            with_peer(
+                admin_json("POST", "/api/storage/schedules", &body_json),
+                [127, 0, 0, 1],
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{target}");
+        assert!(!body["error"].as_str().unwrap_or_default().is_empty());
+    }
+
+    // A scrub schedule is daily/weekly and cannot retain snapshots.
+    let hourly = r#"{"kind":"scrub","target":"tank","cadence":"hourly"}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", hourly),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("daily or weekly"));
+
+    let keep =
+        r#"{"kind":"scrub","target":"tank","cadence":"weekly","runAt":"Sun 02:30","keep":3}"#;
+    let (status, _body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", keep),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A valid schedule is created, listed and deleted.
+    let valid = r#"{"kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30","keep":7,"recursive":true}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", valid),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = body["schedule"]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(!id.is_empty());
+    assert!(body["schedule"]["nextRun"].is_string());
+
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            get(
+                "/api/storage/schedules",
+                true,
+                Some("admin"),
+                Some("naslos_admins"),
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["schedules"].as_array().map(Vec::len), Some(1));
+
+    let (status, _body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("DELETE", &format!("/api/storage/schedules?id={id}"), ""),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn manual_scrub_validates_and_needs_the_agent() {
+    let st = state();
+    let (status, _body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/volumes/zfs/bad-name!/scrub", ""),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // No agent client in the test process: the route fails closed rather than
+    // pretending a scrub started.
+    let (status, body, _r) = send_state(
+        st,
+        with_peer(
+            admin_json("POST", "/api/volumes/zfs/tank/scrub", ""),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["error"].as_str().unwrap_or_default().contains("agent"));
+}

@@ -922,12 +922,50 @@ impl Client {
 
     /// Create a snapshot on the host.
     pub async fn create_snapshot(&self, dataset: &str, name: &str) -> Result<(), AgentError> {
+        self.create_snapshot_with(dataset, name, false).await
+    }
+
+    /// Create a snapshot, optionally recursing into child datasets.
+    pub async fn create_snapshot_with(
+        &self,
+        dataset: &str,
+        name: &str,
+        recursive: bool,
+    ) -> Result<(), AgentError> {
         let path = format!("/api/v1/snapshots/{}", escape_dataset_path(dataset));
         self.do_empty(
             self.request(reqwest::Method::POST, &path)
-                .json(&serde_json::json!({ "name": name })),
+                .json(&serde_json::json!({ "name": name, "recursive": recursive })),
         )
         .await
+    }
+
+    /// Every snapshot path under a dataset (`pool/ds@snap`), in creation order.
+    pub async fn snapshot_paths(&self, dataset: &str) -> Result<Vec<String>, AgentError> {
+        let path = format!(
+            "/api/v1/snapshots/{}?paths=true",
+            escape_dataset_path(dataset)
+        );
+        self.do_json(self.request(reqwest::Method::GET, &path))
+            .await
+    }
+
+    /// Destroy one snapshot (`zfs destroy dataset@name`).
+    pub async fn destroy_snapshot(&self, dataset: &str, name: &str) -> Result<(), AgentError> {
+        let path = format!(
+            "/api/v1/snapshots/{}?name={}",
+            escape_dataset_path(dataset),
+            query_escape(name)
+        );
+        self.do_empty(self.request(reqwest::Method::DELETE, &path))
+            .await
+    }
+
+    /// Start a scrub on a pool (`zpool scrub <pool>`).
+    pub async fn scrub_pool(&self, pool: &str) -> Result<(), AgentError> {
+        let path = format!("/api/v1/pools/{}/scrub", escape_component(pool));
+        self.do_empty(self.request(reqwest::Method::POST, &path))
+            .await
     }
 
     /// Roll a dataset back to one of its snapshots (`zfs rollback -r`).

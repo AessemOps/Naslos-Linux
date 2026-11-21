@@ -56,6 +56,38 @@
   let datasetSaving = false;
   let datasetError = '';
 
+  // Scheduled snapshots and scrubs (FR-STO-10/11). Schedules are stored by the
+  // API and survive restarts; this page only edits them.
+  interface StorageSchedule {
+    id: string;
+    kind: 'snapshot' | 'scrub';
+    target: string;
+    cadence: 'hourly' | 'daily' | 'weekly';
+    runAt: string;
+    keep: number;
+    recursive: boolean;
+    enabled: boolean;
+    lastRun?: string;
+    lastResult?: string;
+    lastError?: string;
+    nextRun?: string;
+  }
+  let schedules: StorageSchedule[] = [];
+  let schedulesError = '';
+  let scrubRunning = false;
+  let scrubMessage = '';
+
+  let showScheduleModal = false;
+  let scheduleKind: 'snapshot' | 'scrub' = 'snapshot';
+  let scheduleId = '';
+  let scheduleTarget = '';
+  let scheduleCadence: 'hourly' | 'daily' | 'weekly' = 'daily';
+  let scheduleRunAt = '02:30';
+  let scheduleKeep = 7;
+  let scheduleRecursive = false;
+  let scheduleSaving = false;
+  let scheduleError = '';
+
   let showAddDriveModal = false;
   let disks: any[] = [];
   let disksError = '';
@@ -149,6 +181,132 @@
       await loadDatasets();
     } catch (e: any) {
       alert(e.message);
+    }
+  }
+
+  // ---- Scheduled snapshots and scrubs -----------------------------------
+
+  function fmtTime(s?: string): string {
+    if (!s) return '—';
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? s : d.toLocaleString();
+  }
+
+  async function loadSchedules() {
+    try {
+      const res = await fetch('/api/storage/schedules');
+      if (!res.ok) {
+        schedulesError = `Failed to load schedules (HTTP ${res.status})`;
+        return;
+      }
+      const data = await res.json();
+      schedules = Array.isArray(data.schedules) ? data.schedules : [];
+      schedulesError = '';
+    } catch {
+      schedulesError = 'Failed to connect to API';
+    }
+  }
+
+  $: snapshotSchedules = schedules.filter(
+    (s) => s.kind === 'snapshot' && (s.target === poolName || s.target?.startsWith(`${poolName}/`))
+  );
+  $: scrubSchedule = schedules.find((s) => s.kind === 'scrub' && s.target === poolName);
+  // A snapshot schedule needs a dataset below the pool; the pool root is the
+  // pool itself, not a snapshot target.
+  $: scheduleableDatasets = datasets.filter((d) => d.name !== poolName);
+
+  function snapshotScheduleFor(dataset: string): StorageSchedule | undefined {
+    return schedules.find((s) => s.kind === 'snapshot' && s.target === dataset);
+  }
+
+  function openSchedule(
+    kind: 'snapshot' | 'scrub',
+    target: string,
+    existing?: StorageSchedule
+  ) {
+    // Both entry points resolve the same way: opening an existing schedule must
+    // edit it instead of silently creating a duplicate for the same target.
+    const current = existing ?? (kind === 'snapshot' ? snapshotScheduleFor(target) : scrubSchedule);
+    scheduleKind = kind;
+    scheduleId = current?.id ?? '';
+    scheduleTarget = target;
+    scheduleCadence = current?.cadence ?? (kind === 'scrub' ? 'weekly' : 'daily');
+    scheduleRunAt = current?.runAt || (kind === 'scrub' ? 'Sun 02:30' : '02:30');
+    scheduleKeep = current?.keep ?? (kind === 'scrub' ? 0 : 7);
+    scheduleRecursive = current?.recursive ?? false;
+    scheduleError = '';
+    showScheduleModal = true;
+  }
+
+  function selectScheduleTarget() {
+    const existing = snapshotScheduleFor(scheduleTarget);
+    scheduleId = existing?.id ?? '';
+    if (existing) {
+      scheduleCadence = existing.cadence;
+      scheduleRunAt = existing.runAt;
+      scheduleKeep = existing.keep;
+      scheduleRecursive = existing.recursive;
+    }
+  }
+
+  async function saveSchedule() {
+    scheduleSaving = true;
+    scheduleError = '';
+    try {
+      const res = await fetch('/api/storage/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: scheduleId,
+          kind: scheduleKind,
+          target: scheduleTarget,
+          cadence: scheduleCadence,
+          runAt: scheduleCadence === 'hourly' ? '' : scheduleRunAt,
+          keep: scheduleKind === 'scrub' ? 0 : Number(scheduleKeep) || 0,
+          recursive: scheduleKind === 'snapshot' ? scheduleRecursive : false,
+          enabled: true
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not save the schedule');
+      showScheduleModal = false;
+      await loadSchedules();
+    } catch (e: any) {
+      scheduleError = e.message;
+    } finally {
+      scheduleSaving = false;
+    }
+  }
+
+  async function removeSchedule(id: string) {
+    if (!confirm('Delete this schedule? Snapshots it already created are kept unless their retention limit is reached while the schedule still exists.')) return;
+    try {
+      const res = await fetch(`/api/storage/schedules?id=${encodeURIComponent(id)}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not delete the schedule');
+      await loadSchedules();
+    } catch (e: any) {
+      alert(e.message);
+    }
+  }
+
+  async function runScrubNow() {
+    scrubRunning = true;
+    scrubMessage = '';
+    try {
+      const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(poolName ?? '')}/scrub`, {
+        method: 'POST'
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not start the scrub');
+      scrubMessage = 'Scrub started. Its result appears in the scan status above.';
+      await loadHealth();
+    } catch (e: any) {
+      scrubMessage = e.message;
+    } finally {
+      scrubRunning = false;
     }
   }
 
@@ -247,6 +405,7 @@
   onMount(() => {
     loadHealth();
     loadDatasets();
+    loadSchedules();
   });
 </script>
 
@@ -260,10 +419,16 @@
 
   <PageHeader title={poolName} subtitle="Pool health, datasets and devices.">
     <div slot="actions" class="flex gap-2">
+      <button class="btn btn-secondary" on:click={runScrubNow} disabled={scrubRunning}>
+        {scrubRunning ? 'Starting…' : 'Scrub Now'}
+      </button>
       <button class="btn btn-secondary" on:click={openAddDrive}>Add Drive</button>
       <button class="btn btn-primary" on:click={() => { showDatasetModal = true; datasetError = ''; }}>New Dataset</button>
     </div>
   </PageHeader>
+
+  {#if scrubMessage}<div role="status" class="callout callout-ok mb-4">{scrubMessage}</div>{/if}
+  {#if schedulesError}<div role="alert" class="callout callout-bad mb-4">{schedulesError}</div>{/if}
 
   {#if loading}
     <LoadingState label="Loading health data..." />
@@ -337,11 +502,95 @@
               <div class="text-xs text-gray-400 whitespace-nowrap">
                 {ds.used || '0'} used · {ds.avail || '0'} free
               </div>
-              <button
-                class="btn btn-sm rounded border border-naslos-border text-red-300 hover:bg-red-900/30 whitespace-nowrap"
-                on:click={() => deleteDataset(ds.name, false)}
-                title="Destroy this dataset"
-              >Delete</button>
+              <div class="flex gap-1">
+                {#if ds.name !== poolName}
+                  <button
+                    class="btn btn-sm rounded border border-naslos-border text-gray-200 hover:bg-naslos-dark whitespace-nowrap"
+                    on:click={() => openSchedule('snapshot', ds.name, snapshotScheduleFor(ds.name))}
+                    title={snapshotScheduleFor(ds.name) ? 'Edit this dataset’s snapshot schedule' : 'Schedule periodic snapshots'}
+                  >{snapshotScheduleFor(ds.name) ? 'Schedule ✓' : 'Schedule'}</button>
+                {/if}
+                <button
+                  class="btn btn-sm rounded border border-naslos-border text-red-300 hover:bg-red-900/30 whitespace-nowrap"
+                  on:click={() => deleteDataset(ds.name, false)}
+                  title="Destroy this dataset"
+                >Delete</button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
+    <!-- Scheduled maintenance (FR-STO-10/11) -->
+    <div class="card mt-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-bold">Maintenance schedules</h2>
+        <button class="btn btn-secondary btn-sm" on:click={() => openSchedule('scrub', poolName ?? '', scrubSchedule)}>
+          {scrubSchedule ? 'Edit scrub schedule' : 'Schedule scrub'}
+        </button>
+      </div>
+
+      <div class="bg-naslos-dark rounded-lg p-3 mb-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div class="font-medium">Scrub</div>
+            {#if scrubSchedule}
+              <div class="text-xs text-gray-400">
+                {scrubSchedule.cadence}{scrubSchedule.runAt ? ` ${scrubSchedule.runAt} UTC` : ''} ·
+                last {scrubSchedule.lastResult || 'never'} ({fmtTime(scrubSchedule.lastRun)}) ·
+                next {scrubSchedule.enabled ? fmtTime(scrubSchedule.nextRun) : 'disabled'}
+              </div>
+              {#if scrubSchedule.lastError}
+                <div class="text-xs text-yellow-400/90 break-words">{scrubSchedule.lastError}</div>
+              {/if}
+            {:else}
+              <div class="text-xs text-gray-500">No scrub schedule. Scrubs are read-only and verify every block's checksum.</div>
+            {/if}
+          </div>
+          <div class="flex gap-1">
+            <button class="btn btn-secondary btn-sm" on:click={runScrubNow} disabled={scrubRunning}>Scrub now</button>
+            {#if scrubSchedule}
+              <button class="btn btn-danger btn-sm" on:click={() => removeSchedule(scrubSchedule.id)}>Remove</button>
+            {/if}
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="font-bold">Scheduled snapshots</h3>
+        <button
+          class="btn btn-secondary btn-sm"
+          on:click={() => openSchedule('snapshot', scheduleableDatasets[0]?.name ?? '')}
+          disabled={scheduleableDatasets.length === 0}
+        >
+          Add snapshot schedule
+        </button>
+      </div>
+      {#if scheduleableDatasets.length === 0}
+        <p class="text-sm text-gray-400">Create a dataset below this pool first; the pool root cannot be scheduled.</p>
+      {:else if snapshotSchedules.length === 0}
+        <p class="text-sm text-gray-400">
+          No dataset has a snapshot schedule yet. A schedule creates its own
+          <code class="text-xs">naslos-auto-…</code> snapshots and keeps the newest N; it never deletes your snapshots.
+        </p>
+      {:else}
+        <div class="space-y-2">
+          {#each snapshotSchedules as s (s.id)}
+            <div class="bg-naslos-dark rounded-lg p-3 flex flex-wrap items-center justify-between gap-2">
+              <div class="min-w-0">
+                <div class="font-medium truncate">{s.target}</div>
+                <div class="text-xs text-gray-400">
+                  {s.cadence}{s.runAt ? ` ${s.runAt} UTC` : ''} · keep {s.keep || 'all'}
+                  {s.keep ? 'newest' : ''}{s.recursive ? ' · recursive' : ''} ·
+                  last {s.lastResult || 'never'} ({fmtTime(s.lastRun)}) · next {s.enabled ? fmtTime(s.nextRun) : 'disabled'}
+                </div>
+                {#if s.lastError}<div class="text-xs text-yellow-400/90 break-words">{s.lastError}</div>{/if}
+              </div>
+              <div class="flex gap-1">
+                <button class="btn btn-secondary btn-sm" on:click={() => openSchedule('snapshot', s.target, s)}>Edit</button>
+                <button class="btn btn-danger btn-sm" on:click={() => removeSchedule(s.id)}>Remove</button>
+              </div>
             </div>
           {/each}
         </div>
@@ -385,6 +634,93 @@
     </div>
   {/if}
 </div>
+
+<!-- Schedule modal (FR-STO-10/11) -->
+{#if showScheduleModal}
+  <Modal
+    title={scheduleKind === 'scrub' ? `Scrub schedule for ${scheduleTarget}` : `Snapshot schedule for ${scheduleTarget}`}
+    onClose={() => (showScheduleModal = false)}
+  >
+    {#if scheduleKind === 'snapshot'}
+      <p class="text-sm text-gray-400">
+        The schedule creates snapshots named <code class="text-xs">naslos-auto-…</code> and keeps
+        the newest <strong>{scheduleKeep || 'all'}</strong>. Snapshots you create yourself are never removed.
+      </p>
+      <div>
+        <label class="label" for="schedule-target">Dataset</label>
+        <select
+          id="schedule-target"
+          class="input w-full"
+          bind:value={scheduleTarget}
+          on:change={selectScheduleTarget}
+        >
+          {#each scheduleableDatasets as d}
+            <option value={d.name}>{d.name}</option>
+          {/each}
+        </select>
+        {#if scheduleId}
+          <p class="text-xs text-gray-500 mt-1">This dataset already has a schedule; saving updates it.</p>
+        {/if}
+      </div>
+    {:else}
+      <p class="text-sm text-gray-400">
+        A scrub is read-only: ZFS reads every block and verifies its checksum. It
+        is skipped when a scrub or resilver is already running.
+      </p>
+    {/if}
+
+    <div>
+      <label class="label" for="schedule-cadence">Cadence</label>
+      <select id="schedule-cadence" bind:value={scheduleCadence} class="input w-full">
+        {#if scheduleKind === 'snapshot'}
+          <option value="hourly">Hourly</option>
+        {/if}
+        <option value="daily">Daily</option>
+        <option value="weekly">Weekly</option>
+      </select>
+    </div>
+
+    {#if scheduleCadence !== 'hourly'}
+      <div>
+        <label class="label" for="schedule-run-at">Run at (UTC)</label>
+        <input
+          id="schedule-run-at"
+          type="text"
+          bind:value={scheduleRunAt}
+          placeholder={scheduleCadence === 'weekly' ? 'Mon 02:30' : '02:30'}
+          class="input w-full"
+        />
+        <p class="text-xs text-gray-500 mt-1">
+          {scheduleCadence === 'weekly' ? 'Weekday and time, e.g. Sun 02:30.' : 'Time of day, e.g. 02:30.'}
+        </p>
+      </div>
+    {/if}
+
+    {#if scheduleKind === 'snapshot'}
+      <div>
+        <label class="label" for="schedule-keep">Keep newest</label>
+        <input id="schedule-keep" type="number" min="0" bind:value={scheduleKeep} class="input w-full" />
+        <p class="text-xs text-gray-500 mt-1">0 keeps every scheduler-created snapshot.</p>
+      </div>
+      <label class="flex items-start gap-3 cursor-pointer">
+        <input type="checkbox" class="mt-1" bind:checked={scheduleRecursive} />
+        <span class="text-sm">Include child datasets (recursive snapshot)</span>
+      </label>
+    {/if}
+
+    {#if scheduleError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{scheduleError}</div>{/if}
+
+    <div slot="footer">
+      {#if scheduleId}
+        <button class="btn btn-danger" on:click={() => { showScheduleModal = false; removeSchedule(scheduleId); }}>Remove</button>
+      {/if}
+      <button class="btn btn-secondary" on:click={() => (showScheduleModal = false)}>Cancel</button>
+      <button class="btn btn-primary" on:click={saveSchedule} disabled={scheduleSaving || !scheduleTarget}>
+        {scheduleSaving ? 'Saving…' : 'Save schedule'}
+      </button>
+    </div>
+  </Modal>
+{/if}
 
 <!-- New Dataset modal -->
 {#if showDatasetModal}

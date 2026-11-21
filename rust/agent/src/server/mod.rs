@@ -98,6 +98,10 @@ impl Server {
                 get(handlers::pool_devices_get).post(handlers::pool_devices_post),
             )
             .route(
+                "/api/v1/pools/{pool}/scrub",
+                post(handlers::pool_scrub_post),
+            )
+            .route(
                 "/api/v1/pools/{pool}",
                 get(handlers::pool_detail_get).delete(handlers::pool_detail_delete),
             )
@@ -123,7 +127,9 @@ impl Server {
             )
             .route(
                 "/api/v1/snapshots/{*dataset}",
-                get(handlers::snapshots_get).post(handlers::snapshots_post),
+                get(handlers::snapshots_get)
+                    .post(handlers::snapshots_post)
+                    .delete(handlers::snapshots_delete),
             )
             .route("/api/v1/rollback/", post(handlers::rollback_post_empty))
             .route("/api/v1/rollback/{*dataset}", post(handlers::rollback_post))

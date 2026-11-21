@@ -33,6 +33,7 @@ pub mod pack;
 pub mod proc;
 pub mod providers;
 pub mod routing;
+pub mod schedule;
 pub mod semver;
 pub mod server;
 pub mod shares;

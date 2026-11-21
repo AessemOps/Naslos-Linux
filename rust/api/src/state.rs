@@ -91,6 +91,8 @@ pub struct AppState {
     pub buddy_jobs: Arc<crate::server::buddy_send::BuddyJobManager>,
     /// The scheduled-backup store (S6j).
     pub buddy_schedules: Arc<crate::server::buddy_schedules::ScheduleStore>,
+    /// Scheduled storage maintenance: periodic snapshots and scrubs (FR-STO-10/11).
+    pub storage_schedules: Arc<crate::server::storage_schedules::StorageScheduleStore>,
     /// Release facts and the upgrader Job wiring (FR-UPD).
     pub system: crate::system::Config,
     /// The release update checker; `None` when updates are disabled.
@@ -234,6 +236,14 @@ impl AppState {
                 }
                 store
             },
+            storage_schedules: {
+                let store =
+                    Arc::new(crate::server::storage_schedules::StorageScheduleStore::from_env());
+                if let Err(e) = store.load() {
+                    tracing::warn!("could not load the storage schedule store: {e}");
+                }
+                store
+            },
             system: crate::system::Config::from_env(),
             updates: crate::system::Checker::from_env().map(Arc::new),
             mcp: crate::mcp::McpState::from_env(),
@@ -275,6 +285,9 @@ impl AppState {
             buddy: None,
             buddy_jobs: Arc::new(crate::server::buddy_send::BuddyJobManager::new()),
             buddy_schedules: Arc::new(crate::server::buddy_schedules::ScheduleStore::new("")),
+            storage_schedules: Arc::new(
+                crate::server::storage_schedules::StorageScheduleStore::new(""),
+            ),
             system: crate::system::Config::default(),
             updates: None,
             mcp: crate::mcp::McpState::for_test(),

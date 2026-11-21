@@ -24,6 +24,7 @@ pub mod notifications;
 pub mod pods;
 pub mod providers;
 pub mod shares;
+pub mod storage_schedules;
 pub mod system;
 pub mod users;
 pub mod virt;
@@ -141,12 +142,22 @@ fn owner_routes() -> Router<Arc<AppState>> {
         )
         .route("/api/volumes/zfs/{pool}/health", get(zfs::pool_health_get))
         .route(
+            "/api/volumes/zfs/{pool}/scrub",
+            post(storage_schedules::pool_scrub_post),
+        )
+        .route(
             "/api/volumes/zfs/{pool}/devices",
             post(zfs::pool_devices_post),
         )
         .route(
             "/api/volumes/zfs/{pool}",
             get(zfs::pool_detail_get).delete(zfs::pool_detail_delete),
+        )
+        .route(
+            "/api/storage/schedules",
+            get(storage_schedules::schedules_get)
+                .post(storage_schedules::schedules_post)
+                .delete(storage_schedules::schedules_delete),
         )
         .route(
             "/api/datasets",

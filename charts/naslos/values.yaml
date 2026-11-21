@@ -92,6 +92,11 @@ api:
   # record and the previous-config snapshot this API needs to revert. Lives on
   # the same state volume as the other config files.
   networkStateFile: /var/lib/naslos/network.json
+  # Scheduled storage maintenance (FR-STO-10/11): periodic snapshot schedules,
+  # per-pool scrub schedules and their last/next-run state. Lives on the same
+  # state volume as the other config files; the scheduler ticks every minute.
+  storageSchedulesFile: /var/lib/naslos/storage-schedules.json
+  storageSchedulerIntervalMs: 60000
   # App-install subsystem state (docs/app-catalog.md): installed-app records,
   # configured chart sources and base domains, plus the git clone cache. All live
   # on the state volume beside shares.json.
