@@ -20,7 +20,7 @@ path = "src/lib.rs"
 
 [dependencies]
 aes-gcm = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 flate2 = "1"
 async-trait = "0.1"
@@ -40,6 +40,12 @@ portable-pty = "0.8"
 tar = "0.4"
 libc = "0.2"
 ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
+# Exact pin: rmcp has a churny API surface and the MCP protocol surface it
+# exposes to clients moves with it (plan: naslos-mcp-server).
+rmcp = { version = "=3.11.0", default-features = false, features = [
+    "server",
+    "transport-streamable-http-server",
+] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
@@ -54,10 +60,11 @@ subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io", "io-util"] }
+# MCP dispatch calls the internal axum router via ServiceExt::oneshot.
+tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 jsonschema = { version = "0.60", default-features = false }
 
 [dev-dependencies]
 http-body-util = "0.1"
-tower = { version = "0.5", features = ["util"] }

@@ -858,6 +858,15 @@ virt:
     # VM. A shared CPU limit would also throttle every guest together. Size
     # the node for the sum of declared VM memory plus QEMU overhead instead.
 
+# MCP endpoint (spec FR-MCP, docs/mcp.md): a Streamable HTTP MCP server inside
+# the API pod that lets LLM clients manage the NAS through scoped bearer
+# tokens. `available` only gates routing and the Authelia bypass; the actual
+# on/off toggle is runtime state in the API (Settings -> MCP, persisted in
+# mcp.json on the state PVC) and defaults to OFF. /mcp bypasses Authelia but
+# never the proxy secret and trusted-CIDR checks (SEC-10 has no opt-out).
+mcp:
+  available: true
+
 # Buddy Backup (docs/buddy-backup.md): a key-authenticated API that lets another
 # Naslos instance - or the standalone naslos-buddy-receiver container - push
 # incremental ZFS backups to this one. Everything arrives already encrypted with
