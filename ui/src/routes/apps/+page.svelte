@@ -5,11 +5,11 @@
   import SourceList from '$lib/components/SourceList.svelte';
   import { appUpdates, startAppUpdates } from '$lib/stores/appUpdates';
 
-  let activeTab: 'catalog' | 'installed' | 'sources' = 'catalog';
+  let activeTab: 'catalog' | 'installed' | 'sources' = 'installed';
 
   const tabs = [
-    { id: 'catalog', label: 'Catalog' },
     { id: 'installed', label: 'Installed' },
+    { id: 'catalog', label: 'Catalog' },
     { id: 'sources', label: 'Sources' }
   ] as const;
 
@@ -31,6 +31,7 @@
         class:bg-naslos-primary={activeTab === tab.id}
         class:text-white={activeTab === tab.id}
         class:text-gray-400={activeTab !== tab.id}
+        aria-pressed={activeTab === tab.id}
         on:click={() => activeTab = tab.id}
       >
         {tab.label}

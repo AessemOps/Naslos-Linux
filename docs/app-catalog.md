@@ -68,6 +68,10 @@ back to the manifest `icon` text (`📦` if neither is set). The chart's
 `security-headers` middleware allows `https:` in `img-src` for these images;
 all other content sources stay locked to the appliance origin.
 
+**Catalog views.** The Catalog tab offers grid, list, and compact layouts; the
+choice is remembered in local storage (`naslos:catalog-view`), and every layout
+keeps the install action keyboard-operable.
+
 ## Repositories (sources)
 
 Each source is `{name, url, auth, credentialsSecret, channels, commit, official}`.
@@ -201,6 +205,10 @@ A Helm release found in the platform namespace without a catalog match is
 **backfilled as orphaned** (shown, but not reconfigurable).
 
 ### Installed tab and updates
+
+The Apps page opens on the Installed tab, paints the last in-session list
+immediately while revalidating it, and `GET /api/apps` resolves release status
+concurrently so the tab is not gated by a serial Helm loop.
 
 The Installed tab is one compact row per app: icon, display name, the API's
 release status (`running`, `failed`, `pending`, `stopped`, `superseded`, `missing`), the

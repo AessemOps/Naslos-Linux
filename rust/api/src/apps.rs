@@ -5,7 +5,7 @@
 //! exposure settings the routing layer renders from.
 
 use chrono::{DateTime, Utc};
-use futures::StreamExt;
+use futures::{stream, StreamExt};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -29,6 +29,10 @@ pub const PLATFORM_DATASET_KEYS: [&str; 3] = ["datasets", "datasetsClaim", "data
 
 /// Platform-owned Helm values that are never accepted from a client.
 pub const PLATFORM_ENV_KEYS: [&str; 1] = [app_env::CHECKSUM_VALUE];
+
+/// Helm status reads are subprocess calls; run them concurrently so the
+/// Installed list does not wait on one app at a time.
+const LIST_STATUS_CONCURRENCY: usize = 8;
 
 /// Resolve the release-name template in a declared service.
 pub fn render_service_name(name: &str, release: &str) -> String {
@@ -1909,48 +1913,62 @@ impl Manager {
     /// All records with live status, looked up in each record's namespace.
     pub async fn list(&self) -> Result<Vec<View>, String> {
         let catalog = (self.catalog)();
-        let mut views = Vec::new();
-        let mut first_err: Option<String> = None;
-        for rec in self.store.list() {
-            let ns = self.display_namespace(&rec);
-            let mut view = View {
-                namespace: ns.clone(),
-                chart: rec.chart_path.clone(),
-                status: "missing".to_string(),
-                url: self.url_for(&rec),
-                record: rec.clone(),
-                redacted_keys: Vec::new(),
-                ..Default::default()
-            };
-            view.redacted_keys = self.redact_record_values(&mut view.record);
-            // The list endpoint does not read the env Secret; keep the
-            // variable names for the detail endpoint only.
-            view.record.env.clear();
-            let mut live_version: Option<String> = None;
-            match self.helm_for(&rec).get(&rec.name).await {
-                Ok(rel) => {
-                    view.status = rel.status.clone();
-                    if !rel.chart.is_empty() {
-                        view.chart = rel.chart;
+        // Live status is a Helm subprocess per app: run the reads concurrently
+        // so the Installed list is not gated by a serial call loop.
+        let results = stream::iter(self.store.list())
+            .map(|rec| {
+                let catalog = catalog.clone();
+                async move {
+                    let mut view = View {
+                        namespace: self.display_namespace(&rec),
+                        chart: rec.chart_path.clone(),
+                        status: "missing".to_string(),
+                        url: self.url_for(&rec),
+                        record: rec.clone(),
+                        redacted_keys: Vec::new(),
+                        ..Default::default()
+                    };
+                    view.redacted_keys = self.redact_record_values(&mut view.record);
+                    // The list endpoint does not read the env Secret; keep the
+                    // variable names for the detail endpoint only.
+                    view.record.env.clear();
+                    let mut live_version: Option<String> = None;
+                    let mut err: Option<String> = None;
+                    match self.helm_for(&rec).status(&rec.name).await {
+                        Ok(rel) => {
+                            view.status = rel.status.clone();
+                            if !rel.chart.is_empty() {
+                                view.chart = rel.chart;
+                            }
+                            if !rel.version.is_empty() {
+                                live_version = Some(rel.version);
+                            }
+                        }
+                        Err(e) => err = Some(e),
                     }
-                    if !rel.version.is_empty() {
-                        live_version = Some(rel.version);
-                    }
+                    let catalog_app = catalog.as_ref().and_then(|c| c.get(&rec.name).ok());
+                    let drift = self.image_drift_for(&rec.name);
+                    enrich_view(
+                        &mut view,
+                        live_version.as_deref(),
+                        catalog_app.as_ref(),
+                        drift.as_ref(),
+                    );
+                    (view, err)
                 }
-                Err(e) => {
-                    if first_err.is_none() {
-                        first_err = Some(e);
-                    }
+            })
+            .buffer_unordered(LIST_STATUS_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+
+        let mut first_err: Option<String> = None;
+        let mut views: Vec<View> = Vec::with_capacity(results.len());
+        for (view, err) in results {
+            if first_err.is_none() {
+                if let Some(e) = err.filter(|e| !e.is_empty()) {
+                    first_err = Some(e);
                 }
             }
-            let catalog_app = catalog.as_ref().and_then(|c| c.get(&rec.name).ok());
-            let drift = self.image_drift_for(&rec.name);
-            enrich_view(
-                &mut view,
-                live_version.as_deref(),
-                catalog_app.as_ref(),
-                drift.as_ref(),
-            );
             views.push(view);
         }
         if views.is_empty() {

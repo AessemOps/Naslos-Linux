@@ -1,3 +1,10 @@
+<script context="module" lang="ts">
+  import type { AppView } from '$lib/appTypes';
+  // The last list paints immediately when the tab remounts; the fetch
+  // below revalidates it.
+  let cachedApps: AppView[] | null = null;
+</script>
+
 <script lang="ts">
   import { onMount } from 'svelte';
   import AppExposureModal from './AppExposureModal.svelte';
@@ -11,10 +18,11 @@
   import { appJobs } from '$lib/stores/appJobs';
   import { appUpdates, refreshAppUpdates, startAppUpdates } from '$lib/stores/appUpdates';
   import { formatBytes, formatBytesPerSec, formatMillicores } from '$lib/format';
-  import type { AppView, AppUsage, AppUsageHistory, UsageReport, AppNamespaces } from '$lib/appTypes';
+  import type { AppUsage, AppUsageHistory, UsageReport, AppNamespaces } from '$lib/appTypes';
 
-  let apps: AppView[] = [];
-  let loading = true;
+  let apps: AppView[] = cachedApps ?? [];
+  let loading = cachedApps === null;
+  let appsInFlight: Promise<void> | null = null;
   let error = '';
   let selected: AppView | null = null;
   let editingExposure: string | null = null;
@@ -61,7 +69,11 @@
     try {
       const res = await fetch('/api/apps/namespaces');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      pools = (await res.json()) as AppNamespaces;
+      const data = await res.json();
+      if (!data || typeof data !== 'object' || !data.baseline || !data.privileged) {
+        throw new Error('unexpected namespace response');
+      }
+      pools = data as AppNamespaces;
       poolsError = '';
     } catch (e) {
       poolsError = `Namespace slots are unavailable: ${e}`;
@@ -108,7 +120,7 @@
     }
   }
 
-  async function loadApps(initial = false) {
+  async function fetchApps(initial: boolean) {
     if (initial) loading = true;
     error = '';
     try {
@@ -118,10 +130,11 @@
       }
       const data = await res.json();
       apps = Array.isArray(data) ? data : [];
-      void loadPools();
+      cachedApps = apps;
     } catch (e) {
       error = 'Failed to load installed apps: ' + e;
-      apps = [];
+      // Keep the rows painted from the cache; the callout reports the failure.
+      if (apps.length === 0) apps = [];
     } finally {
       loading = false;
       // Keep the drawer in sync, and close it when the app disappeared.
@@ -129,6 +142,14 @@
         selected = apps.find((a) => a.name === selected!.name) ?? null;
       }
     }
+  }
+
+  function loadApps(initial = false): Promise<void> {
+    if (appsInFlight) return appsInFlight;
+    appsInFlight = fetchApps(initial).finally(() => {
+      appsInFlight = null;
+    });
+    return appsInFlight;
   }
 
   function pushSample(values: number[], value: number | null | undefined): number[] {
@@ -312,9 +333,7 @@
   onMount(() => {
     const stopUpdates = startAppUpdates();
     document.addEventListener('visibilitychange', onVisibility);
-    void loadApps(true);
-    void loadPools();
-    void pollUsage();
+    void Promise.all([loadApps(true), loadPools(), pollUsage()]);
     usageTimer = setInterval(() => void pollUsage(), 5000);
     return () => {
       unsubscribeJobs();
