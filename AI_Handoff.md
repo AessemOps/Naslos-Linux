@@ -102,24 +102,27 @@ a **v0.4.3 release** to ship all of it.
   newer release`; the operations endpoint correctly answers 412 until a
   check offers a release. The private registry `192.168.1.2:30095` is
   retired — do not build/push local images.
-- **Latest release:** `v0.4.3` (2026-11-20) and installer `naslos-v0.4.3`
-  are published; the pack `naslos-install-pack-0.4.3.tar.gz` is attached.
-  It ships upstream image-release detection for catalog apps (PR #184) plus
-  the platform fixes merged since v0.4.2 (PR #183). The node still runs the
-  v0.4.2 release until the next `make install-vm`. Before that, `v0.4.2`
-  (2026-11-20, PR #182: the vmd rustls provider fix, API uninstall tolerance,
-  auth.setup TOTP window retry) shipped the same day. Earlier, `v0.4.1`
-  (the UI/UX overhaul, PR #181) shipped the same day; its first release
-  attempt failed the pack job because the release workflow raced CI (the
-  green-CI gate saw `audit` still running); the packless tag was deleted and
-  re-pushed once CI was green, per the documented rule. Full Playwright
-  suite green on revision 50 with the drill builds: **71 passed, 5 skipped,
-  0 failed** — the skips are state preconditions (VM console tests with no
-  VM present, link-dependent network mutations); the buddy self-send tests
-  now run for real (the node's own identity is self-enrolled as a peer,
-  scope `naslos/`). The vmd drill passed end-to-end (see the virt section
-  above); a **v0.4.3** release is needed to ship the four virt + three
-  buddy platform fixes on `fix/agent-mount-propagation`.
+- **Latest release:** `v0.4.4` (2026-11-21) and installer `naslos-v0.4.4`
+  are published; the pack `naslos-install-pack-0.4.4.tar.gz` is attached.
+  It ships the Apps speed/catalog work (PR #185): Installed is the default
+  tab and paints the last in-session list while revalidating, `GET /api/apps`
+  resolves release status concurrently with one status-only Helm read per app
+  instead of a serial two-call loop, and the catalog offers grid, list and
+  compact layouts. The node still runs the v0.4.2 release until the next
+  `make install-vm`. Before that, `v0.4.3` (2026-11-20, PR #184) shipped
+  upstream image-release detection for catalog apps plus the platform fixes
+  merged since v0.4.2 (PR #183); `v0.4.2` (2026-11-20, PR #182: the vmd
+  rustls provider fix, API uninstall tolerance, auth.setup TOTP window
+  retry) shipped the same day. Earlier, `v0.4.1` (the UI/UX overhaul, PR
+  #181) shipped the same day; its first release attempt failed the pack job
+  because the release workflow raced CI (the green-CI gate saw `audit` still
+  running); the packless tag was deleted and re-pushed once CI was green,
+  per the documented rule. Full Playwright suite green on revision 50 with
+  the drill builds: **71 passed, 5 skipped, 0 failed** — the skips are state
+  preconditions (VM console tests with no VM present, link-dependent network
+  mutations); the buddy self-send tests now run for real (the node's own
+  identity is self-enrolled as a peer, scope `naslos/`). The vmd drill
+  passed end-to-end (see the virt section above).
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
