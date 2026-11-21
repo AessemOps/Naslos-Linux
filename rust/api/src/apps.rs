@@ -1910,51 +1910,72 @@ impl Manager {
         self.store.delete(name)
     }
 
-    /// All records with live status, looked up in each record's namespace.
+    /// All records with live status, resolved one `helm list` per target
+    /// namespace. The Helm CLI is a subprocess and the API pod has a small CPU
+    /// and memory limit, so one read per app is far more expensive than one
+    /// read per namespace: shared namespaces collapse many apps into a single
+    /// call, and the per-app `helm status` round trips are gone.
     pub async fn list(&self) -> Result<Vec<View>, String> {
         let catalog = (self.catalog)();
-        // Live status is a Helm subprocess per app: run the reads concurrently
-        // so the Installed list is not gated by a serial call loop.
-        let results = stream::iter(self.store.list())
-            .map(|rec| {
+        let mut groups: HashMap<(bool, String), Vec<Record>> = HashMap::new();
+        for rec in self.store.list() {
+            let namespace = self.target_namespace(&rec);
+            groups
+                .entry((rec.privileged, namespace))
+                .or_default()
+                .push(rec);
+        }
+        // Namespace reads are subprocess calls: run them concurrently so the
+        // Installed list is not gated by a serial call loop.
+        let results = stream::iter(groups)
+            .map(|((privileged, namespace), records)| {
                 let catalog = catalog.clone();
                 async move {
-                    let mut view = View {
-                        namespace: self.display_namespace(&rec),
-                        chart: rec.chart_path.clone(),
-                        status: "missing".to_string(),
-                        url: self.url_for(&rec),
-                        record: rec.clone(),
-                        redacted_keys: Vec::new(),
-                        ..Default::default()
-                    };
-                    view.redacted_keys = self.redact_record_values(&mut view.record);
-                    // The list endpoint does not read the env Secret; keep the
-                    // variable names for the detail endpoint only.
-                    view.record.env.clear();
-                    let mut live_version: Option<String> = None;
                     let mut err: Option<String> = None;
-                    match self.helm_for(&rec).status(&rec.name).await {
-                        Ok(rel) => {
+                    let releases: HashMap<String, helm::App> =
+                        match self.helm_client(privileged, &namespace).list().await {
+                            Ok(apps) => apps.into_iter().map(|a| (a.name.clone(), a)).collect(),
+                            Err(e) => {
+                                err = Some(e);
+                                HashMap::new()
+                            }
+                        };
+                    let mut views = Vec::with_capacity(records.len());
+                    for rec in records {
+                        let mut view = View {
+                            namespace: self.display_namespace(&rec),
+                            chart: rec.chart_path.clone(),
+                            status: "missing".to_string(),
+                            url: self.url_for(&rec),
+                            record: rec.clone(),
+                            redacted_keys: Vec::new(),
+                            ..Default::default()
+                        };
+                        view.redacted_keys = self.redact_record_values(&mut view.record);
+                        // The list endpoint does not read the env Secret; keep
+                        // the variable names for the detail endpoint only.
+                        view.record.env.clear();
+                        let mut live_version: Option<String> = None;
+                        if let Some(rel) = releases.get(&rec.name) {
                             view.status = rel.status.clone();
                             if !rel.chart.is_empty() {
-                                view.chart = rel.chart;
+                                view.chart = rel.chart.clone();
                             }
                             if !rel.version.is_empty() {
-                                live_version = Some(rel.version);
+                                live_version = Some(rel.version.clone());
                             }
                         }
-                        Err(e) => err = Some(e),
+                        let catalog_app = catalog.as_ref().and_then(|c| c.get(&rec.name).ok());
+                        let drift = self.image_drift_for(&rec.name);
+                        enrich_view(
+                            &mut view,
+                            live_version.as_deref(),
+                            catalog_app.as_ref(),
+                            drift.as_ref(),
+                        );
+                        views.push(view);
                     }
-                    let catalog_app = catalog.as_ref().and_then(|c| c.get(&rec.name).ok());
-                    let drift = self.image_drift_for(&rec.name);
-                    enrich_view(
-                        &mut view,
-                        live_version.as_deref(),
-                        catalog_app.as_ref(),
-                        drift.as_ref(),
-                    );
-                    (view, err)
+                    (views, err)
                 }
             })
             .buffer_unordered(LIST_STATUS_CONCURRENCY)
@@ -1962,14 +1983,14 @@ impl Manager {
             .await;
 
         let mut first_err: Option<String> = None;
-        let mut views: Vec<View> = Vec::with_capacity(results.len());
-        for (view, err) in results {
+        let mut views: Vec<View> = Vec::new();
+        for (mut group, err) in results {
             if first_err.is_none() {
                 if let Some(e) = err.filter(|e| !e.is_empty()) {
                     first_err = Some(e);
                 }
             }
-            views.push(view);
+            views.append(&mut group);
         }
         if views.is_empty() {
             if let Some(e) = first_err {
