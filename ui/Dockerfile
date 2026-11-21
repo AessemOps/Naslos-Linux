@@ -23,7 +23,7 @@ RUN npm run build
 # rootfs. The Service maps its port 80 to this 8080.
 # The `alpine-slim` variant drops the unused dynamic modules (xslt, geoip,
 # image-filter, njs); this config only needs core nginx (proxy, map, try_files).
-FROM nginxinc/nginx-unprivileged:1.30.6-alpine-slim
+FROM nginxinc/nginx-unprivileged:1.31.7-alpine-slim
 
 # Copy the built static assets to nginx's document root
 COPY --from=builder /build/dist /usr/share/nginx/html
