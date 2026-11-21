@@ -7,8 +7,8 @@ use crate::json;
 use crate::semver::Version;
 use crate::state::AppState;
 use crate::system::{
-    active_phase, job_spec, new_operation_id, operation_job_name, stepping, Candidate, JobOptions,
-    ReleaseFacts,
+    active_phase, candidate_stepping, job_spec, new_operation_id, operation_job_name, stepping,
+    system_steps_pending, Candidate, JobOptions, ReleaseFacts,
 };
 use axum::body::Body;
 use axum::extract::{Query, State};
@@ -153,9 +153,9 @@ pub async fn updates_check(State(state): State<Arc<AppState>>) -> Response {
     let Some(checker) = state.updates.clone() else {
         return json(StatusCode::OK, disabled_updates(&state.system.release));
     };
-    let check = checker.check().await;
     let talos = running_talos(&state).await;
     let kubernetes = running_kubernetes(&state).await;
+    let check = checker.check(&talos, &kubernetes).await;
     render_updates(&state, Some(&check), &talos, &kubernetes)
 }
 
@@ -181,10 +181,14 @@ fn render_updates(
             }),
         );
     };
-    let decision = check
-        .available
-        .as_ref()
-        .map(|candidate| stepping(release, candidate, talos, kubernetes));
+    // A candidate equal to the installed release only exists to finish the
+    // pending Talos/Kubernetes steps; hide it once both pins are current.
+    let available = check.available.as_ref().filter(|candidate| {
+        candidate.version != release.naslos_version
+            || system_steps_pending(release, talos, kubernetes)
+    });
+    let decision =
+        available.map(|candidate| candidate_stepping(release, candidate, talos, kubernetes));
     json(
         StatusCode::OK,
         serde_json::json!({
@@ -193,7 +197,7 @@ fn render_updates(
             "current": check.current,
             "checkedAt": check.checked_at,
             "source": check.source,
-            "available": check.available.as_ref().map(Candidate::as_json),
+            "available": available.map(Candidate::as_json),
             "stepping": {
                 "allowed": decision.as_ref().map(|d| d.allowed).unwrap_or(false),
                 "reason": decision.as_ref().map(|d| d.reason.clone()).unwrap_or_default(),

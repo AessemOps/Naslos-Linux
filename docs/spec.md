@@ -925,7 +925,10 @@ A node installed from an installer pack can be upgraded from the web UI. A
 - **FR-UPD-04** — Operations MUST run in order **Naslos → Talos → Kubernetes**,
   one at a time, each pinned by the installed release. The API MUST return
   `409` while an operation, app job or Buddy job is running, and `412` when a
-  precondition fails (profile, order, stepping, pool health).
+  precondition fails (profile, order, stepping, pool health). When the node
+  already runs the newest release but Talos or Kubernetes still lag that
+  release's pins, the API MUST still offer the installed release as the
+  candidate so the remaining ordered steps can be completed.
 - **FR-UPD-05** — Each operation MUST be an in-cluster Job running
   `naslos-upgrade` with ServiceAccount `naslos-upgrader`; the Naslos operation
   MUST run the image pinned by the target pack, while the Talos and Kubernetes

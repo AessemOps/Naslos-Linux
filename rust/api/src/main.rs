@@ -38,8 +38,9 @@ async fn main() {
 
     // Daily release check (FR-UPD). The first check runs immediately so a
     // restarted API does not wait a full interval to offer an update.
-    if let Some(updates) = state.updates.clone() {
-        tokio::spawn(async move { run_update_checker(updates).await });
+    if state.updates.is_some() {
+        let checker_state = state.clone();
+        tokio::spawn(async move { run_update_checker(checker_state).await });
     }
 
     // Populate and keep the catalog fresh. The chart seeds the official source,
@@ -279,11 +280,22 @@ async fn run_catalog_refresher(
 }
 
 /// Check for a newer release immediately, then every `SYSTEM_UPDATES_INTERVAL_HOURS`.
-async fn run_update_checker(checker: std::sync::Arc<naslos_api::system::Checker>) {
+async fn run_update_checker(state: Arc<AppState>) {
+    let Some(checker) = state.updates.clone() else {
+        return;
+    };
     let mut ticker = tokio::time::interval(checker.interval());
     ticker.tick().await;
     loop {
-        let check = checker.check().await;
+        let talos = match &state.talos {
+            Some(talos) => talos.get_version().await.unwrap_or_default(),
+            None => String::new(),
+        };
+        let kubernetes = match &state.kube {
+            Some(kube) => kube.server_version().await.unwrap_or_default(),
+            None => String::new(),
+        };
+        let check = checker.check(&talos, &kubernetes).await;
         if !check.error.is_empty() {
             tracing::warn!("update check: {}", check.error);
         } else if let Some(candidate) = &check.available {

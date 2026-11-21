@@ -233,6 +233,67 @@ pub fn stepping(
     }
 }
 
+/// Whether the running Talos/Kubernetes still lags the installed release pins.
+pub fn system_steps_pending(release: &ReleaseFacts, talos: &str, kubernetes: &str) -> bool {
+    let differs = |running: &str, pin: &str| {
+        !running.is_empty() && Version::parse(running) != Version::parse(pin)
+    };
+    differs(talos, &release.talos_version) || differs(kubernetes, &release.kubernetes_version)
+}
+
+/// Stepping decision for the candidate the UI will act on. A candidate equal to
+/// the installed release is the "finish the pending system steps" case, which
+/// is allowed while Talos or Kubernetes still lag the release pins.
+pub fn candidate_stepping(
+    release: &ReleaseFacts,
+    candidate: &Candidate,
+    talos: &str,
+    kubernetes: &str,
+) -> Stepping {
+    if Version::parse(&candidate.version) == Version::parse(&release.naslos_version) {
+        pending_stepping(candidate, talos, kubernetes)
+    } else {
+        stepping(release, candidate, talos, kubernetes)
+    }
+}
+
+fn pending_stepping(candidate: &Candidate, talos: &str, kubernetes: &str) -> Stepping {
+    for (name, target, running) in [
+        ("Talos", &candidate.talos_version, talos),
+        ("Kubernetes", &candidate.kubernetes_version, kubernetes),
+    ] {
+        if running.is_empty() {
+            continue;
+        }
+        let (Some(target), Some(running)) = (Version::parse(target), Version::parse(running))
+        else {
+            continue;
+        };
+        if target == running {
+            continue;
+        }
+        let distance = target.minor_distance(&running);
+        if distance < 0 {
+            return Stepping {
+                allowed: false,
+                reason: format!("{name} {target} would be a downgrade from {running}"),
+            };
+        }
+        if distance > 1 {
+            return Stepping {
+                allowed: false,
+                reason: format!(
+                    "{name} {target} is {distance} minors ahead of {running}; upgrade to the next release first"
+                ),
+            };
+        }
+    }
+    Stepping {
+        allowed: true,
+        reason: String::new(),
+    }
+}
+
 /// Release lookup + verified pack cache.
 pub struct Checker {
     source: String,
@@ -333,10 +394,15 @@ impl Checker {
             .filter(|c| c.version == version)
     }
 
-    /// Fetch releases, verify the newest pack whose system pins are within one
-    /// minor of the installed release, and cache it.
-    pub async fn check(&self) -> UpdateCheck {
-        match self.check_inner().await {
+    /// Fetch releases, verify the newest eligible pack, and cache it.
+    ///
+    /// When the node already runs the newest release but its Talos or
+    /// Kubernetes version still lags that release's pins, the installed
+    /// release is offered as the candidate so the UI can finish the pending
+    /// ordered steps (Naslos → Talos → Kubernetes). Without this a node that
+    /// upgraded Naslos first would have no way to complete the system steps.
+    pub async fn check(&self, talos: &str, kubernetes: &str) -> UpdateCheck {
+        match self.check_inner(talos, kubernetes).await {
             Ok(check) => {
                 if let Err(e) = self.save(&check) {
                     tracing::warn!("saving the update check: {e}");
@@ -356,101 +422,42 @@ impl Checker {
         }
     }
 
-    async fn check_inner(&self) -> Result<UpdateCheck, String> {
+    async fn check_inner(&self, talos: &str, kubernetes: &str) -> Result<UpdateCheck, String> {
         let releases: Vec<ReleaseEntry> = self.fetch_releases().await?;
-        let mut newer: Vec<(Version, ReleaseEntry)> = releases
-            .into_iter()
-            .filter_map(|r| {
-                let version = r.tag_name.as_deref().and_then(Version::parse_tag)?;
-                Some((version, r))
-            })
-            .filter(|(v, _)| {
-                Version::parse(&self.facts.naslos_version)
-                    .map(|current| *v > current)
-                    .unwrap_or(true)
-            })
-            .collect();
+        let current = Version::parse(&self.facts.naslos_version);
+
+        let mut newer: Vec<(Version, ReleaseEntry)> = Vec::new();
+        let mut installed: Option<(Version, ReleaseEntry)> = None;
+        for release in releases {
+            let Some(version) = release.tag_name.as_deref().and_then(Version::parse_tag) else {
+                continue;
+            };
+            if current.map(|c| version > c).unwrap_or(true) {
+                newer.push((version, release));
+            } else if current == Some(version) {
+                installed = Some((version, release));
+            }
+        }
         newer.sort_by_key(|a| std::cmp::Reverse(a.0));
+        newer.truncate(8);
+        if system_steps_pending(&self.facts, talos, kubernetes) {
+            if let Some(entry) = installed {
+                newer.push(entry);
+            }
+        }
 
         let mut blocked = String::new();
-        for (version, release) in newer.iter().take(8) {
-            let Some((pack_url, pack_sha_url)) = pack_assets(release, version) else {
-                blocked = format!("release {} has no install pack", version.as_tag());
-                continue;
-            };
-            let pack_sha = match self.download_text(&pack_sha_url).await {
-                Ok(text) => text
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or_default()
-                    .to_ascii_lowercase(),
+        for (version, release) in &newer {
+            let candidate = match self.fetch_candidate(version, release).await {
+                Ok(candidate) => candidate,
                 Err(e) => {
-                    blocked = format!("release {}: {e}", version.as_tag());
+                    blocked = e;
                     continue;
                 }
             };
-            if pack_sha.len() != 64 || !pack_sha.bytes().all(|b| b.is_ascii_hexdigit()) {
-                blocked = format!("release {} has an invalid pack sha256", version.as_tag());
-                continue;
-            }
-            let bytes = match self.download_bytes(&pack_url).await {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    blocked = format!("release {}: {e}", version.as_tag());
-                    continue;
-                }
-            };
-            let got = crate::pack::hex_sha256(&bytes);
-            if got != pack_sha {
-                blocked = format!(
-                    "release {}: pack sha256 mismatch (got {got})",
-                    version.as_tag()
-                );
-                continue;
-            }
-            let meta = match crate::pack::verify_pack(&bytes) {
-                Ok(meta) => meta,
-                Err(e) => {
-                    blocked = format!("release {}: {e}", version.as_tag());
-                    continue;
-                }
-            };
-            if meta.naslos_version != version.to_string() {
-                blocked = format!(
-                    "release {} packs naslosVersion {}",
-                    version.as_tag(),
-                    meta.naslos_version
-                );
-                continue;
-            }
-            let candidate = Candidate {
-                version: version.to_string(),
-                notes_url: release.html_url.clone().unwrap_or_default(),
-                body: release.body.clone().unwrap_or_default(),
-                published_at: release.published_at.clone().unwrap_or_default(),
-                pack_url,
-                pack_sha256: pack_sha,
-                pack_path: self
-                    .cache_dir
-                    .join(format!("pack-{version}.tar.gz"))
-                    .display()
-                    .to_string(),
-                talos_version: meta.talos_version.clone(),
-                kubernetes_version: meta.kubernetes_version.clone(),
-                api_image: meta.api_image().unwrap_or_default().to_string(),
-            };
-            let decision = stepping(
-                &self.facts,
-                &candidate,
-                &self.facts.talos_version,
-                &self.facts.kubernetes_version,
-            );
+            let decision = candidate_stepping(&self.facts, &candidate, talos, kubernetes);
             if !decision.allowed {
                 blocked = decision.reason;
-                continue;
-            }
-            if let Err(e) = self.store_pack(&candidate, &bytes) {
-                blocked = e;
                 continue;
             }
             return Ok(UpdateCheck {
@@ -475,6 +482,71 @@ impl Checker {
             },
             error: String::new(),
         })
+    }
+
+    /// Download, verify and build the candidate for one release. The verified
+    /// pack is written to the cache only by the caller.
+    async fn fetch_candidate(
+        &self,
+        version: &Version,
+        release: &ReleaseEntry,
+    ) -> Result<Candidate, String> {
+        let (pack_url, pack_sha_url) = pack_assets(release, version)
+            .ok_or_else(|| format!("release {} has no install pack", version.as_tag()))?;
+        let pack_sha = self
+            .download_text(&pack_sha_url)
+            .await
+            .map(|text| {
+                text.split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+            })
+            .map_err(|e| format!("release {}: {e}", version.as_tag()))?;
+        if pack_sha.len() != 64 || !pack_sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!(
+                "release {} has an invalid pack sha256",
+                version.as_tag()
+            ));
+        }
+        let bytes = self
+            .download_bytes(&pack_url)
+            .await
+            .map_err(|e| format!("release {}: {e}", version.as_tag()))?;
+        let got = crate::pack::hex_sha256(&bytes);
+        if got != pack_sha {
+            return Err(format!(
+                "release {}: pack sha256 mismatch (got {got})",
+                version.as_tag()
+            ));
+        }
+        let meta = crate::pack::verify_pack(&bytes)
+            .map_err(|e| format!("release {}: {e}", version.as_tag()))?;
+        if meta.naslos_version != version.to_string() {
+            return Err(format!(
+                "release {} packs naslosVersion {}",
+                version.as_tag(),
+                meta.naslos_version
+            ));
+        }
+        let candidate = Candidate {
+            version: version.to_string(),
+            notes_url: release.html_url.clone().unwrap_or_default(),
+            body: release.body.clone().unwrap_or_default(),
+            published_at: release.published_at.clone().unwrap_or_default(),
+            pack_url,
+            pack_sha256: pack_sha,
+            pack_path: self
+                .cache_dir
+                .join(format!("pack-{version}.tar.gz"))
+                .display()
+                .to_string(),
+            talos_version: meta.talos_version.clone(),
+            kubernetes_version: meta.kubernetes_version.clone(),
+            api_image: meta.api_image().unwrap_or_default().to_string(),
+        };
+        self.store_pack(&candidate, &bytes)?;
+        Ok(candidate)
     }
 
     async fn fetch_releases(&self) -> Result<Vec<ReleaseEntry>, String> {
@@ -798,6 +870,41 @@ mod tests {
         let s = stepping(&facts(), &c, "v1.14.1", "v1.37.0");
         assert!(!s.allowed);
         assert!(s.reason.contains("Talos"));
+    }
+
+    #[test]
+    fn installed_release_is_offered_while_system_pins_lag() {
+        let f = facts();
+        assert!(system_steps_pending(&f, "v1.14.0", "v1.37.0"));
+        assert!(!system_steps_pending(&f, "v1.14.1", "v1.37.0"));
+        assert!(!system_steps_pending(&f, "", ""));
+    }
+
+    #[test]
+    fn installed_release_candidate_allows_pending_talos_step() {
+        let f = facts();
+        let installed = Candidate {
+            version: f.naslos_version.clone(),
+            talos_version: f.talos_version.clone(),
+            kubernetes_version: f.kubernetes_version.clone(),
+            ..Default::default()
+        };
+        let decision = candidate_stepping(&f, &installed, "v1.14.0", "v1.37.0");
+        assert!(decision.allowed, "{}", decision.reason);
+    }
+
+    #[test]
+    fn installed_release_candidate_refuses_a_pin_downgrade() {
+        let f = facts();
+        let installed = Candidate {
+            version: f.naslos_version.clone(),
+            talos_version: "v1.13.0".into(),
+            kubernetes_version: f.kubernetes_version.clone(),
+            ..Default::default()
+        };
+        let decision = candidate_stepping(&f, &installed, "v1.14.1", "v1.37.0");
+        assert!(!decision.allowed);
+        assert!(decision.reason.contains("downgrade"));
     }
 
     #[test]

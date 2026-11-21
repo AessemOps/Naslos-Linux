@@ -166,7 +166,10 @@
         message = 'Update check failed: ' + updates.error;
         messageType = 'error';
       } else if (updates?.available) {
-        message = `Release ${updates.available.version} is available.`;
+        message =
+          updates.available.version === version?.naslosVersion
+            ? `System upgrade available for ${updates.available.version}.`
+            : `Release ${updates.available.version} is available.`;
         messageType = 'success';
       } else {
         message = updates?.blocked || 'No newer release.';
@@ -470,7 +473,13 @@
       {/if}
       {#if updates?.available}
         <div class="mt-4 p-4 rounded-lg bg-naslos-dark border border-naslos-border">
-          <p class="font-medium">Naslos {updates.available.version} is available</p>
+          <p class="font-medium">
+            {#if updates.available.version === version?.naslosVersion}
+              System upgrade for Naslos {updates.available.version}
+            {:else}
+              Naslos {updates.available.version} is available
+            {/if}
+          </p>
           <p class="text-sm text-gray-400 mt-1">
             Talos {updates.available.talosVersion} · Kubernetes
             {updates.available.kubernetesVersion}
