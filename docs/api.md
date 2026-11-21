@@ -29,6 +29,16 @@ its relative `/api/*` calls reach the API on the same origin.
   (see [identity-sso.md](identity-sso.md#header-trust)). The API refuses to start
   without the secret, so a request that bypasses Traefik cannot authenticate.
 
+### Authorization roles (planned)
+
+Today there are two levels: `naslos_users` (dashboard, metrics and
+`/api/auth/me`) and `naslos_admins` (every other `/api/*` route, via
+`require_admin`). The read-only/operator/admin role model
+([rbac-audit.md](rbac-audit.md), spec `FR-RBAC`) is **[OPEN]** and will map
+route families to a minimum role after the P0 route work lands. Until then the
+route tables below keep the current admin-or-baseline behavior; no route is
+delegated by this document.
+
 ## naslos-api routes
 
 ### Health & auth

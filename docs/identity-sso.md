@@ -111,7 +111,13 @@ Two default groups:
 | Group | Access |
 | --- | --- |
 | `naslos_admins` | Full access (users, apps, disks, shares) |
-| `naslos_users` | Every authenticated route; the API gates admin-only routes by group |
+| `naslos_users` | Authenticated baseline: dashboard, metrics and `/api/auth/me`; the API's admin gate keeps every other owner route admin-only |
+
+> **Planned roles (design only).** `naslos_readonly` and `naslos_operators`
+> are designed in [rbac-audit.md](rbac-audit.md) (spec `FR-RBAC`, **[OPEN]**).
+> They are not created by the chart, not admitted by Authelia's
+> `users_filter` and not enforced by the API yet; the group checks below are
+> unchanged.
 
 Authelia rules (`charts/naslos/templates/authelia-config.yaml`):
 
