@@ -206,7 +206,7 @@ impl Store {
 fn config_revision(vms: &[VmSpec]) -> String {
     let canonical = serde_json::to_vec(vms).unwrap_or_default();
     let digest = Sha256::digest(&canonical);
-    format!("{digest:x}")
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Merge the records with vmd's live report. `live` is `None` when vmd is
