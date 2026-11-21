@@ -251,6 +251,84 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-DHK-07** — Disk health MUST be read-only: no SMART self-tests, no
   enabling SMART, no device writes, and no user-controlled command arguments.
 
+### 3.1.2 Local replication (`FR-REP`)
+
+Local replication copies a ZFS dataset to another dataset on the **same node**
+through the agent's streaming `zfs send`/`zfs receive`. It is the first slice of
+the replication/rsync/cloud-sync backlog item; remote replication, rsync and
+cloud sync remain `[OPEN]` below.
+
+- **FR-REP-01** — A local replication MUST run as a server-owned async job:
+  `POST /api/replication/send` validates, enqueues and answers `202 {jobId}`
+  immediately, and the transfer continues when the client disconnects.
+  `GET /api/replication/jobs` MUST list running plus recently finished jobs,
+  `GET /api/replication/jobs/{id}` MUST return one job (404 when unknown), and
+  `DELETE /api/replication/jobs/{id}` MUST abort a running job and report it as
+  `cancelled` (409 when it already finished). Jobs are in memory and are not
+  persisted across an API restart. *(tests:
+  `replication::a_full_replication_job_snapshots_streams_and_finishes`,
+  `replication::a_second_job_for_the_destination_conflicts_and_cancels`,
+  `replication::jobs_are_listed_and_unknown_ids_are_404`)*
+- **FR-REP-02** — The request body MUST be
+  `{source, destination, snapshot?, recursive?, pruneKeep?}`. Both dataset paths
+  MUST pass the existing dataset validator; an identical pair, or either path
+  nested inside the other, MUST be refused. The source and destination MUST
+  already exist (an exact agent dataset-list match; replication MUST NOT create
+  the destination implicitly), `snapshot` when supplied MUST exist on the
+  source and pass the snapshot-name validator, and `pruneKeep` MUST be at most
+  1000. No arbitrary ZFS property or free-form argument is accepted. *(tests:
+  `replication::invalid_pairs_and_missing_datasets_are_refused`,
+  `replication::send_needs_the_agent_and_valid_input`,
+  `zfs::tests::snapshot_names_cannot_become_flags_or_paths`)*
+- **FR-REP-03** — Without `snapshot`, the job MUST create a replication-owned
+  source snapshot named `naslos-rep-<pair token>-<UTC timestamp>-<random>`
+  (recursive when `recursive` is true). The job MUST choose the newest snapshot
+  GUID present on both source and destination as the incremental base, never a
+  snapshot name, so a copy renamed on either side still matches; without a
+  common GUID it MUST send a full stream. The stream MUST be piped from the
+  agent's `zfs send` endpoint into its `zfs receive` endpoint without buffering
+  the dataset in API memory, and `recursive` MUST use `zfs send -r` (descendants without property propagation, so the source mountpoint cannot shadow the same-node replica). Encrypted
+  (`-w`) replication is `[OPEN]` until dataset encryption ships (P0-3).
+  *(tests: `replication::planner_matches_by_guid_not_name`,
+  `replication::a_full_replication_job_snapshots_streams_and_finishes`,
+  `replication::a_common_guid_makes_the_send_incremental`,
+  `zfs_backup::send_command_line_recursive_replication_stream`,
+  `zfs_backup::snapshot_listing_is_recursive_only_when_requested`)*
+- **FR-REP-04** — Receive safety: an incremental receive MUST NOT use
+  `zfs receive -F`. A full stream replaces the destination dataset's contents,
+  so the destination is a replica target: the full send MUST be refused when the
+  destination holds any snapshot not carrying this pair's replication prefix, or
+  any child dataset. A user snapshot on the destination MUST NEVER be destroyed
+  by replication; the API documentation MUST state that a full send replaces
+  the destination's data. *(tests:
+  `replication::a_full_send_refuses_foreign_snapshots_and_child_datasets`,
+  `replication::a_destination_that_already_has_the_target_is_up_to_date`)*
+- **FR-REP-05** — Retention (`pruneKeep`, 0 = keep all) MUST destroy only
+  destination snapshots whose names start with this pair's replication prefix,
+  keeping the newest N per dataset; user snapshots and another pair's replica
+  MUST be left alone. Source snapshots created by replication are not pruned in
+  this slice and remain available to the operator's snapshot policy. *(tests:
+  `replication::retention_destroys_only_replication_owned_snapshots`,
+  `replication::retention_keeps_the_newest_own_snapshots_per_dataset`)*
+- **FR-REP-06** — A job MUST report `state`
+  (`running|succeeded|failed|cancelled`), source, destination, target snapshot,
+  `recursive`, `pruneKeep`, `startedAt`/`finishedAt`, live and estimated bytes,
+  `incremental`, and on success a `result` with the base snapshot/GUID, target
+  GUID, byte count, pruned count and duration. A second job writing the same
+  destination (or a nested destination) MUST be refused with `409` while one
+  runs. *(tests:
+  `replication::a_full_replication_job_snapshots_streams_and_finishes`,
+  `replication::a_second_job_for_the_destination_conflicts_and_cancels`)*
+- **FR-REP-07** — `[OPEN]` Remote replication (another node or a standalone
+  receiver), including auto-resume of an interrupted transfer and encrypted
+  replication, is not implemented in this slice.
+- **FR-REP-08** — `[OPEN]` rsync-over-SSH tasks (pull/push) are not implemented
+  in this slice.
+- **FR-REP-09** — `[OPEN]` S3-compatible or provider cloud-sync tasks are not
+  implemented in this slice; Buddy remains the zero-knowledge off-site path.
+- **FR-REP-10** — `[OPEN]` A replication UI (create/history/progress) is not
+  part of this slice; the routes above are the API surface.
+
 ### 3.2 Identity & SSO (`FR-IDN`)
 
 - **FR-IDN-01** — Users and groups MUST be stored in OpenLDAP under
@@ -1212,6 +1290,9 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 | `/api/volumes/zfs/{pool}` | GET, DELETE | Pool health / destroy |
 | `/api/volumes/zfs/{pool}/scrub` | POST | Start a scrub now (`202`; `409` when a scrub/resilver is running) (FR-STO-11) |
 | `/api/storage/schedules` | GET, POST, DELETE | Snapshot and scrub schedules: list / create-or-update / delete (`?id=`) (FR-STO-10/11) |
+| `/api/replication/send` | POST | Local ZFS replication `{source, destination, snapshot?, recursive?, pruneKeep?}` → `202 {"jobId"}` (FR-REP) |
+| `/api/replication/jobs` | GET | Local replication jobs (running + recent finished) (FR-REP-01/06) |
+| `/api/replication/jobs/{id}` | GET, DELETE | Job detail incl. progress / cancel a running job (FR-REP-01/06) |
 | `/api/shares` | GET, POST | List / create |
 | `/api/shares/{name}` | PUT, DELETE | Update / delete |
 | `/api/shares/paths` | GET | Shareable dataset paths + ZFS base |
@@ -1270,6 +1351,9 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 | `/api/v1/disks/health` | GET | Per-disk SMART + ZFS health (FR-DHK) |
 | `/api/v1/datasets/{pool}` | GET, POST | List / create datasets |
 | `/api/v1/snapshots/{pool}` | GET, POST, DELETE | List (add `?paths=true` for full `dataset@snap` paths) / create (optional `recursive`) / destroy one snapshot (`?name=`) (FR-STO-10) |
+| `/api/v1/zfs/send/{dataset}` | GET | Stream `zfs send`; optional `to`, `from`, `raw`, `recursive=true`, `estimate=true` (FR-BUD-12, FR-REP-03) |
+| `/api/v1/zfs/receive/{dataset}` | POST | Stream a body into `zfs receive`; optional `force=true` (FR-BUD-12; replication never sets it) |
+| `/api/v1/zfs/snapshots/{dataset}` | GET | Snapshots with GUIDs; `?recursive=false` lists only the dataset's own snapshots (FR-BUD, FR-REP-03) |
 | `/api/v1/shares/config` | PUT | Write the API-rendered share config to the host (atomic) |
 | `/api/v1/shares/status` | GET | Applied revision + rendered share counts |
 
@@ -1285,6 +1369,7 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 - **DM-6 DiskHealth**: `{ "smartctlAvailable": bool, "error": string, "temperatureWarningC": number, "wearWarningPercent": number, "disks": [{ "device", "size", "isSystemDisk", "model", "serial", "busPath", "type", "signatures": [], "inPool"?, "smart": { "available", "enabled", "health": "PASSED"|"FAILED"|"UNKNOWN", "temperatureC"?, "powerOnHours"?, "wearPercent"?, "reallocatedSectors"?, "pendingSectors"?, "uncorrectableSectors"?, "mediaErrors"?, "errorCount"?, "standby", "message" }, "zfs"?: { "pool", "vdev", "state", "readErrors", "writeErrors", "cksumErrors" } }] }` — `smart.available:false` is normal for virtio/USB/RAID devices and MUST NOT fail the endpoint (FR-DHK-02/03).
 - **DM-7 Vm**: `{ "name", "pool", "cpu", "memMiB", "autostart": bool, "firmware": "uefi"|"bios", "desired": "running"|"stopped", "disk": { "sizeGB", "format": "qcow2"|"raw", "bus": "virtio"|"sata", "sourceImage"?: "isos/<file>" }, "net": { "mode": "nat"|"lan", "forwards": [{ "host", "dst" }], "nic"? }, "cloudInit"?: { "hostname", "user", "sshKeys": [] }, "iso"?: "isos/<file>" | null }`. `name` is a DNS-1123 label; live fields (`state`: "running"|"stopped"|"unknown", `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) are merged in responses and MUST NOT be persisted; the console credentials (`vncPort`, `vncPassword`) appear only in the `/api/ws/vm/{name}/vnc` preflight, never in list or detail payloads (FR-VMT).
 - **DM-8 StorageSchedule**: `{ "id", "kind": "snapshot"|"scrub", "target", "cadence": "hourly"|"daily"|"weekly", "runAt", "keep": number, "recursive": bool, "enabled": bool, "lastRun"?, "lastResult"?, "lastError"?, "nextRun"? }`. `target` is a dataset path for `snapshot` and a pool name for `scrub`; `keep` is always 0 for `scrub`; `lastResult` is `ok`/`failed`/`skipped`/`started` (a scrub is `started` until its scan line reports completion). Timestamps are RFC 3339 UTC (FR-STO-10/11).
+- **DM-9 ReplicationJob**: `{ "id", "source", "destination", "snapshot"?, "recursive": bool, "pruneKeep"?: number, "state": "running"|"succeeded"|"failed"|"cancelled", "startedAt", "finishedAt"?, "progress": { "bytes", "estimatedBytes" }, "incremental": bool, "estimatedBytes"?, "result"?: { "status": "replicated"|"up-to-date", "source", "destination", "snapshot", "baseSnapshot"?, "baseGUID"?, "toGUID"?, "incremental": bool, "recursive": bool, "bytes", "estimatedBytes", "prunedSnapshots", "retentionError"?, "durationSeconds" }, "error"? }`. Jobs are in memory; `snapshot` is empty until the job creates one; timestamps are RFC 3339 UTC (FR-REP-01/06).
 
 ---
 
@@ -1388,6 +1473,26 @@ client (the case names below are the original Go suite's):
 | `TestBuddyScheduleFanOutToSeveralBuddies` | FR-BUD-15 (two destinations get a job each, a dead one fails only itself, per-destination results recorded) |
 | `TestBuddyScheduleReceiversValidation` | FR-BUD-15 (at least one receiver, every URL valid, duplicates collapsed) |
 | `TestBuddySendRefusesADatasetTheHostCannotSee` / `TestBuddySendAllowsADatasetWithNoMountpoint` | FR-BUD-11 (a dataset mounted only inside a pod is refused before any snapshot; mountpoint none stays sendable) |
+
+Local replication (`FR-REP`) is verified by the unit tests in
+`rust/api/src/server/replication.rs`, the agent command-line tests in
+`rust/agent/tests/zfs_backup.rs`, and the HTTP contract tests in
+`rust/api/tests/replication.rs` (a mock agent stands in for the streams):
+
+| Test | Verifies |
+| --- | --- |
+| `invalid_pairs_and_missing_datasets_are_refused` | FR-REP-02 (identical/nested pairs, missing source/destination) |
+| `send_needs_the_agent_and_valid_input` | FR-REP-02 (503 without agent, invalid path/snapshot, retention bound) |
+| `a_full_replication_job_snapshots_streams_and_finishes` | FR-REP-01/03/06 (202 job, scheduler-owned snapshot, streamed full receive, result shape) |
+| `a_common_guid_makes_the_send_incremental` | FR-REP-03 (GUID base, no new snapshot for a supplied one) |
+| `a_destination_that_already_has_the_target_is_up_to_date` | FR-REP-03/04 (GUID no-op receive) |
+| `a_full_send_refuses_foreign_snapshots_and_child_datasets` | FR-REP-04 (a user snapshot or child dataset blocks a full overwrite) |
+| `retention_destroys_only_replication_owned_snapshots` | FR-REP-05 (prunes its own prefix, never a user snapshot) |
+| `a_second_job_for_the_destination_conflicts_and_cancels` | FR-REP-01/06 (409 conflict, cancel, finished-cancel 409) |
+| `jobs_are_listed_and_unknown_ids_are_404` | FR-REP-01 (list, 404) |
+| `planner_matches_by_guid_not_name`, `plan_uses_the_newest_common_guid` | FR-REP-03 (GUID matching and ordering) |
+| `send_command_line_recursive_replication_stream` | FR-REP-03 (`zfs send -r`, incremental `-i`, no flag injection) |
+| `snapshot_listing_is_recursive_only_when_requested` | FR-REP-03 (shallow snapshot listing for GUID base selection) |
 
 Dynamic DNS and the provider registry are verified by
 `rust/api/src/providers.rs`, `rust/api/src/ddns.rs` and

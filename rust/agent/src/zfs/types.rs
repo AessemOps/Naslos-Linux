@@ -131,4 +131,7 @@ pub struct SendStreamOptions {
     pub from: String,
     /// Send encrypted records as-is (`-w`); a backup wants this.
     pub raw: bool,
+    /// Include descendant datasets (`-r`, without properties). Local
+    /// replication uses it when the request asks for a recursive copy.
+    pub recursive: bool,
 }

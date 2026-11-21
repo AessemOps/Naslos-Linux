@@ -155,6 +155,34 @@ pub fn validate_dataset_path(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate a snapshot name (the part after `@`). Mirrors the agent's
+/// validator so a bad name is refused before it reaches a command line.
+pub fn validate_snapshot_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("snapshot name is required".into());
+    }
+    if name != name.trim() {
+        return Err("snapshot name must not start or end with whitespace".into());
+    }
+    if name.starts_with('-') {
+        return Err(format!("snapshot name {name:?} must not start with '-'"));
+    }
+    if name.contains('@') || name.contains(' ') || name.contains('/') || name.contains('\\') {
+        return Err(format!(
+            "snapshot name {name:?} must not contain '@', '/', '\\' or spaces"
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '+' | '-'))
+    {
+        return Err(format!(
+            "snapshot name {name:?} must be letters, digits, '.', '_', ':', '+' or '-'"
+        ));
+    }
+    Ok(())
+}
+
 /// Validate a dataset create request's options.
 pub fn validate_dataset_create_options(options: &HashMap<String, String>) -> Result<(), String> {
     for (key, raw) in options {
@@ -810,6 +838,18 @@ mod tests {
         );
         assert_eq!(whole_disk_path("/dev/sdc"), None);
         assert_eq!(whole_disk_path("/dev/zd32"), None);
+    }
+
+    #[test]
+    fn snapshot_names_cannot_become_flags_or_paths() {
+        assert!(validate_snapshot_name("naslos-rep-abcd-20260101T000000Z").is_ok());
+        assert!(validate_snapshot_name("manual.2026-01-01_10:00+00").is_ok());
+        assert!(validate_snapshot_name("-F").is_err());
+        assert!(validate_snapshot_name("snap@other").is_err());
+        assert!(validate_snapshot_name("snap name").is_err());
+        assert!(validate_snapshot_name("snap/child").is_err());
+        assert!(validate_snapshot_name("").is_err());
+        assert!(validate_snapshot_name(" snap").is_err());
     }
 
     #[test]

@@ -650,6 +650,7 @@ pub async fn zfs_send(
         to: query.get("to").cloned().unwrap_or_default(),
         from: query.get("from").cloned().unwrap_or_default(),
         raw: query.get("raw").map(|v| v != "false").unwrap_or(true),
+        recursive: query.get("recursive").map(|v| v == "true").unwrap_or(false),
     };
     if opts.to.is_empty() {
         return write_error(
@@ -814,11 +815,15 @@ pub async fn zfs_receive(
 pub async fn zfs_snapshots(
     State(state): State<Arc<AppState>>,
     Path(dataset): Path<String>,
+    Query(query): Query<QueryMap>,
 ) -> Response {
     let Some(zfs) = state.zfs.as_ref() else {
         return backup_unavailable();
     };
-    match zfs.snapshots_with_guid(&dataset).await {
+    // Default stays recursive (buddy send/restore rely on it); replication
+    // asks for `recursive=false` to compare one dataset's own snapshots.
+    let recursive = query.get("recursive").map(|v| v != "false").unwrap_or(true);
+    match zfs.snapshots_with_guid(&dataset, recursive).await {
         Ok(snapshots) => json_response(StatusCode::OK, &snapshots),
         Err(e) => write_error(StatusCode::BAD_REQUEST, e.to_string()),
     }

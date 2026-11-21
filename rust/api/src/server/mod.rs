@@ -23,6 +23,7 @@ pub mod network;
 pub mod notifications;
 pub mod pods;
 pub mod providers;
+pub mod replication;
 pub mod shares;
 pub mod storage_schedules;
 pub mod system;
@@ -158,6 +159,12 @@ fn owner_routes() -> Router<Arc<AppState>> {
             get(storage_schedules::schedules_get)
                 .post(storage_schedules::schedules_post)
                 .delete(storage_schedules::schedules_delete),
+        )
+        .route("/api/replication/send", post(replication::send_post))
+        .route("/api/replication/jobs", get(replication::jobs_get))
+        .route(
+            "/api/replication/jobs/{id}",
+            get(replication::job_detail_get).delete(replication::job_detail_delete),
         )
         .route(
             "/api/datasets",
