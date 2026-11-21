@@ -827,7 +827,7 @@ fn tail_qemu_log(dir: &str) -> String {
 fn vnc_password() -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
     let mut raw = [0u8; VNC_PASSWORD_LEN];
-    let _ = getrandom::getrandom(&mut raw);
+    let _ = getrandom::fill(&mut raw);
     raw.iter()
         .map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char)
         .collect()

@@ -183,7 +183,7 @@ impl ChainState {
         validate_source(source)?;
         let kind = if kind.is_empty() { "tar" } else { kind };
         let mut id = [0u8; 8];
-        getrandom::getrandom(&mut id).map_err(|e| format!("generating chain id: {e}"))?;
+        getrandom::fill(&mut id).map_err(|e| format!("generating chain id: {e}"))?;
         let dek = super::envelope::generate_dek()?;
         let prefix = new_stream_prefix()?;
         Ok(Self {
