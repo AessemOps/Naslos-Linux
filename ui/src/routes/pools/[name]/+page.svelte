@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { page } from '$app/stores';
+  import { page } from '$app/state';
   import Icon from '$lib/components/Icon.svelte';
   import ErrorState from '$lib/components/ErrorState.svelte';
   import LoadingState from '$lib/components/LoadingState.svelte';
@@ -65,7 +65,7 @@
   let addSaving = false;
   let addError = '';
 
-  const poolName = $page.params.name;
+  const poolName = page.params.name;
 
   async function loadHealth() {
     loading = true;
