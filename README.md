@@ -110,6 +110,7 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [api](docs/api.md) | HTTP API reference (naslos-api + naslos-agent) |
 | [bootstrap](docs/bootstrap.md) | Image Factory schematic & ZFS extension |
 | [storage-zfs](docs/storage-zfs.md) | ZFS pools, datasets, snapshots, storage classes |
+| [nvmeof](docs/nvmeof.md) | NVMe-oF TCP design spike (go/no-go; not implemented) |
 | [identity-sso](docs/identity-sso.md) | Authelia + OpenLDAP + Samba single sign-on |
 | [shares](docs/shares.md) | SMB / NFS / Time-Machine shares |
 | [app-catalog](docs/app-catalog.md) | Catalog, schema-driven forms, Helm lifecycle |

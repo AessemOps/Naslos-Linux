@@ -228,6 +228,105 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-DHK-07** — Disk health MUST be read-only: no SMART self-tests, no
   enabling SMART, no device writes, and no user-controlled command arguments.
 
+### 3.1.2 Block storage — NVMe-oF TCP (`FR-NVME`)
+
+**Status: design spike only (2026-11-21).** No target, API route, chart
+object, or test exists in this tree. These requirements reserve stable IDs and
+define the bar for a future implementation; every one is **[OPEN]**. The
+evidence and the go/no-go decision are in [nvmeof.md](nvmeof.md). The
+`T-NVME-*` references name the validation items in that document's
+[validation plan](nvmeof.md#13-validation-plan); they are planned checks, not
+executable tests.
+
+- **FR-NVME-01** — An NVMe-oF TCP export MUST be offered only when the pinned
+  Talos node exposes `nvmet`, `nvmet-tcp`, configfs, and target-side
+  DH-HMAC-CHAP, and a capability endpoint MUST report each capability (module,
+  configfs, authentication, TLS) with a reason. An unsupported node MUST fail
+  closed: no listener and no partial export. The supported initiator scope MUST
+  be documented as Linux kernels with `nvme-tcp`; VMware ESXi and production
+  Windows initiators MUST NOT be claimed (the kernel target does not implement
+  the fused-command path ESXi requires, and the native Windows initiator was
+  preview-only at spike time). **[OPEN]** (tests: `T-NVME-01`, `T-NVME-10`)
+- **FR-NVME-02** — Every namespace MUST be backed by a ZFS zvol created through
+  the agent, with `volmode=dev`, a validated `volblocksize`,
+  `refreservation=none` unless thick provisioning is explicitly selected, and
+  a stable `/dev/zvol/<pool>/<zvol>` path. The supervisor MUST resolve and
+  verify that the path is a block device and a zvol under an allowed pool
+  before enabling it; it MUST NOT accept a raw disk, file, partition, mounted
+  volume, or arbitrary device path. v1 MUST expose exactly one namespace per
+  subsystem; multi-namespace subsystems are a future extension. **[OPEN]**
+  (tests: `T-NVME-02`, `T-NVME-10`)
+- **FR-NVME-03** — Export records (name, pool/zvol, NQN, host NQNs, listener
+  address/port, authentication mode, enabled state) MUST be validated and
+  persisted by the API, which MUST push the full desired state to a dedicated
+  supervisor. The supervisor MUST reconcile configfs idempotently on startup
+  and on change, adopt an existing tree after its own restart, and build every
+  path from validated components only (no shell, no user-controlled path
+  interpolation). State MUST be derived live from the kernel/supervisor, never
+  invented. **[OPEN]** (tests: `T-NVME-04`, `T-NVME-10`)
+- **FR-NVME-04** — `attr_allow_any_host` MUST be 0. Every subsystem MUST have
+  at least one allowed host NQN, and discovery MUST be filtered to the caller's
+  allowed subsystems. DH-HMAC-CHAP MUST be supported for Linux initiators
+  (host key, optional controller key, negotiated hash and FFDHE group). CHAP
+  secrets MUST live in a Kubernetes Secret, never in values, logs, API
+  responses, or error strings, and rotation MUST require a reconnect. TLS MUST
+  NOT be claimed unless the pinned kernel implements it and the operator
+  enables it; when it is absent, the docs MUST state that data is cleartext on
+  the wire. **[OPEN]** (tests: `T-NVME-03`, `T-NVME-10`)
+- **FR-NVME-05** — The target MUST run in the node's network namespace
+  (`hostNetwork`), bind one concrete configured IPv4 address on 4420/tcp (no
+  wildcard/`0.0.0.0` advertisement), and MUST NOT be exposed through
+  Traefik/Ingress or a public route. A node-level firewall or host policy MUST
+  restrict 4420 to configured initiator CIDRs; a pod NetworkPolicy alone is
+  insufficient for host-network pods. An address change or loss MUST stop new
+  connections and require an explicit rebind; a stale listener MUST NOT
+  survive. **[OPEN]** (tests: `T-NVME-05`, `T-NVME-09`)
+- **FR-NVME-06** — The system MUST refuse to export a zvol that is mounted or
+  otherwise in use, and MUST refuse zvol delete/resize/rollback and pool
+  export/destroy while a namespace is enabled or a controller is connected.
+  Tearing down a live subsystem MUST require an explicit disconnect, or a
+  separate force path with a written warning. Snapshotting a live exported
+  zvol is crash-consistent; restore MUST require a disconnect. The UI/docs MUST
+  state that formatting the exported device on the initiator destroys the
+  zvol. **[OPEN]** (tests: `T-NVME-02`, `T-NVME-06`)
+- **FR-NVME-07** — The API/UI MUST expose, read-only: export and namespace
+  state, NQN, backing zvol and size, listener address/port, configured hosts
+  (never secrets), pool free space and thin-provisioning usage, and controller
+  or namespace errors the kernel exposes. If the kernel does not expose
+  connected-host identity, the API MUST report it as unknown rather than
+  fabricate it. Events MUST cover controller loss, namespace I/O errors,
+  pool-full/thin-space warnings, and reconcile failures. **[OPEN]** (tests:
+  `T-NVME-05`, `T-NVME-06`)
+- **FR-NVME-08** — The target MUST NOT advertise a maximum data transfer size
+  it cannot honor. If the pinned kernel advertises an unlimited MDTS while
+  enforcing a smaller transport limit, the feature MUST be blocked, or MUST
+  require a proven initiator-side cap and document it; large-I/O tests
+  (8/16/32 MiB) MUST pass with zero I/O errors before enablement. A documented
+  benchmark matrix (local zvol vs remote, 4K/1M, QD1/32, 1/4 jobs, MTU
+  1500/9000) and agreed throughput/latency thresholds MUST pass before any
+  release claim. **[OPEN]** (test: `T-NVME-07`)
+- **FR-NVME-09** — `nvmet` and `nvmet-tcp` MUST be loaded through the
+  declarative Talos machine-config install path (`KernelModuleConfig` in both
+  the node overlay and the installer template where the pinned Talos provides
+  it; the deprecated `.machine.kernel.modules` form is acceptable only where
+  the pinned Talos requires it). There MUST be no custom kernel,
+  kernel-module extension, or runtime `modprobe` from a pod. The feature MUST
+  be off by default, use a `Recreate` supervisor, re-apply configfs after
+  reboot, preserve zvol data
+  across disable/re-enable, and be provable with `make -n install-vm` and
+  `helm template` on both values profiles. Uninstall MUST stop the target
+  before modules can be unloaded and MUST NOT delete zvols. **[OPEN]** (tests:
+  `T-NVME-08`, `T-NVME-09`)
+- **FR-NVME-10** — A future privileged container or system extension MUST pass
+  a security review covering: command construction (no shell; validated
+  NQN/NSID/port/path), egress (none), host mounts (`/dev` only; configfs
+  mounted read-write inside the pod), secrets (Secret file, 0600, never
+  logged/returned), device-path allowlist (zvols under allowed pools, never the
+  system disk), configfs global-state blast radius, kernel CVE/patch cadence,
+  and a documented recovery for a bad host-firewall rule. The review MUST be
+  signed off before enablement; a system extension is not approved by this
+  spike. **[OPEN]** (test: `T-NVME-10`)
+
 ### 3.2 Identity & SSO (`FR-IDN`)
 
 - **FR-IDN-01** — Users and groups MUST be stored in OpenLDAP under
@@ -1387,6 +1486,23 @@ Dynamic DNS and the provider registry are verified by
 | `naslos_api::virt::tests::*` | FR-VMT-10 (store round-trip + revalidation, boot render marks autostart VMs, views survive a dead supervisor, credentials stay out of payloads) |
 | `contract.rs` virt tests (fail-closed shapes, octet-stream scoped to the upload route only, console origin/auth) | FR-VMT-08/11 |
 | `ui/tests/vms.spec.ts` (capability-skip) | FR-VMT-01 (banner on KVM-less nodes, list contract, preflight 409 on a stopped VM) |
+
+NVMe-oF TCP is not implemented (spike only); every `FR-NVME` requirement is
+**[OPEN]**. The planned validation items are defined in
+[nvmeof.md](nvmeof.md#13-validation-plan):
+
+| Validation | Verifies |
+| --- | --- |
+| `T-NVME-01` — stock-module/configfs capability probe on a scratch Talos node | FR-NVME-01 |
+| `T-NVME-02` — zvol create/export/connect/I/O; mounted and busy zvol refusals | FR-NVME-02/06 |
+| `T-NVME-03` — host-NQN allowlist, discovery filtering, CHAP positive/negative, secret redaction | FR-NVME-04 |
+| `T-NVME-04` — supervisor crash/adopt/idempotent reconcile; kernel data plane survives | FR-NVME-03 |
+| `T-NVME-05` — listener address/port exposure, host-firewall restriction, network-change rebind | FR-NVME-05/07 |
+| `T-NVME-06` — cable pull, reboot, pool full, delete/resize/rollback refusals, CHAP rotation | FR-NVME-06/07 |
+| `T-NVME-07` — fio matrix including ≥8 MiB I/O and MDTS behavior | FR-NVME-08 |
+| `T-NVME-08` — Talos/chart upgrade, feature disable/re-enable, data retention | FR-NVME-09 |
+| `T-NVME-09` — install-path render (`make -n install-vm`, `helm template`, machine-config overlay) | FR-NVME-05/09 |
+| `T-NVME-10` — security review checklist and threat-model sign-off | FR-NVME-01/03/04/10 |
 
 Historical verification (2026-09-14, retired .96 VM, through its UI NodePort —
 that listener was removed on 2026-09-19, and the same checks now run through the

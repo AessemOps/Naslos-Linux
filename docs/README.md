@@ -18,6 +18,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [api.md](api.md) | HTTP API surface of `naslos-api` and `naslos-agent`, env vars, error format | New |
 | [bootstrap.md](bootstrap.md) | Image Factory schematic, ZFS extension, boot-time pool import, upgrades | New |
 | [storage-zfs.md](storage-zfs.md) | ZFS pools, datasets, snapshots, topology advisor, Talos gotchas | New |
+| [nvmeof.md](nvmeof.md) | NVMe-oF TCP spike: Talos `nvmet` evidence, SPDK/extension alternatives, security, performance, failure modes, go/no-go | Spike |
 | [identity-sso.md](identity-sso.md) | Single sign-on: Authelia, OpenLDAP, Samba hash sync, RBAC groups, 2FA | Rebuilt (replaces `authentication.md`) |
 | [shares.md](shares.md) | SMB / NFS / Time-Machine share model, generated configs | New |
 | [terminal.md](terminal.md) | Web terminal: exec scoping, RBAC, terminal namespace | New |
