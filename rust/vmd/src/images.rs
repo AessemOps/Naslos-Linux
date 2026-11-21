@@ -222,7 +222,11 @@ pub async fn import_url(
         .await
         .map_err(|e| format!("syncing {path}: {e}"))?;
     if let Some(expected) = expected {
-        let actual = format!("{:x}", hasher.finalize());
+        let actual: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         if actual != expected {
             let _ = tokio::fs::remove_file(&path).await;
             return Err(format!(

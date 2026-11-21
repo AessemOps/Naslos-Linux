@@ -412,7 +412,13 @@ pub async fn resolve_digest(
         .map(str::trim)
         .filter(|value| valid_digest(value))
         .map(str::to_string)
-        .unwrap_or_else(|| format!("sha256:{:x}", Sha256::digest(&body)));
+        .unwrap_or_else(|| {
+            let hex: String = Sha256::digest(&body)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            format!("sha256:{hex}")
+        });
 
     let is_index = serde_json::from_slice::<serde_json::Value>(&body)
         .ok()
