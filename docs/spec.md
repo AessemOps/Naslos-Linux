@@ -200,6 +200,29 @@ Requirement IDs are stable: never renumber, only deprecate.
   root dataset MUST NOT be destroyable through the dataset API, and a dataset
   that a share is serving (or that backs a share's path) MUST be refused with a
   conflict instead of removing the share's data.
+- **FR-STO-10** — Scheduled snapshots MUST be creatable, listable, updatable and
+  deletable per dataset (`GET|POST|DELETE /api/storage/schedules`, kind
+  `snapshot`) with a cadence (hourly/daily/weekly, UTC `runAt`), an optional
+  recursive flag, and a keep count (0 = keep all, at most 1000). Every run MUST
+  create the snapshot through the agent with a scheduler-owned name
+  `naslos-auto-<schedule>-<UTC timestamp>`. Retention MUST delete only
+  snapshots carrying that schedule's prefix, keeping the newest N per dataset;
+  a user-created snapshot or another schedule's snapshot MUST NEVER be removed.
+  The schedule's `lastRun`, `lastResult`, `lastError` and `nextRun` MUST persist
+  on the state volume, a run missed while the API was down MUST fire once at
+  startup, and a failed run MUST be recorded without disabling the schedule.
+  A run that cannot reach the agent MUST be retried on the next tick instead of
+  consuming the cadence interval.
+- **FR-STO-11** — Each pool MUST support an optional scrub schedule (kind
+  `scrub`, daily or weekly only) and a manual "scrub now"
+  (`POST /api/volumes/zfs/{pool}/scrub`). The manual route MUST answer `409`
+  while `zpool status` reports a scrub or resilver in progress. A scheduled run
+  MUST NOT start a second scrub: it records `skipped`, or advances its next run
+  without replacing an in-flight result of its own. The agent MUST run only
+  `zpool scrub <validated pool>` (no user-controlled arguments), and the
+  schedule's `lastResult` MUST be derived from the pool's `scan` line once the
+  scrub finishes (ok only with zero errors). The UI MUST expose the schedule's
+  last/next run and result on the pool page.
 
 ### 3.1.1 Disk health (`FR-DHK`)
 
@@ -1187,6 +1210,8 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 | `/api/volumes/zfs` | GET | Pools (live via agent) |
 | `/api/volumes/zfs/import` | POST | Import existing pool |
 | `/api/volumes/zfs/{pool}` | GET, DELETE | Pool health / destroy |
+| `/api/volumes/zfs/{pool}/scrub` | POST | Start a scrub now (`202`; `409` when a scrub/resilver is running) (FR-STO-11) |
+| `/api/storage/schedules` | GET, POST, DELETE | Snapshot and scrub schedules: list / create-or-update / delete (`?id=`) (FR-STO-10/11) |
 | `/api/shares` | GET, POST | List / create |
 | `/api/shares/{name}` | PUT, DELETE | Update / delete |
 | `/api/shares/paths` | GET | Shareable dataset paths + ZFS base |
@@ -1241,9 +1266,10 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 | `/api/v1/pools` | GET | List pools (via `zpool list`) |
 | `/api/v1/pools/import` | POST | `zpool import` |
 | `/api/v1/pools/{name}` | GET, DELETE | Status/iostat / destroy |
+| `/api/v1/pools/{pool}/scrub` | POST | Start `zpool scrub <validated pool>` (FR-STO-11) |
 | `/api/v1/disks/health` | GET | Per-disk SMART + ZFS health (FR-DHK) |
 | `/api/v1/datasets/{pool}` | GET, POST | List / create datasets |
-| `/api/v1/snapshots/{pool}` | GET, POST | List / create snapshots |
+| `/api/v1/snapshots/{pool}` | GET, POST, DELETE | List (add `?paths=true` for full `dataset@snap` paths) / create (optional `recursive`) / destroy one snapshot (`?name=`) (FR-STO-10) |
 | `/api/v1/shares/config` | PUT | Write the API-rendered share config to the host (atomic) |
 | `/api/v1/shares/status` | GET | Applied revision + rendered share counts |
 
@@ -1258,6 +1284,7 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 - **DM-5 SystemMetrics**: see FR-MET-03. CPU also carries `model`, `temperatureC` (nullable), and `perCore[]` (`core`, `usagePercent`, optional `frequencyMhz`). `updatedAt` is RFC 3339; before the first successful collection it is the Go zero time and consumers MUST treat it as "no data yet".
 - **DM-6 DiskHealth**: `{ "smartctlAvailable": bool, "error": string, "temperatureWarningC": number, "wearWarningPercent": number, "disks": [{ "device", "size", "isSystemDisk", "model", "serial", "busPath", "type", "signatures": [], "inPool"?, "smart": { "available", "enabled", "health": "PASSED"|"FAILED"|"UNKNOWN", "temperatureC"?, "powerOnHours"?, "wearPercent"?, "reallocatedSectors"?, "pendingSectors"?, "uncorrectableSectors"?, "mediaErrors"?, "errorCount"?, "standby", "message" }, "zfs"?: { "pool", "vdev", "state", "readErrors", "writeErrors", "cksumErrors" } }] }` — `smart.available:false` is normal for virtio/USB/RAID devices and MUST NOT fail the endpoint (FR-DHK-02/03).
 - **DM-7 Vm**: `{ "name", "pool", "cpu", "memMiB", "autostart": bool, "firmware": "uefi"|"bios", "desired": "running"|"stopped", "disk": { "sizeGB", "format": "qcow2"|"raw", "bus": "virtio"|"sata", "sourceImage"?: "isos/<file>" }, "net": { "mode": "nat"|"lan", "forwards": [{ "host", "dst" }], "nic"? }, "cloudInit"?: { "hostname", "user", "sshKeys": [] }, "iso"?: "isos/<file>" | null }`. `name` is a DNS-1123 label; live fields (`state`: "running"|"stopped"|"unknown", `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) are merged in responses and MUST NOT be persisted; the console credentials (`vncPort`, `vncPassword`) appear only in the `/api/ws/vm/{name}/vnc` preflight, never in list or detail payloads (FR-VMT).
+- **DM-8 StorageSchedule**: `{ "id", "kind": "snapshot"|"scrub", "target", "cadence": "hourly"|"daily"|"weekly", "runAt", "keep": number, "recursive": bool, "enabled": bool, "lastRun"?, "lastResult"?, "lastError"?, "nextRun"? }`. `target` is a dataset path for `snapshot` and a pool name for `scrub`; `keep` is always 0 for `scrub`; `lastResult` is `ok`/`failed`/`skipped`/`started` (a scrub is `started` until its scan line reports completion). Timestamps are RFC 3339 UTC (FR-STO-10/11).
 
 ---
 
@@ -1295,6 +1322,7 @@ The authoritative executable acceptance suite is the Playwright suite in
 | --- | --- |
 | `dashboard.spec.ts` — live node metrics | FR-MET-03/04/05, FR-IDN-08 (live values, non-zero memory/cores, no zero-time) |
 | `dashboard.spec.ts` — zfs pools | FR-STO-06, FR-MET-07 |
+| `storage-schedules.spec.ts` — schedules | FR-STO-10/11 (create/edit/remove a snapshot schedule on a dataset, scrub schedule validation, API refusals; no user snapshot is touched) |
 | `disk-health.spec.ts` — per-disk inventory | FR-DHK-02/03/04 (API/UI shape, SMART-unavailable path) |
 | `dashboard.spec.ts` — auto-refresh | FR-MET-08 (5 s re-render without reload) |
 | `dashboard.spec.ts` — CPU detail | FR-MET-11/12 (model, load averages, one bar per core, unavailable-temperature note) |
@@ -1333,7 +1361,9 @@ Rust tests cover the parts that need no node: `rust/api/src/identity.rs`
 `rust/api/src/shares.rs` (smbpasswd and
 extrausers rendering, stable group GIDs, access-list groups, NetBIOS name
 sanitising); `rust/api/src/server/` (the user-edit membership diff, FR-IDN-04;
-the write-only ntfy token, `TestNotificationsNeverReturnTheAuthToken`); and
+the write-only ntfy token, `TestNotificationsNeverReturnTheAuthToken`; the
+storage retention plan, scheduler-owned snapshot names and scrub scan
+classification, FR-STO-10/11); and
 `rust/agent/src/shares/` (the 0600 passdb/shadow mirrors, FR-IDN-13).
 
 Buddy Backup is verified by the Rust suites in `rust/api/src/buddy/` and
@@ -1411,7 +1441,7 @@ ingress): peer → nginx → API, with the chart's `buddy` values enabled:
 | `TestRequireAuth` on the agent: `/health` public, every `/api/v1/*` behind `Authorization: Bearer`, wrong/missing/partial token → 401 | SEC-11 |
 | `TestNoncesSurviveARestart`, `TestNonceFileIsCompacted`, `TestPersistNoncesWithoutAPathStaysInMemory` | SEC-14 |
 | `TestSequenceFollowsTheGuidIndex`, `TestSequenceRefusesWhenTheBaseIsGone`, `TestChainsListingIsCapped`, `TestRestoreSequenceFallsBackToTheListing` | FR-BUD-14, NAS-021 (bounded walks) |
-| Agent refusal tests (`TestCreatePoolRefusals…`, `TestCreatePoolRefusesBadDisks`, `TestPoolSinksRefuseInvalidNames`, `TestSnapshotRefusesInvalidArguments`) assert no command ran at all | SEC-9/SEC-11 |
+| Agent refusal tests (`TestCreatePoolRefusals…`, `TestCreatePoolRefusesBadDisks`, `TestPoolSinksRefuseInvalidNames`, `TestSnapshotRefusesInvalidArguments`, `TestScrubRefusesInvalidPoolNames`, `TestDestroySnapshotRefusesInvalidArguments`) assert no command ran at all | SEC-9/SEC-11 |
 | `TestOwnerRoutesRequireAuth` (every owner path, with and without a forged `Remote-User`) → 401; `TestOwnerRoutesPassWithTheProxySecret` → reaches the handler; no opt-out exists | SEC-10 |
 | `POST /api/buddy/send` → `202 {jobId}`; `GET /api/buddy/jobs/{id}` reaches `succeeded` with the sync-era result fields | FR-BUD-16 (async jobs) |
 | second send for the same (receiver, source) or dataset while running → 409; `DELETE` mid-send → `cancelled`, resume state kept, retry `resumed: true` | FR-BUD-16 |

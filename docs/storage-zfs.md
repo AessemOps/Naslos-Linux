@@ -116,11 +116,36 @@ guidance.
 The agent exposes dataset and snapshot operations:
 
 - `GET/POST /api/v1/datasets/{pool}`, `DELETE /api/v1/datasets/{pool}/{name…}`
-- `GET/POST /api/v1/snapshots/{dataset}`
+- `GET/POST/DELETE /api/v1/snapshots/{dataset}` (`?paths=true` returns full
+  `dataset@snap` paths; `DELETE ?name=` destroys one snapshot)
 
 Datasets are how shares get structured sizes/quota boundaries and are the unit
 of snapshots (`zfs snapshot pool/ds@name`). Shares previously used AFP/Time
 Machine; the modern path is SMB + `fruit` VFS (see [shares.md](shares.md)).
+
+### Scheduled snapshots and scrubs (FR-STO-10/11)
+
+`Pools → <pool>` owns the maintenance schedules:
+
+- **Snapshot schedule** (per dataset): `GET|POST|DELETE /api/storage/schedules`
+  with `kind: "snapshot"`. Cadence is hourly/daily/weekly in UTC, with an
+  optional `recursive` flag (`zfs snapshot -r`) and `keep` retention (0 = keep
+  all, max 1000). Every run creates `naslos-auto-<schedule>-<UTC timestamp>`;
+  retention deletes only names carrying that schedule's prefix, keeping the
+  newest N per dataset. User-created snapshots are never touched.
+- **Scrub schedule** (per pool): `kind: "scrub"`, daily or weekly only, plus
+  **Scrub now** (`POST /api/volumes/zfs/{pool}/scrub`). The manual route answers
+  `409` when `zpool status` reports a scrub or resilver already running; a
+  scheduled run records `skipped` (or leaves its own in-flight result in place)
+  instead of starting a second scrub. The agent runs only
+  `zpool scrub <validated pool>`, and the schedule's result is read from the
+  finished `scan` line (`ok` only with zero errors).
+
+Schedules and their last/next-run state persist on the state volume
+(`/var/lib/naslos/storage-schedules.json`, `api.storageSchedulesFile`), and a
+run missed while the API was down fires once at startup. A run that cannot
+reach the agent keeps its due time and is retried on the next tick, so an
+upgrade does not consume a daily or weekly snapshot.
 
 ### Creating a dataset (UI)
 

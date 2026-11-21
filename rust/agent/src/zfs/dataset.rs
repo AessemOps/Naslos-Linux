@@ -431,19 +431,75 @@ impl ZfsClient {
 
     /// Create a snapshot.
     pub async fn snapshot(&self, dataset: &str, snap_name: &str) -> ZfsResult<()> {
+        self.snapshot_with(dataset, snap_name, false).await
+    }
+
+    /// Create a snapshot, optionally recursing into child datasets
+    /// (`zfs snapshot -r`). A recursive snapshot is what a scheduled snapshot
+    /// task wants: one consistent point for the dataset and everything under it.
+    pub async fn snapshot_with(
+        &self,
+        dataset: &str,
+        snap_name: &str,
+        recursive: bool,
+    ) -> ZfsResult<()> {
         validate_dataset_path(dataset)?;
         super::backup::validate_snapshot_name(snap_name)?;
         let name = format!("{dataset}@{snap_name}");
-        match self
-            .host_exec(ZFS_BIN, &strings(&["snapshot", &name]))
-            .await
-        {
+        let argv = if recursive {
+            strings(&["snapshot", "-r", &name])
+        } else {
+            strings(&["snapshot", &name])
+        };
+        match self.host_exec(ZFS_BIN, &argv).await {
             Ok(_) => Ok(()),
             Err(e) => Err(ZfsError::Other(format!(
                 "creating snapshot: {}: {}",
                 e.output, e.message
             ))),
         }
+    }
+
+    /// Destroy one snapshot (`zfs destroy dataset@snap`).
+    ///
+    /// The caller owns retention: the API only calls this for snapshot names it
+    /// generated itself, so a user-created snapshot is never removed by a
+    /// schedule.
+    pub async fn destroy_snapshot(&self, dataset: &str, snap_name: &str) -> ZfsResult<()> {
+        validate_dataset_path(dataset)?;
+        super::backup::validate_snapshot_name(snap_name)?;
+        let name = format!("{dataset}@{snap_name}");
+        match self.host_exec(ZFS_BIN, &strings(&["destroy", &name])).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(ZfsError::Other(format!(
+                "destroying snapshot {name}: {}: {}",
+                e.output, e.message
+            ))),
+        }
+    }
+
+    /// Every snapshot path under a dataset (`pool/ds@snap`, including child
+    /// datasets) in creation order, for retention planning.
+    pub async fn snapshot_paths(&self, dataset: &str) -> ZfsResult<Vec<String>> {
+        validate_dataset_path(dataset)?;
+        let out = match self
+            .host_exec(
+                ZFS_BIN,
+                &strings(&[
+                    "list", "-H", "-t", "snapshot", "-o", "name", "-s", "creation", "-r", dataset,
+                ]),
+            )
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => return Err(ZfsError::Other(format!("listing snapshots: {}", e.message))),
+        };
+        Ok(out
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect())
     }
 
     /// List a dataset's snapshots (names without the `dataset@` prefix).

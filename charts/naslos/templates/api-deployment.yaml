@@ -1,4 +1,7 @@
 {{- if .Values.api.enabled }}
+{{- if gt (int .Values.api.replicas) 1 }}
+{{- fail "api.replicas must be 1: the API runs the metrics, buddy and storage schedulers against a single state volume, so replicas > 1 would run concurrent schedulers" }}
+{{- end }}
 {{- $ddns := get .Values "ddns" | default dict }}
 {{- $diskHealth := get .Values "diskHealth" | default dict }}
 apiVersion: apps/v1
@@ -11,6 +14,12 @@ metadata:
     app.kubernetes.io/component: api
 spec:
   replicas: {{ .Values.api.replicas }}
+  # The API runs the metrics, buddy and storage schedulers and they persist to
+  # one state volume. Recreate replaces the old pod before the new one starts;
+  # a RollingUpdate would briefly run two schedulers against the same store
+  # (duplicate snapshot/scrub runs and last-writer-wins on schedule edits).
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: naslos-api
@@ -474,6 +483,12 @@ spec:
             # and its previous-config snapshot live on the same state volume.
             - name: NETWORK_STATE
               value: {{ .Values.api.networkStateFile | default "/var/lib/naslos/network.json" | quote }}
+            # Scheduled storage maintenance (FR-STO-10/11): snapshot/scrub
+            # schedule store and the runner's tick, both on the state volume.
+            - name: STORAGE_SCHEDULES
+              value: {{ .Values.api.storageSchedulesFile | default "/var/lib/naslos/storage-schedules.json" | quote }}
+            - name: STORAGE_SCHEDULER_INTERVAL_MS
+              value: {{ .Values.api.storageSchedulerIntervalMs | default 60000 | quote }}
             {{- if .Values.buddy.enabled }}
             # Buddy Backup receive side (docs/buddy-backup.md): peers push
             # encrypted chunks that this instance stores but cannot read. The

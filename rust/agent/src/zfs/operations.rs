@@ -513,6 +513,20 @@ impl ZfsClient {
         Ok(health)
     }
 
+    /// Start a scrub (`zpool scrub <pool>`). Whether a scrub is already running
+    /// is decided by the API from `pool_health().scan`; the agent only runs the
+    /// validated, argument-free command.
+    pub async fn scrub_pool(&self, name: &str) -> ZfsResult<()> {
+        validate_pool_name(name)?;
+        match self.host_exec(ZPOOL_BIN, &args(&["scrub", name])).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(ZfsError::Other(format!(
+                "starting scrub on {name}: {}: {}",
+                e.output, e.message
+            ))),
+        }
+    }
+
     /// Per-disk ZFS membership and error counters, keyed by canonical
     /// `/dev/<node>`. Best effort: a pool whose status cannot be read is
     /// skipped, because the SMART half of the health page must still work.

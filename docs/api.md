@@ -166,6 +166,8 @@ are in-memory (a restart abandons a running job; the app record and
 | GET | `/api/volumes/zfs/import` | List pools available for import (on disk but not imported) |
 | POST | `/api/volumes/zfs/import` | Import: `{"name":"tank"}` for one pool, `{"all":true}` for every importable pool. A missing/malformed body is a 400, never an implicit import-all |
 | POST | `/api/volumes/zfs/{name}/devices` | Attach disks: `{disks, topology, force, wipeConfirmed}` → `zpool add`. Refuses a disk already in any pool (even with `force`), a disk holding a ZFS label, a non-`/dev` path, an unknown disk, and too few disks for the topology (FR-STO-08). A disk with another filesystem signature needs `wipeConfirmed`. |
+| POST | `/api/volumes/zfs/{name}/scrub` | Start a scrub now (`202`). `409` while `zpool status` reports a scrub or resilver in progress (FR-STO-11) |
+| GET/POST/DELETE | `/api/storage/schedules` | Periodic snapshot and scrub schedules (`{id, kind, target, cadence, runAt, keep, recursive, enabled}`; `?id=` deletes). Snapshot runs create `naslos-auto-<schedule>-<UTC>` and prune only their own names; scrub runs are daily/weekly and report the scan result (FR-STO-10/11) |
 | GET | `/api/datasets` | Every dataset with used/avail/refer/mountpoint |
 | GET | `/api/datasets/registry` | List operator-registered datasets apps may mount (`{name, hostPath, shared, warningAcknowledged, createdAt}`) |
 | POST | `/api/datasets/registry` | Register a dataset `{name, hostPath, shared, warningAcknowledged?}`. The path must be a mounted ZFS dataset below `/var/mnt`, must not overlap the Buddy store, and a `shared` dataset requires `warningAcknowledged:true` (400 otherwise) |
@@ -392,7 +394,8 @@ rule, client configuration).
 | GET | `/api/v1/pools/import` | List pools available for import (`zpool import` dry-run) |
 | POST | `/api/v1/pools/import` | Import pool(s): `{"name":"tank"}` or `{}` for all |
 | GET/POST | `/api/v1/datasets/{pool}` | List / create dataset |
-| GET/POST | `/api/v1/snapshots/{dataset}` | List / create snapshot |
+| GET/POST/DELETE | `/api/v1/snapshots/{dataset}` | List (`?paths=true` returns full `dataset@snap` paths), create (`{name, recursive}`), destroy one (`?name=`) |
+| POST | `/api/v1/pools/{pool}/scrub` | Start `zpool scrub <pool>` (pool name validated; no other arguments) |
 | GET | `/api/v1/zfs/send/{dataset}?to=&from=&raw=&estimate=` | Stream a `zfs send` (or report its size with `estimate=true`) |
 | POST | `/api/v1/zfs/receive/{dataset}?force=` | Stream a restore into `zfs receive` |
 | GET | `/api/v1/zfs/snapshots/{dataset}` | Snapshots with their GUIDs (how an incremental base is found) |
@@ -427,6 +430,7 @@ rule, client configuration).
 | `DDNS_ENABLED` | `true` | Wire the DDNS reconcile loop |
 | `DDNS_CONFIG` | `/var/lib/naslos/ddns.json` | Dynamic-DNS entry store |
 | `NETWORK_STATE` | `/var/lib/naslos/network.json` | In-flight host-network change record and its previous-config snapshot (`FR-NET`) |
+| `STORAGE_SCHEDULES` | `/var/lib/naslos/storage-schedules.json` | Snapshot and scrub schedules plus their last/next-run state (`FR-STO-10/11`) |
 | `DDNS_PROVIDERS_DIR` | — | Override directory for provider `*.yaml` files |
 | `DDNS_IP_SOURCE` / `DDNS_IPV6_SOURCE` | `https://api.ipify.org` / `https://api6.ipify.org` | Public-IP detection URLs |
 | `DDNS_IP_SOURCES` / `DDNS_IPV6_SOURCES` | — | Comma-separated source lists (HTTP URLs or `dns:opendns`/`dns:google`) |
