@@ -131,6 +131,13 @@ a **v0.4.3 release** to ship all of it.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.4.4` (2026-11-21) — Apps speed and catalog views: the page opens on
+    Installed, paints the last in-session list while revalidating, and
+    `GET /api/apps` resolves release status concurrently with one
+    status-only Helm read per app (8 at a time) instead of a serial
+    two-call loop. The catalog adds grid, list, and compact layouts with
+    the choice remembered in local storage, and the install form loads its
+    domain data in the initial parallel request batch. PR #185.
   - `0.3.23` (2026-11-14) — per-app custom environment variables
     (`capabilities: [env]`, `naslos-env-<release>` Secret, checksum-driven
     rollout) and opt-in automatic app CNAMEs per domain (OVH ZoneDNS /
