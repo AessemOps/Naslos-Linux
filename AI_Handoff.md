@@ -142,9 +142,13 @@ retrying or using the browser path worked around it. Worth watching.
   (the release guard now covers `values-vm.yaml` tags and facts). The
   private registry `192.168.1.2:30095` is retired — do not build/push
   local images.
-- **Latest release:** `v0.5.1` (2026-11-21) and installer `naslos-v0.5.1`
-  are published; the pack `naslos-install-pack-0.5.1.tar.gz` is attached.
-  It fixes the web upgrader so a node that already runs the newest release
+- **Latest release:** `v0.5.2` (2026-11-21) and installer `naslos-v0.5.2`
+  are published; the pack `naslos-install-pack-0.5.2.tar.gz` is attached.
+  It makes VM networking **NAT-only**: the macvtap LAN-attachment draft is
+  removed (spec FR-VMT-04 keeps the Talos host-bridge path `[OPEN]`), and it
+  resolves installed app status per namespace instead of a serial scan
+  (#205, #206). `v0.5.1` (2026-11-21) fixed the web upgrader so a node that
+  already runs the newest release
   can still complete the pending Talos/Kubernetes steps: the update check
   now offers the installed release while its system pins lag, and the UI
   labels that as a system upgrade. It also bumps the node overlay's
@@ -184,6 +188,11 @@ retrying or using the browser path worked around it. Worth watching.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.5.2` (2026-11-21) — VM networking is NAT-only: the `macvtap` LAN mode,
+  `nic` spec field and vmd netdev/tap hand-off are removed, and the wizard
+  always renders port forwards. A Talos `BridgeConfig` host bridge remains the
+  `[OPEN]` path for VMs that need a LAN address. Also speeds up the Apps page
+  by resolving installed status per namespace (#205).
   - `0.5.1` (2026-11-21) — web-upgrader fix: the update check now offers the
     installed release while its Talos/Kubernetes pins are still pending, so a
     node that finished the Naslos step (0.5.0) can complete the pinned
