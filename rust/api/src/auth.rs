@@ -59,29 +59,7 @@ pub async fn require_auth(
     mut req: Request,
     next: Next,
 ) -> Response {
-    // An unconfigured secret must never authorize anything.
-    if state.proxy_secret.is_empty() {
-        return unauthorized();
-    }
-
-    // Only trust auth headers from Traefik's network...
-    if !is_trusted(&state, &req) {
-        return unauthorized();
-    }
-
-    // ...and only when the unforgeable proxy secret proves the request came
-    // through the proxy.
-    let provided = req
-        .headers()
-        .get(PROXY_SECRET_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if provided
-        .as_bytes()
-        .ct_eq(state.proxy_secret.as_bytes())
-        .unwrap_u8()
-        != 1
-    {
+    if !proxy_checks_pass(&state, &req) {
         return unauthorized();
     }
 
@@ -134,6 +112,35 @@ pub async fn require_auth(
     req.extensions_mut().insert(user);
 
     next.run(req).await
+}
+
+/// The SEC-10 trust checks, shared by `/api` (`require_auth`) and the `/mcp`
+/// bearer guard: the proxy secret must be configured, the peer address must
+/// be inside the trusted Traefik CIDR, and the request must carry the exact
+/// secret. `/mcp` bypasses Authelia but never these checks.
+pub(crate) fn proxy_checks_pass(state: &AppState, req: &Request) -> bool {
+    // An unconfigured secret must never authorize anything.
+    if state.proxy_secret.is_empty() {
+        return false;
+    }
+
+    // Only trust auth headers from Traefik's network...
+    if !is_trusted(state, req) {
+        return false;
+    }
+
+    // ...and only when the unforgeable proxy secret proves the request came
+    // through the proxy.
+    let provided = req
+        .headers()
+        .get(PROXY_SECRET_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    provided
+        .as_bytes()
+        .ct_eq(state.proxy_secret.as_bytes())
+        .unwrap_u8()
+        == 1
 }
 
 /// Middleware enforcing admin group membership. Runs after `require_auth`.

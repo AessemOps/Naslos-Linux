@@ -129,10 +129,11 @@ see the [document index](README.md).
   `:8080` (`ui/vite.config.ts`). In the cluster it is a plain Deployment whose
   work is done by Traefik + Authelia in front.
 - **naslos-api** — stateless Deployment; holds all "brain" logic, the auth
-  middleware, and serves UI static files as fallback. Talks to LDAP, Talos,
-  Kubernetes, Helm (in-process) and the agent. It mounts hostPath volumes for
-  the shares view and the buddy receive dataset, which is why its namespace
-  stays `privileged`.
+  middleware, and (since 0.4.4) the MCP endpoint at `/mcp` — a bearer-token
+  guarded Streamable HTTP server in the same process, no new image. Talks to
+  LDAP, Talos, Kubernetes, the bundled `helm` CLI and the agent. It mounts
+  hostPath volumes for the shares view and the buddy receive dataset, which is
+  why its namespace stays `privileged`.
 - **naslos-agent** — a **DaemonSet** (one pod per node) in `naslos-privileged`
   with `hostNetwork: true` and a `privileged` security context (no `hostPID`).
   It bind-mounts the host root at `/host` and runs every ZFS command through
@@ -186,6 +187,8 @@ see the [document index](README.md).
 | Package | Owning directory | Responsibility |
 | --- | --- | --- |
 | `auth` | `rust/api/src/auth.rs` | Middleware: accepts `Remote-User/-Groups/-Email/-Name` only from `TRAEFIK_CIDR` **and** with the `X-Naslos-Proxy-Secret` injected by Traefik; `RequireAdmin` checks `naslos_admins` |
+| `mcp` | `rust/api/src/mcp/` | The `/mcp` endpoint: token store (SHA-256 hashes), bearer guard with failure backoff, and a declarative tool registry dispatched through the internal router (`server/mod.rs::internal_router`) with a synthetic identity |
+| `server` | `rust/api/src/server/` | Route composition: `owner_routes()`/`user_routes()` are shared by the public `build_router` (auth layers) and the MCP internal router |
 | `talos` | `rust/api/src/talos.rs` | Talos API adapter over the bundled `talosctl` CLI: metrics, disk discovery, `VolumeAdvisor`, `UserVolumeConfig` documents |
 | `catalog` | `rust/api/src/catalog.rs` | Built-in app store + JSON Schema per app; loads external JSON catalog overrides |
 | `helm` | `rust/api/src/helm.rs` | Helm CLI adapter (bundled `helm`): install/upgrade/uninstall/list/get/rollback, chart repo cache |
@@ -209,7 +212,7 @@ see the [document index](README.md).
                   │           │ trust header boundary:
                   │           │ Remote-* headers + X-Naslos-
                   │           │ Proxy-Secret, and only from
-                  │           │ TRAEFIK_CIDR (default 10/8)
+                  │           │ TRAEFIK_CIDR (default 10.244.0.0/16)
                   ▼
             ┌──────────────┐    ┌─────────────────────────────┐
             │  naslos-ui  │    │   naslos-api :8080          │

@@ -113,6 +113,11 @@ both guards failed, recover the saved configuration instead of reinstalling:
    ```
    If the API pod cannot start, mount the PVC in a debug pod and read the same
    file.
+1a. **MCP state** lives beside it: `/var/lib/naslos/mcp.json` on the same PVC
+   (`MCP_CONFIG`) holds the enabled flag and the token hashes. The same
+   debug-pod read works when the API is down, and an operator-side
+   `"enabled": false` edit is the emergency kill switch for the MCP endpoint
+   when the UI is unreachable.
 2. **Apply the snapshot from a workstation** that has the admin talosconfig:
    save the `previousConfig` string as `previous.yaml`, then
    ```bash

@@ -1,9 +1,9 @@
 # App Catalog & Apps
 
-Apps are discovered from **git-based chart repositories**. The API clones each
-repository with a pure-Go git client (`go-git`) into a cache on the state volume
-and installs charts from the **local clone path** — the distroless image has no
-`git` or `helm` binary.
+Apps are discovered from **git-based chart repositories**. The API shells out
+to the pinned `git` bundled in the image (see `rust/api/Dockerfile`) to clone
+each repository into a cache on the state volume, and installs charts with the
+**bundled `helm` binary** (Helm SDK pinned in the same image).
 
 ## Repository contract
 

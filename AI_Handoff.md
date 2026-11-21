@@ -76,7 +76,45 @@ upstream image release detection for installed apps (FR-APP-27: registry
 tag→digest drift, `new image` badge, forced re-pull on update). The branch needs
 a **v0.4.3 release** to ship all of it.
 
-## Production instance (2026-11-20)
+## Shipped — MCP server (drilled on the node; PR #187, `feature/mcp-server`)
+
+The MCP endpoint (spec `FR-MCP-01…07`, `SEC-17`; guide `docs/mcp.md`) is
+implemented and **drilled end-to-end on the node** (2026-11-21): a stateless
+Streamable HTTP server at `/mcp` **inside the `naslos-api` pod** — no new
+image, Service or NetworkPolicy. Off by default (404 while disabled);
+Traefik `Host && PathPrefix(/mcp)` without forwardAuth + the Authelia bypass
+(placed before the `naslos_admins` two_factor rule); the chart-level
+`mcp.available` kill switch removes both. Bearer tokens (`nmcp_…`,
+SHA-256-hashed, constant-time compare, one-time plaintext reveal, optional
+expiry, revocation) carry scopes `read < write < full`; `full` = admin
+without 2FA. ~128 tools (declarative registry, one file per domain in
+`rust/api/src/mcp/tools/`) dispatch through `internal_router` — the real
+owner/user handlers with a synthetic `mcp:<token>` identity; the internal
+router is never listener-mounted (regression tests sweep every route's auth
+and a forged identity cannot bypass the layers). Destructive tools require
+`confirm == the resolved target` before dispatch. Every call is audited
+(`mcp_tool_call` line + the Settings recent-calls feed; arguments never
+logged). `build_router` now composes `owner_routes()`/`user_routes()`.
+Live drill: guard chain (401/Bearer challenge, foreign Origin 403, disabled
+404, 10-fail backoff), initialize (serverInfo `naslos 0.4.4` from the
+release facts), read-token `tools/list` (62 tools, all read-only) and
+`tools/call` (dashboard/pool live data, `pod_logs` bounded snapshot),
+scope and confirm refusals, token create/reveal-once/revoke through the UI
+(the new Settings → MCP page, `bot` icon), `mcp.json` persistence across
+restarts (lastUsed debounced flush survived the deploys). Node left with
+MCP **disabled** and no drill tokens; the Playwright `mcp.spec.ts`
+cleanes up after itself. Suite after the drill: **78 passed, 5 skipped,
+0 failed** — includes the a11y spec, which surfaced a pre-existing master
+defect now fixed in this branch: the installed-apps update badge's
+aria-label did not contain its visible text (`label-content-name-mismatch`
+on /apps, first visible once the post-0.4.3 UI reached the node).
+Observed while drilling (not caused by the deploy, nothing touches 6443):
+the **workstation→apiserver LAN path flaked** with intermittent
+"Couldn't get current server API group list" / raw `/apis` 404s while
+in-cluster access stayed healthy and Talos services reported 337h uptime;
+retrying or using the browser path worked around it. Worth watching.
+
+## Production instance (2026-11-21)
 
 - **Hardware:** the production NAS is the bare-metal node `talos-zgr-9yg` at
   `192.168.1.38` (Talos v1.14.5, Kubernetes v1.37.0, control-plane Ready). The
@@ -84,18 +122,24 @@ a **v0.4.3 release** to ship all of it.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.4.2`**, revision 50
-  (2026-11-20), deployed from the drill branch with `make install-vm`.
-  Images digest-pinned (public GHCR): agent `4c1b2185…`, UI `1afaf755…`,
+- **Deployed release:** Helm `naslos` chart **`naslos-0.4.4`**, revision 55
+  (2026-11-21), deployed from `feature/mcp-server` (PR #187) with
+  `make install-vm`; the node now runs everything through the v0.4.4
+  release. Images digest-pinned (public GHCR): agent `4c1b2185…`,
   OpenLDAP `fdac7fee…`, Samba `7284669e…`, NFS `110f6a13…`, terminal
-  `3dfbea9f…` — all from the v0.4.2 release. **Two drill builds carry the
-  unreleased fixes until v0.4.3:** API `sha-0701822…` (digest
-  `9e6fff7e…` — recursive VM delete, buddy loopback + replay retry) and vmd
-  `sha-4b40034…` (digest `d1d907c0…` — detached reconcile). `virt.enabled:
-  true`. `/api/system/version` reports the `release.*` facts from
-  `values-vm.yaml`: Naslos/chart 0.4.2, profile `installer` (the
-  web-upgrader facts), Talos v1.14.5 and k8s v1.37.0 (a node without them
-  falls back to `.Chart.AppVersion` and reports `make-install`). The web
+  `3dfbea9f…` — all from the v0.4.2/v0.4.4 release train. **Two drill
+  builds carry the MCP work until the next release tag:** API
+  `sha-9fe8f5c…` (digest `3b7ee9fa…` — the MCP server + the serverInfo
+  release-version fix) and UI `sha-dbdbd48…` (digest `c4ec9638…` — the
+  Settings → MCP page + the update-badge a11y fix), both from release
+  dry runs with `publish=false`. The old drill API (`sha-0701822…`) and
+  vmd (`sha-4b40034…`) superseded: their fixes shipped in v0.4.3/v0.4.4
+  and the current vmd pin remains `sha-4b40034` (identical code).
+  `virt.enabled: true`. `/api/system/version` reports the `release.*`
+  facts from `values-vm.yaml`: Naslos/chart **0.4.4**, profile
+  `installer` (the web-upgrader facts), Talos v1.14.5 and k8s v1.37.0 (a
+  node without them falls back to `.Chart.AppVersion` and reports
+  `make-install`). The web
   upgrader is enabled: SA `naslos-upgrader` + cluster-admin binding, the
   `naslos-api-system` Role/RoleBinding, and the upgrader admission policy
   are present, and a GitHub check returns `enabled:true, current:0.4.2, no
@@ -108,8 +152,9 @@ a **v0.4.3 release** to ship all of it.
   tab and paints the last in-session list while revalidating, `GET /api/apps`
   resolves release status concurrently with one status-only Helm read per app
   instead of a serial two-call loop, and the catalog offers grid, list and
-  compact layouts. The node still runs the v0.4.2 release until the next
-  `make install-vm`. Before that, `v0.4.3` (2026-11-20, PR #184) shipped
+  compact layouts. The node now runs the v0.4.4 chart with the MCP drill
+  builds (see "Deployed release" above) instead of the old v0.4.2
+  release. Before that, `v0.4.3` (2026-11-20, PR #184) shipped
   upstream image-release detection for catalog apps plus the platform fixes
   merged since v0.4.2 (PR #183); `v0.4.2` (2026-11-20, PR #182: the vmd
   rustls provider fix, API uninstall tolerance, auth.setup TOTP window

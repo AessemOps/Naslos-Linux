@@ -202,6 +202,19 @@ data:
           resources:
             - "^/api/buddy/v1/"
         {{- end }}
+        {{- if .Values.mcp.available }}
+        # The MCP endpoint authenticates with the operator's bearer tokens
+        # (a programmatic client cannot complete an interactive 2FA login),
+        # so it bypasses the login flow. NOT anonymous: the API's /mcp guard
+        # still requires the proxy secret, the trusted CIDR and a valid
+        # scoped token (SEC-10 has no opt-out). Must stay above the
+        # group:naslos_admins two_factor rule, which would otherwise shadow
+        # it. Only present when the chart declares the endpoint available.
+        - domain: {{ .Values.domain | quote }}
+          policy: bypass
+          resources:
+            - "^/mcp([/?].*)?$"
+        {{- end }}
         # The portal (page, assets and its own /authelia/api/* XHR calls) is
         # routed to Authelia by its own IngressRoute with no forwardAuth, so it
         # never reaches these rules. The bypass is defensive only.
