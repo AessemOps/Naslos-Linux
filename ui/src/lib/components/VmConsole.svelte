@@ -2,7 +2,7 @@
   import { onDestroy } from 'svelte';
   // The official noVNC distribution (MPL-2.0, see CREDITS.md): it speaks RFB
   // over the websocket the API bridges to QEMU's password-protected VNC.
-  import RFB from '@novnc/novnc/lib/rfb.js';
+  import RFB from '@novnc/novnc';
 
   export let vm: {
     name: string;
