@@ -738,7 +738,7 @@ check_system_upgrade_render() {
     --set release.profile=installer \
     --set release.naslosVersion=0.3.0 \
     --set release.chartVersion=0.3.0 \
-    --set release.talosVersion=v1.14.5 \
+    --set release.talosVersion=v1.14.6 \
     --set release.schematicId=abc \
     --set release.kubernetesVersion=v1.37.0 >"$f" 2>/dev/null; then
     rm -f "$f"
