@@ -122,44 +122,39 @@ retrying or using the browser path worked around it. Worth watching.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.4.4`**, revision 55
-  (2026-11-21), deployed from `feature/mcp-server` (PR #187) with
-  `make install-vm`; the node now runs everything through the v0.4.4
-  release. Images digest-pinned (public GHCR): agent `4c1b2185…`,
-  OpenLDAP `fdac7fee…`, Samba `7284669e…`, NFS `110f6a13…`, terminal
-  `3dfbea9f…` — all from the v0.4.2/v0.4.4 release train. **Two drill
-  builds carry the MCP work until the node is redeployed on v0.5.0:** API
-  `sha-9fe8f5c…` (digest `3b7ee9fa…` — the MCP server + the serverInfo
-  release-version fix) and UI `sha-dbdbd48…` (digest `c4ec9638…` — the
-  Settings → MCP page + the update-badge a11y fix), both from release
-  dry runs with `publish=false`. The old drill API (`sha-0701822…`) and
-  vmd (`sha-4b40034…`) superseded: their fixes shipped in v0.4.3/v0.4.4
-  and the current vmd pin remains `sha-4b40034` (identical code).
+- **Deployed release:** Helm `naslos` chart **`naslos-0.5.0`**, revision 56
+  (2026-11-21), deployed with `make install-vm`; the node runs the v0.5.0
+  chart and release images, digest-pinned (public GHCR): API `11a5e3bb…`,
+  UI `36e7d304…`, agent `d55da198…`, OpenLDAP `b87e40ff…`, Samba
+  `b0ed23c1…`, NFS `eaf6455a…`, terminal `62924c71…`, vmd `71ddcd08…`.
   `virt.enabled: true`. `/api/system/version` reports the `release.*`
-  facts from `values-vm.yaml`: Naslos/chart **0.4.4**, profile
-  `installer` (the web-upgrader facts), Talos v1.14.5 and k8s v1.37.0 (a
-  node without them falls back to `.Chart.AppVersion` and reports
-  `make-install`). The web
-  upgrader is enabled: SA `naslos-upgrader` + cluster-admin binding, the
-  `naslos-api-system` Role/RoleBinding, and the upgrader admission policy
-  are present, and a GitHub check returns `enabled:true, current:0.4.2, no
-  newer release`; the operations endpoint correctly answers 412 until a
-  check offers a release. The private registry `192.168.1.2:30095` is
-  retired — do not build/push local images.
-- **Latest release:** `v0.5.0` (2026-11-21) and installer `naslos-v0.5.0`
-  are published; the pack `naslos-install-pack-0.5.0.tar.gz` is attached.
-  It ships the MCP server (PR #187), targets Talos **v1.14.6** for fresh
-  installs and web upgrades (the running node is still v1.14.5), and lands
-  the Vite 8 / SvelteKit 3 / TypeScript 6 UI stack, the Tailwind 4 desktop
-  wizard and the Rust `sha2` 0.11 / `getrandom` 0.4 / `ed25519-dalek` 3
-  majors. Before that, `v0.4.4` (2026-11-21) shipped the Apps speed/catalog
-  work (PR #185): Installed is the default
+  facts from `values-vm.yaml`: Naslos/chart **0.5.0**, profile
+  `installer` (the web-upgrader facts), release Talos pin **v1.14.6** and
+  k8s v1.37.0, while the running Talos is still **v1.14.5** (the node has
+  not been upgraded yet). The web upgrader is enabled (SA
+  `naslos-upgrader` + cluster-admin binding, the `naslos-api-system`
+  Role/RoleBinding, and the upgrader admission policy). **Defect found
+  live:** the update check only looked at releases strictly newer than the
+  installed one, so after finishing the Naslos 0.5.0 step it answered
+  `no newer release` and the UI could not offer the pinned Talos v1.14.6
+  step; fixed in `0.5.1` (the installed release is now offered while
+  Talos/Kubernetes lag its pins). The private registry
+  `192.168.1.2:30095` is retired — do not build/push local images.
+- **Latest release:** `v0.5.1` (2026-11-21) and installer `naslos-v0.5.1`
+  are published; the pack `naslos-install-pack-0.5.1.tar.gz` is attached.
+  It fixes the web upgrader so a node that already runs the newest release
+  can still complete the pending Talos/Kubernetes steps: the update check
+  now offers the installed release while its system pins lag, and the UI
+  labels that as a system upgrade. `v0.5.0` (2026-11-21) shipped the MCP
+  server (PR #187), targeted Talos **v1.14.6** for fresh installs and web
+  upgrades, and landed the Vite 8 / SvelteKit 3 / TypeScript 6 UI stack,
+  the Tailwind 4 desktop wizard and the Rust `sha2` 0.11 / `getrandom` 0.4
+  / `ed25519-dalek` 3 majors. Before that, `v0.4.4` (2026-11-21) shipped
+  the Apps speed/catalog work (PR #185): Installed is the default
   tab and paints the last in-session list while revalidating, `GET /api/apps`
   resolves release status concurrently with one status-only Helm read per app
   instead of a serial two-call loop, and the catalog offers grid, list and
-  compact layouts. The node runs the v0.4.4 chart with the MCP drill
-  builds (see "Deployed release" above) instead of the old v0.4.2
-  release. Before that, `v0.4.3` (2026-11-20, PR #184) shipped
+  compact layouts. Before that, `v0.4.3` (2026-11-20, PR #184) shipped
   upstream image-release detection for catalog apps plus the platform fixes
   merged since v0.4.2 (PR #183); `v0.4.2` (2026-11-20, PR #182: the vmd
   rustls provider fix, API uninstall tolerance, auth.setup TOTP window
@@ -184,6 +179,11 @@ retrying or using the browser path worked around it. Worth watching.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.5.1` (2026-11-21) — web-upgrader fix: the update check now offers the
+    installed release while its Talos/Kubernetes pins are still pending, so a
+    node that finished the Naslos step (0.5.0) can complete the pinned
+    Talos v1.14.6 upgrade from the UI instead of reading "no newer release".
+    The UI labels this case as a system upgrade, not a new release.
   - `0.5.0` (2026-11-21) — MCP server (spec FR-MCP/SEC-17) inside the API pod:
     a stateless Streamable HTTP endpoint at `/mcp` with scoped bearer tokens
     and a Settings → MCP page (PR #187). The release also moves the install
