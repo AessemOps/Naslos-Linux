@@ -7,6 +7,10 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version)
   },
+  build: {
+    // noVNC 1.7 uses top-level await, so the default es2020 target refuses it.
+    target: 'es2022'
+  },
   server: {
     proxy: {
       '/api': {
