@@ -122,6 +122,11 @@ pub fn validate_dataset_name(name: &str) -> ZfsResult<()> {
 pub fn validate_dataset_options(
     options: &std::collections::HashMap<String, String>,
 ) -> ZfsResult<()> {
+    // Encryption shape is validated (and, while custody/unlock are [OPEN],
+    // refused) before any option can reach `zfs create -o`. Key material is
+    // never an option: a passphrase or raw key in `options` falls through to
+    // the allow-list below and is rejected.
+    super::encryption::validate_create_options(options)?;
     for (key, raw) in options {
         let value = raw.trim();
         if !is_dataset_option_key(key) {
@@ -543,5 +548,43 @@ mod tests {
             assert_eq!(actual, expected, "for {kind} {name}");
         }
         assert!(validate_dataset_name(&"a".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn encryption_options_are_refused_until_key_custody_ships() {
+        let valid = std::collections::HashMap::from([
+            ("encryption".to_string(), "aes-256-gcm".to_string()),
+            ("keyformat".to_string(), "raw".to_string()),
+        ]);
+        let err = validate_dataset_options(&valid).unwrap_err();
+        assert!(err.is_validation());
+        assert!(err.to_string().contains("not implemented yet"), "{err}");
+
+        for (key, value) in [
+            ("encryption", "rot13"),
+            ("keyformat", "raw"),
+            ("keylocation", "prompt"),
+        ] {
+            let options = std::collections::HashMap::from([(key.to_string(), value.to_string())]);
+            let err = validate_dataset_options(&options).unwrap_err();
+            assert!(err.is_validation(), "{key}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn key_material_is_never_a_dataset_option() {
+        for key in ["key", "passphrase", "encryption_key"] {
+            let options =
+                std::collections::HashMap::from([(key.to_string(), "secret".to_string())]);
+            let err = validate_dataset_options(&options).unwrap_err();
+            assert!(
+                err.to_string().contains("unsupported dataset option"),
+                "{key}: {err}"
+            );
+            assert!(
+                !err.to_string().contains("secret"),
+                "the error echoed the value: {err}"
+            );
+        }
     }
 }
