@@ -228,7 +228,7 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-DHK-07** — Disk health MUST be read-only: no SMART self-tests, no
   enabling SMART, no device writes, and no user-controlled command arguments.
 
-### 3.1.2 Block storage — NVMe-oF TCP (`FR-NVME`)
+### 3.1.3 Block storage — NVMe-oF TCP (`FR-NVME`)
 
 **Status: design spike only (2026-11-21).** No target, API route, chart
 object, or test exists in this tree. These requirements reserve stable IDs and
