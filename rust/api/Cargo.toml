@@ -21,7 +21,7 @@ path = "src/lib.rs"
 [dependencies]
 aes-gcm = "0.10"
 base64 = "0.23"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek = { version = "3", features = ["rand_core"] }
 flate2 = "1"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
