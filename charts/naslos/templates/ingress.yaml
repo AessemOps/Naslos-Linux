@@ -10,10 +10,11 @@ spec:
   entryPoints:
     - websecure
   routes:
-    # The API and the Authelia portal have their own IngressRoutes
-    # (ingress-api.yaml); excluding those prefixes here means this route only
-    # ever serves the SPA, without relying on Traefik's rule-length priority.
-    - match: Host(`{{ .Values.domain }}`) && !PathPrefix(`/api`) && !PathPrefix(`/authelia`) && !PathPrefix(`/traefik`)
+    # The API, the Authelia portal and the MCP endpoint have their own
+    # IngressRoutes (ingress-api.yaml); excluding those prefixes here means
+    # this route only ever serves the SPA, without relying on Traefik's
+    # rule-length priority.
+    - match: Host(`{{ .Values.domain }}`) && !PathPrefix(`/api`) && !PathPrefix(`/authelia`) && !PathPrefix(`/traefik`) && !PathPrefix(`/mcp`)
       kind: Rule
       middlewares:
         - name: forwardauth-authelia

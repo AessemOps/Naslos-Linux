@@ -18,6 +18,7 @@ pub mod ddns;
 pub mod disks;
 pub mod domains;
 pub mod handlers;
+pub mod mcp;
 pub mod network;
 pub mod notifications;
 pub mod pods;
@@ -41,53 +42,20 @@ use std::sync::Arc;
 /// The status a not-yet-ported owner route returns.
 pub const NOT_PORTED_STATUS: u16 = 501;
 
-pub fn build_router(state: Arc<AppState>) -> Router {
-    // Public: health probes.
-    let mut public: Router<Arc<AppState>> = Router::new()
-        .route("/api/health", get(handlers::health))
-        .route("/api/ready", get(handlers::ready));
-
-    // Buddy peers authenticate with their own Ed25519 key, not the proxy.
-    //
-    // Mount the receiver routes only when a receiver exists. The `BuddyState`
-    // extractor requires one, and the release profile is `panic = "abort"`, so
-    // mounting them unconditionally turned any request into an API-process
-    // abort on a Buddy-disabled install (AUD-2611-T6-1). A disabled install
-    // answers 503 instead.
-    if state.buddy.is_some() {
-        public = public
-            .route("/api/buddy/v1/status", get(buddy::status))
-            .route("/api/buddy/v1/enroll", post(buddy::enroll))
-            .route("/api/buddy/v1/backups", get(buddy::backups))
-            .route(
-                "/api/buddy/v1/chunks/{*source}",
-                get(buddy::chunks).put(buddy::chunks),
-            )
-            .route("/api/buddy/v1/chains/{*source}", get(buddy::chains))
-            .route("/api/buddy/v1/sequence/{*source}", get(buddy::sequence))
-            .route(
-                "/api/buddy/v1/manifest/{*source}",
-                get(buddy::manifest).put(buddy::manifest),
-            )
-            .route("/api/buddy/v1/prune/{*source}", post(buddy::prune));
-    } else {
-        public = public
-            .route("/api/buddy/v1", any(buddy_disabled))
-            .route("/api/buddy/v1/{*rest}", any(buddy_disabled));
-    }
-
-    // Auth-but-not-admin (any authenticated user).
-    let user: Router<Arc<AppState>> = Router::new()
+/// Auth-but-not-admin routes (any authenticated user). No auth layers: the
+/// public router applies them, the MCP internal router injects a synthetic
+/// identity instead.
+fn user_routes() -> Router<Arc<AppState>> {
+    Router::new()
         .route("/api/auth/me", get(handlers::auth_me))
         .route("/api/dashboard", get(handlers::dashboard))
         .route("/api/metrics", get(handlers::metrics))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_auth,
-        ));
+}
 
-    // Admin-only owner routes. Handlers not in S1 answer 501.
-    let owner: Router<Arc<AppState>> = Router::new()
+/// Admin-only owner routes. Handlers not in S1 answer 501. No auth layers for
+/// the same reason as `user_routes`.
+fn owner_routes() -> Router<Arc<AppState>> {
+    Router::new()
         .route("/api/catalog", get(catalog::catalog_get))
         .route("/api/catalog/{name}", get(catalog::catalog_app_get))
         .route("/api/apps", get(apps::apps_get).post(apps::apps_post))
@@ -313,18 +281,104 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .put(users::group_detail_put)
                 .delete(users::group_detail_delete),
         )
+        // The MCP settings surface (FR-MCP). Mounted on the owner router
+        // like every other admin route; the MCP endpoint itself is a
+        // separate public route at `/mcp` guarded by bearer tokens.
+        .route("/api/mcp", get(mcp::mcp_get).put(mcp::mcp_put))
+        .route("/api/mcp/tokens", post(mcp::tokens_post))
+        .route(
+            "/api/mcp/tokens/{id}",
+            axum::routing::delete(mcp::token_delete),
+        )
         // Unknown /api paths stay behind auth so their existence is not
         // leaked; the public fallback below only serves non-API paths.
         .route("/api/{*rest}", any(not_found))
+}
+
+/// The full authenticated route surface, built for `build_router` (auth
+/// layers applied) and `internal_router` (synthetic MCP identity) alike.
+pub fn build_router(state: Arc<AppState>) -> Router {
+    // Public: health probes.
+    let mut public: Router<Arc<AppState>> = Router::new()
+        .route("/api/health", get(handlers::health))
+        .route("/api/ready", get(handlers::ready));
+
+    // Buddy peers authenticate with their own Ed25519 key, not the proxy.
+    //
+    // Mount the receiver routes only when a receiver exists. The `BuddyState`
+    // extractor requires one, and the release profile is `panic = "abort"`, so
+    // mounting them unconditionally turned any request into an API-process
+    // abort on a Buddy-disabled install (AUD-2611-T6-1). A disabled install
+    // answers 503 instead.
+    if state.buddy.is_some() {
+        public = public
+            .route("/api/buddy/v1/status", get(buddy::status))
+            .route("/api/buddy/v1/enroll", post(buddy::enroll))
+            .route("/api/buddy/v1/backups", get(buddy::backups))
+            .route(
+                "/api/buddy/v1/chunks/{*source}",
+                get(buddy::chunks).put(buddy::chunks),
+            )
+            .route("/api/buddy/v1/chains/{*source}", get(buddy::chains))
+            .route("/api/buddy/v1/sequence/{*source}", get(buddy::sequence))
+            .route(
+                "/api/buddy/v1/manifest/{*source}",
+                get(buddy::manifest).put(buddy::manifest),
+            )
+            .route("/api/buddy/v1/prune/{*source}", post(buddy::prune));
+    } else {
+        public = public
+            .route("/api/buddy/v1", any(buddy_disabled))
+            .route("/api/buddy/v1/{*rest}", any(buddy_disabled));
+    }
+
+    // Auth-but-not-admin (any authenticated user).
+    let user = user_routes().layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth::require_auth,
+    ));
+
+    // Admin-only owner routes. Handlers not in S1 answer 501.
+    let owner = owner_routes()
         .layer(middleware::from_fn(auth::require_admin))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
         ));
 
+    // The MCP endpoint (FR-MCP). Public reachability, but the guard rejects
+    // everything without a valid bearer token, so it is never actually
+    // anonymous: disabled -> 404, no/invalid token -> 401, blocked -> 429.
+    // The proxy-secret/CIDR checks still apply (SEC-10 has no opt-out).
+    let mcp: Router<Arc<AppState>> = Router::new()
+        .route("/mcp", any(crate::mcp::service::entry))
+        .route("/mcp/", any(crate::mcp::service::entry))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::mcp::auth::guard,
+        ));
+
     public
         .merge(user)
         .merge(owner)
+        .merge(mcp)
+        .with_state(state)
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed)
+}
+
+/// The MCP tool dispatcher's view of the API: every authenticated route
+/// without the auth middlewares. It is NEVER mounted on the HTTP listener —
+/// only `build_router` is — and the dispatch inserts a synthetic
+/// `mcp:<token>` identity per call, so tools get validated, owner-gated
+/// handler behavior (validation, agent/vmd calls, error shapes) for free.
+///
+/// The security model rests on this function not being reachable from the
+/// network: `tests::forged_identity_cannot_bypass_the_public_auth_layers`
+/// proves client-injected identities cannot bypass `build_router`'s layers.
+pub fn internal_router(state: Arc<AppState>) -> Router {
+    owner_routes()
+        .merge(user_routes())
         .with_state(state)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
@@ -357,8 +411,412 @@ async fn method_not_allowed() -> Response {
 mod tests {
     use super::*;
     use axum::body::Body;
+    use axum::extract::ConnectInfo;
     use axum::http::Request;
+    use std::net::SocketAddr;
     use tower::ServiceExt;
+
+    /// Dummy values for the registry probe and the auth sweep: realistic
+    /// placeholders for `{param}` segments.
+    fn dummy_args() -> serde_json::Map<String, serde_json::Value> {
+        let mut map = serde_json::Map::new();
+        for key in ["name", "pool", "uid", "cn", "id", "snap"] {
+            map.insert(key.into(), serde_json::json!("mcp-probe"));
+        }
+        map.insert("service".into(), serde_json::json!("samba"));
+        map.insert("action".into(), serde_json::json!("enable"));
+        map
+    }
+
+    /// Resolve `{param}` and add the query args a tool declares.
+    fn probe_uri(path: &str, query: &[&str]) -> String {
+        let args = dummy_args();
+        let mut out = String::new();
+        let mut rest = path;
+        while let Some((head, tail)) = rest.split_once('{') {
+            let (param, after) = tail.split_once('}').unwrap();
+            let value = args
+                .get(param)
+                .and_then(serde_json::Value::as_str)
+                .filter(|v| !v.is_empty())
+                .unwrap_or("mcp-probe");
+            out.push_str(head);
+            out.push_str(value);
+            rest = after;
+        }
+        out.push_str(rest);
+        if !query.is_empty() {
+            let pairs: Vec<String> = query
+                .iter()
+                .map(|key| {
+                    format!(
+                        "{key}={}",
+                        args.get(*key)
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("mcp-probe")
+                    )
+                })
+                .collect();
+            out.push('?');
+            out.push_str(&pairs.join("&"));
+        }
+        out
+    }
+
+    /// The owner/user route inventory: every MCP registry entry (resolved
+    /// with dummy values) plus the routes that are not tools (WS endpoints,
+    /// the settings API surface).
+    fn route_inventory() -> Vec<(axum::http::Method, String)> {
+        let mut out = Vec::new();
+        for tool in crate::mcp::tools::all_tools() {
+            if tool.special != crate::mcp::tools::Special::None {
+                continue; // no route to match (pod_logs)
+            }
+            out.push((tool.method.clone(), probe_uri(tool.path, tool.query)));
+        }
+        for (method, path) in [
+            (axum::http::Method::GET, "/api/ws/logs".to_string()),
+            (axum::http::Method::GET, "/api/ws/exec".to_string()),
+            (
+                axum::http::Method::GET,
+                "/api/ws/vm/mcp-probe/vnc".to_string(),
+            ),
+            (axum::http::Method::GET, "/api/mcp".to_string()),
+            (axum::http::Method::PUT, "/api/mcp".to_string()),
+            (axum::http::Method::POST, "/api/mcp/tokens".to_string()),
+            (
+                axum::http::Method::DELETE,
+                "/api/mcp/tokens/mcp-probe".to_string(),
+            ),
+        ] {
+            out.push((method, path));
+        }
+        out
+    }
+
+    fn signed(
+        secret: Option<&str>,
+        user: &str,
+        groups: &str,
+        method: axum::http::Method,
+        uri: &str,
+        with_identity: bool,
+    ) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 55555u16))));
+        if let Some(secret) = secret {
+            builder = builder.header(auth::PROXY_SECRET_HEADER, secret);
+        }
+        if !user.is_empty() {
+            builder = builder.header("Remote-User", user);
+        }
+        if !groups.is_empty() {
+            builder = builder.header("Remote-Groups", groups);
+        }
+        let mut request = builder.body(Body::empty()).unwrap();
+        if with_identity {
+            request.extensions_mut().insert(Arc::new(auth::UserInfo {
+                username: "forged-admin".into(),
+                groups: vec!["naslos_admins".into()],
+                email: String::new(),
+                display_name: String::new(),
+            }));
+        }
+        request
+    }
+
+    #[tokio::test]
+    async fn every_route_answers_401_without_the_proxy_secret() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state);
+        for (method, uri) in route_inventory() {
+            let response = app
+                .clone()
+                .oneshot(signed(None, "", "", method.clone(), &uri, false))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} must be 401 without the proxy secret"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_owner_route_is_403_for_non_admins() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state);
+        for (method, uri) in route_inventory() {
+            if uri.starts_with("/api/auth/")
+                || uri.starts_with("/api/dashboard")
+                || uri.starts_with("/api/metrics")
+            {
+                // User routes: authenticated, not admin-gated.
+                let response = app
+                    .clone()
+                    .oneshot(signed(
+                        Some("test-secret"),
+                        "viewer",
+                        "naslos_users",
+                        method.clone(),
+                        &uri,
+                        false,
+                    ))
+                    .await
+                    .unwrap();
+                assert_ne!(
+                    response.status(),
+                    StatusCode::FORBIDDEN,
+                    "{method} {uri} must not be admin-gated"
+                );
+                continue;
+            }
+            let response = app
+                .clone()
+                .oneshot(signed(
+                    Some("test-secret"),
+                    "viewer",
+                    "naslos_users",
+                    method.clone(),
+                    &uri,
+                    false,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{method} {uri} must be 403 for a non-admin"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn admin_requests_are_not_blocked_by_the_auth_layers() {
+        // Writes carry a non-JSON content type so the auth layers' JSON guard
+        // (which runs after the identity checks) rejects them with 415: the
+        // sweep proves the auth gates pass without executing any handler.
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state);
+        for (method, uri) in route_inventory() {
+            let mut request = signed(
+                Some("test-secret"),
+                "boss",
+                "naslos_admins",
+                method.clone(),
+                &uri,
+                false,
+            );
+            if matches!(method, axum::http::Method::POST | axum::http::Method::PUT) {
+                request.headers_mut().insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("text/plain"),
+                );
+                *request.body_mut() = Body::from("not json");
+            }
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_ne!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{} {uri} must not 401 for an admin",
+                method
+            );
+            assert_ne!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{} {uri} must not 403 for an admin",
+                method
+            );
+        }
+    }
+
+    /// The MCP security model: only `build_router` is ever mounted, and a
+    /// client can never inject request extensions over the wire. This test
+    /// forges an admin identity in the extensions the way the internal
+    /// dispatch does, then proves `build_router`'s layers ignore it: the
+    /// headers still decide.
+    #[tokio::test]
+    async fn forged_identity_cannot_bypass_the_public_auth_layers() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state);
+        for (method, uri) in route_inventory() {
+            // With a forged identity but no secret: still 401.
+            let response = app
+                .clone()
+                .oneshot(signed(None, "", "", method.clone(), &uri, true))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri}: a forged identity must not replace the proxy secret"
+            );
+            // With a forged identity AND the secret but no admin group:
+            // still 403 on owner routes.
+            if uri.starts_with("/api/auth/")
+                || uri.starts_with("/api/dashboard")
+                || uri.starts_with("/api/metrics")
+            {
+                continue;
+            }
+            let response = app
+                .clone()
+                .oneshot(signed(
+                    Some("test-secret"),
+                    "viewer",
+                    "naslos_users",
+                    method.clone(),
+                    &uri,
+                    true,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{method} {uri}: a forged identity must not satisfy require_admin"
+            );
+        }
+    }
+
+    /// The internal router serves the same routes without auth, is never
+    /// built by `build_router`, and keeps the public-only routes out.
+    #[tokio::test]
+    async fn internal_router_answers_with_a_synthetic_identity_and_hides_public_routes() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = internal_router(state.clone());
+
+        // Synthetic identity: answers without any proxy headers.
+        let request = Request::builder()
+            .uri("/api/dashboard")
+            .extension(Arc::new(auth::UserInfo {
+                username: "mcp:probe".into(),
+                groups: vec!["naslos_admins".into()],
+                email: String::new(),
+                display_name: String::new(),
+            }))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Public-only routes are absent from the internal router.
+        for uri in ["/api/health", "/api/ready"] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "{uri} must not exist on the internal router"
+            );
+        }
+    }
+
+    /// Every registry entry must match a real route. The `/api/{*rest}`
+    /// catch-all (any method) makes status-only probing useless: a wrong
+    /// path or method is indistinguishable from an unknown one by status.
+    /// The discriminant is the catch-all's exact body — no handler emits
+    /// it — so a probe that answers anything else proves the specific
+    /// (method, path) matched and reached a handler.
+    #[tokio::test]
+    async fn every_registry_tool_matches_a_real_route() {
+        const CATCHALL_BODY: &str = "{\"error\":\"not found\"}\n";
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = internal_router(state);
+
+        for tool in crate::mcp::tools::all_tools() {
+            if tool.special != crate::mcp::tools::Special::None {
+                continue; // handled inside the dispatcher, no route
+            }
+            if tool.name == "buddy_identity_create" {
+                // identity_post swallows an unreadable body (unwrap_or_default)
+                // and then writes a key file to the host; probing it would
+                // create /var/lib/naslos/buddy-identity.json. Its path is
+                // verified by the buddy_identity_get probe on the same
+                // pattern, and its method sits on that same route line.
+                continue;
+            }
+            let uri = probe_uri(tool.path, tool.query);
+
+            // Writes send an extractor-breaking body (wrong content type):
+            // the handler's own rejection proves the route matched. GET and
+            // DELETE probe empty; the handler answers against the inert
+            // for_test state.
+            let builder = Request::builder()
+                .method(tool.method.clone())
+                .uri(&uri)
+                .header(axum::http::header::CONTENT_TYPE, "text/plain");
+            let probe = if matches!(
+                tool.method,
+                axum::http::Method::POST | axum::http::Method::PUT
+            ) {
+                builder.body(Body::from("not json"))
+            } else {
+                builder.body(Body::empty())
+            }
+            .unwrap();
+            let response = app.clone().oneshot(probe).await.unwrap();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            let fell_through =
+                status == StatusCode::NOT_FOUND && body.as_ref() == CATCHALL_BODY.as_bytes();
+            assert!(
+                !fell_through,
+                "{} -> {} {}: only the /api catch-all answered, so the tool's \
+                 method+path matches no route",
+                tool.name, tool.method, uri
+            );
+        }
+    }
+
+    /// The destructive-tool confirm rule: the registry must never offer a
+    /// `full` tool without a confirm target, and every confirm target is an
+    /// argument the tool's schema actually declares.
+    #[test]
+    fn full_tools_always_declare_a_confirm_target() {
+        for tool in crate::mcp::tools::all_tools() {
+            let schema = (tool.schema)();
+            let props = schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            match tool.confirm {
+                crate::mcp::tools::Confirm::No => {
+                    if tool.level == crate::mcp::store::Scope::Full {
+                        panic!("{} is full but has no confirm target", tool.name);
+                    }
+                }
+                crate::mcp::tools::Confirm::Arg(param) => {
+                    assert!(
+                        props.contains_key(param),
+                        "{}: confirm target {param} is missing from the schema",
+                        tool.name
+                    );
+                    assert!(
+                        props.contains_key("confirm"),
+                        "{}: the schema does not declare the confirm argument",
+                        tool.name
+                    );
+                }
+                crate::mcp::tools::Confirm::Literal(_) => {
+                    assert!(
+                        props.contains_key("confirm"),
+                        "{}: the schema does not declare the confirm argument",
+                        tool.name
+                    );
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn buddy_routes_are_unavailable_when_the_receiver_is_disabled() {

@@ -25,6 +25,7 @@ pub mod identity;
 pub mod images;
 pub mod kube;
 pub mod logsafe;
+pub mod mcp;
 pub mod metrics;
 pub mod network;
 pub mod notifications;

@@ -45,6 +45,11 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   at a DDNS hostname (see [docs/app-catalog.md](docs/app-catalog.md) and
   [docs/dynamic-dns.md](docs/dynamic-dns.md)).
 - **Logs & terminal** — stream logs and open an interactive shell (`bash` by default; `sh`/`ash`/`zsh` where installed) in any pod from the UI
+- **MCP server** — let AI assistants manage the NAS through the Model Context
+  Protocol: a Streamable HTTP endpoint at `/mcp` inside the API, off by
+  default, with scoped bearer tokens (read / write / full), a `confirm` guard
+  on destructive tools, audited calls and a Settings page
+  (see [docs/mcp.md](docs/mcp.md))
 - **Virtual machines** — a first-party QEMU/KVM hypervisor on the node
   (`rust/vmd` supervisor): VM datasets under `<pool>/vms/<name>` with quota =
   declared disk, UEFI/BIOS firmware, NAT with editable port forwards plus
