@@ -72,8 +72,7 @@ fn new_identity_with_env(name: &str, env_kek: bool) -> Result<Identity, String> 
         String::new()
     } else {
         let mut kek = [0u8; 32];
-        getrandom::getrandom(&mut kek)
-            .map_err(|e| format!("generating key encryption key: {e}"))?;
+        getrandom::fill(&mut kek).map_err(|e| format!("generating key encryption key: {e}"))?;
         base64::engine::general_purpose::STANDARD.encode(kek)
     };
 

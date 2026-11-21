@@ -94,7 +94,7 @@ impl Entry {
 /// A random DNS-1123-safe entry id.
 pub fn new_id() -> String {
     let mut buf = [0u8; 8];
-    if getrandom::getrandom(&mut buf).is_err() {
+    if getrandom::fill(&mut buf).is_err() {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())

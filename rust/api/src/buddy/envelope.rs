@@ -79,7 +79,7 @@ pub struct Manifest {
 /// The random prefix that keeps a chain's nonces unique.
 pub fn new_stream_prefix() -> Result<Vec<u8>, String> {
     let mut prefix = [0u8; STREAM_PREFIX_LEN];
-    getrandom::getrandom(&mut prefix).map_err(|e| format!("generating stream prefix: {e}"))?;
+    getrandom::fill(&mut prefix).map_err(|e| format!("generating stream prefix: {e}"))?;
     Ok(prefix.to_vec())
 }
 
@@ -125,7 +125,7 @@ pub fn chunk_plain_len(sealed: &[u8]) -> Option<usize> {
 
 fn new_dek() -> Result<[u8; 32], String> {
     let mut dek = [0u8; 32];
-    getrandom::getrandom(&mut dek).map_err(|e| format!("generating data key: {e}"))?;
+    getrandom::fill(&mut dek).map_err(|e| format!("generating data key: {e}"))?;
     Ok(dek)
 }
 
@@ -243,7 +243,7 @@ pub fn open_chunk(
 pub fn wrap_dek(kek: &[u8], dek: &[u8], source: &str, chain: &str) -> Result<String, String> {
     let aead = aead_for(kek)?;
     let mut nonce = [0u8; 12];
-    getrandom::getrandom(&mut nonce).map_err(|e| format!("generating wrap nonce: {e}"))?;
+    getrandom::fill(&mut nonce).map_err(|e| format!("generating wrap nonce: {e}"))?;
     let aad = format!("{AEAD_LABEL}|dek|{source}|{chain}");
     let sealed = aead
         .encrypt(
