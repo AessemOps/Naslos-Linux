@@ -107,13 +107,18 @@ api:
   ldapCA:
     secretName: naslos-openldap-tls
     key: ca.crt
+  # The API shells out to the Helm and kubectl CLIs. A concurrent Apps read
+  # (one `helm list` per app namespace) needs CPU and memory headroom for those
+  # child processes: with 500m/256Mi the cgroup throttles and reclaims, and a
+  # 13-app Installed list took ~3s instead of ~0.2s. Keep the requests modest
+  # so the pod packs, but let it burst.
   resources:
     requests:
       cpu: 100m
       memory: 128Mi
     limits:
-      cpu: 500m
-      memory: 256Mi
+      cpu: "2"
+      memory: 512Mi
 
 # System upgrades (docs/installer-contract.md §7, spec FR-UPD).
 # The update check is a daily GitHub release lookup; `source` is a base URL so
