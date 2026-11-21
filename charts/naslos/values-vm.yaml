@@ -24,12 +24,12 @@
 api:
   image:
     repository: ghcr.io/aessemops/naslos-api
-    # Drill build (sha-0701822, release dry run publish=false) carrying the
-    # recursive VM-dataset destroy, the buddy self-send loopback and the
-    # replay-window retry until the next release tag; the digest is the pin
-    # that actually gets pulled (FR-INSTALL-13).
-    tag: "sha-0701822ffb37c63b9ef4e9fa4a69a5a2cf92c01d"
-    digest: "sha256:9e6fff7ead57d61149d89a4c902b09533a7244de65b3ac670580c54fa7d83559"
+    # Drill build (sha-a7d230c, release dry run publish=false) carrying the
+    # MCP server (FR-MCP) on top of everything in the v0.4.4 release, until
+    # the next release tag; the digest is the pin that actually gets pulled
+    # (FR-INSTALL-13).
+    tag: "sha-a7d230cf12c6e0fce9e762e9875d6897e9ca2b60"
+    digest: "sha256:0820d602b45978e917d01bbffac6ced154c08e85557e718507bc032b20b4ccc7"
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -213,8 +213,8 @@ ovhWebhook:
 # SA/RBAC/Job resources render. Keep these in step with the deployed release.
 release:
   profile: installer
-  naslosVersion: "0.4.2"
-  chartVersion: "0.4.2"
+  naslosVersion: "0.4.4"
+  chartVersion: "0.4.4"
   talosVersion: "v1.14.5"
   kubernetesVersion: "v1.37.0"
   schematicId: "4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c"

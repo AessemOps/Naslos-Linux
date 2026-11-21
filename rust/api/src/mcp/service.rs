@@ -74,7 +74,7 @@ impl McpServer {
 
 impl ServerHandler for McpServer {
     fn get_info(&self) -> rmcp::model::ServerConfig {
-        server_info()
+        server_info(&self.state)
     }
 
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
@@ -113,7 +113,15 @@ impl ServerHandler for McpServer {
 }
 
 /// The `initialize`/`discover` server description.
-fn server_info() -> rmcp::model::ServerConfig {
+fn server_info(state: &AppState) -> rmcp::model::ServerConfig {
+    // The running Naslos version (release facts from the chart), not the
+    // crate version: a client's "is this NAS up to date" question must not
+    // get "0.1.0" as the answer.
+    let version = if state.system.release.naslos_version.is_empty() {
+        env!("CARGO_PKG_VERSION").to_string()
+    } else {
+        state.system.release.naslos_version.clone()
+    };
     let mut tools = ToolsCapability::default();
     tools.list_changed = Some(false);
     let mut capabilities = ServerCapabilities::default();
@@ -121,7 +129,7 @@ fn server_info() -> rmcp::model::ServerConfig {
     // ServerConfig = InitializeResult (non_exhaustive): construct then set.
     let mut info = rmcp::model::ServerConfig::new(capabilities);
     info.protocol_version = ProtocolVersion::default();
-    let mut implementation = Implementation::new("naslos", env!("CARGO_PKG_VERSION"));
+    let mut implementation = Implementation::new("naslos", version);
     implementation.title = Some("Naslos".into());
     info.server_info = implementation;
     info.instructions = Some(INSTRUCTIONS.to_string());
@@ -263,8 +271,11 @@ mod tests {
 
     #[test]
     fn server_info_advertises_naslos_with_instructions() {
-        let info = server_info();
+        let state = AppState::for_test("test-secret");
+        let info = server_info(&state);
         assert_eq!(info.server_info.name, "naslos");
+        // A dev/test state carries no release facts, so the crate version
+        // stands in; on a node the release facts win (0.4.x).
         assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
         assert!(info
             .instructions
