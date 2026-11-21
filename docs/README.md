@@ -20,6 +20,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [storage-zfs.md](storage-zfs.md) | ZFS pools, datasets, snapshots, topology advisor, Talos gotchas | New |
 | [identity-sso.md](identity-sso.md) | Single sign-on: Authelia, OpenLDAP, Samba hash sync, RBAC groups, 2FA | Rebuilt (replaces `authentication.md`) |
 | [shares.md](shares.md) | SMB / NFS / Time-Machine share model, generated configs | New |
+| [acl.md](acl.md) | Dataset/share ACL decision spike: POSIX presets vs NFSv4 + Samba mapping, migration fallout, recommendation | New |
 | [terminal.md](terminal.md) | Web terminal: exec scoping, RBAC, terminal namespace | New |
 | [buddy-backup.md](buddy-backup.md) | Buddy Backup: owner-to-owner encrypted backup, enrollment, verify/restore | New |
 | [app-catalog.md](app-catalog.md) | App catalog: git chart repositories, `naslos-app.yaml`, install lifecycle, exposure/routing, domains/certs, privileged NS | Rebuilt |
