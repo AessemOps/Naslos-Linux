@@ -19,6 +19,7 @@
     { href: '/backups', title: 'Backups', detail: 'Buddy peers and schedules', icon: 'cloud' },
     { href: '/apps', title: 'Apps', detail: 'Catalog, installs and exposure', icon: 'puzzle' },
     { href: '/datasets', title: 'Datasets', detail: 'Datasets apps may mount', icon: 'folder-tree' },
+    { href: '/settings/mcp', title: 'MCP', detail: 'AI assistant access and tokens', icon: 'bot' },
     { href: '/terminal', title: 'Terminal', detail: 'Pod logs and shells', icon: 'keyboard' }
   ];
 </script>

@@ -55,8 +55,8 @@
         type="button"
         class="text-xs px-2 py-1 rounded bg-amber-900/50 text-amber-300 hover:bg-amber-800/60 tabular-nums"
         aria-label={app.updateAvailable
-          ? `Update ${displayName} to ${app.latestVersion}`
-          : `Update ${displayName} to the newly released image`}
+          ? `→ v${app.latestVersion}: update ${displayName} to version ${app.latestVersion}`
+          : 'new image: update to the newly released image'}
         disabled={jobRunning}
         on:click={() => dispatch('update')}
       >

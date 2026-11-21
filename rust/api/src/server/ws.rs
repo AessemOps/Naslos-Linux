@@ -48,11 +48,11 @@ fn shell_command(shell: &str) -> Result<Vec<&'static str>, String> {
     }
 }
 
-fn kubectl_binary() -> String {
+pub(crate) fn kubectl_binary() -> String {
     std::env::var("KUBECTL_BIN").unwrap_or_else(|_| "kubectl".to_string())
 }
 
-fn kubeconfig_args() -> Vec<String> {
+pub(crate) fn kubeconfig_args() -> Vec<String> {
     match crate::helm::resolve_api_kubeconfig() {
         Some(p) => vec!["--kubeconfig".into(), p.display().to_string()],
         None => Vec::new(),

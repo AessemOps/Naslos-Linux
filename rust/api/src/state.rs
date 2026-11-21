@@ -95,6 +95,8 @@ pub struct AppState {
     pub system: crate::system::Config,
     /// The release update checker; `None` when updates are disabled.
     pub updates: Option<Arc<crate::system::Checker>>,
+    /// The MCP endpoint state (FR-MCP): the token store and failure backoff.
+    pub mcp: crate::mcp::McpState,
 }
 
 /// Holds the current catalog snapshot; refresh replaces it atomically.
@@ -234,6 +236,7 @@ impl AppState {
             },
             system: crate::system::Config::from_env(),
             updates: crate::system::Checker::from_env().map(Arc::new),
+            mcp: crate::mcp::McpState::from_env(),
         })
     }
 
@@ -274,6 +277,7 @@ impl AppState {
             buddy_schedules: Arc::new(crate::server::buddy_schedules::ScheduleStore::new("")),
             system: crate::system::Config::default(),
             updates: None,
+            mcp: crate::mcp::McpState::for_test(),
         }
     }
 }
