@@ -24,12 +24,12 @@
 api:
   image:
     repository: ghcr.io/aessemops/naslos-api
-    # Drill build (sha-a7d230c, release dry run publish=false) carrying the
+    # Drill build (sha-9fe8f5c, release dry run publish=false) carrying the
     # MCP server (FR-MCP) on top of everything in the v0.4.4 release, until
     # the next release tag; the digest is the pin that actually gets pulled
     # (FR-INSTALL-13).
-    tag: "sha-a7d230cf12c6e0fce9e762e9875d6897e9ca2b60"
-    digest: "sha256:0820d602b45978e917d01bbffac6ced154c08e85557e718507bc032b20b4ccc7"
+    tag: "sha-9fe8f5c54a3a962bae6f2498cdf0b55648c07c88"
+    digest: "sha256:3b7ee9fa69388d2deaebae608b4250f10c311f8baafd7868f5269b247e444546"
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -53,9 +53,11 @@ agent:
 ui:
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    # v0.4.2 release (the UI/UX overhaul train plus the release-drill fixes).
-    tag: "0.4.2"
-    digest: "sha256:1afaf755694712c09f6344b11ee3773a1fd6fd1a1705a585259a4c5de428dd94"
+    # Drill build (sha-9fe8f5c, release dry run publish=false) carrying the
+    # Settings -> MCP card and page (FR-MCP) on top of the v0.4.4 release,
+    # until the next release tag; the digest is the pin (FR-INSTALL-13).
+    tag: "sha-9fe8f5c54a3a962bae6f2498cdf0b55648c07c88"
+    digest: "sha256:bb27ea207072970f5ac19dc0c79dcfc2fd580b83d688b115702d3ead194ce3fa"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
