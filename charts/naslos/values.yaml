@@ -119,7 +119,9 @@ api:
     enabled: false
     provider: ldap
     host: ""
-    port: 636
+    # Unset: the chart selects 636 with TLS and 389 without, and this key
+    # overrides that default when set.
+    # port: 636
     useTLS: true
     baseDN: ""
     bindDN: ""

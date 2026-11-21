@@ -157,6 +157,20 @@ impl Store {
                     config.bind_pass_file
                 ));
             }
+            // The CA bundle is also a mounted Secret; a missing optional volume
+            // must disable the source rather than leave an unverifiable trust
+            // anchor configured.
+            if !config.ca_cert_path.is_empty() {
+                let ca = std::fs::read(&config.ca_cert_path).map_err(|e| {
+                    format!("reading {ENV_CA_CERT} file {}: {e}", config.ca_cert_path)
+                })?;
+                if ca.is_empty() {
+                    return Err(format!(
+                        "{ENV_CA_CERT}: the CA bundle file {} is empty",
+                        config.ca_cert_path
+                    ));
+                }
+            }
         }
         Ok(Self { config })
     }
@@ -361,7 +375,14 @@ fn validate_host(host: &str) -> Result<(), String> {
 }
 
 fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost") || host.starts_with("127.")
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // Only an actual IPv4 loopback address counts: a name such as
+    // "127.ldap.example.com" merely starts with "127." and is not loopback.
+    host.parse::<std::net::Ipv4Addr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
 }
 
 fn validate_dn(name: &str, value: &str) -> Result<(), String> {
@@ -379,14 +400,26 @@ fn validate_dn(name: &str, value: &str) -> Result<(), String> {
 }
 
 fn validate_search_base(name: &str, value: &str, base_dn: &str) -> Result<(), String> {
-    let value = value.to_ascii_lowercase();
-    let base = base_dn.to_ascii_lowercase();
+    // Compare normalized DNs so `ou=people, dc=example, dc=test` and
+    // `ou=people,dc=example,dc=test` are equivalent; the raw-string suffix
+    // check rejected valid DNs with whitespace after a comma.
+    let value = normalize_dn(value);
+    let base = normalize_dn(base_dn);
     if value == base || value.ends_with(&format!(",{base}")) {
         return Ok(());
     }
     Err(format!(
         "{name}: the search base must equal {ENV_BASE_DN} or be a descendant of it"
     ))
+}
+
+fn normalize_dn(value: &str) -> String {
+    value
+        .split(',')
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(",")
+        .to_ascii_lowercase()
 }
 
 fn validate_attribute(name: &str, value: &str) -> Result<(), String> {
@@ -563,6 +596,20 @@ mod tests {
         );
         let vars = without(&vars, ENV_CA_CERT);
         assert!(parse_with(&vars).unwrap().is_some());
+
+        // Only an actual loopback address is exempt: a DNS name that merely
+        // starts with "127." is a remote host and must keep TLS.
+        let vars = with(
+            &with(
+                &without(&base_vars(dir.path()), ENV_CA_CERT),
+                ENV_HOST,
+                "127.ldap.example.test",
+            ),
+            ENV_USE_TLS,
+            "false",
+        );
+        let err = parse_with(&vars).unwrap_err();
+        assert!(err.contains(ENV_USE_TLS), "{err}");
     }
 
     #[test]
@@ -576,6 +623,27 @@ mod tests {
         let vars = with(&base_vars(dir.path()), ENV_CA_CERT, "ca.crt");
         let err = parse_with(&vars).unwrap_err();
         assert!(err.contains("absolute"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_or_empty_ca_bundle_disables_the_source() {
+        let dir = tempdir().unwrap();
+        seed_secret_files(dir.path());
+
+        let missing = dir.path().join("missing-ca.crt");
+        let vars = with(
+            &base_vars(dir.path()),
+            ENV_CA_CERT,
+            missing.to_str().unwrap(),
+        );
+        let err = store_with(&vars).unwrap_err();
+        assert!(err.contains(ENV_CA_CERT), "{err}");
+
+        let empty = dir.path().join("empty-ca.crt");
+        std::fs::write(&empty, "").unwrap();
+        let vars = with(&base_vars(dir.path()), ENV_CA_CERT, empty.to_str().unwrap());
+        let err = store_with(&vars).unwrap_err();
+        assert!(err.contains("empty"), "{err}");
     }
 
     #[test]
@@ -645,6 +713,16 @@ mod tests {
         );
         let config = parse_with(&vars).unwrap().unwrap();
         assert_eq!(config.group_search_base, "ou=groups,dc=example,dc=test");
+
+        // Whitespace after the RDN separators is valid and does not change
+        // whether the value is a descendant.
+        let vars = with(
+            &base_vars(dir.path()),
+            ENV_USER_SEARCH_BASE,
+            "ou=people, dc=example, dc=test",
+        );
+        let config = parse_with(&vars).unwrap().unwrap();
+        assert_eq!(config.user_search_base, "ou=people, dc=example, dc=test");
     }
 
     #[test]
