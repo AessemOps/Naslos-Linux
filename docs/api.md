@@ -364,8 +364,12 @@ keys/KEKs and all Secret data. App `values` have the catalog's secret-marked
 keys removed at any depth (their names are listed in `redactedKeys`); if the
 catalog cannot be read, `values` is omitted and `valuesOmitted` is `true`.
 Free-form value/provider keys that look like credentials (`password`, `passwd`,
-`secret`, `token`, `credential`, `privateKey`, `apiKey`, `kek`) are removed even
-when a provider schema forgot to mark them.
+`passphrase`, `secret`, `token`, `credential`, `privateKey`, `tls.key`, `apiKey`,
+`accessKey`, `consumerKey`, `applicationKey`, `kek`) are removed even when a
+provider schema forgot to mark them. Domain and DDNS `providerConfig` is
+projected to the keys the provider schema declares non-secret; unknown keys,
+free-form value templates that can embed a credential (the generic DDNS
+`updateUrl`/`body`) and configs for an unknown provider are omitted.
 
 **Import/restore is `[OPEN]`.** An importer must reject a newer `schemaVersion`,
 accept only allow-listed fields (reject unknown or secret-like keys), revalidate

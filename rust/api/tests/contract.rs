@@ -31,6 +31,23 @@ async fn send_state(state: Arc<AppState>, req: Request<Body>) -> (StatusCode, Va
     (status, value, raw)
 }
 
+/// A git backend that must never be called by the config-export contract test.
+struct NoopGit;
+
+#[async_trait::async_trait]
+impl naslos_api::chartsrepo::GitBackend for NoopGit {
+    async fn sync(
+        &self,
+        _url: &str,
+        _branch: &str,
+        _commit: &str,
+        _dir: &str,
+        _auth: &naslos_api::chartsrepo::GitAuth,
+    ) -> Result<(), String> {
+        Err("git must not run in the config-export test".to_string())
+    }
+}
+
 fn get(path: &str, secret: bool, user: Option<&str>, groups: Option<&str>) -> Request<Body> {
     let mut b = Request::builder().method("GET").uri(path);
     if secret {
@@ -714,7 +731,7 @@ async fn config_export_requires_an_admin_and_emits_the_versioned_shape() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    let st = state();
+    let mut st = AppState::for_test(SECRET);
     {
         let mut shares = st.shares.lock().unwrap();
         shares
@@ -782,6 +799,109 @@ async fn config_export_requires_an_admin_and_emits_the_versioned_shape() {
         })
         .unwrap();
 
+    // A catalog app with a secret-marked value, so the route exercises the
+    // values redaction (not only the empty-apps case).
+    let root = std::env::temp_dir().join(format!(
+        "naslos-config-export-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("apps/demo")).unwrap();
+    std::fs::write(
+        root.join("apps/demo/naslos-app.yaml"),
+        "name: demo\ndescription: Demo\nschema:\n  type: object\n  properties:\n    adminPassword:\n      type: string\n      format: password\n",
+    )
+    .unwrap();
+    let catalog = Arc::new(naslos_api::catalog::Catalog::load(&[
+        naslos_api::catalog::SourceRef {
+            name: "test".into(),
+            display_name: "Test".into(),
+            channel: "stable".into(),
+            dir: root.to_string_lossy().into_owned(),
+            official: true,
+        },
+    ]));
+    st.catalog.store(catalog.clone());
+
+    let apps_path = root.join("apps.json");
+    let record = naslos_api::apps::Record {
+        name: "demo".into(),
+        values: serde_json::json!({
+            "adminPassword": "CANARY-SECRET-MUST-NOT-EXPORT",
+            "replicas": 2
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+        ..Default::default()
+    };
+    std::fs::write(&apps_path, serde_json::to_vec(&vec![record]).unwrap()).unwrap();
+    let catalog_provider = catalog.clone();
+    let app_manager = naslos_api::apps::Manager::new(naslos_api::apps::Config {
+        store_path: apps_path.to_string_lossy().into_owned(),
+        helm: Arc::new(naslos_api::helm::Client::new("naslos-apps")),
+        helm_privileged: None,
+        privileged_namespace: "naslos-apps-priv".into(),
+        charts: Arc::new(naslos_api::chartsrepo::Manager::new(
+            Arc::new(naslos_api::chartsrepo::Store::new("")),
+            "",
+            std::time::Duration::ZERO,
+            None,
+            Arc::new(NoopGit),
+        )),
+        catalog: Arc::new(move || Some(catalog_provider.clone())),
+        router: None,
+        discoverer: None,
+        base_domain: String::new(),
+        sso_domains: None,
+        namespace_pool: Vec::new(),
+        privileged_namespace_pool: Vec::new(),
+        namespace_pool_limit: None,
+        pool_settings_path: String::new(),
+        kube: None,
+        datasets: None,
+        pool_provisioner_image: String::new(),
+        app_dns: None,
+    })
+    .unwrap();
+    st.app_manager = Some(Arc::new(app_manager));
+
+    // A DDNS entry whose legacy config still holds an OVH key that the schema
+    // now marks secret, plus a safe field that must survive.
+    let ddns = naslos_api::ddns::Manager::new(naslos_api::ddns::Options {
+        registry: st.providers.clone(),
+        store_path: String::new(),
+        apps_namespace: "naslos-apps".into(),
+        kube: None,
+        ip_sources: Vec::new(),
+        ipv6_sources: Vec::new(),
+        interval: std::time::Duration::ZERO,
+        cooldown: std::time::Duration::ZERO,
+    });
+    ddns.store()
+        .put(naslos_api::ddns::Entry {
+            id: "ddns-1".into(),
+            provider: "ovh".into(),
+            zone: "example.test".into(),
+            record: "home".into(),
+            record_type: "A".into(),
+            provider_config: std::collections::HashMap::from([
+                ("endpoint".into(), "ovh-eu".into()),
+                ("mode".into(), "api".into()),
+                (
+                    "applicationKey".into(),
+                    "CANARY-SECRET-MUST-NOT-EXPORT".into(),
+                ),
+            ]),
+            ..Default::default()
+        })
+        .unwrap();
+    st.ddns = Some(Arc::new(ddns));
+    let st = Arc::new(st);
+
     let req = with_peer(
         get(
             "/api/system/config/export",
@@ -798,6 +918,12 @@ async fn config_export_requires_an_admin_and_emits_the_versioned_shape() {
             .get(axum::http::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok()),
         Some("application/json")
+    );
+    assert_eq!(
+        resp.headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store")
     );
     let disposition = resp
         .headers()
@@ -829,8 +955,21 @@ async fn config_export_requires_an_admin_and_emits_the_versioned_shape() {
     );
     assert_eq!(body["domains"][0]["baseDomain"], "example.test");
     assert!(body["domains"][0].get("credentialsSecret").is_none());
-    assert_eq!(body["ddnsEntries"], serde_json::json!([]));
-    assert_eq!(body["apps"], serde_json::json!([]));
+    assert_eq!(
+        body["ddnsEntries"][0]["providerConfig"],
+        serde_json::json!({"endpoint": "ovh-eu", "mode": "api"})
+    );
+    assert_eq!(body["apps"][0]["name"], "demo");
+    assert_eq!(body["apps"][0]["values"]["replicas"], 2);
+    assert!(
+        body["apps"][0]["values"].get("adminPassword").is_none(),
+        "the catalog-marked secret must be redacted: {}",
+        body["apps"][0]
+    );
+    assert_eq!(
+        body["apps"][0]["redactedKeys"],
+        serde_json::json!(["adminPassword"])
+    );
     assert_eq!(body["datasetRegistry"][0]["name"], "media");
 
     let raw = String::from_utf8_lossy(&bytes);

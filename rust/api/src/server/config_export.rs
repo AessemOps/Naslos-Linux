@@ -28,6 +28,7 @@ use std::sync::Arc;
 use crate::app_env::EnvMeta;
 use crate::apps::{Exposure, Record};
 use crate::catalog::App;
+use crate::providers::Provider;
 use crate::state::AppState;
 
 /// The export envelope discriminator.
@@ -167,11 +168,11 @@ pub struct DomainExport {
 }
 
 impl DomainExport {
-    fn project(domain: &crate::certs::Domain) -> Self {
+    fn project(domain: &crate::certs::Domain, provider: Option<&Provider>) -> Self {
         Self {
             base_domain: domain.base_domain.clone(),
             dns_provider: domain.dns_provider.clone(),
-            provider_config: safe_map(&domain.provider_config),
+            provider_config: safe_provider_config(&domain.provider_config, provider, "cert"),
             acme_email: domain.acme_email.clone(),
             environment: domain.environment.clone(),
             primary: domain.primary,
@@ -197,7 +198,7 @@ pub struct DdnsEntryExport {
 }
 
 impl DdnsEntryExport {
-    fn project(entry: &crate::ddns::Entry) -> Self {
+    fn project(entry: &crate::ddns::Entry, provider: Option<&Provider>) -> Self {
         Self {
             id: entry.id.clone(),
             provider: entry.provider.clone(),
@@ -206,14 +207,15 @@ impl DdnsEntryExport {
             record_type: entry.record_type.clone(),
             ttl: entry.ttl,
             enabled: entry.enabled,
-            provider_config: safe_map(&entry.provider_config),
+            provider_config: safe_provider_config(&entry.provider_config, provider, "ddns"),
         }
     }
 }
 
 /// An installed app record. `values` has the catalog's secret-marked keys (and
-/// any key that looks like a credential) removed; `valuesOmitted` says the
-/// catalog was unavailable and the values had to be dropped whole.
+/// any key that looks like a credential) removed; it is omitted entirely and
+/// `valuesOmitted` is true when the catalog was unavailable and the values had
+/// to be dropped whole.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppExport {
@@ -222,13 +224,46 @@ pub struct AppExport {
     pub channel: String,
     pub chart_version: String,
     pub base_domain: String,
-    pub exposure: Exposure,
+    pub exposure: ExposureExport,
     pub datasets: Vec<String>,
     pub privileged: bool,
     pub env: Vec<EnvExport>,
-    pub values: BTreeMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub values: Option<BTreeMap<String, serde_json::Value>>,
     pub redacted_keys: Vec<String>,
     pub values_omitted: bool,
+}
+
+/// The app exposure settings. A dedicated allow-list struct keeps the DM-9
+/// shape stable even though the stored `Exposure` skips empty fields.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExposureExport {
+    pub subdomain: String,
+    pub tls: bool,
+    pub auth: bool,
+    pub local_only: bool,
+    pub protected_paths: Vec<String>,
+    pub internet: bool,
+    pub service: String,
+    pub port: i64,
+    pub scheme: String,
+}
+
+impl ExposureExport {
+    fn project(exposure: &Exposure) -> Self {
+        Self {
+            subdomain: exposure.subdomain.clone(),
+            tls: exposure.tls,
+            auth: exposure.auth,
+            local_only: exposure.local_only,
+            protected_paths: exposure.protected_paths.clone(),
+            internet: exposure.internet,
+            service: exposure.service.clone(),
+            port: exposure.port,
+            scheme: exposure.scheme.clone(),
+        }
+    }
 }
 
 /// A custom environment variable's metadata only: the value lives in a Secret.
@@ -252,9 +287,11 @@ impl AppExport {
     fn project(record: &Record, app: Option<&App>) -> Self {
         let (values, redacted_keys) = match app {
             Some(app) => {
-                redact_values(&record.values, &crate::apps::secret_value_keys(&app.schema))
+                let (values, keys) =
+                    redact_values(&record.values, &crate::apps::secret_value_keys(&app.schema));
+                (Some(values), keys)
             }
-            None => (BTreeMap::new(), Vec::new()),
+            None => (None, Vec::new()),
         };
         Self {
             name: record.name.clone(),
@@ -262,14 +299,15 @@ impl AppExport {
             channel: record.channel.clone(),
             chart_version: record.chart_version.clone(),
             base_domain: record.base_domain.clone(),
-            exposure: record.exposure.clone(),
+            exposure: ExposureExport::project(&record.exposure),
             datasets: record.datasets.clone(),
             privileged: record.privileged,
             env: record.env.iter().map(EnvExport::project).collect(),
             values,
             redacted_keys,
             // A missing catalog means secret-marked keys cannot be identified,
-            // so the whole value map is dropped instead of guessed at.
+            // so the whole value map is dropped instead of guessed at. An empty
+            // map still exports as `{}` because there is nothing to hide.
             values_omitted: app.is_none() && !record.values.is_empty(),
         }
     }
@@ -357,7 +395,7 @@ pub fn build(state: &AppState, now: DateTime<Utc>) -> Export {
             .domains
             .list()
             .iter()
-            .map(DomainExport::project)
+            .map(|domain| DomainExport::project(domain, state.providers.get(&domain.dns_provider)))
             .collect(),
         ddns_entries: state
             .ddns
@@ -367,7 +405,9 @@ pub fn build(state: &AppState, now: DateTime<Utc>) -> Export {
                     .store()
                     .list()
                     .iter()
-                    .map(DdnsEntryExport::project)
+                    .map(|entry| {
+                        DdnsEntryExport::project(entry, state.providers.get(&entry.provider))
+                    })
                     .collect()
             })
             .unwrap_or_default(),
@@ -396,15 +436,79 @@ pub fn build(state: &AppState, now: DateTime<Utc>) -> Export {
     }
 }
 
-/// Copy a provider config map with credential-looking keys removed. Provider
-/// configs only carry non-secret fields by construction; this is the second
-/// line of defence for override providers.
-fn safe_map(input: &std::collections::HashMap<String, String>) -> BTreeMap<String, String> {
+/// Project a provider config to the provider schema's non-secret fields.
+///
+/// A key-name filter alone is not enough: provider configs can carry values
+/// under free-form keys (the generic DDNS `updateUrl`/`body`) and older records
+/// may still hold fields that later became secret (the OVH `applicationKey`
+/// fallback). Only keys the provider declares non-secret are exported, and
+/// free-form values that can embed a credential are dropped.
+fn safe_provider_config(
+    input: &std::collections::HashMap<String, String>,
+    provider: Option<&Provider>,
+    scope: &str,
+) -> BTreeMap<String, String> {
+    let Some(provider) = provider else {
+        // An unknown/removed provider definition cannot tell us which keys are
+        // safe, so fail closed rather than fall back to a key-name heuristic.
+        return BTreeMap::new();
+    };
+    let allowed: HashSet<String> = provider
+        .fields_for(scope)
+        .into_iter()
+        .filter(|field| !field.secret)
+        .map(|field| field.key)
+        .collect();
     input
         .iter()
-        .filter(|(key, _)| !is_sensitive_key(key))
+        .filter(|(key, value)| {
+            allowed.contains(*key)
+                && !is_sensitive_key(key)
+                && !is_free_form_value_key(key)
+                && !value_looks_sensitive(value)
+        })
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect()
+}
+
+/// Free-form provider fields whose value can legitimately contain a credential
+/// (the generic DDNS driver substitutes tokens into these templates). They have
+/// no safe projection, so they are left out and must be re-entered.
+fn is_free_form_value_key(key: &str) -> bool {
+    let normalized: String = key
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    matches!(normalized.as_str(), "updateurl" | "body")
+}
+
+/// Whether a provider-config value itself contains something credential-like.
+/// This catches a token pasted into a URL or body even when the key looks safe.
+fn value_looks_sensitive(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    if let Some((_, rest)) = lower.split_once("://") {
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        if authority.contains('@') {
+            // `scheme://user:password@host` carries userinfo.
+            return true;
+        }
+    }
+    [
+        "password",
+        "passwd",
+        "passphrase",
+        "secret",
+        "token",
+        "credential",
+        "apikey",
+        "api_key",
+        "access_key",
+        "consumer_key",
+        "private_key",
+    ]
+    .iter()
+    .any(|marker| lower.contains(&format!("{marker}=")) || lower.contains(&format!("{marker}:")))
 }
 
 /// Redact an app value map recursively. The catalog's secret-marked property
@@ -469,11 +573,18 @@ pub fn is_sensitive_key(key: &str) -> bool {
     [
         "password",
         "passwd",
+        "passphrase",
         "secret",
         "token",
         "credential",
         "privatekey",
+        "tlskey",
         "apikey",
+        "accesskey",
+        "consumerkey",
+        "applicationkey",
+        "secretkey",
+        "bearer",
         "kek",
     ]
     .iter()
@@ -720,11 +831,15 @@ mod tests {
 
     #[test]
     fn secret_material_is_never_exported() {
+        let providers = crate::providers::Registry::load("");
         let domain = Domain {
             base_domain: "example.test".into(),
             dns_provider: "cloudflare".into(),
             credentials_secret: format!("domain-{CANARY}"),
             provider_config: HashMap::from([
+                // Declared non-secret by the provider schema.
+                ("proxied".into(), "false".into()),
+                // Client-supplied/legacy keys not in the schema must not pass.
                 ("zone".into(), "example.test".into()),
                 ("apiKey".into(), CANARY.into()),
             ]),
@@ -735,13 +850,19 @@ mod tests {
         };
         let ddns = Entry {
             id: "ddns-1".into(),
-            provider: "duckdns".into(),
+            provider: "ovh".into(),
             zone: "example.test".into(),
             record: "home".into(),
             record_type: "A".into(),
             credentials_secret: format!("ddns-{CANARY}"),
             credential_fields: vec![CANARY.into()],
-            provider_config: HashMap::from([("domain".into(), "example.test".into())]),
+            provider_config: HashMap::from([
+                ("endpoint".into(), "ovh-eu".into()),
+                ("mode".into(), "api".into()),
+                // Legacy OVH fallback: a field that is secret in the schema.
+                ("applicationKey".into(), CANARY.into()),
+                ("consumerKey".into(), CANARY.into()),
+            ]),
             last_ip: CANARY.into(),
             last_status: CANARY.into(),
             last_error: CANARY.into(),
@@ -804,8 +925,8 @@ mod tests {
         let app_export = AppExport::project(&record, Some(&app));
 
         let value = json!({
-            "domain": DomainExport::project(&domain),
-            "ddns": DdnsEntryExport::project(&ddns),
+            "domain": DomainExport::project(&domain, providers.get("cloudflare")),
+            "ddns": DdnsEntryExport::project(&ddns, providers.get("ovh")),
             "buddy": BuddyScheduleExport::project(&buddy),
             "storage": StorageScheduleExport::project(&storage),
             "app": app_export,
@@ -818,7 +939,7 @@ mod tests {
 
         assert_eq!(
             value["domain"]["providerConfig"],
-            json!({"zone": "example.test"})
+            json!({"proxied": "false"})
         );
         assert!(value["domain"].get("credentialsSecret").is_none());
         assert!(value["domain"].get("solver").is_none());
@@ -826,7 +947,7 @@ mod tests {
 
         assert_eq!(
             value["ddns"]["providerConfig"],
-            json!({"domain": "example.test"})
+            json!({"endpoint": "ovh-eu", "mode": "api"})
         );
         for key in [
             "credentialsSecret",
@@ -872,11 +993,66 @@ mod tests {
             ..Default::default()
         };
         let export = AppExport::project(&record, None);
-        assert!(export.values.is_empty());
+        assert!(export.values.is_none());
         assert!(export.values_omitted);
         let value = serde_json::to_value(export).unwrap();
         assert_eq!(value["valuesOmitted"], true);
-        assert_eq!(value["values"], json!({}));
+        assert!(value.get("values").is_none(), "{value}");
+    }
+
+    #[test]
+    fn exposure_projection_always_has_every_dm9_field() {
+        // The stored Exposure skips empty fields, so exporting it directly
+        // omitted protectedPaths/service/port/scheme.
+        let record = Record {
+            name: "demo".into(),
+            exposure: Exposure::default(),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(AppExport::project(&record, None)).unwrap();
+        let exposure = keys(&value["exposure"]);
+        for field in [
+            "subdomain",
+            "tls",
+            "auth",
+            "localOnly",
+            "protectedPaths",
+            "internet",
+            "service",
+            "port",
+            "scheme",
+        ] {
+            assert!(
+                exposure.contains(field),
+                "exposure missing {field}: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn free_form_provider_values_are_not_exported() {
+        let providers = crate::providers::Registry::load("");
+        let entry = Entry {
+            id: "ddns-1".into(),
+            provider: "generic".into(),
+            provider_config: HashMap::from([
+                (
+                    "updateUrl".into(),
+                    format!("https://example.test/update?token={CANARY}"),
+                ),
+                ("body".into(), format!("{{\"token\":\"{CANARY}\"}}")),
+                ("method".into(), "GET".into()),
+            ]),
+            ..Default::default()
+        };
+        let export = DdnsEntryExport::project(&entry, providers.get("generic"));
+        assert_eq!(
+            export.provider_config,
+            BTreeMap::from([("method".to_string(), "GET".to_string())])
+        );
+        // An unknown provider definition fails closed.
+        let unknown = DdnsEntryExport::project(&entry, None);
+        assert!(unknown.provider_config.is_empty());
     }
 
     #[test]
@@ -902,17 +1078,53 @@ mod tests {
 
     #[test]
     fn every_free_form_key_in_the_payload_is_allow_listed() {
-        let state = AppState::for_test("test-secret");
-        let value = serde_json::to_value(build(&state, Utc::now())).unwrap();
+        let providers = crate::providers::Registry::load("");
+        // A catalog app with an empty schema: no secret-marked properties, so
+        // only the credential-key heuristic stands between values and export.
+        let app = App {
+            name: "demo".into(),
+            schema: json!({"type": "object", "properties": {}}),
+            ..Default::default()
+        };
+        let mut record = Record {
+            name: "demo".into(),
+            ..Default::default()
+        };
+        record.values = json!({
+            "passphrase": CANARY,
+            "accessKey": CANARY,
+            "tls.key": CANARY,
+            "replicas": 2
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let domain = Domain {
+            dns_provider: "ovh".into(),
+            provider_config: HashMap::from([
+                ("endpoint".into(), "ovh-eu".into()),
+                ("applicationKey".into(), CANARY.into()),
+            ]),
+            ..Default::default()
+        };
+
+        let value = json!({
+            "domain": DomainExport::project(&domain, providers.get("ovh")),
+            "app": AppExport::project(&record, Some(&app)),
+        });
+        let mut visited = 0usize;
         let mut forbidden = Vec::new();
         walk(&value, &mut |key, _| {
+            visited += 1;
             if is_sensitive_key(key) {
                 forbidden.push(key.to_string());
             }
         });
+        assert!(visited > 0, "the assertion must not be vacuous: {value}");
         assert!(
             forbidden.is_empty(),
             "credential-looking key in export: {forbidden:?}"
         );
+        assert_eq!(value["app"]["values"]["replicas"], 2);
     }
 }
