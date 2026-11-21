@@ -169,19 +169,6 @@ pub fn scrub_in_progress(scan: &str) -> bool {
     scan.contains("scrub in progress") || scan.contains("resilver in progress")
 }
 
-/// The `scan:` field from a raw `zpool status` body. Scrub polling uses the
-/// status body (not the full health endpoint, which also samples `zpool iostat`)
-/// so a slow or stuck scrub costs one cheap command per tick.
-pub fn scan_line(status: &str) -> String {
-    for line in status.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("scan:") {
-            return rest.trim().to_string();
-        }
-    }
-    String::new()
-}
-
 /// A finished scrub's outcome, from `zpool status`'s scan line. `None` while a
 /// scrub is still running, has never run, or the pool is only resilvering.
 pub fn scrub_finished(scan: &str) -> Option<Result<String, String>> {
@@ -566,7 +553,7 @@ async fn refresh_scrub_results(state: &AppState) {
         let Ok(health) = client.pool_health(&entry.target).await else {
             continue;
         };
-        match scrub_finished(&scan_line(&health.scan)) {
+        match scrub_finished(&health.scan) {
             Some(Ok(_)) => state.storage_schedules.record_result(&entry.id, "ok", ""),
             Some(Err(detail)) => state
                 .storage_schedules
@@ -698,7 +685,7 @@ async fn run_scrub_schedule(state: &Arc<AppState>, entry: &StorageSchedule) {
             return;
         }
     };
-    if scrub_in_progress(&scan_line(&health.scan)) {
+    if scrub_in_progress(&health.scan) {
         if entry.last_result == "started" {
             // This schedule's own scrub is still running. Advance without
             // replacing `started`, so the completion is still derived later.
@@ -833,16 +820,6 @@ mod tests {
         assert_eq!(saved.last_result, "ok");
         assert!(saved.last_run.is_some());
         assert_eq!(store.get("abc").unwrap().last_result, "ok");
-    }
-
-    #[test]
-    fn scan_field_is_extracted_from_zpool_status() {
-        let status = "  pool: tank\n state: ONLINE\n  scan: scrub repaired 0B in 00:01:23 with 0 errors on Sun Jan  4 02:00:00 2026\nconfig:\n";
-        assert_eq!(
-            scan_line(status),
-            "scrub repaired 0B in 00:01:23 with 0 errors on Sun Jan  4 02:00:00 2026"
-        );
-        assert_eq!(scan_line("pool: tank\nstate: ONLINE\n"), "");
     }
 
     #[test]
