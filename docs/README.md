@@ -19,6 +19,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [bootstrap.md](bootstrap.md) | Image Factory schematic, ZFS extension, boot-time pool import, upgrades | New |
 | [storage-zfs.md](storage-zfs.md) | ZFS pools, datasets, snapshots, topology advisor, Talos gotchas | New |
 | [identity-sso.md](identity-sso.md) | Single sign-on: Authelia, OpenLDAP, Samba hash sync, RBAC groups, 2FA | Rebuilt (replaces `authentication.md`) |
+| [external-directory.md](external-directory.md) | Optional external LDAP source (FR-EXT): phase-1 configuration, TLS, search bases, uid/gid mapping, AD/Kerberos roadmap | New |
 | [shares.md](shares.md) | SMB / NFS / Time-Machine share model, generated configs | New |
 | [terminal.md](terminal.md) | Web terminal: exec scoping, RBAC, terminal namespace | New |
 | [buddy-backup.md](buddy-backup.md) | Buddy Backup: owner-to-owner encrypted backup, enrollment, verify/restore | New |
