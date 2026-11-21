@@ -297,7 +297,9 @@ impl Manager {
         let resp = rb.send().await.map_err(|e| transport_error(&e))?;
         let status = resp.status();
         drain_bounded(resp).await;
-        if status.as_u16() >= 400 {
+        // Redirects are disabled, so a 3xx is a failed delivery (usually a
+        // misconfigured URL), not a success. Only a 2xx accepted the payload.
+        if !status.is_success() {
             return Err(format!("webhook returned status {}", status.as_u16()));
         }
         Ok(())

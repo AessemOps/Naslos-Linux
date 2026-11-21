@@ -39,7 +39,7 @@ time-series service.
 
 The API does **not** currently link SQLite. If the implementation uses
 `rusqlite` (bundled SQLite), that is a direct dependency change and must update
-`CREDITS.md` and `ui/package.json`/image review in the same change. The
+`CREDITS.md` and `rust/api/Cargo.toml`/image review in the same change. The
 alternative is a small file format of fixed-width buckets; the design below
 assumes SQLite because it makes the bounds and queries explicit.
 

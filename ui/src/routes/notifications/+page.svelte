@@ -309,7 +309,7 @@
 
       <div class="card space-y-4">
         <label class="flex items-center gap-4 cursor-pointer">
-          <input type="checkbox" bind:checked={webhook.enabled} class="w-5 h-5 rounded" />
+          <input type="checkbox" bind:checked={webhook.enabled} disabled={webhookLoading} class="w-5 h-5 rounded" />
           <div>
             <div class="font-medium">Webhook Channel</div>
             <div class="text-sm text-gray-400">POST each selected event as JSON to an external webhook.</div>
