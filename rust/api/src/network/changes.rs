@@ -637,7 +637,7 @@ impl Manager {
 
 fn new_id() -> String {
     let mut bytes = [0u8; 8];
-    if getrandom::getrandom(&mut bytes).is_ok() {
+    if getrandom::fill(&mut bytes).is_ok() {
         return bytes.iter().map(|b| format!("{b:02x}")).collect();
     }
     format!("{:x}", Utc::now().timestamp_nanos_opt().unwrap_or_default())

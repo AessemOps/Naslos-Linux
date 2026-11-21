@@ -336,7 +336,7 @@ pub fn validate_nonce(nonce: &str) -> Result<(), String> {
 /// A 128-bit random nonce, base64-encoded.
 pub fn random_nonce() -> Result<String, String> {
     let mut buf = [0u8; 16];
-    getrandom::getrandom(&mut buf).map_err(|e| format!("generating nonce: {e}"))?;
+    getrandom::fill(&mut buf).map_err(|e| format!("generating nonce: {e}"))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(buf))
 }
 

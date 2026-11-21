@@ -48,8 +48,9 @@ pub fn new_identity(name: &str) -> Result<Identity, String> {
 }
 
 fn new_identity_with_env(name: &str, env_kek: bool) -> Result<Identity, String> {
-    let signing = SigningKey::generate(&mut ssh_key::rand_core::OsRng);
-    let ed = ssh_key::private::Ed25519PrivateKey::from(&signing);
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed).map_err(|e| format!("generating signing key: {e}"))?;
+    let ed = ssh_key::private::Ed25519PrivateKey::from_bytes(&seed);
     let priv_key = PrivateKey::new(
         KeypairData::Ed25519(Ed25519Keypair {
             public: ed.clone().into(),
@@ -71,8 +72,7 @@ fn new_identity_with_env(name: &str, env_kek: bool) -> Result<Identity, String> 
         String::new()
     } else {
         let mut kek = [0u8; 32];
-        getrandom::getrandom(&mut kek)
-            .map_err(|e| format!("generating key encryption key: {e}"))?;
+        getrandom::fill(&mut kek).map_err(|e| format!("generating key encryption key: {e}"))?;
         base64::engine::general_purpose::STANDARD.encode(kek)
     };
 
@@ -140,7 +140,7 @@ impl Identity {
         let key = PrivateKey::from_openssh(self.private_key.as_bytes())
             .map_err(|e| format!("parsing private key: {e}"))?;
         match key.key_data() {
-            KeypairData::Ed25519(kp) => Ok(SigningKey::from(&kp.private)),
+            KeypairData::Ed25519(kp) => Ok(SigningKey::from_bytes(kp.private.as_ref())),
             _ => Err("unsupported key type: buddy keys are Ed25519".to_string()),
         }
     }

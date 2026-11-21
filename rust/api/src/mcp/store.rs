@@ -238,14 +238,14 @@ impl Store {
         }
 
         let mut bytes = [0u8; TOKEN_BYTES];
-        getrandom::getrandom(&mut bytes).map_err(|e| format!("generating token bytes: {e}"))?;
+        getrandom::fill(&mut bytes).map_err(|e| format!("generating token bytes: {e}"))?;
         let plaintext = format!(
             "{TOKEN_PREFIX}{}",
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
         );
 
         let mut id_bytes = [0u8; 8];
-        getrandom::getrandom(&mut id_bytes).map_err(|e| format!("generating token id: {e}"))?;
+        getrandom::fill(&mut id_bytes).map_err(|e| format!("generating token id: {e}"))?;
         let now = chrono::Utc::now();
         let record = TokenRecord {
             id: hex(&id_bytes),

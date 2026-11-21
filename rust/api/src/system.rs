@@ -726,7 +726,7 @@ pub fn job_spec(o: &JobOptions<'_>) -> serde_json::Value {
 /// A DNS-label-safe operation id: unix seconds + 8 hex characters.
 pub fn new_operation_id() -> String {
     let mut random = [0u8; 4];
-    let _ = getrandom::getrandom(&mut random);
+    let _ = getrandom::fill(&mut random);
     let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
     format!("{}-{}", chrono::Utc::now().timestamp(), suffix)
 }

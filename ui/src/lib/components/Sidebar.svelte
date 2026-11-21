@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { page } from '$app/stores';
+  import { page } from '$app/state';
   import { onMount } from 'svelte';
   import { appUpdates, startAppUpdates } from '$lib/stores/appUpdates';
   import { sidebarCollapsed, toggleSidebar } from '$lib/stores/sidebar';
@@ -194,7 +194,7 @@
         </div>
         <div class="space-y-0.5">
           {#each group.items as item}
-            {@const active = activePath($page.url.pathname) === item.path}
+            {@const active = activePath(page.url.pathname) === item.path}
             <a
               href={item.path}
               class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors {$sidebarCollapsed
