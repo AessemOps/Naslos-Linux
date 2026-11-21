@@ -256,6 +256,15 @@ a **v0.4.3 release** to ship all of it.
 
 ### Open items
 
+- **App upgrades blocked by a Helm field-manager conflict (fixed on this
+  branch, needs a release):** the image refresh's `kubectl patch` owned
+  `imagePullPolicy`, so later app upgrades and their rollbacks failed
+  (gotcha #19). App install/upgrade now pass `--force-conflicts`; ProjectSend,
+  Sonarr and Prowlarr were repaired live on 2026-11-21 with the fixed flags
+  (revisions 8, 9 and 12) and are deployed again. The node's API still
+  predates the fix, so the next release must ship it before the next
+  image-refresh cycle re-creates the conflict.
+
 - **Audit 2026-11-11:** the full read-only audit is
   [`docs/AUDIT-2026-11-11.md`](docs/AUDIT-2026-11-11.md) with the ordered fix
   plan in [`.kilo/plans/2026-11-11-audit-remediation.md`](.kilo/plans/2026-11-11-audit-remediation.md).
@@ -485,6 +494,22 @@ sh scripts/audit.sh
     chunk streams; sustained ceiling ≈ cap/600s requests per key). Two
     same-key sends run concurrently at their combined budget. The refusal
     wording is contract — the sender keys its retry on it.
+19. **Helm owns app objects with server-side apply; a foreign field manager
+    wedges every later upgrade** (found 2026-11-21). Helm v4 applies release
+    objects server-side. The image-refresh pass (FR-APP-27) separately patches
+    `imagePullPolicy` on the drifted container with `kubectl patch`, so the
+    Deployment has a `kubectl-patch` field manager owning that field. The next
+    `helm upgrade` — and its automatic rollback — fails with `Apply failed with
+    1 conflict: conflict with "kubectl-patch" … imagePullPolicy`, leaving the
+    release `failed` while the pods keep running the last deployed revision
+    (ProjectSend, Sonarr, Prowlarr on 2026-11-21; the app job log only showed
+    the minimised Helm conflict plus harmless `restricted:latest` PSA warnings
+    from the baseline namespaces). Install/upgrade now pass `--force-conflicts`
+    (Helm owns the app's objects) and use `--rollback-on-failure` instead of
+    the deprecated `--atomic` (`rust/api/src/helm.rs`). The three releases were
+    repaired live with the same flags (revisions 8, 9 and 12). Any other app
+    that has been image-refreshed once will fail its next update until the fix
+    ships.
 
 ## History
 

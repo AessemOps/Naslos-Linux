@@ -238,6 +238,12 @@ API strategically patches only the drifted containers to
 `imagePullPolicy: Always` with a `naslos.io/image-refresh` pod annotation, waits
 for the bounded rollout, and rolls the pods; a failed pull or rollout is
 recorded as the app's `lastError` and the drift is retried on the next cycle.
+That patch is written by a different field manager than Helm's server-side
+apply, so app installs and upgrades pass `--force-conflicts`: Helm remains the
+owner of the release objects and the refresh cannot wedge later upgrades (or
+their automatic rollback) on `imagePullPolicy`. Upgrades use Helm v4's
+`--rollback-on-failure` rather than the deprecated `--atomic`, which only emits
+a warning.
 The chart's `networkPolicy.imageEgress` (default on, port 443, API pod only) is
 the egress allow for a policy CNI.
 
