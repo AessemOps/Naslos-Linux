@@ -279,6 +279,29 @@ impl Client {
         Ok(app_from_status(&status_json, values_json, &self.namespace))
     }
 
+    /// Release status, version and chart only: the Installed list does not
+    /// need the release values `get` also fetches, so this is one Helm call
+    /// instead of two per app.
+    pub async fn status(&self, name: &str) -> Result<App, String> {
+        let out = self
+            .run(&[
+                "status".into(),
+                name.into(),
+                "-n".into(),
+                self.namespace.clone(),
+                "-o".into(),
+                "json".into(),
+            ])
+            .await?;
+        let status_json: serde_json::Value =
+            serde_json::from_str(out.trim()).map_err(|e| format!("parsing helm status: {e}"))?;
+        Ok(app_from_status(
+            &status_json,
+            serde_json::Value::Null,
+            &self.namespace,
+        ))
+    }
+
     /// Roll back a release to a revision.
     pub async fn rollback(&self, name: &str, revision: i64) -> Result<(), String> {
         self.run(&[

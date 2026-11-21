@@ -67,6 +67,10 @@ test.describe('apps', () => {
     await expect(page.getByRole('button', { name: 'Catalog', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Installed', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Sources', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Installed', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    );
   });
 
   test('the sources tab lists chart repositories', async ({ page }) => {
@@ -82,8 +86,69 @@ test.describe('apps', () => {
     test.skip(!Array.isArray(catalog) || catalog.length === 0, 'no catalog entries; add and refresh a source first');
 
     await page.goto('/apps');
+    await page.getByRole('button', { name: 'Catalog', exact: true }).click();
     await expect(page.getByText('Loading catalog...')).toBeHidden({ timeout: 10_000 });
     await expect(page.getByRole('combobox', { name: 'Channel' })).toBeVisible();
+  });
+
+  test('the catalog offers grid, list and compact views', async ({ page }) => {
+    const app = {
+      name: 'viewdemo',
+      displayName: 'View Demo',
+      description: 'Catalog view fixture',
+      category: 'media',
+      source: 'official',
+      channel: 'Prod',
+      channels: ['Prod'],
+      version: '1.0.0',
+      icon: 'V',
+      iconUrl: '',
+      chart: 'viewdemo',
+      chartPath: 'apps/viewdemo',
+      tags: []
+    };
+    await page.route(/\/api\//, async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/api/catalog') return route.fulfill({ json: [app] });
+      if (path === '/api/apps') return route.fulfill({ json: [] });
+      if (path === '/api/apps/updates') return route.fulfill({ json: { count: 0, apps: [] } });
+      if (path === '/api/apps/usage') {
+        return route.fulfill({ json: { available: false, apps: [] } });
+      }
+      if (path === '/api/apps/namespaces') {
+        return route.fulfill({
+          json: {
+            baseline: { provisioned: 0, limit: 0, used: 0, available: 0 },
+            privileged: { provisioned: 0, limit: 0, used: 0, available: 0 }
+          }
+        });
+      }
+      return route.fulfill({ json: [] });
+    });
+
+    await page.goto('/apps');
+    await page.getByRole('button', { name: 'Catalog', exact: true }).click();
+    const install = page.getByRole('button', { name: 'Install View Demo' });
+    await expect(install).toBeVisible();
+
+    await page.getByRole('button', { name: 'List view', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'List view', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    );
+    await expect(install).toBeVisible();
+
+    await page.getByRole('button', { name: 'Compact view', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Compact view', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    );
+
+    await page.getByRole('button', { name: 'Grid view', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Grid view', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    );
   });
 
   test('GET /api/apps/jobs is a job list, not an app named jobs', async ({ request }) => {
@@ -272,6 +337,14 @@ test.describe('app environment variables', () => {
       if (path === '/api/apps/usage') {
         return route.fulfill({ json: { available: false, apps: [] } });
       }
+      if (path === '/api/apps/namespaces') {
+        return route.fulfill({
+          json: {
+            baseline: { provisioned: 0, limit: 0, used: 0, available: 0 },
+            privileged: { provisioned: 0, limit: 0, used: 0, available: 0 }
+          }
+        });
+      }
       if (path === '/api/apps' && request.method() === 'POST') {
         posted = request.postDataJSON();
         return route.fulfill({ json: { jobId: 'job-env', state: 'running' } });
@@ -280,6 +353,7 @@ test.describe('app environment variables', () => {
     });
 
     await page.goto('/apps');
+    await page.getByRole('button', { name: 'Catalog', exact: true }).click();
     await page.getByRole('button', { name: 'Install Env Demo' }).click();
     await expect(page.getByRole('heading', { name: 'Env Demo' })).toBeVisible();
 
@@ -330,10 +404,24 @@ test.describe('app environment variables', () => {
           }
         });
       }
+      if (path === '/api/apps') return route.fulfill({ json: [] });
+      if (path === '/api/apps/updates') return route.fulfill({ json: { count: 0, apps: [] } });
+      if (path === '/api/apps/usage') {
+        return route.fulfill({ json: { available: false, apps: [] } });
+      }
+      if (path === '/api/apps/namespaces') {
+        return route.fulfill({
+          json: {
+            baseline: { provisioned: 0, limit: 0, used: 0, available: 0 },
+            privileged: { provisioned: 0, limit: 0, used: 0, available: 0 }
+          }
+        });
+      }
       return route.fulfill({ json: [] });
     });
 
     await page.goto('/apps');
+    await page.getByRole('button', { name: 'Catalog', exact: true }).click();
     await page.getByRole('button', { name: 'Install Env Demo' }).click();
     await page.locator('summary', { hasText: 'Environment variables' }).click();
     await page.getByRole('button', { name: '+ Add variable' }).click();

@@ -125,10 +125,11 @@
 
   async function loadApp() {
     try {
-      const [res, registryRes, poolsRes] = await Promise.all([
+      const [res, registryRes, poolsRes, domainRes] = await Promise.all([
         fetch(`/api/catalog/${encodeURIComponent(appName)}`),
         fetch('/api/datasets/registry'),
-        fetch('/api/volumes/zfs')
+        fetch('/api/volumes/zfs'),
+        fetch('/api/domains')
       ]);
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
@@ -159,7 +160,6 @@
           exposure.localOnly = true;
         }
       }
-      const domainRes = await fetch('/api/domains');
       if (domainRes.ok) {
         const domainData = await domainRes.json();
         baseDomain = domainData.baseDomain || '';
