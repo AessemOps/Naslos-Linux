@@ -1,0 +1,94 @@
+# Dependabot: dependency updates for Naslos-Linux.
+#
+# Covers the Rust workspace, the Svelte UI, the service images, the GitHub
+# Actions used by ci.yml/release.yml, and the chart's published subcharts.
+# The Naslos image tags in charts/naslos/values*.yaml are release-managed by
+# scripts/check-release-version.sh, so Helm updates for them are ignored.
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/rust"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      rust-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/ui"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      ui-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "docker"
+    directories:
+      - "/agent"
+      - "/nfs/image"
+      - "/openldap/image"
+      - "/rust/api"
+      - "/samba/image"
+      - "/terminal/image"
+      - "/ui"
+      - "/vmd"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    # node:24 is the LTS line; do not drift onto an odd, non-LTS major.
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+    groups:
+      docker-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "helm"
+    directory: "/charts/naslos"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    # Update traefik/authelia/cert-manager, never the self-published Naslos
+    # images whose tags must equal the chart version.
+    ignore:
+      - dependency-name: "ghcr.io/aessemops/*"
+      - dependency-name: "naslos-*"
+    groups:
+      helm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
