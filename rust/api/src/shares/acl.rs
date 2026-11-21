@@ -21,7 +21,7 @@ pub enum AclPreset {
     /// Owner full access; owning group read and traverse (`0750`).
     GroupRead,
     /// Owner and owning group full access (`0770`, the Naslos dataset access
-    /// level; setgid is applied separately).
+    /// level; setgid is a separate dataset policy this module never applies).
     GroupWrite,
     /// Owner full access; group and others read and traverse (`0755`).
     PublicRead,
@@ -71,8 +71,8 @@ impl AclPreset {
 
     /// The classic UNIX mode bits (`0700`…`0755`) equivalent to the preset.
     ///
-    /// The setgid bit is not part of an ACL preset; dataset creation owns that
-    /// separately.
+    /// The setgid bit is not part of an ACL preset: this module never sets it,
+    /// and dataset creation does not apply it either.
     pub const fn mode_bits(self) -> u16 {
         ((self.permissions(PosixClass::Owner).bits() as u16) << 6)
             | ((self.permissions(PosixClass::Group).bits() as u16) << 3)

@@ -20,7 +20,7 @@ NFSv4 deferred to a separate decision with its own migration tooling**.
 | --- | --- | --- |
 | Pool defaults | `xattr=sa`, `compression=zstd`, `acltype=posixacl`, `atime=off`, … | `rust/agent/src/zfs/operations.rs` (`default_options`) |
 | Dataset creation | A small safe property allow-list: `compression`, `quota`, `recordsize`, `atime`, `copies`, `readonly`. ACL properties are **not** settable through the API | `rust/agent/src/zfs/dataset.rs` |
-| Dataset ownership | Shared data model is `10001:10000` (`admin:naslos_users`) with mode `2770` and setgid on directories; app containers get the same gid | `docs/app-catalog.md`, dataset provisioning |
+| Dataset ownership | Shared data model is owner `10001` and group `10000` (`admin:naslos_users`); app containers run with the same gid. Directory mode/`setgid` is **not** provisioned by dataset creation today | `docs/app-catalog.md`, `rust/agent/src/zfs/dataset.rs` |
 | API identity | Non-root `65532`, supplementary gid `10000`; mounts datasets read-only (list/stat only) | `charts/naslos/templates/api-deployment.yaml` |
 | Agent identity | Privileged root DaemonSet; the only component that writes host configuration | `rust/agent`, `docs/shares.md` |
 | SMB | Samba, `security = user`, `map to guest = Never`; sessions use the LDAP user's POSIX identity mirrored through `extrausers`; no `force user`; `create mask = 0660`, `directory mask = 0770`; `vfs objects = fruit streams_xattr` | `rust/api/src/shares/render.rs`, `samba/image/` |
@@ -143,7 +143,7 @@ option is attractive.
 
 - No dataset conversion and no mixed `acltype` tree.
 - Works with both SMB and NFS through the existing POSIX semantics.
-- Fits the current `10001:10000`/`2770` ownership model and app containers.
+- Fits the current `10001:10000` ownership model and app containers.
 - Small, auditable preset surface; easy lockout guard.
 - Keeps FR-STO-01 and every existing snapshot, clone and send/recv stream
   meaningful.
@@ -216,7 +216,8 @@ a default change:
   without an explicit conversion step and a validation pass.
 - **Snapshots and clones.** Existing snapshots carry POSIX ACLs; clones inherit
   the origin's type. A migration must account for both, not just the live tree.
-- **Applications.** App containers expect `10001:10000` and mode `2770`. An app
+- **Applications.** App datasets are documented as `10001:10000` with group
+  access; dataset creation does not apply a mode or setgid bit today. An app
   that runs `chmod` or `chown` can rewrite NFSv4 ACEs (or be blocked), depending
   on `aclmode`. Every chart would need a compatibility check.
 - **Backups.** Native `zfs send` preserves ACLs. The Buddy `tar` directory path
@@ -258,7 +259,7 @@ feature.
 | Inheritance | Default ACLs, downward only | Rich, if backend is proven |
 | Deny ACEs | No | Yes |
 | Migration risk | None | Dataset-level, mixed-tree, backup-sensitive |
-| App compatibility | Existing `10001:10000`/`2770` model | Needs per-chart validation |
+| App compatibility | Existing `10001:10000` ownership model | Needs per-chart validation |
 | Dependencies | None | Samba backend, idmapping, Ganesha support, P0-5 |
 | Time to first useful editor | Short | Long |
 
