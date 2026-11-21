@@ -404,7 +404,7 @@ pub async fn schedules_post(State(state): State<Arc<AppState>>, body: Body) -> R
     };
     if entry.id.is_empty() {
         let mut buf = [0u8; 16];
-        let _ = getrandom::getrandom(&mut buf);
+        let _ = getrandom::fill(&mut buf);
         entry.id = buf.iter().map(|b| format!("{b:02x}")).collect();
     } else if let Some(existing) = state.buddy_schedules.get(&entry.id) {
         entry.last_run = existing.last_run;

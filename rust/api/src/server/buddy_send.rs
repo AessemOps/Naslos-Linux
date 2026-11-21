@@ -277,7 +277,7 @@ fn send_state_path(receiver: &str, source: &str) -> std::path::PathBuf {
 
 fn random_suffix() -> String {
     let mut buf = [0u8; 2];
-    if getrandom::getrandom(&mut buf).is_err() {
+    if getrandom::fill(&mut buf).is_err() {
         return format!(
             "{:04x}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0) & 0xffff
@@ -288,7 +288,7 @@ fn random_suffix() -> String {
 
 fn random_job_id() -> String {
     let mut buf = [0u8; 16];
-    if getrandom::getrandom(&mut buf).is_err() {
+    if getrandom::fill(&mut buf).is_err() {
         return format!("{:032x}", Utc::now().timestamp_nanos_opt().unwrap_or(0));
     }
     buf.iter().map(|b| format!("{b:02x}")).collect()
