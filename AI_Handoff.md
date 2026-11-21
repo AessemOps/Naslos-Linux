@@ -128,7 +128,7 @@ retrying or using the browser path worked around it. Worth watching.
   release. Images digest-pinned (public GHCR): agent `4c1b2185…`,
   OpenLDAP `fdac7fee…`, Samba `7284669e…`, NFS `110f6a13…`, terminal
   `3dfbea9f…` — all from the v0.4.2/v0.4.4 release train. **Two drill
-  builds carry the MCP work until the next release tag:** API
+  builds carry the MCP work until the node is redeployed on v0.5.0:** API
   `sha-9fe8f5c…` (digest `3b7ee9fa…` — the MCP server + the serverInfo
   release-version fix) and UI `sha-dbdbd48…` (digest `c4ec9638…` — the
   Settings → MCP page + the update-badge a11y fix), both from release
@@ -146,13 +146,18 @@ retrying or using the browser path worked around it. Worth watching.
   newer release`; the operations endpoint correctly answers 412 until a
   check offers a release. The private registry `192.168.1.2:30095` is
   retired — do not build/push local images.
-- **Latest release:** `v0.4.4` (2026-11-21) and installer `naslos-v0.4.4`
-  are published; the pack `naslos-install-pack-0.4.4.tar.gz` is attached.
-  It ships the Apps speed/catalog work (PR #185): Installed is the default
+- **Latest release:** `v0.5.0` (2026-11-21) and installer `naslos-v0.5.0`
+  are published; the pack `naslos-install-pack-0.5.0.tar.gz` is attached.
+  It ships the MCP server (PR #187), targets Talos **v1.14.6** for fresh
+  installs and web upgrades (the running node is still v1.14.5), and lands
+  the Vite 8 / SvelteKit 3 / TypeScript 6 UI stack, the Tailwind 4 desktop
+  wizard and the Rust `sha2` 0.11 / `getrandom` 0.4 / `ed25519-dalek` 3
+  majors. Before that, `v0.4.4` (2026-11-21) shipped the Apps speed/catalog
+  work (PR #185): Installed is the default
   tab and paints the last in-session list while revalidating, `GET /api/apps`
   resolves release status concurrently with one status-only Helm read per app
   instead of a serial two-call loop, and the catalog offers grid, list and
-  compact layouts. The node now runs the v0.4.4 chart with the MCP drill
+  compact layouts. The node runs the v0.4.4 chart with the MCP drill
   builds (see "Deployed release" above) instead of the old v0.4.2
   release. Before that, `v0.4.3` (2026-11-20, PR #184) shipped
   upstream image-release detection for catalog apps plus the platform fixes
@@ -179,6 +184,15 @@ retrying or using the browser path worked around it. Worth watching.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.5.0` (2026-11-21) — MCP server (spec FR-MCP/SEC-17) inside the API pod:
+    a stateless Streamable HTTP endpoint at `/mcp` with scoped bearer tokens
+    and a Settings → MCP page (PR #187). The release also moves the install
+    target to Talos **v1.14.6** (talosctl pin and the Image Factory installer
+    image; the running node stays on v1.14.5 until upgraded) and lands the
+    dependency majors: Rust `sha2` 0.11, `getrandom` 0.4 and
+    `ed25519-dalek` 3; UI `vite` 8 with `@sveltejs/vite-plugin-svelte` 7 and
+    `@sveltejs/kit` 3 (`adapter-static` 4, TypeScript 6); the desktop wizard on
+    Tailwind 4 and `vite` 8.
   - `0.4.4` (2026-11-21) — Apps speed and catalog views: the page opens on
     Installed, paints the last in-session list while revalidating, and
     `GET /api/apps` resolves release status concurrently with one
