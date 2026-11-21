@@ -32,6 +32,40 @@ spec:
     options:
       name: naslos-tls
 ---
+{{- if .Values.mcp.available }}
+# MCP endpoint IngressRoute (FR-MCP, docs/mcp.md).
+#
+# No forwardauth-authelia: MCP clients are non-browser programs that cannot
+# complete an interactive 2FA login, so they authenticate with the bearer
+# token created in Settings instead. The API's /mcp guard still demands the
+# proxy secret and the trusted CIDR (SEC-10 has no opt-out) and rejects
+# everything without a valid token, so the surface is not anonymous:
+# disabled -> 404, no/invalid token -> 401, repeated failures -> 429.
+# Authelia's matching /mcp bypass lives in authelia-config.yaml.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: naslos-mcp
+  namespace: {{ .Release.Namespace }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/mcp`)
+      kind: Rule
+      middlewares:
+        - name: strip-client-identity
+        - name: proxy-identity
+        - name: security-headers
+      services:
+        - name: naslos-api
+          port: {{ .Values.api.service.port }}
+  tls:
+    secretName: {{ .Values.ingress.tls.secretName | default "naslos-tls" }}
+    options:
+      name: naslos-tls
+{{- end }}
+---
 # Authelia portal IngressRoute.
 #
 # Must NOT have the forwardAuth middleware or the portal would challenge

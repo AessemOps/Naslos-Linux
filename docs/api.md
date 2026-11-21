@@ -7,9 +7,9 @@ Two HTTP APIs exist:
 | `naslos-api` | `/api/...` | Deployment in `naslos` namespace | 8080 (ClusterIP) |
 | `naslos-agent` | `/api/v1/...` | DaemonSet on every node (hostNetwork, `naslos-privileged`) | 9090 |
 
-The web UI is served as static files by `naslos-api` (`/var/naslos/ui`) and also by
-the separate `naslos-ui` SvelteKit deployment; the IngressRoute routes the UI to
-`naslos-ui` and lets the SPA reach the API on the same origin.
+The web UI is served by the separate `naslos-ui` SvelteKit deployment (static
+files behind nginx); the IngressRoute routes the SPA to `naslos-ui` and lets
+its relative `/api/*` calls reach the API on the same origin.
 
 ## Common behaviors
 
@@ -361,7 +361,23 @@ shell, never an arbitrary command.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/` | Serves `/var/naslos/ui` via `http.FileServer` as a fallback |
+| GET | `/` | The `naslos-ui` deployment serves the SPA; `naslos-api` serves no static files |
+
+### MCP
+
+The MCP endpoint is a separate surface (not under `/api`): Streamable HTTP at
+`/mcp`, guarded by scoped bearer tokens instead of Authelia. Its settings
+routes are ordinary owner routes:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/mcp` | Endpoint state: `enabled`, `endpointUrl`, `tokens` (no hashes), `recentCalls` (§3.14) |
+| PUT | `/api/mcp` | `{enabled}` — toggle the endpoint |
+| POST | `/api/mcp/tokens` | `{name, scope, expiresInDays?}` — create a token; the plaintext is in this response only |
+| DELETE | `/api/mcp/tokens/{id}` | Revoke a token |
+
+See [mcp.md](mcp.md) for the client-facing guide (scopes, the `confirm`
+rule, client configuration).
 
 ## naslos-agent routes (host-level)
 

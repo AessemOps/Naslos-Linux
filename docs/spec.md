@@ -97,6 +97,19 @@ unmodified Talos installation, administered through a web UI.
 - **SEC-16** — A WebSocket upgrade MUST be refused unless a present `Origin`
   matches the request host (ports aside) or a configured Naslos domain.
   Non-browser clients that send no `Origin` remain supported.
+- **SEC-17** — The MCP endpoint MUST authenticate clients with operator-created
+  bearer tokens: the stored form is a SHA-256 hash compared in constant time,
+  the plaintext is shown exactly once at creation, every token carries one
+  scope (read < write < full), and `tools/call` MUST re-check both the scope
+  and (for full-scope destructive tools) an explicit `confirm` argument equal
+  to the resolved target before dispatch. The endpoint MUST refuse every
+  request while MCP is disabled (404), apply the SEC-10 proxy trust checks
+  with no opt-out, refuse a foreign `Origin` (SEC-16 rules), and block a
+  source address after ten failed attempts inside five minutes. *(contract
+  tests: `the_full_chain_rejects_every_shortcut`, `disabled_answers_404`,
+  `ten_failures_block_the_source_ip`, `a_read_token_cannot_call_a_write_tool`,
+  `a_full_tool_without_confirm_is_refused_before_dispatch`,
+  `forged_identity_cannot_bypass_the_public_auth_layers`)*
 - **SEC-4** — The user's LDAP password MUST be mirrored to Samba's passdb as
   an NT hash at password-change time; plaintext passwords MUST NOT be stored
   anywhere.
@@ -1064,6 +1077,62 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   QMP per boot and handed to the browser only through the owner-gated
   preflight).
 
+### 3.14 MCP server (`FR-MCP`)
+
+Naslos 0.4.4 ships a first-party MCP (Model Context Protocol) endpoint: a
+Streamable HTTP server **inside the existing `naslos-api` pod** — no new
+image, Service, deployment or NetworkPolicy — that exposes the API's
+owner routes to AI assistants and other programmatic clients through
+scoped bearer tokens. Traefik routes `Host(apex) && PathPrefix('/mcp')`
+to the API without the Authelia forwardAuth (a programmatic client cannot
+complete an interactive 2FA login); the Authelia bypass lives next to the
+buddy bypass, and the API's own guard keeps SEC-10 in force. See
+`docs/mcp.md` for the operator guide.
+
+- **FR-MCP-01** — The endpoint MUST be off by default: state persists in
+  `mcp.json` on the state PVC (`MCP_CONFIG`), the admin toggle is
+  `PUT /api/mcp {enabled}`, and a disabled install answers `/mcp` with 404
+  so the surface is not advertised. `mcp.available` in the chart only gates
+  routing and the bypass (a chart-level kill switch for locked-down
+  installs).
+- **FR-MCP-02** — Tokens: `POST /api/mcp/tokens` (owner route, SEC-10 +
+  admin) creates a token `{name, scope, expiresInDays?}`; the response
+  shows the plaintext exactly once and every other view (Settings UI,
+  `GET /api/mcp`) omits both the plaintext and the hash. Tokens verify by
+  SHA-256 hash with constant-time comparison, may expire, and revoke via
+  `DELETE /api/mcp/tokens/{id}`. New tokens default to the `read` scope:
+  a `full` token is an administrator without 2FA. *(SEC-17)*
+- **FR-MCP-03** — Scopes: every tool declares `read` < `write` < `full`.
+  `tools/list` MUST only list the tools the calling token's scope allows,
+  and `tools/call` MUST re-check the scope (a client can call an unlisted
+  tool). Refusals return tool errors the caller's LLM can read, never a
+  protocol-level failure.
+- **FR-MCP-04** — Destructive (full-scope) tools MUST require a `confirm`
+  argument equal to the resolved target (the same resolved value used in
+  the path or query, never a second lookup), checked before any dispatch.
+  The `initialize` instructions MUST state the rule.
+- **FR-MCP-05** — Tool dispatch MUST call the real handlers through the
+  same router surface `build_router` mounts (split into `owner_routes()`
+  and `user_routes()`), with a synthetic `mcp:<token>` admin identity
+  injected per call — the internal router is never reachable from the
+  HTTP listener. Tools get API behavior for free: validation, JSON error
+  bodies, and 503 for absent subsystems; the registry stays a declarative
+  table plus one dispatcher. *(contract tests:
+  `every_registry_tool_matches_a_real_route`,
+  `every_route_answers_401_without_the_proxy_secret`,
+  `every_owner_route_is_403_for_non_admins`,
+  `internal_router_answers_with_a_synthetic_identity_and_hides_public_routes`)*
+- **FR-MCP-06** — The server MUST be stateless (Streamable HTTP,
+  `json_response` preferred, no session store): one API replica today, but
+  a stateful session would silently break the day a second replica
+  exists. Resources and prompts are out of scope for v1; `tools` is the
+  only advertised capability.
+- **FR-MCP-07** — Every `tools/call` MUST be audited: a structured log
+  line (`mcp_tool_call`, token name, tool, scope, status, duration) plus
+  an in-memory per-token ring buffer (newest 50 across tokens) surfaced at
+  `GET /api/mcp`. Arguments are NEVER logged or recorded — tool bodies can
+  carry passwords, secrets and tokens.
+
 ---
 
 ## 4. API contracts (normative)
@@ -1151,6 +1220,10 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
 | `/api/buddy/restore` | POST | Restore a buddy's backup into a local dataset (whole chain sequence), or `verify` to hash it without touching ZFS |
 | `/api/metrics` | GET | Live `SystemMetrics` (§3.5) |
 | `/api/dashboard` | GET | Dashboard view model + live pools |
+| `/api/mcp` | GET, PUT | MCP endpoint state (enabled, endpointUrl, tokens without hashes, recent calls) / toggle (§3.14) |
+| `/api/mcp/tokens` | POST | Create a scoped bearer token; the plaintext is shown once (§3.14, SEC-17) |
+| `/api/mcp/tokens/{id}` | DELETE | Revoke a token |
+| `/mcp` | POST, GET | The MCP endpoint itself: Streamable HTTP, bearer-token guarded, no Authelia (§3.14) |
 | `/api/ws/logs` `/api/ws/exec` | WS | Streams (§3.6) |
 | `/*` | GET | UI static assets (legacy `/var/naslos/ui` path; the served UI is the `naslos-ui` deployment) |
 
@@ -1229,6 +1302,7 @@ The authoritative executable acceptance suite is the Playwright suite in
 | `logo.spec.ts` | NFR-5, asset served as real PNG (SPA-fallback guard) |
 | `network.spec.ts` — inventory and client validation | FR-NET-01/02 (hostname, resolver and link shape; invalid CIDR/gateway blocked in the browser with no POST) |
 | `network.spec.ts` — hub navigation | The Settings → Network card reaches `/settings/network` |
+| `mcp.spec.ts` — MCP settings | FR-MCP-01/02/03/07 (disabled-by-default view, token create/reveal-once/revoke flow, scope choice, recent-calls table; leaves the endpoint disabled and no tokens behind) |
 
 Share serving, the account mirror and group access involve the node, so they
 are additionally verified against the live VM (not by Playwright):

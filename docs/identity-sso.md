@@ -111,7 +111,7 @@ Two default groups:
 | Group | Access |
 | --- | --- |
 | `naslos_admins` | Full access (users, apps, disks, shares) |
-| `naslos_users` | Read-only (view only) |
+| `naslos_users` | Every authenticated route; the API gates admin-only routes by group |
 
 Authelia rules (`charts/naslos/templates/authelia-config.yaml`):
 
@@ -119,6 +119,7 @@ Authelia rules (`charts/naslos/templates/authelia-config.yaml`):
 | --- | --- |
 | `/api/health` | bypass (health checks) |
 | `/api/buddy/v1/` | bypass (peers authenticate with their own keys, not a session) |
+| `/mcp` | bypass when `mcp.available` (MCP clients authenticate with scoped bearer tokens; the API's guard still enforces the proxy trust checks — see [mcp.md](mcp.md)) |
 | `/authelia` | bypass (the portal route has no forwardAuth) |
 | every path, for a user in `group:naslos_admins` | two_factor (2FA on the whole surface, so the portal prompts enrolment during the first login — not just on the API prefixes, which would let the SPA open on a one-factor session) |
 | `/traefik` | deny for everyone except admins (matched above with 2FA). The rule has no subject on purpose: an authenticated account outside both Naslos groups used to fall through to the catch-all and reach the dashboard, whose API returns the `proxy-identity` middleware with the shared secret |
