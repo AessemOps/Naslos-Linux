@@ -49,7 +49,7 @@ pub fn new_identity(name: &str) -> Result<Identity, String> {
 
 fn new_identity_with_env(name: &str, env_kek: bool) -> Result<Identity, String> {
     let mut seed = [0u8; 32];
-    getrandom::getrandom(&mut seed).map_err(|e| format!("generating signing key: {e}"))?;
+    getrandom::fill(&mut seed).map_err(|e| format!("generating signing key: {e}"))?;
     let ed = ssh_key::private::Ed25519PrivateKey::from_bytes(&seed);
     let priv_key = PrivateKey::new(
         KeypairData::Ed25519(Ed25519Keypair {
