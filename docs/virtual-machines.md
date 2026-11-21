@@ -16,7 +16,7 @@ naslos-api ── zfs create/destroy/rollback ──> naslos-agent ──> ZFS d
 
 | Piece | Role |
 | --- | --- |
-| `naslos-vmd` (`rust/vmd`, image `ghcr.io/aessemops/naslos-vmd`) | Privileged hostNetwork pod, one per node (`Recreate`). Validates, builds every QEMU argument from the validated model (golden-tested), supervises children, speaks QMP (graceful stop, VNC passwords, balloon stats), creates macvtap devices for LAN mode, generates cloud-init seeds, and serves the image library at `<pool>/vms/isos`. |
+| `naslos-vmd` (`rust/vmd`, image `ghcr.io/aessemops/naslos-vmd`) | Privileged hostNetwork pod, one per node (`Recreate`). Validates, builds every QEMU argument from the validated model (golden-tested), supervises children, speaks QMP (graceful stop, VNC passwords, balloon stats), generates cloud-init seeds, and serves the image library at `<pool>/vms/isos`. |
 | `naslos-api` (`rust/api/src/virt.rs`, `server/virt.rs`) | The brain: validates every record, persists `vms.json` on the state PVC, renders the whole desired config and pushes it (`PUT /api/v1/vms/config` on vmd, revision-tagged: an identical
   revision is a no-op). State is always derived live from vmd and never
   persisted. |
@@ -54,19 +54,20 @@ entire command line is pinned by unit tests.
 
 ## Networking
 
-- **NAT (default)**: QEMU slirp. The VM reaches the LAN/Internet through
+- **NAT only (v1)**: QEMU slirp. The VM reaches the LAN/Internet through
   the node; inbound access is via editable TCP port forwards
   (`node:port → guest:port`) in the create/edit wizard. The ports listen
   on the node itself — same reachability as an SMB share.
-- **LAN (macvtap)**: the VM attaches to a physical NIC via a macvtap bridge
-  device (`mtap-<hash>`) and gets **its own DHCP address** on your LAN, as
-  if it were a separate machine. Two caveats, both macvtap properties:
-  the **NAS host itself cannot talk to the guest** (reached from any other
-  device instead), and the v1 UI enforces no forwards in this mode.
-- No Talos machine-config change is involved in either mode; a full host
-  bridge (so the host can reach guests) is explicitly out of scope for v1.
-- Every VM gets a stable MAC derived from its name, so DHCP assignments
-  survive restarts.
+- Every VM gets a stable MAC derived from its name, so the slirp-side
+  addressing survives restarts.
+- **LAN attachment is [OPEN]** (a guest with its own DHCP address on your
+  LAN). The planned path is a Talos `BridgeConfig` host bridge — the
+  sanctioned KubeVirt-on-Talos pattern — which moves the node's primary
+  address onto the bridge, so it is a separate release; 0.5.2 makes no
+  machine-config change. The earlier macvtap draft was removed rather than
+  shipped: its probe could false-negative on kernels that do have macvtap,
+  and the device was created without the guest's stable MAC, so its ingress
+  filter would have dropped unicast traffic to the guest.
 
 ## Provisioning (cloud-init)
 
@@ -141,7 +142,7 @@ boots straight to SSH.
 
 ## Security posture
 
-- vmd is privileged by design (KVM, tun, macvtap, dataset writes). Its
+- vmd is privileged by design (KVM, dataset writes). Its
   HTTP API is on the node's network, so it carries the exact agent
   posture: a chart-generated bearer token (`naslos-vmd` Secret) checked on
   every route but `/health`, and chart-generated TLS (PF-M5) —

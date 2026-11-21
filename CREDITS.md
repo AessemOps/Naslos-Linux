@@ -238,7 +238,6 @@ authoritative copyright file ships in the image at
 | ovmf (OVMF/edk2 firmware) | BSD-2-Clause-Patent | https://github.com/tianocore/edk2 |
 | seabios | LGPL-3.0 | https://www.seabios.org/ |
 | genisoimage | GPL-3.0-or-later | https://www.debian.org/ |
-| iproute2 | GPL-2.0-or-later | https://git.kernel.org/pub/scm/network/iproute2/iproute2.git |
 | ca-certificates | GPL-2.0-or-later AND MPL-2.0 | https://tracker.debian.org/pkg/ca-certificates |
 
 QEMU is invoked as an unmodified distro binary; Naslos only orchestrates it

@@ -344,7 +344,7 @@ shell, never an arbitrary command.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/virt/capabilities` | Node preflight: KVM, CPU model, nested, tun, macvtap, physical NICs. 503 when the supervisor is not deployed/reachable |
+| GET | `/api/virt/capabilities` | Node preflight: KVM, CPU model, nested, physical NICs. 503 when the supervisor is not deployed/reachable |
 | GET | `/api/virt/vms` | VM records merged with live state (`running`/`stopped`/`unknown`; live `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) |
 | POST | `/api/virt/vms` | Create: validates, creates `<pool>/vms/<name>` (quota = disk size) + the pool's `vms/isos` library via the agent, stores the record, pushes the desired config; rolls the record back if the push fails |
 | GET/PUT/DELETE | `/api/virt/vms/{name}` | Detail (merged view) / update (name immutable; the supervisor recreates the QEMU process when the rendered args change) / delete (409 while running; destroys the dataset, restoring the record if the destroy fails) |

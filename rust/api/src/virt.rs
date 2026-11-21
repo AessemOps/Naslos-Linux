@@ -7,7 +7,7 @@
 //! enforce exactly the same rules (SEC-1: no unvalidated string ever reaches a
 //! QEMU command line).
 
-use naslos_vmd::model::{DesiredConfig, DesiredState, NetMode, VmSpec};
+use naslos_vmd::model::{DesiredConfig, DesiredState, VmSpec};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
@@ -157,9 +157,6 @@ impl Store {
             if other.name == name {
                 continue;
             }
-            if spec.net.mode != NetMode::Nat || other.net.mode != NetMode::Nat {
-                continue;
-            }
             for fwd in &spec.net.forwards {
                 if other.net.forwards.iter().any(|f| f.host == fwd.host) {
                     return Err(format!(
@@ -253,7 +250,7 @@ pub fn isos_dataset(pool: &str) -> String {
 mod tests {
     use super::*;
     use naslos_vmd::model::{
-        CloudInitSpec, DiskBus, DiskFormat, DiskSpec, Firmware, NetMode, NetSpec, PortForward,
+        CloudInitSpec, DiskBus, DiskFormat, DiskSpec, Firmware, NetSpec, PortForward,
     };
 
     fn spec(name: &str) -> VmSpec {
@@ -271,12 +268,11 @@ mod tests {
                 source_image: None,
             },
             net: NetSpec {
-                mode: NetMode::Nat,
                 forwards: vec![PortForward {
                     host: 8081,
                     dst: 80,
                 }],
-                nic: None,
+                ..NetSpec::default()
             },
             cloud_init: Some(CloudInitSpec {
                 hostname: name.into(),
@@ -414,10 +410,5 @@ mod tests {
         assert!(store
             .validate_cross_vm_ports("alpha", &spec("alpha"))
             .is_ok());
-        // LAN VMs have no host ports to collide with.
-        let mut lan = spec("beta");
-        lan.net.mode = NetMode::Lan;
-        lan.net.forwards = spec("alpha").net.forwards.clone();
-        assert!(store.validate_cross_vm_ports("beta", &lan).is_ok());
     }
 }

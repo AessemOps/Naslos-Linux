@@ -4,7 +4,7 @@
 //! string ever reaches the command line unvalidated. The golden tests pin the
 //! exact argv for the reference VMs so a render change is a reviewable diff.
 
-use crate::model::{DiskBus, DiskFormat, Firmware, NetMode, VmSpec};
+use crate::model::{DiskBus, DiskFormat, Firmware, VmSpec};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
@@ -28,8 +28,6 @@ pub struct BuildContext {
     pub cloud_init_seed: Option<PathBuf>,
     /// Absolute path of the install ISO, resolved by the supervisor.
     pub iso_path: Option<PathBuf>,
-    /// Inherited fd number of the opened macvtap device (LAN mode only).
-    pub macvtap_fd: Option<i32>,
 }
 
 /// Derive a stable MAC from the VM name so DHCP assigns the same address
@@ -112,29 +110,16 @@ pub fn qemu_args(spec: &VmSpec, ctx: &BuildContext) -> Result<Vec<String>, Strin
         Firmware::Bios => {}
     }
 
-    // Networking.
+    // Networking: NAT (slirp) with the VM's TCP port forwards.
     let mac = stable_mac(&spec.name);
-    match spec.net.mode {
-        NetMode::Nat => {
-            let mut netdev = String::from("user,id=net0");
-            for fwd in &spec.net.forwards {
-                netdev.push_str(&format!(",hostfwd=tcp::{}-:{}", fwd.host, fwd.dst));
-            }
-            args.push("-netdev".into());
-            args.push(netdev);
-            args.push("-device".into());
-            args.push(format!("virtio-net-pci,netdev=net0,mac={mac}"));
-        }
-        NetMode::Lan => {
-            let fd = ctx
-                .macvtap_fd
-                .ok_or_else(|| "LAN mode needs an opened macvtap device fd".to_string())?;
-            args.push("-netdev".into());
-            args.push(format!("tap,id=net0,fd={fd}"));
-            args.push("-device".into());
-            args.push(format!("virtio-net-pci,netdev=net0,mac={mac}"));
-        }
+    let mut netdev = String::from("user,id=net0");
+    for fwd in &spec.net.forwards {
+        netdev.push_str(&format!(",hostfwd=tcp::{}-:{}", fwd.host, fwd.dst));
     }
+    args.push("-netdev".into());
+    args.push(netdev);
+    args.push("-device".into());
+    args.push(format!("virtio-net-pci,netdev=net0,mac={mac}"));
 
     // VNC with a per-VM password vmd sets over QMP after start.
     args.push("-vnc".into());
@@ -223,7 +208,6 @@ mod tests {
             uefi_vars: Some(PathBuf::from("/var/mnt/tank/vms/test-vm/vars.fd")),
             cloud_init_seed: Some(PathBuf::from("/var/mnt/tank/vms/test-vm/seed.iso")),
             iso_path: Some(PathBuf::from("/var/mnt/tank/vms/isos/debian-13.iso")),
-            macvtap_fd: None,
         }
     }
 
@@ -242,12 +226,11 @@ mod tests {
                 source_image: None,
             },
             net: NetSpec {
-                mode: NetMode::Nat,
                 forwards: vec![PortForward {
                     host: 8081,
                     dst: 80,
                 }],
-                nic: None,
+                ..NetSpec::default()
             },
             cloud_init: Some(CloudInitSpec {
                 hostname: "test-vm".into(),
@@ -305,20 +288,15 @@ mod tests {
     }
 
     #[test]
-    fn golden_args_bios_sata_lan() {
-        let mut s = spec("lan-vm");
+    fn golden_args_bios_sata() {
+        let mut s = spec("bios-vm");
         s.firmware = Firmware::Bios;
         s.disk.bus = DiskBus::Sata;
         s.disk.format = DiskFormat::Raw;
-        s.net = NetSpec {
-            mode: NetMode::Lan,
-            forwards: vec![],
-            nic: Some("eth0".into()),
-        };
+        s.net.forwards.clear();
         s.cloud_init = None;
         let mut c = ctx();
-        c.macvtap_fd = Some(9);
-        c.vm_dir = PathBuf::from("/var/mnt/tank/vms/lan-vm");
+        c.vm_dir = PathBuf::from("/var/mnt/tank/vms/bios-vm");
         c.cloud_init_seed = None;
         c.iso_path = None;
         c.vnc_display = 7;
@@ -328,7 +306,7 @@ mod tests {
         // No pflash drives in BIOS mode.
         assert!(!joined.contains("pflash"), "{joined}");
         assert!(joined.contains("if=ide,format=raw"), "{joined}");
-        assert!(joined.contains("-netdev tap,id=net0,fd=9"), "{joined}");
+        assert!(joined.contains("-netdev user,id=net0"), "{joined}");
         assert!(joined.contains("mac=52:54:00:"), "{joined}");
         assert!(joined.contains("-vnc 0.0.0.0:7,password=on"), "{joined}");
         // No cloud-init seed without cloud-init.
@@ -351,17 +329,6 @@ mod tests {
         c.uefi_code = None;
         c.uefi_vars = None;
         assert!(qemu_args(&spec("test-vm"), &c).is_err());
-    }
-
-    #[test]
-    fn lan_without_fd_is_an_error() {
-        let mut s = spec("lan-vm");
-        s.net = NetSpec {
-            mode: NetMode::Lan,
-            forwards: vec![],
-            nic: Some("eth0".into()),
-        };
-        assert!(qemu_args(&s, &ctx()).is_err());
     }
 
     #[test]

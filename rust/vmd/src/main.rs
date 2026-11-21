@@ -2,7 +2,6 @@
 
 use clap::Parser;
 use naslos_vmd::capabilities;
-use naslos_vmd::netdev;
 use naslos_vmd::server::{Options, Server};
 use naslos_vmd::supervisor::{self, Supervisor};
 use std::path::PathBuf;
@@ -57,10 +56,8 @@ async fn main() {
 
     let caps = capabilities::detect();
     tracing::info!(
-        "naslos-vmd starting (kvm={}, tun={}, macvtap={}, nics={})",
+        "naslos-vmd starting (kvm={}, nics={})",
         caps.kvm,
-        caps.tun,
-        caps.macvtap,
         caps.nics.join(",")
     );
 
@@ -76,10 +73,6 @@ async fn main() {
     let run_dir =
         PathBuf::from(std::env::var("VMD_RUN_DIR").unwrap_or_else(|_| "/run/vmd".to_string()));
     let _ = std::fs::create_dir_all(&run_dir);
-
-    // vmd is the only creator of mtap-* devices; a crashed pod may have left
-    // some behind, and two QEMUs can never share one macvtap device.
-    netdev::remove_all_macvtap().await;
 
     let supervisor = Arc::new(Supervisor::new(caps.kvm, vnc_first, vnc_count, run_dir));
     tokio::spawn(supervisor::run_watchdog(supervisor.clone()));

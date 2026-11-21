@@ -31,7 +31,6 @@ test('virtual machines page renders and reports the node capabilities', async ({
   expect(res.ok(), await res.text()).toBeTruthy();
   const caps = await res.json();
   expect(typeof caps.kvm).toBe('boolean');
-  expect(typeof caps.macvtap).toBe('boolean');
   expect(Array.isArray(caps.nics)).toBeTruthy();
 
   await page.goto('/vms');
@@ -70,7 +69,7 @@ test('the VM list contract holds on the node', async ({ request }) => {
     expect(vm.cpu).toBeGreaterThan(0);
     expect(vm.memMiB).toBeGreaterThanOrEqual(16);
     expect(vm.disk.sizeGB).toBeGreaterThan(0);
-    expect(['nat', 'lan']).toContain(vm.net.mode);
+    expect(vm.net.mode).toBe('nat');
     // The console credentials never leak into the list payload (they only
     // ever travel through the preflight route).
     expect(vm.vncPassword).toBeUndefined();

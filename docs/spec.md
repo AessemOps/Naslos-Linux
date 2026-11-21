@@ -1012,17 +1012,16 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
 
 - **FR-VMT-01** — The node's virtualization capabilities MUST be reported on
   `GET /api/virt/capabilities`: KVM availability, CPU model, nested
-  virtualization, `/dev/net/tun`, macvtap support and the physical NIC list.
-  The UI MUST surface a missing-KVM banner and disable LAN mode when macvtap
-  is unavailable; a pre-0.4 node (no supervisor) must render the page with a
-  clear message, never a crash.
+  virtualization and the physical NIC list. The UI MUST surface a
+  missing-KVM banner; a pre-0.4 node (no supervisor) must render the page with
+  a clear message, never a crash.
 - **FR-VMT-02** — VM creation MUST be validated server-side before any host
   change: DNS-1123 name, pool existence, vCPU/memory/disk ranges, unique
-  host ports across all VMs, firmware/disk-format/bus/net-mode enums, library
-  references (`isos/<file>`), and cloud-init fields (hostname, POSIX user,
-  ≤20 SSH public keys, no passwords). vmd MUST re-validate the same rules
-  before building any QEMU command line (SEC-1: no unvalidated string ever
-  reaches `exec`).
+  host ports across all VMs, firmware/disk-format/bus enums, the NAT-only
+  network mode, library references (`isos/<file>`), and cloud-init fields
+  (hostname, POSIX user, ≤20 SSH public keys, no passwords). vmd MUST
+  re-validate the same rules before building any QEMU command line (SEC-1: no
+  unvalidated string ever reaches `exec`).
 - **FR-VMT-03** — A VM's dataset MUST be a child of its pool
   (`<pool>/vms/<name>`) with `quota` equal to the declared disk size, created
   through the agent; the first start creates the disk image blank (`qcow2`
@@ -1030,12 +1029,16 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   and resizes it to the declared size. Deleting a VM MUST refuse while it is
   running and MUST destroy the dataset only after the record is removed,
   restoring the record if the destroy fails.
-- **FR-VMT-04** — Networking v1: NAT (slirp) with per-VM editable TCP port
-  forwards exposed on the node, plus optional macvtap LAN attachment (the
-  guest gets its own DHCP address). The UI MUST document the macvtap
-  host-isolation caveat (the NAS host itself cannot talk to the guest); a
-  full host bridge is out of scope for v1 and no Talos machine-config change
-  is made.
+- **FR-VMT-04** — Networking v1 is NAT (slirp) with per-VM editable TCP port
+  forwards exposed on the node; that is the only mode. A LAN mode that gives
+  the guest its own DHCP address is **[OPEN]**: the planned path is a Talos
+  `BridgeConfig` host bridge (the sanctioned KubeVirt-on-Talos pattern),
+  which re-addresses the node's primary interface and is therefore a separate
+  release; no Talos machine-config change is made today. A future implementer
+  MUST NOT revive the removed macvtap path unchanged: its capability probe
+  created a throwaway macvtap linked to `lo` (a false negative on kernels
+  that do have macvtap), and the device was created without the guest's
+  stable MAC, so macvtap's ingress filter dropped unicast to the guest.
 - **FR-VMT-05** — Boot media: an install ISO attaches as a CD-ROM from the
   per-pool image library (`<pool>/vms/isos`). UEFI (OVMF, with a per-VM
   writable vars copy) is the default firmware; BIOS (SeaBIOS) remains a
