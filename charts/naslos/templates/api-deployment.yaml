@@ -1,4 +1,7 @@
 {{- if .Values.api.enabled }}
+{{- if gt (int .Values.api.replicas) 1 }}
+{{- fail "api.replicas must be 1: the API runs the metrics, buddy and storage schedulers against a single state volume, so replicas > 1 would run concurrent schedulers" }}
+{{- end }}
 {{- $ddns := get .Values "ddns" | default dict }}
 {{- $diskHealth := get .Values "diskHealth" | default dict }}
 apiVersion: apps/v1

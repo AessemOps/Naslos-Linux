@@ -76,6 +76,7 @@
   let schedulesError = '';
   let scrubRunning = false;
   let scrubMessage = '';
+  let scrubError = false;
 
   let showScheduleModal = false;
   let scheduleKind: 'snapshot' | 'scrub' = 'snapshot';
@@ -249,6 +250,34 @@
     }
   }
 
+  // Keep `runAt` valid for the selected cadence: daily is `HH:MM` and weekly is
+  // `Day HH:MM`. Changing the cadence must not leave the field in the other
+  // shape, or the API rejects the save until the operator retypes it.
+  function normalizeRunAt(
+    cadence: 'hourly' | 'daily' | 'weekly',
+    runAt: string
+  ): string {
+    if (cadence === 'hourly') return '';
+    const parts = runAt.trim().split(/\s+/).filter(Boolean);
+    const last = parts[parts.length - 1] ?? '';
+    const time = /^\d{2}:\d{2}$/.test(last) ? last : '02:30';
+    if (cadence === 'weekly') {
+      const day = parts.find(p => /^(sun|mon|tue|wed|thu|fri|sat)$/i.test(p));
+      const weekday = day ? day[0].toUpperCase() + day.slice(1, 3).toLowerCase() : 'Sun';
+      return `${weekday} ${time}`;
+    }
+    return time;
+  }
+
+  function changeScheduleCadence(event: Event) {
+    const value = (event.currentTarget as HTMLSelectElement).value as
+      | 'hourly'
+      | 'daily'
+      | 'weekly';
+    scheduleCadence = value;
+    scheduleRunAt = normalizeRunAt(value, scheduleRunAt);
+  }
+
   async function saveSchedule() {
     scheduleSaving = true;
     scheduleError = '';
@@ -295,6 +324,7 @@
   async function runScrubNow() {
     scrubRunning = true;
     scrubMessage = '';
+    scrubError = false;
     try {
       const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(poolName ?? '')}/scrub`, {
         method: 'POST'
@@ -305,6 +335,7 @@
       await loadHealth();
     } catch (e: any) {
       scrubMessage = e.message;
+      scrubError = true;
     } finally {
       scrubRunning = false;
     }
@@ -427,7 +458,12 @@
     </div>
   </PageHeader>
 
-  {#if scrubMessage}<div role="status" class="callout callout-ok mb-4">{scrubMessage}</div>{/if}
+  {#if scrubMessage}
+    <div
+      role={scrubError ? 'alert' : 'status'}
+      class={scrubError ? 'callout callout-bad mb-4' : 'callout callout-ok mb-4'}
+    >{scrubMessage}</div>
+  {/if}
   {#if schedulesError}<div role="alert" class="callout callout-bad mb-4">{schedulesError}</div>{/if}
 
   {#if loading}
@@ -671,7 +707,7 @@
 
     <div>
       <label class="label" for="schedule-cadence">Cadence</label>
-      <select id="schedule-cadence" bind:value={scheduleCadence} class="input w-full">
+      <select id="schedule-cadence" value={scheduleCadence} on:change={changeScheduleCadence} class="input w-full">
         {#if scheduleKind === 'snapshot'}
           <option value="hourly">Hourly</option>
         {/if}

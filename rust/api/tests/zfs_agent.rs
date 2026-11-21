@@ -103,6 +103,16 @@ async fn spawn_mock(mock: MockAgent) -> String {
             }),
         )
         .route(
+            "/api/v1/pools/{pool}/scrub",
+            post({
+                let default = default.clone();
+                move || {
+                    let (status, body) = (*default).clone();
+                    async move { (StatusCode::from_u16(status).unwrap(), Json(body)) }
+                }
+            }),
+        )
+        .route(
             "/api/v1/datasets/{*rest}",
             post({
                 let default = default.clone();
@@ -499,5 +509,50 @@ async fn vm_delete_destroys_the_dataset_recursively() {
     assert!(
         destroy.contains("recursive=true"),
         "the VM dataset destroy must be recursive (snapshots belong to the VM), got: {destroy}"
+    );
+}
+
+#[tokio::test]
+async fn scrub_schedule_reads_pool_health_before_starting_the_scrub() {
+    // The agent's `GET /api/v1/pools/{pool}` returns a PoolHealth object, not a
+    // `{"status": ...}` map. Decoding it the wrong way fails every tick, so the
+    // schedule never starts a scrub and never reports a result.
+    let base = spawn_mock(MockAgent {
+        default: (
+            200,
+            json!({
+                "name": "tank",
+                "state": "ONLINE",
+                "scan": "none requested",
+                "errors": "No known data errors",
+                "config": [],
+                "ioStats": {}
+            }),
+        ),
+        pools: None,
+    })
+    .await;
+    let state = state_with_agent(&base);
+    let now = chrono::Utc::now();
+    state
+        .storage_schedules
+        .put(naslos_api::server::storage_schedules::StorageSchedule {
+            id: "scrubtest".to_string(),
+            kind: naslos_api::server::storage_schedules::ScheduleKind::Scrub,
+            target: "tank".to_string(),
+            cadence: naslos_api::schedule::Cadence::Daily,
+            run_at: "02:30".to_string(),
+            enabled: true,
+            next_run: Some(now - chrono::Duration::seconds(1)),
+            ..Default::default()
+        })
+        .unwrap();
+
+    naslos_api::server::storage_schedules::run_due_schedules(&state, now).await;
+
+    let saved = state.storage_schedules.get("scrubtest").unwrap();
+    assert_eq!(
+        saved.last_result, "started",
+        "the schedule must read pool health and start the scrub"
     );
 }
