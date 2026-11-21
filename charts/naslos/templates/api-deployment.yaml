@@ -465,6 +465,11 @@ spec:
             # restart (they used to be in-memory only).
             - name: NOTIFICATIONS_CONFIG
               value: {{ .Values.api.notificationsFile | default "/var/lib/naslos/notifications.json" | quote }}
+            # MCP endpoint state (FR-MCP): the enabled flag and the SHA-256
+            # token hashes live beside the other state files. The endpoint
+            # itself stays off until an admin enables it in Settings.
+            - name: MCP_CONFIG
+              value: {{ .Values.api.mcpFile | default "/var/lib/naslos/mcp.json" | quote }}
             # Day-2 host network changes (FR-NET): the in-flight change record
             # and its previous-config snapshot live on the same state volume.
             - name: NETWORK_STATE
