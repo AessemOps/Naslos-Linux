@@ -1005,9 +1005,12 @@ with a sibling `naslos-app.yaml` install-config. See
 - **FR-APP-27** — The Installed view MUST offer an update when the registry
   serves a different digest for an installed app's image tag (a floating tag
   such as `latest`), not only when the catalog chart version changes. The API
-  MUST compare the running pod's `imageID` digest with the tag's top-level
+  MUST compare a live pod's `imageID` digest with the tag's top-level
   registry digest *or* its `linux/amd64` manifest digest (runtimes report
-  either), cache lookups for `IMAGE_CHECK_TTL` (default 1h), normalize
+  either); only pods whose phase is `Running` and that are not terminating
+  count, so a completed or failed pod from an earlier ReplicaSet MUST NOT keep
+  an already-applied update offered. Cache lookups for `IMAGE_CHECK_TTL`
+  (default 1h), normalize
   `docker.io`/`index.docker.io` to `registry-1.docker.io`, and never report an
   update for a digest-pinned image, an unreadable registry, or a catalog chart
   older than the installed one. The background catalog cycle and the manual

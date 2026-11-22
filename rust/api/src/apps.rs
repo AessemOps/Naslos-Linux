@@ -455,6 +455,21 @@ fn pod_instance(pod: &serde_json::Value) -> &str {
         .unwrap_or("")
 }
 
+/// Whether a pod should be consulted for image drift.
+///
+/// Only a live pod runs the image it reports: a completed or failed pod from
+/// an earlier ReplicaSet keeps its stale `imageID`, so counting it makes the
+/// app advertise an image update that has already been applied. The same goes
+/// for a pod that is terminating: during a rollout the old pod still runs the
+/// previous digest.
+fn pod_is_live_for_image_check(pod: &serde_json::Value) -> bool {
+    pod.pointer("/metadata/deletionTimestamp").is_none()
+        && pod
+            .pointer("/status/phase")
+            .and_then(|phase| phase.as_str())
+            == Some("Running")
+}
+
 /// Build the strategic-merge patch that makes the drifted container pull its
 /// image again and roll: `Always` only on containers whose image is
 /// `reference`, plus a pod-template annotation. Returns `None` when no
@@ -2747,6 +2762,9 @@ impl Manager {
             async move {
                 let mut drift = None;
                 'pods: for pod in pods {
+                    if !pod_is_live_for_image_check(&pod) {
+                        continue;
+                    }
                     if !isolated && pod_instance(&pod) != app {
                         continue;
                     }
@@ -3926,6 +3944,27 @@ mod tests {
 
         assert!(image_pull_patch(&workload, "example/app:v2", "now").is_none());
         assert!(image_pull_patch(&serde_json::json!({}), "example/app:v2", "now").is_none());
+    }
+
+    #[test]
+    fn only_live_pods_participate_in_image_drift() {
+        let running = serde_json::json!({ "status": { "phase": "Running" } });
+        assert!(pod_is_live_for_image_check(&running));
+
+        // A completed pod from an older ReplicaSet keeps its stale imageID;
+        // counting it reports an update that was already applied.
+        for phase in ["Succeeded", "Failed", "Pending", "Unknown"] {
+            let pod = serde_json::json!({ "status": { "phase": phase } });
+            assert!(!pod_is_live_for_image_check(&pod), "{phase}");
+        }
+        assert!(!pod_is_live_for_image_check(&serde_json::json!({})));
+
+        // A terminating pod still runs the previous digest during a rollout.
+        let terminating = serde_json::json!({
+            "metadata": { "deletionTimestamp": "2026-01-01T00:00:00Z" },
+            "status": { "phase": "Running" }
+        });
+        assert!(!pod_is_live_for_image_check(&terminating));
     }
 
     #[test]
