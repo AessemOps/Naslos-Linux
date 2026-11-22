@@ -841,6 +841,10 @@ mod tests {
 /// A snapshot's identity, from the agent's `/zfs/snapshots`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotInfo {
+    /// Dataset that owns the snapshot. The recursive listing flattens paths,
+    /// so this is what lets a caller tell a root snapshot from a child one.
+    #[serde(default)]
+    pub dataset: String,
     pub name: String,
     #[serde(default)]
     pub guid: String,

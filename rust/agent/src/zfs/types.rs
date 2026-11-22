@@ -118,6 +118,8 @@ pub struct PoolIOStats {
 /// A snapshot's identity: name plus GUID (the sender recognises its last send).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SnapshotInfo {
+    #[serde(default)]
+    pub dataset: String,
     pub name: String,
     pub guid: String,
     pub created: String,

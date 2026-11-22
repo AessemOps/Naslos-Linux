@@ -30,6 +30,7 @@ struct MockAgent {
     deleted: Arc<Mutex<Vec<String>>>,
     created: Arc<Mutex<Vec<String>>>,
     sends: Arc<Mutex<Vec<Value>>>,
+    receives: Arc<Mutex<Vec<Value>>>,
     send_body: Arc<Vec<u8>>,
     send_delay: Duration,
 }
@@ -43,6 +44,7 @@ impl Default for MockAgent {
             deleted: Arc::new(Mutex::new(Vec::new())),
             created: Arc::new(Mutex::new(Vec::new())),
             sends: Arc::new(Mutex::new(Vec::new())),
+            receives: Arc::new(Mutex::new(Vec::new())),
             send_body: Arc::new(b"zfs-stream".to_vec()),
             send_delay: Duration::ZERO,
         }
@@ -89,14 +91,24 @@ async fn spawn_mock(mock: MockAgent) -> String {
         .route(
             "/api/v1/zfs/snapshots/{*dataset}",
             get(
-                |State(m): State<MockAgent>, Path(dataset): Path<String>| async move {
-                    let list = m
-                        .snaps
-                        .lock()
-                        .unwrap()
-                        .get(&dataset)
-                        .cloned()
-                        .unwrap_or_default();
+                |State(m): State<MockAgent>,
+                 Path(dataset): Path<String>,
+                 Query(q): Query<HashMap<String, String>>| async move {
+                    let recursive = q.get("recursive").map(|v| v != "false").unwrap_or(true);
+                    let snaps = m.snaps.lock().unwrap();
+                    let mut list = Vec::new();
+                    for (name, items) in snaps.iter() {
+                        if name != &dataset
+                            && !(recursive && name.starts_with(&format!("{dataset}/")))
+                        {
+                            continue;
+                        }
+                        for item in items {
+                            let mut item = item.clone();
+                            item["dataset"] = json!(name);
+                            list.push(item);
+                        }
+                    }
                     Json(list)
                 },
             ),
@@ -190,7 +202,14 @@ async fn spawn_mock(mock: MockAgent) -> String {
         .route(
             "/api/v1/zfs/receive/{*dataset}",
             post(
-                |State(_m): State<MockAgent>, Path(_dataset): Path<String>, body: Body| async move {
+                |State(m): State<MockAgent>,
+                 Path(dataset): Path<String>,
+                 Query(q): Query<HashMap<String, String>>,
+                 body: Body| async move {
+                    m.receives.lock().unwrap().push(json!({
+                        "dataset": dataset,
+                        "force": q.get("force"),
+                    }));
                     let data = axum::body::to_bytes(body, 8 << 20).await.unwrap();
                     Json(json!({ "status": "received", "bytes": data.len() }))
                 },
@@ -492,6 +511,10 @@ async fn a_recursive_job_repairs_a_missing_descendant_replica() {
     let mock = MockAgent::with_pair();
     mock.set_snapshots("tank/src", &[("base", "g0"), ("snap", "g1")]);
     mock.set_snapshots("backup/dst", &[("base", "g0"), ("snap", "g1")]);
+    mock.set_snapshots(
+        "tank/src/child",
+        &[("base", "g0-child"), ("snap", "g1-child")],
+    );
     // The root replica is current, but `tank/src/child` never reached the
     // destination. The root GUID alone must not mark the recursive job done.
     mock.set_paths(
@@ -571,8 +594,13 @@ async fn a_child_snapshot_with_a_different_guid_is_not_up_to_date() {
     mock.set_snapshots("backup/dst", &[("snap", "g1")]);
     mock.set_snapshots("tank/src/child", &[("snap", "g1-child")]);
     mock.set_snapshots("backup/dst/child", &[("snap", "g-DIFFERENT")]);
+    mock.datasets
+        .lock()
+        .unwrap()
+        .push(json!({ "name": "backup/dst/child" }));
     mock.set_paths("tank/src", &["tank/src@snap", "tank/src/child@snap"]);
     mock.set_paths("backup/dst", &["backup/dst@snap", "backup/dst/child@snap"]);
+    mock.set_paths("backup/dst/child", &["backup/dst/child@snap"]);
     let base = spawn_mock(mock.clone()).await;
     let state = state_with_agent(&base);
 
@@ -592,8 +620,60 @@ async fn a_child_snapshot_with_a_different_guid_is_not_up_to_date() {
     let job = wait_job(state, body["jobId"].as_str().unwrap()).await;
     assert_eq!(job["state"], "failed", "{job}");
     let error = job["error"].as_str().unwrap_or_default();
-    assert!(error.contains("different GUID"), "{error}");
+    // The mismatched child snapshot does not carry this pair's prefix, so the
+    // full-send gate refuses to replace it (FR-REP-04).
+    assert!(error.contains("replication did not create"), "{error}");
     assert!(mock.sends.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_stale_child_replica_is_replaced_only_after_the_full_send_gate() {
+    let mock = MockAgent::with_pair();
+    let prefix = naslos_api::server::replication::snapshot_prefix("tank/src", "backup/dst");
+    mock.set_snapshots("tank/src", &[("snap", "g1")]);
+    mock.set_snapshots("backup/dst", &[("snap", "g1")]);
+    mock.set_snapshots("tank/src/child", &[("snap", "g1-child")]);
+    // The child exists but holds only this pair's own old snapshot, so it is
+    // safe to replace with -F.
+    mock.set_snapshots("backup/dst/child", &[(&format!("{prefix}old"), "g-old")]);
+    mock.datasets
+        .lock()
+        .unwrap()
+        .push(json!({ "name": "backup/dst/child" }));
+    mock.set_paths("tank/src", &["tank/src@snap", "tank/src/child@snap"]);
+    mock.set_paths(
+        "backup/dst",
+        &["backup/dst@snap", &format!("backup/dst/child@{prefix}old")],
+    );
+    mock.set_paths(
+        "backup/dst/child",
+        &[&format!("backup/dst/child@{prefix}old")],
+    );
+    let base = spawn_mock(mock.clone()).await;
+    let state = state_with_agent(&base);
+
+    let (status, body) = call(
+        state.clone(),
+        "POST",
+        "/api/replication/send",
+        Some(json!({
+            "source": "tank/src",
+            "destination": "backup/dst",
+            "snapshot": "snap",
+            "recursive": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let job = wait_job(state, body["jobId"].as_str().unwrap()).await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    let sends = mock.sends.lock().unwrap().clone();
+    assert_eq!(sends.len(), 1, "{sends:?}");
+    assert_eq!(sends[0]["dataset"], "tank/src/child", "{sends:?}");
+    let receives = mock.receives.lock().unwrap().clone();
+    assert_eq!(receives.len(), 1, "{receives:?}");
+    assert_eq!(receives[0]["dataset"], "backup/dst/child", "{receives:?}");
+    assert_eq!(receives[0]["force"], "true", "{receives:?}");
 }
 
 #[tokio::test]
@@ -714,17 +794,20 @@ async fn jobs_are_listed_and_unknown_ids_are_404() {
 fn planner_matches_by_guid_not_name() {
     let src = vec![
         SnapshotInfo {
+            dataset: String::new(),
             name: "a".into(),
             guid: "g1".into(),
             created: String::new(),
         },
         SnapshotInfo {
+            dataset: String::new(),
             name: "b".into(),
             guid: "g2".into(),
             created: String::new(),
         },
     ];
     let dst = vec![SnapshotInfo {
+        dataset: String::new(),
         name: "renamed".into(),
         guid: "g1".into(),
         created: String::new(),

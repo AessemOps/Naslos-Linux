@@ -166,11 +166,12 @@ impl ZfsClient {
             if fields.len() < 2 {
                 continue;
             }
-            let name = match fields[0].find('@') {
-                Some(at) => &fields[0][at + 1..],
-                None => fields[0],
+            let (dataset, name) = match fields[0].find('@') {
+                Some(at) => (&fields[0][..at], &fields[0][at + 1..]),
+                None => (fields[0], fields[0]),
             };
             snapshots.push(SnapshotInfo {
+                dataset: dataset.to_string(),
                 name: name.to_string(),
                 guid: fields[1].to_string(),
                 created: fields.get(2).map(|s| s.to_string()).unwrap_or_default(),

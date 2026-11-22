@@ -451,7 +451,7 @@ rule, client configuration).
 | POST | `/api/v1/pools/{pool}/scrub` | Start `zpool scrub <pool>` (pool name validated; no other arguments) |
 | GET | `/api/v1/zfs/send/{dataset}?to=&from=&raw=&estimate=` | Stream a `zfs send` (or report its size with `estimate=true`) |
 | POST | `/api/v1/zfs/receive/{dataset}?force=` | Stream a restore into `zfs receive` |
-| GET | `/api/v1/zfs/snapshots/{dataset}` | Snapshots with their GUIDs (how an incremental base is found) |
+| GET | `/api/v1/zfs/snapshots/{dataset}` | Snapshots as `{dataset, name, guid, created}` (the owning dataset matters for recursive listings; the GUID is how an incremental base is found) |
 
 ## Environment variables (`naslos-api`)
 

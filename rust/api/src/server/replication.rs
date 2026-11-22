@@ -304,49 +304,59 @@ pub fn plan_send(
     Ok(SendPlan::Full)
 }
 
-/// Source datasets that carry `target`, shallowest first. A sibling whose
-/// name merely shares the source prefix is not included.
-pub fn recursive_source_datasets(
-    source_paths: &[String],
+/// The source snapshots a recursive send covers, as `(dataset, guid)` pairs,
+/// shallowest first. A sibling whose name merely shares the source prefix is
+/// not included.
+pub fn expected_recursive_snapshots(
+    source_snapshots: &[SnapshotInfo],
     source: &str,
     target: &str,
-) -> Vec<String> {
-    let suffix = format!("@{target}");
-    let mut datasets: Vec<String> = source_paths
+) -> Vec<(String, String)> {
+    let mut expected: Vec<(String, String)> = source_snapshots
         .iter()
-        .filter_map(|path| path.strip_suffix(&suffix))
-        .filter_map(|dataset| {
-            let relative = dataset.strip_prefix(source)?;
+        .filter(|snapshot| snapshot.name == target && !snapshot.guid.is_empty())
+        .filter_map(|snapshot| {
+            let relative = snapshot.dataset.strip_prefix(source)?;
             if relative.is_empty() || relative.starts_with('/') {
-                Some(dataset.to_string())
+                Some((snapshot.dataset.clone(), snapshot.guid.clone()))
             } else {
                 None
             }
         })
         .collect();
-    datasets.sort_by_key(|dataset| dataset.matches('/').count());
-    datasets
+    expected.sort_by_key(|(dataset, _)| dataset.matches('/').count());
+    expected
 }
 
-/// Recursive source datasets that have no child replica yet, reduced to the
-/// top-most missing subtree so one send covers every descendant below it.
-pub fn missing_recursive_datasets(
-    source_paths: &[String],
-    destination_paths: &[String],
+/// Recursive source snapshots whose GUID is not present on the destination,
+/// reduced to the top-most missing subtree so one send covers every descendant
+/// below it. A same-named child snapshot with a different GUID is not a match.
+pub fn missing_recursive_replicas(
+    expected: &[(String, String)],
+    destination_snapshots: &[SnapshotInfo],
     source: &str,
     destination: &str,
-    target: &str,
 ) -> Vec<String> {
-    let suffix = format!("@{target}");
-    let present: HashSet<&str> = destination_paths
-        .iter()
-        .filter_map(|path| path.strip_suffix(&suffix))
-        .collect();
+    let mut guids: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for snapshot in destination_snapshots {
+        guids
+            .entry(snapshot.dataset.as_str())
+            .or_default()
+            .insert(snapshot.guid.as_str());
+    }
     let mut missing: Vec<String> = Vec::new();
-    for dataset in recursive_source_datasets(source_paths, source, target) {
-        let relative = dataset.strip_prefix(source).unwrap_or_default();
-        let expected = format!("{destination}{relative}");
-        if present.contains(expected.as_str()) {
+    for (dataset, guid) in expected {
+        let Some(relative) = dataset.strip_prefix(source) else {
+            continue;
+        };
+        if !relative.is_empty() && !relative.starts_with('/') {
+            continue;
+        }
+        let replica = format!("{destination}{relative}");
+        if guids
+            .get(replica.as_str())
+            .is_some_and(|set| set.contains(guid.as_str()))
+        {
             continue;
         }
         if missing
@@ -355,76 +365,42 @@ pub fn missing_recursive_datasets(
         {
             continue;
         }
-        missing.push(dataset);
+        missing.push(dataset.clone());
     }
     missing
 }
 
-fn target_guid(snapshots: &[SnapshotInfo], target: &str) -> Option<String> {
-    snapshots
-        .iter()
-        .find(|snapshot| snapshot.name == target)
-        .map(|snapshot| snapshot.guid.clone())
-        .filter(|guid| !guid.is_empty())
-}
-
 /// Verify a recursive replica and return the top-most subtree sends needed to
-/// repair it. A child present by name but carrying a different GUID is refused
-/// rather than mistaken for the same snapshot.
+/// repair it. Two recursive GUID listings cover the whole tree, so a renamed
+/// snapshot is matched by GUID and a missing child dataset is found without a
+/// call per descendant.
 async fn recursive_repair_datasets(
     agent: &crate::agent::Client,
     source: &str,
     destination: &str,
     target: &str,
 ) -> Result<Vec<String>, String> {
-    let source_paths = agent
-        .snapshot_paths(source)
+    let source_snapshots = agent
+        .snapshots_with_guid(source)
         .await
         .map_err(|e| format!("listing recursive source snapshots: {e}"))?;
-    let destination_paths = agent
-        .snapshot_paths(destination)
+    let destination_snapshots = agent
+        .snapshots_with_guid(destination)
         .await
         .map_err(|e| format!("listing recursive destination snapshots: {e}"))?;
-    let suffix = format!("@{target}");
-    let present: HashSet<String> = destination_paths
+    if source_snapshots
         .iter()
-        .filter_map(|path| path.strip_suffix(&suffix))
-        .map(str::to_string)
-        .collect();
-    for dataset in recursive_source_datasets(&source_paths, source, target) {
-        let relative = dataset.strip_prefix(source).unwrap_or_default();
-        let replica = format!("{destination}{relative}");
-        if !present.contains(&replica) {
-            continue;
-        }
-        let expected = target_guid(
-            &agent
-                .snapshots_with_guid_shallow(&dataset)
-                .await
-                .map_err(|e| format!("reading {dataset}@{target}: {e}"))?,
-            target,
-        )
-        .ok_or_else(|| format!("source {dataset}@{target} has no GUID"))?;
-        let actual = target_guid(
-            &agent
-                .snapshots_with_guid_shallow(&replica)
-                .await
-                .map_err(|e| format!("reading {replica}@{target}: {e}"))?,
-            target,
-        )
-        .ok_or_else(|| format!("destination {replica}@{target} has no GUID"))?;
-        if expected != actual {
-            return Err(format!(
-                "child replica {replica}@{target} has a different GUID; refusing to treat it as current. Remove that snapshot or choose another destination"
-            ));
-        }
+        .any(|snapshot| snapshot.name == target && snapshot.dataset.is_empty())
+    {
+        return Err(
+            "the agent did not report which dataset owns a snapshot; update the agent".to_string(),
+        );
     }
-    Ok(missing_recursive_datasets(
-        &source_paths,
-        &destination_paths,
+    Ok(missing_recursive_replicas(
+        &expected_recursive_snapshots(&source_snapshots, source, target),
+        &destination_snapshots,
         source,
         destination,
-        target,
     ))
 }
 
@@ -507,24 +483,33 @@ pub fn replacement_blocker(
     None
 }
 
+async fn replacement_gate(
+    agent: &crate::agent::Client,
+    dataset: &str,
+    prefix: &str,
+    dataset_names: &[String],
+) -> Result<(), String> {
+    let paths = agent
+        .snapshot_paths(dataset)
+        .await
+        .map_err(|e| format!("listing destination snapshots: {e}"))?;
+    match replacement_blocker(&paths, dataset_names, dataset, prefix) {
+        Some(reason) => Err(reason),
+        None => Ok(()),
+    }
+}
+
 async fn destination_can_be_replaced(
     agent: &crate::agent::Client,
     destination: &str,
     prefix: &str,
 ) -> Result<(), String> {
-    let paths = agent
-        .snapshot_paths(destination)
-        .await
-        .map_err(|e| format!("listing destination snapshots: {e}"))?;
     let datasets = agent
         .list_datasets()
         .await
         .map_err(|e| format!("listing datasets: {e}"))?;
     let names: Vec<String> = datasets.into_iter().map(|d| d.name).collect();
-    match replacement_blocker(&paths, &names, destination, prefix) {
-        Some(reason) => Err(reason),
-        None => Ok(()),
-    }
+    replacement_gate(agent, destination, prefix, &names).await
 }
 
 /// Pipe one agent send stream into one receive call and add its bytes to the
@@ -833,12 +818,24 @@ async fn run_job(
         sent_any = true;
     }
 
-    // Each missing child is a full send into a dataset that does not exist on
-    // the destination; the root's newer snapshots are never rolled back.
+    // Each missing child is a full send. A stale child that exists without the
+    // target GUID is replaced with `-F` only after the same safety gate a
+    // top-level full send uses; a foreign snapshot or child dataset is refused.
     if !repair_datasets.is_empty() {
+        let datasets = match agent.list_datasets().await {
+            Ok(datasets) => datasets,
+            Err(e) => fail!(format!("listing datasets: {e}")),
+        };
+        let dataset_names: Vec<String> = datasets.into_iter().map(|d| d.name).collect();
         for dataset in &repair_datasets {
             let relative = dataset.strip_prefix(&source).unwrap_or_default();
             let replica = format!("{destination}{relative}");
+            let exists = dataset_names.iter().any(|name| name == &replica);
+            if exists {
+                if let Err(e) = replacement_gate(&agent, &replica, &prefix, &dataset_names).await {
+                    fail!(e);
+                }
+            }
             let opts = SendStreamOptions {
                 dataset: dataset.clone(),
                 to: target.clone(),
@@ -856,7 +853,7 @@ async fn run_job(
                 p.estimated_bytes = result.estimated_bytes;
                 p.progress.estimated_bytes = result.estimated_bytes;
             }
-            let sent = match stream_one(&agent, &job, opts, &replica, false, &progress).await {
+            let sent = match stream_one(&agent, &job, opts, &replica, exists, &progress).await {
                 Ok(bytes) => bytes,
                 Err(e) => fail!(e),
             };
@@ -1013,6 +1010,16 @@ mod tests {
 
     fn snap(name: &str, guid: &str) -> SnapshotInfo {
         SnapshotInfo {
+            dataset: String::new(),
+            name: name.into(),
+            guid: guid.into(),
+            created: String::new(),
+        }
+    }
+
+    fn snap_on(dataset: &str, name: &str, guid: &str) -> SnapshotInfo {
+        SnapshotInfo {
+            dataset: dataset.into(),
             name: name.into(),
             guid: guid.into(),
             created: String::new(),
@@ -1115,58 +1122,52 @@ mod tests {
     }
 
     #[test]
-    fn missing_recursive_datasets_reports_the_topmost_subtree() {
-        let source = vec![
-            path("tank/src", "snap"),
-            path("tank/src/child", "snap"),
-            path("tank/src/child/grandchild", "snap"),
-            path("tank/src/other", "snap"),
-            path("tank/src/no-snap", "other"),
-        ];
-        let destination = vec![path("backup/dst", "snap"), path("backup/dst/other", "snap")];
-        assert_eq!(
-            missing_recursive_datasets(&source, &destination, "tank/src", "backup/dst", "snap"),
-            vec!["tank/src/child".to_string()]
-        );
-
-        let complete = vec![
-            path("backup/dst", "snap"),
-            path("backup/dst/child", "snap"),
-            path("backup/dst/child/grandchild", "snap"),
-            path("backup/dst/other", "snap"),
-        ];
-        assert!(
-            missing_recursive_datasets(&source, &complete, "tank/src", "backup/dst", "snap")
-                .is_empty()
-        );
-
-        // A same-named snapshot under a sibling dataset is not the replica.
-        let wrong = vec![
-            path("backup/dst", "snap"),
-            path("backup/dst2/child", "snap"),
+    fn expected_recursive_snapshots_are_shallowest_first_and_boundary_checked() {
+        let snapshots = vec![
+            snap_on("tank/src/a/b", "snap", "g3"),
+            snap_on("tank/src", "snap", "g1"),
+            snap_on("tank/src/a", "snap", "g2"),
+            snap_on("tank/src2/sibling", "snap", "gx"),
+            snap_on("tank/src/a", "other", "gy"),
         ];
         assert_eq!(
-            missing_recursive_datasets(&source, &wrong, "tank/src", "backup/dst", "snap"),
-            vec!["tank/src/child".to_string(), "tank/src/other".to_string()]
+            expected_recursive_snapshots(&snapshots, "tank/src", "snap"),
+            vec![
+                ("tank/src".to_string(), "g1".to_string()),
+                ("tank/src/a".to_string(), "g2".to_string()),
+                ("tank/src/a/b".to_string(), "g3".to_string())
+            ]
         );
     }
 
     #[test]
-    fn recursive_source_datasets_are_shallowest_first_and_boundary_checked() {
-        let paths = vec![
-            path("tank/src/a/b", "snap"),
-            path("tank/src", "snap"),
-            path("tank/src/a", "snap"),
-            path("tank/src2/sibling", "snap"),
-            path("tank/src/a", "other"),
+    fn missing_recursive_replicas_uses_guids_and_the_topmost_subtree() {
+        let expected = vec![
+            ("tank/src".to_string(), "g1".to_string()),
+            ("tank/src/child".to_string(), "g2".to_string()),
+            ("tank/src/child/grandchild".to_string(), "g3".to_string()),
+            ("tank/src/other".to_string(), "g4".to_string()),
+        ];
+        let destination = vec![
+            snap_on("backup/dst", "snap", "g1"),
+            // A renamed snapshot still matches by GUID.
+            snap_on("backup/dst/other", "renamed", "g4"),
+            // The child exists by name but is not the source snapshot.
+            snap_on("backup/dst/child", "snap", "g-DIFFERENT"),
         ];
         assert_eq!(
-            recursive_source_datasets(&paths, "tank/src", "snap"),
-            vec![
-                "tank/src".to_string(),
-                "tank/src/a".to_string(),
-                "tank/src/a/b".to_string()
-            ]
+            missing_recursive_replicas(&expected, &destination, "tank/src", "backup/dst"),
+            vec!["tank/src/child".to_string()]
+        );
+
+        let complete = vec![
+            snap_on("backup/dst", "snap", "g1"),
+            snap_on("backup/dst/child", "renamed-child", "g2"),
+            snap_on("backup/dst/child/grandchild", "snap", "g3"),
+            snap_on("backup/dst/other", "snap", "g4"),
+        ];
+        assert!(
+            missing_recursive_replicas(&expected, &complete, "tank/src", "backup/dst").is_empty()
         );
     }
 
