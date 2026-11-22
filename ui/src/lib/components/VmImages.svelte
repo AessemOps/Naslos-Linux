@@ -16,6 +16,10 @@
   let uploadFile: any = null;
   let uploadProgress = 0;
   let uploading = false;
+  // The last offset the server confirmed for the selected file, so retrying a
+  // failed upload resumes instead of truncating and starting at zero.
+  let uploadKey = '';
+  let uploadOffset = 0;
 
   let importUrl = '';
   let importName = '';
@@ -49,12 +53,18 @@
   // 8 MiB octet-stream requests the API relays to vmd.
   function upload() {
     if (!uploadFile || uploading) return;
-    uploading = true;
-    uploadProgress = 0;
-    error = '';
     const file = uploadFile;
     const name = file.name;
-    let offset = 0;
+    const key = `${file.name}:${file.size}:${file.lastModified}`;
+    if (uploadKey !== key) {
+      uploadKey = key;
+      uploadOffset = 0;
+    }
+    let offset = uploadOffset;
+    const total = file.size || 1;
+    uploading = true;
+    uploadProgress = Math.round((offset / total) * 100);
+    error = '';
     const xhr = new XMLHttpRequest();
     const sendChunk = () => {
       const slice = file.slice(offset, offset + CHUNK);
@@ -63,15 +73,29 @@
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) {
-          uploadProgress = Math.round(((offset + event.loaded) / file.size) * 100);
+          uploadProgress = Math.round(((offset + event.loaded) / total) * 100);
         }
       };
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
-          offset += slice.size;
+          // Trust the size the server reports: it is the confirmed file length,
+          // not just what the browser believes it sent.
+          let confirmed = offset + slice.size;
+          try {
+            const data = JSON.parse(xhr.responseText);
+            if (typeof data.sizeBytes === 'number' && data.sizeBytes >= confirmed) {
+              confirmed = data.sizeBytes;
+            }
+          } catch {
+            // Older vmd responses may be empty; the chunk size is still valid.
+          }
+          offset = confirmed;
+          uploadOffset = confirmed;
           if (offset >= file.size) {
             uploading = false;
             uploadProgress = 100;
+            uploadKey = '';
+            uploadOffset = 0;
             uploadFile = null;
             load();
           } else {
@@ -79,10 +103,19 @@
           }
         } else {
           uploading = false;
+          let detail = `upload failed (HTTP ${xhr.status})`;
           try {
-            error = JSON.parse(xhr.responseText).error || `upload failed (HTTP ${xhr.status})`;
+            detail = JSON.parse(xhr.responseText).error || detail;
           } catch {
-            error = `upload failed (HTTP ${xhr.status})`;
+            // Keep the HTTP fallback.
+          }
+          if (/past the end/i.test(detail)) {
+            uploadKey = key;
+            uploadOffset = 0;
+            uploadProgress = 0;
+            error = 'The server no longer has the partial upload; retry to start from the beginning.';
+          } else {
+            error = detail;
           }
         }
       };

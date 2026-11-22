@@ -191,6 +191,21 @@
     step--;
   }
 
+  // Start a clean run: a second pool must not inherit the first pool's disk
+  // selection, name, topology or wipe confirmations.
+  function createAnotherPool() {
+    step = 1;
+    selectedDisks = [];
+    recommendation = null;
+    customTopology = '';
+    poolName = '';
+    cacheDisk = '';
+    wipeConfirmed = [];
+    createResult = '';
+    error = '';
+    void loadDisks();
+  }
+
   onMount(loadDisks);
 </script>
 
@@ -423,7 +438,7 @@
       {/if}
 
       <div class="flex justify-end mt-6">
-        <button class="btn btn-primary" on:click={() => step = 1}>Create Another Pool</button>
+        <button class="btn btn-primary" on:click={createAnotherPool}>Create Another Pool</button>
       </div>
     </div>
   {/if}

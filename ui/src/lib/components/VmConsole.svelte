@@ -14,34 +14,52 @@
   let connected = false;
   let connecting = false;
   let error = '';
+  let destroyed = false;
+  let preflight: AbortController | null = null;
+  let connectSeq = 0;
 
   async function connect() {
     error = '';
     if (connecting || connected) return;
     connecting = true;
+    const seq = ++connectSeq;
+    preflight?.abort();
+    const controller = new AbortController();
+    preflight = controller;
     try {
       // Plain-GET preflight: surfaces "not running"/"no KVM" as a readable
       // message (a browser cannot read a failed websocket handshake) and
       // hands over the per-boot VNC password for the RFB auth handshake.
-      const res = await fetch(`/api/ws/vm/${encodeURIComponent(vm.name)}/vnc`);
+      const res = await fetch(`/api/ws/vm/${encodeURIComponent(vm.name)}/vnc`, {
+        signal: controller.signal
+      });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || `Cannot open the console (HTTP ${res.status})`);
       }
       const info = await res.json();
+      // The drawer can close while the preflight is in flight; never attach
+      // noVNC to a detached element or after a disconnect.
+      if (destroyed || seq !== connectSeq) return;
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const url = `${proto}//${window.location.host}/api/ws/vm/${encodeURIComponent(vm.name)}/vnc`;
-      rfb = new RFB(consoleEl, url, {
+      const instance = new RFB(consoleEl, url, {
         credentials: { password: info.vncPassword },
         shared: false
       });
-      rfb.scaleViewport = true;
-      rfb.resizeSession = false;
-      rfb.addEventListener('connect', () => {
+      rfb = instance;
+      instance.scaleViewport = true;
+      instance.resizeSession = false;
+      instance.addEventListener('connect', () => {
+        if (destroyed || instance !== rfb) {
+          instance.disconnect();
+          return;
+        }
         connected = true;
         connecting = false;
       });
-      rfb.addEventListener('disconnect', (event: any) => {
+      instance.addEventListener('disconnect', (event: any) => {
+        if (destroyed) return;
         connected = false;
         connecting = false;
         if (!event.detail.clean) {
@@ -49,16 +67,21 @@
         }
       });
     } catch (e: any) {
+      if (destroyed || controller.signal.aborted) return;
       error = e.message;
-      connecting = false;
+    } finally {
+      if (seq === connectSeq) connecting = false;
+      if (preflight === controller) preflight = null;
     }
   }
 
   function disconnect() {
-    if (rfb) {
-      rfb.disconnect();
-      rfb = null;
-    }
+    connectSeq += 1;
+    preflight?.abort();
+    preflight = null;
+    const instance = rfb;
+    rfb = null;
+    if (instance) instance.disconnect();
     connected = false;
     connecting = false;
   }
@@ -71,7 +94,10 @@
     consoleEl?.requestFullscreen?.();
   }
 
-  onDestroy(disconnect);
+  onDestroy(() => {
+    destroyed = true;
+    disconnect();
+  });
 </script>
 
 <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
