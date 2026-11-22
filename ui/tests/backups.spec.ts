@@ -164,7 +164,7 @@ test('a manual send reaches succeeded with chunks', async ({ page, request }) =>
     expect(job.state, job.error).toBe('succeeded');
     expect(job.result.chunks, 'send stored no chunks').toBeGreaterThan(0);
   } finally {
-    await request.delete(`/api/datasets?name=${encodeURIComponent(dataset)}&recursive=true`);
+    await request.delete(`/api/datasets?name=${encodeURIComponent(dataset)}&recursive=true&confirm=${encodeURIComponent(dataset)}`);
   }
 });
 
@@ -212,7 +212,7 @@ test('Back up now drives a job from the page and Verify reads it back', async ({
     await expect(page.getByText(/[0-9a-f]{64}/)).toBeVisible({ timeout: 30_000 });
   } finally {
     await request.delete(`/api/buddy/schedules?id=${encodeURIComponent(id)}`);
-    await request.delete(`/api/datasets?name=${encodeURIComponent(dataset)}&recursive=true`);
+    await request.delete(`/api/datasets?name=${encodeURIComponent(dataset)}&recursive=true&confirm=${encodeURIComponent(dataset)}`);
   }
 });
 

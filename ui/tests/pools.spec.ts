@@ -39,10 +39,32 @@ test('a dataset can be created and destroyed from the pool page', async ({ page,
     const paths = await (await request.get('/api/shares/paths')).json();
     expect(paths.paths).toContain(created.mountpoint);
 
-    // Destroy it again from the row's Delete action.
+    // Destroy it again from the row's Delete action. Every delete now asks for
+    // the typed dataset name; dismissing it must send nothing.
     const row = page.locator('div.bg-naslos-dark').filter({ hasText: full });
     await expect(row).toHaveCount(1);
+    const deletes: string[] = [];
+    page.on('request', (req) => {
+      if (req.method() === 'DELETE' && req.url().includes('/api/datasets')) deletes.push(req.url());
+    });
+    page.once('dialog', (dialog) => dialog.dismiss());
     await row.getByTitle('Destroy this dataset').click();
+    await expect(row).toHaveCount(1);
+    expect(deletes).toHaveLength(0);
+
+    // A typed name that does not match is refused locally (prompt + alert).
+    page.once('dialog', (dialog) => dialog.accept('not-the-name'));
+    page.once('dialog', (dialog) => dialog.accept());
+    await row.getByTitle('Destroy this dataset').click();
+    await expect(row).toHaveCount(1);
+    expect(deletes).toHaveLength(0);
+
+    // The matching name is acknowledged and the request carries confirm=<name>.
+    page.once('dialog', (dialog) => dialog.accept(full));
+    await row.getByTitle('Destroy this dataset').click();
+    await expect
+      .poll(() => deletes.some((url) => url.includes(`confirm=${encodeURIComponent(full)}`)))
+      .toBe(true);
     // The row must disappear (asserting on the row, not the text: the mountpoint
     // contains the dataset name as a substring).
     await expect(page.locator('div.bg-naslos-dark').filter({ hasText: full })).toHaveCount(0, { timeout: 15_000 });
@@ -51,7 +73,7 @@ test('a dataset can be created and destroyed from the pool page', async ({ page,
     expect(after.find((d: any) => d.name === full)).toBeFalsy();
   } finally {
     // Best effort: if a UI step failed halfway, the dataset would linger.
-    await request.delete(`/api/datasets?name=${encodeURIComponent(full)}`);
+    await request.delete(`/api/datasets?name=${encodeURIComponent(full)}&confirm=${encodeURIComponent(full)}`);
   }
 });
 

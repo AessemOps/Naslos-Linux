@@ -57,7 +57,7 @@ async function ensureTestDataset(
 
 async function removeTestDataset(request: APIRequestContext, name: string, dataset: string) {
   await request.delete(`/api/datasets/registry/${encodeURIComponent(name)}`);
-  await request.delete(`/api/datasets?name=${encodeURIComponent(dataset)}&recursive=true`);
+  await request.delete(`/api/datasets?name=${encodeURIComponent(dataset)}&recursive=true&confirm=${encodeURIComponent(dataset)}`);
 }
 
 test.describe('apps', () => {
@@ -610,5 +610,194 @@ test.describe('installed app updates', () => {
 
     await expect(page.getByText('Started 1 update')).toBeVisible();
     expect(updated).toEqual(['demo-image']);
+  });
+});
+
+// Pure UI regressions (UI-01/02/03/05): the API is mocked so these run without
+// touching installed apps or the node.
+test.describe('app UI safety', () => {
+  const app = {
+    name: 'demo-app',
+    displayName: 'Demo App',
+    description: 'UI fixture',
+    namespace: 'naslos-app-1',
+    chart: 'demo-app',
+    status: 'running',
+    url: '',
+    orphaned: false,
+    values: {
+      resources: {
+        requests: { cpu: '100m', memory: '128Mi' },
+        limits: { cpu: '1', memory: '1Gi' }
+      }
+    },
+    exposure: {
+      subdomain: 'demo-app',
+      tls: true,
+      auth: true,
+      localOnly: false,
+      internet: true,
+      service: 'demo-app',
+      port: 8080,
+      scheme: 'http'
+    },
+    icon: 'D',
+    iconUrl: '',
+    installedVersion: '1.0.0',
+    latestVersion: '1.0.0',
+    latestSource: 'official',
+    latestChannel: 'Prod',
+    updateAvailable: false
+  };
+
+  async function mockInstalledApp(page: any, extra?: (route: any, path: string, request: any) => any) {
+    await page.route(/\/api\//, async (route: any) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path === '/api/apps') return route.fulfill({ json: [app] });
+      if (path === '/api/apps/updates') return route.fulfill({ json: { count: 0, apps: [] } });
+      if (path === '/api/apps/usage') return route.fulfill({ json: { available: false, apps: [] } });
+      if (path === '/api/apps/namespaces') {
+        return route.fulfill({
+          json: {
+            baseline: { provisioned: 0, limit: 0, used: 0, available: 0 },
+            privileged: { provisioned: 0, limit: 0, used: 0, available: 0 }
+          }
+        });
+      }
+      if (path === '/api/apps/demo-app/quota') {
+        return route.fulfill({ json: { available: false } });
+      }
+      if (extra && (await extra(route, path, request))) return;
+      return route.fulfill({ json: [] });
+    });
+  }
+
+  test('a domain change that removes Authelia login warns and needs confirmation', async ({ page }) => {
+    let saved: any = null;
+    await mockInstalledApp(page, async (route, path, request) => {
+      if (path === '/api/apps/demo-app/exposure' && request.method() === 'GET') {
+        await route.fulfill({
+          json: {
+            exposure: app.exposure,
+            baseDomain: 'example.test',
+            selectableDomains: ['example.test', 'other.test'],
+            ssoDomains: ['example.test']
+          }
+        });
+        return true;
+      }
+      if (path === '/api/apps/demo-app/services') {
+        await route.fulfill({ json: [{ name: 'demo-app', port: 8080, scheme: 'http' }] });
+        return true;
+      }
+      if (path === '/api/apps/demo-app/exposure' && request.method() === 'PUT') {
+        saved = request.postDataJSON();
+        await route.fulfill({ json: {} });
+        return true;
+      }
+      return false;
+    });
+
+    await page.goto('/apps');
+    await expect(page.getByText('Loading installed apps...')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Open Demo App details', exact: true }).click();
+    await page.getByRole('button', { name: 'Exposure', exact: true }).click();
+    await expect(page.locator('#exposure-domain')).toBeVisible();
+
+    const save = page.getByRole('button', { name: 'Save', exact: true });
+    await page.locator('#exposure-domain').selectOption('other.test');
+    await expect(page.getByText(/Authelia login was turned off/)).toBeVisible();
+    await expect(save).toBeDisabled();
+    expect(saved).toBeNull();
+
+    await page.getByLabel(/I understand this app is reachable without/).check();
+    await expect(save).toBeEnabled();
+    await save.click();
+    await expect.poll(() => saved?.exposure?.auth).toBe(false);
+  });
+
+  test('clearing a resource field drops it from the whole resources object', async ({ page }) => {
+    let saved: any = null;
+    await mockInstalledApp(page, async (route, path, request) => {
+      if (path === '/api/apps/demo-app' && request.method() === 'PUT') {
+        saved = request.postDataJSON();
+        await route.fulfill({ status: 202, json: { jobId: 'job-resources', state: 'running' } });
+        return true;
+      }
+      if (path === '/api/apps/jobs/job-resources') {
+        await route.fulfill({
+          json: {
+            id: 'job-resources',
+            kind: 'upgrade',
+            app: 'demo-app',
+            state: 'succeeded',
+            stage: 'finalizing',
+            startedAt: new Date().toISOString()
+          }
+        });
+        return true;
+      }
+      return false;
+    });
+
+    await page.goto('/apps');
+    await expect(page.getByText('Loading installed apps...')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Open Demo App details', exact: true }).click();
+    await page.getByRole('button', { name: 'Adjust', exact: true }).click();
+    await page.getByLabel('CPU limit').fill('');
+    await page.getByRole('button', { name: 'Save resources' }).click();
+
+    await expect.poll(() => saved?.values?.resources).toBeTruthy();
+    const resources = saved.values.resources;
+    expect(resources.limits).toEqual({ memory: '1Gi' });
+    expect(JSON.stringify(resources)).not.toContain('null');
+    expect(resources.requests).toEqual({ cpu: '100m', memory: '128Mi' });
+  });
+
+  test('a catalog load failure leaves a closable error modal', async ({ page }) => {
+    const catalogApp = {
+      name: 'broken-app',
+      displayName: 'Broken App',
+      description: 'Catalog failure fixture',
+      icon: 'B',
+      iconUrl: '',
+      version: '1.0.0',
+      chart: 'broken-app',
+      source: 'official',
+      channel: 'Prod',
+      chartPath: 'apps/broken-app',
+      schema: { type: 'object', properties: {}, required: [] },
+      defaultValues: {},
+      exposure: { subdomain: 'broken-app', tls: true, auth: true, localOnly: false, internet: true },
+      services: [{ name: 'broken-app', port: 8080, scheme: 'http' }]
+    };
+    await page.route(/\/api\//, async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/api/catalog') return route.fulfill({ json: [catalogApp] });
+      if (path === '/api/catalog/broken-app') {
+        return route.fulfill({ status: 500, json: { error: 'catalog unavailable' } });
+      }
+      if (path === '/api/apps') return route.fulfill({ json: [] });
+      if (path === '/api/apps/updates') return route.fulfill({ json: { count: 0, apps: [] } });
+      if (path === '/api/apps/usage') return route.fulfill({ json: { available: false, apps: [] } });
+      if (path === '/api/apps/namespaces') {
+        return route.fulfill({
+          json: {
+            baseline: { provisioned: 0, limit: 0, used: 0, available: 0 },
+            privileged: { provisioned: 0, limit: 0, used: 0, available: 0 }
+          }
+        });
+      }
+      return route.fulfill({ json: [] });
+    });
+
+    await page.goto('/apps');
+    await page.getByRole('button', { name: 'Catalog', exact: true }).click();
+    await page.getByRole('button', { name: 'Install Broken App' }).click();
+    const dialog = page.locator('.fixed.inset-0');
+    await expect(dialog.getByRole('alert')).toContainText(/Failed to load app details|HTTP 500/);
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(dialog).toBeHidden();
   });
 });
