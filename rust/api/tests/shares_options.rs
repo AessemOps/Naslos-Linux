@@ -139,6 +139,7 @@ async fn smb_options_round_trip_and_render() {
         conf.contains("   shadow:format = naslos-%Y-%m-%d_%H-%M-%S\n"),
         "{conf}"
     );
+    assert!(conf.contains("   shadow:localtime = no\n"), "{conf}");
     assert!(conf.contains("   full_audit:syslog = no\n"), "{conf}");
     assert!(conf.contains("   logging = file\n"), "{conf}");
     assert!(conf.contains("   log level = 1\n"), "{conf}");

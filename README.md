@@ -20,6 +20,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 ## Features
 
 - **ZFS** — official `siderolabs/zfs` extension; pools auto-import at boot via `zfs-service`
+- **Dataset encryption at rest** — raw-key ZFS native encryption created with the dataset; the API generates the 32-byte key into a Secret in `naslos-keys`, and an administrator explicitly unlocks after boot (no auto-unlock). Passphrase keys, encrypted send/receive and in-place conversion are `[OPEN]` (see [docs/dataset-encryption.md](docs/dataset-encryption.md))
 - **Block volumes (zvol)** — create, list, resize and delete ZFS zvols through a validated API/agent surface (growth-only resize, in-use refusals, no arbitrary properties); the management UI and iSCSI export are planned (`[OPEN]`, see [docs/iscsi.md](docs/iscsi.md))
 - **Accessible UI** — Svelte 5 + Tailwind design-token system with a persisted
   light/dark theme (no-FOUC bootstrap, `prefers-color-scheme` default), a
@@ -28,7 +29,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   in both themes in the e2e suite
 - **Disk setup wizard** — topology advisor (mirror / RAIDZ1 / RAIDZ2), best-practice tuning (`ashift=12`, `compression=zstd`, `xattr=sa`, `acltype=posixacl`, `atime=off`)
 - **Pool health page** — live device tree, IO stats, scan state, and error summary from `zpool status` / `zpool iostat`
-- **Scheduled storage maintenance** — periodic snapshot tasks per dataset (hourly/daily/weekly, keep-N retention, optional recursive) and per-pool scrub schedules, with a manual "scrub now", last/next-run state and results on the pool page
+- **Scheduled storage maintenance** — periodic snapshot tasks per dataset (hourly/daily/weekly, keep-N retention, optional recursive) named in the SMB previous-versions format and owned through a ZFS user property, plus per-pool scrub schedules, with a manual "scrub now", last/next-run state and results on the pool page
 - **Local ZFS replication** — async dataset-to-dataset `zfs send`/`receive` on the same node, GUID-based incrementals, recursive sends, cancellable jobs and prefix-scoped destination retention that never touches user snapshots
 - **Disk health** — per-disk SMART (read-only, standby-safe) plus ZFS vdev state/error counters, with temperature/wear threshold alerts
 - **CPU detail** — model, per-core load/frequency, load averages and CPU temperature (when the hardware exposes it) on the dashboard
@@ -59,11 +60,15 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   append-only JSON Lines audit log with a SHA-256 hash chain, fail-closed
   begin/end records, redaction, bounded retention and admin-only
   query/verify/export routes (see [docs/rbac-audit.md](docs/rbac-audit.md))
-- **System config export** — download a versioned, secret-free JSON snapshot
-  of shares, snapshot/scrub and buddy schedules, domains, DDNS entries (without
-  credentials), app records and registered app datasets; import/restore is
-  planned. This is application config, not the installer recovery ZIP
-  (see [docs/api.md](docs/api.md#system-config-export-fr-cfg-see-specmd-315))
+- **System config export/import** — download a versioned, secret-free JSON
+  snapshot of shares, snapshot/scrub and buddy schedules, domains, DDNS entries
+  (without credentials), app records and registered app datasets, then restore
+  it through a strict dry-run plan and an explicit apply. Import never injects
+  credentials or trusts exported IDs, and it never deletes unrelated records;
+  apps and provider credentials need the existing catalog/credential endpoints.
+  This is
+  application config, not the installer recovery ZIP
+  (see [docs/api.md](docs/api.md#system-config-exportimport-fr-cfg-see-specmd-315))
 - **Virtual machines** — a first-party QEMU/KVM hypervisor on the node
   (`rust/vmd` supervisor): VM datasets under `<pool>/vms/<name>` with quota =
   declared disk, UEFI/BIOS firmware with optional Secure Boot, NAT with
@@ -76,7 +81,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 - **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served); per-share SMB shadow copies from ZFS snapshots and optional `full_audit` logging, with NFSv4 served by Ganesha (NFSv3 is a documented no-go for now — see [docs/nfsv3.md](docs/nfsv3.md))
 - **ntfy notifications** — push alerts on backup and ZFS/agent health transitions
 - **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served)
-- **Alert channels** — ntfy push plus a generic JSON webhook, each with its own event routing and severity floor for backup, ZFS/agent health and VM events
+- **Alert channels** — ntfy push, a generic JSON webhook, SMTP email and RFC 5424 syslog, each with its own event routing and severity floor for backup, ZFS/agent health and VM events
 - **Network settings** — day-2 host link addressing, MTU and DNS changes from the UI, applied with a machine-side `--mode=try` guard, an API watchdog and a saved-config revert (see [docs/deployment.md](docs/deployment.md#day-2-network-changes-fr-net))
 - **Monitoring dashboard** — live metrics API (`/api/metrics`) + home dashboard; no bundled metrics stack
 - **Desktop installer** — a one-app installer (separate
@@ -135,8 +140,8 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [shares](docs/shares.md) | SMB / NFS / Time-Machine shares |
 | [app-catalog](docs/app-catalog.md) | Catalog, schema-driven forms, Helm lifecycle |
 | [monitoring](docs/monitoring.md) | Live metrics API + dashboard (no Prometheus) |
-| [reporting](docs/reporting.md) | Bounded 24 h/7 d/30 d history design (`[OPEN]`) |
-| [notifications](docs/notifications.md) | ntfy + webhook alert channels |
+| [reporting](docs/reporting.md) | Bounded 24 h/7 d/30 d history: embedded store, API and dashboard card |
+| [notifications](docs/notifications.md) | ntfy + webhook + SMTP + syslog alert channels |
 | [deployment](docs/deployment.md) | Prerequisites, Make targets, Helm values |
 | [installer-contract](docs/installer-contract.md) | Install pack + interfaces for the desktop installer (FR-INSTALL) |
 | [operations](docs/operations.md) | Backups, restore, troubleshooting |

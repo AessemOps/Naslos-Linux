@@ -2,7 +2,9 @@
 
 use crate::json;
 use crate::notifications::Settings;
+use crate::smtp;
 use crate::state::AppState;
+use crate::syslog;
 use crate::webhook;
 use axum::body::Body;
 use axum::extract::State;
@@ -172,6 +174,220 @@ pub async fn webhook_test_post(State(state): State<Arc<AppState>>) -> Response {
         Ok(()) => json(
             StatusCode::OK,
             serde_json::json!({ "status": "test webhook sent" }),
+        ),
+        Err(e) => json(StatusCode::BAD_GATEWAY, serde_json::json!({ "error": e })),
+    }
+}
+
+/// `GET /api/notifications/smtp`
+pub async fn smtp_get(State(state): State<Arc<AppState>>) -> Response {
+    let s = state.smtp.get_settings();
+    json(
+        StatusCode::OK,
+        serde_json::json!({
+            "enabled": s.enabled,
+            "host": s.host,
+            "port": s.port,
+            "tls": s.tls,
+            "username": s.username,
+            "hasPassword": !s.password.is_empty(),
+            "from": s.from,
+            "to": s.to,
+            "enabledEvents": s.enabled_events,
+            "minSeverity": s.min_severity,
+        }),
+    )
+}
+
+#[derive(Default, serde::Deserialize)]
+struct SmtpBody {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    port: u16,
+    #[serde(default)]
+    tls: String,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    from: String,
+    #[serde(default)]
+    to: Vec<String>,
+    #[serde(default, rename = "enabledEvents")]
+    enabled_events: Vec<String>,
+    #[serde(default, rename = "minSeverity")]
+    min_severity: String,
+}
+
+/// `PUT /api/notifications/smtp`
+pub async fn smtp_put(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    let req: SmtpBody = match super::zfs::read_json(body).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let settings = smtp::Settings {
+        enabled: req.enabled,
+        host: req.host,
+        port: req.port,
+        tls: req.tls,
+        username: req.username,
+        password: String::new(),
+        from: req.from,
+        to: req.to,
+        enabled_events: req.enabled_events,
+        min_severity: req.min_severity,
+    };
+    // A bad target/TLS/credential combination or severity is a client error;
+    // a failed write is not.
+    if let Err(e) = state
+        .smtp
+        .validate_update(&settings, req.password.as_deref())
+    {
+        return json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": e }));
+    }
+    match state
+        .smtp
+        .update_settings(settings, req.password.as_deref())
+    {
+        Ok(()) => json(
+            StatusCode::OK,
+            serde_json::json!({ "status": "smtp settings updated" }),
+        ),
+        Err(e) => json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": e }),
+        ),
+    }
+}
+
+/// `DELETE /api/notifications/smtp`
+pub async fn smtp_delete(State(state): State<Arc<AppState>>) -> Response {
+    match state.smtp.clear() {
+        Ok(()) => json(
+            StatusCode::OK,
+            serde_json::json!({ "status": "smtp channel removed" }),
+        ),
+        Err(e) => json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": e }),
+        ),
+    }
+}
+
+/// `POST /api/notifications/smtp/test`
+pub async fn smtp_test_post(State(state): State<Arc<AppState>>) -> Response {
+    if !state.smtp.get_settings().enabled {
+        return json(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({ "error": "smtp channel is disabled" }),
+        );
+    }
+    match state.smtp.send_test().await {
+        Ok(()) => json(
+            StatusCode::OK,
+            serde_json::json!({ "status": "test email sent" }),
+        ),
+        Err(e) => json(StatusCode::BAD_GATEWAY, serde_json::json!({ "error": e })),
+    }
+}
+
+/// `GET /api/notifications/syslog`
+pub async fn syslog_get(State(state): State<Arc<AppState>>) -> Response {
+    let s = state.syslog.get_settings();
+    json(
+        StatusCode::OK,
+        serde_json::json!({
+            "enabled": s.enabled,
+            "protocol": s.protocol,
+            "host": s.host,
+            "port": s.port,
+            "facility": s.facility,
+            "enabledEvents": s.enabled_events,
+            "minSeverity": s.min_severity,
+        }),
+    )
+}
+
+#[derive(Default, serde::Deserialize)]
+struct SyslogBody {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    protocol: String,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    port: u16,
+    #[serde(default)]
+    facility: String,
+    #[serde(default, rename = "enabledEvents")]
+    enabled_events: Vec<String>,
+    #[serde(default, rename = "minSeverity")]
+    min_severity: String,
+}
+
+/// `PUT /api/notifications/syslog`
+pub async fn syslog_put(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    let req: SyslogBody = match super::zfs::read_json(body).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let mut settings = syslog::Settings {
+        enabled: req.enabled,
+        protocol: req.protocol,
+        host: req.host,
+        port: req.port,
+        facility: req.facility,
+        enabled_events: req.enabled_events,
+        min_severity: req.min_severity,
+    };
+    let validated = syslog::normalize_settings(&mut settings)
+        .and_then(|()| syslog::validate_settings(&settings));
+    if let Err(e) = validated {
+        return json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": e }));
+    }
+    match state.syslog.update_settings(settings) {
+        Ok(()) => json(
+            StatusCode::OK,
+            serde_json::json!({ "status": "syslog settings updated" }),
+        ),
+        Err(e) => json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": e }),
+        ),
+    }
+}
+
+/// `DELETE /api/notifications/syslog`
+pub async fn syslog_delete(State(state): State<Arc<AppState>>) -> Response {
+    match state.syslog.clear() {
+        Ok(()) => json(
+            StatusCode::OK,
+            serde_json::json!({ "status": "syslog channel removed" }),
+        ),
+        Err(e) => json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": e }),
+        ),
+    }
+}
+
+/// `POST /api/notifications/syslog/test`
+pub async fn syslog_test_post(State(state): State<Arc<AppState>>) -> Response {
+    if !state.syslog.get_settings().enabled {
+        return json(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({ "error": "syslog channel is disabled" }),
+        );
+    }
+    match state.syslog.send_test().await {
+        Ok(()) => json(
+            StatusCode::OK,
+            serde_json::json!({ "status": "test syslog message sent" }),
         ),
         Err(e) => json(StatusCode::BAD_GATEWAY, serde_json::json!({ "error": e })),
     }

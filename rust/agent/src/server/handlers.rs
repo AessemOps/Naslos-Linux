@@ -23,6 +23,15 @@ use tokio::io::AsyncWriteExt;
 
 type QueryMap = HashMap<String, String>;
 
+/// Zeroes raw key bytes on every handler exit path, including early returns.
+struct KeyBuffer(Vec<u8>);
+
+impl Drop for KeyBuffer {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
 fn zfs_unavailable() -> Response {
     write_error(
         StatusCode::SERVICE_UNAVAILABLE,
@@ -304,6 +313,10 @@ struct DatasetCreateRequest {
     name: String,
     #[serde(default)]
     options: HashMap<String, String>,
+    /// Raw key bytes for an encrypted create. Never logged or echoed; the
+    /// handler zeroes it after the ZFS call.
+    #[serde(default)]
+    key: Option<Vec<u8>>,
 }
 
 pub async fn datasets_post(
@@ -314,12 +327,17 @@ pub async fn datasets_post(
     let Some(zfs) = state.zfs.as_ref() else {
         return zfs_unavailable();
     };
-    let req: DatasetCreateRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
+    let mut req: DatasetCreateRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
         Ok(req) => req,
         Err(resp) => return resp,
     };
+    let key = KeyBuffer(req.key.take().unwrap_or_default());
+    let key_bytes = (!key.0.is_empty()).then_some(key.0.as_slice());
     let dataset_name = format!("{rest}/{}", req.name);
-    match zfs.create_dataset(&dataset_name, &req.options).await {
+    let result = zfs
+        .create_dataset_with_key(&dataset_name, &req.options, key_bytes)
+        .await;
+    match result {
         Ok(()) => {
             tracing::info!("created dataset {}", dataset_name);
             json_response(
@@ -354,6 +372,90 @@ pub async fn datasets_delete(
             )
         }
         Err(e) => write_error(StatusCode::BAD_REQUEST, e.to_string()),
+    }
+}
+
+// ---- Dataset encryption (FR-ENC) -----------------------------------------
+
+pub async fn encryption_status_get(
+    State(state): State<Arc<AppState>>,
+    Path(dataset): Path<String>,
+) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    match zfs.encryption_status(&dataset).await {
+        Ok(status) => json_response(StatusCode::OK, &status),
+        Err(e) => write_client_error(&e),
+    }
+}
+
+pub async fn encryption_status_get_empty() -> Response {
+    write_error(StatusCode::BAD_REQUEST, "dataset is required")
+}
+
+#[derive(Default, Deserialize)]
+struct EncryptionUnlockRequest {
+    #[serde(default)]
+    dataset: String,
+    /// Raw key bytes. Never logged or echoed.
+    #[serde(default)]
+    key: Vec<u8>,
+}
+
+pub async fn encryption_unlock_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    let mut req: EncryptionUnlockRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
+        Ok(req) => req,
+        Err(resp) => return resp,
+    };
+    let key = KeyBuffer(std::mem::take(&mut req.key));
+    if req.dataset.trim().is_empty() {
+        return write_error(StatusCode::BAD_REQUEST, "dataset is required");
+    }
+    let dataset = req.dataset.trim().to_string();
+    let result = zfs.unlock_dataset(&dataset, &key.0).await;
+    match result {
+        Ok(status) => {
+            tracing::info!("unlocked dataset {}", dataset);
+            json_response(
+                StatusCode::OK,
+                &json!({ "status": "unlocked", "name": status.name, "keystatus": status.keystatus }),
+            )
+        }
+        Err(e) => write_client_error(&e),
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct EncryptionLockRequest {
+    #[serde(default)]
+    dataset: String,
+}
+
+pub async fn encryption_lock_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    let req: EncryptionLockRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
+        Ok(req) => req,
+        Err(resp) => return resp,
+    };
+    if req.dataset.trim().is_empty() {
+        return write_error(StatusCode::BAD_REQUEST, "dataset is required");
+    }
+    let dataset = req.dataset.trim().to_string();
+    match zfs.lock_dataset(&dataset).await {
+        Ok(status) => {
+            tracing::info!("locked dataset {}", dataset);
+            json_response(
+                StatusCode::OK,
+                &json!({ "status": "locked", "name": status.name, "keystatus": status.keystatus }),
+            )
+        }
+        Err(e) => write_client_error(&e),
     }
 }
 
@@ -537,9 +639,71 @@ pub async fn snapshots_post_empty() -> Response {
     write_error(StatusCode::BAD_REQUEST, "dataset path is required")
 }
 
+#[derive(Default, Deserialize)]
+struct SnapshotScheduleRequest {
+    name: String,
+    schedule: String,
+    /// Tag the descendant snapshots a recursive snapshot created too.
+    #[serde(default)]
+    recursive: bool,
+}
+
+/// `GET /api/v1/snapshot-properties/{dataset}` — every snapshot under the
+/// dataset with its owning storage schedule (`user:naslos:schedule`).
+pub async fn snapshot_properties_get(
+    State(state): State<Arc<AppState>>,
+    Path(dataset): Path<String>,
+) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    match zfs.snapshot_schedules(&dataset).await {
+        Ok(snapshots) => json_response(StatusCode::OK, &snapshots),
+        Err(e) => write_client_error(&e),
+    }
+}
+
+/// `/api/v1/snapshot-properties/` (empty dataset segment).
+pub async fn snapshot_properties_get_empty() -> Response {
+    write_error(StatusCode::BAD_REQUEST, "dataset path is required")
+}
+
+/// `PUT /api/v1/snapshot-properties/{dataset}` — record the owning schedule on
+/// one snapshot (or a recursive snapshot's descendants). Only the fixed
+/// `user:naslos:schedule` property can be written.
+pub async fn snapshot_properties_put(
+    State(state): State<Arc<AppState>>,
+    Path(dataset): Path<String>,
+    body: Body,
+) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    let req: SnapshotScheduleRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
+        Ok(req) => req,
+        Err(resp) => return resp,
+    };
+    match zfs
+        .set_snapshot_schedule(&dataset, &req.name, &req.schedule, req.recursive)
+        .await
+    {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &json!({
+                "status": "snapshot schedule recorded",
+                "dataset": dataset,
+                "name": req.name,
+                "schedule": req.schedule,
+            }),
+        ),
+        Err(e) => write_client_error(&e),
+    }
+}
+
 /// `DELETE /api/v1/snapshots/{dataset}?name=<snap>` — destroy one snapshot.
 /// The API's retention scheduler is the only caller, and it only passes names
-/// it generated (`naslos-auto-*`).
+/// it generated (`naslos-*`; legacy `naslos-auto-*` while that compatibility
+/// window is open).
 pub async fn snapshots_delete(
     State(state): State<Arc<AppState>>,
     Path(dataset): Path<String>,

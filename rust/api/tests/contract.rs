@@ -297,6 +297,14 @@ async fn protected_routes_fail_closed_for_all_unauthenticated_shapes() {
         ("PUT", "/api/notifications/webhook"),
         ("DELETE", "/api/notifications/webhook"),
         ("POST", "/api/notifications/webhook/test"),
+        ("GET", "/api/notifications/smtp"),
+        ("PUT", "/api/notifications/smtp"),
+        ("DELETE", "/api/notifications/smtp"),
+        ("POST", "/api/notifications/smtp/test"),
+        ("GET", "/api/notifications/syslog"),
+        ("PUT", "/api/notifications/syslog"),
+        ("DELETE", "/api/notifications/syslog"),
+        ("POST", "/api/notifications/syslog/test"),
     ];
     for (method, path) in routes {
         for (secret, user) in [
@@ -708,6 +716,226 @@ async fn webhook_test_route_requires_enabled_and_guards_at_send_time() {
     assert!(!raw.contains("send-secret"));
 }
 
+#[tokio::test]
+async fn smtp_channel_crud_never_returns_the_password() {
+    let st = Arc::new(AppState::for_test(SECRET));
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/smtp", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["host"], "");
+    assert_eq!(body["port"], 587);
+    assert_eq!(body["tls"], "starttls");
+    assert_eq!(body["hasPassword"], false);
+    assert!(body.get("password").is_none());
+
+    // Loopback, an unknown TLS mode and credentials over plaintext are all
+    // client errors and must leave the defaults intact.
+    for payload in [
+        r#"{"enabled":true,"host":"127.0.0.1","from":"naslos@example.com","to":["ops@example.com"]}"#,
+        r#"{"enabled":true,"host":"1.1.1.1","tls":"plain","from":"naslos@example.com","to":["ops@example.com"]}"#,
+        r#"{"enabled":true,"host":"1.1.1.1","tls":"none","username":"relay","password":"pass","from":"naslos@example.com","to":["ops@example.com"]}"#,
+        r#"{"enabled":true,"host":"1.1.1.1","from":"not-a-mailbox","to":["ops@example.com"]}"#,
+    ] {
+        let (status, _b, _r) = send_state(
+            st.clone(),
+            admin_request("PUT", "/api/notifications/smtp", Some(payload)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{payload}");
+    }
+
+    let payload = r#"{"enabled":true,"host":"1.1.1.1","port":587,"tls":"starttls","username":"relay","password":"contract-smtp-secret","from":"naslos@example.com","to":["ops@example.com"],"enabledEvents":["disk_failure"],"minSeverity":"error"}"#;
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/notifications/smtp", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body, raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/smtp", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], true);
+    assert_eq!(body["host"], "1.1.1.1");
+    assert_eq!(body["username"], "relay");
+    assert_eq!(body["hasPassword"], true);
+    assert_eq!(body["from"], "naslos@example.com");
+    assert_eq!(body["to"][0], "ops@example.com");
+    assert_eq!(body["minSeverity"], "error");
+    assert!(body.get("password").is_none());
+    assert!(!raw.contains("contract-smtp-secret"));
+
+    // Omitting the password keeps the stored one.
+    let payload = r#"{"enabled":true,"host":"1.1.1.1","username":"relay","from":"naslos@example.com","to":["ops@example.com"],"enabledEvents":["disk_failure"],"minSeverity":"error"}"#;
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/notifications/smtp", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/smtp", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["hasPassword"], true);
+
+    // An explicit empty string clears it.
+    let payload = r#"{"enabled":true,"host":"1.1.1.1","username":"relay","password":"","from":"naslos@example.com","to":["ops@example.com"],"enabledEvents":["disk_failure"],"minSeverity":"error"}"#;
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/notifications/smtp", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/smtp", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["hasPassword"], false);
+
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("DELETE", "/api/notifications/smtp", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _raw) =
+        send_state(st, admin_request("GET", "/api/notifications/smtp", None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["hasPassword"], false);
+}
+
+#[tokio::test]
+async fn smtp_test_route_requires_enabled_and_guards_at_send_time() {
+    let (status, body, _r) =
+        send(admin_request("POST", "/api/notifications/smtp/test", None)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "smtp channel is disabled");
+
+    // A settings file that bypassed save-time validation must still be
+    // refused by the send path, without leaking the password or the host.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("smtp.json");
+    std::fs::write(
+        &path,
+        r#"{"enabled":true,"host":"127.0.0.1","port":587,"tls":"starttls","username":"relay","password":"send-secret","from":"naslos@example.com","to":["ops@example.com"],"enabledEvents":["disk_failure"],"minSeverity":"warning"}"#,
+    )
+    .unwrap();
+    let mut st = AppState::for_test(SECRET);
+    st.smtp = Arc::new(naslos_api::smtp::Manager::new(path.to_str().unwrap()));
+    let (status, body, raw) = send_state(
+        Arc::new(st),
+        admin_request("POST", "/api/notifications/smtp/test", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body["error"].as_str().unwrap().contains("non-routable"));
+    assert!(!raw.contains("send-secret"));
+    assert!(!raw.contains("127.0.0.1"));
+}
+
+#[tokio::test]
+async fn syslog_channel_crud_and_test_route() {
+    let st = Arc::new(AppState::for_test(SECRET));
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/syslog", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["protocol"], "udp");
+    assert_eq!(body["port"], 514);
+    assert_eq!(body["facility"], "local0");
+
+    for payload in [
+        r#"{"enabled":true,"protocol":"carrier-pigeon","host":"192.168.1.10"}"#,
+        r#"{"enabled":true,"protocol":"udp","host":"192.168.1.10","facility":"bogus"}"#,
+        r#"{"enabled":true,"protocol":"udp","host":"127.0.0.1"}"#,
+    ] {
+        let (status, _b, _r) = send_state(
+            st.clone(),
+            admin_request("PUT", "/api/notifications/syslog", Some(payload)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{payload}");
+    }
+
+    let payload = r#"{"enabled":true,"protocol":"tcp","host":"192.168.1.10","port":514,"facility":"local3","enabledEvents":["zfs_health"],"minSeverity":"warning"}"#;
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/notifications/syslog", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/syslog", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], true);
+    assert_eq!(body["protocol"], "tcp");
+    assert_eq!(body["host"], "192.168.1.10");
+    assert_eq!(body["facility"], "local3");
+    assert_eq!(body["enabledEvents"][0], "zfs_health");
+
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("DELETE", "/api/notifications/syslog", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/syslog", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+
+    let (status, body, _r) = send(admin_request(
+        "POST",
+        "/api/notifications/syslog/test",
+        None,
+    ))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "syslog channel is disabled");
+
+    // A bypassed settings file is refused at send time, without the host in
+    // the error.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("syslog.json");
+    std::fs::write(
+        &path,
+        r#"{"enabled":true,"protocol":"udp","host":"127.0.0.1","port":514,"facility":"local0","enabledEvents":["disk_failure"],"minSeverity":"warning"}"#,
+    )
+    .unwrap();
+    let mut st = AppState::for_test(SECRET);
+    st.syslog = Arc::new(naslos_api::syslog::Manager::new(path.to_str().unwrap()));
+    let (status, body, raw) = send_state(
+        Arc::new(st),
+        admin_request("POST", "/api/notifications/syslog/test", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body["error"].as_str().unwrap().contains("non-routable"));
+    assert!(!raw.contains("127.0.0.1"));
+}
+
 fn admin_json(method: &str, uri: &str, body: &str) -> Request<Body> {
     Request::builder()
         .method(method)
@@ -822,6 +1050,24 @@ async fn storage_schedules_validate_and_round_trip() {
     assert!(!id.is_empty());
     assert!(body["schedule"]["nextRun"].is_string());
 
+    // A second schedule on the same dataset is refused: the shadow-copy name
+    // carries no schedule id, so two schedules would collide and fight over
+    // retention ownership.
+    let duplicate = r#"{"kind":"snapshot","target":"tank/data","cadence":"weekly","runAt":"Sun 03:30","keep":3}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", duplicate),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("already has snapshot schedule"));
+
     let (status, body, _r) = send_state(
         st.clone(),
         with_peer(
@@ -847,6 +1093,190 @@ async fn storage_schedules_validate_and_round_trip() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn snapshot_schedules_refuse_recursive_overlap_and_allow_siblings() {
+    let st = state();
+    let parent = r#"{"kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30","recursive":true}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", parent),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A recursive parent owns the child dataset's snapshot name too, so a
+    // child schedule would collide every time both fire.
+    let child = r#"{"kind":"snapshot","target":"tank/data/child","cadence":"hourly","runAt":""}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", child),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("already has snapshot schedule"));
+
+    // The reverse order is refused too: a recursive parent cannot be created
+    // over an existing child schedule.
+    let st2 = state();
+    let child_first =
+        r#"{"kind":"snapshot","target":"tank/data/child","cadence":"daily","runAt":"02:30"}"#;
+    let (status, body, _r) = send_state(
+        st2.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", child_first),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let parent_second = r#"{"kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30","recursive":true}"#;
+    let (status, body, _r) = send_state(
+        st2,
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", parent_second),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // Siblings and non-recursive parent/child pairs do not share a snapshot
+    // name and stay allowed.
+    let sibling = r#"{"kind":"snapshot","target":"tank/other","cadence":"daily","runAt":"02:30"}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", sibling),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let plain_parent =
+        r#"{"kind":"snapshot","target":"tank/plain","cadence":"daily","runAt":"02:30"}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", plain_parent),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let plain_child =
+        r#"{"kind":"snapshot","target":"tank/plain/child","cadence":"daily","runAt":"02:30"}"#;
+    let (status, body, _r) = send_state(
+        st,
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", plain_child),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn legacy_duplicate_schedules_can_be_updated_disabled_or_moved() {
+    let st = state();
+    for (id, target) in [("aaa", "tank/data"), ("bbb", "tank/data")] {
+        st.storage_schedules
+            .put(naslos_api::server::storage_schedules::StorageSchedule {
+                id: id.into(),
+                kind: naslos_api::server::storage_schedules::ScheduleKind::Snapshot,
+                target: target.into(),
+                cadence: naslos_api::schedule::Cadence::Daily,
+                run_at: "02:30".into(),
+                keep: 7,
+                enabled: true,
+                ..Default::default()
+            })
+            .unwrap();
+    }
+
+    // Editing one of the two legacy entries in place must not be blocked by the
+    // duplicate (0.6.0 allowed it before the naming change).
+    let update_aaa = r#"{"id":"aaa","kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30","keep":9,"enabled":true}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", update_aaa),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["schedule"]["keep"], 9);
+
+    // It can also be disabled, which is the escape hatch for the colliding pair.
+    let disable_bbb = r#"{"id":"bbb","kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30","keep":7,"enabled":false}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", disable_bbb),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["schedule"]["enabled"], false);
+
+    // The UI omits `enabled` when it edits an existing schedule. That must
+    // preserve the disabled state instead of silently re-enabling it.
+    let edit_without_enabled = r#"{"id":"bbb","kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30","keep":8}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", edit_without_enabled),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["schedule"]["enabled"], false);
+    assert_eq!(body["schedule"]["keep"], 8);
+
+    // Re-enabling it while the first still covers the dataset is refused.
+    let enable_bbb = r#"{"id":"bbb","kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30","keep":7,"enabled":true}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", enable_bbb),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("already has snapshot schedule"));
+
+    // Moving it to an uncovered dataset is allowed and keeps it enabled.
+    let move_bbb = r#"{"id":"bbb","kind":"snapshot","target":"tank/other","cadence":"daily","runAt":"02:30","keep":7,"enabled":true}"#;
+    let (status, body, _r) = send_state(
+        st,
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", move_bbb),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["schedule"]["target"], "tank/other");
+    assert_eq!(body["schedule"]["enabled"], true);
 }
 
 #[tokio::test]
@@ -1137,4 +1567,412 @@ async fn config_export_requires_an_admin_and_emits_the_versioned_shape() {
     assert!(!raw.contains("CANARY-SECRET-MUST-NOT-EXPORT"), "{raw}");
     assert!(!raw.contains("credentialsSecret"), "{raw}");
     assert!(!raw.contains("receiverResults"), "{raw}");
+}
+
+fn import_document() -> Value {
+    serde_json::json!({
+        "kind": "naslos-config-export",
+        "schemaVersion": 1,
+        "generatedAt": "2026-11-22T00:00:00Z",
+        "naslosVersion": "0.6.0",
+        "baseDomain": "",
+        "shares": [],
+        "storageSchedules": [],
+        "buddySchedules": [],
+        "domains": [],
+        "ddnsEntries": [],
+        "apps": [],
+        "datasetRegistry": []
+    })
+}
+
+fn import_share(name: &str, path: &str) -> Value {
+    serde_json::json!({
+        "name": name,
+        "path": path,
+        "protocol": "smb",
+        "description": "",
+        "readOnly": false,
+        "browseable": true,
+        "allowedHosts": [],
+        "validUsers": [],
+        "validGroups": [],
+        "timeMachine": false,
+        "noRootSquash": false,
+        "enabled": true
+    })
+}
+
+fn json_request(
+    method: &str,
+    uri: &str,
+    body: &str,
+    secret: bool,
+    user: &str,
+    groups: &str,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("Sec-Fetch-Site", "same-origin")
+        .header("Content-Type", "application/json");
+    if secret {
+        builder = builder.header("X-Naslos-Proxy-Secret", SECRET);
+    }
+    if !user.is_empty() {
+        builder = builder.header("Remote-User", user);
+    }
+    if !groups.is_empty() {
+        builder = builder.header("Remote-Groups", groups);
+    }
+    builder.body(Body::from(body.to_string())).unwrap()
+}
+
+fn test_ddns_manager(state: &AppState) -> naslos_api::ddns::Manager {
+    naslos_api::ddns::Manager::new(naslos_api::ddns::Options {
+        registry: state.providers.clone(),
+        store_path: String::new(),
+        apps_namespace: "naslos-apps".into(),
+        kube: None,
+        ip_sources: Vec::new(),
+        ipv6_sources: Vec::new(),
+        interval: std::time::Duration::ZERO,
+        cooldown: std::time::Duration::ZERO,
+    })
+}
+
+#[tokio::test]
+async fn config_import_requires_an_admin_and_defaults_to_dry_run() {
+    let mut document = import_document();
+    document["shares"] = serde_json::json!([import_share("media", "/var/mnt/tank/media")]);
+    let body = serde_json::to_string(&document).unwrap();
+
+    let (status, _b, _r) = send(with_peer(
+        json_request("POST", "/api/system/config/import", &body, false, "", ""),
+        [127, 0, 0, 1],
+    ))
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, _b, _r) = send(with_peer(
+        json_request(
+            "POST",
+            "/api/system/config/import",
+            &body,
+            true,
+            "viewer",
+            "naslos_users",
+        ),
+        [127, 0, 0, 1],
+    ))
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let target = state();
+    let (status, report, _r) = send_state(
+        target.clone(),
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["kind"], "naslos-config-import");
+    assert_eq!(report["dryRun"], true);
+    assert_eq!(report["applied"], false);
+    assert_eq!(report["sections"]["shares"]["created"][0]["entry"], "media");
+    assert!(target.shares.lock().unwrap().get("media").is_err());
+
+    let (status, _b, _r) = send_state(
+        target.clone(),
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import?apply=true",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, report, _r) = send_state(
+        target.clone(),
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import?apply=true&confirm=apply",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["dryRun"], false);
+    assert_eq!(report["applied"], true);
+    assert!(target.shares.lock().unwrap().get("media").is_ok());
+
+    let (status, report, _r) = send_state(
+        target,
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import?apply=true&confirm=apply",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["sections"]["shares"]["unchanged"][0], "media");
+    assert!(report["sections"]["shares"]["created"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn config_import_round_trips_an_export_through_the_http_routes() {
+    let mut source = AppState::for_test(SECRET);
+    source.ddns = Some(Arc::new(test_ddns_manager(&source)));
+    source
+        .shares
+        .lock()
+        .unwrap()
+        .create(&naslos_api::shares::CreateShareRequest {
+            name: "media".into(),
+            path: "/var/mnt/tank/media".into(),
+            protocol: naslos_api::shares::Protocol::Smb,
+            description: "Media".into(),
+            enabled: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+    source
+        .storage_schedules
+        .put(naslos_api::server::storage_schedules::StorageSchedule {
+            id: "snap-source".into(),
+            kind: naslos_api::server::storage_schedules::ScheduleKind::Snapshot,
+            target: "tank/media".into(),
+            cadence: naslos_api::schedule::Cadence::Daily,
+            run_at: "02:30".into(),
+            keep: 3,
+            recursive: true,
+            enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+    source
+        .domains
+        .upsert(naslos_api::certs::Domain {
+            base_domain: "example.test".into(),
+            dns_provider: "cloudflare".into(),
+            credentials_secret: "must-not-export".into(),
+            provider_config: std::collections::HashMap::from([("proxied".into(), "false".into())]),
+            acme_email: "ops@example.test".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    source
+        .ddns
+        .as_ref()
+        .unwrap()
+        .store()
+        .put(naslos_api::ddns::Entry {
+            id: "ddns-source".into(),
+            provider: "cloudflare".into(),
+            zone: "example.test".into(),
+            record: "home".into(),
+            record_type: "A".into(),
+            ttl: 300,
+            enabled: true,
+            provider_config: std::collections::HashMap::from([("proxied".into(), "false".into())]),
+            ..Default::default()
+        })
+        .unwrap();
+    source
+        .datasets_registry
+        .add(naslos_api::datasets::ManagedDataset {
+            name: "media".into(),
+            host_path: "/var/mnt/tank/media".into(),
+            shared: false,
+            warning_acknowledged: false,
+            created_at: None,
+            attached_to: Vec::new(),
+        })
+        .unwrap();
+
+    let (status, exported, raw) = send_state(
+        Arc::new(source),
+        with_peer(
+            get(
+                "/api/system/config/export",
+                true,
+                Some("admin"),
+                Some("naslos_admins"),
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert_eq!(exported["kind"], "naslos-config-export");
+
+    let mut target = AppState::for_test(SECRET);
+    target.ddns = Some(Arc::new(test_ddns_manager(&target)));
+    let target = Arc::new(target);
+    let body = serde_json::to_string(&exported).unwrap();
+    let (status, report, raw) = send_state(
+        target.clone(),
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import?apply=true&confirm=apply",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert_eq!(report["totals"]["failed"], 0);
+
+    let (status, reexported, raw) = send_state(
+        target,
+        with_peer(
+            get(
+                "/api/system/config/export",
+                true,
+                Some("admin"),
+                Some("naslos_admins"),
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert_eq!(reexported["shares"][0]["name"], "media");
+    assert_eq!(reexported["shares"][0]["path"], "/var/mnt/tank/media");
+    assert_eq!(reexported["storageSchedules"][0]["target"], "tank/media");
+    assert_eq!(reexported["datasetRegistry"][0]["name"], "media");
+    assert_eq!(reexported["domains"][0]["baseDomain"], "example.test");
+    assert!(reexported["domains"][0].get("credentialsSecret").is_none());
+    assert_eq!(reexported["ddnsEntries"][0]["provider"], "cloudflare");
+}
+
+#[tokio::test]
+async fn config_import_refuses_newer_schemas_unknown_fields_and_credentials() {
+    let target = state();
+
+    let mut newer = import_document();
+    newer["schemaVersion"] = serde_json::json!(2);
+    let body = serde_json::to_string(&newer).unwrap();
+    let (status, response, _r) = send_state(
+        target.clone(),
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(response["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("newer"));
+
+    let mut unknown = import_document();
+    unknown["unexpected"] = serde_json::json!(true);
+    let body = serde_json::to_string(&unknown).unwrap();
+    let (status, _response, _r) = send_state(
+        target.clone(),
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let mut credential = import_document();
+    credential["apps"] = serde_json::json!([{
+        "name": "demo",
+        "source": "official",
+        "channel": "stable",
+        "chartVersion": "1.0.0",
+        "baseDomain": "",
+        "exposure": {
+            "subdomain": "",
+            "tls": false,
+            "auth": false,
+            "localOnly": false,
+            "protectedPaths": [],
+            "internet": true,
+            "service": "",
+            "port": 0,
+            "scheme": ""
+        },
+        "datasets": [],
+        "privileged": false,
+        "env": [],
+        "values": {"adminPassword": "must-not-pass"},
+        "redactedKeys": [],
+        "valuesOmitted": false
+    }]);
+    let body = serde_json::to_string(&credential).unwrap();
+    let (status, response, raw) = send_state(
+        target,
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(response["details"].to_string().contains("adminPassword"));
+    assert!(!raw.contains("must-not-pass"), "{raw}");
 }

@@ -19,7 +19,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [bootstrap.md](bootstrap.md) | Image Factory schematic, ZFS extension, boot-time pool import, upgrades | New |
 | [storage-zfs.md](storage-zfs.md) | ZFS pools, datasets, zvols, snapshots, topology advisor, Talos gotchas | New |
 | [iscsi.md](iscsi.md) | iSCSI target spike: Talos kernel constraint, userspace `tgt` vs a system extension, go/no-go gates, privilege/NetworkPolicy review (`[OPEN]`) | Spike |
-| [dataset-encryption.md](dataset-encryption.md) | ZFS native encryption: key custody for an unattended Talos boot, unlock/lock, encrypted send, Buddy threat-model comparison, migration (FR-ENC) | Design + safe validation slice |
+| [dataset-encryption.md](dataset-encryption.md) | ZFS native encryption: Secret-backed raw-key custody, dataset create, keystatus, explicit unlock/lock, encrypted send, Buddy threat-model comparison, migration (FR-ENC) | Raw-key path implemented; passphrase/send/migration `[OPEN]` |
 | [nvmeof.md](nvmeof.md) | NVMe-oF TCP spike: Talos `nvmet` evidence, SPDK/extension alternatives, security, performance, failure modes, go/no-go | Spike |
 | [identity-sso.md](identity-sso.md) | Single sign-on: Authelia, OpenLDAP, Samba hash sync, RBAC groups, 2FA | Rebuilt (replaces `authentication.md`) |
 | [external-directory.md](external-directory.md) | Optional external LDAP source (FR-EXT): phase-1 configuration, TLS, search bases, uid/gid mapping, AD/Kerberos roadmap | New |
@@ -31,8 +31,8 @@ read them in order for the full picture, or jump straight to a topic.
 | [app-catalog.md](app-catalog.md) | App catalog: git chart repositories, `naslos-app.yaml`, install lifecycle, exposure/routing, domains/certs, privileged NS | Rebuilt |
 | [dynamic-dns.md](dynamic-dns.md) | Dynamic DNS + declarative DNS providers: provider YAML, entries, credential Secrets, drivers, egress | New |
 | [monitoring.md](monitoring.md) | Live metrics API + dashboard; node/workload measurement without Prometheus | New |
-| [reporting.md](reporting.md) | Bounded historical reporting design (24 h/7 d/30 d, embedded store, no Prometheus) | Design (`[OPEN]`) |
-| [notifications.md](notifications.md) | ntfy + webhook alert channels: routing, severities, defaults | New |
+| [reporting.md](reporting.md) | Bounded historical reporting (24 h/7 d/30 d, embedded append-only store, API + dashboard card, no Prometheus) | Implemented subset (`FR-RPT-05…07` `[OPEN]`) |
+| [notifications.md](notifications.md) | ntfy + webhook + SMTP + syslog alert channels: routing, severities, defaults, target policy | New |
 | [deployment.md](deployment.md) | Prerequisites, Make targets, Helm values walkthrough | New |
 | [installer-contract.md](installer-contract.md) | Install pack format + stable interfaces for the desktop installer (FR-INSTALL) | New |
 | [datasets-isolation.md](datasets-isolation.md) | Design for isolating installed apps from the shared datasets root (D3/F1): current model, options, migration, residual risk | Current |

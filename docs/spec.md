@@ -211,12 +211,31 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-STO-10** — Scheduled snapshots MUST be creatable, listable, updatable and
   deletable per dataset (`GET|POST|DELETE /api/storage/schedules`, kind
   `snapshot`) with a cadence (hourly/daily/weekly, UTC `runAt`), an optional
-  recursive flag, and a keep count (0 = keep all, at most 1000). Every run MUST
-  create the snapshot through the agent with a scheduler-owned name
-  `naslos-auto-<schedule>-<UTC timestamp>`. Retention MUST delete only
-  snapshots carrying that schedule's prefix, keeping the newest N per dataset;
-  a user-created snapshot or another schedule's snapshot MUST NEVER be removed.
-  The schedule's `lastRun`, `lastResult`, `lastError` and `nextRun` MUST persist
+  recursive flag, and a keep count (0 = keep all, at most 1000). At most one
+  **enabled** snapshot schedule may cover a dataset: an exact target or a
+  recursive ancestor/descendant overlap MUST be refused (the shadow-copy name
+  carries no schedule id, so both would write the same snapshot), while a
+  disabled duplicate is allowed. On load, a 0.6.0 store that already has
+  overlapping enabled schedules MUST keep the first in id order enabled and
+  disable the rest with an explanatory `lastError`, so the upgrade neither
+  collides nor blocks their updates. Every run MUST
+  create the snapshot through the agent with the shadow-copy-compatible UTC
+  name `naslos-%Y-%m-%d_%H-%M-%S` and MUST record the owning schedule in the
+  snapshot's `user:naslos:schedule=<id>` user property (every descendant
+  snapshot of a recursive run). If recording that property fails after the
+  snapshot was created, the run MUST remove the snapshot(s) it just created
+  (all matching descendant snapshots for a recursive run) and record `failed`
+  with the cleanup outcome, so an untagged shadow-copy name cannot accumulate.
+  Retention MUST delete only snapshots whose
+  property equals that schedule's id, keeping the newest N per dataset; a
+  user-created snapshot (no property) or another schedule's snapshot MUST NEVER
+  be removed. For one release after the 0.6.0 rename, retention MUST also treat
+  a property-less legacy `naslos-auto-<schedule>-<UTC timestamp>` name as owned
+  by that schedule so older snapshots do not orphan. The agent property surface
+  is limited to that one fixed property (a validated value; no arbitrary
+  property passthrough). The API and agent MUST expose the property only through
+  the validated snapshot-property set/list routes. The schedule's `lastRun`,
+  `lastResult`, `lastError` and `nextRun` MUST persist
   on the state volume, a run missed while the API was down MUST fire once at
   startup, and a failed run MUST be recorded without disabling the schedule.
   A run that cannot reach the agent MUST be retried on the next tick instead of
@@ -274,43 +293,63 @@ and `zfs change-key` only rewraps an existing key.
   encrypted dataset. Encryption MUST NOT be presented as changeable on an
   existing dataset; migration MUST be a new encrypted dataset plus a
   send/receive (or copy) and the old dataset's retirement, never `zfs set`.
-  **[OPEN]**
-- **FR-ENC-02** — Until custody, unlock/lock and encrypted send are implemented,
-  a well-formed dataset-create request that asks for encryption MUST be
-  rejected by both the API and the agent with an explicit "not implemented"
-  error, and neither layer MUST pass an encryption option to `zfs`. Malformed
-  encryption requests (unknown algorithms/formats, a missing `keyformat`, a
-  request-supplied `keylocation`, `encryption=off` combined with key options,
-  or `copies=3`) MUST fail validation. No key material is accepted, stored,
-  logged or placed in argv. Verified by
+  Verified by
   `naslos_agent::zfs::encryption::tests::planner_matches_shared_fixture`,
-  `naslos_api::dataset_encryption::tests::planner_matches_shared_fixture`
-  (shared fixture `rust/testdata/dataset_encryption.txt`) and the
-  create-option tests in both crates.
-- **FR-ENC-03** — **[OPEN]** Key custody: each encrypted dataset MUST have its
-  own generated 256-bit raw key. The key MUST be held in a Kubernetes Secret in
-  the Naslos namespace and MUST NOT be returned by any API, written to a log,
-  an error, the environment, argv or an `-o` property. The agent MUST be the
-  only component that materialises it for ZFS, in a 0600 file on host tmpfs,
-  and MUST remove that file when the dataset is locked. Unlock material MUST
-  travel only over the authenticated API→agent channel.
-- **FR-ENC-04** — **[OPEN]** Unlock/lock and boot: because Talos `zfs-service`
-  runs `zpool import -fal` and does not load keys, an encrypted dataset MUST be
+  `naslos_api::dataset_encryption::tests::planner_matches_shared_fixture` and
+  `key_location_is_never_caller_controlled` in both crates.
+- **FR-ENC-02** — A well-formed dataset-create request with `encryption` and
+  `keyformat=raw` MUST create the dataset with the request's allow-listed
+  cipher after its key Secret exists. `keyformat=passphrase` MUST be refused
+  with an explicit `[OPEN]` error until FR-ENC-05 ships. Malformed encryption
+  requests (unknown algorithms/formats, a missing `keyformat`, a
+  request-supplied `keylocation`, `encryption=off` combined with key options,
+  or `copies=3`) MUST fail validation. No key material is accepted as a
+  dataset option, placed in argv, written to a log or echoed in an error.
+  Verified by the planner fixtures, the create-option tests in both crates,
+  `passphrase_creation_is_refused_before_any_zfs_call` and
+  `key_material_is_never_a_dataset_option`.
+- **FR-ENC-03** — Key custody: each encrypted dataset MUST have its own
+  generated 256-bit raw key. The key MUST be held in a Kubernetes Secret in the
+  dedicated `naslos-keys` namespace and MUST NOT be returned by any API,
+  written to a log, an error, the environment, argv or an `-o` property. The
+  agent MUST be the only component that materialises it for ZFS, in a 0600 file
+  on host tmpfs, and MUST remove that file after `zfs create` and
+  `zfs load-key`. Unlock material MUST travel only over the authenticated
+  API→agent channel. Verified by
+  `naslos_api::dataset_encryption::tests::generated_keys_are_32_bytes_and_redacted`,
+  `secret_names_are_deterministic_and_dns_safe`,
+  `key_secret_parsing_refuses_mismatches_without_echoing_the_key`,
+  `naslos_agent::zfs::encryption::tests::keyfiles_are_private_and_removed`,
+  `create_encrypted_dataset_never_puts_the_key_in_argv` and
+  `unlock_response_never_echoes_the_key`.
+- **FR-ENC-04** — Unlock/lock and boot: because Talos `zfs-service` runs
+  `zpool import -fal` and does not load keys, an encrypted dataset MUST be
   reported as locked (`keystatus: unavailable`) and MUST NOT be mounted or
   served until an administrator explicitly unlocks it. There MUST be no
-  automatic unlock by default. Lock MUST be refused while the dataset is
-  mounted or used by a share or app. `GET /api/datasets` and the UI MUST expose
-  the lock state.
+  automatic unlock by default. Lock MUST be refused while the dataset or a
+  descendant is mounted. `GET /api/datasets`,
+  `GET /api/datasets/keystatus`, `POST /api/datasets/unlock` and
+  `POST /api/datasets/lock` MUST expose and change the lock state, and the UI
+  MUST show it. Verified by
+  `naslos_agent::zfs::encryption::tests` (`unlock_loads_the_key_from_the_private_file_and_removes_it`,
+  `lock_is_refused_while_mounted`, `lock_refuses_a_mounted_child`) and
+  `unlock_response_never_echoes_the_key`.
 - **FR-ENC-05** — **[OPEN]** Passphrase datasets: a passphrase MUST NOT be
   persisted; it MUST be supplied once over the authenticated API→agent channel
   and passed to `zfs load-key` on stdin, never in argv. The UI MUST state that a
   reboot requires re-entry and that a lost passphrase is unrecoverable.
-- **FR-ENC-06** — **[OPEN]** Create atomicity: the key Secret MUST exist before
-  the dataset is created, and a create MUST verify the exact dataset's
-  `encryption` and `keystatus=available` rather than trusting the exit status
-  of `zfs create -p` (which succeeds without applying properties when the
-  target already exists). On failure the partial dataset and the Secret MUST be
-  removed; no dataset may exist whose only key copy is in process memory.
+- **FR-ENC-06** — Create atomicity: the key Secret MUST exist before the
+  dataset is created, and a create MUST verify the exact dataset's
+  `encryption`, `encryptionroot` and `keystatus=available` rather than trusting
+  the exit status of `zfs create -p` (which succeeds without applying
+  properties when the target already exists). The agent MUST refuse an exact
+  dataset that already exists, destroy only the dataset it just created on
+  failure, and remove the transient keyfile. The API MUST delete the Secret
+  only when the exact dataset is confirmed absent; if the dataset exists or its
+  existence cannot be checked, the Secret MUST be kept. No dataset may exist
+  whose only key copy is in process memory. Verified by
+  `create_rolls_back_a_dataset_that_did_not_verify` and
+  `encrypted_create_requires_a_32_byte_key_and_never_runs_zfs`.
 - **FR-ENC-07** — **[OPEN]** Encrypted send/receive: replication of an
   encrypted source MUST use `zfs send -w`; `-U` (no-preserve-encryption) MUST
   NOT be used, and a property-bearing send without `-w` MUST be refused
@@ -324,12 +363,14 @@ and `zfs change-key` only rewraps an existing key.
   (`zfs send -w`) so the API never handles plaintext; that choice MUST NOT
   change the receiver's zero-knowledge guarantee. **[OPEN]** for the raw-send
   choice.
-- **FR-ENC-09** — **[OPEN]** Consumers: a share or app mount whose path is
-  inside a locked encrypted dataset MUST be refused rather than served empty or
-  served from the parent dataset. Destroying an encrypted dataset MUST require
-  an explicit confirmation that the key is destroyed with it and the data is
-  unrecoverable without a backup; key deletion MUST be presented as
-  irreversible.
+- **FR-ENC-09** — Destroying an encrypted dataset (or a subtree containing one)
+  MUST require an explicit confirmation that the key is destroyed with it and
+  the data is unrecoverable without a backup; after a successful destroy the
+  API MUST delete the key Secret(s) and MUST present key deletion as
+  irreversible. **[OPEN]** for consumers: a share or app mount whose path is
+  inside a locked encrypted dataset MUST be refused rather than served empty
+  or served from the parent dataset. Verified for destroy by the
+  `datasets_delete` handler (confirm + post-destroy Secret deletion).
 - **FR-ENC-10** — **[OPEN]** Key lifecycle: the owner MUST be able to rotate an
   encrypted dataset's key with `zfs change-key` (raw→passphrase and back) and
   MUST be able to back up/restore the key material without exposing it to the
@@ -518,7 +559,8 @@ cloud sync remain `[OPEN]` below.
   common GUID it MUST send a full stream. The stream MUST be piped from the
   agent's `zfs send` endpoint into its `zfs receive` endpoint without buffering
   the dataset in API memory, and `recursive` MUST use `zfs send -r` (descendants without property propagation, so the source mountpoint cannot shadow the same-node replica). Encrypted
-  (`-w`) replication is `[OPEN]` until dataset encryption ships (P0-3).
+  (`-w`) replication is `[OPEN]` until FR-ENC-07 ships; dataset encryption
+  itself is implemented for create/unlock/lock (P0-3).
   *(tests: `replication::planner_matches_by_guid_not_name`,
   `replication::a_full_replication_job_snapshots_streams_and_finishes`,
   `replication::a_common_guid_makes_the_send_incremental`,
@@ -749,11 +791,14 @@ later phases and are marked **[OPEN]** below.
   `vfs_shadow_copy2`) in front of
   the inherited `fruit`/`streams_xattr` modules and point it at the share's
   ZFS `.zfs/snapshot` directory (`shadow:snapdir`,
-  `shadow:snapdirseverywhere`, `shadow:sort`, `shadow:format`,
-  `shadow:localtime`), exposing only snapshots whose names match the
-  documented `naslos-…` timestamp format. A request that enables it on an
-  `nfs`/`afp` share MUST be refused with a 400. The share-form toggle is
-  **[OPEN]** (API-only in this pass). *(render + validation + contract tests)*
+  `shadow:snapdirseverywhere`, `shadow:sort`,
+  `shadow:format = naslos-%Y-%m-%d_%H-%M-%S`,
+  `shadow:localtime = no`), exposing only snapshots whose names match the
+  documented UTC timestamp format shared with FR-STO-10. A request that enables
+  it on an `nfs`/`afp` share MUST be refused with a 400, and a share path with a
+  `.zfs` component MUST be refused. The share form MUST expose the toggle
+  (default off) for SMB shares and MUST NOT send it for NFS.
+  *(render + validation + contract + UI tests)*
 - **FR-SHR-15** — Audit logging MUST be a per-share, SMB-only opt-in (default
   off). When enabled, the renderer MUST stack `full_audit` last in the VFS list
   with a fixed prefix and an explicit success/failure operation list, and MUST
@@ -761,8 +806,9 @@ later phases and are marked **[OPEN]** below.
   `logging = file` and `log level = 1` while any audited share exists) because
   the serving container has no syslog daemon. It MUST NOT change
   authentication, access or share contents, and a request that enables it on
-  an `nfs`/`afp` share MUST be refused with a 400. The share-form toggle is
-  **[OPEN]** (API-only in this pass). *(render + validation + contract tests)*
+  an `nfs`/`afp` share MUST be refused with a 400. The share form MUST expose
+  the toggle (default off) for SMB shares and MUST NOT send it for NFS.
+  *(render + validation + contract + UI tests)*
 - **FR-SHR-16** — A share path MUST NOT contain a `.zfs` component: the ZFS
   snapshot directory MUST NOT be exportable as a share. *(validation test)*
 
@@ -1212,43 +1258,93 @@ additive: ntfy keeps its existing behavior (FR-NTF-01/02) and settings.
   tests: `test_action_requires_an_enabled_channel`,
   `test_action_is_not_gated_by_event_routing`; contract test
   `webhook_test_route_requires_enabled_and_guards_at_send_time`)*
-- **FR-ALT-07** — **[OPEN]** An SMTP/email channel MUST be configurable with
-  host, port, TLS mode, sender, recipients and credentials held in a Secret,
-  routed by the same event/severity rules as FR-ALT-01. *(no test yet;
-  backend not implemented)*
+- **FR-ALT-07** — An SMTP/email channel MUST be configurable with host, port,
+  TLS mode (`starttls`, `implicit` or `none`), sender, recipients and optional
+  write-only credentials, routed by the same event/severity rules as
+  FR-ALT-01. TLS MUST validate the server certificate; there is no insecure
+  mode. Credentials MUST be persisted only in the mode-`0600` settings file
+  (never returned by the API) and MUST require STARTTLS or implicit TLS. The
+  target guard MUST allow an explicitly configured RFC1918 relay while still
+  refusing loopback, link-local/metadata, CGNAT, ULA and embedded credentials.
+  Delivery MUST be a single bounded attempt, and an error or log line MUST NOT
+  expose the host, username, password or message. *(SMTP tests:
+  `target_policy_allows_lan_relays_and_public_hosts_but_not_special_addresses`,
+  `tls_modes_and_credentials_are_validated`,
+  `settings_survive_a_reload_and_the_password_stays_write_only`,
+  `message_shape_is_rfc5322_and_subject_is_sanitized`,
+  `send_path_refuses_an_unknown_tls_mode_from_a_hand_edited_file`,
+  `starttls_does_not_wait_for_a_second_greeting`,
+  `a_multibyte_separator_is_rejected_without_panicking`,
+  `a_multiline_reply_is_bounded_by_lines_and_bytes`; contract tests
+  `smtp_channel_crud_never_returns_the_password`,
+  `smtp_test_route_requires_enabled_and_guards_at_send_time`)*
 - **FR-ALT-08** — **[OPEN]** SNMP traps MUST be a configurable channel
   (version, target, community/credentials from a Secret) routed by the same
   event/severity rules as FR-ALT-01. *(no test yet; backend not implemented)*
-- **FR-ALT-09** — **[OPEN]** Syslog forwarding MUST be a configurable channel
+- **FR-ALT-09** — Syslog forwarding MUST be a configurable channel
   (`udp`/`tcp`/`tls`, target, facility) routed by the same event/severity rules
-  as FR-ALT-01. *(no test yet; backend not implemented)*
+  as FR-ALT-01. The payload MUST be a bounded RFC 5424 message that carries only
+  the event fields, never channel settings or credentials. TLS MUST validate
+  the collector certificate. The target guard is the LAN-aware one from
+  FR-ALT-07. *(syslog tests:
+  `payload_is_rfc5424_with_pri_and_event_msgid`,
+  `payload_sanitizes_control_characters_and_the_msgid`,
+  `payload_is_bounded`, `target_policy_allows_lan_collectors_and_refuses_special_addresses`,
+  `send_path_refuses_an_unknown_protocol_from_a_hand_edited_file`,
+  `tcp_send_tries_every_vetted_address`;
+  contract test `syslog_channel_crud_and_test_route`)*
 
 ### 3.7.2 Historical reporting (`FR-RPT`)
 
-Historical reporting is **not implemented in this pass**; the bounded design is
-normative in [reporting.md](reporting.md). The requirements below are `[OPEN]`
-until the store, API and UI land.
+The bounded store, recorder, API and dashboard section are implemented
+([reporting.md](reporting.md)). The store is an embedded append-only file on a
+dedicated reporting volume; it does not bundle, require or depend on
+Prometheus, Grafana or an external time-series service.
 
-- **FR-RPT-01** — **[OPEN]** A background recorder MUST persist a bounded local
-  time series for CPU, memory, network, ZFS pool usage and disk health/SMART
-  values. The store MUST be embedded (SQLite or fixed-size RRD-like
-  files) on the state volume; Naslos MUST NOT bundle, require or depend on
-  Prometheus, Grafana, or an external time-series service. *(no test yet;
-  design in reporting.md)*
-- **FR-RPT-02** — **[OPEN]** Recording MUST retain at most three resolutions —
-  raw/1-minute for 24 h, 5-minute rollups for 7 d and 1-hour rollups for 30 d —
-  and MUST prune anything older than 30 d. The number of recorded series MUST be
-  a fixed allowlist (no per-app, per-container or per-process cardinality), and
-  a query MUST be capped in points. *(no test yet; design in reporting.md)*
-- **FR-RPT-03** — **[OPEN]** History writes MUST be best-effort and MUST NOT
-  block or fail the live metrics collector. A missing, locked or corrupt history
-  database MUST degrade to "no history" and MUST be recreatable without
-  affecting live metrics, alerts, shares or the dashboard. *(no test yet;
-  design in reporting.md)*
-- **FR-RPT-04** — **[OPEN]** The API and UI MUST expose only the 24 h, 7 d and
-  30 d views over the fixed series allowlist, authenticated like every other
-  owner route, and MUST NOT return unbounded raw samples. *(no test yet;
-  design in reporting.md)*
+- **FR-RPT-01** — A background recorder MUST persist a bounded local time
+  series for CPU, memory, network, ZFS pool usage and disk health/SMART values.
+  The store MUST be embedded on a persistent node-local state volume (its own
+  reporting PVC); Naslos MUST NOT bundle, require or depend on Prometheus,
+  Grafana, or an external time-series service. *Implemented
+  (`rust/api/src/reporting.rs`): allowlisted CPU, memory, per-second network
+  rates for physical interfaces, ZFS pool used/alloc/free and disk
+  temperature/wear; tests `ingest_records_series_and_derives_closed_rollups`,
+  `disk_smart_values_are_recorded_when_present`.*
+- **FR-RPT-02** — Recording MUST retain at most three resolutions — raw/1-minute
+  for 24 h, 5-minute rollups for 7 d and 1-hour rollups for 30 d — and MUST
+  prune anything older than 30 d. The number of recorded series MUST be a fixed
+  allowlist (no per-app, per-container or per-process cardinality), and a query
+  MUST be capped in points. *Implemented: `retention_prunes_each_resolution_and_keeps_the_30_day_floor`,
+  `series_registry_holds_stable_ids_and_caps_cardinality`,
+  `query_downsampling_caps_points`, `buckets_floor_at_boundaries`.*
+- **FR-RPT-03** — History writes MUST be best-effort and MUST NOT block or fail
+  the live metrics collector. A missing, locked or corrupt history database MUST
+  degrade to "no history" and MUST be recreatable without affecting live
+  metrics, alerts, shares or the dashboard. *Implemented: the recorder is a
+  separate task, writes are off the collector path, a corrupt header is moved
+  aside, a corrupt/truncated tail is repaired, and an unopenable store answers
+  `available:false`; tests `corrupt_tail_is_truncated_and_the_store_keeps_writing`,
+  `corrupt_header_is_moved_aside_and_recreated`,
+  `a_directory_instead_of_a_file_degrades_to_unavailable`.*
+- **FR-RPT-04** — The API and UI MUST expose only the 24 h, 7 d and 30 d views
+  over the fixed series allowlist, authenticated like every other owner route,
+  and MUST NOT return unbounded raw samples. *Implemented: `GET /api/reports`
+  and `GET /api/reports/series` on the admin-only owner router, plus the
+  dashboard History card; tests `server::reports::tests::*`,
+  `ranges_are_an_enum_not_a_duration`.*
+
+Remaining `[OPEN]` for reporting:
+
+- **FR-RPT-05** — **[OPEN]** ZFS pool `fragmentation_percent` is part of the
+  design's optional series set but the agent pool list does not expose it yet;
+  it MUST NOT be synthesized. *(no test yet; owner: agent pool inventory)*
+- **FR-RPT-06** — **[OPEN]** A live drill MUST compare one hour of recorded
+  history with `/api/metrics` on the production node and confirm the store stays
+  under its size cap across a restart. *(no test yet; requires the node)*
+- **FR-RPT-07** — **[OPEN]** A dedicated Reporting page (beyond the dashboard
+  section) and Playwright coverage for the range selector, seeded points and the
+  empty/corrupt state. *(no test yet; the API contract and unit tests cover the
+  current dashboard section)*
 
 ### 3.8 Buddy Backup (`FR-BUD`)
 
@@ -1769,10 +1865,13 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 ### 3.15 System config export/import (`FR-CFG`)
 
 The owner can download a versioned snapshot of the declarative configuration
-(not the data) to keep beside a backup. The export is deliberately a
-**projection**: every section is written through an explicit allow-listed
-struct, so a newly added store field cannot leak by accident. Import/restore is
-not implemented yet and stays `[OPEN]` with the validation rules below.
+(not the data) to keep beside a backup, and restore it through a dry-run plan
+followed by an explicit apply. The export is deliberately a **projection**:
+every section is written through an explicit allow-listed struct, so a newly
+added store field cannot leak by accident. Import consumes only that same
+strict envelope, never deletes records, never injects credentials and never
+installs apps; the app section is reported as skipped with the reinstall
+follow-up.
 
 - **FR-CFG-01** — `GET /api/system/config/export` MUST be an admin-only owner
   route that returns a JSON download with `kind: "naslos-config-export"`,
@@ -1809,15 +1908,50 @@ not implemented yet and stays `[OPEN]` with the validation rules below.
   provider with no loaded definition MUST export an empty config.
   *(config export tests: `secret_material_is_never_exported`,
   `every_free_form_key_in_the_payload_is_allow_listed`)*
-- **FR-CFG-04** — Import/restore is `[OPEN]`. When implemented it MUST:
-  accept only the current `schemaVersion` (reject a newer one), accept only
-  allow-listed fields and reject unknown or secret-like keys rather than
-  ignoring them; revalidate every ID, path, dataset, pool and provider against
-  the live node instead of trusting the payload; never reuse an exported ID to
-  overwrite or delete an existing record; never inject a credential (entries
-  whose credentials were removed MUST be re-entered through the existing
-  endpoints); and run as a dry-run plan followed by an explicit confirmation,
-  never as an automatic apply on upload.
+- **FR-CFG-04** — `POST /api/system/config/import` MUST accept only the
+  `naslos-config-export` envelope with `schemaVersion: 1` (a newer or older
+  version is rejected), reject unknown top-level or record fields and any
+  credential-shaped key rather than ignoring them, and default to a dry-run
+  report. Applying MUST require the explicit `?apply=true&confirm=apply`
+  confirmation and MUST return a per-section report of created, updated,
+  unchanged, skipped and failed entries with the changed field names. Import
+  MUST ignore exported IDs and match an existing record by its natural key
+  (share name, schedule kind + dataset/pool, buddy dataset + source, provider +
+  zone + record + type, base domain, or dataset name); new records get
+  server-generated IDs. It MUST never delete a record absent from the import,
+  never overwrite a credential Secret, and never write a Secret, TLS key, Buddy
+  identity/KEK, token or other credential. A referenced DDNS entry MUST be
+  remapped to the server's ID even when the domain would otherwise be
+  unchanged; an ambiguous existing match, or a second imported record with the
+  same natural key, MUST be skipped rather than guessed at; a legacy AFP share
+  MUST be reported skipped; a provider change MUST clear the previous
+  provider's credential Secret and request re-entry; and an entry whose
+  credentials were removed is imported without them with a report note to
+  re-enter them through the existing endpoint. When the agent is reachable,
+  share paths, dataset/pool targets and registered dataset paths MUST be
+  revalidated read-only against the node, and the Buddy receive store and its
+  parent paths MUST be refused as app datasets; without an agent they are
+  validated structurally and the report says so. *(config import tests:
+  `unknown_top_level_and_record_fields_are_rejected`,
+  `envelope_version_and_kind_are_strict`,
+  `secret_shaped_app_values_are_rejected`,
+  `secret_and_free_form_provider_fields_are_rejected`,
+  `invalid_paths_datasets_pools_and_providers_are_rejected`,
+  `dry_run_plan_is_pure_and_apply_is_idempotent`,
+  `exported_ids_are_never_reused_for_new_records`,
+  `domain_references_follow_the_server_generated_ddns_id`,
+  `an_existing_domain_links_to_a_ddns_entry_created_by_the_import`,
+  `ambiguous_existing_schedules_are_skipped`,
+  `duplicate_storage_schedules_are_skipped_not_fatal`,
+  `duplicate_buddy_schedules_are_skipped_not_fatal`,
+  `trimmed_domain_duplicates_are_rejected`,
+  `legacy_afp_shares_are_skipped`,
+  `a_provider_change_clears_the_old_credentials`,
+  `the_buddy_store_and_parent_paths_are_refused`,
+  `an_exported_document_round_trips_through_import`; contract tests:
+  `config_import_requires_an_admin_and_defaults_to_dry_run`,
+  `config_import_round_trips_an_export_through_the_http_routes`,
+  `config_import_refuses_newer_schemas_unknown_fields_and_credentials`)*
 - **FR-CFG-05** — The config export is **not** the installer recovery ZIP
   (FR-INSTALL-08). The recovery ZIP is bootstrap material (`talosconfig`,
   machine config, Talos secrets, `kubeconfig`, schematic/ISO facts) and is the
@@ -1825,6 +1959,12 @@ not implemented yet and stays `[OPEN]` with the validation rules below.
   records. The config export is an owner-gated, versioned JSON document of
   declarative application records and contains no PKI, kubeconfig or Secret
   material, so it cannot recreate a node. Neither format supersedes the other.
+- **FR-CFG-06** — Import is a declarative-record restore, not an app reinstall
+  or a credential restore. Installing exported app records, restoring provider
+  credentials, automatically pushing the restored Samba/NFS configuration
+  during import (the existing `/api/shares/apply` step remains manual), and
+  reconciling certificates/SSO immediately after import remain `[OPEN]`; the
+  import report names the follow-up and the app section is reported skipped.
 ### 3.16 RBAC roles (`FR-RBAC`)
 
 Naslos adds three privileged roles on top of the authenticated baseline:
@@ -2069,6 +2209,7 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
 | `/api/ddns/{id}/run` | POST | Force one reconcile even when the IP is unchanged |
 | `/api/system/version` | GET | Running Naslos/chart/Talos/Kubernetes, release pins, profile, `upgradable` (§3.11) |
 | `/api/system/config/export` | GET | Versioned, secret-free declarative config download (`Content-Disposition`; FR-CFG) |
+| `/api/system/config/import` | POST | Strict import of the export envelope for shares, schedules, domains, DDNS entries and dataset registry records (`?apply=true&confirm=apply` commits; FR-CFG-04) |
 | `/api/system/updates` | GET | Cached update check, candidate, stepping decision |
 | `/api/system/updates/check` | POST | Run an update check now |
 | `/api/system/operations` | POST | Start an ordered upgrade operation (`202`; `409` lock; `412` precondition) |
@@ -2105,6 +2246,10 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
 | `/api/notifications/test` | POST | Send test push |
 | `/api/notifications/webhook` | GET, PUT, DELETE | Webhook channel settings / update / reset (FR-ALT) |
 | `/api/notifications/webhook/test` | POST | Send a test webhook (FR-ALT-06) |
+| `/api/notifications/smtp` | GET, PUT, DELETE | SMTP channel settings / update / reset (FR-ALT-07) |
+| `/api/notifications/smtp/test` | POST | Send a test email (FR-ALT-07) |
+| `/api/notifications/syslog` | GET, PUT, DELETE | Syslog channel settings / update / reset (FR-ALT-09) |
+| `/api/notifications/syslog/test` | POST | Send a test RFC 5424 message (FR-ALT-09) |
 | `/api/network` | GET | Host network inventory: hostname, resolvers and physical links (§3.12) |
 | `/api/network/changes` | POST | Start a guarded network change (`202`; `409` while pending or during an upgrade) |
 | `/api/network/changes/{id}` | GET | Change phase, target address, deadline and error |
@@ -2153,6 +2298,7 @@ operator and read-only users receive `403` on owner routes.
 | `/api/v1/disks/health` | GET | Per-disk SMART + ZFS health (FR-DHK) |
 | `/api/v1/datasets/{pool}` | GET, POST | List / create datasets |
 | `/api/v1/snapshots/{pool}` | GET, POST, DELETE | List (add `?paths=true` for full `dataset@snap` paths) / create (optional `recursive`) / destroy one snapshot (`?name=`) (FR-STO-10) |
+| `/api/v1/snapshot-properties/{dataset}` | GET, PUT | List snapshots as `{path, schedule}` from `user:naslos:schedule` / record the owning schedule (`{name, schedule, recursive}`); only that fixed property, argv-only (FR-STO-10) |
 | `/api/v1/zfs/send/{dataset}` | GET | Stream `zfs send`; optional `to`, `from`, `raw`, `recursive=true`, `estimate=true` (FR-BUD-12, FR-REP-03) |
 | `/api/v1/zfs/receive/{dataset}` | POST | Stream a body into `zfs receive`; optional `force=true` (FR-BUD-12; replication sets it only for a full send and never for an incremental) |
 | `/api/v1/zfs/snapshots/{dataset}` | GET | Snapshots as `{dataset, name, guid, created}`; `?recursive=false` lists only the dataset's own snapshots (FR-BUD, FR-REP-03) |
@@ -2171,7 +2317,7 @@ operator and read-only users receive `403` on owner routes.
 - **DM-6 DiskHealth**: `{ "smartctlAvailable": bool, "error": string, "temperatureWarningC": number, "wearWarningPercent": number, "disks": [{ "device", "size", "isSystemDisk", "model", "serial", "busPath", "type", "signatures": [], "inPool"?, "smart": { "available", "enabled", "health": "PASSED"|"FAILED"|"UNKNOWN", "temperatureC"?, "powerOnHours"?, "wearPercent"?, "reallocatedSectors"?, "pendingSectors"?, "uncorrectableSectors"?, "mediaErrors"?, "errorCount"?, "standby", "message" }, "zfs"?: { "pool", "vdev", "state", "readErrors", "writeErrors", "cksumErrors" } }] }` — `smart.available:false` is normal for virtio/USB/RAID devices and MUST NOT fail the endpoint (FR-DHK-02/03).
 - **DM-7 Vm**: `{ "name", "pool", "cpu", "memMiB", "autostart": bool, "firmware": "uefi"|"bios", "secureBoot": bool, "desired": "running"|"stopped", "disk": { "sizeGB", "format": "qcow2"|"raw", "bus": "virtio"|"sata", "sourceImage"?: "isos/<file>" }, "net": { "mode": "nat"|"lan", "forwards": [{ "host", "dst" }], "nic"? }, "cloudInit"?: { "hostname", "user", "sshKeys": [] }, "iso"?: "isos/<file>" | null }`. `name` is a DNS-1123 label; `secureBoot` is omitted in pre-FR-VMT-12 records and defaults to `false`; live fields (`state`: "running"|"stopped"|"unknown", `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) are merged in responses and MUST NOT be persisted; the console credentials (`vncPort`, `vncPassword`) appear only in the `/api/ws/vm/{name}/vnc` preflight, never in list or detail payloads (FR-VMT).
 - **DM-8 StorageSchedule**: `{ "id", "kind": "snapshot"|"scrub", "target", "cadence": "hourly"|"daily"|"weekly", "runAt", "keep": number, "recursive": bool, "enabled": bool, "lastRun"?, "lastResult"?, "lastError"?, "nextRun"? }`. `target` is a dataset path for `snapshot` and a pool name for `scrub`; `keep` is always 0 for `scrub`; `lastResult` is `ok`/`failed`/`skipped`/`started` (a scrub is `started` until its scan line reports completion). Timestamps are RFC 3339 UTC (FR-STO-10/11).
-- **DM-9 ConfigExport**: `{ "kind": "naslos-config-export", "schemaVersion": 1, "generatedAt", "naslosVersion", "baseDomain", "shares": [DM-4 without createdAt], "storageSchedules": [DM-8 without lastRun/lastResult/lastError/nextRun], "buddySchedules": [{ "id", "dataset", "source", "receivers": [], "cadence", "runAt", "pruneKeep", "enabled" }], "domains": [{ "baseDomain", "dnsProvider", "providerConfig": {}, "acmeEmail", "environment", "primary", "sso", "appRecordsDdnsEntry": string|null }], "ddnsEntries": [{ "id", "provider", "zone", "record", "recordType", "ttl", "enabled", "providerConfig": {} }], "apps": [{ "name", "source", "channel", "chartVersion", "baseDomain", "exposure": { "subdomain", "tls", "auth", "localOnly", "protectedPaths": [], "internet", "service", "port", "scheme" }, "datasets": [], "privileged", "env": [{ "name", "secret" }], "values"?: {}, "redactedKeys": [], "valuesOmitted": bool }], "datasetRegistry": [{ "name", "hostPath", "shared", "warningAcknowledged" }] }`. Every section is an array, never `null`. No field may carry a credential value, credential Secret name, solver body, the Buddy identity/KEK or Kubernetes Secret data; `values` excludes the catalog's secret-marked keys at any depth, is omitted entirely when `valuesOmitted` is true, and `providerConfig` contains only keys the provider schema declares non-secret (free-form credential templates such as the generic DDNS `updateUrl`/`body` are omitted). Import is `[OPEN]` (FR-CFG-04).
+- **DM-9 ConfigExport**: `{ "kind": "naslos-config-export", "schemaVersion": 1, "generatedAt", "naslosVersion", "baseDomain", "shares": [DM-4 without createdAt], "storageSchedules": [DM-8 without lastRun/lastResult/lastError/nextRun], "buddySchedules": [{ "id", "dataset", "source", "receivers": [], "cadence", "runAt", "pruneKeep", "enabled" }], "domains": [{ "baseDomain", "dnsProvider", "providerConfig": {}, "acmeEmail", "environment", "primary", "sso", "appRecordsDdnsEntry": string|null }], "ddnsEntries": [{ "id", "provider", "zone", "record", "recordType", "ttl", "enabled", "providerConfig": {} }], "apps": [{ "name", "source", "channel", "chartVersion", "baseDomain", "exposure": { "subdomain", "tls", "auth", "localOnly", "protectedPaths": [], "internet", "service", "port", "scheme" }, "datasets": [], "privileged", "env": [{ "name", "secret" }], "values"?: {}, "redactedKeys": [], "valuesOmitted": bool }], "datasetRegistry": [{ "name", "hostPath", "shared", "warningAcknowledged" }] }`. Every section is an array, never `null`. No field may carry a credential value, credential Secret name, solver body, the Buddy identity/KEK or Kubernetes Secret data; `values` excludes the catalog's secret-marked keys at any depth, is omitted entirely when `valuesOmitted` is true, and `providerConfig` contains only keys the provider schema declares non-secret (free-form credential templates such as the generic DDNS `updateUrl`/`body` are omitted). Import consumes this exact shape (FR-CFG-04); app records are validated but reported skipped because installing them needs the catalog path.
 - **DM-10 ReplicationJob**: `{ "id", "source", "destination", "snapshot"?, "recursive": bool, "pruneKeep"?: number, "state": "running"|"succeeded"|"failed"|"cancelled", "startedAt", "finishedAt"?, "progress": { "bytes", "estimatedBytes" }, "incremental": bool, "estimatedBytes"?, "result"?: { "status": "replicated"|"up-to-date", "source", "destination", "snapshot", "baseSnapshot"?, "baseGUID"?, "toGUID"?, "incremental": bool, "recursive": bool, "bytes", "estimatedBytes", "prunedSnapshots", "retentionError"?, "durationSeconds" }, "error"? }`. Jobs are in memory; `snapshot` is empty until the job creates one; timestamps are RFC 3339 UTC (FR-REP-01/06).
 
 ---
@@ -2255,7 +2401,8 @@ path refusal, and the options round-trip, FR-SHR-14/15/16);
 the service-account lockout guard, FR-ACL-01/02); `rust/api/src/server/`
 (the user-edit membership diff, FR-IDN-04; the write-only ntfy token,
 `TestNotificationsNeverReturnTheAuthToken`; the storage retention plan,
-scheduler-owned snapshot names and scrub scan classification, FR-STO-10/11;
+property-owned shadow-copy snapshot names (and the one-release legacy fallback)
+and scrub scan classification, FR-STO-10/11;
 the system config export allow-list and secret-exclusion canaries,
 FR-CFG-01…03); and `rust/agent/src/shares/` (the 0600 passdb/shadow mirrors,
 FR-IDN-13).
@@ -2302,14 +2449,20 @@ Local replication (`FR-REP`) is verified by the unit tests in
 | `planner_matches_by_guid_not_name`, `plan_uses_the_newest_common_guid` | FR-REP-03 (GUID matching and ordering) |
 | `send_command_line_recursive_replication_stream` | FR-REP-03 (`zfs send -r`, incremental `-i`, no flag injection) |
 | `snapshot_listing_is_recursive_only_when_requested` | FR-REP-03 (shallow snapshot listing for GUID base selection) |
-Dataset encryption is verified in this slice only by the pure planner
-(FR-ENC-03…10 are `[OPEN]`; their tests ship with the implementation):
+Dataset encryption is verified by the pure planners, key-custody tests and
+the agent's command/keyfile tests (FR-ENC-05/07/08/09-consumers/10 remain
+`[OPEN]`; their tests ship with the implementation):
 
 | Test | Verifies |
 | --- | --- |
 | `naslos_agent::zfs::encryption::tests::planner_matches_shared_fixture`, `naslos_api::dataset_encryption::tests::planner_matches_shared_fixture` | FR-ENC-01/02 (algorithm and key-format allow-list, `keylocation` refusal, `copies=3`, `encryption=off` consistency; the shared fixture is the API/agent parity oracle) |
-| `naslos_agent::zfs::encryption::tests::valid_encryption_requests_are_refused_before_any_zfs_call`, `naslos_api::server::zfs::tests::encryption_options_are_refused_until_key_custody_ships` | FR-ENC-02 (a well-formed encryption request is refused before any `zfs` call) |
-| `naslos_agent::zfs::dataset::tests::key_material_is_never_a_dataset_option`, `naslos_api::server::zfs::tests::key_material_is_never_a_dataset_option` | FR-ENC-02 (a `key`/`passphrase` field is rejected and its value is not echoed) |
+| `naslos_api::server::zfs::tests::encryption_options_accept_raw_keys_and_refuse_passphrases`, `naslos_agent::zfs::encryption::tests::raw_key_creation_is_accepted_and_passphrase_is_refused` | FR-ENC-02/05 (raw is implemented, passphrase is refused with `[OPEN]`) |
+| `key_material_is_never_a_dataset_option` (both crates) | FR-ENC-02/03 (a `key`/`passphrase` field is rejected and its value is not echoed) |
+| `generated_keys_are_32_bytes_and_redacted`, `secret_names_are_deterministic_and_dns_safe`, `key_secret_object_keeps_the_key_out_of_metadata`, `key_secret_parsing_refuses_mismatches_without_echoing_the_key` (`naslos_api::dataset_encryption`) | FR-ENC-03 (CSPRNG, Secret shape, deterministic names, no key in metadata/errors, redacted `Debug`) |
+| `keyfiles_are_private_and_removed`, `keyfiles_never_replace_a_directory`, `raw_keys_must_be_exactly_32_bytes` (`naslos_agent::zfs::encryption`) | FR-ENC-03/06 (0600 tmpfs file, removal, path safety, key length) |
+| `create_encrypted_dataset_never_puts_the_key_in_argv`, `create_rolls_back_a_dataset_that_did_not_verify`, `encrypted_create_requires_a_32_byte_key_and_never_runs_zfs`, `passphrase_creation_is_refused_before_any_zfs_call` (`rust/agent/tests/zfs_encryption.rs`) | FR-ENC-02/03/06 (key never in argv, exact-dataset verification/rollback, refusal before `zfs`) |
+| `unlock_loads_the_key_from_the_private_file_and_removes_it`, `unlock_is_idempotent`, `lock_is_refused_while_mounted`, `lock_refuses_a_mounted_child`, `lock_unloads_the_key_and_removes_the_keyfile`, `lock_is_idempotent` (`rust/agent/tests/zfs_encryption.rs`) | FR-ENC-04 (explicit unlock/lock, idempotence, mounted refusal, keyfile cleanup) |
+| `encryption_status_route_reports_the_raw_properties`, `unlock_response_never_echoes_the_key` (`rust/agent/tests/http_contract.rs`) | FR-ENC-03/04 (agent status contract and no key in a response) |
 | `docs/dataset-encryption.md` | FR-ENC-11 (threat model and the key-custody decision) |
 
 Dynamic DNS and the provider registry are verified by

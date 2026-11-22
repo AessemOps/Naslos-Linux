@@ -474,7 +474,7 @@ fn safe_provider_config(
 /// Free-form provider fields whose value can legitimately contain a credential
 /// (the generic DDNS driver substitutes tokens into these templates). They have
 /// no safe projection, so they are left out and must be re-entered.
-fn is_free_form_value_key(key: &str) -> bool {
+pub(crate) fn is_free_form_value_key(key: &str) -> bool {
     let normalized: String = key
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -485,7 +485,7 @@ fn is_free_form_value_key(key: &str) -> bool {
 
 /// Whether a provider-config value itself contains something credential-like.
 /// This catches a token pasted into a URL or body even when the key looks safe.
-fn value_looks_sensitive(value: &str) -> bool {
+pub(crate) fn value_looks_sensitive(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     if let Some((_, rest)) = lower.split_once("://") {
         let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();

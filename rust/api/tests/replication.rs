@@ -254,6 +254,8 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         ddns: None,
         notifications: Arc::new(naslos_api::notifications::Manager::new("")),
         webhook: std::sync::Arc::new(naslos_api::webhook::Manager::new("")),
+        smtp: std::sync::Arc::new(naslos_api::smtp::Manager::new("")),
+        syslog: std::sync::Arc::new(naslos_api::syslog::Manager::new("")),
         network: naslos_api::network::Manager::new(
             "",
             Arc::new(naslos_api::network::UnavailableNode),
@@ -269,6 +271,7 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         system: naslos_api::system::Config::default(),
         updates: None,
         mcp: naslos_api::mcp::McpState::for_test(),
+        reporting: Arc::new(naslos_api::reporting::Reporter::disabled()),
     })
 }
 

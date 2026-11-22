@@ -363,6 +363,21 @@ spec:
               value: {{ .Values.api.auditSegmentBytes | default 8388608 | quote }}
             - name: AUDIT_MIN_FREE_BYTES
               value: {{ .Values.api.auditMinFreeBytes | default 8388608 | quote }}
+            {{- if .Values.api.reporting.enabled }}
+            # Bounded historical reporting (FR-RPT): recorder cadence and the
+            # one-file store on its own PVC.
+            - name: REPORTING_ENABLED
+              value: "true"
+            - name: REPORTING_FILE
+              value: {{ .Values.api.reporting.file | default (printf "%s/history.bin" (.Values.api.reporting.mountPath | default "/var/lib/naslos/reporting")) | quote }}
+            - name: REPORTING_MAX_BYTES
+              value: {{ .Values.api.reporting.maxBytes | default 67108864 | quote }}
+            - name: REPORTING_INTERVAL_SECONDS
+              value: {{ .Values.api.reporting.intervalSeconds | default 60 | quote }}
+            {{- else }}
+            - name: REPORTING_ENABLED
+              value: "false"
+            {{- end }}
             # ---- App install subsystem (docs/app-catalog.md) ----
             # Apps run in their own namespace; sources, records and domains are
             # persisted beside the other state files, and repositories are
@@ -403,6 +418,11 @@ spec:
               value: {{ .Values.api.sourcesFile | default "/var/lib/naslos/sources.json" | quote }}
             - name: DATASETS_CONFIG
               value: {{ .Values.api.datasetsFile | default "/var/lib/naslos/datasets.json" | quote }}
+            # FR-ENC: encrypted datasets keep their raw key in this namespace's
+            # Secrets. It is deliberately separate from the release namespace so
+            # the API never gains read access to platform secrets.
+            - name: DATASET_KEYS_NAMESPACE
+              value: {{ .Values.datasetEncryption.keysNamespace | default "naslos-keys" | quote }}
             - name: DOMAINS_CONFIG
               value: {{ .Values.api.domainsFile | default "/var/lib/naslos/domains.json" | quote }}
             - name: CHARTS_CACHE_DIR
@@ -539,6 +559,13 @@ spec:
             # the same state volume.
             - name: ALERT_WEBHOOK_CONFIG
               value: {{ .Values.api.webhookFile | default "/var/lib/naslos/webhook.json" | quote }}
+            # SMTP/email and syslog alert channels (FR-ALT-07/09): settings on
+            # the same state volume as the other channels. The SMTP file may
+            # hold the password, so it is written 0600.
+            - name: ALERT_SMTP_CONFIG
+              value: {{ .Values.api.smtpFile | default "/var/lib/naslos/smtp.json" | quote }}
+            - name: ALERT_SYSLOG_CONFIG
+              value: {{ .Values.api.syslogFile | default "/var/lib/naslos/syslog.json" | quote }}
             # MCP endpoint state (FR-MCP): the enabled flag and the SHA-256
             # token hashes live beside the other state files. The endpoint
             # itself stays off until an admin enables it in Settings.
@@ -648,6 +675,11 @@ spec:
             # volume (api.sharesConfig.enabled=true).
             - name: audit
               mountPath: {{ .Values.api.auditDir | default "/var/lib/naslos/audit" }}
+            {{- end }}
+            {{- if .Values.api.reporting.enabled }}
+            # Disposable history on its own volume; see docs/reporting.md.
+            - name: reporting
+              mountPath: {{ .Values.api.reporting.mountPath | default "/var/lib/naslos/reporting" }}
             {{- end }}
             {{- if .Values.buddy.enabled }}
             # The Buddy Backup receive dataset. It is the only read-write host
@@ -765,6 +797,11 @@ spec:
         - name: audit
           emptyDir: {}
         {{- end }}
+        {{- if .Values.api.reporting.enabled }}
+        - name: reporting
+          persistentVolumeClaim:
+            claimName: naslos-reporting
+        {{- end }}
         {{- if .Values.api.datasetsHostPath }}
         - name: datasets
           hostPath:
@@ -800,6 +837,23 @@ spec:
       storage: {{ .Values.api.sharesConfig.size | default "64Mi" }}
   {{- if .Values.api.sharesConfig.storageClassName }}
   storageClassName: {{ .Values.api.sharesConfig.storageClassName }}
+  {{- end }}
+{{- end }}
+---
+{{- if .Values.api.reporting.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: naslos-reporting
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.api.reporting.size | default "256Mi" }}
+  {{- if .Values.api.reporting.storageClassName }}
+  storageClassName: {{ .Values.api.reporting.storageClassName }}
   {{- end }}
 {{- end }}
 ---

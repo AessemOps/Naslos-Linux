@@ -5,7 +5,40 @@ use super::devices::validate_pool_name;
 use super::{ZfsClient, ZFS_BIN};
 use crate::invalid;
 use crate::zfs::validation::{ZfsError, ZfsResult};
-use crate::zfs::Dataset;
+use crate::zfs::{Dataset, SnapshotSchedule};
+
+/// The only snapshot user property Naslos writes: the id of the storage
+/// schedule that created the snapshot. Retention uses it instead of trusting a
+/// name prefix, so a user snapshot can never be mistaken for a scheduled one.
+pub const SNAPSHOT_SCHEDULE_PROPERTY: &str = "user:naslos:schedule";
+
+/// Validate a schedule id used as a snapshot property value. The API generates
+/// lowercase hex ids; the wider ZFS-safe charset keeps older store values
+/// readable while still refusing whitespace, control characters and anything
+/// that could look like an option.
+pub fn validate_schedule_id(value: &str) -> ZfsResult<()> {
+    if value.is_empty() {
+        return Err(ZfsError::Validation("schedule id is required".into()));
+    }
+    if value.len() > 128 {
+        return Err(ZfsError::Validation(
+            "schedule id must be 128 characters or fewer".into(),
+        ));
+    }
+    if value.starts_with('-') {
+        return Err(invalid!("schedule id {:?} must not start with '-'", value));
+    }
+    if !value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '+' | '-'))
+    {
+        return Err(invalid!(
+            "schedule id {:?} must be letters, digits, '.', '_', ':', '+' or '-'",
+            value
+        ));
+    }
+    Ok(())
+}
 
 /// `humanBytes` from the Go agent: powers of 1024, one decimal below 10.
 pub fn human_bytes(n: i64) -> String {
@@ -77,7 +110,14 @@ pub(crate) fn valid_compression(v: &str) -> bool {
 pub(crate) fn is_dataset_option_key(k: &str) -> bool {
     matches!(
         k,
-        "compression" | "quota" | "recordsize" | "atime" | "copies" | "readonly"
+        "compression"
+            | "quota"
+            | "recordsize"
+            | "atime"
+            | "copies"
+            | "readonly"
+            | "encryption"
+            | "keyformat"
     )
 }
 
@@ -122,10 +162,10 @@ pub fn validate_dataset_name(name: &str) -> ZfsResult<()> {
 pub fn validate_dataset_options(
     options: &std::collections::HashMap<String, String>,
 ) -> ZfsResult<()> {
-    // Encryption shape is validated (and, while custody/unlock are [OPEN],
-    // refused) before any option can reach `zfs create -o`. Key material is
-    // never an option: a passphrase or raw key in `options` falls through to
-    // the allow-list below and is rejected.
+    // Encryption shape is validated before any option can reach
+    // `zfs create -o`. A passphrase-keyed request is still refused (FR-ENC-05).
+    // Key material is never an option: a passphrase or raw key in `options`
+    // falls through to the allow-list below and is rejected.
     super::encryption::validate_create_options(options)?;
     for (key, raw) in options {
         let value = raw.trim();
@@ -238,7 +278,7 @@ impl ZfsClient {
                     "-H",
                     "-p",
                     "-o",
-                    "name,used,avail,refer,mountpoint,mounted",
+                    "name,used,avail,refer,mountpoint,mounted,encryption,keystatus,encryptionroot",
                     "-t",
                     "filesystem",
                     "-r",
@@ -270,6 +310,11 @@ impl ZfsClient {
                 refer: human_bytes(refer_bytes),
                 mountpoint: fields[4].to_string(),
                 mounted: fields.len() > 5 && fields[5] == "yes",
+                encryption: fields.get(6).copied().unwrap_or_default().to_string(),
+                keystatus: normalise_keystatus(fields.get(7).copied().unwrap_or_default()),
+                encryption_root: normalise_encryption_root(
+                    fields.get(8).copied().unwrap_or_default(),
+                ),
             });
         }
         Ok(datasets)
@@ -285,7 +330,7 @@ impl ZfsClient {
                     "list",
                     "-H",
                     "-o",
-                    "name,used,avail,refer,mountpoint,mounted",
+                    "name,used,avail,refer,mountpoint,mounted,encryption,keystatus,encryptionroot",
                     "-r",
                     pool,
                 ]),
@@ -313,37 +358,27 @@ impl ZfsClient {
                 mountpoint: fields[4].to_string(),
                 used_bytes: 0,
                 mounted: fields.len() > 5 && fields[5] == "yes",
+                encryption: fields.get(6).copied().unwrap_or_default().to_string(),
+                keystatus: normalise_keystatus(fields.get(7).copied().unwrap_or_default()),
+                encryption_root: normalise_encryption_root(
+                    fields.get(8).copied().unwrap_or_default(),
+                ),
             });
         }
         Ok(datasets)
     }
 
     /// Create a dataset (`-p` so nested names create their parents).
+    ///
+    /// An encryption request needs a raw key, so it must go through
+    /// [`Self::create_dataset_with_key`]; this entry point refuses one instead
+    /// of creating a dataset whose key would be lost on the next boot.
     pub async fn create_dataset(
         &self,
         name: &str,
         options: &std::collections::HashMap<String, String>,
     ) -> ZfsResult<()> {
-        validate_new_dataset_path(name)?;
-        validate_dataset_options(options)?;
-
-        let mut argv: Vec<String> = vec!["create".into(), "-p".into()];
-        let mut keys: Vec<&String> = options.keys().collect();
-        keys.sort();
-        for k in keys {
-            argv.push("-o".into());
-            argv.push(format!("{}={}", k, options[k].trim()));
-        }
-        argv.push(name.to_string());
-
-        match self.host_exec(ZFS_BIN, &argv).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(ZfsError::Other(format!(
-                "creating dataset: {}: {}",
-                e.output.trim(),
-                e.message
-            ))),
-        }
+        self.create_dataset_with_key(name, options, None).await
     }
 
     /// Destroy a dataset, recovering from the AV-8 stale-mount "busy" case.
@@ -534,6 +569,136 @@ impl ZfsClient {
         Ok(snaps)
     }
 
+    /// Every snapshot under a dataset (including child datasets) with the
+    /// schedule that owns it. The property is unset (`-` in `zfs list`) for
+    /// user snapshots and for anything not created by the scheduler.
+    ///
+    /// The property name is a constant and the value comes from `zfs list`, so
+    /// this path cannot be used to read arbitrary ZFS properties.
+    pub async fn snapshot_schedules(&self, dataset: &str) -> ZfsResult<Vec<SnapshotSchedule>> {
+        validate_dataset_path(dataset)?;
+        let out = match self
+            .host_exec(
+                ZFS_BIN,
+                &strings(&[
+                    "list",
+                    "-H",
+                    "-t",
+                    "snapshot",
+                    "-o",
+                    &format!("name,{SNAPSHOT_SCHEDULE_PROPERTY}"),
+                    "-s",
+                    "creation",
+                    "-r",
+                    dataset,
+                ]),
+            )
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => return Err(ZfsError::Other(format!("listing snapshots: {}", e.message))),
+        };
+
+        Ok(out
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let (path, schedule) = match line.split_once('\t') {
+                    Some((path, schedule)) => (path, schedule.trim()),
+                    None => (line, ""),
+                };
+                SnapshotSchedule {
+                    path: path.to_string(),
+                    schedule: if schedule == "-" {
+                        String::new()
+                    } else {
+                        schedule.to_string()
+                    },
+                }
+            })
+            .collect())
+    }
+
+    /// Record which schedule owns a snapshot (`zfs set
+    /// user:naslos:schedule=<id>`), on the dataset itself or, for a recursive
+    /// snapshot, on every descendant snapshot carrying the same name.
+    pub async fn set_snapshot_schedule(
+        &self,
+        dataset: &str,
+        snap_name: &str,
+        schedule: &str,
+        recursive: bool,
+    ) -> ZfsResult<()> {
+        validate_dataset_path(dataset)?;
+        super::backup::validate_snapshot_name(snap_name)?;
+        validate_schedule_id(schedule)?;
+        let property = format!("{SNAPSHOT_SCHEDULE_PROPERTY}={schedule}");
+
+        if !recursive {
+            return self
+                .set_snapshot_property(&format!("{dataset}@{snap_name}"), &property)
+                .await;
+        }
+
+        // `zfs set -r` walks dataset descendants, not snapshots, so collect the
+        // recursive snapshot's own paths and tag each one. The paths come from
+        // `zfs list`, but are validated again before reaching argv.
+        let out = match self
+            .host_exec(
+                ZFS_BIN,
+                &strings(&["list", "-H", "-t", "snapshot", "-o", "name", "-r", dataset]),
+            )
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => {
+                return Err(ZfsError::Other(format!(
+                    "listing recursive snapshots: {}",
+                    e.message
+                )))
+            }
+        };
+
+        let root = format!("{dataset}@{snap_name}");
+        let child_prefix = format!("{dataset}/");
+        let snap_suffix = format!("@{snap_name}");
+        let mut targets: Vec<&str> = out
+            .lines()
+            .map(str::trim)
+            .filter(|path| {
+                *path == root || (path.starts_with(&child_prefix) && path.ends_with(&snap_suffix))
+            })
+            .collect();
+        if targets.is_empty() {
+            targets.push(&root);
+        }
+
+        for path in targets {
+            let Some((owner, name)) = path.split_once('@') else {
+                return Err(invalid!("invalid snapshot path {:?}", path));
+            };
+            validate_dataset_path(owner)?;
+            super::backup::validate_snapshot_name(name)?;
+            self.set_snapshot_property(path, &property).await?;
+        }
+        Ok(())
+    }
+
+    async fn set_snapshot_property(&self, path: &str, property: &str) -> ZfsResult<()> {
+        match self
+            .host_exec(ZFS_BIN, &strings(&["set", property, path]))
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(ZfsError::Other(format!(
+                "setting snapshot schedule on {path}: {}: {}",
+                e.output.trim(),
+                e.message
+            ))),
+        }
+    }
+
     /// Roll a dataset back to one of its snapshots (`zfs rollback -r`). The
     /// `-r` deletes snapshots newer than the target, which is the documented
     /// meaning of a restore; the caller (the API's VM routes) refuses while
@@ -553,6 +718,26 @@ impl ZfsClient {
                 e.output, e.message
             ))),
         }
+    }
+}
+
+/// Normalise `zfs list`'s `-` placeholder for unencrypted datasets.
+pub(crate) fn normalise_keystatus(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() || value == "-" {
+        "none".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// Normalise `zfs list`'s `-` placeholder for an unencrypted encryption root.
+pub(crate) fn normalise_encryption_root(value: &str) -> String {
+    let value = value.trim();
+    if value == "-" {
+        String::new()
+    } else {
+        value.to_string()
     }
 }
 
@@ -610,14 +795,20 @@ mod tests {
     }
 
     #[test]
-    fn encryption_options_are_refused_until_key_custody_ships() {
-        let valid = std::collections::HashMap::from([
+    fn encryption_options_are_validated() {
+        let raw = std::collections::HashMap::from([
             ("encryption".to_string(), "aes-256-gcm".to_string()),
             ("keyformat".to_string(), "raw".to_string()),
         ]);
-        let err = validate_dataset_options(&valid).unwrap_err();
+        validate_dataset_options(&raw).expect("raw-key encryption is accepted");
+
+        let passphrase = std::collections::HashMap::from([
+            ("encryption".to_string(), "aes-256-gcm".to_string()),
+            ("keyformat".to_string(), "passphrase".to_string()),
+        ]);
+        let err = validate_dataset_options(&passphrase).unwrap_err();
         assert!(err.is_validation());
-        assert!(err.to_string().contains("not implemented yet"), "{err}");
+        assert!(err.to_string().contains("passphrase"), "{err}");
 
         for (key, value) in [
             ("encryption", "rot13"),

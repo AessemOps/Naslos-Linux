@@ -7,6 +7,15 @@
 # no values change); set it to the release namespace to keep everything together.
 workloadNamespace: naslos-privileged
 
+# ZFS dataset encryption (FR-ENC). Each encrypted dataset's 32-byte raw key is
+# stored in a Secret in this dedicated namespace; the API has CRUD on Secrets
+# there and no Secret access in the release namespace. It must differ from the
+# release, workload and app namespaces (the chart fails the render otherwise),
+# and it carries `helm.sh/resource-policy: keep` because datasets live on the
+# host and losing the keys after an uninstall would make the data unrecoverable.
+datasetEncryption:
+  keysNamespace: naslos-keys
+
 # API server configuration
 api:
   enabled: true
@@ -98,6 +107,25 @@ api:
     # Size of the PersistentVolumeClaim holding SHARES_CONFIG.
     size: 64Mi
     storageClassName: ""
+  # Bounded historical reporting (FR-RPT, docs/reporting.md). History is
+  # disposable telemetry, so it gets its own small PVC instead of sharing the
+  # 64 MiB config volume: a corrupt or full store must never affect shares,
+  # apps or the rest of the API state. Disabled means live metrics only and
+  # /api/reports answers available:false.
+  reporting:
+    enabled: true
+    # Directory inside the API container. The history file and its series
+    # registry live here. Leave `file` empty to derive `<mountPath>/history.bin`,
+    # so overriding only the mount point keeps history on the reporting volume.
+    mountPath: /var/lib/naslos/reporting
+    file: ""
+    # Hard cap for the append-only history file. Age retention (24 h raw,
+    # 7 d five-minute, 30 d hourly) is enforced independently.
+    maxBytes: "67108864"
+    # Recorder cadence. The live dashboard collector keeps its own 5 s poll.
+    intervalSeconds: 60
+    size: 256Mi
+    storageClassName: ""
   # Where notification settings (topic, token, enabled events, severity) are
   # persisted. They share the volume above, so they survive API restarts; with no
   # writable path the notification manager is memory-only and every restart
@@ -107,6 +135,13 @@ api:
   # bearer token, routed events, severity floor) are persisted. Shares the
   # state volume above; without a writable path it is memory-only.
   webhookFile: /var/lib/naslos/webhook.json
+  # SMTP/email alert channel settings (host/port/TLS, From/To, write-only
+  # username/password, routed events, severity floor). Mode 0600 on the same
+  # state volume because it may hold the SMTP password.
+  smtpFile: /var/lib/naslos/smtp.json
+  # Syslog forwarding settings (udp/tcp/tls, target, facility, routed events,
+  # severity floor); no credentials are stored.
+  syslogFile: /var/lib/naslos/syslog.json
   # Day-2 host network changes (Settings → Network, FR-NET): the pending change
   # record and the previous-config snapshot this API needs to revert. Lives on
   # the same state volume as the other config files.
@@ -792,8 +827,10 @@ networkPolicy:
   # express. Set the LAN CIDR here (e.g. 192.168.1.0/24) or leave empty to keep
   # the ports closed to everything but the API.
   nfsClientCIDR: ""
-  # Extra egress CIDRs. No workload here has a documented outbound-Internet
-  # dependency; add one only if that changes.
+  # Extra egress CIDRs (all ports). No workload here has a documented
+  # outbound-Internet dependency; add one only if that changes. An SMTP relay
+  # or syslog collector outside the cluster needs its CIDR here unless
+  # nodeCIDR already covers the LAN.
   extraEgressCIDRs: []
   # Git chart repositories are cloned by the API pod, which needs outbound git
   # (HTTPS:443, SSH:22, git://:9418). Enable to let a user-added source outside

@@ -37,6 +37,37 @@ pub struct Dataset {
     pub used_bytes: i64,
     /// Whether the dataset is mounted in *this* process's mount namespace.
     pub mounted: bool,
+    /// `zfs get encryption`: `off` for an unencrypted dataset, else the cipher.
+    #[serde(default)]
+    pub encryption: String,
+    /// `zfs get keystatus`: `none` (not encrypted), `unavailable` (locked) or
+    /// `available` (unlocked). The agent normalises ZFS's `-` to `none`.
+    #[serde(default)]
+    pub keystatus: String,
+    /// The dataset whose key this dataset uses (`zfs get encryptionroot`).
+    #[serde(default, rename = "encryptionRoot")]
+    pub encryption_root: String,
+}
+
+/// The encryption state of one dataset (`GET /api/v1/encryption/status/…`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EncryptionStatus {
+    pub name: String,
+    #[serde(default)]
+    pub encryption: String,
+    #[serde(default)]
+    pub keystatus: String,
+    #[serde(default, rename = "encryptionRoot")]
+    pub encryption_root: String,
+    #[serde(default)]
+    pub mounted: bool,
+}
+
+impl EncryptionStatus {
+    /// Whether the dataset (or an ancestor) is encrypted.
+    pub fn is_encrypted(&self) -> bool {
+        !self.encryption.is_empty() && self.encryption != "off" && self.encryption != "-"
+    }
 }
 
 /// `POST /api/v1/pools` request body.
@@ -141,6 +172,15 @@ pub struct SnapshotInfo {
     pub name: String,
     pub guid: String,
     pub created: String,
+}
+
+/// A snapshot and the storage schedule that owns it, from the
+/// `user:naslos:schedule` property. An unset property is an empty string.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotSchedule {
+    pub path: String,
+    #[serde(default)]
+    pub schedule: String,
 }
 
 /// One `zfs send` invocation.

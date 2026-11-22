@@ -959,8 +959,15 @@ pub async fn run_vm_watcher(state: Arc<AppState>) {
                     severity: severity.to_string(),
                     tags: vec!["computer".to_string(), "x".to_string()],
                 };
-                crate::webhook::deliver_logged(&state.notifications, &state.webhook, event, &notif)
-                    .await;
+                crate::webhook::deliver_logged(
+                    &state.notifications,
+                    &state.webhook,
+                    &state.smtp,
+                    &state.syslog,
+                    event,
+                    &notif,
+                )
+                .await;
             }
         }
     }

@@ -111,6 +111,22 @@ impl Server {
             .route("/api/v1/disks/health", get(handlers::disks_health))
             .route("/api/v1/datasets", get(handlers::datasets_all_get))
             .route(
+                "/api/v1/encryption/status/",
+                get(handlers::encryption_status_get_empty),
+            )
+            .route(
+                "/api/v1/encryption/status/{*dataset}",
+                get(handlers::encryption_status_get),
+            )
+            .route(
+                "/api/v1/encryption/unlock",
+                post(handlers::encryption_unlock_post),
+            )
+            .route(
+                "/api/v1/encryption/lock",
+                post(handlers::encryption_lock_post),
+            )
+            .route(
                 "/api/v1/zvols",
                 get(handlers::zvols_get)
                     .post(handlers::zvols_post)
@@ -139,6 +155,14 @@ impl Server {
                 get(handlers::snapshots_get)
                     .post(handlers::snapshots_post)
                     .delete(handlers::snapshots_delete),
+            )
+            .route(
+                "/api/v1/snapshot-properties/",
+                get(handlers::snapshot_properties_get_empty),
+            )
+            .route(
+                "/api/v1/snapshot-properties/{*dataset}",
+                get(handlers::snapshot_properties_get).put(handlers::snapshot_properties_put),
             )
             .route("/api/v1/rollback/", post(handlers::rollback_post_empty))
             .route("/api/v1/rollback/{*dataset}", post(handlers::rollback_post))
