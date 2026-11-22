@@ -19,7 +19,9 @@ read them in order for the full picture, or jump straight to a topic.
 | [bootstrap.md](bootstrap.md) | Image Factory schematic, ZFS extension, boot-time pool import, upgrades | New |
 | [storage-zfs.md](storage-zfs.md) | ZFS pools, datasets, zvols, snapshots, topology advisor, Talos gotchas | New |
 | [iscsi.md](iscsi.md) | iSCSI target spike: Talos kernel constraint, userspace `tgt` vs a system extension, go/no-go gates, privilege/NetworkPolicy review (`[OPEN]`) | Spike |
+| [dataset-encryption.md](dataset-encryption.md) | ZFS native encryption: key custody for an unattended Talos boot, unlock/lock, encrypted send, Buddy threat-model comparison, migration (FR-ENC) | Design + safe validation slice |
 | [identity-sso.md](identity-sso.md) | Single sign-on: Authelia, OpenLDAP, Samba hash sync, RBAC groups, 2FA | Rebuilt (replaces `authentication.md`) |
+| [external-directory.md](external-directory.md) | Optional external LDAP source (FR-EXT): phase-1 configuration, TLS, search bases, uid/gid mapping, AD/Kerberos roadmap | New |
 | [shares.md](shares.md) | SMB / NFS / Time-Machine share model, generated configs | New |
 | [terminal.md](terminal.md) | Web terminal: exec scoping, RBAC, terminal namespace | New |
 | [buddy-backup.md](buddy-backup.md) | Buddy Backup: owner-to-owner encrypted backup, enrollment, verify/restore | New |

@@ -237,6 +237,10 @@ pub fn validate_dataset_path(name: &str) -> Result<(), String> {
 
 /// Validate a dataset create request's options.
 pub fn validate_dataset_create_options(options: &HashMap<String, String>) -> Result<(), String> {
+    // Encryption shape is checked first: a malformed request gets a precise
+    // error, and a well-formed one is refused until key custody, unlock/lock
+    // and encrypted send ship (FR-ENC; docs/dataset-encryption.md).
+    crate::dataset_encryption::validate_create_options(options)?;
     for (key, raw) in options {
         let value = raw.trim();
         match key.as_str() {
@@ -1183,5 +1187,37 @@ mod tests {
             .unwrap(),
             "tank"
         );
+    }
+
+    #[test]
+    fn encryption_options_are_refused_until_key_custody_ships() {
+        let mut valid = HashMap::new();
+        valid.insert("encryption".to_string(), "aes-256-gcm".to_string());
+        valid.insert("keyformat".to_string(), "raw".to_string());
+        let err = validate_dataset_create_options(&valid).unwrap_err();
+        assert!(err.contains("not implemented yet"), "{err}");
+
+        let mut malformed = HashMap::new();
+        malformed.insert("encryption".to_string(), "rot13".to_string());
+        malformed.insert("keyformat".to_string(), "raw".to_string());
+        let err = validate_dataset_create_options(&malformed).unwrap_err();
+        assert!(err.contains("unsupported encryption"), "{err}");
+
+        let mut caller_location = HashMap::new();
+        caller_location.insert("encryption".to_string(), "aes-256-gcm".to_string());
+        caller_location.insert("keyformat".to_string(), "raw".to_string());
+        caller_location.insert("keylocation".to_string(), "file:///tmp/key".to_string());
+        let err = validate_dataset_create_options(&caller_location).unwrap_err();
+        assert!(err.contains("keylocation"), "{err}");
+    }
+
+    #[test]
+    fn key_material_is_never_a_dataset_option() {
+        for key in ["key", "passphrase", "encryption_key"] {
+            let options = HashMap::from([(key.to_string(), "secret".to_string())]);
+            let err = validate_dataset_create_options(&options).unwrap_err();
+            assert!(err.contains("unsupported dataset option"), "{key}: {err}");
+            assert!(!err.contains("secret"), "the error echoed the value: {err}");
+        }
     }
 }

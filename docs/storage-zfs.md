@@ -116,11 +116,36 @@ guidance.
 The agent exposes dataset and snapshot operations:
 
 - `GET/POST /api/v1/datasets/{pool}`, `DELETE /api/v1/datasets/{pool}/{name…}`
-- `GET/POST /api/v1/snapshots/{dataset}`
+- `GET/POST/DELETE /api/v1/snapshots/{dataset}` (`?paths=true` returns full
+  `dataset@snap` paths; `DELETE ?name=` destroys one snapshot)
 
 Datasets are how shares get structured sizes/quota boundaries and are the unit
 of snapshots (`zfs snapshot pool/ds@name`). Shares previously used AFP/Time
 Machine; the modern path is SMB + `fruit` VFS (see [shares.md](shares.md)).
+
+### Scheduled snapshots and scrubs (FR-STO-10/11)
+
+`Pools → <pool>` owns the maintenance schedules:
+
+- **Snapshot schedule** (per dataset): `GET|POST|DELETE /api/storage/schedules`
+  with `kind: "snapshot"`. Cadence is hourly/daily/weekly in UTC, with an
+  optional `recursive` flag (`zfs snapshot -r`) and `keep` retention (0 = keep
+  all, max 1000). Every run creates `naslos-auto-<schedule>-<UTC timestamp>`;
+  retention deletes only names carrying that schedule's prefix, keeping the
+  newest N per dataset. User-created snapshots are never touched.
+- **Scrub schedule** (per pool): `kind: "scrub"`, daily or weekly only, plus
+  **Scrub now** (`POST /api/volumes/zfs/{pool}/scrub`). The manual route answers
+  `409` when `zpool status` reports a scrub or resilver already running; a
+  scheduled run records `skipped` (or leaves its own in-flight result in place)
+  instead of starting a second scrub. The agent runs only
+  `zpool scrub <validated pool>`, and the schedule's result is read from the
+  finished `scan` line (`ok` only with zero errors).
+
+Schedules and their last/next-run state persist on the state volume
+(`/var/lib/naslos/storage-schedules.json`, `api.storageSchedulesFile`), and a
+run missed while the API was down fires once at startup. A run that cannot
+reach the agent keeps its due time and is retried on the next tick, so an
+upgrade does not consume a daily or weekly snapshot.
 
 ### Creating a dataset (UI)
 
@@ -133,6 +158,7 @@ reaches ZFS:
 | Each name component is ZFS-safe, no traversal, no `@` | A name is interpolated into `zfs create`; `../` or a snapshot marker must not get through |
 | Nested names allowed (`photos/2026`), created with `-p` | One call, and the intermediate levels are what the operator meant |
 | Options limited to `compression`, `quota`, `recordsize`, `atime`, `copies`, `readonly` with validated values | `zfs create -o` accepts arbitrary properties; `mountpoint=/` would put the dataset somewhere unexpected |
+| Encryption options are not accepted yet | ZFS encryption is create-only and its key custody/unlock model is designed but `[OPEN]`; `encryption`/`keyformat`/`keylocation` are validated and refused (FR-ENC, [dataset-encryption.md](dataset-encryption.md)) |
 | The pool must exist | Otherwise the failure surfaces after the name was accepted |
 | Destroy needs `recursive=true` for a non-empty dataset, never applies to a pool's root dataset, and is refused (409) while a share serves the dataset's path | A dataset picker must not delete data or quietly break a share |
 

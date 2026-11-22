@@ -239,6 +239,31 @@ pub async fn pool_devices_post(
     }
 }
 
+/// `POST /api/v1/pools/{pool}/scrub` — start a scrub. The API refuses when a
+/// scrub/resilver is already running; the agent only validates the pool name
+/// and runs `zpool scrub`.
+pub async fn pool_scrub_post(
+    State(state): State<Arc<AppState>>,
+    Path(pool): Path<String>,
+) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    if let Err(e) = validate_pool_name(&pool) {
+        return write_error(StatusCode::BAD_REQUEST, e.to_string());
+    }
+    match zfs.scrub_pool(&pool).await {
+        Ok(()) => {
+            tracing::info!("started scrub on pool {}", pool);
+            json_response(
+                StatusCode::ACCEPTED,
+                &json!({ "status": "scrub started", "pool": pool }),
+            )
+        }
+        Err(e) => write_client_error(&e),
+    }
+}
+
 // ---- Datasets ------------------------------------------------------------
 
 pub async fn datasets_all_get(State(state): State<Arc<AppState>>) -> Response {
@@ -451,10 +476,19 @@ pub async fn zvols_delete(
 pub async fn snapshots_get(
     State(state): State<Arc<AppState>>,
     Path(dataset): Path<String>,
+    Query(query): Query<QueryMap>,
 ) -> Response {
     let Some(zfs) = state.zfs.as_ref() else {
         return zfs_unavailable();
     };
+    if query.get("paths").map(String::as_str) == Some("true") {
+        // Retention planning needs the full `pool/ds@snap` paths so a
+        // recursive snapshot's child entries are visible.
+        return match zfs.snapshot_paths(&dataset).await {
+            Ok(paths) => json_response(StatusCode::OK, &paths),
+            Err(e) => write_client_error(&e),
+        };
+    }
     match zfs.snapshots(&dataset).await {
         Ok(snaps) => json_response(StatusCode::OK, &snaps),
         Err(e) => write_client_error(&e),
@@ -471,6 +505,10 @@ pub async fn snapshots_get_empty() -> Response {
 struct SnapshotRequest {
     #[serde(default)]
     name: String,
+    /// Snapshot child datasets too (`zfs snapshot -r`). Scheduled snapshot
+    /// tasks use it; a manual snapshot keeps the default (non-recursive).
+    #[serde(default)]
+    recursive: bool,
 }
 
 pub async fn snapshots_post(
@@ -485,7 +523,7 @@ pub async fn snapshots_post(
         Ok(req) => req,
         Err(resp) => return resp,
     };
-    match zfs.snapshot(&dataset, &req.name).await {
+    match zfs.snapshot_with(&dataset, &req.name, req.recursive).await {
         Ok(()) => json_response(
             StatusCode::CREATED,
             &json!({ "status": "snapshot created" }),
@@ -497,6 +535,33 @@ pub async fn snapshots_post(
 /// `/api/v1/snapshots/` POST with an empty dataset segment.
 pub async fn snapshots_post_empty() -> Response {
     write_error(StatusCode::BAD_REQUEST, "dataset path is required")
+}
+
+/// `DELETE /api/v1/snapshots/{dataset}?name=<snap>` — destroy one snapshot.
+/// The API's retention scheduler is the only caller, and it only passes names
+/// it generated (`naslos-auto-*`).
+pub async fn snapshots_delete(
+    State(state): State<Arc<AppState>>,
+    Path(dataset): Path<String>,
+    Query(query): Query<QueryMap>,
+) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    let name = query
+        .get("name")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if name.is_empty() {
+        return write_error(StatusCode::BAD_REQUEST, "name is required");
+    }
+    match zfs.destroy_snapshot(&dataset, &name).await {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &json!({ "status": "snapshot destroyed", "dataset": dataset, "name": name }),
+        ),
+        Err(e) => write_client_error(&e),
+    }
 }
 
 /// `POST /api/v1/rollback/{dataset}` — roll a dataset back to a snapshot

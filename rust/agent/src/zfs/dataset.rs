@@ -122,6 +122,11 @@ pub fn validate_dataset_name(name: &str) -> ZfsResult<()> {
 pub fn validate_dataset_options(
     options: &std::collections::HashMap<String, String>,
 ) -> ZfsResult<()> {
+    // Encryption shape is validated (and, while custody/unlock are [OPEN],
+    // refused) before any option can reach `zfs create -o`. Key material is
+    // never an option: a passphrase or raw key in `options` falls through to
+    // the allow-list below and is rejected.
+    super::encryption::validate_create_options(options)?;
     for (key, raw) in options {
         let value = raw.trim();
         if matches!(key.as_str(), "volblocksize" | "volsize" | "volmode") {
@@ -434,19 +439,75 @@ impl ZfsClient {
 
     /// Create a snapshot.
     pub async fn snapshot(&self, dataset: &str, snap_name: &str) -> ZfsResult<()> {
+        self.snapshot_with(dataset, snap_name, false).await
+    }
+
+    /// Create a snapshot, optionally recursing into child datasets
+    /// (`zfs snapshot -r`). A recursive snapshot is what a scheduled snapshot
+    /// task wants: one consistent point for the dataset and everything under it.
+    pub async fn snapshot_with(
+        &self,
+        dataset: &str,
+        snap_name: &str,
+        recursive: bool,
+    ) -> ZfsResult<()> {
         validate_dataset_path(dataset)?;
         super::backup::validate_snapshot_name(snap_name)?;
         let name = format!("{dataset}@{snap_name}");
-        match self
-            .host_exec(ZFS_BIN, &strings(&["snapshot", &name]))
-            .await
-        {
+        let argv = if recursive {
+            strings(&["snapshot", "-r", &name])
+        } else {
+            strings(&["snapshot", &name])
+        };
+        match self.host_exec(ZFS_BIN, &argv).await {
             Ok(_) => Ok(()),
             Err(e) => Err(ZfsError::Other(format!(
                 "creating snapshot: {}: {}",
                 e.output, e.message
             ))),
         }
+    }
+
+    /// Destroy one snapshot (`zfs destroy dataset@snap`).
+    ///
+    /// The caller owns retention: the API only calls this for snapshot names it
+    /// generated itself, so a user-created snapshot is never removed by a
+    /// schedule.
+    pub async fn destroy_snapshot(&self, dataset: &str, snap_name: &str) -> ZfsResult<()> {
+        validate_dataset_path(dataset)?;
+        super::backup::validate_snapshot_name(snap_name)?;
+        let name = format!("{dataset}@{snap_name}");
+        match self.host_exec(ZFS_BIN, &strings(&["destroy", &name])).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(ZfsError::Other(format!(
+                "destroying snapshot {name}: {}: {}",
+                e.output, e.message
+            ))),
+        }
+    }
+
+    /// Every snapshot path under a dataset (`pool/ds@snap`, including child
+    /// datasets) in creation order, for retention planning.
+    pub async fn snapshot_paths(&self, dataset: &str) -> ZfsResult<Vec<String>> {
+        validate_dataset_path(dataset)?;
+        let out = match self
+            .host_exec(
+                ZFS_BIN,
+                &strings(&[
+                    "list", "-H", "-t", "snapshot", "-o", "name", "-s", "creation", "-r", dataset,
+                ]),
+            )
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => return Err(ZfsError::Other(format!("listing snapshots: {}", e.message))),
+        };
+        Ok(out
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect())
     }
 
     /// List a dataset's snapshots (names without the `dataset@` prefix).
@@ -546,5 +607,43 @@ mod tests {
             assert_eq!(actual, expected, "for {kind} {name}");
         }
         assert!(validate_dataset_name(&"a".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn encryption_options_are_refused_until_key_custody_ships() {
+        let valid = std::collections::HashMap::from([
+            ("encryption".to_string(), "aes-256-gcm".to_string()),
+            ("keyformat".to_string(), "raw".to_string()),
+        ]);
+        let err = validate_dataset_options(&valid).unwrap_err();
+        assert!(err.is_validation());
+        assert!(err.to_string().contains("not implemented yet"), "{err}");
+
+        for (key, value) in [
+            ("encryption", "rot13"),
+            ("keyformat", "raw"),
+            ("keylocation", "prompt"),
+        ] {
+            let options = std::collections::HashMap::from([(key.to_string(), value.to_string())]);
+            let err = validate_dataset_options(&options).unwrap_err();
+            assert!(err.is_validation(), "{key}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn key_material_is_never_a_dataset_option() {
+        for key in ["key", "passphrase", "encryption_key"] {
+            let options =
+                std::collections::HashMap::from([(key.to_string(), "secret".to_string())]);
+            let err = validate_dataset_options(&options).unwrap_err();
+            assert!(
+                err.to_string().contains("unsupported dataset option"),
+                "{key}: {err}"
+            );
+            assert!(
+                !err.to_string().contains("secret"),
+                "the error echoed the value: {err}"
+            );
+        }
     }
 }

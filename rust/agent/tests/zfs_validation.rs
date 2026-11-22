@@ -435,6 +435,127 @@ async fn snapshots_refuses_invalid_dataset() {
     assert!(calls.lock().unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn recursive_snapshot_command_line() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    c.snapshot_with("tank/data", "naslos-auto-ab-20260105T101500Z", true)
+        .await
+        .expect("valid recursive snapshot");
+    assert!(ran_command(
+        &calls,
+        "/usr/local/sbin/zfs snapshot -r tank/data@naslos-auto-ab-20260105T101500Z"
+    ));
+}
+
+#[tokio::test]
+async fn destroy_snapshot_refuses_invalid_arguments() {
+    let cases: Vec<(&str, &str, &str, &str)> = vec![
+        (
+            "flag-shaped snapshot",
+            "tank/data",
+            "-r",
+            "must not start with '-'",
+        ),
+        (
+            "snapshot with a slash",
+            "tank/data",
+            "a/b",
+            "must not contain",
+        ),
+        (
+            "dataset without a pool",
+            "data",
+            "snap1",
+            "must be <pool>/<name>",
+        ),
+        (
+            "dataset with a snapshot",
+            "tank/data@old",
+            "snap1",
+            "must not contain '@'",
+        ),
+    ];
+    for (name, dataset, snap, want) in cases {
+        let host = FakeHost::new();
+        let runner = Arc::new(FakeRunner::new(&[]));
+        let calls = runner.calls();
+        let c = client(&host, runner);
+
+        let err = c
+            .destroy_snapshot(dataset, snap)
+            .await
+            .expect_err(&format!("{name}: expected an error"));
+        assert!(
+            err.to_string().contains(want),
+            "{name}: error {err:?} should mention {want:?}"
+        );
+        assert!(calls.lock().unwrap().is_empty(), "{name}: a command ran");
+    }
+
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+    c.destroy_snapshot("tank/data", "naslos-auto-ab-20260105T101500Z")
+        .await
+        .expect("valid snapshot");
+    assert!(ran_command(
+        &calls,
+        "/usr/local/sbin/zfs destroy tank/data@naslos-auto-ab-20260105T101500Z"
+    ));
+}
+
+#[tokio::test]
+async fn snapshot_paths_lists_creation_ordered_paths() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "tank/data@old\ntank/data@new\ntank/data/child@old\n",
+    ]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    let paths = c.snapshot_paths("tank/data").await.expect("paths");
+    assert_eq!(
+        paths,
+        vec![
+            "tank/data@old".to_string(),
+            "tank/data@new".to_string(),
+            "tank/data/child@old".to_string()
+        ]
+    );
+    assert!(ran_command(
+        &calls,
+        "/usr/local/sbin/zfs list -H -t snapshot -o name -s creation -r tank/data"
+    ));
+}
+
+#[tokio::test]
+async fn scrub_refuses_invalid_pool_names() {
+    for name in ["-f", "tank/name", "../tank", ""] {
+        let host = FakeHost::new();
+        let runner = Arc::new(FakeRunner::new(&[]));
+        let calls = runner.calls();
+        let c = client(&host, runner);
+
+        assert!(c.scrub_pool(name).await.is_err(), "{name:?} was accepted");
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "{name:?} reached a command"
+        );
+    }
+
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+    c.scrub_pool("tank").await.expect("valid pool");
+    assert!(ran_command(&calls, "/usr/local/sbin/zpool scrub tank"));
+}
+
 // ---- devices -------------------------------------------------------------
 
 #[tokio::test]

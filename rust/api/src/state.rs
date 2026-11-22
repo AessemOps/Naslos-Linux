@@ -53,6 +53,10 @@ pub struct AppState {
     pub samba_users: std::sync::Mutex<crate::shares::SambaUserStore>,
     /// The LDAP identity client (S3a). Absent when LDAP config is unusable.
     pub identity: Option<Arc<crate::identity::Client>>,
+    /// Validated external-directory configuration (FR-EXT phase 1). Disabled
+    /// unless `EXTERNAL_DIRECTORY_ENABLED=true`; it does not participate in
+    /// request-time authentication yet.
+    pub external_directory: crate::directory::Store,
     /// The chart-repository manager (S4d). Absent when no cache is configured.
     pub charts: Option<Arc<crate::chartsrepo::Manager>>,
     /// The swappable catalog snapshot (S4d).
@@ -91,6 +95,8 @@ pub struct AppState {
     pub buddy_jobs: Arc<crate::server::buddy_send::BuddyJobManager>,
     /// The scheduled-backup store (S6j).
     pub buddy_schedules: Arc<crate::server::buddy_schedules::ScheduleStore>,
+    /// Scheduled storage maintenance: periodic snapshots and scrubs (FR-STO-10/11).
+    pub storage_schedules: Arc<crate::server::storage_schedules::StorageScheduleStore>,
     /// Release facts and the upgrader Job wiring (FR-UPD).
     pub system: crate::system::Config,
     /// The release update checker; `None` when updates are disabled.
@@ -209,6 +215,17 @@ impl AppState {
                     None
                 }
             },
+            external_directory: match crate::directory::Store::from_env() {
+                Ok(store) => store,
+                Err(e) => {
+                    // Never include credential material here: errors name the
+                    // variable or secret path, never the password. A bad
+                    // external-directory config disables that optional source
+                    // only; the internal directory and the API keep working.
+                    tracing::error!("external directory disabled: {e}");
+                    crate::directory::Store::disabled()
+                }
+            },
             charts: charts.clone(),
             catalog,
             app_manager,
@@ -234,6 +251,14 @@ impl AppState {
                 }
                 store
             },
+            storage_schedules: {
+                let store =
+                    Arc::new(crate::server::storage_schedules::StorageScheduleStore::from_env());
+                if let Err(e) = store.load() {
+                    tracing::warn!("could not load the storage schedule store: {e}");
+                }
+                store
+            },
             system: crate::system::Config::from_env(),
             updates: crate::system::Checker::from_env().map(Arc::new),
             mcp: crate::mcp::McpState::from_env(),
@@ -256,6 +281,7 @@ impl AppState {
             shares: std::sync::Mutex::new(crate::shares::Manager::new("", "/var/mnt")),
             samba_users: std::sync::Mutex::new(crate::shares::SambaUserStore::new("")),
             identity: None,
+            external_directory: crate::directory::Store::disabled(),
             charts: None,
             catalog: Arc::new(CatalogHolder::new()),
             app_manager: None,
@@ -275,6 +301,9 @@ impl AppState {
             buddy: None,
             buddy_jobs: Arc::new(crate::server::buddy_send::BuddyJobManager::new()),
             buddy_schedules: Arc::new(crate::server::buddy_schedules::ScheduleStore::new("")),
+            storage_schedules: Arc::new(
+                crate::server::storage_schedules::StorageScheduleStore::new(""),
+            ),
             system: crate::system::Config::default(),
             updates: None,
             mcp: crate::mcp::McpState::for_test(),

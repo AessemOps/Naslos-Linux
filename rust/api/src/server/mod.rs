@@ -13,6 +13,7 @@ pub mod buddy_restore;
 pub mod buddy_schedules;
 pub mod buddy_send;
 pub mod catalog;
+pub mod config_export;
 pub mod dataset_registry;
 pub mod ddns;
 pub mod disks;
@@ -24,6 +25,7 @@ pub mod notifications;
 pub mod pods;
 pub mod providers;
 pub mod shares;
+pub mod storage_schedules;
 pub mod system;
 pub mod users;
 pub mod virt;
@@ -120,6 +122,7 @@ fn owner_routes() -> Router<Arc<AppState>> {
                 .delete(ddns::ddns_detail_delete),
         )
         .route("/api/system/version", get(system::version))
+        .route("/api/system/config/export", get(config_export::export))
         .route("/api/system/updates", get(system::updates_get))
         .route("/api/system/updates/check", post(system::updates_check))
         .route("/api/system/reboot", post(system::reboot_post))
@@ -141,12 +144,22 @@ fn owner_routes() -> Router<Arc<AppState>> {
         )
         .route("/api/volumes/zfs/{pool}/health", get(zfs::pool_health_get))
         .route(
+            "/api/volumes/zfs/{pool}/scrub",
+            post(storage_schedules::pool_scrub_post),
+        )
+        .route(
             "/api/volumes/zfs/{pool}/devices",
             post(zfs::pool_devices_post),
         )
         .route(
             "/api/volumes/zfs/{pool}",
             get(zfs::pool_detail_get).delete(zfs::pool_detail_delete),
+        )
+        .route(
+            "/api/storage/schedules",
+            get(storage_schedules::schedules_get)
+                .post(storage_schedules::schedules_post)
+                .delete(storage_schedules::schedules_delete),
         )
         .route(
             "/api/datasets",
@@ -487,6 +500,10 @@ mod tests {
             (
                 axum::http::Method::GET,
                 "/api/ws/vm/mcp-probe/vnc".to_string(),
+            ),
+            (
+                axum::http::Method::GET,
+                "/api/system/config/export".to_string(),
             ),
             (axum::http::Method::GET, "/api/mcp".to_string()),
             (axum::http::Method::PUT, "/api/mcp".to_string()),
