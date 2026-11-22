@@ -26,6 +26,11 @@ spec:
       automountServiceAccountToken: false
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
+      # R-038: root is required for the privileged port and dataset access;
+      # capabilities are narrowed to the FSAL/setuid set below.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: nfs
           image: {{ include "naslos.image" .Values.shares.nfs.image }}
@@ -37,7 +42,10 @@ spec:
           # NFS4ERR_PERM while the mount itself still succeeds).
           securityContext:
             runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
+              drop: [ALL]
               add:
                 - CHOWN
                 - DAC_OVERRIDE
@@ -52,6 +60,8 @@ spec:
                 # did not call it, which is why this only appeared with the
                 # Debian 13 image (AUDIT: image migration).
                 - SYS_RESOURCE
+            seccompProfile:
+              type: RuntimeDefault
           # NFSv4 only: no rpcbind (111) and no NLM/statd ports are needed on
           # Talos, which does not ship them.
           ports:
@@ -89,6 +99,16 @@ spec:
             - name: datasets
               mountPath: /var/mnt
               mountPropagation: HostToContainer
+            # Ganesha writes its pid, recovery state and log; keep them on
+            # explicit volumes so the image root can stay read-only.
+            - name: nfs-run
+              mountPath: /var/run
+            - name: nfs-state
+              mountPath: /var/lib/nfs
+            - name: nfs-logs
+              mountPath: /var/log/ganesha
+            - name: tmp
+              mountPath: /tmp
           resources:
             {{- toYaml .Values.shares.nfs.resources | nindent 12 }}
       volumes:
@@ -100,4 +120,14 @@ spec:
           hostPath:
             path: /var/mnt
             type: DirectoryOrCreate
+        - name: nfs-run
+          emptyDir: {}
+        - name: nfs-state
+          emptyDir: {}
+        - name: nfs-logs
+          hostPath:
+            path: /var/log/naslos-nfs
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir: {}
 {{- end }}

@@ -28,6 +28,26 @@ spec:
       hostNetwork: true
       # hostNetwork pods need this to resolve cluster DNS names.
       dnsPolicy: ClusterFirstWithHostNet
+      # R-038: the container runs as root only because SMB must chown/setuid to
+      # share owners; it gets no capability beyond that and an immutable root.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # avahi-daemon.conf and the service file are edited by the entrypoint;
+        # seed a writable copy so the main container can keep / read-only.
+        - name: avahi-config
+          image: {{ include "naslos.image" .Values.shares.smb.image }}
+          imagePullPolicy: {{ .Values.shares.smb.image.pullPolicy }}
+          command: ["/bin/sh", "-c", "cp -a /etc/avahi/. /tmp/avahi-copy/"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: avahi-config
+              mountPath: /tmp/avahi-copy
       containers:
         - name: samba
           image: {{ include "naslos.image" .Values.shares.smb.image }}
@@ -37,7 +57,10 @@ spec:
           # the full privileged flag.
           securityContext:
             runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
+              drop: [ALL]
               add:
                 - CHOWN
                 - DAC_OVERRIDE
@@ -45,6 +68,8 @@ spec:
                 - FSETID
                 - SETGID
                 - SETUID
+            seccompProfile:
+              type: RuntimeDefault
           env:
             # Network discovery (mDNS via Avahi, WSD via wsdd).
             - name: SMB_DISCOVERY_ENABLED
@@ -104,6 +129,14 @@ spec:
             # recreating the pod does not discard them.
             - name: samba-logs
               mountPath: /var/log/samba
+            # Writable scratch/runtime/avahi paths; everything else stays on
+            # the read-only image root.
+            - name: tmp
+              mountPath: /tmp
+            - name: run
+              mountPath: /run
+            - name: avahi-config
+              mountPath: /etc/avahi
           resources:
             {{- toYaml .Values.shares.smb.resources | nindent 12 }}
       volumes:
@@ -123,4 +156,10 @@ spec:
           hostPath:
             path: /var/log/naslos-samba
             type: DirectoryOrCreate
+        - name: tmp
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+        - name: avahi-config
+          emptyDir: {}
 {{- end }}

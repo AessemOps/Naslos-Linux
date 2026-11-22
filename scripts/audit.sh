@@ -172,6 +172,21 @@ for kind, name in [
     assert doc, f"{kind}/{name} missing"
     if doc["spec"]["template"]["spec"].get("automountServiceAccountToken") is not False:
         raise AssertionError(f"{kind}/{name} automounts a service-account token")
+# R-038: Samba/NFS keep root only for their datastore work, with no inherited
+# capabilities, no privilege escalation, seccomp and a read-only root.
+for name in ("naslos-samba", "naslos-nfs"):
+    ds = find("DaemonSet", name)
+    ctr = ds["spec"]["template"]["spec"]["containers"][0]
+    sc = ctr.get("securityContext", {})
+    assert sc.get("allowPrivilegeEscalation") is False, (name, sc)
+    assert sc.get("readOnlyRootFilesystem") is True, (name, sc)
+    assert sc.get("seccompProfile", {}).get("type") == "RuntimeDefault", (name, sc)
+    assert sc.get("capabilities", {}).get("drop") == ["ALL"], (name, sc)
+    assert "SYS_ADMIN" not in sc.get("capabilities", {}).get("add", []), (name, sc)
+    mounts = {m["mountPath"] for m in ctr.get("volumeMounts", [])}
+    assert "/tmp" in mounts, (name, mounts)
+    if name == "naslos-samba":
+        assert "/etc/avahi" in mounts, (name, mounts)
 PY
   py_status=$?
   rm -f "$f"
