@@ -307,6 +307,14 @@ retrying or using the browser path worked around it. Worth watching.
 
 ### Open items
 
+- **Phantom image update after an app upgrade (fixed on
+  `fix/app-image-drift-stale-pods`, needs a release):** image drift counted
+  every pod in the app namespace, including a lingering `Succeeded`/`Failed`
+  pod from an earlier ReplicaSet. Calibre-Web kept offering an image update
+  after it had already pulled the new digest, and each click restarted it
+  again. Only `Running`, non-terminating pods count now. Deleting the stale
+  completed pod clears the current badge until the fix ships.
+
 - **App upgrades blocked by a Helm field-manager conflict (fixed on this
   branch, needs a release):** the image refresh's `kubectl patch` owned
   `imagePullPolicy`, so later app upgrades and their rollbacks failed
