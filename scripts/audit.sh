@@ -261,6 +261,17 @@ for name in ("naslos-samba", "naslos-nfs"):
     assert "/tmp" in mounts, (name, mounts)
     if name == "naslos-samba":
         assert "/etc/avahi" in mounts, (name, mounts)
+# R-034 chart side: vmd keeps hostNetwork (NAT forwards) but no host PID/IPC,
+# no service-account token and no VNC port in any Service or containerPort.
+vmd = find("Deployment", "naslos-vmd")
+vmd_pod = vmd["spec"]["template"]["spec"]
+assert vmd_pod.get("hostNetwork") is True, vmd_pod
+assert vmd_pod.get("hostPID") is False and vmd_pod.get("hostIPC") is False, vmd_pod
+assert vmd_pod.get("automountServiceAccountToken") is False, vmd_pod
+vmd_ctr = vmd_pod["containers"][0]
+assert not [p for p in vmd_ctr.get("ports", []) if 5900 <= int(p.get("containerPort", 0)) <= 5915], vmd_ctr
+vmd_svc = find("Service", "naslos-vmd")
+assert [p["port"] for p in vmd_svc["spec"]["ports"]] == [9091], vmd_svc["spec"]["ports"]
 PY
   py_status=$?
   rm -f "$f"
