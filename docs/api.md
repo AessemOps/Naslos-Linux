@@ -372,11 +372,12 @@ and the operator's DNS or `/etc/hosts` entry must move to it; see
 sha256 in this response; the Job receives it as the administrator-approved
 value. All routes are admin-only (owner router).
 
-### System config export (`FR-CFG`, see [spec.md §3.15](spec.md#315-system-config-exportimport-fr-cfg))
+### System config export/import (`FR-CFG`, see [spec.md §3.15](spec.md#315-system-config-exportimport-fr-cfg))
 
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/system/config/export` | Versioned, secret-free JSON download of the declarative records. Admin-only owner route; `Content-Disposition: attachment` and `Cache-Control: no-store` |
+| POST | `/api/system/config/import` | Strict import of that envelope. Default is a dry-run report; `?apply=true&confirm=apply` writes the plan. Admin-only owner route; body limit 8 MiB |
 
 ```json
 {
@@ -448,19 +449,81 @@ projected to the keys the provider schema declares non-secret; unknown keys,
 free-form value templates that can embed a credential (the generic DDNS
 `updateUrl`/`body`) and configs for an unknown provider are omitted.
 
-**Import/restore is `[OPEN]`.** An importer must reject a newer `schemaVersion`,
-accept only allow-listed fields (reject unknown or secret-like keys), revalidate
-IDs/paths/datasets/pools/providers against the live node, never reuse an
-exported ID to overwrite or delete a record, and never inject credentials. It
-must run as a dry-run plan followed by explicit confirmation.
+#### Import semantics
+
+`POST /api/system/config/import` takes the export document above as its raw
+body. It is strict: `kind` and `schemaVersion` must match, unknown top-level or
+record fields are rejected, and credential-shaped keys are refused rather than
+stripped. The default is a dry-run plan; an apply needs both query parameters:
+
+```bash
+curl -sk -X POST "https://<naslos-host>/api/system/config/import?apply=true&confirm=apply" \
+  -H "Content-Type: application/json" --data-binary @naslos-config-export.json
+```
+
+The response is a per-section report. `id` is present only for server-keyed
+records and is the ID the apply actually used (the dry-run omits it because the
+ID does not exist yet):
+
+```json
+{
+  "kind": "naslos-config-import",
+  "schemaVersion": 1,
+  "dryRun": false,
+  "applied": true,
+  "sections": {
+    "shares": {
+      "created": [{ "entry": "media" }],
+      "updated": [],
+      "unchanged": [],
+      "skipped": [],
+      "failed": [],
+      "notes": ["share records were written; POST /api/shares/apply pushes them to Samba and NFS"]
+    },
+    "ddnsEntries": {
+      "created": [{ "entry": "cloudflare example.test/home A", "id": "1f0c..." }],
+      "updated": [],
+      "unchanged": [],
+      "skipped": [],
+      "failed": [],
+      "notes": ["provider credentials are not exported; enter them with PUT /api/ddns/{id} before the entries can update"]
+    },
+    "apps": {
+      "created": [],
+      "updated": [],
+      "unchanged": [],
+      "skipped": [{ "entry": "demo", "reason": "not installed; reinstall it from the catalog and re-enter secret values" }],
+      "failed": [],
+      "notes": ["apps are installed from the catalog, not by config import; secret values and environment values must be re-entered"]
+    }
+  },
+  "totals": { "created": 2, "updated": 0, "unchanged": 0, "skipped": 1, "failed": 0 },
+  "warnings": []
+}
+```
+
+Exported IDs are never trusted. Existing records are matched by natural key
+(share name, schedule kind + dataset/pool, buddy dataset + source, provider +
+zone + record + type, base domain, dataset name); new records get
+server-generated IDs. Records absent from the import are never deleted, a
+credential Secret is never read or overwritten, and an ambiguous existing match
+is skipped instead of guessed at. A domain that references an imported DDNS
+entry is remapped to the server-generated DDNS ID. If the agent is reachable,
+share paths and dataset/pool targets are revalidated read-only against the
+node; without an agent the report carries a warning that only structural
+validation ran.
+
+Apps are validated but not installed: the app section is reported skipped with
+the catalog follow-up. Provider credentials are never imported, so a created
+domain or DDNS entry is reported with the existing endpoint to enter them.
 
 This document is distinct from the installer **recovery ZIP**
 ([installer-contract.md §2](installer-contract.md#2-cluster-objects-the-installer-depends-on)):
 the recovery ZIP is bootstrap material (`talosconfig`, machine config, Talos
 secrets, `kubeconfig`, schematic/ISO facts) used to rebuild a lost control
-plane, while this export is application-config JSON with no PKI, kubeconfig or
-Secret material. Neither replaces the other; back up the recovery ZIP offline
-and store this export beside your data backups.
+plane, while this export/import is application-config JSON with no PKI,
+kubeconfig or Secret material. Neither replaces the other; back up the recovery
+ZIP offline and store this export beside your data backups.
 
 ### Logs & terminal (WebSocket)
 

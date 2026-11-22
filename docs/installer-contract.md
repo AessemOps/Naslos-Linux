@@ -171,15 +171,16 @@ makes every stored backup unreadable, and `helm uninstall` would delete it (the
 namespace is `helm.sh/resource-policy: keep`). The recovery README MUST say so.
 
 The recovery ZIP is **not** the system config export (`FR-CFG`, see
-[api.md § System config export](api.md#system-config-export-fr-cfg-see-specmd-315)).
+[api.md § System config export/import](api.md#system-config-exportimport-fr-cfg-see-specmd-315)).
 The ZIP is bootstrap material — `talosconfig`, machine config, the Talos
 secrets bundle, `kubeconfig`, the schematic and ISO facts — and is the only way
 to rebuild a lost control plane; it contains no application records. The config
-export is an owner-gated, versioned JSON download of shares, schedules, domains,
-DDNS entries, app records and dataset registry entries, and it deliberately
+export/import is an owner-gated, versioned JSON format for shares, schedules,
+domains, DDNS entries, app records and dataset registry entries. It deliberately
 contains no PKI, kubeconfig, Secret value or credential. A config export cannot
 provision a node, and a recovery ZIP cannot restore application records; back
-up both.
+up both. Import matches records by natural key, ignores exported IDs and never
+imports apps or credentials, so it does not replace the installer either.
 
 ## 3. First admin (`FR-INSTALL-06`)
 

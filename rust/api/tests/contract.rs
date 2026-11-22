@@ -1138,3 +1138,411 @@ async fn config_export_requires_an_admin_and_emits_the_versioned_shape() {
     assert!(!raw.contains("credentialsSecret"), "{raw}");
     assert!(!raw.contains("receiverResults"), "{raw}");
 }
+
+fn import_document() -> Value {
+    serde_json::json!({
+        "kind": "naslos-config-export",
+        "schemaVersion": 1,
+        "generatedAt": "2026-11-22T00:00:00Z",
+        "naslosVersion": "0.6.0",
+        "baseDomain": "",
+        "shares": [],
+        "storageSchedules": [],
+        "buddySchedules": [],
+        "domains": [],
+        "ddnsEntries": [],
+        "apps": [],
+        "datasetRegistry": []
+    })
+}
+
+fn import_share(name: &str, path: &str) -> Value {
+    serde_json::json!({
+        "name": name,
+        "path": path,
+        "protocol": "smb",
+        "description": "",
+        "readOnly": false,
+        "browseable": true,
+        "allowedHosts": [],
+        "validUsers": [],
+        "validGroups": [],
+        "timeMachine": false,
+        "noRootSquash": false,
+        "enabled": true
+    })
+}
+
+fn json_request(
+    method: &str,
+    uri: &str,
+    body: &str,
+    secret: bool,
+    user: &str,
+    groups: &str,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("Sec-Fetch-Site", "same-origin")
+        .header("Content-Type", "application/json");
+    if secret {
+        builder = builder.header("X-Naslos-Proxy-Secret", SECRET);
+    }
+    if !user.is_empty() {
+        builder = builder.header("Remote-User", user);
+    }
+    if !groups.is_empty() {
+        builder = builder.header("Remote-Groups", groups);
+    }
+    builder.body(Body::from(body.to_string())).unwrap()
+}
+
+fn test_ddns_manager(state: &AppState) -> naslos_api::ddns::Manager {
+    naslos_api::ddns::Manager::new(naslos_api::ddns::Options {
+        registry: state.providers.clone(),
+        store_path: String::new(),
+        apps_namespace: "naslos-apps".into(),
+        kube: None,
+        ip_sources: Vec::new(),
+        ipv6_sources: Vec::new(),
+        interval: std::time::Duration::ZERO,
+        cooldown: std::time::Duration::ZERO,
+    })
+}
+
+#[tokio::test]
+async fn config_import_requires_an_admin_and_defaults_to_dry_run() {
+    let mut document = import_document();
+    document["shares"] = serde_json::json!([import_share("media", "/var/mnt/tank/media")]);
+    let body = serde_json::to_string(&document).unwrap();
+
+    let (status, _b, _r) = send(with_peer(
+        json_request("POST", "/api/system/config/import", &body, false, "", ""),
+        [127, 0, 0, 1],
+    ))
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, _b, _r) = send(with_peer(
+        json_request(
+            "POST",
+            "/api/system/config/import",
+            &body,
+            true,
+            "viewer",
+            "naslos_users",
+        ),
+        [127, 0, 0, 1],
+    ))
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let target = state();
+    let (status, report, _r) = send_state(
+        target.clone(),
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["kind"], "naslos-config-import");
+    assert_eq!(report["dryRun"], true);
+    assert_eq!(report["applied"], false);
+    assert_eq!(report["sections"]["shares"]["created"][0]["entry"], "media");
+    assert!(target.shares.lock().unwrap().get("media").is_err());
+
+    let (status, _b, _r) = send_state(
+        target.clone(),
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import?apply=true",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, report, _r) = send_state(
+        target.clone(),
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import?apply=true&confirm=apply",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["dryRun"], false);
+    assert_eq!(report["applied"], true);
+    assert!(target.shares.lock().unwrap().get("media").is_ok());
+
+    let (status, report, _r) = send_state(
+        target,
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import?apply=true&confirm=apply",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(report["sections"]["shares"]["unchanged"][0], "media");
+    assert!(report["sections"]["shares"]["created"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn config_import_round_trips_an_export_through_the_http_routes() {
+    let mut source = AppState::for_test(SECRET);
+    source.ddns = Some(Arc::new(test_ddns_manager(&source)));
+    source
+        .shares
+        .lock()
+        .unwrap()
+        .create(&naslos_api::shares::CreateShareRequest {
+            name: "media".into(),
+            path: "/var/mnt/tank/media".into(),
+            protocol: naslos_api::shares::Protocol::Smb,
+            description: "Media".into(),
+            enabled: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+    source
+        .storage_schedules
+        .put(naslos_api::server::storage_schedules::StorageSchedule {
+            id: "snap-source".into(),
+            kind: naslos_api::server::storage_schedules::ScheduleKind::Snapshot,
+            target: "tank/media".into(),
+            cadence: naslos_api::schedule::Cadence::Daily,
+            run_at: "02:30".into(),
+            keep: 3,
+            recursive: true,
+            enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+    source
+        .domains
+        .upsert(naslos_api::certs::Domain {
+            base_domain: "example.test".into(),
+            dns_provider: "cloudflare".into(),
+            credentials_secret: "must-not-export".into(),
+            provider_config: std::collections::HashMap::from([("proxied".into(), "false".into())]),
+            acme_email: "ops@example.test".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    source
+        .ddns
+        .as_ref()
+        .unwrap()
+        .store()
+        .put(naslos_api::ddns::Entry {
+            id: "ddns-source".into(),
+            provider: "cloudflare".into(),
+            zone: "example.test".into(),
+            record: "home".into(),
+            record_type: "A".into(),
+            ttl: 300,
+            enabled: true,
+            provider_config: std::collections::HashMap::from([("proxied".into(), "false".into())]),
+            ..Default::default()
+        })
+        .unwrap();
+    source
+        .datasets_registry
+        .add(naslos_api::datasets::ManagedDataset {
+            name: "media".into(),
+            host_path: "/var/mnt/tank/media".into(),
+            shared: false,
+            warning_acknowledged: false,
+            created_at: None,
+            attached_to: Vec::new(),
+        })
+        .unwrap();
+
+    let (status, exported, raw) = send_state(
+        Arc::new(source),
+        with_peer(
+            get(
+                "/api/system/config/export",
+                true,
+                Some("admin"),
+                Some("naslos_admins"),
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert_eq!(exported["kind"], "naslos-config-export");
+
+    let mut target = AppState::for_test(SECRET);
+    target.ddns = Some(Arc::new(test_ddns_manager(&target)));
+    let target = Arc::new(target);
+    let body = serde_json::to_string(&exported).unwrap();
+    let (status, report, raw) = send_state(
+        target.clone(),
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import?apply=true&confirm=apply",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert_eq!(report["totals"]["failed"], 0);
+
+    let (status, reexported, raw) = send_state(
+        target,
+        with_peer(
+            get(
+                "/api/system/config/export",
+                true,
+                Some("admin"),
+                Some("naslos_admins"),
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert_eq!(reexported["shares"][0]["name"], "media");
+    assert_eq!(reexported["shares"][0]["path"], "/var/mnt/tank/media");
+    assert_eq!(reexported["storageSchedules"][0]["target"], "tank/media");
+    assert_eq!(reexported["datasetRegistry"][0]["name"], "media");
+    assert_eq!(reexported["domains"][0]["baseDomain"], "example.test");
+    assert!(reexported["domains"][0].get("credentialsSecret").is_none());
+    assert_eq!(reexported["ddnsEntries"][0]["provider"], "cloudflare");
+}
+
+#[tokio::test]
+async fn config_import_refuses_newer_schemas_unknown_fields_and_credentials() {
+    let target = state();
+
+    let mut newer = import_document();
+    newer["schemaVersion"] = serde_json::json!(2);
+    let body = serde_json::to_string(&newer).unwrap();
+    let (status, response, _r) = send_state(
+        target.clone(),
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(response["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("newer"));
+
+    let mut unknown = import_document();
+    unknown["unexpected"] = serde_json::json!(true);
+    let body = serde_json::to_string(&unknown).unwrap();
+    let (status, _response, _r) = send_state(
+        target.clone(),
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let mut credential = import_document();
+    credential["apps"] = serde_json::json!([{
+        "name": "demo",
+        "source": "official",
+        "channel": "stable",
+        "chartVersion": "1.0.0",
+        "baseDomain": "",
+        "exposure": {
+            "subdomain": "",
+            "tls": false,
+            "auth": false,
+            "localOnly": false,
+            "protectedPaths": [],
+            "internet": true,
+            "service": "",
+            "port": 0,
+            "scheme": ""
+        },
+        "datasets": [],
+        "privileged": false,
+        "env": [],
+        "values": {"adminPassword": "must-not-pass"},
+        "redactedKeys": [],
+        "valuesOmitted": false
+    }]);
+    let body = serde_json::to_string(&credential).unwrap();
+    let (status, response, raw) = send_state(
+        target,
+        with_peer(
+            json_request(
+                "POST",
+                "/api/system/config/import",
+                &body,
+                true,
+                "admin",
+                "naslos_admins",
+            ),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(response["details"].to_string().contains("adminPassword"));
+    assert!(!raw.contains("must-not-pass"), "{raw}");
+}

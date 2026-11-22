@@ -31,11 +31,11 @@ fn is_dns_label(s: &str) -> bool {
 }
 
 /// A DNS name / subdomain.
-fn is_dns_subdomain(s: &str) -> bool {
+pub(crate) fn is_dns_subdomain(s: &str) -> bool {
     !s.is_empty() && s.len() <= 253 && s.split('.').all(is_dns_label)
 }
 
-fn validate_record_label(record: &str) -> Result<(), String> {
+pub(crate) fn validate_record_label(record: &str) -> Result<(), String> {
     if record.is_empty() || record == "@" {
         return Ok(());
     }
