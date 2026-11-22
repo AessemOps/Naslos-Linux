@@ -9,6 +9,8 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::path::Path;
 
+use super::backup_corrupt_store;
+
 /// The placeholder Samba uses for "no LAN Manager hash".
 const NO_LM_HASH: &str = "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
 
@@ -57,6 +59,8 @@ pub struct SambaUserStore {
     /// treated as loaded). A missing or corrupt file must not be rendered and
     /// pushed as "no accounts" over a working node mirror.
     loaded: bool,
+    /// Why the store failed to load, with recovery guidance.
+    load_error: Option<String>,
 }
 
 impl SambaUserStore {
@@ -65,6 +69,7 @@ impl SambaUserStore {
             path: path.to_string(),
             users: HashMap::new(),
             loaded: false,
+            load_error: None,
         };
         s.load();
         s
@@ -77,15 +82,42 @@ impl SambaUserStore {
     }
 
     fn load(&mut self) {
+        self.loaded = false;
+        self.load_error = None;
         if self.path.is_empty() {
             self.loaded = true;
             return;
         }
-        let Ok(data) = std::fs::read(&self.path) else {
-            return;
+        let data = match std::fs::read(&self.path) {
+            Ok(data) => data,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.load_error = Some(format!(
+                    "SMB account store {} does not exist; restore it before changing accounts",
+                    self.path
+                ));
+                return;
+            }
+            Err(e) => {
+                self.load_error = Some(format!(
+                    "SMB account store {} could not be read: {e}; refusing to overwrite it",
+                    self.path
+                ));
+                return;
+            }
         };
-        let Ok(list) = serde_json::from_slice::<Vec<SambaUser>>(&data) else {
-            return;
+        let list = match serde_json::from_slice::<Vec<SambaUser>>(&data) {
+            Ok(list) => list,
+            Err(e) => {
+                let backup = match backup_corrupt_store(&self.path, &data) {
+                    Ok(path) => format!(" (backup saved to {})", path.display()),
+                    Err(backup_err) => format!(" ({backup_err})"),
+                };
+                self.load_error = Some(format!(
+                    "SMB account store {} is corrupt: {e}{backup}; repair or remove it before changing accounts",
+                    self.path
+                ));
+                return;
+            }
         };
         self.loaded = true;
         let mut changed = false;
@@ -131,10 +163,18 @@ impl SambaUserStore {
     }
 
     fn save(&self) -> Result<(), String> {
+        self.write_snapshot(&self.users)
+    }
+
+    /// Persist a candidate map without touching in-memory state (R-049b).
+    fn write_snapshot(&self, users: &HashMap<String, SambaUser>) -> Result<(), String> {
+        self.require_loaded()?;
         if self.path.is_empty() {
             return Ok(());
         }
-        let mut data = serde_json::to_vec_pretty(&self.list())
+        let mut list: Vec<SambaUser> = users.values().cloned().collect();
+        list.sort_by(|a, b| a.uid.cmp(&b.uid));
+        let mut data = serde_json::to_vec_pretty(&list)
             .map_err(|e| format!("marshaling SMB accounts: {e}"))?;
         data.push(b'\n');
 
@@ -189,6 +229,18 @@ impl SambaUserStore {
         self.loaded
     }
 
+    /// Fail closed unless the persisted mirror was read successfully.
+    pub fn require_loaded(&self) -> Result<(), String> {
+        if self.loaded {
+            Ok(())
+        } else {
+            Err(self
+                .load_error
+                .clone()
+                .unwrap_or_else(|| format!("SMB account store {} is unavailable", self.path)))
+        }
+    }
+
     /// Record the account's NT hash and POSIX identity.
     pub fn upsert(&mut self, id: &PosixIdentity, nt_hash: &str) -> Result<(), String> {
         let uid = normalize_uid(&id.uid);
@@ -213,48 +265,62 @@ impl SambaUserStore {
             gecos = uid.clone();
         }
 
-        if let Some(existing) = self.users.get_mut(&uid) {
-            existing.nt_hash = nt_hash;
-            existing.password_set_at = Some(Utc::now());
+        let entry = if let Some(existing) = self.users.get(&uid) {
+            let mut updated = existing.clone();
+            updated.nt_hash = nt_hash;
+            updated.password_set_at = Some(Utc::now());
             if id.uid_num > 0 {
-                existing.uid_number = id.uid_num;
+                updated.uid_number = id.uid_num;
             }
             if id.gid_num > 0 {
-                existing.gid_number = id.gid_num;
+                updated.gid_number = id.gid_num;
             }
-            existing.gecos = gecos;
+            updated.gecos = gecos;
+            updated
         } else {
-            self.users.insert(
-                uid.clone(),
-                SambaUser {
-                    uid,
-                    uid_number: id.uid_num,
-                    gid_number: id.gid_num,
-                    gecos,
-                    nt_hash,
-                    password_set_at: Some(Utc::now()),
-                    enabled: true,
-                },
-            );
-        }
-        self.save()
+            SambaUser {
+                uid: uid.clone(),
+                uid_number: id.uid_num,
+                gid_number: id.gid_num,
+                gecos,
+                nt_hash,
+                password_set_at: Some(Utc::now()),
+                enabled: true,
+            }
+        };
+        let mut next = self.users.clone();
+        next.insert(uid, entry);
+        self.write_snapshot(&next)?;
+        self.users = next;
+        Ok(())
     }
 
     /// Mirror an LDAP enable/disable into the SMB account.
     pub fn set_enabled(&mut self, uid: &str, enabled: bool) -> Result<(), String> {
-        let Some(u) = self.users.get_mut(&normalize_uid(uid)) else {
+        let uid = normalize_uid(uid);
+        if !self.users.contains_key(&uid) {
             return Ok(());
-        };
-        u.enabled = enabled;
-        self.save()
+        }
+        let mut next = self.users.clone();
+        if let Some(u) = next.get_mut(&uid) {
+            u.enabled = enabled;
+        }
+        self.write_snapshot(&next)?;
+        self.users = next;
+        Ok(())
     }
 
     /// Drop an account.
     pub fn remove(&mut self, uid: &str) -> Result<(), String> {
-        if self.users.remove(&normalize_uid(uid)).is_none() {
+        let uid = normalize_uid(uid);
+        if !self.users.contains_key(&uid) {
             return Ok(());
         }
-        self.save()
+        let mut next = self.users.clone();
+        next.remove(&uid);
+        self.write_snapshot(&next)?;
+        self.users = next;
+        Ok(())
     }
 
     /// `/var/lib/extrausers/passwd` entries.
@@ -654,5 +720,67 @@ mod tests {
                 "8846F7EAEE8FB117AD06BDD830B7586C"
             )
             .is_err());
+    }
+
+    #[test]
+    fn corrupt_account_store_is_backed_up_and_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("smbusers.json");
+        std::fs::write(&store_path, "{not json").unwrap();
+
+        let mut store = SambaUserStore::new(store_path.to_str().unwrap());
+        assert!(!store.loaded());
+        let err = store.require_loaded().unwrap_err();
+        assert!(err.contains("corrupt"), "{err}");
+        assert!(err.contains(".corrupt-"), "{err}");
+
+        let backups: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "one corrupt backup expected");
+
+        let err = store
+            .upsert(
+                &PosixIdentity {
+                    uid: "elisa".into(),
+                    uid_num: 10003,
+                    gid_num: 10000,
+                    ..Default::default()
+                },
+                "8846F7EAEE8FB117AD06BDD830B7586C",
+            )
+            .unwrap_err();
+        assert!(err.contains("corrupt"), "{err}");
+        assert_eq!(std::fs::read_to_string(&store_path).unwrap(), "{not json");
+        assert_eq!(store.count(), 0);
+    }
+
+    #[test]
+    fn failed_save_leaves_account_memory_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("smbusers.json");
+        std::fs::write(&store_path, "[]").unwrap();
+        let blocker = dir.path().join("blocked");
+        std::fs::write(&blocker, "not a directory").unwrap();
+
+        let mut store = SambaUserStore::new(store_path.to_str().unwrap());
+        assert!(store.loaded());
+        store.path = blocker.join("smbusers.json").to_string_lossy().into_owned();
+
+        assert!(store
+            .upsert(
+                &PosixIdentity {
+                    uid: "elisa".into(),
+                    uid_num: 10003,
+                    gid_num: 10000,
+                    ..Default::default()
+                },
+                "8846F7EAEE8FB117AD06BDD830B7586C",
+            )
+            .is_err());
+        assert_eq!(store.count(), 0);
+        assert_eq!(std::fs::read_to_string(&store_path).unwrap(), "[]");
     }
 }
