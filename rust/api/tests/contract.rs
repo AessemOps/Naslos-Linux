@@ -297,6 +297,14 @@ async fn protected_routes_fail_closed_for_all_unauthenticated_shapes() {
         ("PUT", "/api/notifications/webhook"),
         ("DELETE", "/api/notifications/webhook"),
         ("POST", "/api/notifications/webhook/test"),
+        ("GET", "/api/notifications/smtp"),
+        ("PUT", "/api/notifications/smtp"),
+        ("DELETE", "/api/notifications/smtp"),
+        ("POST", "/api/notifications/smtp/test"),
+        ("GET", "/api/notifications/syslog"),
+        ("PUT", "/api/notifications/syslog"),
+        ("DELETE", "/api/notifications/syslog"),
+        ("POST", "/api/notifications/syslog/test"),
     ];
     for (method, path) in routes {
         for (secret, user) in [
@@ -706,6 +714,226 @@ async fn webhook_test_route_requires_enabled_and_guards_at_send_time() {
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert!(body["error"].as_str().unwrap().contains("non-public"));
     assert!(!raw.contains("send-secret"));
+}
+
+#[tokio::test]
+async fn smtp_channel_crud_never_returns_the_password() {
+    let st = Arc::new(AppState::for_test(SECRET));
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/smtp", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["host"], "");
+    assert_eq!(body["port"], 587);
+    assert_eq!(body["tls"], "starttls");
+    assert_eq!(body["hasPassword"], false);
+    assert!(body.get("password").is_none());
+
+    // Loopback, an unknown TLS mode and credentials over plaintext are all
+    // client errors and must leave the defaults intact.
+    for payload in [
+        r#"{"enabled":true,"host":"127.0.0.1","from":"naslos@example.com","to":["ops@example.com"]}"#,
+        r#"{"enabled":true,"host":"1.1.1.1","tls":"plain","from":"naslos@example.com","to":["ops@example.com"]}"#,
+        r#"{"enabled":true,"host":"1.1.1.1","tls":"none","username":"relay","password":"pass","from":"naslos@example.com","to":["ops@example.com"]}"#,
+        r#"{"enabled":true,"host":"1.1.1.1","from":"not-a-mailbox","to":["ops@example.com"]}"#,
+    ] {
+        let (status, _b, _r) = send_state(
+            st.clone(),
+            admin_request("PUT", "/api/notifications/smtp", Some(payload)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{payload}");
+    }
+
+    let payload = r#"{"enabled":true,"host":"1.1.1.1","port":587,"tls":"starttls","username":"relay","password":"contract-smtp-secret","from":"naslos@example.com","to":["ops@example.com"],"enabledEvents":["disk_failure"],"minSeverity":"error"}"#;
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/notifications/smtp", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body, raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/smtp", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], true);
+    assert_eq!(body["host"], "1.1.1.1");
+    assert_eq!(body["username"], "relay");
+    assert_eq!(body["hasPassword"], true);
+    assert_eq!(body["from"], "naslos@example.com");
+    assert_eq!(body["to"][0], "ops@example.com");
+    assert_eq!(body["minSeverity"], "error");
+    assert!(body.get("password").is_none());
+    assert!(!raw.contains("contract-smtp-secret"));
+
+    // Omitting the password keeps the stored one.
+    let payload = r#"{"enabled":true,"host":"1.1.1.1","username":"relay","from":"naslos@example.com","to":["ops@example.com"],"enabledEvents":["disk_failure"],"minSeverity":"error"}"#;
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/notifications/smtp", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/smtp", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["hasPassword"], true);
+
+    // An explicit empty string clears it.
+    let payload = r#"{"enabled":true,"host":"1.1.1.1","username":"relay","password":"","from":"naslos@example.com","to":["ops@example.com"],"enabledEvents":["disk_failure"],"minSeverity":"error"}"#;
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/notifications/smtp", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/smtp", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["hasPassword"], false);
+
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("DELETE", "/api/notifications/smtp", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _raw) =
+        send_state(st, admin_request("GET", "/api/notifications/smtp", None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["hasPassword"], false);
+}
+
+#[tokio::test]
+async fn smtp_test_route_requires_enabled_and_guards_at_send_time() {
+    let (status, body, _r) =
+        send(admin_request("POST", "/api/notifications/smtp/test", None)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "smtp channel is disabled");
+
+    // A settings file that bypassed save-time validation must still be
+    // refused by the send path, without leaking the password or the host.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("smtp.json");
+    std::fs::write(
+        &path,
+        r#"{"enabled":true,"host":"127.0.0.1","port":587,"tls":"starttls","username":"relay","password":"send-secret","from":"naslos@example.com","to":["ops@example.com"],"enabledEvents":["disk_failure"],"minSeverity":"warning"}"#,
+    )
+    .unwrap();
+    let mut st = AppState::for_test(SECRET);
+    st.smtp = Arc::new(naslos_api::smtp::Manager::new(path.to_str().unwrap()));
+    let (status, body, raw) = send_state(
+        Arc::new(st),
+        admin_request("POST", "/api/notifications/smtp/test", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body["error"].as_str().unwrap().contains("non-routable"));
+    assert!(!raw.contains("send-secret"));
+    assert!(!raw.contains("127.0.0.1"));
+}
+
+#[tokio::test]
+async fn syslog_channel_crud_and_test_route() {
+    let st = Arc::new(AppState::for_test(SECRET));
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/syslog", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["protocol"], "udp");
+    assert_eq!(body["port"], 514);
+    assert_eq!(body["facility"], "local0");
+
+    for payload in [
+        r#"{"enabled":true,"protocol":"carrier-pigeon","host":"192.168.1.10"}"#,
+        r#"{"enabled":true,"protocol":"udp","host":"192.168.1.10","facility":"bogus"}"#,
+        r#"{"enabled":true,"protocol":"udp","host":"127.0.0.1"}"#,
+    ] {
+        let (status, _b, _r) = send_state(
+            st.clone(),
+            admin_request("PUT", "/api/notifications/syslog", Some(payload)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{payload}");
+    }
+
+    let payload = r#"{"enabled":true,"protocol":"tcp","host":"192.168.1.10","port":514,"facility":"local3","enabledEvents":["zfs_health"],"minSeverity":"warning"}"#;
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/notifications/syslog", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/syslog", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], true);
+    assert_eq!(body["protocol"], "tcp");
+    assert_eq!(body["host"], "192.168.1.10");
+    assert_eq!(body["facility"], "local3");
+    assert_eq!(body["enabledEvents"][0], "zfs_health");
+
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("DELETE", "/api/notifications/syslog", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/syslog", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+
+    let (status, body, _r) = send(admin_request(
+        "POST",
+        "/api/notifications/syslog/test",
+        None,
+    ))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "syslog channel is disabled");
+
+    // A bypassed settings file is refused at send time, without the host in
+    // the error.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("syslog.json");
+    std::fs::write(
+        &path,
+        r#"{"enabled":true,"protocol":"udp","host":"127.0.0.1","port":514,"facility":"local0","enabledEvents":["disk_failure"],"minSeverity":"warning"}"#,
+    )
+    .unwrap();
+    let mut st = AppState::for_test(SECRET);
+    st.syslog = Arc::new(naslos_api::syslog::Manager::new(path.to_str().unwrap()));
+    let (status, body, raw) = send_state(
+        Arc::new(st),
+        admin_request("POST", "/api/notifications/syslog/test", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body["error"].as_str().unwrap().contains("non-routable"));
+    assert!(!raw.contains("127.0.0.1"));
 }
 
 fn admin_json(method: &str, uri: &str, body: &str) -> Request<Body> {

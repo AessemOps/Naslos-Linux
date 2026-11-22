@@ -370,23 +370,27 @@ async fn drain_bounded(mut resp: reqwest::Response) {
 }
 
 /// Per-channel delivery results, kept separate so one channel's failure is
-/// observable without suppressing the other.
+/// observable without suppressing the others.
 #[derive(Debug)]
 pub struct DeliveryOutcome {
     pub ntfy: Result<(), String>,
     pub webhook: Result<(), String>,
+    pub smtp: Result<(), String>,
+    pub syslog: Result<(), String>,
 }
 
-/// Deliver one event to both alert channels. Each channel applies its own
-/// routing and severity settings; a failure in one never stops the other.
+/// Deliver one event to every alert channel. Each channel applies its own
+/// routing and severity settings; a failure in one never stops the others.
 pub async fn deliver(
     ntfy: &crate::notifications::Manager,
     webhook: &Manager,
+    smtp: &crate::smtp::Manager,
+    syslog: &crate::syslog::Manager,
     event: &str,
     notif: &Notification,
 ) -> DeliveryOutcome {
-    // Run both sinks concurrently: a slow ntfy endpoint must not delay the
-    // webhook, and vice versa.
+    // Run every sink concurrently: a slow or unreachable endpoint must not
+    // delay another channel.
     let ntfy_fut = async {
         if ntfy.event_enabled(event) {
             ntfy.send(notif).await
@@ -394,10 +398,17 @@ pub async fn deliver(
             Ok(())
         }
     };
-    let (ntfy_result, webhook_result) = tokio::join!(ntfy_fut, webhook.send(event, notif));
+    let (ntfy_result, webhook_result, smtp_result, syslog_result) = tokio::join!(
+        ntfy_fut,
+        webhook.send(event, notif),
+        smtp.send(event, notif),
+        syslog.send(event, notif),
+    );
     DeliveryOutcome {
         ntfy: ntfy_result,
         webhook: webhook_result,
+        smtp: smtp_result,
+        syslog: syslog_result,
     }
 }
 
@@ -406,15 +417,23 @@ pub async fn deliver(
 pub async fn deliver_logged(
     ntfy: &crate::notifications::Manager,
     webhook: &Manager,
+    smtp: &crate::smtp::Manager,
+    syslog: &crate::syslog::Manager,
     event: &str,
     notif: &Notification,
 ) {
-    let outcome = deliver(ntfy, webhook, event, notif).await;
+    let outcome = deliver(ntfy, webhook, smtp, syslog, event, notif).await;
     if let Err(e) = outcome.ntfy {
         tracing::warn!("ntfy notification failed: {e}");
     }
     if let Err(e) = outcome.webhook {
         tracing::warn!("webhook notification failed: {e}");
+    }
+    if let Err(e) = outcome.smtp {
+        tracing::warn!("SMTP notification failed: {e}");
+    }
+    if let Err(e) = outcome.syslog {
+        tracing::warn!("syslog notification failed: {e}");
     }
 }
 
@@ -615,9 +634,21 @@ mod tests {
         };
         let (_dir, webhook) = temp_manager(Some(&blocked));
         let ntfy = crate::notifications::Manager::new("");
+        let smtp = crate::smtp::Manager::new("");
+        let syslog = crate::syslog::Manager::new("");
 
-        let outcome = deliver(&ntfy, &webhook, EVENT_DISK_FAILURE, &notif()).await;
+        let outcome = deliver(
+            &ntfy,
+            &webhook,
+            &smtp,
+            &syslog,
+            EVENT_DISK_FAILURE,
+            &notif(),
+        )
+        .await;
         assert!(outcome.ntfy.is_ok());
+        assert!(outcome.smtp.is_ok());
+        assert!(outcome.syslog.is_ok());
         let error = outcome.webhook.unwrap_err();
         assert!(error.contains("non-public"));
         assert!(!error.contains("do-not-leak-this"));

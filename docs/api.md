@@ -302,6 +302,10 @@ and [nfsv3.md](nfsv3.md) for NFSv3 (not served).
 | POST | `/api/notifications/test` | Send a test notification (target must resolve to a public address; the host is resolved once and pinned at send time) |
 | GET/PUT/DELETE | `/api/notifications/webhook` | Generic webhook channel settings / update / reset (`400` for an invalid or non-public URL) |
 | POST | `/api/notifications/webhook/test` | Send a test webhook (`400` disabled, `502` delivery failure; the response never carries the token) |
+| GET/PUT/DELETE | `/api/notifications/smtp` | SMTP channel settings / update / reset (`400` for a bad TLS mode, mailbox, credential pair or non-routable target). The response exposes `hasPassword`, never the password |
+| POST | `/api/notifications/smtp/test` | Send a test email (`400` disabled, `502` delivery failure; errors carry no host or credentials) |
+| GET/PUT/DELETE | `/api/notifications/syslog` | Syslog channel settings / update / reset (`400` for a bad protocol, facility or non-routable target) |
+| POST | `/api/notifications/syslog/test` | Send a test RFC 5424 message (`400` disabled, `502` delivery failure) |
 | GET | `/api/metrics` | Full `SystemMetrics` object |
 | GET | `/api/dashboard` | Dashboard-formatted subset (home screen) |
 
@@ -662,6 +666,8 @@ rule, client configuration).
 | `DDNS_CONFIG` | `/var/lib/naslos/ddns.json` | Dynamic-DNS entry store |
 | `NETWORK_STATE` | `/var/lib/naslos/network.json` | In-flight host-network change record and its previous-config snapshot (`FR-NET`) |
 | `ALERT_WEBHOOK_CONFIG` | `/var/lib/naslos/webhook.json` | Generic webhook alert channel settings (`FR-ALT`, mode `0600`; may hold a bearer token) |
+| `ALERT_SMTP_CONFIG` | `/var/lib/naslos/smtp.json` | SMTP/email alert channel settings (`FR-ALT-07`, mode `0600`; may hold the write-only password) |
+| `ALERT_SYSLOG_CONFIG` | `/var/lib/naslos/syslog.json` | Syslog forwarding settings (`FR-ALT-09`; no credentials) |
 | `STORAGE_SCHEDULES` | `/var/lib/naslos/storage-schedules.json` | Snapshot and scrub schedules plus their last/next-run state (`FR-STO-10/11`) |
 | `DDNS_PROVIDERS_DIR` | — | Override directory for provider `*.yaml` files |
 | `DDNS_IP_SOURCE` / `DDNS_IPV6_SOURCE` | `https://api.ipify.org` / `https://api6.ipify.org` | Public-IP detection URLs |

@@ -286,7 +286,15 @@ async fn send(state: &AppState, event: &str, title: &str, message: &str, severit
         severity: severity.to_string(),
         tags: vec!["floppy_disk".to_string()],
     };
-    crate::webhook::deliver_logged(&state.notifications, &state.webhook, event, &notif).await;
+    crate::webhook::deliver_logged(
+        &state.notifications,
+        &state.webhook,
+        &state.smtp,
+        &state.syslog,
+        event,
+        &notif,
+    )
+    .await;
 }
 
 #[cfg(test)]
