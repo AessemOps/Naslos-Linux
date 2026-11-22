@@ -296,6 +296,14 @@ pub fn severity_meets_threshold(severity: &str, threshold: &str) -> bool {
     severity_rank(severity) >= severity_rank(threshold)
 }
 
+/// Whether a string is one of the four known severities.
+pub fn valid_severity(severity: &str) -> bool {
+    matches!(
+        severity,
+        SEVERITY_INFO | SEVERITY_WARNING | SEVERITY_ERROR | SEVERITY_CRITICAL
+    )
+}
+
 pub fn severity_to_priority(severity: &str) -> &'static str {
     match severity {
         SEVERITY_INFO => "2",

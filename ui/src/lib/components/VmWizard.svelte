@@ -7,6 +7,8 @@
   export let vm: any | null; // null = create, object = edit
   export let pools: string[] = [];
   export let images: any[] = []; // library entries of the selected pool
+  // The supervisor image ships the OVMF Secure Boot pair (capabilities).
+  export let secureBootAvailable = false;
 
   export let close: () => void = () => {};
   export let submit: (payload: any, edited: boolean) => Promise<string | null>;
@@ -18,6 +20,7 @@
   $: if (open) {
     error = '';
     form = vm ? structuredClone(vm) : blank();
+    form.secureBoot = !!form.secureBoot;
   }
 
   function blank() {
@@ -28,6 +31,7 @@
       memMiB: 2048,
       autostart: false,
       firmware: 'uefi',
+      secureBoot: false,
       desired: 'stopped',
       disk: { sizeGB: 40, format: 'qcow2', bus: 'virtio', sourceImage: null },
       net: { mode: 'nat', forwards: [] },
@@ -65,6 +69,8 @@
         memMiB: Number(form.memMiB),
         autostart: !!form.autostart,
         firmware: form.firmware,
+        // The server rejects Secure Boot on BIOS; never send that shape.
+        secureBoot: form.firmware === 'uefi' && !!form.secureBoot,
         // Keep the persisted desired state in edit mode; a new VM starts
         // stopped (start it explicitly from the detail view).
         desired: isEdit ? (vm.desired ?? 'stopped') : 'stopped',
@@ -225,6 +231,21 @@
             <option value="uefi">UEFI (OVMF)</option>
             <option value="bios">BIOS (SeaBIOS)</option>
           </select>
+          <label class="flex items-center gap-2 text-sm text-gray-300 mt-2">
+            <input type="checkbox" class="w-4 h-4 rounded" bind:checked={form.secureBoot}
+              disabled={form.firmware !== 'uefi' || !secureBootAvailable} />
+            Secure Boot (UEFI only)
+          </label>
+          <p class="text-xs text-gray-500 mt-1">
+            {#if form.firmware !== 'uefi'}
+              Secure Boot requires UEFI firmware.
+            {:else if !secureBootAvailable}
+              The supervisor image has no Secure Boot firmware; non-Secure-Boot UEFI is used.
+            {:else}
+              Boots the guest with the OVMF Secure Boot firmware and Microsoft-enrolled keys.
+              Signed boot loaders only (Windows, or a Linux shim).
+            {/if}
+          </p>
         </div>
         <div class="flex items-end">
           <label class="flex items-center gap-2 text-sm text-gray-300">

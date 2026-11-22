@@ -39,7 +39,7 @@ fn is_valid_dataset_component(part: &str) -> bool {
 }
 
 /// `^[0-9]+(\.[0-9]+)?[KMGTPE]?$`.
-fn matches_size(s: &str) -> bool {
+pub(crate) fn matches_size(s: &str) -> bool {
     let bytes = s.as_bytes();
     let mut i = 0;
     let digits = |b: u8| b.is_ascii_digit();
@@ -67,14 +67,14 @@ fn matches_size(s: &str) -> bool {
     i == bytes.len()
 }
 
-fn valid_compression(v: &str) -> bool {
+pub(crate) fn valid_compression(v: &str) -> bool {
     matches!(
         v,
         "on" | "off" | "lz4" | "zstd" | "zstd-fast" | "gzip" | "gzip-1" | "gzip-9" | "lzjb" | "zle"
     )
 }
 
-fn is_dataset_option_key(k: &str) -> bool {
+pub(crate) fn is_dataset_option_key(k: &str) -> bool {
     matches!(
         k,
         "compression" | "quota" | "recordsize" | "atime" | "copies" | "readonly"
@@ -129,6 +129,9 @@ pub fn validate_dataset_options(
     super::encryption::validate_create_options(options)?;
     for (key, raw) in options {
         let value = raw.trim();
+        if matches!(key.as_str(), "volblocksize" | "volsize" | "volmode") {
+            return Err(invalid!("{key} is a zvol property; create a zvol instead"));
+        }
         if !is_dataset_option_key(key) {
             return Err(invalid!("unsupported dataset option {:?}", key));
         }

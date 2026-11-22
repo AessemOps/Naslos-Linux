@@ -4,6 +4,10 @@ Shares expose ZFS datasets over SMB (and, with limitations, NFS).
 Share definitions live in the API; the file-serving workloads are separate
 containers that run on the node with `hostNetwork` and host mounts.
 
+Dataset/share ACLs — the POSIX preset model versus NFSv4 and Samba ACL mapping
+— are covered by the decision spike in [acl.md](acl.md). This document covers
+the share-level access lists and protocol configuration.
+
 ## Architecture
 
 ```

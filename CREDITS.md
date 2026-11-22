@@ -235,7 +235,7 @@ authoritative copyright file ships in the image at
 | --- | --- | --- |
 | qemu-system-x86 (QEMU) | GPL-2.0 | https://www.qemu.org/ |
 | qemu-utils (`qemu-img`) | GPL-2.0 | https://www.qemu.org/ |
-| ovmf (OVMF/edk2 firmware) | BSD-2-Clause-Patent | https://github.com/tianocore/edk2 |
+| ovmf (OVMF/edk2 firmware, including the Secure Boot code and pre-enrolled vars images) | BSD-2-Clause-Patent | https://github.com/tianocore/edk2 |
 | seabios | LGPL-3.0 | https://www.seabios.org/ |
 | genisoimage | GPL-3.0-or-later | https://www.debian.org/ |
 | ca-certificates | GPL-2.0-or-later AND MPL-2.0 | https://tracker.debian.org/pkg/ca-certificates |

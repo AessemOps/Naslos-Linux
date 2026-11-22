@@ -48,6 +48,28 @@ fn wrap(prefix: &str, err: ZfsError) -> ZfsError {
     }
 }
 
+/// The `zfs list` argv for a dataset's snapshots. `recursive` includes child
+/// datasets; replication passes `false` so a child GUID cannot be mistaken for
+/// the root's. The caller validates `dataset`.
+pub fn snapshot_list_argv(dataset: &str, recursive: bool) -> Vec<String> {
+    let mut argv: Vec<String> = vec![
+        "list".into(),
+        "-H".into(),
+        "-p".into(),
+        "-t".into(),
+        "snapshot".into(),
+        "-o".into(),
+        "name,guid,creation".into(),
+        "-s".into(),
+        "creation".into(),
+    ];
+    if recursive {
+        argv.push("-r".into());
+    }
+    argv.push(dataset.to_string());
+    argv
+}
+
 /// Build the argument list for `zfs send`; the single place deciding what a
 /// backup contains.
 pub fn send_command_line(opts: &SendStreamOptions) -> ZfsResult<Vec<String>> {
@@ -57,6 +79,12 @@ pub fn send_command_line(opts: &SendStreamOptions) -> ZfsResult<Vec<String>> {
     let mut argv = vec!["send".to_string()];
     if opts.raw {
         argv.push("-w".into());
+    }
+    if opts.recursive {
+        // Lowercase `-r`: replicate descendants without carrying properties
+        // such as the source's mountpoint, which would shadow the live dataset
+        // on the same node.
+        argv.push("-r".into());
     }
     if !opts.from.is_empty() {
         validate_snapshot_name(&opts.from).map_err(|e| wrap("from: ", e))?;
@@ -114,28 +142,17 @@ impl ZfsClient {
         }
     }
 
-    /// A dataset's snapshots with GUIDs, in creation order.
-    pub async fn snapshots_with_guid(&self, dataset: &str) -> ZfsResult<Vec<SnapshotInfo>> {
+    /// A dataset's snapshots with GUIDs, in creation order. `recursive` also
+    /// lists child-dataset snapshots; replication base selection asks for the
+    /// shallow list so a child snapshot GUID cannot be mistaken for the root's.
+    pub async fn snapshots_with_guid(
+        &self,
+        dataset: &str,
+        recursive: bool,
+    ) -> ZfsResult<Vec<SnapshotInfo>> {
         validate_dataset_path(dataset)?;
-        let out = match self
-            .host_exec(
-                ZFS_BIN,
-                &[
-                    "list".to_string(),
-                    "-H".into(),
-                    "-p".into(),
-                    "-t".into(),
-                    "snapshot".into(),
-                    "-o".into(),
-                    "name,guid,creation".into(),
-                    "-s".into(),
-                    "creation".into(),
-                    "-r".into(),
-                    dataset.to_string(),
-                ],
-            )
-            .await
-        {
+        let argv = snapshot_list_argv(dataset, recursive);
+        let out = match self.host_exec(ZFS_BIN, &argv).await {
             Ok(out) => out,
             Err(e) => return Err(ZfsError::Other(format!("listing snapshots: {}", e.message))),
         };
@@ -149,11 +166,12 @@ impl ZfsClient {
             if fields.len() < 2 {
                 continue;
             }
-            let name = match fields[0].find('@') {
-                Some(at) => &fields[0][at + 1..],
-                None => fields[0],
+            let (dataset, name) = match fields[0].find('@') {
+                Some(at) => (&fields[0][..at], &fields[0][at + 1..]),
+                None => (fields[0], fields[0]),
             };
             snapshots.push(SnapshotInfo {
+                dataset: dataset.to_string(),
                 name: name.to_string(),
                 guid: fields[1].to_string(),
                 created: fields.get(2).map(|s| s.to_string()).unwrap_or_default(),

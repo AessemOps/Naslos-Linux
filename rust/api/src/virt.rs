@@ -260,6 +260,7 @@ mod tests {
             mem_mib: 2048,
             autostart: false,
             firmware: Firmware::Uefi,
+            secure_boot: false,
             desired: DesiredState::Stopped,
             disk: DiskSpec {
                 size_gb: 40,
@@ -289,6 +290,24 @@ mod tests {
         let path = dir.path().join("vms.json");
         let store = Store::new(&path.display().to_string());
         (dir, store)
+    }
+
+    #[test]
+    fn secure_boot_round_trips_and_legacy_records_default_off() {
+        let (dir, store) = store();
+        let mut secure = spec("secure");
+        secure.secure_boot = true;
+        store.create(secure).unwrap();
+        assert!(store.get("secure").unwrap().secure_boot);
+
+        // A record written before the field existed must load as off.
+        let mut legacy = serde_json::to_value(spec("legacy")).unwrap();
+        legacy.as_object_mut().unwrap().remove("secureBoot");
+        let path = dir.path().join("legacy.json");
+        std::fs::write(&path, serde_json::to_vec(&vec![legacy]).unwrap()).unwrap();
+        let legacy_store = Store::new(&path.display().to_string());
+        let loaded = legacy_store.get("legacy").expect("legacy record loads");
+        assert!(!loaded.secure_boot);
     }
 
     #[test]

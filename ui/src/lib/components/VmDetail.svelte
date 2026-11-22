@@ -228,7 +228,7 @@
       {/if}
 
       <div class="text-xs text-gray-500 space-y-1">
-        <p>Firmware: {vm.firmware === 'uefi' ? 'UEFI (OVMF)' : 'BIOS (SeaBIOS)'} · dataset: {vm.pool}/vms/{vm.name}</p>
+        <p>Firmware: {vm.firmware === 'uefi' ? 'UEFI (OVMF)' : 'BIOS (SeaBIOS)'}{#if vm.firmware === 'uefi'} · Secure Boot {vm.secureBoot ? 'on' : 'off'}{/if} · dataset: {vm.pool}/vms/{vm.name}</p>
         {#if vm.iso}<p>Install ISO: {vm.iso}</p>{/if}
         {#if vm.disk.sourceImage}<p>Seeded from: {vm.disk.sourceImage}</p>{/if}
         {#if vm.cloudInit}<p>cloud-init: user {vm.cloudInit.user}, {vm.cloudInit.sshKeys?.length ?? 0} SSH key(s)</p>{/if}

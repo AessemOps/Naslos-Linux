@@ -53,6 +53,24 @@ pub struct PoolConfig {
     pub options: HashMap<String, String>,
 }
 
+/// A ZFS zvol (block volume), as returned by `GET /api/v1/zvols`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Zvol {
+    pub name: String,
+    /// Human-readable `volsize`.
+    pub volsize: String,
+    /// Exact `volsize` bytes (`zfs list -p`); resize compares against this.
+    #[serde(rename = "volsizeBytes")]
+    pub volsize_bytes: i64,
+    /// Exact `volblocksize` bytes (`zfs list -p` prints numeric properties as bytes).
+    pub volblocksize: String,
+    #[serde(default)]
+    pub compression: String,
+    pub used: String,
+    pub avail: String,
+    pub refer: String,
+}
+
 /// A pool discovered by `zpool import` but not currently imported.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImportablePool {
@@ -118,6 +136,8 @@ pub struct PoolIOStats {
 /// A snapshot's identity: name plus GUID (the sender recognises its last send).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SnapshotInfo {
+    #[serde(default)]
+    pub dataset: String,
     pub name: String,
     pub guid: String,
     pub created: String,
@@ -131,4 +151,7 @@ pub struct SendStreamOptions {
     pub from: String,
     /// Send encrypted records as-is (`-w`); a backup wants this.
     pub raw: bool,
+    /// Include descendant datasets (`-r`, without properties). Local
+    /// replication uses it when the request asks for a recursive copy.
+    pub recursive: bool,
 }

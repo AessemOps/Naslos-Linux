@@ -100,6 +100,26 @@ pub struct Dataset {
     pub mounted: bool,
 }
 
+/// A ZFS zvol (mirrors the agent's `Zvol` JSON shape).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Zvol {
+    pub name: String,
+    #[serde(default)]
+    pub volsize: String,
+    #[serde(default, rename = "volsizeBytes")]
+    pub volsize_bytes: i64,
+    #[serde(default)]
+    pub volblocksize: String,
+    #[serde(default)]
+    pub compression: String,
+    #[serde(default)]
+    pub used: String,
+    #[serde(default)]
+    pub avail: String,
+    #[serde(default)]
+    pub refer: String,
+}
+
 /// An importable pool.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImportablePool {
@@ -565,6 +585,57 @@ impl Client {
             .await
     }
 
+    // ---- zvols ----------------------------------------------------------
+
+    pub async fn list_zvols(&self) -> Result<Vec<Zvol>, AgentError> {
+        self.do_json(self.request(reqwest::Method::GET, "/api/v1/zvols"))
+            .await
+    }
+
+    pub async fn list_pool_zvols(&self, pool: &str) -> Result<Vec<Zvol>, AgentError> {
+        self.do_json(self.request(
+            reqwest::Method::GET,
+            &format!("/api/v1/zvols?pool={}", query_escape(pool)),
+        ))
+        .await
+    }
+
+    pub async fn create_zvol(
+        &self,
+        name: &str,
+        size: &str,
+        options: &std::collections::HashMap<String, String>,
+    ) -> Result<(), AgentError> {
+        self.do_empty(self.request(reqwest::Method::POST, "/api/v1/zvols").json(
+            &serde_json::json!({
+                "name": name, "size": size, "options": options
+            }),
+        ))
+        .await
+    }
+
+    pub async fn resize_zvol(&self, name: &str, size: &str) -> Result<(), AgentError> {
+        self.do_empty(
+            self.request(
+                reqwest::Method::PUT,
+                &format!("/api/v1/zvols?name={}", query_escape(name)),
+            )
+            .json(&serde_json::json!({ "size": size })),
+        )
+        .await
+    }
+
+    /// `confirm` must repeat the full zvol name; the agent also enforces it.
+    pub async fn delete_zvol(&self, name: &str, confirm: &str) -> Result<(), AgentError> {
+        let path = format!(
+            "/api/v1/zvols?name={}&confirm={}",
+            query_escape(name),
+            query_escape(confirm)
+        );
+        self.do_empty(self.request(reqwest::Method::DELETE, &path))
+            .await
+    }
+
     // ---- Shares ---------------------------------------------------------
 
     pub async fn apply_shares_config(
@@ -753,6 +824,7 @@ mod tests {
             to: "snap".into(),
             from: String::new(),
             raw: false,
+            recursive: false,
         }
     }
 
@@ -838,8 +910,12 @@ mod tests {
 // ---- Streaming (buddy send/restore) -------------------------------------
 
 /// A snapshot's identity, from the agent's `/zfs/snapshots`.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotInfo {
+    /// Dataset that owns the snapshot. The recursive listing flattens paths,
+    /// so this is what lets a caller tell a root snapshot from a child one.
+    #[serde(default)]
+    pub dataset: String,
     pub name: String,
     #[serde(default)]
     pub guid: String,
@@ -854,6 +930,8 @@ pub struct SendStreamOptions {
     pub to: String,
     pub from: String,
     pub raw: bool,
+    /// Send descendant datasets too (`zfs send -r`, no property propagation).
+    pub recursive: bool,
 }
 
 fn send_path(opts: &SendStreamOptions) -> String {
@@ -866,6 +944,9 @@ fn send_path(opts: &SendStreamOptions) -> String {
         path.push_str(&format!("&from={}", urlencode(&opts.from, true)));
     }
     path.push_str(if opts.raw { "&raw=true" } else { "&raw=false" });
+    if opts.recursive {
+        path.push_str("&recursive=true");
+    }
     path
 }
 
@@ -908,12 +989,28 @@ impl Client {
         Ok(payload.get("bytes").and_then(|v| v.as_i64()).unwrap_or(0))
     }
 
-    /// A dataset's snapshots with GUIDs.
+    /// A dataset's snapshots with GUIDs, including child datasets.
     pub async fn snapshots_with_guid(
         &self,
         dataset: &str,
     ) -> Result<Vec<SnapshotInfo>, AgentError> {
         let path = format!("/api/v1/zfs/snapshots/{}", escape_dataset_path(dataset));
+        let list: Vec<SnapshotInfo> = self
+            .do_json(self.request(reqwest::Method::GET, &path))
+            .await?;
+        Ok(list)
+    }
+
+    /// A dataset's own snapshots with GUIDs, excluding child datasets. Local
+    /// replication compares exactly the source and destination roots.
+    pub async fn snapshots_with_guid_shallow(
+        &self,
+        dataset: &str,
+    ) -> Result<Vec<SnapshotInfo>, AgentError> {
+        let path = format!(
+            "/api/v1/zfs/snapshots/{}?recursive=false",
+            escape_dataset_path(dataset)
+        );
         let list: Vec<SnapshotInfo> = self
             .do_json(self.request(reqwest::Method::GET, &path))
             .await?;

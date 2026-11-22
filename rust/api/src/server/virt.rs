@@ -948,9 +948,6 @@ pub async fn run_vm_watcher(state: Arc<AppState>) {
                 } else {
                     virt::EVENT_VM_FAILED
                 };
-                if !state.notifications.event_enabled(event) {
-                    continue;
-                }
                 let severity = crate::notifications::SEVERITY_ERROR;
                 let notif = crate::notifications::Notification {
                     title: format!("VM {} failed", entry.name),
@@ -962,9 +959,8 @@ pub async fn run_vm_watcher(state: Arc<AppState>) {
                     severity: severity.to_string(),
                     tags: vec!["computer".to_string(), "x".to_string()],
                 };
-                if let Err(e) = state.notifications.send(&notif).await {
-                    tracing::warn!("vm failure notification: {e}");
-                }
+                crate::webhook::deliver_logged(&state.notifications, &state.webhook, event, &notif)
+                    .await;
             }
         }
     }

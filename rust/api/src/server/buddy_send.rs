@@ -547,6 +547,7 @@ async fn run_send_job(
         to: snapshot.clone(),
         from: base.clone(),
         raw,
+        recursive: false,
     };
     let expected = agent.estimate_send(&opts).await.unwrap_or_else(|e| {
         tracing::warn!("buddy send: could not estimate {dataset}@{snapshot}: {e}");
@@ -708,17 +709,9 @@ fn require_stream_matches_dataset(dataset: &str, used: i64, plain: i64) -> Resul
 }
 
 async fn notify(state: &AppState, job: &JobPublic) {
-    let mgr = &state.notifications;
-    let settings = mgr.get_settings();
-    if !settings.enabled {
-        return;
-    }
-    let enabled = |ev: &str| settings.enabled_events.iter().any(|e| e == ev);
-    let notif = match job.state {
-        JobState::Succeeded => {
-            if !enabled("backup_success") {
-                return;
-            }
+    let (event, notif) = match job.state {
+        JobState::Succeeded => (
+            crate::notifications::EVENT_BACKUP_SUCCESS,
             crate::notifications::Notification {
                 title: format!("Backup of {} to {} succeeded", job.dataset, job.receiver),
                 message: format!(
@@ -732,22 +725,20 @@ async fn notify(state: &AppState, job: &JobPublic) {
                 ),
                 severity: crate::notifications::SEVERITY_INFO.to_string(),
                 tags: vec!["white_check_mark".into(), "naslos".into(), "backup".into()],
-            }
-        }
-        JobState::Failed => {
-            if !enabled("backup_failure") {
-                return;
-            }
+            },
+        ),
+        JobState::Failed => (
+            crate::notifications::EVENT_BACKUP_FAILURE,
             crate::notifications::Notification {
                 title: format!("Backup of {} to {} failed", job.dataset, job.receiver),
                 message: format!("source {}: {}", job.source, job.error),
                 severity: crate::notifications::SEVERITY_ERROR.to_string(),
                 tags: vec!["x".into(), "naslos".into(), "backup".into()],
-            }
-        }
+            },
+        ),
         _ => return,
     };
-    let _ = mgr.send(&notif).await;
+    crate::webhook::deliver_logged(&state.notifications, &state.webhook, event, &notif).await;
 }
 
 /// `GET /api/buddy/jobs`

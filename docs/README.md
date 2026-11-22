@@ -17,17 +17,22 @@ read them in order for the full picture, or jump straight to a topic.
 | [architecture.md](architecture.md) | Design principles, system-context / deployment / component diagrams, data flows, trust map | Rebuilt |
 | [api.md](api.md) | HTTP API surface of `naslos-api` and `naslos-agent`, env vars, error format | New |
 | [bootstrap.md](bootstrap.md) | Image Factory schematic, ZFS extension, boot-time pool import, upgrades | New |
-| [storage-zfs.md](storage-zfs.md) | ZFS pools, datasets, snapshots, topology advisor, Talos gotchas | New |
+| [storage-zfs.md](storage-zfs.md) | ZFS pools, datasets, zvols, snapshots, topology advisor, Talos gotchas | New |
+| [iscsi.md](iscsi.md) | iSCSI target spike: Talos kernel constraint, userspace `tgt` vs a system extension, go/no-go gates, privilege/NetworkPolicy review (`[OPEN]`) | Spike |
 | [dataset-encryption.md](dataset-encryption.md) | ZFS native encryption: key custody for an unattended Talos boot, unlock/lock, encrypted send, Buddy threat-model comparison, migration (FR-ENC) | Design + safe validation slice |
+| [nvmeof.md](nvmeof.md) | NVMe-oF TCP spike: Talos `nvmet` evidence, SPDK/extension alternatives, security, performance, failure modes, go/no-go | Spike |
 | [identity-sso.md](identity-sso.md) | Single sign-on: Authelia, OpenLDAP, Samba hash sync, RBAC groups, 2FA | Rebuilt (replaces `authentication.md`) |
 | [external-directory.md](external-directory.md) | Optional external LDAP source (FR-EXT): phase-1 configuration, TLS, search bases, uid/gid mapping, AD/Kerberos roadmap | New |
+| [rbac-audit.md](rbac-audit.md) | Read-only/operator/admin role model, route classification, append-only hash-chained audit log (FR-RBAC/FR-AUD) | Design only (P1-11, `[OPEN]`) |
 | [shares.md](shares.md) | SMB / NFS / Time-Machine share model, generated configs | New |
+| [acl.md](acl.md) | Dataset/share ACL decision spike: POSIX presets vs NFSv4 + Samba mapping, migration fallout, recommendation | New |
 | [terminal.md](terminal.md) | Web terminal: exec scoping, RBAC, terminal namespace | New |
 | [buddy-backup.md](buddy-backup.md) | Buddy Backup: owner-to-owner encrypted backup, enrollment, verify/restore | New |
 | [app-catalog.md](app-catalog.md) | App catalog: git chart repositories, `naslos-app.yaml`, install lifecycle, exposure/routing, domains/certs, privileged NS | Rebuilt |
 | [dynamic-dns.md](dynamic-dns.md) | Dynamic DNS + declarative DNS providers: provider YAML, entries, credential Secrets, drivers, egress | New |
 | [monitoring.md](monitoring.md) | Live metrics API + dashboard; node/workload measurement without Prometheus | New |
-| [notifications.md](notifications.md) | ntfy alerting: topics, severities, defaults | New |
+| [reporting.md](reporting.md) | Bounded historical reporting design (24 h/7 d/30 d, embedded store, no Prometheus) | Design (`[OPEN]`) |
+| [notifications.md](notifications.md) | ntfy + webhook alert channels: routing, severities, defaults | New |
 | [deployment.md](deployment.md) | Prerequisites, Make targets, Helm values walkthrough | New |
 | [installer-contract.md](installer-contract.md) | Install pack format + stable interfaces for the desktop installer (FR-INSTALL) | New |
 | [datasets-isolation.md](datasets-isolation.md) | Design for isolating installed apps from the shared datasets root (D3/F1): current model, options, migration, residual risk | Current |

@@ -358,3 +358,59 @@ async fn rollback_route_matches_multi_segment_dataset_paths() {
         "expected a zfs rollback call, got {calls:?}"
     );
 }
+
+// ---- zvols ---------------------------------------------------------------
+
+#[tokio::test]
+async fn zvol_routes_are_503_in_degraded_mode() {
+    let (status, body) = send(&degraded(), get_auth("/api/v1/zvols")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        body["error"],
+        "ZFS is not available on this node (agent running in degraded mode)"
+    );
+}
+
+#[tokio::test]
+async fn zvol_create_rejects_bad_input_with_400() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[]));
+    let zfs = ZfsClient::new(runner, host.root.clone());
+    let server = server_with(Some(zfs), None, TOKEN);
+
+    for body in [
+        r#"{"name":"tank/vol","size":"lots"}"#,
+        r#"{"name":"tank/vol","size":"10G","options":{"recordsize":"128K"}}"#,
+        r#"{"name":"../vol","size":"10G"}"#,
+    ] {
+        let (status, _) = send(&server, post_json("/api/v1/zvols", body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn zvol_delete_requires_confirm_and_list_has_the_json_shape() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "tank/vol\t10737418240\t16384\t1048576\t9663676416\t10737418240\toff\n",
+    ]));
+    let zfs = ZfsClient::new(runner, host.root.clone());
+    let server = server_with(Some(zfs), None, TOKEN);
+
+    let (status, body) = send(&server, get_auth("/api/v1/zvols")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body[0]["name"], "tank/vol");
+    assert_eq!(body[0]["volsize"], "10G");
+    assert_eq!(body[0]["volsizeBytes"], 10_737_418_240i64);
+    assert_eq!(body[0]["volblocksize"], "16384");
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/zvols?name=tank/vol")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(&server, req).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("confirm"));
+}

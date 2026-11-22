@@ -5,6 +5,7 @@
 //! share fields verbatim, so `validate_share_fields` is what stops a field from
 //! injecting a new config directive (NAS-007).
 
+pub mod acl;
 pub mod render;
 pub mod smbusers;
 

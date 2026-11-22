@@ -20,6 +20,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 ## Features
 
 - **ZFS** — official `siderolabs/zfs` extension; pools auto-import at boot via `zfs-service`
+- **Block volumes (zvol)** — create, list, resize and delete ZFS zvols through a validated API/agent surface (growth-only resize, in-use refusals, no arbitrary properties); the management UI and iSCSI export are planned (`[OPEN]`, see [docs/iscsi.md](docs/iscsi.md))
 - **Accessible UI** — Svelte 5 + Tailwind design-token system with a persisted
   light/dark theme (no-FOUC bootstrap, `prefers-color-scheme` default), a
   grouped collapsible sidebar, SVG icon set (Lucide), shared modal/loading/
@@ -28,6 +29,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 - **Disk setup wizard** — topology advisor (mirror / RAIDZ1 / RAIDZ2), best-practice tuning (`ashift=12`, `compression=zstd`, `xattr=sa`, `acltype=posixacl`, `atime=off`)
 - **Pool health page** — live device tree, IO stats, scan state, and error summary from `zpool status` / `zpool iostat`
 - **Scheduled storage maintenance** — periodic snapshot tasks per dataset (hourly/daily/weekly, keep-N retention, optional recursive) and per-pool scrub schedules, with a manual "scrub now", last/next-run state and results on the pool page
+- **Local ZFS replication** — async dataset-to-dataset `zfs send`/`receive` on the same node, GUID-based incrementals, recursive sends, cancellable jobs and prefix-scoped destination retention that never touches user snapshots
 - **Disk health** — per-disk SMART (read-only, standby-safe) plus ZFS vdev state/error counters, with temperature/wear threshold alerts
 - **CPU detail** — model, per-core load/frequency, load averages and CPU temperature (when the hardware exposes it) on the dashboard
 - **Import existing pools** — discover and import pools already on disk via `zpool import`
@@ -58,14 +60,17 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   (see [docs/api.md](docs/api.md#system-config-export-fr-cfg-see-specmd-315))
 - **Virtual machines** — a first-party QEMU/KVM hypervisor on the node
   (`rust/vmd` supervisor): VM datasets under `<pool>/vms/<name>` with quota =
-  declared disk, UEFI/BIOS firmware, NAT with editable port forwards (LAN
-  attachment via a host bridge is planned), browser console (noVNC over an
+  declared disk, UEFI/BIOS firmware with optional Secure Boot, NAT with
+  editable port forwards (LAN attachment via a host bridge is planned),
+  browser console (noVNC over an
   owner-gated websocket bridge), cloud-init NoCloud seeds (keys only, no
   passwords), an ISO/cloud-image library with chunked browser upload and
   SSRF-guarded URL import, and ZFS snapshots/rollback per VM
   (see [docs/virtual-machines.md](docs/virtual-machines.md))
 - **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served); per-share SMB shadow copies from ZFS snapshots and optional `full_audit` logging, with NFSv4 served by Ganesha (NFSv3 is a documented no-go for now — see [docs/nfsv3.md](docs/nfsv3.md))
 - **ntfy notifications** — push alerts on backup and ZFS/agent health transitions
+- **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served)
+- **Alert channels** — ntfy push plus a generic JSON webhook, each with its own event routing and severity floor for backup, ZFS/agent health and VM events
 - **Network settings** — day-2 host link addressing, MTU and DNS changes from the UI, applied with a machine-side `--mode=try` guard, an API watchdog and a saved-config revert (see [docs/deployment.md](docs/deployment.md#day-2-network-changes-fr-net))
 - **Monitoring dashboard** — live metrics API (`/api/metrics`) + home dashboard; no bundled metrics stack
 - **Desktop installer** — a one-app installer (separate
@@ -115,13 +120,17 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [architecture](docs/architecture.md) | Design principles + system/deployment/component diagrams, data flows |
 | [api](docs/api.md) | HTTP API reference (naslos-api + naslos-agent) |
 | [bootstrap](docs/bootstrap.md) | Image Factory schematic & ZFS extension |
-| [storage-zfs](docs/storage-zfs.md) | ZFS pools, datasets, snapshots, storage classes |
+| [storage-zfs](docs/storage-zfs.md) | ZFS pools, datasets, zvols, snapshots, storage classes |
+| [iscsi](docs/iscsi.md) | iSCSI target spike: userspace target on Talos, go/no-go, security review |
 | [dataset-encryption](docs/dataset-encryption.md) | ZFS native encryption design: key custody, Talos boot/unlock, encrypted send, migration (FR-ENC) |
+| [nvmeof](docs/nvmeof.md) | NVMe-oF TCP design spike (go/no-go; not implemented) |
 | [identity-sso](docs/identity-sso.md) | Authelia + OpenLDAP + Samba single sign-on |
+| [rbac-audit](docs/rbac-audit.md) | Read-only/operator/admin roles + append-only audit log (design, `[OPEN]`) |
 | [shares](docs/shares.md) | SMB / NFS / Time-Machine shares |
 | [app-catalog](docs/app-catalog.md) | Catalog, schema-driven forms, Helm lifecycle |
 | [monitoring](docs/monitoring.md) | Live metrics API + dashboard (no Prometheus) |
-| [notifications](docs/notifications.md) | ntfy alerts |
+| [reporting](docs/reporting.md) | Bounded 24 h/7 d/30 d history design (`[OPEN]`) |
+| [notifications](docs/notifications.md) | ntfy + webhook alert channels |
 | [deployment](docs/deployment.md) | Prerequisites, Make targets, Helm values |
 | [installer-contract](docs/installer-contract.md) | Install pack + interfaces for the desktop installer (FR-INSTALL) |
 | [operations](docs/operations.md) | Backups, restore, troubleshooting |

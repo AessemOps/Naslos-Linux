@@ -85,6 +85,8 @@ pub struct AppState {
     pub ddns: Option<Arc<crate::ddns::Manager>>,
     /// The ntfy notification manager (S6a).
     pub notifications: Arc<crate::notifications::Manager>,
+    /// The generic webhook alert channel (FR-ALT).
+    pub webhook: Arc<crate::webhook::Manager>,
     /// The day-2 host network change manager (FR-NET).
     pub network: Arc<crate::network::Manager>,
     /// The operator-registered datasets an app may mount (D3/F1).
@@ -97,6 +99,8 @@ pub struct AppState {
     pub buddy_schedules: Arc<crate::server::buddy_schedules::ScheduleStore>,
     /// Scheduled storage maintenance: periodic snapshots and scrubs (FR-STO-10/11).
     pub storage_schedules: Arc<crate::server::storage_schedules::StorageScheduleStore>,
+    /// In-memory local replication jobs (FR-REP).
+    pub replication_jobs: Arc<crate::server::replication::ReplicationJobManager>,
     /// Release facts and the upgrader Job wiring (FR-UPD).
     pub system: crate::system::Config,
     /// The release update checker; `None` when updates are disabled.
@@ -240,6 +244,7 @@ impl AppState {
             apps_namespace,
             ddns,
             notifications: Arc::new(crate::notifications::Manager::from_env()),
+            webhook: Arc::new(crate::webhook::Manager::from_env()),
             network,
             datasets_registry,
             buddy: build_buddy_receiver(),
@@ -259,6 +264,7 @@ impl AppState {
                 }
                 store
             },
+            replication_jobs: Arc::new(crate::server::replication::ReplicationJobManager::new()),
             system: crate::system::Config::from_env(),
             updates: crate::system::Checker::from_env().map(Arc::new),
             mcp: crate::mcp::McpState::from_env(),
@@ -296,6 +302,7 @@ impl AppState {
             apps_namespace: "naslos-apps".to_string(),
             ddns: None,
             notifications: Arc::new(crate::notifications::Manager::new("")),
+            webhook: Arc::new(crate::webhook::Manager::new("")),
             network: crate::network::Manager::new("", Arc::new(crate::network::UnavailableNode)),
             datasets_registry: Arc::new(crate::datasets::Registry::new("", "")),
             buddy: None,
@@ -304,6 +311,7 @@ impl AppState {
             storage_schedules: Arc::new(
                 crate::server::storage_schedules::StorageScheduleStore::new(""),
             ),
+            replication_jobs: Arc::new(crate::server::replication::ReplicationJobManager::new()),
             system: crate::system::Config::default(),
             updates: None,
             mcp: crate::mcp::McpState::for_test(),

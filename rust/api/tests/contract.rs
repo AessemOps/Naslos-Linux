@@ -286,12 +286,17 @@ async fn protected_routes_fail_closed_for_all_unauthenticated_shapes() {
         ("GET", "/api/shares"),
         ("POST", "/api/shares/apply"),
         ("DELETE", "/api/volumes/zfs/tank?confirm=tank"),
+        ("GET", "/api/zvols"),
         ("POST", "/api/apps"),
         ("GET", "/api/virt/capabilities"),
         ("GET", "/api/virt/vms"),
         ("POST", "/api/virt/vms"),
         ("GET", "/api/virt/images?pool=tank"),
         ("POST", "/api/virt/images/import"),
+        ("GET", "/api/notifications/webhook"),
+        ("PUT", "/api/notifications/webhook"),
+        ("DELETE", "/api/notifications/webhook"),
+        ("POST", "/api/notifications/webhook/test"),
     ];
     for (method, path) in routes {
         for (secret, user) in [
@@ -465,6 +470,31 @@ async fn vm_create_validates_before_touching_anything() {
 }
 
 #[tokio::test]
+async fn vm_create_rejects_secure_boot_without_uefi() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/virt/vms")
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"name":"sb-bios","cpu":2,"memMiB":2048,"pool":"tank","firmware":"bios","secureBoot":true,"disk":{"sizeGB":40}}"#,
+        ))
+        .unwrap();
+    let (status, body, _r) = send(with_peer(req, [127, 0, 0, 1])).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("secureBoot requires UEFI"),
+        "the error should explain the firmware requirement: {}",
+        body["error"]
+    );
+}
+
+#[tokio::test]
 async fn image_upload_accepts_octet_stream_bodies() {
     // The chunked upload is the one non-JSON body the API accepts; the
     // content-type carve-out is scoped to /api/virt/images/upload only.
@@ -545,6 +575,137 @@ async fn the_dataset_registry_requires_the_agent_for_registration() {
     let (status, body, _r) = send(with_peer(req, [127, 0, 0, 1])).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(body["error"].as_str().unwrap_or_default().contains("agent"));
+}
+
+fn admin_request(method: &str, path: &str, body: Option<&str>) -> Request<Body> {
+    let mut b = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins");
+    if body.is_some() {
+        b = b.header("Content-Type", "application/json");
+    }
+    with_peer(
+        b.body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+            .unwrap(),
+        [127, 0, 0, 1],
+    )
+}
+
+#[tokio::test]
+async fn webhook_channel_crud_never_returns_the_token() {
+    // One state across the sequence: the channel is persisted in the manager.
+    let st = Arc::new(AppState::for_test(SECRET));
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/webhook", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["url"], "");
+    assert_eq!(body["hasAuthToken"], false);
+    assert!(body.get("authToken").is_none());
+
+    // Bad scheme and an SSRF-blocked address are both client errors.
+    for url in ["ftp://1.1.1.1/hook", "http://127.0.0.1/hook"] {
+        let payload = format!(
+            r#"{{"enabled":true,"url":"{url}","enabledEvents":["disk_failure"],"minSeverity":"warning"}}"#
+        );
+        let (status, _b, _r) = send_state(
+            st.clone(),
+            admin_request("PUT", "/api/notifications/webhook", Some(&payload)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{url}");
+    }
+
+    let payload = r#"{"enabled":true,"url":"https://1.1.1.1/hook","authToken":"contract-secret","enabledEvents":["disk_failure"],"minSeverity":"error"}"#;
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/notifications/webhook", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body, raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/webhook", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], true);
+    assert_eq!(body["url"], "https://1.1.1.1/hook");
+    assert_eq!(body["hasAuthToken"], true);
+    assert_eq!(body["minSeverity"], "error");
+    assert_eq!(body["enabledEvents"][0], "disk_failure");
+    assert!(body.get("authToken").is_none());
+    assert!(!raw.contains("contract-secret"));
+
+    // Omitting authToken keeps the stored one (the UI's default save shape).
+    let payload = r#"{"enabled":true,"url":"https://1.1.1.1/hook","enabledEvents":["disk_failure"],"minSeverity":"error"}"#;
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/notifications/webhook", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("GET", "/api/notifications/webhook", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["hasAuthToken"], true);
+
+    // DELETE removes the channel and its token.
+    let (status, _b, _r) = send_state(
+        st.clone(),
+        admin_request("DELETE", "/api/notifications/webhook", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _raw) =
+        send_state(st, admin_request("GET", "/api/notifications/webhook", None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["hasAuthToken"], false);
+}
+
+#[tokio::test]
+async fn webhook_test_route_requires_enabled_and_guards_at_send_time() {
+    // Disabled: an explicit client error rather than a false success.
+    let (status, body, _r) = send(admin_request(
+        "POST",
+        "/api/notifications/webhook/test",
+        None,
+    ))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "webhook channel is disabled");
+
+    // Simulate a settings file that bypassed save-time validation: the send
+    // path must still refuse the non-public target, and the token must not
+    // appear in the error.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("webhook.json");
+    std::fs::write(
+        &path,
+        r#"{"enabled":true,"url":"http://127.0.0.1/hook","authToken":"send-secret","enabledEvents":["disk_failure"],"minSeverity":"warning"}"#,
+    )
+    .unwrap();
+    let mut st = AppState::for_test(SECRET);
+    st.webhook = Arc::new(naslos_api::webhook::Manager::new(path.to_str().unwrap()));
+    let (status, body, raw) = send_state(
+        Arc::new(st),
+        admin_request("POST", "/api/notifications/webhook/test", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body["error"].as_str().unwrap().contains("non-public"));
+    assert!(!raw.contains("send-secret"));
 }
 
 fn admin_json(method: &str, uri: &str, body: &str) -> Request<Body> {

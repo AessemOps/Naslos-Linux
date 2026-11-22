@@ -29,6 +29,18 @@ its relative `/api/*` calls reach the API on the same origin.
   (see [identity-sso.md](identity-sso.md#header-trust)). The API refuses to start
   without the secret, so a request that bypasses Traefik cannot authenticate.
 
+### Authorization roles (planned)
+
+Today there are two levels: `naslos_users` (dashboard, metrics and
+`/api/auth/me`) and `naslos_admins` (the rest of the authenticated `/api/*`
+surface, via `require_admin`). Public `/api/health` and `/api/ready` and the
+Ed25519-authenticated `/api/buddy/v1/*` peer routes are outside that
+`require_admin` gate. The read-only/operator/admin role model
+([rbac-audit.md](rbac-audit.md), spec `FR-RBAC`) is **[OPEN]** and will map
+route families to a minimum role after the P0 route work lands. Until then the
+route tables below keep the current admin-or-baseline behavior; no route is
+delegated by this document.
+
 ## naslos-api routes
 
 ### Health & auth
@@ -174,6 +186,10 @@ are in-memory (a restart abandons a running job; the app record and
 | DELETE | `/api/datasets/registry/{name}` | Unregister a dataset; existing app claims are untouched |
 | POST | `/api/datasets` | Create: `{pool, name, options}` → `zfs create -p` (validated name + safe option subset, FR-STO-07). Encryption options (`encryption`, `keyformat`, `keylocation`) are validated, then refused with `400` until key custody and unlock/lock ship (FR-ENC; see [dataset-encryption.md](dataset-encryption.md)) |
 | DELETE | `/api/datasets?name=<pool>/<name>&recursive=true` | Destroy a dataset. Empty → plain destroy; non-empty needs `recursive=true`; a pool root dataset is refused; a dataset backing a share's path is refused with 409 (FR-STO-09) |
+| GET | `/api/zvols?pool=<pool>` | List ZFS zvols (`volsize`, `volsizeBytes`, `volblocksize`, compression, used/avail/refer); omit `pool` for every pool |
+| POST | `/api/zvols` | Create `{pool, name, size, options}` → `zfs create -V`. Validated name and size; only `volblocksize` (512–16M, power of two) and `compression` are accepted (FR-ZVOL-01/02) |
+| PUT | `/api/zvols?name=<pool>/<zvol>` | Resize `{size}` → `zfs set volsize`; growth only, refused while the zvol is in use (FR-ZVOL-03) |
+| DELETE | `/api/zvols?name=<pool>/<zvol>&confirm=<pool>/<zvol>` | Destroy a zvol. `confirm` must repeat the full name; a path that is not a `type=volume` and an in-use zvol are refused (FR-ZVOL-03) |
 
 The actual ZFS work is delegated to `naslos-agent` on each node:
 `chroot /host zpool …` / `chroot /host zfs …`. The API reaches the agent
@@ -192,6 +208,59 @@ Error contract for the ZFS endpoints:
 
 The actual ZFS work is delegated to `naslos-agent` on each node:
 `chroot /host zpool …` / `chroot /host zfs …`.
+
+### Local replication (FR-REP)
+
+Local replication copies one ZFS dataset to another dataset on the same node.
+It is asynchronous: the request validates and enqueues, then the transfer runs
+as a server-owned task with the agent's `zfs send` stream piped straight into
+`zfs receive` (never buffered in the API). Jobs are in memory; the received
+snapshots are the durable outcome.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| POST | `/api/replication/send` | `{source, destination, snapshot?, recursive?, pruneKeep?}` → `202 {jobId, status:"started"}` |
+| GET | `/api/replication/jobs` | `{jobs:[…]}` running plus the last ~20 finished |
+| GET | `/api/replication/jobs/{id}` | One job: state, progress, result, error (`404` unknown) |
+| DELETE | `/api/replication/jobs/{id}` | Cancel a running job (`200 {"status":"cancelling"}`; `409` if already finished) |
+
+Rules:
+
+- `source` and `destination` must be existing datasets (`<pool>/<name>`); an
+  exact match against the agent's dataset list is required, and the destination
+  is never created implicitly. Identical paths, or either path nested inside the
+  other, are refused with `400`.
+- Without `snapshot`, the job creates
+  `naslos-rep-<pair token>-<UTC timestamp>-<random>` on the source (recursive
+  when `recursive` is true). A supplied snapshot must exist on the source.
+- Incremental sends are chosen by the newest **snapshot GUID** shared with the
+  destination (a differently named copy still counts); without one the job
+  sends a full stream. `recursive` maps to `zfs send -r` (descendants, without propagating properties such as the source mountpoint).
+- A full stream replaces the destination dataset's contents (treat the
+  destination as a replica target); it is refused when the destination holds a
+  snapshot that does not carry this pair's `naslos-rep-…` prefix or a child
+  dataset. Incremental receives never use `-F`, so replication cannot delete a
+  user snapshot. Encrypted (`-w`) replication is not implemented yet.
+- A recursive job still verifies every descendant when the root target already
+  exists. Each missing child subtree is sent as its own full stream rather than
+  rolling the destination back to an older base; a child carrying a same-named
+  snapshot with a different GUID is refused.
+- `pruneKeep` (0 = keep all, max 1000) keeps the newest N destination snapshots
+  carrying the pair's prefix. Source snapshots created by replication are left
+  in place.
+- A second job writing the same destination (or a nested one) is `409` while it
+  runs.
+
+Job shape: `{id, source, destination, snapshot?, recursive, pruneKeep?, state:
+"running"|"succeeded"|"failed"|"cancelled", startedAt, finishedAt?, progress:
+{bytes, estimatedBytes}, incremental, estimatedBytes?, result?: {status:
+"replicated"|"up-to-date", baseSnapshot?, baseGUID?, toGUID?, bytes,
+estimatedBytes, prunedSnapshots, retentionError?, durationSeconds}, error?}`.
+
+The agent's streaming routes gained one optional argument each: `zfs send`
+accepts `recursive=true` (`-r`), and `/api/v1/zfs/snapshots/{dataset}` accepts
+`recursive=false` to list only the dataset's own snapshots (the default stays
+recursive for Buddy).
 
 ### Shares
 
@@ -231,6 +300,8 @@ and [nfsv3.md](nfsv3.md) for NFSv3 (not served).
 | GET | `/api/notifications` | ntfy settings |
 | PUT | `/api/notifications` | Update ntfy settings |
 | POST | `/api/notifications/test` | Send a test notification (target must resolve to a public address; the host is resolved once and pinned at send time) |
+| GET/PUT/DELETE | `/api/notifications/webhook` | Generic webhook channel settings / update / reset (`400` for an invalid or non-public URL) |
+| POST | `/api/notifications/webhook/test` | Send a test webhook (`400` disabled, `502` delivery failure; the response never carries the token) |
 | GET | `/api/metrics` | Full `SystemMetrics` object |
 | GET | `/api/dashboard` | Dashboard-formatted subset (home screen) |
 
@@ -442,10 +513,10 @@ shell, never an arbitrary command.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/virt/capabilities` | Node preflight: KVM, CPU model, nested, physical NICs. 503 when the supervisor is not deployed/reachable |
+| GET | `/api/virt/capabilities` | Node preflight: KVM, CPU model, nested, physical NICs, and whether the supervisor image ships the OVMF Secure Boot firmware pair (`secureBoot`). 503 when the supervisor is not deployed/reachable |
 | GET | `/api/virt/vms` | VM records merged with live state (`running`/`stopped`/`unknown`; live `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) |
-| POST | `/api/virt/vms` | Create: validates, creates `<pool>/vms/<name>` (quota = disk size) + the pool's `vms/isos` library via the agent, stores the record, pushes the desired config; rolls the record back if the push fails |
-| GET/PUT/DELETE | `/api/virt/vms/{name}` | Detail (merged view) / update (name immutable; the supervisor recreates the QEMU process when the rendered args change) / delete (409 while running; destroys the dataset, restoring the record if the destroy fails) |
+| POST | `/api/virt/vms` | Create: validates (`secureBoot` is UEFI-only and defaults off), creates `<pool>/vms/<name>` (quota = disk size) + the pool's `vms/isos` library via the agent, stores the record, pushes the desired config; rolls the record back if the push fails |
+| GET/PUT/DELETE | `/api/virt/vms/{name}` | Detail (merged view) / update (name immutable; the supervisor recreates the QEMU process when the rendered args change, including `secureBoot`) / delete (409 while running; destroys the dataset, restoring the record if the destroy fails) |
 | POST | `/api/virt/vms/{name}/start` `stop` `force-stop` `restart` | Lifecycle. `stop` = graceful ACPI shutdown (vmd escalates to SIGTERM/SIGKILL); `restart` = force-stop + start |
 | GET/POST | `/api/virt/vms/{name}/snapshots` | List / create a ZFS snapshot of the VM dataset (validated name) |
 | POST | `/api/virt/vms/{name}/snapshots/{snap}/restore` | `zfs rollback -r`; 409 while running (newer snapshots are deleted, stated in the response) |
@@ -490,11 +561,13 @@ rule, client configuration).
 | GET | `/api/v1/pools/import` | List pools available for import (`zpool import` dry-run) |
 | POST | `/api/v1/pools/import` | Import pool(s): `{"name":"tank"}` or `{}` for all |
 | GET/POST | `/api/v1/datasets/{pool}` | List / create dataset |
+| GET/POST/PUT/DELETE | `/api/v1/zvols` | List (`?pool=`), create `{name, size, options}`, resize `{size}` (`?name=`) or destroy (`?name=&confirm=`) a zvol. Property surface is `volblocksize` + `compression` only (FR-ZVOL) |
+| GET/POST | `/api/v1/snapshots/{dataset}` | List / create snapshot |
 | GET/POST/DELETE | `/api/v1/snapshots/{dataset}` | List (`?paths=true` returns full `dataset@snap` paths), create (`{name, recursive}`), destroy one (`?name=`) |
 | POST | `/api/v1/pools/{pool}/scrub` | Start `zpool scrub <pool>` (pool name validated; no other arguments) |
 | GET | `/api/v1/zfs/send/{dataset}?to=&from=&raw=&estimate=` | Stream a `zfs send` (or report its size with `estimate=true`) |
 | POST | `/api/v1/zfs/receive/{dataset}?force=` | Stream a restore into `zfs receive` |
-| GET | `/api/v1/zfs/snapshots/{dataset}` | Snapshots with their GUIDs (how an incremental base is found) |
+| GET | `/api/v1/zfs/snapshots/{dataset}` | Snapshots as `{dataset, name, guid, created}` (the owning dataset matters for recursive listings; the GUID is how an incremental base is found) |
 
 ## Environment variables (`naslos-api`)
 
@@ -541,6 +614,7 @@ rule, client configuration).
 | `DDNS_ENABLED` | `true` | Wire the DDNS reconcile loop |
 | `DDNS_CONFIG` | `/var/lib/naslos/ddns.json` | Dynamic-DNS entry store |
 | `NETWORK_STATE` | `/var/lib/naslos/network.json` | In-flight host-network change record and its previous-config snapshot (`FR-NET`) |
+| `ALERT_WEBHOOK_CONFIG` | `/var/lib/naslos/webhook.json` | Generic webhook alert channel settings (`FR-ALT`, mode `0600`; may hold a bearer token) |
 | `STORAGE_SCHEDULES` | `/var/lib/naslos/storage-schedules.json` | Snapshot and scrub schedules plus their last/next-run state (`FR-STO-10/11`) |
 | `DDNS_PROVIDERS_DIR` | — | Override directory for provider `*.yaml` files |
 | `DDNS_IP_SOURCE` / `DDNS_IPV6_SOURCE` | `https://api.ipify.org` / `https://api6.ipify.org` | Public-IP detection URLs |
@@ -583,7 +657,10 @@ The `naslos-agent` uses `NODE_NAME` (from `spec.nodeName`) and listens on `:9090
 The `naslos-vmd` supervisor listens on `:9091` (see
 [virtual-machines.md](virtual-machines.md) for its own variables:
 `VMD_TOKEN`, `VMD_TLS_CERT`/`VMD_TLS_KEY` or `VMD_ALLOW_PLAINTEXT=1`,
-`VMD_VNC_FIRST_DISPLAY`/`VMD_VNC_DISPLAYS`, `VMD_RUN_DIR`).
+`VMD_VNC_FIRST_DISPLAY`/`VMD_VNC_DISPLAYS`, `VMD_RUN_DIR`, and the optional
+firmware path overrides `VMD_UEFI_CODE`/`VMD_UEFI_VARS` (plain UEFI) and
+`VMD_UEFI_SECBOOT_CODE`/`VMD_UEFI_SECBOOT_VARS` (Secure Boot); each pair must
+be set together).
 
 Disk-health controls:
 

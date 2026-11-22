@@ -24,6 +24,7 @@ pub mod network;
 pub mod notifications;
 pub mod pods;
 pub mod providers;
+pub mod replication;
 pub mod shares;
 pub mod storage_schedules;
 pub mod system;
@@ -161,11 +162,24 @@ fn owner_routes() -> Router<Arc<AppState>> {
                 .post(storage_schedules::schedules_post)
                 .delete(storage_schedules::schedules_delete),
         )
+        .route("/api/replication/send", post(replication::send_post))
+        .route("/api/replication/jobs", get(replication::jobs_get))
+        .route(
+            "/api/replication/jobs/{id}",
+            get(replication::job_detail_get).delete(replication::job_detail_delete),
+        )
         .route(
             "/api/datasets",
             get(zfs::datasets_get)
                 .post(zfs::datasets_post)
                 .delete(zfs::datasets_delete),
+        )
+        .route(
+            "/api/zvols",
+            get(zfs::zvols_get)
+                .post(zfs::zvols_post)
+                .put(zfs::zvols_resize)
+                .delete(zfs::zvols_delete),
         )
         .route("/api/virt/capabilities", get(virt::capabilities_get))
         .route("/api/virt/vms", get(virt::vms_get).post(virt::vms_post))
@@ -233,6 +247,16 @@ fn owner_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/notifications/test",
             post(notifications::notification_test_post),
+        )
+        .route(
+            "/api/notifications/webhook",
+            get(notifications::webhook_get)
+                .put(notifications::webhook_put)
+                .delete(notifications::webhook_delete),
+        )
+        .route(
+            "/api/notifications/webhook/test",
+            post(notifications::webhook_test_post),
         )
         // Host network settings (FR-NET). Literal change routes before the
         // `{id}` wildcard, and all of them before the `/api/{*rest}` fallback.

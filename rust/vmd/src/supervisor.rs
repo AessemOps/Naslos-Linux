@@ -8,7 +8,7 @@
 //!   processes or VNC ports (`Recreate` strategy),
 //! - `state` is always derived here, never persisted.
 
-use crate::args::{detect_firmware, qemu_args, BuildContext};
+use crate::args::{detect_firmware, qemu_args, BuildContext, FirmwareImages};
 use crate::cloudinit;
 use crate::model::{validate_vm, vm_dir, DesiredConfig, Firmware, VmLive, VmSpec};
 use crate::qmp::Qmp;
@@ -55,7 +55,7 @@ pub struct Supervisor {
     vnc_first_display: u16,
     vnc_display_count: u16,
     run_dir: PathBuf,
-    firmware: (Option<PathBuf>, Option<PathBuf>),
+    firmware: FirmwareImages,
     state: Mutex<State>,
 }
 
@@ -447,14 +447,27 @@ impl Supervisor {
 
         // UEFI vars: a writable per-VM copy of the template, made on first
         // start only (the template itself is mounted read-only in the image).
-        let vars_path = std::path::Path::new(&dir).join("vars.fd");
+        // Secure Boot gets its own NVRAM file and key-enrolled template so a
+        // non-Secure-Boot var store can never be booted as Secure Boot.
+        let vars_name = if spec.secure_boot {
+            "vars.secboot.fd"
+        } else {
+            "vars.fd"
+        };
+        let vars_path = std::path::Path::new(&dir).join(vars_name);
         if spec.firmware == Firmware::Uefi && !vars_path.exists() {
-            let template = self
-                .firmware
-                .1
-                .clone()
-                .ok_or("UEFI firmware is not installed in the vmd image".to_string())?;
-            let bytes = tokio::fs::read(&template)
+            let template = if spec.secure_boot {
+                self.firmware
+                    .secure_boot_vars
+                    .as_ref()
+                    .ok_or("Secure Boot firmware is not installed in the vmd image".to_string())?
+            } else {
+                self.firmware
+                    .vars
+                    .as_ref()
+                    .ok_or("UEFI firmware is not installed in the vmd image".to_string())?
+            };
+            let bytes = tokio::fs::read(template)
                 .await
                 .map_err(|e| format!("reading the UEFI vars template: {e}"))?;
             tokio::fs::write(&vars_path, bytes)
@@ -499,8 +512,9 @@ impl Supervisor {
             vnc_display: vnc_display_num,
             vm_dir: PathBuf::from(&dir),
             qmp_socket: qmp_socket.clone(),
-            uefi_code: self.firmware.0.clone(),
+            uefi_code: self.firmware.code.clone(),
             uefi_vars: Some(vars_path),
+            secure_boot_code: self.firmware.secure_boot_code.clone(),
             cloud_init_seed: seed,
             iso_path,
         };
@@ -687,6 +701,7 @@ fn running_matches(running: &Running, desired: &VmSpec) -> bool {
     running.spec.cpu == desired.cpu
         && running.spec.mem_mib == desired.mem_mib
         && running.spec.firmware == desired.firmware
+        && running.spec.secure_boot == desired.secure_boot
         && running.spec.disk == desired.disk
         && running.spec.net == desired.net
         && running.spec.cloud_init == desired.cloud_init
@@ -809,6 +824,7 @@ mod tests {
             mem_mib: 128,
             autostart: false,
             firmware: Firmware::Bios,
+            secure_boot: false,
             desired: DesiredState::Stopped,
             disk: DiskSpec {
                 size_gb: 1,

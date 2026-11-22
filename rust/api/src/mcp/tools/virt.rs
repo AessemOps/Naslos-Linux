@@ -63,6 +63,10 @@ pub const TOOLS: &[ToolDef] = &[
                 ("autostart", b("Start with the host.")),
                 ("firmware", s_enum("The boot firmware.", &["uefi", "bios"])),
                 (
+                    "secureBoot",
+                    b("Boot with OVMF Secure Boot (requires UEFI firmware).")
+                ),
+                (
                     "desired",
                     s_enum("The desired power state.", &["running", "stopped"])
                 ),
@@ -101,6 +105,11 @@ pub const TOOLS: &[ToolDef] = &[
                 ("cpu", n("vCPUs.")),
                 ("memMiB", n("Memory in MiB.")),
                 ("autostart", b("Start with the host.")),
+                ("firmware", s_enum("The boot firmware.", &["uefi", "bios"])),
+                (
+                    "secureBoot",
+                    b("Boot with OVMF Secure Boot (requires UEFI firmware).")
+                ),
                 (
                     "desired",
                     s_enum("The desired power state.", &["running", "stopped"])

@@ -15,6 +15,7 @@
     autostart: boolean;
     desired: string;
     firmware: string;
+    secureBoot?: boolean;
     disk: { sizeGB: number; format: string; bus: string; sourceImage?: string | null };
     net: { mode: string; forwards: Array<{ host: number; dst: number }>; nic?: string | null };
     cloudInit?: { hostname: string; user: string; sshKeys: string[] } | null;
@@ -316,6 +317,7 @@
       <p class="text-xs text-gray-500 mt-2">
         Node: {capabilities.cpuModel || 'unknown CPU'} · KVM {capabilities.kvm ? 'yes' : 'no'}
         {capabilities.nested ? ' (nested)' : ''} ·
+        Secure Boot {capabilities.secureBoot ? 'available' : 'unavailable'} ·
         VNC range 5901+{#if capabilities.nics} · NICs {capabilities.nics.join(', ')}{/if}
       </p>
     {/if}
@@ -323,6 +325,7 @@
 </div>
 
 <VmWizard open={wizardOpen} vm={editing} pools={pools}
+  secureBootAvailable={!!capabilities?.secureBoot}
   close={() => (wizardOpen = false)} submit={createOrUpdate} />
 
 {#if selected}

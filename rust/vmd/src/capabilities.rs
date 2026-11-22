@@ -1,5 +1,6 @@
 //! Hardware preflight (FR-VMT): what the node can run.
 
+use crate::args::detect_firmware;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -9,6 +10,9 @@ pub struct Capabilities {
     pub cpu_model: String,
     pub nested: bool,
     pub nics: Vec<String>,
+    /// The supervisor image ships an OVMF Secure Boot code/vars pair.
+    #[serde(rename = "secureBoot")]
+    pub secure_boot: bool,
 }
 
 /// Detect the node's virtualization capabilities.
@@ -41,6 +45,7 @@ pub fn detect() -> Capabilities {
         cpu_model,
         nested,
         nics: physical_nics(),
+        secure_boot: detect_firmware().secure_boot_available(),
     }
 }
 
@@ -82,5 +87,7 @@ mod tests {
         );
         assert!(caps.nics.iter().all(|n| n != "lo"));
         assert!(caps.nics.iter().all(|n| !n.contains('/')));
+        // The field is always present and never inferred from a plain pair.
+        let _ = caps.secure_boot;
     }
 }
