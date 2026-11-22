@@ -166,11 +166,13 @@ are in-memory (a restart abandons a running job; the app record and
 | GET | `/api/volumes/zfs/import` | List pools available for import (on disk but not imported) |
 | POST | `/api/volumes/zfs/import` | Import: `{"name":"tank"}` for one pool, `{"all":true}` for every importable pool. A missing/malformed body is a 400, never an implicit import-all |
 | POST | `/api/volumes/zfs/{name}/devices` | Attach disks: `{disks, topology, force, wipeConfirmed}` → `zpool add`. Refuses a disk already in any pool (even with `force`), a disk holding a ZFS label, a non-`/dev` path, an unknown disk, and too few disks for the topology (FR-STO-08). A disk with another filesystem signature needs `wipeConfirmed`. |
+| POST | `/api/volumes/zfs/{name}/scrub` | Start a scrub now (`202`). `409` while `zpool status` reports a scrub or resilver in progress (FR-STO-11) |
+| GET/POST/DELETE | `/api/storage/schedules` | Periodic snapshot and scrub schedules (`{id, kind, target, cadence, runAt, keep, recursive, enabled}`; `?id=` deletes). Snapshot runs create `naslos-auto-<schedule>-<UTC>` and prune only their own names; scrub runs are daily/weekly and report the scan result (FR-STO-10/11) |
 | GET | `/api/datasets` | Every dataset with used/avail/refer/mountpoint |
 | GET | `/api/datasets/registry` | List operator-registered datasets apps may mount (`{name, hostPath, shared, warningAcknowledged, createdAt}`) |
 | POST | `/api/datasets/registry` | Register a dataset `{name, hostPath, shared, warningAcknowledged?}`. The path must be a mounted ZFS dataset below `/var/mnt`, must not overlap the Buddy store, and a `shared` dataset requires `warningAcknowledged:true` (400 otherwise) |
 | DELETE | `/api/datasets/registry/{name}` | Unregister a dataset; existing app claims are untouched |
-| POST | `/api/datasets` | Create: `{pool, name, options}` → `zfs create -p` (validated name + safe option subset, FR-STO-07) |
+| POST | `/api/datasets` | Create: `{pool, name, options}` → `zfs create -p` (validated name + safe option subset, FR-STO-07). Encryption options (`encryption`, `keyformat`, `keylocation`) are validated, then refused with `400` until key custody and unlock/lock ship (FR-ENC; see [dataset-encryption.md](dataset-encryption.md)) |
 | DELETE | `/api/datasets?name=<pool>/<name>&recursive=true` | Destroy a dataset. Empty → plain destroy; non-empty needs `recursive=true`; a pool root dataset is refused; a dataset backing a share's path is refused with 409 (FR-STO-09) |
 
 The actual ZFS work is delegated to `naslos-agent` on each node:
@@ -299,6 +301,96 @@ and the operator's DNS or `/etc/hosts` entry must move to it; see
 sha256 in this response; the Job receives it as the administrator-approved
 value. All routes are admin-only (owner router).
 
+### System config export (`FR-CFG`, see [spec.md §3.15](spec.md#315-system-config-exportimport-fr-cfg))
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/system/config/export` | Versioned, secret-free JSON download of the declarative records. Admin-only owner route; `Content-Disposition: attachment` and `Cache-Control: no-store` |
+
+```json
+{
+  "kind": "naslos-config-export",
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-21T22:00:00Z",
+  "naslosVersion": "0.5.2",
+  "baseDomain": "example.test",
+  "shares": [
+    { "name": "media", "path": "/var/mnt/tank/media", "protocol": "smb",
+      "description": "Media", "readOnly": false, "browseable": true,
+      "allowedHosts": [], "validUsers": [], "validGroups": [],
+      "timeMachine": false, "noRootSquash": false, "enabled": true }
+  ],
+  "storageSchedules": [
+    { "id": "snap-1", "kind": "snapshot", "target": "tank/media",
+      "cadence": "daily", "runAt": "02:30", "keep": 7,
+      "recursive": true, "enabled": true }
+  ],
+  "buddySchedules": [
+    { "id": "buddy-1", "dataset": "tank/media", "source": "tank/media",
+      "receivers": ["peer-a"], "cadence": "weekly", "runAt": "Sun 03:00",
+      "pruneKeep": 5, "enabled": true }
+  ],
+  "domains": [
+    { "baseDomain": "example.test", "dnsProvider": "cloudflare",
+      "providerConfig": { "proxied": "false" }, "acmeEmail": "ops@example.test",
+      "environment": "production", "primary": true, "sso": true,
+      "appRecordsDdnsEntry": null }
+  ],
+  "ddnsEntries": [
+    { "id": "ddns-1", "provider": "duckdns", "zone": "example.test",
+      "record": "home", "recordType": "A", "ttl": 0, "enabled": true,
+      "providerConfig": {} }
+  ],
+  "apps": [
+    { "name": "demo", "source": "naslos", "channel": "stable",
+      "chartVersion": "0.1.0", "baseDomain": "", "exposure": { "subdomain": "demo",
+        "tls": true, "auth": true, "localOnly": false, "protectedPaths": [],
+        "internet": true, "service": "", "port": 0, "scheme": "" },
+      "datasets": ["media"], "privileged": false,
+      "env": [{ "name": "API_TOKEN", "secret": true }],
+      "values": { "replicas": 2 }, "redactedKeys": ["adminPassword"],
+      "valuesOmitted": false }
+  ],
+  "datasetRegistry": [
+    { "name": "media", "hostPath": "/var/mnt/tank/media", "shared": false,
+      "warningAcknowledged": false }
+  ]
+}
+```
+
+All sections are arrays (never `null`), including when the subsystem is
+unavailable. Runtime state is not exported: `lastRun`/`lastResult`/`lastError`/
+`nextRun`, per-receiver results and server-owned timestamps are omitted.
+
+The export is **not** a Secret dump and the API never reads a Kubernetes Secret
+or the Buddy identity/KEK file. It excludes passwords, API/ntfy tokens, DDNS and
+domain credential values **and credential Secret names**, `credentialFields`,
+rendered cert-manager `solver` objects, TLS private keys, Buddy identities/peer
+keys/KEKs and all Secret data. App `values` have the catalog's secret-marked
+keys removed at any depth (their names are listed in `redactedKeys`); if the
+catalog cannot be read, `values` is omitted and `valuesOmitted` is `true`.
+Free-form value/provider keys that look like credentials (`password`, `passwd`,
+`passphrase`, `secret`, `token`, `credential`, `privateKey`, `tls.key`, `apiKey`,
+`accessKey`, `consumerKey`, `applicationKey`, `kek`) are removed even when a
+provider schema forgot to mark them. Domain and DDNS `providerConfig` is
+projected to the keys the provider schema declares non-secret; unknown keys,
+free-form value templates that can embed a credential (the generic DDNS
+`updateUrl`/`body`) and configs for an unknown provider are omitted.
+
+**Import/restore is `[OPEN]`.** An importer must reject a newer `schemaVersion`,
+accept only allow-listed fields (reject unknown or secret-like keys), revalidate
+IDs/paths/datasets/pools/providers against the live node, never reuse an
+exported ID to overwrite or delete a record, and never inject credentials. It
+must run as a dry-run plan followed by explicit confirmation.
+
+This document is distinct from the installer **recovery ZIP**
+([installer-contract.md §2](installer-contract.md#2-cluster-objects-the-installer-depends-on)):
+the recovery ZIP is bootstrap material (`talosconfig`, machine config, Talos
+secrets, `kubeconfig`, schematic/ISO facts) used to rebuild a lost control
+plane, while this export is application-config JSON with no PKI, kubeconfig or
+Secret material. Neither replaces the other; back up the recovery ZIP offline
+and store this export beside your data backups.
+
 ### Logs & terminal (WebSocket)
 
 | Method | Path | Description |
@@ -398,7 +490,8 @@ rule, client configuration).
 | GET | `/api/v1/pools/import` | List pools available for import (`zpool import` dry-run) |
 | POST | `/api/v1/pools/import` | Import pool(s): `{"name":"tank"}` or `{}` for all |
 | GET/POST | `/api/v1/datasets/{pool}` | List / create dataset |
-| GET/POST | `/api/v1/snapshots/{dataset}` | List / create snapshot |
+| GET/POST/DELETE | `/api/v1/snapshots/{dataset}` | List (`?paths=true` returns full `dataset@snap` paths), create (`{name, recursive}`), destroy one (`?name=`) |
+| POST | `/api/v1/pools/{pool}/scrub` | Start `zpool scrub <pool>` (pool name validated; no other arguments) |
 | GET | `/api/v1/zfs/send/{dataset}?to=&from=&raw=&estimate=` | Stream a `zfs send` (or report its size with `estimate=true`) |
 | POST | `/api/v1/zfs/receive/{dataset}?force=` | Stream a restore into `zfs receive` |
 | GET | `/api/v1/zfs/snapshots/{dataset}` | Snapshots with their GUIDs (how an incremental base is found) |
@@ -414,6 +507,21 @@ rule, client configuration).
 | `LDAP_BIND_PASS_FILE` | — | File holding the service-account password (mounted from `naslos-openldap`/`service-password`). **Required** when identity is enabled: there is no inline `LDAP_BIND_PASS` fallback (it was inherited by forked `helm`/`kubectl`/`talosctl`/`git`). `LDAP_CA_CERT` is required when `LDAP_USE_TLS=true` |
 | `LDAP_USE_TLS` | `true` | Use LDAPS |
 | `LDAP_CA_CERT` | — | Path to CA cert for LDAPS verification |
+| `EXTERNAL_DIRECTORY_ENABLED` | `false` | Validate an optional external LDAP source (FR-EXT phase 1). Disabled by default; it does not participate in authentication yet |
+| `EXTERNAL_DIRECTORY_PROVIDER` | `ldap` | Provider type; `ad` is rejected until phase 2 |
+| `EXTERNAL_DIRECTORY_HOST` | — | External LDAP hostname/IPv4 (no scheme/port/path) |
+| `EXTERNAL_DIRECTORY_PORT` | `636` (TLS) / `389` | External LDAP port |
+| `EXTERNAL_DIRECTORY_BASE_DN` | — | External base DN |
+| `EXTERNAL_DIRECTORY_BIND_DN` | — | External service bind DN |
+| `EXTERNAL_DIRECTORY_BIND_PASS_FILE` | — | File holding the external bind password; the chart mounts a Secret. There is no inline fallback |
+| `EXTERNAL_DIRECTORY_USER_SEARCH_BASE` | base DN | User search base (must be inside the base DN) |
+| `EXTERNAL_DIRECTORY_GROUP_SEARCH_BASE` | base DN | Group search base (must be inside the base DN) |
+| `EXTERNAL_DIRECTORY_UID_ATTRIBUTE` | `uid` | Login-name attribute |
+| `EXTERNAL_DIRECTORY_UID_NUMBER_ATTRIBUTE` | `uidNumber` | POSIX uid attribute |
+| `EXTERNAL_DIRECTORY_GID_NUMBER_ATTRIBUTE` | `gidNumber` | POSIX gid attribute |
+| `EXTERNAL_DIRECTORY_GROUP_MEMBER_ATTRIBUTE` | `member` | Group-member attribute |
+| `EXTERNAL_DIRECTORY_USE_TLS` | `true` | LDAPS for the external source; plaintext is refused off loopback |
+| `EXTERNAL_DIRECTORY_CA_CERT` | — | CA bundle path; required when external TLS is on |
 | `TRAEFIK_CIDR` | `10.244.0.0/16` | Comma-separated CIDRs trusted for auth headers (the cluster pod CIDR Traefik sources from); the `X-Naslos-Proxy-Secret` is the actual proof of the proxy hop |
 | `NASLOS_NAMESPACE` | — | Namespace injected by the Helm chart |
 | `KUBECONFIG` | — | Path to kubeconfig (default: in-cluster) |
@@ -433,6 +541,7 @@ rule, client configuration).
 | `DDNS_ENABLED` | `true` | Wire the DDNS reconcile loop |
 | `DDNS_CONFIG` | `/var/lib/naslos/ddns.json` | Dynamic-DNS entry store |
 | `NETWORK_STATE` | `/var/lib/naslos/network.json` | In-flight host-network change record and its previous-config snapshot (`FR-NET`) |
+| `STORAGE_SCHEDULES` | `/var/lib/naslos/storage-schedules.json` | Snapshot and scrub schedules plus their last/next-run state (`FR-STO-10/11`) |
 | `DDNS_PROVIDERS_DIR` | — | Override directory for provider `*.yaml` files |
 | `DDNS_IP_SOURCE` / `DDNS_IPV6_SOURCE` | `https://api.ipify.org` / `https://api6.ipify.org` | Public-IP detection URLs |
 | `DDNS_IP_SOURCES` / `DDNS_IPV6_SOURCES` | — | Comma-separated source lists (HTTP URLs or `dns:opendns`/`dns:google`) |
