@@ -107,6 +107,9 @@ pub struct AppState {
     pub updates: Option<Arc<crate::system::Checker>>,
     /// The MCP endpoint state (FR-MCP): the token store and failure backoff.
     pub mcp: crate::mcp::McpState,
+    /// Bounded historical reporting (FR-RPT). Disabled or unopenable stores
+    /// answer "history unavailable" and never affect live metrics.
+    pub reporting: Arc<crate::reporting::Reporter>,
 }
 
 /// Holds the current catalog snapshot; refresh replaces it atomically.
@@ -268,6 +271,7 @@ impl AppState {
             system: crate::system::Config::from_env(),
             updates: crate::system::Checker::from_env().map(Arc::new),
             mcp: crate::mcp::McpState::from_env(),
+            reporting: Arc::new(crate::reporting::Reporter::from_env()),
         })
     }
 
@@ -315,6 +319,7 @@ impl AppState {
             system: crate::system::Config::default(),
             updates: None,
             mcp: crate::mcp::McpState::for_test(),
+            reporting: Arc::new(crate::reporting::Reporter::disabled()),
         }
     }
 }

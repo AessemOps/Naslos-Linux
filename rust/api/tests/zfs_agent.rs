@@ -187,6 +187,7 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         system: naslos_api::system::Config::default(),
         updates: None,
         mcp: naslos_api::mcp::McpState::for_test(),
+        reporting: Arc::new(naslos_api::reporting::Reporter::disabled()),
     })
 }
 
@@ -365,6 +366,7 @@ async fn no_agent_configured_is_502() {
         system: naslos_api::system::Config::default(),
         updates: None,
         mcp: naslos_api::mcp::McpState::for_test(),
+        reporting: Arc::new(naslos_api::reporting::Reporter::disabled()),
     });
     let (status, _b) = call(state, "GET", "/api/volumes/zfs", None).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
@@ -940,6 +942,7 @@ async fn zvols_without_an_agent_are_502() {
         system: naslos_api::system::Config::default(),
         updates: None,
         mcp: naslos_api::mcp::McpState::for_test(),
+        reporting: Arc::new(naslos_api::reporting::Reporter::disabled()),
     });
     let (status, _b) = call(state, "GET", "/api/zvols", None).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);

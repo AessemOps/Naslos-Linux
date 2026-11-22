@@ -349,6 +349,21 @@ spec:
             - name: SHARES_CONFIG
               value: {{ .Values.api.sharesConfig.file | default "/var/lib/naslos/shares.json" }}
             {{- end }}
+            {{- if .Values.api.reporting.enabled }}
+            # Bounded historical reporting (FR-RPT): recorder cadence and the
+            # one-file store on its own PVC.
+            - name: REPORTING_ENABLED
+              value: "true"
+            - name: REPORTING_FILE
+              value: {{ .Values.api.reporting.file | default "/var/lib/naslos/reporting/history.bin" | quote }}
+            - name: REPORTING_MAX_BYTES
+              value: {{ .Values.api.reporting.maxBytes | default 67108864 | quote }}
+            - name: REPORTING_INTERVAL_SECONDS
+              value: {{ .Values.api.reporting.intervalSeconds | default 60 | quote }}
+            {{- else }}
+            - name: REPORTING_ENABLED
+              value: "false"
+            {{- end }}
             # ---- App install subsystem (docs/app-catalog.md) ----
             # Apps run in their own namespace; sources, records and domains are
             # persisted beside the other state files, and repositories are
@@ -628,6 +643,11 @@ spec:
             - name: shares-config
               mountPath: {{ .Values.api.sharesConfig.mountPath | default "/var/lib/naslos" }}
             {{- end }}
+            {{- if .Values.api.reporting.enabled }}
+            # Disposable history on its own volume; see docs/reporting.md.
+            - name: reporting
+              mountPath: {{ .Values.api.reporting.mountPath | default "/var/lib/naslos/reporting" }}
+            {{- end }}
             {{- if .Values.buddy.enabled }}
             # The Buddy Backup receive dataset. It is the only read-write host
             # path this pod gets, and it is a dataset of its own for two reasons:
@@ -741,6 +761,11 @@ spec:
           persistentVolumeClaim:
             claimName: naslos-shares-config
         {{- end }}
+        {{- if .Values.api.reporting.enabled }}
+        - name: reporting
+          persistentVolumeClaim:
+            claimName: naslos-reporting
+        {{- end }}
         {{- if .Values.api.datasetsHostPath }}
         - name: datasets
           hostPath:
@@ -776,6 +801,23 @@ spec:
       storage: {{ .Values.api.sharesConfig.size | default "64Mi" }}
   {{- if .Values.api.sharesConfig.storageClassName }}
   storageClassName: {{ .Values.api.sharesConfig.storageClassName }}
+  {{- end }}
+{{- end }}
+---
+{{- if .Values.api.reporting.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: naslos-reporting
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.api.reporting.size | default "256Mi" }}
+  {{- if .Values.api.reporting.storageClassName }}
+  storageClassName: {{ .Values.api.reporting.storageClassName }}
   {{- end }}
 {{- end }}
 ---

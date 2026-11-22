@@ -312,6 +312,51 @@ and [nfsv3.md](nfsv3.md) for NFSv3 (not served).
 Temperature is `null` when the node exposes no CPU sensor; the rest of the
 metrics are unaffected.
 
+### Historical reporting (`FR-RPT`, see [reporting.md](reporting.md))
+
+Admin-only, read-only routes over the bounded local history store. There is no
+write endpoint; the API recorder owns writes.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/reports` | Ranges, caps, store availability and the series registry (`key`, `kind`, `unit`, `id`) |
+| GET | `/api/reports/series?range=24h\|7d\|30d&metric=...` | Downsampled points for up to 8 series; `series` is accepted as an alias for `metric` |
+
+`range` is required and must be exactly `24h`, `7d` or `30d`; anything else is
+`400 {"error":"range must be one of 24h, 7d, 30d"}`. The resolution is implied
+by the range (60 / 300 / 3600 seconds). `metric` accepts a comma-separated
+list; unknown keys are returned in `ignored`, never queried as identifiers.
+Omitting `metric` returns the default dashboard set (CPU usage, memory usage,
+memory used, then the first available families).
+
+```json
+{
+  "range": "24h",
+  "resolution": 60,
+  "sample_interval_seconds": 60,
+  "from": "2026-11-21T00:00:00Z",
+  "to": "2026-11-21T23:59:00Z",
+  "available": true,
+  "error": null,
+  "series": [
+    {
+      "key": "cpu.usage_percent",
+      "kind": "cpu",
+      "unit": "percent",
+      "points": [[1732233600, 1.7, 12.4, 4.1, 3.2, 60]]
+    }
+  ],
+  "ignored": []
+}
+```
+
+Each point is `[bucket, min, max, avg, last, count]`; `bucket` is the epoch
+second at the start of the bucket. Units are `percent`, `bytes`,
+`bytes_per_s`, `celsius` and `load`. A disabled or unopenable store answers
+`200` with `available:false`, an `error` string and no series, so the UI can
+render an empty state instead of an error page. Points per series are capped
+at 1 440 / 2 016 / 720 for the 24 h / 7 d / 30 d views.
+
 ### Host network settings (`FR-NET`)
 
 | Method | Path | Description |

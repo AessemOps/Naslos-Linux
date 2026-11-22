@@ -36,6 +36,13 @@ async fn main() {
     let collector = state.clone();
     tokio::spawn(async move { run_metrics_collector(collector).await });
 
+    // Historical reporting recorder (FR-RPT). It reads the latest snapshot on
+    // its own cadence, so the 5-second collector never waits for disk I/O.
+    if state.reporting.is_enabled() {
+        let reporting_state = state.clone();
+        tokio::spawn(async move { run_reporting_recorder(reporting_state).await });
+    }
+
     // Daily release check (FR-UPD). The first check runs immediately so a
     // restarted API does not wait a full interval to offer an update.
     if state.updates.is_some() {
@@ -231,6 +238,41 @@ async fn run_metrics_collector(state: Arc<AppState>) {
     loop {
         ticker.tick().await;
         collect_once(&state, &talos).await;
+    }
+}
+
+/// Record the latest live snapshot at the reporting cadence (60 s by default).
+/// The collector is untouched: a slow or broken history store only means a
+/// missing point, never a delayed dashboard sample.
+async fn run_reporting_recorder(state: Arc<AppState>) {
+    let interval = std::env::var("REPORTING_INTERVAL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(std::time::Duration::from_secs(60));
+    let mut ticker = tokio::time::interval(interval);
+    ticker.tick().await;
+    tracing::info!(
+        "Historical reporting recorder started (interval {:?})",
+        interval
+    );
+    loop {
+        ticker.tick().await;
+        let metrics = state.metrics.get();
+        if metrics.updated_at.is_none() {
+            continue;
+        }
+        // Disk SMART values are not part of the live SystemMetrics snapshot;
+        // one bounded agent read per reporting tick is enough.
+        let disk = match &state.agent {
+            Some(agent) => agent.disk_health().await.ok(),
+            None => None,
+        };
+        let reporter = state.reporting.clone();
+        let at = chrono::Utc::now().timestamp();
+        let _ =
+            tokio::task::spawn_blocking(move || reporter.record(at, &metrics, disk.as_ref())).await;
     }
 }
 
