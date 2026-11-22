@@ -237,6 +237,7 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         shares: Mutex::new(SharesManager::new("", "/var/mnt")),
         samba_users: Mutex::new(SambaUserStore::new("")),
         identity: None,
+        external_directory: naslos_api::directory::Store::disabled(),
         charts: None,
         catalog: Arc::new(naslos_api::state::CatalogHolder::new()),
         app_manager: None,

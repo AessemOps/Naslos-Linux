@@ -1,0 +1,25 @@
+# Shared by the API and agent dataset-encryption planners (FR-ENC).
+# Format: semicolon-separated create options | expected
+#   expected is none, err, or plan:<algorithm>,<keyformat>
+|none
+compression=zstd|none
+encryption=off|none
+encryption=off;copies=3|none
+encryption=off;keyformat=raw|err
+keyformat=raw|err
+keylocation=prompt|err
+encryption=aes-256-gcm;keyformat=raw|plan:aes-256-gcm,raw
+encryption=on;keyformat=passphrase|plan:aes-256-gcm,passphrase
+encryption=aes-128-ccm;keyformat=passphrase|plan:aes-128-ccm,passphrase
+encryption=aes-192-ccm;keyformat=raw|plan:aes-192-ccm,raw
+encryption=aes-256-ccm;keyformat=raw|plan:aes-256-ccm,raw
+encryption=aes-128-gcm;keyformat=raw|plan:aes-128-gcm,raw
+encryption=aes-192-gcm;keyformat=raw|plan:aes-192-gcm,raw
+encryption=aes-256-gcm;keyformat=raw;quota=1G;compression=zstd|plan:aes-256-gcm,raw
+encryption=bogus;keyformat=raw|err
+encryption=AES-256-GCM;keyformat=raw|err
+encryption=aes-256-gcm|err
+encryption=aes-256-gcm;keyformat=hex|err
+encryption=aes-256-gcm;keyformat=raw;keylocation=file:///tmp/key|err
+encryption=aes-256-gcm;keyformat=passphrase;keylocation=prompt|err
+encryption=aes-256-gcm;keyformat=raw;copies=3|err

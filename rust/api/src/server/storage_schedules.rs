@@ -169,19 +169,6 @@ pub fn scrub_in_progress(scan: &str) -> bool {
     scan.contains("scrub in progress") || scan.contains("resilver in progress")
 }
 
-/// The `scan:` field from a raw `zpool status` body. Scrub polling uses the
-/// status body (not the full health endpoint, which also samples `zpool iostat`)
-/// so a slow or stuck scrub costs one cheap command per tick.
-pub fn scan_line(status: &str) -> String {
-    for line in status.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("scan:") {
-            return rest.trim().to_string();
-        }
-    }
-    String::new()
-}
-
 /// A finished scrub's outcome, from `zpool status`'s scan line. `None` while a
 /// scrub is still running, has never run, or the pool is only resilvering.
 pub fn scrub_finished(scan: &str) -> Option<Result<String, String>> {
@@ -283,12 +270,36 @@ impl StorageScheduleStore {
         self.save(&guard)
     }
 
+    /// Replace a schedule's editable fields while preserving the runtime state
+    /// (`lastRun`, `lastResult`, `lastError`) recorded by the scheduler. The
+    /// merge happens under the store lock so a result recorded while the
+    /// request was being validated is not overwritten.
+    pub fn update_config(&self, e: StorageSchedule) -> Result<StorageSchedule, String> {
+        let mut guard = self.entries.lock().unwrap();
+        let Some(existing) = guard.get_mut(&e.id) else {
+            return Err(format!("schedule {:?} not found", e.id));
+        };
+        existing.kind = e.kind;
+        existing.target = e.target;
+        existing.cadence = e.cadence;
+        existing.run_at = e.run_at;
+        existing.keep = e.keep;
+        existing.recursive = e.recursive;
+        existing.enabled = e.enabled;
+        existing.next_run = e.next_run;
+        let saved = existing.clone();
+        self.save(&guard)?;
+        Ok(saved)
+    }
+
     /// Advance the next run without recording an outcome.
     pub fn advance_next_run(&self, id: &str, now: DateTime<Utc>) {
         let mut guard = self.entries.lock().unwrap();
         if let Some(e) = guard.get_mut(id) {
             e.next_run = Some(next_run(e.cadence, &e.run_at, now));
-            let _ = self.save(&guard);
+            if let Err(err) = self.save(&guard) {
+                tracing::warn!("storage scheduler: could not persist schedule state: {err}");
+            }
         }
     }
 
@@ -300,7 +311,9 @@ impl StorageScheduleStore {
         e.last_result = result.to_string();
         e.last_error = err.to_string();
         e.next_run = Some(next_run(e.cadence, &e.run_at, now));
-        let _ = self.save(&guard);
+        if let Err(save_err) = self.save(&guard) {
+            tracing::warn!("storage scheduler: could not persist schedule state: {save_err}");
+        }
     }
 
     /// Record a failed attempt that must be retried on the next tick (the agent
@@ -311,7 +324,9 @@ impl StorageScheduleStore {
         e.last_run = Some(Utc::now());
         e.last_result = "failed".to_string();
         e.last_error = err.to_string();
-        let _ = self.save(&guard);
+        if let Err(save_err) = self.save(&guard) {
+            tracing::warn!("storage scheduler: could not persist schedule state: {save_err}");
+        }
     }
 }
 
@@ -430,31 +445,45 @@ pub async fn schedules_post(State(state): State<Arc<AppState>>, body: Body) -> R
         enabled: req.enabled.unwrap_or(true),
         ..Default::default()
     };
-    if entry.id.is_empty() {
+    let updating = if entry.id.is_empty() {
         let mut buf = [0u8; 16];
         let _ = getrandom::fill(&mut buf);
         entry.id = buf.iter().map(|b| format!("{b:02x}")).collect();
-    } else if let Some(existing) = state.storage_schedules.get(&entry.id) {
-        entry.last_run = existing.last_run;
-        entry.last_result = existing.last_result;
-        entry.last_error = existing.last_error;
+        false
+    } else if state.storage_schedules.get(&entry.id).is_some() {
+        true
     } else {
         // Only server-generated ids may become retention prefixes. Accepting an
         // arbitrary client id would let two schedules collide after token
         // encoding and prune each other's snapshots.
         return bad_request("unknown schedule id; omit id to create a new schedule");
-    }
+    };
     if let Err(e) = validate_schedule(&state, &mut entry).await {
         return bad_request(&e);
     }
     entry.next_run = Some(next_run(entry.cadence, &entry.run_at, Utc::now()));
-    if let Err(e) = state.storage_schedules.put(entry.clone()) {
-        return json(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            serde_json::json!({ "error": format!("saving the schedule: {e}") }),
-        );
-    }
-    json(StatusCode::OK, serde_json::json!({ "schedule": entry }))
+    let saved = if updating {
+        // Merge under the store lock; a stale read here would overwrite a
+        // lastRun/lastResult recorded while validation was awaiting the agent.
+        match state.storage_schedules.update_config(entry) {
+            Ok(saved) => saved,
+            Err(e) => {
+                return json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({ "error": format!("saving the schedule: {e}") }),
+                )
+            }
+        }
+    } else {
+        if let Err(e) = state.storage_schedules.put(entry.clone()) {
+            return json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "error": format!("saving the schedule: {e}") }),
+            );
+        }
+        entry
+    };
+    json(StatusCode::OK, serde_json::json!({ "schedule": saved }))
 }
 
 pub async fn schedules_delete(
@@ -521,10 +550,10 @@ async fn refresh_scrub_results(state: &AppState) {
         if entry.kind != ScheduleKind::Scrub || entry.last_result != "started" {
             continue;
         }
-        let Ok(status) = client.pool_status(&entry.target).await else {
+        let Ok(health) = client.pool_health(&entry.target).await else {
             continue;
         };
-        match scrub_finished(&scan_line(&status)) {
+        match scrub_finished(&health.scan) {
             Some(Ok(_)) => state.storage_schedules.record_result(&entry.id, "ok", ""),
             Some(Err(detail)) => state
                 .storage_schedules
@@ -639,8 +668,8 @@ async fn run_scrub_schedule(state: &Arc<AppState>, entry: &StorageSchedule) {
         );
         return;
     };
-    let status = match agent.pool_status(&entry.target).await {
-        Ok(status) => status,
+    let health = match agent.pool_health(&entry.target).await {
+        Ok(health) => health,
         Err(e) => {
             if retryable_agent_error(&e) {
                 state
@@ -656,7 +685,7 @@ async fn run_scrub_schedule(state: &Arc<AppState>, entry: &StorageSchedule) {
             return;
         }
     };
-    if scrub_in_progress(&scan_line(&status)) {
+    if scrub_in_progress(&health.scan) {
         if entry.last_result == "started" {
             // This schedule's own scrub is still running. Advance without
             // replacing `started`, so the completion is still derived later.
@@ -769,13 +798,28 @@ mod tests {
     }
 
     #[test]
-    fn scan_field_is_extracted_from_zpool_status() {
-        let status = "  pool: tank\n state: ONLINE\n  scan: scrub repaired 0B in 00:01:23 with 0 errors on Sun Jan  4 02:00:00 2026\nconfig:\n";
-        assert_eq!(
-            scan_line(status),
-            "scrub repaired 0B in 00:01:23 with 0 errors on Sun Jan  4 02:00:00 2026"
-        );
-        assert_eq!(scan_line("pool: tank\nstate: ONLINE\n"), "");
+    fn config_update_preserves_the_scheduler_runtime_state() {
+        let store = StorageScheduleStore::new("");
+        let mut entry = StorageSchedule {
+            id: "abc".to_string(),
+            kind: ScheduleKind::Snapshot,
+            target: "tank/data".to_string(),
+            cadence: Cadence::Daily,
+            run_at: "02:30".to_string(),
+            keep: 7,
+            enabled: true,
+            ..Default::default()
+        };
+        store.put(entry.clone()).unwrap();
+        // A run finishes while the edit request is still being validated.
+        store.record_result("abc", "ok", "");
+
+        entry.keep = 14;
+        let saved = store.update_config(entry).unwrap();
+        assert_eq!(saved.keep, 14);
+        assert_eq!(saved.last_result, "ok");
+        assert!(saved.last_run.is_some());
+        assert_eq!(store.get("abc").unwrap().last_result, "ok");
     }
 
     #[test]

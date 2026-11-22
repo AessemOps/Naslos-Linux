@@ -186,6 +186,7 @@ reaches ZFS:
 | Each name component is ZFS-safe, no traversal, no `@` | A name is interpolated into `zfs create`; `../` or a snapshot marker must not get through |
 | Nested names allowed (`photos/2026`), created with `-p` | One call, and the intermediate levels are what the operator meant |
 | Options limited to `compression`, `quota`, `recordsize`, `atime`, `copies`, `readonly` with validated values | `zfs create -o` accepts arbitrary properties; `mountpoint=/` would put the dataset somewhere unexpected |
+| Encryption options are not accepted yet | ZFS encryption is create-only and its key custody/unlock model is designed but `[OPEN]`; `encryption`/`keyformat`/`keylocation` are validated and refused (FR-ENC, [dataset-encryption.md](dataset-encryption.md)) |
 | The pool must exist | Otherwise the failure surfaces after the name was accepted |
 | Destroy needs `recursive=true` for a non-empty dataset, never applies to a pool's root dataset, and is refused (409) while a share serves the dataset's path | A dataset picker must not delete data or quietly break a share |
 

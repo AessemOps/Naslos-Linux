@@ -42,6 +42,13 @@ test('a snapshot schedule can be created, listed and removed from the pool page'
     // Cadence and retention are explicit fields.
     await dialog.getByLabel('Cadence').selectOption('weekly');
     await dialog.getByLabel('Run at (UTC)').fill('Sun 03:30');
+    // Changing the cadence rewrites `runAt` into the shape that cadence needs,
+    // instead of leaving a weekly value that the API rejects for daily.
+    await dialog.getByLabel('Cadence').selectOption('daily');
+    await expect(dialog.getByLabel('Run at (UTC)')).toHaveValue('03:30');
+    await dialog.getByLabel('Cadence').selectOption('weekly');
+    await expect(dialog.getByLabel('Run at (UTC)')).toHaveValue('Sun 03:30');
+    await dialog.getByLabel('Run at (UTC)').fill('Sun 03:30');
     await dialog.getByLabel('Keep newest').fill('3');
     await dialog.getByRole('button', { name: 'Save schedule' }).click();
     await expect(dialog).toBeHidden({ timeout: 15_000 });

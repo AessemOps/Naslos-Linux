@@ -5,6 +5,7 @@
 pub mod backup;
 pub mod dataset;
 pub mod devices;
+pub mod encryption;
 pub mod operations;
 pub mod runner;
 pub mod smart;

@@ -50,6 +50,12 @@ unmodified Talos installation, administered through a web UI.
   served in userspace by NFS-Ganesha, NFSv4 only (FR-SHR-02). NFSv3 and its
   `rpcbind`/`statd` dependencies are out of scope, as is Kerberos
   (`sec=krb5`) — NFS uses AUTH_SYS.
+- Unattended unlocking of ZFS encrypted datasets: the v1 model is a per-dataset
+  keyfile in a Kubernetes Secret plus an explicit administrator unlock after
+  boot (FR-ENC), because Talos `zfs-service` imports pools but does not load
+  keys. TPM/KMIP key custody, automatic unlock, SED/OPAL, and in-place
+  conversion of an existing dataset (ZFS cannot do it) are out of scope. See
+  `docs/dataset-encryption.md`.
 
 ### 1.4 Target platform
 
@@ -251,7 +257,89 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-DHK-07** — Disk health MUST be read-only: no SMART self-tests, no
   enabling SMART, no device writes, and no user-controlled command arguments.
 
-### 3.1.2 Local replication (`FR-REP`)
+### 3.1.2 Dataset encryption at rest (`FR-ENC`)
+
+ZFS native encryption created with the dataset. The design, the key-custody
+decision and the threat model are in `docs/dataset-encryption.md`. Existing
+datasets cannot be converted in place: `encryption` is a create-time property
+and `zfs change-key` only rewraps an existing key.
+
+- **FR-ENC-01** — Dataset encryption MUST use ZFS native encryption set at
+  dataset creation, with an allow-listed cipher (`aes-128/192/256-ccm`,
+  `aes-128/192/256-gcm`; `on` is the alias for `aes-256-gcm`) and an
+  allow-listed `keyformat` (`raw` or `passphrase`). The API and agent MUST
+  reject `keylocation` supplied by a request and MUST reject `copies=3` on an
+  encrypted dataset. Encryption MUST NOT be presented as changeable on an
+  existing dataset; migration MUST be a new encrypted dataset plus a
+  send/receive (or copy) and the old dataset's retirement, never `zfs set`.
+  **[OPEN]**
+- **FR-ENC-02** — Until custody, unlock/lock and encrypted send are implemented,
+  a well-formed dataset-create request that asks for encryption MUST be
+  rejected by both the API and the agent with an explicit "not implemented"
+  error, and neither layer MUST pass an encryption option to `zfs`. Malformed
+  encryption requests (unknown algorithms/formats, a missing `keyformat`, a
+  request-supplied `keylocation`, `encryption=off` combined with key options,
+  or `copies=3`) MUST fail validation. No key material is accepted, stored,
+  logged or placed in argv. Verified by
+  `naslos_agent::zfs::encryption::tests::planner_matches_shared_fixture`,
+  `naslos_api::dataset_encryption::tests::planner_matches_shared_fixture`
+  (shared fixture `rust/testdata/dataset_encryption.txt`) and the
+  create-option tests in both crates.
+- **FR-ENC-03** — **[OPEN]** Key custody: each encrypted dataset MUST have its
+  own generated 256-bit raw key. The key MUST be held in a Kubernetes Secret in
+  the Naslos namespace and MUST NOT be returned by any API, written to a log,
+  an error, the environment, argv or an `-o` property. The agent MUST be the
+  only component that materialises it for ZFS, in a 0600 file on host tmpfs,
+  and MUST remove that file when the dataset is locked. Unlock material MUST
+  travel only over the authenticated API→agent channel.
+- **FR-ENC-04** — **[OPEN]** Unlock/lock and boot: because Talos `zfs-service`
+  runs `zpool import -fal` and does not load keys, an encrypted dataset MUST be
+  reported as locked (`keystatus: unavailable`) and MUST NOT be mounted or
+  served until an administrator explicitly unlocks it. There MUST be no
+  automatic unlock by default. Lock MUST be refused while the dataset is
+  mounted or used by a share or app. `GET /api/datasets` and the UI MUST expose
+  the lock state.
+- **FR-ENC-05** — **[OPEN]** Passphrase datasets: a passphrase MUST NOT be
+  persisted; it MUST be supplied once over the authenticated API→agent channel
+  and passed to `zfs load-key` on stdin, never in argv. The UI MUST state that a
+  reboot requires re-entry and that a lost passphrase is unrecoverable.
+- **FR-ENC-06** — **[OPEN]** Create atomicity: the key Secret MUST exist before
+  the dataset is created, and a create MUST verify the exact dataset's
+  `encryption` and `keystatus=available` rather than trusting the exit status
+  of `zfs create -p` (which succeeds without applying properties when the
+  target already exists). On failure the partial dataset and the Secret MUST be
+  removed; no dataset may exist whose only key copy is in process memory.
+- **FR-ENC-07** — **[OPEN]** Encrypted send/receive: replication of an
+  encrypted source MUST use `zfs send -w`; `-U` (no-preserve-encryption) MUST
+  NOT be used, and a property-bearing send without `-w` MUST be refused
+  instead of sending plaintext. A raw-received dataset keeps the source key and
+  MUST be unlocked with it; raw and non-raw streams MUST NOT be mixed in one
+  chain.
+- **FR-ENC-08** — FR-BUD-02 remains in force: ZFS encryption MUST NOT be
+  treated as a substitute for Buddy's client-side encryption, the receiver MUST
+  NOT receive or derive the KEK, and a ZFS-encrypted source MUST still be
+  wrapped by Buddy. For an encrypted source, Buddy SHOULD send raw ciphertext
+  (`zfs send -w`) so the API never handles plaintext; that choice MUST NOT
+  change the receiver's zero-knowledge guarantee. **[OPEN]** for the raw-send
+  choice.
+- **FR-ENC-09** — **[OPEN]** Consumers: a share or app mount whose path is
+  inside a locked encrypted dataset MUST be refused rather than served empty or
+  served from the parent dataset. Destroying an encrypted dataset MUST require
+  an explicit confirmation that the key is destroyed with it and the data is
+  unrecoverable without a backup; key deletion MUST be presented as
+  irreversible.
+- **FR-ENC-10** — **[OPEN]** Key lifecycle: the owner MUST be able to rotate an
+  encrypted dataset's key with `zfs change-key` (raw→passphrase and back) and
+  MUST be able to back up/restore the key material without exposing it to the
+  API's normal responses. The system-config export MUST either include the keys
+  encrypted or refuse to claim the export is a full restore.
+- **FR-ENC-11** — The documentation MUST state the threat model: ZFS native
+  encryption protects data at rest on stolen media and raw backups, not against
+  a compromised node, agent, API, Secret/etcd reader, or an unlocked dataset;
+  Buddy remains the zero-knowledge path. `docs/dataset-encryption.md` is that
+  document (verified by review; no Rust test).
+
+### 3.1.5 Local replication (`FR-REP`)
 
 Local replication copies a ZFS dataset to another dataset on the **same node**
 through the agent's streaming `zfs send`/`zfs receive`. It is the first slice of
@@ -328,7 +416,6 @@ cloud sync remain `[OPEN]` below.
   implemented in this slice; Buddy remains the zero-knowledge off-site path.
 - **FR-REP-10** — `[OPEN]` A replication UI (create/history/progress) is not
   part of this slice; the routes above are the API surface.
-
 ### 3.2 Identity & SSO (`FR-IDN`)
 
 - **FR-IDN-01** — Users and groups MUST be stored in OpenLDAP under
@@ -383,6 +470,71 @@ cloud sync remain `[OPEN]` below.
   passdb account and its NSS entry.
 - **FR-IDN-16** — Change detection for the node's mirror MUST NOT rely on
   whole-second timestamps: two writes in the same second MUST both take effect.
+
+### 3.2.1 External directory (`FR-EXT`)
+
+An operator MAY configure an external LDAP directory as an additional identity
+source. Phase 1 is configuration-only: the internal OpenLDAP store remains the
+default and the system of record, and **FR-IDN-01…16 continue to apply
+unchanged**. Live source selection, AD domain join, Kerberos and the UI are
+later phases and are marked **[OPEN]** below.
+
+- **FR-EXT-01** — External-directory integration MUST be disabled by default,
+  MUST NOT change request-time authentication, and MUST NOT alter the internal
+  OpenLDAP, Samba-mirror or Authelia paths while disabled. *(tests:
+  `directory::tests::disabled_by_default_and_requires_no_settings`)*
+- **FR-EXT-02** — When enabled, the API MUST validate the external provider
+  configuration at startup and MUST fail closed: every required field is
+  present, DNs contain `=` and no control characters, attribute names are
+  valid, search bases are inside the configured base DN, and the bind-password
+  file is readable and non-empty. An invalid configuration MUST disable only
+  the external source; the API, the internal directory and non-identity
+  features MUST keep working. *(tests:
+  `directory::tests::enabled_config_is_parsed_with_defaults`,
+  `directory::tests::enabled_requires_the_core_fields`,
+  `directory::tests::invalid_boolean_is_refused`,
+  `directory::tests::dns_paths_and_attributes_are_validated`,
+  `directory::tests::search_bases_must_stay_inside_the_base_dn`,
+  `directory::tests::bind_password_file_is_required_absolute_and_non_empty`)*
+- **FR-EXT-03** — Bind credentials MUST be read only from a mounted Secret
+  file; inline/environment password values and chart values MUST NOT be
+  accepted. The validated configuration MUST NOT retain the password, and no
+  error or debug rendering may include it. *(tests:
+  `directory::tests::the_secret_is_read_on_demand_and_never_stored_or_logged`,
+  `directory::tests::bind_password_file_is_required_absolute_and_non_empty`)*
+- **FR-EXT-04** — The external-directory configuration MUST require LDAPS with
+  a configured CA bundle and MUST refuse a non-loopback plaintext host.
+  *(tests: `directory::tests::tls_requires_an_absolute_ca_path`,
+  `directory::tests::plaintext_ldap_is_refused_off_loopback`)*
+- **FR-EXT-05** — User and group search bases and the uid, uidNumber, gidNumber
+  and group-member attributes MUST be explicit configuration with deterministic
+  defaults (`uid`, `uidNumber`, `gidNumber`, `member`; search bases default to
+  the base DN). *(tests:
+  `directory::tests::enabled_config_is_parsed_with_defaults`,
+  `directory::tests::search_bases_must_stay_inside_the_base_dn`,
+  `directory::tests::dns_paths_and_attributes_are_validated`)*
+- **FR-EXT-06** — Phase 1 MUST accept only the `ldap` provider; an Active
+  Directory provider value MUST be rejected until phase 2 implements it.
+  *(tests: `directory::tests::active_directory_is_reserved_for_phase_two`)*
+- **FR-EXT-07** — **[OPEN]** Live external identity reads MUST be read-only and
+  lazy, with the same outage semantics as FR-IDN-11/12, and MUST NOT write
+  password or account changes back to the external directory.
+- **FR-EXT-08** — **[OPEN]** External identities MUST be merged with internal
+  identities deterministically: name/uid/gid collisions MUST be rejected or
+  resolved by a documented, stable rule, and an external user MUST NOT
+  silently shadow an internal user.
+- **FR-EXT-09** — **[OPEN]** External users and groups MUST feed the Samba
+  account mirror (FR-IDN-13) and share access (FR-SHR-07) only after their
+  POSIX uid/gid mapping is stable and collision-checked.
+- **FR-EXT-10** — **[OPEN]** Authelia MUST authenticate external identities
+  only after the read-only merge and group mapping are implemented; enabling an
+  external source MUST NOT lock out internal administrators.
+- **FR-EXT-11** — **[OPEN]** Active Directory domain join (Samba winbind/idmap)
+  and the UI for configuring either provider are phase 2.
+- **FR-EXT-12** — **[OPEN]** Kerberos realms/keytabs and NFS `sec=krb5` are
+  phase 3 and MUST NOT be offered until NFS-Ganesha supports Kerberos. The NFS
+  export path MUST remain `AUTH_SYS` (`SecType = sys`, `Active_krb5 = false`)
+  and the UI MUST NOT advertise Kerberos before then.
 
 ### 3.3 Shares (`FR-SHR`)
 
@@ -1240,6 +1392,66 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
   `GET /api/mcp`. Arguments are NEVER logged or recorded — tool bodies can
   carry passwords, secrets and tokens.
 
+### 3.15 System config export/import (`FR-CFG`)
+
+The owner can download a versioned snapshot of the declarative configuration
+(not the data) to keep beside a backup. The export is deliberately a
+**projection**: every section is written through an explicit allow-listed
+struct, so a newly added store field cannot leak by accident. Import/restore is
+not implemented yet and stays `[OPEN]` with the validation rules below.
+
+- **FR-CFG-01** — `GET /api/system/config/export` MUST be an admin-only owner
+  route that returns a JSON download with `kind: "naslos-config-export"`,
+  `schemaVersion: 1`, a UTC `generatedAt`, the `naslosVersion` and the
+  `baseDomain`, plus the `shares`, `storageSchedules`, `buddySchedules`,
+  `domains`, `ddnsEntries`, `apps` and `datasetRegistry` sections. The response
+  MUST carry a `Content-Disposition` attachment filename and
+  `Cache-Control: no-store`. *(config export tests:
+  `export_shape_uses_an_allow_list_and_deterministic_arrays`,
+  `absent_subsystems_export_empty_arrays_not_null`; contract test:
+  `config_export_requires_an_admin_and_emits_the_versioned_shape`)*
+- **FR-CFG-02** — The export MUST include only declarative fields: no runtime
+  state (`lastRun`, `lastResult`, `lastError`, `nextRun`,
+  `receiverResults`), no server-owned timestamps and no derived data. Every
+  section MUST be an array (never `null`), including when its subsystem is
+  unavailable, and store order MUST be deterministic. App values MUST have the
+  catalog's secret-marked keys removed at any depth (reported in
+  `redactedKeys`); when the catalog cannot be read, the app's whole `values`
+  object MUST be omitted with `valuesOmitted: true` rather than exported
+  unredacted. *(config export tests:
+  `app_values_are_omitted_without_a_catalog`,
+  `export_shape_uses_an_allow_list_and_deterministic_arrays`)*
+- **FR-CFG-03** — The export MUST NOT contain passwords, API tokens, ntfy
+  tokens, DDNS or domain credential values/Secret names, `credentialFields`,
+  rendered cert-manager `solver` objects, TLS private keys, Buddy identities,
+  peer keys, KEKs, or any Kubernetes Secret data. It MUST NOT read a
+  Kubernetes Secret or the Buddy identity/KEK file at all. Free-form value and
+  provider-config keys that look like credentials (`password`, `passwd`,
+  `secret`, `token`, `credential`, `privateKey`, `apiKey`, `kek`) MUST be
+  removed even when a provider schema forgets to mark them. Domain and DDNS
+  `providerConfig` MUST be projected to the keys the provider schema declares
+  non-secret; unknown keys and free-form value templates that can embed a
+  credential (the generic DDNS `updateUrl`/`body`) MUST be omitted, and a
+  provider with no loaded definition MUST export an empty config.
+  *(config export tests: `secret_material_is_never_exported`,
+  `every_free_form_key_in_the_payload_is_allow_listed`)*
+- **FR-CFG-04** — Import/restore is `[OPEN]`. When implemented it MUST:
+  accept only the current `schemaVersion` (reject a newer one), accept only
+  allow-listed fields and reject unknown or secret-like keys rather than
+  ignoring them; revalidate every ID, path, dataset, pool and provider against
+  the live node instead of trusting the payload; never reuse an exported ID to
+  overwrite or delete an existing record; never inject a credential (entries
+  whose credentials were removed MUST be re-entered through the existing
+  endpoints); and run as a dry-run plan followed by an explicit confirmation,
+  never as an automatic apply on upload.
+- **FR-CFG-05** — The config export is **not** the installer recovery ZIP
+  (FR-INSTALL-08). The recovery ZIP is bootstrap material (`talosconfig`,
+  machine config, Talos secrets, `kubeconfig`, schematic/ISO facts) and is the
+  only way to rebuild a lost control plane; it contains no application
+  records. The config export is an owner-gated, versioned JSON document of
+  declarative application records and contains no PKI, kubeconfig or Secret
+  material, so it cannot recreate a node. Neither format supersedes the other.
+
 ---
 
 ## 4. API contracts (normative)
@@ -1278,6 +1490,7 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 | `/api/ddns/{id}` | GET, PUT, DELETE | Entry detail / update / delete (deletes its credential Secret) |
 | `/api/ddns/{id}/run` | POST | Force one reconcile even when the IP is unchanged |
 | `/api/system/version` | GET | Running Naslos/chart/Talos/Kubernetes, release pins, profile, `upgradable` (§3.11) |
+| `/api/system/config/export` | GET | Versioned, secret-free declarative config download (`Content-Disposition`; FR-CFG) |
 | `/api/system/updates` | GET | Cached update check, candidate, stepping decision |
 | `/api/system/updates/check` | POST | Run an update check now |
 | `/api/system/operations` | POST | Start an ordered upgrade operation (`202`; `409` lock; `412` precondition) |
@@ -1364,12 +1577,13 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 - **DM-1 Person**: `{ "uid", "displayName", "email", "uidNumber", "enabled": bool, "groups": ["short-name", …] }`
 - **DM-2 Group**: `{ "cn", "description?", "members": ["uid", …] }` — `members` MUST be an array (possibly empty), `description` omitted when empty.
 - **DM-3 Pool**: `{ "name", "size", "alloc", "free", "usagePercent", "health" }` — sizes in bytes, parsed from human `zpool list` output.
-- **DM-4 Share**: `{ "name", "path", "protocol": "smb"|"nfs", "description", "readOnly": bool, "browseable": bool, "allowedHosts": [], "validUsers": [], "validGroups": [], "timeMachine": bool, "createdAt", "enabled": bool }` — `path` MUST be inside the ZFS base; the three list fields MUST be arrays (never `null`, including when read back from disk); `validUsers` entries render bare and `validGroups` entries render as `@group` in `smb.conf` (FR-SHR-07/12).
+- **DM-4 Share**: `{ "name", "path", "protocol": "smb"|"nfs"|"afp", "description", "readOnly": bool, "browseable": bool, "allowedHosts": [], "validUsers": [], "validGroups": [], "timeMachine": bool, "noRootSquash": bool, "createdAt", "enabled": bool }` — `path` MUST be inside the ZFS base; the three list fields MUST be arrays (never `null`, including when read back from disk); `validUsers` entries render bare and `validGroups` entries render as `@group` in `smb.conf` (FR-SHR-07/12).
 - **DM-5 SystemMetrics**: see FR-MET-03. CPU also carries `model`, `temperatureC` (nullable), and `perCore[]` (`core`, `usagePercent`, optional `frequencyMhz`). `updatedAt` is RFC 3339; before the first successful collection it is the Go zero time and consumers MUST treat it as "no data yet".
 - **DM-6 DiskHealth**: `{ "smartctlAvailable": bool, "error": string, "temperatureWarningC": number, "wearWarningPercent": number, "disks": [{ "device", "size", "isSystemDisk", "model", "serial", "busPath", "type", "signatures": [], "inPool"?, "smart": { "available", "enabled", "health": "PASSED"|"FAILED"|"UNKNOWN", "temperatureC"?, "powerOnHours"?, "wearPercent"?, "reallocatedSectors"?, "pendingSectors"?, "uncorrectableSectors"?, "mediaErrors"?, "errorCount"?, "standby", "message" }, "zfs"?: { "pool", "vdev", "state", "readErrors", "writeErrors", "cksumErrors" } }] }` — `smart.available:false` is normal for virtio/USB/RAID devices and MUST NOT fail the endpoint (FR-DHK-02/03).
 - **DM-7 Vm**: `{ "name", "pool", "cpu", "memMiB", "autostart": bool, "firmware": "uefi"|"bios", "desired": "running"|"stopped", "disk": { "sizeGB", "format": "qcow2"|"raw", "bus": "virtio"|"sata", "sourceImage"?: "isos/<file>" }, "net": { "mode": "nat"|"lan", "forwards": [{ "host", "dst" }], "nic"? }, "cloudInit"?: { "hostname", "user", "sshKeys": [] }, "iso"?: "isos/<file>" | null }`. `name` is a DNS-1123 label; live fields (`state`: "running"|"stopped"|"unknown", `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) are merged in responses and MUST NOT be persisted; the console credentials (`vncPort`, `vncPassword`) appear only in the `/api/ws/vm/{name}/vnc` preflight, never in list or detail payloads (FR-VMT).
 - **DM-8 StorageSchedule**: `{ "id", "kind": "snapshot"|"scrub", "target", "cadence": "hourly"|"daily"|"weekly", "runAt", "keep": number, "recursive": bool, "enabled": bool, "lastRun"?, "lastResult"?, "lastError"?, "nextRun"? }`. `target` is a dataset path for `snapshot` and a pool name for `scrub`; `keep` is always 0 for `scrub`; `lastResult` is `ok`/`failed`/`skipped`/`started` (a scrub is `started` until its scan line reports completion). Timestamps are RFC 3339 UTC (FR-STO-10/11).
-- **DM-9 ReplicationJob**: `{ "id", "source", "destination", "snapshot"?, "recursive": bool, "pruneKeep"?: number, "state": "running"|"succeeded"|"failed"|"cancelled", "startedAt", "finishedAt"?, "progress": { "bytes", "estimatedBytes" }, "incremental": bool, "estimatedBytes"?, "result"?: { "status": "replicated"|"up-to-date", "source", "destination", "snapshot", "baseSnapshot"?, "baseGUID"?, "toGUID"?, "incremental": bool, "recursive": bool, "bytes", "estimatedBytes", "prunedSnapshots", "retentionError"?, "durationSeconds" }, "error"? }`. Jobs are in memory; `snapshot` is empty until the job creates one; timestamps are RFC 3339 UTC (FR-REP-01/06).
+- **DM-9 ConfigExport**: `{ "kind": "naslos-config-export", "schemaVersion": 1, "generatedAt", "naslosVersion", "baseDomain", "shares": [DM-4 without createdAt], "storageSchedules": [DM-8 without lastRun/lastResult/lastError/nextRun], "buddySchedules": [{ "id", "dataset", "source", "receivers": [], "cadence", "runAt", "pruneKeep", "enabled" }], "domains": [{ "baseDomain", "dnsProvider", "providerConfig": {}, "acmeEmail", "environment", "primary", "sso", "appRecordsDdnsEntry": string|null }], "ddnsEntries": [{ "id", "provider", "zone", "record", "recordType", "ttl", "enabled", "providerConfig": {} }], "apps": [{ "name", "source", "channel", "chartVersion", "baseDomain", "exposure": { "subdomain", "tls", "auth", "localOnly", "protectedPaths": [], "internet", "service", "port", "scheme" }, "datasets": [], "privileged", "env": [{ "name", "secret" }], "values"?: {}, "redactedKeys": [], "valuesOmitted": bool }], "datasetRegistry": [{ "name", "hostPath", "shared", "warningAcknowledged" }] }`. Every section is an array, never `null`. No field may carry a credential value, credential Secret name, solver body, the Buddy identity/KEK or Kubernetes Secret data; `values` excludes the catalog's secret-marked keys at any depth, is omitted entirely when `valuesOmitted` is true, and `providerConfig` contains only keys the provider schema declares non-secret (free-form credential templates such as the generic DDNS `updateUrl`/`body` are omitted). Import is `[OPEN]` (FR-CFG-04).
+- **DM-10 ReplicationJob**: `{ "id", "source", "destination", "snapshot"?, "recursive": bool, "pruneKeep"?: number, "state": "running"|"succeeded"|"failed"|"cancelled", "startedAt", "finishedAt"?, "progress": { "bytes", "estimatedBytes" }, "incremental": bool, "estimatedBytes"?, "result"?: { "status": "replicated"|"up-to-date", "source", "destination", "snapshot", "baseSnapshot"?, "baseGUID"?, "toGUID"?, "incremental": bool, "recursive": bool, "bytes", "estimatedBytes", "prunedSnapshots", "retentionError"?, "durationSeconds" }, "error"? }`. Jobs are in memory; `snapshot` is empty until the job creates one; timestamps are RFC 3339 UTC (FR-REP-01/06).
 
 ---
 
@@ -1448,7 +1662,8 @@ extrausers rendering, stable group GIDs, access-list groups, NetBIOS name
 sanitising); `rust/api/src/server/` (the user-edit membership diff, FR-IDN-04;
 the write-only ntfy token, `TestNotificationsNeverReturnTheAuthToken`; the
 storage retention plan, scheduler-owned snapshot names and scrub scan
-classification, FR-STO-10/11); and
+classification, FR-STO-10/11; the system config export allow-list and
+secret-exclusion canaries, FR-CFG-01…03); and
 `rust/agent/src/shares/` (the 0600 passdb/shadow mirrors, FR-IDN-13).
 
 Buddy Backup is verified by the Rust suites in `rust/api/src/buddy/` and
@@ -1493,6 +1708,15 @@ Local replication (`FR-REP`) is verified by the unit tests in
 | `planner_matches_by_guid_not_name`, `plan_uses_the_newest_common_guid` | FR-REP-03 (GUID matching and ordering) |
 | `send_command_line_recursive_replication_stream` | FR-REP-03 (`zfs send -r`, incremental `-i`, no flag injection) |
 | `snapshot_listing_is_recursive_only_when_requested` | FR-REP-03 (shallow snapshot listing for GUID base selection) |
+Dataset encryption is verified in this slice only by the pure planner
+(FR-ENC-03…10 are `[OPEN]`; their tests ship with the implementation):
+
+| Test | Verifies |
+| --- | --- |
+| `naslos_agent::zfs::encryption::tests::planner_matches_shared_fixture`, `naslos_api::dataset_encryption::tests::planner_matches_shared_fixture` | FR-ENC-01/02 (algorithm and key-format allow-list, `keylocation` refusal, `copies=3`, `encryption=off` consistency; the shared fixture is the API/agent parity oracle) |
+| `naslos_agent::zfs::encryption::tests::valid_encryption_requests_are_refused_before_any_zfs_call`, `naslos_api::server::zfs::tests::encryption_options_are_refused_until_key_custody_ships` | FR-ENC-02 (a well-formed encryption request is refused before any `zfs` call) |
+| `naslos_agent::zfs::dataset::tests::key_material_is_never_a_dataset_option`, `naslos_api::server::zfs::tests::key_material_is_never_a_dataset_option` | FR-ENC-02 (a `key`/`passphrase` field is rejected and its value is not echoed) |
+| `docs/dataset-encryption.md` | FR-ENC-11 (threat model and the key-custody decision) |
 
 Dynamic DNS and the provider registry are verified by
 `rust/api/src/providers.rs`, `rust/api/src/ddns.rs` and
