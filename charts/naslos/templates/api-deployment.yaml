@@ -24,6 +24,12 @@ spec:
   # (duplicate snapshot/scrub runs and last-writer-wins on schedule edits).
   strategy:
     type: Recreate
+    # Explicitly clear a rollingUpdate block left by pre-0.6.0 installs.
+    # Server-side apply rejects an object that specifies both Recreate and
+    # rollingUpdate, so a UI/installer upgrade from 0.5.x would otherwise fail
+    # before the API is replaced. The Makefile has the same one-time migration
+    # for repo-driven installs.
+    rollingUpdate: null
   selector:
     matchLabels:
       app.kubernetes.io/name: naslos-api

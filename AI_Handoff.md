@@ -136,17 +136,23 @@ retrying or using the browser path worked around it. Worth watching.
   retired — do not build/push local images. `/api/health` is green, both
   ZFS pools are ONLINE with no data errors, and the full Playwright suite
   passed on revision 60: **80 passed, 5 skipped, 0 failed**.
-- **Latest release:** `v0.6.0` (2026-11-22) and installer `naslos-v0.6.0`
-  are published; the pack `naslos-install-pack-0.6.0.tar.gz` is attached and
-  its images are digest-pinned. It lands the TrueNAS parity backlog's P0/P1
-  work: scheduled snapshots/scrubs, local replication, zvols plus iSCSI and
-  NVMe-oF spikes, dataset-encryption and ACL designs, external-directory
-  config, webhook alerts plus the reporting design, config export, VM Secure
-  Boot, SMB shadow-copy/audit options, RBAC/audit design, and the catalog
-  expansion (NaslosCharts: 73 apps). Existing datasets, shares and VMs are
-  unchanged by default. The only upgrade trap found was the pre-0.6.0 API
-  Deployment's stale `rollingUpdate` block; `make install-vm` now removes it
-  before the upgrade.
+- **Latest release:** `v0.7.0` (2026-11-22) and installer `naslos-v0.7.0`
+  are published; the pack `naslos-install-pack-0.7.0.tar.gz` is attached and
+  its images are digest-pinned. It completes the P0/P1 runtime slices: raw-key
+  ZFS encryption with Secret custody and explicit unlock/lock, SMTP + syslog
+  alerts, config import/restore, RBAC phase 2 plus append-only audit v1,
+  bounded historical reporting, and shadow-copy-compatible scheduled
+  snapshots. It is **not yet deployed**; the node remains on 0.6.0 revision 60
+  until the next install. Caveats: RBAC only admits admins until Authelia
+  admission for the new groups ships; encryption keys live in Kubernetes
+  Secrets (etcd at-rest encryption is not configured) and require manual
+  unlock after boot; audit is fail-closed on the state volume (16 MiB/90 d);
+  reporting adds a 256 MiB PVC; config import does not reinstall apps or inject
+  credentials; SMTP/syslog LAN targets need `nodeCIDR` or
+  `extraEgressCIDRs`; scheduled snapshots were renamed and legacy
+  `naslos-auto-*` pruning lasts one release. The API still uses `Recreate`;
+  the chart now clears a pre-0.6.0 `rollingUpdate` block so UI/installer
+  upgrades from 0.5.x work.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
@@ -158,6 +164,17 @@ retrying or using the browser path worked around it. Worth watching.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.7.0` (2026-11-22) — P0/P1 runtime completion: raw-key ZFS encryption
+    with Secret custody and explicit unlock/lock, SMTP + syslog alerts,
+    config import/restore (dry-run + apply), RBAC phase 2 and hash-chained
+    audit v1, bounded 24 h/7 d/30 d reporting, and shadow-copy-compatible
+    scheduled snapshots (schedule ownership in a ZFS user property; one
+    schedule per dataset tree). Adds the `naslos-keys` namespace (retained on
+    uninstall) and the `naslos-reporting` PVC. No default change for existing
+    pools, shares or VMs. Known limits: RBAC only admins until Authelia
+    admission; encryption has no passphrase/encrypted-send/in-place
+    conversion; audit/reporting are v1; config import does not reinstall apps
+    or credentials.
   - `0.6.0` (2026-11-22) — TrueNAS parity backlog P0/P1: per-dataset snapshot
     schedules with keep-N retention and per-pool scrub schedules (manual scrub
     included), local ZFS replication jobs, zvol lifecycle, dataset-encryption
