@@ -180,6 +180,17 @@ for container in spec.get("containers", []) + spec.get("initContainers", []):
 # must exist even with every optional feature off.
 for required in ("ldap-bind", "tmp"):
     assert required in volumes, f"unconditional volume {required} missing"
+# The audit sink must still have a writable path with the state volume off
+# (the rootfs is read-only); the chart backs AUDIT_DIR with an emptyDir.
+env = {e["name"]: e for e in spec["containers"][0].get("env", [])}
+assert "AUDIT_DIR" in env, "AUDIT_DIR env missing"
+audit_mounts = [
+    m for c in spec.get("containers", [])
+    for m in c.get("volumeMounts", []) if m["name"] == "audit"
+]
+assert any(m["mountPath"] == env["AUDIT_DIR"]["value"] for m in audit_mounts), (
+    "AUDIT_DIR is not backed by the audit volume"
+)
 PY
   rm -f "$f"
 }

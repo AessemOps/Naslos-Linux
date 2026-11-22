@@ -101,6 +101,7 @@ pub fn find_tool(name: &str) -> Option<&'static ToolDef> {
 
 /// What a dispatch produced: the HTTP status plus the response body text
 /// (the API's JSON result or error shape).
+#[derive(Debug)]
 pub struct Outcome {
     pub status: u16,
     pub body: String,
@@ -109,11 +110,14 @@ pub struct Outcome {
 /// Why `tools/call` refused before dispatching. These map onto
 /// `CallToolResult::error` — the caller's LLM must read them — not onto
 /// JSON-RPC protocol errors.
+#[derive(Debug)]
 pub enum CallError {
     UnknownTool,
     Scope { have: Scope, need: Scope },
     Confirm { target: String },
     BadPath { param: &'static str },
+    AuditUnavailable(String),
+    AuditWriteFailed(String),
     Internal(String),
 }
 
@@ -133,6 +137,14 @@ impl CallError {
             CallError::BadPath { param } => {
                 format!("the {param:?} argument is required and must be a string")
             }
+            CallError::AuditUnavailable(e) => format!(
+                "audit unavailable: this tool did not run; mutating calls are refused \
+                 until the audit log is repaired ({e})"
+            ),
+            CallError::AuditWriteFailed(e) => format!(
+                "audit_write_failed: the tool may have been applied, but its outcome \
+                 could not be recorded ({e})"
+            ),
             CallError::Internal(e) => format!("dispatch failed: {e}"),
         }
     }
@@ -229,11 +241,15 @@ pub async fn dispatch(
     name: &str,
     args: &JsonObject,
 ) -> Result<Outcome, CallError> {
-    let tool = find_tool(name).ok_or(CallError::UnknownTool)?;
+    let Some(tool) = find_tool(name) else {
+        record_mcp_refusal(state, token, name, None, "failed", "unknown_tool");
+        return Err(CallError::UnknownTool);
+    };
 
     // Scope: re-checked here even though tools/list filtered, because a
     // client may call an unlisted tool.
     if !token.scope.allows(tool.level) {
+        record_mcp_refusal(state, token, name, Some(tool), "denied", "scope");
         return Err(CallError::Scope {
             have: token.scope,
             need: tool.level,
@@ -255,17 +271,53 @@ pub async fn dispatch(
     if !target.is_empty() {
         let confirm = args.get("confirm").and_then(Value::as_str).unwrap_or("");
         if confirm != target {
+            record_mcp_refusal(state, token, name, Some(tool), "denied", "confirm_required");
             return Err(CallError::Confirm { target });
         }
     }
 
     match tool.special {
-        Special::PodLogs => return pods::pod_logs(state, args).await,
+        Special::PodLogs => {
+            let outcome = pods::pod_logs(state, args).await;
+            let status = match &outcome {
+                Ok(result) => result.status,
+                Err(_) => 400,
+            };
+            record_mcp_read(state, token, tool, tool.path, status);
+            return outcome;
+        }
         Special::None => {}
     }
 
-    let path = resolve_path(tool.path, args)?;
+    let path = match resolve_path(tool.path, args) {
+        Ok(path) => path,
+        Err(err) => {
+            record_mcp_refusal(state, token, name, Some(tool), "failed", "bad_path");
+            return Err(err);
+        }
+    };
     let uri = format!("{path}{}", query_string(tool, args));
+    let audit_target = crate::rbac::action_target(tool.path, &path);
+    let audit = crate::audit::Pending::mcp(
+        &token.id,
+        &token.name,
+        token.scope.as_str(),
+        tool.name,
+        &tool.method,
+        tool.path,
+        &path,
+        audit_target,
+    );
+    // A mutation is never dispatched without a durable begin record. Reads
+    // get one durable end record after dispatch instead.
+    let mut audit = if crate::rbac::is_unsafe(&tool.method) {
+        Some(state.audit.begin(audit).map_err(|e| {
+            degrade_mcp(state, &e);
+            CallError::AuditUnavailable(e)
+        })?)
+    } else {
+        None
+    };
 
     let mut builder = Request::builder().method(tool.method.clone()).uri(&uri);
     // GET/DELETE tools take their input as path segments and query params;
@@ -280,7 +332,7 @@ pub async fn dispatch(
         }
     };
 
-    // The synthetic identity handlers see for this call. `require_admin` is
+    // The synthetic identity handlers see for this call. `require_role` is
     // not mounted on the internal router; the identity exists so handlers
     // that audit the acting user (or check the admin group) behave exactly
     // as on `/api`.
@@ -312,10 +364,82 @@ pub async fn dispatch(
     let body_bytes = axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024)
         .await
         .map_err(|e| CallError::Internal(e.to_string()))?;
-    Ok(Outcome {
+    let outcome = Outcome {
         status,
         body: String::from_utf8_lossy(&body_bytes).into_owned(),
-    })
+    };
+
+    match audit.take() {
+        Some(pending) => {
+            if let Err(e) = state.audit.finish(&pending, status) {
+                degrade_mcp(state, &e);
+                return Err(CallError::AuditWriteFailed(e));
+            }
+        }
+        None => {
+            // A read: the outcome is useful even if the log write fails, but
+            // the subsystem still has to degrade so mutations stop.
+            record_mcp_read(state, token, tool, &path, status);
+        }
+    }
+    Ok(outcome)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_mcp_refusal(
+    state: &Arc<AppState>,
+    token: &TokenAuth,
+    tool_name: &str,
+    tool: Option<&ToolDef>,
+    outcome_state: &str,
+    error_code: &str,
+) {
+    let method = tool.map(|tool| tool.method.clone()).unwrap_or(Method::POST);
+    let route = tool.map(|tool| tool.path).unwrap_or("/mcp/tools/call");
+    let pending = crate::audit::Pending::mcp(
+        &token.id,
+        &token.name,
+        token.scope.as_str(),
+        tool_name,
+        &method,
+        route,
+        route,
+        Some(tool_name.to_string()),
+    );
+    if let Err(e) = state
+        .audit
+        .record_refusal(&pending, outcome_state, error_code)
+    {
+        degrade_mcp(state, &e);
+    }
+}
+
+fn record_mcp_read(
+    state: &Arc<AppState>,
+    token: &TokenAuth,
+    tool: &ToolDef,
+    path: &str,
+    status: u16,
+) {
+    let pending = crate::audit::Pending::mcp(
+        &token.id,
+        &token.name,
+        token.scope.as_str(),
+        tool.name,
+        &tool.method,
+        tool.path,
+        path,
+        crate::rbac::action_target(tool.path, path),
+    );
+    if let Err(e) = state.audit.record_once(&pending, status) {
+        degrade_mcp(state, &e);
+    }
+}
+
+fn degrade_mcp(state: &Arc<AppState>, reason: &str) {
+    if state.audit.mark_degraded(reason) {
+        crate::audit::spawn_degraded_alert(state.clone(), reason.to_string());
+    }
 }
 
 fn json_object(v: Value) -> JsonObject {
@@ -476,3 +600,132 @@ pub mod shares;
 pub mod system;
 pub mod users;
 pub mod virt;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::store::TokenAuth;
+
+    fn token(name: &str, scope: Scope) -> TokenAuth {
+        TokenAuth {
+            id: format!("tok-{name}"),
+            name: name.to_string(),
+            scope,
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_read_calls_are_audited_without_arguments() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let args = serde_json::json!({
+            "token": "canary-mcp-argument",
+            "password": "canary-mcp-password",
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        let outcome = dispatch(
+            &state,
+            &token("reader", Scope::Read),
+            "dashboard_get",
+            &args,
+        )
+        .await
+        .expect("dashboard_get dispatches");
+        assert_eq!(outcome.status, 200);
+        let records = state
+            .audit
+            .query(&crate::audit::AuditQuery::default())
+            .unwrap()
+            .records;
+        assert_eq!(records.len(), 1, "one durable record per MCP read");
+        let record = &records[0];
+        assert_eq!(record["actor"]["kind"], "mcp");
+        assert_eq!(record["actor"]["id"], "tok-reader");
+        assert_eq!(record["actor"]["name"], "reader");
+        assert_eq!(record["actor"]["auth"], "mcp-token");
+        assert_eq!(record["action"]["target"], "dashboard_get");
+        assert_eq!(record["action"]["name"], "mcp.tool_call");
+        assert_eq!(record["outcome"]["state"], "succeeded");
+        let serialized = serde_json::to_string(record).unwrap();
+        assert!(!serialized.contains("canary-mcp-argument"));
+        assert!(!serialized.contains("canary-mcp-password"));
+    }
+
+    #[tokio::test]
+    async fn refused_mcp_calls_are_audited_without_arguments() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let args = serde_json::json!({
+            "name": "canary-refused-tool",
+            "password": "canary-refused-password",
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+
+        let scope_err = dispatch(&state, &token("reader", Scope::Read), "share_create", &args)
+            .await
+            .expect_err("a read token cannot call a write tool");
+        assert!(
+            matches!(scope_err, CallError::Scope { .. }),
+            "{scope_err:?}"
+        );
+
+        let unknown_err = dispatch(
+            &state,
+            &token("reader", Scope::Read),
+            "not_a_real_tool",
+            &args,
+        )
+        .await
+        .expect_err("the tool does not exist");
+        assert!(
+            matches!(unknown_err, CallError::UnknownTool),
+            "{unknown_err:?}"
+        );
+
+        let records = state
+            .audit
+            .query(&crate::audit::AuditQuery::default())
+            .unwrap()
+            .records;
+        assert_eq!(records.len(), 2, "one record per refused call: {records:?}");
+        assert_eq!(records[0]["outcome"]["state"], "denied");
+        assert_eq!(records[0]["outcome"]["errorCode"], "scope");
+        assert_eq!(records[0]["action"]["target"], "share_create");
+        assert_eq!(records[1]["outcome"]["state"], "failed");
+        assert_eq!(records[1]["outcome"]["errorCode"], "unknown_tool");
+        assert_eq!(records[1]["action"]["target"], "not_a_real_tool");
+        let serialized = serde_json::to_string(&records).unwrap();
+        assert!(!serialized.contains("canary-refused"));
+        assert!(!serialized.contains("canary-refused-password"));
+    }
+
+    #[tokio::test]
+    async fn mcp_mutations_fail_closed_when_audit_is_degraded() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        assert!(state.audit.mark_degraded("test failure"));
+        let args = serde_json::json!({
+            "name": "canary-share",
+            "path": "/canary-share",
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        let err = dispatch(
+            &state,
+            &token("writer", Scope::Write),
+            "share_create",
+            &args,
+        )
+        .await
+        .expect_err("a degraded audit sink must refuse the tool");
+        assert!(matches!(err, CallError::AuditUnavailable(_)), "{err:?}");
+        assert!(state
+            .audit
+            .query(&crate::audit::AuditQuery::default())
+            .unwrap()
+            .records
+            .is_empty());
+    }
+}

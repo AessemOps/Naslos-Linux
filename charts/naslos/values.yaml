@@ -73,6 +73,21 @@ api:
   # Where the VM records (vms.json) are persisted, on the same state volume as
   # shares.json/apps.json.
   vmsFile: /var/lib/naslos/vms.json
+  # Append-only audit log (FR-AUD, docs/rbac-audit.md §7). JSONL segments live
+  # under this directory on the state volume (0700, 0600). The API refuses to
+  # start when the directory cannot be created or written, and refuses
+  # mutations when the chain is degraded. Keep the byte budget below the state
+  # PVC: raise api.sharesConfig.size (for example 128Mi) when raising these.
+  # With api.sharesConfig.enabled=false the chart backs this path with an
+  # emptyDir so the read-only-rootfs API can start, but that trail is lost on
+  # pod restart; durable audit requires the state volume.
+  auditDir: /var/lib/naslos/audit
+  auditRetentionDays: 90
+  auditMaxBytes: 16777216
+  auditSegmentBytes: 8388608
+  # Refuse mutations when the state volume has less free space than this,
+  # so the audit budget can never fill the shared volume and take down the API.
+  auditMinFreeBytes: 8388608
   # Base URL of the naslos-vmd Service (QEMU supervisor). Empty selects the
   # in-namespace default https://naslos-vmd.<workloadNamespace>.svc.cluster.local:9091.
   virtBaseURL: ""

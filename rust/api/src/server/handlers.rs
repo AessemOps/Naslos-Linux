@@ -32,7 +32,11 @@ pub async fn ready(State(state): State<Arc<AppState>>) -> Response {
     };
     json(
         StatusCode::OK,
-        serde_json::json!({ "status": "ok", "ldap": ldap }),
+        serde_json::json!({
+            "status": "ok",
+            "ldap": ldap,
+            "audit": state.audit.status(),
+        }),
     )
 }
 

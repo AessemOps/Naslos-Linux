@@ -1,12 +1,19 @@
-# RBAC roles and audit log (design)
+# RBAC roles and audit log
 
-Status: **design only (P1-11)**. No runtime enforcement or audit sink is
-implemented in this change. The route surface is being edited by the open P0
-pull requests (scheduled snapshots, replication, encryption, ACLs, external
-directory, alerting, config export), so per-route classification and the
-middleware split land **after** those PRs settle. Requirements are tracked as
-`FR-RBAC-01…` and `FR-AUD-01…` in [spec.md](spec.md) and are `[OPEN]` until
-implemented.
+Status: **Phase 2 + audit v1 implemented**. `rust/api/src/rbac.rs` derives the
+role per request and enforces the authoritative per-route minimum in one
+`require_role` middleware; `rust/api/src/audit.rs` writes the append-only
+JSONL chain and exposes the admin-only query/verify/export routes. Phase 2 is
+behavior-preserving: every existing owner route is classified **admin**, so
+`naslos_admins` keeps its full surface and `naslos_users` still receives
+`403`; operator/read-only route delegation is Phase 4.
+
+Still open: Authelia admission of `naslos_readonly`/`naslos_operators` and the
+operator 2FA rule (FR-RBAC-09), MCP scope-to-route-role parity once routes are
+delegated (FR-RBAC-07), terminal/VNC and Buddy peer audit coverage plus
+background/system actors (FR-AUD-03/10), and the role-aware UI plus audit
+viewer. Requirements are tracked as `FR-RBAC-01…` and `FR-AUD-01…` in
+[spec.md](spec.md).
 
 “RBAC” here means **application authorization for Naslos API users**, not
 Kubernetes RBAC (the chart's `Role`/`ClusterRole` objects are unrelated and
@@ -39,19 +46,20 @@ Non-goals for this stage:
 
 ## 2. Current state
 
-| Layer | Today |
+| Layer | Implemented |
 | --- | --- |
 | Proxy authentication | Traefik forwardAuth → Authelia → OpenLDAP; the API trusts `Remote-*` headers only from `TRAEFIK_CIDR` with the proxy secret (SEC-3/SEC-10) |
-| Groups | `naslos_admins` (owner gate) and `naslos_users` (authenticated baseline). Authelia's `users_filter` admits only these two groups |
-| Route groups | `public` (`/api/health`, `/api/ready`), the Buddy peer API and the `/mcp` endpoint with their own guards, `user_routes` (`/api/auth/me`, `/api/dashboard`, `/api/metrics`), `owner_routes` (every other `/api/*` route, behind `require_admin`), and the in-process `internal_router` used only by MCP dispatch |
-| MCP | Bearer tokens with `read` < `write` < `full` scopes; `tools/list` and `tools/call` re-check the scope; the dispatcher injects a synthetic admin identity into the internal router |
-| Audit | Only MCP `tools/call` is audited: a structured log line plus a bounded in-memory ring surfaced at `GET /api/mcp` (FR-MCP-07). Arguments are never recorded |
+| Groups | `naslos_admins` (owner gate), `naslos_users` (authenticated baseline), and the parsed-but-not-yet-admitted `naslos_operators`/`naslos_readonly`. Authelia's `users_filter` still admits only the first two (FR-RBAC-09) |
+| Role enforcement | One `require_role` middleware after `require_auth`, reading the authoritative `(method, path) → minimum` table in `rust/api/src/rbac.rs`; an unknown route/method is admin. Phase 2 keeps every owner route admin |
+| Route groups | `public` (`/api/health`, `/api/ready`), the Buddy peer API and `/mcp` with their own guards, the authenticated user+owner routers, and the in-process `internal_router` used only by MCP dispatch |
+| MCP | Bearer tokens with `read` < `write` < `full` scopes; `tools/list` and `tools/call` re-check the scope; the dispatcher injects a synthetic admin identity and now writes a durable audit record per call (no arguments) |
+| Audit | `rust/api/src/audit.rs`: append-only JSONL segments, SHA-256 chain, begin/end for HTTP mutations, denied requests, MCP calls and audit reads; admin-only `GET /api/audit`, `/verify`, `/export`; retention and fail-closed failure semantics |
 
-Important current detail: the UI labels `naslos_users` as “read-only”, but that
-group only reaches the dashboard, metrics and `/api/auth/me`; every inventory
-GET (shares, pools, apps, disks) is on the owner router and is admin-only. The
-new **read-only role is a new, privileged group**, not `naslos_users`. The
-misleading UI label must be corrected when the role model ships.
+The UI still labels `naslos_users` as “read-only”, but that group only reaches
+the dashboard, metrics and `/api/auth/me`; every inventory GET (shares, pools,
+apps, disks) stays on the admin router until Phase 4. The **read-only role is
+a new, privileged group**, not `naslos_users`. The misleading label is a
+Phase 5 UI change.
 
 ## 3. Role model
 
@@ -127,8 +135,8 @@ tests it against the route inventory. A prose table would drift.
 | Buddy peer API | `/api/buddy/v1/*` | peer Ed25519 key, not the role model |
 | MCP endpoint | `/mcp`, `/mcp/` | MCP bearer token scope, not the role model |
 | `user_routes` | `/api/auth/me`, `/api/dashboard`, `/api/metrics` | authenticated baseline |
-| `owner_routes` | every other `/api/*` route, including the `/api/{*rest}` 404 catch-all | **admin today**; split into read-only / operator / admin routers in Phase 2, then routes move between buckets in Phase 4 |
-| `internal_router` | the same handlers without HTTP auth, used only by MCP dispatch | MCP scope re-check (never mounted on the listener) |
+| `owner_routes` | every other `/api/*` route, including `/api/audit*` and the `/api/{*rest}` 404 catch-all | **admin (Phase 2)**; Phase 4 lowers individual entries in the `ROUTES` table |
+| `internal_router` | the same handlers without HTTP auth, used only by MCP dispatch | MCP scope re-check plus the dispatcher's own durable audit; never mounted on the listener |
 
 Classification is by **(HTTP method, path pattern)**, not path alone:
 
@@ -212,15 +220,15 @@ Traefik forwardAuth (Authelia, 2FA for privileged groups)
 
 ### 5.2 Route registration and deny-by-default
 
-Implementation shape (after the P0 merges):
+Implementation shape (shipped):
 
-- Split `owner_routes()` into `read_routes()`, `operator_routes()` and
-  `admin_routes()` (names illustrative), each layered with
-  `require_role(MinimumRole::…)` after `require_auth`. `internal_router()`
-  merges all of them for MCP dispatch without the HTTP auth layers.
-- Keep the current admin bucket as the default destination for every existing
-  owner route. Phase 4 moves routes out of it one family at a time; nothing is
-  moved to read-only or operator without a test.
+- `rust/api/src/rbac.rs` holds the authoritative `ROUTES` table; one
+  `require_role` middleware after `require_auth` looks up the request's
+  `(method, path)` and enforces the minimum. `internal_router()` keeps the
+  handlers for MCP dispatch without the HTTP auth layers.
+- Every existing owner route is `Admin` in Phase 2. Phase 4 moves route
+  families out of that bucket one at a time; nothing is moved to read-only or
+  operator without a test.
 - The `/api/{*rest}` catch-all stays auth-gated and role-checked by the router
   it belongs to (admin bucket by default), so an unknown path cannot become a
   probe.
@@ -264,12 +272,12 @@ escalation path:
 
 | Phase | Change | Behavior change |
 | --- | --- | --- |
-| 0 (this PR) | Design doc + `[OPEN]` requirements | none |
+| 0 | Design doc + `[OPEN]` requirements | none |
 | 1 | Audit sink and generic audit middleware (method/path based; no role classification) | mutations are audited; an audit failure refuses the mutation |
-| 2 | Role parser and `require_role` middleware; split routers; **every current owner route starts in the admin bucket**; `naslos_users` stays baseline | none: `naslos_admins` keeps full access, `naslos_users` still gets 403 on owner routes |
-| 3 | Add `naslos_operators` and `naslos_readonly` as optional LDAP groups; extend Authelia `users_filter` and the 2FA subject list; `/api/auth/me` adds `role` (additive); UI labels corrected | users without the new groups see no change; admins are unaffected |
-| 4 | Reclassify route families from the admin bucket to read-only/operator per §4, one family per PR, with tests and docs | only users placed in the new groups gain access |
-| 5 | Role-aware UI (hide/disable controls; the API still enforces) and the audit viewer | presentation only |
+| 2 (**implemented**) | Role parser, `require_role` middleware, authoritative `ROUTES` table, audit v1; **every current owner route is in the admin bucket**; `naslos_users` stays baseline | none: `naslos_admins` keeps full access, `naslos_users` and both new groups still get 403 on owner routes |
+| 3 (**open**) | Add `naslos_operators` and `naslos_readonly` as optional LDAP groups; extend Authelia `users_filter` and the 2FA subject list; `/api/auth/me` adds `role` (additive); UI labels corrected | users without the new groups see no change; admins are unaffected |
+| 4 (**open**) | Reclassify route families from the admin bucket to read-only/operator per §4, one family per PR, with tests and docs | only users placed in the new groups gain access |
+| 5 (**open**) | Role-aware UI (hide/disable controls; the API still enforces) and the audit viewer | presentation only |
 
 Phase 2 is intentionally a no-op release gate: it proves the middleware and
 admin compatibility before any route is delegated.
@@ -313,21 +321,31 @@ Guarantees for existing admins:
 
 ### 7.1 Storage and format
 
-- Location: `/var/lib/naslos/audit/` on the existing state volume (the
-  `naslos-shares-config` PVC mounted at `/var/lib/naslos`). Directory mode
-  `0700`, files `0600`, owned by the API's non-root user.
+- Location: `AUDIT_DIR` (default `/var/lib/naslos/audit/`) on the existing
+  state volume (the `naslos-shares-config` PVC mounted at
+  `/var/lib/naslos`). Directory mode `0700`, files `0600`, owned by the API's
+  non-root user. `AUDIT_DIR`, `AUDIT_RETENTION_DAYS`, `AUDIT_MAX_BYTES`,
+  `AUDIT_SEGMENT_BYTES` and `AUDIT_MIN_FREE_BYTES` are chart values
+  (`api.auditDir`, `api.auditRetentionDays`, …) rendered into the API
+  Deployment.
 - Format: JSON Lines, one record per line, UTF-8, no pretty printing.
   Segments are named `segments/audit-<20-digit-seq>.jsonl` and are opened with
   `O_APPEND`; a record is written and `fsync`ed before the mutation proceeds.
 - The active segment is never edited. Rotation seals a segment (flushes and
-  `fsync`s it, writes its digest to the checkpoint file) and opens the next
-  one. There is no update/delete API and no log-editing UI.
-- State PVC sizing: the current default is **64 MiB shared with every other
-  Naslos state file**. When audit ships, the chart must either raise
-  `api.sharesConfig.size` (recommended: 512 MiB) or add a dedicated
-  `naslos-audit` PVC mounted at `/var/lib/naslos/audit`. Until then the
-  default budget is small and retention prunes early; that is a deployment
-  decision, not a silent bypass.
+  `fsync`s it, updates `checkpoint.json` with its first/last sequence, record
+  count and head hash) and opens the next one. There is no update/delete API
+  and no log-editing UI.
+- State PVC sizing: the chart default is **64 MiB shared with every other
+  Naslos state file** and the audit budget defaults to 16 MiB / 8 MiB segments.
+  A deployment that needs a longer trail should raise `api.sharesConfig.size`
+  (for example 128 MiB or more) or add a dedicated PVC mounted at
+  `/var/lib/naslos/audit`. The API also refuses mutations when free space
+  drops below `AUDIT_MIN_FREE_BYTES` (default 8 MiB), so audit retention can
+  never fill the shared volume and take the API down silently.
+- If `api.sharesConfig.enabled=false`, the chart mounts a pod-lifetime
+  `emptyDir` at `api.auditDir` (default `/var/lib/naslos/audit`) so the
+  read-only-rootfs API can still start; that trail is not durable across pod
+  restarts. Durable audit requires the state volume (the default).
 - The audit directory is separate from the application log. Container stdout
   logs remain for operators/debugging and are not the audit trail.
 
@@ -346,6 +364,7 @@ Every record is a canonical JSON object. Field names are stable API contract.
   "hash": "sha256:<hex>",
   "actor": {
     "kind": "user",
+    "id": null,
     "name": "<username>",
     "role": "operator",
     "groups": ["naslos_users", "naslos_operators"],
@@ -390,6 +409,7 @@ Every record is a canonical JSON object. Field names are stable API contract.
 | `prev` | Hash of the previous record; all-zero genesis for the first retained record |
 | `hash` | `sha256` over the canonical record with `hash` omitted |
 | `actor.kind` | `user`, `mcp`, `system`, `peer` |
+| `actor.id` | MCP token id (stable even after rename); omitted for users/system/peer |
 | `actor.name` | Username for users; token name for MCP; component/job for system; peer name for peers |
 | `actor.role` | Effective role for users; token scope for MCP; omitted for system/peer |
 | `actor.auth` | `authelia`, `mcp-token`, `system`, `buddy-key` |
@@ -484,9 +504,14 @@ Not audited durably:
   hash))` and `prev` is the previous record's hash. Editing, reordering,
   deleting or inserting a record breaks verification from the first retained
   record.
-- A checkpoint file records each sealed segment's first/last sequence, record
-  count and head hash. On startup the API verifies the retained chain; an
-  admin-only `GET /api/audit/verify` repeats the check on demand.
+- `checkpoint.json` records the retained range, record count, head hash and
+  the head hashes of pruned segments (`prunedHeads`). It is written **before**
+  each record becomes visible, so verification can detect a missing/tampered
+  checkpoint, a truncated or rolled-back tail, an unanchored tail, or a
+  different head hash. On startup the API verifies the retained chain; an
+  admin-only `GET /api/audit/verify` repeats the check on demand. The first
+  retained record's `prev` must be genesis or one of those anchors, which is
+  how pruning preserves a verifiable chain.
 - A plain hash chain cannot stop a writer with full volume access from
   rewriting the whole chain. Recommended hardening: an HMAC key mounted from a
   Kubernetes Secret **outside** the state volume (`AUDIT_HMAC_KEY_FILE`), or a
@@ -502,12 +527,11 @@ Not audited durably:
 
 ### 7.7 Retention and size bounds
 
-- Proposed defaults: `AUDIT_RETENTION_DAYS=90`,
-  `AUDIT_MAX_BYTES=16777216` (16 MiB), `AUDIT_SEGMENT_BYTES=8388608`
-  (8 MiB). The byte budget must stay below the provisioned state volume so
-  pruning can run before the volume is full; raise it only together with the
-  volume (see §7.1). These are design defaults; the implementation PR owns the final
-  names and chart wiring.
+- Defaults: `AUDIT_RETENTION_DAYS=90`, `AUDIT_MAX_BYTES=16777216` (16 MiB),
+  `AUDIT_SEGMENT_BYTES=8388608` (8 MiB), `AUDIT_MIN_FREE_BYTES=8388608`.
+  The byte budget must stay below the provisioned state volume so pruning can
+  run before the volume is full; raise it only together with the volume
+  (see §7.1).
 - When the age or byte bound is exceeded, delete the **oldest sealed**
   segment(s) only. Never delete the active segment, the newest sealed
   segment, or the checkpoint. Write an `audit.retention.prune` record to the
@@ -547,52 +571,49 @@ The hard rule: **an audit write failure must not silently allow a mutation.**
 6. Logging the failure must not leak the failing mutation's secrets; audit
    errors record only the operation name, target and sanitized error.
 
-### 7.9 Audit access API (future)
+### 7.9 Audit access API (implemented)
 
-- `GET /api/audit` — admin-only, owner-gated (SEC-10), paginated, bounded
+- `GET /api/audit` — admin-only, owner-gated (SEC-10), bounded
   (`from`, `to`, `actor`, `action`, `outcome`, `limit`); returns records, never
   deleted/pending secrets.
 - `GET /api/audit/verify` — admin-only; verifies the retained chain and
   returns `{ok, firstSeq, lastSeq, firstHash, lastHash, records, errors}`.
-- `GET /api/audit/export` — admin-only JSONL stream for a time range; the
-  export itself is audited.
+- `GET /api/audit/export` — admin-only JSONL export for a time range; the
+  export itself is audited. It defaults to and accepts up to 50 000 records,
+  independent of the 1 000-record query cap.
 - No `PUT`/`PATCH`/`DELETE`; there is no API to edit or purge the log. The
-  UI is a viewer only.
+  UI viewer is still `[OPEN]` (Phase 5); the API is complete.
 
 ## 8. Testing plan
 
-Unit/contract (Rust, future):
+Unit/contract (Rust, shipped):
 
-| Planned test | Verifies |
+| Test | Verifies |
 | --- | --- |
 | `role_precedence_is_admin_operator_readonly`, `role_mapping_ignores_untrusted_identity_sources`, `naslos_users_stays_baseline` | mapping, case-insensitivity, admin superset, unknown group → baseline (FR-RBAC-01/02) |
-| `every_route_declares_a_minimum_role`, `unsafe_methods_are_never_readonly_without_an_exception` | route inventory has no unclassified `(method, path)`; unsafe methods are explicit (FR-RBAC-04) |
+| `every_route_declares_a_minimum_role`, `user_routes_are_baseline_and_owner_routes_are_admin`, `literal_routes_win_over_parameterized_patterns` | route inventory has no unclassified `(method, path)`; safe-method floors; Phase 2 admin bucket (FR-RBAC-04) |
 | `unclassified_route_falls_into_the_admin_bucket`, `role_hierarchy_is_monotonic` | deny-by-default and monotonic hierarchy (FR-RBAC-03/04/10) |
-| `owner_only_routes_refuse_operator`, `owner_only_routes_refuse_readonly`, `operator_cannot_mutate_owner_only_surfaces`, `readonly_cannot_mutate` | owner-only surfaces and method floor (FR-RBAC-05/06) |
-| `admin_group_keeps_full_access` | migration compatibility, including the existing owner-route sweep (FR-RBAC-08) |
-| `forged_identity_cannot_bypass_role` | forged extensions/headers still fail the proxy/role gates (FR-RBAC-03, extends `forged_identity_cannot_bypass_the_public_auth_layers`) |
-| `mcp_scope_is_never_weaker_than_the_route_role` | MCP parity (FR-RBAC-07) |
-| `audit_record_shape_and_chain` | canonical JSON, field contract, begin/end pairing (FR-AUD-02) |
-| `audit_chain_detects_tampering` | edited/deleted/truncated records fail verification (FR-AUD-06) |
-| `audit_write_failure_refuses_the_mutation` | failing begin → 503, handler not called (FR-AUD-08) |
-| `audit_end_failure_degrades_and_refuses_followups` | no silent success after an end-write failure (FR-AUD-08) |
-| `audit_redacts_canary_secrets_and_never_records_mcp_arguments` | redaction/allow-list (FR-AUD-05) |
-| `audit_retention_prunes_only_sealed_segments_and_records_it` | retention/size bound (FR-AUD-07) |
-| `audit_request_id_is_validated_and_echoed` | request correlation (FR-AUD-04) |
-| `audit_survives_restart_and_appends` | no truncation on restart (FR-AUD-01) |
-| `denied_mutation_is_audited`, `background_mutations_record_a_system_actor` | authorization denials and system actors (FR-AUD-03) |
-| `audit_never_records_mcp_arguments`, `buddy_peer_mutation_records_the_key_fingerprint` | MCP and peer actor coverage (FR-AUD-10) |
-| `audit_routes_are_admin_only`, `audit_read_is_itself_audited` | audit access control (FR-AUD-09) |
+| `operator_and_readonly_groups_are_denied_on_owner_routes`, `every_owner_route_is_403_for_non_admins` | owner-only surfaces and the Phase 2 method floor (FR-RBAC-05/06) |
+| `admin_requests_are_not_blocked_by_the_auth_layers` | existing admins keep full access (FR-RBAC-08) |
+| `forged_identity_cannot_bypass_the_public_auth_layers`, `internal_router_answers_with_a_synthetic_identity_and_hides_public_routes` | forged identities still fail the proxy/role gates; internal router not listener-mounted (FR-RBAC-03/07) |
+| `record_shape_and_chain` | canonical JSON, field contract, begin/end pairing (FR-AUD-02) |
+| `chain_detects_edited_and_deleted_records`, `truncating_the_active_tail_fails_verification`, `a_missing_checkpoint_fails_verification` | edited/deleted/truncated records and a missing checkpoint fail verification (FR-AUD-06) |
+| `degraded_log_refuses_begin`, `audit_begin_failure_refuses_the_mutation_without_a_record`, `audit_end_failure_degrades_and_reports_may_have_applied`, `audit_records_a_mutation_and_refuses_after_degrade`, `mcp_mutations_fail_closed_when_audit_is_degraded` | degraded/failed audit → 503, handler not called or "may have applied"; follow-ups refused (FR-AUD-08) |
+| `denied_mutations_are_audited_with_the_actor` | role denial is recorded with the actor and `outcome: denied` (FR-AUD-03) |
+| `redacts_canary_secrets_in_params`, `request_ids_are_echoed_and_audit_redacts_the_request_surface`, `mcp_read_calls_are_audited_without_arguments`, `refused_mcp_calls_are_audited_without_arguments` | redaction/allow-list, no bodies/query/headers/arguments; refused MCP calls are recorded (FR-AUD-05/10) |
+| `retention_prunes_only_sealed_segments_and_records_it`, `the_export_limit_honours_the_documented_maximum`, `export_returns_more_than_the_query_limit` | retention/size bound and the documented 50 000-record export cap (FR-AUD-07/09) |
+| `request_ids_are_validated`, `request_id_is_echoed_on_public_and_unauthenticated_responses` | request correlation validation and echo on every response (FR-AUD-04) |
+| `survives_restart_and_appends` | no truncation on restart (FR-AUD-01) |
+| `audit_routes_are_admin_only_and_the_read_is_audited` | audit access control and self-audit (FR-AUD-09) |
 
-Playwright (future, after the API ships):
+Playwright (future, Phase 5):
 
 | Test | Verifies |
 | --- | --- |
 | `rbac.spec.ts` | admin sees every control; operator sees operational controls but no identity/credential/security controls; read-only sees no mutation controls; forced API calls return 403 (FR-RBAC-06/09) |
 | `audit.spec.ts` | admin can view/filter/verify; operator/read-only get 403; records show actor/action/outcome; no canary secret appears (FR-AUD-05/09) |
 
-Live drill (after implementation, on a disposable test instance — never part
-of this design PR):
+Live drill (on a disposable test instance, after the Phase 3 auth change):
 
 1. Create the new groups and assign one user per role; verify admin, operator,
    read-only and baseline logins and 403/200 behavior for representative
@@ -610,43 +631,46 @@ of this design PR):
 
 ## 9. Open decisions
 
-These are deliberately left to the implementation PRs after the P0 route
-surface settles:
+Resolved in this pass:
+
+- **Audit query parameters**: `from`, `to` (RFC 3339), `actor` (actor name),
+  `action` (stable dotted action name), `outcome` (`attempted`/`succeeded`/
+  `failed`/`denied`) and `limit` (default 100, max 1000; export max 50 000).
+- **Audit storage sizing**: the state PVC default stays 64 MiB, the audit
+  budget is 16 MiB, and `AUDIT_MIN_FREE_BYTES` (8 MiB) refuses mutations before
+  the shared volume fills. Raising `api.sharesConfig.size` remains a
+  deployment choice.
+- **Retention bridge**: `checkpoint.json` keeps the pruned segment head
+  hashes; a prune record in the active segment is the human-readable audit of
+  what was removed.
+
+Still open (deferred, not silently accepted):
 
 - Whether operator may delete a VM or uninstall an app (workload-scoped but
   data-destroying). Recommendation: keep both admin; expose a scoped
   “delete workload” action later with `confirm` and audit if operators need
   it.
-- Whether read-only requires 2FA or only one-factor. Recommendation: operator
-  and admin get 2FA; read-only may stay one-factor, reviewed with the threat
-  model.
-- Whether the new groups are created by the bootstrap job (idempotent empty
-  groups) or by an admin after install. Recommendation: bootstrap them
-  empty so membership can be assigned immediately; existing installs get a
-  migration note.
-- Audit HMAC key custody and whether the checkpoint is also copied off-box.
-- Audit storage sizing: raise the shared state PVC or add a dedicated PVC.
-- The exact audit query/export parameters and pagination limits.
-- Whether `/api/auth/me` returns `role` as a string, an ordered list, or both.
-  Recommendation: additive `role` string plus the existing raw `groups`.
+- Whether read-only requires 2FA or only one-factor (FR-RBAC-09).
+- Whether the new groups are created by the bootstrap job or by an admin
+  after install. Recommendation: bootstrap them empty so membership can be
+  assigned immediately.
+- Audit HMAC key custody and off-box checkpoint copies (FR-AUD-06 SHOULD).
+- `/api/auth/me` `role` shape (recommendation: additive string plus the raw
+  `groups`).
 
-## 10. What waits for the P0 merges
+## 10. Remaining work
 
-- The final per-route classification table and the `read_routes`/
-  `operator_routes`/`admin_routes` split: the P0 PRs add and change routes in
-  `rust/api/src/server/mod.rs`, so editing that file now would conflict and
-  the classification would be stale on merge.
-- The route-inventory contract test and the role-aware Playwright specs.
-- The chart/Authelia changes (new groups in `users_filter`, operator in the
-  2FA subject list, audit volume size/env).
-- The UI role-aware navigation and the audit viewer.
-- The `/api/auth/me` additive `role` field and the UI label correction for
-  `naslos_users`.
-
-The audit middleware is route-surface independent (it keys off method and
-path), but it touches the same router module; land it after the P0 PRs to keep
-the merge surface small. The design and the `[OPEN]` requirements are stable
-now.
+- **Phase 3** — create the two groups, extend Authelia `users_filter` and the
+  2FA subject list, add `role` to `/api/auth/me`, and correct the
+  `naslos_users` UI label.
+- **Phase 4** — lower `ROUTES` entries from admin to operator/read-only per
+  §3.2/§4, one family per change, with contract tests and docs. Then enforce
+  MCP scope-to-route-role parity (FR-RBAC-07) so a `write` token cannot reach
+  an owner-only admin tool.
+- **Phase 5** — role-aware UI controls and the audit viewer.
+- **Audit coverage** — terminal/VNC session open/close, Buddy peer mutations
+  (key fingerprint instead of user), and background/system job actors
+  (FR-AUD-03/10).
 
 ## 11. References
 

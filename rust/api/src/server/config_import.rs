@@ -684,24 +684,6 @@ async fn plan_storage(
             enabled: record.enabled,
             ..Default::default()
         };
-        if let Err(e) = storage_schedules::validate_schedule(state, &mut value).await {
-            errors.push(format!("{label}: {e}"));
-            continue;
-        }
-        let key = format!("{}|{}", kind_name(value.kind), value.target);
-        if !seen.insert(key) {
-            plans.push(StoragePlan {
-                entry: label,
-                value,
-                existing: None,
-                changes: Vec::new(),
-                outcome: Outcome::Skipped(
-                    "another imported schedule already uses this kind/target; only one can be restored by natural key"
-                        .to_string(),
-                ),
-            });
-            continue;
-        }
         let matches: Vec<StorageSchedule> = current
             .iter()
             .filter(|schedule| schedule.kind == value.kind && schedule.target == value.target)
@@ -721,6 +703,42 @@ async fn plan_storage(
             continue;
         }
         let existing = matches.into_iter().next();
+        if let Some(schedule) = &existing {
+            // Validate an update as itself so the one-schedule-per-dataset
+            // overlap guard does not treat the local schedule as a conflict.
+            value.id = schedule.id.clone();
+        }
+        if let Err(e) = storage_schedules::validate_schedule(state, &mut value).await {
+            // An imported snapshot schedule that overlaps a different existing
+            // one is ambiguous, not malformed: skip it (the operator keeps the
+            // local schedule) instead of aborting the whole import.
+            if e.contains("already has snapshot schedule") {
+                plans.push(StoragePlan {
+                    entry: label,
+                    value,
+                    existing: None,
+                    changes: Vec::new(),
+                    outcome: Outcome::Skipped(e),
+                });
+                continue;
+            }
+            errors.push(format!("{label}: {e}"));
+            continue;
+        }
+        let key = format!("{}|{}", kind_name(value.kind), value.target);
+        if !seen.insert(key) {
+            plans.push(StoragePlan {
+                entry: label,
+                value,
+                existing: None,
+                changes: Vec::new(),
+                outcome: Outcome::Skipped(
+                    "another imported schedule already uses this kind/target; only one can be restored by natural key"
+                        .to_string(),
+                ),
+            });
+            continue;
+        }
         let changes = existing
             .as_ref()
             .map(|schedule| storage_changes(schedule, &value))

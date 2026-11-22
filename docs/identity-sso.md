@@ -107,7 +107,10 @@ AuthZ is enforced by `auth.Middleware`:
 
 - `RequireAuth` — source IP ∈ `TRAEFIK_CIDR` **and** the proxy secret **and** a
   `Remote-User` present.
-- `RequireAdmin` — additionally the user must be in group `naslos_admins`.
+- `RequireRole` — one middleware after `RequireAuth` maps the trusted
+  `Remote-Groups` to the effective role and enforces the authoritative
+  per-route minimum; unknown route/method → admin. The 401/403 split is
+  unchanged (`naslos_users` is the baseline).
 
 ## Access control
 
@@ -116,13 +119,21 @@ Two default groups:
 | Group | Access |
 | --- | --- |
 | `naslos_admins` | Full access (users, apps, disks, shares) |
-| `naslos_users` | Authenticated baseline: dashboard, metrics and `/api/auth/me`; the API's admin gate keeps every other owner route admin-only |
+| `naslos_users` | Authenticated baseline: dashboard, metrics and `/api/auth/me`; the API's role gate keeps every other owner route admin-only |
+| `naslos_operators` (not admitted yet) | Operator role: Phase 2 sees the same baseline + 403 behavior; Phase 4 adds workload-scoped routes |
+| `naslos_readonly` (not admitted yet) | Read-only role: Phase 2 sees the same baseline + 403 behavior; Phase 4 adds non-secret inventory reads |
 
-> **Planned roles (design only).** `naslos_readonly` and `naslos_operators`
-> are designed in [rbac-audit.md](rbac-audit.md) (spec `FR-RBAC`, **[OPEN]**).
-> They are not created by the chart, not admitted by Authelia's
-> `users_filter` and not enforced by the API yet; the group checks below are
-> unchanged.
+> **Roles (API enforced, Authelia admission pending).** The API derives
+> `naslos_admins` → admin, `naslos_operators` → operator,
+> `naslos_readonly` → read-only and otherwise the `naslos_users` baseline on
+> every request (case-insensitive, trusted `Remote-Groups` only) and enforces
+> a per-route minimum role (`rust/api/src/rbac.rs`, spec `FR-RBAC`). Phase 2 is
+> behavior-preserving: every owner route is still admin, so operator and
+> read-only users receive `403` until Phase 4. The chart does **not** create
+> the two new groups and Authelia's `users_filter` still admits only
+> `naslos_users`/`naslos_admins`, so a user in only a new group cannot log in
+> yet; that admission change and the operator 2FA rule are FR-RBAC-09
+> (`[OPEN]`). See [rbac-audit.md](rbac-audit.md).
 
 Authelia rules (`charts/naslos/templates/authelia-config.yaml`):
 

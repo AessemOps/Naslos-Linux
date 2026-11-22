@@ -32,6 +32,12 @@ async fn main() {
         }
     };
 
+    // A chain that failed startup verification is degraded: reads work,
+    // mutations are refused, and the operator gets one alert.
+    if let Some(reason) = state.audit.degraded_reason() {
+        naslos_api::audit::spawn_degraded_alert(state.clone(), reason);
+    }
+
     // Background metrics collector (port of startMetricsCollector).
     let collector = state.clone();
     tokio::spawn(async move { run_metrics_collector(collector).await });

@@ -145,6 +145,7 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
     Arc::new(AppState {
         proxy_secret: SECRET.to_string(),
         trusted_cidrs: vec![Cidr::parse("0.0.0.0/0").unwrap()],
+        audit: naslos_api::audit::AuditLog::for_test(),
         metrics: Manager::new(),
         talos: None,
         agent: Some(Arc::new(agent)),
@@ -326,6 +327,7 @@ async fn no_agent_configured_is_502() {
     let state = Arc::new(AppState {
         proxy_secret: SECRET.to_string(),
         trusted_cidrs: vec![Cidr::parse("0.0.0.0/0").unwrap()],
+        audit: naslos_api::audit::AuditLog::for_test(),
         metrics: Manager::new(),
         talos: None,
         agent: None,
@@ -1037,6 +1039,7 @@ async fn zvols_without_an_agent_are_502() {
     let state = Arc::new(AppState {
         proxy_secret: SECRET.to_string(),
         trusted_cidrs: vec![Cidr::parse("0.0.0.0/0").unwrap()],
+        audit: naslos_api::audit::AuditLog::for_test(),
         metrics: Manager::new(),
         talos: None,
         agent: None,

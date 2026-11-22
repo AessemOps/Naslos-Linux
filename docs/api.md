@@ -22,24 +22,44 @@ its relative `/api/*` calls reach the API on the same origin.
   error shape. Unknown `/api/*` paths stay behind the auth gate (401 without
   the proxy identity) so route existence is not leaked.
 - `GET /api/ready` always answers `200` (LDAP being down must not take the
-  dashboard down) and reports the measured state: `{"status":"ok","ldap":"up"|"down"}`.
+  dashboard down) and reports the measured state:
+  `{"status":"ok","ldap":"up"|"down","audit":"ok"|"degraded"}`. A degraded
+  audit log leaves reads working but refuses every unsafe `/api` request.
 - Authentication **is** enforced: the API is only reachable through Traefik's
   `proxy-identity` middleware, and `rust/api/src/auth.rs` independently requires the
   shared proxy secret plus a `Remote-User` header from the Traefik pod CIDR
   (see [identity-sso.md](identity-sso.md#header-trust)). The API refuses to start
   without the secret, so a request that bypasses Traefik cannot authenticate.
 
-### Authorization roles (planned)
+### Authorization roles
 
-Today there are two levels: `naslos_users` (dashboard, metrics and
-`/api/auth/me`) and `naslos_admins` (the rest of the authenticated `/api/*`
-surface, via `require_admin`). Public `/api/health` and `/api/ready` and the
-Ed25519-authenticated `/api/buddy/v1/*` peer routes are outside that
-`require_admin` gate. The read-only/operator/admin role model
-([rbac-audit.md](rbac-audit.md), spec `FR-RBAC`) is **[OPEN]** and will map
-route families to a minimum role after the P0 route work lands. Until then the
-route tables below keep the current admin-or-baseline behavior; no route is
-delegated by this document.
+Roles are derived per request from the trusted `Remote-Groups` header:
+`naslos_admins` → admin, else `naslos_operators` → operator, else
+`naslos_readonly` → read-only, else the `naslos_users` authenticated baseline.
+One `require_role` middleware after `require_auth` enforces the authoritative
+`(method, path)` table in `rust/api/src/rbac.rs`; an unclassified route or
+method is admin. Phase 2 is behavior-preserving: every owner route below is
+**admin**, so `naslos_admins` keeps its full surface and every other group
+still receives `403` on owner routes. Operator/read-only delegation, the
+Authelia admission change and the role-aware UI are tracked in
+[rbac-audit.md](rbac-audit.md) and spec `FR-RBAC`. Public `/api/health`,
+`/api/ready` and the Ed25519-authenticated `/api/buddy/v1/*` peer routes are
+outside the role gate.
+
+Every authenticated response carries `X-Request-ID` (a validated client value
+or a generated one). It is correlation only, never authorization.
+
+### Audit log
+
+Every unsafe `/api` request (including a denied one), MCP `tools/call`, and a
+read of the audit API itself writes a durable record to the append-only log
+before/after the handler (`docs/rbac-audit.md` §7). Records never contain
+bodies, query strings, cookies, authorization headers, tokens, hashes or
+credentials. If the begin record cannot be written the request is refused with
+`503 {"error":"audit unavailable: …"}` and the handler does not run; if the end
+record fails the API marks audit degraded and answers `503
+{"error":"audit_write_failed: …; the action may have been applied"}`. A
+degraded log refuses every later unsafe request until repaired.
 
 ## naslos-api routes
 
@@ -664,6 +684,18 @@ routes are ordinary owner routes:
 | PUT | `/api/mcp` | `{enabled}` — toggle the endpoint |
 | POST | `/api/mcp/tokens` | `{name, scope, expiresInDays?}` — create a token; the plaintext is in this response only |
 | DELETE | `/api/mcp/tokens/{id}` | Revoke a token |
+
+### Audit trail (admin-only)
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/audit` | Bounded query: `from`, `to` (RFC 3339), `actor`, `action`, `outcome`, `limit` (default 100, max 1000). Returns `{records, count, firstSeq, lastSeq, truncated}`; records omit secrets, bodies, query strings and headers |
+| GET | `/api/audit/verify` | Re-verify the retained SHA-256 chain: `{ok, firstSeq, lastSeq, firstHash, lastHash, records, errors}`. Also runs at startup |
+| GET | `/api/audit/export` | JSONL export for the same filters (default and max 50 000 records) as an attachment; the export itself is audited |
+
+There is no `PUT`/`PATCH`/`DELETE` audit route: the log is append-only, and
+retention prunes only the oldest sealed segments while writing an
+`audit.retention.prune` record. The UI viewer is `[OPEN]` (Phase 5).
 
 See [mcp.md](mcp.md) for the client-facing guide (scopes, the `confirm`
 rule, client configuration).

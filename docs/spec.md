@@ -1970,16 +1970,19 @@ follow-up.
 Naslos adds three privileged roles on top of the authenticated baseline:
 **read-only** (`naslos_readonly`), **operator** (`naslos_operators`) and
 **admin** (`naslos_admins`). The full role matrix, route classification and
-migration plan are in [`docs/rbac-audit.md`](rbac-audit.md). Enforcement is
-not implemented yet: the current route surface remains admin-or-baseline, and
-every requirement below is **[OPEN]** until its implementation PR lands after
-the open P0 route work.
+migration plan are in [`docs/rbac-audit.md`](rbac-audit.md). Roles, the
+single `require_role` middleware and the per-route table are implemented in
+`rust/api/src/rbac.rs`. Phase 2 is behavior-preserving: every existing owner
+route is classified **admin** (`naslos_admins` keeps its full surface and
+`naslos_users` still gets `403`), while route delegation to operator/read-only
+is Phase 4. The Authelia admission change (FR-RBAC-09) and MCP scope-to-role
+parity (FR-RBAC-07) remain open.
 
 - **FR-RBAC-01** — Roles MUST be ordered read-only < operator < admin, and a
   higher role MUST be a superset of the lower ones. `naslos_users` MUST remain
   the authenticated baseline (dashboard, metrics and own identity only), not a
-  privileged role; `naslos_admins` MUST remain the highest role. **[OPEN]**
-  *(planned contract tests: `role_precedence_is_admin_operator_readonly`,
+  privileged role; `naslos_admins` MUST remain the highest role.
+  **[IMPLEMENTED]** *(tests: `role_precedence_is_admin_operator_readonly`,
   `naslos_users_stays_baseline`)*
 - **FR-RBAC-02** — The role MUST be derived per request from the trusted
   `Remote-Groups` header injected through the SEC-3/SEC-10 proxy gate, matched
@@ -1987,26 +1990,25 @@ the open P0 route work.
   `naslos_operators` to operator, else `naslos_readonly` to read-only, else
   the authenticated baseline; other groups MUST NOT grant a role. No email,
   display name, path, query, body or client-supplied header may grant a role.
-  **[OPEN]** *(planned contract test:
+  **[IMPLEMENTED]** *(test:
   `role_mapping_ignores_untrusted_identity_sources`)*
 - **FR-RBAC-03** — Authorization MUST be enforced in one middleware that runs
   after `require_auth`; handlers MUST NOT perform ad-hoc role checks. A
   missing identity MUST remain `401`, and an authenticated user with an
   insufficient role MUST receive the existing `403` JSON string body
   `"Forbidden"`. The SEC-10 proxy-secret gate MUST NOT be weakened or bypassed.
-  **[OPEN]** *(planned contract tests:
-  `every_route_declares_a_minimum_role`,
-  `forged_identity_cannot_bypass_role`; existing regression test:
-  `forged_identity_cannot_bypass_the_public_auth_layers`)*
+  **[IMPLEMENTED]** *(tests: `every_route_declares_a_minimum_role`,
+  `forged_identity_cannot_bypass_the_public_auth_layers`,
+  `operator_and_readonly_groups_are_denied_on_owner_routes`)*
 - **FR-RBAC-04** — Every `(method, path)` pair on the owner surface MUST
   declare a minimum role, and an unclassified route or method MUST fall into
   the admin bucket (deny-by-default). Safe methods MUST never exceed
   read-only on a route the read-only role may use, and an unsafe method MUST
   be assigned operator or admin unless a documented non-mutating exception
   exists. The `/api/{*rest}` fallback MUST stay behind authentication.
-  **[OPEN]** *(planned contract tests:
-  `unclassified_route_falls_into_the_admin_bucket`,
-  `unsafe_methods_are_never_readonly_without_an_exception`)*
+  **[IMPLEMENTED]** *(tests: `unclassified_route_falls_into_the_admin_bucket`,
+  `every_route_declares_a_minimum_role`,
+  `user_routes_are_baseline_and_owner_routes_are_admin`)*
 - **FR-RBAC-05** — The owner-only surfaces MUST require admin and MUST NOT be
   delegated to operator or read-only: users/groups/passwords and identity
   writes; MCP settings and tokens; DDNS entries and credentials; domains,
@@ -2016,9 +2018,9 @@ the open P0 route work.
   pool destroy, device changes and dataset destroy; Buddy peer
   authorization/identity/restore; audit read/verify/export; config
   export/import; encryption key custody; external directory/Kerberos
-  configuration; terminal exec. **[OPEN]** *(planned contract tests:
-  `owner_only_routes_refuse_operator`,
-  `owner_only_routes_refuse_readonly`)*
+  configuration; terminal exec. **[IMPLEMENTED — phase 2]** All of these stay
+  in the admin bucket; the operator/read-only denials are tested by
+  `operator_and_readonly_groups_are_denied_on_owner_routes`.*
 - **FR-RBAC-06** — Read-only MUST be limited to non-secret inventory/status
   reads and MUST NOT mutate anything. Operator MUST be limited to
   workload-scoped, reversible or confirmed day-2 operations (VM
@@ -2027,71 +2029,77 @@ the open P0 route work.
   replication run/cancel, ACL presets, alert tests) and MUST NOT reach
   platform-destructive, identity, credential or security-configuration
   surfaces. The implementation's per-route table is authoritative; this
-  requirement's matrix is in `docs/rbac-audit.md` §3.2/§4. **[OPEN]**
-  *(planned contract tests: `operator_cannot_mutate_owner_only_surfaces`,
-  `readonly_cannot_mutate`)*
+  requirement's matrix is in `docs/rbac-audit.md` §3.2/§4.
+  **[IMPLEMENTED — phase 2]** No route is delegated yet, so both roles are
+  confined to the baseline routes; the per-route delegations are Phase 4.*
 - **FR-RBAC-07** — MCP MUST remain a separate bearer-token surface and MUST
   NOT become a role escalation path: `read`, `write` and `full` stay
   authoritative (FR-MCP-03/04), `tools/list` filtering is not enforcement,
   and `tools/call` MUST re-check the token scope against the route's minimum
   role before dispatch. The synthetic MCP identity MUST carry the effective
   role for audit, and the internal router MUST stay unreachable from the HTTP
-  listener. **[OPEN]** *(planned contract test:
-  `mcp_scope_is_never_weaker_than_the_route_role`; existing regression test:
-  `internal_router_answers_with_a_synthetic_identity_and_hides_public_routes`)*
+  listener. **[OPEN — phase 4]** Token scopes and `confirm` stay authoritative
+  and every call is durably audited now; scope-to-route-role parity waits
+  until routes are delegated. Existing regression test:
+  `internal_router_answers_with_a_synthetic_identity_and_hides_public_routes`.*
 - **FR-RBAC-08** — Migration MUST be behavior-preserving for existing admins:
   `naslos_admins` keeps full access without joining a new group, every
   current owner route stays in the admin bucket until deliberately
   reclassified, the `401`/`403` split and JSON error shape stay unchanged,
   and `/api/auth/me` only gains fields. A user in no privileged group MUST
   continue to receive `403` on owner routes. The role rollout MUST proceed in
-  the phases in `docs/rbac-audit.md` §6.1. **[OPEN]** *(existing regression
-  tests: `every_owner_route_is_403_for_non_admins`,
-  `admin_requests_are_not_blocked_by_the_auth_layers`; planned test:
-  `admin_group_keeps_full_access`)*
+  the phases in `docs/rbac-audit.md` §6.1. **[IMPLEMENTED]** *(tests:
+  `every_owner_route_is_403_for_non_admins`,
+  `admin_requests_are_not_blocked_by_the_auth_layers`,
+  `operator_and_readonly_groups_are_denied_on_owner_routes`)*
 - **FR-RBAC-09** — Authelia MUST admit `naslos_operators` and
   `naslos_readonly` in its LDAP `users_filter` before those groups can log
   in, and operator MUST be subject to the same two-factor rule as admin.
   Read-only MAY remain one-factor. These auth changes MUST be made in a
   dedicated reviewed change with a live login drill, not as a side effect of
-  route classification. **[OPEN]** *(planned live drill: admin/operator/
-  read-only/baseline login matrix; planned chart assertion:
-  `users_filter_admits_every_privileged_group`)*
+  route classification. **[OPEN — auth change]** The API already derives the
+  new groups; Authelia still admits only `naslos_users`/`naslos_admins`, so a
+  user in only a new group cannot log in yet. Planned live drill:
+  admin/operator/read-only/baseline login matrix.*
 - **FR-RBAC-10** — The route inventory MUST be testable: a contract test MUST
   walk every registered `(method, path)` and fail when a route has no minimum
   role, a moved route loses its expected role, or the role hierarchy is not
-  monotonic. **[OPEN]** *(planned contract tests:
-  `every_route_declares_a_minimum_role`,
+  monotonic. **[IMPLEMENTED]** *(tests: `every_route_declares_a_minimum_role`,
   `role_hierarchy_is_monotonic`)*
 
 ### 3.17 Audit log (`FR-AUD`)
 
 Naslos records every mutating action in an append-only, tamper-evident audit
 log on the state volume. The record shape, storage layout, retention and
-failure semantics are specified in [`docs/rbac-audit.md`](rbac-audit.md) §7.
-Only the MCP in-memory call ring exists today (FR-MCP-07); every requirement
-below is **[OPEN]** until the audit implementation lands.
+failure semantics are specified in [`docs/rbac-audit.md`](rbac-audit.md) §7
+and implemented in `rust/api/src/audit.rs`. HTTP mutations (including denied
+requests), MCP `tools/call` and audit reads are covered. Terminal/VNC session
+records, Buddy peer mutations and background/system actors are the remaining
+coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
 
 - **FR-AUD-01** — The audit log MUST be append-only JSON Lines stored under
   `/var/lib/naslos/audit/` on the state volume, with directory mode `0700`,
   file mode `0600`, `O_APPEND` writes and an `fsync` before the mutation
-  proceeds. There MUST be no update, delete or purge API/UI. **[OPEN]**
-  *(planned contract test: `audit_survives_restart_and_appends`)*
+  proceeds. There MUST be no update, delete or purge API/UI.
+  **[IMPLEMENTED]** *(test: `survives_restart_and_appends`)*
 - **FR-AUD-02** — Every record MUST carry the stable fields `v`, `seq`, `id`,
   `ts`, `requestId`, `prev`, `hash`, `actor`, `source`, `action`, `outcome`
   and `correlation` as specified in `docs/rbac-audit.md` §7.2. `begin` and
   `end` records MUST share a correlation id, and the JSON MUST be canonical
-  enough for deterministic hashing. **[OPEN]** *(planned contract test:
-  `audit_record_shape_and_chain`)*
+  enough for deterministic hashing. **[IMPLEMENTED]** *(tests:
+  `record_shape_and_chain`, `request_ids_are_validated`)*
 - **FR-AUD-03** — The audit log MUST cover every unsafe `/api` request that
   reaches a handler (including 4xx/5xx outcomes and authorization denials
   with a known actor), every MCP `tools/call`, terminal/VNC session
   open/close, Buddy peer mutations, and background mutations (snapshots,
   scrub, SMART, replication/cloud sync, DDNS, certificates, Buddy schedules,
   network watchdog, upgrades). Ordinary safe reads, health probes and
-  unauthenticated `401`s MUST NOT flood the durable log. **[OPEN]**
-  *(planned contract tests: `denied_mutation_is_audited`,
-  `background_mutations_record_a_system_actor`)*
+  unauthenticated `401`s MUST NOT flood the durable log.
+  **[IMPLEMENTED — HTTP/MCP] [OPEN — terminal/VNC sessions, Buddy peer
+  mutations, background/system jobs]** *(tests:
+  `denied_mutations_are_audited_with_the_actor`,
+  `audit_records_a_mutation_and_refuses_after_degrade`,
+  `mcp_read_calls_are_audited_without_arguments`)*
 - **FR-AUD-04** — Each record MUST identify the actor (user, MCP token,
   system component or peer key fingerprint), the source (method, route
   template, peer address, optional trusted client address and truncated user
@@ -2099,31 +2107,38 @@ below is **[OPEN]** until the audit implementation lands.
   client `X-Request-ID` MUST be accepted and echoed, otherwise one MUST be
   generated; async work MUST correlate by job/operation id. Client addresses
   MUST only be recorded when the proxy sets them and the API trusts that
-  header. **[OPEN]** *(planned contract test:
-  `audit_request_id_is_validated_and_echoed`)*
+  header. **[IMPLEMENTED]** *(tests: `request_ids_are_validated`,
+  `request_ids_are_echoed_and_audit_redacts_the_request_surface`,
+  `request_id_is_echoed_on_public_and_unauthenticated_responses`)*
 - **FR-AUD-05** — The audit log MUST NOT contain request/response bodies, MCP
   arguments, query strings, cookies, authorization headers, passwords, NT
   hashes, TOTP/WebAuthn secrets, proxy secrets, MCP tokens or their hashes,
   Buddy KEKs/DEKs or private keys, TLS private keys, DDNS/cloud/SMTP/webhook
   credentials, dataset encryption keys/passphrases or config-export contents.
   A recursive redactor MUST replace forbidden keys in any allow-listed params,
-  and `action.target` MUST never be a secret. **[OPEN]** *(planned contract
-  tests: `audit_redacts_canary_secrets_and_never_records_mcp_arguments`)*
+  and `action.target` MUST never be a secret. **[IMPLEMENTED]** *(tests:
+  `redacts_canary_secrets_in_params`,
+  `request_ids_are_echoed_and_audit_redacts_the_request_surface`,
+  `mcp_read_calls_are_audited_without_arguments`)*
 - **FR-AUD-06** — Records MUST be tamper-evident via a SHA-256 hash chain
-  (`hash` over the canonical record and `prev` as the previous hash) with
-  sealed-segment checkpoints. Startup and an admin-only verify endpoint MUST
+  (`hash` over the canonical record and `prev` as the previous hash) with a
+  checkpoint that anchors the prospective tail before each record and records
+  pruned-segment head hashes. Startup and an admin-only verify endpoint MUST
   detect edited, reordered, deleted, inserted or truncated records. A keyed
   MAC or off-box checkpoint SHOULD be added because a plain hash chain cannot
   stop a writer with full volume access. Verification failure MUST NOT
-  auto-repair or truncate the log. **[OPEN]** *(planned contract test:
-  `audit_chain_detects_tampering`)*
+  auto-repair or truncate the log. **[IMPLEMENTED]** The plain hash chain
+  remains the baseline; a keyed MAC/off-box checkpoint is still a SHOULD.
+  *(tests: `chain_detects_edited_and_deleted_records`,
+  `truncating_the_active_tail_fails_verification`,
+  `a_missing_checkpoint_fails_verification`)*
 - **FR-AUD-07** — Retention MUST be bounded by age and bytes (proposed
   defaults 90 days / 16 MiB, 8 MiB segments, below the shared state
   volume). Pruning MUST remove only the oldest sealed segments, MUST never remove the active segment or the newest
   sealed segment, and MUST write an `audit.retention.prune` record with the
   pruned segment hashes. A full volume MUST fail closed rather than silently
-  truncate or drop records. **[OPEN]** *(planned contract test:
-  `audit_retention_prunes_only_sealed_segments_and_records_it`)*
+  truncate or drop records. **[IMPLEMENTED]** *(test:
+  `retention_prunes_only_sealed_segments_and_records_it`)*
 - **FR-AUD-08** — Audit failure semantics MUST be fail-closed: a begin record
   MUST be durably written before the handler runs; if that write fails, the
   mutation MUST be refused with `503` and the handler MUST NOT run. An
@@ -2132,23 +2147,28 @@ below is **[OPEN]** until the audit implementation lands.
   applied; it MUST NOT return a success response with an unaudited outcome.
   While degraded, reads MAY proceed and `/api/ready` MUST report the audit
   state. A missing/unwritable audit directory at startup MUST be a fatal
-  configuration error for the API. **[OPEN]** *(planned contract tests:
-  `audit_write_failure_refuses_the_mutation`,
-  `audit_end_failure_degrades_and_refuses_followups`)*
-- **FR-AUD-09** — Audit access MUST be admin-only and owner-gated: paginated
+  configuration error for the API. **[IMPLEMENTED]** *(tests:
+  `degraded_log_refuses_begin`, `audit_begin_failure_refuses_the_mutation_without_a_record`,
+  `audit_end_failure_degrades_and_reports_may_have_applied`,
+  `audit_records_a_mutation_and_refuses_after_degrade`,
+  `mcp_mutations_fail_closed_when_audit_is_degraded`)*
+- **FR-AUD-09** — Audit access MUST be admin-only and owner-gated: a bounded
   query, chain verification and JSONL export MAY be exposed at
   `/api/audit`, `/api/audit/verify` and `/api/audit/export`; there MUST be no
   mutation, purge or delete route. The audit viewer/export MUST itself be
-  audited. **[OPEN]** *(planned contract tests:
-  `audit_routes_are_admin_only`, `audit_read_is_itself_audited`)*
+  audited. **[IMPLEMENTED]** *(tests:
+  `audit_routes_are_admin_only_and_the_read_is_audited`,
+  `the_export_limit_honours_the_documented_maximum`,
+  `export_returns_more_than_the_query_limit`)*
 - **FR-AUD-10** — MCP MUST record every `tools/call` durably (token id/name,
   tool, scope, status, duration, generated MCP call id) while NEVER recording
   arguments; the existing in-memory ring MAY remain as a UI convenience.
   System actors MUST be recorded for scheduled/background work, and Buddy
   peer mutations MUST record the peer key fingerprint rather than a
-  username. **[OPEN]** *(planned contract tests:
-  `audit_never_records_mcp_arguments`,
-  `buddy_peer_mutation_records_the_key_fingerprint`)*
+  username. **[IMPLEMENTED — MCP] [OPEN — system actors and Buddy peer
+  fingerprints]** *(tests: `mcp_read_calls_are_audited_without_arguments`,
+  `refused_mcp_calls_are_audited_without_arguments`,
+  `mcp_mutations_fail_closed_when_audit_is_degraded`)*
 
 ---
 
@@ -2257,12 +2277,14 @@ below is **[OPEN]** until the audit implementation lands.
 | `/api/ws/logs` `/api/ws/exec` | WS | Streams (§3.6) |
 | `/*` | GET | UI static assets (legacy `/var/naslos/ui` path; the served UI is the `naslos-ui` deployment) |
 
-Until FR-RBAC is implemented, every route in this table except `/api/health`,
-`/api/ready`, `/api/auth/me`, `/api/dashboard`, `/api/metrics` and the
-self-authenticating Buddy/MCP surfaces is admin-only (`naslos_admins`). The
-planned read-only/operator/admin classification is in
-[`docs/rbac-audit.md`](rbac-audit.md) §3–§4 and is **[OPEN]**; the table keeps
-the current behavior until the post-P0 implementation lands.
+FR-RBAC Phase 2 is enforced by one `require_role` middleware after
+`require_auth`: every route in this table except `/api/health`, `/api/ready`,
+`/api/auth/me`, `/api/dashboard`, `/api/metrics` and the self-authenticating
+Buddy/MCP surfaces remains **admin-only** (`naslos_admins`). The authoritative
+per-route table is `rust/api/src/rbac.rs`; the intended Phase 4
+read-only/operator classification is in
+[`docs/rbac-audit.md`](rbac-audit.md) §3–§4. Until that reclassification lands,
+operator and read-only users receive `403` on owner routes.
 
 ### 4.3 `naslos-agent` routes (host-level)
 
@@ -2525,26 +2547,28 @@ ingress): peer → nginx → API, with the chart's `buddy` values enabled:
 Rust verification: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
 and `cargo test` in `rust/` (agent and API). `npm run check` in `ui/` with 0 errors.
 
-RBAC and the audit log (FR-RBAC, FR-AUD) are **[OPEN]** and have no executable
-suite yet. Their implementation PRs carry these tests; until then the current
-admin gate is protected by the existing contract tests
-(`every_owner_route_is_403_for_non_admins`,
-`admin_requests_are_not_blocked_by_the_auth_layers`,
-`forged_identity_cannot_bypass_the_public_auth_layers`). Planned:
+RBAC and the audit log (FR-RBAC, FR-AUD) now have an executable suite in
+`rust/api/src/rbac.rs`, `rust/api/src/audit.rs` and
+`rust/api/src/server/mod.rs`:
 
-| Planned test | Verifies |
+| Shipped test | Verifies |
 | --- | --- |
-| `role_precedence_is_admin_operator_readonly`, `role_mapping_ignores_untrusted_identity_sources`, `naslos_users_stays_baseline` | FR-RBAC-01/02 |
-| `every_route_declares_a_minimum_role`, `unclassified_route_falls_into_the_admin_bucket`, `role_hierarchy_is_monotonic`, `unsafe_methods_are_never_readonly_without_an_exception` | FR-RBAC-03/04/10 |
-| `owner_only_routes_refuse_operator`, `owner_only_routes_refuse_readonly`, `operator_cannot_mutate_owner_only_surfaces`, `readonly_cannot_mutate` | FR-RBAC-05/06 |
-| `mcp_scope_is_never_weaker_than_the_route_role`, `admin_group_keeps_full_access`, `forged_identity_cannot_bypass_role` | FR-RBAC-07/08 |
-| Authelia chart assertion `users_filter_admits_every_privileged_group` + admin/operator/read-only/baseline login drill | FR-RBAC-09 |
-| `audit_record_shape_and_chain`, `audit_survives_restart_and_appends`, `audit_request_id_is_validated_and_echoed` | FR-AUD-01/02/04 |
-| `audit_chain_detects_tampering`, `audit_redacts_canary_secrets_and_never_records_mcp_arguments` | FR-AUD-05/06 |
-| `denied_mutation_is_audited`, `background_mutations_record_a_system_actor`, `buddy_peer_mutation_records_the_key_fingerprint` | FR-AUD-03/10 |
-| `audit_write_failure_refuses_the_mutation`, `audit_end_failure_degrades_and_refuses_followups`, `audit_retention_prunes_only_sealed_segments_and_records_it` | FR-AUD-07/08 |
-| `audit_routes_are_admin_only`, `audit_read_is_itself_audited` | FR-AUD-09 |
-| `ui/tests/rbac.spec.ts`, `ui/tests/audit.spec.ts` (planned) | FR-RBAC-06/09, FR-AUD-05/09 (role-aware controls, forced 403s, viewer/verify, redaction) |
+| `role_precedence_is_admin_operator_readonly`, `role_mapping_ignores_untrusted_identity_sources`, `naslos_users_stays_baseline`, `role_hierarchy_is_monotonic` | FR-RBAC-01/02/10 |
+| `every_route_declares_a_minimum_role`, `unclassified_route_falls_into_the_admin_bucket`, `literal_routes_win_over_parameterized_patterns` | FR-RBAC-03/04/10 |
+| `operator_and_readonly_groups_are_denied_on_owner_routes`, `every_owner_route_is_403_for_non_admins`, `admin_requests_are_not_blocked_by_the_auth_layers` | FR-RBAC-05/06/08 |
+| `forged_identity_cannot_bypass_the_public_auth_layers`, `internal_router_answers_with_a_synthetic_identity_and_hides_public_routes` | FR-RBAC-03/07 |
+| `record_shape_and_chain`, `survives_restart_and_appends`, `request_ids_are_validated`, `query_filters_actor_action_and_outcome` | FR-AUD-01/02/04 |
+| `chain_detects_edited_and_deleted_records`, `truncating_the_active_tail_fails_verification`, `a_missing_checkpoint_fails_verification`, `redacts_canary_secrets_in_params`, `request_ids_are_echoed_and_audit_redacts_the_request_surface` | FR-AUD-05/06 |
+| `audit_records_a_mutation_and_refuses_after_degrade`, `degraded_log_refuses_begin`, `mcp_mutations_fail_closed_when_audit_is_degraded` | FR-AUD-03/08 |
+| `retention_prunes_only_sealed_segments_and_records_it` | FR-AUD-07 |
+| `audit_routes_are_admin_only_and_the_read_is_audited`, `the_export_limit_honours_the_documented_maximum`, `export_returns_more_than_the_query_limit` | FR-AUD-09 |
+| `mcp_read_calls_are_audited_without_arguments`, `refused_mcp_calls_are_audited_without_arguments` | FR-AUD-10 (MCP) |
+
+Still open: Authelia admission and 2FA for the new groups (FR-RBAC-09), MCP
+scope-to-route-role parity after route delegation (FR-RBAC-07), terminal/VNC
+and Buddy peer session records plus background/system actors (FR-AUD-03/10),
+and the UI role-aware controls/audit viewer (`ui/tests/rbac.spec.ts`,
+`ui/tests/audit.spec.ts`).
 
 LDAP resilience (FR-IDN-11/12) is covered by
 `rust/api/src/identity.rs` (lazy client and retry-after-failure cases) plus this

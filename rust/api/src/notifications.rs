@@ -9,6 +9,7 @@ pub const EVENT_ZFS_HEALTH: &str = "zfs_health";
 pub const EVENT_DISK_FAILURE: &str = "disk_failure";
 pub const EVENT_BACKUP_FAILURE: &str = "backup_failure";
 pub const EVENT_BACKUP_SUCCESS: &str = "backup_success";
+pub const EVENT_AUDIT: &str = "audit";
 /// The event name used by a channel's manual test action. It is not routable.
 pub const EVENT_TEST: &str = "test";
 
