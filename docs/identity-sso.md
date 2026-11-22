@@ -36,6 +36,11 @@ Users are created with objectClasses `inetOrgPerson`, `posixAccount`,
 `shadowAccount`; enabling/disabling maps to `shadowExpire` (`-1` = enabled,
 `1` = disabled).
 
+An optional external LDAP source is configurable but **disabled by default** and
+does not participate in authentication yet; this internal directory remains the
+source of record. See [external-directory.md](external-directory.md) for the
+phase-1 configuration contract and the AD/Kerberos roadmap.
+
 ## Shared Password Flow
 
 1. User changes password via the Naslos UI (or admin sets it).

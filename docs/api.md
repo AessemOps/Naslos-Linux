@@ -411,6 +411,21 @@ rule, client configuration).
 | `LDAP_BIND_PASS_FILE` | — | File holding the service-account password (mounted from `naslos-openldap`/`service-password`). **Required** when identity is enabled: there is no inline `LDAP_BIND_PASS` fallback (it was inherited by forked `helm`/`kubectl`/`talosctl`/`git`). `LDAP_CA_CERT` is required when `LDAP_USE_TLS=true` |
 | `LDAP_USE_TLS` | `true` | Use LDAPS |
 | `LDAP_CA_CERT` | — | Path to CA cert for LDAPS verification |
+| `EXTERNAL_DIRECTORY_ENABLED` | `false` | Validate an optional external LDAP source (FR-EXT phase 1). Disabled by default; it does not participate in authentication yet |
+| `EXTERNAL_DIRECTORY_PROVIDER` | `ldap` | Provider type; `ad` is rejected until phase 2 |
+| `EXTERNAL_DIRECTORY_HOST` | — | External LDAP hostname/IPv4 (no scheme/port/path) |
+| `EXTERNAL_DIRECTORY_PORT` | `636` (TLS) / `389` | External LDAP port |
+| `EXTERNAL_DIRECTORY_BASE_DN` | — | External base DN |
+| `EXTERNAL_DIRECTORY_BIND_DN` | — | External service bind DN |
+| `EXTERNAL_DIRECTORY_BIND_PASS_FILE` | — | File holding the external bind password; the chart mounts a Secret. There is no inline fallback |
+| `EXTERNAL_DIRECTORY_USER_SEARCH_BASE` | base DN | User search base (must be inside the base DN) |
+| `EXTERNAL_DIRECTORY_GROUP_SEARCH_BASE` | base DN | Group search base (must be inside the base DN) |
+| `EXTERNAL_DIRECTORY_UID_ATTRIBUTE` | `uid` | Login-name attribute |
+| `EXTERNAL_DIRECTORY_UID_NUMBER_ATTRIBUTE` | `uidNumber` | POSIX uid attribute |
+| `EXTERNAL_DIRECTORY_GID_NUMBER_ATTRIBUTE` | `gidNumber` | POSIX gid attribute |
+| `EXTERNAL_DIRECTORY_GROUP_MEMBER_ATTRIBUTE` | `member` | Group-member attribute |
+| `EXTERNAL_DIRECTORY_USE_TLS` | `true` | LDAPS for the external source; plaintext is refused off loopback |
+| `EXTERNAL_DIRECTORY_CA_CERT` | — | CA bundle path; required when external TLS is on |
 | `TRAEFIK_CIDR` | `10.244.0.0/16` | Comma-separated CIDRs trusted for auth headers (the cluster pod CIDR Traefik sources from); the `X-Naslos-Proxy-Secret` is the actual proof of the proxy hop |
 | `NASLOS_NAMESPACE` | — | Namespace injected by the Helm chart |
 | `KUBECONFIG` | — | Path to kubeconfig (default: in-cluster) |

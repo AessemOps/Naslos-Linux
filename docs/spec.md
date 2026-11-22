@@ -306,6 +306,71 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-IDN-16** — Change detection for the node's mirror MUST NOT rely on
   whole-second timestamps: two writes in the same second MUST both take effect.
 
+### 3.2.1 External directory (`FR-EXT`)
+
+An operator MAY configure an external LDAP directory as an additional identity
+source. Phase 1 is configuration-only: the internal OpenLDAP store remains the
+default and the system of record, and **FR-IDN-01…16 continue to apply
+unchanged**. Live source selection, AD domain join, Kerberos and the UI are
+later phases and are marked **[OPEN]** below.
+
+- **FR-EXT-01** — External-directory integration MUST be disabled by default,
+  MUST NOT change request-time authentication, and MUST NOT alter the internal
+  OpenLDAP, Samba-mirror or Authelia paths while disabled. *(tests:
+  `directory::tests::disabled_by_default_and_requires_no_settings`)*
+- **FR-EXT-02** — When enabled, the API MUST validate the external provider
+  configuration at startup and MUST fail closed: every required field is
+  present, DNs contain `=` and no control characters, attribute names are
+  valid, search bases are inside the configured base DN, and the bind-password
+  file is readable and non-empty. An invalid configuration MUST disable only
+  the external source; the API, the internal directory and non-identity
+  features MUST keep working. *(tests:
+  `directory::tests::enabled_config_is_parsed_with_defaults`,
+  `directory::tests::enabled_requires_the_core_fields`,
+  `directory::tests::invalid_boolean_is_refused`,
+  `directory::tests::dns_paths_and_attributes_are_validated`,
+  `directory::tests::search_bases_must_stay_inside_the_base_dn`,
+  `directory::tests::bind_password_file_is_required_absolute_and_non_empty`)*
+- **FR-EXT-03** — Bind credentials MUST be read only from a mounted Secret
+  file; inline/environment password values and chart values MUST NOT be
+  accepted. The validated configuration MUST NOT retain the password, and no
+  error or debug rendering may include it. *(tests:
+  `directory::tests::the_secret_is_read_on_demand_and_never_stored_or_logged`,
+  `directory::tests::bind_password_file_is_required_absolute_and_non_empty`)*
+- **FR-EXT-04** — The external-directory configuration MUST require LDAPS with
+  a configured CA bundle and MUST refuse a non-loopback plaintext host.
+  *(tests: `directory::tests::tls_requires_an_absolute_ca_path`,
+  `directory::tests::plaintext_ldap_is_refused_off_loopback`)*
+- **FR-EXT-05** — User and group search bases and the uid, uidNumber, gidNumber
+  and group-member attributes MUST be explicit configuration with deterministic
+  defaults (`uid`, `uidNumber`, `gidNumber`, `member`; search bases default to
+  the base DN). *(tests:
+  `directory::tests::enabled_config_is_parsed_with_defaults`,
+  `directory::tests::search_bases_must_stay_inside_the_base_dn`,
+  `directory::tests::dns_paths_and_attributes_are_validated`)*
+- **FR-EXT-06** — Phase 1 MUST accept only the `ldap` provider; an Active
+  Directory provider value MUST be rejected until phase 2 implements it.
+  *(tests: `directory::tests::active_directory_is_reserved_for_phase_two`)*
+- **FR-EXT-07** — **[OPEN]** Live external identity reads MUST be read-only and
+  lazy, with the same outage semantics as FR-IDN-11/12, and MUST NOT write
+  password or account changes back to the external directory.
+- **FR-EXT-08** — **[OPEN]** External identities MUST be merged with internal
+  identities deterministically: name/uid/gid collisions MUST be rejected or
+  resolved by a documented, stable rule, and an external user MUST NOT
+  silently shadow an internal user.
+- **FR-EXT-09** — **[OPEN]** External users and groups MUST feed the Samba
+  account mirror (FR-IDN-13) and share access (FR-SHR-07) only after their
+  POSIX uid/gid mapping is stable and collision-checked.
+- **FR-EXT-10** — **[OPEN]** Authelia MUST authenticate external identities
+  only after the read-only merge and group mapping are implemented; enabling an
+  external source MUST NOT lock out internal administrators.
+- **FR-EXT-11** — **[OPEN]** Active Directory domain join (Samba winbind/idmap)
+  and the UI for configuring either provider are phase 2.
+- **FR-EXT-12** — **[OPEN]** Kerberos realms/keytabs and NFS `sec=krb5` are
+  phase 3 and MUST NOT be offered until NFS-Ganesha supports Kerberos. The NFS
+  export path MUST remain `AUTH_SYS` (`SecType = sys`, `Active_krb5 = false`)
+  and the UI MUST NOT advertise Kerberos before then.
+
 ### 3.3 Shares (`FR-SHR`)
 
 - **FR-SHR-01** — Shares MUST be backed by ZFS datasets: a share path MUST be a
