@@ -92,6 +92,11 @@ api:
   # record and the previous-config snapshot this API needs to revert. Lives on
   # the same state volume as the other config files.
   networkStateFile: /var/lib/naslos/network.json
+  # Scheduled storage maintenance (FR-STO-10/11): periodic snapshot schedules,
+  # per-pool scrub schedules and their last/next-run state. Lives on the same
+  # state volume as the other config files; the scheduler ticks every minute.
+  storageSchedulesFile: /var/lib/naslos/storage-schedules.json
+  storageSchedulerIntervalMs: 60000
   # App-install subsystem state (docs/app-catalog.md): installed-app records,
   # configured chart sources and base domains, plus the git clone cache. All live
   # on the state volume beside shares.json.
@@ -107,6 +112,40 @@ api:
   ldapCA:
     secretName: naslos-openldap-tls
     key: ca.crt
+  # Optional external directory source (FR-EXT, docs/external-directory.md).
+  # Phase 1 parses and validates this configuration only: the internal
+  # OpenLDAP directory remains the identity source of record, request-time
+  # authentication does not use the external provider, and this is disabled by
+  # default. The bind password comes from an existing Secret and is never a
+  # value here; the CA is a separate Secret. Enabling the block with a missing
+  # Secret leaves the external source disabled (the API logs the error and
+  # keeps serving), so create both Secrets before enabling.
+  externalDirectory:
+    enabled: false
+    provider: ldap
+    host: ""
+    # Unset: the chart selects 636 with TLS and 389 without, and this key
+    # overrides that default when set.
+    # port: 636
+    useTLS: true
+    baseDN: ""
+    bindDN: ""
+    # Secret key holding the service-account password (mounted as a file).
+    bindPasswordSecret:
+      name: ""
+      key: bind-password
+    # Secret key holding the CA bundle used to verify the server certificate.
+    caSecret:
+      name: ""
+      key: ca.crt
+    # Empty search bases default to baseDN.
+    userSearchBase: ""
+    groupSearchBase: ""
+    # POSIX identity mapping attributes (phase 1 configuration only).
+    uidAttribute: uid
+    uidNumberAttribute: uidNumber
+    gidNumberAttribute: gidNumber
+    groupMemberAttribute: member
   # The API shells out to the Helm and kubectl CLIs. A concurrent Apps read
   # (one `helm list` per app namespace) needs CPU and memory headroom for those
   # child processes: with 500m/256Mi the cgroup throttles and reclaims, and a
