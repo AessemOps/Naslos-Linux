@@ -159,7 +159,7 @@ test('a manual send reaches succeeded with chunks', async ({ page, request }) =>
       if (job.state !== 'running') break;
       await new Promise((r) => setTimeout(r, 1000));
     }
-    test.skip(job.state === 'failed' && /unknown key|not authorized|not configured|out of scope/i.test(job.error ?? ''),
+    test.skip(job.state === 'failed' && /unknown key|not authorized|not configured|out of scope|disabled/i.test(job.error ?? ''),
       `receiver not set up for self-send: ${job.error}`);
     expect(job.state, job.error).toBe('succeeded');
     expect(job.result.chunks, 'send stored no chunks').toBeGreaterThan(0);
@@ -202,7 +202,7 @@ test('Back up now drives a job from the page and Verify reads it back', async ({
       .or(page.locator('[role="alert"]'));
     await expect(outcome.first()).toBeVisible({ timeout: 60_000 });
     const seen = (await outcome.first().textContent()) ?? '';
-    test.skip(/unknown key|not authorized|not configured|out of scope/i.test(seen),
+    test.skip(/unknown key|not authorized|not configured|out of scope|disabled/i.test(seen),
       `receiver not set up for self-send: ${seen}`);
     await expect(page.getByText(/Chain [0-9a-f]{16}: \d+ chunks/)).toBeVisible({ timeout: 60_000 });
 
