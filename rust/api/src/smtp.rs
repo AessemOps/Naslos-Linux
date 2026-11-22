@@ -25,6 +25,10 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWrite
 
 /// Upper bound on one SMTP reply line, to keep a hostile/broken server bounded.
 pub const MAX_REPLY_LINE: usize = 4096;
+/// Upper bound on the number of lines in one multiline reply.
+pub const MAX_REPLY_LINES: usize = 64;
+/// Upper bound on the total bytes of one multiline reply.
+pub const MAX_REPLY_BYTES: usize = 16 * 1024;
 /// Upper bound on the DATA payload (headers plus body).
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 /// Upper bound on recipients so one event cannot fan out unboundedly.
@@ -352,12 +356,16 @@ impl Manager {
         // A hand-edited settings file may have bypassed save-time validation;
         // never send with an unknown TLS mode or an invalid credential pair.
         validate_fields(settings)?;
-        let host = crate::alert_transport::normalize_host(&settings.host)?;
-        if host.is_empty() {
-            return Err("SMTP host is empty".to_string());
-        }
-        let addrs = crate::alert_transport::resolve_target(&host, settings.port).await?;
-        let fut = session(settings, &host, &addrs, event, notif);
+        // DNS resolution is inside the timeout too, so a stalled resolver
+        // cannot delay the joined notification dispatch without bound.
+        let fut = async {
+            let host = crate::alert_transport::normalize_host(&settings.host)?;
+            if host.is_empty() {
+                return Err("SMTP host is empty".to_string());
+            }
+            let addrs = crate::alert_transport::resolve_target(&host, settings.port).await?;
+            session(settings, &host, &addrs, event, notif).await
+        };
         tokio::time::timeout(SMTP_TIMEOUT, fut)
             .await
             .map_err(|_| "the SMTP request timed out".to_string())?
@@ -381,29 +389,15 @@ async fn session(
             conversation(settings, tls, event, notif, true).await
         }
         "starttls" => {
-            let tcp = tokio::net::TcpStream::connect(addrs)
-                .await
-                .map_err(|_| connect_error())?;
-            let mut io = BufReader::new(tcp);
-            read_greeting(&mut io).await?;
-            let caps = ehlo(&mut io).await?;
-            if !caps
-                .iter()
-                .any(|line| first_token(line).as_deref() == Some("STARTTLS"))
-            {
-                return Err("the SMTP server does not offer STARTTLS".to_string());
-            }
-            command_expect(
-                &mut io,
-                "STARTTLS",
-                &[220],
-                "the SMTP server refused STARTTLS",
+            starttls_session(
+                settings,
+                host,
+                addrs,
+                event,
+                notif,
+                |tcp, host| async move { crate::alert_transport::tls_connect(tcp, &host).await },
             )
-            .await?;
-            // The 220 reply was read completely, so nothing is left buffered.
-            let tcp = io.into_inner();
-            let tls = crate::alert_transport::tls_connect(tcp, host).await?;
-            conversation(settings, tls, event, notif, true).await
+            .await
         }
         "none" => {
             let tcp = tokio::net::TcpStream::connect(addrs)
@@ -413,6 +407,51 @@ async fn session(
         }
         _ => Err("unknown SMTP TLS mode".to_string()),
     }
+}
+
+/// The plaintext STARTTLS phase plus the post-upgrade EHLO/AUTH/DATA flow.
+///
+/// `upgrade` is the TLS handshake. It is injectable so the protocol sequence
+/// (notably: no second greeting after STARTTLS) can be tested without a real
+/// certificate.
+async fn starttls_session<S, F, Fut>(
+    settings: &Settings,
+    host: &str,
+    addrs: &[std::net::SocketAddr],
+    event: &str,
+    notif: &Notification,
+    upgrade: F,
+) -> Result<(), String>
+where
+    F: FnOnce(tokio::net::TcpStream, String) -> Fut,
+    Fut: std::future::Future<Output = Result<S, String>>,
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let tcp = tokio::net::TcpStream::connect(addrs)
+        .await
+        .map_err(|_| "could not connect to the SMTP server".to_string())?;
+    let mut io = BufReader::new(tcp);
+    read_greeting(&mut io).await?;
+    let caps = ehlo(&mut io).await?;
+    if !caps
+        .iter()
+        .any(|line| first_token(line).as_deref() == Some("STARTTLS"))
+    {
+        return Err("the SMTP server does not offer STARTTLS".to_string());
+    }
+    command_expect(
+        &mut io,
+        "STARTTLS",
+        &[220],
+        "the SMTP server refused STARTTLS",
+    )
+    .await?;
+    // The 220 reply was read completely, so nothing is left buffered.
+    let tcp = io.into_inner();
+    let tls = upgrade(tcp, host.to_string()).await?;
+    // STARTTLS replaces the greeting: the server waits for EHLO, it does not
+    // send another 220. Reading one here would hang every default-mode send.
+    conversation(settings, tls, event, notif, false).await
 }
 
 async fn conversation<S>(
@@ -580,10 +619,18 @@ struct Reply {
 async fn read_reply<R: AsyncBufRead + Unpin>(io: &mut R) -> Result<Reply, String> {
     let mut lines = Vec::new();
     let mut expected_code = None;
+    let mut total_bytes = 0usize;
     loop {
         let raw = read_line_bounded(io, MAX_REPLY_LINE)
             .await?
             .ok_or_else(|| "the SMTP server closed the connection".to_string())?;
+        total_bytes = total_bytes.saturating_add(raw.len());
+        if total_bytes > MAX_REPLY_BYTES {
+            return Err("the SMTP reply was too long".to_string());
+        }
+        if lines.len() >= MAX_REPLY_LINES {
+            return Err("the SMTP reply had too many lines".to_string());
+        }
         let line = raw.trim_end_matches(['\r', '\n']);
         let bytes = line.as_bytes();
         if bytes.len() < 3 || !bytes[..3].iter().all(|b| b.is_ascii_digit()) {
@@ -599,11 +646,10 @@ async fn read_reply<R: AsyncBufRead + Unpin>(io: &mut R) -> Result<Reply, String
             None => expected_code = Some(code),
             _ => {}
         }
-        let text = if line.len() > 4 {
-            line[4..].to_string()
-        } else {
-            String::new()
-        };
+        // `get` returns None when byte 4 is not a char boundary (for example a
+        // multi-byte character in the separator position), so this can never
+        // panic before the separator is validated.
+        let text = line.get(4..).unwrap_or_default().to_string();
         match bytes.get(3).copied() {
             Some(b'-') => lines.push(text),
             Some(b' ') | None => {
@@ -1009,6 +1055,16 @@ mod tests {
     }
 
     #[test]
+    fn a_multibyte_separator_is_rejected_without_panicking() {
+        // Byte 3 starts "é", so byte 4 is not a char boundary. The old
+        // `line[4..]` slice panicked here before the separator was checked.
+        let raw = "250é\r\n".as_bytes();
+        let mut io = BufReader::new(raw);
+        let error = futures::executor::block_on(read_reply(&mut io)).unwrap_err();
+        assert!(error.contains("malformed"), "{error}");
+    }
+
+    #[test]
     fn malformed_replies_are_rejected() {
         for raw in [
             &b"garbage\r\n"[..],
@@ -1030,6 +1086,97 @@ mod tests {
         let raw = vec![b'x'; MAX_REPLY_LINE + 2];
         let mut io = BufReader::new(&raw[..]);
         assert!(futures::executor::block_on(read_reply(&mut io)).is_err());
+    }
+
+    #[test]
+    fn a_multiline_reply_is_bounded_by_lines_and_bytes() {
+        let mut too_many = Vec::new();
+        for _ in 0..=MAX_REPLY_LINES {
+            too_many.extend_from_slice(b"250-x\r\n");
+        }
+        let mut io = BufReader::new(&too_many[..]);
+        assert!(futures::executor::block_on(read_reply(&mut io)).is_err());
+
+        let mut too_large = Vec::new();
+        let payload = vec![b'x'; 1024];
+        for _ in 0..(MAX_REPLY_BYTES / 1024 + 1) {
+            too_large.extend_from_slice(b"250-");
+            too_large.extend_from_slice(&payload);
+            too_large.extend_from_slice(b"\r\n");
+        }
+        let mut io = BufReader::new(&too_large[..]);
+        assert!(futures::executor::block_on(read_reply(&mut io)).is_err());
+    }
+
+    /// Read one CRLF-terminated command line in the fake SMTP server.
+    async fn read_command<R: AsyncBufRead + Unpin>(reader: &mut R) -> String {
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        line.trim_end_matches(['\r', '\n']).to_string()
+    }
+
+    /// A scripted plaintext peer for the STARTTLS regression test. It sends
+    /// the greeting, advertises STARTTLS, then waits for EHLO after the
+    /// (identity) upgrade - a server never sends a second greeting there.
+    async fn spawn_starttls_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = socket.into_split();
+            let mut reader = BufReader::new(read_half);
+            write_half.write_all(b"220 test ESMTP\r\n").await.unwrap();
+            assert_eq!(read_command(&mut reader).await, "EHLO naslos");
+            write_half
+                .write_all(b"250-test\r\n250-STARTTLS\r\n250 AUTH PLAIN\r\n")
+                .await
+                .unwrap();
+            assert_eq!(read_command(&mut reader).await, "STARTTLS");
+            write_half.write_all(b"220 go ahead\r\n").await.unwrap();
+            // This is the regression assertion: the next client command must
+            // be EHLO, not a blocked read for a second 220 greeting.
+            assert_eq!(read_command(&mut reader).await, "EHLO naslos");
+            write_half
+                .write_all(b"250-test\r\n250 AUTH PLAIN\r\n")
+                .await
+                .unwrap();
+            assert!(read_command(&mut reader).await.starts_with("MAIL FROM:<"));
+            write_half.write_all(b"250 ok\r\n").await.unwrap();
+            assert!(read_command(&mut reader).await.starts_with("RCPT TO:<"));
+            write_half.write_all(b"250 ok\r\n").await.unwrap();
+            assert_eq!(read_command(&mut reader).await, "DATA");
+            write_half.write_all(b"354 go\r\n").await.unwrap();
+            loop {
+                if read_command(&mut reader).await == "." {
+                    break;
+                }
+            }
+            write_half.write_all(b"250 queued\r\n").await.unwrap();
+            assert_eq!(read_command(&mut reader).await, "QUIT");
+            write_half.write_all(b"221 bye\r\n").await.unwrap();
+        });
+        (addr, task)
+    }
+
+    #[tokio::test]
+    async fn starttls_does_not_wait_for_a_second_greeting() {
+        let (addr, server) = spawn_starttls_server().await;
+        let settings = enabled("192.168.1.10");
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            starttls_session(
+                &settings,
+                "127.0.0.1",
+                &[addr],
+                EVENT_DISK_FAILURE,
+                &notif(),
+                |tcp, _host| async move { Ok::<_, String>(tcp) },
+            ),
+        )
+        .await
+        .expect("STARTTLS session timed out waiting for a second greeting");
+        outcome.unwrap();
+        server.await.unwrap();
     }
 
     fn temp_manager(settings: Option<&Settings>) -> (tempfile::TempDir, Manager) {

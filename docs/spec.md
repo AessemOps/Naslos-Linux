@@ -1226,7 +1226,10 @@ additive: ntfy keeps its existing behavior (FR-NTF-01/02) and settings.
   `tls_modes_and_credentials_are_validated`,
   `settings_survive_a_reload_and_the_password_stays_write_only`,
   `message_shape_is_rfc5322_and_subject_is_sanitized`,
-  `send_path_refuses_an_unknown_tls_mode_from_a_hand_edited_file`; contract tests
+  `send_path_refuses_an_unknown_tls_mode_from_a_hand_edited_file`,
+  `starttls_does_not_wait_for_a_second_greeting`,
+  `a_multibyte_separator_is_rejected_without_panicking`,
+  `a_multiline_reply_is_bounded_by_lines_and_bytes`; contract tests
   `smtp_channel_crud_never_returns_the_password`,
   `smtp_test_route_requires_enabled_and_guards_at_send_time`)*
 - **FR-ALT-08** — **[OPEN]** SNMP traps MUST be a configurable channel
@@ -1241,7 +1244,8 @@ additive: ntfy keeps its existing behavior (FR-NTF-01/02) and settings.
   `payload_is_rfc5424_with_pri_and_event_msgid`,
   `payload_sanitizes_control_characters_and_the_msgid`,
   `payload_is_bounded`, `target_policy_allows_lan_collectors_and_refuses_special_addresses`,
-  `send_path_refuses_an_unknown_protocol_from_a_hand_edited_file`;
+  `send_path_refuses_an_unknown_protocol_from_a_hand_edited_file`,
+  `tcp_send_tries_every_vetted_address`;
   contract test `syslog_channel_crud_and_test_route`)*
 
 ### 3.7.2 Historical reporting (`FR-RPT`)

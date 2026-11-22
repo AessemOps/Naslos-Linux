@@ -367,13 +367,18 @@ impl Manager {
                 return Err("syslog host is empty".to_string());
             }
             let addrs = crate::alert_transport::resolve_target(&host, settings.port).await?;
-            let target = *addrs
-                .first()
-                .ok_or_else(|| "the syslog host did not resolve".to_string())?;
             match settings.protocol.as_str() {
-                "udp" => send_udp(target, payload.as_bytes()).await,
-                "tcp" => send_stream(target, payload.as_bytes(), false, &host).await,
-                "tls" => send_stream(target, payload.as_bytes(), true, &host).await,
+                "udp" => {
+                    // UDP sends one datagram; use the first vetted address.
+                    let target = *addrs
+                        .first()
+                        .ok_or_else(|| "the syslog host did not resolve".to_string())?;
+                    send_udp(target, payload.as_bytes()).await
+                }
+                // TCP/TLS try every vetted address, so a dual-stack collector
+                // with an unreachable first address still works.
+                "tcp" => send_stream(&addrs, payload.as_bytes(), false, &host).await,
+                "tls" => send_stream(&addrs, payload.as_bytes(), true, &host).await,
                 _ => Err("unknown syslog protocol".to_string()),
             }
         };
@@ -407,24 +412,40 @@ async fn send_udp(target: std::net::SocketAddr, payload: &[u8]) -> Result<(), St
 }
 
 async fn send_stream(
-    target: std::net::SocketAddr,
+    addrs: &[std::net::SocketAddr],
     payload: &[u8],
     tls: bool,
     host: &str,
 ) -> Result<(), String> {
-    let tcp = tokio::net::TcpStream::connect(target)
-        .await
-        .map_err(|_| "could not connect to the syslog server".to_string())?;
-    if tls {
-        let mut stream = crate::alert_transport::tls_connect(tcp, host).await?;
-        write_frame(&mut stream, payload).await?;
-        let _ = stream.shutdown().await;
-    } else {
-        let mut stream = tcp;
-        write_frame(&mut stream, payload).await?;
-        let _ = stream.shutdown().await;
+    let mut last_error = "could not connect to the syslog server".to_string();
+    for target in addrs {
+        let tcp = match tokio::net::TcpStream::connect(*target).await {
+            Ok(tcp) => tcp,
+            Err(_) => continue,
+        };
+        if tls {
+            match crate::alert_transport::tls_connect(tcp, host).await {
+                Ok(mut stream) => match write_frame(&mut stream, payload).await {
+                    Ok(()) => {
+                        let _ = stream.shutdown().await;
+                        return Ok(());
+                    }
+                    Err(e) => last_error = e,
+                },
+                Err(e) => last_error = e,
+            }
+        } else {
+            let mut stream = tcp;
+            match write_frame(&mut stream, payload).await {
+                Ok(()) => {
+                    let _ = stream.shutdown().await;
+                    return Ok(());
+                }
+                Err(e) => last_error = e,
+            }
+        }
     }
-    Ok(())
+    Err(last_error)
 }
 
 async fn write_frame<W: AsyncWrite + Unpin>(stream: &mut W, payload: &[u8]) -> Result<(), String> {
@@ -450,6 +471,7 @@ mod tests {
         Notification, EVENT_DISK_FAILURE, EVENT_ZFS_HEALTH, SEVERITY_CRITICAL, SEVERITY_ERROR,
         SEVERITY_INFO, SEVERITY_WARNING,
     };
+    use tokio::io::AsyncReadExt;
 
     fn notif() -> Notification {
         Notification {
@@ -647,6 +669,31 @@ mod tests {
         let (_dir, manager) = temp_manager(Some(&settings));
         let error = manager.send_test().await.unwrap_err();
         assert!(error.contains("syslog protocol"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn tcp_send_tries_every_vetted_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let good = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 256];
+            let n = tokio::time::timeout(Duration::from_secs(2), socket.read(&mut buf))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(String::from_utf8_lossy(&buf[..n]).starts_with("<11>1 "));
+        });
+        // Bind then drop a listener so the first address is certainly closed.
+        let bad = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap()
+        };
+        let payload = render_rfc5424(1, EVENT_DISK_FAILURE, &notif());
+        send_stream(&[bad, good], payload.as_bytes(), false, "127.0.0.1")
+            .await
+            .unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]
