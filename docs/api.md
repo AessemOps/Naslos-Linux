@@ -225,6 +225,10 @@ Rules:
   snapshot that does not carry this pair's `naslos-rep-…` prefix or a child
   dataset. Incremental receives never use `-F`, so replication cannot delete a
   user snapshot. Encrypted (`-w`) replication is not implemented yet.
+- A recursive job still verifies every descendant when the root target already
+  exists. Each missing child subtree is sent as its own full stream rather than
+  rolling the destination back to an older base; a child carrying a same-named
+  snapshot with a different GUID is refused.
 - `pruneKeep` (0 = keep all, max 1000) keeps the newest N destination snapshots
   carrying the pair's prefix. Source snapshots created by replication are left
   in place.

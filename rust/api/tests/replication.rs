@@ -29,6 +29,7 @@ struct MockAgent {
     paths: Arc<Mutex<HashMap<String, Vec<String>>>>,
     deleted: Arc<Mutex<Vec<String>>>,
     created: Arc<Mutex<Vec<String>>>,
+    sends: Arc<Mutex<Vec<Value>>>,
     send_body: Arc<Vec<u8>>,
     send_delay: Duration,
 }
@@ -41,6 +42,7 @@ impl Default for MockAgent {
             paths: Arc::new(Mutex::new(HashMap::new())),
             deleted: Arc::new(Mutex::new(Vec::new())),
             created: Arc::new(Mutex::new(Vec::new())),
+            sends: Arc::new(Mutex::new(Vec::new())),
             send_body: Arc::new(b"zfs-stream".to_vec()),
             send_delay: Duration::ZERO,
         }
@@ -164,7 +166,7 @@ async fn spawn_mock(mock: MockAgent) -> String {
             "/api/v1/zfs/send/{*dataset}",
             get(
                 |State(m): State<MockAgent>,
-                 Path(_dataset): Path<String>,
+                 Path(dataset): Path<String>,
                  Query(q): Query<HashMap<String, String>>| async move {
                     if q.get("estimate").map(String::as_str) == Some("true") {
                         return (
@@ -172,6 +174,12 @@ async fn spawn_mock(mock: MockAgent) -> String {
                             Body::from(json!({ "bytes": m.send_body.len() as i64 }).to_string()),
                         );
                     }
+                    m.sends.lock().unwrap().push(json!({
+                        "dataset": dataset,
+                        "to": q.get("to"),
+                        "from": q.get("from"),
+                        "recursive": q.get("recursive"),
+                    }));
                     if !m.send_delay.is_zero() {
                         tokio::time::sleep(m.send_delay).await;
                     }
@@ -515,8 +523,15 @@ async fn a_recursive_job_repairs_a_missing_descendant_replica() {
     let job = wait_job(state, body["jobId"].as_str().unwrap()).await;
     assert_eq!(job["state"], "succeeded", "{job}");
     assert_eq!(job["result"]["status"], "replicated", "{job}");
-    assert_eq!(job["result"]["incremental"], true, "{job}");
-    assert_eq!(job["result"]["baseSnapshot"], "base", "{job}");
+    // The root is already current; only the missing child subtree is sent and
+    // it must be a full send, never an incremental from an older base.
+    assert_eq!(job["result"]["incremental"], false, "{job}");
+    assert!(job["result"].get("baseSnapshot").is_none(), "{job}");
+    let sends = mock.sends.lock().unwrap().clone();
+    assert_eq!(sends.len(), 1, "{sends:?}");
+    assert_eq!(sends[0]["dataset"], "tank/src/child", "{sends:?}");
+    assert_eq!(sends[0]["from"], Value::Null, "{sends:?}");
+    assert_eq!(sends[0]["recursive"], "true", "{sends:?}");
 }
 
 #[tokio::test]
@@ -524,6 +539,8 @@ async fn a_complete_recursive_replica_is_up_to_date() {
     let mock = MockAgent::with_pair();
     mock.set_snapshots("tank/src", &[("base", "g0"), ("snap", "g1")]);
     mock.set_snapshots("backup/dst", &[("base", "g0"), ("snap", "g1")]);
+    mock.set_snapshots("tank/src/child", &[("snap", "g1-child")]);
+    mock.set_snapshots("backup/dst/child", &[("snap", "g1-child")]);
     mock.set_paths("tank/src", &["tank/src@snap", "tank/src/child@snap"]);
     mock.set_paths("backup/dst", &["backup/dst@snap", "backup/dst/child@snap"]);
     let base = spawn_mock(mock).await;
@@ -545,6 +562,38 @@ async fn a_complete_recursive_replica_is_up_to_date() {
     let job = wait_job(state, body["jobId"].as_str().unwrap()).await;
     assert_eq!(job["state"], "succeeded", "{job}");
     assert_eq!(job["result"]["status"], "up-to-date", "{job}");
+}
+
+#[tokio::test]
+async fn a_child_snapshot_with_a_different_guid_is_not_up_to_date() {
+    let mock = MockAgent::with_pair();
+    mock.set_snapshots("tank/src", &[("snap", "g1")]);
+    mock.set_snapshots("backup/dst", &[("snap", "g1")]);
+    mock.set_snapshots("tank/src/child", &[("snap", "g1-child")]);
+    mock.set_snapshots("backup/dst/child", &[("snap", "g-DIFFERENT")]);
+    mock.set_paths("tank/src", &["tank/src@snap", "tank/src/child@snap"]);
+    mock.set_paths("backup/dst", &["backup/dst@snap", "backup/dst/child@snap"]);
+    let base = spawn_mock(mock.clone()).await;
+    let state = state_with_agent(&base);
+
+    let (status, body) = call(
+        state.clone(),
+        "POST",
+        "/api/replication/send",
+        Some(json!({
+            "source": "tank/src",
+            "destination": "backup/dst",
+            "snapshot": "snap",
+            "recursive": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let job = wait_job(state, body["jobId"].as_str().unwrap()).await;
+    assert_eq!(job["state"], "failed", "{job}");
+    let error = job["error"].as_str().unwrap_or_default();
+    assert!(error.contains("different GUID"), "{error}");
+    assert!(mock.sends.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

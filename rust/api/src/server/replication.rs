@@ -304,65 +304,128 @@ pub fn plan_send(
     Ok(SendPlan::Full)
 }
 
-/// When a recursive replica is incomplete, the target GUID alone is not enough
-/// to declare the job up to date. Pick the newest common snapshot strictly
-/// older than the target so the send can add the missing descendant datasets.
-fn plan_incomplete_recursive_repair(
-    source: &[SnapshotInfo],
-    destination: &[SnapshotInfo],
+/// Source datasets that carry `target`, shallowest first. A sibling whose
+/// name merely shares the source prefix is not included.
+pub fn recursive_source_datasets(
+    source_paths: &[String],
+    source: &str,
     target: &str,
-) -> Result<SendPlan, String> {
-    let position = source
+) -> Vec<String> {
+    let suffix = format!("@{target}");
+    let mut datasets: Vec<String> = source_paths
         .iter()
-        .position(|s| s.name == target)
-        .ok_or_else(|| format!("snapshot {target:?} does not exist on the source"))?;
-    let known: HashSet<&str> = destination
-        .iter()
-        .map(|s| s.guid.as_str())
-        .filter(|g| !g.is_empty())
+        .filter_map(|path| path.strip_suffix(&suffix))
+        .filter_map(|dataset| {
+            let relative = dataset.strip_prefix(source)?;
+            if relative.is_empty() || relative.starts_with('/') {
+                Some(dataset.to_string())
+            } else {
+                None
+            }
+        })
         .collect();
-    for candidate in source[..position].iter().rev() {
-        if !candidate.guid.is_empty() && known.contains(candidate.guid.as_str()) {
-            return Ok(SendPlan::Incremental {
-                base: candidate.clone(),
-            });
-        }
-    }
-    Ok(SendPlan::Full)
+    datasets.sort_by_key(|dataset| dataset.matches('/').count());
+    datasets
 }
 
-/// Whether every dataset that carries `target` on the source has the same
-/// snapshot on the destination. Recursive sends must check descendants: the
-/// root GUID can exist while a child replica is missing.
-pub fn recursive_paths_complete(
+/// Recursive source datasets that have no child replica yet, reduced to the
+/// top-most missing subtree so one send covers every descendant below it.
+pub fn missing_recursive_datasets(
     source_paths: &[String],
     destination_paths: &[String],
     source: &str,
     destination: &str,
     target: &str,
-) -> bool {
+) -> Vec<String> {
     let suffix = format!("@{target}");
     let present: HashSet<&str> = destination_paths
         .iter()
         .filter_map(|path| path.strip_suffix(&suffix))
         .collect();
-    for path in source_paths {
-        let Some(dataset) = path.strip_suffix(&suffix) else {
-            continue;
-        };
-        let Some(relative) = dataset.strip_prefix(source) else {
-            continue;
-        };
-        // A sibling whose name merely shares the prefix is not a descendant.
-        if !relative.is_empty() && !relative.starts_with('/') {
+    let mut missing: Vec<String> = Vec::new();
+    for dataset in recursive_source_datasets(source_paths, source, target) {
+        let relative = dataset.strip_prefix(source).unwrap_or_default();
+        let expected = format!("{destination}{relative}");
+        if present.contains(expected.as_str()) {
             continue;
         }
-        let expected = format!("{destination}{relative}");
-        if !present.contains(expected.as_str()) {
-            return false;
+        if missing
+            .iter()
+            .any(|parent| dataset.starts_with(&format!("{parent}/")))
+        {
+            continue;
+        }
+        missing.push(dataset);
+    }
+    missing
+}
+
+fn target_guid(snapshots: &[SnapshotInfo], target: &str) -> Option<String> {
+    snapshots
+        .iter()
+        .find(|snapshot| snapshot.name == target)
+        .map(|snapshot| snapshot.guid.clone())
+        .filter(|guid| !guid.is_empty())
+}
+
+/// Verify a recursive replica and return the top-most subtree sends needed to
+/// repair it. A child present by name but carrying a different GUID is refused
+/// rather than mistaken for the same snapshot.
+async fn recursive_repair_datasets(
+    agent: &crate::agent::Client,
+    source: &str,
+    destination: &str,
+    target: &str,
+) -> Result<Vec<String>, String> {
+    let source_paths = agent
+        .snapshot_paths(source)
+        .await
+        .map_err(|e| format!("listing recursive source snapshots: {e}"))?;
+    let destination_paths = agent
+        .snapshot_paths(destination)
+        .await
+        .map_err(|e| format!("listing recursive destination snapshots: {e}"))?;
+    let suffix = format!("@{target}");
+    let present: HashSet<String> = destination_paths
+        .iter()
+        .filter_map(|path| path.strip_suffix(&suffix))
+        .map(str::to_string)
+        .collect();
+    for dataset in recursive_source_datasets(&source_paths, source, target) {
+        let relative = dataset.strip_prefix(source).unwrap_or_default();
+        let replica = format!("{destination}{relative}");
+        if !present.contains(&replica) {
+            continue;
+        }
+        let expected = target_guid(
+            &agent
+                .snapshots_with_guid_shallow(&dataset)
+                .await
+                .map_err(|e| format!("reading {dataset}@{target}: {e}"))?,
+            target,
+        )
+        .ok_or_else(|| format!("source {dataset}@{target} has no GUID"))?;
+        let actual = target_guid(
+            &agent
+                .snapshots_with_guid_shallow(&replica)
+                .await
+                .map_err(|e| format!("reading {replica}@{target}: {e}"))?,
+            target,
+        )
+        .ok_or_else(|| format!("destination {replica}@{target} has no GUID"))?;
+        if expected != actual {
+            return Err(format!(
+                "child replica {replica}@{target} has a different GUID; refusing to treat it as current. Remove that snapshot or choose another destination"
+            ));
         }
     }
-    true
+    Ok(missing_recursive_datasets(
+        &source_paths,
+        &destination_paths,
+        source,
+        destination,
+        target,
+    ))
 }
 
 /// Plan retention for one pair: from the destination's full snapshot paths,
@@ -462,6 +525,41 @@ async fn destination_can_be_replaced(
         Some(reason) => Err(reason),
         None => Ok(()),
     }
+}
+
+/// Pipe one agent send stream into one receive call and add its bytes to the
+/// job progress. Returns the number of bytes streamed.
+async fn stream_one(
+    agent: &crate::agent::Client,
+    job: &Arc<ReplicationJob>,
+    opts: SendStreamOptions,
+    destination: &str,
+    force: bool,
+    progress: &Arc<AtomicI64>,
+) -> Result<i64, String> {
+    let before = progress.load(Ordering::Relaxed);
+    let stream = agent
+        .send_stream(&opts)
+        .await
+        .map_err(|e| format!("starting zfs send: {e}"))?;
+    let progress_for_stream = progress.clone();
+    let job_for_stream = job.clone();
+    let stream = stream.map(move |item| {
+        if let Ok(bytes) = &item {
+            let total = progress_for_stream.fetch_add(bytes.len() as i64, Ordering::Relaxed)
+                + bytes.len() as i64;
+            if let Ok(mut p) = job_for_stream.public.lock() {
+                p.progress.bytes = total;
+            }
+        }
+        item
+    });
+    let reader = tokio_util::io::StreamReader::new(stream);
+    agent
+        .receive_stream_body(destination, force, reader)
+        .await
+        .map_err(|e| format!("zfs receive into {destination} failed: {e}"))?;
+    Ok(progress.load(Ordering::Relaxed) - before)
 }
 
 fn bad_request(msg: &str) -> Response {
@@ -662,38 +760,22 @@ async fn run_job(
         Ok(s) => s,
         Err(e) => fail!(format!("listing destination snapshots: {e}")),
     };
-    let mut plan = match plan_send(&source_snaps, &destination_snaps, &target) {
+    let plan = match plan_send(&source_snaps, &destination_snaps, &target) {
         Ok(p) => p,
         Err(e) => fail!(e),
     };
-    if recursive && plan == SendPlan::UpToDate {
-        // The root target GUID can be present while a descendant replica is
-        // missing, so a recursive job must compare the full snapshot paths.
-        let source_paths = match agent.snapshot_paths(&source).await {
-            Ok(paths) => paths,
-            Err(e) => fail!(format!("listing recursive source snapshots: {e}")),
-        };
-        let destination_paths = match agent.snapshot_paths(&destination).await {
-            Ok(paths) => paths,
-            Err(e) => fail!(format!("listing recursive destination snapshots: {e}")),
-        };
-        if !recursive_paths_complete(
-            &source_paths,
-            &destination_paths,
-            &source,
-            &destination,
-            &target,
-        ) {
-            plan = match plan_incomplete_recursive_repair(
-                &source_snaps,
-                &destination_snaps,
-                &target,
-            ) {
-                Ok(p) => p,
-                Err(e) => fail!(e),
-            };
+    // The root target GUID can be present while a descendant replica is
+    // missing. The destination's newest snapshot is already the target, so a
+    // stream from an older base cannot be received without rolling it back;
+    // repair by sending each missing child subtree on its own instead.
+    let repair_datasets = if recursive && plan == SendPlan::UpToDate {
+        match recursive_repair_datasets(&agent, &source, &destination, &target).await {
+            Ok(datasets) => datasets,
+            Err(e) => fail!(e),
         }
-    }
+    } else {
+        Vec::new()
+    };
 
     let prefix = snapshot_prefix(&source, &destination);
     let mut result = ReplicationResult {
@@ -705,6 +787,8 @@ async fn run_job(
         ..Default::default()
     };
 
+    let progress = Arc::new(AtomicI64::new(0));
+    let mut sent_any = false;
     if plan != SendPlan::UpToDate {
         let (from, base_snapshot, base_guid) = match &plan {
             SendPlan::Incremental { base } => {
@@ -741,34 +825,53 @@ async fn run_job(
         }
         result.estimated_bytes = expected;
 
-        let stream = match agent.send_stream(&opts).await {
-            Ok(s) => s,
-            Err(e) => fail!(format!("starting zfs send: {e}")),
+        result.bytes = match stream_one(&agent, &job, opts, &destination, force, &progress).await {
+            Ok(bytes) => bytes,
+            Err(e) => fail!(e),
         };
-        let sent = Arc::new(AtomicI64::new(0));
-        let sent_for_stream = sent.clone();
-        let job_for_stream = job.clone();
-        let stream = stream.map(move |item| {
-            if let Ok(bytes) = &item {
-                let total = sent_for_stream.fetch_add(bytes.len() as i64, Ordering::Relaxed)
-                    + bytes.len() as i64;
-                if let Ok(mut p) = job_for_stream.public.lock() {
-                    p.progress.bytes = total;
-                }
-            }
-            item
-        });
-        let reader = tokio_util::io::StreamReader::new(stream);
-        if let Err(e) = agent.receive_stream_body(&destination, force, reader).await {
-            fail!(format!("zfs receive into {destination} failed: {e}"));
-        }
-        result.bytes = sent.load(Ordering::Relaxed);
         result.status = "replicated".to_string();
-    } else {
+        sent_any = true;
+    }
+
+    // Each missing child is a full send into a dataset that does not exist on
+    // the destination; the root's newer snapshots are never rolled back.
+    if !repair_datasets.is_empty() {
+        for dataset in &repair_datasets {
+            let relative = dataset.strip_prefix(&source).unwrap_or_default();
+            let replica = format!("{destination}{relative}");
+            let opts = SendStreamOptions {
+                dataset: dataset.clone(),
+                to: target.clone(),
+                from: String::new(),
+                raw: false,
+                recursive: true,
+            };
+            let expected = agent.estimate_send(&opts).await.unwrap_or_else(|e| {
+                tracing::warn!("replication: could not estimate {dataset}@{target}: {e}");
+                0
+            });
+            result.estimated_bytes += expected;
+            {
+                let mut p = job.public.lock().unwrap();
+                p.estimated_bytes = result.estimated_bytes;
+                p.progress.estimated_bytes = result.estimated_bytes;
+            }
+            let sent = match stream_one(&agent, &job, opts, &replica, false, &progress).await {
+                Ok(bytes) => bytes,
+                Err(e) => fail!(e),
+            };
+            result.bytes += sent;
+        }
+        result.status = "replicated".to_string();
+        result.incremental = false;
+        job.public.lock().unwrap().incremental = false;
+        sent_any = true;
+    }
+    if !sent_any {
         result.status = "up-to-date".to_string();
     }
 
-    if prune_keep > 0 && plan != SendPlan::UpToDate {
+    if prune_keep > 0 && sent_any {
         match agent.snapshot_paths(&destination).await {
             Ok(paths) => {
                 let mut errors = Vec::new();
@@ -1012,60 +1115,58 @@ mod tests {
     }
 
     #[test]
-    fn recursive_completeness_requires_every_source_descendant() {
-        let source = vec![path("tank/src", "snap"), path("tank/src/child", "snap")];
-        let missing_child = vec![path("backup/dst", "snap")];
-        assert!(!recursive_paths_complete(
-            &source,
-            &missing_child,
-            "tank/src",
-            "backup/dst",
-            "snap"
-        ));
+    fn missing_recursive_datasets_reports_the_topmost_subtree() {
+        let source = vec![
+            path("tank/src", "snap"),
+            path("tank/src/child", "snap"),
+            path("tank/src/child/grandchild", "snap"),
+            path("tank/src/other", "snap"),
+            path("tank/src/no-snap", "other"),
+        ];
+        let destination = vec![path("backup/dst", "snap"), path("backup/dst/other", "snap")];
+        assert_eq!(
+            missing_recursive_datasets(&source, &destination, "tank/src", "backup/dst", "snap"),
+            vec!["tank/src/child".to_string()]
+        );
 
-        let complete = vec![path("backup/dst", "snap"), path("backup/dst/child", "snap")];
-        assert!(recursive_paths_complete(
-            &source,
-            &complete,
-            "tank/src",
-            "backup/dst",
-            "snap"
-        ));
+        let complete = vec![
+            path("backup/dst", "snap"),
+            path("backup/dst/child", "snap"),
+            path("backup/dst/child/grandchild", "snap"),
+            path("backup/dst/other", "snap"),
+        ];
+        assert!(
+            missing_recursive_datasets(&source, &complete, "tank/src", "backup/dst", "snap")
+                .is_empty()
+        );
 
-        // A snapshot with another name, or under a sibling dataset, is not the
-        // missing replica.
+        // A same-named snapshot under a sibling dataset is not the replica.
         let wrong = vec![
-            path("backup/dst", "other"),
+            path("backup/dst", "snap"),
             path("backup/dst2/child", "snap"),
         ];
-        assert!(!recursive_paths_complete(
-            &source,
-            &wrong,
-            "tank/src",
-            "backup/dst",
-            "snap"
-        ));
+        assert_eq!(
+            missing_recursive_datasets(&source, &wrong, "tank/src", "backup/dst", "snap"),
+            vec!["tank/src/child".to_string(), "tank/src/other".to_string()]
+        );
     }
 
     #[test]
-    fn an_incomplete_recursive_replica_repairs_from_an_older_common_snapshot() {
-        let source = vec![snap("base", "g0"), snap("target", "g1")];
-        let destination = vec![snap("base", "g0"), snap("target", "g1")];
+    fn recursive_source_datasets_are_shallowest_first_and_boundary_checked() {
+        let paths = vec![
+            path("tank/src/a/b", "snap"),
+            path("tank/src", "snap"),
+            path("tank/src/a", "snap"),
+            path("tank/src2/sibling", "snap"),
+            path("tank/src/a", "other"),
+        ];
         assert_eq!(
-            plan_send(&source, &destination, "target").unwrap(),
-            SendPlan::UpToDate
-        );
-        assert_eq!(
-            plan_incomplete_recursive_repair(&source, &destination, "target").unwrap(),
-            SendPlan::Incremental {
-                base: snap("base", "g0")
-            }
-        );
-        // With only the target in common there is no older base, so the repair
-        // has to be a full send.
-        assert_eq!(
-            plan_incomplete_recursive_repair(&source, &[snap("target", "g1")], "target").unwrap(),
-            SendPlan::Full
+            recursive_source_datasets(&paths, "tank/src", "snap"),
+            vec![
+                "tank/src".to_string(),
+                "tank/src/a".to_string(),
+                "tank/src/a/b".to_string()
+            ]
         );
     }
 
