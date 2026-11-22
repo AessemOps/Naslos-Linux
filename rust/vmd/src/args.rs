@@ -26,9 +26,6 @@ pub struct BuildContext {
     pub uefi_vars: Option<PathBuf>,
     /// OVMF Secure Boot code image (pflash, read-only, `*.secboot.fd`).
     pub secure_boot_code: Option<PathBuf>,
-    /// Secure Boot vars template with the Microsoft keys pre-enrolled
-    /// (`OVMF_VARS_*.ms.fd`); the supervisor copies it per VM.
-    pub secure_boot_vars: Option<PathBuf>,
     /// Generated cloud-init NoCloud seed ISO, when the VM has cloud-init.
     pub cloud_init_seed: Option<PathBuf>,
     /// Absolute path of the install ISO, resolved by the supervisor.
@@ -126,9 +123,11 @@ pub fn qemu_args(spec: &VmSpec, ctx: &BuildContext) -> Result<Vec<String>, Strin
                     "Secure Boot firmware (OVMF secboot) is not installed in the vmd image"
                         .to_string()
                 })?;
-                let vars = ctx.secure_boot_vars.as_ref().ok_or_else(|| {
-                    "Secure Boot vars template (OVMF ms) is not installed in the vmd image"
-                        .to_string()
+                // The supervisor copies the pre-enrolled Microsoft-key
+                // template into this per-VM NVRAM file; QEMU must open that
+                // copy read-write, never the shared firmware template.
+                let vars = ctx.uefi_vars.as_ref().ok_or_else(|| {
+                    "Secure Boot vars image is not configured for this VM".to_string()
                 })?;
                 // SMM must protect the pflash from guest writes for Secure
                 // Boot to be meaningful; ICH9 S3 resume is incompatible with
@@ -352,7 +351,6 @@ mod tests {
             uefi_code: Some(PathBuf::from("/usr/share/ovmf/OVMF_CODE_4M.fd")),
             uefi_vars: Some(PathBuf::from("/var/mnt/tank/vms/test-vm/vars.fd")),
             secure_boot_code: Some(PathBuf::from("/usr/share/ovmf/OVMF_CODE_4M.secboot.fd")),
-            secure_boot_vars: Some(PathBuf::from("/usr/share/ovmf/OVMF_VARS_4M.ms.fd")),
             cloud_init_seed: Some(PathBuf::from("/var/mnt/tank/vms/test-vm/seed.iso")),
             iso_path: Some(PathBuf::from("/var/mnt/tank/vms/isos/debian-13.iso")),
         }
@@ -485,8 +483,7 @@ mod tests {
         s.secure_boot = true;
         let mut c = ctx();
         c.vm_dir = PathBuf::from("/var/mnt/tank/vms/sb-vm");
-        c.uefi_vars = Some(PathBuf::from("/var/mnt/tank/vms/sb-vm/vars.fd"));
-        c.secure_boot_vars = Some(PathBuf::from("/var/mnt/tank/vms/sb-vm/vars.secboot.fd"));
+        c.uefi_vars = Some(PathBuf::from("/var/mnt/tank/vms/sb-vm/vars.secboot.fd"));
         let argv = qemu_args(&s, &c).unwrap();
         let joined = argv.join(" ");
         assert!(joined.contains("-machine q35,accel=kvm,smm=on"), "{joined}");
@@ -523,7 +520,7 @@ mod tests {
         let err = qemu_args(&s, &c).unwrap_err();
         assert!(err.contains("Secure Boot firmware"), "{err}");
         c.secure_boot_code = ctx().secure_boot_code;
-        c.secure_boot_vars = None;
+        c.uefi_vars = None;
         let err = qemu_args(&s, &c).unwrap_err();
         assert!(err.contains("Secure Boot vars"), "{err}");
     }

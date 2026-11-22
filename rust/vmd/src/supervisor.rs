@@ -515,7 +515,6 @@ impl Supervisor {
             uefi_code: self.firmware.code.clone(),
             uefi_vars: Some(vars_path),
             secure_boot_code: self.firmware.secure_boot_code.clone(),
-            secure_boot_vars: self.firmware.secure_boot_vars.clone(),
             cloud_init_seed: seed,
             iso_path,
         };
