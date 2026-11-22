@@ -136,6 +136,15 @@ async fn main() {
         });
     }
 
+    // Scheduled storage maintenance (FR-STO-10/11): periodic snapshots with
+    // retention and per-pool scrubs. Catch-up runs once at startup.
+    {
+        let scheduler_state = state.clone();
+        tokio::spawn(async move {
+            naslos_api::server::storage_schedules::run_scheduler(scheduler_state).await
+        });
+    }
+
     // Virtual machines (FR-VMT): push the rendered desired state so vmd
     // reconciles after any restart. The boot push marks autostart VMs
     // desired-running (pod restart = VM restart for autostart-marked VMs,
