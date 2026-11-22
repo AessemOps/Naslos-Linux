@@ -3,7 +3,7 @@
 **Status:** design / go-no-go spike, 2026-11-21. **No target is implemented.**
 There is no API route, chart object, supervisor image, kernel change, or test in
 this tree. The stable requirement IDs are reserved in
-[spec.md](spec.md#312-block-storage--nvme-of-tcp-fr-nvme) and every one is
+[spec.md](spec.md#313-block-storage--nvme-of-tcp-fr-nvme) and every one is
 `[OPEN]`.
 
 This document answers one question: should Naslos expose ZFS zvols as an
@@ -73,7 +73,6 @@ CONFIG_NVME_TARGET_TCP=m       # nvmet-tcp.ko
 CONFIG_NVME_TARGET_AUTH=y      # DH-HMAC-CHAP on the target
 CONFIG_CONFIGFS_FS=y
 # CONFIG_NVME_TARGET_TCP_TLS is not set
-# CONFIG_NVME_HOST_AUTH is not set
 # CONFIG_ISCSI_TARGET is not set
 ```
 
@@ -465,7 +464,7 @@ plus a hash and DH group. The key format is `DHHC-1:<hash-id>:<base64>:`. The
 
 Secret handling:
 
-- Stored in a Kubernetes Secret, mounted as a file, mode 0400, read by the
+- Stored in a Kubernetes Secret, mounted as a file, mode 0600, read by the
   supervisor; never placed in chart values, environment variables, logs, API
   responses, or error strings.
 - The API reports only "CHAP configured" and never returns the key or a
@@ -801,7 +800,7 @@ recovery, and the test evidence. "It is just a storage target" is not a review.
 ## 13. Validation plan
 
 The `T-NVME-*` IDs are referenced inline by the `FR-NVME` requirements in
-[spec.md](spec.md#312-block-storage--nvme-of-tcp-fr-nvme). They are planned;
+[spec.md](spec.md#313-block-storage--nvme-of-tcp-fr-nvme). They are planned;
 none exists in this tree.
 
 | ID | Test | Pass criteria |
