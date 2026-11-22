@@ -259,7 +259,7 @@
     {#if logoutError}
       <p role="alert" class="px-2 py-1 text-xs text-red-300 break-words">
         {logoutError}
-        <a class="underline text-naslos-link" href="/authelia/">Open the portal</a>
+        <a class="underline text-naslos-link" href="/authelia/" data-sveltekit-reload>Open the portal</a>
       </p>
     {/if}
     <button
