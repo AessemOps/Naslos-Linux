@@ -181,7 +181,9 @@ Requirement IDs are stable: never renumber, only deprecate.
   defaults: `ashift=12`, `compression=zstd`, `xattr=sa`,
   `acltype=posixacl`, `atime=off`.
 - **FR-STO-02** — The disk wizard MUST advise a topology (mirror / RAIDZ1 /
-  RAIDZ2) from the number and size of selected disks.
+  RAIDZ2) from the number and size of selected disks. "Create another pool"
+  MUST start a clean run (no inherited disks, name, topology or wipe
+  confirmations) and reload the disk inventory.
 - **FR-STO-03** — Pools MUST be importable from the UI when they exist on
   disk but are not yet imported (`zpool import` discovery + import).
 - **FR-STO-04** — Pools MUST auto-import at boot via `zfs-service`
@@ -189,7 +191,9 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-STO-05** — Pool deletion MUST require explicit user confirmation and
   MUST NOT be undoable (the UI MUST state this).
 - **FR-STO-06** — Pool health view MUST expose: device tree, IO stats, scan
-  state, and error summary (from `zpool status` / `zpool iostat`).
+  state, and error summary (from `zpool status` / `zpool iostat`). The page
+  MUST follow a changed pool route parameter and reload that pool's health,
+  datasets and schedules instead of reusing the previously opened pool.
 - **FR-STO-07** — Datasets and snapshots on a pool MUST be creatable and
   listable from the UI via the agent. Dataset names MUST be validated
   (ZFS-safe per component, no traversal, no snapshot `@`), and creation MUST
@@ -207,7 +211,10 @@ Requirement IDs are stable: never renumber, only deprecate.
   MUST require the recursive flag (the UI MUST say what that destroys), a pool's
   root dataset MUST NOT be destroyable through the dataset API, and a dataset
   that a share is serving (or that backs a share's path) MUST be refused with a
-  conflict instead of removing the share's data.
+  conflict instead of removing the share's data. The UI MUST require the
+  operator to type the dataset name before **every** destroy (plain or
+  encrypted) and MUST send `confirm=<dataset name>` only after that prompt
+  succeeds.
 - **FR-STO-10** — Scheduled snapshots MUST be creatable, listable, updatable and
   deletable per dataset (`GET|POST|DELETE /api/storage/schedules`, kind
   `snapshot`) with a cadence (hourly/daily/weekly, UTC `runAt`), an optional
@@ -624,7 +631,9 @@ cloud sync remain `[OPEN]` below.
 - **FR-IDN-09** — Password changes MUST update both LDAP `userPassword` and
   the Samba NT hash (same password everywhere).
 - **FR-IDN-10** — Web login MUST flow through Authelia forwardAuth; API
-  routes behind Traefik MUST reject unauthenticated requests.
+  routes behind Traefik MUST reject unauthenticated requests. The UI sign-out
+  MUST check the logout response: a failure MUST surface an error with the
+  portal as the fallback and MUST NOT redirect as if the session ended.
 - **FR-IDN-11** — LDAP connectivity MUST NOT be established at process start.
   The client MUST connect lazily and re-establish the connection automatically
   after failure, so that:
@@ -936,7 +945,10 @@ with a sibling `naslos-app.yaml` install-config. See
   accepted only for an app in a dedicated (isolated) baseline namespace, where
   the app MUST be denied public egress while keeping cluster DNS and
   app-to-app traffic; the API MUST reject the opt-out for privileged or shared
-  namespaces, whose policy always allows public egress.
+  namespaces, whose policy always allows public egress. The exposure editor
+  MUST flag an exposed route without auth or TLS and MUST require an explicit
+  acknowledgement before saving it; changing to a non-SSO domain MUST warn
+  that Authelia login was turned off rather than doing so silently.
   *(routing tests, apps tests, server tests)*
 - **FR-APP-11** — The API MUST own one Traefik `IngressRoute` per app plus its
   middlewares and the per-app Internet-egress `NetworkPolicy` in the app
@@ -1026,7 +1038,10 @@ with a sibling `naslos-app.yaml` install-config. See
   upgrade before Helm runs, and MUST reject aggregate totals above the app
   namespace's `naslos-app-quota`. `GET /api/apps/{name}/quota` MUST report that
   quota (`{available, namespace, hard}`) so the drawer shows the effective cap.
-  The quota itself MUST be configurable (`apps.isolation.quota`).
+  The quota itself MUST be configurable (`apps.isolation.quota`). Clearing a
+  field MUST remove it from the complete `resources` object the drawer sends
+  (never as JSON `null`), and a reload after the upgrade MUST show the
+  request/limit gone.
   *(apps::resource_quantity_tests, UI check)*
 - **FR-APP-26** — A chart MAY declare `capabilities: [env]`. For such a chart
   the owner MUST be able to set custom environment variables per installed app.
@@ -1639,7 +1654,8 @@ A node installed from an installer pack can be upgraded from the web UI. A
 - **FR-UPD-10** — The UI MUST show the version table, the available release and
   notes link, the three ordered actions with disabled reasons, typed-version
   confirmation dialogs (the Talos one warning about downtime), a progress panel
-  that keeps polling through the reboot, and an update badge.
+  that keeps polling through the reboot, and an update badge. The release-notes
+  link MUST render only when `notesUrl` is an absolute `https://` URL.
 
 ### 3.12 Host network configuration (`FR-NET`)
 
@@ -1740,7 +1756,10 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   (b) server-side URL import restricted to public http(s) targets — the
   FR-DNS-07 SSRF guard (redirects re-validated hop by hop, connection pinned
   to the vetted address), optional sha256 verification — and (c) delete.
-  The library lives at `<pool>/vms/isos`, flat file names only.
+  A retried browser upload MUST resume at the last offset the supervisor
+  confirmed; when the partial upload no longer exists the UI MUST say so and
+  restart from zero. The library lives at `<pool>/vms/isos`, flat file names
+  only.
 - **FR-VMT-08** — The console MUST be reachable from the browser:
   `GET /api/ws/vm/{name}/vnc` (plain GET) is a preflight returning the VNC
   port, the per-boot VNC password and `ready to attach`; the same route with
@@ -1748,11 +1767,15 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   client, `@novnc/novnc`). The bridge MUST enforce the `/api/ws/exec`
   posture: same-origin check, finite session caps (max session, idle
   timeout, concurrent session semaphore). The credentials MUST appear only
-  in the preflight response, never in list/detail payloads.
+  in the preflight response, never in list/detail payloads. The noVNC client
+  MUST abort an in-flight preflight when the drawer closes or a disconnect is
+  requested and MUST NOT attach the console after unmount.
 - **FR-VMT-09** — Snapshots MUST be ordinary ZFS snapshots of the VM dataset
   (created/listed via the agent, crash-consistent while the VM runs, backed
   up by Buddy like any dataset). Restore MUST refuse a running VM and MUST
-  roll the dataset back (`zfs rollback -r`, deleting newer snapshots).
+  roll the dataset back (`zfs rollback -r`, deleting newer snapshots). A
+  failed snapshot listing MUST render an error with a retry in that section,
+  not the empty state.
 - **FR-VMT-10** — `state` MUST be derived live from the supervisor, never
   persisted. The API MUST push the desired config at its own startup with
   `desired=running` for autostart-marked VMs (pod restart = VM restart for
@@ -2332,7 +2355,9 @@ operator and read-only users receive `403` on owner routes.
 - **NFR-4 Resilience** — The API MUST return usable (non-crashing) responses
   when a dependency is down: LDAP failures yield `503` with the underlying
   cause (FR-IDN-11) while non-identity features keep working (FR-IDN-12); the
-  UI MUST show errors, never silently freeze. A component MUST also survive a
+  UI MUST show errors, never silently freeze. A failed catalog load MUST leave
+  a closable error instead of a blank modal, and a failed per-section fetch
+  MUST show a retry in that section. A component MUST also survive a
   **node reboot**: startup MUST NOT depend on another component already being
   resolvable, or it will crash-loop in the race (nginx resolving the API host
   name at boot was exactly that failure, so the UI waits for the name first).

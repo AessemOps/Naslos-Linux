@@ -120,7 +120,10 @@ The agent exposes dataset and snapshot operations:
   `dataset@snap` paths; `DELETE ?name=` destroys one snapshot)
 
 Datasets are how shares get structured sizes/quota boundaries and are the unit
-of snapshots (`zfs snapshot pool/ds@name`). Shares previously used AFP/Time
+of snapshots (`zfs snapshot pool/ds@name`). Every dataset delete in the pool
+page asks the operator to type the dataset name; `DELETE /api/datasets` carries
+`confirm=<dataset name>` only after that prompt (FR-STO-09), for plain and
+encrypted datasets alike. Shares previously used AFP/Time
 Machine; the modern path is SMB + `fruit` VFS (see [shares.md](shares.md)).
 Snapshots that should appear as SMB previous versions must be named
 `naslos-YYYY-MM-DD_HH-MM-SS` (UTC); scheduled snapshots use that format, and

@@ -440,6 +440,9 @@ The install wizard reflects the backend rules instead of silently installing an
 unsafe exposure. A catalog entry with `exposure.auth: false` or
 `exposure.tls: false` shows a red warning in review and requires a second,
 explicit checkbox before Install enables; an entry with both off is preselected
-as cluster-internal (`localOnly`). Password fields are masked in the review
+as cluster-internal (`localOnly`). The installed-app **Exposure** editor applies
+the same rule: turning auth or TLS off requires the acknowledgement, and
+changing to a non-SSO base domain warns that Authelia login was turned off
+instead of clearing it silently. Password fields are masked in the review
 step. Dismissing a running app job is disabled (it only hid the "already
 running" conflict), and a job evicted from the server's list stops polling.
