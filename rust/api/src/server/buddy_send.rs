@@ -575,27 +575,16 @@ async fn run_send_job(
         }
     };
     let before_publish = |pushed: &crate::buddy::client::PushResult| -> Result<(), String> {
-        if expected <= 0 && !force {
-            return Err(format!(
-                "refusing to publish chain {}: the agent could not estimate {dataset}@{snapshot}, so a truncated send would go unnoticed",
-                send_state.chain.chain
-            ));
-        }
-        if expected > 0 && pushed.plain_bytes + send_shortfall_allowance(expected) < expected {
-            return Err(format!(
-                "the send stream ended early ({} of at least {expected} bytes), so nothing was published. Retry the same send to continue chain {}",
-                pushed.plain_bytes, send_state.chain.chain
-            ));
-        }
-        if let Some((_, _, used)) = &mount_state {
-            require_stream_matches_dataset(&dataset, *used, pushed.plain_bytes)?;
-        } else if !force {
-            return Err(format!(
-                "refusing to publish chain {}: the dataset's used space could not be read, so the content check cannot run",
-                send_state.chain.chain
-            ));
-        }
-        Ok(())
+        require_publish_evidence(
+            &dataset,
+            &snapshot,
+            &send_state.chain.chain,
+            mount_state.as_ref().map(|(_, _, used)| *used),
+            pushed.plain_bytes,
+            !base.is_empty(),
+            expected,
+            force,
+        )
     };
 
     let persist_template = send_state.clone();
@@ -692,6 +681,46 @@ async fn dataset_mount_state(
         .into_iter()
         .find(|d| d.name == dataset)
         .map(|d| (d.mounted, d.mountpoint.clone(), d.used_bytes))
+}
+
+/// Decide whether an uploaded stream may be published. A full send must carry a
+/// sizeable fraction of the dataset, which catches the mount-namespace trap
+/// where `zfs send` captures an empty filesystem. An incremental send is
+/// legitimately small next to the dataset, so it is checked against the
+/// `zfs send -nP` estimate for the `base..snapshot` range instead
+/// (R-005: applying the full-send ratio to increments rejected every real one).
+#[allow(clippy::too_many_arguments)]
+fn require_publish_evidence(
+    dataset: &str,
+    snapshot: &str,
+    chain: &str,
+    used: Option<i64>,
+    plain: i64,
+    incremental: bool,
+    expected: i64,
+    force: bool,
+) -> Result<(), String> {
+    if expected <= 0 && !force {
+        return Err(format!(
+            "refusing to publish chain {chain}: the agent could not estimate {dataset}@{snapshot}, so a truncated send would go unnoticed"
+        ));
+    }
+    if expected > 0 && plain + send_shortfall_allowance(expected) < expected {
+        return Err(format!(
+            "the send stream ended early ({plain} of at least {expected} bytes), so nothing was published. Retry the same send to continue chain {chain}"
+        ));
+    }
+    if incremental {
+        return Ok(());
+    }
+    if let Some(used) = used {
+        require_stream_matches_dataset(dataset, used, plain)?;
+    } else if !force {
+        return Err(format!(
+            "refusing to publish chain {chain}: the dataset's used space could not be read, so the content check cannot run"
+        ));
+    }
+    Ok(())
 }
 
 fn require_stream_matches_dataset(dataset: &str, used: i64, plain: i64) -> Result<(), String> {
@@ -874,7 +903,70 @@ const _: Duration = Duration::from_secs(0);
 
 #[cfg(test)]
 mod tests {
-    use super::send_shortfall_allowance;
+    use super::{
+        require_publish_evidence, require_stream_matches_dataset, send_shortfall_allowance,
+    };
+
+    #[test]
+    fn a_full_send_still_requires_dataset_contents() {
+        let used = 10 * 1024 * 1024;
+        assert!(require_publish_evidence(
+            "tank/data",
+            "buddy-1",
+            "4",
+            Some(used),
+            used,
+            false,
+            used,
+            false
+        )
+        .is_ok());
+        // An empty full send is still refused (mount-propagation trap).
+        assert!(require_publish_evidence(
+            "tank/data",
+            "buddy-1",
+            "4",
+            Some(used),
+            0,
+            false,
+            used,
+            false
+        )
+        .is_err());
+        assert!(require_stream_matches_dataset("tank/data", used, 0).is_err());
+    }
+
+    #[test]
+    fn a_small_incremental_after_a_full_send_is_published() {
+        let used = 10 * 1024 * 1024;
+        let incremental = 64 * 1024;
+        assert!(
+            require_publish_evidence(
+                "tank/data",
+                "buddy-2",
+                "4",
+                Some(used),
+                incremental,
+                true,
+                incremental,
+                false
+            )
+            .is_ok(),
+            "an incremental must not be measured against the whole dataset"
+        );
+        // The same size is still refused when the range estimate says it was truncated.
+        assert!(require_publish_evidence(
+            "tank/data",
+            "buddy-2",
+            "4",
+            Some(used),
+            incremental,
+            true,
+            used,
+            false
+        )
+        .is_err());
+    }
 
     #[test]
     fn a_half_truncated_small_send_is_refused() {
