@@ -115,13 +115,13 @@ test('a share can be linked to a new folder created from the share form', async 
     await expect(dialog.getByRole('heading', { name: 'New Share' })).toBeVisible();
 
     // The picker starts on a dataset, which is what the share would use.
-    await expect(dialog.locator('code')).toHaveText(dataset);
+    await expect(dialog.locator('code.text-naslos-link')).toHaveText(dataset);
 
     // Create a folder inside the dataset: this is the "link the share to a new
     // folder in the pool" flow, and the picker must follow the new folder.
     await dialog.locator('input[placeholder="New folder name"]').fill(folder);
     await dialog.getByRole('button', { name: 'Create folder' }).click();
-    await expect(dialog.locator('code')).toHaveText(expected, { timeout: 10_000 });
+    await expect(dialog.locator('code.text-naslos-link')).toHaveText(expected, { timeout: 10_000 });
 
     // The folder has to be real on the node, not just rendered in the UI.
     const listing = await request.get(`/api/shares/folders?path=${encodeURIComponent(expected)}`);
@@ -140,7 +140,7 @@ test('a share can be linked to a new folder created from the share form', async 
     await page.locator('.card').filter({ hasText: name }).getByText('Edit').click();
     const editDialog = page.locator('.fixed.inset-0');
     await expect(editDialog.getByRole('heading', { name: 'Edit Share' })).toBeVisible();
-    await expect(editDialog.locator('code')).toHaveText(expected);
+    await expect(editDialog.locator('code.text-naslos-link')).toHaveText(expected);
   } finally {
     await request.delete(`/api/shares/${name}`);
     await request.delete(`/api/shares/folders?path=${encodeURIComponent(expected)}`);
