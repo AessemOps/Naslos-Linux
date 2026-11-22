@@ -28,7 +28,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   in both themes in the e2e suite
 - **Disk setup wizard** — topology advisor (mirror / RAIDZ1 / RAIDZ2), best-practice tuning (`ashift=12`, `compression=zstd`, `xattr=sa`, `acltype=posixacl`, `atime=off`)
 - **Pool health page** — live device tree, IO stats, scan state, and error summary from `zpool status` / `zpool iostat`
-- **Scheduled storage maintenance** — periodic snapshot tasks per dataset (hourly/daily/weekly, keep-N retention, optional recursive) and per-pool scrub schedules, with a manual "scrub now", last/next-run state and results on the pool page
+- **Scheduled storage maintenance** — periodic snapshot tasks per dataset (hourly/daily/weekly, keep-N retention, optional recursive) named in the SMB previous-versions format and owned through a ZFS user property, plus per-pool scrub schedules, with a manual "scrub now", last/next-run state and results on the pool page
 - **Local ZFS replication** — async dataset-to-dataset `zfs send`/`receive` on the same node, GUID-based incrementals, recursive sends, cancellable jobs and prefix-scoped destination retention that never touches user snapshots
 - **Disk health** — per-disk SMART (read-only, standby-safe) plus ZFS vdev state/error counters, with temperature/wear threshold alerts
 - **CPU detail** — model, per-core load/frequency, load averages and CPU temperature (when the hardware exposes it) on the dashboard

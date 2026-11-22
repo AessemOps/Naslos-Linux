@@ -416,7 +416,7 @@ Previous Versions; clients issue `FSCTL_GET_SHADOW_COPY_DATA`). It stacks
    shadow:snapdirseverywhere = yes
    shadow:sort = desc
    shadow:format = naslos-%Y-%m-%d_%H-%M-%S
-   shadow:localtime = yes
+   shadow:localtime = no
 ```
 
 A share-level `vfs objects` **replaces** the global list, which is why the
@@ -430,21 +430,25 @@ parses the snapshot directory name as a timestamp; it cannot read ZFS
 creation metadata. Naslos therefore defines the name as
 
 ```
-naslos-YYYY-MM-DD_HH-MM-SS        (local time, matching shadow:localtime = yes)
+naslos-YYYY-MM-DD_HH-MM-SS        (UTC, matching shadow:localtime = no)
 ```
 
-Snapshots named `manual-before-upgrade`, `auto-…` or by another tool simply are
-not listed. The feature is off by default; enabling it does not make a share
-browse the `.zfs` directory, and a share path containing `.zfs` is rejected
-outright. ZFS hides `.zfs` from directory listings by default
+Snapshots named `manual-before-upgrade`, `naslos-auto-…` or by another tool
+simply are not listed. The feature is off by default; enabling it does not make
+a share browse the `.zfs` directory, and a share path containing `.zfs` is
+rejected outright. ZFS hides `.zfs` from directory listings by default
 (`snapdir=hidden`); Naslos does not change that property, so a dataset with
 `snapdir=visible` still shows the directory to clients independently of this
 option.
 
-Snapshot creation is not part of this pass: there is no scheduled-snapshot UI
-in this release, so the snapshots have to already exist (created through the
-agent snapshot API or by a future scheduler) with the name above. The
-`naslos-…` convention is the contract a scheduler must follow.
+Scheduled snapshots (Pools → the dataset → **Add snapshot schedule**, see
+[storage-zfs.md](storage-zfs.md#scheduled-snapshots-and-scrubs-fr-sto-1011))
+create exactly that name and record the owning schedule in the snapshot's
+`user:naslos:schedule` property, so the same snapshots serve retention and
+Previous Versions. The schedule's `keep` count therefore controls how many
+previous versions clients see. The share form exposes **Previous Versions** and
+**Audit file operations** for SMB shares; both are off by default and are not
+sent for NFS.
 
 ## Audit logging
 
@@ -711,7 +715,7 @@ shares:
     workgroup: "NASLOS"
     multichannel: true   # explicit `server multi channel support` (Samba default = on)
     timeMachine: true
-    # shadowCopies/audit are per-share API fields, not chart values.
+    # shadowCopies/audit are per-share fields in the share form, not chart values.
     image: { repository: ghcr.io/aessemops/naslos-samba, tag: "0.6.0" }
   # Network advertisement (mDNS + WSD) so the server shows up when browsing.
   discovery:

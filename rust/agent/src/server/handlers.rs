@@ -537,9 +537,71 @@ pub async fn snapshots_post_empty() -> Response {
     write_error(StatusCode::BAD_REQUEST, "dataset path is required")
 }
 
+#[derive(Default, Deserialize)]
+struct SnapshotScheduleRequest {
+    name: String,
+    schedule: String,
+    /// Tag the descendant snapshots a recursive snapshot created too.
+    #[serde(default)]
+    recursive: bool,
+}
+
+/// `GET /api/v1/snapshot-properties/{dataset}` — every snapshot under the
+/// dataset with its owning storage schedule (`user:naslos:schedule`).
+pub async fn snapshot_properties_get(
+    State(state): State<Arc<AppState>>,
+    Path(dataset): Path<String>,
+) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    match zfs.snapshot_schedules(&dataset).await {
+        Ok(snapshots) => json_response(StatusCode::OK, &snapshots),
+        Err(e) => write_client_error(&e),
+    }
+}
+
+/// `/api/v1/snapshot-properties/` (empty dataset segment).
+pub async fn snapshot_properties_get_empty() -> Response {
+    write_error(StatusCode::BAD_REQUEST, "dataset path is required")
+}
+
+/// `PUT /api/v1/snapshot-properties/{dataset}` — record the owning schedule on
+/// one snapshot (or a recursive snapshot's descendants). Only the fixed
+/// `user:naslos:schedule` property can be written.
+pub async fn snapshot_properties_put(
+    State(state): State<Arc<AppState>>,
+    Path(dataset): Path<String>,
+    body: Body,
+) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    let req: SnapshotScheduleRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
+        Ok(req) => req,
+        Err(resp) => return resp,
+    };
+    match zfs
+        .set_snapshot_schedule(&dataset, &req.name, &req.schedule, req.recursive)
+        .await
+    {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &json!({
+                "status": "snapshot schedule recorded",
+                "dataset": dataset,
+                "name": req.name,
+                "schedule": req.schedule,
+            }),
+        ),
+        Err(e) => write_client_error(&e),
+    }
+}
+
 /// `DELETE /api/v1/snapshots/{dataset}?name=<snap>` — destroy one snapshot.
 /// The API's retention scheduler is the only caller, and it only passes names
-/// it generated (`naslos-auto-*`).
+/// it generated (`naslos-*`; legacy `naslos-auto-*` while that compatibility
+/// window is open).
 pub async fn snapshots_delete(
     State(state): State<Arc<AppState>>,
     Path(dataset): Path<String>,

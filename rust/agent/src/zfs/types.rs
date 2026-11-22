@@ -143,6 +143,15 @@ pub struct SnapshotInfo {
     pub created: String,
 }
 
+/// A snapshot and the storage schedule that owns it, from the
+/// `user:naslos:schedule` property. An unset property is an empty string.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotSchedule {
+    pub path: String,
+    #[serde(default)]
+    pub schedule: String,
+}
+
 /// One `zfs send` invocation.
 #[derive(Debug, Clone, Default)]
 pub struct SendStreamOptions {

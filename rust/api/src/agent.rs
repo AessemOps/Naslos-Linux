@@ -923,6 +923,17 @@ pub struct SnapshotInfo {
     pub created: String,
 }
 
+/// A snapshot with its owning storage schedule, from the agent's
+/// `/api/v1/snapshot-properties/{dataset}` route. `schedule` is empty for a
+/// user snapshot or a legacy scheduled snapshot created before ownership was
+/// recorded as a property.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotSchedule {
+    pub path: String,
+    #[serde(default)]
+    pub schedule: String,
+}
+
 /// Options for a `zfs send`.
 #[derive(Debug, Clone, Default)]
 pub struct SendStreamOptions {
@@ -1045,6 +1056,43 @@ impl Client {
         );
         self.do_json(self.request(reqwest::Method::GET, &path))
             .await
+    }
+
+    /// Every snapshot under a dataset with its owning schedule property.
+    pub async fn snapshot_schedules(
+        &self,
+        dataset: &str,
+    ) -> Result<Vec<SnapshotSchedule>, AgentError> {
+        let path = format!(
+            "/api/v1/snapshot-properties/{}",
+            escape_dataset_path(dataset)
+        );
+        self.do_json(self.request(reqwest::Method::GET, &path))
+            .await
+    }
+
+    /// Record the owning schedule on a snapshot (and a recursive snapshot's
+    /// descendants). The agent only writes `user:naslos:schedule`.
+    pub async fn set_snapshot_schedule(
+        &self,
+        dataset: &str,
+        name: &str,
+        schedule: &str,
+        recursive: bool,
+    ) -> Result<(), AgentError> {
+        let path = format!(
+            "/api/v1/snapshot-properties/{}",
+            escape_dataset_path(dataset)
+        );
+        self.do_empty(
+            self.request(reqwest::Method::PUT, &path)
+                .json(&serde_json::json!({
+                    "name": name,
+                    "schedule": schedule,
+                    "recursive": recursive,
+                })),
+        )
+        .await
     }
 
     /// Destroy one snapshot (`zfs destroy dataset@name`).

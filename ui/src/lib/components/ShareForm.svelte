@@ -15,6 +15,8 @@
     validGroups: string[];
     timeMachine: boolean;
     noRootSquash?: boolean;
+    shadowCopies?: boolean;
+    audit?: boolean;
     enabled: boolean;
   }
 
@@ -30,6 +32,8 @@
   let browseable = true;
   let timeMachine = false;
   let noRootSquash = false;
+  let shadowCopies = false;
+  let audit = false;
   let allowedHostsStr = '';
   let validUsersStr = '';
   let validGroups: string[] = [];
@@ -190,6 +194,8 @@
       browseable = share.browseable;
       timeMachine = share.timeMachine;
       noRootSquash = share.noRootSquash ?? false;
+      shadowCopies = share.shadowCopies ?? false;
+      audit = share.audit ?? false;
       allowedHostsStr = share.allowedHosts?.join(', ') || '';
       validUsersStr = share.validUsers?.join(', ') || '';
       validGroups = [...(share.validGroups || [])];
@@ -209,6 +215,11 @@
       browseable,
       timeMachine,
       noRootSquash,
+      // SMB-only options (FR-SHR-14/15). A new NFS share must never carry a
+      // toggle left over from a protocol switch; an existing share keeps its
+      // stored values (the API ignores protocol changes on update).
+      shadowCopies: share || protocol === 'smb' ? shadowCopies : false,
+      audit: share || protocol === 'smb' ? audit : false,
       allowedHosts: allowedHostsStr ? allowedHostsStr.split(',').map(s => s.trim()) : [],
       validUsers: validUsersStr ? validUsersStr.split(',').map(s => s.trim()) : [],
       validGroups
@@ -355,10 +366,31 @@
       </div>
 
       {#if protocol === 'smb'}
-        <label class="flex items-center gap-3 cursor-pointer">
-          <input type="checkbox" bind:checked={timeMachine} class="w-5 h-5 rounded" />
-          <span class="text-gray-300">Time Machine (macOS backup)</span>
-        </label>
+        <div class="space-y-3">
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" bind:checked={timeMachine} class="w-5 h-5 rounded" />
+            <span class="text-gray-300">Time Machine (macOS backup)</span>
+          </label>
+          <div>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" bind:checked={shadowCopies} class="w-5 h-5 rounded" />
+              <span class="text-gray-300">Previous Versions (shadow copies)</span>
+            </label>
+            <p class="text-xs text-gray-500 mt-1 ml-8">
+              Exposes the dataset's scheduled snapshots to Windows Previous Versions. Only
+              snapshots named <code class="text-xs">naslos-YYYY-MM-DD_HH-MM-SS</code> are listed.
+            </p>
+          </div>
+          <div>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" bind:checked={audit} class="w-5 h-5 rounded" />
+              <span class="text-gray-300">Audit file operations</span>
+            </label>
+            <p class="text-xs text-gray-500 mt-1 ml-8">
+              Records successful and failed SMB operations in the Samba log.
+            </p>
+          </div>
+        </div>
       {/if}
 
       {#if protocol === 'nfs'}

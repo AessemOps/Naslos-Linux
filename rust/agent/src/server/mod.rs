@@ -140,6 +140,14 @@ impl Server {
                     .post(handlers::snapshots_post)
                     .delete(handlers::snapshots_delete),
             )
+            .route(
+                "/api/v1/snapshot-properties/",
+                get(handlers::snapshot_properties_get_empty),
+            )
+            .route(
+                "/api/v1/snapshot-properties/{*dataset}",
+                get(handlers::snapshot_properties_get).put(handlers::snapshot_properties_put),
+            )
             .route("/api/v1/rollback/", post(handlers::rollback_post_empty))
             .route("/api/v1/rollback/{*dataset}", post(handlers::rollback_post))
             .route(

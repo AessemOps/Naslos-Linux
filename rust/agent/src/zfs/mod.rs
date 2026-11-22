@@ -19,7 +19,7 @@ pub use runner::{join_host, RealRunner, Runner};
 pub use smart::{DiskHealth, DiskHealthReport, SmartClient, SmartInfo};
 pub use types::{
     Dataset, ImportablePool, Pool, PoolConfig, PoolDevice, PoolHealth, PoolIOStats,
-    SendStreamOptions, SnapshotInfo, ZfsDiskHealth, Zvol,
+    SendStreamOptions, SnapshotInfo, SnapshotSchedule, ZfsDiskHealth, Zvol,
 };
 pub use validation::{ZfsError, ZfsResult};
 
