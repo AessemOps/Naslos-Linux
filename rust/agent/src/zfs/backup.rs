@@ -44,6 +44,7 @@ pub fn validate_snapshot_name(name: &str) -> ZfsResult<()> {
 fn wrap(prefix: &str, err: ZfsError) -> ZfsError {
     match err {
         ZfsError::Validation(m) => ZfsError::Validation(format!("{prefix}{m}")),
+        ZfsError::Conflict(m) => ZfsError::Conflict(format!("{prefix}{m}")),
         ZfsError::Other(m) => ZfsError::Other(format!("{prefix}{m}")),
     }
 }
