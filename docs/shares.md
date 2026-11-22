@@ -716,7 +716,7 @@ shares:
     multichannel: true   # explicit `server multi channel support` (Samba default = on)
     timeMachine: true
     # shadowCopies/audit are per-share fields in the share form, not chart values.
-    image: { repository: ghcr.io/aessemops/naslos-samba, tag: "0.6.0" }
+    image: { repository: ghcr.io/aessemops/naslos-samba, tag: "0.7.0" }
   # Network advertisement (mDNS + WSD) so the server shows up when browsing.
   discovery:
     enabled: true
@@ -727,7 +727,7 @@ shares:
   confCheckInterval: 3
   nfs:
     enabled: true
-    image: { repository: ghcr.io/aessemops/naslos-nfs,   tag: "0.6.0" }
+    image: { repository: ghcr.io/aessemops/naslos-nfs,   tag: "0.7.0" }
   afp:
     enabled: false      # deprecated in favor of SMB Time Machine
 ```
