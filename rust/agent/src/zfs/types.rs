@@ -118,6 +118,8 @@ pub struct PoolIOStats {
 /// A snapshot's identity: name plus GUID (the sender recognises its last send).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SnapshotInfo {
+    #[serde(default)]
+    pub dataset: String,
     pub name: String,
     pub guid: String,
     pub created: String,
@@ -131,4 +133,7 @@ pub struct SendStreamOptions {
     pub from: String,
     /// Send encrypted records as-is (`-w`); a backup wants this.
     pub raw: bool,
+    /// Include descendant datasets (`-r`, without properties). Local
+    /// replication uses it when the request asks for a recursive copy.
+    pub recursive: bool,
 }

@@ -547,6 +547,7 @@ async fn run_send_job(
         to: snapshot.clone(),
         from: base.clone(),
         raw,
+        recursive: false,
     };
     let expected = agent.estimate_send(&opts).await.unwrap_or_else(|e| {
         tracing::warn!("buddy send: could not estimate {dataset}@{snapshot}: {e}");

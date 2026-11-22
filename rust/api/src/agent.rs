@@ -753,6 +753,7 @@ mod tests {
             to: "snap".into(),
             from: String::new(),
             raw: false,
+            recursive: false,
         }
     }
 
@@ -838,8 +839,12 @@ mod tests {
 // ---- Streaming (buddy send/restore) -------------------------------------
 
 /// A snapshot's identity, from the agent's `/zfs/snapshots`.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotInfo {
+    /// Dataset that owns the snapshot. The recursive listing flattens paths,
+    /// so this is what lets a caller tell a root snapshot from a child one.
+    #[serde(default)]
+    pub dataset: String,
     pub name: String,
     #[serde(default)]
     pub guid: String,
@@ -854,6 +859,8 @@ pub struct SendStreamOptions {
     pub to: String,
     pub from: String,
     pub raw: bool,
+    /// Send descendant datasets too (`zfs send -r`, no property propagation).
+    pub recursive: bool,
 }
 
 fn send_path(opts: &SendStreamOptions) -> String {
@@ -866,6 +873,9 @@ fn send_path(opts: &SendStreamOptions) -> String {
         path.push_str(&format!("&from={}", urlencode(&opts.from, true)));
     }
     path.push_str(if opts.raw { "&raw=true" } else { "&raw=false" });
+    if opts.recursive {
+        path.push_str("&recursive=true");
+    }
     path
 }
 
@@ -908,12 +918,28 @@ impl Client {
         Ok(payload.get("bytes").and_then(|v| v.as_i64()).unwrap_or(0))
     }
 
-    /// A dataset's snapshots with GUIDs.
+    /// A dataset's snapshots with GUIDs, including child datasets.
     pub async fn snapshots_with_guid(
         &self,
         dataset: &str,
     ) -> Result<Vec<SnapshotInfo>, AgentError> {
         let path = format!("/api/v1/zfs/snapshots/{}", escape_dataset_path(dataset));
+        let list: Vec<SnapshotInfo> = self
+            .do_json(self.request(reqwest::Method::GET, &path))
+            .await?;
+        Ok(list)
+    }
+
+    /// A dataset's own snapshots with GUIDs, excluding child datasets. Local
+    /// replication compares exactly the source and destination roots.
+    pub async fn snapshots_with_guid_shallow(
+        &self,
+        dataset: &str,
+    ) -> Result<Vec<SnapshotInfo>, AgentError> {
+        let path = format!(
+            "/api/v1/zfs/snapshots/{}?recursive=false",
+            escape_dataset_path(dataset)
+        );
         let list: Vec<SnapshotInfo> = self
             .do_json(self.request(reqwest::Method::GET, &path))
             .await?;

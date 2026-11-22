@@ -193,6 +193,59 @@ Error contract for the ZFS endpoints:
 The actual ZFS work is delegated to `naslos-agent` on each node:
 `chroot /host zpool …` / `chroot /host zfs …`.
 
+### Local replication (FR-REP)
+
+Local replication copies one ZFS dataset to another dataset on the same node.
+It is asynchronous: the request validates and enqueues, then the transfer runs
+as a server-owned task with the agent's `zfs send` stream piped straight into
+`zfs receive` (never buffered in the API). Jobs are in memory; the received
+snapshots are the durable outcome.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| POST | `/api/replication/send` | `{source, destination, snapshot?, recursive?, pruneKeep?}` → `202 {jobId, status:"started"}` |
+| GET | `/api/replication/jobs` | `{jobs:[…]}` running plus the last ~20 finished |
+| GET | `/api/replication/jobs/{id}` | One job: state, progress, result, error (`404` unknown) |
+| DELETE | `/api/replication/jobs/{id}` | Cancel a running job (`200 {"status":"cancelling"}`; `409` if already finished) |
+
+Rules:
+
+- `source` and `destination` must be existing datasets (`<pool>/<name>`); an
+  exact match against the agent's dataset list is required, and the destination
+  is never created implicitly. Identical paths, or either path nested inside the
+  other, are refused with `400`.
+- Without `snapshot`, the job creates
+  `naslos-rep-<pair token>-<UTC timestamp>-<random>` on the source (recursive
+  when `recursive` is true). A supplied snapshot must exist on the source.
+- Incremental sends are chosen by the newest **snapshot GUID** shared with the
+  destination (a differently named copy still counts); without one the job
+  sends a full stream. `recursive` maps to `zfs send -r` (descendants, without propagating properties such as the source mountpoint).
+- A full stream replaces the destination dataset's contents (treat the
+  destination as a replica target); it is refused when the destination holds a
+  snapshot that does not carry this pair's `naslos-rep-…` prefix or a child
+  dataset. Incremental receives never use `-F`, so replication cannot delete a
+  user snapshot. Encrypted (`-w`) replication is not implemented yet.
+- A recursive job still verifies every descendant when the root target already
+  exists. Each missing child subtree is sent as its own full stream rather than
+  rolling the destination back to an older base; a child carrying a same-named
+  snapshot with a different GUID is refused.
+- `pruneKeep` (0 = keep all, max 1000) keeps the newest N destination snapshots
+  carrying the pair's prefix. Source snapshots created by replication are left
+  in place.
+- A second job writing the same destination (or a nested one) is `409` while it
+  runs.
+
+Job shape: `{id, source, destination, snapshot?, recursive, pruneKeep?, state:
+"running"|"succeeded"|"failed"|"cancelled", startedAt, finishedAt?, progress:
+{bytes, estimatedBytes}, incremental, estimatedBytes?, result?: {status:
+"replicated"|"up-to-date", baseSnapshot?, baseGUID?, toGUID?, bytes,
+estimatedBytes, prunedSnapshots, retentionError?, durationSeconds}, error?}`.
+
+The agent's streaming routes gained one optional argument each: `zfs send`
+accepts `recursive=true` (`-r`), and `/api/v1/zfs/snapshots/{dataset}` accepts
+`recursive=false` to list only the dataset's own snapshots (the default stays
+recursive for Buddy).
+
 ### Shares
 
 | Method | Path | Description |
@@ -488,7 +541,7 @@ rule, client configuration).
 | POST | `/api/v1/pools/{pool}/scrub` | Start `zpool scrub <pool>` (pool name validated; no other arguments) |
 | GET | `/api/v1/zfs/send/{dataset}?to=&from=&raw=&estimate=` | Stream a `zfs send` (or report its size with `estimate=true`) |
 | POST | `/api/v1/zfs/receive/{dataset}?force=` | Stream a restore into `zfs receive` |
-| GET | `/api/v1/zfs/snapshots/{dataset}` | Snapshots with their GUIDs (how an incremental base is found) |
+| GET | `/api/v1/zfs/snapshots/{dataset}` | Snapshots as `{dataset, name, guid, created}` (the owning dataset matters for recursive listings; the GUID is how an incremental base is found) |
 
 ## Environment variables (`naslos-api`)
 
