@@ -211,7 +211,9 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-STO-10** — Scheduled snapshots MUST be creatable, listable, updatable and
   deletable per dataset (`GET|POST|DELETE /api/storage/schedules`, kind
   `snapshot`) with a cadence (hourly/daily/weekly, UTC `runAt`), an optional
-  recursive flag, and a keep count (0 = keep all, at most 1000). Every run MUST
+  recursive flag, and a keep count (0 = keep all, at most 1000). At most one
+  snapshot schedule is allowed per dataset, because the shadow-copy name carries
+  no schedule id. Every run MUST
   create the snapshot through the agent with the shadow-copy-compatible UTC
   name `naslos-%Y-%m-%d_%H-%M-%S` and MUST record the owning schedule in the
   snapshot's `user:naslos:schedule=<id>` user property (every descendant

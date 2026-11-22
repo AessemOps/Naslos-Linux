@@ -822,6 +822,24 @@ async fn storage_schedules_validate_and_round_trip() {
     assert!(!id.is_empty());
     assert!(body["schedule"]["nextRun"].is_string());
 
+    // A second schedule on the same dataset is refused: the shadow-copy name
+    // carries no schedule id, so two schedules would collide and fight over
+    // retention ownership.
+    let duplicate = r#"{"kind":"snapshot","target":"tank/data","cadence":"weekly","runAt":"Sun 03:30","keep":3}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", duplicate),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("already has snapshot schedule"));
+
     let (status, body, _r) = send_state(
         st.clone(),
         with_peer(

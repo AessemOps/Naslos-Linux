@@ -379,6 +379,19 @@ pub async fn validate_schedule(state: &AppState, e: &mut StorageSchedule) -> Res
         ScheduleKind::Snapshot => {
             crate::server::zfs::validate_dataset_path(e.target.trim())?;
             e.target = e.target.trim().to_string();
+            // Snapshot names are the shadow-copy timestamp only, so two
+            // schedules on the same dataset would create the same name and
+            // fight over ownership. One schedule per dataset.
+            if let Some(other) =
+                state.storage_schedules.list().into_iter().find(|s| {
+                    s.kind == ScheduleKind::Snapshot && s.target == e.target && s.id != e.id
+                })
+            {
+                return Err(format!(
+                    "dataset {:?} already has snapshot schedule {:?}",
+                    e.target, other.id
+                ));
+            }
             if let Some(agent) = &state.agent {
                 if let Ok(datasets) = agent.list_datasets().await {
                     if !datasets.iter().any(|d| d.name == e.target) {
