@@ -293,43 +293,63 @@ and `zfs change-key` only rewraps an existing key.
   encrypted dataset. Encryption MUST NOT be presented as changeable on an
   existing dataset; migration MUST be a new encrypted dataset plus a
   send/receive (or copy) and the old dataset's retirement, never `zfs set`.
-  **[OPEN]**
-- **FR-ENC-02** — Until custody, unlock/lock and encrypted send are implemented,
-  a well-formed dataset-create request that asks for encryption MUST be
-  rejected by both the API and the agent with an explicit "not implemented"
-  error, and neither layer MUST pass an encryption option to `zfs`. Malformed
-  encryption requests (unknown algorithms/formats, a missing `keyformat`, a
-  request-supplied `keylocation`, `encryption=off` combined with key options,
-  or `copies=3`) MUST fail validation. No key material is accepted, stored,
-  logged or placed in argv. Verified by
+  Verified by
   `naslos_agent::zfs::encryption::tests::planner_matches_shared_fixture`,
-  `naslos_api::dataset_encryption::tests::planner_matches_shared_fixture`
-  (shared fixture `rust/testdata/dataset_encryption.txt`) and the
-  create-option tests in both crates.
-- **FR-ENC-03** — **[OPEN]** Key custody: each encrypted dataset MUST have its
-  own generated 256-bit raw key. The key MUST be held in a Kubernetes Secret in
-  the Naslos namespace and MUST NOT be returned by any API, written to a log,
-  an error, the environment, argv or an `-o` property. The agent MUST be the
-  only component that materialises it for ZFS, in a 0600 file on host tmpfs,
-  and MUST remove that file when the dataset is locked. Unlock material MUST
-  travel only over the authenticated API→agent channel.
-- **FR-ENC-04** — **[OPEN]** Unlock/lock and boot: because Talos `zfs-service`
-  runs `zpool import -fal` and does not load keys, an encrypted dataset MUST be
+  `naslos_api::dataset_encryption::tests::planner_matches_shared_fixture` and
+  `key_location_is_never_caller_controlled` in both crates.
+- **FR-ENC-02** — A well-formed dataset-create request with `encryption` and
+  `keyformat=raw` MUST create the dataset with the request's allow-listed
+  cipher after its key Secret exists. `keyformat=passphrase` MUST be refused
+  with an explicit `[OPEN]` error until FR-ENC-05 ships. Malformed encryption
+  requests (unknown algorithms/formats, a missing `keyformat`, a
+  request-supplied `keylocation`, `encryption=off` combined with key options,
+  or `copies=3`) MUST fail validation. No key material is accepted as a
+  dataset option, placed in argv, written to a log or echoed in an error.
+  Verified by the planner fixtures, the create-option tests in both crates,
+  `passphrase_creation_is_refused_before_any_zfs_call` and
+  `key_material_is_never_a_dataset_option`.
+- **FR-ENC-03** — Key custody: each encrypted dataset MUST have its own
+  generated 256-bit raw key. The key MUST be held in a Kubernetes Secret in the
+  dedicated `naslos-keys` namespace and MUST NOT be returned by any API,
+  written to a log, an error, the environment, argv or an `-o` property. The
+  agent MUST be the only component that materialises it for ZFS, in a 0600 file
+  on host tmpfs, and MUST remove that file after `zfs create` and
+  `zfs load-key`. Unlock material MUST travel only over the authenticated
+  API→agent channel. Verified by
+  `naslos_api::dataset_encryption::tests::generated_keys_are_32_bytes_and_redacted`,
+  `secret_names_are_deterministic_and_dns_safe`,
+  `key_secret_parsing_refuses_mismatches_without_echoing_the_key`,
+  `naslos_agent::zfs::encryption::tests::keyfiles_are_private_and_removed`,
+  `create_encrypted_dataset_never_puts_the_key_in_argv` and
+  `unlock_response_never_echoes_the_key`.
+- **FR-ENC-04** — Unlock/lock and boot: because Talos `zfs-service` runs
+  `zpool import -fal` and does not load keys, an encrypted dataset MUST be
   reported as locked (`keystatus: unavailable`) and MUST NOT be mounted or
   served until an administrator explicitly unlocks it. There MUST be no
-  automatic unlock by default. Lock MUST be refused while the dataset is
-  mounted or used by a share or app. `GET /api/datasets` and the UI MUST expose
-  the lock state.
+  automatic unlock by default. Lock MUST be refused while the dataset or a
+  descendant is mounted. `GET /api/datasets`,
+  `GET /api/datasets/keystatus`, `POST /api/datasets/unlock` and
+  `POST /api/datasets/lock` MUST expose and change the lock state, and the UI
+  MUST show it. Verified by
+  `naslos_agent::zfs::encryption::tests` (`unlock_loads_the_key_from_the_private_file_and_removes_it`,
+  `lock_is_refused_while_mounted`, `lock_refuses_a_mounted_child`) and
+  `unlock_response_never_echoes_the_key`.
 - **FR-ENC-05** — **[OPEN]** Passphrase datasets: a passphrase MUST NOT be
   persisted; it MUST be supplied once over the authenticated API→agent channel
   and passed to `zfs load-key` on stdin, never in argv. The UI MUST state that a
   reboot requires re-entry and that a lost passphrase is unrecoverable.
-- **FR-ENC-06** — **[OPEN]** Create atomicity: the key Secret MUST exist before
-  the dataset is created, and a create MUST verify the exact dataset's
-  `encryption` and `keystatus=available` rather than trusting the exit status
-  of `zfs create -p` (which succeeds without applying properties when the
-  target already exists). On failure the partial dataset and the Secret MUST be
-  removed; no dataset may exist whose only key copy is in process memory.
+- **FR-ENC-06** — Create atomicity: the key Secret MUST exist before the
+  dataset is created, and a create MUST verify the exact dataset's
+  `encryption`, `encryptionroot` and `keystatus=available` rather than trusting
+  the exit status of `zfs create -p` (which succeeds without applying
+  properties when the target already exists). The agent MUST refuse an exact
+  dataset that already exists, destroy only the dataset it just created on
+  failure, and remove the transient keyfile. The API MUST delete the Secret
+  only when the exact dataset is confirmed absent; if the dataset exists or its
+  existence cannot be checked, the Secret MUST be kept. No dataset may exist
+  whose only key copy is in process memory. Verified by
+  `create_rolls_back_a_dataset_that_did_not_verify` and
+  `encrypted_create_requires_a_32_byte_key_and_never_runs_zfs`.
 - **FR-ENC-07** — **[OPEN]** Encrypted send/receive: replication of an
   encrypted source MUST use `zfs send -w`; `-U` (no-preserve-encryption) MUST
   NOT be used, and a property-bearing send without `-w` MUST be refused
@@ -343,12 +363,14 @@ and `zfs change-key` only rewraps an existing key.
   (`zfs send -w`) so the API never handles plaintext; that choice MUST NOT
   change the receiver's zero-knowledge guarantee. **[OPEN]** for the raw-send
   choice.
-- **FR-ENC-09** — **[OPEN]** Consumers: a share or app mount whose path is
-  inside a locked encrypted dataset MUST be refused rather than served empty or
-  served from the parent dataset. Destroying an encrypted dataset MUST require
-  an explicit confirmation that the key is destroyed with it and the data is
-  unrecoverable without a backup; key deletion MUST be presented as
-  irreversible.
+- **FR-ENC-09** — Destroying an encrypted dataset (or a subtree containing one)
+  MUST require an explicit confirmation that the key is destroyed with it and
+  the data is unrecoverable without a backup; after a successful destroy the
+  API MUST delete the key Secret(s) and MUST present key deletion as
+  irreversible. **[OPEN]** for consumers: a share or app mount whose path is
+  inside a locked encrypted dataset MUST be refused rather than served empty
+  or served from the parent dataset. Verified for destroy by the
+  `datasets_delete` handler (confirm + post-destroy Secret deletion).
 - **FR-ENC-10** — **[OPEN]** Key lifecycle: the owner MUST be able to rotate an
   encrypted dataset's key with `zfs change-key` (raw→passphrase and back) and
   MUST be able to back up/restore the key material without exposing it to the
@@ -537,7 +559,8 @@ cloud sync remain `[OPEN]` below.
   common GUID it MUST send a full stream. The stream MUST be piped from the
   agent's `zfs send` endpoint into its `zfs receive` endpoint without buffering
   the dataset in API memory, and `recursive` MUST use `zfs send -r` (descendants without property propagation, so the source mountpoint cannot shadow the same-node replica). Encrypted
-  (`-w`) replication is `[OPEN]` until dataset encryption ships (P0-3).
+  (`-w`) replication is `[OPEN]` until FR-ENC-07 ships; dataset encryption
+  itself is implemented for create/unlock/lock (P0-3).
   *(tests: `replication::planner_matches_by_guid_not_name`,
   `replication::a_full_replication_job_snapshots_streams_and_finishes`,
   `replication::a_common_guid_makes_the_send_incremental`,
@@ -1028,9 +1051,12 @@ with a sibling `naslos-app.yaml` install-config. See
 - **FR-APP-27** — The Installed view MUST offer an update when the registry
   serves a different digest for an installed app's image tag (a floating tag
   such as `latest`), not only when the catalog chart version changes. The API
-  MUST compare the running pod's `imageID` digest with the tag's top-level
+  MUST compare a live pod's `imageID` digest with the tag's top-level
   registry digest *or* its `linux/amd64` manifest digest (runtimes report
-  either), cache lookups for `IMAGE_CHECK_TTL` (default 1h), normalize
+  either); only pods whose phase is `Running` and that are not terminating
+  count, so a completed or failed pod from an earlier ReplicaSet MUST NOT keep
+  an already-applied update offered. Cache lookups for `IMAGE_CHECK_TTL`
+  (default 1h), normalize
   `docker.io`/`index.docker.io` to `registry-1.docker.io`, and never report an
   update for a digest-pinned image, an unreadable registry, or a catalog chart
   older than the installed one. The background catalog cycle and the manual
@@ -1232,43 +1258,93 @@ additive: ntfy keeps its existing behavior (FR-NTF-01/02) and settings.
   tests: `test_action_requires_an_enabled_channel`,
   `test_action_is_not_gated_by_event_routing`; contract test
   `webhook_test_route_requires_enabled_and_guards_at_send_time`)*
-- **FR-ALT-07** — **[OPEN]** An SMTP/email channel MUST be configurable with
-  host, port, TLS mode, sender, recipients and credentials held in a Secret,
-  routed by the same event/severity rules as FR-ALT-01. *(no test yet;
-  backend not implemented)*
+- **FR-ALT-07** — An SMTP/email channel MUST be configurable with host, port,
+  TLS mode (`starttls`, `implicit` or `none`), sender, recipients and optional
+  write-only credentials, routed by the same event/severity rules as
+  FR-ALT-01. TLS MUST validate the server certificate; there is no insecure
+  mode. Credentials MUST be persisted only in the mode-`0600` settings file
+  (never returned by the API) and MUST require STARTTLS or implicit TLS. The
+  target guard MUST allow an explicitly configured RFC1918 relay while still
+  refusing loopback, link-local/metadata, CGNAT, ULA and embedded credentials.
+  Delivery MUST be a single bounded attempt, and an error or log line MUST NOT
+  expose the host, username, password or message. *(SMTP tests:
+  `target_policy_allows_lan_relays_and_public_hosts_but_not_special_addresses`,
+  `tls_modes_and_credentials_are_validated`,
+  `settings_survive_a_reload_and_the_password_stays_write_only`,
+  `message_shape_is_rfc5322_and_subject_is_sanitized`,
+  `send_path_refuses_an_unknown_tls_mode_from_a_hand_edited_file`,
+  `starttls_does_not_wait_for_a_second_greeting`,
+  `a_multibyte_separator_is_rejected_without_panicking`,
+  `a_multiline_reply_is_bounded_by_lines_and_bytes`; contract tests
+  `smtp_channel_crud_never_returns_the_password`,
+  `smtp_test_route_requires_enabled_and_guards_at_send_time`)*
 - **FR-ALT-08** — **[OPEN]** SNMP traps MUST be a configurable channel
   (version, target, community/credentials from a Secret) routed by the same
   event/severity rules as FR-ALT-01. *(no test yet; backend not implemented)*
-- **FR-ALT-09** — **[OPEN]** Syslog forwarding MUST be a configurable channel
+- **FR-ALT-09** — Syslog forwarding MUST be a configurable channel
   (`udp`/`tcp`/`tls`, target, facility) routed by the same event/severity rules
-  as FR-ALT-01. *(no test yet; backend not implemented)*
+  as FR-ALT-01. The payload MUST be a bounded RFC 5424 message that carries only
+  the event fields, never channel settings or credentials. TLS MUST validate
+  the collector certificate. The target guard is the LAN-aware one from
+  FR-ALT-07. *(syslog tests:
+  `payload_is_rfc5424_with_pri_and_event_msgid`,
+  `payload_sanitizes_control_characters_and_the_msgid`,
+  `payload_is_bounded`, `target_policy_allows_lan_collectors_and_refuses_special_addresses`,
+  `send_path_refuses_an_unknown_protocol_from_a_hand_edited_file`,
+  `tcp_send_tries_every_vetted_address`;
+  contract test `syslog_channel_crud_and_test_route`)*
 
 ### 3.7.2 Historical reporting (`FR-RPT`)
 
-Historical reporting is **not implemented in this pass**; the bounded design is
-normative in [reporting.md](reporting.md). The requirements below are `[OPEN]`
-until the store, API and UI land.
+The bounded store, recorder, API and dashboard section are implemented
+([reporting.md](reporting.md)). The store is an embedded append-only file on a
+dedicated reporting volume; it does not bundle, require or depend on
+Prometheus, Grafana or an external time-series service.
 
-- **FR-RPT-01** — **[OPEN]** A background recorder MUST persist a bounded local
-  time series for CPU, memory, network, ZFS pool usage and disk health/SMART
-  values. The store MUST be embedded (SQLite or fixed-size RRD-like
-  files) on the state volume; Naslos MUST NOT bundle, require or depend on
-  Prometheus, Grafana, or an external time-series service. *(no test yet;
-  design in reporting.md)*
-- **FR-RPT-02** — **[OPEN]** Recording MUST retain at most three resolutions —
-  raw/1-minute for 24 h, 5-minute rollups for 7 d and 1-hour rollups for 30 d —
-  and MUST prune anything older than 30 d. The number of recorded series MUST be
-  a fixed allowlist (no per-app, per-container or per-process cardinality), and
-  a query MUST be capped in points. *(no test yet; design in reporting.md)*
-- **FR-RPT-03** — **[OPEN]** History writes MUST be best-effort and MUST NOT
-  block or fail the live metrics collector. A missing, locked or corrupt history
-  database MUST degrade to "no history" and MUST be recreatable without
-  affecting live metrics, alerts, shares or the dashboard. *(no test yet;
-  design in reporting.md)*
-- **FR-RPT-04** — **[OPEN]** The API and UI MUST expose only the 24 h, 7 d and
-  30 d views over the fixed series allowlist, authenticated like every other
-  owner route, and MUST NOT return unbounded raw samples. *(no test yet;
-  design in reporting.md)*
+- **FR-RPT-01** — A background recorder MUST persist a bounded local time
+  series for CPU, memory, network, ZFS pool usage and disk health/SMART values.
+  The store MUST be embedded on a persistent node-local state volume (its own
+  reporting PVC); Naslos MUST NOT bundle, require or depend on Prometheus,
+  Grafana, or an external time-series service. *Implemented
+  (`rust/api/src/reporting.rs`): allowlisted CPU, memory, per-second network
+  rates for physical interfaces, ZFS pool used/alloc/free and disk
+  temperature/wear; tests `ingest_records_series_and_derives_closed_rollups`,
+  `disk_smart_values_are_recorded_when_present`.*
+- **FR-RPT-02** — Recording MUST retain at most three resolutions — raw/1-minute
+  for 24 h, 5-minute rollups for 7 d and 1-hour rollups for 30 d — and MUST
+  prune anything older than 30 d. The number of recorded series MUST be a fixed
+  allowlist (no per-app, per-container or per-process cardinality), and a query
+  MUST be capped in points. *Implemented: `retention_prunes_each_resolution_and_keeps_the_30_day_floor`,
+  `series_registry_holds_stable_ids_and_caps_cardinality`,
+  `query_downsampling_caps_points`, `buckets_floor_at_boundaries`.*
+- **FR-RPT-03** — History writes MUST be best-effort and MUST NOT block or fail
+  the live metrics collector. A missing, locked or corrupt history database MUST
+  degrade to "no history" and MUST be recreatable without affecting live
+  metrics, alerts, shares or the dashboard. *Implemented: the recorder is a
+  separate task, writes are off the collector path, a corrupt header is moved
+  aside, a corrupt/truncated tail is repaired, and an unopenable store answers
+  `available:false`; tests `corrupt_tail_is_truncated_and_the_store_keeps_writing`,
+  `corrupt_header_is_moved_aside_and_recreated`,
+  `a_directory_instead_of_a_file_degrades_to_unavailable`.*
+- **FR-RPT-04** — The API and UI MUST expose only the 24 h, 7 d and 30 d views
+  over the fixed series allowlist, authenticated like every other owner route,
+  and MUST NOT return unbounded raw samples. *Implemented: `GET /api/reports`
+  and `GET /api/reports/series` on the admin-only owner router, plus the
+  dashboard History card; tests `server::reports::tests::*`,
+  `ranges_are_an_enum_not_a_duration`.*
+
+Remaining `[OPEN]` for reporting:
+
+- **FR-RPT-05** — **[OPEN]** ZFS pool `fragmentation_percent` is part of the
+  design's optional series set but the agent pool list does not expose it yet;
+  it MUST NOT be synthesized. *(no test yet; owner: agent pool inventory)*
+- **FR-RPT-06** — **[OPEN]** A live drill MUST compare one hour of recorded
+  history with `/api/metrics` on the production node and confirm the store stays
+  under its size cap across a restart. *(no test yet; requires the node)*
+- **FR-RPT-07** — **[OPEN]** A dedicated Reporting page (beyond the dashboard
+  section) and Playwright coverage for the range selector, seeded points and the
+  empty/corrupt state. *(no test yet; the API contract and unit tests cover the
+  current dashboard section)*
 
 ### 3.8 Buddy Backup (`FR-BUD`)
 
@@ -2105,6 +2181,10 @@ below is **[OPEN]** until the audit implementation lands.
 | `/api/notifications/test` | POST | Send test push |
 | `/api/notifications/webhook` | GET, PUT, DELETE | Webhook channel settings / update / reset (FR-ALT) |
 | `/api/notifications/webhook/test` | POST | Send a test webhook (FR-ALT-06) |
+| `/api/notifications/smtp` | GET, PUT, DELETE | SMTP channel settings / update / reset (FR-ALT-07) |
+| `/api/notifications/smtp/test` | POST | Send a test email (FR-ALT-07) |
+| `/api/notifications/syslog` | GET, PUT, DELETE | Syslog channel settings / update / reset (FR-ALT-09) |
+| `/api/notifications/syslog/test` | POST | Send a test RFC 5424 message (FR-ALT-09) |
 | `/api/network` | GET | Host network inventory: hostname, resolvers and physical links (§3.12) |
 | `/api/network/changes` | POST | Start a guarded network change (`202`; `409` while pending or during an upgrade) |
 | `/api/network/changes/{id}` | GET | Change phase, target address, deadline and error |
@@ -2302,14 +2382,20 @@ Local replication (`FR-REP`) is verified by the unit tests in
 | `planner_matches_by_guid_not_name`, `plan_uses_the_newest_common_guid` | FR-REP-03 (GUID matching and ordering) |
 | `send_command_line_recursive_replication_stream` | FR-REP-03 (`zfs send -r`, incremental `-i`, no flag injection) |
 | `snapshot_listing_is_recursive_only_when_requested` | FR-REP-03 (shallow snapshot listing for GUID base selection) |
-Dataset encryption is verified in this slice only by the pure planner
-(FR-ENC-03…10 are `[OPEN]`; their tests ship with the implementation):
+Dataset encryption is verified by the pure planners, key-custody tests and
+the agent's command/keyfile tests (FR-ENC-05/07/08/09-consumers/10 remain
+`[OPEN]`; their tests ship with the implementation):
 
 | Test | Verifies |
 | --- | --- |
 | `naslos_agent::zfs::encryption::tests::planner_matches_shared_fixture`, `naslos_api::dataset_encryption::tests::planner_matches_shared_fixture` | FR-ENC-01/02 (algorithm and key-format allow-list, `keylocation` refusal, `copies=3`, `encryption=off` consistency; the shared fixture is the API/agent parity oracle) |
-| `naslos_agent::zfs::encryption::tests::valid_encryption_requests_are_refused_before_any_zfs_call`, `naslos_api::server::zfs::tests::encryption_options_are_refused_until_key_custody_ships` | FR-ENC-02 (a well-formed encryption request is refused before any `zfs` call) |
-| `naslos_agent::zfs::dataset::tests::key_material_is_never_a_dataset_option`, `naslos_api::server::zfs::tests::key_material_is_never_a_dataset_option` | FR-ENC-02 (a `key`/`passphrase` field is rejected and its value is not echoed) |
+| `naslos_api::server::zfs::tests::encryption_options_accept_raw_keys_and_refuse_passphrases`, `naslos_agent::zfs::encryption::tests::raw_key_creation_is_accepted_and_passphrase_is_refused` | FR-ENC-02/05 (raw is implemented, passphrase is refused with `[OPEN]`) |
+| `key_material_is_never_a_dataset_option` (both crates) | FR-ENC-02/03 (a `key`/`passphrase` field is rejected and its value is not echoed) |
+| `generated_keys_are_32_bytes_and_redacted`, `secret_names_are_deterministic_and_dns_safe`, `key_secret_object_keeps_the_key_out_of_metadata`, `key_secret_parsing_refuses_mismatches_without_echoing_the_key` (`naslos_api::dataset_encryption`) | FR-ENC-03 (CSPRNG, Secret shape, deterministic names, no key in metadata/errors, redacted `Debug`) |
+| `keyfiles_are_private_and_removed`, `keyfiles_never_replace_a_directory`, `raw_keys_must_be_exactly_32_bytes` (`naslos_agent::zfs::encryption`) | FR-ENC-03/06 (0600 tmpfs file, removal, path safety, key length) |
+| `create_encrypted_dataset_never_puts_the_key_in_argv`, `create_rolls_back_a_dataset_that_did_not_verify`, `encrypted_create_requires_a_32_byte_key_and_never_runs_zfs`, `passphrase_creation_is_refused_before_any_zfs_call` (`rust/agent/tests/zfs_encryption.rs`) | FR-ENC-02/03/06 (key never in argv, exact-dataset verification/rollback, refusal before `zfs`) |
+| `unlock_loads_the_key_from_the_private_file_and_removes_it`, `unlock_is_idempotent`, `lock_is_refused_while_mounted`, `lock_refuses_a_mounted_child`, `lock_unloads_the_key_and_removes_the_keyfile`, `lock_is_idempotent` (`rust/agent/tests/zfs_encryption.rs`) | FR-ENC-04 (explicit unlock/lock, idempotence, mounted refusal, keyfile cleanup) |
+| `encryption_status_route_reports_the_raw_properties`, `unlock_response_never_echoes_the_key` (`rust/agent/tests/http_contract.rs`) | FR-ENC-03/04 (agent status contract and no key in a response) |
 | `docs/dataset-encryption.md` | FR-ENC-11 (threat model and the key-custody decision) |
 
 Dynamic DNS and the provider registry are verified by

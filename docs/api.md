@@ -180,12 +180,15 @@ are in-memory (a restart abandons a running job; the app record and
 | POST | `/api/volumes/zfs/{name}/devices` | Attach disks: `{disks, topology, force, wipeConfirmed}` → `zpool add`. Refuses a disk already in any pool (even with `force`), a disk holding a ZFS label, a non-`/dev` path, an unknown disk, and too few disks for the topology (FR-STO-08). A disk with another filesystem signature needs `wipeConfirmed`. |
 | POST | `/api/volumes/zfs/{name}/scrub` | Start a scrub now (`202`). `409` while `zpool status` reports a scrub or resilver in progress (FR-STO-11) |
 | GET/POST/DELETE | `/api/storage/schedules` | Periodic snapshot and scrub schedules (`{id, kind, target, cadence, runAt, keep, recursive, enabled}`; `?id=` deletes). Only one enabled snapshot schedule may cover a dataset tree (recursive overlap is refused; legacy duplicates are disabled on load), and an update that omits `enabled` keeps the stored value. Snapshot runs create `naslos-YYYY-MM-DD_HH-MM-SS` (UTC) and record `user:naslos:schedule=<schedule>`; a failed property write removes the just-created snapshot(s). Retention prunes only snapshots carrying that property (plus legacy `naslos-auto-<schedule>-…` names for one release), never user snapshots; scrub runs are daily/weekly and report the scan result (FR-STO-10/11) |
-| GET | `/api/datasets` | Every dataset with used/avail/refer/mountpoint |
+| GET | `/api/datasets` | Every dataset with used/avail/refer/mountpoint plus `encryption` (`off` or the cipher), `keystatus` (`none`, `unavailable`/locked, `available`/unlocked) and `encryptionRoot` (FR-ENC-04) |
 | GET | `/api/datasets/registry` | List operator-registered datasets apps may mount (`{name, hostPath, shared, warningAcknowledged, createdAt}`) |
 | POST | `/api/datasets/registry` | Register a dataset `{name, hostPath, shared, warningAcknowledged?}`. The path must be a mounted ZFS dataset below `/var/mnt`, must not overlap the Buddy store, and a `shared` dataset requires `warningAcknowledged:true` (400 otherwise) |
 | DELETE | `/api/datasets/registry/{name}` | Unregister a dataset; existing app claims are untouched |
-| POST | `/api/datasets` | Create: `{pool, name, options}` → `zfs create -p` (validated name + safe option subset, FR-STO-07). Encryption options (`encryption`, `keyformat`, `keylocation`) are validated, then refused with `400` until key custody and unlock/lock ship (FR-ENC; see [dataset-encryption.md](dataset-encryption.md)) |
-| DELETE | `/api/datasets?name=<pool>/<name>&recursive=true` | Destroy a dataset. Empty → plain destroy; non-empty needs `recursive=true`; a pool root dataset is refused; a dataset backing a share's path is refused with 409 (FR-STO-09) |
+| POST | `/api/datasets` | Create: `{pool, name, options}` → `zfs create -p` (validated name + safe option subset, FR-STO-07). With `encryption` + `keyformat=raw` the API generates a 32-byte key into a Secret in the `naslos-keys` namespace, then sends it to the agent over the authenticated channel; the response is `201 {status, name, encryption, keystatus:"available"}`. `keyformat=passphrase` and a request-supplied `keylocation` are refused until FR-ENC-05 ships. A retry whose key Secret already exists is `409` rather than overwriting it (FR-ENC-03/06; see [dataset-encryption.md](dataset-encryption.md)) |
+| DELETE | `/api/datasets?name=<pool>/<name>&recursive=true&confirm=<name>` | Destroy a dataset. Empty → plain destroy; non-empty needs `recursive=true`; a pool root dataset is refused; a dataset backing a share's path is refused with 409. An encrypted dataset (or a subtree containing one) additionally requires `confirm=<name>`; after a successful destroy its key Secret(s) are deleted (crypto-shredding), and `keysDeleted` reports whether cleanup succeeded. A failed destroy keeps every key (FR-STO-09, FR-ENC-09) |
+| GET | `/api/datasets/keystatus?name=<pool>/<name>` | Authoritative `zfs get` encryption state: `{name, encryption, keystatus, encryptionRoot, mounted}` (FR-ENC-04) |
+| POST | `/api/datasets/unlock` | `{name}` → load the dataset's key from its Secret. Admin-only, idempotent when already unlocked; a missing key Secret is `409` (restore it before unlocking). No key bytes are accepted or returned (FR-ENC-03/04) |
+| POST | `/api/datasets/lock` | `{name}` → unload the key and remove the transient keyfile. Refused while the dataset or a descendant is mounted; idempotent when already locked (FR-ENC-04) |
 | GET | `/api/zvols?pool=<pool>` | List ZFS zvols (`volsize`, `volsizeBytes`, `volblocksize`, compression, used/avail/refer); omit `pool` for every pool |
 | POST | `/api/zvols` | Create `{pool, name, size, options}` → `zfs create -V`. Validated name and size; only `volblocksize` (512–16M, power of two) and `compression` are accepted (FR-ZVOL-01/02) |
 | PUT | `/api/zvols?name=<pool>/<zvol>` | Resize `{size}` → `zfs set volsize`; growth only, refused while the zvol is in use (FR-ZVOL-03) |
@@ -303,6 +306,10 @@ and [nfsv3.md](nfsv3.md) for NFSv3 (not served).
 | POST | `/api/notifications/test` | Send a test notification (target must resolve to a public address; the host is resolved once and pinned at send time) |
 | GET/PUT/DELETE | `/api/notifications/webhook` | Generic webhook channel settings / update / reset (`400` for an invalid or non-public URL) |
 | POST | `/api/notifications/webhook/test` | Send a test webhook (`400` disabled, `502` delivery failure; the response never carries the token) |
+| GET/PUT/DELETE | `/api/notifications/smtp` | SMTP channel settings / update / reset (`400` for a bad TLS mode, mailbox, credential pair or non-routable target). The response exposes `hasPassword`, never the password |
+| POST | `/api/notifications/smtp/test` | Send a test email (`400` disabled, `502` delivery failure; errors carry no host or credentials) |
+| GET/PUT/DELETE | `/api/notifications/syslog` | Syslog channel settings / update / reset (`400` for a bad protocol, facility or non-routable target) |
+| POST | `/api/notifications/syslog/test` | Send a test RFC 5424 message (`400` disabled, `502` delivery failure) |
 | GET | `/api/metrics` | Full `SystemMetrics` object |
 | GET | `/api/dashboard` | Dashboard-formatted subset (home screen) |
 
@@ -312,6 +319,53 @@ and [nfsv3.md](nfsv3.md) for NFSv3 (not served).
 `cpu.{usage,cores,model,temperatureC,loadAvg1,loadAvg5,loadAvg15,perCore}`.
 Temperature is `null` when the node exposes no CPU sensor; the rest of the
 metrics are unaffected.
+
+### Historical reporting (`FR-RPT`, see [reporting.md](reporting.md))
+
+Admin-only, read-only routes over the bounded local history store. There is no
+write endpoint; the API recorder owns writes.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/reports` | Ranges, caps, store availability and the series registry (`key`, `kind`, `unit`, `id`) |
+| GET | `/api/reports/series?range=24h\|7d\|30d&metric=...` | Downsampled points for up to 8 series; `series` is accepted as an alias for `metric` |
+
+`range` is required and must be exactly `24h`, `7d` or `30d`; anything else is
+`400 {"error":"range must be one of 24h, 7d, 30d"}`. The resolution is implied
+by the range (60 / 300 / 3600 seconds). `metric` accepts a comma-separated
+list; unknown keys are returned in `ignored`, never queried as identifiers.
+Omitting `metric` returns the default dashboard set (CPU usage, memory usage,
+memory used, then the first available families).
+
+```json
+{
+  "range": "24h",
+  "resolution": 60,
+  "sample_interval_seconds": 60,
+  "from": "2026-11-21T00:00:00Z",
+  "to": "2026-11-21T23:59:00Z",
+  "available": true,
+  "error": null,
+  "series": [
+    {
+      "key": "cpu.usage_percent",
+      "kind": "cpu",
+      "unit": "percent",
+      "points": [[1732233600, 1.7, 12.4, 4.1, 3.2, 60]]
+    }
+  ],
+  "ignored": []
+}
+```
+
+Each point is `[bucket, min, max, avg, last, count]`; `bucket` is the epoch
+second at the start of the bucket. Units are `percent`, `bytes`,
+`bytes_per_s`, `celsius` and `load`. The window is `(from, to]`, so a complete
+24 h / 7 d / 30 d view returns exactly 1 440 / 2 016 / 720 buckets at its stored
+interval; a defensive response-wide factor keeps `sample_interval_seconds`
+accurate if a series ever exceeds the cap. A disabled or unopenable store
+answers `200` with `available:false`, an `error` string and no series, so the UI
+can render an empty state instead of an error page.
 
 ### Host network settings (`FR-NET`)
 
@@ -561,7 +615,8 @@ rule, client configuration).
 | DELETE | `/api/v1/pools/{name}` | Destroy pool |
 | GET | `/api/v1/pools/import` | List pools available for import (`zpool import` dry-run) |
 | POST | `/api/v1/pools/import` | Import pool(s): `{"name":"tank"}` or `{}` for all |
-| GET/POST | `/api/v1/datasets/{pool}` | List / create dataset |
+| GET/POST | `/api/v1/datasets/{pool}` | List / create dataset. A create may carry `key` (32 raw bytes in the JSON body) with `encryption`+`keyformat=raw`; the agent writes a 0600 tmpfs keyfile, creates and verifies the exact dataset, and removes the file. The key is never logged, echoed or put in argv |
+| GET/POST | `/api/v1/encryption/status/{dataset}`, `/api/v1/encryption/unlock`, `/api/v1/encryption/lock` | Read `encryption`/`keystatus`/`encryptionroot`/`mounted`; load a key (`{dataset, key}`); unload it (`{dataset}`). Refuses to lock a mounted dataset or descendant |
 | GET/POST/PUT/DELETE | `/api/v1/zvols` | List (`?pool=`), create `{name, size, options}`, resize `{size}` (`?name=`) or destroy (`?name=&confirm=`) a zvol. Property surface is `volblocksize` + `compression` only (FR-ZVOL) |
 | GET/POST/DELETE | `/api/v1/snapshots/{dataset}` | List (`?paths=true` returns full `dataset@snap` paths), create (`{name, recursive}`), destroy one (`?name=`) |
 | GET/PUT | `/api/v1/snapshot-properties/{dataset}` | List snapshots as `{path, schedule}` from `user:naslos:schedule` / record the owner (`{name, schedule, recursive}`). Only that fixed property; the value is validated and argv-only (FR-STO-10) |
@@ -608,6 +663,7 @@ rule, client configuration).
 | `BUDDY_IDENTITY` | `/var/lib/naslos/buddy-identity.json` | This instance's key material (private key + KEK); created on demand |
 | `BUDDY_SCHEDULES` | `/var/lib/naslos/buddy-schedules.json` | Scheduled backups (interval cadence, catch-up on startup) |
 | `APPS_NAMESPACE` | `naslos-apps` | Namespace user-installed apps run in |
+| `DATASET_KEYS_NAMESPACE` | `naslos-keys` | Namespace for per-dataset encryption key Secrets (FR-ENC-03); the chart grants the API Secret CRUD only there |
 | `APPS_PRIVILEGED_NAMESPACE` | `naslos-apps-priv` | Namespace for apps that declare `privileged: true` |
 | `APPS_CONFIG` | `/var/lib/naslos/apps.json` | Installed-app records |
 | `SOURCES_CONFIG` | `/var/lib/naslos/sources.json` | Configured chart repositories |
@@ -616,6 +672,8 @@ rule, client configuration).
 | `DDNS_CONFIG` | `/var/lib/naslos/ddns.json` | Dynamic-DNS entry store |
 | `NETWORK_STATE` | `/var/lib/naslos/network.json` | In-flight host-network change record and its previous-config snapshot (`FR-NET`) |
 | `ALERT_WEBHOOK_CONFIG` | `/var/lib/naslos/webhook.json` | Generic webhook alert channel settings (`FR-ALT`, mode `0600`; may hold a bearer token) |
+| `ALERT_SMTP_CONFIG` | `/var/lib/naslos/smtp.json` | SMTP/email alert channel settings (`FR-ALT-07`, mode `0600`; may hold the write-only password) |
+| `ALERT_SYSLOG_CONFIG` | `/var/lib/naslos/syslog.json` | Syslog forwarding settings (`FR-ALT-09`; no credentials) |
 | `STORAGE_SCHEDULES` | `/var/lib/naslos/storage-schedules.json` | Snapshot and scrub schedules plus their last/next-run state (`FR-STO-10/11`) |
 | `DDNS_PROVIDERS_DIR` | — | Override directory for provider `*.yaml` files |
 | `DDNS_IP_SOURCE` / `DDNS_IPV6_SOURCE` | `https://api.ipify.org` / `https://api6.ipify.org` | Public-IP detection URLs |

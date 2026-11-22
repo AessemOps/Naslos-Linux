@@ -1,10 +1,14 @@
-# Notifications (ntfy + webhook)
+# Notifications (ntfy, webhook, SMTP, syslog)
 
-Naslos pushes alerts to two channels: [ntfy](https://ntfy.sh) topics and a
-generic HTTP webhook. The ntfy channel is managed by `notifications.Manager`
-and the webhook channel by `webhook.Manager`; both are configured under
-**Notifications** in the UI. Each channel has its own persistence file, event
-routing and severity floor, so disabling one does not affect the other.
+Naslos pushes alerts to four channels: [ntfy](https://ntfy.sh) topics, a
+generic HTTP webhook, SMTP email and syslog. The ntfy channel is managed by
+`notifications.Manager`, the webhook channel by `webhook.Manager`, and the SMTP
+and syslog channels by `smtp.Manager` and `syslog.Manager`; all are configured
+under **Notifications** in the UI. Each channel has its own persistence file,
+event routing and severity floor, so disabling one does not affect the others.
+Every selected event is delivered to every channel concurrently and
+independently: a timeout or failure in one channel cannot suppress or delay
+another.
 
 ## Settings
 
@@ -154,6 +158,145 @@ No channel settings (`url`, token) are part of the payload.
 | DELETE | `/api/notifications/webhook` | Reset the channel to defaults (disabled, no URL/token) |
 | POST | `/api/notifications/webhook/test` | Send a test payload (`400` when disabled, `502` on delivery failure) |
 
+## SMTP channel
+
+The email channel (FR-ALT-07) keeps its own target, routing and severity
+floor. Settings live in `ALERT_SMTP_CONFIG` (default
+`/var/lib/naslos/smtp.json`, mode `0600` because it may hold the password), set
+by the chart value `api.smtpFile`.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Channel on/off switch |
+| `host` | — | Relay hostname or IP. Required when enabled. No embedded `user:pass@`, path or `host:port` |
+| `port` | `587` | Relay port (1–65535). `0` in a PUT selects the TLS-mode default |
+| `tls` | `starttls` | `starttls`, `implicit` (SMTPS) or `none` |
+| `username` | — | Optional SMTP AUTH username |
+| `hasPassword` | `false` | **Read-only.** Whether a password is stored; the password itself is never returned |
+| `password` | — | **Write-only.** Omitted on save keeps the stored password; `""` clears it; any other value replaces it |
+| `from` | — | Envelope/header sender; a bare mailbox (`naslos@example.com`). Required when enabled |
+| `to` | `[]` | Recipients; bare mailboxes. At most 20. Required when enabled |
+| `enabledEvents` | `[zfs_health, disk_failure]` | Which event types this channel receives |
+| `minSeverity` | `warning` | Only send at/above this severity |
+
+The event names are the same ones ntfy and the webhook use, plus the manual
+`test` action. Routing is per channel: an event can go to any subset of the
+four channels.
+
+### TLS and credentials
+
+- `starttls` upgrades after `EHLO` and is refused if the server does not
+  advertise `STARTTLS`.
+- `implicit` starts TLS immediately (SMTPS, typically port 465).
+- `none` is plaintext for an isolated LAN relay.
+- **Certificate validation is always on.** The client trusts the compiled-in
+  Mozilla CA roots and validates the certificate for the configured hostname.
+  There is no insecure/accept-any option; a private relay that wants
+  `starttls`/`implicit` must present a publicly trusted certificate, otherwise
+  use `none` on a trusted network.
+- Credentials are optional. A password requires a username, and AUTH is used
+  only when both are set (a username whose password was cleared means "no
+  authentication"). A password is refused with `tls = none`, so credentials
+  never cross the network in clear text.
+- `AUTH PLAIN` is preferred when advertised, otherwise `AUTH LOGIN`. A server
+  that offers neither is a delivery error.
+
+### Target policy
+
+SMTP relays commonly live on the operator's LAN, so this channel uses the
+LAN-aware guard instead of the strict webhook guard:
+
+- an explicitly configured **RFC1918 IPv4** target (`10/8`, `172.16/12`,
+  `192.168/16`) or a hostname that resolves only to those addresses is
+  allowed;
+- loopback, link-local (including `169.254.169.254` metadata), CGNAT,
+  multicast, unspecified, documentation, benchmark, reserved and ULA
+  addresses are refused, including IPv4-mapped IPv6 forms;
+- a hostname is resolved when the settings are saved **and** again at send
+  time, and the connection is pinned to the vetted address, so DNS cannot be
+  rebound between the check and the send;
+- the host field cannot carry URL credentials, a path or a second target.
+
+The chart's network policy still has to allow the egress: use the configured
+`networkPolicy.extraEgressCIDRs` (or a `nodeCIDR` that already covers the LAN)
+for a relay outside the cluster.
+
+### Message and delivery
+
+The message is RFC 5322 plain text with CRLF endings and UTF-8:
+
+```
+From: naslos@example.com
+To: ops@example.com
+Subject: [Naslos] Disk sda is at 60°C
+X-Naslos-Event: disk_failure
+Date: Sat, 22 Nov 2026 11:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Disk /dev/sda is above the 55°C warning threshold.
+```
+
+- The subject and event header are stripped of CR/LF and control characters,
+  so a notification title cannot inject a header. Sender and recipients are
+  validated as bare mailboxes.
+- DATA is dot-stuffed; the payload is bounded to 64 KiB.
+- Delivery is one attempt under a 15 s whole-operation timeout. There is no
+  retry queue and no unbounded buffering.
+- A failure reports a fixed category and the SMTP numeric code only (for
+  example `SMTP authentication failed (SMTP code 535)`); the host, username,
+  password, server text and message body never appear in an error or log line.
+
+## Syslog channel
+
+Syslog forwarding (FR-ALT-09) sends one RFC 5424 message per selected event
+over UDP, TCP or TLS. It has no credentials. Settings live in
+`ALERT_SYSLOG_CONFIG` (default `/var/lib/naslos/syslog.json`), set by the chart
+value `api.syslogFile`.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Channel on/off switch |
+| `protocol` | `udp` | `udp`, `tcp` or `tls` |
+| `host` | — | Collector hostname or IP. Required when enabled |
+| `port` | `514` | Collector port. An omitted/`0` port defaults to 514 for `udp`/`tcp` and 6514 for `tls` |
+| `facility` | `local0` | Facility name (`kern`, `user`, `mail`, `daemon`, `auth`, `syslog`, `lpr`, `news`, `uucp`, `cron`, `authpriv`, `ftp`, `ntp`, `audit`, `console`, `clock`, `local0`–`local7`) or a number 0–23 |
+| `enabledEvents` | `[zfs_health, disk_failure]` | Which event types this channel receives |
+| `minSeverity` | `warning` | Only send at/above this severity |
+
+### Payload
+
+RFC 5424, one message per event:
+
+```
+<134>1 2026-11-22T11:00:00Z naslos naslos - disk_failure - Disk sda is at 60°C: Disk /dev/sda is above the 55°C warning threshold.
+```
+
+`PRI` is `facility × 8 + severity`. Naslos severities map to RFC 5424
+severities:
+
+| Severity | RFC 5424 code |
+| --- | --- |
+| info | 6 (informational) |
+| warning | 4 (warning) |
+| error | 3 (error) |
+| critical | 2 (critical) |
+
+- `HOSTNAME` and `APP-NAME` are `naslos`; `PROCID` and `STRUCTURED-DATA` are
+  the RFC 5424 nil value `-`; `MSGID` is the sanitized event name.
+- CR/LF/tab and other control characters in the title/message are replaced
+  with spaces. The whole message is bounded to 8 KiB on a UTF-8 boundary.
+- UDP sends one datagram; TCP and TLS use one newline-terminated frame and a
+  connection that is closed after the write.
+- TLS validates the collector certificate against the compiled-in Mozilla CA
+  roots (no insecure mode).
+- The target policy is the SMTP/LAN-aware one above: explicit RFC1918 targets
+  are allowed; loopback, link-local/metadata, CGNAT, ULA and other
+  non-routable addresses are refused.
+- Delivery is one attempt under a 10 s whole-operation timeout. Errors name
+  the failure category only, never the host or the payload.
+
 ## API
 
 | Method | Path | Description |
@@ -163,5 +306,9 @@ No channel settings (`url`, token) are part of the payload.
 | POST | `/api/notifications/test` | Send a test notification ("Naslos Test", info severity) |
 | GET/PUT/DELETE | `/api/notifications/webhook` | Generic webhook channel settings / reset |
 | POST | `/api/notifications/webhook/test` | Send a test webhook |
+| GET/PUT/DELETE | `/api/notifications/smtp` | SMTP channel settings / reset (never returns the password) |
+| POST | `/api/notifications/smtp/test` | Send a test email |
+| GET/PUT/DELETE | `/api/notifications/syslog` | Syslog channel settings / reset |
+| POST | `/api/notifications/syslog/test` | Send a test RFC 5424 message |
 
 See [api.md](api.md) for the full route table.

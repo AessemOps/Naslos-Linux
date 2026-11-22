@@ -49,6 +49,11 @@ rmcp = { version = "=3.11.0", default-features = false, features = [
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
+# SMTP/syslog TLS transports (FR-ALT-07/09): tokio's rustls adapter and the
+# compiled-in Mozilla trust anchors. Certificate validation is always on; there
+# is deliberately no insecure/accept-any mode.
+tokio-rustls = "0.26"
+webpki-roots = "1"
 serde = { version = "1", features = ["derive"] }
 sha1 = "0.10"
 ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "alloc", "rand_core", "std"] }

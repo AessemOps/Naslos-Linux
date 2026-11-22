@@ -98,6 +98,35 @@ pub struct Dataset {
     pub used_bytes: i64,
     #[serde(default)]
     pub mounted: bool,
+    /// `zfs get encryption`: `off` for an unencrypted dataset, else the cipher.
+    #[serde(default)]
+    pub encryption: String,
+    /// `zfs get keystatus`: `none`, `unavailable` (locked) or `available`.
+    #[serde(default)]
+    pub keystatus: String,
+    /// The dataset whose key this dataset uses.
+    #[serde(default, rename = "encryptionRoot")]
+    pub encryption_root: String,
+}
+
+/// The agent's encryption state for one dataset.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EncryptionStatus {
+    pub name: String,
+    #[serde(default)]
+    pub encryption: String,
+    #[serde(default)]
+    pub keystatus: String,
+    #[serde(default, rename = "encryptionRoot")]
+    pub encryption_root: String,
+    #[serde(default)]
+    pub mounted: bool,
+}
+
+impl EncryptionStatus {
+    pub fn is_encrypted(&self) -> bool {
+        !self.encryption.is_empty() && self.encryption != "off" && self.encryption != "-"
+    }
 }
 
 /// A ZFS zvol (mirrors the agent's `Zvol` JSON shape).
@@ -572,6 +601,49 @@ impl Client {
                 &format!("/api/v1/datasets/{}", escape_component(pool)),
             )
             .json(&serde_json::json!({ "name": name, "options": options })),
+        )
+        .await
+    }
+
+    /// Create an encrypted dataset. The raw key travels only in the
+    /// authenticated JSON body; it is never placed in the URL or a header.
+    pub async fn create_dataset_with_key(
+        &self,
+        pool: &str,
+        name: &str,
+        options: &std::collections::HashMap<String, String>,
+        key: &[u8],
+    ) -> Result<(), AgentError> {
+        self.do_empty(
+            self.request(
+                reqwest::Method::POST,
+                &format!("/api/v1/datasets/{}", escape_component(pool)),
+            )
+            .json(&serde_json::json!({ "name": name, "options": options, "key": key })),
+        )
+        .await
+    }
+
+    pub async fn encryption_status(&self, dataset: &str) -> Result<EncryptionStatus, AgentError> {
+        self.do_json(self.request(
+            reqwest::Method::GET,
+            &format!("/api/v1/encryption/status/{}", escape_dataset_path(dataset)),
+        ))
+        .await
+    }
+
+    pub async fn unlock_dataset(&self, dataset: &str, key: &[u8]) -> Result<(), AgentError> {
+        self.do_empty(
+            self.request(reqwest::Method::POST, "/api/v1/encryption/unlock")
+                .json(&serde_json::json!({ "dataset": dataset, "key": key })),
+        )
+        .await
+    }
+
+    pub async fn lock_dataset(&self, dataset: &str) -> Result<(), AgentError> {
+        self.do_empty(
+            self.request(reqwest::Method::POST, "/api/v1/encryption/lock")
+                .json(&serde_json::json!({ "dataset": dataset })),
         )
         .await
     }

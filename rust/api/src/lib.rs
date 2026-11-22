@@ -6,6 +6,7 @@
 //! handlers return a documented 501.
 
 pub mod agent;
+mod alert_transport;
 pub mod app_env;
 pub mod app_usage;
 pub mod apps;
@@ -34,12 +35,15 @@ pub mod notifications;
 pub mod pack;
 pub mod proc;
 pub mod providers;
+pub mod reporting;
 pub mod routing;
 pub mod schedule;
 pub mod semver;
 pub mod server;
 pub mod shares;
+pub mod smtp;
 pub mod state;
+pub mod syslog;
 pub mod system;
 pub mod talos;
 pub mod upgrade;

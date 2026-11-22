@@ -111,6 +111,22 @@ impl Server {
             .route("/api/v1/disks/health", get(handlers::disks_health))
             .route("/api/v1/datasets", get(handlers::datasets_all_get))
             .route(
+                "/api/v1/encryption/status/",
+                get(handlers::encryption_status_get_empty),
+            )
+            .route(
+                "/api/v1/encryption/status/{*dataset}",
+                get(handlers::encryption_status_get),
+            )
+            .route(
+                "/api/v1/encryption/unlock",
+                post(handlers::encryption_unlock_post),
+            )
+            .route(
+                "/api/v1/encryption/lock",
+                post(handlers::encryption_lock_post),
+            )
+            .route(
                 "/api/v1/zvols",
                 get(handlers::zvols_get)
                     .post(handlers::zvols_post)

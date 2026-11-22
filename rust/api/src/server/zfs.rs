@@ -5,6 +5,7 @@
 //! status (`writeAgentError`).
 
 use crate::agent::{AgentError, CreatePoolRequest};
+use crate::dataset_encryption::{self, KeyFormat, RawKey};
 use crate::json;
 use crate::logsafe;
 use crate::state::AppState;
@@ -302,6 +303,9 @@ pub fn validate_dataset_create_options(options: &HashMap<String, String>) -> Res
                     return Err("copies must be 1, 2 or 3".into());
                 }
             }
+            // Shape validated by `dataset_encryption::validate_create_options`
+            // above; the agent owns `keylocation` and the key itself.
+            "encryption" | "keyformat" => {}
             _ => return Err(format!("unsupported dataset option {key:?}")),
         }
     }
@@ -785,6 +789,11 @@ pub async fn datasets_get(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
+/// Serializes encrypted creates so the "dataset absent / Secret absent" checks
+/// and the two writes cannot interleave. The API runs one replica, but a
+/// second create for the same name must still see the first one's Secret.
+static DATASET_CREATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub async fn datasets_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
     let req: CreateDatasetBody = match read_json(body).await {
         Ok(r) => r,
@@ -799,6 +808,10 @@ pub async fn datasets_post(State(state): State<Arc<AppState>>, body: Body) -> Re
     if let Err(e) = validate_dataset_create_options(&req.options) {
         return bad_request(&e);
     }
+    let plan = match dataset_encryption::parse_plan(&req.options) {
+        Ok(plan) => plan,
+        Err(e) => return bad_request(&e),
+    };
     if let Err(e) = require_pool(&state, &req.pool).await {
         return bad_request(&e);
     }
@@ -806,23 +819,336 @@ pub async fn datasets_post(State(state): State<Arc<AppState>>, body: Body) -> Re
         Ok(c) => c,
         Err(resp) => return resp,
     };
+
+    let Some(plan) = plan else {
+        return match client
+            .create_dataset(&req.pool, &req.name, &req.options)
+            .await
+        {
+            Ok(()) => {
+                tracing::info!(
+                    "created dataset {}/{}",
+                    logsafe::field(&req.pool),
+                    logsafe::field(&req.name)
+                );
+                json(
+                    StatusCode::CREATED,
+                    serde_json::json!({ "status": "dataset created", "name": format!("{}/{}", req.pool, req.name) }),
+                )
+            }
+            Err(e) => write_agent_error(&e),
+        };
+    };
+
+    if plan.key_format != KeyFormat::Raw {
+        return bad_request(dataset_encryption::PASSPHRASE_NOT_IMPLEMENTED);
+    }
+
+    let _guard = DATASET_CREATE_LOCK.lock().await;
+    let full = format!("{}/{}", req.pool, req.name);
+    let datasets = match client.list_datasets().await {
+        Ok(datasets) => datasets,
+        Err(e) => return write_agent_error(&e),
+    };
+    if datasets.iter().any(|d| d.name == full) {
+        return json(
+            StatusCode::CONFLICT,
+            serde_json::json!({ "error": format!("dataset {full} already exists") }),
+        );
+    }
+
+    let Some(kube) = state.kube.as_ref() else {
+        return json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": "dataset encryption needs the Kubernetes client; none is configured" }),
+        );
+    };
+    let namespace = dataset_encryption::keys_namespace();
+    let secret_name = match dataset_encryption::secret_name_for_dataset(&full) {
+        Ok(name) => name,
+        Err(e) => return bad_request(&e),
+    };
+    match kube.get_json("secret", &secret_name, &namespace).await {
+        Ok(None) => {}
+        Ok(Some(_)) => {
+            return json(
+                StatusCode::CONFLICT,
+                serde_json::json!({ "error": format!("the dataset key Secret {secret_name} already exists; refusing to overwrite it") }),
+            )
+        }
+        Err(e) => {
+            return json(
+                StatusCode::BAD_GATEWAY,
+                serde_json::json!({ "error": format!("checking the dataset key Secret: {e}") }),
+            )
+        }
+    }
+
+    let key = match RawKey::generate() {
+        Ok(key) => key,
+        Err(e) => {
+            return json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "error": e }),
+            )
+        }
+    };
+    let object = match dataset_encryption::key_secret_object(&full, &key, &namespace) {
+        Ok(object) => object,
+        Err(e) => return bad_request(&e),
+    };
+    if let Err(e) = kube.apply(&object).await {
+        return json(
+            StatusCode::BAD_GATEWAY,
+            serde_json::json!({ "error": format!("writing the dataset key Secret: {e}") }),
+        );
+    }
+
     match client
-        .create_dataset(&req.pool, &req.name, &req.options)
+        .create_dataset_with_key(&req.pool, &req.name, &req.options, key.as_bytes())
         .await
     {
         Ok(()) => {
             tracing::info!(
-                "created dataset {}/{}",
-                logsafe::field(&req.pool),
-                logsafe::field(&req.name)
+                "created encrypted dataset {} ({})",
+                logsafe::field(&full),
+                plan.algorithm.as_zfs_value()
             );
             json(
                 StatusCode::CREATED,
-                serde_json::json!({ "status": "dataset created", "name": format!("{}/{}", req.pool, req.name) }),
+                serde_json::json!({
+                    "status": "dataset created",
+                    "name": full,
+                    "encryption": plan.algorithm.as_zfs_value(),
+                    "keystatus": "available"
+                }),
             )
         }
+        Err(e) => {
+            // The agent rolls back its own partial dataset. If the dataset is
+            // still absent, the key has no owner and can be removed; if it
+            // exists (or existence cannot be checked), keep the Secret: deleting
+            // the only key copy would make the dataset unrecoverable.
+            let exists = match client.list_datasets().await {
+                Ok(datasets) => datasets.iter().any(|d| d.name == full),
+                Err(_) => true,
+            };
+            if !exists {
+                if let Err(err) = kube.delete("secret", &secret_name, &namespace).await {
+                    tracing::warn!(
+                        "could not remove the unused dataset key Secret {}: {}",
+                        logsafe::field(&secret_name),
+                        err
+                    );
+                }
+            } else {
+                tracing::error!(
+                    "encrypted dataset create reported an error but {} exists; the key Secret was kept",
+                    logsafe::field(&full)
+                );
+            }
+            write_agent_error(&e)
+        }
+    }
+}
+
+/// Whether a dataset reports an encrypted state from `zfs list`.
+fn is_encrypted_dataset(dataset: &crate::agent::Dataset) -> bool {
+    !dataset.encryption.is_empty() && dataset.encryption != "off" && dataset.encryption != "-"
+}
+
+fn encryption_root_of(dataset: &crate::agent::Dataset) -> String {
+    if dataset.encryption_root.is_empty() {
+        dataset.name.clone()
+    } else {
+        dataset.encryption_root.clone()
+    }
+}
+
+/// The encryption roots whose keys belong to the destroyed subtree.
+///
+/// A child that merely inherits encryption reports an ancestor as its
+/// `encryptionRoot`; that ancestor survives the destroy and keeps the key its
+/// other children need, so only roots inside `<name>/` (or the dataset itself)
+/// are eligible for Secret deletion.
+fn encryption_roots_in_subtree(
+    datasets: &[crate::agent::Dataset],
+    name: &str,
+) -> (bool, std::collections::BTreeSet<String>) {
+    let prefix = format!("{name}/");
+    let encrypted_subtree = datasets
+        .iter()
+        .filter(|d| d.name == name || d.name.starts_with(&prefix))
+        .any(is_encrypted_dataset);
+    let roots = datasets
+        .iter()
+        .filter(|d| d.name == name || d.name.starts_with(&prefix))
+        .filter(|d| is_encrypted_dataset(d))
+        .map(encryption_root_of)
+        .filter(|root| root == name || root.starts_with(&prefix))
+        .collect();
+    (encrypted_subtree, roots)
+}
+
+/// Read and validate the key Secret for one encryption root.
+#[allow(clippy::result_large_err)]
+async fn read_dataset_key(state: &AppState, root: &str) -> Result<RawKey, Response> {
+    let kube = state.kube.as_ref().ok_or_else(|| {
+        json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": "dataset encryption needs the Kubernetes client; none is configured" }),
+        )
+    })?;
+    let namespace = dataset_encryption::keys_namespace();
+    let secret_name =
+        dataset_encryption::secret_name_for_dataset(root).map_err(|e| bad_request(&e))?;
+    match kube.get_json("secret", &secret_name, &namespace).await {
+        Ok(Some(secret)) => dataset_encryption::parse_key_secret(&secret, root)
+            .map_err(|e| json(StatusCode::CONFLICT, serde_json::json!({ "error": e }))),
+        Ok(None) => Err(json(
+            StatusCode::CONFLICT,
+            serde_json::json!({
+                "error": format!("the key Secret for {root} is missing; restore it from your Secret backup before unlocking")
+            }),
+        )),
+        Err(e) => Err(json(
+            StatusCode::BAD_GATEWAY,
+            serde_json::json!({ "error": format!("reading the dataset key Secret: {e}") }),
+        )),
+    }
+}
+
+/// `GET /api/datasets/keystatus?name=<pool>/<dataset>` — authoritative
+/// `zfs get` state for one dataset.
+pub async fn datasets_keystatus_get(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let name = query
+        .get("name")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if let Err(e) = validate_dataset_path(&name) {
+        return bad_request(&e);
+    }
+    let client = match agent(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    match client.encryption_status(&name).await {
+        Ok(status) => json(StatusCode::OK, serde_json::to_value(status).unwrap()),
         Err(e) => write_agent_error(&e),
     }
+}
+
+#[derive(Default, Deserialize)]
+struct DatasetNameBody {
+    #[serde(default)]
+    name: String,
+}
+
+/// `POST /api/datasets/unlock` — explicit administrator unlock after boot.
+/// There is no automatic unlock; the key comes from the dataset key Secret.
+pub async fn datasets_unlock_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    let req: DatasetNameBody = match read_json(body).await {
+        Ok(req) => req,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = validate_dataset_path(&req.name) {
+        return bad_request(&e);
+    }
+    let client = match agent(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let status = match client.encryption_status(&req.name).await {
+        Ok(status) => status,
+        Err(e) => return write_agent_error(&e),
+    };
+    if !status.is_encrypted() {
+        return bad_request("dataset is not encrypted");
+    }
+    if status.keystatus == "available" {
+        return json(
+            StatusCode::OK,
+            serde_json::json!({
+                "status": "unlocked", "name": status.name,
+                "keystatus": status.keystatus, "alreadyUnlocked": true
+            }),
+        );
+    }
+    let root = if status.encryption_root.is_empty() {
+        status.name.clone()
+    } else {
+        status.encryption_root.clone()
+    };
+    let key = match read_dataset_key(&state, &root).await {
+        Ok(key) => key,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = client.unlock_dataset(&root, key.as_bytes()).await {
+        return write_agent_error(&e);
+    }
+    let after = match client.encryption_status(&req.name).await {
+        Ok(status) => status,
+        Err(e) => return write_agent_error(&e),
+    };
+    tracing::info!(
+        "unlocked encrypted dataset {} (keystatus={})",
+        logsafe::field(&root),
+        after.keystatus
+    );
+    json(
+        StatusCode::OK,
+        serde_json::json!({
+            "status": "unlocked", "name": after.name, "keystatus": after.keystatus
+        }),
+    )
+}
+
+/// `POST /api/datasets/lock` — unload the key; refused while mounted.
+pub async fn datasets_lock_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    let req: DatasetNameBody = match read_json(body).await {
+        Ok(req) => req,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = validate_dataset_path(&req.name) {
+        return bad_request(&e);
+    }
+    let client = match agent(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let status = match client.encryption_status(&req.name).await {
+        Ok(status) => status,
+        Err(e) => return write_agent_error(&e),
+    };
+    if !status.is_encrypted() {
+        return bad_request("dataset is not encrypted");
+    }
+    let root = if status.encryption_root.is_empty() {
+        status.name.clone()
+    } else {
+        status.encryption_root.clone()
+    };
+    if let Err(e) = client.lock_dataset(&root).await {
+        return write_agent_error(&e);
+    }
+    let after = match client.encryption_status(&req.name).await {
+        Ok(status) => status,
+        Err(e) => return write_agent_error(&e),
+    };
+    tracing::info!(
+        "locked encrypted dataset {} (keystatus={})",
+        logsafe::field(&root),
+        after.keystatus
+    );
+    json(
+        StatusCode::OK,
+        serde_json::json!({
+            "status": "locked", "name": after.name, "keystatus": after.keystatus
+        }),
+    )
 }
 
 pub async fn datasets_delete(
@@ -837,23 +1163,61 @@ pub async fn datasets_delete(
     if let Err(e) = validate_dataset_path(&name) {
         return bad_request(&e);
     }
-    if let Err(e) = require_unused_by_shares(&state, &name).await {
-        return json(StatusCode::CONFLICT, serde_json::json!({ "error": e }));
-    }
     let client = match agent(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    let datasets = match client.list_datasets().await {
+        Ok(datasets) => datasets,
+        Err(e) => return write_agent_error(&e),
+    };
+    let (encrypted_subtree, encrypted_roots) = encryption_roots_in_subtree(&datasets, &name);
+    if encrypted_subtree && query.get("confirm").map(String::as_str) != Some(name.as_str()) {
+        return bad_request(
+            "destroying an encrypted dataset requires confirm=<dataset name>; its key Secret is destroyed with it and the data is unrecoverable without a backup",
+        );
+    }
+    if let Err(e) = require_unused_by_shares(&state, &name).await {
+        return json(StatusCode::CONFLICT, serde_json::json!({ "error": e }));
+    }
     match client.destroy_dataset(&name, recursive).await {
         Ok(()) => {
             tracing::info!(
-                "destroyed dataset {} (recursive={})",
+                "destroyed dataset {} (recursive={}, encrypted={})",
                 logsafe::field(&name),
-                recursive
+                recursive,
+                encrypted_subtree
             );
+            // `true` only when there was nothing to delete or every delete
+            // succeeded; a missing Kubernetes client with roots to delete is
+            // not a successful crypto-shred.
+            let mut keys_deleted = encrypted_roots.is_empty();
+            if let Some(kube) = state.kube.as_ref() {
+                keys_deleted = true;
+                let namespace = dataset_encryption::keys_namespace();
+                for root in &encrypted_roots {
+                    let Ok(secret_name) = dataset_encryption::secret_name_for_dataset(root) else {
+                        keys_deleted = false;
+                        continue;
+                    };
+                    if let Err(e) = kube.delete("secret", &secret_name, &namespace).await {
+                        keys_deleted = false;
+                        tracing::warn!(
+                            "dataset {} was destroyed but its key Secret {} could not be deleted: {}",
+                            logsafe::field(root),
+                            logsafe::field(&secret_name),
+                            e
+                        );
+                    }
+                }
+            }
             json(
                 StatusCode::OK,
-                serde_json::json!({ "status": "dataset destroyed", "name": name }),
+                serde_json::json!({
+                    "status": "dataset destroyed",
+                    "name": name,
+                    "keysDeleted": keys_deleted
+                }),
             )
         }
         Err(e) => write_agent_error(&e),
@@ -1230,12 +1594,18 @@ mod tests {
     }
 
     #[test]
-    fn encryption_options_are_refused_until_key_custody_ships() {
+    fn encryption_options_accept_raw_keys_and_refuse_passphrases() {
         let mut valid = HashMap::new();
         valid.insert("encryption".to_string(), "aes-256-gcm".to_string());
         valid.insert("keyformat".to_string(), "raw".to_string());
-        let err = validate_dataset_create_options(&valid).unwrap_err();
-        assert!(err.contains("not implemented yet"), "{err}");
+        validate_dataset_create_options(&valid).expect("raw keys are implemented");
+
+        let mut passphrase = HashMap::new();
+        passphrase.insert("encryption".to_string(), "on".to_string());
+        passphrase.insert("keyformat".to_string(), "passphrase".to_string());
+        let err = validate_dataset_create_options(&passphrase).unwrap_err();
+        assert!(err.contains("passphrase"), "{err}");
+        assert!(err.contains("[OPEN]"), "{err}");
 
         let mut malformed = HashMap::new();
         malformed.insert("encryption".to_string(), "rot13".to_string());
@@ -1259,5 +1629,50 @@ mod tests {
             assert!(err.contains("unsupported dataset option"), "{key}: {err}");
             assert!(!err.contains("secret"), "the error echoed the value: {err}");
         }
+    }
+
+    fn encrypted_dataset(name: &str, root: &str) -> crate::agent::Dataset {
+        crate::agent::Dataset {
+            name: name.to_string(),
+            encryption: "aes-256-gcm".to_string(),
+            keystatus: "available".to_string(),
+            encryption_root: root.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn inherited_child_destroy_keeps_the_ancestor_key() {
+        let datasets = vec![
+            encrypted_dataset("tank/secure", "tank/secure"),
+            encrypted_dataset("tank/secure/docs", "tank/secure"),
+            encrypted_dataset("tank/secure/docs/child", "tank/secure"),
+        ];
+
+        let (encrypted, roots) = encryption_roots_in_subtree(&datasets, "tank/secure/docs");
+        assert!(encrypted, "the subtree is encrypted");
+        assert!(
+            roots.is_empty(),
+            "the surviving ancestor key must not be deleted: {roots:?}"
+        );
+    }
+
+    #[test]
+    fn root_destroy_selects_only_roots_inside_the_subtree() {
+        let datasets = vec![
+            encrypted_dataset("tank/secure", "tank/secure"),
+            encrypted_dataset("tank/secure/docs", "tank/secure"),
+            encrypted_dataset("tank/secure/docs/own", "tank/secure/docs/own"),
+        ];
+
+        let (encrypted, roots) = encryption_roots_in_subtree(&datasets, "tank/secure");
+        assert!(encrypted);
+        assert_eq!(
+            roots,
+            std::collections::BTreeSet::from([
+                "tank/secure".to_string(),
+                "tank/secure/docs/own".to_string(),
+            ])
+        );
     }
 }

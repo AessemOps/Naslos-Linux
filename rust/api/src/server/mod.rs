@@ -25,6 +25,7 @@ pub mod notifications;
 pub mod pods;
 pub mod providers;
 pub mod replication;
+pub mod reports;
 pub mod shares;
 pub mod storage_schedules;
 pub mod system;
@@ -132,6 +133,9 @@ fn owner_routes() -> Router<Arc<AppState>> {
             "/api/system/operations/current",
             get(system::operation_current),
         )
+        // Bounded historical reporting (FR-RPT). Read-only and admin-only.
+        .route("/api/reports", get(reports::reports_get))
+        .route("/api/reports/series", get(reports::reports_series_get))
         .route("/api/disks", get(disks::disks_get))
         .route("/api/disks/health", get(disks::disks_health_get))
         .route("/api/disks/recommend", post(disks::disks_recommend))
@@ -174,6 +178,11 @@ fn owner_routes() -> Router<Arc<AppState>> {
                 .post(zfs::datasets_post)
                 .delete(zfs::datasets_delete),
         )
+        // Literal routes below `/api/datasets`: axum matches them separately
+        // from the exact collection route above.
+        .route("/api/datasets/keystatus", get(zfs::datasets_keystatus_get))
+        .route("/api/datasets/unlock", post(zfs::datasets_unlock_post))
+        .route("/api/datasets/lock", post(zfs::datasets_lock_post))
         .route(
             "/api/zvols",
             get(zfs::zvols_get)
@@ -257,6 +266,26 @@ fn owner_routes() -> Router<Arc<AppState>> {
         .route(
             "/api/notifications/webhook/test",
             post(notifications::webhook_test_post),
+        )
+        .route(
+            "/api/notifications/smtp",
+            get(notifications::smtp_get)
+                .put(notifications::smtp_put)
+                .delete(notifications::smtp_delete),
+        )
+        .route(
+            "/api/notifications/smtp/test",
+            post(notifications::smtp_test_post),
+        )
+        .route(
+            "/api/notifications/syslog",
+            get(notifications::syslog_get)
+                .put(notifications::syslog_put)
+                .delete(notifications::syslog_delete),
+        )
+        .route(
+            "/api/notifications/syslog/test",
+            post(notifications::syslog_test_post),
         )
         // Host network settings (FR-NET). Literal change routes before the
         // `{id}` wildcard, and all of them before the `/api/{*rest}` fallback.
@@ -528,6 +557,11 @@ mod tests {
             (
                 axum::http::Method::DELETE,
                 "/api/mcp/tokens/mcp-probe".to_string(),
+            ),
+            (axum::http::Method::GET, "/api/reports".to_string()),
+            (
+                axum::http::Method::GET,
+                "/api/reports/series?range=24h".to_string(),
             ),
         ] {
             out.push((method, path));

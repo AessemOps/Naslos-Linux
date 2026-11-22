@@ -30,8 +30,9 @@ async fn create_dataset_command_line_sorts_options() {
     .expect("CreateDataset");
 
     let all = calls.lock().unwrap();
+    assert_eq!(all[0], "/usr/local/sbin/zfs list -H -o name tank/media");
     assert_eq!(
-        all[0],
+        all[1],
         "/usr/local/sbin/zfs create -p -o compression=zstd -o quota=100G tank/media"
     );
 }
@@ -46,10 +47,27 @@ async fn create_dataset_without_options() {
     c.create_dataset("tank/photos/2026", &HashMap::new())
         .await
         .expect("CreateDataset");
+    let all = calls.lock().unwrap();
     assert_eq!(
-        calls.lock().unwrap()[0],
-        "/usr/local/sbin/zfs create -p tank/photos/2026"
+        all[0],
+        "/usr/local/sbin/zfs list -H -o name tank/photos/2026"
     );
+    assert_eq!(all[1], "/usr/local/sbin/zfs create -p tank/photos/2026");
+}
+
+#[tokio::test]
+async fn create_dataset_refuses_an_existing_dataset() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&["tank/media\n"]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    let err = c
+        .create_dataset("tank/media", &HashMap::new())
+        .await
+        .expect_err("existing dataset");
+    assert!(err.to_string().contains("already exists"), "{err}");
+    assert_eq!(calls.lock().unwrap().len(), 1, "no create must run");
 }
 
 #[tokio::test]

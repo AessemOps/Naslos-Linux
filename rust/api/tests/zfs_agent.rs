@@ -167,6 +167,8 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         ddns: None,
         notifications: std::sync::Arc::new(naslos_api::notifications::Manager::new("")),
         webhook: std::sync::Arc::new(naslos_api::webhook::Manager::new("")),
+        smtp: std::sync::Arc::new(naslos_api::smtp::Manager::new("")),
+        syslog: std::sync::Arc::new(naslos_api::syslog::Manager::new("")),
         network: naslos_api::network::Manager::new(
             "",
             std::sync::Arc::new(naslos_api::network::UnavailableNode),
@@ -188,6 +190,7 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         system: naslos_api::system::Config::default(),
         updates: None,
         mcp: naslos_api::mcp::McpState::for_test(),
+        reporting: Arc::new(naslos_api::reporting::Reporter::disabled()),
     })
 }
 
@@ -345,6 +348,8 @@ async fn no_agent_configured_is_502() {
         ddns: None,
         notifications: std::sync::Arc::new(naslos_api::notifications::Manager::new("")),
         webhook: std::sync::Arc::new(naslos_api::webhook::Manager::new("")),
+        smtp: std::sync::Arc::new(naslos_api::smtp::Manager::new("")),
+        syslog: std::sync::Arc::new(naslos_api::syslog::Manager::new("")),
         network: naslos_api::network::Manager::new(
             "",
             std::sync::Arc::new(naslos_api::network::UnavailableNode),
@@ -366,6 +371,7 @@ async fn no_agent_configured_is_502() {
         system: naslos_api::system::Config::default(),
         updates: None,
         mcp: naslos_api::mcp::McpState::for_test(),
+        reporting: Arc::new(naslos_api::reporting::Reporter::disabled()),
     });
     let (status, _b) = call(state, "GET", "/api/volumes/zfs", None).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
@@ -1053,6 +1059,8 @@ async fn zvols_without_an_agent_are_502() {
         ddns: None,
         notifications: std::sync::Arc::new(naslos_api::notifications::Manager::new("")),
         webhook: std::sync::Arc::new(naslos_api::webhook::Manager::new("")),
+        smtp: std::sync::Arc::new(naslos_api::smtp::Manager::new("")),
+        syslog: std::sync::Arc::new(naslos_api::syslog::Manager::new("")),
         network: naslos_api::network::Manager::new(
             "",
             std::sync::Arc::new(naslos_api::network::UnavailableNode),
@@ -1074,6 +1082,7 @@ async fn zvols_without_an_agent_are_502() {
         system: naslos_api::system::Config::default(),
         updates: None,
         mcp: naslos_api::mcp::McpState::for_test(),
+        reporting: Arc::new(naslos_api::reporting::Reporter::disabled()),
     });
     let (status, _b) = call(state, "GET", "/api/zvols", None).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);

@@ -1,9 +1,10 @@
 # Dataset encryption at rest (FR-ENC)
 
-**Status:** design + safe validation slice only. No key is generated, stored,
-accepted or loaded yet, no dataset is created encrypted, and there is no
-unlock/lock or encrypted-send support. The normative requirements and their
-`[OPEN]` markers are in [spec.md](spec.md#312-dataset-encryption-at-rest-fr-enc).
+**Status:** raw-key custody, encrypted dataset create, `keystatus`, explicit
+unlock and lock are implemented (FR-ENC-01/02/03/04/06). Passphrase keys,
+encrypted send/receive, raw Buddy sends, live consumer refusal, key rotation/export
+and migration tooling remain `[OPEN]`. The normative requirements and their
+markers are in [spec.md](spec.md#312-dataset-encryption-at-rest-fr-enc).
 
 This document records the decision the parity backlog asked for (key custody for
 an unattended Talos boot), the ZFS facts the implementation must respect, the
@@ -73,14 +74,15 @@ That makes the unlock model a product decision, not an implementation detail.
 
 **Recommended and recorded for FR-ENC:** each encrypted dataset gets a
 generated 32-byte raw key, stored in a `naslos-dataset-key-*` Secret in the
-`naslos` namespace. After boot an administrator explicitly unlocks the dataset;
+dedicated `naslos-keys` namespace. After boot an administrator explicitly
+unlocks the dataset;
 there is no automatic unlock by default. A per-dataset passphrase remains an
 option later for data that must survive a Secret/etcd compromise, at the cost of
 a human on every boot.
 
 | | Keyfile in a K8s Secret + explicit unlock (chosen) | Passphrase only |
 | --- | --- | --- |
-| Where the key lives | 32-byte raw key in a Secret; fetched on unlock and written to an agent-owned 0600 file on host tmpfs only for `zfs load-key` | Operator's memory only; never persisted |
+| Where the key lives | 32-byte raw key in a Secret in `naslos-keys`; fetched on unlock and written to an agent-owned 0600 file on host tmpfs only for `zfs load-key` | Operator's memory only; never persisted |
 | Create | API generates the key, writes the Secret, then sends the key to the agent over the authenticated channel; agent creates with `keyformat=raw`, `keylocation=file:///run/naslos-keys/<id>` | Operator supplies a passphrase; `keyformat=passphrase`, `keylocation=prompt` |
 | Boot on Talos | Locked after boot; one admin unlock (API fetches the Secret, agent loads the key) | Locked after boot; an operator must re-enter the passphrase |
 | Unattended uptime | Good after the unlock; a future opt-in auto-unlock is possible but weakens the model | None: every reboot is an outage until a human acts |
@@ -95,28 +97,57 @@ trade-off: **explicit unlock is an authorization gate and a boot-order guard,
 not protection from a cluster administrator.** The Secret must be included in
 the operator's config/secret backup, or the data is unrecoverable.
 
-### Proposed shape (all `[OPEN]`)
+### Keys live in their own namespace
 
-- **Create:** API validates the shape → API generates 32 random bytes with
-  `getrandom` → API writes Secret `naslos-dataset-key-<id>` (labels: dataset,
-  pool) → API calls the agent with the key in the JSON body over the existing
-  authenticated TLS channel → agent writes the key to
-  `/host/run/naslos-keys/<id>` (0600), runs
-  `zfs create -o encryption=… -o keyformat=raw -o keylocation=file:///run/naslos-keys/<id>`,
-  then verifies `encryption` and `keystatus=available` on the exact dataset.
-  On failure the partial dataset is destroyed and the Secret deleted.
-- **Unlock:** admin-only `POST /api/datasets/.../unlock`; API fetches the Secret
-  and sends the key to the agent; the agent writes the 0600 tmpfs file,
-  `zfs load-key -L file:///run/naslos-keys/<id> <dataset>`, and never logs the
-  body or the key. Repeated unlock is idempotent.
-- **Lock:** admin-only; refused while the dataset is mounted or used by a
-  share/app; `zfs unload-key <dataset>` and remove the tmpfs key. The data stays
-  on disk, unreadable until the next unlock.
-- **Status:** `GET /api/datasets` gains `encryption`, `keystatus` and
-  `encryptionroot`; the UI marks locked datasets and disables share/app actions.
+The key Secrets live in a dedicated `naslos-keys` namespace, not the release
+namespace. Kubernetes RBAC cannot restrict a dynamic Secret name by prefix, so
+putting them beside the platform Secrets would force a broad `get`/`delete`
+grant in `naslos` and let the API read the proxy, LDAP, Authelia and Buddy
+Secrets. The chart instead gives the API CRUD on Secrets only in `naslos-keys`
+(no `list`/`watch`; it addresses each key by its deterministic name). The
+namespace carries `helm.sh/resource-policy: keep`: datasets live on the host, so
+deleting the keys on uninstall would destroy the data.
+
+### Implemented shape
+
+- **Create:** the API validates the shape and refuses `keyformat=passphrase`
+  (FR-ENC-05), checks that the exact dataset and its key Secret do not already
+  exist, then generates 32 random bytes with `getrandom`. It writes an Opaque
+  Secret named `naslos-dataset-key-<slug>-<sha256-prefix>` (a single DNS-1123
+  label of at most 63 characters) with the key in
+  `data.key` and the exact dataset in the `naslos.local/dataset` annotation, and
+  sends the key in the JSON body over the authenticated TLS channel to the
+  agent. The agent writes a 0600 file on host tmpfs, runs
+  `zfs create -p -o encryption=<alg> -o keyformat=raw -o keylocation=file:///run/naslos-keys/<dataset>.key`,
+  verifies the exact dataset's `encryption`, `encryptionroot` and
+  `keystatus=available`, and removes the file. It refuses a dataset that already
+  exists before creating, and destroys only the exact dataset it just created
+  when verification fails.
+- **Create failure:** the agent rolls back its own partial dataset. The API
+  deletes the Secret only when the agent's dataset list confirms the exact
+  dataset is absent; if it exists (or existence cannot be established), the
+  Secret is kept because it may be the only key copy. A leftover Secret blocks a
+  retry with an explicit 409 rather than being overwritten.
+- **Unlock:** admin-only `POST /api/datasets/unlock {name}`. The API reads the
+  encryption root and its Secret, then sends the key to the agent. The agent
+  writes the 0600 file, runs `zfs load-key -L file:///run/naslos-keys/<root>.key <root>`,
+  verifies `keystatus=available`, and removes the file. Repeated unlock is
+  idempotent and does not need the key.
+- **Lock:** admin-only `POST /api/datasets/lock {name}`; refused while the root
+  or a descendant is mounted. The agent runs `zfs unload-key <root>` and removes
+  any stale keyfile. The data stays on disk, unreadable until the next unlock.
+- **Status:** `GET /api/datasets` carries `encryption`, `keystatus` and
+  `encryptionRoot`; `GET /api/datasets/keystatus?name=…` is the authoritative
+  single-dataset read. The pool UI marks locked datasets and offers
+  Unlock/Lock buttons.
+- **Destroy:** destroying an encrypted dataset (or a subtree containing one)
+  requires `confirm=<dataset name>`. Only after `zfs destroy` succeeds does the
+  API delete each encryption root's Secret (crypto-shredding); a failed destroy
+  keeps every key.
 - **Key material never** appears in argv, environment variables, `-o`
   properties, logs, error messages, API responses, or a persistent host file.
-  The only transient copy is the 0600 tmpfs file used by `zfs load-key`.
+  The only transient copies are the 0600 tmpfs file used by `zfs create` /
+  `zfs load-key`, the Secret payload, and the authenticated API→agent body.
 
 ## Encrypted send and receive
 
@@ -185,37 +216,38 @@ There is **no one-click "encrypt this dataset"** and no automatic migration in
 v1. A migration must be rehearsed on a scratch dataset first; it is a
 data-moving operation, not a property change.
 
-## Current implementation (this slice)
+## Implemented code surface
 
-Only the pure planner is implemented, in both layers:
-
-- `rust/agent/src/zfs/encryption.rs` and `rust/api/src/dataset_encryption.rs`
-  parse `encryption`, `keyformat` and `keylocation` against the allow-list and
-  share the fixture `rust/testdata/dataset_encryption.txt`.
-- A dataset-create request that asks for encryption is **refused before any
-  `zfs` command runs** with the stable message
-  `dataset encryption is not implemented yet: key custody, unlock/lock and encrypted send are [OPEN] ...`.
+- `rust/agent/src/zfs/encryption.rs` validates the shape, owns the 0600 keyfile,
+  builds the create/load/unload argv, verifies the exact dataset and implements
+  idempotent unlock/lock. `rust/api/src/dataset_encryption.rs` mirrors the
+  planner, generates and validates the raw key, derives Secret names, builds the
+  Secret object and parses it back with a dataset-annotation check. Both share
+  the fixture `rust/testdata/dataset_encryption.txt`.
+- `POST /api/datasets` with `encryption` + `keyformat=raw` creates the Secret,
+  then the encrypted dataset. `POST /api/datasets/unlock`,
+  `POST /api/datasets/lock` and `GET /api/datasets/keystatus` are the day-2
+  routes; `DELETE /api/datasets` enforces the destroy confirmation and removes
+  the key Secret after a successful destroy.
+- The agent routes are `GET /api/v1/encryption/status/<dataset>`,
+  `POST /api/v1/encryption/unlock` and `POST /api/v1/encryption/lock`. They are
+  behind the existing bearer-token guard.
 - `keylocation` is never accepted from a request; `copies=3` with encryption,
   unknown algorithms, unknown key formats and missing `keyformat` are rejected.
-- No key material is accepted, generated, stored, logged or returned. A
-  `key`/`passphrase` field is not an allow-listed dataset option and is rejected
-  by the existing option allow-list.
-
-This is intentional: creating an encrypted dataset before custody/unlock exist
-would produce a dataset that is locked after the next reboot with no supported
-way to unlock it.
+  A `key`/`passphrase` dataset option is still rejected by the option
+  allow-list.
 
 ## Open work for full implementation
 
-| Area | Requirement | Remaining work |
+| Area | Requirement | Status / remaining work |
 | --- | --- | --- |
-| Key custody | FR-ENC-03 | Secret naming/RBAC, CSPRNG generation, agent create/lookup contract, zeroization, no-log tests |
-| Unlock/lock | FR-ENC-04 | API routes, `zfs load-key`/`unload-key`, stdin/file handling, idempotence, mount ordering |
-| Passphrase option | FR-ENC-05 | stdin transport through the agent runner, UI one-time entry, no persistence tests |
-| Status/UI | FR-ENC-04/09 | `encryption`/`keystatus`/`encryptionroot` in the dataset contract and UI, locked-state actions |
-| Create atomicity | FR-ENC-06 | Secret-first ordering, rollback, exact-dataset verification instead of trusting `zfs create -p` exit status |
-| Encrypted send | FR-ENC-07 | raw-send job flag, `-U` prohibition, same-key receive UX, mixed-chain refusal |
-| Buddy raw send | FR-ENC-08 | decide and implement `-w` for encrypted sources without changing the receiver's zero-knowledge guarantee |
-| Shares/apps | FR-ENC-09 | refuse locked paths in share/app preflight and reconciliation |
-| Key rotation/backup | FR-ENC-10 | `zfs change-key` flow and the config/secret export story |
-| Migration tooling | FR-ENC-01 | optional guided create+send/receive migration; never an in-place conversion |
+| Key custody | FR-ENC-03 | **Implemented** (API CSPRNG generation, Secret in `naslos-keys`, 0600 tmpfs file, no-log/no-argv tests, zeroized `RawKey`) |
+| Unlock/lock | FR-ENC-04 | **Implemented** (explicit admin routes, idempotence, mounted refusal, boot lock state) |
+| Passphrase option | FR-ENC-05 | `[OPEN]`: stdin transport through the agent runner, UI one-time entry, no-persistence tests |
+| Status/UI | FR-ENC-04 | **Implemented** (`encryption`/`keystatus`/`encryptionRoot`, keystatus route, pool UI Unlock/Lock) |
+| Create atomicity | FR-ENC-06 | **Implemented** (Secret-first ordering, exact-dataset verification, agent rollback, safe Secret cleanup) |
+| Encrypted send | FR-ENC-07 | `[OPEN]`: raw-send job flag, `-U` prohibition, same-key receive UX, mixed-chain refusal |
+| Buddy raw send | FR-ENC-08 | `[OPEN]`: decide and implement `-w` for encrypted sources without changing the receiver's zero-knowledge guarantee |
+| Shares/apps | FR-ENC-09 | `[OPEN]`: refuse locked paths in share/app preflight and reconciliation; destroy confirmation and key deletion are implemented |
+| Key rotation/backup | FR-ENC-10 | `[OPEN]`: `zfs change-key` flow and the config/secret export story |
+| Migration tooling | FR-ENC-01 | `[OPEN]`: optional guided create+send/receive migration; never an in-place conversion |

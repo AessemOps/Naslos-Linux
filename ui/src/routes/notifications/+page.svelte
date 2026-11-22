@@ -20,6 +20,29 @@
     minSeverity: string;
   }
 
+  interface SmtpSettings {
+    enabled: boolean;
+    host: string;
+    port: number;
+    tls: string;
+    username: string;
+    hasPassword: boolean;
+    from: string;
+    to: string[];
+    enabledEvents: string[];
+    minSeverity: string;
+  }
+
+  interface SyslogSettings {
+    enabled: boolean;
+    protocol: string;
+    host: string;
+    port: number;
+    facility: string;
+    enabledEvents: string[];
+    minSeverity: string;
+  }
+
   let settings: Settings = {
     enabled: false,
     serverUrl: 'https://ntfy.sh',
@@ -36,6 +59,35 @@
     enabledEvents: ['zfs_health', 'disk_failure'],
     minSeverity: 'warning'
   };
+  let smtp: SmtpSettings = {
+    enabled: false,
+    host: '',
+    port: 587,
+    tls: 'starttls',
+    username: '',
+    hasPassword: false,
+    from: '',
+    to: [],
+    enabledEvents: ['zfs_health', 'disk_failure'],
+    minSeverity: 'warning'
+  };
+  let smtpRecipients = '';
+  let syslog: SyslogSettings = {
+    enabled: false,
+    protocol: 'udp',
+    host: '',
+    port: 514,
+    facility: 'local0',
+    enabledEvents: ['zfs_health', 'disk_failure'],
+    minSeverity: 'warning'
+  };
+  // The SMTP password is write-only, like the webhook token.
+  let smtpPassword = '';
+  let clearSmtpPassword = false;
+  let smtpLoading = true;
+  let syslogLoading = true;
+  let smtpSaving = false;
+  let syslogSaving = false;
   // The stored token is never sent back to the browser; this holds a replacement
   // the operator types, and clearAuthToken is the explicit request to erase it.
   let authToken = '';
@@ -65,6 +117,18 @@
     { id: 'warning', label: 'Warning and above' },
     { id: 'error', label: 'Error and above' },
     { id: 'critical', label: 'Critical only' }
+  ];
+
+  const tlsModes = [
+    { id: 'starttls', label: 'STARTTLS (port 587)' },
+    { id: 'implicit', label: 'Implicit TLS / SMTPS (port 465)' },
+    { id: 'none', label: 'None (plaintext LAN relay)' }
+  ];
+
+  const syslogFacilities = [
+    'kern', 'user', 'mail', 'daemon', 'auth', 'syslog', 'lpr', 'news', 'uucp',
+    'cron', 'authpriv', 'ftp', 'ntp', 'audit', 'console', 'clock',
+    'local0', 'local1', 'local2', 'local3', 'local4', 'local5', 'local6', 'local7'
   ];
 
   async function loadSettings() {
@@ -229,15 +293,195 @@
     }
   }
 
+  async function loadSmtp() {
+    try {
+      const res = await fetch('/api/notifications/smtp');
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      smtp = await res.json();
+      smtpRecipients = smtp.to.join(', ');
+      smtpPassword = '';
+      clearSmtpPassword = false;
+    } catch (e) {
+      message = 'Failed to load SMTP settings: ' + e;
+      messageType = 'error';
+    } finally {
+      smtpLoading = false;
+    }
+  }
+
+  async function saveSmtp() {
+    smtpSaving = true;
+    message = '';
+    try {
+      const payload: Record<string, unknown> = {
+        ...smtp,
+        to: smtpRecipients.split(',').map((r) => r.trim()).filter((r) => r !== '')
+      };
+      if (smtpPassword.trim() !== '') {
+        payload.password = smtpPassword;
+      } else if (clearSmtpPassword) {
+        payload.password = '';
+      }
+      const res = await fetch('/api/notifications/smtp', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      message = 'SMTP settings saved successfully!';
+      messageType = 'success';
+      await loadSmtp();
+    } catch (e) {
+      message = 'Error: ' + e;
+      messageType = 'error';
+    } finally {
+      smtpSaving = false;
+    }
+  }
+
+  async function sendSmtpTest() {
+    try {
+      const res = await fetch('/api/notifications/smtp/test', { method: 'POST' });
+      if (res.ok) {
+        message = 'Test email sent!';
+        messageType = 'success';
+      } else {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      message = 'Error: ' + e;
+      messageType = 'error';
+    }
+  }
+
+  async function removeSmtp() {
+    if (!confirm('Remove the SMTP channel? Its host, sender and password are erased.')) return;
+    smtpSaving = true;
+    message = '';
+    try {
+      const res = await fetch('/api/notifications/smtp', { method: 'DELETE' });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      message = 'SMTP channel removed.';
+      messageType = 'success';
+      await loadSmtp();
+    } catch (e) {
+      message = 'Error: ' + e;
+      messageType = 'error';
+    } finally {
+      smtpSaving = false;
+    }
+  }
+
+  function toggleSmtpEvent(eventId: string) {
+    if (smtp.enabledEvents.includes(eventId)) {
+      smtp.enabledEvents = smtp.enabledEvents.filter((e) => e !== eventId);
+    } else {
+      smtp.enabledEvents = [...smtp.enabledEvents, eventId];
+    }
+  }
+
+  async function loadSyslog() {
+    try {
+      const res = await fetch('/api/notifications/syslog');
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      syslog = await res.json();
+    } catch (e) {
+      message = 'Failed to load syslog settings: ' + e;
+      messageType = 'error';
+    } finally {
+      syslogLoading = false;
+    }
+  }
+
+  async function saveSyslog() {
+    syslogSaving = true;
+    message = '';
+    try {
+      const res = await fetch('/api/notifications/syslog', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(syslog)
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      message = 'Syslog settings saved successfully!';
+      messageType = 'success';
+      await loadSyslog();
+    } catch (e) {
+      message = 'Error: ' + e;
+      messageType = 'error';
+    } finally {
+      syslogSaving = false;
+    }
+  }
+
+  async function sendSyslogTest() {
+    try {
+      const res = await fetch('/api/notifications/syslog/test', { method: 'POST' });
+      if (res.ok) {
+        message = 'Test syslog message sent!';
+        messageType = 'success';
+      } else {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      message = 'Error: ' + e;
+      messageType = 'error';
+    }
+  }
+
+  async function removeSyslog() {
+    if (!confirm('Remove the syslog channel? Its target and routing are erased.')) return;
+    syslogSaving = true;
+    message = '';
+    try {
+      const res = await fetch('/api/notifications/syslog', { method: 'DELETE' });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      message = 'Syslog channel removed.';
+      messageType = 'success';
+      await loadSyslog();
+    } catch (e) {
+      message = 'Error: ' + e;
+      messageType = 'error';
+    } finally {
+      syslogSaving = false;
+    }
+  }
+
+  function toggleSyslogEvent(eventId: string) {
+    if (syslog.enabledEvents.includes(eventId)) {
+      syslog.enabledEvents = syslog.enabledEvents.filter((e) => e !== eventId);
+    } else {
+      syslog.enabledEvents = [...syslog.enabledEvents, eventId];
+    }
+  }
+
   onMount(() => {
     loadSettings();
     loadWebhook();
+    loadSmtp();
+    loadSyslog();
   });
 </script>
 
 <div class="max-w-3xl mx-auto">
   <h1 class="text-3xl font-bold mb-2">Notifications</h1>
-  <p class="text-gray-400 mb-6">Configure ntfy push notifications and the generic webhook channel. Each channel routes events and severities independently.</p>
+  <p class="text-gray-400 mb-6">Configure ntfy push, the generic webhook, SMTP email and syslog. Each channel routes events and severities independently.</p>
 
   {#if loading}
     <LoadingState label="Loading settings..." />
@@ -362,6 +606,160 @@
             <button class="btn btn-primary" on:click={saveWebhook} disabled={webhookSaving}>{webhookSaving ? 'Saving...' : 'Save Webhook'}</button>
             <button class="btn btn-secondary" on:click={sendWebhookTest} disabled={!webhook.enabled}>Send Test</button>
             <button class="btn btn-danger" on:click={removeWebhook} disabled={webhookSaving}>Remove</button>
+          </div>
+        {/if}
+      </div>
+
+      <div class="card space-y-4">
+        <label class="flex items-center gap-4 cursor-pointer">
+          <input type="checkbox" bind:checked={smtp.enabled} disabled={smtpLoading} class="w-5 h-5 rounded" />
+          <div>
+            <div class="font-medium">SMTP Email Channel</div>
+            <div class="text-sm text-gray-400">Email each selected event through your own relay.</div>
+          </div>
+        </label>
+
+        {#if smtpLoading}
+          <LoadingState label="Loading SMTP settings..." />
+        {:else}
+          <div class="grid gap-4 sm:grid-cols-3">
+            <div class="sm:col-span-2">
+              <label class="label" for="smtp-field-1">SMTP Host</label>
+              <input id="smtp-field-1" type="text" bind:value={smtp.host} class="input w-full" placeholder="smtp.example.com or 192.168.1.10" />
+              <p class="text-xs text-gray-500 mt-1">RFC1918 LAN relays are allowed; loopback, link-local, metadata and ULA targets are refused.</p>
+            </div>
+            <div>
+              <label class="label" for="smtp-field-2">Port</label>
+              <input id="smtp-field-2" type="number" min="1" max="65535" bind:value={smtp.port} class="input w-full" />
+            </div>
+          </div>
+          <div>
+            <label class="label" for="smtp-field-3">TLS Mode</label>
+            <select id="smtp-field-3" bind:value={smtp.tls} class="input w-full">
+              {#each tlsModes as mode}<option value={mode.id}>{mode.label}</option>{/each}
+            </select>
+            <p class="text-xs text-gray-500 mt-1">Server certificates are always validated against public CA roots. Credentials require STARTTLS or implicit TLS.</p>
+          </div>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label class="label" for="smtp-field-4">Username (optional)</label>
+              <input id="smtp-field-4" type="text" bind:value={smtp.username} class="input w-full" autocomplete="off" />
+            </div>
+            <div>
+              <label class="label" for="smtp-field-5">Password (optional)</label>
+              <input
+                id="smtp-field-5"
+                type="password"
+                bind:value={smtpPassword}
+                class="input w-full"
+                autocomplete="new-password"
+                placeholder={smtp.hasPassword ? 'Stored — leave blank to keep' : 'SMTP password'}
+              />
+              {#if smtp.hasPassword}
+                <label class="flex items-center gap-2 mt-2 text-sm text-gray-400">
+                  <input type="checkbox" bind:checked={clearSmtpPassword} class="w-4 h-4 rounded" />
+                  Clear the stored password
+                </label>
+              {/if}
+            </div>
+          </div>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label class="label" for="smtp-field-6">From</label>
+              <input id="smtp-field-6" type="email" bind:value={smtp.from} class="input w-full" placeholder="naslos@example.com" />
+            </div>
+            <div>
+              <label class="label" for="smtp-field-7">To</label>
+              <input id="smtp-field-7" type="text" bind:value={smtpRecipients} class="input w-full" placeholder="ops@example.com, oncall@example.com" />
+              <p class="text-xs text-gray-500 mt-1">Comma-separated bare addresses, at most 20.</p>
+            </div>
+          </div>
+          <div>
+            <div class="label">Events</div>
+            <div class="space-y-2">
+              {#each eventTypes as event}
+                <label class="flex items-center gap-3 p-2 rounded hover:bg-naslos-dark cursor-pointer">
+                  <input type="checkbox" checked={smtp.enabledEvents.includes(event.id)} on:change={() => toggleSmtpEvent(event.id)} class="w-4 h-4 rounded" />
+                  <span class="text-gray-300">{event.label}</span>
+                </label>
+              {/each}
+            </div>
+          </div>
+          <div>
+            <label class="label" for="smtp-field-8">Minimum Severity</label>
+            <select id="smtp-field-8" bind:value={smtp.minSeverity} class="input w-full">
+              {#each severityLevels as level}<option value={level.id}>{level.label}</option>{/each}
+            </select>
+          </div>
+          <div class="flex gap-3">
+            <button class="btn btn-primary" on:click={saveSmtp} disabled={smtpSaving}>{smtpSaving ? 'Saving...' : 'Save SMTP'}</button>
+            <button class="btn btn-secondary" on:click={sendSmtpTest} disabled={!smtp.enabled}>Send Test</button>
+            <button class="btn btn-danger" on:click={removeSmtp} disabled={smtpSaving}>Remove</button>
+          </div>
+        {/if}
+      </div>
+
+      <div class="card space-y-4">
+        <label class="flex items-center gap-4 cursor-pointer">
+          <input type="checkbox" bind:checked={syslog.enabled} disabled={syslogLoading} class="w-5 h-5 rounded" />
+          <div>
+            <div class="font-medium">Syslog Channel</div>
+            <div class="text-sm text-gray-400">Forward each selected event as an RFC 5424 message.</div>
+          </div>
+        </label>
+
+        {#if syslogLoading}
+          <LoadingState label="Loading syslog settings..." />
+        {:else}
+          <div class="grid gap-4 sm:grid-cols-3">
+            <div class="sm:col-span-2">
+              <label class="label" for="syslog-field-1">Collector Host</label>
+              <input id="syslog-field-1" type="text" bind:value={syslog.host} class="input w-full" placeholder="syslog.example.com or 192.168.1.10" />
+              <p class="text-xs text-gray-500 mt-1">RFC1918 LAN collectors are allowed; loopback, link-local, metadata and ULA targets are refused.</p>
+            </div>
+            <div>
+              <label class="label" for="syslog-field-2">Port</label>
+              <input id="syslog-field-2" type="number" min="1" max="65535" bind:value={syslog.port} class="input w-full" />
+            </div>
+          </div>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label class="label" for="syslog-field-3">Protocol</label>
+              <select id="syslog-field-3" bind:value={syslog.protocol} class="input w-full">
+                <option value="udp">UDP</option>
+                <option value="tcp">TCP</option>
+                <option value="tls">TLS</option>
+              </select>
+              <p class="text-xs text-gray-500 mt-1">TLS validates the collector certificate against public CA roots.</p>
+            </div>
+            <div>
+              <label class="label" for="syslog-field-4">Facility</label>
+              <select id="syslog-field-4" bind:value={syslog.facility} class="input w-full">
+                {#each syslogFacilities as facility}<option value={facility}>{facility}</option>{/each}
+              </select>
+            </div>
+          </div>
+          <div>
+            <div class="label">Events</div>
+            <div class="space-y-2">
+              {#each eventTypes as event}
+                <label class="flex items-center gap-3 p-2 rounded hover:bg-naslos-dark cursor-pointer">
+                  <input type="checkbox" checked={syslog.enabledEvents.includes(event.id)} on:change={() => toggleSyslogEvent(event.id)} class="w-4 h-4 rounded" />
+                  <span class="text-gray-300">{event.label}</span>
+                </label>
+              {/each}
+            </div>
+          </div>
+          <div>
+            <label class="label" for="syslog-field-5">Minimum Severity</label>
+            <select id="syslog-field-5" bind:value={syslog.minSeverity} class="input w-full">
+              {#each severityLevels as level}<option value={level.id}>{level.label}</option>{/each}
+            </select>
+          </div>
+          <div class="flex gap-3">
+            <button class="btn btn-primary" on:click={saveSyslog} disabled={syslogSaving}>{syslogSaving ? 'Saving...' : 'Save Syslog'}</button>
+            <button class="btn btn-secondary" on:click={sendSyslogTest} disabled={!syslog.enabled}>Send Test</button>
+            <button class="btn btn-danger" on:click={removeSyslog} disabled={syslogSaving}>Remove</button>
           </div>
         {/if}
       </div>
