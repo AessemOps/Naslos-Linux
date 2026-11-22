@@ -116,6 +116,10 @@ pub struct VmSpec {
     pub autostart: bool,
     #[serde(default = "default_firmware")]
     pub firmware: Firmware,
+    /// Boot with OVMF Secure Boot (UEFI only; default off so existing VMs
+    /// keep booting the way they were created).
+    #[serde(rename = "secureBoot", default)]
+    pub secure_boot: bool,
     #[serde(default)]
     pub desired: DesiredState,
     #[serde(default)]
@@ -243,6 +247,9 @@ pub fn validate_vm(spec: &VmSpec) -> Result<(), String> {
             "memMiB {} is out of range (16-1048576)",
             spec.mem_mib
         ));
+    }
+    if spec.secure_boot && spec.firmware != Firmware::Uefi {
+        return Err("secureBoot requires UEFI firmware".to_string());
     }
     if !(1..=16_384).contains(&spec.disk.size_gb) {
         return Err(format!(
@@ -404,6 +411,7 @@ mod tests {
             mem_mib: 2048,
             autostart: false,
             firmware: Firmware::Uefi,
+            secure_boot: false,
             desired: DesiredState::Running,
             disk: DiskSpec {
                 size_gb: 40,
@@ -476,6 +484,30 @@ mod tests {
             spec.name = bad.to_string();
             assert!(validate_vm(&spec).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn secure_boot_requires_uefi() {
+        let mut spec = vm();
+        spec.secure_boot = true;
+        assert!(validate_vm(&spec).is_ok());
+        spec.firmware = Firmware::Bios;
+        let err = validate_vm(&spec).unwrap_err();
+        assert!(err.contains("secureBoot requires UEFI"), "{err}");
+    }
+
+    #[test]
+    fn secure_boot_defaults_off_for_legacy_records() {
+        // Records persisted before the field existed must load as off.
+        let legacy = serde_json::json!({
+            "name": "legacy",
+            "cpu": 1,
+            "memMiB": 512,
+            "pool": "tank",
+            "disk": { "sizeGB": 10 }
+        });
+        let spec: VmSpec = serde_json::from_value(legacy).unwrap();
+        assert!(!spec.secure_boot);
     }
 
     #[test]

@@ -344,10 +344,10 @@ shell, never an arbitrary command.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/virt/capabilities` | Node preflight: KVM, CPU model, nested, physical NICs. 503 when the supervisor is not deployed/reachable |
+| GET | `/api/virt/capabilities` | Node preflight: KVM, CPU model, nested, physical NICs, and whether the supervisor image ships the OVMF Secure Boot firmware pair (`secureBoot`). 503 when the supervisor is not deployed/reachable |
 | GET | `/api/virt/vms` | VM records merged with live state (`running`/`stopped`/`unknown`; live `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) |
-| POST | `/api/virt/vms` | Create: validates, creates `<pool>/vms/<name>` (quota = disk size) + the pool's `vms/isos` library via the agent, stores the record, pushes the desired config; rolls the record back if the push fails |
-| GET/PUT/DELETE | `/api/virt/vms/{name}` | Detail (merged view) / update (name immutable; the supervisor recreates the QEMU process when the rendered args change) / delete (409 while running; destroys the dataset, restoring the record if the destroy fails) |
+| POST | `/api/virt/vms` | Create: validates (`secureBoot` is UEFI-only and defaults off), creates `<pool>/vms/<name>` (quota = disk size) + the pool's `vms/isos` library via the agent, stores the record, pushes the desired config; rolls the record back if the push fails |
+| GET/PUT/DELETE | `/api/virt/vms/{name}` | Detail (merged view) / update (name immutable; the supervisor recreates the QEMU process when the rendered args change, including `secureBoot`) / delete (409 while running; destroys the dataset, restoring the record if the destroy fails) |
 | POST | `/api/virt/vms/{name}/start` `stop` `force-stop` `restart` | Lifecycle. `stop` = graceful ACPI shutdown (vmd escalates to SIGTERM/SIGKILL); `restart` = force-stop + start |
 | GET/POST | `/api/virt/vms/{name}/snapshots` | List / create a ZFS snapshot of the VM dataset (validated name) |
 | POST | `/api/virt/vms/{name}/snapshots/{snap}/restore` | `zfs rollback -r`; 409 while running (newer snapshots are deleted, stated in the response) |
@@ -464,7 +464,10 @@ The `naslos-agent` uses `NODE_NAME` (from `spec.nodeName`) and listens on `:9090
 The `naslos-vmd` supervisor listens on `:9091` (see
 [virtual-machines.md](virtual-machines.md) for its own variables:
 `VMD_TOKEN`, `VMD_TLS_CERT`/`VMD_TLS_KEY` or `VMD_ALLOW_PLAINTEXT=1`,
-`VMD_VNC_FIRST_DISPLAY`/`VMD_VNC_DISPLAYS`, `VMD_RUN_DIR`).
+`VMD_VNC_FIRST_DISPLAY`/`VMD_VNC_DISPLAYS`, `VMD_RUN_DIR`, and the optional
+firmware path overrides `VMD_UEFI_CODE`/`VMD_UEFI_VARS` (plain UEFI) and
+`VMD_UEFI_SECBOOT_CODE`/`VMD_UEFI_SECBOOT_VARS` (Secure Boot); each pair must
+be set together).
 
 Disk-health controls:
 
