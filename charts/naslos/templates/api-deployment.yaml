@@ -333,6 +333,11 @@ spec:
             # and direct connections see one identity.
             - name: SMB_NETBIOS_NAME
               value: {{ .Values.shares.discovery.name | quote }}
+            # SMB3 multichannel. Rendered as an explicit
+            # `server multi channel support = yes|no`; the default (true)
+            # matches Samba's own Linux default.
+            - name: SHARES_SMB_MULTICHANNEL
+              value: {{ .Values.shares.smb.multichannel | quote }}
             # PF-H4: the LAN allowed to reach the NAS. Used as the default client
             # restriction for a share that names none, so shares are never
             # exported to the world by omission. Explicit "*" in a share's

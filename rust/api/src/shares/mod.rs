@@ -56,6 +56,10 @@ pub struct Share {
     pub time_machine: bool,
     #[serde(default, rename = "noRootSquash")]
     pub no_root_squash: bool,
+    #[serde(default, rename = "shadowCopies")]
+    pub shadow_copies: bool,
+    #[serde(default)]
+    pub audit: bool,
     #[serde(default, rename = "createdAt")]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -87,6 +91,10 @@ pub struct CreateShareRequest {
     pub time_machine: bool,
     #[serde(default, rename = "noRootSquash")]
     pub no_root_squash: bool,
+    #[serde(default, rename = "shadowCopies")]
+    pub shadow_copies: bool,
+    #[serde(default)]
+    pub audit: bool,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -112,6 +120,10 @@ pub struct UpdateShareRequest {
     pub time_machine: Option<bool>,
     #[serde(default, rename = "noRootSquash")]
     pub no_root_squash: Option<bool>,
+    #[serde(default, rename = "shadowCopies")]
+    pub shadow_copies: Option<bool>,
+    #[serde(default)]
+    pub audit: Option<bool>,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -297,6 +309,8 @@ impl Manager {
             valid_groups: normalize_list(&req.valid_groups),
             time_machine: req.time_machine,
             no_root_squash: req.no_root_squash,
+            shadow_copies: req.shadow_copies,
+            audit: req.audit,
             created_at: Some(Utc::now()),
             enabled: req.enabled.unwrap_or(true),
         };
@@ -339,6 +353,12 @@ impl Manager {
         }
         if let Some(v) = req.no_root_squash {
             share.no_root_squash = v;
+        }
+        if let Some(v) = req.shadow_copies {
+            share.shadow_copies = v;
+        }
+        if let Some(v) = req.audit {
+            share.audit = v;
         }
         if let Some(v) = req.enabled {
             share.enabled = v;
@@ -444,7 +464,7 @@ impl Manager {
         for s in self.list() {
             h.update(
                 format!(
-                    "{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\n",
+                    "{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}\n",
                     s.name,
                     s.path,
                     s.protocol.as_str(),
@@ -453,8 +473,12 @@ impl Manager {
                     s.browseable,
                     s.time_machine,
                     s.no_root_squash,
+                    s.shadow_copies,
+                    s.audit,
                     s.allowed_hosts.join(","),
-                    s.valid_users.join(",")
+                    s.valid_users.join(","),
+                    s.valid_groups.join(","),
+                    s.description
                 )
                 .as_bytes(),
             );
@@ -564,6 +588,30 @@ pub fn validate_share_fields(share: &Share) -> Result<(), String> {
             share.path
         ));
     }
+    // `.zfs/snapshot` holds the dataset's snapshots. A share rooted there would
+    // export every snapshot directly (and without the read-only shadow-copy
+    // semantics), so it must never be a share path.
+    if share.path.split('/').any(|part| part == ".zfs") {
+        return Err(
+            "share path must not contain a .zfs component (that exports the ZFS snapshot directory)"
+                .to_string(),
+        );
+    }
+    // Shadow copies and audit logging are Samba VFS features. Refusing them on
+    // an NFS export prevents a share that silently does nothing on the server
+    // it is actually served by.
+    if share.shadow_copies && share.protocol != Protocol::Smb {
+        return Err(format!(
+            "shadowCopies is only supported on smb shares (protocol is {})",
+            share.protocol.as_str()
+        ));
+    }
+    if share.audit && share.protocol != Protocol::Smb {
+        return Err(format!(
+            "audit is only supported on smb shares (protocol is {})",
+            share.protocol.as_str()
+        ));
+    }
     for (kind, entries) in [
         ("allowed host", &share.allowed_hosts),
         ("valid user", &share.valid_users),
@@ -646,6 +694,8 @@ mod tests {
             valid_groups: Vec::new(),
             time_machine: false,
             no_root_squash: false,
+            shadow_copies: false,
+            audit: false,
             created_at: None,
             enabled: true,
         };

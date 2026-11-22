@@ -918,6 +918,7 @@ async fn zvols_without_an_agent_are_502() {
         apps_namespace: "naslos-apps".to_string(),
         ddns: None,
         notifications: std::sync::Arc::new(naslos_api::notifications::Manager::new("")),
+        webhook: std::sync::Arc::new(naslos_api::webhook::Manager::new("")),
         network: naslos_api::network::Manager::new(
             "",
             std::sync::Arc::new(naslos_api::network::UnavailableNode),

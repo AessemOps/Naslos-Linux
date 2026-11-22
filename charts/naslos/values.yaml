@@ -296,6 +296,11 @@ shares:
   smb:
     enabled: true
     workgroup: "NASLOS"
+    # SMB3 multichannel. Samba 4.15+ enables it on Linux by default, so this
+    # default preserves the serving image's behaviour; set false for a
+    # single-NIC host or when virtual/pod-network interfaces make clients try
+    # unreachable channels.
+    multichannel: true
     # Time Machine support for macOS (SMB + fruit VFS; AFP is deprecated)
     timeMachine: true
     image:

@@ -274,6 +274,12 @@ recursive for Buddy).
 | GET | `/api/shares/config/samba` | Generated `smb.conf` (text/plain) |
 | GET | `/api/shares/config/nfs` | Generated NFS-Ganesha config (text/plain), not `/etc/exports` |
 
+Share create/update accept the SMB-only booleans `shadowCopies` and `audit`
+(both default false; either on an `nfs` share is a 400). The rendered
+`/api/shares/config/samba` shows the resulting `vfs objects`, `shadow:*` and
+`full_audit:*` directives. See [shares.md](shares.md#shadow-copies-previous-versions)
+and [nfsv3.md](nfsv3.md) for NFSv3 (not served).
+
 ### Buddy Backup (see also [buddy-backup.md](buddy-backup.md))
 
 | Method | Path | Description |
@@ -637,6 +643,10 @@ rule, client configuration).
 | `SYSTEM_UPGRADER_TALOS_SECRET` / `_STATE_PVC` | `api.talosConfigSecret` / `naslos-shares-config` | Job mounts |
 | `SYSTEM_UPGRADER_BACKOFF_LIMIT` / `_TTL_SECONDS` | `3` / `3600` | Job retry/retention |
 | `NASLOS_WORKLOAD_NAMESPACE` | `naslos-privileged` | Where the agent/samba/nfs/terminal/vmd workloads live |
+| `SMB_NETBIOS_NAME` | `shares.discovery.name` | NetBIOS name rendered into `smb.conf` (same identity as mDNS/WSD) |
+| `NASLOS_LAN_CIDR` | `networkPolicy.nfsClientCIDR` | Default client restriction for a share with no `allowedHosts` |
+| `SHARES_SMB_MULTICHANNEL` | `shares.smb.multichannel` (`true`) | Explicit `server multi channel support = yes|no` in `smb.conf` (FR-SHR-13) |
+| `SHARES_CONFIG` | `/var/lib/naslos/shares.json` | Share definitions on the state PVC |
 | `VMD_BASE_URL` | `https://naslos-vmd.<workload ns>.svc.cluster.local:9091` | The QEMU supervisor the API pushes desired state to. Absent client (no `VMD_TOKEN`) disables `/api/virt/*` with 503 |
 | `VMD_TOKEN` | — | Bearer token the supervisor requires (from the `naslos-vmd` Secret, key `token`) |
 | `VMD_CA_FILE` | — | The chart-generated vmd CA, pinned by the API client; **required** for an `https://` `VMD_BASE_URL` (fail closed, PF-M5) |

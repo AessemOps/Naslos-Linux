@@ -99,6 +99,11 @@ spec:
             - name: datasets
               mountPath: /var/mnt
               mountPropagation: HostToContainer
+            # Samba's file logger writes /var/log/samba/%m.log. Keep the audit
+            # records on the host instead of the container's ephemeral root, so
+            # recreating the pod does not discard them.
+            - name: samba-logs
+              mountPath: /var/log/samba
           resources:
             {{- toYaml .Values.shares.smb.resources | nindent 12 }}
       volumes:
@@ -113,5 +118,9 @@ spec:
         - name: datasets
           hostPath:
             path: /var/mnt
+            type: DirectoryOrCreate
+        - name: samba-logs
+          hostPath:
+            path: /var/log/naslos-samba
             type: DirectoryOrCreate
 {{- end }}

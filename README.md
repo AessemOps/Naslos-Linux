@@ -67,6 +67,8 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   passwords), an ISO/cloud-image library with chunked browser upload and
   SSRF-guarded URL import, and ZFS snapshots/rollback per VM
   (see [docs/virtual-machines.md](docs/virtual-machines.md))
+- **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served); per-share SMB shadow copies from ZFS snapshots and optional `full_audit` logging, with NFSv4 served by Ganesha (NFSv3 is a documented no-go for now — see [docs/nfsv3.md](docs/nfsv3.md))
+- **ntfy notifications** — push alerts on backup and ZFS/agent health transitions
 - **Shares** — SMB, NFS, and Time Machine (SMB with the fruit VFS; AFP is not served)
 - **Alert channels** — ntfy push plus a generic JSON webhook, each with its own event routing and severity floor for backup, ZFS/agent health and VM events
 - **Network settings** — day-2 host link addressing, MTU and DNS changes from the UI, applied with a machine-side `--mode=try` guard, an API watchdog and a saved-config revert (see [docs/deployment.md](docs/deployment.md#day-2-network-changes-fr-net))
