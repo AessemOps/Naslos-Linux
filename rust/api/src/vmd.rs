@@ -45,6 +45,9 @@ pub struct Capabilities {
     pub nested: bool,
     #[serde(default)]
     pub nics: Vec<String>,
+    /// The supervisor image ships the OVMF Secure Boot firmware pair.
+    #[serde(default, rename = "secureBoot")]
+    pub secure_boot: bool,
 }
 
 /// One VM's live state as vmd reports it. `vnc_port`/`vnc_password` are set
@@ -392,5 +395,19 @@ mod tests {
             url,
             "https://naslos-vmd.naslos-privileged.svc.cluster.local:9091"
         );
+    }
+
+    #[test]
+    fn capabilities_parse_secure_boot_and_default_it_off() {
+        let caps: Capabilities = serde_json::from_value(serde_json::json!({
+            "kvm": true,
+            "secureBoot": true
+        }))
+        .unwrap();
+        assert!(caps.secure_boot);
+        // An older supervisor without the field means "unavailable".
+        let legacy: Capabilities =
+            serde_json::from_value(serde_json::json!({ "kvm": true })).unwrap();
+        assert!(!legacy.secure_boot);
     }
 }

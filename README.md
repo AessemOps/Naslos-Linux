@@ -60,8 +60,9 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   (see [docs/api.md](docs/api.md#system-config-export-fr-cfg-see-specmd-315))
 - **Virtual machines** — a first-party QEMU/KVM hypervisor on the node
   (`rust/vmd` supervisor): VM datasets under `<pool>/vms/<name>` with quota =
-  declared disk, UEFI/BIOS firmware, NAT with editable port forwards (LAN
-  attachment via a host bridge is planned), browser console (noVNC over an
+  declared disk, UEFI/BIOS firmware with optional Secure Boot, NAT with
+  editable port forwards (LAN attachment via a host bridge is planned),
+  browser console (noVNC over an
   owner-gated websocket bridge), cloud-init NoCloud seeds (keys only, no
   passwords), an ISO/cloud-image library with chunked browser upload and
   SSRF-guarded URL import, and ZFS snapshots/rollback per VM

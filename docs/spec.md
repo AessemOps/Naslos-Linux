@@ -1548,7 +1548,8 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   a clear message, never a crash.
 - **FR-VMT-02** — VM creation MUST be validated server-side before any host
   change: DNS-1123 name, pool existence, vCPU/memory/disk ranges, unique
-  host ports across all VMs, firmware/disk-format/bus enums, the NAT-only
+  host ports across all VMs, firmware/disk-format/bus enums, the UEFI-only
+  `secureBoot` flag (FR-VMT-12), the NAT-only
   network mode, library references (`isos/<file>`), and cloud-init fields
   (hostname, POSIX user, ≤20 SSH public keys, no passwords). vmd MUST
   re-validate the same rules before building any QEMU command line (SEC-1: no
@@ -1613,6 +1614,43 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   QEMU VNC listener MUST be password-protected (the password is set over
   QMP per boot and handed to the browser only through the owner-gated
   preflight).
+- **FR-VMT-12** — Secure Boot MUST be an optional per-VM flag
+  (`secureBoot`, default `false`) and MUST be valid only with UEFI firmware.
+  The supervisor MUST boot a Secure Boot guest with the OVMF `*.secboot.fd`
+  code image, a distinct per-VM NVRAM file initialized from a key-enrolled
+  vars template (`*.ms.fd`, or a distro `*.secboot.fd` vars template),
+  `smm=on`, and the secure pflash/ICH9 S3 options the edk2 reference command
+  line requires. It MUST never fall back to the plain UEFI pair (a VM created
+  with `secureBoot=false` keeps its old `vars.fd`; enabling the flag uses
+  `vars.secboot.fd`). The capabilities report MUST expose
+  `secureBoot: bool`; a vmd image without the Secure Boot pair MUST report
+  `false` and MUST refuse to start a VM that requests the flag. Toggling the
+  flag MUST recreate a running VM's QEMU process.
+- **FR-VMT-13** — TPM 2.0 **[OPEN]**: no per-VM TPM exists today. The vmd
+  image does not ship `swtpm`, so the UI and record schema MUST NOT accept a
+  TPM flag. Implementation requires: `swtpm`/`swtpm-tools` (Debian bookworm)
+  in the vmd image and their credits; a per-VM `tpm/` state directory under
+  the VM dataset (preserved across restarts and snapshotted); a supervised
+  `swtpm socket --tpm2 --tpmstate dir=… --ctrl type=unixio,path=…` process
+  stopped with its VM; QEMU `-chardev socket,id=chrtpm,… -tpmdev
+  emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0`; and
+  `tpm: bool` in DM-7 with UEFI-only validation and a capabilities flag. See
+  `docs/vm-parity.md`.
+- **FR-VMT-14** — Disk import/export **[OPEN]**: importing an existing VM disk
+  and exporting a Naslos disk MUST use a fixed format allow-list (`qcow2`,
+  `raw`, `vmdk`, `vdi`, `vhdx` in; `qcow2`/`raw` out), probe the source with
+  `qemu-img info`, convert through a temporary file inside the VM dataset /
+  bounded scratch area, verify virtual size against the declared disk and
+  quota, atomically rename, and clean up on failure. The format string MUST
+  NOT be caller-controlled and `qemu-img` MUST NOT run on a running VM's disk.
+  No implementation exists; see `docs/vm-parity.md`.
+- **FR-VMT-15** — PCIe/USB/GPU passthrough **[OPEN]**: a per-VM device record
+  limited to allow-listed host devices (PCI address/vendor-device or USB
+  allow-list, never an arbitrary host path), a Talos device-plugin/`vfio-pci`
+  path, exclusive device reset on stop, and a mandatory security review before
+  any privileged device mount. Snapshots/rollback MUST reject or explicitly
+  exclude passed-through device state. No implementation exists; see
+  `docs/vm-parity.md`.
 
 ### 3.14 MCP server (`FR-MCP`)
 
@@ -2051,7 +2089,7 @@ the current behavior until the post-P0 implementation lands.
 - **DM-4 Share**: `{ "name", "path", "protocol": "smb"|"nfs"|"afp", "description", "readOnly": bool, "browseable": bool, "allowedHosts": [], "validUsers": [], "validGroups": [], "timeMachine": bool, "noRootSquash": bool, "createdAt", "enabled": bool }` — `path` MUST be inside the ZFS base; the three list fields MUST be arrays (never `null`, including when read back from disk); `validUsers` entries render bare and `validGroups` entries render as `@group` in `smb.conf` (FR-SHR-07/12).
 - **DM-5 SystemMetrics**: see FR-MET-03. CPU also carries `model`, `temperatureC` (nullable), and `perCore[]` (`core`, `usagePercent`, optional `frequencyMhz`). `updatedAt` is RFC 3339; before the first successful collection it is the Go zero time and consumers MUST treat it as "no data yet".
 - **DM-6 DiskHealth**: `{ "smartctlAvailable": bool, "error": string, "temperatureWarningC": number, "wearWarningPercent": number, "disks": [{ "device", "size", "isSystemDisk", "model", "serial", "busPath", "type", "signatures": [], "inPool"?, "smart": { "available", "enabled", "health": "PASSED"|"FAILED"|"UNKNOWN", "temperatureC"?, "powerOnHours"?, "wearPercent"?, "reallocatedSectors"?, "pendingSectors"?, "uncorrectableSectors"?, "mediaErrors"?, "errorCount"?, "standby", "message" }, "zfs"?: { "pool", "vdev", "state", "readErrors", "writeErrors", "cksumErrors" } }] }` — `smart.available:false` is normal for virtio/USB/RAID devices and MUST NOT fail the endpoint (FR-DHK-02/03).
-- **DM-7 Vm**: `{ "name", "pool", "cpu", "memMiB", "autostart": bool, "firmware": "uefi"|"bios", "desired": "running"|"stopped", "disk": { "sizeGB", "format": "qcow2"|"raw", "bus": "virtio"|"sata", "sourceImage"?: "isos/<file>" }, "net": { "mode": "nat"|"lan", "forwards": [{ "host", "dst" }], "nic"? }, "cloudInit"?: { "hostname", "user", "sshKeys": [] }, "iso"?: "isos/<file>" | null }`. `name` is a DNS-1123 label; live fields (`state`: "running"|"stopped"|"unknown", `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) are merged in responses and MUST NOT be persisted; the console credentials (`vncPort`, `vncPassword`) appear only in the `/api/ws/vm/{name}/vnc` preflight, never in list or detail payloads (FR-VMT).
+- **DM-7 Vm**: `{ "name", "pool", "cpu", "memMiB", "autostart": bool, "firmware": "uefi"|"bios", "secureBoot": bool, "desired": "running"|"stopped", "disk": { "sizeGB", "format": "qcow2"|"raw", "bus": "virtio"|"sata", "sourceImage"?: "isos/<file>" }, "net": { "mode": "nat"|"lan", "forwards": [{ "host", "dst" }], "nic"? }, "cloudInit"?: { "hostname", "user", "sshKeys": [] }, "iso"?: "isos/<file>" | null }`. `name` is a DNS-1123 label; `secureBoot` is omitted in pre-FR-VMT-12 records and defaults to `false`; live fields (`state`: "running"|"stopped"|"unknown", `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) are merged in responses and MUST NOT be persisted; the console credentials (`vncPort`, `vncPassword`) appear only in the `/api/ws/vm/{name}/vnc` preflight, never in list or detail payloads (FR-VMT).
 - **DM-8 StorageSchedule**: `{ "id", "kind": "snapshot"|"scrub", "target", "cadence": "hourly"|"daily"|"weekly", "runAt", "keep": number, "recursive": bool, "enabled": bool, "lastRun"?, "lastResult"?, "lastError"?, "nextRun"? }`. `target` is a dataset path for `snapshot` and a pool name for `scrub`; `keep` is always 0 for `scrub`; `lastResult` is `ok`/`failed`/`skipped`/`started` (a scrub is `started` until its scan line reports completion). Timestamps are RFC 3339 UTC (FR-STO-10/11).
 - **DM-9 ConfigExport**: `{ "kind": "naslos-config-export", "schemaVersion": 1, "generatedAt", "naslosVersion", "baseDomain", "shares": [DM-4 without createdAt], "storageSchedules": [DM-8 without lastRun/lastResult/lastError/nextRun], "buddySchedules": [{ "id", "dataset", "source", "receivers": [], "cadence", "runAt", "pruneKeep", "enabled" }], "domains": [{ "baseDomain", "dnsProvider", "providerConfig": {}, "acmeEmail", "environment", "primary", "sso", "appRecordsDdnsEntry": string|null }], "ddnsEntries": [{ "id", "provider", "zone", "record", "recordType", "ttl", "enabled", "providerConfig": {} }], "apps": [{ "name", "source", "channel", "chartVersion", "baseDomain", "exposure": { "subdomain", "tls", "auth", "localOnly", "protectedPaths": [], "internet", "service", "port", "scheme" }, "datasets": [], "privileged", "env": [{ "name", "secret" }], "values"?: {}, "redactedKeys": [], "valuesOmitted": bool }], "datasetRegistry": [{ "name", "hostPath", "shared", "warningAcknowledged" }] }`. Every section is an array, never `null`. No field may carry a credential value, credential Secret name, solver body, the Buddy identity/KEK or Kubernetes Secret data; `values` excludes the catalog's secret-marked keys at any depth, is omitted entirely when `valuesOmitted` is true, and `providerConfig` contains only keys the provider schema declares non-secret (free-form credential templates such as the generic DDNS `updateUrl`/`body` are omitted). Import is `[OPEN]` (FR-CFG-04).
 - **DM-10 ReplicationJob**: `{ "id", "source", "destination", "snapshot"?, "recursive": bool, "pruneKeep"?: number, "state": "running"|"succeeded"|"failed"|"cancelled", "startedAt", "finishedAt"?, "progress": { "bytes", "estimatedBytes" }, "incremental": bool, "estimatedBytes"?, "result"?: { "status": "replicated"|"up-to-date", "source", "destination", "snapshot", "baseSnapshot"?, "baseGUID"?, "toGUID"?, "incremental": bool, "recursive": bool, "bytes", "estimatedBytes", "prunedSnapshots", "retentionError"?, "durationSeconds" }, "error"? }`. Jobs are in memory; `snapshot` is empty until the job creates one; timestamps are RFC 3339 UTC (FR-REP-01/06).
@@ -2212,12 +2250,13 @@ Dynamic DNS and the provider registry are verified by
 | `TestOVHDriverUpdate`, `TestCloudflareDriverCreateAndUpdate`, `TestHTTPDriverRendersAndAuthenticates` | FR-DNS-01 (drivers: URL/method/body/signature/auth) |
 | `TestHTTPDriverRejectsNonPublicTargets` | FR-DNS-07 (SSRF guard) |
 | `helm lint` + `scripts/audit.sh` DDNS assertions | FR-DNS-03/04 (env wired, egress port-scoped, no release-namespace Secret access) |
-| `naslos_vmd::model::tests::*` | FR-VMT-02 (name/range/enum/cloud-init validation, library traversal guards) |
-| `naslos_vmd::args::tests::*` (golden argv) | FR-VMT-02/05 (SEC-1: the exact QEMU command line is a pinned, reviewable diff) |
+| `naslos_vmd::model::tests::*` | FR-VMT-02/12 (name/range/enum/cloud-init/secure-boot validation, legacy-record defaults, library traversal guards) |
+| `naslos_vmd::args::tests::*` (golden argv) | FR-VMT-02/05/12 (SEC-1: the exact QEMU command line is a pinned, reviewable diff; Secure Boot pins the secboot pair, SMM and secure pflash) |
+| `naslos_vmd::capabilities::tests::*` | FR-VMT-01/12 (Secure Boot availability is reported, never inferred from a plain UEFI pair) |
 | `naslos_vmd::qmp::tests::*`, `naslos_vmd::supervisor::tests::*` | FR-VMT-10 (QMP round-trip incl. event skipping, reconcile invariants, force-stop guards) |
 | `naslos_vmd::images::tests::*` | FR-VMT-07 (SSRF guard covers mapped/ULA addresses, scheme allowlist, upload name guards, redirect resolution) |
 | `naslos_vmd::cloudinit::tests::*` | FR-VMT-06 (no password fields, pwauth disabled, instance-id tracks the seed) |
-| `naslos_api::virt::tests::*` | FR-VMT-10 (store round-trip + revalidation, boot render marks autostart VMs, views survive a dead supervisor, credentials stay out of payloads) |
+| `naslos_api::virt::tests::*` | FR-VMT-10/12 (store round-trip + revalidation, legacy records default `secureBoot` off, boot render marks autostart VMs, views survive a dead supervisor, credentials stay out of payloads) |
 | `contract.rs` virt tests (fail-closed shapes, octet-stream scoped to the upload route only, console origin/auth) | FR-VMT-08/11 |
 | `ui/tests/vms.spec.ts` (capability-skip) | FR-VMT-01 (banner on KVM-less nodes, list contract, preflight 409 on a stopped VM) |
 

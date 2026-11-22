@@ -470,6 +470,31 @@ async fn vm_create_validates_before_touching_anything() {
 }
 
 #[tokio::test]
+async fn vm_create_rejects_secure_boot_without_uefi() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/virt/vms")
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            r#"{"name":"sb-bios","cpu":2,"memMiB":2048,"pool":"tank","firmware":"bios","secureBoot":true,"disk":{"sizeGB":40}}"#,
+        ))
+        .unwrap();
+    let (status, body, _r) = send(with_peer(req, [127, 0, 0, 1])).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("secureBoot requires UEFI"),
+        "the error should explain the firmware requirement: {}",
+        body["error"]
+    );
+}
+
+#[tokio::test]
 async fn image_upload_accepts_octet_stream_bodies() {
     // The chunked upload is the one non-JSON body the API accepts; the
     // content-type carve-out is scoped to /api/virt/images/upload only.

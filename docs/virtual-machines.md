@@ -21,7 +21,7 @@ naslos-api ── zfs create/destroy/rollback ──> naslos-agent ──> ZFS d
   revision is a no-op). State is always derived live from vmd and never
   persisted. |
 | `naslos-agent` | Still the only ZFS writer: VM datasets are created/destroyed/snapshotted/rolled-back through the existing dataset APIs. |
-| QEMU (`qemu-system-x86_64`, Debian package) | The hypervisor, unmodified distro binaries; q35 machine, virtio defaults, OVMF (UEFI) firmware by default with a per-VM writable vars copy, SeaBIOS selectable for legacy guests. |
+| QEMU (`qemu-system-x86_64`, Debian package) | The hypervisor, unmodified distro binaries; q35 machine, virtio defaults, OVMF (UEFI) firmware by default with a per-VM writable vars copy, optional OVMF Secure Boot (`secureBoot`), SeaBIOS selectable for legacy guests. |
 
 Why not KubeVirt: the node runs Kubernetes 1.37, ahead of KubeVirt's
 supported skew, and KubeVirt demands bare-metal K8s features that add
@@ -40,7 +40,9 @@ entire command line is pinned by unit tests.
   start, or seeded from a library cloud image (`disk.sourceImage`) with
   `qemu-img convert` + resize to the declared size.
 - UEFI vars are a per-VM copy (`<dataset>/vars.fd`) made on first start;
-  the seed ISO is `<dataset>/seed.iso`, regenerated on every start.
+  Secure Boot uses a separate copy (`<dataset>/vars.secboot.fd`) so the two
+  NVRAM stores never mix. The seed ISO is `<dataset>/seed.iso`, regenerated
+  on every start.
 - QEMU's stderr lands in `<dataset>/qemu.log` — the first place to look
   when a VM refuses to start.
 - The image library is `<pool>/vms/isos` (flat file names). It is created
@@ -51,6 +53,37 @@ entire command line is pinned by unit tests.
   cord; prefer stopping the VM for a clean backup point. Restore is
   `zfs rollback -r` and refuses a running VM; newer snapshots are deleted
   by the rollback, which the UI states before you confirm.
+
+## Firmware and Secure Boot
+
+- **UEFI (OVMF) is the default**; BIOS (SeaBIOS) stays selectable for legacy
+  guests. UEFI keeps a per-VM writable NVRAM store (`vars.fd`).
+- **Secure Boot is opt-in per VM** (`secureBoot`, default `false`, UEFI
+  only). When enabled, vmd boots the SMM-enabled OVMF Secure Boot code image
+  (`OVMF_CODE_4M.secboot.fd` on Debian), a per-VM `vars.secboot.fd`
+  initialized from the key-enrolled `OVMF_VARS_4M.ms.fd`, `smm=on`, the
+  secure pflash global and the ICH9 S3-disable global from the edk2 reference
+  command line. The guest therefore boots only signed boot loaders that chain
+  to the Microsoft keys already in that vars template (Windows, or a Linux
+  distro's signed shim). Custom key enrollment is not exposed in the UI or
+  API.
+- The supervisor reports whether its image has the Secure Boot pair as
+  `secureBoot` on `GET /api/virt/capabilities`. The UI disables the checkbox
+  when false, and a start request that asks for Secure Boot on an image
+  without the pair fails with an actionable error instead of silently booting
+  the plain UEFI firmware. Toggling the flag on a running VM recreates the
+  QEMU process.
+- Operators can override the detected paths with
+  `VMD_UEFI_CODE`/`VMD_UEFI_VARS` (plain UEFI) and
+  `VMD_UEFI_SECBOOT_CODE`/`VMD_UEFI_SECBOOT_VARS` (Secure Boot); both
+  variables of a pair must be set.
+- **TPM 2.0 is `[OPEN]`** (see `docs/vm-parity.md`). The vmd image does not
+  ship `swtpm`, so there is deliberately no TPM field or toggle: a broken
+  device path is worse than none. Adding it needs `swtpm`/`swtpm-tools` in
+  the vmd image (plus `CREDITS.md` entries), a supervised per-VM
+  `swtpm socket --tpm2` process with its state under the VM dataset, and the
+  QEMU `tpm-tis` device wired over the swtpm socket. Windows 11 additionally
+  needs both Secure Boot and that TPM path.
 
 ## Networking
 
@@ -155,7 +188,14 @@ boots straight to SSH.
 - SEC-1: no unvalidated string reaches a QEMU command line. Names are
   DNS-1123, library references are flat validated file names, and the
   argument builder is pinned by golden tests on both sides (the API
-  validates, vmd re-validates, then renders).
+  validates, vmd re-validates, then renders). Secure Boot is a boolean enum
+  choice, never a caller-supplied firmware path, and the render pins the
+  secboot/SMM/secure-pflash options.
+- Secure Boot is guest firmware trust, not additional host isolation: vmd is
+  still privileged, the Secure Boot pair comes from the same distro `ovmf`
+  package already in the image, and no new host mount or device is added.
+  TPM (`swtpm`) is not installed and no TPM device exists until the `[OPEN]`
+  work in `docs/vm-parity.md` lands.
 - The QEMU VNC listener binds the node with a per-boot password; the
   password only travels to the browser via the owner-gated preflight. If
   you want the port unreachable from the LAN, firewall 5900-5916 at the
@@ -185,9 +225,14 @@ The full gate from the plan, for the record:
    dataset `<pool>/vms/<name>` exists with the declared quota.
 5. Start → state `running`, console connects via the browser, `qemu.log`
    exists, port forward answers on the node (NAT mode).
-6. Stop (graceful ACPI), snapshot, restore (refuses while running), force
+6. Secure Boot: `GET /api/virt/capabilities` reports `secureBoot: true`;
+   create/edit a UEFI VM with `secureBoot` on, start a signed installer, and
+   confirm the guest reports Secure Boot enabled (`mokutil --sb-state`, or
+   `dmesg | grep -i secure` for a Linux guest). A `secureBoot` request on an
+   image without the firmware pair must fail with an actionable error.
+7. Stop (graceful ACPI), snapshot, restore (refuses while running), force
    stop, delete → dataset destroyed.
-7. Kill the vmd pod → its QEMU children die with it (they live in the pod's
+8. Kill the vmd pod → its QEMU children die with it (they live in the pod's
    PID namespace); the API watcher notices the supervisor's return and
    re-pushes the desired state, so desired-running VMs restart — an
    explicitly stopped VM stays stopped. A killed QEMU raises

@@ -24,10 +24,30 @@ pub struct BuildContext {
     /// UEFI vars image (pflash, writable). For a combined OVMF.fd image this
     /// is a per-VM copy made on first start.
     pub uefi_vars: Option<PathBuf>,
+    /// OVMF Secure Boot code image (pflash, read-only, `*.secboot.fd`).
+    pub secure_boot_code: Option<PathBuf>,
     /// Generated cloud-init NoCloud seed ISO, when the VM has cloud-init.
     pub cloud_init_seed: Option<PathBuf>,
     /// Absolute path of the install ISO, resolved by the supervisor.
     pub iso_path: Option<PathBuf>,
+}
+
+/// The firmware images shipped in the vmd image. Secure Boot is a distinct
+/// code/vars pair (SMM-enabled OVMF with pre-enrolled keys); a plain UEFI or
+/// combined image cannot be substituted for it.
+#[derive(Debug, Clone, Default)]
+pub struct FirmwareImages {
+    pub code: Option<PathBuf>,
+    pub vars: Option<PathBuf>,
+    pub secure_boot_code: Option<PathBuf>,
+    pub secure_boot_vars: Option<PathBuf>,
+}
+
+impl FirmwareImages {
+    /// Whether this image can boot a Secure Boot guest.
+    pub fn secure_boot_available(&self) -> bool {
+        self.secure_boot_code.is_some() && self.secure_boot_vars.is_some()
+    }
 }
 
 /// Derive a stable MAC from the VM name so DHCP assigns the same address
@@ -39,6 +59,11 @@ pub fn stable_mac(name: &str) -> String {
 
 /// Build the full `qemu-system-x86_64` argv for one VM.
 pub fn qemu_args(spec: &VmSpec, ctx: &BuildContext) -> Result<Vec<String>, String> {
+    if spec.secure_boot && spec.firmware != Firmware::Uefi {
+        // validate_vm rejects this; the builder refuses it too so a bad
+        // render can never reach QEMU (SEC-1).
+        return Err("secureBoot requires UEFI firmware".to_string());
+    }
     let disk_path = ctx.vm_dir.join("disk.qcow2");
     let mut args: Vec<String> = Vec::new();
 
@@ -47,12 +72,14 @@ pub fn qemu_args(spec: &VmSpec, ctx: &BuildContext) -> Result<Vec<String>, Strin
 
     // q35: modern defaults plus the ich9 AHCI controller the `sata` bus maps
     // to. TCG keeps the feature usable for evaluation when KVM is missing.
+    // Secure Boot also needs SMM, which OVMF's secboot firmware requires and
+    // refuses to boot without.
     args.push("-machine".into());
-    args.push(if ctx.kvm {
-        "q35,accel=kvm".to_string()
-    } else {
-        "q35,accel=tcg".to_string()
-    });
+    args.push(format!(
+        "q35,accel={}{}",
+        if ctx.kvm { "kvm" } else { "tcg" },
+        if spec.secure_boot { ",smm=on" } else { "" }
+    ));
 
     args.push("-cpu".into());
     args.push(if ctx.kvm { "host".into() } else { "max".into() });
@@ -91,21 +118,52 @@ pub fn qemu_args(spec: &VmSpec, ctx: &BuildContext) -> Result<Vec<String>, Strin
     // Firmware. UEFI boots from pflash; BIOS is QEMU's built-in SeaBIOS.
     match spec.firmware {
         Firmware::Uefi => {
-            let code = ctx
-                .uefi_code
-                .as_ref()
-                .ok_or_else(|| "UEFI firmware is not installed in the vmd image".to_string())?;
-            let vars = ctx
-                .uefi_vars
-                .as_ref()
-                .ok_or_else(|| "UEFI vars image is not configured".to_string())?;
+            let (code, vars) = if spec.secure_boot {
+                let code = ctx.secure_boot_code.as_ref().ok_or_else(|| {
+                    "Secure Boot firmware (OVMF secboot) is not installed in the vmd image"
+                        .to_string()
+                })?;
+                // The supervisor copies the pre-enrolled Microsoft-key
+                // template into this per-VM NVRAM file; QEMU must open that
+                // copy read-write, never the shared firmware template.
+                let vars = ctx.uefi_vars.as_ref().ok_or_else(|| {
+                    "Secure Boot vars image is not configured for this VM".to_string()
+                })?;
+                // SMM must protect the pflash from guest writes for Secure
+                // Boot to be meaningful; ICH9 S3 resume is incompatible with
+                // the SMM OVMF build and is disabled as the edk2 reference
+                // command line does.
+                args.push("-global".into());
+                args.push("driver=cfi.pflash01,property=secure,value=on".into());
+                args.push("-global".into());
+                args.push("ICH9-LPC.disable_s3=1".into());
+                (code, vars)
+            } else {
+                let code = ctx
+                    .uefi_code
+                    .as_ref()
+                    .ok_or_else(|| "UEFI firmware is not installed in the vmd image".to_string())?;
+                let vars = ctx
+                    .uefi_vars
+                    .as_ref()
+                    .ok_or_else(|| "UEFI vars image is not configured".to_string())?;
+                (code, vars)
+            };
+            let (code_unit, vars_unit) = if spec.secure_boot {
+                ("unit=0,", "unit=1,")
+            } else {
+                ("", "")
+            };
             args.push("-drive".into());
             args.push(format!(
-                "if=pflash,format=raw,readonly=on,file={}",
+                "if=pflash,{code_unit}format=raw,readonly=on,file={}",
                 code.display()
             ));
             args.push("-drive".into());
-            args.push(format!("if=pflash,format=raw,file={}", vars.display()));
+            args.push(format!(
+                "if=pflash,{vars_unit}format=raw,file={}",
+                vars.display()
+            ));
         }
         Firmware::Bios => {}
     }
@@ -149,19 +207,24 @@ pub fn qemu_args(spec: &VmSpec, ctx: &BuildContext) -> Result<Vec<String>, Strin
     Ok(args)
 }
 
-/// Detect the UEFI firmware pair shipped in the image. Prefers the split
+/// Detect the firmware images shipped in the vmd image. Prefers the split
 /// code/vars layout; falls back to the combined image (copied per VM on
-/// first start by the supervisor).
-pub fn detect_firmware() -> (Option<PathBuf>, Option<PathBuf>) {
-    if let (Ok(code), Ok(vars)) = (
+/// first start by the supervisor). Secure Boot additionally needs the
+/// SMM-enabled `*.secboot.fd` code and a vars template with keys enrolled
+/// (`*.ms.fd`, or a distro's `*.secboot.fd` vars); a plain UEFI pair is not
+/// a Secure Boot pair and is never advertised as one.
+pub fn detect_firmware() -> FirmwareImages {
+    let (mut code, mut vars) = (None, None);
+    if let (Ok(c), Ok(v)) = (
         std::env::var("VMD_UEFI_CODE"),
         std::env::var("VMD_UEFI_VARS"),
     ) {
-        if !code.is_empty() && !vars.is_empty() {
-            return (Some(PathBuf::from(code)), Some(PathBuf::from(vars)));
+        if !c.is_empty() && !v.is_empty() {
+            code = Some(PathBuf::from(c));
+            vars = Some(PathBuf::from(v));
         }
     }
-    let candidates: [(&str, &str); 4] = [
+    let candidates: [(&str, &str); 6] = [
         (
             "/usr/share/OVMF/OVMF_CODE_4M.fd",
             "/usr/share/OVMF/OVMF_VARS_4M.fd",
@@ -171,6 +234,10 @@ pub fn detect_firmware() -> (Option<PathBuf>, Option<PathBuf>) {
             "/usr/share/OVMF/OVMF_VARS_2M.fd",
         ),
         (
+            "/usr/share/OVMF/OVMF_CODE.fd",
+            "/usr/share/OVMF/OVMF_VARS.fd",
+        ),
+        (
             "/usr/share/ovmf/OVMF_CODE_4M.fd",
             "/usr/share/ovmf/OVMF_VARS_4M.fd",
         ),
@@ -178,19 +245,96 @@ pub fn detect_firmware() -> (Option<PathBuf>, Option<PathBuf>) {
             "/usr/share/ovmf/OVMF_CODE_2M.fd",
             "/usr/share/ovmf/OVMF_VARS_2M.fd",
         ),
+        (
+            "/usr/share/ovmf/OVMF_CODE.fd",
+            "/usr/share/ovmf/OVMF_VARS.fd",
+        ),
     ];
-    for (code, vars) in candidates {
-        if std::path::Path::new(code).exists() && std::path::Path::new(vars).exists() {
-            return (Some(PathBuf::from(code)), Some(PathBuf::from(vars)));
+    if code.is_none() {
+        for (c, v) in candidates {
+            if std::path::Path::new(c).exists() && std::path::Path::new(v).exists() {
+                code = Some(PathBuf::from(c));
+                vars = Some(PathBuf::from(v));
+                break;
+            }
         }
     }
     // Combined image: code is the image itself, vars is a per-VM copy of it.
-    for combined in ["/usr/share/ovmf/OVMF.fd", "/usr/share/OVMF/OVMF.fd"] {
-        if std::path::Path::new(combined).exists() {
-            return (Some(PathBuf::from(combined)), Some(PathBuf::from(combined)));
+    if code.is_none() {
+        for combined in ["/usr/share/ovmf/OVMF.fd", "/usr/share/OVMF/OVMF.fd"] {
+            if std::path::Path::new(combined).exists() {
+                code = Some(PathBuf::from(combined));
+                vars = Some(PathBuf::from(combined));
+                break;
+            }
         }
     }
-    (None, None)
+
+    let mut secure_boot_code = None;
+    let mut secure_boot_vars = None;
+    if let (Ok(c), Ok(v)) = (
+        std::env::var("VMD_UEFI_SECBOOT_CODE"),
+        std::env::var("VMD_UEFI_SECBOOT_VARS"),
+    ) {
+        if !c.is_empty() && !v.is_empty() {
+            secure_boot_code = Some(PathBuf::from(c));
+            secure_boot_vars = Some(PathBuf::from(v));
+        }
+    }
+    if secure_boot_code.is_none() {
+        // Debian's ovmf ships OVMF_CODE_4M.secboot.fd + OVMF_VARS_4M.ms.fd
+        // on bookworm; the 2M pair and the lowercase directory are covered
+        // for other distro layouts. Vars without enrolled keys would leave
+        // Secure Boot in setup mode, so only the ms/secboot templates count.
+        let candidates: [(&str, &str); 8] = [
+            (
+                "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd",
+                "/usr/share/OVMF/OVMF_VARS_4M.ms.fd",
+            ),
+            (
+                "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd",
+                "/usr/share/OVMF/OVMF_VARS_4M.secboot.fd",
+            ),
+            (
+                "/usr/share/OVMF/OVMF_CODE.secboot.fd",
+                "/usr/share/OVMF/OVMF_VARS.ms.fd",
+            ),
+            (
+                "/usr/share/OVMF/OVMF_CODE.secboot.fd",
+                "/usr/share/OVMF/OVMF_VARS.secboot.fd",
+            ),
+            (
+                "/usr/share/ovmf/OVMF_CODE_4M.secboot.fd",
+                "/usr/share/ovmf/OVMF_VARS_4M.ms.fd",
+            ),
+            (
+                "/usr/share/ovmf/OVMF_CODE_4M.secboot.fd",
+                "/usr/share/ovmf/OVMF_VARS_4M.secboot.fd",
+            ),
+            (
+                "/usr/share/ovmf/OVMF_CODE.secboot.fd",
+                "/usr/share/ovmf/OVMF_VARS.ms.fd",
+            ),
+            (
+                "/usr/share/ovmf/OVMF_CODE.secboot.fd",
+                "/usr/share/ovmf/OVMF_VARS.secboot.fd",
+            ),
+        ];
+        for (c, v) in candidates {
+            if std::path::Path::new(c).exists() && std::path::Path::new(v).exists() {
+                secure_boot_code = Some(PathBuf::from(c));
+                secure_boot_vars = Some(PathBuf::from(v));
+                break;
+            }
+        }
+    }
+
+    FirmwareImages {
+        code,
+        vars,
+        secure_boot_code,
+        secure_boot_vars,
+    }
 }
 
 #[cfg(test)]
@@ -206,6 +350,7 @@ mod tests {
             qmp_socket: PathBuf::from("/run/vmd/test-vm.qmp"),
             uefi_code: Some(PathBuf::from("/usr/share/ovmf/OVMF_CODE_4M.fd")),
             uefi_vars: Some(PathBuf::from("/var/mnt/tank/vms/test-vm/vars.fd")),
+            secure_boot_code: Some(PathBuf::from("/usr/share/ovmf/OVMF_CODE_4M.secboot.fd")),
             cloud_init_seed: Some(PathBuf::from("/var/mnt/tank/vms/test-vm/seed.iso")),
             iso_path: Some(PathBuf::from("/var/mnt/tank/vms/isos/debian-13.iso")),
         }
@@ -218,6 +363,7 @@ mod tests {
             mem_mib: 2048,
             autostart: false,
             firmware: Firmware::Uefi,
+            secure_boot: false,
             desired: DesiredState::Running,
             disk: DiskSpec {
                 size_gb: 40,
@@ -329,6 +475,79 @@ mod tests {
         c.uefi_code = None;
         c.uefi_vars = None;
         assert!(qemu_args(&spec("test-vm"), &c).is_err());
+    }
+
+    #[test]
+    fn secure_boot_uses_the_secboot_pair_smm_and_secure_pflash() {
+        let mut s = spec("sb-vm");
+        s.secure_boot = true;
+        let mut c = ctx();
+        c.vm_dir = PathBuf::from("/var/mnt/tank/vms/sb-vm");
+        c.uefi_vars = Some(PathBuf::from("/var/mnt/tank/vms/sb-vm/vars.secboot.fd"));
+        let argv = qemu_args(&s, &c).unwrap();
+        let joined = argv.join(" ");
+        assert!(joined.contains("-machine q35,accel=kvm,smm=on"), "{joined}");
+        assert!(
+            joined.contains("-global driver=cfi.pflash01,property=secure,value=on"),
+            "{joined}"
+        );
+        assert!(joined.contains("-global ICH9-LPC.disable_s3=1"), "{joined}");
+        assert!(
+            joined.contains(
+                "if=pflash,unit=0,format=raw,readonly=on,file=/usr/share/ovmf/OVMF_CODE_4M.secboot.fd"
+            ),
+            "{joined}"
+        );
+        assert!(
+            joined.contains(
+                "if=pflash,unit=1,format=raw,file=/var/mnt/tank/vms/sb-vm/vars.secboot.fd"
+            ),
+            "{joined}"
+        );
+        // The non-secure code/vars pair must never leak into a Secure Boot
+        // command line.
+        assert!(!joined.contains("OVMF_CODE_4M.fd"), "{joined}");
+        assert!(!joined.contains("vars.fd "), "{joined}");
+        assert!(!joined.contains("OVMF_VARS_4M.ms.fd"), "{joined}");
+    }
+
+    #[test]
+    fn secure_boot_without_secboot_firmware_is_an_error() {
+        let mut s = spec("sb-vm");
+        s.secure_boot = true;
+        let mut c = ctx();
+        c.secure_boot_code = None;
+        let err = qemu_args(&s, &c).unwrap_err();
+        assert!(err.contains("Secure Boot firmware"), "{err}");
+        c.secure_boot_code = ctx().secure_boot_code;
+        c.uefi_vars = None;
+        let err = qemu_args(&s, &c).unwrap_err();
+        assert!(err.contains("Secure Boot vars"), "{err}");
+    }
+
+    #[test]
+    fn secure_boot_with_bios_is_an_error() {
+        let mut s = spec("sb-vm");
+        s.secure_boot = true;
+        s.firmware = Firmware::Bios;
+        let err = qemu_args(&s, &ctx()).unwrap_err();
+        assert!(err.contains("secureBoot requires UEFI"), "{err}");
+    }
+
+    #[test]
+    fn firmware_availability_requires_a_secure_pair() {
+        let firmware = FirmwareImages {
+            code: Some(PathBuf::from("/code.fd")),
+            vars: Some(PathBuf::from("/vars.fd")),
+            ..FirmwareImages::default()
+        };
+        assert!(!firmware.secure_boot_available());
+        let firmware = FirmwareImages {
+            secure_boot_code: Some(PathBuf::from("/secboot-code.fd")),
+            secure_boot_vars: Some(PathBuf::from("/ms-vars.fd")),
+            ..FirmwareImages::default()
+        };
+        assert!(firmware.secure_boot_available());
     }
 
     #[test]

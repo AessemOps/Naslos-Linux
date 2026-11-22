@@ -500,6 +500,7 @@ async fn vm_delete_destroys_the_dataset_recursively() {
         mem_mib: 256,
         autostart: false,
         firmware: naslos_vmd::model::Firmware::default(),
+        secure_boot: false,
         desired: naslos_vmd::model::DesiredState::default(),
         disk: naslos_vmd::model::DiskSpec {
             size_gb: 2,
