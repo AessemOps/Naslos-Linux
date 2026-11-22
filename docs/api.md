@@ -326,7 +326,7 @@ value. All routes are admin-only (owner router).
   ],
   "domains": [
     { "baseDomain": "example.test", "dnsProvider": "cloudflare",
-      "providerConfig": { "zone": "example.test" }, "acmeEmail": "ops@example.test",
+      "providerConfig": { "proxied": "false" }, "acmeEmail": "ops@example.test",
       "environment": "production", "primary": true, "sso": true,
       "appRecordsDdnsEntry": null }
   ],
