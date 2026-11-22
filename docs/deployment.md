@@ -128,6 +128,20 @@ prefix and takes precedence over `tag`; leave it empty to keep the tag behaviour
 explicit `--set api.image.digest=` (empty). `openldap.image` is a full image
 reference, so pin it there directly (`repo@sha256:…`).
 
+R-035: the build inputs are pinned too. Every Dockerfile base image is
+`tag@sha256:…` (Debian bookworm/trixie slim, Alpine 3.24, the Rust and Node
+images, nginx-unprivileged), `bootstrap/local-path/local-path-storage.yaml`
+pins both the provisioner and its busybox helper, and every GitHub Action is
+referenced by commit SHA. `scripts/check-release-version.sh` walks
+`values.yaml`, `values-installer.yaml` and `values-vm.yaml` and checks every
+`image`/`provisionerImage` reference, including `@sha256:` and
+`image.digest` forms; a naslos image tag must equal `appVersion` and an
+unpinned non-naslos image fails the guard. The release guard also requires a
+`vX.Y.Z` tag to point at a commit already on `master`. Residual: digest pins
+are updated by hand (there is no automated digest-update workflow), so a
+refresh means editing the Dockerfile digest and re-running the image build;
+the release pack remains the authoritative per-release digest map.
+
 ## GHCR images + release tags
 
 Every Naslos image lives in GHCR. A **release** publishes the same images

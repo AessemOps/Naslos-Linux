@@ -18,7 +18,7 @@
 # This is intentionally a powerful container: it is gated by the UI's auth
 # (Authelia forwardAuth) and documented as such in docs/terminal.md.
 
-FROM alpine:3.24
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 LABEL maintainer="Naslos <team@naslos.dev>"
 LABEL description="Administrative shell for the Naslos web terminal"

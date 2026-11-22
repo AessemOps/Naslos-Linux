@@ -499,7 +499,7 @@ apps:
   # `local-path-storage`; chart values are pointed at that class.
   poolStorage:
     enabled: true
-    provisionerImage: rancher/local-path-provisioner:v0.0.26
+    provisionerImage: rancher/local-path-provisioner:v0.0.26@sha256:aee53cadc62bd023911e7f077877d047c5b3c269f9bba25724d558654f43cea0
   # Per-app namespaces + per-dataset PV/PVCs (D3/F1, Option A). The pool is
   # fixed-size; the API assigns new installs to a free namespace and creates one
   # claim per selected managed dataset. Existing apps stay in the legacy

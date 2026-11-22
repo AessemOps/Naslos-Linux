@@ -70,6 +70,9 @@ jobs:
       publish: ${{ steps.version.outputs.publish }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The tag-on-master check below needs history to test ancestry.
+          fetch-depth: 0
 
       - name: Resolve and guard the version
         id: version
@@ -94,6 +97,15 @@ jobs:
           if [ "$EVENT_NAME" != "push" ] && [ "$publish" = "true" ]; then
             echo "release guard: publish=true is only allowed for a vX.Y.Z tag push (use publish=false for a dry run)" >&2
             exit 1
+          fi
+          if [ "$EVENT_NAME" = "push" ]; then
+            # R-035: a release tag must point at a commit merged to master, so
+            # an unreviewed branch commit cannot be published by pushing a tag.
+            git fetch --no-tags origin master:refs/remotes/origin/master
+            if ! git merge-base --is-ancestor "$REF_NAME" refs/remotes/origin/master; then
+              echo "release guard: tag $REF_NAME does not point at a commit on master" >&2
+              exit 1
+            fi
           fi
           scripts/check-release-version.sh "$version"
           scripts/check-system-pins.sh

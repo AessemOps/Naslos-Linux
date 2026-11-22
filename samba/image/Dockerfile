@@ -5,7 +5,7 @@
 # and ZFS datasets are mounted from the host; the API pushes smb.conf through
 # the privileged naslos-agent, and this container reloads smbd when it changes.
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 LABEL maintainer="Naslos <team@naslos.dev>"
 LABEL description="Samba SMB/Time Machine share server for Naslos"
