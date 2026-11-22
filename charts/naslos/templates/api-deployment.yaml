@@ -404,6 +404,11 @@ spec:
               value: {{ .Values.api.sourcesFile | default "/var/lib/naslos/sources.json" | quote }}
             - name: DATASETS_CONFIG
               value: {{ .Values.api.datasetsFile | default "/var/lib/naslos/datasets.json" | quote }}
+            # FR-ENC: encrypted datasets keep their raw key in this namespace's
+            # Secrets. It is deliberately separate from the release namespace so
+            # the API never gains read access to platform secrets.
+            - name: DATASET_KEYS_NAMESPACE
+              value: {{ .Values.datasetEncryption.keysNamespace | default "naslos-keys" | quote }}
             - name: DOMAINS_CONFIG
               value: {{ .Values.api.domainsFile | default "/var/lib/naslos/domains.json" | quote }}
             - name: CHARTS_CACHE_DIR

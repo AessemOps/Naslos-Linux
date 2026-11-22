@@ -20,6 +20,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 ## Features
 
 - **ZFS** — official `siderolabs/zfs` extension; pools auto-import at boot via `zfs-service`
+- **Dataset encryption at rest** — raw-key ZFS native encryption created with the dataset; the API generates the 32-byte key into a Secret in `naslos-keys`, and an administrator explicitly unlocks after boot (no auto-unlock). Passphrase keys, encrypted send/receive and in-place conversion are `[OPEN]` (see [docs/dataset-encryption.md](docs/dataset-encryption.md))
 - **Block volumes (zvol)** — create, list, resize and delete ZFS zvols through a validated API/agent surface (growth-only resize, in-use refusals, no arbitrary properties); the management UI and iSCSI export are planned (`[OPEN]`, see [docs/iscsi.md](docs/iscsi.md))
 - **Accessible UI** — Svelte 5 + Tailwind design-token system with a persisted
   light/dark theme (no-FOUC bootstrap, `prefers-color-scheme` default), a

@@ -130,7 +130,8 @@ mdb database on first boot.
 ## 2. Cluster objects the installer depends on
 
 Namespaces: `naslos` (authenticated services), `naslos-privileged` (agent,
-samba, nfs, **terminal**), `naslos-apps`, `naslos-apps-priv`.
+samba, nfs, **terminal**), `naslos-apps`, `naslos-apps-priv`, and `naslos-keys`
+(dataset encryption key Secrets, FR-ENC-03; kept across uninstall).
 
 | Object | Namespace | Used for |
 | --- | --- | --- |

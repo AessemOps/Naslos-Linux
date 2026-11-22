@@ -414,3 +414,55 @@ async fn zvol_delete_requires_confirm_and_list_has_the_json_shape() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body["error"].as_str().unwrap().contains("confirm"));
 }
+
+#[tokio::test]
+async fn encryption_status_route_reports_the_raw_properties() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "encryption\taes-256-gcm\nkeystatus\tunavailable\nencryptionroot\ttank/media\nmounted\tno\n",
+    ]));
+    let zfs = ZfsClient::new(runner, host.root.clone());
+    let server = server_with(Some(zfs), None, TOKEN);
+
+    let (status, body) = send(&server, get_auth("/api/v1/encryption/status/tank/media")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["encryption"], "aes-256-gcm");
+    assert_eq!(body["keystatus"], "unavailable");
+    assert_eq!(body["encryptionRoot"], "tank/media");
+    assert_eq!(body["mounted"], false);
+}
+
+#[tokio::test]
+async fn unlock_response_never_echoes_the_key() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "encryption\taes-256-gcm\nkeystatus\tunavailable\nencryptionroot\ttank/media\nmounted\tno\n",
+        "",
+        "encryption\taes-256-gcm\nkeystatus\tavailable\nencryptionroot\ttank/media\nmounted\tyes\n",
+    ]));
+    let argv = runner.argv();
+    let zfs = ZfsClient::new(runner, host.root.clone());
+    let server = server_with(Some(zfs), None, TOKEN);
+
+    let key = vec![7u8; 32];
+    let payload = serde_json::json!({ "dataset": "tank/media", "key": key }).to_string();
+    let (status, body) = send(&server, post_json("/api/v1/encryption/unlock", &payload)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "unlocked");
+    assert_eq!(body["keystatus"], "available");
+
+    let rendered = body.to_string();
+    assert!(
+        !rendered.contains("\"key\""),
+        "the response has a key field"
+    );
+    assert!(
+        !rendered.contains(&format!("{key:?}")),
+        "the response echoed the key"
+    );
+    for args in argv.lock().unwrap().iter() {
+        for arg in args {
+            assert!(!arg.contains("7, 7, 7"), "the key reached argv: {arg}");
+        }
+    }
+}
