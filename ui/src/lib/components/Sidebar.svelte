@@ -122,23 +122,31 @@
 
   // The session belongs to Authelia's forwardAuth portal, so signing out is a
   // POST to its logout endpoint (same origin, routed straight to the portal).
-  // The redirect then lands on the login portal; if the session was already
-  // dead the POST errors and the redirect is still correct.
+  // Only a confirmed response navigates away; a failed POST stays put and
+  // offers the portal, so the UI never claims a session ended when it did not.
   let loggingOut = false;
+  let logoutError = '';
 
   async function logout() {
     if (loggingOut) return;
     loggingOut = true;
+    logoutError = '';
     try {
-      await fetch('/authelia/api/logout', {
+      const res = await fetch('/authelia/api/logout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targetURL: '/' })
       });
-    } catch {
-      // Ignore: the redirect below still reaches the login portal.
+      if (!res.ok) {
+        throw new Error(`Sign out failed (HTTP ${res.status}).`);
+      }
+      window.location.assign('/');
+    } catch (e: any) {
+      // Staying put is safer than redirecting into a still-authenticated
+      // session. Offer the portal as the fallback sign-out path.
+      logoutError = e?.message || 'Sign out failed; the session may still be active.';
+      loggingOut = false;
     }
-    window.location.assign('/');
   }
 </script>
 
@@ -248,6 +256,12 @@
   </nav>
 
   <div class="p-2 border-t border-naslos-border space-y-1">
+    {#if logoutError}
+      <p role="alert" class="px-2 py-1 text-xs text-red-300 break-words">
+        {logoutError}
+        <a class="underline text-naslos-link" href="/authelia/">Open the portal</a>
+      </p>
+    {/if}
     <button
       type="button"
       class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-gray-400 hover:bg-naslos-border hover:text-naslos-strong disabled:opacity-50 disabled:cursor-not-allowed {$sidebarCollapsed
