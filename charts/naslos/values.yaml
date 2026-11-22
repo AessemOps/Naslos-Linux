@@ -448,6 +448,92 @@ traefik:
   providers:
     kubernetesCRD:
       allowExternalNameServices: true
+      # An app route lives in the platform apps namespace (with the domain TLS
+      # Secrets) and targets the app's Service in its isolated namespace. The
+      # wildcard private key therefore never needs a copy in an app namespace
+      # (R-002), and no chart can shadow the route.
+      allowCrossNamespace: true
+    # Native Ingress is disabled: the API owns routing through IngressRoute,
+    # so a chart-rendered Ingress must not become a second route (R-001).
+    kubernetesIngress:
+      enabled: false
+  # No default IngressClass is created either; without the native provider an
+  # Ingress object is inert, and the admission policy rejects Helm writes.
+  ingressClass:
+    enabled: false
+    isDefaultClass: false
+  # Local middleware that deletes the parent-domain `authelia_session` cookie
+  # from the request before an app backend sees it (R-003). The Authelia
+  # forwardAuth middleware still receives the cookie, so SSO keeps working;
+  # only the app service is protected. Inline source keeps the plugin in this
+  # chart (no registry download at startup).
+  experimental:
+    localPlugins:
+      naslos-cookie-strip:
+        type: inlinePlugin
+        moduleName: naslos.local/cookiestrip
+        mountPath: /plugins-local/src/naslos.local/cookiestrip
+        source:
+          go.mod: |
+            module naslos.local/cookiestrip
+
+            go 1.22
+          .traefik.yml: |
+            displayName: Naslos Authelia cookie strip
+            type: middleware
+            import: naslos.local/cookiestrip
+            summary: Removes the parent-domain Authelia session cookie before proxying a request to an app backend.
+            testData: {}
+          plugin.go: |
+            // Package cookiestrip implements a Traefik middleware that removes
+            // one cookie from the request. It is used on app routes: Authelia's
+            // session cookie is scoped to the parent domain so forwardAuth can
+            // read it, but an app backend must never receive it.
+            package cookiestrip
+
+            import (
+            	"context"
+            	"net/http"
+            	"strings"
+            )
+
+            const sessionCookie = "authelia_session"
+
+            // Config has no settings: the cookie name is fixed so a chart value
+            // cannot widen or disable the strip.
+            type Config struct{}
+
+            // CreateConfig builds the middleware configuration.
+            func CreateConfig() *Config { return &Config{} }
+
+            type middleware struct {
+            	next http.Handler
+            }
+
+            // New builds the middleware.
+            func New(_ context.Context, next http.Handler, _ *Config, _ string) (http.Handler, error) {
+            	return &middleware{next: next}, nil
+            }
+
+            func (m *middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+            	cookies := req.Cookies()
+            	kept := make([]string, 0, len(cookies))
+            	for _, c := range cookies {
+            		if c.Name != sessionCookie {
+            			kept = append(kept, c.String())
+            		}
+            	}
+            	if len(kept) == len(cookies) {
+            		m.next.ServeHTTP(rw, req)
+            		return
+            	}
+            	if len(kept) == 0 {
+            		req.Header.Del("Cookie")
+            	} else {
+            		req.Header.Set("Cookie", strings.Join(kept, "; "))
+            	}
+            	m.next.ServeHTTP(rw, req)
+            }
   # hostPort 80/443 can only be held by one pod on this single node, so the
   # chart default (maxSurge 1, maxUnavailable 0) deadlocks: the new pod never
   # becomes Ready because the old one still owns the ports. terminate the old

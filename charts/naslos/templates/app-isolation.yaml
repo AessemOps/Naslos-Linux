@@ -51,10 +51,8 @@ rules:
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["networking.k8s.io"]
-    resources: ["ingresses", "networkpolicies"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # No traefik.io, cert-manager.io, RBAC or cluster-scoped writes.
+  # No networking.k8s.io (Ingress/NetworkPolicy), traefik.io, cert-manager.io,
+  # RBAC or cluster-scoped writes: the API owns routing and isolation policy.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -103,7 +101,10 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Copy the domain TLS Secret into the app namespace for its IngressRoute.
+  # Read/write the app's own secrets (chart env, expected chart values) and the
+  # per-app namespace copies the API owns. The platform TLS private key is
+  # never copied here: app routes terminate with a Secret that already lives in
+  # the platform apps namespace (R-002).
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
