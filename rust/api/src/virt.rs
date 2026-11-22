@@ -105,7 +105,9 @@ impl Store {
             .cloned()
     }
 
-    /// Insert a new record (validated, unique).
+    /// Insert a new record (validated, unique). The in-memory list changes
+    /// only after the new file is durable (R-049a-vm): a failed write must
+    /// not leave a record the API believes in but the next restart forgets.
     pub fn create(&self, spec: VmSpec) -> Result<VmSpec, String> {
         naslos_vmd::model::validate_vm(&spec)?;
         {
@@ -115,36 +117,43 @@ impl Store {
             }
             // A brand-new VM starts in the desired state its create form
             // chose; the field is validated like everything else.
-            inner.push(spec.clone());
-            self.save_locked(&inner)?;
+            let mut next = inner.clone();
+            next.push(spec.clone());
+            self.save_locked(&next)?;
+            *inner = next;
         }
         Ok(spec)
     }
 
-    /// Replace one record's definition (the name is immutable).
+    /// Replace one record's definition (the name is immutable). Persist the
+    /// complete new list first, then publish it in memory.
     pub fn update(&self, name: &str, spec: VmSpec) -> Result<VmSpec, String> {
         if spec.name != name {
             return Err("the VM name cannot be changed".to_string());
         }
         naslos_vmd::model::validate_vm(&spec)?;
         let mut inner = self.inner.lock().unwrap();
-        let Some(existing) = inner.iter_mut().find(|vm| vm.name == name) else {
+        let mut next = inner.clone();
+        let Some(existing) = next.iter_mut().find(|vm| vm.name == name) else {
             return Err(format!("VM {name:?} does not exist"));
         };
         *existing = spec.clone();
-        self.save_locked(&inner)?;
+        self.save_locked(&next)?;
+        *inner = next;
         Ok(spec)
     }
 
     /// Remove one record (without touching the dataset; the caller does that).
     pub fn remove(&self, name: &str) -> Result<VmSpec, String> {
         let mut inner = self.inner.lock().unwrap();
-        let index = inner
+        let mut next = inner.clone();
+        let index = next
             .iter()
             .position(|vm| vm.name == name)
             .ok_or_else(|| format!("VM {name:?} does not exist"))?;
-        let removed = inner.remove(index);
-        self.save_locked(&inner)?;
+        let removed = next.remove(index);
+        self.save_locked(&next)?;
+        *inner = next;
         Ok(removed)
     }
 
@@ -169,14 +178,17 @@ impl Store {
         Ok(())
     }
 
-    /// Set one VM's desired runtime state (start/stop actions).
+    /// Set one VM's desired runtime state (start/stop actions). Durable
+    /// before the in-memory record changes, same as the CRUD path.
     pub fn set_desired(&self, name: &str, desired: DesiredState) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let Some(vm) = inner.iter_mut().find(|vm| vm.name == name) else {
+        let mut next = inner.clone();
+        let Some(vm) = next.iter_mut().find(|vm| vm.name == name) else {
             return Err(format!("VM {name:?} does not exist"));
         };
         vm.desired = desired;
-        self.save_locked(&inner)?;
+        self.save_locked(&next)?;
+        *inner = next;
         Ok(())
     }
 

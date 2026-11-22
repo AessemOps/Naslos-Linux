@@ -179,9 +179,11 @@ pub fn qemu_args(spec: &VmSpec, ctx: &BuildContext) -> Result<Vec<String>, Strin
     args.push("-device".into());
     args.push(format!("virtio-net-pci,netdev=net0,mac={mac}"));
 
-    // VNC with a per-VM password vmd sets over QMP after start.
+    // VNC with a per-VM password vmd sets over QMP after start. Loopback
+    // only: the API console bridge is the sole intended client, so the
+    // password-protected RFB port is never directly reachable on the LAN.
     args.push("-vnc".into());
-    args.push(format!("0.0.0.0:{},password=on", ctx.vnc_display));
+    args.push(format!("127.0.0.1:{},password=on", ctx.vnc_display));
 
     args.push("-qmp".into());
     args.push(format!("unix:{},server,nowait", ctx.qmp_socket.display()));
@@ -418,7 +420,7 @@ mod tests {
             "-device".into(),
             format!("virtio-net-pci,netdev=net0,mac={mac}"),
             "-vnc".into(),
-            "0.0.0.0:3,password=on".into(),
+            "127.0.0.1:3,password=on".into(),
             "-qmp".into(),
             "unix:/run/vmd/test-vm.qmp,server,nowait".into(),
             "-drive".into(),
@@ -454,7 +456,7 @@ mod tests {
         assert!(joined.contains("if=ide,format=raw"), "{joined}");
         assert!(joined.contains("-netdev user,id=net0"), "{joined}");
         assert!(joined.contains("mac=52:54:00:"), "{joined}");
-        assert!(joined.contains("-vnc 0.0.0.0:7,password=on"), "{joined}");
+        assert!(joined.contains("-vnc 127.0.0.1:7,password=on"), "{joined}");
         // No cloud-init seed without cloud-init.
         assert!(!joined.contains("seed.iso"), "{joined}");
     }

@@ -490,7 +490,7 @@ impl Supervisor {
             .allocate_display()
             .await
             .ok_or_else(|| "no free VNC display in the configured range".to_string())?;
-        let password = vnc_password();
+        let password = vnc_password()?;
 
         let iso_path = match &spec.iso {
             Some(iso) => {
@@ -792,13 +792,17 @@ fn tail_qemu_log(dir: &str) -> String {
         .unwrap_or_default()
 }
 
-fn vnc_password() -> String {
+fn vnc_password() -> Result<String, String> {
     const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
     let mut raw = [0u8; VNC_PASSWORD_LEN];
-    let _ = getrandom::fill(&mut raw);
-    raw.iter()
+    // Fail closed: a predictable password would make the console's only
+    // authentication layer worthless, so a start that cannot get entropy is
+    // refused instead of falling back to zeros.
+    getrandom::fill(&mut raw).map_err(|e| format!("generating the VNC password: {e}"))?;
+    Ok(raw
+        .iter()
         .map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char)
-        .collect()
+        .collect())
 }
 
 /// The background watchdog: reaps children and keeps state fresh even when
@@ -859,7 +863,7 @@ mod tests {
 
     #[test]
     fn vnc_passwords_are_8_alphanumeric_chars() {
-        let password = vnc_password();
+        let password = vnc_password().unwrap();
         assert_eq!(password.len(), 8);
         assert!(
             password.chars().all(|c| c.is_ascii_alphanumeric()),

@@ -34,6 +34,52 @@ fn vmd_client(state: &AppState) -> Result<Arc<vmd::Client>, Response> {
     })
 }
 
+/// The per-VM lifecycle lock: every operation that can change a VM's runtime
+/// state or destroy its dataset (start/stop/restart/delete/restore) holds it,
+/// so a delete cannot interleave with a start that was queued behind it.
+fn lifecycle_lock(name: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    let locks = LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut locks = locks.lock().unwrap();
+    locks.entry(name.to_string()).or_default().clone()
+}
+
+/// Fail closed: a VM's dataset may only be deleted or rolled back when the
+/// supervisor positively reports the VM as stopped. A missing vmd, an
+/// unreadable live report or any state other than `stopped` is refused — the
+/// old code silently treated all three as "safe". Holding the caller's
+/// lifecycle lock keeps the answer from going stale before the destructive
+/// call.
+#[allow(clippy::result_large_err)]
+async fn ensure_stopped_for(
+    state: &AppState,
+    name: &str,
+    action: &str,
+) -> Result<Arc<vmd::Client>, Response> {
+    let client = vmd_client(state)?;
+    let live = client.vms_live().await.map_err(|e| {
+        gateway(&format!(
+            "cannot verify that VM {name:?} is stopped before you {action} it: {e}"
+        ))
+    })?;
+    if let Some(entry) = live.iter().find(|l| l.name == name) {
+        if entry.state != "stopped" {
+            return Err(json(
+                StatusCode::CONFLICT,
+                serde_json::json!({
+                    "error": format!(
+                        "VM {name:?} is {}; stop it before you {action} it",
+                        entry.state
+                    )
+                }),
+            ));
+        }
+    }
+    Ok(client)
+}
+
 #[allow(clippy::result_large_err)]
 fn agent_client(state: &AppState) -> Result<Arc<crate::agent::Client>, Response> {
     state.agent.clone().ok_or_else(|| {
@@ -192,18 +238,46 @@ pub async fn vm_detail_put(
     if let Err(e) = state.vms.validate_cross_vm_ports(&name, &spec) {
         return bad_request(&e);
     }
+    // Fields that shape the on-disk image and its dataset are immutable: the
+    // supervisor creates the disk once and never migrates it, so accepting a
+    // change here would make vms.json lie about what QEMU is actually using.
+    let Some(previous) = state.vms.get(&name) else {
+        return not_found(&name);
+    };
+    if spec.pool != previous.pool {
+        return conflict(&format!(
+            "the pool is immutable after creation (this VM lives in {:?}); create a new VM in the target pool instead",
+            previous.pool
+        ));
+    }
+    if spec.disk.format != previous.disk.format || spec.disk.bus != previous.disk.bus {
+        return conflict(
+            "disk.format and disk.bus are immutable after creation; the existing disk image cannot be migrated in place",
+        );
+    }
+    if spec.disk.source_image != previous.disk.source_image {
+        return conflict(
+            "disk.sourceImage is immutable after creation; it only seeds the disk on first start",
+        );
+    }
+    if spec.disk.size_gb != previous.disk.size_gb {
+        // No resize path exists yet: qemu-img resize and a matching
+        // `zfs set quota` would both be needed, and neither is exposed by the
+        // vmd/agent APIs. Refuse rather than record a size the guest does not
+        // have.
+        return conflict(
+            "disk.sizeGB is immutable after creation: growing the image needs qemu-img resize plus a dataset quota change, which the supervisor API does not expose yet; recreate the VM with the new size instead",
+        );
+    }
     // The record only sticks if the supervisor accepts the whole config;
     // otherwise restore the previous spec so vms.json is never left with a
     // config that would fail every later push.
-    let previous = state.vms.get(&name);
     let updated = match state.vms.update(&name, spec) {
         Ok(vm) => vm,
         Err(e) => return bad_request(&e),
     };
     if let Err(e) = push_config(&state, false).await {
-        if let Some(previous) = previous {
-            let _ = state.vms.update(&name, previous);
-        }
+        let _ = state.vms.update(&name, previous);
         return json(
             StatusCode::BAD_GATEWAY,
             serde_json::json!({ "error": e.to_string() }),
@@ -215,25 +289,24 @@ pub async fn vm_detail_put(
 pub async fn vm_detail_delete(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    // Existence check only; the removed record (with its pool) comes back
-    // from store.remove below.
+    if !confirmed(&query, &name) {
+        return bad_request(&format!(
+            "deleting a VM destroys its dataset: retry with ?confirm={name}"
+        ));
+    }
+    // Serialize with every other lifecycle action for this VM, then prove it
+    // is stopped. If vmd is absent or its live report cannot be read, the
+    // delete is refused (fail closed): an unreadable supervisor says nothing
+    // about whether QEMU is writing the image right now.
+    let lock = lifecycle_lock(&name);
+    let _guard = lock.lock().await;
     if state.vms.get(&name).is_none() {
         return not_found(&name);
     }
-    // A running VM's disk is being written right now: destroying the dataset
-    // under it would corrupt the image. Stop the VM first.
-    if let Some(client) = state.vmd.clone() {
-        if let Ok(live) = client.vms_live().await {
-            if live.iter().any(|l| l.name == name && l.state == "running") {
-                return json(
-                    StatusCode::CONFLICT,
-                    serde_json::json!({
-                        "error": format!("VM {name:?} is running; stop it before deleting it")
-                    }),
-                );
-            }
-        }
+    if let Err(resp) = ensure_stopped_for(&state, &name, "delete").await {
+        return resp;
     }
     let agent = match agent_client(&state) {
         Ok(c) => c,
@@ -277,10 +350,20 @@ pub async fn vm_start_post(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Response {
+    let lock = lifecycle_lock(&name);
+    let _guard = lock.lock().await;
+    let Some(previous) = state.vms.get(&name) else {
+        return not_found(&name);
+    };
+    // No supervisor, no start: fail closed before touching the record.
+    if let Err(resp) = vmd_client(&state) {
+        return resp;
+    }
     if let Err(e) = state.vms.set_desired(&name, DesiredState::Running) {
         return bad_request(&e);
     }
     if let Err(e) = push_config(&state, false).await {
+        let _ = state.vms.set_desired(&name, previous.desired);
         return json(
             StatusCode::BAD_GATEWAY,
             serde_json::json!({ "error": e.to_string() }),
@@ -296,10 +379,19 @@ pub async fn vm_stop_post(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Response {
+    let lock = lifecycle_lock(&name);
+    let _guard = lock.lock().await;
+    let Some(previous) = state.vms.get(&name) else {
+        return not_found(&name);
+    };
+    if let Err(resp) = vmd_client(&state) {
+        return resp;
+    }
     if let Err(e) = state.vms.set_desired(&name, DesiredState::Stopped) {
         return bad_request(&e);
     }
     if let Err(e) = push_config(&state, false).await {
+        let _ = state.vms.set_desired(&name, previous.desired);
         return json(
             StatusCode::BAD_GATEWAY,
             serde_json::json!({ "error": e.to_string() }),
@@ -315,6 +407,11 @@ pub async fn vm_force_stop_post(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Response {
+    let lock = lifecycle_lock(&name);
+    let _guard = lock.lock().await;
+    let Some(previous) = state.vms.get(&name) else {
+        return not_found(&name);
+    };
     let client = match vmd_client(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -324,6 +421,7 @@ pub async fn vm_force_stop_post(
     }
     // The supervisor ignores force-stop for a VM that is not running.
     if let Err(e) = client.force_stop(&name).await {
+        let _ = state.vms.set_desired(&name, previous.desired);
         return json(
             StatusCode::BAD_GATEWAY,
             serde_json::json!({ "error": e.to_string() }),
@@ -348,6 +446,11 @@ pub async fn vm_restart_post(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Response {
+    let lock = lifecycle_lock(&name);
+    let _guard = lock.lock().await;
+    let Some(previous) = state.vms.get(&name) else {
+        return not_found(&name);
+    };
     let client = match vmd_client(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -358,6 +461,7 @@ pub async fn vm_restart_post(
     // Best effort: a not-running VM just starts.
     let _ = client.force_stop(&name).await;
     if let Err(e) = push_config(&state, false).await {
+        let _ = state.vms.set_desired(&name, previous.desired);
         return json(
             StatusCode::BAD_GATEWAY,
             serde_json::json!({ "error": e.to_string() }),
@@ -433,29 +537,30 @@ pub async fn vm_snapshot_post(
     }
 }
 
-/// Restore = `zfs rollback -r`, which refuses a dataset in use; the API
-/// refuses a running VM first so the error is actionable.
+/// Restore = `zfs rollback -r`, which destroys every snapshot newer than the
+/// target (and the live state they describe). The API refuses a running VM
+/// and requires `?confirm=<name>` because the loss is irreversible.
 pub async fn vm_snapshot_restore_post(
     State(state): State<Arc<AppState>>,
     Path((name, snap)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Response {
+    if !confirmed(&query, &name) {
+        return bad_request(&format!(
+            "restoring a snapshot rolls the VM back and deletes newer snapshots: retry with ?confirm={name}"
+        ));
+    }
     let Some(spec) = state.vms.get(&name) else {
         return not_found(&name);
     };
     if let Err(e) = validate_snapshot_name(&snap) {
         return bad_request(&e);
     }
-    if let Some(client) = state.vmd.clone() {
-        if let Ok(live) = client.vms_live().await {
-            if live.iter().any(|l| l.name == name && l.state == "running") {
-                return json(
-                    StatusCode::CONFLICT,
-                    serde_json::json!({
-                        "error": format!("VM {name:?} is running; stop it before restoring a snapshot")
-                    }),
-                );
-            }
-        }
+    let lock = lifecycle_lock(&name);
+    let _guard = lock.lock().await;
+    // Fail closed exactly like delete: no live report, no rollback.
+    if let Err(resp) = ensure_stopped_for(&state, &name, "restore a snapshot onto").await {
+        return resp;
     }
     let agent = match agent_client(&state) {
         Ok(c) => c,
@@ -471,7 +576,7 @@ pub async fn vm_snapshot_restore_post(
                 "status": "restored",
                 "name": name,
                 "snapshot": snap,
-                "note": "snapshots newer than the restored one were deleted (zfs rollback -r)"
+                "note": "zfs rollback -r: every snapshot newer than this one was destroyed, and the VM lost all state written after it"
             }),
         ),
         Err(e) => json(
@@ -690,10 +795,21 @@ pub async fn vm_vnc_ws(
     Path(name): Path<String>,
     request: Request,
 ) -> Response {
-    if !super::ws::origin_allowed(request.headers(), &console_allowed_origins(&state)) {
+    if !vnc_origin_allowed(request.headers()) {
         return json(
             StatusCode::FORBIDDEN,
             serde_json::json!({ "error": "websocket origin refused" }),
+        );
+    }
+    // The console hands over a live VNC password and bridges a privileged
+    // channel: a degraded audit log means the session could not be recorded,
+    // so it is refused rather than started unaudited.
+    if state.audit.status() != "ok" {
+        return json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({
+                "error": "the audit log is degraded; refusing to start a console session"
+            }),
         );
     }
     let Some(_spec) = state.vms.get(&name) else {
@@ -752,6 +868,16 @@ pub async fn vm_vnc_ws(
         );
     }
 
+    if !console_attach_allowed(&name) {
+        return json(
+            StatusCode::TOO_MANY_REQUESTS,
+            serde_json::json!({
+                "error": "console attach attempts are rate limited; retry in a second"
+            }),
+        );
+    }
+    let pending = console_session_pending(&request, &name);
+    let audit = state.audit.clone();
     let (mut parts, _body) = request.into_parts();
     let ws = match WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
         Ok(ws) => ws,
@@ -768,24 +894,122 @@ pub async fn vm_vnc_ws(
             )
         }
     };
+    let pending = match audit.begin(pending) {
+        Ok(pending) => pending,
+        Err(e) => {
+            audit.mark_degraded(&format!("console session begin: {e}"));
+            return json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({ "error": format!("audit unavailable: {e}") }),
+            );
+        }
+    };
 
     let vmd_host = vmd_host_of(client.base_url());
     ws.max_message_size(1 << 20)
         .max_frame_size(256 << 10)
-        .on_upgrade(move |socket| vnc_bridge(socket, vmd_host, vnc_port, permit))
+        .on_upgrade(move |socket| vnc_bridge(socket, vmd_host, vnc_port, permit, audit, pending))
 }
 
-fn console_allowed_origins(state: &AppState) -> Vec<String> {
-    let mut out = Vec::new();
-    if !state.base_domain.is_empty() {
-        out.push(state.base_domain.clone());
+/// The console origin policy: the browser `Origin` must be exactly the HTTPS
+/// authority of the request's own `Host`, port included. HTTP, another host,
+/// or any SSO/base-domain expansion is refused — this route hands over the
+/// per-boot VNC password, so an `Origin` allowlist that accepts sibling hosts
+/// is a cross-origin console takeover.
+fn vnc_origin_allowed(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    else {
+        // No Origin header: not a browser cross-origin request (the route is
+        // still owner-gated); the console client always sends one.
+        return true;
+    };
+    let Ok(uri) = origin.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    if uri.scheme_str() != Some("https") {
+        return false;
     }
-    for d in &state.sso_domains {
-        if !d.is_empty() {
-            out.push(d.clone());
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    let Some(host) = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    authority.as_str().eq_ignore_ascii_case(host.trim())
+}
+
+/// One attach attempt per VM per second. The console is expensive (a QEMU
+/// TCP connection plus a WebSocket bridge) and the VNC password is
+/// brute-forceable, so a tight loop of upgrade attempts is refused early.
+fn console_attach_allowed(name: &str) -> bool {
+    static LAST: std::sync::OnceLock<std::sync::Mutex<HashMap<String, std::time::Instant>>> =
+        std::sync::OnceLock::new();
+    let last = LAST.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut last = last.lock().unwrap();
+    let now = std::time::Instant::now();
+    if last
+        .get(name)
+        .is_some_and(|previous| now.duration_since(*previous) < std::time::Duration::from_secs(1))
+    {
+        return false;
+    }
+    last.insert(name.to_string(), now);
+    true
+}
+
+/// The audit record for one console session. The generic audit middleware
+/// only records mutations, and a WebSocket upgrade is a `GET`; the session is
+/// recorded explicitly instead, attributed to the authenticated owner.
+fn console_session_pending(request: &Request, name: &str) -> crate::audit::Pending {
+    let request_id = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            format!("vnc-{name}-{nanos}")
+        });
+    match crate::auth::user_from_request(request) {
+        Some(user) => crate::audit::Pending::user(
+            &user,
+            &axum::http::Method::GET,
+            &format!("/api/ws/vm/{name}/vnc"),
+            "/api/ws/vm/{name}/vnc",
+            None,
+            None,
+            request_id,
+        ),
+        // Direct handler tests (and a future internal caller) have no user
+        // extension; still audited, as a system session.
+        None => crate::audit::Pending::system(
+            "api",
+            "virt.vms.console",
+            Some(name.to_string()),
+            serde_json::json!({ "requestId": request_id }),
+        ),
+    }
+}
+
+fn finish_console_session(
+    audit: &crate::audit::AuditLog,
+    pending: &crate::audit::Pending,
+    status: u16,
+) {
+    if let Err(e) = audit.finish(pending, status) {
+        if audit.mark_degraded(&format!("console session end: {e}")) {
+            tracing::error!("console session audit end failed: {e}");
         }
     }
-    out
 }
 
 /// Extract the host to dial for the VNC listener: vmd's Service host (the
@@ -808,6 +1032,8 @@ async fn vnc_bridge(
     vmd_host: String,
     vnc_port: u16,
     _slot: tokio::sync::OwnedSemaphorePermit,
+    audit: crate::audit::AuditLog,
+    pending: crate::audit::Pending,
 ) {
     let mut socket = socket;
     let stream = match tokio::time::timeout(
@@ -820,6 +1046,7 @@ async fn vnc_bridge(
         _ => {
             tracing::warn!("console bridge: cannot reach {vmd_host}:{vnc_port}");
             let _ = socket.close().await;
+            finish_console_session(&audit, &pending, 502);
             return;
         }
     };
@@ -881,6 +1108,7 @@ async fn vnc_bridge(
     let _ = tcp_write.shutdown().await;
     pump.abort();
     let _ = pump.await;
+    finish_console_session(&audit, &pending, 101);
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -1007,6 +1235,16 @@ async fn ensure_dataset(
 
 fn bad_request(msg: &str) -> Response {
     json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": msg }))
+}
+
+fn conflict(msg: &str) -> Response {
+    json(StatusCode::CONFLICT, serde_json::json!({ "error": msg }))
+}
+
+/// Destructive VM operations take `?confirm=<name>`: a stale UI request, a
+/// mis-clicked row or a replayed call must not destroy a dataset by accident.
+fn confirmed(query: &HashMap<String, String>, name: &str) -> bool {
+    query.get("confirm").map(String::as_str) == Some(name)
 }
 
 fn gateway(msg: &str) -> Response {
