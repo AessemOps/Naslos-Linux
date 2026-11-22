@@ -202,7 +202,7 @@ Traefik forwardAuth (Authelia, 2FA for privileged groups)
   with the authenticated actor and the refusal.
 - The role check runs after authentication, so a missing identity is `401`
   (unchanged) and an authenticated user with too low a role is `403` with the
-  existing JSON error shape (`{"error":"Forbidden"}`). A 401 must never be
+  existing JSON error body (the string `"Forbidden"`). A 401 must never be
   turned into a 403 or vice versa.
 - Handlers must not perform ad-hoc role checks. A handler that needs the actor
   reads the stashed `UserInfo`/role for audit fields only; enforcement is the
@@ -503,8 +503,10 @@ Not audited durably:
 ### 7.7 Retention and size bounds
 
 - Proposed defaults: `AUDIT_RETENTION_DAYS=90`,
-  `AUDIT_MAX_BYTES=67108864` (64 MiB), `AUDIT_SEGMENT_BYTES=8388608`
-  (8 MiB). These are design defaults; the implementation PR owns the final
+  `AUDIT_MAX_BYTES=16777216` (16 MiB), `AUDIT_SEGMENT_BYTES=8388608`
+  (8 MiB). The byte budget must stay below the provisioned state volume so
+  pruning can run before the volume is full; raise it only together with the
+  volume (see §7.1). These are design defaults; the implementation PR owns the final
   names and chart wiring.
 - When the age or byte bound is exceeded, delete the **oldest sealed**
   segment(s) only. Never delete the active segment, the newest sealed

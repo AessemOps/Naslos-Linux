@@ -1166,8 +1166,8 @@ the open P0 route work.
 - **FR-RBAC-03** — Authorization MUST be enforced in one middleware that runs
   after `require_auth`; handlers MUST NOT perform ad-hoc role checks. A
   missing identity MUST remain `401`, and an authenticated user with an
-  insufficient role MUST receive the existing `403 {"error":"Forbidden"}`
-  shape. The SEC-10 proxy-secret gate MUST NOT be weakened or bypassed.
+  insufficient role MUST receive the existing `403` JSON string body
+  `"Forbidden"`. The SEC-10 proxy-secret gate MUST NOT be weakened or bypassed.
   **[OPEN]** *(planned contract tests:
   `every_route_declares_a_minimum_role`,
   `forged_identity_cannot_bypass_role`; existing regression test:
