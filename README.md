@@ -53,6 +53,12 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
   default, with scoped bearer tokens (read / write / full), a `confirm` guard
   on destructive tools, audited calls and a Settings page
   (see [docs/mcp.md](docs/mcp.md))
+- **RBAC & audit** — roles derived per request from the trusted SSO groups
+  (read-only < operator < admin, `naslos_users` baseline) with one
+  per-route middleware (Phase 2 keeps every owner route admin), plus an
+  append-only JSON Lines audit log with a SHA-256 hash chain, fail-closed
+  begin/end records, redaction, bounded retention and admin-only
+  query/verify/export routes (see [docs/rbac-audit.md](docs/rbac-audit.md))
 - **System config export** — download a versioned, secret-free JSON snapshot
   of shares, snapshot/scrub and buddy schedules, domains, DDNS entries (without
   credentials), app records and registered app datasets; import/restore is
@@ -125,7 +131,7 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [dataset-encryption](docs/dataset-encryption.md) | ZFS native encryption design: key custody, Talos boot/unlock, encrypted send, migration (FR-ENC) |
 | [nvmeof](docs/nvmeof.md) | NVMe-oF TCP design spike (go/no-go; not implemented) |
 | [identity-sso](docs/identity-sso.md) | Authelia + OpenLDAP + Samba single sign-on |
-| [rbac-audit](docs/rbac-audit.md) | Read-only/operator/admin roles + append-only audit log (design, `[OPEN]`) |
+| [rbac-audit](docs/rbac-audit.md) | Read-only/operator/admin roles (Phase 2 enforced) + append-only hash-chained audit log; delegation/UI phases open |
 | [shares](docs/shares.md) | SMB / NFS / Time-Machine shares |
 | [app-catalog](docs/app-catalog.md) | Catalog, schema-driven forms, Helm lifecycle |
 | [monitoring](docs/monitoring.md) | Live metrics API + dashboard (no Prometheus) |

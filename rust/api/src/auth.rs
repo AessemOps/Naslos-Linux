@@ -5,7 +5,6 @@
 //! `proxy-identity` middleware injects. The CIDR check alone cannot distinguish
 //! Traefik from any other pod in the cluster; the secret can (SEC-1/NAS-001).
 
-use crate::json;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE, HOST, TRANSFER_ENCODING};
 use axum::http::{Method, StatusCode, Uri};
@@ -143,18 +142,7 @@ pub(crate) fn proxy_checks_pass(state: &AppState, req: &Request) -> bool {
         == 1
 }
 
-/// Middleware enforcing admin group membership. Runs after `require_auth`.
-pub async fn require_admin(req: Request, next: Next) -> Response {
-    let Some(user) = user_from_request(&req) else {
-        return unauthorized();
-    };
-    if !user.is_admin() {
-        return json(StatusCode::FORBIDDEN, serde_json::json!("Forbidden"));
-    }
-    next.run(req).await
-}
-
-fn unauthorized() -> Response {
+pub(crate) fn unauthorized() -> Response {
     // Match Go's `http.Error(w, "Unauthorized", 401)`.
     (StatusCode::UNAUTHORIZED, "Unauthorized\n").into_response_plain()
 }

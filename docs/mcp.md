@@ -114,9 +114,13 @@ layer re-implements domain logic.
 
 ## What is logged
 
-Every `tools/call` produces a structured audit line (`mcp_tool_call`: token
-name, tool, scope, HTTP status, duration) and a Settings-visible recent
-calls feed. **Arguments are never logged or recorded** — tool bodies can
-carry passwords and secrets. Enabling/disabling the endpoint and token
-creation/revocation happen through the owner API, which is to say: with a
-2FA-authenticated admin session.
+Every `tools/call` produces a durable record in the append-only audit log
+(`docs/rbac-audit.md` §7: actor `mcp`, token name, scope, tool, generated
+MCP call id, HTTP status, duration) **and** the existing structured log line
+plus Settings-visible recent calls feed. **Arguments are never logged or
+recorded** — tool bodies can carry passwords and secrets. A mutating tool
+(`write`/`full` scope) is not dispatched unless its begin record is durable: a
+degraded or unwritable audit sink refuses the call, exactly like an unsafe
+HTTP route. Enabling/disabling the endpoint and token creation/revocation
+happen through the owner API, which is to say: with a 2FA-authenticated admin
+session.

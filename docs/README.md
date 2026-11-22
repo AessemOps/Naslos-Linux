@@ -23,7 +23,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [nvmeof.md](nvmeof.md) | NVMe-oF TCP spike: Talos `nvmet` evidence, SPDK/extension alternatives, security, performance, failure modes, go/no-go | Spike |
 | [identity-sso.md](identity-sso.md) | Single sign-on: Authelia, OpenLDAP, Samba hash sync, RBAC groups, 2FA | Rebuilt (replaces `authentication.md`) |
 | [external-directory.md](external-directory.md) | Optional external LDAP source (FR-EXT): phase-1 configuration, TLS, search bases, uid/gid mapping, AD/Kerberos roadmap | New |
-| [rbac-audit.md](rbac-audit.md) | Read-only/operator/admin role model, route classification, append-only hash-chained audit log (FR-RBAC/FR-AUD) | Design only (P1-11, `[OPEN]`) |
+| [rbac-audit.md](rbac-audit.md) | Read-only/operator/admin role model, route classification, append-only hash-chained audit log (FR-RBAC/FR-AUD) | Phase 2 + audit v1 implemented; delegation/auth/UI phases open |
 | [shares.md](shares.md) | SMB / NFS / Time-Machine share model, generated configs | New |
 | [acl.md](acl.md) | Dataset/share ACL decision spike: POSIX presets vs NFSv4 + Samba mapping, migration fallout, recommendation | New |
 | [terminal.md](terminal.md) | Web terminal: exec scoping, RBAC, terminal namespace | New |

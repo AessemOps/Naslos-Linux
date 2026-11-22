@@ -349,6 +349,20 @@ spec:
             - name: SHARES_CONFIG
               value: {{ .Values.api.sharesConfig.file | default "/var/lib/naslos/shares.json" }}
             {{- end }}
+            # Append-only audit log (FR-AUD). The directory must be on the
+            # persistent state volume: the API fails closed at startup when it
+            # cannot create/write it, and refuses mutations when the chain is
+            # degraded. Keep the byte budget below the PVC size.
+            - name: AUDIT_DIR
+              value: {{ .Values.api.auditDir | default "/var/lib/naslos/audit" | quote }}
+            - name: AUDIT_RETENTION_DAYS
+              value: {{ .Values.api.auditRetentionDays | default 90 | quote }}
+            - name: AUDIT_MAX_BYTES
+              value: {{ .Values.api.auditMaxBytes | default 16777216 | quote }}
+            - name: AUDIT_SEGMENT_BYTES
+              value: {{ .Values.api.auditSegmentBytes | default 8388608 | quote }}
+            - name: AUDIT_MIN_FREE_BYTES
+              value: {{ .Values.api.auditMinFreeBytes | default 8388608 | quote }}
             # ---- App install subsystem (docs/app-catalog.md) ----
             # Apps run in their own namespace; sources, records and domains are
             # persisted beside the other state files, and repositories are

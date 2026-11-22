@@ -327,6 +327,11 @@ fn owner_routes() -> Router<Arc<AppState>> {
             "/api/mcp/tokens/{id}",
             axum::routing::delete(mcp::token_delete),
         )
+        // Append-only audit trail (FR-AUD-09). Read-only, admin-only, and the
+        // read itself is audited by `crate::audit::middleware`.
+        .route("/api/audit", get(crate::audit::list))
+        .route("/api/audit/verify", get(crate::audit::verify))
+        .route("/api/audit/export", get(crate::audit::export))
         // Unknown /api paths stay behind auth so their existence is not
         // leaked; the public fallback below only serves non-API paths.
         .route("/api/{*rest}", any(not_found))
@@ -369,15 +374,17 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             .route("/api/buddy/v1/{*rest}", any(buddy_disabled));
     }
 
-    // Auth-but-not-admin (any authenticated user).
-    let user = user_routes().layer(middleware::from_fn_with_state(
-        state.clone(),
-        auth::require_auth,
-    ));
-
-    // Admin-only owner routes. Handlers not in S1 answer 501.
-    let owner = owner_routes()
-        .layer(middleware::from_fn(auth::require_admin))
+    // Every authenticated route: one role check after authentication, then the
+    // audit middleware around the role check and the handler. The layer order
+    // is outermost first: require_auth -> audit begin -> require_role ->
+    // handler -> audit end, so a denied mutation is recorded too.
+    let authenticated = user_routes()
+        .merge(owner_routes())
+        .layer(middleware::from_fn(crate::rbac::require_role))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::audit::middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
@@ -396,9 +403,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         ));
 
     public
-        .merge(user)
-        .merge(owner)
+        .merge(authenticated)
         .merge(mcp)
+        // Outermost: correlate every response, including public routes and
+        // pre-auth 401s. Audit reads this value so record/header match.
+        .layer(middleware::from_fn(crate::audit::request_id_middleware))
         .with_state(state)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
@@ -529,6 +538,9 @@ mod tests {
                 axum::http::Method::DELETE,
                 "/api/mcp/tokens/mcp-probe".to_string(),
             ),
+            (axum::http::Method::GET, "/api/audit".to_string()),
+            (axum::http::Method::GET, "/api/audit/verify".to_string()),
+            (axum::http::Method::GET, "/api/audit/export".to_string()),
         ] {
             out.push((method, path));
         }
@@ -566,6 +578,50 @@ mod tests {
             }));
         }
         request
+    }
+
+    #[tokio::test]
+    async fn request_id_is_echoed_on_public_and_unauthenticated_responses() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state);
+        let health = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .header("X-Request-ID", "public-rid-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+        assert_eq!(
+            health
+                .headers()
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("public-rid-1")
+        );
+
+        let unauthorized = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/shares")
+                    .header("X-Request-ID", "auth-rid-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            unauthorized
+                .headers()
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("auth-rid-1")
+        );
     }
 
     #[tokio::test]
@@ -718,7 +774,7 @@ mod tests {
             assert_eq!(
                 response.status(),
                 StatusCode::FORBIDDEN,
-                "{method} {uri}: a forged identity must not satisfy require_admin"
+                "{method} {uri}: a forged identity must not satisfy the role gate"
             );
         }
     }
@@ -857,6 +913,346 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn mutation_request(
+        user: &str,
+        groups: &str,
+        uri: &str,
+        body: &str,
+        request_id: Option<&str>,
+        authorization: Option<&str>,
+    ) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(uri)
+            .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 55555u16))))
+            .header(auth::PROXY_SECRET_HEADER, "test-secret")
+            .header("Remote-User", user)
+            .header("Remote-Groups", groups)
+            .header(axum::http::header::CONTENT_TYPE, "application/json");
+        if let Some(request_id) = request_id {
+            builder = builder.header("X-Request-ID", request_id);
+        }
+        if let Some(authorization) = authorization {
+            builder = builder.header(axum::http::header::AUTHORIZATION, authorization);
+        }
+        builder.body(Body::from(body.to_string())).unwrap()
+    }
+
+    fn audit_records(state: &Arc<AppState>) -> Vec<serde_json::Value> {
+        state
+            .audit
+            .query(&crate::audit::AuditQuery::default())
+            .expect("audit query")
+            .records
+    }
+
+    #[test]
+    fn every_route_declares_a_minimum_role() {
+        for (method, uri) in route_inventory() {
+            assert!(
+                crate::rbac::is_explicitly_classified(&method, &uri),
+                "{method} {uri} has no entry in the RBAC route table"
+            );
+        }
+        assert_eq!(
+            crate::rbac::minimum_role(&axum::http::Method::GET, "/api/unclassified-probe"),
+            crate::rbac::Role::Admin
+        );
+    }
+
+    #[tokio::test]
+    async fn operator_and_readonly_groups_are_denied_on_owner_routes() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state);
+        for groups in ["naslos_operators", "naslos_readonly"] {
+            for (method, uri) in route_inventory() {
+                if uri.starts_with("/api/auth/")
+                    || uri.starts_with("/api/dashboard")
+                    || uri.starts_with("/api/metrics")
+                {
+                    continue;
+                }
+                let response = app
+                    .clone()
+                    .oneshot(signed(
+                        Some("test-secret"),
+                        "worker",
+                        groups,
+                        method.clone(),
+                        &uri,
+                        false,
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::FORBIDDEN,
+                    "{groups} must not reach {method} {uri} in phase 2"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unclassified_route_falls_into_the_admin_bucket() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state);
+        let denied = app
+            .clone()
+            .oneshot(signed(
+                Some("test-secret"),
+                "worker",
+                "naslos_operators",
+                axum::http::Method::GET,
+                "/api/definitely-not-a-route",
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+        let allowed = app
+            .oneshot(signed(
+                Some("test-secret"),
+                "boss",
+                "naslos_admins",
+                axum::http::Method::GET,
+                "/api/definitely-not-a-route",
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            allowed.status(),
+            StatusCode::NOT_FOUND,
+            "an admin may learn that the route does not exist; it is not a public probe"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_records_a_mutation_and_refuses_after_degrade() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state.clone());
+        let response = app
+            .clone()
+            .oneshot(mutation_request(
+                "boss",
+                "naslos_admins",
+                "/api/shares",
+                "{}",
+                Some("audit-mutation-1"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(response.status(), StatusCode::FORBIDDEN);
+        let records = audit_records(&state);
+        assert_eq!(records.len(), 2, "begin + end: {records:?}");
+        assert_eq!(records[0]["requestId"], "audit-mutation-1");
+        assert_eq!(records[0]["action"]["phase"], "begin");
+        assert_eq!(records[0]["action"]["name"], "shares.create");
+        assert_eq!(records[0]["actor"]["name"], "boss");
+        assert_eq!(records[0]["actor"]["role"], "admin");
+        assert_eq!(records[1]["action"]["phase"], "end");
+        assert_eq!(records[1]["requestId"], "audit-mutation-1");
+        assert_eq!(records[1]["prev"], records[0]["hash"]);
+
+        // A degraded sink refuses the next mutation before the handler runs.
+        state.audit.mark_degraded("test failure");
+        let before = audit_records(&state).len();
+        let response = app
+            .oneshot(mutation_request(
+                "boss",
+                "naslos_admins",
+                "/api/shares",
+                "{}",
+                Some("audit-mutation-2"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(audit_records(&state).len(), before);
+    }
+
+    #[tokio::test]
+    async fn denied_mutations_are_audited_with_the_actor() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state.clone());
+        let response = app
+            .oneshot(mutation_request(
+                "worker",
+                "naslos_operators",
+                "/api/shares",
+                "{}",
+                Some("audit-denied-1"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let records = audit_records(&state);
+        assert_eq!(records.len(), 2, "begin + end: {records:?}");
+        assert_eq!(records[0]["action"]["phase"], "begin");
+        assert_eq!(records[0]["actor"]["role"], "operator");
+        assert_eq!(records[1]["action"]["phase"], "end");
+        assert_eq!(records[1]["outcome"]["state"], "denied");
+        assert_eq!(records[1]["outcome"]["httpStatus"], 403);
+    }
+
+    #[tokio::test]
+    async fn audit_begin_failure_refuses_the_mutation_without_a_record() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state.clone());
+        state.audit.fail_next_append();
+        let response = app
+            .oneshot(mutation_request(
+                "boss",
+                "naslos_admins",
+                "/api/shares",
+                "{}",
+                Some("audit-begin-failure"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(state.audit.status(), "degraded");
+        assert!(audit_records(&state).is_empty());
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("audit unavailable"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn audit_end_failure_degrades_and_reports_may_have_applied() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state.clone());
+        // Let the begin record through, then fail the end record.
+        let begin = crate::audit::Pending::user(
+            &crate::auth::UserInfo {
+                username: "boss".to_string(),
+                groups: vec!["naslos_admins".to_string()],
+                email: String::new(),
+                display_name: String::new(),
+            },
+            &axum::http::Method::POST,
+            "/api/shares",
+            "/api/shares",
+            None,
+            None,
+            "audit-end-failure".to_string(),
+        );
+        state.audit.begin(begin).unwrap();
+        state.audit.fail_next_end();
+        let response = app
+            .oneshot(mutation_request(
+                "boss",
+                "naslos_admins",
+                "/api/shares",
+                "{}",
+                Some("audit-end-failure-2"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(state.audit.status(), "degraded");
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("may have been applied"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn request_ids_are_echoed_and_audit_redacts_the_request_surface() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state.clone());
+        let canaries = [
+            "canary-body-value",
+            "canary-query-value",
+            "canary-authorization-value",
+        ];
+        let body = serde_json::json!({
+            "name": canaries[0],
+            "path": format!("/{}", canaries[0]),
+            "password": canaries[0],
+        })
+        .to_string();
+        let response = app
+            .oneshot(mutation_request(
+                "boss",
+                "naslos_admins",
+                &format!("/api/shares?token={}", canaries[1]),
+                &body,
+                Some("audit-redaction-1"),
+                Some(&format!("Bearer {}", canaries[2])),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("audit-redaction-1")
+        );
+        let serialized = audit_records(&state)
+            .into_iter()
+            .map(|record| serde_json::to_string(&record).unwrap())
+            .collect::<String>();
+        assert!(serialized.contains("audit-redaction-1"));
+        for canary in canaries {
+            assert!(
+                !serialized.contains(canary),
+                "{canary} leaked into the audit log: {serialized}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn audit_routes_are_admin_only_and_the_read_is_audited() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let app = build_router(state.clone());
+        let denied = app
+            .clone()
+            .oneshot(signed(
+                Some("test-secret"),
+                "worker",
+                "naslos_operators",
+                axum::http::Method::GET,
+                "/api/audit",
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+        let allowed = app
+            .oneshot(signed(
+                Some("test-secret"),
+                "boss",
+                "naslos_admins",
+                axum::http::Method::GET,
+                "/api/audit",
+                false,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
+        let records = audit_records(&state);
+        assert!(
+            records
+                .iter()
+                .any(|record| record["action"]["name"] == "audit.read"),
+            "the audit query itself must be recorded: {records:?}"
+        );
     }
 
     #[tokio::test]

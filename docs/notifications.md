@@ -30,6 +30,7 @@ offers exactly these, and the API only emits these.
 | `disk_failure` | SMART reports `FAILED`, or a ZFS vdev is `FAULTED`/`OFFLINE`/`UNAVAIL`/`REMOVED`; one recovery notice when it clears. Polled every 60 s. See [operations.md](operations.md#disk-health) |
 | `backup_success` | Buddy Backup run completed |
 | `backup_failure` | Buddy Backup run failed |
+| `audit` | The append-only audit log entered the degraded state; mutating API requests are refused until an operator repairs it. Also sent directly to ntfy as critical |
 
 The watcher interval is `HEALTH_INTERVAL_SECONDS` (default 60). A pool, disk or
 threshold transition is reported once, not on every poll. Per-disk conditions

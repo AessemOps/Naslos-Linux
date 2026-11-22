@@ -37,6 +37,9 @@ impl Cidr {
 pub struct AppState {
     pub proxy_secret: String,
     pub trusted_cidrs: Vec<Cidr>,
+    /// Append-only audit chain (FR-AUD). Fail-closed: a log that cannot be
+    /// opened refuses the API at startup; a degraded log refuses mutations.
+    pub audit: crate::audit::AuditLog,
     pub metrics: Manager,
     /// Present once the Talos CLI adapter is wired (S1 keeps it optional).
     pub talos: Option<Arc<crate::talos::TalosClient>>,
@@ -141,6 +144,8 @@ impl AppState {
         let cidr_env =
             std::env::var("TRAEFIK_CIDR").unwrap_or_else(|_| "10.244.0.0/16".to_string());
         let trusted_cidrs = parse_cidrs(&cidr_env)?;
+        let audit = crate::audit::AuditLog::from_env()
+            .map_err(|e| format!("audit log unavailable (fail closed): {e}"))?;
 
         let apps_namespace =
             std::env::var("APPS_NAMESPACE").unwrap_or_else(|_| "naslos-apps".to_string());
@@ -193,6 +198,7 @@ impl AppState {
         Ok(Self {
             proxy_secret,
             trusted_cidrs,
+            audit,
             metrics: Manager::new(),
             talos,
             agent: match crate::agent::Client::from_env() {
@@ -279,6 +285,7 @@ impl AppState {
                 Cidr::parse("127.0.0.1/32").unwrap(),
                 Cidr::parse("::1/128").unwrap(),
             ],
+            audit: crate::audit::AuditLog::for_test(),
             metrics: Manager::new(),
             talos: None,
             agent: None,

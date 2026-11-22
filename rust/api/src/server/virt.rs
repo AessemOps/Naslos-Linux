@@ -1,5 +1,5 @@
 //! VM owner routes (FR-VMT): CRUD, lifecycle actions, snapshots and the
-//! image library, all behind `require_admin` + the proxy secret like every
+//! image library, all behind the role gate + the proxy secret like every
 //! owner route, plus the console WebSocket with the `/api/ws/exec` posture
 //! (same-origin check, session caps, plain-GET preflight).
 
