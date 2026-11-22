@@ -47,7 +47,12 @@ pub fn parse_size_bytes(raw: &str) -> Option<u64> {
     if bytes >= u64::MAX as f64 {
         return None;
     }
-    Some(bytes.round() as u64)
+    // Do not round: `0.1` is not a byte and `1023.5` is not a power of two.
+    // Fractional byte counts are refused rather than silently rounded.
+    if bytes < 1.0 || bytes.fract() != 0.0 {
+        return None;
+    }
+    Some(bytes as u64)
 }
 
 /// Validate a zvol size (`volsize` on create, the target size on resize).
@@ -343,6 +348,21 @@ pub fn zvol_in_use(host_root: &Path, name: &str) -> Option<String> {
             }
         }
     }
+    // A mounted or opened partition is a separate node (`zdNpM`) under the
+    // zvol's sysfs block directory; the whole-disk name alone misses it.
+    let mut inspected = devices.clone();
+    for device in &devices {
+        let block = host_root.join("sys/block").join(device);
+        if let Ok(entries) = std::fs::read_dir(block) {
+            for entry in entries.flatten() {
+                let partition = entry.file_name().to_string_lossy().to_string();
+                if partition.len() > device.len() && partition.starts_with(device.as_str()) {
+                    paths.push(format!("/dev/{partition}"));
+                    inspected.push(partition);
+                }
+            }
+        }
+    }
     for device in &devices {
         paths.push(format!("/dev/{device}"));
     }
@@ -373,7 +393,7 @@ pub fn zvol_in_use(host_root: &Path, name: &str) -> Option<String> {
     }
 
     for proc_root in [host_root.join("proc"), PathBuf::from("/proc")] {
-        if let Some(pid) = open_by_process(&proc_root, &devices) {
+        if let Some(pid) = open_by_process(&proc_root, &inspected) {
             return Some(format!("open by process {pid}"));
         }
     }

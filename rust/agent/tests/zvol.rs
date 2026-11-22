@@ -260,13 +260,13 @@ async fn destroy_refuses_a_filesystem_and_a_busy_volume() {
 #[test]
 fn sizes_and_volblocksizes_are_validated() {
     assert_eq!(validate_volsize("10G").unwrap(), 10 * 1024 * 1024 * 1024);
-    for bad in ["", "0", "lots", "10X", "-1G"] {
+    for bad in ["", "0", "0.1", "lots", "10X", "-1G"] {
         assert!(validate_volsize(bad).is_err(), "{bad}");
     }
     for ok in ["512", "4K", "16K", "128K", "1M", "16M"] {
         assert!(validate_volblocksize(ok).is_ok(), "{ok}");
     }
-    for bad in ["256", "3M", "17M", "32M", "1G"] {
+    for bad in ["256", "3M", "17M", "32M", "1G", "1023.5"] {
         assert!(validate_volblocksize(bad).is_err(), "{bad}");
     }
 }
@@ -292,6 +292,18 @@ async fn in_use_detection_covers_mounts_holders_and_open_files() {
     );
     let reason = zvol_in_use(&mounted.root, "tank/vol").expect("mounted");
     assert!(reason.contains("mounted at /mnt/vol"), "{reason}");
+
+    // A partition of the zvol is a different device node (`zd0p1`) and must
+    // count as in use too.
+    let partitioned = FakeHost::new();
+    host_with_zvol_device(&partitioned);
+    std::fs::create_dir_all(partitioned.root.join("sys/block/zd0/zd0p1")).unwrap();
+    write(
+        &partitioned.root.join("proc/mounts"),
+        "/dev/zd0p1 /mnt/part ext4 rw,relatime 0 0\n",
+    );
+    let reason = zvol_in_use(&partitioned.root, "tank/vol").expect("mounted partition");
+    assert!(reason.contains("mounted at /mnt/part"), "{reason}");
 
     let held = FakeHost::new();
     host_with_zvol_device(&held);

@@ -112,7 +112,12 @@ fn parse_size_bytes(raw: &str) -> Option<u64> {
     if bytes >= u64::MAX as f64 {
         return None;
     }
-    Some(bytes.round() as u64)
+    // Do not round: `0.1` is not a byte and `1023.5` is not a power of two.
+    // Fractional byte counts are refused rather than silently rounded.
+    if bytes < 1.0 || bytes.fract() != 0.0 {
+        return None;
+    }
+    Some(bytes as u64)
 }
 
 /// Validate a zvol size (creation and resize).
@@ -1039,6 +1044,22 @@ mod tests {
         );
         assert_eq!(whole_disk_path("/dev/sdc"), None);
         assert_eq!(whole_disk_path("/dev/zd32"), None);
+    }
+
+    #[test]
+    fn zvol_sizes_are_not_rounded_into_validity() {
+        assert_eq!(validate_zvol_size("10G").unwrap(), 10 * 1024 * 1024 * 1024);
+        assert_eq!(validate_zvol_size("512").unwrap(), 512);
+        for bad in ["0.1", "1.5", "0", "-1G", "lots"] {
+            assert!(validate_zvol_size(bad).is_err(), "{bad}");
+        }
+        for ok in ["512", "4K", "16M"] {
+            assert!(validate_volblocksize(ok).is_ok(), "{ok}");
+        }
+        // 1023.5 rounds to 1024 but is not a power-of-two size the user typed.
+        for bad in ["1023.5", "1023", "3M"] {
+            assert!(validate_volblocksize(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

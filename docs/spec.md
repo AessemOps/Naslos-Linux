@@ -228,7 +228,7 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-DHK-07** — Disk health MUST be read-only: no SMART self-tests, no
   enabling SMART, no device writes, and no user-controlled command arguments.
 
-### 3.1.4 Block volumes — ZFS zvol (`FR-ZVOL`)
+### 3.1.2 Block volumes — ZFS zvol (`FR-ZVOL`)
 
 - **FR-ZVOL-01** — The system MUST create, list, resize and destroy ZFS
   zvols end to end through the API and the privileged agent. Creation MUST run
@@ -251,8 +251,8 @@ Requirement IDs are stable: never renumber, only deprecate.
   the zvol path, and a zvol-only option (`volsize`, `volblocksize`, `volmode`)
   MUST be refused on the dataset path. Options MUST be passed as discrete argv
   elements; the agent MUST NOT build a shell command string. *(rust/agent/tests/
-  zvol.rs: `create_zvol_refusals`, `zvol_options_split_dataset_and_zvol_surfaces`;
-  rust/api/tests/zfs_agent.rs:
+  zvol.rs: `create_zvol_refusals`; rust/agent/src/zfs/zvol.rs:
+  `zvol_options_split_dataset_and_zvol_surfaces`; rust/api/tests/zfs_agent.rs:
   `zvol_create_rejects_dataset_options_and_bad_sizes_before_the_agent`)*
 - **FR-ZVOL-03** — Destroying a zvol MUST require `confirm` equal to its full
   `<pool>/<name>` and MUST first verify that the path is a `type=volume` (so a
