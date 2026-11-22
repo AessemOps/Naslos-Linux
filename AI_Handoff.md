@@ -117,66 +117,36 @@ retrying or using the browser path worked around it. Worth watching.
 ## Production instance (2026-11-21)
 
 - **Hardware:** the production NAS is the bare-metal node `talos-zgr-9yg` at
-  `192.168.1.38` (Talos v1.14.5, Kubernetes v1.37.0, control-plane Ready). The
+  `192.168.1.38` (Talos v1.14.6, Kubernetes v1.37.0, control-plane Ready). The
   old `192.168.1.117` VM is powered off. The recovery bundle imported into
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.5.1`**, revision 58
-  (2026-11-21), deployed with `make install-vm`; the node runs the v0.5.1
-  chart and release images, digest-pinned (public GHCR): API `e9a461fc…`,
-  UI `418f1240…`, agent `de15ccba…`, OpenLDAP `2f6d7077…`, Samba
-  `59088ce9…`, NFS `32cf601f…`, terminal `6c4fc507…`, vmd `fee36ced…`.
+- **Deployed release:** Helm `naslos` chart **`naslos-0.6.0`**, revision 60
+  (2026-11-22), deployed with `make install-vm`; the node runs the v0.6.0
+  release images, digest-pinned (public GHCR): API `44c1f95f…`,
+  UI `8d619cdf…`, agent `e1bbf478…`, OpenLDAP `a077deaf…`, Samba
+  `9b9b34c4…`, NFS `2c32e7e3…`, terminal `c503eaf9…`, vmd `8f34e315…`.
   `virt.enabled: true`. `/api/system/version` reports the `release.*`
-  facts from `values-vm.yaml`: Naslos/chart **0.5.1**, profile
-  `installer`, release Talos pin **v1.14.6** and k8s v1.37.0, while the
-  running Talos is still **v1.14.5** (the Talos step has not been run).
-  The web upgrader is enabled (SA `naslos-upgrader` + cluster-admin
-  binding, the `naslos-api-system` Role/RoleBinding, and the upgrader
-  admission policy). **Web-upgrader fix verified live:** `POST
-  /api/system/updates/check` now returns `current`/`available` 0.5.1 with
-  `talosVersion: v1.14.6`, `stepping.allowed: true`, so the UI shows the
-  system upgrade and enables **Upgrade Talos**; before 0.5.1 it answered
-  `no newer release` once Naslos was current. The same deploy corrected
-  `values-vm.yaml`, which still advertised the release facts as 0.4.4
-  (the release guard now covers `values-vm.yaml` tags and facts). The
-  private registry `192.168.1.2:30095` is retired — do not build/push
-  local images.
-- **Latest release:** `v0.5.2` (2026-11-21) and installer `naslos-v0.5.2`
-  are published; the pack `naslos-install-pack-0.5.2.tar.gz` is attached.
-  It makes VM networking **NAT-only**: the macvtap LAN-attachment draft is
-  removed (spec FR-VMT-04 keeps the Talos host-bridge path `[OPEN]`), and it
-  resolves installed app status per namespace instead of a serial scan
-  (#205, #206). `v0.5.1` (2026-11-21) fixed the web upgrader so a node that
-  already runs the newest release
-  can still complete the pending Talos/Kubernetes steps: the update check
-  now offers the installed release while its system pins lag, and the UI
-  labels that as a system upgrade. It also bumps the node overlay's
-  release facts and folds `values-vm.yaml` into the release guard, so a
-  stale overlay cannot make the upgrader misread the installed version.
-  `v0.5.0` (2026-11-21) shipped the MCP
-  server (PR #187), targeted Talos **v1.14.6** for fresh installs and web
-  upgrades, and landed the Vite 8 / SvelteKit 3 / TypeScript 6 UI stack,
-  the Tailwind 4 desktop wizard and the Rust `sha2` 0.11 / `getrandom` 0.4
-  / `ed25519-dalek` 3 majors. Before that, `v0.4.4` (2026-11-21) shipped
-  the Apps speed/catalog work (PR #185): Installed is the default
-  tab and paints the last in-session list while revalidating, `GET /api/apps`
-  resolves release status concurrently with one status-only Helm read per app
-  instead of a serial two-call loop, and the catalog offers grid, list and
-  compact layouts. Before that, `v0.4.3` (2026-11-20, PR #184) shipped
-  upstream image-release detection for catalog apps plus the platform fixes
-  merged since v0.4.2 (PR #183); `v0.4.2` (2026-11-20, PR #182: the vmd
-  rustls provider fix, API uninstall tolerance, auth.setup TOTP window
-  retry) shipped the same day. Earlier, `v0.4.1` (the UI/UX overhaul, PR
-  #181) shipped the same day; its first release attempt failed the pack job
-  because the release workflow raced CI (the green-CI gate saw `audit` still
-  running); the packless tag was deleted and re-pushed once CI was green,
-  per the documented rule. Full Playwright suite green on revision 50 with
-  the drill builds: **71 passed, 5 skipped, 0 failed** — the skips are state
-  preconditions (VM console tests with no VM present, link-dependent network
-  mutations); the buddy self-send tests now run for real (the node's own
-  identity is self-enrolled as a peer, scope `naslos/`). The vmd drill
-  passed end-to-end (see the virt section above).
+  facts from `values-vm.yaml`: Naslos/chart **0.6.0**, profile
+  `installer`, Talos pin **v1.14.6** and k8s v1.37.0; the node runs Talos
+  **v1.14.6**. The web upgrader is enabled (SA `naslos-upgrader` +
+  cluster-admin binding, the `naslos-api-system` Role/RoleBinding, and the
+  upgrader admission policy). The private registry `192.168.1.2:30095` is
+  retired — do not build/push local images. `/api/health` is green, both
+  ZFS pools are ONLINE with no data errors, and the full Playwright suite
+  passed on revision 60: **80 passed, 5 skipped, 0 failed**.
+- **Latest release:** `v0.6.0` (2026-11-22) and installer `naslos-v0.6.0`
+  are published; the pack `naslos-install-pack-0.6.0.tar.gz` is attached and
+  its images are digest-pinned. It lands the TrueNAS parity backlog's P0/P1
+  work: scheduled snapshots/scrubs, local replication, zvols plus iSCSI and
+  NVMe-oF spikes, dataset-encryption and ACL designs, external-directory
+  config, webhook alerts plus the reporting design, config export, VM Secure
+  Boot, SMB shadow-copy/audit options, RBAC/audit design, and the catalog
+  expansion (NaslosCharts: 73 apps). Existing datasets, shares and VMs are
+  unchanged by default. The only upgrade trap found was the pre-0.6.0 API
+  Deployment's stale `rollingUpdate` block; `make install-vm` now removes it
+  before the upgrade.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
@@ -188,6 +158,14 @@ retrying or using the browser path worked around it. Worth watching.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.6.0` (2026-11-22) — TrueNAS parity backlog P0/P1: per-dataset snapshot
+    schedules with keep-N retention and per-pool scrub schedules (manual scrub
+    included), local ZFS replication jobs, zvol lifecycle, dataset-encryption
+    and ACL/NVMe-oF/iSCSI/NFSv3 designs, inert external-directory config,
+    SSRF-guarded webhook alerts, secret-free config export, per-VM Secure Boot,
+    opt-in SMB shadow copies/audit logging, and a docs-only RBAC/audit design.
+    Five new catalog apps (73 total). No default behavior changes for existing
+    pools, datasets, shares or VMs.
   - `0.5.2` (2026-11-21) — VM networking is NAT-only: the `macvtap` LAN mode,
   `nic` spec field and vmd netdev/tap hand-off are removed, and the wizard
   always renders port forwards. A Talos `BridgeConfig` host bridge remains the

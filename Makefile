@@ -285,6 +285,11 @@ install-vm: crds cert-manager cert-manager-webhook-ovh
 	# manifest and is left orphaned (a bound 2Gi local-path volume). Delete it;
 	# no-op on a fresh install. See docs/monitoring.md.
 	-$(KUBECTL) -n naslos delete pvc storage-naslos-alertmanager-0 --ignore-not-found
+	# One-time migration: pre-0.6.0 API Deployments carry a rollingUpdate
+	# block. The 0.6.0 chart uses strategy Recreate, and Kubernetes rejects an
+	# object that specifies both; remove the stale block before the upgrade.
+	# No-op when absent.
+	-$(KUBECTL) -n naslos patch deployment naslos-api --type=json -p='[{"op":"remove","path":"/spec/strategy/rollingUpdate"}]'
 	$(HELM) upgrade --install naslos $(CHART_DIR) -n naslos --create-namespace \
 		-f $(CHART_DIR)/values.yaml \
 		-f $(CHART_DIR)/values-vm.yaml \
