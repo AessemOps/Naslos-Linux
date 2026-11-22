@@ -170,6 +170,17 @@ UI. The step needs image-pull egress to `quay.io` (cert-manager) and Docker Hub
 makes every stored backup unreadable, and `helm uninstall` would delete it (the
 namespace is `helm.sh/resource-policy: keep`). The recovery README MUST say so.
 
+The recovery ZIP is **not** the system config export (`FR-CFG`, see
+[api.md § System config export](api.md#system-config-export-fr-cfg-see-specmd-315)).
+The ZIP is bootstrap material — `talosconfig`, machine config, the Talos
+secrets bundle, `kubeconfig`, the schematic and ISO facts — and is the only way
+to rebuild a lost control plane; it contains no application records. The config
+export is an owner-gated, versioned JSON download of shares, schedules, domains,
+DDNS entries, app records and dataset registry entries, and it deliberately
+contains no PKI, kubeconfig, Secret value or credential. A config export cannot
+provision a node, and a recovery ZIP cannot restore application records; back
+up both.
+
 ## 3. First admin (`FR-INSTALL-06`)
 
 Reuse the owner-gated API from inside the terminal pod. The exact path is in
