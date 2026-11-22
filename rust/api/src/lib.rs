@@ -16,6 +16,7 @@ pub mod catalog;
 pub mod certs;
 pub mod chartsrepo;
 pub mod config;
+pub mod dataset_encryption;
 pub mod datasets;
 pub mod ddns;
 pub mod directory;

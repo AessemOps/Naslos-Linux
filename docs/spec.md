@@ -50,6 +50,12 @@ unmodified Talos installation, administered through a web UI.
   served in userspace by NFS-Ganesha, NFSv4 only (FR-SHR-02). NFSv3 and its
   `rpcbind`/`statd` dependencies are out of scope, as is Kerberos
   (`sec=krb5`) — NFS uses AUTH_SYS.
+- Unattended unlocking of ZFS encrypted datasets: the v1 model is a per-dataset
+  keyfile in a Kubernetes Secret plus an explicit administrator unlock after
+  boot (FR-ENC), because Talos `zfs-service` imports pools but does not load
+  keys. TPM/KMIP key custody, automatic unlock, SED/OPAL, and in-place
+  conversion of an existing dataset (ZFS cannot do it) are out of scope. See
+  `docs/dataset-encryption.md`.
 
 ### 1.4 Target platform
 
@@ -250,6 +256,88 @@ Requirement IDs are stable: never renumber, only deprecate.
   detection. The agent endpoint MUST require the agent bearer token.
 - **FR-DHK-07** — Disk health MUST be read-only: no SMART self-tests, no
   enabling SMART, no device writes, and no user-controlled command arguments.
+
+### 3.1.2 Dataset encryption at rest (`FR-ENC`)
+
+ZFS native encryption created with the dataset. The design, the key-custody
+decision and the threat model are in `docs/dataset-encryption.md`. Existing
+datasets cannot be converted in place: `encryption` is a create-time property
+and `zfs change-key` only rewraps an existing key.
+
+- **FR-ENC-01** — Dataset encryption MUST use ZFS native encryption set at
+  dataset creation, with an allow-listed cipher (`aes-128/192/256-ccm`,
+  `aes-128/192/256-gcm`; `on` is the alias for `aes-256-gcm`) and an
+  allow-listed `keyformat` (`raw` or `passphrase`). The API and agent MUST
+  reject `keylocation` supplied by a request and MUST reject `copies=3` on an
+  encrypted dataset. Encryption MUST NOT be presented as changeable on an
+  existing dataset; migration MUST be a new encrypted dataset plus a
+  send/receive (or copy) and the old dataset's retirement, never `zfs set`.
+  **[OPEN]**
+- **FR-ENC-02** — Until custody, unlock/lock and encrypted send are implemented,
+  a well-formed dataset-create request that asks for encryption MUST be
+  rejected by both the API and the agent with an explicit "not implemented"
+  error, and neither layer MUST pass an encryption option to `zfs`. Malformed
+  encryption requests (unknown algorithms/formats, a missing `keyformat`, a
+  request-supplied `keylocation`, `encryption=off` combined with key options,
+  or `copies=3`) MUST fail validation. No key material is accepted, stored,
+  logged or placed in argv. Verified by
+  `naslos_agent::zfs::encryption::tests::planner_matches_shared_fixture`,
+  `naslos_api::dataset_encryption::tests::planner_matches_shared_fixture`
+  (shared fixture `rust/testdata/dataset_encryption.txt`) and the
+  create-option tests in both crates.
+- **FR-ENC-03** — **[OPEN]** Key custody: each encrypted dataset MUST have its
+  own generated 256-bit raw key. The key MUST be held in a Kubernetes Secret in
+  the Naslos namespace and MUST NOT be returned by any API, written to a log,
+  an error, the environment, argv or an `-o` property. The agent MUST be the
+  only component that materialises it for ZFS, in a 0600 file on host tmpfs,
+  and MUST remove that file when the dataset is locked. Unlock material MUST
+  travel only over the authenticated API→agent channel.
+- **FR-ENC-04** — **[OPEN]** Unlock/lock and boot: because Talos `zfs-service`
+  runs `zpool import -fal` and does not load keys, an encrypted dataset MUST be
+  reported as locked (`keystatus: unavailable`) and MUST NOT be mounted or
+  served until an administrator explicitly unlocks it. There MUST be no
+  automatic unlock by default. Lock MUST be refused while the dataset is
+  mounted or used by a share or app. `GET /api/datasets` and the UI MUST expose
+  the lock state.
+- **FR-ENC-05** — **[OPEN]** Passphrase datasets: a passphrase MUST NOT be
+  persisted; it MUST be supplied once over the authenticated API→agent channel
+  and passed to `zfs load-key` on stdin, never in argv. The UI MUST state that a
+  reboot requires re-entry and that a lost passphrase is unrecoverable.
+- **FR-ENC-06** — **[OPEN]** Create atomicity: the key Secret MUST exist before
+  the dataset is created, and a create MUST verify the exact dataset's
+  `encryption` and `keystatus=available` rather than trusting the exit status
+  of `zfs create -p` (which succeeds without applying properties when the
+  target already exists). On failure the partial dataset and the Secret MUST be
+  removed; no dataset may exist whose only key copy is in process memory.
+- **FR-ENC-07** — **[OPEN]** Encrypted send/receive: replication of an
+  encrypted source MUST use `zfs send -w`; `-U` (no-preserve-encryption) MUST
+  NOT be used, and a property-bearing send without `-w` MUST be refused
+  instead of sending plaintext. A raw-received dataset keeps the source key and
+  MUST be unlocked with it; raw and non-raw streams MUST NOT be mixed in one
+  chain.
+- **FR-ENC-08** — FR-BUD-02 remains in force: ZFS encryption MUST NOT be
+  treated as a substitute for Buddy's client-side encryption, the receiver MUST
+  NOT receive or derive the KEK, and a ZFS-encrypted source MUST still be
+  wrapped by Buddy. For an encrypted source, Buddy SHOULD send raw ciphertext
+  (`zfs send -w`) so the API never handles plaintext; that choice MUST NOT
+  change the receiver's zero-knowledge guarantee. **[OPEN]** for the raw-send
+  choice.
+- **FR-ENC-09** — **[OPEN]** Consumers: a share or app mount whose path is
+  inside a locked encrypted dataset MUST be refused rather than served empty or
+  served from the parent dataset. Destroying an encrypted dataset MUST require
+  an explicit confirmation that the key is destroyed with it and the data is
+  unrecoverable without a backup; key deletion MUST be presented as
+  irreversible.
+- **FR-ENC-10** — **[OPEN]** Key lifecycle: the owner MUST be able to rotate an
+  encrypted dataset's key with `zfs change-key` (raw→passphrase and back) and
+  MUST be able to back up/restore the key material without exposing it to the
+  API's normal responses. The system-config export MUST either include the keys
+  encrypted or refuse to claim the export is a full restore.
+- **FR-ENC-11** — The documentation MUST state the threat model: ZFS native
+  encryption protects data at rest on stolen media and raw backups, not against
+  a compromised node, agent, API, Secret/etcd reader, or an unlocked dataset;
+  Buddy remains the zero-knowledge path. `docs/dataset-encryption.md` is that
+  document (verified by review; no Rust test).
 
 ### 3.2 Identity & SSO (`FR-IDN`)
 
@@ -1453,6 +1541,16 @@ client (the case names below are the original Go suite's):
 | `TestBuddyScheduleFanOutToSeveralBuddies` | FR-BUD-15 (two destinations get a job each, a dead one fails only itself, per-destination results recorded) |
 | `TestBuddyScheduleReceiversValidation` | FR-BUD-15 (at least one receiver, every URL valid, duplicates collapsed) |
 | `TestBuddySendRefusesADatasetTheHostCannotSee` / `TestBuddySendAllowsADatasetWithNoMountpoint` | FR-BUD-11 (a dataset mounted only inside a pod is refused before any snapshot; mountpoint none stays sendable) |
+
+Dataset encryption is verified in this slice only by the pure planner
+(FR-ENC-03…10 are `[OPEN]`; their tests ship with the implementation):
+
+| Test | Verifies |
+| --- | --- |
+| `naslos_agent::zfs::encryption::tests::planner_matches_shared_fixture`, `naslos_api::dataset_encryption::tests::planner_matches_shared_fixture` | FR-ENC-01/02 (algorithm and key-format allow-list, `keylocation` refusal, `copies=3`, `encryption=off` consistency; the shared fixture is the API/agent parity oracle) |
+| `naslos_agent::zfs::encryption::tests::valid_encryption_requests_are_refused_before_any_zfs_call`, `naslos_api::server::zfs::tests::encryption_options_are_refused_until_key_custody_ships` | FR-ENC-02 (a well-formed encryption request is refused before any `zfs` call) |
+| `naslos_agent::zfs::dataset::tests::key_material_is_never_a_dataset_option`, `naslos_api::server::zfs::tests::key_material_is_never_a_dataset_option` | FR-ENC-02 (a `key`/`passphrase` field is rejected and its value is not echoed) |
+| `docs/dataset-encryption.md` | FR-ENC-11 (threat model and the key-custody decision) |
 
 Dynamic DNS and the provider registry are verified by
 `rust/api/src/providers.rs`, `rust/api/src/ddns.rs` and

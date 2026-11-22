@@ -172,7 +172,7 @@ are in-memory (a restart abandons a running job; the app record and
 | GET | `/api/datasets/registry` | List operator-registered datasets apps may mount (`{name, hostPath, shared, warningAcknowledged, createdAt}`) |
 | POST | `/api/datasets/registry` | Register a dataset `{name, hostPath, shared, warningAcknowledged?}`. The path must be a mounted ZFS dataset below `/var/mnt`, must not overlap the Buddy store, and a `shared` dataset requires `warningAcknowledged:true` (400 otherwise) |
 | DELETE | `/api/datasets/registry/{name}` | Unregister a dataset; existing app claims are untouched |
-| POST | `/api/datasets` | Create: `{pool, name, options}` → `zfs create -p` (validated name + safe option subset, FR-STO-07) |
+| POST | `/api/datasets` | Create: `{pool, name, options}` → `zfs create -p` (validated name + safe option subset, FR-STO-07). Encryption options (`encryption`, `keyformat`, `keylocation`) are validated, then refused with `400` until key custody and unlock/lock ship (FR-ENC; see [dataset-encryption.md](dataset-encryption.md)) |
 | DELETE | `/api/datasets?name=<pool>/<name>&recursive=true` | Destroy a dataset. Empty → plain destroy; non-empty needs `recursive=true`; a pool root dataset is refused; a dataset backing a share's path is refused with 409 (FR-STO-09) |
 
 The actual ZFS work is delegated to `naslos-agent` on each node:
