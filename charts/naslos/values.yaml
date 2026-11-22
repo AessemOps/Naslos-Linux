@@ -801,6 +801,14 @@ openldap:
     # storageClassName uses the cluster default.
     size: 2Gi
     storageClassName: ""
+    # R-037: the slapcat Job is a short-lived offline dump; bound it.
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
 
 # No `namespace` value: every template uses `.Release.Namespace`, so the chart
 # installs under any release namespace (`helm -n <ns>`), which is what multi-

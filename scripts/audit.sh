@@ -149,6 +149,28 @@ aut_cert_volume = next(v for v in aut_spec["volumes"] if v["name"] == "certifica
 assert aut_cert_volume["secret"]["secretName"] == "naslos-openldap-ca", aut_cert_volume
 ca_secret = find("Secret", "naslos-openldap-ca")
 assert ca_secret and list(ca_secret.get("data", ca_secret.get("stringData", {}))) == ["ca.crt"], ca_secret
+# R-037: OpenLDAP receives its admin password as a file, and the backup Job is
+# hardened and never mounts a service-account token.
+sts = find("StatefulSet", "naslos-openldap")
+sts_ctr = sts["spec"]["template"]["spec"]["containers"][0]
+sts_env = {e["name"]: e for e in sts_ctr["env"]}
+assert "LDAP_ADMIN_PASSWORD_FILE" in sts_env, sts_env
+assert "LDAP_ADMIN_PASSWORD" not in sts_env, sts_env
+sts_mounts = {m["name"] for m in sts_ctr.get("volumeMounts", [])}
+assert "admin-password" in sts_mounts, sts_mounts
+backup = find("CronJob", "naslos-openldap-backup")
+backup_pod = backup["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+assert backup_pod.get("automountServiceAccountToken") is False, backup_pod
+assert backup_pod.get("securityContext", {}).get("runAsNonRoot") is True, backup_pod
+backup_ctr = backup_pod["containers"][0]
+for key, value in {
+    "allowPrivilegeEscalation": False,
+    "readOnlyRootFilesystem": True,
+    "runAsNonRoot": True,
+}.items():
+    assert backup_ctr["securityContext"].get(key) is value, (key, backup_ctr["securityContext"])
+assert backup_ctr["securityContext"]["capabilities"]["drop"] == ["ALL"], backup_ctr["securityContext"]
+assert backup_ctr.get("resources", {}).get("limits"), backup_ctr
 secret = find("Secret", "naslos-buddy-kek")
 assert secret, "generated buddy KEK Secret missing"
 raw = base64.b64decode(secret["data"]["kek"])

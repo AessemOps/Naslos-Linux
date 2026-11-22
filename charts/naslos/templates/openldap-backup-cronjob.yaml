@@ -55,10 +55,29 @@ spec:
         spec:
           restartPolicy: OnFailure
           serviceAccountName: naslos-openldap-backup
+          # R-037: the backup never calls the Kubernetes API, so no token.
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 101
+            runAsGroup: 101
+            fsGroup: 101
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: backup
               image: "{{ .Values.openldap.image }}"
               imagePullPolicy: {{ .Values.openldap.imagePullPolicy | default "IfNotPresent" }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                capabilities:
+                  drop: [ALL]
+                seccompProfile:
+                  type: RuntimeDefault
+              resources:
+                {{- toYaml (index $backup "resources" | default (dict "requests" (dict "cpu" "50m" "memory" "64Mi") "limits" (dict "cpu" "500m" "memory" "256Mi"))) | nindent 16 }}
               command:
                 - /bin/sh
                 - -c
