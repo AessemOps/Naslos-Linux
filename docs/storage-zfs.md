@@ -147,6 +147,34 @@ run missed while the API was down fires once at startup. A run that cannot
 reach the agent keeps its due time and is retried on the next tick, so an
 upgrade does not consume a daily or weekly snapshot.
 
+### Local replication (FR-REP)
+
+`POST /api/replication/send` copies a source dataset to a destination dataset
+on the **same node** as an async job (`202 {jobId}`), with
+`GET /api/replication/jobs[/{id}]` for progress and
+`DELETE /api/replication/jobs/{id}` to cancel. The API creates a
+`naslos-rep-<pair token>-<UTC>-<random>` snapshot when none is supplied and pipes
+the agent's `zfs send` stream into `zfs receive`; `recursive` uses `zfs send -r` (descendants, no property propagation).
+
+- Both datasets must already exist (the destination is never created
+  implicitly), and identical or nested paths are refused.
+- Incremental vs full is chosen from the newest **snapshot GUID** the source and
+  destination share, not from snapshot names.
+- A full send replaces the destination dataset's contents, so the destination is
+  a replica target: it is refused if the destination has a snapshot that does
+  not carry this pair's `naslos-rep-…` prefix, or any child dataset. Incremental
+  receives never use `-F`, so a user snapshot on the destination is never
+  deleted.
+- `pruneKeep` retains the newest N destination snapshots carrying this pair's
+  prefix; only those names are eligible for deletion. Source snapshots created
+  by replication are not pruned here.
+- Encrypted/raw replication, remote replication, rsync and cloud sync are
+  `[OPEN]` (see the spec's `FR-REP` group).
+
+Plumbing added for this path: `zfs send` accepts `recursive=true` (`-r`) and
+`/api/v1/zfs/snapshots/{dataset}` accepts `recursive=false`; every dataset and
+snapshot name still goes through the existing validators before a command line.
+
 ### Creating a dataset (UI)
 
 `Pools → <pool>` lists the pool's datasets and creates new ones. The API layer
@@ -290,5 +318,8 @@ destroy path.
 fallback imported every importable pool with `-f`.
 
 Concurrent `zfs send`/`receive` streams are capped (`agent.maxStreams`,
-`AGENT_MAX_STREAMS`, default 4) and a restore fails after
-`agent.streamIdleTimeoutSecs` (default 300 s) without body data.
+`AGENT_MAX_STREAMS`, default 8) and a restore fails after
+`agent.streamIdleTimeoutSecs` (default 300 s) without body data. A local
+replication job holds two slots (its send and its receive), and a Buddy transfer
+uses the same pool, so size the cap for the number of concurrent transfers plus
+headroom.

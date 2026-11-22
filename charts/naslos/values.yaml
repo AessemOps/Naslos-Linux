@@ -235,7 +235,9 @@ agent:
     enabled: true
   # Caps concurrent zfs send/receive streams (each pins a host process and its
   # file descriptors, so an authenticated caller must not start unbounded ones).
-  maxStreams: 4
+  # A local replication job holds two (its send and its receive), so keep this
+  # at least 2 per concurrent replication plus headroom for Buddy streams.
+  maxStreams: 8
   # Longest tolerated gap between restore body chunks.
   streamIdleTimeoutSecs: 300
   # Read-only SMART health for the per-disk page. The agent image bundles a

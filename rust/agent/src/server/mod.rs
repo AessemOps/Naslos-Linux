@@ -31,13 +31,15 @@ pub struct AppState {
     pub stream_slots: Arc<tokio::sync::Semaphore>,
 }
 
-/// Concurrent `zfs send`/`receive` limit (default 4).
+/// Concurrent `zfs send`/`receive` limit (default 8). A local replication job
+/// holds two slots (its send and its receive), so the default leaves room for
+/// concurrent replication and Buddy streams.
 fn max_streams() -> usize {
     std::env::var("AGENT_MAX_STREAMS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|n| *n > 0)
-        .unwrap_or(4)
+        .unwrap_or(8)
 }
 
 /// Longest tolerated gap between restore body chunks.

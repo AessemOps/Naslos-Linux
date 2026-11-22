@@ -97,6 +97,8 @@ pub struct AppState {
     pub buddy_schedules: Arc<crate::server::buddy_schedules::ScheduleStore>,
     /// Scheduled storage maintenance: periodic snapshots and scrubs (FR-STO-10/11).
     pub storage_schedules: Arc<crate::server::storage_schedules::StorageScheduleStore>,
+    /// In-memory local replication jobs (FR-REP).
+    pub replication_jobs: Arc<crate::server::replication::ReplicationJobManager>,
     /// Release facts and the upgrader Job wiring (FR-UPD).
     pub system: crate::system::Config,
     /// The release update checker; `None` when updates are disabled.
@@ -259,6 +261,7 @@ impl AppState {
                 }
                 store
             },
+            replication_jobs: Arc::new(crate::server::replication::ReplicationJobManager::new()),
             system: crate::system::Config::from_env(),
             updates: crate::system::Checker::from_env().map(Arc::new),
             mcp: crate::mcp::McpState::from_env(),
@@ -304,6 +307,7 @@ impl AppState {
             storage_schedules: Arc::new(
                 crate::server::storage_schedules::StorageScheduleStore::new(""),
             ),
+            replication_jobs: Arc::new(crate::server::replication::ReplicationJobManager::new()),
             system: crate::system::Config::default(),
             updates: None,
             mcp: crate::mcp::McpState::for_test(),

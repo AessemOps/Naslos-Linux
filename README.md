@@ -29,6 +29,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 - **Disk setup wizard** — topology advisor (mirror / RAIDZ1 / RAIDZ2), best-practice tuning (`ashift=12`, `compression=zstd`, `xattr=sa`, `acltype=posixacl`, `atime=off`)
 - **Pool health page** — live device tree, IO stats, scan state, and error summary from `zpool status` / `zpool iostat`
 - **Scheduled storage maintenance** — periodic snapshot tasks per dataset (hourly/daily/weekly, keep-N retention, optional recursive) and per-pool scrub schedules, with a manual "scrub now", last/next-run state and results on the pool page
+- **Local ZFS replication** — async dataset-to-dataset `zfs send`/`receive` on the same node, GUID-based incrementals, recursive sends, cancellable jobs and prefix-scoped destination retention that never touches user snapshots
 - **Disk health** — per-disk SMART (read-only, standby-safe) plus ZFS vdev state/error counters, with temperature/wear threshold alerts
 - **CPU detail** — model, per-core load/frequency, load averages and CPU temperature (when the hardware exposes it) on the dashboard
 - **Import existing pools** — discover and import pools already on disk via `zpool import`
@@ -119,7 +120,9 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [storage-zfs](docs/storage-zfs.md) | ZFS pools, datasets, zvols, snapshots, storage classes |
 | [iscsi](docs/iscsi.md) | iSCSI target spike: userspace target on Talos, go/no-go, security review |
 | [dataset-encryption](docs/dataset-encryption.md) | ZFS native encryption design: key custody, Talos boot/unlock, encrypted send, migration (FR-ENC) |
+| [nvmeof](docs/nvmeof.md) | NVMe-oF TCP design spike (go/no-go; not implemented) |
 | [identity-sso](docs/identity-sso.md) | Authelia + OpenLDAP + Samba single sign-on |
+| [rbac-audit](docs/rbac-audit.md) | Read-only/operator/admin roles + append-only audit log (design, `[OPEN]`) |
 | [shares](docs/shares.md) | SMB / NFS / Time-Machine shares |
 | [app-catalog](docs/app-catalog.md) | Catalog, schema-driven forms, Helm lifecycle |
 | [monitoring](docs/monitoring.md) | Live metrics API + dashboard (no Prometheus) |

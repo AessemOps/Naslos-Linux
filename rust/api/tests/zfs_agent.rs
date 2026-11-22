@@ -178,6 +178,9 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         storage_schedules: std::sync::Arc::new(
             naslos_api::server::storage_schedules::StorageScheduleStore::new(""),
         ),
+        replication_jobs: std::sync::Arc::new(
+            naslos_api::server::replication::ReplicationJobManager::new(),
+        ),
         identity: None,
         external_directory: naslos_api::directory::Store::disabled(),
         system: naslos_api::system::Config::default(),
@@ -351,6 +354,9 @@ async fn no_agent_configured_is_502() {
         ),
         storage_schedules: std::sync::Arc::new(
             naslos_api::server::storage_schedules::StorageScheduleStore::new(""),
+        ),
+        replication_jobs: std::sync::Arc::new(
+            naslos_api::server::replication::ReplicationJobManager::new(),
         ),
         identity: None,
         external_directory: naslos_api::directory::Store::disabled(),
@@ -923,6 +929,9 @@ async fn zvols_without_an_agent_are_502() {
         external_directory: naslos_api::directory::Store::disabled(),
         storage_schedules: std::sync::Arc::new(
             naslos_api::server::storage_schedules::StorageScheduleStore::new(""),
+        ),
+        replication_jobs: std::sync::Arc::new(
+            naslos_api::server::replication::ReplicationJobManager::new(),
         ),
         system: naslos_api::system::Config::default(),
         updates: None,
