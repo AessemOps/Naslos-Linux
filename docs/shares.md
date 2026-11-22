@@ -73,6 +73,9 @@ the API stays the source of truth and the next apply converges the node.
 | `validUsers` | SMB users/groups allowed (empty = all authenticated users) |
 | `validGroups` | LDAP groups allowed, rendered as `@group` (empty = all) |
 | `timeMachine` | SMB Time Machine (macOS) share |
+| `noRootSquash` | NFS: let a root client write as root instead of squashing it (default false) |
+| `shadowCopies` | SMB only: expose ZFS snapshots named in the documented format as previous versions (default false) |
+| `audit` | SMB only: log VFS operations with `full_audit` (default false) |
 | `enabled` | Export active/inactive (defaults to true when omitted) |
 
 Validation (`Manager.Create`):
@@ -90,6 +93,11 @@ Validation (`Manager.Create`):
   Each component is inspected with `symlink_metadata` (no follow), so the check
   works with the API's read-only `/var/mnt` view (`AUD-2611-T5-1`);
 - protocol must be `smb` or `nfs` (AFP is not served — see below);
+- the path must not contain a `.zfs` component: that is the dataset's snapshot
+  directory, and exporting it directly would expose every snapshot outside the
+  controlled previous-versions view;
+- `shadowCopies` and `audit` are **SMB-only**; a request that sets either on an
+  `nfs` (or `afp`) share is refused with a 400 naming the option;
 - duplicate names rejected.
 
 An existing share can be repointed at another folder (`PUT /api/shares/{name}`
@@ -360,6 +368,115 @@ returns member DNs, so a client that PUTs back exactly what it read must not
 corrupt the group (a DN used as a uid once produced
 `uid=uid=alice,ou=people,...`).
 
+## SMB multichannel
+
+SMB3 multichannel lets one authenticated SMB session bind several TCP
+connections, so a client can use more than one link. Samba enables it by
+default on Linux from 4.15 onward; Naslos renders the choice explicitly so it
+can be turned off:
+
+```ini
+[global]
+   server min protocol = SMB3
+   server multi channel support = yes
+```
+
+- Default: `shares.smb.multichannel: true`, which matches the Samba default in
+  the serving image and therefore preserves existing behaviour.
+- Set it to `false` to render `server multi channel support = no`. That is the
+  useful setting on a host where the only other addresses Samba sees are CNI,
+  bridge or veth interfaces: clients may otherwise try to open a channel to an
+  address they cannot reach. A single-NIC client negotiation falls back to one
+  channel either way.
+- It is a server-wide setting, not a per-share field: there is nothing to
+  change on a share, and it does not alter authentication, encryption or share
+  access.
+
+Verify the effective value inside the serving container:
+
+```bash
+kubectl -n naslos-privileged exec ds/naslos-samba --   sh -c 'testparm -s -v /etc/naslos/shares/smb.conf 2>/dev/null | grep -i "multi channel"'
+```
+
+## Shadow copies (previous versions)
+
+`shadowCopies: true` on an SMB share makes the dataset's ZFS snapshots visible
+to clients as read-only **previous versions** (Windows Explorer → Properties →
+Previous Versions; clients issue `FSCTL_GET_SHADOW_COPY_DATA`). It stacks
+`vfs_shadow_copy2` in front of the normal `fruit streams_xattr` modules:
+
+```ini
+[media]
+   vfs objects = shadow_copy2 fruit streams_xattr
+   shadow:snapdir = .zfs/snapshot
+   shadow:snapdirseverywhere = yes
+   shadow:sort = desc
+   shadow:format = naslos-%Y-%m-%d_%H-%M-%S
+   shadow:localtime = yes
+```
+
+A share-level `vfs objects` **replaces** the global list, which is why the
+renderer repeats `fruit`/`streams_xattr` there. `snapdirseverywhere` lets the
+same configuration work when the share is a subfolder (for example
+`/var/mnt/tank/media`) rather than the dataset root; it stops at the
+mountpoint, so a parent dataset's snapshots are not exposed.
+
+**Only snapshots whose name matches the format are shown.** `vfs_shadow_copy2`
+parses the snapshot directory name as a timestamp; it cannot read ZFS
+creation metadata. Naslos therefore defines the name as
+
+```
+naslos-YYYY-MM-DD_HH-MM-SS        (local time, matching shadow:localtime = yes)
+```
+
+Snapshots named `manual-before-upgrade`, `auto-…` or by another tool simply are
+not listed. The feature is off by default; enabling it does not make a share
+browse the `.zfs` directory, and a share path containing `.zfs` is rejected
+outright. ZFS hides `.zfs` from directory listings by default
+(`snapdir=hidden`); Naslos does not change that property, so a dataset with
+`snapdir=visible` still shows the directory to clients independently of this
+option.
+
+Snapshot creation is not part of this pass: there is no scheduled-snapshot UI
+in this release, so the snapshots have to already exist (created through the
+agent snapshot API or by a future scheduler) with the name above. The
+`naslos-…` convention is the contract a scheduler must follow.
+
+## Audit logging
+
+`audit: true` on an SMB share adds Samba's `full_audit` VFS module last in the
+stack:
+
+```ini
+[records]
+   vfs objects = fruit streams_xattr full_audit
+   full_audit:prefix = %u|%I|%m|%S
+   full_audit:success = connect disconnect open close create_file pwrite ftruncate renameat mkdirat unlinkat
+   full_audit:failure = connect open create_file renameat mkdirat unlinkat
+   full_audit:syslog = no
+```
+
+- The operation list is deliberately the mutating/open/close set, not `all`
+  (logging every `stat`/`readdir` would swamp the log). An unknown operation
+  name makes `vfs_full_audit` refuse the share, so the list is checked against
+  the Samba version in the image; it must be re-checked on an image bump.
+- The container has no syslog daemon, so `full_audit:syslog = no` turns the
+  records into debug-level-1 messages. While **any** share has audit on, the
+  renderer adds `logging = file` and `log level = 1` to `[global]` so the
+  records land in `/var/log/samba/<client>.log`. A normal install keeps today's
+  logging settings.
+- It is off by default and does not change authentication, access or the
+  client-visible share contents.
+
+```bash
+kubectl -n naslos-privileged exec ds/naslos-samba --   sh -c 'grep smbd_audit /var/log/samba/*.log | tail -20'
+# e.g. smbd_audit: alice|<client-ip>|WORKSTATION|records|unlinkat|ok|/var/mnt/tank/records/x
+```
+
+Both options are API-only in this pass; the share form does not expose the two
+toggles yet (`FR-SHR-14/15` mark the UI as `[OPEN]`). An update that omits the
+fields leaves them unchanged, so editing a share in the UI does not reset them.
+
 ## Network discovery (browsing `smb://`)
 
 The server advertises itself so it appears in a client's network browse view —
@@ -444,12 +561,19 @@ one that works, while intermediate and initial passwords are rejected.
 
 ### Samba (`GenerateSambaConfig`)
 
-- `[global]` workgroup `NASLOS`, `security = user`, fruit VFS enabled
+- `[global]` workgroup `NASLOS`, `security = user`, `server min protocol =
+  SMB3`, an explicit `server multi channel support = yes|no`, and the fruit VFS
   (`fruit:time machine = yes`, `fruit:model = MacSamba`, …) for macOS interop.
+- `logging = file` and `log level = 1` are added **only while an audited share
+  exists**, so audit records reach the smbd log without changing logging for a
+  normal install.
 - One `[share]` stanza per enabled `smb` share (AFP is not served):
   `path`, `comment`, `read only`, `browseable`, `hosts allow/deny`,
   `valid users`, and `fruit:time machine` when `timeMachine` is set.
-- `force user = root`, `force group = root`, masks `0664`/`0775`.
+- A share with `shadowCopies` or `audit` gets a share-level `vfs objects` that
+  repeats the global stack and adds `shadow_copy2` and/or `full_audit`, plus the
+  matching `shadow:*` or `full_audit:*` options (see the sections above).
+- `force user = root`, `force group = root`, masks `0660`/`0770`.
 
 ### NFS (`GenerateGaneshaConfig`)
 
@@ -472,7 +596,7 @@ EXPORT {
     Path            = /var/mnt/test;                     # the real path served
     Pseudo          = /<share name>;                     # what clients mount
     Access_Type     = RW | RO;                           # from readOnly
-    Squash          = No_Root_Squash;
+    Squash          = Root_Squash | No_Root_Squash;       # from noRootSquash; default Root_Squash
     SecType         = sys;                               # AUTH_SYS, numeric uid/gid
     Protocols       = 4;
     Transports      = TCP;
@@ -483,9 +607,12 @@ EXPORT {
 
 Decisions worth knowing:
 
-- **NFSv4 only.** NFSv3 needs `rpcbind` (111) and `statd`, neither of which
-  exists on Talos. v4 also has locking built in, so `Enable_NLM = false` is not
-  a compromise.
+- **NFSv4 only.** NFSv3 needs a portmapper plus NLM/NSM; the Talos host has
+  none of them. The spike in [nfsv3.md](nfsv3.md) evaluates running them inside
+  the Ganesha container and recommends staying v4-only for now. v4 also has
+  locking built in, so `Enable_NLM = false` is not a compromise. The core
+  parameters keep `mount_path_pseudo = true`, so a future v3 client would mount
+  the same `<host>:/<share name>` path.
 - **`Pseudo` is separate from `Path`**, so clients mount `<host>:/<share name>`
   and the share can be repointed at another dataset without clients changing
   anything. `Export_Id` is derived from the share name (not a running counter),
@@ -493,9 +620,12 @@ Decisions worth knowing:
 - **No host restriction = `Clients = *`** (everyone), matching the SMB default;
   `allowedHosts` entries become one `CLIENT` block each, so a share can be
   limited to a subnet or a single host.
-- **`No_Root_Squash` mirrors SMB's `force user = root`.** The datasets are
-  root-owned, so squashing root would make them unwritable for an admin client.
-  Change it here if root-squash semantics are wanted.
+- **`Root_Squash` is the default; `noRootSquash` opts a share out.** The
+  datasets are usually root-owned, so an admin client that must write them can
+  turn squashing off per share (the UI warns that this lets a root client on an
+  allowed host write every file as root). NFSv4 with AUTH_SYS trusts the
+  client's numeric uid either way; on a share with `noRootSquash`, any client
+  that can claim uid 0 gets root on the dataset.
 
 ## NFS serving container (`naslos-nfs`)
 
@@ -555,7 +685,9 @@ AFP is not served (netatalk is effectively dead). Time Machine uses SMB with the
 > **Talos NFS limitation:** the kernel has no NFS *server* (`nfsd`) — only the
 > client (`/proc/filesystems` lists `nfs`/`nfs4`, and `/proc/fs/nfsd` does not
 > exist). Kernel `nfsd` is therefore never an option on Talos; NFS is served in
-> userspace by NFS-Ganesha (see "NFS serving container" above).
+> userspace by NFS-Ganesha (see "NFS serving container" above). NFSv3 is not
+> served; the feasibility study in [nfsv3.md](nfsv3.md) recommends keeping the
+> NFSv4-only path until a concrete v3 client requirement appears.
 
 ## Chart flags (`charts/naslos/values.yaml`)
 
@@ -571,8 +703,10 @@ shares:
   smb:
     enabled: true
     workgroup: "NASLOS"
+    multichannel: true   # explicit `server multi channel support` (Samba default = on)
     timeMachine: true
-    image: { repository: ghcr.io/aessemops/naslos-samba, tag: "0.3.23" }
+    # shadowCopies/audit are per-share API fields, not chart values.
+    image: { repository: ghcr.io/aessemops/naslos-samba, tag: "0.5.2" }
   # Network advertisement (mDNS + WSD) so the server shows up when browsing.
   discovery:
     enabled: true
@@ -583,7 +717,7 @@ shares:
   confCheckInterval: 3
   nfs:
     enabled: true
-    image: { repository: ghcr.io/aessemops/naslos-nfs,   tag: "0.3.23" }
+    image: { repository: ghcr.io/aessemops/naslos-nfs,   tag: "0.5.2" }
   afp:
     enabled: false      # deprecated in favor of SMB Time Machine
 ```
@@ -643,4 +777,19 @@ curl -s -X POST "$API/api/shares/folders" -d '{"path":"/var/mnt/test/../../etc",
 
 # NFS: a share change is reloaded in place (mounts are not interrupted)
 kubectl -n naslos-privileged logs ds/naslos-nfs | grep 'reloading exports'
+
+# SMB: multichannel, shadow copies and audit are in the effective config
+kubectl -n naslos-privileged exec ds/naslos-samba -- \
+  sh -c 'testparm -s /etc/naslos/shares/smb.conf 2>/dev/null | \
+         grep -E "multi channel|shadow:|full_audit|log level"'
+
+# SMB: a Windows client shows previous versions for a share with shadowCopies
+# (Properties -> Previous Versions). The snapshot names must match
+# naslos-YYYY-MM-DD_HH-MM-SS; list them from the host with:
+#   zfs list -t snapshot -o name -s creation <dataset>
+# (the agent is the only component allowed to run zfs on the node).
+
+# SMB: audit records land in the client log while an audited share exists
+kubectl -n naslos-privileged exec ds/naslos-samba -- \
+  sh -c 'grep smbd_audit /var/log/samba/*.log | tail -20'
 ```

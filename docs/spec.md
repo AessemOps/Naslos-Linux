@@ -47,9 +47,11 @@ unmodified Talos installation, administered through a web UI.
   metrics is **[OPEN]**.
 - Replacing Kubernetes tooling: Naslos sits on top of k8s, not beside it.
 - Serving NFS from the kernel: Talos ships no kernel NFS server, so NFS is
-  served in userspace by NFS-Ganesha, NFSv4 only (FR-SHR-02). NFSv3 and its
-  `rpcbind`/`statd` dependencies are out of scope, as is Kerberos
-  (`sec=krb5`) — NFS uses AUTH_SYS.
+  served in userspace by NFS-Ganesha, NFSv4 only (FR-SHR-02). NFSv3 is **not**
+  served: the feasibility study in [nfsv3.md](nfsv3.md) recommends keeping the
+  NFSv4-only path and records the conditions for enabling v3 as the `[OPEN]`
+  FR-NFS3 requirements. Kerberos (`sec=krb5`) is out of scope — NFS uses
+  AUTH_SYS.
 
 ### 1.4 Target platform
 
@@ -306,8 +308,9 @@ Requirement IDs are stable: never renumber, only deprecate.
   it rather than accept a share nothing exports. NFS MUST also be served, in
   userspace: the Talos kernel has no NFS server (`nfsd`), so NFS is served by
   NFS-Ganesha (NFSv4 over TCP on the node's :2049) from an API-rendered config,
-  and it MUST NOT require `rpcbind`, a node account, or a kernel module. Every
-  NFS share MUST be presented with a reachable address in the UI.
+  and the NFSv4 path MUST NOT require `rpcbind`, a node account, or a kernel
+  module. NFSv3 is not served (FR-NFS3). Every NFS share MUST be presented with
+  a reachable address in the UI.
 - **FR-SHR-03** — Effective Samba/NFS configuration MUST be retrievable from
   the API (`/api/shares/config/samba`, `/api/shares/config/nfs`).
 - **FR-SHR-04** — Share definitions MUST be durable: they MUST survive an API
@@ -342,6 +345,58 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-SHR-12** — Share list fields (`allowedHosts`, `validUsers`,
   `validGroups`) MUST be served as arrays, never `null`, including for
   definitions read back from disk (FR-IDN-08's rule applies to shares too).
+- **FR-SHR-13** — SMB multichannel MUST be an explicit rendered server setting:
+  `smb.conf` MUST contain `server multi channel support = yes|no` derived from
+  configuration, and the default MUST preserve the serving image's Samba
+  default (enabled on Linux from 4.15). Disabling it MUST NOT affect
+  authentication, encryption, share access or any other SMB behaviour.
+  *(render tests)*
+- **FR-SHR-14** — Shadow copies MUST be a per-share, SMB-only opt-in (default
+  off). When enabled, the renderer MUST stack the `shadow_copy2` module (from
+  `vfs_shadow_copy2`) in front of
+  the inherited `fruit`/`streams_xattr` modules and point it at the share's
+  ZFS `.zfs/snapshot` directory (`shadow:snapdir`,
+  `shadow:snapdirseverywhere`, `shadow:sort`, `shadow:format`,
+  `shadow:localtime`), exposing only snapshots whose names match the
+  documented `naslos-…` timestamp format. A request that enables it on an
+  `nfs`/`afp` share MUST be refused with a 400. The share-form toggle is
+  **[OPEN]** (API-only in this pass). *(render + validation + contract tests)*
+- **FR-SHR-15** — Audit logging MUST be a per-share, SMB-only opt-in (default
+  off). When enabled, the renderer MUST stack `full_audit` last in the VFS list
+  with a fixed prefix and an explicit success/failure operation list, and MUST
+  route the records to Samba's file log (`full_audit:syslog = no`, plus
+  `logging = file` and `log level = 1` while any audited share exists) because
+  the serving container has no syslog daemon. It MUST NOT change
+  authentication, access or share contents, and a request that enables it on
+  an `nfs`/`afp` share MUST be refused with a 400. The share-form toggle is
+  **[OPEN]** (API-only in this pass). *(render + validation + contract tests)*
+- **FR-SHR-16** — A share path MUST NOT contain a `.zfs` component: the ZFS
+  snapshot directory MUST NOT be exportable as a share. *(validation test)*
+
+#### NFSv3 (`FR-NFS3`) — all `[OPEN]`
+
+NFSv3 is not served in this release. The spike in [nfsv3.md](nfsv3.md) records
+the evidence and the go conditions; the following requirements apply if the
+feature is ever enabled.
+
+- **FR-NFS3-01** — **[OPEN]** NFSv3 MUST remain disabled and unadvertised by
+  default; with v3 off, the v4 export table and its client allow-lists MUST be
+  unchanged.
+- **FR-NFS3-02** — **[OPEN]** If enabled, NFSv3 MUST be an explicit opt-in
+  profile and MUST keep `mount_path_pseudo = true`, so `<host>:/<share>` is the
+  mount path for both v3 and v4 and no share has to be renamed.
+- **FR-NFS3-03** — **[OPEN]** If enabled, the serving container MUST carry the
+  portmapper (`rpcbind`) and NSM (Ganesha `Internal_statd` or `rpc.statd`)
+  itself; it MUST NOT require a Talos host daemon, and every RPC port
+  (111, 2049, MOUNT 20048, NLM 32803, NSM 662) MUST be fixed and declared.
+- **FR-NFS3-04** — **[OPEN]** NFSv3 MUST be AUTH_SYS-only, LAN-scoped and
+  root-squashed by default; enabling it MUST NOT widen the v4 client
+  allow-list, change the v4 auth posture, or expose v3 beyond the configured
+  NFS client CIDR.
+- **FR-NFS3-05** — **[OPEN]** NLM/NSM state MUST survive a serving-container
+  restart, or the lock-recovery limitation MUST be documented explicitly; mount,
+  read/write and lock recovery MUST be verified with a live v3 client before
+  the feature ships.
 
 ### 3.4 App catalog & install (`FR-APP`)
 
@@ -1254,7 +1309,7 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 - **DM-1 Person**: `{ "uid", "displayName", "email", "uidNumber", "enabled": bool, "groups": ["short-name", …] }`
 - **DM-2 Group**: `{ "cn", "description?", "members": ["uid", …] }` — `members` MUST be an array (possibly empty), `description` omitted when empty.
 - **DM-3 Pool**: `{ "name", "size", "alloc", "free", "usagePercent", "health" }` — sizes in bytes, parsed from human `zpool list` output.
-- **DM-4 Share**: `{ "name", "path", "protocol": "smb"|"nfs", "description", "readOnly": bool, "browseable": bool, "allowedHosts": [], "validUsers": [], "validGroups": [], "timeMachine": bool, "createdAt", "enabled": bool }` — `path` MUST be inside the ZFS base; the three list fields MUST be arrays (never `null`, including when read back from disk); `validUsers` entries render bare and `validGroups` entries render as `@group` in `smb.conf` (FR-SHR-07/12).
+- **DM-4 Share**: `{ "name", "path", "protocol": "smb"|"nfs", "description", "readOnly": bool, "browseable": bool, "allowedHosts": [], "validUsers": [], "validGroups": [], "timeMachine": bool, "noRootSquash": bool, "shadowCopies": bool, "audit": bool, "createdAt", "enabled": bool }` — `path` MUST be inside the ZFS base and MUST NOT contain a `.zfs` component; the three list fields MUST be arrays (never `null`, including when read back from disk); `validUsers` entries render bare and `validGroups` entries render as `@group` in `smb.conf` (FR-SHR-07/12); `shadowCopies` and `audit` default to false and are valid only for `smb` (FR-SHR-14/15).
 - **DM-5 SystemMetrics**: see FR-MET-03. CPU also carries `model`, `temperatureC` (nullable), and `perCore[]` (`core`, `usagePercent`, optional `frequencyMhz`). `updatedAt` is RFC 3339; before the first successful collection it is the Go zero time and consumers MUST treat it as "no data yet".
 - **DM-6 DiskHealth**: `{ "smartctlAvailable": bool, "error": string, "temperatureWarningC": number, "wearWarningPercent": number, "disks": [{ "device", "size", "isSystemDisk", "model", "serial", "busPath", "type", "signatures": [], "inPool"?, "smart": { "available", "enabled", "health": "PASSED"|"FAILED"|"UNKNOWN", "temperatureC"?, "powerOnHours"?, "wearPercent"?, "reallocatedSectors"?, "pendingSectors"?, "uncorrectableSectors"?, "mediaErrors"?, "errorCount"?, "standby", "message" }, "zfs"?: { "pool", "vdev", "state", "readErrors", "writeErrors", "cksumErrors" } }] }` — `smart.available:false` is normal for virtio/USB/RAID devices and MUST NOT fail the endpoint (FR-DHK-02/03).
 - **DM-7 Vm**: `{ "name", "pool", "cpu", "memMiB", "autostart": bool, "firmware": "uefi"|"bios", "desired": "running"|"stopped", "disk": { "sizeGB", "format": "qcow2"|"raw", "bus": "virtio"|"sata", "sourceImage"?: "isos/<file>" }, "net": { "mode": "nat"|"lan", "forwards": [{ "host", "dst" }], "nic"? }, "cloudInit"?: { "hostname", "user", "sshKeys": [] }, "iso"?: "isos/<file>" | null }`. `name` is a DNS-1123 label; live fields (`state`: "running"|"stopped"|"unknown", `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) are merged in responses and MUST NOT be persisted; the console credentials (`vncPort`, `vncPassword`) appear only in the `/api/ws/vm/{name}/vnc` preflight, never in list or detail payloads (FR-VMT).
@@ -1332,9 +1387,12 @@ Rust tests cover the parts that need no node: `rust/api/src/identity.rs`
 (NT-hash known vectors against OpenSSL-computed values);
 `rust/api/src/shares.rs` (smbpasswd and
 extrausers rendering, stable group GIDs, access-list groups, NetBIOS name
-sanitising); `rust/api/src/server/` (the user-edit membership diff, FR-IDN-04;
-the write-only ntfy token, `TestNotificationsNeverReturnTheAuthToken`); and
-`rust/agent/src/shares/` (the 0600 passdb/shadow mirrors, FR-IDN-13).
+sanitising, multichannel/shadow-copy/audit rendering, FR-SHR-13/14/15);
+`rust/api/tests/shares_options.rs` (the SMB-only option contract, the `.zfs`
+path refusal, and the options round-trip, FR-SHR-14/15/16); `rust/api/src/server/`
+(the user-edit membership diff, FR-IDN-04; the write-only ntfy token,
+`TestNotificationsNeverReturnTheAuthToken`); and `rust/agent/src/shares/` (the
+0600 passdb/shadow mirrors, FR-IDN-13).
 
 Buddy Backup is verified by the Rust suites in `rust/api/src/buddy/` and
 `rust/api/tests/`, which run the real receiver over HTTP against the real

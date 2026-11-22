@@ -121,6 +121,9 @@ The agent exposes dataset and snapshot operations:
 Datasets are how shares get structured sizes/quota boundaries and are the unit
 of snapshots (`zfs snapshot pool/ds@name`). Shares previously used AFP/Time
 Machine; the modern path is SMB + `fruit` VFS (see [shares.md](shares.md)).
+Snapshots that should appear as SMB previous versions must be named
+`naslos-YYYY-MM-DD_HH-MM-SS` (local time); see
+[shares.md](shares.md#shadow-copies-previous-versions).
 
 ### Creating a dataset (UI)
 
