@@ -332,7 +332,13 @@
             </p>
           </div>
         {:else if activeStep === 'exposure'}
-          <ExposureForm bind:exposure bind:baseDomain {selectableDomains} {ssoDomains} />
+          <ExposureForm
+            bind:exposure
+            bind:baseDomain
+            {selectableDomains}
+            {ssoDomains}
+            on:change={() => (unsafeConfirmed = false)}
+          />
           {#if exposure.subdomain && appRecordDomains.has(baseDomain)}
             <p class="mt-4 p-3 rounded-lg border border-naslos-border bg-naslos-dark/40 text-xs text-gray-300">
               A CNAME <span class="font-mono">{exposure.subdomain}.{baseDomain}</span> will be created on
