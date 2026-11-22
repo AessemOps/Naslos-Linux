@@ -1050,6 +1050,24 @@ async fn storage_schedules_validate_and_round_trip() {
     assert!(!id.is_empty());
     assert!(body["schedule"]["nextRun"].is_string());
 
+    // A second schedule on the same dataset is refused: the shadow-copy name
+    // carries no schedule id, so two schedules would collide and fight over
+    // retention ownership.
+    let duplicate = r#"{"kind":"snapshot","target":"tank/data","cadence":"weekly","runAt":"Sun 03:30","keep":3}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", duplicate),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("already has snapshot schedule"));
+
     let (status, body, _r) = send_state(
         st.clone(),
         with_peer(
@@ -1075,6 +1093,190 @@ async fn storage_schedules_validate_and_round_trip() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn snapshot_schedules_refuse_recursive_overlap_and_allow_siblings() {
+    let st = state();
+    let parent = r#"{"kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30","recursive":true}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", parent),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A recursive parent owns the child dataset's snapshot name too, so a
+    // child schedule would collide every time both fire.
+    let child = r#"{"kind":"snapshot","target":"tank/data/child","cadence":"hourly","runAt":""}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", child),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("already has snapshot schedule"));
+
+    // The reverse order is refused too: a recursive parent cannot be created
+    // over an existing child schedule.
+    let st2 = state();
+    let child_first =
+        r#"{"kind":"snapshot","target":"tank/data/child","cadence":"daily","runAt":"02:30"}"#;
+    let (status, body, _r) = send_state(
+        st2.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", child_first),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let parent_second = r#"{"kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30","recursive":true}"#;
+    let (status, body, _r) = send_state(
+        st2,
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", parent_second),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // Siblings and non-recursive parent/child pairs do not share a snapshot
+    // name and stay allowed.
+    let sibling = r#"{"kind":"snapshot","target":"tank/other","cadence":"daily","runAt":"02:30"}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", sibling),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let plain_parent =
+        r#"{"kind":"snapshot","target":"tank/plain","cadence":"daily","runAt":"02:30"}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", plain_parent),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let plain_child =
+        r#"{"kind":"snapshot","target":"tank/plain/child","cadence":"daily","runAt":"02:30"}"#;
+    let (status, body, _r) = send_state(
+        st,
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", plain_child),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn legacy_duplicate_schedules_can_be_updated_disabled_or_moved() {
+    let st = state();
+    for (id, target) in [("aaa", "tank/data"), ("bbb", "tank/data")] {
+        st.storage_schedules
+            .put(naslos_api::server::storage_schedules::StorageSchedule {
+                id: id.into(),
+                kind: naslos_api::server::storage_schedules::ScheduleKind::Snapshot,
+                target: target.into(),
+                cadence: naslos_api::schedule::Cadence::Daily,
+                run_at: "02:30".into(),
+                keep: 7,
+                enabled: true,
+                ..Default::default()
+            })
+            .unwrap();
+    }
+
+    // Editing one of the two legacy entries in place must not be blocked by the
+    // duplicate (0.6.0 allowed it before the naming change).
+    let update_aaa = r#"{"id":"aaa","kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30","keep":9,"enabled":true}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", update_aaa),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["schedule"]["keep"], 9);
+
+    // It can also be disabled, which is the escape hatch for the colliding pair.
+    let disable_bbb = r#"{"id":"bbb","kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30","keep":7,"enabled":false}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", disable_bbb),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["schedule"]["enabled"], false);
+
+    // The UI omits `enabled` when it edits an existing schedule. That must
+    // preserve the disabled state instead of silently re-enabling it.
+    let edit_without_enabled = r#"{"id":"bbb","kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30","keep":8}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", edit_without_enabled),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["schedule"]["enabled"], false);
+    assert_eq!(body["schedule"]["keep"], 8);
+
+    // Re-enabling it while the first still covers the dataset is refused.
+    let enable_bbb = r#"{"id":"bbb","kind":"snapshot","target":"tank/data","cadence":"daily","runAt":"02:30","keep":7,"enabled":true}"#;
+    let (status, body, _r) = send_state(
+        st.clone(),
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", enable_bbb),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("already has snapshot schedule"));
+
+    // Moving it to an uncovered dataset is allowed and keeps it enabled.
+    let move_bbb = r#"{"id":"bbb","kind":"snapshot","target":"tank/other","cadence":"daily","runAt":"02:30","keep":7,"enabled":true}"#;
+    let (status, body, _r) = send_state(
+        st,
+        with_peer(
+            admin_json("POST", "/api/storage/schedules", move_bbb),
+            [127, 0, 0, 1],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["schedule"]["target"], "tank/other");
+    assert_eq!(body["schedule"]["enabled"], true);
 }
 
 #[tokio::test]

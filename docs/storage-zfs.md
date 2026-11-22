@@ -123,8 +123,8 @@ Datasets are how shares get structured sizes/quota boundaries and are the unit
 of snapshots (`zfs snapshot pool/ds@name`). Shares previously used AFP/Time
 Machine; the modern path is SMB + `fruit` VFS (see [shares.md](shares.md)).
 Snapshots that should appear as SMB previous versions must be named
-`naslos-YYYY-MM-DD_HH-MM-SS` (local time); see
-[shares.md](shares.md#shadow-copies-previous-versions).
+`naslos-YYYY-MM-DD_HH-MM-SS` (UTC); scheduled snapshots use that format, and
+see [shares.md](shares.md#shadow-copies-previous-versions).
 
 ### Scheduled snapshots and scrubs (FR-STO-10/11)
 
@@ -133,9 +133,19 @@ Snapshots that should appear as SMB previous versions must be named
 - **Snapshot schedule** (per dataset): `GET|POST|DELETE /api/storage/schedules`
   with `kind: "snapshot"`. Cadence is hourly/daily/weekly in UTC, with an
   optional `recursive` flag (`zfs snapshot -r`) and `keep` retention (0 = keep
-  all, max 1000). Every run creates `naslos-auto-<schedule>-<UTC timestamp>`;
-  retention deletes only names carrying that schedule's prefix, keeping the
-  newest N per dataset. User-created snapshots are never touched.
+  all, max 1000). At most one enabled schedule may cover a dataset: exact
+  duplicates and recursive ancestor/descendant overlaps are refused, while a
+  disabled duplicate is allowed. A 0.6.0 store with overlapping enabled
+  schedules is migrated on load: the first in id order stays enabled and the
+  rest are disabled with an explanatory `lastError`. Every run creates
+  `naslos-YYYY-MM-DD_HH-MM-SS` (UTC, the `vfs_shadow_copy2` format) and records
+  the owning schedule in each snapshot's `user:naslos:schedule` property; if
+  that property write fails, the run removes the snapshots it just created
+  instead of leaking an untagged name. Retention deletes only snapshots whose
+  property matches that schedule's id, keeping the newest N per dataset.
+  User-created snapshots are never touched. For one release after 0.6.0,
+  property-less legacy `naslos-auto-<schedule>-…` names are still recognised as
+  owned so old schedules do not orphan their snapshots.
 - **Scrub schedule** (per pool): `kind: "scrub"`, daily or weekly only, plus
   **Scrub now** (`POST /api/volumes/zfs/{pool}/scrub`). The manual route answers
   `409` when `zpool status` reports a scrub or resilver already running; a

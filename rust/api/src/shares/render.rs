@@ -133,7 +133,9 @@ impl Manager {
                 sb.push_str("   shadow:snapdirseverywhere = yes\n");
                 sb.push_str("   shadow:sort = desc\n");
                 sb.push_str(&format!("   shadow:format = {SHADOW_COPY_FORMAT}\n"));
-                sb.push_str("   shadow:localtime = yes\n");
+                // Scheduled snapshot names are UTC, so shadow_copy2 must parse
+                // them as UTC rather than shifting them from local time.
+                sb.push_str("   shadow:localtime = no\n");
             }
 
             if share.audit {
@@ -484,7 +486,7 @@ mod tests {
         assert!(conf.contains("   shadow:snapdirseverywhere = yes\n"));
         assert!(conf.contains("   shadow:sort = desc\n"));
         assert!(conf.contains("   shadow:format = naslos-%Y-%m-%d_%H-%M-%S\n"));
-        assert!(conf.contains("   shadow:localtime = yes\n"));
+        assert!(conf.contains("   shadow:localtime = no\n"));
         assert!(!conf.contains("full_audit"));
     }
 

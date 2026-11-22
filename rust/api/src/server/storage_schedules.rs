@@ -2,10 +2,14 @@
 //! per-pool scrub schedules (FR-STO-10/11).
 //!
 //! Entries persist as JSON beside the other state files. The runner ticks
-//! (default a minute), creates snapshots through the agent, and prunes only the
-//! snapshots it named itself (`naslos-auto-<schedule>-*`), so a user snapshot
-//! is never deleted by retention. A run missed while the API was down fires
-//! once at startup (catch-up), matching the buddy scheduler.
+//! (default a minute), creates snapshots through the agent, and prunes only
+//! snapshots whose `user:naslos:schedule` property names the schedule, so a
+//! user snapshot or another schedule's snapshot is never deleted by retention.
+//! Scheduled names use the shadow-copy-compatible `naslos-%Y-%m-%d_%H-%M-%S`
+//! UTC format; legacy 0.6.0 `naslos-auto-<schedule>-*` names stay eligible for
+//! retention for one release so upgrading does not orphan them. A run missed
+//! while the API was down fires once at startup (catch-up), matching the buddy
+//! scheduler.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -21,9 +25,13 @@ use crate::json;
 use crate::schedule::{next_run, parse_run_at, Cadence};
 use crate::state::AppState;
 
-/// Snapshot names are owned by the scheduler: a schedule may only delete names
-/// that start with its own prefix.
+/// Legacy snapshot name prefix (`naslos-auto-<schedule>-*`). Scheduled
+/// snapshots now carry their owner in a ZFS user property; this prefix is kept
+/// only so 0.6.0 schedules can still find and prune their older snapshots.
 pub const SNAPSHOT_NAME_PREFIX: &str = "naslos-auto-";
+
+/// The shadow-copy-compatible timestamp format (UTC).
+pub const SHADOW_COPY_SNAPSHOT_FORMAT: &str = "naslos-%Y-%m-%d_%H-%M-%S";
 
 /// Upper bound on retained snapshots per dataset.
 pub const MAX_KEEP: usize = 1000;
@@ -92,7 +100,7 @@ impl Default for StorageSchedule {
     }
 }
 
-/// Generates an injective token for the schedule's snapshot-name prefix.
+/// Generates an injective token for a legacy snapshot-name prefix.
 ///
 /// Ids are opaque store keys, so the token hex-encodes every byte instead of
 /// stripping characters: `"a-b"` and `"ab"` must not map to the same prefix, or
@@ -104,38 +112,126 @@ fn schedule_token(id: &str) -> String {
     id.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The prefix every snapshot this schedule creates starts with.
+/// The legacy prefix a 0.6.0 schedule created: `naslos-auto-<token>-`.
 pub fn snapshot_prefix(id: &str) -> String {
     format!("{SNAPSHOT_NAME_PREFIX}{}-", schedule_token(id))
 }
 
-/// A schedule-owned snapshot name: `naslos-auto-<token>-<UTC timestamp>`.
-pub fn snapshot_name(id: &str, now: DateTime<Utc>) -> String {
-    format!("{}{}", snapshot_prefix(id), now.format("%Y%m%dT%H%M%SZ"))
+/// A scheduled snapshot name in UTC: `naslos-YYYY-MM-DD_HH-MM-SS`.
+///
+/// The format is the contract `vfs_shadow_copy2` parses (`shadow:format`),
+/// which is why it cannot carry the schedule id. Ownership is recorded in the
+/// `user:naslos:schedule` user property instead.
+pub fn snapshot_name(now: DateTime<Utc>) -> String {
+    now.format(SHADOW_COPY_SNAPSHOT_FORMAT).to_string()
 }
 
-/// Plan retention: from the full snapshot paths under `root` (oldest first),
-/// return the `(dataset, snapshot)` pairs to destroy so each dataset keeps the
-/// newest `keep` scheduler-owned snapshots. Only names carrying `prefix` are
-/// considered, so user snapshots and other schedules' snapshots are untouched.
+/// Whether two snapshot schedules would write the same snapshot name on a
+/// dataset. The targets collide when they are equal, or when either schedule is
+/// recursive and the other target is inside its tree.
+fn snapshot_targets_overlap(
+    a_target: &str,
+    a_recursive: bool,
+    b_target: &str,
+    b_recursive: bool,
+) -> bool {
+    a_target == b_target
+        || (a_recursive && b_target.starts_with(&format!("{a_target}/")))
+        || (b_recursive && a_target.starts_with(&format!("{b_target}/")))
+}
+
+fn snapshot_schedules_overlap(a: &StorageSchedule, b: &StorageSchedule) -> bool {
+    a.kind == ScheduleKind::Snapshot
+        && b.kind == ScheduleKind::Snapshot
+        && snapshot_targets_overlap(&a.target, a.recursive, &b.target, b.recursive)
+}
+
+/// Disable the extra enabled schedules a 0.6.0 store could contain now that the
+/// snapshot name no longer carries the schedule id. The lexicographically first
+/// id in each overlapping group stays enabled; the rest are disabled with an
+/// explanation so an operator can delete or retarget them. Returns whether the
+/// store changed and must be persisted.
+fn disable_legacy_overlaps(entries: &mut HashMap<String, StorageSchedule>) -> bool {
+    let mut ids: Vec<String> = entries.keys().cloned().collect();
+    ids.sort();
+    let mut kept: Vec<StorageSchedule> = Vec::new();
+    let mut changed = false;
+    for id in ids {
+        let Some(entry) = entries.get(&id).cloned() else {
+            continue;
+        };
+        if entry.kind != ScheduleKind::Snapshot || !entry.enabled {
+            continue;
+        }
+        if kept
+            .iter()
+            .any(|kept| snapshot_schedules_overlap(kept, &entry))
+        {
+            if let Some(entry) = entries.get_mut(&id) {
+                entry.enabled = false;
+                entry.last_error = format!(
+                    "disabled automatically after the shadow-copy naming upgrade: another snapshot schedule already covers {:?}; delete this schedule or point it at another dataset",
+                    entry.target
+                );
+                tracing::warn!(
+                    "storage scheduler: disabled overlapping legacy schedule {} on {}",
+                    id,
+                    entry.target
+                );
+                changed = true;
+            }
+        } else {
+            kept.push(entry);
+        }
+    }
+    changed
+}
+
+/// A snapshot plus the schedule that owns it (`user:naslos:schedule`). An
+/// empty schedule means no property was recorded (a user snapshot, or a legacy
+/// 0.6.0 scheduled snapshot).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedSnapshot {
+    pub path: String,
+    pub schedule: String,
+}
+
+/// Plan retention: from the snapshots under `root` (oldest first), return the
+/// `(dataset, snapshot)` pairs to destroy so each dataset keeps the newest
+/// `keep` snapshots owned by `schedule_id`.
+///
+/// Ownership is the property value, not the name. During the one-release
+/// compatibility window a snapshot with no property is also owned when its name
+/// starts with `legacy_prefix`; that is the only way an old 0.6.0 schedule can
+/// still prune its snapshots.
 pub fn prune_plan(
-    paths: &[String],
+    snapshots: &[OwnedSnapshot],
     root: &str,
-    prefix: &str,
+    schedule_id: &str,
+    legacy_prefix: &str,
     keep: usize,
 ) -> Vec<(String, String)> {
     if keep == 0 {
         return Vec::new();
     }
+    let owned = |snapshot: &OwnedSnapshot| -> bool {
+        if !snapshot.schedule.is_empty() {
+            return snapshot.schedule == schedule_id;
+        }
+        snapshot
+            .path
+            .split_once('@')
+            .is_some_and(|(_, snap)| snap.starts_with(legacy_prefix))
+    };
     let mut totals: HashMap<String, usize> = HashMap::new();
-    for path in paths {
-        let Some((dataset, snap)) = path.split_once('@') else {
+    for snapshot in snapshots {
+        let Some((dataset, _)) = snapshot.path.split_once('@') else {
             continue;
         };
         if dataset != root && !dataset.starts_with(&format!("{root}/")) {
             continue;
         }
-        if snap.starts_with(prefix) {
+        if owned(snapshot) {
             *totals.entry(dataset.to_string()).or_insert(0) += 1;
         }
     }
@@ -144,14 +240,14 @@ pub fn prune_plan(
     let mut delete = Vec::new();
     // Creation order is oldest first: the first `total - keep` entries of a
     // dataset are the oldest ones and are the ones retention removes.
-    for path in paths {
-        let Some((dataset, snap)) = path.split_once('@') else {
+    for snapshot in snapshots {
+        let Some((dataset, snap)) = snapshot.path.split_once('@') else {
             continue;
         };
         let Some(total) = totals.get(dataset) else {
             continue;
         };
-        if !snap.starts_with(prefix) {
+        if !owned(snapshot) {
             continue;
         }
         let count = seen.entry(dataset.to_string()).or_insert(0);
@@ -229,6 +325,12 @@ impl StorageScheduleStore {
                 continue;
             }
             guard.insert(e.id.clone(), e);
+        }
+        // A 0.6.0 store may predate the one-snapshot-schedule-per-tree rule.
+        // Disable the extras now instead of letting them collide at every tick
+        // (and instead of blocking every update with a 400).
+        if disable_legacy_overlaps(&mut guard) {
+            self.save(&guard)?;
         }
         Ok(())
     }
@@ -344,6 +446,39 @@ pub async fn validate_schedule(state: &AppState, e: &mut StorageSchedule) -> Res
         ScheduleKind::Snapshot => {
             crate::server::zfs::validate_dataset_path(e.target.trim())?;
             e.target = e.target.trim().to_string();
+            // Snapshot names are the shadow-copy timestamp only, so two
+            // enabled schedules covering the same dataset (exactly or through a
+            // recursive ancestor/descendant) would create the same name and
+            // fight over ownership.
+            if e.enabled {
+                let existing = state.storage_schedules.get(&e.id);
+                let conflict = state
+                    .storage_schedules
+                    .list()
+                    .into_iter()
+                    .find(|s| s.id != e.id && s.enabled && snapshot_schedules_overlap(s, e));
+                if let Some(other) = conflict {
+                    // A 0.6.0 store can still contain an overlapping pair when
+                    // this request reaches validation (for example an in-memory
+                    // store in a test, or a store written by the old API after
+                    // startup). Updating either entry in place must stay
+                    // possible so the operator can change `keep` or disable it;
+                    // only creating, moving or re-enabling can introduce a new
+                    // collision.
+                    let unchanged = existing.as_ref().is_some_and(|old| {
+                        old.enabled && old.target == e.target && old.recursive == e.recursive
+                    });
+                    if !unchanged {
+                        return Err(format!(
+                            "dataset {:?} already has snapshot schedule {:?} covering {:?}{}",
+                            e.target,
+                            other.id,
+                            other.target,
+                            if other.recursive { " recursively" } else { "" }
+                        ));
+                    }
+                }
+            }
             if let Some(agent) = &state.agent {
                 if let Ok(datasets) = agent.list_datasets().await {
                     if !datasets.iter().any(|d| d.name == e.target) {
@@ -434,29 +569,41 @@ pub async fn schedules_post(State(state): State<Arc<AppState>>, body: Body) -> R
         Ok(k) => k,
         Err(e) => return bad_request(&e),
     };
+    let requested_id = req.id.trim().to_string();
+    let existing = if requested_id.is_empty() {
+        None
+    } else {
+        match state.storage_schedules.get(&requested_id) {
+            Some(existing) => Some(existing),
+            // Only server-generated ids may become retention prefixes.
+            // Accepting an arbitrary client id would let two schedules collide
+            // after token encoding and prune each other's snapshots.
+            None => return bad_request("unknown schedule id; omit id to create a new schedule"),
+        }
+    };
+    let updating = existing.is_some();
+    let id = if updating {
+        requested_id
+    } else {
+        let mut buf = [0u8; 16];
+        let _ = getrandom::fill(&mut buf);
+        buf.iter().map(|b| format!("{b:02x}")).collect()
+    };
     let mut entry = StorageSchedule {
-        id: req.id.trim().to_string(),
+        id,
         kind,
         target: req.target.trim().to_string(),
         cadence: req.cadence.unwrap_or(Cadence::Daily),
         run_at: req.run_at.trim().to_string(),
         keep: req.keep,
         recursive: req.recursive,
-        enabled: req.enabled.unwrap_or(true),
+        // An update that omits `enabled` keeps the stored state. That matters
+        // for a legacy schedule the load migration disabled: editing its keep
+        // count must not silently re-enable a colliding schedule.
+        enabled: req
+            .enabled
+            .unwrap_or_else(|| existing.as_ref().is_none_or(|s| s.enabled)),
         ..Default::default()
-    };
-    let updating = if entry.id.is_empty() {
-        let mut buf = [0u8; 16];
-        let _ = getrandom::fill(&mut buf);
-        entry.id = buf.iter().map(|b| format!("{b:02x}")).collect();
-        false
-    } else if state.storage_schedules.get(&entry.id).is_some() {
-        true
-    } else {
-        // Only server-generated ids may become retention prefixes. Accepting an
-        // arbitrary client id would let two schedules collide after token
-        // encoding and prune each other's snapshots.
-        return bad_request("unknown schedule id; omit id to create a new schedule");
     };
     if let Err(e) = validate_schedule(&state, &mut entry).await {
         return bad_request(&e);
@@ -594,6 +741,69 @@ fn retryable_agent_error(err: &crate::agent::AgentError) -> bool {
     matches!(err.status, 0 | 502 | 503 | 504)
 }
 
+/// Remove the snapshots a snapshot run just created after its ownership
+/// property could not be recorded. The name is the one this run generated, so
+/// only its own (possibly recursive) snapshots are targeted; a later retention
+/// pass could not identify them without the property.
+async fn destroy_untagged_run_snapshots(
+    agent: &crate::agent::Client,
+    entry: &StorageSchedule,
+    name: &str,
+) -> Result<(), String> {
+    let root = format!("{}@{name}", entry.target);
+    let child_prefix = format!("{}/", entry.target);
+    let suffix = format!("@{name}");
+    let mut errors: Vec<String> = Vec::new();
+
+    // A non-recursive run created exactly one snapshot; never sweep descendants
+    // by name, because one of those could be an unrelated pre-existing snapshot.
+    if !entry.recursive {
+        if let Err(e) = agent.destroy_snapshot(&entry.target, name).await {
+            errors.push(format!("{root}: {e}"));
+        }
+    } else {
+        match agent.snapshot_paths(&entry.target).await {
+            Ok(paths) => {
+                let mut targets: Vec<(String, String)> = paths
+                    .iter()
+                    .filter(|path| {
+                        *path == &root
+                            || (path.starts_with(&child_prefix) && path.ends_with(&suffix))
+                    })
+                    .filter_map(|path| {
+                        path.split_once('@')
+                            .map(|(dataset, snap)| (dataset.to_string(), snap.to_string()))
+                    })
+                    .collect();
+                if targets.is_empty() {
+                    targets.push((entry.target.clone(), name.to_string()));
+                }
+                for (dataset, snap) in targets {
+                    if let Err(e) = agent.destroy_snapshot(&dataset, &snap).await {
+                        errors.push(format!("{dataset}@{snap}: {e}"));
+                    }
+                }
+            }
+            Err(e) => {
+                // The listing route predates the property route, so this is
+                // rare. Remove what we can; the descendant snapshots may remain.
+                match agent.destroy_snapshot(&entry.target, name).await {
+                    Ok(()) => errors.push(format!(
+                        "listing snapshots for cleanup failed ({e}); only the root snapshot was removed"
+                    )),
+                    Err(destroy_err) => errors.push(format!("{root}: {destroy_err}")),
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
 async fn run_snapshot_schedule(state: &Arc<AppState>, entry: &StorageSchedule) {
     let Some(agent) = state.agent.clone() else {
         tracing::warn!(
@@ -603,7 +813,7 @@ async fn run_snapshot_schedule(state: &Arc<AppState>, entry: &StorageSchedule) {
         return;
     };
     let now = Utc::now();
-    let name = snapshot_name(&entry.id, now);
+    let name = snapshot_name(now);
     if let Err(e) = agent
         .create_snapshot_with(&entry.target, &name, entry.recursive)
         .await
@@ -629,12 +839,48 @@ async fn run_snapshot_schedule(state: &Arc<AppState>, entry: &StorageSchedule) {
         return;
     }
 
+    // Retention trusts the property, not the name. Tag before listing so the
+    // snapshot just created belongs to this schedule even if the run is checked
+    // immediately afterwards.
+    if let Err(e) = agent
+        .set_snapshot_schedule(&entry.target, &name, &entry.id, entry.recursive)
+        .await
+    {
+        let cleanup = destroy_untagged_run_snapshots(agent.as_ref(), entry, &name).await;
+        let mut message =
+            format!("snapshot {name} was created but its schedule property was not recorded: {e}");
+        match cleanup {
+            Ok(()) => message.push_str("; the untagged snapshot was removed"),
+            Err(cleanup_error) => message.push_str(&format!(
+                "; removing the untagged snapshot failed: {cleanup_error}"
+            )),
+        }
+        tracing::warn!("storage scheduler: {}", message);
+        state
+            .storage_schedules
+            .record_result(&entry.id, "failed", &message);
+        return;
+    }
+
     let mut prune_error = String::new();
     if entry.keep > 0 {
-        match agent.snapshot_paths(&entry.target).await {
-            Ok(paths) => {
-                let prefix = snapshot_prefix(&entry.id);
-                for (dataset, snap) in prune_plan(&paths, &entry.target, &prefix, entry.keep) {
+        match agent.snapshot_schedules(&entry.target).await {
+            Ok(snapshots) => {
+                let snapshots: Vec<OwnedSnapshot> = snapshots
+                    .into_iter()
+                    .map(|s| OwnedSnapshot {
+                        path: s.path,
+                        schedule: s.schedule,
+                    })
+                    .collect();
+                let legacy_prefix = snapshot_prefix(&entry.id);
+                for (dataset, snap) in prune_plan(
+                    &snapshots,
+                    &entry.target,
+                    &entry.id,
+                    &legacy_prefix,
+                    entry.keep,
+                ) {
                     if let Err(e) = agent.destroy_snapshot(&dataset, &snap).await {
                         if !prune_error.is_empty() {
                             prune_error.push_str("; ");
@@ -741,23 +987,24 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    fn path(ds: &str, snap: &str) -> String {
-        format!("{ds}@{snap}")
+    fn owned(ds: &str, snap: &str, schedule: &str) -> OwnedSnapshot {
+        OwnedSnapshot {
+            path: format!("{ds}@{snap}"),
+            schedule: schedule.to_string(),
+        }
     }
 
     #[test]
-    fn names_are_scheduler_owned_and_parseable() {
+    fn scheduled_names_use_the_shadow_copy_utc_format() {
         let now = Utc.with_ymd_and_hms(2026, 1, 5, 10, 15, 0).unwrap();
-        let name = snapshot_name("abcdef1234567890", now);
-        assert!(name.starts_with("naslos-auto-61626364656631323334353637383930-"));
-        assert!(name.ends_with("20260105T101500Z"));
-        assert!(naslos_agent_snapshot_charset(&name));
+        assert_eq!(snapshot_name(now), "naslos-2026-01-05_10-15-00");
+        assert!(naslos_agent_snapshot_charset(&snapshot_name(now)));
     }
 
     #[test]
-    fn distinct_ids_never_share_a_retention_prefix() {
+    fn legacy_prefixes_stay_injective() {
         // The token must be injective: stripping punctuation would make these
-        // two schedules prune each other's snapshots.
+        // two schedules prune each other's snapshots during the legacy window.
         assert_ne!(snapshot_prefix("a-b"), snapshot_prefix("ab"));
         assert_ne!(snapshot_prefix("AB"), snapshot_prefix("ab"));
         assert!(naslos_agent_snapshot_charset(&snapshot_prefix("a-b:.")));
@@ -771,30 +1018,154 @@ mod tests {
     }
 
     #[test]
-    fn retention_keeps_the_newest_and_never_touches_foreign_names() {
-        let paths = vec![
-            path("tank/data", "naslos-auto-abcd1234-old1"),
-            path("tank/data", "manual-keep"),
-            path("tank/data", "naslos-auto-abcd1234-old2"),
-            path("tank/data", "naslos-auto-abcd1234-new1"),
-            path("tank/data/child", "naslos-auto-abcd1234-old1"),
-            path("tank/data/child", "naslos-auto-abcd1234-new1"),
-            path("other/data", "naslos-auto-abcd1234-old1"),
+    fn retention_uses_the_schedule_property_not_the_name() {
+        let id = "abcd1234";
+        let snapshots = vec![
+            owned("tank/data", "naslos-2026-01-01_00-00-00", id),
+            owned("tank/data", "naslos-2026-01-02_00-00-00", id),
+            // Another schedule's snapshot is never retained against this one,
+            // even when its name matches the shadow-copy format.
+            owned("tank/data", "naslos-2026-01-03_00-00-00", "other"),
+            // A user snapshot has no property and must never be deleted.
+            owned("tank/data", "manual-keep", ""),
+            owned("tank/data", "naslos-2026-01-04_00-00-00", id),
+            owned("tank/data/child", "naslos-2026-01-01_00-00-00", id),
+            owned("tank/data/child", "naslos-2026-01-02_00-00-00", id),
+            owned("other/data", "naslos-2026-01-01_00-00-00", id),
         ];
-        let delete = prune_plan(&paths, "tank/data", "naslos-auto-abcd1234-", 2);
+        let delete = prune_plan(&snapshots, "tank/data", id, "naslos-auto-abcd1234-", 2);
         assert_eq!(
             delete,
             vec![(
                 "tank/data".to_string(),
-                "naslos-auto-abcd1234-old1".to_string()
+                "naslos-2026-01-01_00-00-00".to_string()
             )]
         );
     }
 
     #[test]
+    fn legacy_060_names_remain_retained_for_one_release() {
+        let id = "abcd1234";
+        let legacy = snapshot_prefix(id);
+        let snapshots = vec![
+            owned("tank/data", &format!("{legacy}20260101T000000Z"), ""),
+            owned("tank/data", &format!("{legacy}20260102T000000Z"), ""),
+            owned("tank/data", "manual-keep", ""),
+            owned("tank/data", "naslos-2026-01-03_00-00-00", id),
+        ];
+        let delete = prune_plan(&snapshots, "tank/data", id, &legacy, 2);
+        assert_eq!(
+            delete,
+            vec![("tank/data".to_string(), format!("{legacy}20260101T000000Z"))]
+        );
+    }
+
+    #[test]
+    fn a_property_from_another_schedule_beats_a_legacy_looking_name() {
+        let id = "abcd1234";
+        let legacy = snapshot_prefix(id);
+        let snapshots = vec![
+            owned("tank/data", &format!("{legacy}20260101T000000Z"), "other"),
+            owned("tank/data", "naslos-2026-01-02_00-00-00", id),
+        ];
+        // The legacy-looking name belongs to another schedule (the property is
+        // authoritative), so only this schedule's one snapshot counts.
+        assert!(prune_plan(&snapshots, "tank/data", id, &legacy, 1).is_empty());
+    }
+
+    #[test]
     fn retention_is_disabled_by_zero() {
-        let paths = vec![path("tank/data", "naslos-auto-abcd1234-old1")];
-        assert!(prune_plan(&paths, "tank/data", "naslos-auto-abcd1234-", 0).is_empty());
+        let snapshots = vec![owned("tank/data", "naslos-2026-01-01_00-00-00", "abcd1234")];
+        assert!(prune_plan(&snapshots, "tank/data", "abcd1234", "", 0).is_empty());
+    }
+
+    #[test]
+    fn snapshot_target_overlap_covers_recursive_descendants_only() {
+        assert!(snapshot_targets_overlap(
+            "tank/data",
+            false,
+            "tank/data",
+            false
+        ));
+        assert!(snapshot_targets_overlap(
+            "tank/data",
+            true,
+            "tank/data/child",
+            false
+        ));
+        assert!(snapshot_targets_overlap(
+            "tank/data/child",
+            false,
+            "tank/data",
+            true
+        ));
+        // A non-recursive parent only snapshots itself.
+        assert!(!snapshot_targets_overlap(
+            "tank/data",
+            false,
+            "tank/data/child",
+            false
+        ));
+        assert!(!snapshot_targets_overlap(
+            "tank/data/a",
+            true,
+            "tank/data/b",
+            true
+        ));
+        assert!(!snapshot_targets_overlap(
+            "tank/data",
+            true,
+            "tank/data2",
+            false
+        ));
+    }
+
+    fn stored_schedule(id: &str, target: &str, recursive: bool, enabled: bool) -> StorageSchedule {
+        StorageSchedule {
+            id: id.to_string(),
+            kind: ScheduleKind::Snapshot,
+            target: target.to_string(),
+            cadence: Cadence::Daily,
+            run_at: "02:30".to_string(),
+            recursive,
+            enabled,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn loading_disables_preexisting_overlapping_schedules() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("storage-schedules.json");
+        let list = vec![
+            stored_schedule("a", "tank/data", true, true),
+            // Exact duplicate of `a`.
+            stored_schedule("b", "tank/data", false, true),
+            // Nested in `a`'s recursive tree.
+            stored_schedule("c", "tank/data/child", false, true),
+            stored_schedule("d", "tank/other", false, true),
+            // Disabled entries never run, so they are not touched.
+            stored_schedule("e", "tank/other/child", false, false),
+        ];
+        std::fs::write(&path, serde_json::to_vec(&list).unwrap()).unwrap();
+
+        let store = StorageScheduleStore::new(path.to_str().unwrap());
+        store.load().unwrap();
+        assert!(store.get("a").unwrap().enabled);
+        let b = store.get("b").unwrap();
+        assert!(!b.enabled);
+        assert!(b.last_error.contains("disabled automatically"), "{b:?}");
+        let c = store.get("c").unwrap();
+        assert!(!c.enabled);
+        assert!(c.last_error.contains("disabled automatically"), "{c:?}");
+        assert!(store.get("d").unwrap().enabled);
+        assert!(!store.get("e").unwrap().enabled);
+
+        // The migration is persisted, not just applied in memory.
+        let reloaded = StorageScheduleStore::new(path.to_str().unwrap());
+        reloaded.load().unwrap();
+        assert!(!reloaded.get("b").unwrap().enabled);
+        assert!(!reloaded.get("c").unwrap().enabled);
     }
 
     #[test]

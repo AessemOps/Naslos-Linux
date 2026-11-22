@@ -7,6 +7,7 @@ mod common;
 use common::{ran_command, FakeHost, FakeRunner};
 use naslos_agent::zfs::dataset::{
     is_busy_error, validate_dataset_name, validate_dataset_options, validate_dataset_path,
+    validate_schedule_id,
 };
 use naslos_agent::zfs::devices::{is_whole_disk, normalize_vdev_topology, validate_pool_name};
 use naslos_agent::zfs::operations::parse_pool_health;
@@ -531,6 +532,135 @@ async fn snapshot_paths_lists_creation_ordered_paths() {
         &calls,
         "/usr/local/sbin/zfs list -H -t snapshot -o name -s creation -r tank/data"
     ));
+}
+
+#[tokio::test]
+async fn snapshot_schedules_list_the_owner_property() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "tank/data@naslos-2026-01-05_10-15-00\tabc123\n\
+         tank/data@manual-keep\t-\n\
+         tank/data/child@naslos-2026-01-05_10-15-00\tabc123\n",
+    ]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    let snapshots = c
+        .snapshot_schedules("tank/data")
+        .await
+        .expect("snapshot properties");
+    assert_eq!(
+        snapshots,
+        vec![
+            naslos_agent::zfs::SnapshotSchedule {
+                path: "tank/data@naslos-2026-01-05_10-15-00".into(),
+                schedule: "abc123".into(),
+            },
+            naslos_agent::zfs::SnapshotSchedule {
+                path: "tank/data@manual-keep".into(),
+                schedule: String::new(),
+            },
+            naslos_agent::zfs::SnapshotSchedule {
+                path: "tank/data/child@naslos-2026-01-05_10-15-00".into(),
+                schedule: "abc123".into(),
+            },
+        ]
+    );
+    assert!(ran_command(
+        &calls,
+        "/usr/local/sbin/zfs list -H -t snapshot -o name,user:naslos:schedule -s creation -r tank/data"
+    ));
+}
+
+#[tokio::test]
+async fn snapshot_schedule_refusals_never_reach_the_host() {
+    for schedule in ["", "-f", "a b", "a@b", "a\nb"] {
+        let host = FakeHost::new();
+        let runner = Arc::new(FakeRunner::new(&[]));
+        let calls = runner.calls();
+        let c = client(&host, runner);
+
+        let err = c
+            .set_snapshot_schedule("tank/data", "naslos-2026-01-05_10-15-00", schedule, false)
+            .await
+            .expect_err("invalid schedule id was accepted");
+        assert!(err.is_validation(), "{schedule:?}: {err:?}");
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "{schedule:?} reached a command"
+        );
+    }
+
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+    assert!(c
+        .set_snapshot_schedule("tank/data", "-r", "abc123", false)
+        .await
+        .is_err());
+    assert!(c
+        .set_snapshot_schedule("data", "naslos-2026-01-05_10-15-00", "abc123", false)
+        .await
+        .is_err());
+    assert!(calls.lock().unwrap().is_empty());
+    assert!(validate_schedule_id(&"a".repeat(129)).is_err());
+    assert!(validate_schedule_id("0123456789abcdef").is_ok());
+}
+
+#[tokio::test]
+async fn set_snapshot_schedule_writes_only_the_fixed_property() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[""]));
+    let argv = runner.argv();
+    let c = client(&host, runner);
+
+    c.set_snapshot_schedule("tank/data", "naslos-2026-01-05_10-15-00", "abc123", false)
+        .await
+        .expect("valid property set");
+    let argv = argv.lock().unwrap();
+    assert_eq!(argv.len(), 1);
+    assert_eq!(
+        argv[0],
+        vec![
+            "set".to_string(),
+            "user:naslos:schedule=abc123".to_string(),
+            "tank/data@naslos-2026-01-05_10-15-00".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn recursive_snapshot_schedule_tags_every_child_snapshot() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "tank/data@naslos-2026-01-05_10-15-00\n\
+         tank/data/child@naslos-2026-01-05_10-15-00\n\
+         tank/data/child@manual-keep\n\
+         tank/data/other@naslos-2025-01-01_00-00-00\n",
+        "",
+        "",
+    ]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    c.set_snapshot_schedule("tank/data", "naslos-2026-01-05_10-15-00", "abc123", true)
+        .await
+        .expect("recursive property set");
+    let all = calls.lock().unwrap();
+    assert_eq!(all.len(), 3, "{all:?}");
+    assert_eq!(
+        all[0],
+        "/usr/local/sbin/zfs list -H -t snapshot -o name -r tank/data"
+    );
+    assert_eq!(
+        all[1],
+        "/usr/local/sbin/zfs set user:naslos:schedule=abc123 tank/data@naslos-2026-01-05_10-15-00"
+    );
+    assert_eq!(
+        all[2],
+        "/usr/local/sbin/zfs set user:naslos:schedule=abc123 tank/data/child@naslos-2026-01-05_10-15-00"
+    );
 }
 
 #[tokio::test]

@@ -3,9 +3,9 @@
 //! server) stands in for the DaemonSet.
 
 use axum::body::Body;
-use axum::extract::ConnectInfo;
+use axum::extract::{ConnectInfo, Path, Query};
 use axum::http::{Request, StatusCode};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use naslos_api::agent::Client as AgentClient;
@@ -16,6 +16,7 @@ use naslos_api::server::storage_schedules::{run_due_schedules, ScheduleKind, Sto
 use naslos_api::shares::{Manager as SharesManager, SambaUserStore};
 use naslos_api::state::{AppState, Cidr};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -670,6 +671,139 @@ async fn scrub_schedule_does_not_restart_a_running_scrub() {
     let saved = state.storage_schedules.get("scrubrunning").unwrap();
     assert_eq!(saved.last_result, "started");
     assert!(saved.next_run.unwrap() > now);
+}
+
+// ---- scheduled snapshots -------------------------------------------------
+
+#[tokio::test]
+async fn snapshot_schedule_removes_untagged_snapshots_when_tagging_fails() {
+    let created = Arc::new(std::sync::Mutex::new(String::new()));
+    let deleted = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let created_post = created.clone();
+    let created_get = created.clone();
+    let deleted_delete = deleted.clone();
+
+    let app =
+        Router::new()
+            .route(
+                "/api/v1/snapshots/{*dataset}",
+                get(move || {
+                    let name = created_get.lock().unwrap().clone();
+                    async move {
+                        Json(json!([
+                            format!("tank/data@{name}"),
+                            format!("tank/data/child@{name}")
+                        ]))
+                    }
+                })
+                .post(move |Json(body): Json<Value>| {
+                    let name = body["name"].as_str().unwrap_or_default().to_string();
+                    *created_post.lock().unwrap() = name;
+                    async move {
+                        (
+                            StatusCode::CREATED,
+                            Json(json!({ "status": "snapshot created" })),
+                        )
+                    }
+                })
+                .delete(
+                    move |Path(dataset): Path<String>,
+                          Query(query): Query<HashMap<String, String>>| async move {
+                        let name = query.get("name").cloned().unwrap_or_default();
+                        deleted_delete
+                            .lock()
+                            .unwrap()
+                            .push(format!("{dataset}@{name}"));
+                        Json(json!({ "status": "snapshot destroyed" }))
+                    },
+                ),
+            )
+            .route(
+                "/api/v1/snapshot-properties/{*dataset}",
+                put(|| async {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "tag failed" })),
+                    )
+                }),
+            );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let state = state_with_agent(&format!("http://{addr}"));
+    let now = chrono::Utc::now();
+    state
+        .storage_schedules
+        .put(StorageSchedule {
+            id: "snaptest".to_string(),
+            kind: ScheduleKind::Snapshot,
+            target: "tank/data".to_string(),
+            cadence: Cadence::Daily,
+            run_at: "02:30".to_string(),
+            recursive: true,
+            enabled: true,
+            next_run: Some(now - chrono::Duration::seconds(1)),
+            ..Default::default()
+        })
+        .unwrap();
+
+    run_due_schedules(&state, now).await;
+
+    let saved = state.storage_schedules.get("snaptest").unwrap();
+    assert_eq!(saved.last_result, "failed");
+    assert!(
+        saved
+            .last_error
+            .contains("the untagged snapshot was removed"),
+        "{}",
+        saved.last_error
+    );
+
+    let name = created.lock().unwrap().clone();
+    assert!(!name.is_empty());
+    let deleted_paths = deleted.lock().unwrap().clone();
+    assert_eq!(deleted_paths.len(), 2, "{deleted_paths:?}");
+    assert!(
+        deleted_paths
+            .iter()
+            .any(|p| p == &format!("tank/data@{name}")),
+        "{deleted_paths:?}"
+    );
+    assert!(
+        deleted_paths
+            .iter()
+            .any(|p| p == &format!("tank/data/child@{name}")),
+        "{deleted_paths:?}"
+    );
+
+    // A non-recursive run created exactly one snapshot; cleanup must not sweep
+    // a descendant snapshot that happens to carry the same name.
+    deleted.lock().unwrap().clear();
+    state
+        .storage_schedules
+        .put(StorageSchedule {
+            id: "snapflat".to_string(),
+            kind: ScheduleKind::Snapshot,
+            target: "tank/data".to_string(),
+            cadence: Cadence::Daily,
+            run_at: "02:30".to_string(),
+            recursive: false,
+            enabled: true,
+            next_run: Some(now - chrono::Duration::seconds(1)),
+            ..Default::default()
+        })
+        .unwrap();
+    run_due_schedules(&state, now).await;
+
+    let flat = state.storage_schedules.get("snapflat").unwrap();
+    assert_eq!(flat.last_result, "failed");
+    let name = created.lock().unwrap().clone();
+    let deleted = deleted.lock().unwrap();
+    assert_eq!(deleted.len(), 1, "{deleted:?}");
+    assert_eq!(deleted[0], format!("tank/data@{name}"));
 }
 
 // ---- zvols ---------------------------------------------------------------

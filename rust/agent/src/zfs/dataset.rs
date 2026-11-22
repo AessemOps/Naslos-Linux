@@ -5,7 +5,40 @@ use super::devices::validate_pool_name;
 use super::{ZfsClient, ZFS_BIN};
 use crate::invalid;
 use crate::zfs::validation::{ZfsError, ZfsResult};
-use crate::zfs::Dataset;
+use crate::zfs::{Dataset, SnapshotSchedule};
+
+/// The only snapshot user property Naslos writes: the id of the storage
+/// schedule that created the snapshot. Retention uses it instead of trusting a
+/// name prefix, so a user snapshot can never be mistaken for a scheduled one.
+pub const SNAPSHOT_SCHEDULE_PROPERTY: &str = "user:naslos:schedule";
+
+/// Validate a schedule id used as a snapshot property value. The API generates
+/// lowercase hex ids; the wider ZFS-safe charset keeps older store values
+/// readable while still refusing whitespace, control characters and anything
+/// that could look like an option.
+pub fn validate_schedule_id(value: &str) -> ZfsResult<()> {
+    if value.is_empty() {
+        return Err(ZfsError::Validation("schedule id is required".into()));
+    }
+    if value.len() > 128 {
+        return Err(ZfsError::Validation(
+            "schedule id must be 128 characters or fewer".into(),
+        ));
+    }
+    if value.starts_with('-') {
+        return Err(invalid!("schedule id {:?} must not start with '-'", value));
+    }
+    if !value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '+' | '-'))
+    {
+        return Err(invalid!(
+            "schedule id {:?} must be letters, digits, '.', '_', ':', '+' or '-'",
+            value
+        ));
+    }
+    Ok(())
+}
 
 /// `humanBytes` from the Go agent: powers of 1024, one decimal below 10.
 pub fn human_bytes(n: i64) -> String {
@@ -534,6 +567,136 @@ impl ZfsClient {
             }
         }
         Ok(snaps)
+    }
+
+    /// Every snapshot under a dataset (including child datasets) with the
+    /// schedule that owns it. The property is unset (`-` in `zfs list`) for
+    /// user snapshots and for anything not created by the scheduler.
+    ///
+    /// The property name is a constant and the value comes from `zfs list`, so
+    /// this path cannot be used to read arbitrary ZFS properties.
+    pub async fn snapshot_schedules(&self, dataset: &str) -> ZfsResult<Vec<SnapshotSchedule>> {
+        validate_dataset_path(dataset)?;
+        let out = match self
+            .host_exec(
+                ZFS_BIN,
+                &strings(&[
+                    "list",
+                    "-H",
+                    "-t",
+                    "snapshot",
+                    "-o",
+                    &format!("name,{SNAPSHOT_SCHEDULE_PROPERTY}"),
+                    "-s",
+                    "creation",
+                    "-r",
+                    dataset,
+                ]),
+            )
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => return Err(ZfsError::Other(format!("listing snapshots: {}", e.message))),
+        };
+
+        Ok(out
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let (path, schedule) = match line.split_once('\t') {
+                    Some((path, schedule)) => (path, schedule.trim()),
+                    None => (line, ""),
+                };
+                SnapshotSchedule {
+                    path: path.to_string(),
+                    schedule: if schedule == "-" {
+                        String::new()
+                    } else {
+                        schedule.to_string()
+                    },
+                }
+            })
+            .collect())
+    }
+
+    /// Record which schedule owns a snapshot (`zfs set
+    /// user:naslos:schedule=<id>`), on the dataset itself or, for a recursive
+    /// snapshot, on every descendant snapshot carrying the same name.
+    pub async fn set_snapshot_schedule(
+        &self,
+        dataset: &str,
+        snap_name: &str,
+        schedule: &str,
+        recursive: bool,
+    ) -> ZfsResult<()> {
+        validate_dataset_path(dataset)?;
+        super::backup::validate_snapshot_name(snap_name)?;
+        validate_schedule_id(schedule)?;
+        let property = format!("{SNAPSHOT_SCHEDULE_PROPERTY}={schedule}");
+
+        if !recursive {
+            return self
+                .set_snapshot_property(&format!("{dataset}@{snap_name}"), &property)
+                .await;
+        }
+
+        // `zfs set -r` walks dataset descendants, not snapshots, so collect the
+        // recursive snapshot's own paths and tag each one. The paths come from
+        // `zfs list`, but are validated again before reaching argv.
+        let out = match self
+            .host_exec(
+                ZFS_BIN,
+                &strings(&["list", "-H", "-t", "snapshot", "-o", "name", "-r", dataset]),
+            )
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => {
+                return Err(ZfsError::Other(format!(
+                    "listing recursive snapshots: {}",
+                    e.message
+                )))
+            }
+        };
+
+        let root = format!("{dataset}@{snap_name}");
+        let child_prefix = format!("{dataset}/");
+        let snap_suffix = format!("@{snap_name}");
+        let mut targets: Vec<&str> = out
+            .lines()
+            .map(str::trim)
+            .filter(|path| {
+                *path == root || (path.starts_with(&child_prefix) && path.ends_with(&snap_suffix))
+            })
+            .collect();
+        if targets.is_empty() {
+            targets.push(&root);
+        }
+
+        for path in targets {
+            let Some((owner, name)) = path.split_once('@') else {
+                return Err(invalid!("invalid snapshot path {:?}", path));
+            };
+            validate_dataset_path(owner)?;
+            super::backup::validate_snapshot_name(name)?;
+            self.set_snapshot_property(path, &property).await?;
+        }
+        Ok(())
+    }
+
+    async fn set_snapshot_property(&self, path: &str, property: &str) -> ZfsResult<()> {
+        match self
+            .host_exec(ZFS_BIN, &strings(&["set", property, path]))
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(ZfsError::Other(format!(
+                "setting snapshot schedule on {path}: {}: {}",
+                e.output.trim(),
+                e.message
+            ))),
+        }
     }
 
     /// Roll a dataset back to one of its snapshots (`zfs rollback -r`). The

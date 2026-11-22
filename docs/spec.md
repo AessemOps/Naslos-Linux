@@ -211,12 +211,31 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-STO-10** — Scheduled snapshots MUST be creatable, listable, updatable and
   deletable per dataset (`GET|POST|DELETE /api/storage/schedules`, kind
   `snapshot`) with a cadence (hourly/daily/weekly, UTC `runAt`), an optional
-  recursive flag, and a keep count (0 = keep all, at most 1000). Every run MUST
-  create the snapshot through the agent with a scheduler-owned name
-  `naslos-auto-<schedule>-<UTC timestamp>`. Retention MUST delete only
-  snapshots carrying that schedule's prefix, keeping the newest N per dataset;
-  a user-created snapshot or another schedule's snapshot MUST NEVER be removed.
-  The schedule's `lastRun`, `lastResult`, `lastError` and `nextRun` MUST persist
+  recursive flag, and a keep count (0 = keep all, at most 1000). At most one
+  **enabled** snapshot schedule may cover a dataset: an exact target or a
+  recursive ancestor/descendant overlap MUST be refused (the shadow-copy name
+  carries no schedule id, so both would write the same snapshot), while a
+  disabled duplicate is allowed. On load, a 0.6.0 store that already has
+  overlapping enabled schedules MUST keep the first in id order enabled and
+  disable the rest with an explanatory `lastError`, so the upgrade neither
+  collides nor blocks their updates. Every run MUST
+  create the snapshot through the agent with the shadow-copy-compatible UTC
+  name `naslos-%Y-%m-%d_%H-%M-%S` and MUST record the owning schedule in the
+  snapshot's `user:naslos:schedule=<id>` user property (every descendant
+  snapshot of a recursive run). If recording that property fails after the
+  snapshot was created, the run MUST remove the snapshot(s) it just created
+  (all matching descendant snapshots for a recursive run) and record `failed`
+  with the cleanup outcome, so an untagged shadow-copy name cannot accumulate.
+  Retention MUST delete only snapshots whose
+  property equals that schedule's id, keeping the newest N per dataset; a
+  user-created snapshot (no property) or another schedule's snapshot MUST NEVER
+  be removed. For one release after the 0.6.0 rename, retention MUST also treat
+  a property-less legacy `naslos-auto-<schedule>-<UTC timestamp>` name as owned
+  by that schedule so older snapshots do not orphan. The agent property surface
+  is limited to that one fixed property (a validated value; no arbitrary
+  property passthrough). The API and agent MUST expose the property only through
+  the validated snapshot-property set/list routes. The schedule's `lastRun`,
+  `lastResult`, `lastError` and `nextRun` MUST persist
   on the state volume, a run missed while the API was down MUST fire once at
   startup, and a failed run MUST be recorded without disabling the schedule.
   A run that cannot reach the agent MUST be retried on the next tick instead of
@@ -772,11 +791,14 @@ later phases and are marked **[OPEN]** below.
   `vfs_shadow_copy2`) in front of
   the inherited `fruit`/`streams_xattr` modules and point it at the share's
   ZFS `.zfs/snapshot` directory (`shadow:snapdir`,
-  `shadow:snapdirseverywhere`, `shadow:sort`, `shadow:format`,
-  `shadow:localtime`), exposing only snapshots whose names match the
-  documented `naslos-…` timestamp format. A request that enables it on an
-  `nfs`/`afp` share MUST be refused with a 400. The share-form toggle is
-  **[OPEN]** (API-only in this pass). *(render + validation + contract tests)*
+  `shadow:snapdirseverywhere`, `shadow:sort`,
+  `shadow:format = naslos-%Y-%m-%d_%H-%M-%S`,
+  `shadow:localtime = no`), exposing only snapshots whose names match the
+  documented UTC timestamp format shared with FR-STO-10. A request that enables
+  it on an `nfs`/`afp` share MUST be refused with a 400, and a share path with a
+  `.zfs` component MUST be refused. The share form MUST expose the toggle
+  (default off) for SMB shares and MUST NOT send it for NFS.
+  *(render + validation + contract + UI tests)*
 - **FR-SHR-15** — Audit logging MUST be a per-share, SMB-only opt-in (default
   off). When enabled, the renderer MUST stack `full_audit` last in the VFS list
   with a fixed prefix and an explicit success/failure operation list, and MUST
@@ -784,8 +806,9 @@ later phases and are marked **[OPEN]** below.
   `logging = file` and `log level = 1` while any audited share exists) because
   the serving container has no syslog daemon. It MUST NOT change
   authentication, access or share contents, and a request that enables it on
-  an `nfs`/`afp` share MUST be refused with a 400. The share-form toggle is
-  **[OPEN]** (API-only in this pass). *(render + validation + contract tests)*
+  an `nfs`/`afp` share MUST be refused with a 400. The share form MUST expose
+  the toggle (default off) for SMB shares and MUST NOT send it for NFS.
+  *(render + validation + contract + UI tests)*
 - **FR-SHR-16** — A share path MUST NOT contain a `.zfs` component: the ZFS
   snapshot directory MUST NOT be exportable as a share. *(validation test)*
 
@@ -2208,6 +2231,7 @@ the current behavior until the post-P0 implementation lands.
 | `/api/v1/disks/health` | GET | Per-disk SMART + ZFS health (FR-DHK) |
 | `/api/v1/datasets/{pool}` | GET, POST | List / create datasets |
 | `/api/v1/snapshots/{pool}` | GET, POST, DELETE | List (add `?paths=true` for full `dataset@snap` paths) / create (optional `recursive`) / destroy one snapshot (`?name=`) (FR-STO-10) |
+| `/api/v1/snapshot-properties/{dataset}` | GET, PUT | List snapshots as `{path, schedule}` from `user:naslos:schedule` / record the owning schedule (`{name, schedule, recursive}`); only that fixed property, argv-only (FR-STO-10) |
 | `/api/v1/zfs/send/{dataset}` | GET | Stream `zfs send`; optional `to`, `from`, `raw`, `recursive=true`, `estimate=true` (FR-BUD-12, FR-REP-03) |
 | `/api/v1/zfs/receive/{dataset}` | POST | Stream a body into `zfs receive`; optional `force=true` (FR-BUD-12; replication sets it only for a full send and never for an incremental) |
 | `/api/v1/zfs/snapshots/{dataset}` | GET | Snapshots as `{dataset, name, guid, created}`; `?recursive=false` lists only the dataset's own snapshots (FR-BUD, FR-REP-03) |
@@ -2310,7 +2334,8 @@ path refusal, and the options round-trip, FR-SHR-14/15/16);
 the service-account lockout guard, FR-ACL-01/02); `rust/api/src/server/`
 (the user-edit membership diff, FR-IDN-04; the write-only ntfy token,
 `TestNotificationsNeverReturnTheAuthToken`; the storage retention plan,
-scheduler-owned snapshot names and scrub scan classification, FR-STO-10/11;
+property-owned shadow-copy snapshot names (and the one-release legacy fallback)
+and scrub scan classification, FR-STO-10/11;
 the system config export allow-list and secret-exclusion canaries,
 FR-CFG-01…03); and `rust/agent/src/shares/` (the 0600 passdb/shadow mirrors,
 FR-IDN-13).

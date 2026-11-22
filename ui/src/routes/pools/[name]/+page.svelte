@@ -364,8 +364,10 @@
           cadence: scheduleCadence,
           runAt: scheduleCadence === 'hourly' ? '' : scheduleRunAt,
           keep: scheduleKind === 'scrub' ? 0 : Number(scheduleKeep) || 0,
-          recursive: scheduleKind === 'snapshot' ? scheduleRecursive : false,
-          enabled: true
+          recursive: scheduleKind === 'snapshot' ? scheduleRecursive : false
+          // `enabled` is omitted: a new schedule defaults to enabled in the API,
+          // while editing a schedule disabled by the 0.6.0 duplicate migration
+          // must not silently re-enable it.
         })
       });
       const data = await res.json().catch(() => ({}));
@@ -703,7 +705,8 @@
       {:else if snapshotSchedules.length === 0}
         <p class="text-sm text-gray-400">
           No dataset has a snapshot schedule yet. A schedule creates its own
-          <code class="text-xs">naslos-auto-…</code> snapshots and keeps the newest N; it never deletes your snapshots.
+          <code class="text-xs">naslos-YYYY-MM-DD_HH-MM-SS</code> snapshots (visible as SMB previous
+          versions) and keeps the newest N; it never deletes your snapshots.
         </p>
       {:else}
         <div class="space-y-2">
@@ -774,8 +777,9 @@
   >
     {#if scheduleKind === 'snapshot'}
       <p class="text-sm text-gray-400">
-        The schedule creates snapshots named <code class="text-xs">naslos-auto-…</code> and keeps
-        the newest <strong>{scheduleKeep || 'all'}</strong>. Snapshots you create yourself are never removed.
+        The schedule creates snapshots named <code class="text-xs">naslos-YYYY-MM-DD_HH-MM-SS</code>
+        (UTC) and keeps the newest <strong>{scheduleKeep || 'all'}</strong>. Snapshots you create
+        yourself are never removed.
       </p>
       <div>
         <label class="label" for="schedule-target">Dataset</label>

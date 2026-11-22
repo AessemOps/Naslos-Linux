@@ -179,7 +179,7 @@ are in-memory (a restart abandons a running job; the app record and
 | POST | `/api/volumes/zfs/import` | Import: `{"name":"tank"}` for one pool, `{"all":true}` for every importable pool. A missing/malformed body is a 400, never an implicit import-all |
 | POST | `/api/volumes/zfs/{name}/devices` | Attach disks: `{disks, topology, force, wipeConfirmed}` → `zpool add`. Refuses a disk already in any pool (even with `force`), a disk holding a ZFS label, a non-`/dev` path, an unknown disk, and too few disks for the topology (FR-STO-08). A disk with another filesystem signature needs `wipeConfirmed`. |
 | POST | `/api/volumes/zfs/{name}/scrub` | Start a scrub now (`202`). `409` while `zpool status` reports a scrub or resilver in progress (FR-STO-11) |
-| GET/POST/DELETE | `/api/storage/schedules` | Periodic snapshot and scrub schedules (`{id, kind, target, cadence, runAt, keep, recursive, enabled}`; `?id=` deletes). Snapshot runs create `naslos-auto-<schedule>-<UTC>` and prune only their own names; scrub runs are daily/weekly and report the scan result (FR-STO-10/11) |
+| GET/POST/DELETE | `/api/storage/schedules` | Periodic snapshot and scrub schedules (`{id, kind, target, cadence, runAt, keep, recursive, enabled}`; `?id=` deletes). Only one enabled snapshot schedule may cover a dataset tree (recursive overlap is refused; legacy duplicates are disabled on load), and an update that omits `enabled` keeps the stored value. Snapshot runs create `naslos-YYYY-MM-DD_HH-MM-SS` (UTC) and record `user:naslos:schedule=<schedule>`; a failed property write removes the just-created snapshot(s). Retention prunes only snapshots carrying that property (plus legacy `naslos-auto-<schedule>-…` names for one release), never user snapshots; scrub runs are daily/weekly and report the scan result (FR-STO-10/11) |
 | GET | `/api/datasets` | Every dataset with used/avail/refer/mountpoint plus `encryption` (`off` or the cipher), `keystatus` (`none`, `unavailable`/locked, `available`/unlocked) and `encryptionRoot` (FR-ENC-04) |
 | GET | `/api/datasets/registry` | List operator-registered datasets apps may mount (`{name, hostPath, shared, warningAcknowledged, createdAt}`) |
 | POST | `/api/datasets/registry` | Register a dataset `{name, hostPath, shared, warningAcknowledged?}`. The path must be a mounted ZFS dataset below `/var/mnt`, must not overlap the Buddy store, and a `shared` dataset requires `warningAcknowledged:true` (400 otherwise) |
@@ -278,7 +278,8 @@ recursive for Buddy).
 | GET | `/api/shares/config/nfs` | Generated NFS-Ganesha config (text/plain), not `/etc/exports` |
 
 Share create/update accept the SMB-only booleans `shadowCopies` and `audit`
-(both default false; either on an `nfs` share is a 400). The rendered
+(both default false; either on an `nfs` share is a 400), exposed as **Previous
+Versions** and **Audit file operations** toggles in the share form. The rendered
 `/api/shares/config/samba` shows the resulting `vfs objects`, `shadow:*` and
 `full_audit:*` directives. See [shares.md](shares.md#shadow-copies-previous-versions)
 and [nfsv3.md](nfsv3.md) for NFSv3 (not served).
@@ -617,8 +618,8 @@ rule, client configuration).
 | GET/POST | `/api/v1/datasets/{pool}` | List / create dataset. A create may carry `key` (32 raw bytes in the JSON body) with `encryption`+`keyformat=raw`; the agent writes a 0600 tmpfs keyfile, creates and verifies the exact dataset, and removes the file. The key is never logged, echoed or put in argv |
 | GET/POST | `/api/v1/encryption/status/{dataset}`, `/api/v1/encryption/unlock`, `/api/v1/encryption/lock` | Read `encryption`/`keystatus`/`encryptionroot`/`mounted`; load a key (`{dataset, key}`); unload it (`{dataset}`). Refuses to lock a mounted dataset or descendant |
 | GET/POST/PUT/DELETE | `/api/v1/zvols` | List (`?pool=`), create `{name, size, options}`, resize `{size}` (`?name=`) or destroy (`?name=&confirm=`) a zvol. Property surface is `volblocksize` + `compression` only (FR-ZVOL) |
-| GET/POST | `/api/v1/snapshots/{dataset}` | List / create snapshot |
 | GET/POST/DELETE | `/api/v1/snapshots/{dataset}` | List (`?paths=true` returns full `dataset@snap` paths), create (`{name, recursive}`), destroy one (`?name=`) |
+| GET/PUT | `/api/v1/snapshot-properties/{dataset}` | List snapshots as `{path, schedule}` from `user:naslos:schedule` / record the owner (`{name, schedule, recursive}`). Only that fixed property; the value is validated and argv-only (FR-STO-10) |
 | POST | `/api/v1/pools/{pool}/scrub` | Start `zpool scrub <pool>` (pool name validated; no other arguments) |
 | GET | `/api/v1/zfs/send/{dataset}?to=&from=&raw=&estimate=` | Stream a `zfs send` (or report its size with `estimate=true`) |
 | POST | `/api/v1/zfs/receive/{dataset}?force=` | Stream a restore into `zfs receive` |

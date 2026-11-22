@@ -64,6 +64,16 @@ fn post_json(uri: &str, body: &str) -> Request<Body> {
         .unwrap()
 }
 
+fn put_json(uri: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 #[tokio::test]
 async fn health_is_public() {
     let (status, body) = send(&degraded(), get_auth("/health")).await;
@@ -138,6 +148,13 @@ async fn degraded_mode_returns_503_for_zfs_and_shares() {
     );
 
     let (status, body) = send(&server, get_auth("/api/v1/datasets")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        body["error"],
+        "ZFS is not available on this node (agent running in degraded mode)"
+    );
+
+    let (status, body) = send(&server, get_auth("/api/v1/snapshot-properties/tank/data")).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
         body["error"],
@@ -270,6 +287,46 @@ async fn bare_trailing_slash_route_is_bad_request_not_not_found() {
         StatusCode::BAD_REQUEST,
         "route did not match"
     );
+
+    let resp = server
+        .router()
+        .oneshot(get_auth("/api/v1/snapshot-properties/"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "route did not match"
+    );
+}
+
+#[tokio::test]
+async fn snapshot_property_route_matches_multi_segment_datasets() {
+    // The API writes the property with a PUT to a multi-segment dataset path;
+    // a 404 here would leave scheduled snapshots unowned.
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "tank/data/child@naslos-2026-01-05_10-15-00\n",
+        "",
+    ]));
+    let calls = runner.calls();
+    let zfs = ZfsClient::new(runner, host.root.clone());
+    let server = server_with(Some(zfs), None, TOKEN);
+
+    let (status, body) = send(
+        &server,
+        put_json(
+            "/api/v1/snapshot-properties/tank/data/child",
+            r#"{"name":"naslos-2026-01-05_10-15-00","schedule":"abc123"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["schedule"], "abc123");
+    assert!(common::ran_command(
+        &calls,
+        "/usr/local/sbin/zfs set user:naslos:schedule=abc123 tank/data/child@naslos-2026-01-05_10-15-00"
+    ));
 }
 
 #[tokio::test]
