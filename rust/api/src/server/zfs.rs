@@ -89,6 +89,86 @@ fn valid_compression(v: &str) -> bool {
     )
 }
 
+/// Parse a validated ZFS size (`10G`, `1.5T`, `4096`) into bytes.
+fn parse_size_bytes(raw: &str) -> Option<u64> {
+    let s = raw.trim();
+    if !matches_size(s) {
+        return None;
+    }
+    let (number, unit) = match s.as_bytes().last() {
+        Some(b'K') => (&s[..s.len() - 1], 1024u64),
+        Some(b'M') => (&s[..s.len() - 1], 1024u64.pow(2)),
+        Some(b'G') => (&s[..s.len() - 1], 1024u64.pow(3)),
+        Some(b'T') => (&s[..s.len() - 1], 1024u64.pow(4)),
+        Some(b'P') => (&s[..s.len() - 1], 1024u64.pow(5)),
+        Some(b'E') => (&s[..s.len() - 1], 1024u64.pow(6)),
+        _ => (s, 1),
+    };
+    let value: f64 = number.parse().ok()?;
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    let bytes = value * unit as f64;
+    if bytes >= u64::MAX as f64 {
+        return None;
+    }
+    // Do not round: `0.1` is not a byte and `1023.5` is not a power of two.
+    // Fractional byte counts are refused rather than silently rounded.
+    if bytes < 1.0 || bytes.fract() != 0.0 {
+        return None;
+    }
+    Some(bytes as u64)
+}
+
+/// Validate a zvol size (creation and resize).
+pub fn validate_zvol_size(raw: &str) -> Result<u64, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err("zvol size is required (for example 10G)".into());
+    }
+    parse_size_bytes(value)
+        .ok_or_else(|| format!("invalid zvol size {value:?}: use a size such as 10G"))
+}
+
+/// Validate `volblocksize`: a power of two from 512 bytes to 16 MiB.
+pub fn validate_volblocksize(raw: &str) -> Result<(), String> {
+    let value = raw.trim();
+    let bytes = parse_size_bytes(value).ok_or_else(|| {
+        format!("invalid volblocksize {value:?}: use a power of two from 512 to 16M")
+    })?;
+    if !(512..=16 * 1024 * 1024).contains(&bytes) || !bytes.is_power_of_two() {
+        return Err(format!(
+            "invalid volblocksize {value:?}: use a power of two from 512 to 16M"
+        ));
+    }
+    Ok(())
+}
+
+/// Validate the properties a zvol is created with.
+pub fn validate_zvol_options(options: &HashMap<String, String>) -> Result<(), String> {
+    for (key, raw) in options {
+        let value = raw.trim();
+        match key.as_str() {
+            "volblocksize" => validate_volblocksize(value)?,
+            "compression" => {
+                if !valid_compression(value) {
+                    return Err(format!("unsupported compression {value:?}"));
+                }
+            }
+            "volsize" => {
+                return Err("set the size with the size field, not a volsize option".into())
+            }
+            "quota" | "recordsize" | "atime" | "copies" | "readonly" => {
+                return Err(format!(
+                    "{key} is a dataset option; it cannot be set on a zvol"
+                ))
+            }
+            _ => return Err(format!("unsupported zvol option {key:?}")),
+        }
+    }
+    Ok(())
+}
+
 /// Validate a dataset name relative to its pool.
 pub fn validate_dataset_name(name: &str) -> Result<(), String> {
     let trimmed = name.trim();
@@ -192,6 +272,9 @@ pub fn validate_dataset_create_options(options: &HashMap<String, String>) -> Res
     for (key, raw) in options {
         let value = raw.trim();
         match key.as_str() {
+            "volblocksize" | "volsize" | "volmode" => {
+                return Err(format!("{key} is a zvol property; create a zvol instead"))
+            }
             "compression" => {
                 if !valid_compression(value) {
                     return Err(format!("unsupported compression {value:?}"));
@@ -777,6 +860,157 @@ pub async fn datasets_delete(
     }
 }
 
+// ---- zvols ---------------------------------------------------------------
+
+#[derive(Default, Deserialize)]
+struct CreateZvolBody {
+    #[serde(default)]
+    pool: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    size: String,
+    #[serde(default)]
+    options: HashMap<String, String>,
+}
+
+pub async fn zvols_get(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let client = match agent(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let pool = query.get("pool").map(|p| p.trim()).unwrap_or_default();
+    if !pool.is_empty() && !is_valid_pool_name(pool) {
+        return bad_request(&format!("invalid pool name {pool:?}"));
+    }
+    let result = if pool.is_empty() {
+        client.list_zvols().await
+    } else {
+        client.list_pool_zvols(pool).await
+    };
+    match result {
+        Ok(zvols) => json(StatusCode::OK, serde_json::to_value(zvols).unwrap()),
+        Err(e) => write_agent_error(&e),
+    }
+}
+
+pub async fn zvols_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    let req: CreateZvolBody = match read_json(body).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if !is_valid_pool_name(&req.pool) {
+        return bad_request(&format!("invalid pool name {:?}", req.pool));
+    }
+    if let Err(e) = validate_dataset_name(&req.name) {
+        return bad_request(&e);
+    }
+    if let Err(e) = validate_zvol_size(&req.size) {
+        return bad_request(&e);
+    }
+    if let Err(e) = validate_zvol_options(&req.options) {
+        return bad_request(&e);
+    }
+    if let Err(e) = require_pool(&state, &req.pool).await {
+        return bad_request(&e);
+    }
+    let client = match agent(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let name = format!("{}/{}", req.pool, req.name);
+    match client.create_zvol(&name, &req.size, &req.options).await {
+        Ok(()) => {
+            tracing::info!("created zvol {}", logsafe::field(&name));
+            json(
+                StatusCode::CREATED,
+                serde_json::json!({ "status": "zvol created", "name": name }),
+            )
+        }
+        Err(e) => write_agent_error(&e),
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct ResizeZvolBody {
+    #[serde(default)]
+    size: String,
+}
+
+pub async fn zvols_resize(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
+    body: Body,
+) -> Response {
+    let name = query
+        .get("name")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if let Err(e) = validate_dataset_path(&name) {
+        return bad_request(&e);
+    }
+    let req: ResizeZvolBody = match read_json(body).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = validate_zvol_size(&req.size) {
+        return bad_request(&e);
+    }
+    let client = match agent(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    match client.resize_zvol(&name, &req.size).await {
+        Ok(()) => {
+            tracing::info!(
+                "resized zvol {} to {}",
+                logsafe::field(&name),
+                logsafe::field(req.size.trim())
+            );
+            json(
+                StatusCode::OK,
+                serde_json::json!({
+                    "status": "zvol resized", "name": name, "size": req.size.trim()
+                }),
+            )
+        }
+        Err(e) => write_agent_error(&e),
+    }
+}
+
+pub async fn zvols_delete(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let name = query
+        .get("name")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if let Err(e) = validate_dataset_path(&name) {
+        return bad_request(&e);
+    }
+    if query.get("confirm").map(String::as_str) != Some(name.as_str()) {
+        return bad_request("destroying a zvol requires confirm=<zvol name>");
+    }
+    let client = match agent(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    match client.delete_zvol(&name, &name).await {
+        Ok(()) => {
+            tracing::info!("destroyed zvol {}", logsafe::field(&name));
+            json(
+                StatusCode::OK,
+                serde_json::json!({ "status": "zvol destroyed", "name": name }),
+            )
+        }
+        Err(e) => write_agent_error(&e),
+    }
+}
+
 /// Refuse to destroy a dataset that a share serves (or a parent of one).
 async fn require_unused_by_shares(state: &AppState, name: &str) -> Result<(), String> {
     let client = match state.agent.clone() {
@@ -842,6 +1076,22 @@ mod tests {
         );
         assert_eq!(whole_disk_path("/dev/sdc"), None);
         assert_eq!(whole_disk_path("/dev/zd32"), None);
+    }
+
+    #[test]
+    fn zvol_sizes_are_not_rounded_into_validity() {
+        assert_eq!(validate_zvol_size("10G").unwrap(), 10 * 1024 * 1024 * 1024);
+        assert_eq!(validate_zvol_size("512").unwrap(), 512);
+        for bad in ["0.1", "1.5", "0", "-1G", "lots"] {
+            assert!(validate_zvol_size(bad).is_err(), "{bad}");
+        }
+        for ok in ["512", "4K", "16M"] {
+            assert!(validate_volblocksize(ok).is_ok(), "{ok}");
+        }
+        // 1023.5 rounds to 1024 but is not a power-of-two size the user typed.
+        for bad in ["1023.5", "1023", "3M"] {
+            assert!(validate_volblocksize(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

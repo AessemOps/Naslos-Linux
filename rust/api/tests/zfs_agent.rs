@@ -662,3 +662,281 @@ async fn scrub_schedule_does_not_restart_a_running_scrub() {
     assert_eq!(saved.last_result, "started");
     assert!(saved.next_run.unwrap() > now);
 }
+
+// ---- zvols ---------------------------------------------------------------
+
+async fn record_zvol_request(
+    requests: Arc<std::sync::Mutex<Vec<String>>>,
+    req: Request<Body>,
+) -> (StatusCode, Json<Value>) {
+    let (parts, body) = req.into_parts();
+    let bytes = body.collect().await.unwrap().to_bytes();
+    let mut line = format!("{} {}", parts.method, parts.uri);
+    if !bytes.is_empty() {
+        line.push_str(&format!(" | {}", String::from_utf8_lossy(&bytes)));
+    }
+    requests.lock().unwrap().push(line);
+    let body = if parts.method == axum::http::Method::GET {
+        json!([])
+    } else {
+        json!({ "status": "ok" })
+    };
+    (StatusCode::OK, Json(body))
+}
+
+/// A mock agent that records every zvol request and always answers 200.
+async fn spawn_zvol_recorder() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route(
+            "/api/v1/pools",
+            get(|| async {
+                Json(json!([{
+                    "name": "tank", "size": "10G", "alloc": "1G", "free": "9G",
+                    "health": "ONLINE", "topology": "", "disks": [], "mountpoint": ""
+                }]))
+            }),
+        )
+        .route(
+            "/api/v1/zvols",
+            axum::routing::any({
+                let requests = requests.clone();
+                move |req: Request<Body>| record_zvol_request(requests.clone(), req)
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), requests)
+}
+
+fn zvol_requests(requests: &Arc<std::sync::Mutex<Vec<String>>>) -> Vec<String> {
+    requests.lock().unwrap().clone()
+}
+
+#[tokio::test]
+async fn zvol_create_sends_the_validated_full_name_and_options() {
+    let (base, requests) = spawn_zvol_recorder().await;
+    let (status, body) = call(
+        state_with_agent(&base),
+        "POST",
+        "/api/zvols",
+        Some(json!({
+            "pool": "tank",
+            "name": "targets/vol1",
+            "size": "10G",
+            "options": { "volblocksize": "16K", "compression": "zstd" }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["name"], "tank/targets/vol1");
+    let requests = zvol_requests(&requests);
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert!(
+        requests[0].starts_with("POST /api/v1/zvols | "),
+        "{requests:?}"
+    );
+    assert!(
+        requests[0].contains(r#""name":"tank/targets/vol1""#),
+        "{requests:?}"
+    );
+    assert!(requests[0].contains(r#""size":"10G""#), "{requests:?}");
+    assert!(
+        requests[0].contains(r#""volblocksize":"16K""#),
+        "{requests:?}"
+    );
+}
+
+#[tokio::test]
+async fn zvol_create_rejects_dataset_options_and_bad_sizes_before_the_agent() {
+    let cases = [
+        json!({ "pool": "tank", "name": "vol", "size": "10G", "options": { "recordsize": "128K" } }),
+        json!({ "pool": "tank", "name": "vol", "size": "10G", "options": { "volsize": "10G" } }),
+        json!({ "pool": "tank", "name": "vol", "size": "lots" }),
+        json!({ "pool": "tank", "name": "../vol", "size": "10G" }),
+        json!({ "pool": "-f", "name": "vol", "size": "10G" }),
+        json!({ "pool": "tank", "name": "vol", "size": "10G", "options": { "volblocksize": "3M" } }),
+    ];
+    for body in cases {
+        let (base, requests) = spawn_zvol_recorder().await;
+        let (status, _b) = call(
+            state_with_agent(&base),
+            "POST",
+            "/api/zvols",
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(zvol_requests(&requests).is_empty(), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn zvol_list_passes_the_pool_filter() {
+    let (base, requests) = spawn_zvol_recorder().await;
+    let state = state_with_agent(&base);
+
+    let (status, _b) = call(state.clone(), "GET", "/api/zvols", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _b) = call(state.clone(), "GET", "/api/zvols?pool=tank", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _b) = call(state, "GET", "/api/zvols?pool=-f", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let requests = zvol_requests(&requests);
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert_eq!(requests[0], "GET /api/v1/zvols");
+    assert_eq!(requests[1], "GET /api/v1/zvols?pool=tank");
+}
+
+#[tokio::test]
+async fn zvol_resize_validates_and_forwards_the_name() {
+    let (base, requests) = spawn_zvol_recorder().await;
+    let state = state_with_agent(&base);
+
+    let (status, body) = call(
+        state.clone(),
+        "PUT",
+        "/api/zvols?name=tank/vol",
+        Some(json!({ "size": "20G" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "tank/vol");
+
+    let (status, _b) = call(
+        state.clone(),
+        "PUT",
+        "/api/zvols?name=tank/vol",
+        Some(json!({ "size": "lots" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _b) = call(state, "PUT", "/api/zvols", Some(json!({ "size": "20G" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let requests = zvol_requests(&requests);
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(
+        requests[0],
+        "PUT /api/v1/zvols?name=tank%2Fvol | {\"size\":\"20G\"}"
+    );
+}
+
+#[tokio::test]
+async fn zvol_delete_requires_confirmation_matching_the_name() {
+    let (base, requests) = spawn_zvol_recorder().await;
+    let state = state_with_agent(&base);
+
+    let (status, _b) = call(state.clone(), "DELETE", "/api/zvols?name=tank/vol", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "no confirm");
+    let (status, _b) = call(
+        state.clone(),
+        "DELETE",
+        "/api/zvols?name=tank/vol&confirm=tank/other",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "wrong confirm");
+    assert!(zvol_requests(&requests).is_empty());
+
+    let (status, body) = call(
+        state,
+        "DELETE",
+        "/api/zvols?name=tank/vol&confirm=tank/vol",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "tank/vol");
+    let requests = zvol_requests(&requests);
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(
+        requests[0],
+        "DELETE /api/v1/zvols?name=tank%2Fvol&confirm=tank%2Fvol"
+    );
+}
+
+#[tokio::test]
+async fn zvol_refusals_from_the_agent_are_forwarded() {
+    let app = Router::new().route(
+        "/api/v1/zvols",
+        axum::routing::any(|| async {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "zvol tank/vol is in use (held by dm-0)" })),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let state = state_with_agent(&format!("http://{addr}"));
+
+    let (status, body) = call(
+        state,
+        "DELETE",
+        "/api/zvols?name=tank/vol&confirm=tank/vol",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("in use"), "{body}");
+}
+
+#[tokio::test]
+async fn zvols_without_an_agent_are_502() {
+    let state = Arc::new(AppState {
+        proxy_secret: SECRET.to_string(),
+        trusted_cidrs: vec![Cidr::parse("0.0.0.0/0").unwrap()],
+        metrics: Manager::new(),
+        talos: None,
+        agent: None,
+        vmd: None,
+        vms: std::sync::Arc::new(naslos_api::virt::Store::new("")),
+        shares: std::sync::Mutex::new(SharesManager::new("", "/var/mnt")),
+        samba_users: std::sync::Mutex::new(SambaUserStore::new("")),
+        charts: None,
+        catalog: std::sync::Arc::new(naslos_api::state::CatalogHolder::new()),
+        app_manager: None,
+        app_jobs: std::sync::Arc::new(naslos_api::server::app_jobs::AppJobManager::new()),
+        base_domain: String::new(),
+        providers: std::sync::Arc::new(naslos_api::providers::Registry::load("")),
+        domains: std::sync::Arc::new(naslos_api::certs::Store::new("")),
+        certs: None,
+        sso: None,
+        kube: None,
+        sso_domains: Vec::new(),
+        apps_namespace: "naslos-apps".to_string(),
+        ddns: None,
+        notifications: std::sync::Arc::new(naslos_api::notifications::Manager::new("")),
+        network: naslos_api::network::Manager::new(
+            "",
+            std::sync::Arc::new(naslos_api::network::UnavailableNode),
+        ),
+        datasets_registry: std::sync::Arc::new(naslos_api::datasets::Registry::new("", "")),
+        buddy: None,
+        buddy_jobs: std::sync::Arc::new(naslos_api::server::buddy_send::BuddyJobManager::new()),
+        buddy_schedules: std::sync::Arc::new(
+            naslos_api::server::buddy_schedules::ScheduleStore::new(""),
+        ),
+        identity: None,
+        external_directory: naslos_api::directory::Store::disabled(),
+        storage_schedules: std::sync::Arc::new(
+            naslos_api::server::storage_schedules::StorageScheduleStore::new(""),
+        ),
+        replication_jobs: std::sync::Arc::new(
+            naslos_api::server::replication::ReplicationJobManager::new(),
+        ),
+        system: naslos_api::system::Config::default(),
+        updates: None,
+        mcp: naslos_api::mcp::McpState::for_test(),
+    });
+    let (status, _b) = call(state, "GET", "/api/zvols", None).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}

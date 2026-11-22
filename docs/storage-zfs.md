@@ -193,6 +193,34 @@ reaches ZFS:
 The UI's dataset form only asks for what matters (name, compression, quota) and
 the pool page shows used/free per dataset.
 
+### Block volumes (zvol)
+
+A zvol is a ZFS block device (`/dev/zvol/<pool>/<name>`), not a mounted
+filesystem. The API exposes it without changing the dataset surface:
+
+| Route | Operation |
+| --- | --- |
+| `GET /api/zvols?pool=<pool>` | List zvols (omit `pool` for every pool) |
+| `POST /api/zvols` | Create `{pool, name, size, options}` → `zfs create -p -V <size>` |
+| `PUT /api/zvols?name=<pool>/<zvol>` | Resize `{size}` → `zfs set volsize=<size>` |
+| `DELETE /api/zvols?name=<pool>/<zvol>&confirm=<pool>/<zvol>` | Destroy the zvol |
+
+Rules the API and the agent both enforce (FR-ZVOL):
+
+| Rule | Why |
+| --- | --- |
+| Name is validated exactly like a new dataset (strict per-component charset, no traversal, no `@`) | The name becomes an argv element of `zfs create`/`zfs destroy` |
+| `size` is a validated ZFS size (`10G`, `512M`, `1.5T`); resize is growth-only | Shrinking a zvol can corrupt the filesystem inside it |
+| Only `volblocksize` (512–16M, power of two) and `compression` are accepted | No arbitrary `zfs create -o` properties |
+| Dataset-only options (`quota`, `recordsize`, `atime`, `copies`, `readonly`, `mountpoint`) are refused on the zvol path, and zvol-only options on the dataset path | A request cannot hop between the two APIs |
+| Delete needs `confirm` equal to the full name and first checks `type=volume` | A same-named dataset must never be destroyed by mistake |
+| Delete/resize is refused while the zvol is mounted, held by a sysfs holder, or open by a visible host/agent process; a ZFS `volume is busy` is mapped to the same refusal | A consumer has no chance to rescan or flush |
+| A busy destroy is never retried with a forced unmount (unlike the dataset stale-mount ladder) | A busy zvol has a live consumer; taking it away is data loss |
+
+There is no zvol UI yet and no iSCSI export: both are `[OPEN]` (FR-ZVOL-04).
+The iSCSI spike, including the in-use consumer-registration requirement, is in
+[iscsi.md](iscsi.md).
+
 ### Growing a pool (adding disks)
 
 `POST /api/volumes/zfs/{pool}/devices` → `zpool add [-f] <pool> [<topology>]
@@ -214,6 +242,7 @@ is bypassed.
 ### AGENT-side dataset/device endpoints
 
 - `GET/POST /api/v1/datasets/{pool}`, `DELETE /api/v1/datasets/{pool}/{name…}?recursive=true`
+- `GET/POST/PUT/DELETE /api/v1/zvols` (list `?pool=`, create, resize, destroy; FR-ZVOL)
 - `GET/POST /api/v1/pools/{pool}/devices` (list disks that are free / attach a vdev)
 
 ## Storage classes & app data

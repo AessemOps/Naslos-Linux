@@ -100,6 +100,26 @@ pub struct Dataset {
     pub mounted: bool,
 }
 
+/// A ZFS zvol (mirrors the agent's `Zvol` JSON shape).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Zvol {
+    pub name: String,
+    #[serde(default)]
+    pub volsize: String,
+    #[serde(default, rename = "volsizeBytes")]
+    pub volsize_bytes: i64,
+    #[serde(default)]
+    pub volblocksize: String,
+    #[serde(default)]
+    pub compression: String,
+    #[serde(default)]
+    pub used: String,
+    #[serde(default)]
+    pub avail: String,
+    #[serde(default)]
+    pub refer: String,
+}
+
 /// An importable pool.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImportablePool {
@@ -561,6 +581,57 @@ impl Client {
         if recursive {
             path.push_str("?recursive=true");
         }
+        self.do_empty(self.request(reqwest::Method::DELETE, &path))
+            .await
+    }
+
+    // ---- zvols ----------------------------------------------------------
+
+    pub async fn list_zvols(&self) -> Result<Vec<Zvol>, AgentError> {
+        self.do_json(self.request(reqwest::Method::GET, "/api/v1/zvols"))
+            .await
+    }
+
+    pub async fn list_pool_zvols(&self, pool: &str) -> Result<Vec<Zvol>, AgentError> {
+        self.do_json(self.request(
+            reqwest::Method::GET,
+            &format!("/api/v1/zvols?pool={}", query_escape(pool)),
+        ))
+        .await
+    }
+
+    pub async fn create_zvol(
+        &self,
+        name: &str,
+        size: &str,
+        options: &std::collections::HashMap<String, String>,
+    ) -> Result<(), AgentError> {
+        self.do_empty(self.request(reqwest::Method::POST, "/api/v1/zvols").json(
+            &serde_json::json!({
+                "name": name, "size": size, "options": options
+            }),
+        ))
+        .await
+    }
+
+    pub async fn resize_zvol(&self, name: &str, size: &str) -> Result<(), AgentError> {
+        self.do_empty(
+            self.request(
+                reqwest::Method::PUT,
+                &format!("/api/v1/zvols?name={}", query_escape(name)),
+            )
+            .json(&serde_json::json!({ "size": size })),
+        )
+        .await
+    }
+
+    /// `confirm` must repeat the full zvol name; the agent also enforces it.
+    pub async fn delete_zvol(&self, name: &str, confirm: &str) -> Result<(), AgentError> {
+        let path = format!(
+            "/api/v1/zvols?name={}&confirm={}",
+            query_escape(name),
+            query_escape(confirm)
+        );
         self.do_empty(self.request(reqwest::Method::DELETE, &path))
             .await
     }

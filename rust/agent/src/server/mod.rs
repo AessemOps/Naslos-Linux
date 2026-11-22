@@ -110,6 +110,13 @@ impl Server {
             .route("/api/v1/system/disk", get(handlers::disk_usage))
             .route("/api/v1/disks/health", get(handlers::disks_health))
             .route("/api/v1/datasets", get(handlers::datasets_all_get))
+            .route(
+                "/api/v1/zvols",
+                get(handlers::zvols_get)
+                    .post(handlers::zvols_post)
+                    .put(handlers::zvols_resize)
+                    .delete(handlers::zvols_delete),
+            )
             // The bare trailing-slash URL matched Go's prefix mux (rest == "")
             // and returned 400; matchit's {*rest} needs a non-empty segment, so
             // register it explicitly to preserve the contract.

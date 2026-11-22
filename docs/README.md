@@ -17,7 +17,8 @@ read them in order for the full picture, or jump straight to a topic.
 | [architecture.md](architecture.md) | Design principles, system-context / deployment / component diagrams, data flows, trust map | Rebuilt |
 | [api.md](api.md) | HTTP API surface of `naslos-api` and `naslos-agent`, env vars, error format | New |
 | [bootstrap.md](bootstrap.md) | Image Factory schematic, ZFS extension, boot-time pool import, upgrades | New |
-| [storage-zfs.md](storage-zfs.md) | ZFS pools, datasets, snapshots, topology advisor, Talos gotchas | New |
+| [storage-zfs.md](storage-zfs.md) | ZFS pools, datasets, zvols, snapshots, topology advisor, Talos gotchas | New |
+| [iscsi.md](iscsi.md) | iSCSI target spike: Talos kernel constraint, userspace `tgt` vs a system extension, go/no-go gates, privilege/NetworkPolicy review (`[OPEN]`) | Spike |
 | [dataset-encryption.md](dataset-encryption.md) | ZFS native encryption: key custody for an unattended Talos boot, unlock/lock, encrypted send, Buddy threat-model comparison, migration (FR-ENC) | Design + safe validation slice |
 | [nvmeof.md](nvmeof.md) | NVMe-oF TCP spike: Talos `nvmet` evidence, SPDK/extension alternatives, security, performance, failure modes, go/no-go | Spike |
 | [identity-sso.md](identity-sso.md) | Single sign-on: Authelia, OpenLDAP, Samba hash sync, RBAC groups, 2FA | Rebuilt (replaces `authentication.md`) |
