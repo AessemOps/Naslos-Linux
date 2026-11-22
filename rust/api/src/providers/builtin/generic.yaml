@@ -55,6 +55,10 @@ fields:
     label: Header value
     type: string
     secret: true
+  - key: allowInsecureHttp
+    label: Allow plaintext HTTP with credentials
+    type: bool
+    default: "false"
 ddns:
   driver: http
   defaults:
