@@ -217,7 +217,7 @@ not installed (e.g. `smbclient`, `avahi-utils`, `nfs-common`, `procps`).
 | `make cert-manager` | Install cert-manager in the `cert-manager` namespace (CRDs come from `make crds`) |
 | `make cert-manager-webhook-ovh` | Install the OVH DNS-01 webhook in `cert-manager` (group `ovh.naslos.local`) |
 | `make install` | `helm dependency update && helm upgrade --install naslos charts/naslos -n naslos --create-namespace` (does **not** install cert-manager) |
-| `make install-vm` | `make install` with the VM values **and its prerequisites** (`crds`, `cert-manager`, `cert-manager-webhook-ovh`): Traefik on hostPort 80/443 with Authelia forwardAuth (see below). This is the only posture |
+| `make install-vm` | `make install` with the VM values **and its prerequisites** (`crds`, `cert-manager`, `cert-manager-webhook-ovh`, `local-path`, `naslos-talosconfig`, then a preflight that fails closed): Traefik on hostPort 80/443 with Authelia forwardAuth (see below). Requires `VM_IP=<node-ip>` (no default). This is the only posture |
 | `make install-pack` | Build `dist/naslos-install-pack-<version>.tar.gz` for the desktop installer (FR-INSTALL; [installer-contract](installer-contract.md)) |
 | `make uninstall` | `helm uninstall naslos -n naslos` |
 | `make dev-cluster` | `talosctl cluster create --name naslos-dev` from the rendered schematic |
@@ -296,8 +296,8 @@ of the chart now, so there is no separate step for it:
 # Make kubectl/helm talk to the new cluster
 talosctl kubeconfig --nodes 192.168.1.96 --endpoints 192.168.1.96 -f ~/.kube/config
 
-# Deploy local-path-provisioner (single-node VM, no ZFS pool required).
-# Pinned in-repo; the installer pack ships the same file.
+# `make install-vm` does this for you (targets `local-path` and
+# `naslos-talosconfig`, both idempotent). To prepare a node by hand:
 kubectl apply -f bootstrap/local-path/local-path-storage.yaml
 kubectl wait --for=condition=ready pod -l app=local-path-provisioner -n local-path-storage --timeout=120s
 kubectl label ns local-path-storage pod-security.kubernetes.io/enforce=privileged --overwrite
@@ -305,16 +305,21 @@ kubectl patch storageclass local-path \
   -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
 ```
 
-Then install the rest of Naslos:
+Then install Naslos. `VM_IP` is required: it both fills the endpoint in the
+`naslos-talosconfig` Secret the API mounts and identifies the node:
 
 ```bash
-make install-vm
+make install-vm VM_IP=<node-ip>
 ```
+
+A missing `VM_IP`, `local-path` StorageClass or `naslos-talosconfig` Secret
+fails the preflight with the exact target to run; the Helm upgrade is never
+attempted half-provisioned (R-068).
 
 If you used a custom registry/tag, pass the overrides to Helm:
 
 ```bash
-make install-vm HELM_FLAGS="\
+make install-vm VM_IP=<node-ip> HELM_FLAGS="\
   --set api.image.repository=docker.io/myuser/naslos-api \
   --set api.image.tag=latest \
   --set agent.image.repository=docker.io/myuser/naslos-agent \
@@ -517,7 +522,7 @@ direct `ldapadd`) are in
 [identity-sso.md](identity-sso.md#deployment--first-admin).
 
 ```bash
-make install-vm
+make install-vm VM_IP=<node-ip>
 ```
 
 Verify, in order: `kubectl -n naslos get ingressroute` shows `naslos-ui`,
@@ -537,7 +542,7 @@ cluster access:
 ```bash
 helm -n naslos rollback naslos          # previous release
 # or, after a bad commit:
-git revert <sha> && make install-vm
+git revert <sha> && make install-vm VM_IP=<node-ip>
 ```
 
 Pools, datasets and the state PVC (shares, buddy identity, notifications) are

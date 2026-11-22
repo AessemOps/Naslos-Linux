@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# deploy-vm.sh — deploy Naslos to the single-node Talos VM at 192.168.1.96.
+# deploy-vm.sh — deploy Naslos to the single-node Talos node.
 #
 # This script is meant to be run from the repo root on a machine that has
 # talosctl, kubectl, helm and (optionally) docker installed.
 #
 # Environment variables:
-#   VM_IP          Target Talos node IP (default: 192.168.1.96)
+#   VM_IP          Target Talos node IP (required; no default)
 #   REGISTRY       Container registry for Naslos images (default: ghcr.io/aessemops)
 #   REGISTRY_HTTP_SECRET  HTTP basic-auth password for a non-GHCR registry (optional)
-#   IMAGE_TAG      Image tag (default: 0.1.0)
+#   IMAGE_TAG      Image tag (default: charts/naslos/Chart.yaml appVersion)
 #   SKIP_BOOTSTRAP Set to "1" to skip talosctl bootstrap (default: 0)
 #   SKIP_IMAGES    Set to "1" to skip docker build/push (images already in registry)
 #   WIPE_STATE     Set to "1" to delete generated Talos PKI/config for a clean
@@ -18,17 +18,21 @@
 
 set -euo pipefail
 
-VM_IP="${VM_IP:-192.168.1.96}"
+VM_IP="${VM_IP:-}"
 REGISTRY="${REGISTRY:-ghcr.io/aessemops}"
 # No default (NAS-010): the previous fallback was the literal "secret".
 REGISTRY_HTTP_SECRET="${REGISTRY_HTTP_SECRET:-}"
-IMAGE_TAG="${IMAGE_TAG:-0.1.0}"
 SKIP_BOOTSTRAP="${SKIP_BOOTSTRAP:-0}"
 SKIP_IMAGES="${SKIP_IMAGES:-0}"
 HELM_FLAGS="${HELM_FLAGS:-}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+if [ -z "$VM_IP" ]; then
+    echo "ERROR: VM_IP is required (set VM_IP=<node-ip>; there is no default)" >&2
+    exit 1
+fi
+IMAGE_TAG="${IMAGE_TAG:-$(awk '/^appVersion:/ {gsub(/"/, "", $2); print $2; exit}' charts/naslos/Chart.yaml)}"
 
 TALOSCONFIG="$REPO_ROOT/bootstrap/vm/talosconfig"
 CONTROLPLANE="$REPO_ROOT/bootstrap/vm/controlplane.yaml"
@@ -329,13 +333,13 @@ kubectl patch storageclass local-path \
 # the Helm targets adopts them into the release.
 echo "=== Creating platform namespaces ==="
 kubectl create namespace naslos --dry-run=client -o yaml | kubectl apply -f -
-# PodSecurity (AUDIT-M6): `naslos` holds only the unprivileged workloads now
-# (api, ui, traefik, authelia, openldap), so it enforces `baseline`. The
-# privileged workloads (agent, samba, nfs, terminal) live in the separate
-# naslos-privileged namespace below. `baseline` still permits the hostPath the
-# API mounts for the shares UI, which `restricted` would refuse.
+# PodSecurity (AUDIT-M6): `naslos` holds the authenticated services, but the API
+# pod mounts hostPath volumes for the shares view and the Buddy receive store,
+# which `baseline` forbids. It therefore enforces `privileged`, matching
+# charts/naslos/templates/namespace.yaml; the separate naslos-privileged
+# namespace holds the hostNetwork workloads.
 kubectl label namespace naslos \
-    pod-security.kubernetes.io/enforce=baseline \
+    pod-security.kubernetes.io/enforce=privileged \
     pod-security.kubernetes.io/enforce-version=latest --overwrite || true
 # AUDIT-M6: the privileged namespace. agent mounts host devices and samba/nfs
 # are hostNetwork, so this one needs `privileged`.
