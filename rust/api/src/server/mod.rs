@@ -174,6 +174,11 @@ fn owner_routes() -> Router<Arc<AppState>> {
                 .post(zfs::datasets_post)
                 .delete(zfs::datasets_delete),
         )
+        // Literal routes below `/api/datasets`: axum matches them separately
+        // from the exact collection route above.
+        .route("/api/datasets/keystatus", get(zfs::datasets_keystatus_get))
+        .route("/api/datasets/unlock", post(zfs::datasets_unlock_post))
+        .route("/api/datasets/lock", post(zfs::datasets_lock_post))
         .route(
             "/api/zvols",
             get(zfs::zvols_get)

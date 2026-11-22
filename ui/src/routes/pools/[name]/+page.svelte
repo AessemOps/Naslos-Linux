@@ -45,6 +45,10 @@
     avail: string;
     refer: string;
     mountpoint: string;
+    mounted?: boolean;
+    encryption?: string;
+    keystatus?: string;
+    encryptionRoot?: string;
   }
   let datasets: Dataset[] = [];
   let datasetsError = '';
@@ -53,6 +57,7 @@
   let datasetName = '';
   let datasetCompression = 'lz4';
   let datasetQuota = '';
+  let datasetEncrypted = false;
   let datasetSaving = false;
   let datasetError = '';
 
@@ -142,6 +147,12 @@
       const options: Record<string, string> = {};
       if (datasetCompression) options.compression = datasetCompression;
       if (datasetQuota.trim()) options.quota = datasetQuota.trim();
+      if (datasetEncrypted) {
+        // Raw-key custody (FR-ENC): the API generates the key into a Secret;
+        // the browser never handles it.
+        options.encryption = 'on';
+        options.keyformat = 'raw';
+      }
 
       const res = await fetch('/api/datasets', {
         method: 'POST',
@@ -154,6 +165,7 @@
       showDatasetModal = false;
       datasetName = '';
       datasetQuota = '';
+      datasetEncrypted = false;
       await loadDatasets();
     } catch (e: any) {
       datasetError = e.message;
@@ -162,16 +174,61 @@
     }
   }
 
+  function isEncryptedDataset(ds: Dataset): boolean {
+    return !!ds.encryption && ds.encryption !== 'off' && ds.encryption !== '-';
+  }
+
+  function isLockedDataset(ds: Dataset): boolean {
+    return isEncryptedDataset(ds) && ds.keystatus === 'unavailable';
+  }
+
+  async function unlockDataset(name: string) {
+    try {
+      const res = await fetch('/api/datasets/unlock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Unlock failed (HTTP ${res.status})`);
+      await loadDatasets();
+    } catch (e: any) {
+      alert(e.message);
+    }
+  }
+
+  async function lockDataset(name: string) {
+    if (!confirm(`Lock ${name}?\n\nIts data stays on disk but is unreadable until an administrator unlocks it. Stop shares and apps using it first.`)) return;
+    try {
+      const res = await fetch('/api/datasets/lock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Lock failed (HTTP ${res.status})`);
+      await loadDatasets();
+    } catch (e: any) {
+      alert(e.message);
+    }
+  }
+
   async function deleteDataset(name: string, recursive: boolean) {
     try {
-      const url = `/api/datasets?name=${encodeURIComponent(name)}${recursive ? '&recursive=true' : ''}`;
+      // The API requires `confirm` for an encrypted dataset: destroying it also
+      // destroys the key Secret (crypto-shredding), which is irreversible.
+      const url = `/api/datasets?name=${encodeURIComponent(name)}${recursive ? '&recursive=true' : ''}&confirm=${encodeURIComponent(name)}`;
       const res = await fetch(url, { method: 'DELETE' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         // A non-empty dataset needs the recursive flag. Ask rather than guess:
         // recursive also destroys snapshots and child datasets.
         if (!recursive && /not empty|has children|snapshot/i.test(data.error || '')) {
-          if (confirm(`${name} is not empty.\n\nDestroy it recursively? Its snapshots and child datasets go with it, and this cannot be undone.`)) {
+          const target = datasets.find((d) => d.name === name);
+          const extra = target && isEncryptedDataset(target)
+            ? ' Destroying an encrypted dataset also destroys its key Secret; the data is unrecoverable without a backup.'
+            : '';
+          if (confirm(`${name} is not empty.\n\nDestroy it recursively? Its snapshots and child datasets go with it, and this cannot be undone.${extra}`)) {
             await deleteDataset(name, true);
           }
           return;
@@ -532,13 +589,36 @@
           {#each datasets as ds}
             <div class="bg-naslos-dark rounded-lg p-3 flex items-center justify-between gap-3">
               <div class="min-w-0">
-                <div class="font-medium truncate">{ds.name}</div>
+                <div class="font-medium truncate">
+                  {ds.name}
+                  {#if isEncryptedDataset(ds)}
+                    <span
+                      class="ml-2 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border {isLockedDataset(ds) ? 'text-amber-300 border-amber-700' : 'text-emerald-300 border-emerald-700'}"
+                      title={isLockedDataset(ds) ? 'Key not loaded; unlock after boot' : 'Key loaded'}
+                    >{isLockedDataset(ds) ? 'Locked' : 'Unlocked'}</span>
+                  {/if}
+                </div>
                 <div class="text-xs text-gray-500">{ds.mountpoint || '—'}</div>
               </div>
               <div class="text-xs text-gray-400 whitespace-nowrap">
                 {ds.used || '0'} used · {ds.avail || '0'} free
               </div>
               <div class="flex gap-1">
+                {#if isEncryptedDataset(ds)}
+                  {#if isLockedDataset(ds)}
+                    <button
+                      class="btn btn-sm rounded border border-amber-700 text-amber-200 hover:bg-amber-900/30 whitespace-nowrap"
+                      on:click={() => unlockDataset(ds.name)}
+                      title="Load this dataset's key from its Secret"
+                    >Unlock</button>
+                  {:else}
+                    <button
+                      class="btn btn-sm rounded border border-naslos-border text-gray-200 hover:bg-naslos-dark whitespace-nowrap"
+                      on:click={() => lockDataset(ds.name)}
+                      title="Unload the key; the data stays on disk"
+                    >Lock</button>
+                  {/if}
+                {/if}
                 {#if ds.name !== poolName}
                   <button
                     class="btn btn-sm rounded border border-naslos-border text-gray-200 hover:bg-naslos-dark whitespace-nowrap"
@@ -785,6 +865,19 @@
       <label class="label" for="pool-field-3">Quota</label>
       <input id="pool-field-3" type="text" bind:value={datasetQuota} placeholder="e.g. 500G (empty = pool-wide limit)" class="input w-full" />
     </div>
+
+    <label class="flex items-start gap-3 cursor-pointer">
+      <input type="checkbox" class="mt-1" bind:checked={datasetEncrypted} />
+      <span>
+        Encrypt this dataset
+        <span class="block text-xs text-gray-500">
+          The key is generated by the API into a Kubernetes Secret; the browser
+          never sees it. An administrator must unlock the dataset after every
+          reboot. Losing the key Secret loses the data. Encryption is
+          create-only: existing datasets cannot be converted in place.
+        </span>
+      </span>
+    </label>
 
     {#if datasetError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{datasetError}</div>{/if}
 

@@ -304,6 +304,10 @@ struct DatasetCreateRequest {
     name: String,
     #[serde(default)]
     options: HashMap<String, String>,
+    /// Raw key bytes for an encrypted create. Never logged or echoed; the
+    /// handler zeroes it after the ZFS call.
+    #[serde(default)]
+    key: Option<Vec<u8>>,
 }
 
 pub async fn datasets_post(
@@ -314,12 +318,18 @@ pub async fn datasets_post(
     let Some(zfs) = state.zfs.as_ref() else {
         return zfs_unavailable();
     };
-    let req: DatasetCreateRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
+    let mut req: DatasetCreateRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
         Ok(req) => req,
         Err(resp) => return resp,
     };
     let dataset_name = format!("{rest}/{}", req.name);
-    match zfs.create_dataset(&dataset_name, &req.options).await {
+    let result = zfs
+        .create_dataset_with_key(&dataset_name, &req.options, req.key.as_deref())
+        .await;
+    if let Some(key) = req.key.as_mut() {
+        key.fill(0);
+    }
+    match result {
         Ok(()) => {
             tracing::info!("created dataset {}", dataset_name);
             json_response(
@@ -354,6 +364,90 @@ pub async fn datasets_delete(
             )
         }
         Err(e) => write_error(StatusCode::BAD_REQUEST, e.to_string()),
+    }
+}
+
+// ---- Dataset encryption (FR-ENC) -----------------------------------------
+
+pub async fn encryption_status_get(
+    State(state): State<Arc<AppState>>,
+    Path(dataset): Path<String>,
+) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    match zfs.encryption_status(&dataset).await {
+        Ok(status) => json_response(StatusCode::OK, &status),
+        Err(e) => write_client_error(&e),
+    }
+}
+
+pub async fn encryption_status_get_empty() -> Response {
+    write_error(StatusCode::BAD_REQUEST, "dataset is required")
+}
+
+#[derive(Default, Deserialize)]
+struct EncryptionUnlockRequest {
+    #[serde(default)]
+    dataset: String,
+    /// Raw key bytes. Never logged or echoed.
+    #[serde(default)]
+    key: Vec<u8>,
+}
+
+pub async fn encryption_unlock_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    let mut req: EncryptionUnlockRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
+        Ok(req) => req,
+        Err(resp) => return resp,
+    };
+    if req.dataset.trim().is_empty() {
+        return write_error(StatusCode::BAD_REQUEST, "dataset is required");
+    }
+    let dataset = req.dataset.trim().to_string();
+    let result = zfs.unlock_dataset(&dataset, &req.key).await;
+    req.key.fill(0);
+    match result {
+        Ok(status) => {
+            tracing::info!("unlocked dataset {}", dataset);
+            json_response(
+                StatusCode::OK,
+                &json!({ "status": "unlocked", "name": status.name, "keystatus": status.keystatus }),
+            )
+        }
+        Err(e) => write_client_error(&e),
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct EncryptionLockRequest {
+    #[serde(default)]
+    dataset: String,
+}
+
+pub async fn encryption_lock_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    let req: EncryptionLockRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
+        Ok(req) => req,
+        Err(resp) => return resp,
+    };
+    if req.dataset.trim().is_empty() {
+        return write_error(StatusCode::BAD_REQUEST, "dataset is required");
+    }
+    let dataset = req.dataset.trim().to_string();
+    match zfs.lock_dataset(&dataset).await {
+        Ok(status) => {
+            tracing::info!("locked dataset {}", dataset);
+            json_response(
+                StatusCode::OK,
+                &json!({ "status": "locked", "name": status.name, "keystatus": status.keystatus }),
+            )
+        }
+        Err(e) => write_client_error(&e),
     }
 }
 

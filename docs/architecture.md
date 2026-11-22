@@ -76,6 +76,10 @@ see the [document index](README.md).
 
 ## Layer 2 — Deployment Topology (namespaces `naslos` + `naslos-privileged`)
 
+Dataset encryption key Secrets live in a third, workload-free `naslos-keys`
+namespace so the API never needs Secret read access in the release namespace
+(FR-ENC-03, [dataset-encryption.md](dataset-encryption.md)).
+
 ```
         ┌──────────────────────────────────────────────────────────┐
         │                  naslos namespace                        │

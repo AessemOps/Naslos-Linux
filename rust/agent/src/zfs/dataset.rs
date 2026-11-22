@@ -77,7 +77,14 @@ pub(crate) fn valid_compression(v: &str) -> bool {
 pub(crate) fn is_dataset_option_key(k: &str) -> bool {
     matches!(
         k,
-        "compression" | "quota" | "recordsize" | "atime" | "copies" | "readonly"
+        "compression"
+            | "quota"
+            | "recordsize"
+            | "atime"
+            | "copies"
+            | "readonly"
+            | "encryption"
+            | "keyformat"
     )
 }
 
@@ -122,10 +129,10 @@ pub fn validate_dataset_name(name: &str) -> ZfsResult<()> {
 pub fn validate_dataset_options(
     options: &std::collections::HashMap<String, String>,
 ) -> ZfsResult<()> {
-    // Encryption shape is validated (and, while custody/unlock are [OPEN],
-    // refused) before any option can reach `zfs create -o`. Key material is
-    // never an option: a passphrase or raw key in `options` falls through to
-    // the allow-list below and is rejected.
+    // Encryption shape is validated before any option can reach
+    // `zfs create -o`. A passphrase-keyed request is still refused (FR-ENC-05).
+    // Key material is never an option: a passphrase or raw key in `options`
+    // falls through to the allow-list below and is rejected.
     super::encryption::validate_create_options(options)?;
     for (key, raw) in options {
         let value = raw.trim();
@@ -238,7 +245,7 @@ impl ZfsClient {
                     "-H",
                     "-p",
                     "-o",
-                    "name,used,avail,refer,mountpoint,mounted",
+                    "name,used,avail,refer,mountpoint,mounted,encryption,keystatus,encryptionroot",
                     "-t",
                     "filesystem",
                     "-r",
@@ -270,6 +277,11 @@ impl ZfsClient {
                 refer: human_bytes(refer_bytes),
                 mountpoint: fields[4].to_string(),
                 mounted: fields.len() > 5 && fields[5] == "yes",
+                encryption: fields.get(6).copied().unwrap_or_default().to_string(),
+                keystatus: normalise_keystatus(fields.get(7).copied().unwrap_or_default()),
+                encryption_root: normalise_encryption_root(
+                    fields.get(8).copied().unwrap_or_default(),
+                ),
             });
         }
         Ok(datasets)
@@ -285,7 +297,7 @@ impl ZfsClient {
                     "list",
                     "-H",
                     "-o",
-                    "name,used,avail,refer,mountpoint,mounted",
+                    "name,used,avail,refer,mountpoint,mounted,encryption,keystatus,encryptionroot",
                     "-r",
                     pool,
                 ]),
@@ -313,37 +325,27 @@ impl ZfsClient {
                 mountpoint: fields[4].to_string(),
                 used_bytes: 0,
                 mounted: fields.len() > 5 && fields[5] == "yes",
+                encryption: fields.get(6).copied().unwrap_or_default().to_string(),
+                keystatus: normalise_keystatus(fields.get(7).copied().unwrap_or_default()),
+                encryption_root: normalise_encryption_root(
+                    fields.get(8).copied().unwrap_or_default(),
+                ),
             });
         }
         Ok(datasets)
     }
 
     /// Create a dataset (`-p` so nested names create their parents).
+    ///
+    /// An encryption request needs a raw key, so it must go through
+    /// [`Self::create_dataset_with_key`]; this entry point refuses one instead
+    /// of creating a dataset whose key would be lost on the next boot.
     pub async fn create_dataset(
         &self,
         name: &str,
         options: &std::collections::HashMap<String, String>,
     ) -> ZfsResult<()> {
-        validate_new_dataset_path(name)?;
-        validate_dataset_options(options)?;
-
-        let mut argv: Vec<String> = vec!["create".into(), "-p".into()];
-        let mut keys: Vec<&String> = options.keys().collect();
-        keys.sort();
-        for k in keys {
-            argv.push("-o".into());
-            argv.push(format!("{}={}", k, options[k].trim()));
-        }
-        argv.push(name.to_string());
-
-        match self.host_exec(ZFS_BIN, &argv).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(ZfsError::Other(format!(
-                "creating dataset: {}: {}",
-                e.output.trim(),
-                e.message
-            ))),
-        }
+        self.create_dataset_with_key(name, options, None).await
     }
 
     /// Destroy a dataset, recovering from the AV-8 stale-mount "busy" case.
@@ -556,6 +558,26 @@ impl ZfsClient {
     }
 }
 
+/// Normalise `zfs list`'s `-` placeholder for unencrypted datasets.
+pub(crate) fn normalise_keystatus(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() || value == "-" {
+        "none".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// Normalise `zfs list`'s `-` placeholder for an unencrypted encryption root.
+pub(crate) fn normalise_encryption_root(value: &str) -> String {
+    let value = value.trim();
+    if value == "-" {
+        String::new()
+    } else {
+        value.to_string()
+    }
+}
+
 /// The stale-mount "dataset is busy" signature that a forced unmount can clear.
 pub fn is_busy_error(out: &str) -> bool {
     let lower = out.to_ascii_lowercase();
@@ -610,14 +632,20 @@ mod tests {
     }
 
     #[test]
-    fn encryption_options_are_refused_until_key_custody_ships() {
-        let valid = std::collections::HashMap::from([
+    fn encryption_options_are_validated() {
+        let raw = std::collections::HashMap::from([
             ("encryption".to_string(), "aes-256-gcm".to_string()),
             ("keyformat".to_string(), "raw".to_string()),
         ]);
-        let err = validate_dataset_options(&valid).unwrap_err();
+        validate_dataset_options(&raw).expect("raw-key encryption is accepted");
+
+        let passphrase = std::collections::HashMap::from([
+            ("encryption".to_string(), "aes-256-gcm".to_string()),
+            ("keyformat".to_string(), "passphrase".to_string()),
+        ]);
+        let err = validate_dataset_options(&passphrase).unwrap_err();
         assert!(err.is_validation());
-        assert!(err.to_string().contains("not implemented yet"), "{err}");
+        assert!(err.to_string().contains("passphrase"), "{err}");
 
         for (key, value) in [
             ("encryption", "rot13"),

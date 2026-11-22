@@ -7,6 +7,14 @@
 # no values change); set it to the release namespace to keep everything together.
 workloadNamespace: naslos-privileged
 
+# ZFS dataset encryption (FR-ENC). Each encrypted dataset's 32-byte raw key is
+# stored in a Secret in this dedicated namespace; the API has CRUD on Secrets
+# there and no Secret access in the release namespace. The namespace carries
+# `helm.sh/resource-policy: keep` because datasets live on the host and losing
+# the keys after an uninstall would make the data unrecoverable.
+datasetEncryption:
+  keysNamespace: naslos-keys
+
 # API server configuration
 api:
   enabled: true
