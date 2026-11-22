@@ -241,11 +241,15 @@ pub async fn dispatch(
     name: &str,
     args: &JsonObject,
 ) -> Result<Outcome, CallError> {
-    let tool = find_tool(name).ok_or(CallError::UnknownTool)?;
+    let Some(tool) = find_tool(name) else {
+        record_mcp_refusal(state, token, name, None, "failed", "unknown_tool");
+        return Err(CallError::UnknownTool);
+    };
 
     // Scope: re-checked here even though tools/list filtered, because a
     // client may call an unlisted tool.
     if !token.scope.allows(tool.level) {
+        record_mcp_refusal(state, token, name, Some(tool), "denied", "scope");
         return Err(CallError::Scope {
             have: token.scope,
             need: tool.level,
@@ -267,6 +271,7 @@ pub async fn dispatch(
     if !target.is_empty() {
         let confirm = args.get("confirm").and_then(Value::as_str).unwrap_or("");
         if confirm != target {
+            record_mcp_refusal(state, token, name, Some(tool), "denied", "confirm_required");
             return Err(CallError::Confirm { target });
         }
     }
@@ -284,7 +289,13 @@ pub async fn dispatch(
         Special::None => {}
     }
 
-    let path = resolve_path(tool.path, args)?;
+    let path = match resolve_path(tool.path, args) {
+        Ok(path) => path,
+        Err(err) => {
+            record_mcp_refusal(state, token, name, Some(tool), "failed", "bad_path");
+            return Err(err);
+        }
+    };
     let uri = format!("{path}{}", query_string(tool, args));
     let audit_target = crate::rbac::action_target(tool.path, &path);
     let audit = crate::audit::Pending::mcp(
@@ -372,6 +383,35 @@ pub async fn dispatch(
         }
     }
     Ok(outcome)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_mcp_refusal(
+    state: &Arc<AppState>,
+    token: &TokenAuth,
+    tool_name: &str,
+    tool: Option<&ToolDef>,
+    outcome_state: &str,
+    error_code: &str,
+) {
+    let method = tool.map(|tool| tool.method.clone()).unwrap_or(Method::POST);
+    let route = tool.map(|tool| tool.path).unwrap_or("/mcp/tools/call");
+    let pending = crate::audit::Pending::mcp(
+        &token.id,
+        &token.name,
+        token.scope.as_str(),
+        tool_name,
+        &method,
+        route,
+        route,
+        Some(tool_name.to_string()),
+    );
+    if let Err(e) = state
+        .audit
+        .record_refusal(&pending, outcome_state, error_code)
+    {
+        degrade_mcp(state, &e);
+    }
 }
 
 fn record_mcp_read(
@@ -610,6 +650,55 @@ mod tests {
         let serialized = serde_json::to_string(record).unwrap();
         assert!(!serialized.contains("canary-mcp-argument"));
         assert!(!serialized.contains("canary-mcp-password"));
+    }
+
+    #[tokio::test]
+    async fn refused_mcp_calls_are_audited_without_arguments() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let args = serde_json::json!({
+            "name": "canary-refused-tool",
+            "password": "canary-refused-password",
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+
+        let scope_err = dispatch(&state, &token("reader", Scope::Read), "share_create", &args)
+            .await
+            .expect_err("a read token cannot call a write tool");
+        assert!(
+            matches!(scope_err, CallError::Scope { .. }),
+            "{scope_err:?}"
+        );
+
+        let unknown_err = dispatch(
+            &state,
+            &token("reader", Scope::Read),
+            "not_a_real_tool",
+            &args,
+        )
+        .await
+        .expect_err("the tool does not exist");
+        assert!(
+            matches!(unknown_err, CallError::UnknownTool),
+            "{unknown_err:?}"
+        );
+
+        let records = state
+            .audit
+            .query(&crate::audit::AuditQuery::default())
+            .unwrap()
+            .records;
+        assert_eq!(records.len(), 2, "one record per refused call: {records:?}");
+        assert_eq!(records[0]["outcome"]["state"], "denied");
+        assert_eq!(records[0]["outcome"]["errorCode"], "scope");
+        assert_eq!(records[0]["action"]["target"], "share_create");
+        assert_eq!(records[1]["outcome"]["state"], "failed");
+        assert_eq!(records[1]["outcome"]["errorCode"], "unknown_tool");
+        assert_eq!(records[1]["action"]["target"], "not_a_real_tool");
+        let serialized = serde_json::to_string(&records).unwrap();
+        assert!(!serialized.contains("canary-refused"));
+        assert!(!serialized.contains("canary-refused-password"));
     }
 
     #[tokio::test]

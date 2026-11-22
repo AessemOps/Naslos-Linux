@@ -342,6 +342,10 @@ Guarantees for existing admins:
   `/var/lib/naslos/audit`. The API also refuses mutations when free space
   drops below `AUDIT_MIN_FREE_BYTES` (default 8 MiB), so audit retention can
   never fill the shared volume and take the API down silently.
+- If `api.sharesConfig.enabled=false`, the chart mounts a pod-lifetime
+  `emptyDir` at `api.auditDir` (default `/var/lib/naslos/audit`) so the
+  read-only-rootfs API can still start; that trail is not durable across pod
+  restarts. Durable audit requires the state volume (the default).
 - The audit directory is separate from the application log. Container stdout
   logs remain for operators/debugging and are not the audit trail.
 
@@ -501,10 +505,13 @@ Not audited durably:
   deleting or inserting a record breaks verification from the first retained
   record.
 - `checkpoint.json` records the retained range, record count, head hash and
-  the head hashes of pruned segments (`prunedHeads`). On startup the API
-  verifies the retained chain; an admin-only `GET /api/audit/verify` repeats
-  the check on demand. The first retained record's `prev` must be genesis or
-  one of those anchors, which is how pruning preserves a verifiable chain.
+  the head hashes of pruned segments (`prunedHeads`). It is written **before**
+  each record becomes visible, so verification can detect a missing/tampered
+  checkpoint, a truncated or rolled-back tail, an unanchored tail, or a
+  different head hash. On startup the API verifies the retained chain; an
+  admin-only `GET /api/audit/verify` repeats the check on demand. The first
+  retained record's `prev` must be genesis or one of those anchors, which is
+  how pruning preserves a verifiable chain.
 - A plain hash chain cannot stop a writer with full volume access from
   rewriting the whole chain. Recommended hardening: an HMAC key mounted from a
   Kubernetes Secret **outside** the state volume (`AUDIT_HMAC_KEY_FILE`), or a
@@ -571,8 +578,9 @@ The hard rule: **an audit write failure must not silently allow a mutation.**
   deleted/pending secrets.
 - `GET /api/audit/verify` — admin-only; verifies the retained chain and
   returns `{ok, firstSeq, lastSeq, firstHash, lastHash, records, errors}`.
-- `GET /api/audit/export` — admin-only JSONL stream for a time range; the
-  export itself is audited.
+- `GET /api/audit/export` — admin-only JSONL export for a time range; the
+  export itself is audited. It defaults to and accepts up to 50 000 records,
+  independent of the 1 000-record query cap.
 - No `PUT`/`PATCH`/`DELETE`; there is no API to edit or purge the log. The
   UI viewer is still `[OPEN]` (Phase 5); the API is complete.
 
@@ -589,11 +597,11 @@ Unit/contract (Rust, shipped):
 | `admin_requests_are_not_blocked_by_the_auth_layers` | existing admins keep full access (FR-RBAC-08) |
 | `forged_identity_cannot_bypass_the_public_auth_layers`, `internal_router_answers_with_a_synthetic_identity_and_hides_public_routes` | forged identities still fail the proxy/role gates; internal router not listener-mounted (FR-RBAC-03/07) |
 | `record_shape_and_chain` | canonical JSON, field contract, begin/end pairing (FR-AUD-02) |
-| `chain_detects_edited_and_deleted_records` | edited/deleted records fail verification (FR-AUD-06) |
+| `chain_detects_edited_and_deleted_records`, `truncating_the_active_tail_fails_verification`, `a_missing_checkpoint_fails_verification` | edited/deleted/truncated records and a missing checkpoint fail verification (FR-AUD-06) |
 | `degraded_log_refuses_begin`, `audit_begin_failure_refuses_the_mutation_without_a_record`, `audit_end_failure_degrades_and_reports_may_have_applied`, `audit_records_a_mutation_and_refuses_after_degrade`, `mcp_mutations_fail_closed_when_audit_is_degraded` | degraded/failed audit → 503, handler not called or "may have applied"; follow-ups refused (FR-AUD-08) |
 | `denied_mutations_are_audited_with_the_actor` | role denial is recorded with the actor and `outcome: denied` (FR-AUD-03) |
-| `redacts_canary_secrets_in_params`, `request_ids_are_echoed_and_audit_redacts_the_request_surface`, `mcp_read_calls_are_audited_without_arguments` | redaction/allow-list, no bodies/query/headers/arguments (FR-AUD-05/10) |
-| `retention_prunes_only_sealed_segments_and_records_it` | retention/size bound (FR-AUD-07) |
+| `redacts_canary_secrets_in_params`, `request_ids_are_echoed_and_audit_redacts_the_request_surface`, `mcp_read_calls_are_audited_without_arguments`, `refused_mcp_calls_are_audited_without_arguments` | redaction/allow-list, no bodies/query/headers/arguments; refused MCP calls are recorded (FR-AUD-05/10) |
+| `retention_prunes_only_sealed_segments_and_records_it`, `the_export_limit_honours_the_documented_maximum`, `export_returns_more_than_the_query_limit` | retention/size bound and the documented 50 000-record export cap (FR-AUD-07/09) |
 | `request_ids_are_validated`, `request_id_is_echoed_on_public_and_unauthenticated_responses` | request correlation validation and echo on every response (FR-AUD-04) |
 | `survives_restart_and_appends` | no truncation on restart (FR-AUD-01) |
 | `audit_routes_are_admin_only_and_the_read_is_audited` | audit access control and self-audit (FR-AUD-09) |

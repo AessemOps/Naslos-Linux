@@ -17,7 +17,7 @@
 //! credentials. `action.target` comes from a route path parameter only.
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -409,7 +409,13 @@ impl AuditLog {
             }
         });
         let paths = segment_paths(&segments_dir)?;
-        let (report, mut metas) = verify_paths(&paths, &checkpoint.pruned_heads);
+        let (mut report, mut metas) = verify_paths(&paths, &checkpoint);
+        if !checkpoint_path.exists() && !paths.is_empty() {
+            report.errors.push(
+                "audit checkpoint is missing; refusing to trust an unanchored log".to_string(),
+            );
+            report.ok = false;
+        }
 
         let mut state = AuditState {
             active: None,
@@ -460,7 +466,9 @@ impl AuditLog {
                 };
                 state.prev_hash = if active_meta.records == 0 {
                     metas
-                        .last()
+                        .iter()
+                        .rev()
+                        .find(|meta| meta.records > 0)
                         .map(|meta| meta.last_hash.clone())
                         .or_else(|| {
                             if checkpoint.head_hash.is_empty() {
@@ -474,6 +482,7 @@ impl AuditLog {
                     active_meta.last_hash.clone()
                 };
                 state.active = Some(file);
+                metas.retain(|meta| meta.records > 0);
                 state.sealed = metas;
             } else {
                 // Fresh log: create the first segment.
@@ -589,6 +598,25 @@ impl AuditLog {
     /// (MCP read tools).
     pub fn record_once(&self, pending: &Pending, status: u16) -> Result<(), String> {
         let outcome = end_outcome(status, Some(pending.started.elapsed()));
+        self.append(pending, "end", &outcome)
+    }
+
+    /// One durable record for a call refused before dispatch (unknown tool,
+    /// scope, `confirm`, path validation). No begin exists; a single end
+    /// record with the stable refusal code is enough.
+    pub fn record_refusal(
+        &self,
+        pending: &Pending,
+        state: &str,
+        error_code: &str,
+    ) -> Result<(), String> {
+        let outcome = Outcome {
+            state: state.to_string(),
+            http_status: None,
+            error_code: Some(error_code.to_string()),
+            error: None,
+            duration_ms: Some(pending.started.elapsed().as_millis().min(u64::MAX as u128) as u64),
+        };
         self.append(pending, "end", &outcome)
     }
 
@@ -767,6 +795,25 @@ impl AuditLog {
             serde_json::to_vec(&record).map_err(|e| format!("serializing an audit record: {e}"))?;
         line.push(b'\n');
         self.ensure_capacity(state, line.len() as u64)?;
+        // Anchor the prospective tail before the record becomes visible. If
+        // the process dies between the checkpoint and the append, the missing
+        // record is detected; if an attacker removes the last record later,
+        // the checkpoint no longer matches. The prune record uses this too, so
+        // a failed retention checkpoint still describes the full (not yet
+        // deleted) log.
+        let first_seq = state
+            .sealed
+            .first()
+            .map(|segment| segment.first_seq)
+            .or(Some(state.active_first_seq));
+        write_checkpoint_snapshot(
+            &self.inner.checkpoint_path,
+            first_seq,
+            Some(seq),
+            state.records + 1,
+            &hash,
+            &state.pruned_heads,
+        )?;
         let Some(file) = state.active.as_mut() else {
             return Err("no active audit segment".to_string());
         };
@@ -791,9 +838,9 @@ impl AuditLog {
     // -- Read APIs ----------------------------------------------------------
 
     pub fn query(&self, query: &AuditQuery) -> Result<QueryResponse, String> {
-        let filter = parse_filter(query)?;
-        let _state = self.inner.state.lock().unwrap();
-        let records = self.read_records()?;
+        let filter = parse_filter(query, 100, MAX_FILTER_LIMIT)?;
+        let views = self.snapshot_segments()?;
+        let records = self.read_records_snapshot(&views)?;
         let mut out = Vec::new();
         let mut truncated = false;
         for value in records {
@@ -820,20 +867,9 @@ impl AuditLog {
     }
 
     pub fn export(&self, query: &AuditQuery) -> Result<String, String> {
-        let mut filter = parse_filter(query)?;
-        if query
-            .limit
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_none()
-        {
-            filter.limit = MAX_EXPORT_LIMIT;
-        } else {
-            filter.limit = filter.limit.min(MAX_EXPORT_LIMIT);
-        }
-        let _state = self.inner.state.lock().unwrap();
-        let records = self.read_records()?;
+        let filter = parse_filter(query, MAX_EXPORT_LIMIT, MAX_EXPORT_LIMIT)?;
+        let views = self.snapshot_segments()?;
+        let records = self.read_records_snapshot(&views)?;
         let mut out = String::new();
         let mut exported = 0usize;
         for value in records {
@@ -853,7 +889,7 @@ impl AuditLog {
     }
 
     pub fn verify(&self) -> VerifyReport {
-        let state = self.inner.state.lock().unwrap();
+        let _state = self.inner.state.lock().unwrap();
         let paths = match segment_paths(&self.inner.segments_dir) {
             Ok(paths) => paths,
             Err(e) => {
@@ -868,27 +904,92 @@ impl AuditLog {
                 }
             }
         };
-        let (report, _) = verify_paths(&paths, &state.pruned_heads);
+        let checkpoint = match load_checkpoint(&self.inner.checkpoint_path) {
+            Ok(checkpoint) => checkpoint,
+            Err(e) => {
+                return VerifyReport {
+                    ok: false,
+                    first_seq: None,
+                    last_seq: None,
+                    first_hash: None,
+                    last_hash: None,
+                    records: 0,
+                    errors: vec![e],
+                }
+            }
+        };
+        let (mut report, _) = verify_paths(&paths, &checkpoint);
+        if !self.inner.checkpoint_path.exists() && !paths.is_empty() {
+            report.errors.push(
+                "audit checkpoint is missing; refusing to trust an unanchored log".to_string(),
+            );
+            report.ok = false;
+        }
         report
     }
 
+    /// Snapshot the stable byte length of every segment while holding the
+    /// append lock, then read the files without it. Writers only update
+    /// `active_bytes` after a complete fsynced record, so a reader never sees
+    /// a half-written line even if the file grows concurrently.
+    #[cfg(test)]
     fn read_records(&self) -> Result<Vec<Value>, String> {
+        let views = self.snapshot_segments()?;
+        self.read_records_snapshot(&views)
+    }
+
+    fn snapshot_segments(&self) -> Result<Vec<SegmentView>, String> {
+        let state = self.inner.state.lock().unwrap();
         let paths = segment_paths(&self.inner.segments_dir)?;
-        let mut out = Vec::new();
+        let mut views = Vec::with_capacity(paths.len());
         for path in paths {
-            let text = std::fs::read_to_string(&path)
-                .map_err(|e| format!("reading audit segment {}: {e}", path.display()))?;
+            let len = if path == state.active_path {
+                state.active_bytes
+            } else {
+                std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0)
+            };
+            views.push(SegmentView { path, len });
+        }
+        Ok(views)
+    }
+
+    fn read_records_snapshot(&self, views: &[SegmentView]) -> Result<Vec<Value>, String> {
+        let mut out = Vec::new();
+        for view in views {
+            let file = match File::open(&view.path) {
+                Ok(file) => file,
+                // Retention may remove a sealed segment between the snapshot
+                // and the read; it is outside the query window now.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(format!(
+                        "reading audit segment {}: {e}",
+                        view.path.display()
+                    ))
+                }
+            };
+            let mut buf = Vec::with_capacity(view.len.min(1024 * 1024) as usize);
+            file.take(view.len)
+                .read_to_end(&mut buf)
+                .map_err(|e| format!("reading audit segment {}: {e}", view.path.display()))?;
+            let text = String::from_utf8_lossy(&buf);
             for line in text.lines() {
                 if line.trim().is_empty() {
                     continue;
                 }
                 let value: Value = serde_json::from_str(line)
-                    .map_err(|e| format!("parsing audit segment {}: {e}", path.display()))?;
+                    .map_err(|e| format!("parsing audit segment {}: {e}", view.path.display()))?;
                 out.push(value);
             }
         }
         Ok(out)
     }
+}
+
+#[derive(Debug)]
+struct SegmentView {
+    path: PathBuf,
+    len: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1059,7 +1160,7 @@ pub struct VerifyReport {
     pub errors: Vec<String>,
 }
 
-fn verify_paths(paths: &[PathBuf], pruned_heads: &[String]) -> (VerifyReport, Vec<SegmentMeta>) {
+fn verify_paths(paths: &[PathBuf], checkpoint: &Checkpoint) -> (VerifyReport, Vec<SegmentMeta>) {
     let mut report = VerifyReport {
         ok: true,
         first_seq: None,
@@ -1123,7 +1224,9 @@ fn verify_paths(paths: &[PathBuf], pruned_heads: &[String]) -> (VerifyReport, Ve
                         path.display()
                     ));
                 }
-            } else if prev != ZERO_HASH && !pruned_heads.iter().any(|known| known == prev) {
+            } else if prev != ZERO_HASH
+                && !checkpoint.pruned_heads.iter().any(|known| known == prev)
+            {
                 report.errors.push(format!(
                     "{}: first retained record points at unknown prev {prev}",
                     path.display()
@@ -1174,8 +1277,21 @@ fn verify_paths(paths: &[PathBuf], pruned_heads: &[String]) -> (VerifyReport, Ve
                 last_ts,
                 last_hash,
             });
+        } else if path.exists() {
+            // A rotation can leave the newest segment empty (for example a
+            // crash before its first record). Keep it as the active segment
+            // so the next append does not reopen the previous one.
+            metas.push(SegmentMeta {
+                first_seq: fallback_first,
+                path: path.clone(),
+                bytes,
+                records: 0,
+                last_ts: None,
+                last_hash: String::new(),
+            });
         }
     }
+    report.errors.extend(checkpoint_errors(checkpoint, &report));
     if report.errors.len() > MAX_ERRORS {
         report.errors.truncate(MAX_ERRORS);
         report
@@ -1184,6 +1300,48 @@ fn verify_paths(paths: &[PathBuf], pruned_heads: &[String]) -> (VerifyReport, Ve
     }
     report.ok = report.errors.is_empty();
     (report, metas)
+}
+
+/// The checkpoint is the durable tail anchor. Because it is written before
+/// the record it describes, it must match the retained log exactly: a shorter
+/// log is a truncated/rolled-back tail, a longer log is an unanchored tail,
+/// and a different head hash is tampering.
+fn checkpoint_errors(checkpoint: &Checkpoint, report: &VerifyReport) -> Vec<String> {
+    let has_anchor =
+        checkpoint.last_seq.is_some() || checkpoint.records > 0 || !checkpoint.head_hash.is_empty();
+    if !has_anchor {
+        return if report.records == 0 {
+            Vec::new()
+        } else {
+            vec!["audit checkpoint is missing; refusing to trust an unanchored log".to_string()]
+        };
+    }
+    if checkpoint.last_seq == Some(0) && report.records == 0 && checkpoint.records == 0 {
+        // A freshly opened, still-empty log.
+        return Vec::new();
+    }
+    let mut errors = Vec::new();
+    match (checkpoint.last_seq, report.last_seq) {
+        (Some(expected), Some(actual)) => {
+            if expected != actual {
+                errors.push(format!(
+                    "audit checkpoint expects the log to end at sequence {expected}, but it ends at {actual}"
+                ));
+            } else if !checkpoint.head_hash.is_empty()
+                && report.last_hash.as_deref() != Some(checkpoint.head_hash.as_str())
+            {
+                errors.push("audit checkpoint head hash does not match the log tail".to_string());
+            }
+        }
+        (Some(expected), None) => errors.push(format!(
+            "audit checkpoint expects the log to end at sequence {expected}, but the log is empty"
+        )),
+        (None, Some(actual)) => errors.push(format!(
+            "audit checkpoint does not anchor the log tail at sequence {actual}"
+        )),
+        (None, None) => {}
+    }
+    errors
 }
 
 fn segment_paths(dir: &Path) -> Result<Vec<PathBuf>, String> {
@@ -1279,17 +1437,35 @@ fn write_checkpoint_locked(path: &Path, state: &AuditState) -> Result<(), String
             } else {
                 state.first_seq
             });
+    write_checkpoint_snapshot(
+        path,
+        first_seq,
+        state.next_seq.checked_sub(1),
+        state.records,
+        if state.prev_hash.is_empty() {
+            ZERO_HASH
+        } else {
+            &state.prev_hash
+        },
+        &state.pruned_heads,
+    )
+}
+
+fn write_checkpoint_snapshot(
+    path: &Path,
+    first_seq: Option<u64>,
+    last_seq: Option<u64>,
+    records: u64,
+    head_hash: &str,
+    pruned_heads: &[String],
+) -> Result<(), String> {
     let checkpoint = Checkpoint {
         v: RECORD_VERSION,
         first_seq,
-        last_seq: state.next_seq.checked_sub(1),
-        records: state.records,
-        head_hash: if state.prev_hash.is_empty() {
-            ZERO_HASH.to_string()
-        } else {
-            state.prev_hash.clone()
-        },
-        pruned_heads: state.pruned_heads.clone(),
+        last_seq,
+        records,
+        head_hash: head_hash.to_string(),
+        pruned_heads: pruned_heads.to_vec(),
         updated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true),
     };
     let data = serde_json::to_vec_pretty(&checkpoint)
@@ -1297,7 +1473,11 @@ fn write_checkpoint_locked(path: &Path, state: &AuditState) -> Result<(), String
     let path = path
         .to_str()
         .ok_or_else(|| "audit checkpoint path is not valid UTF-8".to_string())?;
-    crate::chartsrepo::write_atomic(path, &data, 0o600, 0o700)
+    crate::chartsrepo::write_atomic(path, &data, 0o600, 0o700)?;
+    if let Some(dir) = Path::new(path).parent() {
+        let _ = sync_dir(dir);
+    }
+    Ok(())
 }
 
 fn available_bytes(path: &Path) -> Option<u64> {
@@ -1482,7 +1662,7 @@ pub fn spawn_degraded_alert(state: Arc<AppState>, reason: String) {
 }
 
 /// Query parameters for `GET /api/audit` and `GET /api/audit/export`.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct AuditQuery {
     pub from: Option<String>,
     pub to: Option<String>,
@@ -1502,11 +1682,15 @@ struct AuditFilter {
     limit: usize,
 }
 
-fn parse_filter(query: &AuditQuery) -> Result<AuditFilter, String> {
+fn parse_filter(
+    query: &AuditQuery,
+    default_limit: usize,
+    max_limit: usize,
+) -> Result<AuditFilter, String> {
     let from = parse_bound(query.from.as_deref(), "from")?;
     let to = parse_bound(query.to.as_deref(), "to")?;
     let limit = match query.limit.as_deref() {
-        None | Some("") => 100,
+        None | Some("") => default_limit,
         Some(raw) => raw
             .trim()
             .parse::<usize>()
@@ -1521,7 +1705,7 @@ fn parse_filter(query: &AuditQuery) -> Result<AuditFilter, String> {
         actor: query.actor.clone().filter(|value| !value.is_empty()),
         action: query.action.clone().filter(|value| !value.is_empty()),
         outcome: query.outcome.clone().filter(|value| !value.is_empty()),
-        limit: limit.min(MAX_FILTER_LIMIT),
+        limit: limit.min(max_limit),
     })
 }
 
@@ -1597,22 +1781,33 @@ pub struct QueryResponse {
 
 /// `GET /api/audit` — admin-only, bounded query.
 pub async fn list(State(state): State<Arc<AppState>>, Query(query): Query<AuditQuery>) -> Response {
-    match state.audit.query(&query) {
-        Ok(response) => crate::json(
+    let audit = state.audit.clone();
+    match tokio::task::spawn_blocking(move || audit.query(&query)).await {
+        Ok(Ok(response)) => crate::json(
             StatusCode::OK,
             serde_json::to_value(response).unwrap_or_default(),
         ),
-        Err(e) => crate::json(StatusCode::BAD_REQUEST, json!({ "error": e })),
+        Ok(Err(e)) => crate::json(StatusCode::BAD_REQUEST, json!({ "error": e })),
+        Err(e) => crate::json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("audit query task failed: {e}") }),
+        ),
     }
 }
 
 /// `GET /api/audit/verify` — re-verify the retained chain on demand.
 pub async fn verify(State(state): State<Arc<AppState>>) -> Response {
-    let report = state.audit.verify();
-    crate::json(
-        StatusCode::OK,
-        serde_json::to_value(report).unwrap_or_default(),
-    )
+    let audit = state.audit.clone();
+    match tokio::task::spawn_blocking(move || audit.verify()).await {
+        Ok(report) => crate::json(
+            StatusCode::OK,
+            serde_json::to_value(report).unwrap_or_default(),
+        ),
+        Err(e) => crate::json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("audit verify task failed: {e}") }),
+        ),
+    }
 }
 
 /// `GET /api/audit/export` — admin-only JSONL export. The read itself is
@@ -1621,8 +1816,9 @@ pub async fn export(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AuditQuery>,
 ) -> Response {
-    match state.audit.export(&query) {
-        Ok(body) => (
+    let audit = state.audit.clone();
+    match tokio::task::spawn_blocking(move || audit.export(&query)).await {
+        Ok(Ok(body)) => (
             [
                 (header::CONTENT_TYPE, "application/x-ndjson"),
                 (
@@ -1633,7 +1829,11 @@ pub async fn export(
             body,
         )
             .into_response(),
-        Err(e) => crate::json(StatusCode::BAD_REQUEST, json!({ "error": e })),
+        Ok(Err(e)) => crate::json(StatusCode::BAD_REQUEST, json!({ "error": e })),
+        Err(e) => crate::json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("audit export task failed: {e}") }),
+        ),
     }
 }
 
@@ -1741,6 +1941,96 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("prev") || error.contains("sequence")));
+    }
+
+    #[test]
+    fn truncating_the_active_tail_fails_verification() {
+        let log = AuditLog::for_test();
+        let pending = begin_post(&log, "req-truncate");
+        log.finish(&pending, 201).unwrap();
+        assert!(log.verify().ok);
+        let path = std::fs::read_dir(&log.inner.segments_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| segment_seq(path).is_some())
+            .expect("segment file");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let (first, _) = original.split_once('\n').expect("two records");
+        std::fs::write(&path, format!("{first}\n")).unwrap();
+        let report = log.verify();
+        assert!(!report.ok, "a truncated tail must fail verification");
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("checkpoint")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn a_missing_checkpoint_fails_verification() {
+        let log = AuditLog::for_test();
+        let pending = begin_post(&log, "req-no-checkpoint");
+        log.finish(&pending, 201).unwrap();
+        std::fs::remove_file(&log.inner.checkpoint_path).unwrap();
+        let report = log.verify();
+        assert!(!report.ok, "an unanchored log must fail verification");
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("checkpoint")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn export_returns_more_than_the_query_limit() {
+        let log = AuditLog::for_test();
+        for index in 0..1005 {
+            let pending = Pending::system("test", "audit.test", Some(index.to_string()), json!({}));
+            log.record_once(&pending, 200).unwrap();
+        }
+        let export = log
+            .export(&AuditQuery {
+                limit: Some("50000".to_string()),
+                ..AuditQuery::default()
+            })
+            .unwrap();
+        assert_eq!(export.lines().count(), 1005);
+        let query = log
+            .query(&AuditQuery {
+                limit: Some("50000".to_string()),
+                ..AuditQuery::default()
+            })
+            .unwrap();
+        assert_eq!(query.count, MAX_FILTER_LIMIT);
+        assert!(query.truncated);
+    }
+
+    #[test]
+    fn the_export_limit_honours_the_documented_maximum() {
+        let query = AuditQuery {
+            limit: Some("50000".to_string()),
+            ..AuditQuery::default()
+        };
+        assert_eq!(
+            parse_filter(&query, 100, MAX_FILTER_LIMIT).unwrap().limit,
+            MAX_FILTER_LIMIT
+        );
+        assert_eq!(
+            parse_filter(&query, MAX_EXPORT_LIMIT, MAX_EXPORT_LIMIT)
+                .unwrap()
+                .limit,
+            MAX_EXPORT_LIMIT
+        );
+        let default_export =
+            parse_filter(&AuditQuery::default(), MAX_EXPORT_LIMIT, MAX_EXPORT_LIMIT).unwrap();
+        assert_eq!(default_export.limit, MAX_EXPORT_LIMIT);
     }
 
     #[test]

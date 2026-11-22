@@ -641,6 +641,13 @@ spec:
             # Persists share definitions across restarts.
             - name: shares-config
               mountPath: {{ .Values.api.sharesConfig.mountPath | default "/var/lib/naslos" }}
+            {{- else }}
+            # With the state volume disabled the rootfs is read-only, so the
+            # API still needs a writable audit directory to start. This
+            # emptyDir is pod-lifetime only; durable audit requires the state
+            # volume (api.sharesConfig.enabled=true).
+            - name: audit
+              mountPath: {{ .Values.api.auditDir | default "/var/lib/naslos/audit" }}
             {{- end }}
             {{- if .Values.buddy.enabled }}
             # The Buddy Backup receive dataset. It is the only read-write host
@@ -754,6 +761,9 @@ spec:
         - name: shares-config
           persistentVolumeClaim:
             claimName: naslos-shares-config
+        {{- else }}
+        - name: audit
+          emptyDir: {}
         {{- end }}
         {{- if .Values.api.datasetsHostPath }}
         - name: datasets

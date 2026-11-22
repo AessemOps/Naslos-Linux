@@ -1981,14 +1981,17 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
   `request_ids_are_echoed_and_audit_redacts_the_request_surface`,
   `mcp_read_calls_are_audited_without_arguments`)*
 - **FR-AUD-06** — Records MUST be tamper-evident via a SHA-256 hash chain
-  (`hash` over the canonical record and `prev` as the previous hash) with
-  sealed-segment checkpoints. Startup and an admin-only verify endpoint MUST
+  (`hash` over the canonical record and `prev` as the previous hash) with a
+  checkpoint that anchors the prospective tail before each record and records
+  pruned-segment head hashes. Startup and an admin-only verify endpoint MUST
   detect edited, reordered, deleted, inserted or truncated records. A keyed
   MAC or off-box checkpoint SHOULD be added because a plain hash chain cannot
   stop a writer with full volume access. Verification failure MUST NOT
   auto-repair or truncate the log. **[IMPLEMENTED]** The plain hash chain
   remains the baseline; a keyed MAC/off-box checkpoint is still a SHOULD.
-  *(test: `chain_detects_edited_and_deleted_records`)*
+  *(tests: `chain_detects_edited_and_deleted_records`,
+  `truncating_the_active_tail_fails_verification`,
+  `a_missing_checkpoint_fails_verification`)*
 - **FR-AUD-07** — Retention MUST be bounded by age and bytes (proposed
   defaults 90 days / 16 MiB, 8 MiB segments, below the shared state
   volume). Pruning MUST remove only the oldest sealed segments, MUST never remove the active segment or the newest
@@ -2013,16 +2016,18 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
   query, chain verification and JSONL export MAY be exposed at
   `/api/audit`, `/api/audit/verify` and `/api/audit/export`; there MUST be no
   mutation, purge or delete route. The audit viewer/export MUST itself be
-  audited. **[IMPLEMENTED]** *(test:
-  `audit_routes_are_admin_only_and_the_read_is_audited`)*
+  audited. **[IMPLEMENTED]** *(tests:
+  `audit_routes_are_admin_only_and_the_read_is_audited`,
+  `the_export_limit_honours_the_documented_maximum`,
+  `export_returns_more_than_the_query_limit`)*
 - **FR-AUD-10** — MCP MUST record every `tools/call` durably (token id/name,
   tool, scope, status, duration, generated MCP call id) while NEVER recording
   arguments; the existing in-memory ring MAY remain as a UI convenience.
   System actors MUST be recorded for scheduled/background work, and Buddy
   peer mutations MUST record the peer key fingerprint rather than a
   username. **[IMPLEMENTED — MCP] [OPEN — system actors and Buddy peer
-  fingerprints]** *(test: `mcp_read_calls_are_audited_without_arguments`;
-  MCP mutations are covered by
+  fingerprints]** *(tests: `mcp_read_calls_are_audited_without_arguments`,
+  `refused_mcp_calls_are_audited_without_arguments`,
   `mcp_mutations_fail_closed_when_audit_is_degraded`)*
 
 ---
@@ -2400,11 +2405,11 @@ RBAC and the audit log (FR-RBAC, FR-AUD) now have an executable suite in
 | `operator_and_readonly_groups_are_denied_on_owner_routes`, `every_owner_route_is_403_for_non_admins`, `admin_requests_are_not_blocked_by_the_auth_layers` | FR-RBAC-05/06/08 |
 | `forged_identity_cannot_bypass_the_public_auth_layers`, `internal_router_answers_with_a_synthetic_identity_and_hides_public_routes` | FR-RBAC-03/07 |
 | `record_shape_and_chain`, `survives_restart_and_appends`, `request_ids_are_validated`, `query_filters_actor_action_and_outcome` | FR-AUD-01/02/04 |
-| `chain_detects_edited_and_deleted_records`, `redacts_canary_secrets_in_params`, `request_ids_are_echoed_and_audit_redacts_the_request_surface` | FR-AUD-05/06 |
+| `chain_detects_edited_and_deleted_records`, `truncating_the_active_tail_fails_verification`, `a_missing_checkpoint_fails_verification`, `redacts_canary_secrets_in_params`, `request_ids_are_echoed_and_audit_redacts_the_request_surface` | FR-AUD-05/06 |
 | `audit_records_a_mutation_and_refuses_after_degrade`, `degraded_log_refuses_begin`, `mcp_mutations_fail_closed_when_audit_is_degraded` | FR-AUD-03/08 |
 | `retention_prunes_only_sealed_segments_and_records_it` | FR-AUD-07 |
-| `audit_routes_are_admin_only_and_the_read_is_audited` | FR-AUD-09 |
-| `mcp_read_calls_are_audited_without_arguments` | FR-AUD-10 (MCP) |
+| `audit_routes_are_admin_only_and_the_read_is_audited`, `the_export_limit_honours_the_documented_maximum`, `export_returns_more_than_the_query_limit` | FR-AUD-09 |
+| `mcp_read_calls_are_audited_without_arguments`, `refused_mcp_calls_are_audited_without_arguments` | FR-AUD-10 (MCP) |
 
 Still open: Authelia admission and 2FA for the new groups (FR-RBAC-09), MCP
 scope-to-route-role parity after route delegation (FR-RBAC-07), terminal/VNC

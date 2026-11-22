@@ -69,6 +69,9 @@ api:
   # start when the directory cannot be created or written, and refuses
   # mutations when the chain is degraded. Keep the byte budget below the state
   # PVC: raise api.sharesConfig.size (for example 128Mi) when raising these.
+  # With api.sharesConfig.enabled=false the chart backs this path with an
+  # emptyDir so the read-only-rootfs API can start, but that trail is lost on
+  # pod restart; durable audit requires the state volume.
   auditDir: /var/lib/naslos/audit
   auditRetentionDays: 90
   auditMaxBytes: 16777216

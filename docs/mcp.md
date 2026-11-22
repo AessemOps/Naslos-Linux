@@ -115,10 +115,12 @@ layer re-implements domain logic.
 ## What is logged
 
 Every `tools/call` produces a durable record in the append-only audit log
-(`docs/rbac-audit.md` §7: actor `mcp`, token name, scope, tool, generated
-MCP call id, HTTP status, duration) **and** the existing structured log line
-plus Settings-visible recent calls feed. **Arguments are never logged or
-recorded** — tool bodies can carry passwords and secrets. A mutating tool
+(`docs/rbac-audit.md` §7: actor `mcp`, token id/name, scope, tool, generated
+MCP call id, HTTP status/refusal code, duration) **and** the existing
+structured log line plus Settings-visible recent calls feed. Refused calls
+(unknown tool, scope, missing `confirm`, bad path) are recorded with
+`outcome: denied|failed` before the error is returned. **Arguments are never
+logged or recorded** — tool bodies can carry passwords and secrets. A mutating tool
 (`write`/`full` scope) is not dispatched unless its begin record is durable: a
 degraded or unwritable audit sink refuses the call, exactly like an unsafe
 HTTP route. Enabling/disabling the endpoint and token creation/revocation
