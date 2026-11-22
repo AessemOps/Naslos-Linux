@@ -196,6 +196,33 @@ for pvc_name in ("naslos-shares-config", "naslos-openldap-backups"):
     assert pvc, f"{pvc_name} PVC missing"
     assert pvc["metadata"].get("annotations", {}).get("helm.sh/resource-policy") == "keep", \
         f"{pvc_name} must be kept on uninstall"
+# R-030 chart: the upgrader admission policy pins image, entrypoint, args, env,
+# volumes and securityContext.
+vap = find("ValidatingAdmissionPolicy", "naslos-upgrader-guard")
+assert vap, "upgrader ValidatingAdmissionPolicy missing"
+expressions = " ".join(v["expression"] for v in vap["spec"]["validations"])
+for fragment in (
+    "naslos-upgrade",
+    "^--(op|operation-id|from|version|pack-url|sha256|namespace|release)",
+    "NASLOS_NAMESPACE",
+    "hostPath",
+    "/var/lib/naslos",
+    "runAsUser == 65532",
+    "readOnlyRootFilesystem == true",
+    "drop.exists(cap, cap == 'ALL')",
+):
+    assert fragment in expressions, f"upgrader policy is missing {fragment!r}"
+# The upgrader path itself grants no exec: the API's operation Role is
+# jobs/pods/log/configmap only, and no rule attached to the upgrader identity
+# names pods/exec (the web terminal has its own dedicated Role).
+api_system = find("Role", "naslos-api-system")
+assert api_system, "API system Role missing"
+for rule in api_system["rules"]:
+    assert "pods/exec" not in rule.get("resources", []), rule
+for doc in docs:
+    if doc.get("kind") in ("Role", "ClusterRole") and "upgrader" in doc["metadata"]["name"]:
+        for rule in doc.get("rules", []):
+            assert "pods/exec" not in rule.get("resources", []), doc["metadata"]["name"]
 secret = find("Secret", "naslos-buddy-kek")
 assert secret, "generated buddy KEK Secret missing"
 raw = base64.b64decode(secret["data"]["kek"])

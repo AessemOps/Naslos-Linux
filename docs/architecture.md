@@ -351,3 +351,17 @@ Talos upgrades are unaffected because:
   `talosctl apply-config` / `scripts/deploy-vm.sh`. The one in-product exception
   is the guarded day-2 network change path (`FR-NET`) described in
   [deployment.md](deployment.md#day-2-network-changes-fr-net).
+
+The web upgrader runs an in-cluster `naslos-upgrade` Job rather than upgrading
+from the API pod (the API cannot replace its own release). That Job needs
+cluster-admin for `helm upgrade`, CRD/cert-manager provisioning and
+`talosctl upgrade`, so the chart pins it through a ValidatingAdmissionPolicy
+(`naslos-upgrader-guard`): only a single `ghcr.io/aessemops/naslos-api@sha256:`
+container running the `naslos-upgrade` entrypoint, only the documented
+operation flags, only the NASLOS_/HELM_/TALOS_ env names, only the tmp,
+talosconfig and state volumes (no hostPath/subPath), and a fixed non-root,
+no-privilege, read-only, RuntimeDefault-seccomp pod. The API's own Role is
+limited to Jobs, pod/log reads and the operation ConfigMap, so the API cannot
+use the upgrader identity as a general pod launcher; the cluster-admin binding
+itself remains the residual, bounded by that policy and the owner-only
+upgrade endpoints.

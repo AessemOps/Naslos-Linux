@@ -120,11 +120,12 @@ spec:
       expression: "object.spec.serviceAccountName == '{{ $sa }}'"
   validations:
     - expression: >-
+        object.spec.containers.size() == 1 &&
         object.spec.containers.all(c,
         c.image.startsWith('ghcr.io/aessemops/naslos-api@sha256:'))
       message: >-
-        pods using the naslos-upgrader ServiceAccount must run a
-        ghcr.io/aessemops/naslos-api@sha256: image
+        pods using the naslos-upgrader ServiceAccount must run exactly one
+        ghcr.io/aessemops/naslos-api@sha256: container
     - expression: >-
         object.spec.containers.all(c,
         c.command.size() > 0 && c.command[0] == 'naslos-upgrade')
@@ -132,13 +133,68 @@ spec:
         pods using the naslos-upgrader ServiceAccount must run the
         naslos-upgrade entrypoint
     - expression: >-
-        !has(object.spec.initContainers) ||
-        object.spec.initContainers.all(c,
-        c.image.startsWith('ghcr.io/aessemops/naslos-api@sha256:') &&
-        c.command.size() > 0 && c.command[0] == 'naslos-upgrade')
+        !has(object.spec.initContainers) &&
+        !has(object.spec.ephemeralContainers)
       message: >-
-        init containers using the naslos-upgrader ServiceAccount must run the
-        naslos-upgrade entrypoint
+        the upgrader pod may not run init or ephemeral containers
+    # R-030: the API chooses the Job spec, so pin the arguments to the
+    # documented flags (the operation cannot turn the Job into an arbitrary
+    # command) and env names to the NASLOS_*/HELM_* set the binary consumes.
+    - expression: >-
+        object.spec.containers.all(c,
+        c.args.all(a,
+        !a.startsWith('--') ||
+        a.matches('^--(op|operation-id|from|version|pack-url|sha256|namespace|release)(=|$)')))
+      message: >-
+        upgrader args may only use the operation flags
+    - expression: >-
+        object.spec.containers.all(c,
+        c.env.all(e,
+        e.name in ['NASLOS_NAMESPACE', 'NASLOS_RELEASE',
+        'NASLOS_WORKLOAD_NAMESPACE', 'NASLOS_STATE_DIR', 'TALOSCONFIG',
+        'TALOS_NODES', 'HOME', 'HELM_CACHE_HOME', 'HELM_CONFIG_HOME',
+        'HELM_DATA_HOME']))
+      message: >-
+        upgrader env may only set the documented NASLOS_/HELM_/TALOS_ variables
+    # Volumes: tmp emptyDir, the Talos Secret, and the state claim/emptyDir.
+    # No hostPath, no extra volume, no subPath mount.
+    - expression: >-
+        object.spec.volumes.all(v,
+        v.name in ['tmp', 'talosconfig', 'state'] &&
+        !has(v.hostPath) &&
+        ((v.name == 'tmp' && has(v.emptyDir)) ||
+        (v.name == 'talosconfig' && has(v.secret)) ||
+        (v.name == 'state' && (has(v.persistentVolumeClaim) || has(v.emptyDir)))))
+      message: >-
+        upgrader volumes are limited to tmp, talosconfig and state (no hostPath)
+    - expression: >-
+        object.spec.containers.all(c,
+        c.volumeMounts.all(m,
+        m.mountPath in ['/tmp', '/var/run/secrets/talos.dev', '/var/lib/naslos'] &&
+        !has(m.subPath)))
+      message: >-
+        upgrader mounts may only target /tmp, /var/run/secrets/talos.dev and
+        /var/lib/naslos without subPath
+    # Pod and container isolation, pinned to what naslos-upgrade actually
+    # needs. This stops a caller from gaining host namespaces or a writable
+    # root through a mutated Job.
+    - expression: >-
+        !has(object.spec.hostNetwork) && !has(object.spec.hostPID) &&
+        !has(object.spec.hostIPC) &&
+        object.spec.securityContext.runAsNonRoot == true &&
+        object.spec.securityContext.runAsUser == 65532 &&
+        object.spec.securityContext.seccompProfile.type == 'RuntimeDefault'
+      message: >-
+        upgrader pods must be non-root (65532), without host namespaces, with
+        RuntimeDefault seccomp
+    - expression: >-
+        object.spec.containers.all(c,
+        c.securityContext.allowPrivilegeEscalation == false &&
+        c.securityContext.readOnlyRootFilesystem == true &&
+        c.securityContext.capabilities.drop.exists(cap, cap == 'ALL'))
+      message: >-
+        upgrader containers must drop ALL, forbid privilege escalation and use
+        a read-only root
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
