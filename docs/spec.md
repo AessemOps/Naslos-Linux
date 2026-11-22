@@ -201,7 +201,50 @@ Requirement IDs are stable: never renumber, only deprecate.
   that a share is serving (or that backs a share's path) MUST be refused with a
   conflict instead of removing the share's data.
 
-### 3.1.1 Disk health (`FR-DHK`)
+### 3.1.1 Block volumes — ZFS zvol (`FR-ZVOL`)
+
+- **FR-ZVOL-01** — The system MUST create, list, resize and destroy ZFS
+  zvols end to end through the API and the privileged agent. Creation MUST run
+  `zfs create -p -V <validated size>`, resize MUST run
+  `zfs set volsize=<validated size>`, and a zvol name MUST pass the same strict
+  per-component validation as a new dataset. Listing MUST report `volsize`,
+  exact `volsizeBytes`, `volblocksize`, compression, used, avail and refer.
+  The dataset routes MUST keep their existing behavior. *(rust/agent/tests/
+  zvol.rs: `create_zvol_command_line_sorts_options`,
+  `resize_zvol_grows_with_a_validated_size`,
+  `destroy_zvol_checks_type_then_destroys`; rust/api/tests/zfs_agent.rs:
+  `zvol_create_sends_the_validated_full_name_and_options`,
+  `zvol_list_passes_the_pool_filter`,
+  `zvol_resize_validates_and_forwards_the_name`,
+  `zvol_delete_requires_confirmation_matching_the_name`)*
+- **FR-ZVOL-02** — The zvol property surface MUST be limited to
+  `volblocksize` (a power of two from 512 bytes to 16 MiB) and `compression`
+  (the shared dataset allow-list). A dataset-only option (`quota`,
+  `recordsize`, `atime`, `copies`, `readonly`, `mountpoint`) MUST be refused on
+  the zvol path, and a zvol-only option (`volsize`, `volblocksize`, `volmode`)
+  MUST be refused on the dataset path. Options MUST be passed as discrete argv
+  elements; the agent MUST NOT build a shell command string. *(rust/agent/tests/
+  zvol.rs: `create_zvol_refusals`, `zvol_options_split_dataset_and_zvol_surfaces`;
+  rust/api/tests/zfs_agent.rs:
+  `zvol_create_rejects_dataset_options_and_bad_sizes_before_the_agent`)*
+- **FR-ZVOL-03** — Destroying a zvol MUST require `confirm` equal to its full
+  `<pool>/<name>` and MUST first verify that the path is a `type=volume` (so a
+  same-named filesystem is never destroyed). Deleting or resizing a zvol that
+  is in use MUST be refused: the agent MUST check the mounted device, sysfs
+  holders and visible host/agent `/proc/<pid>/fd` openers, and MUST map a ZFS
+  `volume is busy` error to the same refusal. A busy destroy MUST NOT be
+  retried with a forced unmount, and resize MUST reject a shrink. *(rust/agent/
+  tests/zvol.rs: `create_zvol_refusals`, `resize_refuses_a_shrink_or_a_non_zvol`,
+  `resize_and_destroy_refuse_an_in_use_zvol`,
+  `destroy_refuses_a_filesystem_and_a_busy_volume`,
+  `in_use_detection_covers_mounts_holders_and_open_files`; rust/api/tests/
+  zfs_agent.rs: `zvol_refusals_from_the_agent_are_forwarded`)*
+- **FR-ZVOL-04 [OPEN]** — A zvol management UI (Pools → zvols: create, list,
+  resize, delete with a destructive confirmation) and an iSCSI target export
+  are not implemented. The iSCSI spike, privilege/network review and go/no-go
+  gates are in [iscsi.md](iscsi.md). *(No UI or iSCSI test yet)*
+
+### 3.1.2 Disk health (`FR-DHK`)
 
 - **FR-DHK-01** — The agent MUST report per-whole-disk SMART health (health
   status, temperature, power-on hours, wear, reallocated/pending/uncorrectable

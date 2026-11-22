@@ -10,6 +10,7 @@ pub mod runner;
 pub mod smart;
 pub mod types;
 pub mod validation;
+pub mod zvol;
 
 pub use devices::validate_pool_name;
 
@@ -17,7 +18,7 @@ pub use runner::{join_host, RealRunner, Runner};
 pub use smart::{DiskHealth, DiskHealthReport, SmartClient, SmartInfo};
 pub use types::{
     Dataset, ImportablePool, Pool, PoolConfig, PoolDevice, PoolHealth, PoolIOStats,
-    SendStreamOptions, SnapshotInfo, ZfsDiskHealth,
+    SendStreamOptions, SnapshotInfo, ZfsDiskHealth, Zvol,
 };
 pub use validation::{ZfsError, ZfsResult};
 

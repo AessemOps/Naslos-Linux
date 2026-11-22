@@ -20,6 +20,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 ## Features
 
 - **ZFS** — official `siderolabs/zfs` extension; pools auto-import at boot via `zfs-service`
+- **Block volumes (zvol)** — create, list, resize and delete ZFS zvols through a validated API/agent surface (growth-only resize, in-use refusals, no arbitrary properties); the management UI and iSCSI export are planned (`[OPEN]`, see [docs/iscsi.md](docs/iscsi.md))
 - **Accessible UI** — Svelte 5 + Tailwind design-token system with a persisted
   light/dark theme (no-FOUC bootstrap, `prefers-color-scheme` default), a
   grouped collapsible sidebar, SVG icon set (Lucide), shared modal/loading/
@@ -109,7 +110,8 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [architecture](docs/architecture.md) | Design principles + system/deployment/component diagrams, data flows |
 | [api](docs/api.md) | HTTP API reference (naslos-api + naslos-agent) |
 | [bootstrap](docs/bootstrap.md) | Image Factory schematic & ZFS extension |
-| [storage-zfs](docs/storage-zfs.md) | ZFS pools, datasets, snapshots, storage classes |
+| [storage-zfs](docs/storage-zfs.md) | ZFS pools, datasets, zvols, snapshots, storage classes |
+| [iscsi](docs/iscsi.md) | iSCSI target spike: userspace target on Talos, go/no-go, security review |
 | [identity-sso](docs/identity-sso.md) | Authelia + OpenLDAP + Samba single sign-on |
 | [shares](docs/shares.md) | SMB / NFS / Time-Machine shares |
 | [app-catalog](docs/app-catalog.md) | Catalog, schema-driven forms, Helm lifecycle |

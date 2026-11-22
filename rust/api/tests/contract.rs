@@ -269,6 +269,7 @@ async fn protected_routes_fail_closed_for_all_unauthenticated_shapes() {
         ("GET", "/api/shares"),
         ("POST", "/api/shares/apply"),
         ("DELETE", "/api/volumes/zfs/tank?confirm=tank"),
+        ("GET", "/api/zvols"),
         ("POST", "/api/apps"),
         ("GET", "/api/virt/capabilities"),
         ("GET", "/api/virt/vms"),

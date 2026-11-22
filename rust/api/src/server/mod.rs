@@ -154,6 +154,13 @@ fn owner_routes() -> Router<Arc<AppState>> {
                 .post(zfs::datasets_post)
                 .delete(zfs::datasets_delete),
         )
+        .route(
+            "/api/zvols",
+            get(zfs::zvols_get)
+                .post(zfs::zvols_post)
+                .put(zfs::zvols_resize)
+                .delete(zfs::zvols_delete),
+        )
         .route("/api/virt/capabilities", get(virt::capabilities_get))
         .route("/api/virt/vms", get(virt::vms_get).post(virt::vms_post))
         .route(

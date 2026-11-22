@@ -332,6 +332,120 @@ pub async fn datasets_delete(
     }
 }
 
+// ---- zvols ---------------------------------------------------------------
+
+pub async fn zvols_get(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<QueryMap>,
+) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    let pool = query.get("pool").map(|p| p.trim()).unwrap_or_default();
+    let result = if pool.is_empty() {
+        zfs.all_zvols().await
+    } else {
+        zfs.zvols(pool).await
+    };
+    match result {
+        Ok(zvols) => json_response(StatusCode::OK, &zvols),
+        Err(e) => write_client_error(&e),
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct ZvolCreateRequest {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    size: String,
+    #[serde(default)]
+    options: HashMap<String, String>,
+}
+
+pub async fn zvols_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    let req: ZvolCreateRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
+        Ok(req) => req,
+        Err(resp) => return resp,
+    };
+    match zfs.create_zvol(&req.name, &req.size, &req.options).await {
+        Ok(()) => {
+            tracing::info!("created zvol {}", req.name);
+            json_response(
+                StatusCode::CREATED,
+                &json!({ "status": "zvol created", "name": req.name }),
+            )
+        }
+        Err(e) => write_error(StatusCode::BAD_REQUEST, e.to_string()),
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct ZvolResizeRequest {
+    #[serde(default)]
+    size: String,
+}
+
+pub async fn zvols_resize(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<QueryMap>,
+    body: Body,
+) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    let name = query.get("name").map(String::as_str).unwrap_or_default();
+    if name.trim().is_empty() {
+        return write_error(StatusCode::BAD_REQUEST, "zvol name is required");
+    }
+    let req: ZvolResizeRequest = match read_json(body, MAX_JSON_BODY_BYTES).await {
+        Ok(req) => req,
+        Err(resp) => return resp,
+    };
+    match zfs.resize_zvol(name, &req.size).await {
+        Ok(()) => {
+            tracing::info!("resized zvol {} to {}", name, req.size.trim());
+            json_response(
+                StatusCode::OK,
+                &json!({ "status": "zvol resized", "name": name, "size": req.size.trim() }),
+            )
+        }
+        Err(e) => write_error(StatusCode::BAD_REQUEST, e.to_string()),
+    }
+}
+
+pub async fn zvols_delete(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<QueryMap>,
+) -> Response {
+    let Some(zfs) = state.zfs.as_ref() else {
+        return zfs_unavailable();
+    };
+    let name = query.get("name").map(String::as_str).unwrap_or_default();
+    if name.trim().is_empty() {
+        return write_error(StatusCode::BAD_REQUEST, "zvol name is required");
+    }
+    if query.get("confirm").map(String::as_str) != Some(name) {
+        return write_error(
+            StatusCode::BAD_REQUEST,
+            "destroying a zvol requires confirm=<zvol name>",
+        );
+    }
+    match zfs.destroy_zvol(name).await {
+        Ok(()) => {
+            tracing::info!("destroyed zvol {}", name);
+            json_response(
+                StatusCode::OK,
+                &json!({ "status": "zvol destroyed", "name": name }),
+            )
+        }
+        Err(e) => write_error(StatusCode::BAD_REQUEST, e.to_string()),
+    }
+}
+
 // ---- Snapshots -----------------------------------------------------------
 
 pub async fn snapshots_get(

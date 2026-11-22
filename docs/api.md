@@ -172,6 +172,10 @@ are in-memory (a restart abandons a running job; the app record and
 | DELETE | `/api/datasets/registry/{name}` | Unregister a dataset; existing app claims are untouched |
 | POST | `/api/datasets` | Create: `{pool, name, options}` → `zfs create -p` (validated name + safe option subset, FR-STO-07) |
 | DELETE | `/api/datasets?name=<pool>/<name>&recursive=true` | Destroy a dataset. Empty → plain destroy; non-empty needs `recursive=true`; a pool root dataset is refused; a dataset backing a share's path is refused with 409 (FR-STO-09) |
+| GET | `/api/zvols?pool=<pool>` | List ZFS zvols (`volsize`, `volsizeBytes`, `volblocksize`, compression, used/avail/refer); omit `pool` for every pool |
+| POST | `/api/zvols` | Create `{pool, name, size, options}` → `zfs create -V`. Validated name and size; only `volblocksize` (512–16M, power of two) and `compression` are accepted (FR-ZVOL-01/02) |
+| PUT | `/api/zvols?name=<pool>/<zvol>` | Resize `{size}` → `zfs set volsize`; growth only, refused while the zvol is in use (FR-ZVOL-03) |
+| DELETE | `/api/zvols?name=<pool>/<zvol>&confirm=<pool>/<zvol>` | Destroy a zvol. `confirm` must repeat the full name; a path that is not a `type=volume` and an in-use zvol are refused (FR-ZVOL-03) |
 
 The actual ZFS work is delegated to `naslos-agent` on each node:
 `chroot /host zpool …` / `chroot /host zfs …`. The API reaches the agent
@@ -392,6 +396,7 @@ rule, client configuration).
 | GET | `/api/v1/pools/import` | List pools available for import (`zpool import` dry-run) |
 | POST | `/api/v1/pools/import` | Import pool(s): `{"name":"tank"}` or `{}` for all |
 | GET/POST | `/api/v1/datasets/{pool}` | List / create dataset |
+| GET/POST/PUT/DELETE | `/api/v1/zvols` | List (`?pool=`), create `{name, size, options}`, resize `{size}` (`?name=`) or destroy (`?name=&confirm=`) a zvol. Property surface is `volblocksize` + `compression` only (FR-ZVOL) |
 | GET/POST | `/api/v1/snapshots/{dataset}` | List / create snapshot |
 | GET | `/api/v1/zfs/send/{dataset}?to=&from=&raw=&estimate=` | Stream a `zfs send` (or report its size with `estimate=true`) |
 | POST | `/api/v1/zfs/receive/{dataset}?force=` | Stream a restore into `zfs receive` |
