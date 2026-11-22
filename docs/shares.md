@@ -60,14 +60,22 @@ Agent endpoints (`naslos-agent`, in-cluster only):
 
 Every create/update/delete re-renders and pushes automatically, and the API
 re-applies on startup so the node converges after a reboot or upgrade. A push
-failure is logged and surfaced but never rolls back the share definition:
-the API stays the source of truth and the next apply converges the node.
+failure is surfaced to the caller and the stored change is rolled back, so the
+list never claims a share the node did not accept. If the render itself is
+invalid, the agent restores the previous working files and the API rolls the
+definition back too.
+
+Applies are serialised and carry a strictly increasing revision
+(`<epoch-millis>-<sequence>-<nonce>-<content-hash>`). The agent refuses a
+revision that is not newer than the one already on the host with a stale-revision
+error, which the API surfaces as `409 Conflict`; an out-of-order push can never
+overwrite a newer configuration.
 
 ## Share model
 
 | Field | Meaning |
 | --- | --- |
-| `name` | Unique share name (no `/ \ [ ] " ' : * ? < > = + ; ,`, ≤80 chars) |
+| `name` | Unique share name (no `/ \ [ ] " ' : * ? < > = + ; , # { }`, ≤80 chars) |
 | `path` | Filesystem path — a folder **on a ZFS dataset**: the dataset mountpoint itself or any subfolder of one. Must be inside `/var/mnt` (`SHARES_ZFS_BASE`) and must exist (create it from the UI's folder picker) |
 | `protocol` | `smb` \| `nfs` |
 | `description` | Comment (may be empty) |
@@ -96,6 +104,10 @@ Validation (`Manager.Create`):
   a writable share (e.g. `media/link -> /etc`) would otherwise export its target.
   Each component is inspected with `symlink_metadata` (no follow), so the check
   works with the API's read-only `/var/mnt` view (`AUD-2611-T5-1`);
+- `path` and `description` must not contain a backslash (a trailing `\` is a
+  line continuation in both config grammars) or `#` in the description; `path`
+  also rejects `#`, `{`, `}`, `"` and `;`. This keeps the rendered files
+  one-directive-per-line and parseable (`R-021`);
 - protocol must be `smb` or `nfs` (AFP is not served — see below);
 - the path must not contain a `.zfs` component: that is the dataset's snapshot
   directory, and exporting it directly would expose every snapshot outside the
@@ -145,6 +157,32 @@ Guarantees, checked on both sides:
 - **Reserved names.** Names containing separators or control characters are
   refused, as is `.zfs` (ZFS's snapshot directory, which is also hidden from
   listings).
+- **No symlink escapes.** Creation resolves the nearest existing ancestor and
+  requires it to stay inside the canonicalised `/var/mnt`; it then walks down
+  with `openat(O_NOFOLLOW)` and creates with `mkdirat`, so a symlink swapped in
+  under a writable folder cannot redirect the create outside the pool. Delete
+  refuses a symlink instead of following it.
+- **Writable by the service accounts.** A new folder is owned `10001:10000` with
+  mode `02770` (group-writable, setgid) so Samba/Ganesha can write; when the
+  agent is not privileged enough to chown, it inherits the parent's ownership
+  and still applies `02770`.
+
+## Corrupt stores
+
+The share list (`shares.json`) and the SMB account mirror (`smbusers.json`) are
+loaded once at startup. If either file cannot be parsed, the API:
+
+- keeps the unparsed file untouched and writes a copy next to it named
+  `<store>.corrupt-<unix-timestamp>` (an existing backup is never overwritten);
+- marks the store unloaded, so every mutation and every apply returns
+  `503 Service Unavailable` with the parse error and the backup path instead of
+  rendering an empty store over the working node configuration;
+- refuses to save before the in-memory state has been swapped, so a failed disk
+  write leaves memory and disk in agreement (no phantom share in the list).
+
+Recovery is explicit: repair the file, restore the `.corrupt-*` copy, or remove
+the store file at the documented path, then restart the API. Until then reads
+still show the last successfully loaded state.
 
 ## Account synchronisation (SMB ⇄ LDAP)
 
