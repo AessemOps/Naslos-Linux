@@ -201,7 +201,34 @@ Requirement IDs are stable: never renumber, only deprecate.
   that a share is serving (or that backs a share's path) MUST be refused with a
   conflict instead of removing the share's data.
 
-### 3.1.1 Block volumes — ZFS zvol (`FR-ZVOL`)
+### 3.1.1 Disk health (`FR-DHK`)
+
+- **FR-DHK-01** — The agent MUST report per-whole-disk SMART health (health
+  status, temperature, power-on hours, wear, reallocated/pending/uncorrectable
+  sectors and media/error-log counts where the device exposes them) read-only,
+  and MUST NOT wake a standby disk (`smartctl -n standby`).
+- **FR-DHK-02** — Unsupported or unavailable SMART MUST be reported as
+  `available:false` with a reason, not as an endpoint error; the UI MUST show
+  the disk as unavailable/standby while keeping its ZFS data visible.
+- **FR-DHK-03** — `GET /api/disks/health` MUST merge the Talos disk inventory,
+  ZFS pool/vdev state and error counters, and the agent's SMART data. The
+  existing `GET /api/disks` wizard contract MUST stay unchanged.
+- **FR-DHK-04** — The UI MUST provide a per-disk health page with a summary,
+  a severity-sorted table (device, model/serial, pool/vdev, ZFS state, SMART
+  health, temperature, hours, wear, error counters) and a refresh control.
+- **FR-DHK-05** — The health watcher MUST notify on SMART `FAILED`, temperature
+  above `DISK_HEALTH_TEMPERATURE_C` (default 55 °C), wear at/above
+  `DISK_HEALTH_WEAR_PERCENT` (default 80 %) and ZFS vdev
+  `FAULTED|OFFLINE|UNAVAIL|REMOVED`/`DEGRADED` transitions, using the existing
+  `disk_failure`/`zfs_health` events. Repeated polls MUST NOT repeat an alert;
+  a recovered disk/condition MUST send at most one recovery notice.
+- **FR-DHK-06** — The agent image MUST bundle a pinned, checksum-verified
+  `smartctl`, and the DaemonSet MUST mount the host `/sys` read-only for device
+  detection. The agent endpoint MUST require the agent bearer token.
+- **FR-DHK-07** — Disk health MUST be read-only: no SMART self-tests, no
+  enabling SMART, no device writes, and no user-controlled command arguments.
+
+### 3.1.4 Block volumes — ZFS zvol (`FR-ZVOL`)
 
 - **FR-ZVOL-01** — The system MUST create, list, resize and destroy ZFS
   zvols end to end through the API and the privileged agent. Creation MUST run
@@ -243,33 +270,6 @@ Requirement IDs are stable: never renumber, only deprecate.
   resize, delete with a destructive confirmation) and an iSCSI target export
   are not implemented. The iSCSI spike, privilege/network review and go/no-go
   gates are in [iscsi.md](iscsi.md). *(No UI or iSCSI test yet)*
-
-### 3.1.2 Disk health (`FR-DHK`)
-
-- **FR-DHK-01** — The agent MUST report per-whole-disk SMART health (health
-  status, temperature, power-on hours, wear, reallocated/pending/uncorrectable
-  sectors and media/error-log counts where the device exposes them) read-only,
-  and MUST NOT wake a standby disk (`smartctl -n standby`).
-- **FR-DHK-02** — Unsupported or unavailable SMART MUST be reported as
-  `available:false` with a reason, not as an endpoint error; the UI MUST show
-  the disk as unavailable/standby while keeping its ZFS data visible.
-- **FR-DHK-03** — `GET /api/disks/health` MUST merge the Talos disk inventory,
-  ZFS pool/vdev state and error counters, and the agent's SMART data. The
-  existing `GET /api/disks` wizard contract MUST stay unchanged.
-- **FR-DHK-04** — The UI MUST provide a per-disk health page with a summary,
-  a severity-sorted table (device, model/serial, pool/vdev, ZFS state, SMART
-  health, temperature, hours, wear, error counters) and a refresh control.
-- **FR-DHK-05** — The health watcher MUST notify on SMART `FAILED`, temperature
-  above `DISK_HEALTH_TEMPERATURE_C` (default 55 °C), wear at/above
-  `DISK_HEALTH_WEAR_PERCENT` (default 80 %) and ZFS vdev
-  `FAULTED|OFFLINE|UNAVAIL|REMOVED`/`DEGRADED` transitions, using the existing
-  `disk_failure`/`zfs_health` events. Repeated polls MUST NOT repeat an alert;
-  a recovered disk/condition MUST send at most one recovery notice.
-- **FR-DHK-06** — The agent image MUST bundle a pinned, checksum-verified
-  `smartctl`, and the DaemonSet MUST mount the host `/sys` read-only for device
-  detection. The agent endpoint MUST require the agent bearer token.
-- **FR-DHK-07** — Disk health MUST be read-only: no SMART self-tests, no
-  enabling SMART, no device writes, and no user-controlled command arguments.
 
 ### 3.2 Identity & SSO (`FR-IDN`)
 
