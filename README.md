@@ -119,6 +119,7 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [storage-zfs](docs/storage-zfs.md) | ZFS pools, datasets, snapshots, storage classes |
 | [dataset-encryption](docs/dataset-encryption.md) | ZFS native encryption design: key custody, Talos boot/unlock, encrypted send, migration (FR-ENC) |
 | [identity-sso](docs/identity-sso.md) | Authelia + OpenLDAP + Samba single sign-on |
+| [rbac-audit](docs/rbac-audit.md) | Read-only/operator/admin roles + append-only audit log (design, `[OPEN]`) |
 | [shares](docs/shares.md) | SMB / NFS / Time-Machine shares |
 | [app-catalog](docs/app-catalog.md) | Catalog, schema-driven forms, Helm lifecycle |
 | [monitoring](docs/monitoring.md) | Live metrics API + dashboard (no Prometheus) |

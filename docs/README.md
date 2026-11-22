@@ -21,6 +21,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [dataset-encryption.md](dataset-encryption.md) | ZFS native encryption: key custody for an unattended Talos boot, unlock/lock, encrypted send, Buddy threat-model comparison, migration (FR-ENC) | Design + safe validation slice |
 | [identity-sso.md](identity-sso.md) | Single sign-on: Authelia, OpenLDAP, Samba hash sync, RBAC groups, 2FA | Rebuilt (replaces `authentication.md`) |
 | [external-directory.md](external-directory.md) | Optional external LDAP source (FR-EXT): phase-1 configuration, TLS, search bases, uid/gid mapping, AD/Kerberos roadmap | New |
+| [rbac-audit.md](rbac-audit.md) | Read-only/operator/admin role model, route classification, append-only hash-chained audit log (FR-RBAC/FR-AUD) | Design only (P1-11, `[OPEN]`) |
 | [shares.md](shares.md) | SMB / NFS / Time-Machine share model, generated configs | New |
 | [terminal.md](terminal.md) | Web terminal: exec scoping, RBAC, terminal namespace | New |
 | [buddy-backup.md](buddy-backup.md) | Buddy Backup: owner-to-owner encrypted backup, enrollment, verify/restore | New |
