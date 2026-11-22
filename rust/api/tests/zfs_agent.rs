@@ -10,7 +10,9 @@ use axum::{Json, Router};
 use http_body_util::BodyExt;
 use naslos_api::agent::Client as AgentClient;
 use naslos_api::metrics::Manager;
+use naslos_api::schedule::Cadence;
 use naslos_api::server::build_router;
+use naslos_api::server::storage_schedules::{run_due_schedules, ScheduleKind, StorageSchedule};
 use naslos_api::shares::{Manager as SharesManager, SambaUserStore};
 use naslos_api::state::{AppState, Cidr};
 use serde_json::{json, Value};
@@ -103,6 +105,16 @@ async fn spawn_mock(mock: MockAgent) -> String {
             }),
         )
         .route(
+            "/api/v1/pools/{pool}/scrub",
+            post({
+                let default = default.clone();
+                move || {
+                    let (status, body) = (*default).clone();
+                    async move { (StatusCode::from_u16(status).unwrap(), Json(body)) }
+                }
+            }),
+        )
+        .route(
             "/api/v1/datasets/{*rest}",
             post({
                 let default = default.clone();
@@ -164,7 +176,11 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         buddy_schedules: std::sync::Arc::new(
             naslos_api::server::buddy_schedules::ScheduleStore::new(""),
         ),
+        storage_schedules: std::sync::Arc::new(
+            naslos_api::server::storage_schedules::StorageScheduleStore::new(""),
+        ),
         identity: None,
+        external_directory: naslos_api::directory::Store::disabled(),
         system: naslos_api::system::Config::default(),
         updates: None,
         mcp: naslos_api::mcp::McpState::for_test(),
@@ -335,7 +351,11 @@ async fn no_agent_configured_is_502() {
         buddy_schedules: std::sync::Arc::new(
             naslos_api::server::buddy_schedules::ScheduleStore::new(""),
         ),
+        storage_schedules: std::sync::Arc::new(
+            naslos_api::server::storage_schedules::StorageScheduleStore::new(""),
+        ),
         identity: None,
+        external_directory: naslos_api::directory::Store::disabled(),
         system: naslos_api::system::Config::default(),
         updates: None,
         mcp: naslos_api::mcp::McpState::for_test(),
@@ -496,4 +516,145 @@ async fn vm_delete_destroys_the_dataset_recursively() {
         destroy.contains("recursive=true"),
         "the VM dataset destroy must be recursive (snapshots belong to the VM), got: {destroy}"
     );
+}
+
+#[tokio::test]
+async fn scrub_schedule_reads_pool_health_before_starting_the_scrub() {
+    // The agent's `GET /api/v1/pools/{pool}` returns a PoolHealth object, not a
+    // `{"status": ...}` map. Decoding it the wrong way fails every tick, so the
+    // schedule never starts a scrub and never reports a result.
+    let base = spawn_mock(MockAgent {
+        default: (
+            200,
+            json!({
+                "name": "tank",
+                "state": "ONLINE",
+                "scan": "none requested",
+                "errors": "No known data errors",
+                "config": [],
+                "ioStats": {}
+            }),
+        ),
+        pools: None,
+    })
+    .await;
+    let state = state_with_agent(&base);
+    let now = chrono::Utc::now();
+    state
+        .storage_schedules
+        .put(StorageSchedule {
+            id: "scrubtest".to_string(),
+            kind: ScheduleKind::Scrub,
+            target: "tank".to_string(),
+            cadence: Cadence::Daily,
+            run_at: "02:30".to_string(),
+            enabled: true,
+            next_run: Some(now - chrono::Duration::seconds(1)),
+            ..Default::default()
+        })
+        .unwrap();
+
+    run_due_schedules(&state, now).await;
+
+    let saved = state.storage_schedules.get("scrubtest").unwrap();
+    assert_eq!(
+        saved.last_result, "started",
+        "the schedule must read pool health and start the scrub"
+    );
+}
+
+fn scrub_schedule(id: &str, now: chrono::DateTime<chrono::Utc>) -> StorageSchedule {
+    StorageSchedule {
+        id: id.to_string(),
+        kind: ScheduleKind::Scrub,
+        target: "tank".to_string(),
+        cadence: Cadence::Daily,
+        run_at: "02:30".to_string(),
+        enabled: true,
+        next_run: Some(now),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn scrub_schedule_resolves_a_finished_scrub_from_the_scan_field() {
+    // `PoolHealth.scan` is already the parsed `scan:` value (e.g. "scrub
+    // repaired ..."). Running it through the raw-status parser a second time
+    // yields "" and leaves the schedule stuck on `started` forever.
+    let base = spawn_mock(MockAgent {
+        default: (
+            200,
+            json!({
+                "name": "tank",
+                "state": "ONLINE",
+                "scan": "scrub repaired 0B in 00:01:23 with 0 errors on Sun Jan  4 02:00:00 2026",
+                "errors": "No known data errors",
+                "config": [],
+                "ioStats": {}
+            }),
+        ),
+        pools: None,
+    })
+    .await;
+    let state = state_with_agent(&base);
+    let now = chrono::Utc::now();
+    let mut entry = scrub_schedule("scrubdone", now + chrono::Duration::hours(1));
+    entry.last_result = "started".to_string();
+    state.storage_schedules.put(entry).unwrap();
+
+    run_due_schedules(&state, now).await;
+
+    let saved = state.storage_schedules.get("scrubdone").unwrap();
+    assert_eq!(saved.last_result, "ok");
+}
+
+#[tokio::test]
+async fn scrub_schedule_does_not_restart_a_running_scrub() {
+    let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = posts.clone();
+    let app = Router::new()
+        .route(
+            "/api/v1/pools/{pool}",
+            get(|| async {
+                Json(json!({
+                    "name": "tank",
+                    "state": "ONLINE",
+                    "scan": "scrub in progress since Sun Jan  4 01:00:00 2026",
+                    "errors": "No known data errors",
+                    "config": [],
+                    "ioStats": {}
+                }))
+            }),
+        )
+        .route(
+            "/api/v1/pools/{pool}/scrub",
+            post(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    (StatusCode::OK, Json(json!({ "status": "scrub started" })))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let state = state_with_agent(&format!("http://{addr}"));
+    let now = chrono::Utc::now();
+    let mut entry = scrub_schedule("scrubrunning", now - chrono::Duration::seconds(1));
+    entry.last_result = "started".to_string();
+    state.storage_schedules.put(entry).unwrap();
+
+    run_due_schedules(&state, now).await;
+
+    assert_eq!(
+        posts.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a running scrub must not be restarted"
+    );
+    let saved = state.storage_schedules.get("scrubrunning").unwrap();
+    assert_eq!(saved.last_result, "started");
+    assert!(saved.next_run.unwrap() > now);
 }
