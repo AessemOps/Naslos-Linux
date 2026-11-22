@@ -448,6 +448,23 @@ traefik:
   providers:
     kubernetesCRD:
       allowExternalNameServices: true
+      # R-011: watch only the release namespace (implicit) and the shared app
+      # namespaces. The upstream chart's ClusterRole grants Secret read in every
+      # namespace; `rbac.namespaced` below turns that into a Role per watched
+      # namespace, so a compromised Traefik pod can read Secrets only in
+      # `naslos` and these namespaces. App routes in a per-app isolation
+      # namespace (`naslos-app-*`) need that namespace added here and covered by
+      # a Traefik RoleBinding; see docs/deployment.md "Traefik RBAC".
+      namespaces:
+        - naslos-apps
+        - naslos-apps-priv
+  # R-011: no cluster-wide RBAC. The chart renders a Role/RoleBinding in each
+  # namespace listed above (and the release namespace) instead of the upstream
+  # ClusterRole/ClusterRoleBinding. `rbac.secretResourceNames` is deliberately
+  # left empty: Traefik must get TLS Secrets whose names are per-domain, so a
+  # fixed allowlist would break app certificates.
+  rbac:
+    namespaced: true
   # hostPort 80/443 can only be held by one pod on this single node, so the
   # chart default (maxSurge 1, maxUnavailable 0) deadlocks: the new pod never
   # becomes Ready because the old one still owns the ports. terminate the old

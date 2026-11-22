@@ -33,13 +33,15 @@
   limit in Apps → Installed`. Growing the provisioned pool itself needs a chart
   change (raise `apps.isolation.namespaces`) and a platform upgrade.
 - **Dataset exposure (legacy).** `apps.datasets.hostPath` (default `/var/mnt`) is
-  mounted into legacy baseline apps. Fresh installs set
-  `apps.datasets.enabled=false` in the installer overlay and use only per-app
-  claims; the VM overlay keeps it for records that predate isolation. The chart refuses `/`, `/var`, `/etc`, `/home`,
-  `/root`, `/usr`, `/system`, and refuses a Buddy store nested inside the root
-  unless `apps.datasets.allowBuddyStore=true`. The VM overlay sets that flag
-  until the Buddy dataset is moved outside `/var/mnt`; see
-  `docs/datasets-isolation.md` for the recommended per-app isolation design.
+  mounted into legacy baseline apps. Fresh installs and the production VM
+  overlay set `apps.datasets.enabled=false` and use only per-app claims, so the
+  shared root is not rendered at all: VM datasets (`<pool>/vms`), the Buddy
+  store and every other sibling under `/var/mnt` stay outside any app-visible
+  volume. Installs that deliberately keep the legacy claim still get the chart
+  guards: it refuses `/`, `/var`, `/etc`, `/home`, `/root`, `/usr`, `/system`,
+  and refuses a Buddy store nested inside the root unless
+  `apps.datasets.allowBuddyStore=true`. See `docs/datasets-isolation.md` for the
+  per-app isolation design.
 - **Catalog tracking and pinning.** By default the VM and installer overlays
   leave `apps.officialSource.commit` empty, so the API follows the configured
   channel branch (`main`) and a catalog refresh picks up new charts without a
@@ -472,6 +474,23 @@ https://naslos.local
 - **Traefik dashboard**: `https://naslos.local/traefik/dashboard/`, linked from
   the sidebar for administrators only. The API is not exposed on any port
   (`api.insecure` off) and Authelia denies non-admin accounts on `/traefik`.
+
+### Traefik RBAC (R-011)
+
+The chart runs Traefik with `rbac.namespaced: true`, which replaces the
+upstream ClusterRole/ClusterRoleBinding with a Role/RoleBinding in the release
+namespace and in every namespace listed under
+`providers.kubernetesCRD.namespaces` (`naslos-apps`, `naslos-apps-priv`). A
+compromised Traefik pod can therefore read Secrets only in those namespaces,
+not cluster-wide; the residual is that it can read *all* Secrets in them
+(including the per-domain TLS copies and the app catalog credentials), because
+`rbac.secretResourceNames` cannot express Traefik's per-domain TLS Secret names.
+Routes rendered into a per-app isolation namespace (`naslos-app-*`) need that
+namespace added to `providers.kubernetesCRD.namespaces` and a matching Traefik
+RoleBinding; until the app-isolation work wires that, isolated app exposure
+requires the same two namespaces as a platform-level allowlist. Keep
+`apps.officialSource.credentialsSecret` empty on public catalogs, as the chart
+does.
 
 ### First install / creating the operator
 

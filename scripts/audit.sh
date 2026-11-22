@@ -107,17 +107,28 @@ mounts = {m["name"] for m in dp["spec"]["template"]["spec"]["containers"][0].get
 assert "ldap-bind" in mounts, mounts
 assert "tmp" in mounts, mounts
 assert dp["spec"]["template"]["spec"]["containers"][0]["securityContext"]["readOnlyRootFilesystem"] is True
-pv = find("PersistentVolume", "naslos-datasets")
-if pv:
-    root = pv["spec"]["hostPath"]["path"]
-    buddy = ""
-    for volume in dp["spec"]["template"]["spec"].get("volumes", []):
-        if volume.get("name") == "buddy-data" and "hostPath" in volume:
-            buddy = volume["hostPath"]["path"]
-    if buddy and (buddy == root or buddy.startswith(root.rstrip("/") + "/")):
-        print(f"NOTICE: buddy.receiveHostPath {buddy} is inside the app datasets root {root} (D3/F1 open)")
-    if root in ("/", "/var", "/etc", "/home", "/root"):
-        raise AssertionError(f"unsafe apps.datasets.hostPath {root}")
+# R-012: the production overlay must not render the shared /var/mnt PV/PVC.
+assert find("PersistentVolume", "naslos-datasets") is None, \
+    "the production overlay must not expose the shared datasets root"
+assert not [d for d in docs if d.get("kind") == "PersistentVolumeClaim" and d["metadata"]["name"] == "naslos-datasets"], \
+    "the production overlay must not render the shared datasets claim"
+# R-011: Traefik is namespaced, watches only the app namespaces, and holds no
+# ClusterRole/ClusterRoleBinding.
+for ns_name in ("naslos", "naslos-apps", "naslos-apps-priv"):
+    role = [d for d in docs if d.get("kind") == "Role" and d["metadata"]["name"] == "naslos-traefik" and d["metadata"].get("namespace") == ns_name]
+    assert role, f"namespaced Traefik Role missing in {ns_name}"
+    assert any(
+        "secrets" in rule.get("resources", []) for rule in role[0]["rules"]
+    ), f"Traefik Role in {ns_name} lacks Secret access"
+assert not [d for d in docs if d.get("kind") == "ClusterRole" and d["metadata"]["name"] == "naslos-traefik"], \
+    "Traefik must not render a ClusterRole"
+assert not [d for d in docs if d.get("kind") == "ClusterRoleBinding" and d["metadata"]["name"] == "naslos-traefik"], \
+    "Traefik must not render a ClusterRoleBinding"
+traefik = find("Deployment", "naslos-traefik")
+assert traefik, "Traefik Deployment missing"
+args = " ".join(traefik["spec"]["template"]["spec"]["containers"][0].get("args", []))
+assert "--providers.kubernetescrd.namespaces=naslos-apps,naslos-apps-priv" in args.replace(" ", ""), args
+assert "--providers.kubernetesingress" not in args or "providers.kubernetesingress.namespaces" in args, args
 secret = find("Secret", "naslos-buddy-kek")
 assert secret, "generated buddy KEK Secret missing"
 raw = base64.b64decode(secret["data"]["kek"])

@@ -118,10 +118,13 @@ apps:
     defaultLimit: 20
     privilegedNamespaces: 4
   datasets:
-    # D3/F1 is still open on this profile: the Buddy store is nested under the
-    # exposed root. Remove this once buddy.receiveHostPath is migrated outside
-    # /var/mnt (docs/datasets-isolation.md).
-    allowBuddyStore: true
+    # R-012 (D3/F1 closed on this profile): never expose the shared /var/mnt
+    # root on the production node. With isolation enabled, the API provisions
+    # one PV/PVC per attached dataset instead, so VM datasets
+    # (<pool>/vms), the Buddy store and every other sibling stay unreachable
+    # from an app. The base values keep the legacy shared claim for installs
+    # that explicitly want it; the production overlay must not.
+    enabled: false
   officialSource:
     name: naslos
     displayName: NaslosCharts
