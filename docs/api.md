@@ -383,7 +383,7 @@ value. All routes are admin-only (owner router).
   "kind": "naslos-config-export",
   "schemaVersion": 1,
   "generatedAt": "2026-11-21T22:00:00Z",
-  "naslosVersion": "0.5.2",
+  "naslosVersion": "0.6.0",
   "baseDomain": "example.test",
   "shares": [
     { "name": "media", "path": "/var/mnt/tank/media", "protocol": "smb",
