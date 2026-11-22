@@ -305,6 +305,16 @@ async fn in_use_detection_covers_mounts_holders_and_open_files() {
     let reason = zvol_in_use(&partitioned.root, "tank/vol").expect("mounted partition");
     assert!(reason.contains("mounted at /mnt/part"), "{reason}");
 
+    // A dm/md holder of the partition lives under the partition's sysfs node.
+    let partition_held = FakeHost::new();
+    host_with_zvol_device(&partition_held);
+    write(
+        &partition_held.root.join("sys/block/zd0/zd0p1/holders/dm-1"),
+        "",
+    );
+    let reason = zvol_in_use(&partition_held.root, "tank/vol").expect("held partition");
+    assert!(reason.contains("held by dm-1"), "{reason}");
+
     let held = FakeHost::new();
     host_with_zvol_device(&held);
     write(&held.root.join("sys/block/zd0/holders/dm-0"), "");

@@ -351,6 +351,10 @@ pub fn zvol_in_use(host_root: &Path, name: &str) -> Option<String> {
     // A mounted or opened partition is a separate node (`zdNpM`) under the
     // zvol's sysfs block directory; the whole-disk name alone misses it.
     let mut inspected = devices.clone();
+    let mut holder_dirs: Vec<PathBuf> = devices
+        .iter()
+        .map(|device| host_root.join("sys/block").join(device).join("holders"))
+        .collect();
     for device in &devices {
         let block = host_root.join("sys/block").join(device);
         if let Ok(entries) = std::fs::read_dir(block) {
@@ -358,6 +362,10 @@ pub fn zvol_in_use(host_root: &Path, name: &str) -> Option<String> {
                 let partition = entry.file_name().to_string_lossy().to_string();
                 if partition.len() > device.len() && partition.starts_with(device.as_str()) {
                     paths.push(format!("/dev/{partition}"));
+                    // A dm/md/LUKS holder of a partition lives beside the
+                    // partition node (`zdN/zdNpM/holders`), not under the
+                    // whole-disk `zdN/holders` directory.
+                    holder_dirs.push(entry.path().join("holders"));
                     inspected.push(partition);
                 }
             }
@@ -383,8 +391,7 @@ pub fn zvol_in_use(host_root: &Path, name: &str) -> Option<String> {
         }
     }
 
-    for device in &devices {
-        let holders = host_root.join("sys/block").join(device).join("holders");
+    for holders in holder_dirs {
         if let Ok(entries) = std::fs::read_dir(holders) {
             if let Some(entry) = entries.flatten().next() {
                 return Some(format!("held by {}", entry.file_name().to_string_lossy()));
