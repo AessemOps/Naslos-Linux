@@ -1292,7 +1292,7 @@ below is **[OPEN]** until the audit implementation lands.
   auto-repair or truncate the log. **[OPEN]** *(planned contract test:
   `audit_chain_detects_tampering`)*
 - **FR-AUD-07** — Retention MUST be bounded by age and bytes (proposed
-  defaults 90 days / 64 MiB, 8 MiB segments). Pruning MUST remove only the
+  defaults 90 days / 16 MiB, 8 MiB segments, below the shared state volume). Pruning MUST remove only the
   oldest sealed segments, MUST never remove the active segment or the newest
   sealed segment, and MUST write an `audit.retention.prune` record with the
   pruned segment hashes. A full volume MUST fail closed rather than silently
