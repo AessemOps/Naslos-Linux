@@ -1250,30 +1250,55 @@ additive: ntfy keeps its existing behavior (FR-NTF-01/02) and settings.
 
 ### 3.7.2 Historical reporting (`FR-RPT`)
 
-Historical reporting is **not implemented in this pass**; the bounded design is
-normative in [reporting.md](reporting.md). The requirements below are `[OPEN]`
-until the store, API and UI land.
+The bounded store, recorder, API and dashboard section are implemented
+([reporting.md](reporting.md)). The store is an embedded append-only file on a
+dedicated reporting volume; it does not bundle, require or depend on
+Prometheus, Grafana or an external time-series service.
 
-- **FR-RPT-01** — **[OPEN]** A background recorder MUST persist a bounded local
-  time series for CPU, memory, network, ZFS pool usage and disk health/SMART
-  values. The store MUST be embedded (SQLite or fixed-size RRD-like
-  files) on the state volume; Naslos MUST NOT bundle, require or depend on
-  Prometheus, Grafana, or an external time-series service. *(no test yet;
-  design in reporting.md)*
-- **FR-RPT-02** — **[OPEN]** Recording MUST retain at most three resolutions —
-  raw/1-minute for 24 h, 5-minute rollups for 7 d and 1-hour rollups for 30 d —
-  and MUST prune anything older than 30 d. The number of recorded series MUST be
-  a fixed allowlist (no per-app, per-container or per-process cardinality), and
-  a query MUST be capped in points. *(no test yet; design in reporting.md)*
-- **FR-RPT-03** — **[OPEN]** History writes MUST be best-effort and MUST NOT
-  block or fail the live metrics collector. A missing, locked or corrupt history
-  database MUST degrade to "no history" and MUST be recreatable without
-  affecting live metrics, alerts, shares or the dashboard. *(no test yet;
-  design in reporting.md)*
-- **FR-RPT-04** — **[OPEN]** The API and UI MUST expose only the 24 h, 7 d and
-  30 d views over the fixed series allowlist, authenticated like every other
-  owner route, and MUST NOT return unbounded raw samples. *(no test yet;
-  design in reporting.md)*
+- **FR-RPT-01** — A background recorder MUST persist a bounded local time
+  series for CPU, memory, network, ZFS pool usage and disk health/SMART values.
+  The store MUST be embedded on a persistent node-local state volume (its own
+  reporting PVC); Naslos MUST NOT bundle, require or depend on Prometheus,
+  Grafana, or an external time-series service. *Implemented
+  (`rust/api/src/reporting.rs`): allowlisted CPU, memory, per-second network
+  rates for physical interfaces, ZFS pool used/alloc/free and disk
+  temperature/wear; tests `ingest_records_series_and_derives_closed_rollups`,
+  `disk_smart_values_are_recorded_when_present`.*
+- **FR-RPT-02** — Recording MUST retain at most three resolutions — raw/1-minute
+  for 24 h, 5-minute rollups for 7 d and 1-hour rollups for 30 d — and MUST
+  prune anything older than 30 d. The number of recorded series MUST be a fixed
+  allowlist (no per-app, per-container or per-process cardinality), and a query
+  MUST be capped in points. *Implemented: `retention_prunes_each_resolution_and_keeps_the_30_day_floor`,
+  `series_registry_holds_stable_ids_and_caps_cardinality`,
+  `query_downsampling_caps_points`, `buckets_floor_at_boundaries`.*
+- **FR-RPT-03** — History writes MUST be best-effort and MUST NOT block or fail
+  the live metrics collector. A missing, locked or corrupt history database MUST
+  degrade to "no history" and MUST be recreatable without affecting live
+  metrics, alerts, shares or the dashboard. *Implemented: the recorder is a
+  separate task, writes are off the collector path, a corrupt header is moved
+  aside, a corrupt/truncated tail is repaired, and an unopenable store answers
+  `available:false`; tests `corrupt_tail_is_truncated_and_the_store_keeps_writing`,
+  `corrupt_header_is_moved_aside_and_recreated`,
+  `a_directory_instead_of_a_file_degrades_to_unavailable`.*
+- **FR-RPT-04** — The API and UI MUST expose only the 24 h, 7 d and 30 d views
+  over the fixed series allowlist, authenticated like every other owner route,
+  and MUST NOT return unbounded raw samples. *Implemented: `GET /api/reports`
+  and `GET /api/reports/series` on the admin-only owner router, plus the
+  dashboard History card; tests `server::reports::tests::*`,
+  `ranges_are_an_enum_not_a_duration`.*
+
+Remaining `[OPEN]` for reporting:
+
+- **FR-RPT-05** — **[OPEN]** ZFS pool `fragmentation_percent` is part of the
+  design's optional series set but the agent pool list does not expose it yet;
+  it MUST NOT be synthesized. *(no test yet; owner: agent pool inventory)*
+- **FR-RPT-06** — **[OPEN]** A live drill MUST compare one hour of recorded
+  history with `/api/metrics` on the production node and confirm the store stays
+  under its size cap across a restart. *(no test yet; requires the node)*
+- **FR-RPT-07** — **[OPEN]** A dedicated Reporting page (beyond the dashboard
+  section) and Playwright coverage for the range selector, seeded points and the
+  empty/corrupt state. *(no test yet; the API contract and unit tests cover the
+  current dashboard section)*
 
 ### 3.8 Buddy Backup (`FR-BUD`)
 

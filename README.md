@@ -129,7 +129,7 @@ The full documentation set lives in [`docs/`](docs/README.md):
 | [shares](docs/shares.md) | SMB / NFS / Time-Machine shares |
 | [app-catalog](docs/app-catalog.md) | Catalog, schema-driven forms, Helm lifecycle |
 | [monitoring](docs/monitoring.md) | Live metrics API + dashboard (no Prometheus) |
-| [reporting](docs/reporting.md) | Bounded 24 h/7 d/30 d history design (`[OPEN]`) |
+| [reporting](docs/reporting.md) | Bounded 24 h/7 d/30 d history: embedded store, API and dashboard card |
 | [notifications](docs/notifications.md) | ntfy + webhook + SMTP + syslog alert channels |
 | [deployment](docs/deployment.md) | Prerequisites, Make targets, Helm values |
 | [installer-contract](docs/installer-contract.md) | Install pack + interfaces for the desktop installer (FR-INSTALL) |

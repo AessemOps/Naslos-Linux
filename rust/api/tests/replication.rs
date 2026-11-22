@@ -270,6 +270,7 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         system: naslos_api::system::Config::default(),
         updates: None,
         mcp: naslos_api::mcp::McpState::for_test(),
+        reporting: Arc::new(naslos_api::reporting::Reporter::disabled()),
     })
 }
 

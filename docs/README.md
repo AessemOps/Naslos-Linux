@@ -31,7 +31,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [app-catalog.md](app-catalog.md) | App catalog: git chart repositories, `naslos-app.yaml`, install lifecycle, exposure/routing, domains/certs, privileged NS | Rebuilt |
 | [dynamic-dns.md](dynamic-dns.md) | Dynamic DNS + declarative DNS providers: provider YAML, entries, credential Secrets, drivers, egress | New |
 | [monitoring.md](monitoring.md) | Live metrics API + dashboard; node/workload measurement without Prometheus | New |
-| [reporting.md](reporting.md) | Bounded historical reporting design (24 h/7 d/30 d, embedded store, no Prometheus) | Design (`[OPEN]`) |
+| [reporting.md](reporting.md) | Bounded historical reporting (24 h/7 d/30 d, embedded append-only store, API + dashboard card, no Prometheus) | Implemented subset (`FR-RPT-05…07` `[OPEN]`) |
 | [notifications.md](notifications.md) | ntfy + webhook + SMTP + syslog alert channels: routing, severities, defaults, target policy | New |
 | [deployment.md](deployment.md) | Prerequisites, Make targets, Helm values walkthrough | New |
 | [installer-contract.md](installer-contract.md) | Install pack format + stable interfaces for the desktop installer (FR-INSTALL) | New |

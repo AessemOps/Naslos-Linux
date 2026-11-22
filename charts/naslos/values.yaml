@@ -83,6 +83,25 @@ api:
     # Size of the PersistentVolumeClaim holding SHARES_CONFIG.
     size: 64Mi
     storageClassName: ""
+  # Bounded historical reporting (FR-RPT, docs/reporting.md). History is
+  # disposable telemetry, so it gets its own small PVC instead of sharing the
+  # 64 MiB config volume: a corrupt or full store must never affect shares,
+  # apps or the rest of the API state. Disabled means live metrics only and
+  # /api/reports answers available:false.
+  reporting:
+    enabled: true
+    # Directory inside the API container. The history file and its series
+    # registry live here. Leave `file` empty to derive `<mountPath>/history.bin`,
+    # so overriding only the mount point keeps history on the reporting volume.
+    mountPath: /var/lib/naslos/reporting
+    file: ""
+    # Hard cap for the append-only history file. Age retention (24 h raw,
+    # 7 d five-minute, 30 d hourly) is enforced independently.
+    maxBytes: "67108864"
+    # Recorder cadence. The live dashboard collector keeps its own 5 s poll.
+    intervalSeconds: 60
+    size: 256Mi
+    storageClassName: ""
   # Where notification settings (topic, token, enabled events, severity) are
   # persisted. They share the volume above, so they survive API restarts; with no
   # writable path the notification manager is memory-only and every restart
