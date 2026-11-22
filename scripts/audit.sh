@@ -86,6 +86,25 @@ for ns_name in ("naslos", "naslos-privileged"):
         any(t.get("namespaceSelector", {}).get("matchLabels", {}).get("naslos.local/apps") == "true" for t in rule.get("to", []))
         for rule in matches[0]["spec"]["egress"]
     ), f"app-namespace egress missing in {ns_name}"
+# R-069: git/DDNS Internet egress is scoped to the API pod, never the
+# namespace-wide policy (which also covers the privileged workload namespace).
+for ns_name in ("naslos", "naslos-privileged"):
+    policies = [d for d in docs if d.get("kind") == "NetworkPolicy"
+                and d["metadata"]["name"] == "naslos-workload-egress"
+                and d["metadata"]["namespace"] == ns_name]
+    for policy in policies:
+        ports = {p.get("port") for rule in policy["spec"]["egress"] for p in rule.get("ports", [])}
+        assert 22 not in ports and 9418 not in ports and 80 not in ports, (ns_name, ports)
+for policy_name, want_ports in {
+    "naslos-api-git-egress": {22, 443, 9418},
+    "naslos-api-ddns-egress": {53, 80, 443},
+}.items():
+    policy = find("NetworkPolicy", policy_name)
+    assert policy, f"{policy_name} missing"
+    assert policy["metadata"]["namespace"] == "naslos", policy["metadata"]
+    assert policy["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"] == "naslos-api", policy["spec"]["podSelector"]
+    ports = {p.get("port") for rule in policy["spec"]["egress"] for p in rule.get("ports", [])}
+    assert want_ports <= ports, (policy_name, ports)
 ns = find("Namespace", "naslos-app-1")
 assert ns, "per-app namespace missing"
 assert ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "baseline"

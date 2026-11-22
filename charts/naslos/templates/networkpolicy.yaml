@@ -480,43 +480,6 @@ spec:
         - ipBlock:
             cidr: {{ . | quote }}
     {{- end }}
-    {{- if .Values.networkPolicy.gitEgress }}
-    # Git chart repositories are cloned by the API pod (and fetched by the
-    # installer). Open only the git transports to the configured CIDRs - not a
-    # general all-port Internet opening.
-    - to:
-        {{- range (.Values.networkPolicy.gitEgressCIDRs | default (list "0.0.0.0/0")) }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-        {{- end }}
-      ports:
-        - protocol: TCP
-          port: 443
-        - protocol: TCP
-          port: 22
-        - protocol: TCP
-          port: 9418
-    {{- end }}
-    {{- if .Values.networkPolicy.ddnsEgress }}
-    # Dynamic DNS (FR-DNS-03): the API detects the public IP over HTTP and DNS
-    # (dns:opendns / dns:google) and calls the provider APIs. Open only
-    # HTTP/HTTPS and DNS to the configured CIDRs - not a general all-port
-    # Internet opening.
-    - to:
-        {{- range (.Values.networkPolicy.ddnsEgressCIDRs | default (list "0.0.0.0/0")) }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-        {{- end }}
-      ports:
-        - protocol: TCP
-          port: 443
-        - protocol: TCP
-          port: 80
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    {{- end }}
     {{- $ans := .Values.apps.namespace | default "naslos-apps" }}
     {{- $apriv := .Values.apps.privilegedNamespace | default "naslos-apps-priv" }}
     {{- if ne $ans $ns }}
@@ -560,6 +523,74 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+{{- end }}
+{{- if .Values.networkPolicy.gitEgress }}
+---
+# Git chart repository clones (FR-APP, R-069): scoped to the API pod in the
+# release namespace. The namespace-wide policy no longer grants git egress, so
+# a compromised UI/terminal or privileged workload cannot reach the Internet on
+# these ports. Open only the git transports to gitEgressCIDRs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-api-git-egress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-api
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- range (.Values.networkPolicy.gitEgressCIDRs | default (list "0.0.0.0/0")) }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 22
+        - protocol: TCP
+          port: 9418
+{{- end }}
+{{- if .Values.networkPolicy.ddnsEgress }}
+---
+# Dynamic DNS (FR-DNS-03, R-069): public-IP detection and provider APIs, scoped
+# to the API pod in the release namespace and to HTTP/HTTPS/DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-api-ddns-egress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-api
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- range (.Values.networkPolicy.ddnsEgressCIDRs | default (list "0.0.0.0/0")) }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
 {{- end }}
 {{- if $split }}
 ---
@@ -620,26 +651,9 @@ spec:
         - ipBlock:
             cidr: {{ . | quote }}
     {{- end }}
-    {{- if .Values.networkPolicy.gitEgress }}
-    # Git chart repositories are cloned by the API pod (and fetched by the
-    # installer). Open only the git transports to the configured CIDRs - not a
-    # general all-port Internet opening.
-    - to:
-        {{- range (.Values.networkPolicy.gitEgressCIDRs | default (list "0.0.0.0/0")) }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-        {{- end }}
-      ports:
-        - protocol: TCP
-          port: 443
-        - protocol: TCP
-          port: 22
-        - protocol: TCP
-          port: 9418
-    {{- end }}
-    # DDNS egress is release-namespace only: the API (the only DDNS client) runs
-    # in the release namespace, so the privileged workloads are deliberately not
-    # granted public HTTP/HTTPS egress.
+    # R-069: no git/DDNS (or other public Internet) egress here. Those are
+    # scoped to the API pod in the release namespace; the privileged workloads
+    # need only the cluster, node and DNS rules above.
     {{- $ans := .Values.apps.namespace | default "naslos-apps" }}
     {{- $apriv := .Values.apps.privilegedNamespace | default "naslos-apps-priv" }}
     {{- if ne $ans $ns }}
