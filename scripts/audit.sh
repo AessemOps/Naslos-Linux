@@ -171,6 +171,12 @@ for key, value in {
     assert backup_ctr["securityContext"].get(key) is value, (key, backup_ctr["securityContext"])
 assert backup_ctr["securityContext"]["capabilities"]["drop"] == ["ALL"], backup_ctr["securityContext"]
 assert backup_ctr.get("resources", {}).get("limits"), backup_ctr
+# R-070: the state and backup claims survive `helm uninstall`.
+for pvc_name in ("naslos-shares-config", "naslos-openldap-backups"):
+    pvc = find("PersistentVolumeClaim", pvc_name)
+    assert pvc, f"{pvc_name} PVC missing"
+    assert pvc["metadata"].get("annotations", {}).get("helm.sh/resource-policy") == "keep", \
+        f"{pvc_name} must be kept on uninstall"
 secret = find("Secret", "naslos-buddy-kek")
 assert secret, "generated buddy KEK Secret missing"
 raw = base64.b64decode(secret["data"]["kek"])

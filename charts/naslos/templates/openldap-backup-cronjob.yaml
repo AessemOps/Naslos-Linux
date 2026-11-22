@@ -26,6 +26,10 @@ metadata:
   labels:
     app.kubernetes.io/name: naslos-openldap
     app.kubernetes.io/component: identity
+  annotations:
+    # R-070: retain identity backups across an uninstall; the namespace is kept
+    # but Helm would otherwise delete this claim.
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteOnce
