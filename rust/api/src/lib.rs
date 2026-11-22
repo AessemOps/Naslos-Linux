@@ -45,6 +45,7 @@ pub mod talos;
 pub mod upgrade;
 pub mod virt;
 pub mod vmd;
+pub mod webhook;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

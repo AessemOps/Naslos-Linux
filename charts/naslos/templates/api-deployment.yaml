@@ -516,6 +516,10 @@ spec:
             # restart (they used to be in-memory only).
             - name: NOTIFICATIONS_CONFIG
               value: {{ .Values.api.notificationsFile | default "/var/lib/naslos/notifications.json" | quote }}
+            # Generic webhook alert channel (FR-ALT): its own settings file on
+            # the same state volume.
+            - name: ALERT_WEBHOOK_CONFIG
+              value: {{ .Values.api.webhookFile | default "/var/lib/naslos/webhook.json" | quote }}
             # MCP endpoint state (FR-MCP): the enabled flag and the SHA-256
             # token hashes live beside the other state files. The endpoint
             # itself stays off until an admin enables it in Settings.

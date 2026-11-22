@@ -88,6 +88,10 @@ api:
   # writable path the notification manager is memory-only and every restart
   # resets the configuration.
   notificationsFile: /var/lib/naslos/notifications.json
+  # Where the generic webhook alert channel's settings (target URL, optional
+  # bearer token, routed events, severity floor) are persisted. Shares the
+  # state volume above; without a writable path it is memory-only.
+  webhookFile: /var/lib/naslos/webhook.json
   # Day-2 host network changes (Settings → Network, FR-NET): the pending change
   # record and the previous-config snapshot this API needs to revert. Lives on
   # the same state volume as the other config files.

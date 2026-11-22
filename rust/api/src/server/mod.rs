@@ -248,6 +248,16 @@ fn owner_routes() -> Router<Arc<AppState>> {
             "/api/notifications/test",
             post(notifications::notification_test_post),
         )
+        .route(
+            "/api/notifications/webhook",
+            get(notifications::webhook_get)
+                .put(notifications::webhook_put)
+                .delete(notifications::webhook_delete),
+        )
+        .route(
+            "/api/notifications/webhook/test",
+            post(notifications::webhook_test_post),
+        )
         // Host network settings (FR-NET). Literal change routes before the
         // `{id}` wildcard, and all of them before the `/api/{*rest}` fallback.
         .route("/api/network", get(network::network_get))

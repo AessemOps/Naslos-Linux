@@ -31,7 +31,8 @@ read them in order for the full picture, or jump straight to a topic.
 | [app-catalog.md](app-catalog.md) | App catalog: git chart repositories, `naslos-app.yaml`, install lifecycle, exposure/routing, domains/certs, privileged NS | Rebuilt |
 | [dynamic-dns.md](dynamic-dns.md) | Dynamic DNS + declarative DNS providers: provider YAML, entries, credential Secrets, drivers, egress | New |
 | [monitoring.md](monitoring.md) | Live metrics API + dashboard; node/workload measurement without Prometheus | New |
-| [notifications.md](notifications.md) | ntfy alerting: topics, severities, defaults | New |
+| [reporting.md](reporting.md) | Bounded historical reporting design (24 h/7 d/30 d, embedded store, no Prometheus) | Design (`[OPEN]`) |
+| [notifications.md](notifications.md) | ntfy + webhook alert channels: routing, severities, defaults | New |
 | [deployment.md](deployment.md) | Prerequisites, Make targets, Helm values walkthrough | New |
 | [installer-contract.md](installer-contract.md) | Install pack format + stable interfaces for the desktop installer (FR-INSTALL) | New |
 | [datasets-isolation.md](datasets-isolation.md) | Design for isolating installed apps from the shared datasets root (D3/F1): current model, options, migration, residual risk | Current |
