@@ -543,6 +543,269 @@ async fn existing_free_form_provider_config_is_preserved() {
 }
 
 #[tokio::test]
+async fn an_existing_domain_links_to_a_ddns_entry_created_by_the_import() {
+    let mut state = AppState::for_test("test-secret");
+    state.ddns = Some(Arc::new(ddns_manager(&state)));
+    state
+        .domains
+        .upsert(Domain {
+            base_domain: "example.test".into(),
+            dns_provider: "cloudflare".into(),
+            credentials_secret: "existing".into(),
+            provider_config: std::collections::HashMap::from([("proxied".into(), "false".into())]),
+            acme_email: "ops@example.test".into(),
+            environment: "staging".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mut value = base_doc();
+    value["ddnsEntries"] = json!([{
+        "id": "exported-ddns",
+        "provider": "cloudflare",
+        "zone": "example.test",
+        "record": "home",
+        "recordType": "A",
+        "ttl": 300,
+        "enabled": true,
+        "providerConfig": {}
+    }]);
+    value["domains"] = json!([{
+        "baseDomain": "example.test",
+        "dnsProvider": "cloudflare",
+        "providerConfig": {"proxied": "false"},
+        "acmeEmail": "ops@example.test",
+        "environment": "staging",
+        "primary": false,
+        "sso": false,
+        "appRecordsDdnsEntry": "exported-ddns"
+    }]);
+
+    let mut plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert!(
+        matches!(&plan.domains[0].outcome, Outcome::Updated(_, changed) if changed.iter().any(|field| field == "appRecordsDdnsEntry")),
+        "{:?}",
+        plan.domains[0].outcome
+    );
+    apply_plan(&state, &mut plan);
+
+    let ddns_id = state.ddns.as_ref().unwrap().store().list()[0].id.clone();
+    let domain = state.domains.get("example.test").unwrap();
+    assert_eq!(
+        domain.app_records_ddns_entry.as_deref(),
+        Some(ddns_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn duplicate_storage_schedules_are_skipped_not_fatal() {
+    let state = AppState::for_test("test-secret");
+    let mut value = base_doc();
+    value["storageSchedules"] = json!([
+        {
+            "id": "s1",
+            "kind": "snapshot",
+            "target": "tank/media",
+            "cadence": "daily",
+            "runAt": "02:30",
+            "keep": 3,
+            "recursive": false,
+            "enabled": true
+        },
+        {
+            "id": "s2",
+            "kind": "snapshot",
+            "target": "tank/media",
+            "cadence": "weekly",
+            "runAt": "Sun 03:00",
+            "keep": 5,
+            "recursive": false,
+            "enabled": true
+        }
+    ]);
+    let mut plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert_eq!(plan.storage.len(), 2);
+    assert!(matches!(plan.storage[0].outcome, Outcome::Created(_)));
+    assert!(matches!(plan.storage[1].outcome, Outcome::Skipped(_)));
+    apply_plan(&state, &mut plan);
+    assert_eq!(state.storage_schedules.list().len(), 1);
+}
+
+#[tokio::test]
+async fn duplicate_buddy_schedules_are_skipped_not_fatal() {
+    let state = AppState::for_test("test-secret");
+    let mut value = base_doc();
+    value["buddySchedules"] = json!([
+        {
+            "id": "b1",
+            "dataset": "tank/media",
+            "source": "tank/media",
+            "receivers": ["https://buddy.example.test"],
+            "cadence": "daily",
+            "runAt": "02:30",
+            "pruneKeep": 3,
+            "enabled": true
+        },
+        {
+            "id": "b2",
+            "dataset": "tank/media",
+            "source": "tank/media",
+            "receivers": ["https://buddy.example.test"],
+            "cadence": "weekly",
+            "runAt": "Sun 03:00",
+            "pruneKeep": 5,
+            "enabled": true
+        }
+    ]);
+    let mut plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert_eq!(plan.buddy.len(), 2);
+    assert!(matches!(plan.buddy[0].outcome, Outcome::Created(_)));
+    assert!(matches!(plan.buddy[1].outcome, Outcome::Skipped(_)));
+    apply_plan(&state, &mut plan);
+    assert_eq!(state.buddy_schedules.list().len(), 1);
+}
+
+#[tokio::test]
+async fn trimmed_domain_duplicates_are_rejected() {
+    let state = AppState::for_test("test-secret");
+    let mut value = base_doc();
+    value["domains"] = json!([
+        {
+            "baseDomain": "example.test",
+            "dnsProvider": "cloudflare",
+            "providerConfig": {},
+            "acmeEmail": "ops@example.test",
+            "environment": "staging",
+            "primary": false,
+            "sso": false,
+            "appRecordsDdnsEntry": null
+        },
+        {
+            "baseDomain": " example.test ",
+            "dnsProvider": "cloudflare",
+            "providerConfig": {},
+            "acmeEmail": "ops@example.test",
+            "environment": "staging",
+            "primary": false,
+            "sso": false,
+            "appRecordsDdnsEntry": null
+        }
+    ]);
+    let errors = build_plan(&state, &parse(value)).await.unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("duplicate base domain")),
+        "{errors:?}"
+    );
+}
+
+#[tokio::test]
+async fn legacy_afp_shares_are_skipped() {
+    let state = AppState::for_test("test-secret");
+    let mut afp = share("legacy", "/var/mnt/tank/legacy");
+    afp["protocol"] = json!("afp");
+    let mut value = base_doc();
+    value["shares"] = json!([afp, share("media", "/var/mnt/tank/media")]);
+    let mut plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert_eq!(plan.shares.len(), 2);
+    assert!(matches!(plan.shares[0].outcome, Outcome::Skipped(_)));
+    apply_plan(&state, &mut plan);
+    assert!(state.shares.lock().unwrap().get("legacy").is_err());
+    assert!(state.shares.lock().unwrap().get("media").is_ok());
+}
+
+#[tokio::test]
+async fn a_provider_change_clears_the_old_credentials() {
+    let state = AppState::for_test("test-secret");
+    state
+        .domains
+        .upsert(Domain {
+            base_domain: "example.test".into(),
+            dns_provider: "cloudflare".into(),
+            credentials_secret: "old-secret".into(),
+            provider_config: std::collections::HashMap::from([("proxied".into(), "false".into())]),
+            acme_email: "ops@example.test".into(),
+            environment: "staging".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mut value = base_doc();
+    value["domains"] = json!([{
+        "baseDomain": "example.test",
+        "dnsProvider": "ovh",
+        "providerConfig": {},
+        "acmeEmail": "ops@example.test",
+        "environment": "staging",
+        "primary": false,
+        "sso": false,
+        "appRecordsDdnsEntry": null
+    }]);
+    let mut plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert!(matches!(
+        &plan.domains[0].outcome,
+        Outcome::Updated(_, changed) if changed.iter().any(|field| field == "dnsProvider")
+    ));
+    assert!(plan.domains[0].value.credentials_secret.is_empty());
+    assert!(plan.domains[0].requires_credentials);
+    let report = build_report(&plan, 1, true);
+    assert!(report.sections["domains"]
+        .notes
+        .iter()
+        .any(|note| note.contains("re-enter")));
+
+    apply_plan(&state, &mut plan);
+    let domain = state.domains.get("example.test").unwrap();
+    assert!(domain.credentials_secret.is_empty());
+    assert_eq!(domain.dns_provider.as_str(), "ovh");
+}
+
+#[test]
+fn the_buddy_store_and_parent_paths_are_refused() {
+    let datasets = vec![
+        crate::agent::Dataset {
+            name: "tank".into(),
+            mountpoint: "/var/mnt/tank".into(),
+            ..Default::default()
+        },
+        crate::agent::Dataset {
+            name: "tank/naslos-buddy".into(),
+            mountpoint: "/var/mnt/tank/naslos-buddy".into(),
+            ..Default::default()
+        },
+        crate::agent::Dataset {
+            name: "tank/naslos-buddy/data".into(),
+            mountpoint: "/var/mnt/tank/naslos-buddy/data".into(),
+            ..Default::default()
+        },
+        crate::agent::Dataset {
+            name: "tank/media".into(),
+            mountpoint: "/var/mnt/tank/media".into(),
+            ..Default::default()
+        },
+    ];
+    for host in [
+        "/var/mnt/tank/naslos-buddy",
+        "/var/mnt/tank",
+        "/var/mnt/tank/naslos-buddy/data",
+    ] {
+        let problem = dataset_live_problem(&datasets, host).unwrap();
+        assert!(problem.contains("Buddy"), "{host}: {problem}");
+    }
+    assert!(dataset_live_problem(&datasets, "/var/mnt/tank/media").is_none());
+    assert!(dataset_live_problem(&datasets, "/var/mnt/tank/other")
+        .unwrap()
+        .contains("not a mounted"));
+}
+
+#[test]
+fn server_ids_are_unique() {
+    let first = new_server_id();
+    let second = new_server_id();
+    assert_ne!(first, second);
+    assert_eq!(first.len(), 32);
+}
+
+#[tokio::test]
 async fn an_exported_document_round_trips_through_import() {
     let mut source = AppState::for_test("test-secret");
     source.ddns = Some(Arc::new(ddns_manager(&source)));

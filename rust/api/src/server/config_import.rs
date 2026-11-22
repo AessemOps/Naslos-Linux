@@ -490,6 +490,32 @@ async fn plan_shares(
         let protocol = match record.protocol.as_str() {
             "smb" => Protocol::Smb,
             "nfs" => Protocol::Nfs,
+            "afp" => {
+                plans.push(SharePlan {
+                    entry: record.name.clone(),
+                    create: CreateShareRequest {
+                        name: record.name.clone(),
+                        path: record.path.clone(),
+                        protocol: Protocol::Afp,
+                        description: record.description.clone(),
+                        read_only: record.read_only,
+                        browseable: Some(record.browseable),
+                        allowed_hosts: shares::normalize_list(&record.allowed_hosts),
+                        valid_users: shares::normalize_list(&record.valid_users),
+                        valid_groups: shares::normalize_list(&record.valid_groups),
+                        time_machine: record.time_machine,
+                        no_root_squash: record.no_root_squash,
+                        shadow_copies: false,
+                        audit: false,
+                        enabled: Some(record.enabled),
+                    },
+                    existing: None,
+                    outcome: Outcome::Skipped(
+                        "AFP is no longer supported; recreate the share as SMB or NFS".to_string(),
+                    ),
+                });
+                continue;
+            }
             other => {
                 errors.push(format!(
                     "{label}: unsupported protocol {other:?}; use \"smb\" or \"nfs\""
@@ -664,7 +690,16 @@ async fn plan_storage(
         }
         let key = format!("{}|{}", kind_name(value.kind), value.target);
         if !seen.insert(key) {
-            errors.push(format!("{label}: duplicate kind/target"));
+            plans.push(StoragePlan {
+                entry: label,
+                value,
+                existing: None,
+                changes: Vec::new(),
+                outcome: Outcome::Skipped(
+                    "another imported schedule already uses this kind/target; only one can be restored by natural key"
+                        .to_string(),
+                ),
+            });
             continue;
         }
         let matches: Vec<StorageSchedule> = current
@@ -741,7 +776,16 @@ async fn plan_buddy(
         }
         let key = format!("{}|{}", value.dataset, value.source);
         if !seen.insert(key) {
-            errors.push(format!("{label}: duplicate dataset/source"));
+            plans.push(BuddyPlan {
+                entry: label,
+                value,
+                existing: None,
+                changes: Vec::new(),
+                outcome: Outcome::Skipped(
+                    "another imported schedule already backs up this dataset/source; only one can be restored by natural key"
+                        .to_string(),
+                ),
+            });
             continue;
         }
         let matches: Vec<ScheduleEntry> = current
@@ -943,12 +987,13 @@ fn plan_domains(
     let mut seen = HashSet::new();
 
     for (index, record) in document.domains.iter().enumerate() {
-        let label = format!("domains[{index}] ({})", record.base_domain);
-        if !seen.insert(record.base_domain.clone()) {
+        let base_domain = record.base_domain.trim();
+        let label = format!("domains[{index}] ({base_domain})");
+        if !seen.insert(base_domain.to_string()) {
             errors.push(format!("{label}: duplicate base domain"));
             continue;
         }
-        if !certs::is_dns1123_subdomain(record.base_domain.trim()) {
+        if !certs::is_dns1123_subdomain(base_domain) {
             errors.push(format!("{label}: base domain is not a valid DNS name"));
             continue;
         }
@@ -962,9 +1007,9 @@ fn plan_domains(
         }
         if provider.is_passthrough() {
             plans.push(DomainPlan {
-                entry: record.base_domain.clone(),
+                entry: base_domain.to_string(),
                 value: Domain {
-                    base_domain: record.base_domain.trim().to_string(),
+                    base_domain: base_domain.to_string(),
                     ..Default::default()
                 },
                 existing: None,
@@ -989,7 +1034,10 @@ fn plan_domains(
             ));
             continue;
         }
-        let existing = state.domains.get(record.base_domain.trim()).ok();
+        let existing = state.domains.get(base_domain).ok();
+        let provider_changed = existing
+            .as_ref()
+            .is_some_and(|domain| domain.dns_provider != record.dns_provider.trim());
         let imported_config =
             match provider_config(provider, "cert", &record.provider_config, &label) {
                 Ok(config) => config,
@@ -998,16 +1046,13 @@ fn plan_domains(
                     continue;
                 }
             };
-        let provider_config = if existing
-            .as_ref()
-            .is_some_and(|domain| domain.dns_provider == record.dns_provider.trim())
-        {
+        let provider_config = if provider_changed {
+            imported_config
+        } else {
             merged_config(
                 existing.as_ref().map(|domain| &domain.provider_config),
                 imported_config,
             )
-        } else {
-            imported_config
         };
 
         let mut skip: Option<String> = None;
@@ -1067,7 +1112,12 @@ fn plan_domains(
         }
 
         let mut value = existing.clone().unwrap_or_default();
-        value.base_domain = record.base_domain.trim().to_string();
+        if provider_changed {
+            value.credentials_secret.clear();
+            value.solver = None;
+            value.last_error.clear();
+        }
+        value.base_domain = base_domain.to_string();
         value.dns_provider = record.dns_provider.trim().to_string();
         value.provider_config = provider_config;
         value.acme_email = record.acme_email.trim().to_string();
@@ -1095,7 +1145,10 @@ fn plan_domains(
             if existing.sso != value.sso {
                 changes.push("sso".to_string());
             }
-            if existing.app_records_ddns_entry != value.app_records_ddns_entry {
+            let imported_new_ddns =
+                matches!(&ddns_ref, Some(DdnsRef::Imported { existing: None, .. }));
+            if existing.app_records_ddns_entry != value.app_records_ddns_entry || imported_new_ddns
+            {
                 changes.push("appRecordsDdnsEntry".to_string());
             }
         }
@@ -1108,13 +1161,15 @@ fn plan_domains(
                 Some(_) => Outcome::Updated(None, changes.clone()),
             }
         };
+        let requires_credentials =
+            provider.has_cert_manager() && (existing.is_none() || provider_changed);
         plans.push(DomainPlan {
-            entry: record.base_domain.clone(),
+            entry: base_domain.to_string(),
             value,
             existing,
             ddns_ref,
             changes,
-            requires_credentials: provider.has_cert_manager(),
+            requires_credentials,
             outcome,
         });
     }
@@ -1126,7 +1181,7 @@ async fn plan_datasets(
     state: &AppState,
     errors: &mut Vec<String>,
 ) -> Vec<DatasetPlan> {
-    let mountpoints = live_mountpoints(state).await;
+    let live = live_datasets(state).await;
     let current = state.datasets_registry.list();
     let mut plans = Vec::new();
     let mut seen = HashSet::new();
@@ -1153,13 +1208,9 @@ async fn plan_datasets(
             }
         };
         let host = value.host_path.clone();
-        if let Some(mountpoints) = &mountpoints {
-            if !mountpoints.iter().any(|mountpoint| {
-                datasets::normalize_host_path(mountpoint).ok().as_deref() == Some(host.as_str())
-            }) {
-                errors.push(format!(
-                    "{label}: host path is not a mounted ZFS dataset known to the agent"
-                ));
+        if let Some(datasets) = &live {
+            if let Some(problem) = dataset_live_problem(datasets, &host) {
+                errors.push(format!("{label}: {problem}"));
                 continue;
             }
         }
@@ -1780,11 +1831,10 @@ fn build_report(plan: &Plan, schema_version: u32, dry_run: bool) -> ImportReport
             .iter()
             .map(|entry| (entry.entry.as_str(), &entry.outcome)),
     );
-    if plan
-        .domains
-        .iter()
-        .any(|entry| entry.requires_credentials && matches!(entry.outcome, Outcome::Created(_)))
-    {
+    if plan.domains.iter().any(|entry| {
+        entry.requires_credentials
+            && matches!(entry.outcome, Outcome::Created(_) | Outcome::Updated(_, _))
+    }) {
         domains.notes.push(
             "provider credentials are not exported; re-enter them with PUT /api/domains/{baseDomain} so certificates can reconcile"
                 .to_string(),
@@ -1944,14 +1994,42 @@ fn sorted_config(config: &HashMap<String, String>) -> BTreeMap<String, String> {
         .collect()
 }
 
-async fn live_mountpoints(state: &AppState) -> Option<Vec<String>> {
+async fn live_datasets(state: &AppState) -> Option<Vec<crate::agent::Dataset>> {
     let agent = state.agent.as_ref()?;
-    agent.list_datasets().await.ok().map(|datasets| {
+    agent.list_datasets().await.ok()
+}
+
+async fn live_mountpoints(state: &AppState) -> Option<Vec<String>> {
+    live_datasets(state).await.map(|datasets| {
         datasets
             .into_iter()
             .map(|dataset| dataset.mountpoint)
             .collect()
     })
+}
+
+fn dataset_live_problem(datasets: &[crate::agent::Dataset], host: &str) -> Option<String> {
+    let mounted = datasets.iter().any(|dataset| {
+        datasets::normalize_host_path(&dataset.mountpoint)
+            .ok()
+            .as_deref()
+            == Some(host)
+    });
+    if !mounted {
+        return Some("host path is not a mounted ZFS dataset known to the agent".to_string());
+    }
+    let buddy_paths: Vec<String> = datasets
+        .iter()
+        .filter(|dataset| dataset.name == "naslos-buddy" || dataset.name.ends_with("/naslos-buddy"))
+        .filter_map(|dataset| datasets::normalize_host_path(&dataset.mountpoint).ok())
+        .collect();
+    if datasets::overlaps_buddy(host, &buddy_paths) {
+        return Some(
+            "the Buddy receive store (or a parent path) cannot be registered as an app dataset"
+                .to_string(),
+        );
+    }
+    None
 }
 
 fn validate_imported_id(id: &str, label: &str) -> Result<(), String> {
@@ -1981,8 +2059,17 @@ fn validate_text(label: &str, value: &str, max: usize) -> Result<(), String> {
 
 fn new_server_id() -> String {
     let mut buffer = [0u8; 16];
-    let _ = getrandom::fill(&mut buffer);
-    buffer.iter().map(|byte| format!("{byte:02x}")).collect()
+    if getrandom::fill(&mut buffer).is_ok() {
+        return buffer.iter().map(|byte| format!("{byte:02x}")).collect();
+    }
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static FALLBACK: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let sequence = FALLBACK.fetch_add(1, Ordering::Relaxed);
+    format!("fallback-{nanos:x}-{sequence:x}")
 }
 
 fn bad_request(message: &str) -> Response {

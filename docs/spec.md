@@ -1825,13 +1825,17 @@ follow-up.
   server-generated IDs. It MUST never delete a record absent from the import,
   never overwrite a credential Secret, and never write a Secret, TLS key, Buddy
   identity/KEK, token or other credential. A referenced DDNS entry MUST be
-  remapped to the server's ID, an ambiguous existing match MUST be skipped
-  rather than guessed at, and an entry whose credentials were removed is
-  imported without them with a report note to re-enter them through the
-  existing endpoint. When the agent is reachable, share paths, dataset/pool
-  targets and registered dataset paths MUST be revalidated read-only against
-  the node; without an agent they are validated structurally and the report
-  says so. *(config import tests:
+  remapped to the server's ID even when the domain would otherwise be
+  unchanged; an ambiguous existing match, or a second imported record with the
+  same natural key, MUST be skipped rather than guessed at; a legacy AFP share
+  MUST be reported skipped; a provider change MUST clear the previous
+  provider's credential Secret and request re-entry; and an entry whose
+  credentials were removed is imported without them with a report note to
+  re-enter them through the existing endpoint. When the agent is reachable,
+  share paths, dataset/pool targets and registered dataset paths MUST be
+  revalidated read-only against the node, and the Buddy receive store and its
+  parent paths MUST be refused as app datasets; without an agent they are
+  validated structurally and the report says so. *(config import tests:
   `unknown_top_level_and_record_fields_are_rejected`,
   `envelope_version_and_kind_are_strict`,
   `secret_shaped_app_values_are_rejected`,
@@ -1840,7 +1844,14 @@ follow-up.
   `dry_run_plan_is_pure_and_apply_is_idempotent`,
   `exported_ids_are_never_reused_for_new_records`,
   `domain_references_follow_the_server_generated_ddns_id`,
+  `an_existing_domain_links_to_a_ddns_entry_created_by_the_import`,
   `ambiguous_existing_schedules_are_skipped`,
+  `duplicate_storage_schedules_are_skipped_not_fatal`,
+  `duplicate_buddy_schedules_are_skipped_not_fatal`,
+  `trimmed_domain_duplicates_are_rejected`,
+  `legacy_afp_shares_are_skipped`,
+  `a_provider_change_clears_the_old_credentials`,
+  `the_buddy_store_and_parent_paths_are_refused`,
   `an_exported_document_round_trips_through_import`; contract tests:
   `config_import_requires_an_admin_and_defaults_to_dry_run`,
   `config_import_round_trips_an_export_through_the_http_routes`,

@@ -461,9 +461,9 @@ curl -sk -X POST "https://<naslos-host>/api/system/config/import?apply=true&conf
   -H "Content-Type: application/json" --data-binary @naslos-config-export.json
 ```
 
-The response is a per-section report. `id` is present only for server-keyed
-records and is the ID the apply actually used (the dry-run omits it because the
-ID does not exist yet):
+The response is a per-section report. `id` is present for server-keyed records
+that already exist, including dry-run updates; records that would be created
+omit it until an apply mints the server ID:
 
 ```json
 {
@@ -508,7 +508,9 @@ zone + record + type, base domain, dataset name); new records get
 server-generated IDs. Records absent from the import are never deleted, a
 credential Secret is never read or overwritten, and an ambiguous existing match
 is skipped instead of guessed at. A domain that references an imported DDNS
-entry is remapped to the server-generated DDNS ID. If the agent is reachable,
+entry is remapped to the server-generated DDNS ID, even when the domain itself
+would otherwise be unchanged. A provider change clears the previous provider's
+credential Secret and asks for re-entry. If the agent is reachable,
 share paths and dataset/pool targets are revalidated read-only against the
 node; without an agent the report carries a warning that only structural
 validation ran.
