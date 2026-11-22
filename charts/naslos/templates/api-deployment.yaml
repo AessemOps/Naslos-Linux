@@ -525,6 +525,13 @@ spec:
             # the same state volume.
             - name: ALERT_WEBHOOK_CONFIG
               value: {{ .Values.api.webhookFile | default "/var/lib/naslos/webhook.json" | quote }}
+            # SMTP/email and syslog alert channels (FR-ALT-07/09): settings on
+            # the same state volume as the other channels. The SMTP file may
+            # hold the password, so it is written 0600.
+            - name: ALERT_SMTP_CONFIG
+              value: {{ .Values.api.smtpFile | default "/var/lib/naslos/smtp.json" | quote }}
+            - name: ALERT_SYSLOG_CONFIG
+              value: {{ .Values.api.syslogFile | default "/var/lib/naslos/syslog.json" | quote }}
             # MCP endpoint state (FR-MCP): the enabled flag and the SHA-256
             # token hashes live beside the other state files. The endpoint
             # itself stays off until an admin enables it in Settings.

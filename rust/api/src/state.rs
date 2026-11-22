@@ -87,6 +87,10 @@ pub struct AppState {
     pub notifications: Arc<crate::notifications::Manager>,
     /// The generic webhook alert channel (FR-ALT).
     pub webhook: Arc<crate::webhook::Manager>,
+    /// The SMTP/email alert channel (FR-ALT-07).
+    pub smtp: Arc<crate::smtp::Manager>,
+    /// The syslog alert channel (FR-ALT-09).
+    pub syslog: Arc<crate::syslog::Manager>,
     /// The day-2 host network change manager (FR-NET).
     pub network: Arc<crate::network::Manager>,
     /// The operator-registered datasets an app may mount (D3/F1).
@@ -245,6 +249,8 @@ impl AppState {
             ddns,
             notifications: Arc::new(crate::notifications::Manager::from_env()),
             webhook: Arc::new(crate::webhook::Manager::from_env()),
+            smtp: Arc::new(crate::smtp::Manager::from_env()),
+            syslog: Arc::new(crate::syslog::Manager::from_env()),
             network,
             datasets_registry,
             buddy: build_buddy_receiver(),
@@ -303,6 +309,8 @@ impl AppState {
             ddns: None,
             notifications: Arc::new(crate::notifications::Manager::new("")),
             webhook: Arc::new(crate::webhook::Manager::new("")),
+            smtp: Arc::new(crate::smtp::Manager::new("")),
+            syslog: Arc::new(crate::syslog::Manager::new("")),
             network: crate::network::Manager::new("", Arc::new(crate::network::UnavailableNode)),
             datasets_registry: Arc::new(crate::datasets::Registry::new("", "")),
             buddy: None,

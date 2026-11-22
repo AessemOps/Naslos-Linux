@@ -32,7 +32,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [dynamic-dns.md](dynamic-dns.md) | Dynamic DNS + declarative DNS providers: provider YAML, entries, credential Secrets, drivers, egress | New |
 | [monitoring.md](monitoring.md) | Live metrics API + dashboard; node/workload measurement without Prometheus | New |
 | [reporting.md](reporting.md) | Bounded historical reporting design (24 h/7 d/30 d, embedded store, no Prometheus) | Design (`[OPEN]`) |
-| [notifications.md](notifications.md) | ntfy + webhook alert channels: routing, severities, defaults | New |
+| [notifications.md](notifications.md) | ntfy + webhook + SMTP + syslog alert channels: routing, severities, defaults, target policy | New |
 | [deployment.md](deployment.md) | Prerequisites, Make targets, Helm values walkthrough | New |
 | [installer-contract.md](installer-contract.md) | Install pack format + stable interfaces for the desktop installer (FR-INSTALL) | New |
 | [datasets-isolation.md](datasets-isolation.md) | Design for isolating installed apps from the shared datasets root (D3/F1): current model, options, migration, residual risk | Current |

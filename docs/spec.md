@@ -1209,16 +1209,37 @@ additive: ntfy keeps its existing behavior (FR-NTF-01/02) and settings.
   tests: `test_action_requires_an_enabled_channel`,
   `test_action_is_not_gated_by_event_routing`; contract test
   `webhook_test_route_requires_enabled_and_guards_at_send_time`)*
-- **FR-ALT-07** — **[OPEN]** An SMTP/email channel MUST be configurable with
-  host, port, TLS mode, sender, recipients and credentials held in a Secret,
-  routed by the same event/severity rules as FR-ALT-01. *(no test yet;
-  backend not implemented)*
+- **FR-ALT-07** — An SMTP/email channel MUST be configurable with host, port,
+  TLS mode (`starttls`, `implicit` or `none`), sender, recipients and optional
+  write-only credentials, routed by the same event/severity rules as
+  FR-ALT-01. TLS MUST validate the server certificate; there is no insecure
+  mode. Credentials MUST be persisted only in the mode-`0600` settings file
+  (never returned by the API) and MUST require STARTTLS or implicit TLS. The
+  target guard MUST allow an explicitly configured RFC1918 relay while still
+  refusing loopback, link-local/metadata, CGNAT, ULA and embedded credentials.
+  Delivery MUST be a single bounded attempt, and an error or log line MUST NOT
+  expose the host, username, password or message. *(SMTP tests:
+  `target_policy_allows_lan_relays_and_public_hosts_but_not_special_addresses`,
+  `tls_modes_and_credentials_are_validated`,
+  `settings_survive_a_reload_and_the_password_stays_write_only`,
+  `message_shape_is_rfc5322_and_subject_is_sanitized`,
+  `send_path_refuses_an_unknown_tls_mode_from_a_hand_edited_file`; contract tests
+  `smtp_channel_crud_never_returns_the_password`,
+  `smtp_test_route_requires_enabled_and_guards_at_send_time`)*
 - **FR-ALT-08** — **[OPEN]** SNMP traps MUST be a configurable channel
   (version, target, community/credentials from a Secret) routed by the same
   event/severity rules as FR-ALT-01. *(no test yet; backend not implemented)*
-- **FR-ALT-09** — **[OPEN]** Syslog forwarding MUST be a configurable channel
+- **FR-ALT-09** — Syslog forwarding MUST be a configurable channel
   (`udp`/`tcp`/`tls`, target, facility) routed by the same event/severity rules
-  as FR-ALT-01. *(no test yet; backend not implemented)*
+  as FR-ALT-01. The payload MUST be a bounded RFC 5424 message that carries only
+  the event fields, never channel settings or credentials. TLS MUST validate
+  the collector certificate. The target guard is the LAN-aware one from
+  FR-ALT-07. *(syslog tests:
+  `payload_is_rfc5424_with_pri_and_event_msgid`,
+  `payload_sanitizes_control_characters_and_the_msgid`,
+  `payload_is_bounded`, `target_policy_allows_lan_collectors_and_refuses_special_addresses`,
+  `send_path_refuses_an_unknown_protocol_from_a_hand_edited_file`;
+  contract test `syslog_channel_crud_and_test_route`)*
 
 ### 3.7.2 Historical reporting (`FR-RPT`)
 
@@ -2082,6 +2103,10 @@ below is **[OPEN]** until the audit implementation lands.
 | `/api/notifications/test` | POST | Send test push |
 | `/api/notifications/webhook` | GET, PUT, DELETE | Webhook channel settings / update / reset (FR-ALT) |
 | `/api/notifications/webhook/test` | POST | Send a test webhook (FR-ALT-06) |
+| `/api/notifications/smtp` | GET, PUT, DELETE | SMTP channel settings / update / reset (FR-ALT-07) |
+| `/api/notifications/smtp/test` | POST | Send a test email (FR-ALT-07) |
+| `/api/notifications/syslog` | GET, PUT, DELETE | Syslog channel settings / update / reset (FR-ALT-09) |
+| `/api/notifications/syslog/test` | POST | Send a test RFC 5424 message (FR-ALT-09) |
 | `/api/network` | GET | Host network inventory: hostname, resolvers and physical links (§3.12) |
 | `/api/network/changes` | POST | Start a guarded network change (`202`; `409` while pending or during an upgrade) |
 | `/api/network/changes/{id}` | GET | Change phase, target address, deadline and error |
