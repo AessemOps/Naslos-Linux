@@ -442,4 +442,22 @@ mod tests {
             .validate_cross_vm_ports("alpha", &spec("alpha"))
             .is_ok());
     }
+
+    #[test]
+    fn a_failed_save_never_publishes_the_in_memory_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-directory");
+        std::fs::write(&blocker, b"x").unwrap();
+        let store = Store::new(&blocker.join("vms.json").display().to_string());
+
+        assert!(store.create(spec("alpha")).is_err());
+        assert!(store.list().is_empty(), "memory changed before the save");
+
+        let mut running = spec("alpha");
+        running.desired = DesiredState::Running;
+        assert!(store.update("alpha", running.clone()).is_err());
+        assert!(store.set_desired("alpha", DesiredState::Running).is_err());
+        assert!(store.remove("alpha").is_err());
+        assert!(store.list().is_empty());
+    }
 }

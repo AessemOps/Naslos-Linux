@@ -1257,3 +1257,217 @@ fn not_found(name: &str) -> Response {
         serde_json::json!({ "error": format!("VM {name:?} does not exist") }),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use naslos_vmd::model::DiskFormat;
+
+    fn state() -> Arc<AppState> {
+        Arc::new(AppState::for_test("test-secret"))
+    }
+
+    fn spec(name: &str) -> VmSpec {
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "cpu": 1,
+            "memMiB": 128,
+            "disk": { "sizeGB": 1 },
+            "pool": "tank"
+        }))
+        .expect("a valid test VM spec")
+    }
+
+    fn query(pairs: &[(&str, &str)]) -> Query<HashMap<String, String>> {
+        Query(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn lifecycle_locks_are_per_vm() {
+        assert!(Arc::ptr_eq(
+            &lifecycle_lock("alpha"),
+            &lifecycle_lock("alpha")
+        ));
+        assert!(!Arc::ptr_eq(
+            &lifecycle_lock("alpha"),
+            &lifecycle_lock("beta")
+        ));
+    }
+
+    #[tokio::test]
+    async fn delete_and_restore_require_the_exact_confirm_name() {
+        let state = state();
+        state.vms.create(spec("vm1")).unwrap();
+
+        let missing = vm_detail_delete(State(state.clone()), Path("vm1".into()), query(&[])).await;
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+
+        let wrong = vm_detail_delete(
+            State(state.clone()),
+            Path("vm1".into()),
+            query(&[("confirm", "other")]),
+        )
+        .await;
+        assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
+
+        let restore = vm_snapshot_restore_post(
+            State(state.clone()),
+            Path(("vm1".to_string(), "snap1".to_string())),
+            query(&[]),
+        )
+        .await;
+        assert_eq!(restore.status(), StatusCode::BAD_REQUEST);
+
+        assert!(
+            state.vms.get("vm1").is_some(),
+            "a refused request must not remove the record"
+        );
+    }
+
+    #[tokio::test]
+    async fn destructive_actions_fail_closed_when_vmd_is_absent() {
+        let state = state();
+        state.vms.create(spec("vm1")).unwrap();
+
+        let delete = vm_detail_delete(
+            State(state.clone()),
+            Path("vm1".into()),
+            query(&[("confirm", "vm1")]),
+        )
+        .await;
+        assert_eq!(delete.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let restore = vm_snapshot_restore_post(
+            State(state.clone()),
+            Path(("vm1".to_string(), "snap1".to_string())),
+            query(&[("confirm", "vm1")]),
+        )
+        .await;
+        assert_eq!(restore.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        assert!(
+            state.vms.get("vm1").is_some(),
+            "no live report means no destructive action"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_actions_do_not_mutate_desired_state_without_vmd() {
+        let state = state();
+        state.vms.create(spec("vm1")).unwrap();
+
+        let start = vm_start_post(State(state.clone()), Path("vm1".into())).await;
+        assert_eq!(start.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(state.vms.get("vm1").unwrap().desired, DesiredState::Stopped);
+
+        state.vms.set_desired("vm1", DesiredState::Running).unwrap();
+        let stop = vm_stop_post(State(state.clone()), Path("vm1".into())).await;
+        assert_eq!(stop.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(state.vms.get("vm1").unwrap().desired, DesiredState::Running);
+    }
+
+    async fn put(state: &Arc<AppState>, vm: &VmSpec) -> StatusCode {
+        let response = vm_detail_put(
+            State(state.clone()),
+            Path(vm.name.clone()),
+            Body::from(serde_json::to_vec(vm).unwrap()),
+        )
+        .await;
+        response.status()
+    }
+
+    #[tokio::test]
+    async fn update_rejects_immutable_disk_pool_and_source_image() {
+        let state = state();
+        state.vms.create(spec("vm1")).unwrap();
+
+        let mut format = spec("vm1");
+        format.disk.format = DiskFormat::Raw;
+        assert_eq!(put(&state, &format).await, StatusCode::CONFLICT);
+
+        let mut pool = spec("vm1");
+        pool.pool = "other".into();
+        assert_eq!(put(&state, &pool).await, StatusCode::CONFLICT);
+
+        let mut source = spec("vm1");
+        source.disk.source_image = Some("isos/cloud.qcow2".into());
+        assert_eq!(put(&state, &source).await, StatusCode::CONFLICT);
+
+        let mut size = spec("vm1");
+        size.disk.size_gb = 8;
+        assert_eq!(put(&state, &size).await, StatusCode::CONFLICT);
+
+        // The stored record still describes the disk that exists.
+        let stored = state.vms.get("vm1").unwrap();
+        assert_eq!(stored.disk.format, DiskFormat::Qcow2);
+        assert_eq!(stored.disk.size_gb, 1);
+    }
+
+    #[test]
+    fn vnc_origin_must_be_the_exact_https_request_authority() {
+        use axum::http::header::{HOST, ORIGIN};
+        let headers = |origin: Option<&str>, host: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(HOST, host.parse().unwrap());
+            if let Some(origin) = origin {
+                h.insert(ORIGIN, origin.parse().unwrap());
+            }
+            h
+        };
+
+        assert!(vnc_origin_allowed(&headers(
+            Some("https://naslos.example"),
+            "naslos.example"
+        )));
+        assert!(vnc_origin_allowed(&headers(
+            Some("https://naslos.example:8443"),
+            "naslos.example:8443"
+        )));
+        assert!(!vnc_origin_allowed(&headers(
+            Some("https://naslos.example:8443"),
+            "naslos.example"
+        )));
+        assert!(!vnc_origin_allowed(&headers(
+            Some("http://naslos.example"),
+            "naslos.example"
+        )));
+        assert!(!vnc_origin_allowed(&headers(
+            Some("https://other.example"),
+            "naslos.example"
+        )));
+        assert!(vnc_origin_allowed(&headers(None, "naslos.example")));
+    }
+
+    fn vnc_request(origin: Option<&str>) -> Request {
+        let mut builder = Request::builder()
+            .uri("/api/ws/vm/vm1/vnc")
+            .header("host", "naslos.example");
+        if let Some(origin) = origin {
+            builder = builder.header("origin", origin);
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn console_refuses_http_origin_and_a_degraded_audit_log() {
+        let state = state();
+        let refused = vm_vnc_ws(
+            State(state.clone()),
+            Path("vm1".into()),
+            vnc_request(Some("http://naslos.example")),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        state.vms.create(spec("vm1")).unwrap();
+        state.audit.mark_degraded("test failure");
+        let unaudited =
+            vm_vnc_ws(State(state.clone()), Path("vm1".into()), vnc_request(None)).await;
+        assert_eq!(unaudited.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+}
