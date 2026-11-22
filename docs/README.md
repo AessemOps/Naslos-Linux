@@ -24,6 +24,7 @@ read them in order for the full picture, or jump straight to a topic.
 | [external-directory.md](external-directory.md) | Optional external LDAP source (FR-EXT): phase-1 configuration, TLS, search bases, uid/gid mapping, AD/Kerberos roadmap | New |
 | [rbac-audit.md](rbac-audit.md) | Read-only/operator/admin role model, route classification, append-only hash-chained audit log (FR-RBAC/FR-AUD) | Design only (P1-11, `[OPEN]`) |
 | [shares.md](shares.md) | SMB / NFS / Time-Machine share model, generated configs | New |
+| [acl.md](acl.md) | Dataset/share ACL decision spike: POSIX presets vs NFSv4 + Samba mapping, migration fallout, recommendation | New |
 | [terminal.md](terminal.md) | Web terminal: exec scoping, RBAC, terminal namespace | New |
 | [buddy-backup.md](buddy-backup.md) | Buddy Backup: owner-to-owner encrypted backup, enrollment, verify/restore | New |
 | [app-catalog.md](app-catalog.md) | App catalog: git chart repositories, `naslos-app.yaml`, install lifecycle, exposure/routing, domains/certs, privileged NS | Rebuilt |

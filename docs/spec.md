@@ -694,6 +694,60 @@ later phases and are marked **[OPEN]** below.
   `validGroups`) MUST be served as arrays, never `null`, including for
   definitions read back from disk (FR-IDN-08's rule applies to shares too).
 
+### 3.3.1 Access control (`FR-ACL`)
+
+Dataset and share permissions are being introduced in slices; the decision
+record is [`docs/acl.md`](acl.md). FR-STO-01's pool default (`acltype=posixacl`)
+remains pinned: a move to NFSv4 ACLs is a separate, explicit decision, never a
+silent default change.
+
+- **FR-ACL-01** — ACL permission changes MUST be expressed as a fixed,
+  allow-listed preset that maps to POSIX owner/group/other permissions and the
+  corresponding base `u::`/`g::`/`o::`/`m::` entries. The system MUST NOT accept
+  free-form ACL text, arbitrary ACL entries, raw `setfacl` arguments or a
+  preset name that is not on the allow-list. An allow-listed preset MUST NOT
+  grant write access to the other class. *(acl tests:
+  `shares::acl::tests::preset_allow_list_maps_to_posix_mode_and_entries`,
+  `shares::acl::tests::preset_names_round_trip_and_unknown_names_are_refused`,
+  `shares::acl::tests::no_preset_grants_world_write`)*
+- **FR-ACL-02** — Applying a preset MUST be refused when it would leave the
+  Naslos service account without its required access to the dataset or share
+  path: read and traverse for a read-only requirement, read/write/traverse for
+  a read-write requirement. The check MUST evaluate POSIX owner, group
+  (including supplementary groups) and other classes, and every allow-listed
+  preset MUST keep the dataset owner's full access. *(acl tests:
+  `shares::acl::tests::effective_permissions_follow_owner_group_other`,
+  `shares::acl::tests::preset_that_locks_out_the_service_account_is_refused`,
+  `shares::acl::tests::read_only_requirement_accepts_read_presets`,
+  `shares::acl::tests::every_preset_keeps_owner_full_access`)*
+- **FR-ACL-03** — The UI MUST provide a permission editor for a dataset or share
+  folder that shows the owner, group, current mode/base ACL and selected preset,
+  and lets an operator choose only an allow-listed preset. **[OPEN]**
+- **FR-ACL-04** — Directory inheritance MUST be explicit: default ACL entries
+  MUST be visible and editable, a new child MUST inherit them, and a recursive
+  apply MUST require explicit confirmation of its scope. **[OPEN]**
+- **FR-ACL-05** — An effective-access preview MUST state which layer it
+  evaluates (dataset ACL, share access list, protocol identity) and MUST NOT
+  claim a live probe when it is a calculation. **[OPEN]**
+- **FR-ACL-06** — The system MUST provide a Samba ACL mapping that does not
+  silently create two access models: if Windows ACLs are stored opaquely, the
+  UI MUST say that SMB and NFS see different permissions, or the backend MUST
+  keep the dataset ACL authoritative for both protocols. **[OPEN]**
+- **FR-ACL-07** — NFSv4 datasets (`acltype=nfsv4`) MAY be offered as an
+  explicit per-dataset option only after Samba's ACL backend, NFS-Ganesha's
+  NFSv4 ACL support, `aclmode`/`aclinherit` behavior and Windows identity
+  mapping are proven; the pool default MUST remain FR-STO-01's `posixacl`.
+  **[OPEN]**
+- **FR-ACL-08** — A dataset ACL-type migration MUST be explicit and have a
+  planned rollback: the system MUST NOT flip `acltype` in place without a
+  confirmation that states the conversion limits, MUST expose the ACL type per
+  dataset so a mixed tree is visible, and MUST describe how a rollback restores
+  the previous ACLs. **[OPEN]**
+- **FR-ACL-09** — Live ACL writes MUST be validated in the API and applied by
+  the privileged agent, never by the unprivileged API or by a browser-supplied
+  command. A write MUST record an audit entry, offer a dry-run, and have a
+  documented recovery path for a service-account lockout. **[OPEN]**
+
 ### 3.4 App catalog & install (`FR-APP`)
 
 Apps come from **git-based chart repositories** (an official repository plus
@@ -1948,7 +2002,9 @@ Rust tests cover the parts that need no node: `rust/api/src/identity.rs`
 (NT-hash known vectors against OpenSSL-computed values);
 `rust/api/src/shares.rs` (smbpasswd and
 extrausers rendering, stable group GIDs, access-list groups, NetBIOS name
-sanitising); `rust/api/src/server/` (the user-edit membership diff, FR-IDN-04;
+sanitising); `rust/api/src/shares/acl.rs` (fixed POSIX ACL presets, mode/entry
+mapping and the service-account lockout guard, FR-ACL-01/02);
+`rust/api/src/server/` (the user-edit membership diff, FR-IDN-04;
 the write-only ntfy token, `TestNotificationsNeverReturnTheAuthToken`; the
 storage retention plan, scheduler-owned snapshot names and scrub scan
 classification, FR-STO-10/11; the system config export allow-list and
@@ -2020,6 +2076,7 @@ Dynamic DNS and the provider registry are verified by
 | `apps::tests::update_available_compares_versions`, `apps::tests::enrich_view_uses_catalog_and_live_version`, `apps::tests::enrich_view_reports_image_drift_separately_from_a_chart_update` | FR-APP-22 (update signal, catalog identity, orphan/empty rules) |
 | `images::tests::*`, `apps::tests::image_pull_patch_targets_only_the_drifted_container` | FR-APP-27 (reference parsing, index/platform digest matching, realm validation, digest cache, targeted re-pull patch) |
 | `app_usage::tests::*` | FR-APP-22 (summary parsing, rate baselines, pod→app attribution, aggregation) |
+| `shares::acl::tests::*` | FR-ACL-01/02 (fixed preset allow-list, POSIX mode/entry mapping, no world-write, owner/group/other resolution, service-account lockout refusal) |
 | `apps::dataset_layout_tests::*` | FR-APP-20 (selection normalisation, one claim/hostPath entry per dataset, client value stripping, chart support scan) |
 | `apps::resource_quantity_tests::*` | FR-APP-25 (flat and per-component resources, quantity grammar, non-quantity types, unrelated keys) |
 | `TestManagerUpdateSkipsUnchangedAndHidesSecrets`, `TestDdnsNeverReturnsCredentialValues` | FR-DNS-02/03/06 (skip-when-unchanged, force-run, no credential values) |
