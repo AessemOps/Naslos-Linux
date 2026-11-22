@@ -83,11 +83,46 @@ impl Registry {
         self.inner.lock().unwrap().get(name).cloned()
     }
 
-    pub fn add(&self, mut ds: ManagedDataset) -> Result<ManagedDataset, String> {
-        // Attachments are server-owned; a client must not be able to spoof them.
+    /// Validate and normalize a record against this registry's Buddy path
+    /// without writing it. Attachments are server-owned and cleared.
+    pub fn check(&self, ds: &ManagedDataset) -> Result<ManagedDataset, String> {
+        let mut ds = ds.clone();
         ds.attached_to.clear();
         ds.host_path = normalize_host_path(&ds.host_path)?;
         validate(&ds, &self.buddy_host_path)?;
+        Ok(ds)
+    }
+
+    pub fn update_config(&self, ds: ManagedDataset) -> Result<ManagedDataset, String> {
+        let ds = self.check(&ds)?;
+        let mut inner = self.inner.lock().unwrap();
+        let Some(existing) = inner.get_mut(&ds.name) else {
+            return Err(format!("dataset {:?} is not registered", ds.name));
+        };
+        if existing.host_path != ds.host_path && !existing.attached_to.is_empty() {
+            return Err(format!(
+                "dataset {:?} is attached to {}; detach it before changing its host path",
+                ds.name,
+                existing.attached_to.join(", ")
+            ));
+        }
+        if existing.shared && !ds.shared && existing.attached_to.len() > 1 {
+            return Err(format!(
+                "dataset {:?} is shared by {}; detach them before making it private",
+                ds.name,
+                existing.attached_to.join(", ")
+            ));
+        }
+        existing.host_path = ds.host_path;
+        existing.shared = ds.shared;
+        existing.warning_acknowledged = ds.warning_acknowledged;
+        let out = existing.clone();
+        self.save_locked(&inner)?;
+        Ok(out)
+    }
+
+    pub fn add(&self, ds: ManagedDataset) -> Result<ManagedDataset, String> {
+        let mut ds = self.check(&ds)?;
         if ds.created_at.is_none() {
             ds.created_at = Some(Utc::now());
         }
@@ -313,6 +348,47 @@ mod tests {
         store.attach("library", "radarr").unwrap();
         assert_eq!(store.get("library").unwrap().attached_to.len(), 2);
         assert!(store.remove("library").is_err());
+    }
+
+    #[test]
+    fn update_config_preserves_attachments_and_refuses_a_mount_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Registry::new(&dir.path().join("d.json").display().to_string(), "");
+        store.add(ds("media", "/var/mnt/tank/media")).unwrap();
+        store.attach("media", "sonarr").unwrap();
+
+        let mut moved = ds("media", "/var/mnt/tank/other");
+        moved.shared = true;
+        moved.warning_acknowledged = true;
+        assert!(store.update_config(moved).is_err());
+
+        let mut updated = ds("media", "/var/mnt/tank/media");
+        updated.shared = true;
+        updated.warning_acknowledged = true;
+        let saved = store.update_config(updated).unwrap();
+        assert!(saved.shared);
+        assert!(saved.warning_acknowledged);
+        assert_eq!(saved.attached_to, vec!["sonarr"]);
+        assert!(store
+            .update_config(ds("missing", "/var/mnt/tank/x"))
+            .is_err());
+    }
+
+    #[test]
+    fn a_shared_dataset_cannot_become_private_while_attached_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Registry::new(&dir.path().join("d.json").display().to_string(), "");
+        let mut shared = ds("library", "/var/mnt/tank/library");
+        shared.shared = true;
+        shared.warning_acknowledged = true;
+        store.add(shared).unwrap();
+        store.attach("library", "sonarr").unwrap();
+        store.attach("library", "radarr").unwrap();
+
+        let mut private = ds("library", "/var/mnt/tank/library");
+        private.warning_acknowledged = false;
+        assert!(store.update_config(private).is_err());
+        assert!(store.get("library").unwrap().shared);
     }
 
     #[test]

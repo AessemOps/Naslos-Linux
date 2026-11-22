@@ -1865,10 +1865,13 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 ### 3.15 System config export/import (`FR-CFG`)
 
 The owner can download a versioned snapshot of the declarative configuration
-(not the data) to keep beside a backup. The export is deliberately a
-**projection**: every section is written through an explicit allow-listed
-struct, so a newly added store field cannot leak by accident. Import/restore is
-not implemented yet and stays `[OPEN]` with the validation rules below.
+(not the data) to keep beside a backup, and restore it through a dry-run plan
+followed by an explicit apply. The export is deliberately a **projection**:
+every section is written through an explicit allow-listed struct, so a newly
+added store field cannot leak by accident. Import consumes only that same
+strict envelope, never deletes records, never injects credentials and never
+installs apps; the app section is reported as skipped with the reinstall
+follow-up.
 
 - **FR-CFG-01** — `GET /api/system/config/export` MUST be an admin-only owner
   route that returns a JSON download with `kind: "naslos-config-export"`,
@@ -1905,15 +1908,50 @@ not implemented yet and stays `[OPEN]` with the validation rules below.
   provider with no loaded definition MUST export an empty config.
   *(config export tests: `secret_material_is_never_exported`,
   `every_free_form_key_in_the_payload_is_allow_listed`)*
-- **FR-CFG-04** — Import/restore is `[OPEN]`. When implemented it MUST:
-  accept only the current `schemaVersion` (reject a newer one), accept only
-  allow-listed fields and reject unknown or secret-like keys rather than
-  ignoring them; revalidate every ID, path, dataset, pool and provider against
-  the live node instead of trusting the payload; never reuse an exported ID to
-  overwrite or delete an existing record; never inject a credential (entries
-  whose credentials were removed MUST be re-entered through the existing
-  endpoints); and run as a dry-run plan followed by an explicit confirmation,
-  never as an automatic apply on upload.
+- **FR-CFG-04** — `POST /api/system/config/import` MUST accept only the
+  `naslos-config-export` envelope with `schemaVersion: 1` (a newer or older
+  version is rejected), reject unknown top-level or record fields and any
+  credential-shaped key rather than ignoring them, and default to a dry-run
+  report. Applying MUST require the explicit `?apply=true&confirm=apply`
+  confirmation and MUST return a per-section report of created, updated,
+  unchanged, skipped and failed entries with the changed field names. Import
+  MUST ignore exported IDs and match an existing record by its natural key
+  (share name, schedule kind + dataset/pool, buddy dataset + source, provider +
+  zone + record + type, base domain, or dataset name); new records get
+  server-generated IDs. It MUST never delete a record absent from the import,
+  never overwrite a credential Secret, and never write a Secret, TLS key, Buddy
+  identity/KEK, token or other credential. A referenced DDNS entry MUST be
+  remapped to the server's ID even when the domain would otherwise be
+  unchanged; an ambiguous existing match, or a second imported record with the
+  same natural key, MUST be skipped rather than guessed at; a legacy AFP share
+  MUST be reported skipped; a provider change MUST clear the previous
+  provider's credential Secret and request re-entry; and an entry whose
+  credentials were removed is imported without them with a report note to
+  re-enter them through the existing endpoint. When the agent is reachable,
+  share paths, dataset/pool targets and registered dataset paths MUST be
+  revalidated read-only against the node, and the Buddy receive store and its
+  parent paths MUST be refused as app datasets; without an agent they are
+  validated structurally and the report says so. *(config import tests:
+  `unknown_top_level_and_record_fields_are_rejected`,
+  `envelope_version_and_kind_are_strict`,
+  `secret_shaped_app_values_are_rejected`,
+  `secret_and_free_form_provider_fields_are_rejected`,
+  `invalid_paths_datasets_pools_and_providers_are_rejected`,
+  `dry_run_plan_is_pure_and_apply_is_idempotent`,
+  `exported_ids_are_never_reused_for_new_records`,
+  `domain_references_follow_the_server_generated_ddns_id`,
+  `an_existing_domain_links_to_a_ddns_entry_created_by_the_import`,
+  `ambiguous_existing_schedules_are_skipped`,
+  `duplicate_storage_schedules_are_skipped_not_fatal`,
+  `duplicate_buddy_schedules_are_skipped_not_fatal`,
+  `trimmed_domain_duplicates_are_rejected`,
+  `legacy_afp_shares_are_skipped`,
+  `a_provider_change_clears_the_old_credentials`,
+  `the_buddy_store_and_parent_paths_are_refused`,
+  `an_exported_document_round_trips_through_import`; contract tests:
+  `config_import_requires_an_admin_and_defaults_to_dry_run`,
+  `config_import_round_trips_an_export_through_the_http_routes`,
+  `config_import_refuses_newer_schemas_unknown_fields_and_credentials`)*
 - **FR-CFG-05** — The config export is **not** the installer recovery ZIP
   (FR-INSTALL-08). The recovery ZIP is bootstrap material (`talosconfig`,
   machine config, Talos secrets, `kubeconfig`, schematic/ISO facts) and is the
@@ -1921,6 +1959,12 @@ not implemented yet and stays `[OPEN]` with the validation rules below.
   records. The config export is an owner-gated, versioned JSON document of
   declarative application records and contains no PKI, kubeconfig or Secret
   material, so it cannot recreate a node. Neither format supersedes the other.
+- **FR-CFG-06** — Import is a declarative-record restore, not an app reinstall
+  or a credential restore. Installing exported app records, restoring provider
+  credentials, automatically pushing the restored Samba/NFS configuration
+  during import (the existing `/api/shares/apply` step remains manual), and
+  reconciling certificates/SSO immediately after import remain `[OPEN]`; the
+  import report names the follow-up and the app section is reported skipped.
 ### 3.16 RBAC roles (`FR-RBAC`)
 
 Naslos adds three privileged roles on top of the authenticated baseline:
@@ -2145,6 +2189,7 @@ below is **[OPEN]** until the audit implementation lands.
 | `/api/ddns/{id}/run` | POST | Force one reconcile even when the IP is unchanged |
 | `/api/system/version` | GET | Running Naslos/chart/Talos/Kubernetes, release pins, profile, `upgradable` (§3.11) |
 | `/api/system/config/export` | GET | Versioned, secret-free declarative config download (`Content-Disposition`; FR-CFG) |
+| `/api/system/config/import` | POST | Strict import of the export envelope for shares, schedules, domains, DDNS entries and dataset registry records (`?apply=true&confirm=apply` commits; FR-CFG-04) |
 | `/api/system/updates` | GET | Cached update check, candidate, stepping decision |
 | `/api/system/updates/check` | POST | Run an update check now |
 | `/api/system/operations` | POST | Start an ordered upgrade operation (`202`; `409` lock; `412` precondition) |
@@ -2250,7 +2295,7 @@ the current behavior until the post-P0 implementation lands.
 - **DM-6 DiskHealth**: `{ "smartctlAvailable": bool, "error": string, "temperatureWarningC": number, "wearWarningPercent": number, "disks": [{ "device", "size", "isSystemDisk", "model", "serial", "busPath", "type", "signatures": [], "inPool"?, "smart": { "available", "enabled", "health": "PASSED"|"FAILED"|"UNKNOWN", "temperatureC"?, "powerOnHours"?, "wearPercent"?, "reallocatedSectors"?, "pendingSectors"?, "uncorrectableSectors"?, "mediaErrors"?, "errorCount"?, "standby", "message" }, "zfs"?: { "pool", "vdev", "state", "readErrors", "writeErrors", "cksumErrors" } }] }` — `smart.available:false` is normal for virtio/USB/RAID devices and MUST NOT fail the endpoint (FR-DHK-02/03).
 - **DM-7 Vm**: `{ "name", "pool", "cpu", "memMiB", "autostart": bool, "firmware": "uefi"|"bios", "secureBoot": bool, "desired": "running"|"stopped", "disk": { "sizeGB", "format": "qcow2"|"raw", "bus": "virtio"|"sata", "sourceImage"?: "isos/<file>" }, "net": { "mode": "nat"|"lan", "forwards": [{ "host", "dst" }], "nic"? }, "cloudInit"?: { "hostname", "user", "sshKeys": [] }, "iso"?: "isos/<file>" | null }`. `name` is a DNS-1123 label; `secureBoot` is omitted in pre-FR-VMT-12 records and defaults to `false`; live fields (`state`: "running"|"stopped"|"unknown", `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) are merged in responses and MUST NOT be persisted; the console credentials (`vncPort`, `vncPassword`) appear only in the `/api/ws/vm/{name}/vnc` preflight, never in list or detail payloads (FR-VMT).
 - **DM-8 StorageSchedule**: `{ "id", "kind": "snapshot"|"scrub", "target", "cadence": "hourly"|"daily"|"weekly", "runAt", "keep": number, "recursive": bool, "enabled": bool, "lastRun"?, "lastResult"?, "lastError"?, "nextRun"? }`. `target` is a dataset path for `snapshot` and a pool name for `scrub`; `keep` is always 0 for `scrub`; `lastResult` is `ok`/`failed`/`skipped`/`started` (a scrub is `started` until its scan line reports completion). Timestamps are RFC 3339 UTC (FR-STO-10/11).
-- **DM-9 ConfigExport**: `{ "kind": "naslos-config-export", "schemaVersion": 1, "generatedAt", "naslosVersion", "baseDomain", "shares": [DM-4 without createdAt], "storageSchedules": [DM-8 without lastRun/lastResult/lastError/nextRun], "buddySchedules": [{ "id", "dataset", "source", "receivers": [], "cadence", "runAt", "pruneKeep", "enabled" }], "domains": [{ "baseDomain", "dnsProvider", "providerConfig": {}, "acmeEmail", "environment", "primary", "sso", "appRecordsDdnsEntry": string|null }], "ddnsEntries": [{ "id", "provider", "zone", "record", "recordType", "ttl", "enabled", "providerConfig": {} }], "apps": [{ "name", "source", "channel", "chartVersion", "baseDomain", "exposure": { "subdomain", "tls", "auth", "localOnly", "protectedPaths": [], "internet", "service", "port", "scheme" }, "datasets": [], "privileged", "env": [{ "name", "secret" }], "values"?: {}, "redactedKeys": [], "valuesOmitted": bool }], "datasetRegistry": [{ "name", "hostPath", "shared", "warningAcknowledged" }] }`. Every section is an array, never `null`. No field may carry a credential value, credential Secret name, solver body, the Buddy identity/KEK or Kubernetes Secret data; `values` excludes the catalog's secret-marked keys at any depth, is omitted entirely when `valuesOmitted` is true, and `providerConfig` contains only keys the provider schema declares non-secret (free-form credential templates such as the generic DDNS `updateUrl`/`body` are omitted). Import is `[OPEN]` (FR-CFG-04).
+- **DM-9 ConfigExport**: `{ "kind": "naslos-config-export", "schemaVersion": 1, "generatedAt", "naslosVersion", "baseDomain", "shares": [DM-4 without createdAt], "storageSchedules": [DM-8 without lastRun/lastResult/lastError/nextRun], "buddySchedules": [{ "id", "dataset", "source", "receivers": [], "cadence", "runAt", "pruneKeep", "enabled" }], "domains": [{ "baseDomain", "dnsProvider", "providerConfig": {}, "acmeEmail", "environment", "primary", "sso", "appRecordsDdnsEntry": string|null }], "ddnsEntries": [{ "id", "provider", "zone", "record", "recordType", "ttl", "enabled", "providerConfig": {} }], "apps": [{ "name", "source", "channel", "chartVersion", "baseDomain", "exposure": { "subdomain", "tls", "auth", "localOnly", "protectedPaths": [], "internet", "service", "port", "scheme" }, "datasets": [], "privileged", "env": [{ "name", "secret" }], "values"?: {}, "redactedKeys": [], "valuesOmitted": bool }], "datasetRegistry": [{ "name", "hostPath", "shared", "warningAcknowledged" }] }`. Every section is an array, never `null`. No field may carry a credential value, credential Secret name, solver body, the Buddy identity/KEK or Kubernetes Secret data; `values` excludes the catalog's secret-marked keys at any depth, is omitted entirely when `valuesOmitted` is true, and `providerConfig` contains only keys the provider schema declares non-secret (free-form credential templates such as the generic DDNS `updateUrl`/`body` are omitted). Import consumes this exact shape (FR-CFG-04); app records are validated but reported skipped because installing them needs the catalog path.
 - **DM-10 ReplicationJob**: `{ "id", "source", "destination", "snapshot"?, "recursive": bool, "pruneKeep"?: number, "state": "running"|"succeeded"|"failed"|"cancelled", "startedAt", "finishedAt"?, "progress": { "bytes", "estimatedBytes" }, "incremental": bool, "estimatedBytes"?, "result"?: { "status": "replicated"|"up-to-date", "source", "destination", "snapshot", "baseSnapshot"?, "baseGUID"?, "toGUID"?, "incremental": bool, "recursive": bool, "bytes", "estimatedBytes", "prunedSnapshots", "retentionError"?, "durationSeconds" }, "error"? }`. Jobs are in memory; `snapshot` is empty until the job creates one; timestamps are RFC 3339 UTC (FR-REP-01/06).
 
 ---
