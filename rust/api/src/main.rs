@@ -252,11 +252,15 @@ async fn run_reporting_recorder(state: Arc<AppState>) {
         .map(std::time::Duration::from_secs)
         .unwrap_or(std::time::Duration::from_secs(60));
     let mut ticker = tokio::time::interval(interval);
+    // A slow agent must not make Burst replay several deadlines into the same
+    // 60 s bucket (duplicate raw rows and inflated counts).
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     ticker.tick().await;
     tracing::info!(
         "Historical reporting recorder started (interval {:?})",
         interval
     );
+    let disk_timeout = (interval / 2).max(std::time::Duration::from_secs(1));
     loop {
         ticker.tick().await;
         let metrics = state.metrics.get();
@@ -264,9 +268,13 @@ async fn run_reporting_recorder(state: Arc<AppState>) {
             continue;
         }
         // Disk SMART values are not part of the live SystemMetrics snapshot;
-        // one bounded agent read per reporting tick is enough.
+        // one bounded agent read per reporting tick is enough. Cap it below the
+        // cadence so a stuck agent cannot consume the next tick.
         let disk = match &state.agent {
-            Some(agent) => agent.disk_health().await.ok(),
+            Some(agent) => tokio::time::timeout(disk_timeout, agent.disk_health())
+                .await
+                .ok()
+                .and_then(Result::ok),
             None => None,
         };
         let reporter = state.reporting.clone();

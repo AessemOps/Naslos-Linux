@@ -355,7 +355,7 @@ spec:
             - name: REPORTING_ENABLED
               value: "true"
             - name: REPORTING_FILE
-              value: {{ .Values.api.reporting.file | default "/var/lib/naslos/reporting/history.bin" | quote }}
+              value: {{ .Values.api.reporting.file | default (printf "%s/history.bin" (.Values.api.reporting.mountPath | default "/var/lib/naslos/reporting")) | quote }}
             - name: REPORTING_MAX_BYTES
               value: {{ .Values.api.reporting.maxBytes | default 67108864 | quote }}
             - name: REPORTING_INTERVAL_SECONDS

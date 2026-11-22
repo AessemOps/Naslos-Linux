@@ -362,6 +362,15 @@ fn set_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Best-effort directory fsync so a rename survives a crash.
+fn sync_directory(path: &Path) {
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+}
+
 fn open_append(path: &Path) -> std::io::Result<File> {
     OpenOptions::new()
         .create(true)
@@ -453,6 +462,7 @@ impl Registry {
         }
         set_mode(&tmp, 0o600)?;
         std::fs::rename(&tmp, &self.path)?;
+        sync_directory(&self.path);
         self.dirty = false;
         Ok(())
     }
@@ -555,8 +565,26 @@ impl Store {
         }
         set_mode(path, 0o600).map_err(|e| format!("setting reporting file mode: {e}"))?;
 
+        let max_record_id = scan
+            .records
+            .iter()
+            .map(|record| record.id)
+            .max()
+            .unwrap_or(0);
+        let mut registry = Registry::load(path.with_file_name("series.json"));
+        // A lost/corrupt registry must not hand out ids that already label
+        // records in history.bin: old samples would silently appear under a
+        // new key. Start above every id present in the file instead.
+        if registry.next_id <= max_record_id {
+            registry.next_id = max_record_id.saturating_add(1);
+            registry.dirty = true;
+        }
+        if registry.dirty {
+            if let Err(e) = registry.save() {
+                tracing::warn!("could not persist reconciled reporting series ids: {e}");
+            }
+        }
         let file = open_append(path).map_err(|e| format!("opening reporting store: {e}"))?;
-        let registry = Registry::load(path.with_file_name("series.json"));
         let mut store = Self {
             path: path.to_path_buf(),
             file,
@@ -581,18 +609,39 @@ impl Store {
         Ok(self.file.metadata()?.len())
     }
 
+    /// Truncate a partial record left by an interrupted append and return the
+    /// last whole-record offset. Without this, every later append would sit
+    /// behind an undecodable tail and disappear on the next scan.
+    fn align_tail(&mut self) -> Result<u64, String> {
+        let len = self.file_len().map_err(|e| e.to_string())?;
+        let records = len.saturating_sub(HEADER_LEN) / RECORD_SIZE as u64;
+        let aligned = HEADER_LEN + records * RECORD_SIZE as u64;
+        if len != aligned {
+            self.file
+                .set_len(aligned)
+                .map_err(|e| format!("repairing a partial reporting append: {e}"))?;
+            tracing::warn!("reporting store truncated a partial record before append");
+        }
+        Ok(aligned)
+    }
+
     fn append(&mut self, record: Record, now: i64) -> Result<(), String> {
-        if self.file_len().map_err(|e| e.to_string())? + RECORD_SIZE as u64 > self.max_bytes {
+        let start = self.align_tail()?;
+        if start + RECORD_SIZE as u64 > self.max_bytes {
             self.prune(now, true)?;
         }
-        if self.file_len().map_err(|e| e.to_string())? + RECORD_SIZE as u64 > self.max_bytes {
+        let start = self.align_tail()?;
+        if start + RECORD_SIZE as u64 > self.max_bytes {
             return Err("reporting store is at its size cap".to_string());
         }
         let mut buf = [0u8; RECORD_SIZE];
         encode_record(&record, &mut buf);
-        self.file
-            .write_all(&buf)
-            .map_err(|e| format!("writing reporting sample: {e}"))
+        if let Err(e) = self.file.write_all(&buf) {
+            // A short write must not poison every later record.
+            let _ = self.file.set_len(start);
+            return Err(format!("writing reporting sample: {e}"));
+        }
+        Ok(())
     }
 
     fn push_recent(&mut self, record: Record, now: i64) {
@@ -854,11 +903,7 @@ impl Store {
         }
         set_mode(&tmp, 0o600).map_err(|e| format!("setting reporting rewrite mode: {e}"))?;
         std::fs::rename(&tmp, &self.path).map_err(|e| format!("replacing reporting store: {e}"))?;
-        if let Some(parent) = self.path.parent() {
-            if let Ok(dir) = File::open(parent) {
-                let _ = dir.sync_all();
-            }
-        }
+        sync_directory(&self.path);
         self.file =
             open_append(&self.path).map_err(|e| format!("reopening reporting store: {e}"))?;
         Ok(())
@@ -1117,7 +1162,10 @@ impl Store {
         let records = read_records(&self.path).map_err(|e| format!("reading history: {e}"))?;
         let mut groups: HashMap<(u32, i64), Sample> = HashMap::new();
         for record in records {
-            if record.resolution != resolution || record.bucket < from || record.bucket > now {
+            // Half-open lower bound: `from` is the start of the requested
+            // window, so a full window is exactly max_points buckets rather
+            // than max_points + 1 and never needs a forced 2x downsample.
+            if record.resolution != resolution || record.bucket <= from || record.bucket > now {
                 continue;
             }
             if !ids.contains_key(&record.id) {
@@ -1129,8 +1177,8 @@ impl Store {
                 .merge_after(record.sample);
         }
 
-        let mut series = Vec::with_capacity(selected.len());
-        let mut interval = i64::from(resolution);
+        let mut collected: Vec<(SeriesMeta, Vec<(i64, Sample)>)> =
+            Vec::with_capacity(selected.len());
         for meta in selected {
             let mut points: Vec<(i64, Sample)> = groups
                 .iter()
@@ -1138,11 +1186,31 @@ impl Store {
                 .map(|((_, bucket), sample)| (*bucket, *sample))
                 .collect();
             points.sort_by_key(|(bucket, _)| *bucket);
-            if points.len() > range.max_points() {
-                let factor = points.len().div_ceil(range.max_points());
-                points = downsample(points, factor);
-                interval = i64::from(resolution) * factor as i64;
-            }
+            collected.push((meta, points));
+        }
+
+        // A single response-wide factor keeps one `sample_interval_seconds`
+        // accurate for every series, including series that start later or have
+        // fewer points than the longest one.
+        let largest = collected
+            .iter()
+            .map(|(_, points)| points.len())
+            .max()
+            .unwrap_or(0);
+        let factor = if largest > range.max_points() {
+            largest.div_ceil(range.max_points())
+        } else {
+            1
+        };
+        let interval = i64::from(resolution) * factor as i64;
+
+        let mut series = Vec::with_capacity(collected.len());
+        for (meta, points) in collected {
+            let points = if factor > 1 {
+                downsample(points, factor)
+            } else {
+                points
+            };
             series.push(ReportSeries {
                 key: meta.key,
                 kind: meta.kind,
@@ -1697,6 +1765,106 @@ mod tests {
         assert!(records
             .iter()
             .all(|record| record.bucket >= now - HOUR_RETENTION));
+    }
+
+    #[test]
+    fn a_full_window_returns_max_points_at_the_stored_interval() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir);
+        let now = 1_800_000_000i64;
+        let id = store
+            .registry
+            .id_for("cpu.usage_percent", "cpu", "percent")
+            .unwrap();
+        let start = now - RAW_RETENTION;
+        for bucket in (start..=now).step_by(60) {
+            store
+                .append(
+                    Record {
+                        id,
+                        resolution: RES_RAW,
+                        bucket,
+                        sample: Sample::single(1.0),
+                    },
+                    now,
+                )
+                .unwrap();
+        }
+        let response = store
+            .query(
+                ReportRange::Hours24,
+                &["cpu.usage_percent".to_string()],
+                now,
+            )
+            .unwrap();
+        assert_eq!(response.series[0].points.len(), 1_440);
+        assert_eq!(response.sample_interval_seconds, 60);
+        assert_eq!(response.series[0].points.first().unwrap().0, start + 60);
+        assert_eq!(response.series[0].points.last().unwrap().0, now);
+    }
+
+    #[test]
+    fn a_lost_registry_starts_above_ids_already_in_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now().timestamp();
+        let bucket = floor_bucket(now, RES_RAW);
+        let old_id = {
+            let mut store = open_store(&dir);
+            let id = store
+                .registry
+                .id_for("old.series", "cpu", "percent")
+                .unwrap();
+            store
+                .append(
+                    Record {
+                        id,
+                        resolution: RES_RAW,
+                        bucket,
+                        sample: Sample::single(1.0),
+                    },
+                    now,
+                )
+                .unwrap();
+            store.registry.save().unwrap();
+            id
+        };
+        std::fs::remove_file(dir.path().join("series.json")).unwrap();
+
+        let mut store = Store::open(&dir.path().join("history.bin"), DEFAULT_MAX_BYTES).unwrap();
+        assert!(store.registry.next_id > old_id);
+        let new_id = store
+            .registry
+            .id_for("new.series", "cpu", "percent")
+            .unwrap();
+        assert_ne!(new_id, old_id);
+        let response = store
+            .query(ReportRange::Hours24, &["new.series".to_string()], now)
+            .unwrap();
+        assert_eq!(response.series.len(), 1);
+        assert!(
+            response.series[0].points.is_empty(),
+            "a new id must not surface the orphaned old samples"
+        );
+    }
+
+    #[test]
+    fn a_partial_append_is_truncated_before_the_next_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir);
+        let now = Utc::now().timestamp();
+        store.ingest(now, &sample(), None).unwrap();
+        let path = dir.path().join("history.bin");
+        {
+            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+            file.write_all(&[0xAB; RECORD_SIZE / 2]).unwrap();
+        }
+        let before = read_records(&path).unwrap().len();
+
+        store.ingest(now + 60, &sample(), None).unwrap();
+        let after = read_records(&path).unwrap().len();
+        assert!(after > before);
+        let len = std::fs::metadata(&path).unwrap().len();
+        assert_eq!((len - HEADER_LEN) % RECORD_SIZE as u64, 0);
     }
 
     #[test]

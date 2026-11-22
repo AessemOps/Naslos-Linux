@@ -22,13 +22,24 @@ pub struct SeriesQuery {
 /// `GET /api/reports` — the fixed ranges and the series allowlist actually
 /// present in the store.
 pub async fn reports_get(State(state): State<Arc<AppState>>) -> Response {
-    let meta = state.reporting.metadata();
-    match serde_json::to_value(meta) {
-        Ok(value) => json(StatusCode::OK, value),
-        Err(_) => json(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            serde_json::json!({ "error": "could not encode reporting metadata" }),
-        ),
+    let reporter = state.reporting.clone();
+    // `metadata` takes the same mutex the recorder holds across prune/rewrite
+    // and fsync; keep that wait off the async worker.
+    match tokio::task::spawn_blocking(move || reporter.metadata()).await {
+        Ok(meta) => match serde_json::to_value(meta) {
+            Ok(value) => json(StatusCode::OK, value),
+            Err(_) => json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "error": "could not encode reporting metadata" }),
+            ),
+        },
+        Err(e) => {
+            tracing::warn!("reporting metadata task failed: {e}");
+            json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "error": "reporting metadata failed" }),
+            )
+        }
     }
 }
 
@@ -216,6 +227,34 @@ mod tests {
         let body = body_json(response).await;
         assert_eq!(body["series"].as_array().unwrap().len(), 0);
         assert_eq!(body["ignored"].as_array().unwrap().len(), 10);
+    }
+
+    #[tokio::test]
+    async fn series_cap_selects_eight_registered_series() {
+        let (state, _dir, _path) = state_with_store();
+        let now = Utc::now().timestamp();
+        for index in 0..10 {
+            state.reporting.record_sample(
+                now - 60,
+                &format!("test.metric{index}"),
+                "cpu",
+                "percent",
+                index as f64,
+            );
+        }
+        let app = crate::server::build_router(state);
+        let mut uri = String::from("/api/reports/series?range=24h&metric=");
+        for index in 0..10 {
+            if index > 0 {
+                uri.push(',');
+            }
+            uri.push_str(&format!("test.metric{index}"));
+        }
+        let response = app.oneshot(admin_request(&uri)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["series"].as_array().unwrap().len(), 8);
+        assert_eq!(body["ignored"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

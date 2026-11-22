@@ -190,6 +190,7 @@
   let historyUnit = 'percent';
   let historyLoading = false;
   let historyError = '';
+  let historyRequest = 0;
   let historyTimer: ReturnType<typeof setInterval>;
 
   $: historyGroups = ['cpu', 'memory', 'network', 'zfs', 'disk']
@@ -218,14 +219,19 @@
       if (tail === 'swap_used_bytes') return 'Swap used';
     }
     if (family === 'network') {
-      const [iface, metric] = rest;
-      return `Network ${iface} ${metric?.startsWith('rx') ? 'receive' : 'transmit'}`;
+      const metric = rest[rest.length - 1] ?? '';
+      const iface = rest.slice(0, -1).join('.');
+      return `Network ${iface} ${metric.startsWith('rx') ? 'receive' : 'transmit'}`;
     }
     if (family === 'zfs') {
-      return `ZFS ${rest[0] ?? ''} ${(rest[1] ?? '').replace('_bytes', '').replace('_percent', '')}`.trim();
+      const metric = rest[rest.length - 1] ?? '';
+      const pool = rest.slice(0, -1).join('.');
+      const label = metric.replace('_bytes', '').replace('_percent', '');
+      return `ZFS ${pool} ${label}`.trim();
     }
     if (family === 'disk') {
-      const [device, metric] = rest;
+      const metric = rest[rest.length - 1] ?? '';
+      const device = rest.slice(0, -1).join('.');
       return `Disk ${device} ${metric === 'wear_percent' ? 'wear' : 'temperature'}`;
     }
     return key;
@@ -276,33 +282,47 @@
 
   async function loadHistory() {
     if (!historyVisible || !historyMetric) return;
+    // Capture the request identity: a slower response for an older range or
+    // metric must never overwrite the current selection, and a missing key
+    // must not fall back to an unrelated series.
+    const request = ++historyRequest;
+    const range = historyRange;
+    const metric = historyMetric;
     historyLoading = true;
     historyError = '';
     try {
-      const url = `/api/reports/series?range=${historyRange}&metric=${encodeURIComponent(historyMetric)}`;
+      const url = `/api/reports/series?range=${range}&metric=${encodeURIComponent(metric)}`;
       const res = await fetch(url);
+      if (request !== historyRequest) return;
       if (res.status === 401 || res.status === 403) {
         historyVisible = false;
         return;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as ReportResponse;
+      if (request !== historyRequest) return;
       if (!data.available) {
         historyPoints = [];
         historyError = data.error || 'Historical reporting is unavailable.';
         return;
       }
-      const selected = data.series.find((series) => series.key === historyMetric) ?? data.series[0];
+      const selected = data.series.find((series) => series.key === metric);
+      if (!selected) {
+        historyPoints = [];
+        historyInterval = data.sample_interval_seconds;
+        historyError = 'The selected history metric is no longer available.';
+        return;
+      }
       historyInterval = data.sample_interval_seconds;
-      historyUnit = selected?.unit ?? historySeries.find((series) => series.key === historyMetric)?.unit ?? 'percent';
-      const points = selected?.points ?? [];
+      historyUnit = selected.unit;
+      const points = selected.points;
       historyPoints = points.map((point) => point[3]);
       historyMin = points.length ? Math.min(...points.map((point) => point[1])) : 0;
       historyMax = points.length ? Math.max(...points.map((point) => point[2])) : 0;
     } catch (e) {
-      historyError = 'Failed to load history: ' + e;
+      if (request === historyRequest) historyError = 'Failed to load history: ' + e;
     } finally {
-      historyLoading = false;
+      if (request === historyRequest) historyLoading = false;
     }
   }
 

@@ -352,10 +352,12 @@ memory used, then the first available families).
 
 Each point is `[bucket, min, max, avg, last, count]`; `bucket` is the epoch
 second at the start of the bucket. Units are `percent`, `bytes`,
-`bytes_per_s`, `celsius` and `load`. A disabled or unopenable store answers
-`200` with `available:false`, an `error` string and no series, so the UI can
-render an empty state instead of an error page. Points per series are capped
-at 1 440 / 2 016 / 720 for the 24 h / 7 d / 30 d views.
+`bytes_per_s`, `celsius` and `load`. The window is `(from, to]`, so a complete
+24 h / 7 d / 30 d view returns exactly 1 440 / 2 016 / 720 buckets at its stored
+interval; a defensive response-wide factor keeps `sample_interval_seconds`
+accurate if a series ever exceeds the cap. A disabled or unopenable store
+answers `200` with `available:false`, an `error` string and no series, so the UI
+can render an empty state instead of an error page.
 
 ### Host network settings (`FR-NET`)
 

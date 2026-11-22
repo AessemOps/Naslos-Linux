@@ -91,9 +91,10 @@ api:
   reporting:
     enabled: true
     # Directory inside the API container. The history file and its series
-    # registry live here; keep `file` below this directory.
+    # registry live here. Leave `file` empty to derive `<mountPath>/history.bin`,
+    # so overriding only the mount point keeps history on the reporting volume.
     mountPath: /var/lib/naslos/reporting
-    file: /var/lib/naslos/reporting/history.bin
+    file: ""
     # Hard cap for the append-only history file. Age retention (24 h raw,
     # 7 d five-minute, 30 d hourly) is enforced independently.
     maxBytes: "67108864"

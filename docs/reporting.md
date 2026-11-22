@@ -104,7 +104,10 @@ history.bin
   starts a new store. A corrupt or truncated tail is truncated to the last valid
   record. A CRC failure is treated as the end of valid history.
 - The registry is independent: if it is corrupt it moves aside and old records
-  are orphaned telemetry (pruned normally) rather than a startup failure.
+  are orphaned telemetry (pruned normally) rather than a startup failure. On
+  open, the next id is raised above every id present in `history.bin`, so a
+  lost registry (or a crash before the registry save) cannot make new series
+  reuse an old id and silently serve old samples under a new key.
 
 ## 5. Sampling, rollups and retention
 
@@ -124,8 +127,11 @@ history.bin
   A missed tick degrades a rollup point instead of corrupting the next level.
   At startup, missing rollups still covered by raw/5-minute retention are
   rebuilt before serving queries.
-- A gap is a gap: the query returns the points that exist. The UI does not
-  interpolate across a reboot or an outage.
+- A gap is a gap: the API omits missing buckets and never invents or
+  interpolates samples. The dashboard `Sparkline` positions adjacent returned
+  points by index, so a long outage looks like a compressed line rather than a
+  time-proportional hole; the reported values themselves are still the stored
+  buckets.
 - Pruning runs hourly (and once at startup):
   - raw older than 24 h;
   - 5-minute older than 7 d;
@@ -172,10 +178,13 @@ GET /api/reports/series?range=24h|7d|30d&metric=cpu.usage_percent,memory.used_by
 - Unknown or disallowed keys are never turned into SQL or file paths; they are
   returned in `ignored`. More than 8 requested keys puts the remainder in
   `ignored`.
-- Points are capped per range (1 440 / 2 016 / 720). If stored rows ever exceed
-  the cap, adjacent buckets are merged server-side (`min`, weighted `avg`,
-  latest `last`, summed `count`) and `sample_interval_seconds` reports the
-  effective width.
+- The window is `(from, to]`: `from` is the start of the requested range, so a
+  complete 24 h / 7 d / 30 d view contains exactly 1 440 / 2 016 / 720 buckets
+  and keeps its stored interval. Points are capped per range; if stored rows
+  ever exceed the cap, one factor is chosen for the whole response so every
+  series shares the reported `sample_interval_seconds`, and adjacent buckets
+  are merged server-side (`min`, weighted `avg`, latest `last`, summed
+  `count`).
 - Response shape:
 
   ```json
