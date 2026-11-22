@@ -304,6 +304,67 @@ pub fn plan_send(
     Ok(SendPlan::Full)
 }
 
+/// When a recursive replica is incomplete, the target GUID alone is not enough
+/// to declare the job up to date. Pick the newest common snapshot strictly
+/// older than the target so the send can add the missing descendant datasets.
+fn plan_incomplete_recursive_repair(
+    source: &[SnapshotInfo],
+    destination: &[SnapshotInfo],
+    target: &str,
+) -> Result<SendPlan, String> {
+    let position = source
+        .iter()
+        .position(|s| s.name == target)
+        .ok_or_else(|| format!("snapshot {target:?} does not exist on the source"))?;
+    let known: HashSet<&str> = destination
+        .iter()
+        .map(|s| s.guid.as_str())
+        .filter(|g| !g.is_empty())
+        .collect();
+    for candidate in source[..position].iter().rev() {
+        if !candidate.guid.is_empty() && known.contains(candidate.guid.as_str()) {
+            return Ok(SendPlan::Incremental {
+                base: candidate.clone(),
+            });
+        }
+    }
+    Ok(SendPlan::Full)
+}
+
+/// Whether every dataset that carries `target` on the source has the same
+/// snapshot on the destination. Recursive sends must check descendants: the
+/// root GUID can exist while a child replica is missing.
+pub fn recursive_paths_complete(
+    source_paths: &[String],
+    destination_paths: &[String],
+    source: &str,
+    destination: &str,
+    target: &str,
+) -> bool {
+    let suffix = format!("@{target}");
+    let present: HashSet<&str> = destination_paths
+        .iter()
+        .filter_map(|path| path.strip_suffix(&suffix))
+        .collect();
+    for path in source_paths {
+        let Some(dataset) = path.strip_suffix(&suffix) else {
+            continue;
+        };
+        let Some(relative) = dataset.strip_prefix(source) else {
+            continue;
+        };
+        // A sibling whose name merely shares the prefix is not a descendant.
+        if !relative.is_empty() && !relative.starts_with('/') {
+            continue;
+        }
+        let expected = format!("{destination}{relative}");
+        if !present.contains(expected.as_str()) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Plan retention for one pair: from the destination's full snapshot paths,
 /// return the `(dataset, snapshot)` pairs to destroy so each dataset keeps the
 /// newest `keep` snapshots carrying `prefix`. Names without the prefix (user
@@ -524,8 +585,23 @@ pub async fn send_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
 
 fn finish_failed(job: &ReplicationJob, msg: String) {
     let mut p = job.public.lock().unwrap();
+    // A cancel may have won the race while an in-flight agent call returned.
+    // Terminal states are first-writer-wins; never overwrite `cancelled`.
+    if p.state != JobState::Running {
+        return;
+    }
     p.state = JobState::Failed;
     p.error = msg;
+    p.finished_at = Some(Utc::now());
+}
+
+fn finish_succeeded(job: &ReplicationJob, result: ReplicationResult) {
+    let mut p = job.public.lock().unwrap();
+    if p.state != JobState::Running {
+        return;
+    }
+    p.state = JobState::Succeeded;
+    p.result = Some(result);
     p.finished_at = Some(Utc::now());
 }
 
@@ -586,10 +662,38 @@ async fn run_job(
         Ok(s) => s,
         Err(e) => fail!(format!("listing destination snapshots: {e}")),
     };
-    let plan = match plan_send(&source_snaps, &destination_snaps, &target) {
+    let mut plan = match plan_send(&source_snaps, &destination_snaps, &target) {
         Ok(p) => p,
         Err(e) => fail!(e),
     };
+    if recursive && plan == SendPlan::UpToDate {
+        // The root target GUID can be present while a descendant replica is
+        // missing, so a recursive job must compare the full snapshot paths.
+        let source_paths = match agent.snapshot_paths(&source).await {
+            Ok(paths) => paths,
+            Err(e) => fail!(format!("listing recursive source snapshots: {e}")),
+        };
+        let destination_paths = match agent.snapshot_paths(&destination).await {
+            Ok(paths) => paths,
+            Err(e) => fail!(format!("listing recursive destination snapshots: {e}")),
+        };
+        if !recursive_paths_complete(
+            &source_paths,
+            &destination_paths,
+            &source,
+            &destination,
+            &target,
+        ) {
+            plan = match plan_incomplete_recursive_repair(
+                &source_snaps,
+                &destination_snaps,
+                &target,
+            ) {
+                Ok(p) => p,
+                Err(e) => fail!(e),
+            };
+        }
+    }
 
     let prefix = snapshot_prefix(&source, &destination);
     let mut result = ReplicationResult {
@@ -681,10 +785,7 @@ async fn run_job(
     }
     result.duration_seconds = started.elapsed().as_secs_f64();
 
-    let mut p = job.public.lock().unwrap();
-    p.state = JobState::Succeeded;
-    p.result = Some(result);
-    p.finished_at = Some(Utc::now());
+    finish_succeeded(&job, result);
 }
 
 /// Create and start a replication job.
@@ -773,20 +874,28 @@ pub async fn job_detail_delete(
             serde_json::json!({ "error": format!("job {id:?} not found") }),
         );
     };
-    if job.state() != JobState::Running {
+    // Claim the terminal state under the same lock run_job uses, so a late
+    // success/failure cannot overwrite the cancellation (and a second cancel
+    // cannot win twice).
+    let already = {
+        let mut p = job.public.lock().unwrap();
+        if p.state != JobState::Running {
+            Some(p.state)
+        } else {
+            p.state = JobState::Cancelled;
+            p.finished_at = Some(Utc::now());
+            p.error = "cancelled".to_string();
+            None
+        }
+    };
+    if let Some(state) = already {
         return json(
             StatusCode::CONFLICT,
-            serde_json::json!({ "error": format!("job {id} is already {:?}", job.state()) }),
+            serde_json::json!({ "error": format!("job {id} is already {state:?}") }),
         );
     }
     if let Some(handle) = job.handle.lock().unwrap().take() {
         handle.abort();
-    }
-    {
-        let mut p = job.public.lock().unwrap();
-        p.state = JobState::Cancelled;
-        p.finished_at = Some(Utc::now());
-        p.error = "cancelled".to_string();
     }
     json(
         StatusCode::OK,
@@ -900,6 +1009,103 @@ mod tests {
         let reason = replacement_blocker(&own, &children, "backup/dst", &prefix)
             .expect("a child dataset must block the full send");
         assert!(reason.contains("child datasets"), "{reason}");
+    }
+
+    #[test]
+    fn recursive_completeness_requires_every_source_descendant() {
+        let source = vec![path("tank/src", "snap"), path("tank/src/child", "snap")];
+        let missing_child = vec![path("backup/dst", "snap")];
+        assert!(!recursive_paths_complete(
+            &source,
+            &missing_child,
+            "tank/src",
+            "backup/dst",
+            "snap"
+        ));
+
+        let complete = vec![path("backup/dst", "snap"), path("backup/dst/child", "snap")];
+        assert!(recursive_paths_complete(
+            &source,
+            &complete,
+            "tank/src",
+            "backup/dst",
+            "snap"
+        ));
+
+        // A snapshot with another name, or under a sibling dataset, is not the
+        // missing replica.
+        let wrong = vec![
+            path("backup/dst", "other"),
+            path("backup/dst2/child", "snap"),
+        ];
+        assert!(!recursive_paths_complete(
+            &source,
+            &wrong,
+            "tank/src",
+            "backup/dst",
+            "snap"
+        ));
+    }
+
+    #[test]
+    fn an_incomplete_recursive_replica_repairs_from_an_older_common_snapshot() {
+        let source = vec![snap("base", "g0"), snap("target", "g1")];
+        let destination = vec![snap("base", "g0"), snap("target", "g1")];
+        assert_eq!(
+            plan_send(&source, &destination, "target").unwrap(),
+            SendPlan::UpToDate
+        );
+        assert_eq!(
+            plan_incomplete_recursive_repair(&source, &destination, "target").unwrap(),
+            SendPlan::Incremental {
+                base: snap("base", "g0")
+            }
+        );
+        // With only the target in common there is no older base, so the repair
+        // has to be a full send.
+        assert_eq!(
+            plan_incomplete_recursive_repair(&source, &[snap("target", "g1")], "target").unwrap(),
+            SendPlan::Full
+        );
+    }
+
+    fn job_with_state(state: JobState) -> ReplicationJob {
+        ReplicationJob {
+            public: Mutex::new(JobPublic {
+                id: "job".to_string(),
+                source: String::new(),
+                destination: String::new(),
+                snapshot: String::new(),
+                recursive: false,
+                prune_keep: 0,
+                state,
+                started_at: Utc::now(),
+                finished_at: None,
+                progress: ProgressView::default(),
+                incremental: false,
+                estimated_bytes: 0,
+                result: None,
+                error: String::new(),
+            }),
+            handle: Mutex::new(None),
+        }
+    }
+
+    #[test]
+    fn a_cancelled_job_is_not_overwritten_by_a_late_terminal_write() {
+        let job = job_with_state(JobState::Cancelled);
+        finish_failed(&job, "late failure".to_string());
+        assert_eq!(job.state(), JobState::Cancelled);
+        assert!(job.snapshot().error.is_empty());
+
+        finish_succeeded(&job, ReplicationResult::default());
+        assert_eq!(job.state(), JobState::Cancelled);
+        assert!(job.snapshot().result.is_none());
+
+        let running = job_with_state(JobState::Running);
+        finish_succeeded(&running, ReplicationResult::default());
+        assert_eq!(running.state(), JobState::Succeeded);
+        assert!(running.snapshot().result.is_some());
     }
 
     #[test]

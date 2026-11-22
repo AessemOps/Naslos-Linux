@@ -480,6 +480,74 @@ async fn a_destination_that_already_has_the_target_is_up_to_date() {
 }
 
 #[tokio::test]
+async fn a_recursive_job_repairs_a_missing_descendant_replica() {
+    let mock = MockAgent::with_pair();
+    mock.set_snapshots("tank/src", &[("base", "g0"), ("snap", "g1")]);
+    mock.set_snapshots("backup/dst", &[("base", "g0"), ("snap", "g1")]);
+    // The root replica is current, but `tank/src/child` never reached the
+    // destination. The root GUID alone must not mark the recursive job done.
+    mock.set_paths(
+        "tank/src",
+        &[
+            "tank/src@base",
+            "tank/src@snap",
+            "tank/src/child@base",
+            "tank/src/child@snap",
+        ],
+    );
+    mock.set_paths("backup/dst", &["backup/dst@base", "backup/dst@snap"]);
+    let base = spawn_mock(mock.clone()).await;
+    let state = state_with_agent(&base);
+
+    let (status, body) = call(
+        state.clone(),
+        "POST",
+        "/api/replication/send",
+        Some(json!({
+            "source": "tank/src",
+            "destination": "backup/dst",
+            "snapshot": "snap",
+            "recursive": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let job = wait_job(state, body["jobId"].as_str().unwrap()).await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    assert_eq!(job["result"]["status"], "replicated", "{job}");
+    assert_eq!(job["result"]["incremental"], true, "{job}");
+    assert_eq!(job["result"]["baseSnapshot"], "base", "{job}");
+}
+
+#[tokio::test]
+async fn a_complete_recursive_replica_is_up_to_date() {
+    let mock = MockAgent::with_pair();
+    mock.set_snapshots("tank/src", &[("base", "g0"), ("snap", "g1")]);
+    mock.set_snapshots("backup/dst", &[("base", "g0"), ("snap", "g1")]);
+    mock.set_paths("tank/src", &["tank/src@snap", "tank/src/child@snap"]);
+    mock.set_paths("backup/dst", &["backup/dst@snap", "backup/dst/child@snap"]);
+    let base = spawn_mock(mock).await;
+    let state = state_with_agent(&base);
+
+    let (status, body) = call(
+        state.clone(),
+        "POST",
+        "/api/replication/send",
+        Some(json!({
+            "source": "tank/src",
+            "destination": "backup/dst",
+            "snapshot": "snap",
+            "recursive": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let job = wait_job(state, body["jobId"].as_str().unwrap()).await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    assert_eq!(job["result"]["status"], "up-to-date", "{job}");
+}
+
+#[tokio::test]
 async fn retention_destroys_only_replication_owned_snapshots() {
     let mock = MockAgent::with_pair();
     let prefix = naslos_api::server::replication::snapshot_prefix("tank/src", "backup/dst");

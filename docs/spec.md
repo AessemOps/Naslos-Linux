@@ -1352,7 +1352,7 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 | `/api/v1/datasets/{pool}` | GET, POST | List / create datasets |
 | `/api/v1/snapshots/{pool}` | GET, POST, DELETE | List (add `?paths=true` for full `dataset@snap` paths) / create (optional `recursive`) / destroy one snapshot (`?name=`) (FR-STO-10) |
 | `/api/v1/zfs/send/{dataset}` | GET | Stream `zfs send`; optional `to`, `from`, `raw`, `recursive=true`, `estimate=true` (FR-BUD-12, FR-REP-03) |
-| `/api/v1/zfs/receive/{dataset}` | POST | Stream a body into `zfs receive`; optional `force=true` (FR-BUD-12; replication never sets it) |
+| `/api/v1/zfs/receive/{dataset}` | POST | Stream a body into `zfs receive`; optional `force=true` (FR-BUD-12; replication sets it only for a full send and never for an incremental) |
 | `/api/v1/zfs/snapshots/{dataset}` | GET | Snapshots with GUIDs; `?recursive=false` lists only the dataset's own snapshots (FR-BUD, FR-REP-03) |
 | `/api/v1/shares/config` | PUT | Write the API-rendered share config to the host (atomic) |
 | `/api/v1/shares/status` | GET | Applied revision + rendered share counts |

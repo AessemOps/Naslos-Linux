@@ -288,5 +288,8 @@ destroy path.
 fallback imported every importable pool with `-f`.
 
 Concurrent `zfs send`/`receive` streams are capped (`agent.maxStreams`,
-`AGENT_MAX_STREAMS`, default 4) and a restore fails after
-`agent.streamIdleTimeoutSecs` (default 300 s) without body data.
+`AGENT_MAX_STREAMS`, default 8) and a restore fails after
+`agent.streamIdleTimeoutSecs` (default 300 s) without body data. A local
+replication job holds two slots (its send and its receive), and a Buddy transfer
+uses the same pool, so size the cap for the number of concurrent transfers plus
+headroom.
