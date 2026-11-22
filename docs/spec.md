@@ -1315,6 +1315,66 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
   `GET /api/mcp`. Arguments are NEVER logged or recorded — tool bodies can
   carry passwords, secrets and tokens.
 
+### 3.15 System config export/import (`FR-CFG`)
+
+The owner can download a versioned snapshot of the declarative configuration
+(not the data) to keep beside a backup. The export is deliberately a
+**projection**: every section is written through an explicit allow-listed
+struct, so a newly added store field cannot leak by accident. Import/restore is
+not implemented yet and stays `[OPEN]` with the validation rules below.
+
+- **FR-CFG-01** — `GET /api/system/config/export` MUST be an admin-only owner
+  route that returns a JSON download with `kind: "naslos-config-export"`,
+  `schemaVersion: 1`, a UTC `generatedAt`, the `naslosVersion` and the
+  `baseDomain`, plus the `shares`, `storageSchedules`, `buddySchedules`,
+  `domains`, `ddnsEntries`, `apps` and `datasetRegistry` sections. The response
+  MUST carry a `Content-Disposition` attachment filename and
+  `Cache-Control: no-store`. *(config export tests:
+  `export_shape_uses_an_allow_list_and_deterministic_arrays`,
+  `absent_subsystems_export_empty_arrays_not_null`; contract test:
+  `config_export_requires_an_admin_and_emits_the_versioned_shape`)*
+- **FR-CFG-02** — The export MUST include only declarative fields: no runtime
+  state (`lastRun`, `lastResult`, `lastError`, `nextRun`,
+  `receiverResults`), no server-owned timestamps and no derived data. Every
+  section MUST be an array (never `null`), including when its subsystem is
+  unavailable, and store order MUST be deterministic. App values MUST have the
+  catalog's secret-marked keys removed at any depth (reported in
+  `redactedKeys`); when the catalog cannot be read, the app's whole `values`
+  object MUST be omitted with `valuesOmitted: true` rather than exported
+  unredacted. *(config export tests:
+  `app_values_are_omitted_without_a_catalog`,
+  `export_shape_uses_an_allow_list_and_deterministic_arrays`)*
+- **FR-CFG-03** — The export MUST NOT contain passwords, API tokens, ntfy
+  tokens, DDNS or domain credential values/Secret names, `credentialFields`,
+  rendered cert-manager `solver` objects, TLS private keys, Buddy identities,
+  peer keys, KEKs, or any Kubernetes Secret data. It MUST NOT read a
+  Kubernetes Secret or the Buddy identity/KEK file at all. Free-form value and
+  provider-config keys that look like credentials (`password`, `passwd`,
+  `secret`, `token`, `credential`, `privateKey`, `apiKey`, `kek`) MUST be
+  removed even when a provider schema forgets to mark them. Domain and DDNS
+  `providerConfig` MUST be projected to the keys the provider schema declares
+  non-secret; unknown keys and free-form value templates that can embed a
+  credential (the generic DDNS `updateUrl`/`body`) MUST be omitted, and a
+  provider with no loaded definition MUST export an empty config.
+  *(config export tests: `secret_material_is_never_exported`,
+  `every_free_form_key_in_the_payload_is_allow_listed`)*
+- **FR-CFG-04** — Import/restore is `[OPEN]`. When implemented it MUST:
+  accept only the current `schemaVersion` (reject a newer one), accept only
+  allow-listed fields and reject unknown or secret-like keys rather than
+  ignoring them; revalidate every ID, path, dataset, pool and provider against
+  the live node instead of trusting the payload; never reuse an exported ID to
+  overwrite or delete an existing record; never inject a credential (entries
+  whose credentials were removed MUST be re-entered through the existing
+  endpoints); and run as a dry-run plan followed by an explicit confirmation,
+  never as an automatic apply on upload.
+- **FR-CFG-05** — The config export is **not** the installer recovery ZIP
+  (FR-INSTALL-08). The recovery ZIP is bootstrap material (`talosconfig`,
+  machine config, Talos secrets, `kubeconfig`, schematic/ISO facts) and is the
+  only way to rebuild a lost control plane; it contains no application
+  records. The config export is an owner-gated, versioned JSON document of
+  declarative application records and contains no PKI, kubeconfig or Secret
+  material, so it cannot recreate a node. Neither format supersedes the other.
+
 ---
 
 ## 4. API contracts (normative)
@@ -1353,6 +1413,7 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 | `/api/ddns/{id}` | GET, PUT, DELETE | Entry detail / update / delete (deletes its credential Secret) |
 | `/api/ddns/{id}/run` | POST | Force one reconcile even when the IP is unchanged |
 | `/api/system/version` | GET | Running Naslos/chart/Talos/Kubernetes, release pins, profile, `upgradable` (§3.11) |
+| `/api/system/config/export` | GET | Versioned, secret-free declarative config download (`Content-Disposition`; FR-CFG) |
 | `/api/system/updates` | GET | Cached update check, candidate, stepping decision |
 | `/api/system/updates/check` | POST | Run an update check now |
 | `/api/system/operations` | POST | Start an ordered upgrade operation (`202`; `409` lock; `412` precondition) |
@@ -1433,11 +1494,12 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
 - **DM-1 Person**: `{ "uid", "displayName", "email", "uidNumber", "enabled": bool, "groups": ["short-name", …] }`
 - **DM-2 Group**: `{ "cn", "description?", "members": ["uid", …] }` — `members` MUST be an array (possibly empty), `description` omitted when empty.
 - **DM-3 Pool**: `{ "name", "size", "alloc", "free", "usagePercent", "health" }` — sizes in bytes, parsed from human `zpool list` output.
-- **DM-4 Share**: `{ "name", "path", "protocol": "smb"|"nfs", "description", "readOnly": bool, "browseable": bool, "allowedHosts": [], "validUsers": [], "validGroups": [], "timeMachine": bool, "createdAt", "enabled": bool }` — `path` MUST be inside the ZFS base; the three list fields MUST be arrays (never `null`, including when read back from disk); `validUsers` entries render bare and `validGroups` entries render as `@group` in `smb.conf` (FR-SHR-07/12).
+- **DM-4 Share**: `{ "name", "path", "protocol": "smb"|"nfs"|"afp", "description", "readOnly": bool, "browseable": bool, "allowedHosts": [], "validUsers": [], "validGroups": [], "timeMachine": bool, "noRootSquash": bool, "createdAt", "enabled": bool }` — `path` MUST be inside the ZFS base; the three list fields MUST be arrays (never `null`, including when read back from disk); `validUsers` entries render bare and `validGroups` entries render as `@group` in `smb.conf` (FR-SHR-07/12).
 - **DM-5 SystemMetrics**: see FR-MET-03. CPU also carries `model`, `temperatureC` (nullable), and `perCore[]` (`core`, `usagePercent`, optional `frequencyMhz`). `updatedAt` is RFC 3339; before the first successful collection it is the Go zero time and consumers MUST treat it as "no data yet".
 - **DM-6 DiskHealth**: `{ "smartctlAvailable": bool, "error": string, "temperatureWarningC": number, "wearWarningPercent": number, "disks": [{ "device", "size", "isSystemDisk", "model", "serial", "busPath", "type", "signatures": [], "inPool"?, "smart": { "available", "enabled", "health": "PASSED"|"FAILED"|"UNKNOWN", "temperatureC"?, "powerOnHours"?, "wearPercent"?, "reallocatedSectors"?, "pendingSectors"?, "uncorrectableSectors"?, "mediaErrors"?, "errorCount"?, "standby", "message" }, "zfs"?: { "pool", "vdev", "state", "readErrors", "writeErrors", "cksumErrors" } }] }` — `smart.available:false` is normal for virtio/USB/RAID devices and MUST NOT fail the endpoint (FR-DHK-02/03).
 - **DM-7 Vm**: `{ "name", "pool", "cpu", "memMiB", "autostart": bool, "firmware": "uefi"|"bios", "desired": "running"|"stopped", "disk": { "sizeGB", "format": "qcow2"|"raw", "bus": "virtio"|"sata", "sourceImage"?: "isos/<file>" }, "net": { "mode": "nat"|"lan", "forwards": [{ "host", "dst" }], "nic"? }, "cloudInit"?: { "hostname", "user", "sshKeys": [] }, "iso"?: "isos/<file>" | null }`. `name` is a DNS-1123 label; live fields (`state`: "running"|"stopped"|"unknown", `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) are merged in responses and MUST NOT be persisted; the console credentials (`vncPort`, `vncPassword`) appear only in the `/api/ws/vm/{name}/vnc` preflight, never in list or detail payloads (FR-VMT).
 - **DM-8 StorageSchedule**: `{ "id", "kind": "snapshot"|"scrub", "target", "cadence": "hourly"|"daily"|"weekly", "runAt", "keep": number, "recursive": bool, "enabled": bool, "lastRun"?, "lastResult"?, "lastError"?, "nextRun"? }`. `target` is a dataset path for `snapshot` and a pool name for `scrub`; `keep` is always 0 for `scrub`; `lastResult` is `ok`/`failed`/`skipped`/`started` (a scrub is `started` until its scan line reports completion). Timestamps are RFC 3339 UTC (FR-STO-10/11).
+- **DM-9 ConfigExport**: `{ "kind": "naslos-config-export", "schemaVersion": 1, "generatedAt", "naslosVersion", "baseDomain", "shares": [DM-4 without createdAt], "storageSchedules": [DM-8 without lastRun/lastResult/lastError/nextRun], "buddySchedules": [{ "id", "dataset", "source", "receivers": [], "cadence", "runAt", "pruneKeep", "enabled" }], "domains": [{ "baseDomain", "dnsProvider", "providerConfig": {}, "acmeEmail", "environment", "primary", "sso", "appRecordsDdnsEntry": string|null }], "ddnsEntries": [{ "id", "provider", "zone", "record", "recordType", "ttl", "enabled", "providerConfig": {} }], "apps": [{ "name", "source", "channel", "chartVersion", "baseDomain", "exposure": { "subdomain", "tls", "auth", "localOnly", "protectedPaths": [], "internet", "service", "port", "scheme" }, "datasets": [], "privileged", "env": [{ "name", "secret" }], "values"?: {}, "redactedKeys": [], "valuesOmitted": bool }], "datasetRegistry": [{ "name", "hostPath", "shared", "warningAcknowledged" }] }`. Every section is an array, never `null`. No field may carry a credential value, credential Secret name, solver body, the Buddy identity/KEK or Kubernetes Secret data; `values` excludes the catalog's secret-marked keys at any depth, is omitted entirely when `valuesOmitted` is true, and `providerConfig` contains only keys the provider schema declares non-secret (free-form credential templates such as the generic DDNS `updateUrl`/`body` are omitted). Import is `[OPEN]` (FR-CFG-04).
 
 ---
 
@@ -1516,7 +1578,8 @@ extrausers rendering, stable group GIDs, access-list groups, NetBIOS name
 sanitising); `rust/api/src/server/` (the user-edit membership diff, FR-IDN-04;
 the write-only ntfy token, `TestNotificationsNeverReturnTheAuthToken`; the
 storage retention plan, scheduler-owned snapshot names and scrub scan
-classification, FR-STO-10/11); and
+classification, FR-STO-10/11; the system config export allow-list and
+secret-exclusion canaries, FR-CFG-01…03); and
 `rust/agent/src/shares/` (the 0600 passdb/shadow mirrors, FR-IDN-13).
 
 Buddy Backup is verified by the Rust suites in `rust/api/src/buddy/` and

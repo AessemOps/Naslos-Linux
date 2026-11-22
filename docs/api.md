@@ -295,6 +295,96 @@ and the operator's DNS or `/etc/hosts` entry must move to it; see
 sha256 in this response; the Job receives it as the administrator-approved
 value. All routes are admin-only (owner router).
 
+### System config export (`FR-CFG`, see [spec.md §3.15](spec.md#315-system-config-exportimport-fr-cfg))
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/system/config/export` | Versioned, secret-free JSON download of the declarative records. Admin-only owner route; `Content-Disposition: attachment` and `Cache-Control: no-store` |
+
+```json
+{
+  "kind": "naslos-config-export",
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-21T22:00:00Z",
+  "naslosVersion": "0.5.2",
+  "baseDomain": "example.test",
+  "shares": [
+    { "name": "media", "path": "/var/mnt/tank/media", "protocol": "smb",
+      "description": "Media", "readOnly": false, "browseable": true,
+      "allowedHosts": [], "validUsers": [], "validGroups": [],
+      "timeMachine": false, "noRootSquash": false, "enabled": true }
+  ],
+  "storageSchedules": [
+    { "id": "snap-1", "kind": "snapshot", "target": "tank/media",
+      "cadence": "daily", "runAt": "02:30", "keep": 7,
+      "recursive": true, "enabled": true }
+  ],
+  "buddySchedules": [
+    { "id": "buddy-1", "dataset": "tank/media", "source": "tank/media",
+      "receivers": ["peer-a"], "cadence": "weekly", "runAt": "Sun 03:00",
+      "pruneKeep": 5, "enabled": true }
+  ],
+  "domains": [
+    { "baseDomain": "example.test", "dnsProvider": "cloudflare",
+      "providerConfig": { "proxied": "false" }, "acmeEmail": "ops@example.test",
+      "environment": "production", "primary": true, "sso": true,
+      "appRecordsDdnsEntry": null }
+  ],
+  "ddnsEntries": [
+    { "id": "ddns-1", "provider": "duckdns", "zone": "example.test",
+      "record": "home", "recordType": "A", "ttl": 0, "enabled": true,
+      "providerConfig": {} }
+  ],
+  "apps": [
+    { "name": "demo", "source": "naslos", "channel": "stable",
+      "chartVersion": "0.1.0", "baseDomain": "", "exposure": { "subdomain": "demo",
+        "tls": true, "auth": true, "localOnly": false, "protectedPaths": [],
+        "internet": true, "service": "", "port": 0, "scheme": "" },
+      "datasets": ["media"], "privileged": false,
+      "env": [{ "name": "API_TOKEN", "secret": true }],
+      "values": { "replicas": 2 }, "redactedKeys": ["adminPassword"],
+      "valuesOmitted": false }
+  ],
+  "datasetRegistry": [
+    { "name": "media", "hostPath": "/var/mnt/tank/media", "shared": false,
+      "warningAcknowledged": false }
+  ]
+}
+```
+
+All sections are arrays (never `null`), including when the subsystem is
+unavailable. Runtime state is not exported: `lastRun`/`lastResult`/`lastError`/
+`nextRun`, per-receiver results and server-owned timestamps are omitted.
+
+The export is **not** a Secret dump and the API never reads a Kubernetes Secret
+or the Buddy identity/KEK file. It excludes passwords, API/ntfy tokens, DDNS and
+domain credential values **and credential Secret names**, `credentialFields`,
+rendered cert-manager `solver` objects, TLS private keys, Buddy identities/peer
+keys/KEKs and all Secret data. App `values` have the catalog's secret-marked
+keys removed at any depth (their names are listed in `redactedKeys`); if the
+catalog cannot be read, `values` is omitted and `valuesOmitted` is `true`.
+Free-form value/provider keys that look like credentials (`password`, `passwd`,
+`passphrase`, `secret`, `token`, `credential`, `privateKey`, `tls.key`, `apiKey`,
+`accessKey`, `consumerKey`, `applicationKey`, `kek`) are removed even when a
+provider schema forgot to mark them. Domain and DDNS `providerConfig` is
+projected to the keys the provider schema declares non-secret; unknown keys,
+free-form value templates that can embed a credential (the generic DDNS
+`updateUrl`/`body`) and configs for an unknown provider are omitted.
+
+**Import/restore is `[OPEN]`.** An importer must reject a newer `schemaVersion`,
+accept only allow-listed fields (reject unknown or secret-like keys), revalidate
+IDs/paths/datasets/pools/providers against the live node, never reuse an
+exported ID to overwrite or delete a record, and never inject credentials. It
+must run as a dry-run plan followed by explicit confirmation.
+
+This document is distinct from the installer **recovery ZIP**
+([installer-contract.md §2](installer-contract.md#2-cluster-objects-the-installer-depends-on)):
+the recovery ZIP is bootstrap material (`talosconfig`, machine config, Talos
+secrets, `kubeconfig`, schematic/ISO facts) used to rebuild a lost control
+plane, while this export is application-config JSON with no PKI, kubeconfig or
+Secret material. Neither replaces the other; back up the recovery ZIP offline
+and store this export beside your data backups.
+
 ### Logs & terminal (WebSocket)
 
 | Method | Path | Description |
