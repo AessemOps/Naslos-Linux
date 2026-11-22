@@ -202,6 +202,9 @@ check_build_integrity() {
   grep -q 'overlaps_buddy' "$root/rust/api/src/server/dataset_registry.rs" || ok=0
   grep -q 'LDAP_BIND_PASS_FILE' "$root/rust/api/src/identity.rs" || ok=0
   grep -q 'rev-parse' "$root/rust/api/src/chartsrepo.rs" || ok=0
+  grep -q 'storage_schedules::run_scheduler' "$root/rust/api/src/main.rs" || ok=0
+  grep -q 'SNAPSHOT_NAME_PREFIX' "$root/rust/api/src/server/storage_schedules.rs" || ok=0
+  grep -q 'STORAGE_SCHEDULES' "$root/charts/naslos/templates/api-deployment.yaml" || ok=0
   if grep -q "^  '''\\^bootstrap/vm/" "$root/.gitleaks-history.toml"; then ok=0; fi
   [ "$ok" -eq 1 ]
 }
