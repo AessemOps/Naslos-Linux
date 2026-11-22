@@ -34,6 +34,7 @@ pub mod notifications;
 pub mod pack;
 pub mod proc;
 pub mod providers;
+pub mod reporting;
 pub mod routing;
 pub mod schedule;
 pub mod semver;

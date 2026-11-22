@@ -73,10 +73,11 @@ and the UI hides the metrics column.
 ## Relating to the dashboard UI
 
 The SvelteKit home screen (`ui/src/lib/components/Dashboard.svelte`) renders
-`GET /api/dashboard`. There is no long-term store yet and no external dashboard
-to link to; the live snapshot is the whole story. A bounded 24 h / 7 d / 30 d
-store is designed (not implemented) in [reporting.md](reporting.md); it stays
-embedded (SQLite/RRD-style) and does not bundle Prometheus.
+`GET /api/dashboard` and a History card backed by `GET /api/reports/series`.
+The card offers bounded 24 h / 7 d / 30 d views over an embedded local
+append-only store ([reporting.md](reporting.md)); there is still no external
+dashboard and no Prometheus. History is admin-only and disposable; the live
+snapshot remains the source of truth for the current values.
 
 See [api.md](api.md) for the exact routes and [deployment.md](deployment.md)
 for Helm values that control these components.

@@ -25,6 +25,7 @@ pub mod notifications;
 pub mod pods;
 pub mod providers;
 pub mod replication;
+pub mod reports;
 pub mod shares;
 pub mod storage_schedules;
 pub mod system;
@@ -132,6 +133,9 @@ fn owner_routes() -> Router<Arc<AppState>> {
             "/api/system/operations/current",
             get(system::operation_current),
         )
+        // Bounded historical reporting (FR-RPT). Read-only and admin-only.
+        .route("/api/reports", get(reports::reports_get))
+        .route("/api/reports/series", get(reports::reports_series_get))
         .route("/api/disks", get(disks::disks_get))
         .route("/api/disks/health", get(disks::disks_health_get))
         .route("/api/disks/recommend", post(disks::disks_recommend))
@@ -528,6 +532,11 @@ mod tests {
             (
                 axum::http::Method::DELETE,
                 "/api/mcp/tokens/mcp-probe".to_string(),
+            ),
+            (axum::http::Method::GET, "/api/reports".to_string()),
+            (
+                axum::http::Method::GET,
+                "/api/reports/series?range=24h".to_string(),
             ),
         ] {
             out.push((method, path));
