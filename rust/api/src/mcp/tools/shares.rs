@@ -99,6 +99,14 @@ pub const TOOLS: &[ToolDef] = &[
                     b("Advertise as a macOS Time Machine target.")
                 ),
                 ("noRootSquash", b("NFS: root keeps its privileges.")),
+                (
+                    "shadowCopies",
+                    b("SMB: expose ZFS snapshots as Previous Versions.")
+                ),
+                (
+                    "audit",
+                    b("SMB: write share operations to the smbd audit log.")
+                ),
             ],
         )
     ),
@@ -132,6 +140,14 @@ pub const TOOLS: &[ToolDef] = &[
                     b("Advertise as a macOS Time Machine target.")
                 ),
                 ("noRootSquash", b("NFS: root keeps its privileges.")),
+                (
+                    "shadowCopies",
+                    b("SMB: expose ZFS snapshots as Previous Versions.")
+                ),
+                (
+                    "audit",
+                    b("SMB: write share operations to the smbd audit log.")
+                ),
             ],
         )
     ),

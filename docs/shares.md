@@ -20,7 +20,7 @@ containers that run on the node with `hostNetwork` and host mounts.
    naslos-samba (DaemonSet, hostNetwork)  ── smbd :445
      • reloads smbd when smb.conf changes (after `testparm` accepts it)
      • imports accounts with `pdbedit -i smbpasswd:<smbusers>` on change
-     • serves /var/mnt (the ZFS datasets) with `force user = root`
+     • serves /var/mnt (the ZFS datasets) as the session user, 0660/0770 masks
    naslos-nfs (DaemonSet, hostNetwork)  ── ganesha.nfsd :2049 (NFSv4/TCP)
      • reloads exports on SIGHUP when ganesha.conf changes (mounts stay alive)
      • serves /var/mnt with `Squash = No_Root_Squash`, AUTH_SYS numeric ids
@@ -463,8 +463,9 @@ stack:
 - The container has no syslog daemon, so `full_audit:syslog = no` turns the
   records into debug-level-1 messages. While **any** share has audit on, the
   renderer adds `logging = file` and `log level = 1` to `[global]` so the
-  records land in `/var/log/samba/<client>.log`. A normal install keeps today's
-  logging settings.
+  records land in `/var/log/samba/<client>.log`. The DaemonSet mounts that
+  directory from the host (`/var/log/naslos-samba`), so the records survive a
+  pod recreation. A normal install keeps today's logging settings.
 - It is off by default and does not change authentication, access or the
   client-visible share contents.
 
@@ -573,7 +574,8 @@ one that works, while intermediate and initial passwords are rejected.
 - A share with `shadowCopies` or `audit` gets a share-level `vfs objects` that
   repeats the global stack and adds `shadow_copy2` and/or `full_audit`, plus the
   matching `shadow:*` or `full_audit:*` options (see the sections above).
-- `force user = root`, `force group = root`, masks `0660`/`0770`.
+- `create mask = 0660` and `directory mask = 0770`; there is no `force user`
+  or `force group`, so writes keep the authenticated session user's identity.
 
 ### NFS (`GenerateGaneshaConfig`)
 
