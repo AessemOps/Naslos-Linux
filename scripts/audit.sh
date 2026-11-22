@@ -129,6 +129,26 @@ assert traefik, "Traefik Deployment missing"
 args = " ".join(traefik["spec"]["template"]["spec"]["containers"][0].get("args", []))
 assert "--providers.kubernetescrd.namespaces=naslos-apps,naslos-apps-priv" in args.replace(" ", ""), args
 assert "--providers.kubernetesingress" not in args or "providers.kubernetesingress.namespaces" in args, args
+# R-036: Authelia is hardened and mounts only the CA Secret, never the LDAP
+# server key.
+authelia = find("StatefulSet", "naslos-authelia")
+assert authelia, "Authelia StatefulSet missing"
+aut_spec = authelia["spec"]["template"]["spec"]
+assert aut_spec.get("securityContext", {}).get("runAsNonRoot") is True, aut_spec.get("securityContext")
+aut_ctr = aut_spec["containers"][0]
+aut_sc = aut_ctr.get("securityContext", {})
+for key, value in {
+    "allowPrivilegeEscalation": False,
+    "readOnlyRootFilesystem": True,
+    "runAsNonRoot": True,
+}.items():
+    assert aut_sc.get(key) is value, (key, aut_sc)
+assert aut_sc.get("capabilities", {}).get("drop") == ["ALL"], aut_sc
+assert aut_sc.get("seccompProfile", {}).get("type") == "RuntimeDefault", aut_sc
+aut_cert_volume = next(v for v in aut_spec["volumes"] if v["name"] == "certificates")
+assert aut_cert_volume["secret"]["secretName"] == "naslos-openldap-ca", aut_cert_volume
+ca_secret = find("Secret", "naslos-openldap-ca")
+assert ca_secret and list(ca_secret.get("data", ca_secret.get("stringData", {}))) == ["ca.crt"], ca_secret
 secret = find("Secret", "naslos-buddy-kek")
 assert secret, "generated buddy KEK Secret missing"
 raw = base64.b64decode(secret["data"]["kek"])
