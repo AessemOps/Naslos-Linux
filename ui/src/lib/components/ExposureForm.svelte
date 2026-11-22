@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { createEventDispatcher } from 'svelte';
+
   interface Exposure {
     subdomain: string;
     tls: boolean;
@@ -22,6 +24,16 @@
   export let ssoDomains: string[] = [];
   export let services: ServiceOption[] = [];
 
+  const dispatch = createEventDispatcher();
+
+  // Set when changing the domain silently removes Authelia protection, so the
+  // operator sees why the checkbox just cleared instead of finding out later.
+  let domainAuthWarning = '';
+
+  function changed() {
+    dispatch('change');
+  }
+
   // Auth is only offered when the chosen domain is in the effective SSO list
   // (FR-APP-10). Derive it rather than reading it in a function called from the
   // template, which Svelte 5 would not track.
@@ -29,12 +41,14 @@
 
   function set<K extends keyof Exposure>(key: K, value: Exposure[K]) {
     exposure = { ...exposure, [key]: value };
+    changed();
   }
 
   function chooseTarget(value: string) {
     const svc = services.find((s) => `${s.name}:${s.port}` === value);
     if (svc) {
       exposure = { ...exposure, service: svc.name, port: svc.port, scheme: svc.scheme };
+      changed();
     }
   }
 
@@ -43,9 +57,16 @@
   // reactive statement, so it never rewrites the caller's exposure on load.
   function chooseDomain(value: string) {
     baseDomain = value;
+    const wasProtected = exposure.auth;
     if (!ssoDomains.includes(value)) {
       exposure = { ...exposure, auth: false };
+      domainAuthWarning = wasProtected
+        ? `Authelia login was turned off because ${value} is not in the SSO domain list.`
+        : '';
+    } else {
+      domainAuthWarning = '';
     }
+    changed();
   }
 </script>
 
@@ -80,6 +101,11 @@
     <p class="text-xs text-gray-500 mt-1">
       Leave empty to keep the app cluster-internal (no route is created).
     </p>
+    {#if domainAuthWarning}
+      <p role="alert" class="text-xs text-amber-300 mt-2">
+        {domainAuthWarning}
+      </p>
+    {/if}
   </div>
 
   {#if services.length > 0}
