@@ -292,8 +292,10 @@
           cadence: scheduleCadence,
           runAt: scheduleCadence === 'hourly' ? '' : scheduleRunAt,
           keep: scheduleKind === 'scrub' ? 0 : Number(scheduleKeep) || 0,
-          recursive: scheduleKind === 'snapshot' ? scheduleRecursive : false,
-          enabled: true
+          recursive: scheduleKind === 'snapshot' ? scheduleRecursive : false
+          // `enabled` is omitted: a new schedule defaults to enabled in the API,
+          // while editing a schedule disabled by the 0.6.0 duplicate migration
+          // must not silently re-enable it.
         })
       });
       const data = await res.json().catch(() => ({}));

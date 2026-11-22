@@ -212,12 +212,21 @@ Requirement IDs are stable: never renumber, only deprecate.
   deletable per dataset (`GET|POST|DELETE /api/storage/schedules`, kind
   `snapshot`) with a cadence (hourly/daily/weekly, UTC `runAt`), an optional
   recursive flag, and a keep count (0 = keep all, at most 1000). At most one
-  snapshot schedule is allowed per dataset, because the shadow-copy name carries
-  no schedule id. Every run MUST
+  **enabled** snapshot schedule may cover a dataset: an exact target or a
+  recursive ancestor/descendant overlap MUST be refused (the shadow-copy name
+  carries no schedule id, so both would write the same snapshot), while a
+  disabled duplicate is allowed. On load, a 0.6.0 store that already has
+  overlapping enabled schedules MUST keep the first in id order enabled and
+  disable the rest with an explanatory `lastError`, so the upgrade neither
+  collides nor blocks their updates. Every run MUST
   create the snapshot through the agent with the shadow-copy-compatible UTC
   name `naslos-%Y-%m-%d_%H-%M-%S` and MUST record the owning schedule in the
   snapshot's `user:naslos:schedule=<id>` user property (every descendant
-  snapshot of a recursive run). Retention MUST delete only snapshots whose
+  snapshot of a recursive run). If recording that property fails after the
+  snapshot was created, the run MUST remove the snapshot(s) it just created
+  (all matching descendant snapshots for a recursive run) and record `failed`
+  with the cleanup outcome, so an untagged shadow-copy name cannot accumulate.
+  Retention MUST delete only snapshots whose
   property equals that schedule's id, keeping the newest N per dataset; a
   user-created snapshot (no property) or another schedule's snapshot MUST NEVER
   be removed. For one release after the 0.6.0 rename, retention MUST also treat
