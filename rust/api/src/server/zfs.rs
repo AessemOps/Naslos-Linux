@@ -965,6 +965,31 @@ fn encryption_root_of(dataset: &crate::agent::Dataset) -> String {
     }
 }
 
+/// The encryption roots whose keys belong to the destroyed subtree.
+///
+/// A child that merely inherits encryption reports an ancestor as its
+/// `encryptionRoot`; that ancestor survives the destroy and keeps the key its
+/// other children need, so only roots inside `<name>/` (or the dataset itself)
+/// are eligible for Secret deletion.
+fn encryption_roots_in_subtree(
+    datasets: &[crate::agent::Dataset],
+    name: &str,
+) -> (bool, std::collections::BTreeSet<String>) {
+    let prefix = format!("{name}/");
+    let encrypted_subtree = datasets
+        .iter()
+        .filter(|d| d.name == name || d.name.starts_with(&prefix))
+        .any(is_encrypted_dataset);
+    let roots = datasets
+        .iter()
+        .filter(|d| d.name == name || d.name.starts_with(&prefix))
+        .filter(|d| is_encrypted_dataset(d))
+        .map(encryption_root_of)
+        .filter(|root| root == name || root.starts_with(&prefix))
+        .collect();
+    (encrypted_subtree, roots)
+}
+
 /// Read and validate the key Secret for one encryption root.
 #[allow(clippy::result_large_err)]
 async fn read_dataset_key(state: &AppState, root: &str) -> Result<RawKey, Response> {
@@ -1146,15 +1171,8 @@ pub async fn datasets_delete(
         Ok(datasets) => datasets,
         Err(e) => return write_agent_error(&e),
     };
-    let prefix = format!("{name}/");
-    let encrypted_roots: std::collections::BTreeSet<String> = datasets
-        .iter()
-        .filter(|d| (d.name == name || d.name.starts_with(&prefix)) && is_encrypted_dataset(d))
-        .map(encryption_root_of)
-        .collect();
-    if !encrypted_roots.is_empty()
-        && query.get("confirm").map(String::as_str) != Some(name.as_str())
-    {
+    let (encrypted_subtree, encrypted_roots) = encryption_roots_in_subtree(&datasets, &name);
+    if encrypted_subtree && query.get("confirm").map(String::as_str) != Some(name.as_str()) {
         return bad_request(
             "destroying an encrypted dataset requires confirm=<dataset name>; its key Secret is destroyed with it and the data is unrecoverable without a backup",
         );
@@ -1168,10 +1186,14 @@ pub async fn datasets_delete(
                 "destroyed dataset {} (recursive={}, encrypted={})",
                 logsafe::field(&name),
                 recursive,
-                !encrypted_roots.is_empty()
+                encrypted_subtree
             );
-            let mut keys_deleted = true;
+            // `true` only when there was nothing to delete or every delete
+            // succeeded; a missing Kubernetes client with roots to delete is
+            // not a successful crypto-shred.
+            let mut keys_deleted = encrypted_roots.is_empty();
             if let Some(kube) = state.kube.as_ref() {
+                keys_deleted = true;
                 let namespace = dataset_encryption::keys_namespace();
                 for root in &encrypted_roots {
                     let Ok(secret_name) = dataset_encryption::secret_name_for_dataset(root) else {
@@ -1607,5 +1629,50 @@ mod tests {
             assert!(err.contains("unsupported dataset option"), "{key}: {err}");
             assert!(!err.contains("secret"), "the error echoed the value: {err}");
         }
+    }
+
+    fn encrypted_dataset(name: &str, root: &str) -> crate::agent::Dataset {
+        crate::agent::Dataset {
+            name: name.to_string(),
+            encryption: "aes-256-gcm".to_string(),
+            keystatus: "available".to_string(),
+            encryption_root: root.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn inherited_child_destroy_keeps_the_ancestor_key() {
+        let datasets = vec![
+            encrypted_dataset("tank/secure", "tank/secure"),
+            encrypted_dataset("tank/secure/docs", "tank/secure"),
+            encrypted_dataset("tank/secure/docs/child", "tank/secure"),
+        ];
+
+        let (encrypted, roots) = encryption_roots_in_subtree(&datasets, "tank/secure/docs");
+        assert!(encrypted, "the subtree is encrypted");
+        assert!(
+            roots.is_empty(),
+            "the surviving ancestor key must not be deleted: {roots:?}"
+        );
+    }
+
+    #[test]
+    fn root_destroy_selects_only_roots_inside_the_subtree() {
+        let datasets = vec![
+            encrypted_dataset("tank/secure", "tank/secure"),
+            encrypted_dataset("tank/secure/docs", "tank/secure"),
+            encrypted_dataset("tank/secure/docs/own", "tank/secure/docs/own"),
+        ];
+
+        let (encrypted, roots) = encryption_roots_in_subtree(&datasets, "tank/secure");
+        assert!(encrypted);
+        assert_eq!(
+            roots,
+            std::collections::BTreeSet::from([
+                "tank/secure".to_string(),
+                "tank/secure/docs/own".to_string(),
+            ])
+        );
     }
 }

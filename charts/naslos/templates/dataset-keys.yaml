@@ -10,6 +10,12 @@ host, so deleting the namespace on uninstall would destroy the only key copy.
 */}}
 {{- if .Values.api.enabled }}
 {{- $keys := .Values.datasetEncryption.keysNamespace | default "naslos-keys" }}
+{{- $apps := .Values.apps.namespace | default "naslos-apps" }}
+{{- $appsPriv := .Values.apps.privilegedNamespace | default "naslos-apps-priv" }}
+{{- $workload := include "naslos.workloadNamespace" . }}
+{{- if or (eq $keys .Release.Namespace) (eq $keys $workload) (eq $keys $apps) (eq $keys $appsPriv) }}
+{{- fail "datasetEncryption.keysNamespace must be a dedicated namespace, not the release, workload, apps or privileged-apps namespace: the API would otherwise gain Secret access to platform Secrets" }}
+{{- end }}
 {{- if ne $keys .Release.Namespace }}
 apiVersion: v1
 kind: Namespace

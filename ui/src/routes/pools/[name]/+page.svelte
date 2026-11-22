@@ -213,24 +213,39 @@
     }
   }
 
-  async function deleteDataset(name: string, recursive: boolean) {
+  async function deleteDataset(name: string, recursive = false, confirmed = false) {
+    const subtree = datasets.filter((d) => d.name === name || d.name.startsWith(`${name}/`));
+    const encrypted = subtree.some((d) => isEncryptedDataset(d));
+
+    // Never send `confirm` without an explicit typed acknowledgement: the API
+    // treats it as authority to crypto-shred the subtree's key Secret.
+    if (encrypted && !confirmed) {
+      const typed = prompt(
+        `Destroy encrypted dataset ${name} and its key Secret?\n\nAll data and snapshots in this subtree become unrecoverable without a backup. Type the dataset name to confirm.`
+      );
+      if (typed === null) return;
+      if (typed.trim() !== name) {
+        alert('Dataset name did not match; nothing was destroyed.');
+        return;
+      }
+      confirmed = true;
+    }
+
     try {
-      // The API requires `confirm` for an encrypted dataset: destroying it also
-      // destroys the key Secret (crypto-shredding), which is irreversible.
-      const url = `/api/datasets?name=${encodeURIComponent(name)}${recursive ? '&recursive=true' : ''}&confirm=${encodeURIComponent(name)}`;
+      const confirmQuery = confirmed ? `&confirm=${encodeURIComponent(name)}` : '';
+      const url = `/api/datasets?name=${encodeURIComponent(name)}${recursive ? '&recursive=true' : ''}${confirmQuery}`;
       const res = await fetch(url, { method: 'DELETE' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         // A non-empty dataset needs the recursive flag. Ask rather than guess:
-        // recursive also destroys snapshots and child datasets.
+        // recursive also destroys snapshots and child datasets. An encrypted
+        // subtree was already covered by the typed confirmation above.
         if (!recursive && /not empty|has children|snapshot/i.test(data.error || '')) {
-          const target = datasets.find((d) => d.name === name);
-          const extra = target && isEncryptedDataset(target)
-            ? ' Destroying an encrypted dataset also destroys its key Secret; the data is unrecoverable without a backup.'
-            : '';
-          if (confirm(`${name} is not empty.\n\nDestroy it recursively? Its snapshots and child datasets go with it, and this cannot be undone.${extra}`)) {
-            await deleteDataset(name, true);
+          if (!encrypted) {
+            const extra = ' This also destroys its snapshots and child datasets.';
+            if (!confirm(`${name} is not empty.\n\nDestroy it recursively?${extra} This cannot be undone.`)) return;
           }
+          await deleteDataset(name, true, confirmed);
           return;
         }
         alert(data.error || `Could not destroy ${name}`);

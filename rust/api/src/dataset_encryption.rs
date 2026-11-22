@@ -213,9 +213,12 @@ pub fn secret_name_for_dataset(dataset: &str) -> Result<String, String> {
         return Err("dataset name is required".into());
     }
 
-    let mut slug = String::with_capacity(40);
+    // `naslos-dataset-key-` is 19 bytes, the `-` and 16-hex digest add 17, so
+    // the readable slug may use at most 27 bytes to stay inside the 63-char
+    // DNS-1123 label limit.
+    let mut slug = String::with_capacity(27);
     for ch in dataset.chars() {
-        if slug.len() >= 40 {
+        if slug.len() >= 27 {
             break;
         }
         if ch.is_ascii_alphanumeric() {
@@ -458,8 +461,12 @@ mod tests {
         let a = secret_name_for_dataset("tank/media").unwrap();
         assert_eq!(a, secret_name_for_dataset("tank/media").unwrap());
         assert!(a.starts_with(KEY_SECRET_PREFIX), "{a}");
-        assert!(a.len() <= 253, "{a}");
+        assert!(a.len() <= 63, "{a}");
         assert!(validate_key_secret_name(&a).is_ok(), "{a}");
+
+        let long = secret_name_for_dataset("tank/backups/weekly-snapshots").unwrap();
+        assert!(long.len() <= 63, "{long}");
+        assert!(validate_key_secret_name(&long).is_ok(), "{long}");
 
         let b = secret_name_for_dataset("tank/media2").unwrap();
         assert_ne!(a, b);

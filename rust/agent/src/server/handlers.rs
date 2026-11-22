@@ -23,6 +23,15 @@ use tokio::io::AsyncWriteExt;
 
 type QueryMap = HashMap<String, String>;
 
+/// Zeroes raw key bytes on every handler exit path, including early returns.
+struct KeyBuffer(Vec<u8>);
+
+impl Drop for KeyBuffer {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
 fn zfs_unavailable() -> Response {
     write_error(
         StatusCode::SERVICE_UNAVAILABLE,
@@ -322,13 +331,12 @@ pub async fn datasets_post(
         Ok(req) => req,
         Err(resp) => return resp,
     };
+    let key = KeyBuffer(req.key.take().unwrap_or_default());
+    let key_bytes = (!key.0.is_empty()).then_some(key.0.as_slice());
     let dataset_name = format!("{rest}/{}", req.name);
     let result = zfs
-        .create_dataset_with_key(&dataset_name, &req.options, req.key.as_deref())
+        .create_dataset_with_key(&dataset_name, &req.options, key_bytes)
         .await;
-    if let Some(key) = req.key.as_mut() {
-        key.fill(0);
-    }
     match result {
         Ok(()) => {
             tracing::info!("created dataset {}", dataset_name);
@@ -403,12 +411,12 @@ pub async fn encryption_unlock_post(State(state): State<Arc<AppState>>, body: Bo
         Ok(req) => req,
         Err(resp) => return resp,
     };
+    let key = KeyBuffer(std::mem::take(&mut req.key));
     if req.dataset.trim().is_empty() {
         return write_error(StatusCode::BAD_REQUEST, "dataset is required");
     }
     let dataset = req.dataset.trim().to_string();
-    let result = zfs.unlock_dataset(&dataset, &req.key).await;
-    req.key.fill(0);
+    let result = zfs.unlock_dataset(&dataset, &key.0).await;
     match result {
         Ok(status) => {
             tracing::info!("unlocked dataset {}", dataset);

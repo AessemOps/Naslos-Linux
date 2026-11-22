@@ -304,13 +304,54 @@ fn remove_keyfile_at(host_root: &Path, dataset: &str) -> ZfsResult<()> {
     }
 }
 
-fn remove_keyfile_quietly(host_root: &Path, dataset: &str) {
-    if let Err(e) = remove_keyfile_at(host_root, dataset) {
-        tracing::warn!(
-            "could not remove the transient keyfile for {}: {}",
-            dataset,
-            e
-        );
+/// Owns a transient keyfile and removes it on every exit path, including
+/// handler cancellation after an await. Callers on success paths must call
+/// [`KeyfileGuard::remove`] and propagate its error: a leftover 0600 file is
+/// still key material even though it is unlinked at the next reboot.
+struct KeyfileGuard<'a> {
+    host_root: &'a Path,
+    dataset: String,
+    written: bool,
+}
+
+impl<'a> KeyfileGuard<'a> {
+    fn new(host_root: &'a Path, dataset: &str) -> Self {
+        Self {
+            host_root,
+            dataset: dataset.to_string(),
+            written: false,
+        }
+    }
+
+    fn write(&mut self, key: &[u8]) -> ZfsResult<String> {
+        let path = write_keyfile_at(self.host_root, &self.dataset, key)?;
+        self.written = true;
+        Ok(path)
+    }
+
+    /// Remove the file now and propagate a failure. The guard stays armed on
+    /// failure so its `Drop` retries once and logs the residual path.
+    fn remove(&mut self) -> ZfsResult<()> {
+        if !self.written {
+            return Ok(());
+        }
+        remove_keyfile_at(self.host_root, &self.dataset)?;
+        self.written = false;
+        Ok(())
+    }
+}
+
+impl Drop for KeyfileGuard<'_> {
+    fn drop(&mut self) {
+        if self.written {
+            if let Err(e) = remove_keyfile_at(self.host_root, &self.dataset) {
+                tracing::error!(
+                    "transient keyfile for {} could not be removed: {}",
+                    self.dataset,
+                    e
+                );
+            }
+        }
     }
 }
 
@@ -471,6 +512,13 @@ impl ZfsClient {
                     "a raw key was supplied for an unencrypted dataset"
                 ));
             }
+            // A concurrent plain create must not interleave between the
+            // encrypted create's existence check and its create/rollback, and
+            // an existing dataset must not be silently accepted by `-p`.
+            let _guard = self.mutation_lock.lock().await;
+            if self.exact_dataset_exists(name).await? {
+                return Err(invalid!("dataset {name} already exists"));
+            }
             return self.create_plain_dataset(name, options).await;
         };
         if plan.key_format != KeyFormat::Raw {
@@ -486,13 +534,14 @@ impl ZfsClient {
             return Err(invalid!("dataset {name} already exists"));
         }
 
-        let in_host = write_keyfile_at(&self.host_root, name, key)?;
+        let mut keyfile = KeyfileGuard::new(&self.host_root, name);
+        let in_host = keyfile.write(key)?;
         let location = format!("file://{in_host}");
         let argv = build_create_argv(name, options, Some(&location));
         let created = self.host_exec(ZFS_BIN, &argv).await;
         if let Err(e) = created {
             self.rollback_created_dataset(name).await;
-            remove_keyfile_quietly(&self.host_root, name);
+            let _ = keyfile.remove();
             return Err(ZfsError::Other(format!(
                 "creating encrypted dataset: {}: {}",
                 e.output.trim(),
@@ -510,7 +559,7 @@ impl ZfsClient {
         );
         if !verified {
             self.rollback_created_dataset(name).await;
-            remove_keyfile_quietly(&self.host_root, name);
+            let _ = keyfile.remove();
             return match status {
                 Ok(status) => Err(invalid!(
                     "the created dataset did not verify as {}-encrypted and unlocked (encryption={:?}, keystatus={:?})",
@@ -522,7 +571,7 @@ impl ZfsClient {
             };
         }
 
-        remove_keyfile_quietly(&self.host_root, name);
+        keyfile.remove()?;
         Ok(())
     }
 
@@ -557,11 +606,12 @@ impl ZfsClient {
         }
         let root = Self::encryption_root(&status);
         if status.keystatus == "available" {
-            remove_keyfile_quietly(&self.host_root, &root);
+            remove_keyfile_at(&self.host_root, &root)?;
             return Ok(status);
         }
 
-        let in_host = write_keyfile_at(&self.host_root, &root, key)?;
+        let mut keyfile = KeyfileGuard::new(&self.host_root, &root);
+        let in_host = keyfile.write(key)?;
         let location = format!("file://{in_host}");
         let loaded = self
             .host_exec(
@@ -569,24 +619,28 @@ impl ZfsClient {
                 &super::dataset::strings(&["load-key", "-L", &location, &root]),
             )
             .await;
-        remove_keyfile_quietly(&self.host_root, &root);
         match loaded {
             Ok(_) => {
                 let after = self.encryption_status(dataset).await?;
                 if after.keystatus == "available" {
+                    keyfile.remove()?;
                     Ok(after)
                 } else {
+                    let _ = keyfile.remove();
                     Err(ZfsError::Other(format!(
                         "the key was loaded but dataset {dataset} still reports keystatus={:?}",
                         after.keystatus
                     )))
                 }
             }
-            Err(e) => Err(ZfsError::Other(format!(
-                "loading the dataset key: {}: {}",
-                e.output.trim(),
-                e.message
-            ))),
+            Err(e) => {
+                let _ = keyfile.remove();
+                Err(ZfsError::Other(format!(
+                    "loading the dataset key: {}: {}",
+                    e.output.trim(),
+                    e.message
+                )))
+            }
         }
     }
 
@@ -600,7 +654,7 @@ impl ZfsClient {
         }
         let root = Self::encryption_root(&status);
         if status.keystatus != "available" {
-            remove_keyfile_quietly(&self.host_root, &root);
+            remove_keyfile_at(&self.host_root, &root)?;
             return Ok(status);
         }
         if status.mounted {
@@ -649,7 +703,7 @@ impl ZfsClient {
                     e.message
                 ))
             })?;
-        remove_keyfile_quietly(&self.host_root, &root);
+        remove_keyfile_at(&self.host_root, &root)?;
         let after = self.encryption_status(dataset).await?;
         if after.keystatus == "available" {
             return Err(ZfsError::Other(format!(
@@ -780,5 +834,18 @@ mod tests {
         std::fs::create_dir_all(&path).unwrap();
         assert!(write_keyfile_at(dir.path(), "tank/media", &key()).is_err());
         assert!(remove_keyfile_at(dir.path(), "tank/media").is_err());
+    }
+
+    #[test]
+    fn keyfile_guard_removes_the_file_when_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let in_host = keyfile_in_host("tank/media").unwrap();
+        let path = join_host(dir.path(), &in_host);
+        {
+            let mut guard = KeyfileGuard::new(dir.path(), "tank/media");
+            guard.write(&key()).unwrap();
+            assert!(path.exists());
+        }
+        assert!(!path.exists(), "Drop must remove the transient keyfile");
     }
 }

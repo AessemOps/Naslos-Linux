@@ -113,7 +113,8 @@ deleting the keys on uninstall would destroy the data.
 - **Create:** the API validates the shape and refuses `keyformat=passphrase`
   (FR-ENC-05), checks that the exact dataset and its key Secret do not already
   exist, then generates 32 random bytes with `getrandom`. It writes an Opaque
-  Secret named `naslos-dataset-key-<slug>-<sha256-prefix>` with the key in
+  Secret named `naslos-dataset-key-<slug>-<sha256-prefix>` (a single DNS-1123
+  label of at most 63 characters) with the key in
   `data.key` and the exact dataset in the `naslos.local/dataset` annotation, and
   sends the key in the JSON body over the authenticated TLS channel to the
   agent. The agent writes a 0600 file on host tmpfs, runs
