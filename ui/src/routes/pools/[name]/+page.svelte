@@ -103,40 +103,68 @@
   let addSaving = false;
   let addError = '';
 
-  const poolName = page.params.name;
+  // SvelteKit reuses this component when the route param changes, so the
+  // pool name must stay reactive; a captured `const` kept showing (and
+  // mutating) the pool the page was first opened on.
+  let poolName = page.params.name ?? '';
+  let loadedPool = '';
+  let mounted = false;
+
+  // Reset everything that belongs to one pool before loading the next one, so
+  // a navigation never shows the previous pool's health/datasets/schedules.
+  function resetPoolView() {
+    health = null;
+    loading = true;
+    error = '';
+    datasets = [];
+    datasetsError = '';
+    schedules = [];
+    schedulesError = '';
+    showDatasetModal = false;
+    showScheduleModal = false;
+    showAddDriveModal = false;
+    datasetError = '';
+    scheduleError = '';
+    addError = '';
+  }
 
   async function loadHealth() {
+    const requested = poolName;
     loading = true;
     error = '';
     try {
-      const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(poolName ?? '')}/health`);
+      const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(requested)}/health`);
+      if (poolName !== requested) return;
       if (res.ok) {
         health = await res.json();
       } else {
         error = `Failed to load health data (HTTP ${res.status})`;
       }
     } catch (e) {
-      error = 'Failed to connect to API';
+      if (poolName === requested) error = 'Failed to connect to API';
     } finally {
-      loading = false;
+      if (poolName === requested) loading = false;
     }
   }
 
   // Datasets come from the API (every dataset) filtered to this pool, so the
   // page shows what actually exists rather than what was requested.
   async function loadDatasets() {
+    const requested = poolName;
     try {
       const res = await fetch('/api/datasets');
+      if (poolName !== requested) return;
       if (!res.ok) {
         datasetsError = `Failed to load datasets (HTTP ${res.status})`;
         return;
       }
       const all: Dataset[] = await res.json();
-      const prefix = `${poolName}/`;
-      datasets = all.filter(d => d.name === poolName || d.name.startsWith(prefix));
+      if (poolName !== requested) return;
+      const prefix = `${requested}/`;
+      datasets = all.filter(d => d.name === requested || d.name.startsWith(prefix));
       datasetsError = '';
     } catch (e) {
-      datasetsError = 'Failed to connect to API';
+      if (poolName === requested) datasetsError = 'Failed to connect to API';
     }
   }
 
@@ -217,11 +245,15 @@
     const subtree = datasets.filter((d) => d.name === name || d.name.startsWith(`${name}/`));
     const encrypted = subtree.some((d) => isEncryptedDataset(d));
 
-    // Never send `confirm` without an explicit typed acknowledgement: the API
-    // treats it as authority to crypto-shred the subtree's key Secret.
-    if (encrypted && !confirmed) {
+    // Every dataset destroy needs a typed acknowledgement, not just encrypted
+    // ones: the API treats `confirm` as the operator's authority to erase the
+    // dataset, and a plain dataset is just as unrecoverable. Never send
+    // `confirm` before this prompt succeeds.
+    if (!confirmed) {
       const typed = prompt(
-        `Destroy encrypted dataset ${name} and its key Secret?\n\nAll data and snapshots in this subtree become unrecoverable without a backup. Type the dataset name to confirm.`
+        encrypted
+          ? `Destroy encrypted dataset ${name} and its key Secret?\n\nAll data and snapshots in this subtree become unrecoverable without a backup. Type the dataset name to confirm.`
+          : `Destroy dataset ${name}?\n\nThis permanently deletes the dataset; if it is not empty, its snapshots and child datasets are deleted too. Type the dataset name to confirm.`
       );
       if (typed === null) return;
       if (typed.trim() !== name) {
@@ -232,8 +264,8 @@
     }
 
     try {
-      const confirmQuery = confirmed ? `&confirm=${encodeURIComponent(name)}` : '';
-      const url = `/api/datasets?name=${encodeURIComponent(name)}${recursive ? '&recursive=true' : ''}${confirmQuery}`;
+      // `confirmed` is only true after the typed prompt above.
+      const url = `/api/datasets?name=${encodeURIComponent(name)}${recursive ? '&recursive=true' : ''}&confirm=${encodeURIComponent(name)}`;
       const res = await fetch(url, { method: 'DELETE' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -508,10 +540,17 @@
   }
 
   onMount(() => {
-    loadHealth();
-    loadDatasets();
-    loadSchedules();
+    mounted = true;
   });
+
+  $: poolName = page.params.name ?? '';
+  $: if (mounted && poolName && poolName !== loadedPool) {
+    loadedPool = poolName;
+    resetPoolView();
+    void loadHealth();
+    void loadDatasets();
+    void loadSchedules();
+  }
 </script>
 
 <div>
