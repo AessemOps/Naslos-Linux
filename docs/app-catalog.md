@@ -92,17 +92,29 @@ required. Signature verification is still a follow-up.
 Allowed URL forms are `https://`, `ssh://` and `git@host:path`. `git://` is
 refused: it is unauthenticated and unencrypted, so an on-path attacker could
 serve an arbitrary chart to an install that runs with cluster identity. Other
-transports (`file://`, `ext::`) are refused as well.
+transports (`file://`, `ext::`) are refused as well. Credentials must never be
+embedded in the URL (an HTTPS `user:pass@` is rejected, as is an SSH password):
+they belong in the credential Secret. A git error is sanitized before it is
+stored/returned, so a URL credential cannot leak through `lastError`.
 
 - The **official** source is seeded from `apps.officialSource` in the chart
-  (`SOURCES_OFFICIAL_URL`); it cannot be recreated through the API as official.
+  (`SOURCES_OFFICIAL_URL`); its name (by default `naslos`, and always the
+  literal `official`) is reserved: an admin source cannot overwrite it.
 - Admin-added sources are created via `POST /api/sources`. A source's channel
   map defaults to `Prod`/`Develop`/`Experimental` → same-named branches.
-- On a name collision, a **user source overrides the official source**.
+- On a name collision, a **user source overrides the official source** for new
+  installs. An installed app is different: its record pins the source, channel
+  and chart version it was confirmed with, and upgrades resolve that exact
+  entry. Moving an app to another source requires an explicit source in the
+  upgrade request; it never happens because a different source now wins the
+  name.
 - Clones live in `CHARTS_CACHE_DIR` (`/var/lib/naslos/charts`) with one working
-  tree per `(source, channel)`. A refresh uses `CHARTS_TTL` (default `15m`);
-  when the remote is unreachable the stale clone is served and `lastError` is
-  recorded. The API also refreshes every source in the background at that TTL
+  tree per `(source, channel)`; freshness is tracked per **exact channel**, so a
+  refresh of one channel does not make another look fresh. An install copies
+  the resolved chart to a private per-job directory while holding a per-source
+  read lock, so a concurrent refresh cannot change the tree Helm is reading.
+  A refresh uses `CHARTS_TTL` (default `15m`); when the remote is unreachable
+  the stale clone is served and `lastError` is recorded. The API also refreshes every source in the background at that TTL
   (rebuilding the catalog snapshot each cycle), so new chart versions surface
   without pressing Refresh; a failed cycle keeps the previous snapshot.
   `POST /api/sources/refresh` forces a refresh now (the Installed tab's
@@ -115,6 +127,18 @@ transports (`file://`, `ext::`) are refused as well.
   device, fifo, file over 5 MiB, or tree over 5000 entries. This matters because
   the Helm loader reads chart files; a symlinked file would have let a chart
   render `/var/lib/naslos/buddy-identity.json` into a manifest.
+
+## Secret redaction
+
+Values the catalog marks as secret (`format: password` or `writeOnly: true`)
+are masked in API responses at every nesting depth by their JSON-pointer path
+(for example `/postgresql/auth/password` and `/smtp/credentials/token`), and the
+pointer list is persisted on the installed-app record as `secretPaths` and
+returned as `redactedKeys`. The
+config form receives the same list and an untouched field is sent back as
+`null`, which the API treats as "keep the stored value" on upgrade. If the
+catalog entry is missing and the record has no persisted pointer list, the API
+omits the value map entirely and sets `valuesOmitted: true` rather than guess.
 
 ## Environment variables
 
@@ -175,7 +199,7 @@ app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
 | Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed, privilegedConfirmed?, datasets?, env?}` | `confirmed` MUST be `true`; a catalog entry with `privileged: true` also requires `privilegedConfirmed: true`, and the UI shows a second, red confirmation (SEC-2026-D8). Defaults are merged and the result is validated against the catalog's JSON schema inside the install job; a violation fails the job (the request is still `202`) (SEC-2026-D7). `env` is rejected with a 400 when the chart lacks the `env` capability. `datasets` selects any number of registered datasets; with `apps.isolation.enabled` the app gets its own namespace, a PV/PVC per dataset (baseline) or host paths (privileged), and the chart receives the platform-owned `datasets` value (one `{name, mountPath: "/datasets/<name>", claim|hostPath}` entry each, plus the legacy `datasetsClaim`/`datasetsClaims` or first `hostPath`). Chart loaded from the clone. Enqueues an install job → `202 {jobId, state}` |
 | List installed | `GET /api/apps` | Records + live status, orphan flag, URL |
 | Detail | `GET /api/apps/{name}` | Record + status |
-| Reconfigure | `PUT /api/apps/{name} {values, datasets?, env?}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}`. An omitted `env` keeps the variables, `[]` removes them; a submitted list replaces them (a `secret` with `value:null` keeps the stored value). `datasets` omitted keeps the selection, `[]` detaches all (an isolated app must keep at least one), a list reconciles adds/removes; removed claims are deleted after Helm succeeds. The merged values are validated against the catalog schema and their `resources` CPU/memory quantities and namespace quota before Helm. A dataset change on a record outside a per-app isolation namespace fails the job with a reinstall message |
+| Reconfigure | `PUT /api/apps/{name} {values, datasets?, env?}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}`. An omitted `env` keeps the variables, `[]` removes them; a submitted list replaces them (a `secret` with `value:null` keeps the stored value). `datasets` omitted keeps the selection, `[]` detaches all (an isolated app must keep at least one), a list reconciles adds/removes; removed claims are deleted after Helm succeeds. The submitted `resources` object replaces the stored one (an omitted key is a cleared field, `{}` clears all limits; explicit nulls are pruned). The merged values are validated against the catalog schema and their `resources` CPU/memory quantities and namespace quota before Helm. A dataset change on a record outside a per-app isolation namespace fails the job with a reinstall message |
 | Exposure | `GET`/`PUT /api/apps/{name}/exposure` | Orthogonal toggles + `baseDomain`, re-renders the route (synchronous) |
 | Route targets | `GET /api/apps/{name}/services` | Services the release rendered (discovery fallback / UI picker) |
 | Logs | `GET /api/apps/{name}/pods` + `GET /api/ws/logs` | Pods/containers of the app for the drawer's live log pane (read-only; tail 200 + follow). The API's `pods/log` grant is `get`-only in the app namespace |

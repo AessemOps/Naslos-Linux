@@ -244,6 +244,13 @@ pub struct Record {
     /// values live only in the `naslos-env-<release>` Secret.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<EnvMeta>,
+    /// JSON-pointer paths the catalog marked secret when this record was
+    /// installed/last upgraded. Persisted so a response can still redact the
+    /// right values when the catalog is unavailable or changed (R-020).
+    /// Serialized as `secretPaths` on the stored record to avoid colliding with
+    /// the API view's own `redactedKeys` under `#[serde(flatten)]`.
+    #[serde(default, rename = "secretPaths", skip_serializing_if = "Vec::is_empty")]
+    pub redacted_keys: Vec<String>,
     /// The CNAME the platform maintains for the app's exposed hostname.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dns: Option<DnsState>,
@@ -271,6 +278,10 @@ pub struct View {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub redacted_keys: Vec<String>,
+    /// True when the values could not be redacted safely (no catalog entry and
+    /// no persisted key list) and were omitted from the response entirely.
+    #[serde(default, rename = "valuesOmitted", skip_serializing_if = "is_false")]
+    pub values_omitted: bool,
     /// Catalog display name, falling back to the release name.
     #[serde(rename = "displayName")]
     pub display_name: String,
@@ -634,6 +645,19 @@ pub struct Config {
     pub pool_provisioner_image: String,
     /// App CNAME maintenance (FR-DNS-09); absent when DNS is unavailable.
     pub app_dns: Option<Arc<dyn AppDns>>,
+}
+
+/// A chart copied for one install/upgrade job. Dropping it removes the
+/// private directory; `path()` stays valid while the value is alive.
+struct ResolvedChart {
+    _snapshot: crate::chartsrepo::ChartSnapshot,
+    version: String,
+}
+
+impl ResolvedChart {
+    fn path(&self) -> &str {
+        &self._snapshot.path
+    }
 }
 
 /// What reconciling the env Secret did, so a failed Helm call can undo it.
@@ -1348,7 +1372,10 @@ impl Manager {
             &format!("Resolving {} from the catalog", req.name),
         );
         let catalog = (self.catalog)().ok_or("catalog is not available")?;
-        let app = catalog.get(&req.name)?;
+        // Resolve the exact source/channel the operator confirmed. Without a
+        // pin the current winner is used once, and its identity is recorded so
+        // later upgrades cannot switch sources silently (R-051/R-065).
+        let app = self.pinned_app(&catalog, &req.name, "", "", &req.pin)?;
         // The HTTP layer checked the catalog snapshot it showed the operator.
         // The job resolves the (swappable) catalog again, so re-check here: a
         // refresh between confirm and execution must not install privileged
@@ -1359,8 +1386,8 @@ impl Manager {
                     .to_string(),
             );
         }
-        let chart_dir = self.resolve_chart(&app).await?;
-        crate::chartsrepo::assert_regular_tree(&chart_dir)?;
+        let chart = self.resolve_chart(&app, &req.pin.chart_version).await?;
+        let chart_dir = chart.path().to_string();
 
         // Load the chart defaults so pool-backed installs can override every
         // persistence key, including keys the catalog schema does not expose.
@@ -1373,11 +1400,19 @@ impl Manager {
         let mut values = merge_values(&chart_values, app.default_values.as_object());
         values = merge_values(&serde_json::Value::Object(values), Some(&client_values));
         coerce_schema_numbers(&app.schema, &mut values);
+        prune_null_resources(&mut values);
         validate_install_values(&app, &values)?;
         validate_resource_quantities(&values)?;
         let datasets = normalize_dataset_names(&req.datasets)?;
         let (namespace, _reservation) = self.reserve_namespace(app.privileged)?;
         self.validate_resource_quota(&namespace, &values).await?;
+        // A namespace handed back by a failed install can still hold that
+        // attempt's release, claims and env Secret. Converge them before this
+        // attempt creates anything (R-023).
+        self.reconcile_namespace_orphans(&namespace, &req.name)
+            .await;
+        self.remove_stale_release(&req.name, app.privileged, &namespace)
+            .await?;
         let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
         // The catalog's default subdomain was never validated on the install
         // path; an invalid host must not reach routing or an app CNAME.
@@ -1394,7 +1429,10 @@ impl Manager {
         for (key, value) in &provision.values {
             values.insert(key.clone(), value.clone());
         }
-        self.provision_pool_storage(&req.pool, &mut values).await?;
+        if let Err(e) = self.provision_pool_storage(&req.pool, &mut values).await {
+            self.rollback_provision(&req.name, &provision).await;
+            return Err(e);
+        }
 
         // Write the env Secret before Helm: the chart mounts it optionally, so
         // the first pod starts with the variables already present.
@@ -1440,6 +1478,10 @@ impl Manager {
                         );
                     }
                     self.rollback_provision(&req.name, &provision).await;
+                    if env_outcome.wrote {
+                        self.restore_env(&namespace, &req.name, env_outcome.previous.as_ref())
+                            .await;
+                    }
                     return Err(format!("creating the Internet egress policy: {e}"));
                 }
             }
@@ -1506,7 +1548,8 @@ impl Manager {
             source: app.source.clone(),
             channel: app.channel.clone(),
             chart_path: app.chart_path.clone(),
-            chart_version: app.version.clone(),
+            chart_version: chart.version.clone(),
+            redacted_keys: secret_value_pointers(&app.schema),
             values,
             exposure,
             base_domain: base_domain.clone(),
@@ -1566,6 +1609,7 @@ impl Manager {
         values: Option<&serde_json::Map<String, serde_json::Value>>,
         datasets: Option<&[String]>,
         env: Option<&[EnvVar]>,
+        pin: &ChartPin,
         progress: Option<&ProgressFn>,
     ) -> Result<View, String> {
         let lock = self.app_lock(name);
@@ -1601,25 +1645,33 @@ impl Manager {
             ));
         }
         let catalog = (self.catalog)().ok_or("catalog is not available")?;
-        let app = catalog.get(name)?;
-        let chart_dir = self.resolve_chart(&app).await?;
-        crate::chartsrepo::assert_regular_tree(&chart_dir)?;
+        // Resolve the recorded source/channel (or the explicitly pinned one).
+        // A bare name lookup here is what let a new user source silently take
+        // over an installed app's upgrade (R-051/R-065).
+        let app = self.pinned_app(&catalog, name, &rec.source, &rec.channel, pin)?;
+        let chart = self.resolve_chart(&app, &pin.chart_version).await?;
+        let chart_dir = chart.path().to_string();
+        let secret_pointers = secret_value_pointers(&app.schema);
         let mut client_values = values.cloned().unwrap_or_default();
         strip_dataset_values(&mut client_values);
         let mut merged = merge_values(
             &serde_json::Value::Object(rec.values.clone()),
             Some(&client_values),
         );
+        // The Resources editor submits the complete `resources` object built
+        // from its form; an omitted key means "cleared". Deep-merging that
+        // object would keep the old value, so replace it wholesale (R-052 /
+        // UI-03). A null top-level value clears the object.
+        replace_resource_values(&mut merged, &client_values);
 
-        // A redacted secret comes back as `null`; keep the stored value.
-        for key in secret_value_keys(&app.schema) {
-            if merged.get(&key).map(|v| v.is_null()).unwrap_or(false) {
-                if let Some(previous) = rec.values.get(&key) {
-                    merged.insert(key, previous.clone());
-                }
-            }
-        }
+        // A redacted secret comes back as `null`; keep the stored value. This
+        // walks the schema's JSON-pointer paths, so nested secrets keep their
+        // stored value too (R-020).
+        restore_redacted_values(&rec.values, &mut merged, &secret_pointers);
         coerce_schema_numbers(&app.schema, &mut merged);
+        // The drawer sends an explicit `null` for a cleared resource field
+        // (UI-03); remove it instead of handing Helm a null quantity.
+        prune_null_resources(&mut merged);
         // `install` validated the catalog schema; `upgrade` did not.
         validate_install_values(&app, &merged)?;
         validate_resource_quantities(&merged)?;
@@ -1740,7 +1792,11 @@ impl Manager {
         if chart_supports_datasets {
             rec.datasets_layout = DATASETS_LAYOUT_V2.to_string();
         }
-        rec.chart_version = app.version.clone();
+        rec.chart_version = chart.version.clone();
+        rec.source = app.source.clone();
+        rec.channel = app.channel.clone();
+        rec.chart_path = app.chart_path.clone();
+        rec.redacted_keys = secret_pointers;
         rec.updated_at = Some(Utc::now());
         rec.last_error = env_outcome.warning;
         // Charts pull floating tags with `IfNotPresent`; without this the
@@ -1788,21 +1844,24 @@ impl Manager {
                 );
                 continue;
             }
-            let app = match catalog.get(&rec.name) {
-                Ok(app) => app,
+            let app = match self.catalog_app_for(&catalog, &rec) {
+                Some(app) => app,
+                None => {
+                    tracing::warn!(
+                        "app {:?}: dataset layout migration skipped: its catalog entry is gone",
+                        rec.name
+                    );
+                    continue;
+                }
+            };
+            let chart = match self.resolve_chart(&app, "").await {
+                Ok(chart) => chart,
                 Err(e) => {
                     tracing::warn!("app {:?}: dataset layout migration skipped: {e}", rec.name);
                     continue;
                 }
             };
-            let chart_dir = match self.resolve_chart(&app).await {
-                Ok(dir) => dir,
-                Err(e) => {
-                    tracing::warn!("app {:?}: dataset layout migration skipped: {e}", rec.name);
-                    continue;
-                }
-            };
-            if !chart_tree_mentions_datasets(std::path::Path::new(&chart_dir)) {
+            if !chart_tree_mentions_datasets(std::path::Path::new(chart.path())) {
                 tracing::info!(
                     "app {:?}: chart does not read .Values.datasets yet; leaving the layout unchanged",
                     rec.name
@@ -1814,7 +1873,10 @@ impl Manager {
                 STAGE_PREPARING,
                 &format!("Migrating datasets for {}", rec.name),
             );
-            if let Err(e) = self.upgrade(&rec.name, None, None, None, progress).await {
+            if let Err(e) = self
+                .upgrade(&rec.name, None, None, None, &ChartPin::default(), progress)
+                .await
+            {
                 // Leave the record unmarked so the next start retries.
                 tracing::warn!("app {:?}: dataset layout migration failed: {e}", rec.name);
             }
@@ -1829,7 +1891,12 @@ impl Manager {
         patch: &ExposurePatch,
         base_domain: &str,
     ) -> Result<View, String> {
-        let mut rec = self.store.get(name)?;
+        // Serialize with install/upgrade/uninstall and the dataset layout
+        // migration: a read-modify-write of the exposure could otherwise
+        // overwrite a concurrent upgrade's values (R-050).
+        let lock = self.app_lock(name);
+        let _guard = lock.lock().await;
+        let rec = self.store.get(name)?;
         let mut merged = patch.apply(&rec.exposure);
         validate_subdomain(&merged.subdomain)?;
         validate_protected_paths(&merged.protected_paths)?;
@@ -1857,13 +1924,17 @@ impl Manager {
                 .fill_discovered_service(&rec.name, &namespace, merged)
                 .await;
         }
-        rec.exposure = merged;
-        rec.base_domain = base_domain.clone();
-        rec.updated_at = Some(Utc::now());
-        rec.last_error.clear();
-        self.store.upsert(rec.clone())?;
-        self.apply_route(&rec, &base_domain).await;
-        self.reconcile_app_dns(&rec).await;
+        // Field-wise write under the store lock: only the exposure-related
+        // fields this endpoint owns are replaced, so a concurrent value or
+        // dataset write is never clobbered by a stale whole-record upsert.
+        let updated = self.store.update(name, |current| {
+            current.exposure = merged.clone();
+            current.base_domain = base_domain.clone();
+            current.updated_at = Some(Utc::now());
+            current.last_error.clear();
+        })?;
+        self.apply_route(&updated, &base_domain).await;
+        self.reconcile_app_dns(&updated).await;
         self.view(name).await
     }
 
@@ -1885,23 +1956,21 @@ impl Manager {
             &format!("Loading the record for {name}"),
         );
         let rec = self.store.get(name)?;
-        if !rec.orphaned {
-            report(
-                progress,
-                STAGE_INSTALLING,
-                &format!("Removing the {name} release"),
-            );
-            match self.helm_for(&rec).uninstall(name).await {
-                Ok(()) => {}
-                // A record whose release is already gone must stay removable:
-                // treating this as fatal stranded the record (the release is
-                // gone, nothing can ever remove the record again) and the
-                // stranded record 409-blocks reinstalling the app forever.
-                // The route, DNS, Secret, dataset claims and the record are
-                // still cleaned up below, which converges the divergence.
-                Err(e) if Self::release_missing(&e) => {}
-                Err(e) => return Err(e),
-            }
+        report(
+            progress,
+            STAGE_INSTALLING,
+            &format!("Removing the {name} release"),
+        );
+        // An orphaned record is created from a release that exists (backfill
+        // adopted it), so it must attempt the Helm removal too. A record whose
+        // release is already gone must stay removable: treating that as fatal
+        // stranded the record and 409-blocked reinstalling the app forever, so
+        // `release_missing` is tolerated and the route, Secret, claims and the
+        // record are still cleaned up below.
+        match self.helm_for(&rec).uninstall(name).await {
+            Ok(()) => {}
+            Err(e) if Self::release_missing(&e) => {}
+            Err(e) => return Err(e),
         }
         report(progress, STAGE_FINALIZING, "Removing the route and record");
         if let Some(router) = &self.router {
@@ -1966,7 +2035,9 @@ impl Manager {
                             redacted_keys: Vec::new(),
                             ..Default::default()
                         };
-                        view.redacted_keys = self.redact_record_values(&mut view.record);
+                        let (redacted, omitted) = self.redact_record_values(&mut view.record);
+                        view.redacted_keys = redacted;
+                        view.values_omitted = omitted;
                         // The list endpoint does not read the env Secret; keep
                         // the variable names for the detail endpoint only.
                         view.record.env.clear();
@@ -1980,7 +2051,8 @@ impl Manager {
                                 live_version = Some(rel.version.clone());
                             }
                         }
-                        let catalog_app = catalog.as_ref().and_then(|c| c.get(&rec.name).ok());
+                        let catalog_app =
+                            catalog.as_ref().and_then(|c| self.catalog_app_for(c, &rec));
                         let drift = self.image_drift_for(&rec.name);
                         enrich_view(
                             &mut view,
@@ -2020,8 +2092,26 @@ impl Manager {
         self.target_namespace(rec)
     }
 
-    /// Create orphaned records for releases that predate the refactor.
+    /// The catalog entry an installed record belongs to: its own
+    /// source/channel when recorded, otherwise the current winner for legacy
+    /// records. Keeps update checks from following a newer source that merely
+    /// won the name (R-051/R-065).
+    fn catalog_app_for(&self, catalog: &Catalog, rec: &Record) -> Option<crate::catalog::App> {
+        if rec.source.trim().is_empty() {
+            catalog.get(&rec.name).ok()
+        } else {
+            catalog
+                .get_from_source(&rec.name, rec.source.trim(), rec.channel.trim())
+                .ok()
+        }
+    }
+
+    /// Create orphaned records for releases that predate the refactor or
+    /// whose install timed out before the record was written. Adopted records
+    /// stay orphaned (their values cannot be reconstructed from `helm list`
+    /// safely) but are visible and uninstallable instead of invisible.
     pub fn backfill(&self, platform_release: &str, releases: &[helm::App]) -> Result<(), String> {
+        let catalog = (self.catalog)();
         for rel in releases {
             if rel.name == platform_release {
                 continue;
@@ -2029,9 +2119,33 @@ impl Manager {
             if self.store.get(&rel.name).is_ok() {
                 continue;
             }
+            let catalog_app = catalog.as_ref().and_then(|c| c.get(&rel.name).ok());
             let rec = Record {
                 name: rel.name.clone(),
-                chart_version: rel.version.clone(),
+                source: catalog_app
+                    .as_ref()
+                    .map(|app| app.source.clone())
+                    .unwrap_or_default(),
+                channel: catalog_app
+                    .as_ref()
+                    .map(|app| app.channel.clone())
+                    .unwrap_or_default(),
+                chart_path: catalog_app
+                    .as_ref()
+                    .map(|app| app.chart_path.clone())
+                    .unwrap_or_default(),
+                chart_version: if rel.version.is_empty() {
+                    catalog_app
+                        .as_ref()
+                        .map(|app| app.version.clone())
+                        .unwrap_or_default()
+                } else {
+                    rel.version.clone()
+                },
+                redacted_keys: catalog_app
+                    .as_ref()
+                    .map(|app| secret_value_pointers(&app.schema))
+                    .unwrap_or_default(),
                 values: match &rel.values {
                     serde_json::Value::Object(m) => m.clone(),
                     _ => Default::default(),
@@ -2045,6 +2159,51 @@ impl Manager {
             self.store.upsert(rec)?;
         }
         Ok(())
+    }
+
+    /// Adopt releases that exist in an app namespace but have no record, at
+    /// startup. A killed install used to leave a live release that nothing
+    /// listed or could uninstall (R-022).
+    pub async fn backfill_from_cluster(&self) -> Result<(), String> {
+        let platform_release = std::env::var("PLATFORM_RELEASE").unwrap_or_default();
+        let mut namespaces: Vec<(bool, String)> = self
+            .namespace_pool
+            .iter()
+            .map(|namespace| (false, namespace.clone()))
+            .collect();
+        namespaces.extend(
+            self.privileged_namespace_pool
+                .iter()
+                .map(|namespace| (true, namespace.clone())),
+        );
+        namespaces.push((false, self.helm.namespace().to_string()));
+        if let Some(privileged) = &self.helm_priv {
+            namespaces.push((true, privileged.namespace().to_string()));
+        }
+        if !self.priv_ns.is_empty() {
+            namespaces.push((true, self.priv_ns.clone()));
+        }
+        namespaces.sort();
+        namespaces.dedup();
+        let mut errors = Vec::new();
+        for (privileged, namespace) in namespaces {
+            if namespace.is_empty() {
+                continue;
+            }
+            match self.helm_client(privileged, &namespace).list().await {
+                Ok(releases) => {
+                    if let Err(e) = self.backfill(&platform_release, &releases) {
+                        errors.push(format!("{namespace}: {e}"));
+                    }
+                }
+                Err(e) => errors.push(format!("{namespace}: {e}")),
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 
     fn dns_base_domain(&self, rec: &Record) -> String {
@@ -2142,6 +2301,11 @@ impl Manager {
 
     /// Re-apply routing for every non-orphaned record.
     pub async fn reconcile_routes(&self) -> Result<(), String> {
+        // Adopt releases whose install died before it recorded anything, so
+        // they show in the Installed list and can be uninstalled (R-022).
+        if let Err(e) = self.backfill_from_cluster().await {
+            tracing::warn!("app release backfill at startup: {e}");
+        }
         // Drop egress policies a previous process pre-created for an install
         // that never recorded a release. This runs even when routing is
         // disabled: the policy is a namespace-wide egress allow.
@@ -2530,6 +2694,87 @@ impl Manager {
         }
     }
 
+    /// Remove a release with this name left in a fresh namespace by a failed
+    /// or timed-out earlier attempt. The record check already ran, so any
+    /// release here is not managed by the platform (R-022).
+    async fn remove_stale_release(
+        &self,
+        name: &str,
+        privileged: bool,
+        namespace: &str,
+    ) -> Result<(), String> {
+        let client = self.helm_client(privileged, namespace);
+        let releases = match client.list().await {
+            Ok(releases) => releases,
+            Err(e) => {
+                tracing::warn!("app {name}: listing releases in {namespace}: {e}");
+                return Ok(());
+            }
+        };
+        if !releases.iter().any(|release| release.name == name) {
+            return Ok(());
+        }
+        match client.uninstall(name).await {
+            Ok(()) => {}
+            Err(e) if Self::release_missing(&e) => {}
+            Err(e) => {
+                return Err(format!(
+                    "removing the stale {name:?} release left in {namespace}: {e}"
+                ))
+            }
+        }
+        if let Some(router) = &self.router {
+            if let Err(e) = router.delete(namespace, name).await {
+                tracing::warn!("app {name}: removing routing for a stale release: {e}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete platform-owned claims, PVs and env Secrets for apps that have no
+    /// record in `namespace`, before the namespace is reused. Every object is
+    /// matched by its platform label, so an operator-managed object without
+    /// the labels is never touched (R-023).
+    async fn reconcile_namespace_orphans(&self, namespace: &str, incoming: &str) {
+        let Some(kube) = &self.kube else {
+            return;
+        };
+        let mut keep: std::collections::HashSet<String> = self
+            .store
+            .list()
+            .into_iter()
+            .filter(|rec| self.target_namespace(rec) == namespace)
+            .map(|rec| rec.name)
+            .collect();
+        keep.insert(incoming.to_string());
+
+        if let Ok(list) = kube
+            .list_json("pvc", namespace, Some("naslos.local/app"))
+            .await
+        {
+            for (name, app) in orphaned_objects(&list, "naslos.local/app", &keep) {
+                tracing::warn!("app namespace {namespace}: removing orphaned PVC {name} for {app}");
+                let _ = kube.delete("pvc", &name, namespace).await;
+                let _ = kube.delete("pv", &name, "").await;
+            }
+        }
+        if let Ok(list) = kube
+            .list_json(
+                "secret",
+                namespace,
+                Some("app.kubernetes.io/managed-by=naslos"),
+            )
+            .await
+        {
+            for (name, app) in orphaned_objects(&list, "naslos.io/app", &keep) {
+                tracing::warn!(
+                    "app namespace {namespace}: removing orphaned Secret {name} for {app}"
+                );
+                let _ = kube.delete("secret", &name, namespace).await;
+            }
+        }
+    }
+
     /// Ensure a pool-scoped local-path provisioner and point every chart
     /// persistence PVC at it. The provisioner's hostPath PVs land under
     /// `/var/mnt/<pool>/apps`.
@@ -2644,9 +2889,70 @@ impl Manager {
         }
     }
 
-    async fn resolve_chart(&self, app: &crate::catalog::App) -> Result<String, String> {
+    /// Resolve the catalog entry an install/upgrade is allowed to use.
+    ///
+    /// An installed app always resolves from its recorded source/channel, so a
+    /// user source that later wins the bare name cannot silently take over an
+    /// upgrade. An explicit `pin.source` is a deliberate migration (R-051).
+    fn pinned_app(
+        &self,
+        catalog: &Catalog,
+        name: &str,
+        rec_source: &str,
+        rec_channel: &str,
+        pin: &ChartPin,
+    ) -> Result<crate::catalog::App, String> {
+        let source = if pin.source.trim().is_empty() {
+            rec_source.trim()
+        } else {
+            pin.source.trim()
+        };
+        if source.is_empty() {
+            let winner = catalog.get(name)?;
+            if !pin.channel.trim().is_empty() {
+                return catalog.get_pinned(name, &winner.source, pin.channel.trim());
+            }
+            return Ok(winner);
+        }
+        let channel = if pin.channel.trim().is_empty() {
+            rec_channel.trim()
+        } else {
+            pin.channel.trim()
+        };
+        catalog.get_from_source(name, source, channel)
+    }
+
+    /// Copy the resolved chart into a private per-job directory and verify the
+    /// version the caller confirmed is the one Helm will actually install.
+    async fn resolve_chart(
+        &self,
+        app: &crate::catalog::App,
+        requested_version: &str,
+    ) -> Result<ResolvedChart, String> {
         self.charts.ensure_fresh(&app.source, &app.channel).await?;
-        self.charts.app_dir(&app.source, &app.channel, &app.name)
+        let read = self.charts.source_read_lock(&app.source).await;
+        let source_dir = self.charts.app_dir(&app.source, &app.channel, &app.name)?;
+        crate::chartsrepo::assert_regular_tree(&source_dir)?;
+        let snapshot = self
+            .charts
+            .snapshot_app(&app.source, &app.channel, &app.name)?;
+        drop(read);
+        crate::chartsrepo::assert_regular_tree(&snapshot.path)?;
+        let actual = crate::chartsrepo::chart_version(&snapshot.path)
+            .unwrap_or_else(|| app.version.trim().to_string());
+        if !requested_version.trim().is_empty() && actual != requested_version.trim() {
+            return Err(format!(
+                "chart version changed: confirmed {:?}, resolved {:?} from {}/{}; reload the catalog and confirm again",
+                requested_version.trim(),
+                actual,
+                app.source,
+                app.channel
+            ));
+        }
+        Ok(ResolvedChart {
+            _snapshot: snapshot,
+            version: actual,
+        })
     }
 
     pub async fn view(&self, name: &str) -> Result<View, String> {
@@ -2661,7 +2967,9 @@ impl Manager {
             redacted_keys: Vec::new(),
             ..Default::default()
         };
-        view.redacted_keys = self.redact_record_values(&mut view.record);
+        let (redacted, omitted) = self.redact_record_values(&mut view.record);
+        view.redacted_keys = redacted;
+        view.values_omitted = omitted;
         let mut live_version: Option<String> = None;
         if let Ok(rel) = self.helm_for(&rec).get(name).await {
             view.status = rel.status.clone();
@@ -2672,7 +2980,7 @@ impl Manager {
                 live_version = Some(rel.version);
             }
         }
-        let catalog_app = (self.catalog)().and_then(|c| c.get(name).ok());
+        let catalog_app = (self.catalog)().and_then(|c| self.catalog_app_for(&c, &rec));
         let drift = self.image_drift_for(name);
         enrich_view(
             &mut view,
@@ -2909,7 +3217,7 @@ impl Manager {
             .into_iter()
             .filter(|rec| !rec.orphaned)
             .filter_map(|rec| {
-                let app = catalog.get(&rec.name).ok()?;
+                let app = self.catalog_app_for(&catalog, &rec)?;
                 let chart_update = update_available(rec.chart_version.trim(), app.version.trim());
                 let image_update = self.image_drift_for(&rec.name).is_some()
                     && !update_available(app.version.trim(), rec.chart_version.trim());
@@ -2940,27 +3248,17 @@ impl Manager {
         self.usage.collect(kube, &self.targets()).await
     }
 
-    /// Mask secret values in a record for API responses (returns the keys).
-    pub fn redact_record_values(&self, record: &mut Record) -> Vec<String> {
-        let keys = match (self.catalog)().and_then(|c| c.get(&record.name).ok()) {
-            Some(app) => secret_value_keys(&app.schema),
-            None => return Vec::new(),
-        };
-        let mut redacted: Vec<String> = keys
-            .into_iter()
-            .filter(|key| {
-                record
-                    .values
-                    .get(key)
-                    .map(|v| !v.is_null())
-                    .unwrap_or(false)
-            })
-            .collect();
-        for key in &redacted {
-            record.values.insert(key.clone(), serde_json::Value::Null);
-        }
-        redacted.sort();
-        redacted
+    /// Mask secret values in a record for API responses.
+    ///
+    /// The catalog schema is walked as JSON pointers, so a nested secret
+    /// (`postgresql.auth.password`, `smtp.credentials.token`) is masked at its
+    /// own path instead of leaking because only its leaf name was compared
+    /// with top-level keys. When the catalog has no entry, the persisted
+    /// pointer list is used; without either, the whole value map is omitted
+    /// (fail closed) rather than returned unredacted.
+    pub fn redact_record_values(&self, record: &mut Record) -> (Vec<String>, bool) {
+        let catalog_app = (self.catalog)().and_then(|c| self.catalog_app_for(&c, record));
+        redact_record_with_catalog(record, catalog_app.as_ref())
     }
 
     fn url_for(&self, rec: &Record) -> String {
@@ -2984,6 +3282,25 @@ impl Manager {
     }
 }
 
+/// The source/channel/chart version the operator confirmed. Empty fields fall
+/// back to the installed record (upgrade) or the current catalog winner
+/// (install); a non-empty version must match the chart actually resolved.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ChartPin {
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub channel: String,
+    #[serde(default, rename = "chartVersion")]
+    pub chart_version: String,
+}
+
+impl ChartPin {
+    pub fn is_empty(&self) -> bool {
+        self.source.is_empty() && self.channel.is_empty() && self.chart_version.is_empty()
+    }
+}
+
 /// `Install` request input.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct InstallRequest {
@@ -2991,6 +3308,9 @@ pub struct InstallRequest {
     pub name: String,
     #[serde(default)]
     pub values: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Source/channel/version confirmed by the operator (R-051/R-065).
+    #[serde(default)]
+    pub pin: ChartPin,
     /// Install-time exposure overrides. A patch (not the persisted struct) so
     /// an omitted field keeps the catalog default instead of deserializing a
     /// bool to `false`/an `internet` default of `true`.
@@ -3049,13 +3369,26 @@ fn validate_pool_limit(limit: usize, provisioned: usize, used: usize) -> Result<
 }
 
 /// Property names the catalog marks as secrets (`format: password` or
-/// `writeOnly: true`), at any nesting depth.
+/// `writeOnly: true`), at any nesting depth. Kept for the config-export
+/// redactor, which removes whole named keys; API responses use the pointer
+/// paths from [`secret_value_pointers`].
 pub fn secret_value_keys(schema: &serde_json::Value) -> std::collections::HashSet<String> {
-    fn walk(node: &serde_json::Value, out: &mut std::collections::HashSet<String>) {
+    secret_value_pointers(schema)
+        .into_iter()
+        .filter_map(|pointer| pointer.rsplit('/').next().map(str::to_string))
+        .collect()
+}
+
+/// JSON-pointer paths to every property the schema marks as secret, at any
+/// nesting depth. A top-level `password` becomes `/password`; a nested
+/// `postgresql.auth.password` becomes `/postgresql/auth/password`.
+pub fn secret_value_pointers(schema: &serde_json::Value) -> Vec<String> {
+    fn walk(node: &serde_json::Value, pointer: &str, out: &mut Vec<String>) {
         match node {
             serde_json::Value::Object(map) => {
                 if let Some(serde_json::Value::Object(props)) = map.get("properties") {
                     for (key, prop) in props {
+                        let child = format!("{pointer}/{}", escape_pointer(key));
                         let secret = prop
                             .get("format")
                             .and_then(|f| f.as_str())
@@ -3066,25 +3399,111 @@ pub fn secret_value_keys(schema: &serde_json::Value) -> std::collections::HashSe
                                 .and_then(|w| w.as_bool())
                                 .unwrap_or(false);
                         if secret {
-                            out.insert(key.clone());
+                            out.push(child.clone());
                         }
+                        walk(prop, &child, out);
                     }
                 }
-                for value in map.values() {
-                    walk(value, out);
+                for (key, value) in map {
+                    if key == "properties" {
+                        continue;
+                    }
+                    walk(value, &format!("{pointer}/{}", escape_pointer(key)), out);
                 }
             }
             serde_json::Value::Array(items) => {
-                for item in items {
-                    walk(item, out);
+                for (index, item) in items.iter().enumerate() {
+                    walk(item, &format!("{pointer}/{index}"), out);
                 }
             }
             _ => {}
         }
     }
-    let mut out = std::collections::HashSet::new();
-    walk(schema, &mut out);
+    let mut out = Vec::new();
+    walk(schema, "", &mut out);
+    out.sort();
+    out.dedup();
     out
+}
+
+fn escape_pointer(key: &str) -> String {
+    key.replace('~', "~0").replace('/', "~1")
+}
+
+/// The UI has historically seen top-level keys (`password`); keep that shape
+/// for them while nested paths stay full JSON pointers.
+fn api_redaction_label(pointer: &str) -> String {
+    match pointer.strip_prefix('/') {
+        Some(key) if !key.contains('/') => key.replace("~1", "/").replace("~0", "~"),
+        _ => pointer.to_string(),
+    }
+}
+
+/// Redact one record using the given catalog entry (or the record's persisted
+/// pointer list). Returns the labels actually masked and whether the values
+/// had to be omitted because no safe redaction was possible.
+pub fn redact_record_with_catalog(
+    record: &mut Record,
+    catalog_app: Option<&crate::catalog::App>,
+) -> (Vec<String>, bool) {
+    let has_catalog = catalog_app.is_some();
+    let pointers = match catalog_app {
+        Some(app) => {
+            let pointers = secret_value_pointers(&app.schema);
+            if !pointers.is_empty() {
+                record.redacted_keys = pointers.clone();
+            }
+            pointers
+        }
+        None => record.redacted_keys.clone(),
+    };
+    if !has_catalog && pointers.is_empty() && !record.values.is_empty() {
+        record.values.clear();
+        return (Vec::new(), true);
+    }
+    let mut redacted = Vec::new();
+    let mut root = serde_json::Value::Object(std::mem::take(&mut record.values));
+    for pointer in pointers {
+        let Some(slot) = root.pointer_mut(&pointer) else {
+            continue;
+        };
+        if slot.is_null() {
+            continue;
+        }
+        *slot = serde_json::Value::Null;
+        redacted.push(api_redaction_label(&pointer));
+    }
+    record.values = root.as_object().cloned().unwrap_or_default();
+    redacted.sort();
+    redacted.dedup();
+    (redacted, false)
+}
+
+/// Copy the stored value back into `merged` when the client echoed a redacted
+/// nested secret as `null`, mirroring the top-level rule in `upgrade`.
+fn restore_redacted_values(
+    stored: &serde_json::Map<String, serde_json::Value>,
+    merged: &mut serde_json::Map<String, serde_json::Value>,
+    pointers: &[String],
+) {
+    let mut root = serde_json::Value::Object(std::mem::take(merged));
+    let stored = serde_json::Value::Object(stored.clone());
+    for pointer in pointers {
+        let incoming_null = root
+            .pointer(pointer)
+            .map(|value| value.is_null())
+            .unwrap_or(false);
+        if !incoming_null {
+            continue;
+        }
+        let Some(previous) = stored.pointer(pointer).cloned() else {
+            continue;
+        };
+        if let Some(slot) = root.pointer_mut(pointer) {
+            *slot = previous;
+        }
+    }
+    *merged = root.as_object().cloned().unwrap_or_default();
 }
 
 fn report(progress: Option<&ProgressFn>, stage: &str, message: &str) {
@@ -3150,6 +3569,35 @@ pub fn exposure_for(
         e.scheme = "http".to_string();
     }
     e
+}
+
+/// `(name, app-label)` of list items whose `label` value is not in `keep`.
+/// Only platform-labeled objects are candidates; anything without both labels
+/// is operator-managed and ignored (R-023).
+pub fn orphaned_objects(
+    list: &serde_json::Value,
+    label: &str,
+    keep: &std::collections::HashSet<String>,
+) -> Vec<(String, String)> {
+    let label_pointer = format!("/metadata/labels/{}", label.replace('/', "~1"));
+    let mut out = Vec::new();
+    for item in list
+        .get("items")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let app = item.pointer(&label_pointer).and_then(|v| v.as_str());
+        let name = item.pointer("/metadata/name").and_then(|v| v.as_str());
+        let (Some(app), Some(name)) = (app, name) else {
+            continue;
+        };
+        if keep.contains(app) {
+            continue;
+        }
+        out.push((name.to_string(), app.to_string()));
+    }
+    out
 }
 
 /// Whether an install may pre-create the Internet egress policy: the app must
@@ -3392,6 +3840,56 @@ fn format_bytes(bytes: f64) -> String {
 /// Reject invalid CPU/memory quantities before Helm hands them to Kubernetes,
 /// where the failure would surface as an opaque `--wait` timeout. Other keys
 /// under `requests`/`limits` (e.g. `ephemeral-storage`) are left to Kubernetes.
+/// Replace the platform-edited `resources` object instead of deep-merging it.
+/// An omitted key is a cleared field; the drawer sends the complete object
+/// built from its form. A `null` top-level value removes the object.
+pub fn replace_resource_values(
+    merged: &mut serde_json::Map<String, serde_json::Value>,
+    incoming: &serde_json::Map<String, serde_json::Value>,
+) {
+    let Some(resources) = incoming.get("resources") else {
+        return;
+    };
+    if resources.is_null() {
+        merged.remove("resources");
+    } else {
+        merged.insert("resources".to_string(), resources.clone());
+    }
+}
+
+/// Remove `null` resource entries so a cleared field is a removal, not a Helm
+/// value. Handles the flat layout (`resources.requests.cpu`) and the
+/// per-component layout (`resources.<component>.limits.cpu`) the catalog uses.
+pub fn prune_null_resources(values: &mut serde_json::Map<String, serde_json::Value>) {
+    fn prune_sections(entry: &mut serde_json::Map<String, serde_json::Value>) {
+        for section in ["requests", "limits"] {
+            let Some(quantities) = entry.get_mut(section).and_then(|v| v.as_object_mut()) else {
+                continue;
+            };
+            quantities.retain(|_, value| !value.is_null());
+            if quantities.is_empty() {
+                entry.remove(section);
+            }
+        }
+    }
+    let Some(resources) = values.get_mut("resources").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    prune_sections(resources);
+    let mut empty_groups = Vec::new();
+    for (group, entry) in resources.iter_mut() {
+        if let Some(entry) = entry.as_object_mut() {
+            prune_sections(entry);
+            if entry.is_empty() {
+                empty_groups.push(group.clone());
+            }
+        }
+    }
+    for group in empty_groups {
+        resources.remove(&group);
+    }
+}
+
 pub fn validate_resource_quantities(
     values: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
@@ -3405,6 +3903,9 @@ pub fn validate_resource_quantities(
             };
             for (field, raw) in quantities {
                 if field != "cpu" && field != "memory" {
+                    continue;
+                }
+                if raw.is_null() {
                     continue;
                 }
                 let text = match raw {
@@ -3688,27 +4189,49 @@ impl Store {
 
     pub fn upsert(&self, rec: Record) -> Result<(), String> {
         let mut guard = self.records.lock().unwrap();
-        guard.insert(rec.name.clone(), clone_record(&rec));
-        self.save_locked(&guard)
+        // Clone-and-swap: the previous value is restored when the durable
+        // write fails, so memory never runs ahead of disk (R-049a).
+        let previous = guard.insert(rec.name.clone(), clone_record(&rec));
+        if let Err(e) = self.save_locked(&guard) {
+            match previous {
+                Some(previous) => {
+                    guard.insert(rec.name, previous);
+                }
+                None => {
+                    guard.remove(&rec.name);
+                }
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 
     pub fn update(&self, name: &str, mutate: impl FnOnce(&mut Record)) -> Result<Record, String> {
         let mut guard = self.records.lock().unwrap();
-        let rec = guard
-            .get_mut(name)
+        let previous = guard
+            .get(name)
+            .map(clone_record)
             .ok_or_else(|| format!("app {name:?} not found"))?;
+        let rec = guard.get_mut(name).expect("record was just checked");
         mutate(rec);
         let out = clone_record(rec);
-        self.save_locked(&guard)?;
+        if let Err(e) = self.save_locked(&guard) {
+            guard.insert(name.to_string(), previous);
+            return Err(e);
+        }
         Ok(out)
     }
 
     pub fn delete(&self, name: &str) -> Result<(), String> {
         let mut guard = self.records.lock().unwrap();
-        if guard.remove(name).is_none() {
-            return Err(format!("app {name:?} not found"));
+        let previous = guard
+            .remove(name)
+            .ok_or_else(|| format!("app {name:?} not found"))?;
+        if let Err(e) = self.save_locked(&guard) {
+            guard.insert(name.to_string(), previous);
+            return Err(e);
         }
-        self.save_locked(&guard)
+        Ok(())
     }
 
     fn save_locked(&self, guard: &HashMap<String, Record>) -> Result<(), String> {
@@ -4480,7 +5003,10 @@ mod value_coercion_tests {
 
 #[cfg(test)]
 mod resource_quantity_tests {
-    use super::{quantity_number, resource_totals, validate_resource_quantities};
+    use super::{
+        prune_null_resources, quantity_number, replace_resource_values, resource_totals,
+        validate_resource_quantities,
+    };
     use serde_json::json;
 
     fn values(resources: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -4547,6 +5073,66 @@ mod resource_quantity_tests {
     }
 
     #[test]
+    fn resources_replace_instead_of_deep_merging_so_omitted_keys_clear() {
+        let mut stored = values(json!({
+            "requests": { "cpu": "100m", "memory": "256Mi" },
+            "limits": { "cpu": "1", "memory": "1Gi" }
+        }));
+        let incoming = json!({
+            "resources": { "requests": { "cpu": "200m" } }
+        });
+        let incoming = incoming.as_object().unwrap();
+        replace_resource_values(&mut stored, incoming);
+        prune_null_resources(&mut stored);
+        assert_eq!(stored["resources"]["requests"]["cpu"], json!("200m"));
+        assert!(
+            stored["resources"]["requests"].get("memory").is_none(),
+            "an omitted memory request must be cleared"
+        );
+        assert!(
+            stored["resources"].get("limits").is_none(),
+            "the complete object replaces the stored resources"
+        );
+    }
+
+    #[test]
+    fn clearing_all_resources_replaces_the_object_with_an_empty_one() {
+        let mut stored = values(json!({
+            "requests": { "cpu": "100m" },
+            "limits": { "memory": "1Gi" }
+        }));
+        let incoming = json!({ "resources": {} });
+        replace_resource_values(&mut stored, incoming.as_object().unwrap());
+        prune_null_resources(&mut stored);
+        assert_eq!(stored["resources"], json!({}));
+        assert!(stored["resources"].get("requests").is_none());
+        assert!(stored["resources"].get("limits").is_none());
+
+        let incoming = json!({ "resources": null });
+        replace_resource_values(&mut stored, incoming.as_object().unwrap());
+        assert!(stored.get("resources").is_none());
+    }
+
+    #[test]
+    fn cleared_resource_fields_are_removed_and_null_is_tolerated() {
+        let mut map = values(json!({
+            "requests": { "cpu": null, "memory": "256Mi" },
+            "limits": { "cpu": "2", "memory": null },
+            "postgres": { "limits": { "cpu": null, "memory": "1Gi" } }
+        }));
+        prune_null_resources(&mut map);
+        assert!(validate_resource_quantities(&map).is_ok());
+        assert_eq!(map["resources"]["requests"]["memory"], json!("256Mi"));
+        assert_eq!(map["resources"]["limits"]["cpu"], json!("2"));
+        assert!(map["resources"]["requests"].get("cpu").is_none());
+        assert!(map["resources"]["postgres"]["limits"].get("cpu").is_none());
+        assert_eq!(
+            map["resources"]["postgres"]["limits"]["memory"],
+            json!("1Gi")
+        );
+    }
+
+    #[test]
     fn quantities_parse_decimal_and_binary_suffixes() {
         assert_eq!(quantity_number("100m"), Some(0.1));
         assert_eq!(quantity_number("0.5"), Some(0.5));
@@ -4580,5 +5166,249 @@ mod resource_quantity_tests {
         assert_eq!(totals.requests_cpu, 1.25);
         assert_eq!(totals.limits_cpu, 6.0);
         assert_eq!(totals.requests_memory, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_hardening_tests {
+    use super::{
+        orphaned_objects, redact_record_with_catalog, restore_redacted_values, secret_value_keys,
+        secret_value_pointers, Record, Store,
+    };
+    use crate::catalog::App;
+    use serde_json::json;
+    use std::collections::HashSet;
+
+    fn nested_secret_app() -> App {
+        App {
+            name: "demo".into(),
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "password": { "type": "string", "format": "password" },
+                    "postgresql": {
+                        "type": "object",
+                        "properties": {
+                            "auth": {
+                                "type": "object",
+                                "properties": {
+                                    "password": { "type": "string", "format": "password" }
+                                }
+                            }
+                        }
+                    },
+                    "smtp": {
+                        "type": "object",
+                        "properties": {
+                            "credentials": {
+                                "type": "object",
+                                "properties": {
+                                    "token": { "type": "string", "writeOnly": true }
+                                }
+                            }
+                        }
+                    },
+                    "user": { "type": "string" }
+                }
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn nested_record() -> Record {
+        Record {
+            name: "demo".into(),
+            values: json!({
+                "password": "top",
+                "postgresql": { "auth": { "password": "pg" } },
+                "smtp": { "credentials": { "token": "smtp" } },
+                "user": "admin"
+            })
+            .as_object()
+            .cloned()
+            .unwrap(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn schema_secrets_are_json_pointer_paths_at_every_depth() {
+        let pointers = secret_value_pointers(&nested_secret_app().schema);
+        assert_eq!(
+            pointers,
+            vec![
+                "/password".to_string(),
+                "/postgresql/auth/password".to_string(),
+                "/smtp/credentials/token".to_string()
+            ]
+        );
+        let keys = secret_value_keys(&nested_secret_app().schema);
+        assert!(keys.contains("password"));
+        assert!(keys.contains("token"));
+        assert!(!keys.contains("user"));
+    }
+
+    #[test]
+    fn nested_secrets_are_redacted_at_their_own_path() {
+        let app = nested_secret_app();
+        let mut record = nested_record();
+        let (redacted, omitted) = redact_record_with_catalog(&mut record, Some(&app));
+        assert!(!omitted);
+        assert_eq!(record.values["password"], json!(null));
+        assert_eq!(record.values["postgresql"]["auth"]["password"], json!(null));
+        assert_eq!(record.values["smtp"]["credentials"]["token"], json!(null));
+        assert_eq!(record.values["user"], json!("admin"));
+        assert!(redacted.contains(&"password".to_string()));
+        assert!(redacted.contains(&"/postgresql/auth/password".to_string()));
+        assert!(redacted.contains(&"/smtp/credentials/token".to_string()));
+        assert_eq!(
+            record.redacted_keys,
+            vec![
+                "/password".to_string(),
+                "/postgresql/auth/password".to_string(),
+                "/smtp/credentials/token".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_catalog_omits_values_instead_of_leaking_them() {
+        let mut record = nested_record();
+        let (redacted, omitted) = redact_record_with_catalog(&mut record, None);
+        assert!(omitted);
+        assert!(redacted.is_empty());
+        assert!(record.values.is_empty());
+    }
+
+    #[test]
+    fn persisted_pointer_list_redacts_without_a_catalog() {
+        let mut record = nested_record();
+        record.redacted_keys = vec![
+            "/postgresql/auth/password".to_string(),
+            "/smtp/credentials/token".to_string(),
+        ];
+        let (redacted, omitted) = redact_record_with_catalog(&mut record, None);
+        assert!(!omitted);
+        assert_eq!(record.values["postgresql"]["auth"]["password"], json!(null));
+        assert_eq!(record.values["smtp"]["credentials"]["token"], json!(null));
+        assert_eq!(record.values["user"], json!("admin"));
+        assert_eq!(redacted.len(), 2);
+    }
+
+    #[test]
+    fn a_null_nested_secret_keeps_the_stored_value_on_upgrade() {
+        let stored = nested_record().values;
+        let mut merged = json!({
+            "postgresql": { "auth": { "password": null } },
+            "smtp": { "credentials": { "token": null } },
+            "user": "operator"
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        restore_redacted_values(
+            &stored,
+            &mut merged,
+            &[
+                "/postgresql/auth/password".to_string(),
+                "/smtp/credentials/token".to_string(),
+            ],
+        );
+        assert_eq!(merged["postgresql"]["auth"]["password"], json!("pg"));
+        assert_eq!(merged["smtp"]["credentials"]["token"], json!("smtp"));
+        assert_eq!(merged["user"], json!("operator"));
+    }
+
+    #[test]
+    fn a_failed_store_save_restores_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent_is_file = dir.path().join("not-a-directory");
+        std::fs::write(&parent_is_file, b"x").unwrap();
+        let path = parent_is_file.join("apps.json").display().to_string();
+        let store = Store::new(&path);
+        let mut rec = Record {
+            name: "demo".into(),
+            values: json!({ "password": "secret" })
+                .as_object()
+                .cloned()
+                .unwrap(),
+            ..Default::default()
+        };
+        assert!(store.upsert(rec.clone()).is_err());
+        assert!(
+            store.get("demo").is_err(),
+            "memory must not run ahead of disk"
+        );
+        rec.values.clear();
+        rec.last_error = "new".into();
+        // A successful path then a failing update must also restore.
+        let ok_dir = tempfile::tempdir().unwrap();
+        let state_dir = ok_dir.path().join("state");
+        std::fs::create_dir(&state_dir).unwrap();
+        let ok = Store::new(&format!("{}/apps.json", state_dir.display()));
+        ok.upsert(rec.clone()).unwrap();
+        std::fs::remove_dir_all(&state_dir).unwrap();
+        std::fs::write(&state_dir, b"blocker").unwrap();
+        assert!(ok
+            .update("demo", |r| r.last_error = "changed".into())
+            .is_err());
+        assert_eq!(ok.get("demo").unwrap().last_error, "new");
+        assert!(ok.delete("demo").is_err());
+        assert_eq!(ok.get("demo").unwrap().last_error, "new");
+    }
+
+    #[test]
+    fn exposure_updates_do_not_clobber_unrelated_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(&format!("{}/apps.json", dir.path().display()));
+        let rec = Record {
+            name: "demo".into(),
+            values: json!({ "port": 8080 }).as_object().cloned().unwrap(),
+            ..Default::default()
+        };
+        store.upsert(rec).unwrap();
+        store
+            .update("demo", |current| {
+                current.exposure.subdomain = "demo".into();
+                current.updated_at = Some(chrono::Utc::now());
+            })
+            .unwrap();
+        let after = store.get("demo").unwrap();
+        assert_eq!(after.values["port"], json!(8080));
+        assert_eq!(after.exposure.subdomain, "demo");
+    }
+
+    #[test]
+    fn orphan_reconciliation_only_returns_unkept_labeled_objects() {
+        let list = json!({
+            "items": [
+                { "metadata": { "name": "naslos-ds-old-media", "labels": { "naslos.local/app": "old" } } },
+                { "metadata": { "name": "naslos-ds-live-media", "labels": { "naslos.local/app": "live" } } },
+                { "metadata": { "name": "operator-claim", "labels": {} } }
+            ]
+        });
+        let keep: HashSet<String> = HashSet::from(["live".to_string()]);
+        let orphans = orphaned_objects(&list, "naslos.local/app", &keep);
+        assert_eq!(
+            orphans,
+            vec![("naslos-ds-old-media".to_string(), "old".to_string())]
+        );
+    }
+
+    #[test]
+    fn source_pin_is_recorded_on_the_record() {
+        let rec: Record = serde_json::from_value(json!({
+            "name": "demo",
+            "source": "mine",
+            "channel": "Prod",
+            "chartVersion": "1.2.3",
+            "secretPaths": ["/postgresql/auth/password"]
+        }))
+        .unwrap();
+        assert_eq!(rec.source, "mine");
+        assert_eq!(rec.redacted_keys, vec!["/postgresql/auth/password"]);
+        let encoded = serde_json::to_value(&rec).unwrap();
+        assert_eq!(encoded["source"], "mine");
+        assert_eq!(encoded["secretPaths"][0], "/postgresql/auth/password");
     }
 }
