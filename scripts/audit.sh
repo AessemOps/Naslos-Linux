@@ -197,13 +197,16 @@ for pvc_name in ("naslos-shares-config", "naslos-openldap-backups"):
     assert pvc["metadata"].get("annotations", {}).get("helm.sh/resource-policy") == "keep", \
         f"{pvc_name} must be kept on uninstall"
 # R-030 chart: the upgrader admission policy pins image, entrypoint, args, env,
-# volumes and securityContext.
+# volumes and securityContext. The arg allowlist is checked exhaustively in
+# check_system_upgrade_render (C-1a); here it only has to be present.
 vap = find("ValidatingAdmissionPolicy", "naslos-upgrader-guard")
 assert vap, "upgrader ValidatingAdmissionPolicy missing"
 expressions = " ".join(v["expression"] for v in vap["spec"]["validations"])
 for fragment in (
     "naslos-upgrade",
-    "^--(op|operation-id|from|version|pack-url|sha256|namespace|release)",
+    "pack-sig-url",
+    "pack-pubkey",
+    "pack-file",
     "NASLOS_NAMESPACE",
     "hostPath",
     "/var/lib/naslos",
@@ -908,28 +911,91 @@ check_system_upgrade_render() {
     "kind: ValidatingAdmissionPolicyBinding" \
     "name: NASLOS_RELEASE_PROFILE" \
     "name: NASLOS_API_IMAGE" \
-    "name: SYSTEM_UPGRADER_STATE_PVC" \
-    "command\[0\] == 'naslos-upgrade'"; do
-    if ! grep -q "$needle" "$f"; then
+    "name: SYSTEM_UPGRADER_STATE_PVC"; do
+    if ! grep -qF "$needle" "$f"; then
       echo "missing from the rendered installer profile: $needle" >&2
       rc=1
     fi
   done
-  # The API creates the upgrader Job with kubectl apply, so its namespaced
-  # Role must include patch (the 0.3.3 live upgrade failed without it).
   python3 - "$f" <<'PY' || rc=1
-import sys, yaml
-docs = list(yaml.safe_load_all(open(sys.argv[1])))
-for doc in docs:
-    if not doc or doc.get("kind") != "Role":
-        continue
-    if doc.get("metadata", {}).get("name") != "naslos-api-system":
-        continue
-    for rule in doc.get("rules", []):
-        if "batch" in rule.get("apiGroups", []) and "jobs" in rule.get("resources", []):
-            if "patch" in rule.get("verbs", []):
-                raise SystemExit(0)
-raise SystemExit("naslos-api-system Role cannot patch jobs")
+import re, sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+
+def find(kind, name):
+    for d in docs:
+        if d.get("kind") == kind and d.get("metadata", {}).get("name") == name:
+            return d
+    return None
+
+# C-1a: the arg allowlist must admit exactly the flags job_spec emits. The
+# check used to grep a truncated regex, so the policy could deny every upgrade
+# while CI stayed green.
+vap = find("ValidatingAdmissionPolicy", "naslos-upgrader-guard")
+assert vap, "upgrader ValidatingAdmissionPolicy missing"
+expr = "\n".join(v.get("expression", "") for v in vap["spec"]["validations"])
+match = re.search(r"a\.matches\('([^']+)'\)", expr)
+assert match, "the upgrader policy has no arg allowlist"
+allow = re.compile(match.group(1))
+flags = [
+    "--op", "--operation-id", "--from", "--version", "--pack-url",
+    "--sha256", "--pack-sig-url", "--pack-pubkey", "--pack-file",
+    "--pack-sig-file", "--namespace", "--release",
+]
+for flag in flags:
+    assert allow.search(flag), f"the upgrader arg allowlist denies {flag} (C-1a)"
+# Negative control: it is a flag set, not a prefix match.
+for bad in ("--privileged", "--pack-url-evil", "--command", "--mount"):
+    assert not allow.search(bad), f"the upgrader arg allowlist admits {bad}"
+
+# C-1b: containment. Each of these closes a way to run arbitrary code with the
+# cluster-admin ServiceAccount: a shell probe, a lifecycle hook, envFrom, a
+# privileged container, an added capability, a container-level identity
+# override, or a Secret/claim that is not the chart-configured one.
+for fragment in (
+    "command == ['naslos-upgrade']",
+    "!has(c.lifecycle)",
+    "!has(c.livenessProbe)",
+    "!has(c.readinessProbe)",
+    "!has(c.startupProbe)",
+    "!has(c.envFrom)",
+    "!has(e.valueFrom)",
+    "!has(c.securityContext.privileged)",
+    "c.securityContext.capabilities.add.size() == 0",
+    "!has(c.securityContext.runAsUser)",
+    "!has(c.securityContext.runAsGroup)",
+    "!has(c.securityContext.runAsNonRoot)",
+    "!has(c.securityContext.seccompProfile)",
+    "v.secret.secretName == 'naslos-talosconfig'",
+    "v.secret.items[0].key == 'talosconfig'",
+    "v.persistentVolumeClaim.claimName == 'naslos-shares-config'",
+    "!has(m.subPath)",
+    "m.mountPath == '/var/run/secrets/talos.dev'",
+    "object.spec.restartPolicy == 'Never'",
+    "object.spec.securityContext.runAsGroup == 65532",
+    "object.spec.securityContext.fsGroup == 65532",
+):
+    assert fragment in expr, f"upgrader policy is missing {fragment!r}"
+
+# The API creates the upgrader Job with kubectl apply, so its namespaced
+# Role must include patch (the 0.3.3 live upgrade failed without it).
+role = find("Role", "naslos-api-system")
+assert role, "API system Role missing"
+assert any(
+    "batch" in rule.get("apiGroups", [])
+    and "jobs" in rule.get("resources", [])
+    and "patch" in rule.get("verbs", [])
+    for rule in role.get("rules", [])
+), "naslos-api-system Role cannot patch jobs"
+
+# C-1c: the Job is handed the cached pack on the state volume, and a fallback
+# egress policy selects its pod so a missing cache can still download over 443.
+sysop = find("NetworkPolicy", "naslos-system-op-egress")
+assert sysop, "the upgrader Job has no egress policy (C-1c)"
+assert sysop["spec"]["podSelector"]["matchLabels"].get("app.kubernetes.io/name") == "naslos-system-op", \
+    sysop["spec"]["podSelector"]
+ports = {p.get("port") for rule in sysop["spec"]["egress"] for p in rule.get("ports", [])}
+assert 443 in ports, ports
+print("system upgrade render ok")
 PY
   rm -f "$f"
   return "$rc"
@@ -950,13 +1016,14 @@ check_image_digest_render() {
     --set shares.smb.image.digest="sha256:$hex" \
     --set shares.nfs.image.digest="sha256:$hex" \
     --set terminal.image.digest="sha256:$hex" \
+    --set virt.image.digest="sha256:$hex" \
     --set openldap.image="ghcr.io/aessemops/naslos-openldap@sha256:$hex" \
     >"$f" 2>/dev/null; then
     rm -f "$f"
     return 1
   fi
   ok=1
-  for repo in naslos-api naslos-agent naslos-ui naslos-samba naslos-nfs naslos-terminal naslos-openldap; do
+  for repo in naslos-api naslos-agent naslos-ui naslos-samba naslos-nfs naslos-terminal naslos-vmd naslos-openldap; do
     grep -qF "ghcr.io/aessemops/${repo}@sha256:${hex}" "$f" || ok=0
   done
   # The digest must win over the tag: the installer profile's tag must be gone.
@@ -1109,6 +1176,10 @@ if have helm; then
   run "chart images render by digest (FR-INSTALL-13)" check_image_digest_render
   run "system upgrade plumbing renders (FR-UPD)" check_system_upgrade_render
   run "install pack pins image digests (FR-INSTALL-13)" check_pack_digest_pinning
+  # C-4/R13: the app-isolation boundary (Helm Role, admission policy, Traefik
+  # plugin) has its own render assertions; they were not wired into either
+  # audit.sh or CI, so a values/template edit could undo them silently.
+  run "app isolation chart assertions (C-4)" scripts/test-app-isolation.sh
   run "authelia ldap password is a Secret file (AUDIT-M3)" check_authelia_ldap_secret
   run "authelia SSO fragments + scoped RBAC (FR-APP-15)" check_authelia_sso_fragments
   run "network policy intent (AUDIT-M4)" check_network_policies
