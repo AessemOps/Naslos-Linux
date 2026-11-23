@@ -52,9 +52,10 @@ spec:
         - name: samba
           image: {{ include "naslos.image" .Values.shares.smb.image }}
           imagePullPolicy: {{ .Values.shares.smb.image.pullPolicy }}
-          # smbd must be able to setuid to the configured share users, and to
-          # read/write datasets owned by root on the host, but it does not need
-          # the full privileged flag.
+          # smbd must be able to setuid to the configured share users, bind
+          # 445/139 (<1024, so NET_BIND_SERVICE is required), and read/write
+          # datasets owned by root on the host, but it does not need the full
+          # privileged flag.
           securityContext:
             runAsUser: 0
             allowPrivilegeEscalation: false
@@ -66,6 +67,7 @@ spec:
                 - DAC_OVERRIDE
                 - FOWNER
                 - FSETID
+                - NET_BIND_SERVICE
                 - SETGID
                 - SETUID
             seccompProfile:

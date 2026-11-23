@@ -27,7 +27,7 @@ jobs:
   # Single source of truth for the 8 image build contexts. release.yml reads the
   # same file, so the CI and release matrices cannot drift.
   image-matrix:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     outputs:
       images: ${{ steps.read.outputs.images }}
     steps:
@@ -36,7 +36,7 @@ jobs:
         run: echo "images=$(jq -c . .github/image-matrix.json)" >> "$GITHUB_OUTPUT"
 
   supply-chain:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -56,15 +56,23 @@ jobs:
           # 0.22.0 declares rust-version 1.95, satisfied by the pinned
           # toolchain above. Bump deliberately, with the gate re-run.
           cargo install cargo-deny --version 0.22.0 --locked
-          version=0.76.1
-          base="https://github.com/aquasecurity/trivy/releases/download/v${version}"
-          tarball="trivy_${version}_Linux-64bit.tar.gz"
-          curl -fsSL -o "$tarball" "${base}/${tarball}"
-          curl -fsSL -o trivy_checksums.txt "${base}/trivy_${version}_checksums.txt"
-          grep " ${tarball}\$" trivy_checksums.txt | sha256sum -c -
-          tar -xzf "$tarball" trivy
-          install -m 0755 trivy /usr/local/bin/trivy
-          trivy --version
+          # The self-hosted runner ships trivy; only fetch it when absent.
+          if ! command -v trivy >/dev/null 2>&1; then
+            version=0.76.1
+            base="https://github.com/aquasecurity/trivy/releases/download/v${version}"
+            tarball="trivy_${version}_Linux-64bit.tar.gz"
+            curl -fsSL -o "$tarball" "${base}/${tarball}"
+            curl -fsSL -o trivy_checksums.txt "${base}/trivy_${version}_checksums.txt"
+            grep " ${tarball}\$" trivy_checksums.txt | sha256sum -c -
+            tar -xzf "$tarball" trivy
+            mkdir -p "$RUNNER_TEMP/bin"
+            install -m 0755 trivy "$RUNNER_TEMP/bin/trivy"
+            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+            trivy="$RUNNER_TEMP/bin/trivy"
+          else
+            trivy=trivy
+          fi
+          "$trivy" --version
 
       - name: Rust advisories, licenses, bans, sources
         run: cd rust && cargo audit --ignore RUSTSEC-2026-0119 --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0387 && cargo deny check advisories bans licenses sources
@@ -76,7 +84,7 @@ jobs:
             --skip-dirs ui/node_modules --skip-dirs rust/target --skip-dirs bootstrap/vm --skip-dirs .git . --ignorefile .trivyignore
 
   audit:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -95,9 +103,10 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.12"
+      - name: Set up Python
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
       - name: Install UI dependencies
         # The committed lock is resolved here (glibc); ui/Dockerfile resolves
@@ -111,7 +120,7 @@ jobs:
         run: bash scripts/audit.sh
 
   gitleaks:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -122,15 +131,23 @@ jobs:
         # organization account. Pinned release, checksum-verified.
         run: |
           set -euo pipefail
-          version=8.30.1
-          tarball="gitleaks_${version}_linux_x64.tar.gz"
-          base="https://github.com/gitleaks/gitleaks/releases/download/v${version}"
-          curl -fsSL -o "$tarball" "${base}/${tarball}"
-          curl -fsSL -o gitleaks_checksums.txt "${base}/gitleaks_${version}_checksums.txt"
-          grep " ${tarball}\$" gitleaks_checksums.txt | sha256sum -c -
-          tar -xzf "$tarball" gitleaks
-          install -m 0755 gitleaks /usr/local/bin/gitleaks
-          gitleaks version
+          # The self-hosted runner ships gitleaks; only fetch it when absent.
+          if ! command -v gitleaks >/dev/null 2>&1; then
+            version=8.30.1
+            tarball="gitleaks_${version}_linux_x64.tar.gz"
+            base="https://github.com/gitleaks/gitleaks/releases/download/v${version}"
+            curl -fsSL -o "$tarball" "${base}/${tarball}"
+            curl -fsSL -o gitleaks_checksums.txt "${base}/gitleaks_${version}_checksums.txt"
+            grep " ${tarball}\$" gitleaks_checksums.txt | sha256sum -c -
+            tar -xzf "$tarball" gitleaks
+            mkdir -p "$RUNNER_TEMP/bin"
+            install -m 0755 gitleaks "$RUNNER_TEMP/bin/gitleaks"
+            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+            gitleaks="$RUNNER_TEMP/bin/gitleaks"
+          else
+            gitleaks=gitleaks
+          fi
+          "$gitleaks" version
 
       - name: Scan the working tree
         run: gitleaks dir . --no-banner --redact
@@ -140,7 +157,7 @@ jobs:
 
   images-build:
     needs: image-matrix
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     strategy:
       fail-fast: false
       matrix:
@@ -166,14 +183,18 @@ jobs:
       - name: Install Trivy
         run: |
           set -euo pipefail
-          version=0.76.1
-          base="https://github.com/aquasecurity/trivy/releases/download/v${version}"
-          tarball="trivy_${version}_Linux-64bit.tar.gz"
-          curl -fsSL -o "$tarball" "${base}/${tarball}"
-          curl -fsSL -o trivy_checksums.txt "${base}/trivy_${version}_checksums.txt"
-          grep " ${tarball}\$" trivy_checksums.txt | sha256sum -c -
-          tar -xzf "$tarball" trivy
-          install -m 0755 trivy /usr/local/bin/trivy
+          if ! command -v trivy >/dev/null 2>&1; then
+            version=0.76.1
+            base="https://github.com/aquasecurity/trivy/releases/download/v${version}"
+            tarball="trivy_${version}_Linux-64bit.tar.gz"
+            curl -fsSL -o "$tarball" "${base}/${tarball}"
+            curl -fsSL -o trivy_checksums.txt "${base}/trivy_${version}_checksums.txt"
+            grep " ${tarball}\$" trivy_checksums.txt | sha256sum -c -
+            tar -xzf "$tarball" trivy
+            mkdir -p "$RUNNER_TEMP/bin"
+            install -m 0755 trivy "$RUNNER_TEMP/bin/trivy"
+            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          fi
 
       - name: Scan ${{ matrix.name }} for HIGH/CRITICAL CVEs
         run: |
@@ -191,13 +212,15 @@ jobs:
           path: sbom-${{ matrix.name }}.cdx.json
 
   pack:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.12"
+      - name: Set up Python
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet pyyaml
 
       - name: Build the install pack (tag placeholders)
         run: make install-pack
