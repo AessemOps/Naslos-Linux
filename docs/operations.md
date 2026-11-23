@@ -23,21 +23,33 @@ kubectl exec -n naslos statefulset/naslos-openldap -- \
 ### Restore
 
 `slapadd` must never run against a live slapd: it rewrites the mdb database
-files underneath the running server and corrupts the directory. Stop the
-StatefulSet, restore into the (now exclusively owned) data volume from a
-one-off pod, then start it again. The API reconnects automatically on its next
-operation; users cannot log in (and the UI's authenticated calls fail) while
-slapd is down.
+files underneath the running server and corrupts the directory. The restore is
+offline end to end: capture a fresh dump, stop the StatefulSet, restore into
+the (now exclusively owned) data volume from a one-off pod, then start it
+again. The API reconnects automatically on its next operation; users cannot log
+in (and the UI's authenticated calls fail) while slapd is down.
+
+1. **Take a fresh dump first.** A manual Job copied from the backup CronJob
+   runs `slapcat` against the live server and mounts the same PVCs; it must run
+   before the StatefulSet is stopped. After the scale-down there is no slapd
+   pod left to `kubectl exec` into, so the backup cannot be taken then.
 
 ```bash
-# 1. Take a fresh backup and stop the only writer.
+BACKUP_JOB="openldap-backup-restore-$(date +%s)"
+kubectl -n naslos create job --from=cronjob/naslos-openldap-backup "$BACKUP_JOB"
+kubectl -n naslos wait --for=condition=complete "job/$BACKUP_JOB" --timeout=300s
+```
+
+2. **Stop the only writer.**
+
+```bash
 kubectl -n naslos scale statefulset/naslos-openldap --replicas=0
 kubectl -n naslos wait --for=delete pod/naslos-openldap-0 --timeout=120s
 ```
 
-Run the restore pod with the same two PVCs the StatefulSet uses plus the
-backups PVC. `slapadd` must run as the image's `openldap` user so the created
-files keep the ownership slapd expects:
+3. **Run the restore pod** with the same two PVCs the StatefulSet uses plus the
+   backups PVC. `slapadd` must run as the image's `openldap` user so the created
+   files keep the ownership slapd expects:
 
 ```bash
 kubectl -n naslos apply -f - <<'EOF'
@@ -80,18 +92,44 @@ spec:
         claimName: naslos-openldap-backups
 EOF
 
-# 2. Restore the config first only if cn=config was lost (a data-only restore
-#    against the existing config is the normal case):
-kubectl -n naslos exec naslos-openldap-restore -- \
-  slapadd -F /etc/ldap/slapd.d -n 0 -l /backups/ldap/config_<timestamp>.ldif
+# 4. Archive the old mdb environment. slapadd -n 1 must write a fresh
+#    database: it rejects duplicate DNs, would otherwise keep entries deleted
+#    since the backup, and cannot open a corrupt old environment. The moved
+#    files are the rollback point if the new dump turns out to be wrong.
+kubectl -n naslos exec naslos-openldap-restore -- sh -c '
+  cd /var/lib/ldap
+  for f in data.mdb lock.mdb; do
+    [ -f "$f" ] && mv "$f" "$f.pre-restore-<timestamp>"
+  done'
+
+# 5. Restore the data.
 kubectl -n naslos exec naslos-openldap-restore -- \
   slapadd -F /etc/ldap/slapd.d -n 1 -l /backups/ldap/data_<timestamp>.ldif
 
-# 3. Start the server again and remove the helper pod.
+# 6. Start the server again and remove the helper pod.
 kubectl -n naslos delete pod naslos-openldap-restore
 kubectl -n naslos scale statefulset/naslos-openldap --replicas=1
 kubectl -n naslos rollout status statefulset/naslos-openldap
 ```
+
+**Only when `cn=config` was lost** (a data-only restore against a valid config
+volume is the normal case) restore the config *before* step 4: `slapadd -n 0`
+also refuses existing entries, so archive the old config tree first, then load
+the config dump and continue with the data steps above.
+
+```bash
+kubectl -n naslos exec naslos-openldap-restore -- sh -c '
+  mkdir -p /backups/ldap/config-pre-restore-<timestamp>
+  find /etc/ldap/slapd.d -mindepth 1 -maxdepth 1 \
+    -exec mv {} /backups/ldap/config-pre-restore-<timestamp>/ \;'
+kubectl -n naslos exec naslos-openldap-restore -- \
+  slapadd -F /etc/ldap/slapd.d -n 0 -l /backups/ldap/config_<timestamp>.ldif
+```
+
+**Rollback:** before scaling up, delete the files the restore created
+(`data.mdb`, `lock.mdb`, and the restored `cn=config` tree if the config restore
+ran) and move the `*.pre-restore-<timestamp>` archives back into place. The
+`naslos-openldap-backups` PVC keeps the dumps, not the old environment.
 
 ### Sizing and limits
 
