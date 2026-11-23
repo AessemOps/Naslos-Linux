@@ -143,6 +143,18 @@ retrying or using the browser path worked around it. Worth watching.
   alerts, config import/restore, RBAC phase 2 plus append-only audit v1,
   bounded historical reporting, and shadow-copy-compatible scheduled
   snapshots. It is **not yet deployed**; the node remains on 0.6.0 revision 60
+- **0.7.1 remediation (in progress, not deployed):** the platform-chart branch
+  (`fix/0.7.1-platform-chart`) changes deploy behavior that the next release
+  must carry: `make install-vm` now requires `VM_IP=<node-ip>` and installs
+  `local-path` + the `naslos-talosconfig` Secret itself; Traefik runs with
+  namespaced RBAC (no cluster-wide Secret read) watching only
+  `naslos-apps`/`naslos-apps-priv`; the production overlay no longer renders
+  the shared `/var/mnt` datasets PV/PVC (per-app claims only); Authelia,
+  Samba, NFS, the OpenLDAP backup Job and the upgrader admission policy are
+  hardened; the state and OpenLDAP-backup PVCs are kept on uninstall; git/DDNS
+  egress is scoped to the API pod; and base images/local-path are digest
+  pinned. The node keeps its current revision/digests until the 0.7.1 pack is
+  released and deployed.
   until the next install. Caveats: RBAC only admits admins until Authelia
   admission for the new groups ships; encryption keys live in Kubernetes
   Secrets (etcd at-rest encryption is not configured) and require manual

@@ -750,22 +750,34 @@ for d in docs:
         assert "stsIncludeSubdomains" not in d["spec"]["headers"], \
             "security-headers must not set stsIncludeSubdomains"
 
-# FR-DNS-03: the DDNS egress is port-scoped to HTTP/HTTPS and DNS (80/443/53),
-# CIDR-scoped, and granted only to the release namespace (the API is the DDNS
-# client).
-egress_policies = [
+# FR-DNS-03/R-069: Internet egress is scoped to the API pod, never the
+# namespace-wide policy. DDNS is port-scoped to HTTP/HTTPS and DNS (80/443/53)
+# and CIDR-scoped; git is port-scoped to 22/443/9418.
+def egress_ports(d):
+    return {p.get("port") for rule in d["spec"].get("egress", []) for p in rule.get("ports", [])}
+workload_policies = [
     d for d in docs
     if d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == "naslos-workload-egress"
 ]
-def ddns_rules(policy):
-    return [r for r in policy["spec"].get("egress", [])
-            if {p.get("port") for p in r.get("ports", [])} == {443, 80, 53}]
-ddns_namespaces = [p["metadata"].get("namespace") for p in egress_policies if ddns_rules(p)]
-assert ddns_namespaces == ["naslos"], \
-    f"the DDNS egress rule must exist only in the release namespace, got {ddns_namespaces}"
-for r in ddns_rules(next(p for p in egress_policies if p["metadata"].get("namespace") == "naslos")):
-    assert all("ipBlock" in p for p in r.get("to", [])), \
-        "the DDNS egress rule must be CIDR-scoped, never a pod selector"
+for policy in workload_policies:
+    ports = egress_ports(policy)
+    assert not ({"80", "443", 80, 443} & ports), \
+        f"the namespace-wide egress policy must not grant public HTTP(S): {policy['metadata']}"
+    assert 22 not in ports and 9418 not in ports, \
+        f"the namespace-wide egress policy must not grant git: {policy['metadata']}"
+for name, expected in {
+    "naslos-api-ddns-egress": {80, 443, 53},
+    "naslos-api-git-egress": {22, 443, 9418},
+}.items():
+    policy = next((d for d in docs if d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == name), None)
+    assert policy, f"missing the {name} policy"
+    assert policy["metadata"]["namespace"] == "naslos", policy["metadata"]
+    assert policy["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"] == "naslos-api", \
+        f"{name} must select the API pod"
+    assert expected <= egress_ports(policy), (name, egress_ports(policy))
+    for rule in policy["spec"].get("egress", []):
+        assert all("ipBlock" in target for target in rule.get("to", [])), \
+            f"{name} egress must be CIDR-scoped, never a pod selector"
 print("network policy intent ok")
 PY
   rc=$?

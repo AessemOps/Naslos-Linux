@@ -237,11 +237,22 @@ namespace so the API never needs Secret read access in the release namespace
    Cilium NetworkPolicies are enforced, but because the agent is `hostNetwork`
    pod-level policy does not cover it; see the AUDIT-M4 residual.
 3. **Authelia ⇄ LDAP.** All directory access is LDAPS (`:636`) with the CA from
-   the `naslos-openldap-tls` secret; Authelia verifies the server name. The bind
-   password comes from the `naslos-openldap` Secret, not the ConfigMap.
+   the `naslos-openldap-ca` Secret (a `ca.crt`-only copy; the LDAP server
+   private key in `naslos-openldap-tls` is never mounted into Authelia);
+   Authelia verifies the server name. The bind password comes from the
+   `naslos-openldap` Secret, not the ConfigMap, and the admin password is a
+   mounted file, not an env value.
 4. **Samba NT-hash sync.** The agent pushes a `smbusers` mirror which the Samba
-   container imports with `pdbedit -i smbpasswd:`; the Samba container must
-   constrain `root` usage and should enforce host allow lists on exports.
+   container imports with `pdbedit -i smbpasswd:`; the Samba and NFS containers
+   run as root only for their datastore operations, drop ALL capabilities and
+   add back the required set, disable privilege escalation, use RuntimeDefault
+   seccomp and a read-only image root with explicit writable volumes.
+5. **Traefik RBAC.** Traefik runs with namespaced RBAC: a Role in the release
+   namespace and in each watched app namespace, no ClusterRole/ClusterRoleBinding.
+   It can read Secrets only there (the per-domain TLS copies need dynamic names,
+   so a `secretResourceNames` allowlist is not possible); routes in per-app
+   isolation namespaces need that namespace added to the watched list and a
+   matching RoleBinding.
 
 ## Layer 5 — Key Data Flows
 
