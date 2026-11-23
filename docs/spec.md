@@ -238,15 +238,24 @@ Requirement IDs are stable: never renumber, only deprecate.
   `lastResult`, `lastError` and `nextRun` MUST persist
   on the state volume, a run missed while the API was down MUST fire once at
   startup, and a failed run MUST be recorded without disabling the schedule.
-  A run that cannot reach the agent MUST be retried on the next tick instead of
-  consuming the cadence interval.
+  A run that cannot reach the agent MUST be retried on the next tick within a
+  bounded window (one hour) instead of consuming the cadence interval forever;
+  every retryable agent 5xx counts as transient. A schedule store that cannot
+  be parsed MUST be preserved as `<file>.corrupt-<epoch>` and MUST refuse
+  mutations instead of being silently replaced with an empty store.
+  *(schedule tests: `snapshot_target_overlap_covers_recursive_descendants_only`,
+  `loading_disables_preexisting_overlapping_schedules`,
+  `legacy_060_prefix_matches_the_captured_release_fixture`,
+  `a_corrupt_store_is_preserved_and_refuses_mutations`,
+  `a_transient_failure_retries_then_records_a_failure_after_the_window`)*
 - **FR-STO-11** — Each pool MUST support an optional scrub schedule (kind
   `scrub`, daily or weekly only) and a manual "scrub now"
   (`POST /api/volumes/zfs/{pool}/scrub`). The manual route MUST answer `409`
   while `zpool status` reports a scrub or resilver in progress. A scheduled run
   MUST NOT start a second scrub: it records `skipped`, or advances its next run
-  without replacing an in-flight result of its own. The agent MUST run only
-  `zpool scrub <validated pool>` (no user-controlled arguments), and the
+  without replacing an in-flight result of its own. A failed pool-health read
+  MUST NOT replace an in-flight scrub's `started` result. The agent MUST run
+  only `zpool scrub <validated pool>` (no user-controlled arguments), and the
   schedule's `lastResult` MUST be derived from the pool's `scan` line once the
   scrub finishes (ok only with zero errors). The UI MUST expose the schedule's
   last/next run and result on the pool page.
@@ -1325,7 +1334,12 @@ Prometheus, Grafana or an external time-series service.
   aside, a corrupt/truncated tail is repaired, and an unopenable store answers
   `available:false`; tests `corrupt_tail_is_truncated_and_the_store_keeps_writing`,
   `corrupt_header_is_moved_aside_and_recreated`,
-  `a_directory_instead_of_a_file_degrades_to_unavailable`.*
+  `a_directory_instead_of_a_file_degrades_to_unavailable`. History scans are
+  streamed record-by-record: queries and retention filter by resolution, series
+  and window before allocating, and the startup scan is released before the
+  rollup rebuild. A prune rewrite opens the replacement handle before the
+  rename, so a failed reopen cannot leave appends on an unlinked inode; test
+  `a_failed_rewrite_keeps_the_store_appendable`.*
 - **FR-RPT-04** — The API and UI MUST expose only the 24 h, 7 d and 30 d views
   over the fixed series allowlist, authenticated like every other owner route,
   and MUST NOT return unbounded raw samples. *Implemented: `GET /api/reports`
@@ -1922,17 +1936,28 @@ follow-up.
   never overwrite a credential Secret, and never write a Secret, TLS key, Buddy
   identity/KEK, token or other credential. A referenced DDNS entry MUST be
   remapped to the server's ID even when the domain would otherwise be
-  unchanged; an ambiguous existing match, or a second imported record with the
-  same natural key, MUST be skipped rather than guessed at; a legacy AFP share
-  MUST be reported skipped; a provider change MUST clear the previous
+  unchanged; in every section, an ambiguous existing match or a second imported
+  record with the same natural key MUST be reported `skipped` (the first record
+  wins) rather than aborting the whole import or being guessed at; a legacy AFP
+  share MUST be reported skipped; a provider change MUST clear the previous
   provider's credential Secret and request re-entry; and an entry whose
   credentials were removed is imported without them with a report note to
   re-enter them through the existing endpoint. When the agent is reachable,
   share paths, dataset/pool targets and registered dataset paths MUST be
-  revalidated read-only against the node, and the Buddy receive store and its
-  parent paths MUST be refused as app datasets; without an agent they are
-  validated structurally and the report says so. *(config import tests:
-  `unknown_top_level_and_record_fields_are_rejected`,
+  revalidated read-only against the node, share paths MUST be validated again
+  under the share lock immediately before create/update, and the Buddy receive
+  store and its parent paths MUST be refused as app datasets. A configured but
+  unreachable agent MUST NOT silently degrade: the report MUST carry a warning
+  and `structuralOnly: true` (an absent agent validates structurally and says
+  so). Imported snapshot schedules MUST pass the same one-enabled-schedule
+  overlap guard against both the persisted store and the schedules earlier in
+  the same plan. After a domain upsert, import MUST run the same certificate
+  render, SSO handler invariants/Authelia sync and app DNS reconciliation as
+  the domain endpoint, and an imported `sso` value that the SSO handler rejects
+  MUST fail and roll back that record. A failed save MUST be rolled back before
+  the entry is reported `failed`, and the response MUST report `applied: false`
+  with `partial: true` when only part of the plan was saved. *(config import
+  tests: `unknown_top_level_and_record_fields_are_rejected`,
   `envelope_version_and_kind_are_strict`,
   `secret_shaped_app_values_are_rejected`,
   `secret_and_free_form_provider_fields_are_rejected`,
@@ -1944,7 +1969,14 @@ follow-up.
   `ambiguous_existing_schedules_are_skipped`,
   `duplicate_storage_schedules_are_skipped_not_fatal`,
   `duplicate_buddy_schedules_are_skipped_not_fatal`,
-  `trimmed_domain_duplicates_are_rejected`,
+  `duplicate_shares_are_skipped_not_fatal`,
+  `duplicate_ddns_entries_are_skipped_not_fatal`,
+  `duplicate_dataset_records_are_skipped_not_fatal`,
+  `duplicate_apps_are_skipped_not_fatal`,
+  `trimmed_domain_duplicates_are_skipped`,
+  `imported_overlapping_snapshot_schedules_are_skipped`,
+  `a_symlink_planted_after_the_plan_is_refused_at_apply`,
+  `an_unreachable_agent_marks_the_plan_structural_only`,
   `legacy_afp_shares_are_skipped`,
   `a_provider_change_clears_the_old_credentials`,
   `the_buddy_store_and_parent_paths_are_refused`,
@@ -1961,10 +1993,12 @@ follow-up.
   material, so it cannot recreate a node. Neither format supersedes the other.
 - **FR-CFG-06** — Import is a declarative-record restore, not an app reinstall
   or a credential restore. Installing exported app records, restoring provider
-  credentials, automatically pushing the restored Samba/NFS configuration
-  during import (the existing `/api/shares/apply` step remains manual), and
-  reconciling certificates/SSO immediately after import remain `[OPEN]`; the
-  import report names the follow-up and the app section is reported skipped.
+  credentials, and automatically pushing the restored Samba/NFS configuration
+  during import (the existing `/api/shares/apply` step remains manual) remain
+  `[OPEN]`; the import report names the follow-up and the app section is
+  reported skipped. Imported domains DO reconcile, however: the record is
+  saved, then its Issuer/Certificate is rendered, the SSO handler invariants
+  and Authelia sync run, and app DNS records are reconciled (FR-CFG-04).
 ### 3.16 RBAC roles (`FR-RBAC`)
 
 Naslos adds three privileged roles on top of the authenticated baseline:

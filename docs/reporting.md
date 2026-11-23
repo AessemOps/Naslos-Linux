@@ -103,6 +103,10 @@ history.bin
 - A corrupt header moves the file aside to `history.bin.corrupt-<epoch>` and
   starts a new store. A corrupt or truncated tail is truncated to the last valid
   record. A CRC failure is treated as the end of valid history.
+- Every scan streams one record at a time. Queries filter by resolution, series
+  and window before accumulating, retention keeps only the records it retains,
+  and the startup rollup rebuild releases the initial scan before reading the
+  file again, so a full history does not double peak memory during a rollup.
 - The registry is independent: if it is corrupt it moves aside and old records
   are orphaned telemetry (pruned normally) rather than a startup failure. On
   open, the next id is raised above every id present in `history.bin`, so a
@@ -136,8 +140,10 @@ history.bin
   - raw older than 24 h;
   - 5-minute older than 7 d;
   - 1-hour older than 30 d.
-  A prune rewrites the retained records to a temporary file, fsyncs and renames
-  it atomically, so a crash cannot leave a half-pruned store.
+  A prune rewrites the retained records to a temporary file, fsyncs, opens the
+  replacement handle and renames it atomically, so a crash cannot leave a
+  half-pruned store and a failed reopen cannot leave later appends on an
+  unlinked inode; test `a_failed_rewrite_keeps_the_store_appendable`.
 - If the file reaches `api.reporting.maxBytes`, the oldest buckets are dropped
   first and a warning is logged once. That is the final backstop; normal
   retention keeps expected usage in the tens of MiB.
