@@ -64,8 +64,8 @@ spec:
       reason: Forbidden
     - expression: >-
         !(request.resource.group == '' && request.resource.resource == 'secrets' && (
-        ['naslos-proxy', 'naslos-tls', 'naslos-agent', 'naslos-agent-tls', 'naslos-agent-ca',
-        'naslos-vmd', 'naslos-vmd-tls', 'naslos-vmd-ca', 'naslos-buddy',
+        ['naslos-proxy', 'naslos-tls', 'naslos-agent', 'naslos-agent-tls', 'naslos-agent-tls-ca',
+        'naslos-vmd', 'naslos-vmd-tls', 'naslos-vmd-tls-ca', 'naslos-buddy',
         'naslos-buddy-kek', 'naslos-authelia', 'naslos-authelia-jwt', 'naslos-openldap',
         'naslos-openldap-tls', 'naslos-openldap-ca', 'naslos-talosconfig',
         'naslos-charts-deploy-key'].exists(n, object.metadata.name == n)
