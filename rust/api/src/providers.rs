@@ -614,6 +614,26 @@ mod tests {
     }
 
     #[test]
+    fn clearing_a_secret_field_marks_it_for_revocation() {
+        let r = Registry::load("");
+        let spdyn = r.get("spdyn").unwrap();
+        let existing = HashMap::from([("password".to_string(), "old".to_string())]);
+        let submitted = HashMap::from([("token".to_string(), String::new())]);
+        let res = spdyn
+            .resolve_fields(
+                "ddns",
+                &submitted,
+                Some(&existing),
+                &["password".to_string(), "token".to_string()],
+                false,
+            )
+            .unwrap();
+        assert_eq!(res.removed_secret_keys, vec!["token".to_string()]);
+        assert!(!res.credential_fields.contains(&"token".to_string()));
+        assert!(!res.secret_values.contains_key("token"));
+    }
+
+    #[test]
     fn resolve_fields_splits_secret_and_config() {
         let r = Registry::load("");
         let cloudflare = r.get("cloudflare").unwrap();

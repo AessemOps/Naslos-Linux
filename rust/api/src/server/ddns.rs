@@ -487,6 +487,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn entry_view_is_write_only_for_templates_and_credentials() {
+        let entry = Entry {
+            id: "abc".into(),
+            provider: "generic".into(),
+            zone: "example.com".into(),
+            record: "home".into(),
+            record_type: "A".into(),
+            provider_config: HashMap::from([
+                ("method".to_string(), "GET".to_string()),
+                (
+                    "updateUrl".to_string(),
+                    "https://dns.example/update?token=secret".to_string(),
+                ),
+                ("applicationKey".to_string(), "legacy-key".to_string()),
+            ]),
+            ..Default::default()
+        };
+        let value = entry_view(&entry);
+        let text = value.to_string();
+        assert!(!text.contains("dns.example"), "{text}");
+        assert!(!text.contains("legacy-key"), "{text}");
+        assert!(text.contains("\"redactedProviderConfigKeys\""), "{text}");
+        assert_eq!(value["providerConfig"]["method"], "GET");
+    }
+
+    #[test]
     fn record_label_validation() {
         assert!(validate_record_label("home").is_ok());
         assert!(validate_record_label("@").is_ok());
