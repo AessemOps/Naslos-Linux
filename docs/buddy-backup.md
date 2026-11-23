@@ -490,14 +490,18 @@ successful restore removes the progress marker before destroying the
 pre-restore snapshot. Before acting on a marker, a restore probes the agent's
 live snapshot listing: a snapshot absent from a successful listing is treated
 as already gone, so a crash or failed unlink in that window cannot block later
-restores; a listing failure keeps the marker. If a failed receive has lost its
-rollback point while the destination dataset still exists, the destination may
-be half-applied with no rollback point, so the marker is kept and the error
-says so; it is dropped only when the dataset itself is gone or the rollback
-succeeded. Restores of the same destination dataset are serialized: a second
-request while one is running is refused, and the progress marker is keyed by
-source **and** dataset and is removed only once the dataset it names has been
-recovered.
+restores. A listing failure keeps the marker unless the destination dataset
+itself is gone (nothing left to recover), in which case the stale marker is
+dropped and a fresh restore recreates the dataset. If a failed receive has lost
+its rollback point while the destination dataset still exists, the destination
+may be half-applied with no rollback point: the marker records a `rollbackLost`
+flag, the error says so, and every later restore refuses with 409 naming the
+dataset until an operator destroys the dataset (which removes the wedge) or
+verifies/repairs it manually and removes the marker. Otherwise a marker is
+dropped only after the rollback succeeded. Restores of the same destination
+dataset are serialized: a second request while one is running is refused, and
+the progress marker is keyed by source **and** dataset and is removed only once
+the dataset it names has been recovered.
 
 The freshness check has one honest limitation: the signed manifest proves the
 sender produced that chain, but replaying an older signed chain is only
