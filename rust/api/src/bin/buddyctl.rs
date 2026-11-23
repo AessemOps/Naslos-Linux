@@ -764,7 +764,7 @@ async fn cmd_restore(
             let (result, error) = client
                 .restore(RestoreOptions {
                     source: &source,
-                    chain: &chain,
+                    chain: &expected.chain,
                     out: &mut sink,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
@@ -786,7 +786,7 @@ async fn cmd_restore(
             let (result, error) = client
                 .restore(RestoreOptions {
                     source: &source,
-                    chain: &chain,
+                    chain: &expected.chain,
                     out: &mut stdout,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
@@ -813,7 +813,7 @@ async fn cmd_restore(
             let (result, error) = client
                 .restore(RestoreOptions {
                     source: &source,
-                    chain: &chain,
+                    chain: &expected.chain,
                     out: &mut file,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
@@ -842,7 +842,7 @@ async fn cmd_restore(
             let (result, error) = client
                 .restore(RestoreOptions {
                     source: &source,
-                    chain: &chain,
+                    chain: &expected.chain,
                     out: &mut write_half,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,

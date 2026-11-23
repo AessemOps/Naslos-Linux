@@ -1395,6 +1395,31 @@ mod tests {
         );
     }
 
+    /// Restores an environment variable when it drops, including on an
+    /// assertion panic, so an env-mutating test cannot leak a temp path into
+    /// the other lib tests that run in parallel.
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: std::path::PathBuf) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     fn sample_string(tool: &str, property: &str, public_key: &str) -> String {
         match property {
             "dataset" => "test/data".to_string(),
@@ -1511,7 +1536,9 @@ mod tests {
             crate::agent::Client::new("http://127.0.0.1:1", "", "").expect("agent client"),
         ));
         let state = Arc::new(state);
-        std::env::set_var("BUDDY_IDENTITY", dir.path().join("identity.json"));
+        // Restored by the guard (even on a panic), so no dangling temp path is
+        // left for parallel tests.
+        let _buddy_identity = EnvGuard::set("BUDDY_IDENTITY", dir.path().join("identity.json"));
         let full = token("full", Scope::Full);
 
         for tool in crate::mcp::tools::buddy::TOOLS {

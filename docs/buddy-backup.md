@@ -470,10 +470,13 @@ destroyed **only after** a successful rollback: if the rollback fails, both the
 snapshot and the progress marker are kept and the error names the snapshot, so
 the data can still be recovered. A destination that did not exist before the
 restore is destroyed on failure instead of being left half-applied. A
-successful restore destroys the pre-restore snapshot. Restores of the same
-destination dataset are serialized: a second request while one is running is
-refused, and the progress marker is keyed by source **and** dataset and is
-removed only once the dataset it names has been recovered.
+successful restore removes the progress marker before destroying the
+pre-restore snapshot; a stale marker whose snapshot is already gone is treated
+as recovered (and discarded) by the next restore, so a crash or failed unlink
+in that window cannot block later restores. Restores of the same destination
+dataset are serialized: a second request while one is running is refused, and
+the progress marker is keyed by source **and** dataset and is removed only
+once the dataset it names has been recovered.
 
 The freshness check has one honest limitation: the signed manifest proves the
 sender produced that chain, but replaying an older signed chain is only
