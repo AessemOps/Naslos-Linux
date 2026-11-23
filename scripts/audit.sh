@@ -399,7 +399,7 @@ check_authelia_ldap_secret() {
   fi
   ok=1
   grep -q 'name: AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE' "$f" || ok=0
-  grep -q "value: '/secrets/naslos-openldap/service-password'" "$f" || ok=0
+  grep -q "value: '/secrets/naslos-openldap/authelia-password'" "$f" || ok=0
   grep -q 'mountPath: /secrets/naslos-openldap' "$f" || ok=0
   # No inline bind password in the authelia-config ConfigMap. Anchor on the
   # ConfigMap's metadata name (two-space indent): the DaemonSet also has a
