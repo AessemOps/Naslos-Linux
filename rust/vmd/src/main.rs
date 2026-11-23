@@ -84,6 +84,7 @@ async fn main() {
             auth_token,
             tls_cert_file: tls_cert,
             tls_key_file: tls_key,
+            datasets_root: PathBuf::new(),
         },
     );
 
