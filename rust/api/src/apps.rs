@@ -30,6 +30,28 @@ pub const PLATFORM_DATASET_KEYS: [&str; 3] = ["datasets", "datasetsClaim", "data
 /// Platform-owned Helm values that are never accepted from a client.
 pub const PLATFORM_ENV_KEYS: [&str; 1] = [app_env::CHECKSUM_VALUE];
 
+/// Chart value keys that control platform-sensitive Kubernetes fields. Even a
+/// catalog schema that lists one of them does not authorize a client to set
+/// it: only the catalog/chart defaults may (SEC-2026-D7, S-1).
+pub const PLATFORM_SENSITIVE_VALUE_KEYS: [&str; 16] = [
+    "automountServiceAccountToken",
+    "containers",
+    "hostIPC",
+    "hostNetwork",
+    "hostPath",
+    "hostPID",
+    "image",
+    "imagePullPolicy",
+    "initContainers",
+    "podSecurityContext",
+    "privileged",
+    "securityContext",
+    "serviceAccount",
+    "serviceAccountName",
+    "volumeMounts",
+    "volumes",
+];
+
 /// Helm status reads are subprocess calls; run them concurrently so the
 /// Installed list does not wait on one app at a time.
 const LIST_STATUS_CONCURRENCY: usize = 8;
@@ -481,6 +503,47 @@ fn pod_is_live_for_image_check(pod: &serde_json::Value) -> bool {
             == Some("Running")
 }
 
+/// `(name, image, imageID)` for every container and init container that can
+/// carry an app image. The image-refresh patch handles init containers too, so
+/// drift detection scans them under the same live-pod rule (S-10).
+fn pod_container_images(pod: &serde_json::Value) -> Vec<(&str, &str, &str)> {
+    let mut statuses: Vec<&serde_json::Value> = Vec::new();
+    for key in ["containerStatuses", "initContainerStatuses"] {
+        if let Some(items) = pod
+            .pointer(&format!("/status/{key}"))
+            .and_then(|statuses| statuses.as_array())
+        {
+            statuses.extend(items.iter());
+        }
+    }
+    let mut out = Vec::new();
+    for key in ["containers", "initContainers"] {
+        let Some(specs) = pod
+            .pointer(&format!("/spec/{key}"))
+            .and_then(|specs| specs.as_array())
+        else {
+            continue;
+        };
+        for spec in specs {
+            let Some(image) = spec.get("image").and_then(|image| image.as_str()) else {
+                continue;
+            };
+            let name = spec
+                .get("name")
+                .and_then(|name| name.as_str())
+                .unwrap_or("");
+            let image_id = statuses
+                .iter()
+                .find(|status| status.get("name").and_then(|n| n.as_str()).unwrap_or("") == name)
+                .and_then(|status| status.get("imageID"))
+                .and_then(|id| id.as_str())
+                .unwrap_or("");
+            out.push((name, image, image_id));
+        }
+    }
+    out
+}
+
 /// Build the strategic-merge patch that makes the drifted container pull its
 /// image again and roll: `Always` only on containers whose image is
 /// `reference`, plus a pod-template annotation. Returns `None` when no
@@ -810,6 +873,36 @@ pub fn set_persistence_storage_class(value: &mut serde_json::Value, class: &str)
             }
         }
         _ => {}
+    }
+}
+
+/// The first non-empty `persistence.*.storageClass` in a values map: the app
+/// pool choice the record was installed with. Pool storage is platform-owned
+/// and not part of the catalog schema, so the whitelist cannot be allowed to
+/// drop it on a later upgrade.
+pub fn find_persistence_storage_class(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Object(persistence)) = map.get("persistence") {
+                if let Some(serde_json::Value::String(class)) = persistence.get("storageClass") {
+                    if !class.is_empty() {
+                        return Some(class.clone());
+                    }
+                }
+                for child in persistence.values() {
+                    if let serde_json::Value::Object(child) = child {
+                        if let Some(serde_json::Value::String(class)) = child.get("storageClass") {
+                            if !class.is_empty() {
+                                return Some(class.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            map.values().find_map(find_persistence_storage_class)
+        }
+        serde_json::Value::Array(items) => items.iter().find_map(find_persistence_storage_class),
+        _ => None,
     }
 }
 
@@ -1394,16 +1487,42 @@ impl Manager {
         let chart_values = self.helm.show_values(&chart_dir).await?;
         // The API owns the dataset Helm values: never let a client point a
         // chart at an arbitrary claim or host path, and keep schema validation
-        // from seeing platform-managed keys.
+        // from seeing platform-managed keys. Everything else the client sent
+        // must be listed in the catalog schema and must not control a
+        // platform-sensitive chart field (SEC-2026-D7, S-1).
         let mut client_values = req.values.clone().unwrap_or_default();
         strip_dataset_values(&mut client_values);
-        let mut values = merge_values(&chart_values, app.default_values.as_object());
-        values = merge_values(&serde_json::Value::Object(values), Some(&client_values));
+        sanitize_submitted_values(&app, &mut client_values);
+        let base_values = merge_values(&chart_values, app.default_values.as_object());
+        let mut values = merge_values(
+            &serde_json::Value::Object(base_values.clone()),
+            Some(&client_values),
+        );
+        // The form submits a complete `resources` object; replace it wholesale
+        // so a cleared key does not come back from a chart default (UI-03).
+        replace_resource_values(&mut values, &client_values);
         coerce_schema_numbers(&app.schema, &mut values);
         prune_null_resources(&mut values);
         validate_install_values(&app, &values)?;
         validate_resource_quantities(&values)?;
         let datasets = normalize_dataset_names(&req.datasets)?;
+        // Resolve and validate the host before touching a namespace: a rejected
+        // host must not have side effects on a namespace handed back by a
+        // failed install.
+        let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
+        // The catalog's default subdomain was never validated on the install
+        // path; an invalid host must not reach routing or an app CNAME.
+        validate_subdomain(&exposure.subdomain)?;
+        validate_protected_paths(&exposure.protected_paths)?;
+        let base_domain = if req.base_domain.is_empty() {
+            self.base_domain.clone()
+        } else {
+            req.base_domain.clone()
+        };
+        // An existing record must not lose its route/CNAME to a second app
+        // silently claiming the same host (S-8). The catalog-default subdomain
+        // goes through the same check as an explicit one.
+        self.ensure_host_available(&req.name, &exposure.subdomain, &base_domain)?;
         let (namespace, _reservation) = self.reserve_namespace(app.privileged)?;
         self.validate_resource_quota(&namespace, &values).await?;
         // A namespace handed back by a failed install can still hold that
@@ -1413,11 +1532,6 @@ impl Manager {
             .await;
         self.remove_stale_release(&req.name, app.privileged, &namespace)
             .await?;
-        let mut exposure = exposure_for(&app, req.exposure.as_ref(), &req.name);
-        // The catalog's default subdomain was never validated on the install
-        // path; an invalid host must not reach routing or an app CNAME.
-        validate_subdomain(&exposure.subdomain)?;
-        validate_protected_paths(&exposure.protected_paths)?;
         // Reject an unenforceable opt-out before creating any storage.
         self.validate_internet(&namespace, &exposure)?;
         // A namespace whose previous install died before recording a release
@@ -1533,16 +1647,17 @@ impl Manager {
             .await;
 
         // Platform-owned keys are never persisted in the app record; they are
-        // recomputed on every install/upgrade.
+        // recomputed on every install/upgrade. Only the operator's override
+        // diff is stored, never the chart defaults (S-2).
         for key in PLATFORM_ENV_KEYS {
             values.remove(key);
         }
+        let stored_values = stored_override_values(
+            &base_values,
+            &values,
+            client_values.contains_key("resources"),
+        );
         let now = Utc::now();
-        let base_domain = if req.base_domain.is_empty() {
-            self.base_domain.clone()
-        } else {
-            req.base_domain.clone()
-        };
         let rec = Record {
             name: req.name.clone(),
             source: app.source.clone(),
@@ -1550,7 +1665,7 @@ impl Manager {
             chart_path: app.chart_path.clone(),
             chart_version: chart.version.clone(),
             redacted_keys: secret_value_pointers(&app.schema),
-            values,
+            values: stored_values,
             exposure,
             base_domain: base_domain.clone(),
             namespace,
@@ -1651,23 +1766,31 @@ impl Manager {
         let app = self.pinned_app(&catalog, name, &rec.source, &rec.channel, pin)?;
         let chart = self.resolve_chart(&app, &pin.chart_version).await?;
         let chart_dir = chart.path().to_string();
-        let secret_pointers = secret_value_pointers(&app.schema);
+        // The persisted values are only the operator's override diff. Re-read
+        // the chart being upgraded to and merge its (possibly changed) defaults
+        // underneath, so a chart bump actually reaches the release (S-2).
+        let chart_values = self.helm.show_values(&chart_dir).await?;
+        let secret_pointers = redaction_pointers(&rec, &app.schema);
+        let pool_class =
+            find_persistence_storage_class(&serde_json::Value::Object(rec.values.clone()));
+        let mut stored_overrides = rec.values.clone();
+        strip_dataset_values(&mut stored_overrides);
+        sanitize_submitted_values(&app, &mut stored_overrides);
+        stored_overrides.remove("hostPath");
         let mut client_values = values.cloned().unwrap_or_default();
         strip_dataset_values(&mut client_values);
-        let mut merged = merge_values(
-            &serde_json::Value::Object(rec.values.clone()),
-            Some(&client_values),
+        sanitize_submitted_values(&app, &mut client_values);
+        let mut merged = upgrade_merged_values(
+            &chart_values,
+            app.default_values.as_object(),
+            &stored_overrides,
+            &client_values,
         );
-        // The Resources editor submits the complete `resources` object built
-        // from its form; an omitted key means "cleared". Deep-merging that
-        // object would keep the old value, so replace it wholesale (R-052 /
-        // UI-03). A null top-level value clears the object.
-        replace_resource_values(&mut merged, &client_values);
 
         // A redacted secret comes back as `null`; keep the stored value. This
         // walks the schema's JSON-pointer paths, so nested secrets keep their
         // stored value too (R-020).
-        restore_redacted_values(&rec.values, &mut merged, &secret_pointers);
+        restore_redacted_values(&stored_overrides, &mut merged, &secret_pointers);
         coerce_schema_numbers(&app.schema, &mut merged);
         // The drawer sends an explicit `null` for a cleared resource field
         // (UI-03); remove it instead of handing Helm a null quantity.
@@ -1703,22 +1826,19 @@ impl Manager {
         merged.remove("datasetsClaims");
         if desired.is_empty() {
             if !rec.datasets.is_empty() {
-                let chart_defaults = self.helm.show_values(&chart_dir).await?;
                 let fallback = if app.privileged {
                     "hostPath"
                 } else {
                     "datasetsClaim"
                 };
-                // Honour a hostPath the operator submitted in this request;
-                // otherwise restore the chart default.
-                if !client_values.contains_key(fallback) {
-                    match chart_defaults.get(fallback) {
-                        Some(value) => {
-                            merged.insert(fallback.to_string(), value.clone());
-                        }
-                        None => {
-                            merged.remove(fallback);
-                        }
+                // Client-supplied host paths are stripped (S-1), so the chart
+                // default is the only trusted source for the legacy fallback.
+                match chart_values.get(fallback) {
+                    Some(value) => {
+                        merged.insert(fallback.to_string(), value.clone());
+                    }
+                    None => {
+                        merged.remove(fallback);
                     }
                 }
             }
@@ -1726,6 +1846,14 @@ impl Manager {
             for (key, value) in &provision.values {
                 merged.insert(key.clone(), value.clone());
             }
+        }
+        // The pool StorageClass lives under `persistence`, which no catalog
+        // schema lists; re-apply it after the dataset merge so the whitelist
+        // cannot silently move new claims to the default provisioner.
+        if let Some(class) = &pool_class {
+            let mut as_value = serde_json::Value::Object(merged.clone());
+            set_persistence_storage_class(&mut as_value, class);
+            merged = as_value.as_object().cloned().unwrap_or(merged);
         }
 
         let env_helm = self.helm_for(&rec);
@@ -1784,7 +1912,12 @@ impl Manager {
         for key in PLATFORM_ENV_KEYS {
             merged.remove(key);
         }
-        rec.values = merged;
+        // Persist only the override diff against the chart version now in use,
+        // so the next chart bump's defaults keep flowing through (S-2).
+        let base_values = merge_values(&chart_values, app.default_values.as_object());
+        let keep_resources =
+            stored_overrides.contains_key("resources") || client_values.contains_key("resources");
+        rec.values = stored_override_values(&base_values, &merged, keep_resources);
         rec.datasets = desired;
         if let Some(meta) = env_outcome.meta {
             rec.env = meta;
@@ -1796,7 +1929,9 @@ impl Manager {
         rec.source = app.source.clone();
         rec.channel = app.channel.clone();
         rec.chart_path = app.chart_path.clone();
-        rec.redacted_keys = secret_pointers;
+        if !secret_pointers.is_empty() {
+            rec.redacted_keys = secret_pointers;
+        }
         rec.updated_at = Some(Utc::now());
         rec.last_error = env_outcome.warning;
         // Charts pull floating tags with `IfNotPresent`; without this the
@@ -1912,6 +2047,9 @@ impl Manager {
         if merged.auth && !self.auth_allowed(&base_domain) {
             return Err("auth requires the domain to be in the SSO domain list".to_string());
         }
+        // Moving an app onto a host another app already serves would silently
+        // steal its route/CNAME (S-8).
+        self.ensure_host_available(name, &merged.subdomain, &base_domain)?;
         let namespace = self.target_namespace(&rec);
         self.validate_internet(&namespace, &merged)?;
         if let Some(service) = &patch.service {
@@ -2408,6 +2546,29 @@ impl Manager {
                 "Internet access can only be turned off for a baseline app with per-app isolation (apps.isolation.enabled); privileged app namespaces always allow outbound Internet"
                     .to_string(),
             );
+        }
+        Ok(())
+    }
+
+    /// Refuse a host already claimed by a different installed app. Two records
+    /// on one host would race for the Traefik route and the app CNAME, and the
+    /// last one to reconcile would silently take both over (S-8). The catalog
+    /// default subdomain goes through the same check as an explicit one.
+    fn ensure_host_available(
+        &self,
+        name: &str,
+        subdomain: &str,
+        base_domain: &str,
+    ) -> Result<(), String> {
+        let host = exposure_host(subdomain, base_domain, &self.base_domain);
+        if host.is_empty() {
+            return Ok(());
+        }
+        let records = self.store.list();
+        if let Some(owner) = host_owner(records.iter(), name, &host, &self.base_domain) {
+            return Err(format!(
+                "host {host:?} is already claimed by app {owner:?}; choose another subdomain or base domain"
+            ));
         }
         Ok(())
     }
@@ -3076,33 +3237,7 @@ impl Manager {
                     if !isolated && pod_instance(&pod) != app {
                         continue;
                     }
-                    let Some(specs) = pod
-                        .pointer("/spec/containers")
-                        .and_then(|containers| containers.as_array())
-                    else {
-                        continue;
-                    };
-                    let statuses = pod
-                        .pointer("/status/containerStatuses")
-                        .and_then(|statuses| statuses.as_array());
-                    for spec in specs {
-                        let Some(image) = spec.get("image").and_then(|image| image.as_str()) else {
-                            continue;
-                        };
-                        let name = spec
-                            .get("name")
-                            .and_then(|name| name.as_str())
-                            .unwrap_or("");
-                        let image_id = statuses
-                            .and_then(|statuses| {
-                                statuses.iter().find(|status| {
-                                    status.get("name").and_then(|n| n.as_str()).unwrap_or("")
-                                        == name
-                                })
-                            })
-                            .and_then(|status| status.get("imageID"))
-                            .and_then(|id| id.as_str())
-                            .unwrap_or("");
+                    for (_, image, image_id) in pod_container_images(&pod) {
                         let Some(current) = crate::images::running_digest(image_id) else {
                             continue;
                         };
@@ -3439,25 +3574,41 @@ fn api_redaction_label(pointer: &str) -> String {
     }
 }
 
-/// Redact one record using the given catalog entry (or the record's persisted
-/// pointer list). Returns the labels actually masked and whether the values
-/// had to be omitted because no safe redaction was possible.
+/// The union of the secret pointers the schema currently declares and the
+/// pointers persisted on the record.
+///
+/// The schema can lose a pointer (a catalog change, or a schema-less catalog
+/// entry) but the value is still stored: keeping the persisted pointers means
+/// an older secret is never returned in clear just because the catalog stopped
+/// describing it (S-3).
+pub fn redaction_pointers(record: &Record, schema: &serde_json::Value) -> Vec<String> {
+    let mut pointers = record.redacted_keys.clone();
+    for pointer in secret_value_pointers(schema) {
+        if !pointers.contains(&pointer) {
+            pointers.push(pointer);
+        }
+    }
+    pointers.sort();
+    pointers.dedup();
+    pointers
+}
+
+/// Redact one record using the given catalog entry and the record's persisted
+/// pointer list. Returns the labels actually masked and whether the values had
+/// to be omitted because no safe redaction was possible.
 pub fn redact_record_with_catalog(
     record: &mut Record,
     catalog_app: Option<&crate::catalog::App>,
 ) -> (Vec<String>, bool) {
-    let has_catalog = catalog_app.is_some();
-    let pointers = match catalog_app {
-        Some(app) => {
-            let pointers = secret_value_pointers(&app.schema);
-            if !pointers.is_empty() {
-                record.redacted_keys = pointers.clone();
-            }
-            pointers
-        }
-        None => record.redacted_keys.clone(),
-    };
-    if !has_catalog && pointers.is_empty() && !record.values.is_empty() {
+    let empty_schema = serde_json::Value::Null;
+    let schema = catalog_app.map(|app| &app.schema).unwrap_or(&empty_schema);
+    let pointers = redaction_pointers(record, schema);
+    // Persist the list when there is anything to persist; a schema that no
+    // longer declares a secret must not erase the record's knowledge of one.
+    if !pointers.is_empty() {
+        record.redacted_keys = pointers.clone();
+    }
+    if catalog_app.is_none() && pointers.is_empty() && !record.values.is_empty() {
         record.values.clear();
         return (Vec::new(), true);
     }
@@ -3679,7 +3830,80 @@ pub fn coerce_schema_numbers(
     }
 }
 
-/// Deep-merge overlay into base and return a new map.
+/// Strip values a client may not submit: keys outside the catalog schema's
+/// property tree and platform-sensitive keys (S-1). Stripped paths are logged
+/// so an operator can tell why a submitted value was ignored.
+fn sanitize_submitted_values(
+    app: &crate::catalog::App,
+    values: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let stripped = sanitize_client_values(&app.schema, values);
+    if !stripped.is_empty() {
+        tracing::warn!(
+            "app {:?}: ignoring values the catalog schema does not authorize: {}",
+            app.name,
+            stripped.join(", ")
+        );
+    }
+}
+
+/// Project `values` onto the catalog schema's property tree. The merged
+/// install values also carry chart/catalog defaults (image settings, service
+/// wiring) that the schema never lists; validating those against the hardened
+/// whitelist schema would reject every chart. Only catalog-exposed keys are
+/// validated.
+fn project_schema_values(
+    schema: Option<&serde_json::Map<String, serde_json::Value>>,
+    values: &serde_json::Value,
+) -> serde_json::Value {
+    match values {
+        serde_json::Value::Object(map) => {
+            let properties = schema
+                .and_then(|s| s.get("properties"))
+                .and_then(|p| p.as_object());
+            let additional = schema.and_then(|s| s.get("additionalProperties"));
+            let patterns = schema
+                .and_then(|s| s.get("patternProperties"))
+                .and_then(|p| p.as_object())
+                .is_some_and(|p| !p.is_empty());
+            let mut out = serde_json::Map::new();
+            for (key, value) in map {
+                if let Some(child) = properties.and_then(|p| p.get(key)) {
+                    out.insert(key.clone(), project_schema_values(child.as_object(), value));
+                    continue;
+                }
+                if let Some(additional_schema) = additional.and_then(|a| a.as_object()) {
+                    out.insert(
+                        key.clone(),
+                        project_schema_values(Some(additional_schema), value),
+                    );
+                    continue;
+                }
+                if patterns
+                    || (properties.is_none()
+                        && !matches!(additional, Some(serde_json::Value::Bool(false))))
+                {
+                    out.insert(key.clone(), value.clone());
+                }
+            }
+            serde_json::Value::Object(out)
+        }
+        serde_json::Value::Array(items) => match schema
+            .and_then(|s| s.get("items"))
+            .and_then(|i| i.as_object())
+        {
+            Some(item_schema) => serde_json::Value::Array(
+                items
+                    .iter()
+                    .map(|item| project_schema_values(Some(item_schema), item))
+                    .collect(),
+            ),
+            None => values.clone(),
+        },
+        _ => values.clone(),
+    }
+}
+
 /// Validate the merged install values against the catalog's JSON schema
 /// (SEC-2026-D7). A missing/null schema means the catalog does not constrain
 /// the values; an invalid schema is a catalog defect and fails closed.
@@ -3692,7 +3916,10 @@ fn validate_install_values(
     }
     let validator = jsonschema::validator_for(&app.schema)
         .map_err(|e| format!("app {:?} has an invalid values schema: {e}", app.name))?;
-    let instance = serde_json::Value::Object(values.clone());
+    let instance = project_schema_values(
+        app.schema.as_object(),
+        &serde_json::Value::Object(values.clone()),
+    );
     let errors: Vec<String> = validator
         .iter_errors(&instance)
         .map(|e| e.to_string())
@@ -3989,6 +4216,177 @@ pub fn strip_dataset_values(values: &mut serde_json::Map<String, serde_json::Val
     }
 }
 
+fn is_platform_sensitive_key(key: &str) -> bool {
+    PLATFORM_SENSITIVE_VALUE_KEYS.contains(&key)
+}
+
+/// Enforce the catalog schema as a whitelist for client-submitted values.
+///
+/// Every key not declared in the schema's property tree is removed, together
+/// with keys that control platform-sensitive chart fields (`image`,
+/// `privileged`, `hostPath`, `serviceAccount`, …) even when a schema lists
+/// them. It is the client's only path into the Helm release, so without this a
+/// values blob could replace the app image or mount an arbitrary host path
+/// (SEC-2026-D7, S-1). Returns the stripped paths for logging.
+pub fn sanitize_client_values(
+    schema: &serde_json::Value,
+    values: &mut serde_json::Map<String, serde_json::Value>,
+) -> Vec<String> {
+    let mut stripped = Vec::new();
+    let mut root = serde_json::Value::Object(std::mem::take(values));
+    // `resources` is the drawer's platform-owned editor, not a catalog schema
+    // field (no catalog declares it). Keep it outside the schema whitelist but
+    // still apply the sensitive-key rule beneath it.
+    let resources = root.as_object_mut().and_then(|map| map.remove("resources"));
+    sanitize_value(schema.as_object(), &mut root, "", &mut stripped);
+    if let Some(mut resources) = resources {
+        sanitize_value(None, &mut resources, "/resources", &mut stripped);
+        if let Some(map) = root.as_object_mut() {
+            map.insert("resources".to_string(), resources);
+        }
+    }
+    *values = root.as_object().cloned().unwrap_or_default();
+    stripped.sort();
+    stripped.dedup();
+    stripped
+}
+
+fn sanitize_value(
+    schema: Option<&serde_json::Map<String, serde_json::Value>>,
+    value: &mut serde_json::Value,
+    path: &str,
+    stripped: &mut Vec<String>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let properties = schema
+                .and_then(|s| s.get("properties"))
+                .and_then(|p| p.as_object());
+            let additional = schema.and_then(|s| s.get("additionalProperties"));
+            let patterns = schema
+                .and_then(|s| s.get("patternProperties"))
+                .and_then(|p| p.as_object())
+                .is_some_and(|p| !p.is_empty());
+            let mut remove = Vec::new();
+            for (key, child) in map.iter_mut() {
+                let child_path = format!("{path}/{}", escape_pointer(key));
+                if is_platform_sensitive_key(key) {
+                    remove.push(key.clone());
+                    stripped.push(child_path);
+                    continue;
+                }
+                let child_schema = match properties.and_then(|p| p.get(key)) {
+                    Some(child_schema) => child_schema.as_object(),
+                    None => match additional {
+                        Some(serde_json::Value::Object(additional_schema)) => {
+                            Some(additional_schema)
+                        }
+                        Some(serde_json::Value::Bool(true)) => None,
+                        _ if patterns => None,
+                        // A node without properties never declared a whitelist;
+                        // only the sensitive-key rule applies beneath it.
+                        None if properties.is_none() => None,
+                        _ => {
+                            remove.push(key.clone());
+                            stripped.push(child_path);
+                            continue;
+                        }
+                    },
+                };
+                sanitize_value(child_schema, child, &child_path, stripped);
+            }
+            for key in remove {
+                map.remove(&key);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            let item_schema = schema
+                .and_then(|s| s.get("items"))
+                .and_then(|i| i.as_object());
+            for (index, item) in items.iter_mut().enumerate() {
+                sanitize_value(item_schema, item, &format!("{path}/{index}"), stripped);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The persisted value set for a record: only what differs from the trusted
+/// chart/catalog defaults (plus the platform-derived values that are not
+/// recomputed on upgrade, such as the pool storage class). Chart defaults are
+/// deliberately not stored, so a later chart bump applies its changed defaults
+/// (including `image.tag`) on upgrade (S-2).
+fn stored_override_values(
+    base: &serde_json::Map<String, serde_json::Value>,
+    values: &serde_json::Map<String, serde_json::Value>,
+    keep_resources: bool,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut overrides = values_override_diff(base, values);
+    // The resource editor submits a complete object where an omitted key means
+    // "cleared", so it is stored (and applied on upgrade) as a replacement
+    // rather than a diff whose cleared keys a chart default would refill.
+    if keep_resources {
+        let resources = values
+            .get("resources")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        overrides.insert("resources".to_string(), resources);
+    }
+    // Platform-owned values are recomputed from the record on every upgrade.
+    for key in PLATFORM_DATASET_KEYS {
+        overrides.remove(key);
+    }
+    for key in PLATFORM_ENV_KEYS {
+        overrides.remove(key);
+    }
+    overrides.remove("hostPath");
+    overrides
+}
+
+fn values_override_diff(
+    base: &serde_json::Map<String, serde_json::Value>,
+    values: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    for (key, value) in values {
+        match base.get(key) {
+            Some(base_value) if base_value == value => continue,
+            Some(serde_json::Value::Object(base_object)) => {
+                if let serde_json::Value::Object(object) = value {
+                    let nested = values_override_diff(base_object, object);
+                    if !nested.is_empty() {
+                        out.insert(key.clone(), serde_json::Value::Object(nested));
+                    }
+                } else {
+                    out.insert(key.clone(), value.clone());
+                }
+            }
+            _ => {
+                out.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Merge the NEW chart defaults underneath the stored overrides and the
+/// client's new values. The stored override set was captured against the chart
+/// version that was installed, so this is what lets a chart bump's changed
+/// defaults (`image.tag` included) reach an existing release (S-2).
+fn upgrade_merged_values(
+    chart_values: &serde_json::Value,
+    catalog_defaults: Option<&serde_json::Map<String, serde_json::Value>>,
+    stored_overrides: &serde_json::Map<String, serde_json::Value>,
+    client_values: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut merged = merge_values(chart_values, catalog_defaults);
+    merged = merge_values(&serde_json::Value::Object(merged), Some(stored_overrides));
+    replace_resource_values(&mut merged, stored_overrides);
+    merged = merge_values(&serde_json::Value::Object(merged), Some(client_values));
+    replace_resource_values(&mut merged, client_values);
+    merged
+}
+
 /// Build the Helm values for a dataset selection: one entry per dataset plus
 /// the legacy single-claim keys (baseline) or the first host path (privileged)
 /// so older chart releases keep working.
@@ -4133,6 +4531,47 @@ pub fn validate_subdomain(subdomain: &str) -> Result<(), String> {
             "subdomain {subdomain:?} must be a lowercase DNS-1123 label"
         ))
     }
+}
+
+/// The name of the record (other than `name`) that already claims `host`.
+pub fn host_owner<'a>(
+    records: impl IntoIterator<Item = &'a Record>,
+    name: &str,
+    host: &str,
+    default_base: &str,
+) -> Option<&'a str> {
+    if host.is_empty() {
+        return None;
+    }
+    records
+        .into_iter()
+        .find(|rec| {
+            rec.name != name
+                && exposure_host(&rec.exposure.subdomain, &rec.base_domain, default_base) == host
+        })
+        .map(|rec| rec.name.as_str())
+}
+
+/// The fully-qualified host an exposure claims, or empty when it has no route.
+/// Compared case-insensitively because DNS host names are.
+pub fn exposure_host(subdomain: &str, base_domain: &str, default_base: &str) -> String {
+    let subdomain = subdomain.trim();
+    if subdomain.is_empty() {
+        return String::new();
+    }
+    let base = if base_domain.trim().is_empty() {
+        default_base.trim()
+    } else {
+        base_domain.trim()
+    };
+    if base.is_empty() {
+        return String::new();
+    }
+    format!(
+        "{}.{}",
+        subdomain.to_ascii_lowercase(),
+        base.to_ascii_lowercase()
+    )
 }
 
 /// Persists records as JSON.
@@ -4491,6 +4930,43 @@ mod tests {
     }
 
     #[test]
+    fn init_containers_participate_in_image_drift() {
+        // The refresh patch already handles init containers, so drift
+        // detection must scan them too (S-10).
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [{ "name": "app", "image": "example/app:1" }],
+                "initContainers": [{ "name": "init", "image": "example/init:1" }]
+            },
+            "status": {
+                "phase": "Running",
+                "containerStatuses": [
+                    { "name": "app", "imageID": "example/app@sha256:aaa" }
+                ],
+                "initContainerStatuses": [
+                    { "name": "init", "imageID": "example/init@sha256:bbb" }
+                ]
+            }
+        });
+        let images = pod_container_images(&pod);
+        assert_eq!(images.len(), 2);
+        assert!(images.contains(&("app", "example/app:1", "example/app@sha256:aaa")));
+        assert!(images.contains(&("init", "example/init:1", "example/init@sha256:bbb")));
+
+        // An init container without a matching status is still scanned; the
+        // live-pod rule itself is unchanged.
+        let pod = serde_json::json!({
+            "spec": { "initContainers": [{ "name": "init", "image": "example/init:2" }] },
+            "status": { "phase": "Running" }
+        });
+        assert!(pod_is_live_for_image_check(&pod));
+        assert_eq!(
+            pod_container_images(&pod),
+            vec![("init", "example/init:2", "")]
+        );
+    }
+
+    #[test]
     fn duplicate_install_is_rejected() {
         let store = Store::new("");
         assert!(ensure_not_installed(&store, "bazarr").is_ok());
@@ -4681,9 +5157,9 @@ mod exposure_patch_tests {
 #[cfg(test)]
 mod value_schema_tests {
     use super::{
-        clamp_pool_limit, load_pool_settings, pick_namespace, pool_storage_class,
-        secret_value_keys, set_persistence_storage_class, validate_install_values,
-        validate_pool_for_storage, validate_pool_limit,
+        clamp_pool_limit, find_persistence_storage_class, load_pool_settings, pick_namespace,
+        pool_storage_class, secret_value_keys, set_persistence_storage_class,
+        validate_install_values, validate_pool_for_storage, validate_pool_limit,
     };
     use crate::catalog::App;
     use serde_json::json;
@@ -4807,6 +5283,26 @@ mod value_schema_tests {
     }
 
     #[test]
+    fn the_pool_storage_class_survives_the_whitelist() {
+        let flat = json!({ "persistence": { "storageClass": "naslos-pool-data-abc" } });
+        assert_eq!(
+            find_persistence_storage_class(&flat).as_deref(),
+            Some("naslos-pool-data-abc")
+        );
+        let nested = json!({
+            "postgres": { "persistence": { "storageClass": "naslos-pool-ssd-def" } }
+        });
+        assert_eq!(
+            find_persistence_storage_class(&nested).as_deref(),
+            Some("naslos-pool-ssd-def")
+        );
+        assert_eq!(
+            find_persistence_storage_class(&json!({ "persistence": { "size": "1Gi" } })),
+            None
+        );
+    }
+
+    #[test]
     fn persistence_storage_class_covers_top_level_and_nested() {
         let mut values = serde_json::json!({
             "persistence": {
@@ -4832,6 +5328,312 @@ mod value_schema_tests {
             "naslos-pool-ssd"
         );
         assert_eq!(values["other"]["storageClass"], "keep-me");
+    }
+}
+
+#[cfg(test)]
+mod values_whitelist_tests {
+    use super::{
+        merge_values, replace_resource_values, sanitize_client_values, stored_override_values,
+        upgrade_merged_values,
+    };
+    use serde_json::json;
+
+    fn schema() -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "port": { "type": "integer" },
+                "smtp": {
+                    "type": "object",
+                    "properties": { "host": { "type": "string" } }
+                }
+            }
+        })
+    }
+
+    fn map(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        value.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn install_rejects_a_hostile_values_blob() {
+        let mut client = map(json!({
+            "port": 8080,
+            "image": { "repository": "evil", "tag": "backdoor" },
+            "privileged": true,
+            "hostPath": "/etc",
+            "serviceAccount": "naslos-admin",
+            "podSecurityContext": { "runAsUser": 0 },
+            "notInTheSchema": "injected"
+        }));
+        let stripped = sanitize_client_values(&schema(), &mut client);
+        assert_eq!(client["port"], 8080);
+        for key in [
+            "image",
+            "privileged",
+            "hostPath",
+            "serviceAccount",
+            "podSecurityContext",
+            "notInTheSchema",
+        ] {
+            assert!(client.get(key).is_none(), "{key} must be stripped");
+        }
+        for path in [
+            "/image",
+            "/privileged",
+            "/hostPath",
+            "/serviceAccount",
+            "/podSecurityContext",
+            "/notInTheSchema",
+        ] {
+            assert!(stripped.contains(&path.to_string()), "{path}: {stripped:?}");
+        }
+    }
+
+    #[test]
+    fn upgrade_rejects_a_hostile_values_blob_and_legacy_record() {
+        // Both the request values and a legacy record that persisted chart
+        // defaults (or injected keys) go through the same whitelist on update.
+        let mut stored = map(json!({
+            "port": 8080,
+            "image": { "tag": "backdoor" },
+            "privileged": true,
+            "hostPath": "/etc"
+        }));
+        sanitize_client_values(&schema(), &mut stored);
+        assert_eq!(stored["port"], 8080);
+        assert!(stored.get("image").is_none());
+        assert!(stored.get("privileged").is_none());
+        assert!(stored.get("hostPath").is_none());
+
+        let chart = json!({ "image": { "tag": "2.0" }, "port": 80 });
+        let merged = upgrade_merged_values(&chart, None, &stored, &map(json!({})));
+        assert_eq!(merged["image"]["tag"], "2.0");
+        assert_eq!(merged["port"], 8080);
+    }
+
+    #[test]
+    fn nested_unknown_and_sensitive_keys_are_stripped() {
+        let mut client = map(json!({
+            "smtp": { "host": "mail.example", "image": "evil", "token": "leak" }
+        }));
+        let stripped = sanitize_client_values(&schema(), &mut client);
+        assert_eq!(client["smtp"]["host"], "mail.example");
+        assert!(client["smtp"].get("image").is_none());
+        assert!(client["smtp"].get("token").is_none());
+        assert!(stripped.contains(&"/smtp/image".to_string()));
+        assert!(stripped.contains(&"/smtp/token".to_string()));
+    }
+
+    #[test]
+    fn schema_listed_sensitive_keys_are_still_not_authorized() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "image": { "type": "object" },
+                "hostPath": { "type": "string" },
+                "allowed": { "type": "string" }
+            }
+        });
+        let mut client = map(json!({
+            "image": { "tag": "evil" },
+            "hostPath": "/etc",
+            "allowed": "yes"
+        }));
+        sanitize_client_values(&schema, &mut client);
+        assert_eq!(client["allowed"], "yes");
+        assert!(client.get("image").is_none());
+        assert!(client.get("hostPath").is_none());
+    }
+
+    #[test]
+    fn an_additional_properties_schema_authorizes_extra_keys() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+        });
+        let mut client = map(json!({ "anything": "kept", "image": "evil" }));
+        sanitize_client_values(&schema, &mut client);
+        assert_eq!(client["anything"], "kept");
+        assert!(client.get("image").is_none(), "the denylist still applies");
+    }
+
+    #[test]
+    fn the_resources_editor_is_authorized_outside_the_schema() {
+        // No catalog declares `resources`; the drawer's resource editor must
+        // survive the schema whitelist, while a sensitive key inside it does
+        // not.
+        let mut client = map(json!({
+            "port": 8080,
+            "resources": {
+                "requests": { "cpu": "100m" },
+                "image": "evil"
+            }
+        }));
+        let stripped = sanitize_client_values(&schema(), &mut client);
+        assert_eq!(client["resources"]["requests"]["cpu"], "100m");
+        assert!(client["resources"].get("image").is_none());
+        assert!(stripped.contains(&"/resources/image".to_string()));
+        assert_eq!(client["port"], 8080);
+    }
+
+    #[test]
+    fn install_stores_only_the_override_diff() {
+        let base = map(json!({
+            "image": { "tag": "1.0" },
+            "port": 80,
+            "persistence": { "data": { "size": "2Gi" } }
+        }));
+        let client = map(json!({ "port": 8080 }));
+        let values = merge_values(&serde_json::Value::Object(base.clone()), Some(&client));
+        let stored = stored_override_values(&base, &values, false);
+        assert_eq!(stored["port"], 8080);
+        assert!(
+            stored.get("image").is_none(),
+            "chart defaults must not be persisted"
+        );
+        assert!(
+            stored.get("persistence").is_none(),
+            "unchanged chart defaults must not be persisted"
+        );
+    }
+
+    #[test]
+    fn upgrade_applies_a_changed_chart_default_image_tag() {
+        let install_base = map(json!({ "image": { "tag": "1.0" }, "port": 80 }));
+        let client = map(json!({ "port": 8080 }));
+        let install_values = merge_values(
+            &serde_json::Value::Object(install_base.clone()),
+            Some(&client),
+        );
+        let stored = stored_override_values(&install_base, &install_values, false);
+
+        // The chart bumps its default image tag between install and upgrade.
+        let upgrade_chart = json!({ "image": { "tag": "2.0" }, "port": 80 });
+        let merged = upgrade_merged_values(&upgrade_chart, None, &stored, &map(json!({})));
+        assert_eq!(merged["image"]["tag"], "2.0");
+        assert_eq!(merged["port"], 8080);
+    }
+
+    #[test]
+    fn the_resources_object_is_stored_and_reapplied_wholesale() {
+        let base = map(json!({
+            "image": { "tag": "1.0" },
+            "resources": { "limits": { "memory": "1Gi" } }
+        }));
+        let client = map(json!({ "resources": {} }));
+        let mut values = merge_values(&serde_json::Value::Object(base.clone()), Some(&client));
+        replace_resource_values(&mut values, &client);
+        let stored = stored_override_values(&base, &values, true);
+        assert_eq!(stored["resources"], json!({}));
+        assert!(stored.get("image").is_none());
+
+        let merged = upgrade_merged_values(
+            &json!({ "resources": { "limits": { "memory": "1Gi" } } }),
+            None,
+            &stored,
+            &map(json!({})),
+        );
+        assert_eq!(
+            merged["resources"],
+            json!({}),
+            "a cleared resource object must not be refilled from the new chart defaults"
+        );
+    }
+
+    #[test]
+    fn platform_owned_values_are_not_persisted() {
+        let base = map(json!({ "port": 80 }));
+        let values = map(json!({
+            "port": 8080,
+            "datasets": [{ "name": "media" }],
+            "datasetsClaim": "naslos-ds-app-media",
+            "datasetsClaims": ["naslos-ds-app-media"],
+            "hostPath": "/var/mnt/tank/media",
+            "naslosEnvChecksum": "abc"
+        }));
+        let stored = stored_override_values(&base, &values, false);
+        assert_eq!(stored["port"], 8080);
+        for key in [
+            "datasets",
+            "datasetsClaim",
+            "datasetsClaims",
+            "hostPath",
+            "naslosEnvChecksum",
+        ] {
+            assert!(stored.get(key).is_none(), "{key} is platform-owned");
+        }
+    }
+}
+
+#[cfg(test)]
+mod host_uniqueness_tests {
+    use super::{exposure_host, host_owner, Exposure, Record};
+
+    fn record(name: &str, subdomain: &str, base_domain: &str) -> Record {
+        Record {
+            name: name.into(),
+            exposure: Exposure {
+                subdomain: subdomain.into(),
+                ..Exposure::default()
+            },
+            base_domain: base_domain.into(),
+            ..Record::default()
+        }
+    }
+
+    #[test]
+    fn exposure_host_resolves_the_default_base_and_normalizes_case() {
+        assert_eq!(
+            exposure_host("Media", "Example.COM", "naslos.local"),
+            "media.example.com"
+        );
+        assert_eq!(
+            exposure_host("media", "", "naslos.local"),
+            "media.naslos.local"
+        );
+        assert_eq!(exposure_host("", "example.com", "naslos.local"), "");
+        assert_eq!(
+            exposure_host("media", "example.com", ""),
+            "media.example.com"
+        );
+    }
+
+    #[test]
+    fn a_host_claimed_by_another_record_names_the_owner() {
+        let records = [
+            record("plex", "media", "example.com"),
+            record("sonarr", "tv", ""),
+        ];
+        let host = exposure_host("media", "", "example.com");
+        assert_eq!(
+            host_owner(records.iter(), "sonarr", &host, "example.com"),
+            Some("plex")
+        );
+        // The same app may re-save its own host.
+        assert_eq!(
+            host_owner(records.iter(), "plex", &host, "example.com"),
+            None
+        );
+        // A different base domain is a different host.
+        let other = exposure_host("media", "other.example", "example.com");
+        assert_eq!(
+            host_owner(records.iter(), "sonarr", &other, "example.com"),
+            None
+        );
+        // A catalog-default subdomain resolves against the record's domain.
+        let defaulted = exposure_host("tv", "", "example.com");
+        assert_eq!(
+            host_owner(records.iter(), "plex", &defaulted, "example.com"),
+            Some("sonarr")
+        );
+    }
+
+    #[test]
+    fn records_without_a_route_never_conflict() {
+        let records = [record("internal", "", "")];
+        assert_eq!(host_owner(records.iter(), "plex", "", "example.com"), None);
     }
 }
 
@@ -5293,6 +6095,52 @@ mod lifecycle_hardening_tests {
         assert_eq!(record.values["smtp"]["credentials"]["token"], json!(null));
         assert_eq!(record.values["user"], json!("admin"));
         assert_eq!(redacted.len(), 2);
+    }
+
+    #[test]
+    fn persisted_pointers_still_redact_without_schema_secrets() {
+        // A catalog entry exists but its schema declares no secret: the
+        // persisted pointer list must not be ignored (S-3).
+        let app = App {
+            name: "demo".into(),
+            schema: json!({
+                "type": "object",
+                "properties": { "user": { "type": "string" } }
+            }),
+            ..Default::default()
+        };
+        let mut record = nested_record();
+        record.redacted_keys = vec!["/postgresql/auth/password".to_string()];
+        let (redacted, omitted) = redact_record_with_catalog(&mut record, Some(&app));
+        assert!(!omitted);
+        assert_eq!(record.values["postgresql"]["auth"]["password"], json!(null));
+        assert_eq!(
+            record.values["password"],
+            json!("top"),
+            "only the persisted pointer is hidden"
+        );
+        assert!(redacted.contains(&"/postgresql/auth/password".to_string()));
+        assert_eq!(
+            record.redacted_keys,
+            vec!["/postgresql/auth/password".to_string()],
+            "a schema with no pointers does not erase the persisted list"
+        );
+    }
+
+    #[test]
+    fn schema_and_persisted_pointers_are_unioned() {
+        let app = nested_secret_app();
+        let mut record = nested_record();
+        record.redacted_keys = vec!["/legacy/token".to_string()];
+        let (redacted, _) = redact_record_with_catalog(&mut record, Some(&app));
+        assert!(
+            redacted.contains(&"password".to_string()),
+            "a top-level secret keeps its short label: {redacted:?}"
+        );
+        assert!(record.redacted_keys.contains(&"/legacy/token".to_string()));
+        assert!(record
+            .redacted_keys
+            .contains(&"/smtp/credentials/token".to_string()));
     }
 
     #[test]
