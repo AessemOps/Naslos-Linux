@@ -67,6 +67,7 @@ impl Server {
                 "/api/v1/vms/{name}/force-stop",
                 post(handlers::vm_force_stop_post),
             )
+            .route("/api/v1/vms/{name}/vnc", get(handlers::vm_vnc_tunnel))
             .route("/api/v1/images", get(handlers::images_get))
             .route("/api/v1/images/upload", post(handlers::image_upload_post))
             .route("/api/v1/images/import", post(handlers::image_import_post))
@@ -208,6 +209,7 @@ mod tests {
             "/api/v1/vms",
             "/api/v1/vms/config",
             "/api/v1/vms/x/force-stop",
+            "/api/v1/vms/x/vnc?port=5901",
             "/api/v1/images?pool=tank",
         ] {
             let response = server
@@ -250,6 +252,74 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_vnc_tunnel_proxies_bytes_to_the_configured_loopback_port() {
+        use futures::{SinkExt, StreamExt};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        use tokio_tungstenite::tungstenite::Message as TunnelMessage;
+
+        // A fake QEMU VNC listener that echoes the client's first bytes.
+        let vnc = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let vnc_port = vnc.local_addr().unwrap().port();
+        assert!(vnc_port >= 5900, "the test needs a display-range port");
+        tokio::spawn(async move {
+            let (mut stream, _) = vnc.accept().await.unwrap();
+            let mut buf = [0u8; 12];
+            stream.read_exact(&mut buf).await.unwrap();
+            stream.write_all(&buf).await.unwrap();
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor = Arc::new(Supervisor::new(
+            false,
+            vnc_port - 5900,
+            1,
+            dir.path().to_path_buf(),
+        ));
+        let server = Server::new(
+            "127.0.0.1:0",
+            supervisor,
+            Options {
+                auth_token: "token".into(),
+                tls_cert_file: String::new(),
+                tls_key_file: String::new(),
+            },
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = server.router();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let url = format!("ws://{addr}/api/v1/vms/drill-vm/vnc?port={vnc_port}");
+        let mut request = url.as_str().into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("authorization", "Bearer token".parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        ws.send(TunnelMessage::Binary(b"RFB 003.008\n".to_vec().into()))
+            .await
+            .unwrap();
+        let echoed = ws.next().await.unwrap().unwrap();
+        assert_eq!(
+            echoed,
+            TunnelMessage::Binary(b"RFB 003.008\n".to_vec().into())
+        );
+
+        // A port outside the configured display range is refused.
+        let outside = format!("ws://{addr}/api/v1/vms/drill-vm/vnc?port={}", vnc_port + 1);
+        let mut request = outside.as_str().into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("authorization", "Bearer token".parse().unwrap());
+        assert!(
+            tokio_tungstenite::connect_async(request).await.is_err(),
+            "a port outside the display range must be refused"
+        );
     }
 
     #[tokio::test]

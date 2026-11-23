@@ -15,7 +15,6 @@ use axum::response::{IntoResponse, Response};
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use naslos_vmd::model::{validate_snapshot_name, DesiredState, VmSpec};
 
@@ -905,10 +904,11 @@ pub async fn vm_vnc_ws(
         }
     };
 
-    let vmd_host = vmd_host_of(client.base_url());
     ws.max_message_size(1 << 20)
         .max_frame_size(256 << 10)
-        .on_upgrade(move |socket| vnc_bridge(socket, vmd_host, vnc_port, permit, audit, pending))
+        .on_upgrade(move |socket| {
+            vnc_bridge(socket, client, name, vnc_port, permit, audit, pending)
+        })
 }
 
 /// The console origin policy: the browser `Origin` must be exactly the HTTPS
@@ -1012,62 +1012,57 @@ fn finish_console_session(
     }
 }
 
-/// Extract the host to dial for the VNC listener: vmd's Service host (the
-/// node's own address, since vmd is hostNetwork).
-fn vmd_host_of(base_url: &str) -> String {
-    let rest = base_url
-        .strip_prefix("https://")
-        .or_else(|| base_url.strip_prefix("http://"))
-        .unwrap_or(base_url);
-    rest.split(':').next().unwrap_or(rest).to_string()
-}
-
-/// Bridge one console: browser WebSocket <-> QEMU's VNC TCP listener. RFB is
-/// a byte stream; the WS frames carry its bytes (the websockify pattern,
-/// implemented here so no extra process exists). QEMU's VNC is
-/// password-protected (vmd sets the per-boot password over QMP) and only the
-/// API pod and the LAN can reach the node port at all.
+/// Bridge one console: browser WebSocket <-> the authenticated vmd console
+/// tunnel. QEMU's VNC listener binds loopback only, so the API never dials it
+/// directly: `Client::vnc_tunnel` opens a WebSocket on vmd's TLS listener and
+/// vmd proxies its bytes to 127.0.0.1:<vnc_port>. RFB is a byte stream, so
+/// the frames carry its bytes unchanged (the websockify pattern).
 async fn vnc_bridge(
     socket: WebSocket,
-    vmd_host: String,
+    client: Arc<vmd::Client>,
+    vm_name: String,
     vnc_port: u16,
     _slot: tokio::sync::OwnedSemaphorePermit,
     audit: crate::audit::AuditLog,
     pending: crate::audit::Pending,
 ) {
+    use tokio_tungstenite::tungstenite::Message as TunnelMessage;
+
     let mut socket = socket;
-    let stream = match tokio::time::timeout(
+    let tunnel = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        tokio::net::TcpStream::connect((vmd_host.as_str(), vnc_port)),
+        client.vnc_tunnel(&vm_name, vnc_port),
     )
     .await
     {
-        Ok(Ok(stream)) => stream,
-        _ => {
-            tracing::warn!("console bridge: cannot reach {vmd_host}:{vnc_port}");
+        Ok(Ok(tunnel)) => tunnel,
+        Ok(Err(e)) => {
+            tracing::warn!("console bridge: vmd tunnel refused for {vm_name}: {e}");
             let _ = socket.close().await;
             finish_console_session(&audit, &pending, 502);
             return;
         }
+        Err(_) => {
+            tracing::warn!("console bridge: opening the vmd tunnel timed out for {vm_name}");
+            let _ = socket.close().await;
+            finish_console_session(&audit, &pending, 504);
+            return;
+        }
     };
-    let (mut tcp_read, mut tcp_write) = stream.into_split();
+    let (mut tunnel_sender, mut tunnel_receiver) = tunnel.split();
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
-    // TCP -> WS: the console output.
+    // Tunnel -> WS: the console output.
     let pump = tokio::spawn(async move {
-        let mut buf = vec![0u8; 16 * 1024];
-        loop {
-            match tcp_read.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if ws_sender
-                        .send(Message::Binary(buf[..n].to_vec().into()))
-                        .await
-                        .is_err()
-                    {
+        while let Some(message) = tunnel_receiver.next().await {
+            match message {
+                Ok(TunnelMessage::Binary(data)) => {
+                    if ws_sender.send(Message::Binary(data)).await.is_err() {
                         break;
                     }
                 }
+                Ok(TunnelMessage::Close(_)) | Err(_) => break,
+                _ => {}
             }
         }
         let _ = ws_sender.close().await;
@@ -1092,7 +1087,11 @@ async fn vnc_bridge(
                     break;
                 }
                 last_traffic = tokio::time::Instant::now();
-                if tcp_write.write_all(&data).await.is_err() {
+                if tunnel_sender
+                    .send(TunnelMessage::Binary(data))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -1105,7 +1104,7 @@ async fn vnc_bridge(
             }
         }
     }
-    let _ = tcp_write.shutdown().await;
+    let _ = tunnel_sender.close().await;
     pump.abort();
     let _ = pump.await;
     finish_console_session(&audit, &pending, 101);

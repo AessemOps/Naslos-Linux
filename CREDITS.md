@@ -18,7 +18,7 @@ and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
-**Last reviewed: 2026-11-22.** Maintenance: update this file whenever a direct dependency changes in
+**Last reviewed: 2026-11-23.** Maintenance: update this file whenever a direct dependency changes in
 `rust/api/Cargo.toml`, `rust/agent/Cargo.toml`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
 It also lists the GitHub Actions used by the CI/release workflows.
 
@@ -95,6 +95,7 @@ adds the same set plus the agent-pattern token/TLS server. Direct dependencies:
 | thiserror | 2 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror |
 | tokio | 1 | MIT | https://github.com/tokio-rs/tokio |
 | tokio-rustls | 0.26 | MIT OR Apache-2.0 | https://github.com/rustls/tokio-rustls |
+| tokio-tungstenite | 0.29 | MIT | https://github.com/snapview/tokio-tungstenite |
 | tokio-util | 0.7 | MIT | https://github.com/tokio-rs/tokio |
 | webpki-roots | 1 | CDLA-Permissive-2.0 | https://github.com/rustls/webpki-roots |
 | tower / tower-http | 0.5 / 0.6 | MIT | https://github.com/tower-rs/tower |
