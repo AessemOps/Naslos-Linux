@@ -179,6 +179,10 @@ credential key that older entries stored in `providerConfig`.
   `credentialsSecret`) and never returned. An explicit `credentialsSecret` must
   be a DNS-1123 name starting with `naslos-`; generated names always are, and
   the prefix keeps a request from targeting another app's Secret (SEC-2026-D12).
+- A domain update that omits the write-only `solver`, `providerConfig` or
+  `credentialsSecret` preserves the stored values and validates the effective
+  record. `solver: null` (or `{}`) clears a provider-rendered solver; a
+  passthrough domain still requires a solver and returns 400.
 
 ## Drivers
 

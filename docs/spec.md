@@ -1500,7 +1500,11 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   (`mode: dynamic`, username/password, the default) and the signed ZoneDNS API
   (`mode: api`). Domain responses MUST project the `solver` away (only
   `solverConfigured` is reported) and apply the same export-safe filter to
-  `providerConfig`. *(certs tests: `TestSpecOVH`, `TestSpecCloudflareSolverShape`,
+  `providerConfig`. Because those values are write-only, a domain update that
+  omits `solver`, `providerConfig` or `credentialsSecret` MUST preserve the
+  stored values and validate the effective (stored + submitted) record; an
+  explicit empty `solver` MUST clear it only for a provider-rendered solver
+  (passthrough still requires one). *(certs tests: `TestSpecOVH`, `TestSpecCloudflareSolverShape`,
   `TestSpecRFC2136SolverShape`, `TestSpecPassthroughIsUnchanged`;
   `TestOVHDriverDynHostMode`)*
 - **FR-DNS-06** — A force-run endpoint (`POST /api/ddns/{id}/run`) MUST exist

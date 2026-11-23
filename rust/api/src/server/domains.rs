@@ -11,13 +11,36 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// A domain create/update body: the domain fields plus the selected provider's
-/// credential `fields`.
+/// credential `fields`. `solver` is write-only in responses, so an update that
+/// omits it must preserve the stored value; `solver_submitted` distinguishes
+/// an omitted key from an explicit `null`/empty object.
 #[derive(Default, serde::Deserialize)]
 struct DomainRequest {
     #[serde(flatten)]
     domain: Domain,
     #[serde(default)]
     fields: Option<HashMap<String, String>>,
+    #[serde(skip)]
+    solver_submitted: bool,
+}
+
+/// Decode a domain request while recording whether `solver` was present.
+#[allow(clippy::result_large_err)]
+async fn read_domain_request(body: Body) -> Result<DomainRequest, Response> {
+    let value: serde_json::Value = super::zfs::read_json(body).await?;
+    let solver_submitted = value.get("solver").is_some();
+    let mut req: DomainRequest = serde_json::from_value(value).map_err(|e| {
+        json(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({ "error": e.to_string() }),
+        )
+    })?;
+    req.solver_submitted = solver_submitted;
+    Ok(req)
+}
+
+fn solver_is_explicitly_empty(solver: &serde_json::Value) -> bool {
+    solver.is_null() || solver.as_object().map(|m| m.is_empty()).unwrap_or(false)
 }
 
 fn bad_request(msg: &str) -> Response {
@@ -168,7 +191,7 @@ pub async fn domains_get(State(state): State<Arc<AppState>>) -> Response {
 }
 
 pub async fn domains_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
-    let mut req: DomainRequest = match super::zfs::read_json(body).await {
+    let mut req = match read_domain_request(body).await {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -197,7 +220,7 @@ pub async fn domain_detail_put(
     Path(name): Path<String>,
     body: Body,
 ) -> Response {
-    let mut req: DomainRequest = match super::zfs::read_json(body).await {
+    let mut req = match read_domain_request(body).await {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -324,7 +347,11 @@ pub async fn domain_certificate_get(
 }
 
 async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: StatusCode) -> Response {
-    let mut domain = req.domain;
+    let DomainRequest {
+        mut domain,
+        fields,
+        solver_submitted,
+    } = req;
     if domain.environment.is_empty() {
         domain.environment = "staging".to_string();
     }
@@ -337,11 +364,35 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
     {
         domain.app_records_ddns_entry = None;
     }
+    let existing = state.domains.get(&domain.base_domain).ok();
+    // Preserve write-only fields that an update omitted. The UI never receives
+    // the solver or credential values back, so omission must not erase them.
+    if let Some(prev) = &existing {
+        if domain.credentials_secret.is_empty() {
+            domain.credentials_secret = prev.credentials_secret.clone();
+        }
+        if !solver_submitted {
+            domain.solver = prev.solver.clone();
+        }
+        if fields.is_none() {
+            domain.provider_config = prev.provider_config.clone();
+        }
+    }
+    // An explicit empty solver clears it only for provider-rendered solvers;
+    // passthrough still needs one and is rejected by `validate` below.
+    if solver_submitted
+        && domain
+            .solver
+            .as_ref()
+            .map(solver_is_explicitly_empty)
+            .unwrap_or(false)
+    {
+        domain.solver = None;
+    }
     if let Err(e) = validate_app_records(state, &domain) {
         return bad_request(&e);
     }
-    let existing = state.domains.get(&domain.base_domain).ok();
-    if let Some(fields) = &req.fields {
+    if let Some(fields) = &fields {
         if let Err(e) = apply_domain_fields(state, &mut domain, fields, existing.as_ref()).await {
             return bad_request(&e);
         }

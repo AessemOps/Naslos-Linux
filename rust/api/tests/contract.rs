@@ -687,6 +687,78 @@ async fn webhook_channel_crud_never_returns_the_token() {
 }
 
 #[tokio::test]
+async fn domain_update_preserves_an_omitted_solver() {
+    let st = Arc::new(AppState::for_test(SECRET));
+    let created = r#"{"baseDomain":"passthrough.example.test","dnsProvider":"passthrough","solver":{"webhook":{"groupName":"example.test","solverName":"passthrough"}},"environment":"staging"}"#;
+    let (status, _body, _raw) = send_state(
+        st.clone(),
+        admin_request("POST", "/api/domains", Some(created)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let original = st
+        .domains
+        .get("passthrough.example.test")
+        .unwrap()
+        .solver
+        .clone()
+        .unwrap();
+
+    // An update from the UI omits the write-only solver: preserve it.
+    let update = r#"{"baseDomain":"passthrough.example.test","dnsProvider":"passthrough","acmeEmail":"ops@example.test","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/passthrough.example.test", Some(update)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = st.domains.get("passthrough.example.test").unwrap();
+    assert_eq!(stored.solver.as_ref(), Some(&original));
+    assert_eq!(stored.acme_email, "ops@example.test");
+
+    // An explicit empty solver still cannot satisfy passthrough.
+    let clear = r#"{"baseDomain":"passthrough.example.test","dnsProvider":"passthrough","solver":null,"environment":"staging"}"#;
+    let (status, _body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/passthrough.example.test", Some(clear)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        st.domains
+            .get("passthrough.example.test")
+            .unwrap()
+            .solver
+            .as_ref(),
+        Some(&original)
+    );
+
+    // A submitted solver replaces the stored one.
+    let changed = r#"{"baseDomain":"passthrough.example.test","dnsProvider":"passthrough","solver":{"webhook":{"groupName":"example.test","solverName":"changed"}},"environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request(
+            "PUT",
+            "/api/domains/passthrough.example.test",
+            Some(changed),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = st.domains.get("passthrough.example.test").unwrap();
+    assert_eq!(
+        stored.solver.as_ref().unwrap()["webhook"]["solverName"],
+        "changed"
+    );
+
+    // Creating a passthrough domain without a solver is still invalid.
+    let invalid = r#"{"baseDomain":"invalid.example.test","dnsProvider":"passthrough","environment":"staging"}"#;
+    let (status, _body, _raw) =
+        send_state(st, admin_request("POST", "/api/domains", Some(invalid))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn webhook_test_route_requires_enabled_and_guards_at_send_time() {
     // Disabled: an explicit client error rather than a false success.
     let (status, body, _r) = send(admin_request(
