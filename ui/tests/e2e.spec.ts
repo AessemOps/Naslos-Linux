@@ -10,7 +10,7 @@ test('full user and group lifecycle', async ({ page }) => {
 
   // Create a user
   await page.goto('/users');
-  await page.click('text=+ New User');
+  await page.getByRole('button', { name: '+ New User' }).click();
   const textInputs = page.locator('input[type="text"]');
   await textInputs.nth(0).fill(uid);
   await textInputs.nth(1).fill('John');
@@ -25,7 +25,7 @@ test('full user and group lifecycle', async ({ page }) => {
 
   // Create a group
   await page.goto('/groups');
-  await page.click('text=+ New Group');
+  await page.getByRole('button', { name: '+ New Group' }).click();
   await page.fill('input[placeholder="e.g. naslos_users"]', cn);
   await page.fill('input[placeholder="e.g. Standard users"]', 'Test group');
   await page.getByRole('button', { name: 'Create', exact: true }).click();

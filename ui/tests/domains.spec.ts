@@ -129,6 +129,15 @@ test.describe('redacted domain config', () => {
         { key: 'proxied', label: 'Proxied (orange cloud)', type: 'bool', default: 'false' }
       ]
     },
+    {
+      name: 'rfc2136',
+      displayName: 'RFC2136',
+      certManager: true,
+      fields: [
+        { key: 'nameserver', label: 'Nameserver', type: 'string', required: true },
+        { key: 'tsigSecret', label: 'TSIG secret', type: 'string', required: true, secret: true }
+      ]
+    },
     { name: 'passthrough', displayName: 'Passthrough', certManager: true, fields: [] }
   ];
   const cloudflareDomain = {
@@ -155,23 +164,28 @@ test.describe('redacted domain config', () => {
     solverConfigured: true
   };
 
-  async function mockDomains(page: any, putBody: { value: any }) {
+  async function mockDomains(
+    page: any,
+    putBody: { value: any },
+    options: { domains?: any[]; ddnsStatus?: number; ddnsJson?: any } = {}
+  ) {
+    const domains = options.domains ?? [cloudflareDomain, passthroughDomain];
     await page.route(/\/api\/domains(\/.*)?$/, async (route: any) => {
       const request = route.request();
       const path = new URL(request.url()).pathname;
       if (request.method() === 'PUT') {
         putBody.value = request.postDataJSON();
-        return route.fulfill({ json: { ...cloudflareDomain, ...putBody.value } });
+        return route.fulfill({ json: { ...domains[0], ...putBody.value } });
       }
       if (path.endsWith('/certificate')) {
         return route.fulfill({ json: { status: 'ready', reason: '', secretName: 'tls' } });
       }
       return route.fulfill({
         json: {
-          domains: [cloudflareDomain, passthroughDomain],
+          domains,
           baseDomain: 'example.test',
           certManager: true,
-          selectableDomains: ['example.test', 'pass.test'],
+          selectableDomains: domains.map((d) => d.baseDomain),
           ssoDomains: ['example.test']
         }
       });
@@ -180,7 +194,14 @@ test.describe('redacted domain config', () => {
       route.fulfill({ json: { providers } })
     );
     await page.route('**/api/ddns', (route: any) =>
-      route.fulfill({ json: { entries: [], enabled: false, intervalSeconds: 300 } })
+      route.fulfill({
+        status: options.ddnsStatus ?? 200,
+        json:
+          options.ddnsJson ??
+          (options.ddnsStatus && options.ddnsStatus >= 400
+            ? { error: 'bad gateway' }
+            : { entries: [], enabled: false, intervalSeconds: 300 })
+      })
     );
   }
 
@@ -207,6 +228,64 @@ test.describe('redacted domain config', () => {
     // secrets; it must not carry blank apiToken/proxied values.
     expect(put.value.fields).toEqual({});
     expect(JSON.stringify(put.value)).not.toContain('apiToken');
+  });
+
+  test('a failed DDNS load preserves the stored app-record target', async ({ page }) => {
+    const put: { value: any } = { value: null };
+    const withRecords = {
+      ...cloudflareDomain,
+      appRecordsSupported: true,
+      appRecordsDdnsEntry: 'entry-1'
+    };
+    await mockDomains(page, put, { domains: [withRecords], ddnsStatus: 502 });
+
+    await page.goto('/domains');
+    await expect(page.getByText('Loading domains...')).toBeHidden({ timeout: 10_000 });
+    const row = page.locator('.card', { hasText: 'example.test' });
+    await row.getByRole('button', { name: 'Edit', exact: true }).click();
+
+    // The control must not look "empty": it is disabled, still checked, and
+    // explains that the stored target is kept.
+    const toggle = page.getByLabel(/Create DNS records for apps/);
+    await expect(toggle).toBeChecked();
+    await expect(toggle).toBeDisabled();
+    await expect(page.getByText(/Could not load the DDNS entries/)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect.poll(() => put.value).toBeTruthy();
+    expect(put.value.appRecordsDdnsEntry).toBe('entry-1');
+  });
+
+  test('changing the DNS provider requires the new provider credentials', async ({ page }) => {
+    const put: { value: any } = { value: null };
+    await mockDomains(page, put);
+
+    await page.goto('/domains');
+    await expect(page.getByText('Loading domains...')).toBeHidden({ timeout: 10_000 });
+    const row = page.locator('.card', { hasText: 'example.test' });
+    await row.getByRole('button', { name: 'Edit', exact: true }).click();
+
+    // The stored Cloudflare token covers Cloudflare only.
+    await expect(page.locator('#domain-field-apiToken')).toHaveAttribute('placeholder', /unchanged/);
+    await page.locator('#domain-provider').selectOption('rfc2136');
+
+    await expect(page.locator('#domain-field-tsigSecret')).not.toHaveAttribute('placeholder', /unchanged/);
+    await expect(page.locator('#domain-clear-tsigSecret')).toHaveCount(0);
+
+    // Saving without the new provider's required values is refused locally.
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText(/Enter .*TSIG secret|Enter .*Nameserver/);
+    expect(put.value).toBeNull();
+
+    await page.locator('#domain-field-nameserver').fill('ns1.example.test');
+    await page.locator('#domain-field-tsigSecret').fill('tsig-secret-value');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect.poll(() => put.value).toBeTruthy();
+    expect(put.value.dnsProvider).toBe('rfc2136');
+    expect(put.value.fields).toMatchObject({
+      nameserver: 'ns1.example.test',
+      tsigSecret: 'tsig-secret-value'
+    });
   });
 
   test('a configured passthrough solver is indicated and not sent on an unrelated save', async ({ page }) => {

@@ -30,6 +30,13 @@ const POOL = 'Data';
 const IMAGE = 'alpine-3.22.0-x86_64-uefi.qcow2';
 const VM = 'e2e-vmd-drill';
 
+// Teardown guards: the cleanup in the finally block must only remove
+// artifacts THIS run created. A drill that aborts before the import or the
+// VM create must never delete a pre-existing VM (recursively destroying its
+// dataset) or a pre-existing library image.
+let importedImage = false;
+let createdVm = false;
+
 const ctx = await request.newContext({
   baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'https://naslos.local',
   ignoreHTTPSErrors: true,
@@ -42,6 +49,9 @@ const ok = (cond, msg) => {
   console.log(`   ok: ${msg}`);
 };
 
+// Everything below runs under try/finally: a failed assertion must still stop
+// the VM and remove the VM/image, never leave a running guest behind.
+try {
 // Step 2: capabilities
 step('capabilities');
 {
@@ -75,6 +85,9 @@ step('private-URL import refused');
 // Step 3b: import the cloud image by URL
 step('import cloud image by URL');
 {
+  // From this request on, the drill owns the library entry (including a
+  // failed partial) and the teardown may delete it.
+  importedImage = true;
   const res = await ctx.post('/api/virt/images/import', {
     data: {
       pool: POOL,
@@ -103,6 +116,8 @@ step('import cloud image by URL');
 // Step 4: create the VM (cloud-init on, autostart off)
 step('create VM');
 {
+  // From this request on, the drill owns the VM and its dataset.
+  createdVm = true;
   const res = await ctx.post('/api/virt/vms', {
     data: {
       name: VM,
@@ -173,7 +188,9 @@ step('snapshot + restore while stopped');
   ok(res.status() < 300, `snapshot accepted: ${res.status()} ${await res.text()}`);
   const list = await (await ctx.get(`/api/virt/vms/${VM}/snapshots`)).json();
   ok(JSON.stringify(list).includes('drill-snap'), 'snapshot listed');
-  const restore = await ctx.post(`/api/virt/vms/${VM}/snapshots/drill-snap/restore`);
+  const restore = await ctx.post(
+    `/api/virt/vms/${VM}/snapshots/drill-snap/restore?confirm=${encodeURIComponent(VM)}`
+  );
   ok(restore.status() < 300, `restore (stopped) accepted: ${restore.status()}`);
 }
 
@@ -188,7 +205,9 @@ step('restore refuses while running');
     const vm = Array.isArray(vms) ? vms.find((v) => v.name === VM) : vms;
     if (vm && vm.state === 'running') break;
   }
-  const restore = await ctx.post(`/api/virt/vms/${VM}/snapshots/drill-snap/restore`);
+  const restore = await ctx.post(
+    `/api/virt/vms/${VM}/snapshots/drill-snap/restore?confirm=${encodeURIComponent(VM)}`
+  );
   ok(restore.status() === 409, `restore while running refused: ${restore.status()} ${(await restore.json()).error || ''}`);
 }
 
@@ -203,7 +222,7 @@ step('force stop + delete');
     const vm = Array.isArray(vms) ? vms.find((v) => v.name === VM) : vms;
     if (vm && vm.state === 'stopped') break;
   }
-  const del = await ctx.delete(`/api/virt/vms/${VM}`);
+  const del = await ctx.delete(`/api/virt/vms/${VM}?confirm=${encodeURIComponent(VM)}`);
   ok(del.status() < 300, `delete accepted: ${del.status()} ${await del.text()}`);
   const ds = await (await ctx.get('/api/datasets')).json();
   ok(
@@ -219,5 +238,30 @@ step('delete imported image');
   ok(res.status() < 300, `image deleted: ${res.status()} ${await res.text()}`);
 }
 
-await ctx.dispose();
 console.log('\nLIVE DRILL PASSED');
+} finally {
+  // Best-effort teardown, guarded by the ownership flags above: only what
+  // this run created is removed. Each call is independent so one failure
+  // cannot skip the rest.
+  const cleanup = async (label, fn) => {
+    try {
+      await fn();
+    } catch (e) {
+      console.error(`cleanup (${label}) failed: ${e}`);
+    }
+  };
+  if (createdVm) {
+    await cleanup('force-stop', () =>
+      ctx.post(`/api/virt/vms/${VM}/force-stop?confirm=${encodeURIComponent(VM)}`)
+    );
+    await cleanup('delete VM', () =>
+      ctx.delete(`/api/virt/vms/${VM}?confirm=${encodeURIComponent(VM)}`)
+    );
+  }
+  if (importedImage) {
+    await cleanup('delete image', () =>
+      ctx.delete(`/api/virt/images/${IMAGE}?pool=${encodeURIComponent(POOL)}`)
+    );
+  }
+  await ctx.dispose();
+}

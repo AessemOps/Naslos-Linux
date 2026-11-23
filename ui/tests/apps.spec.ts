@@ -717,6 +717,37 @@ test.describe('app UI safety', () => {
     await expect.poll(() => saved?.exposure?.auth).toBe(false);
   });
 
+  test('a failed exposure GET disables saving instead of unexposing the app', async ({ page }) => {
+    let saved: any = null;
+    await mockInstalledApp(page, async (route, path, request) => {
+      if (path === '/api/apps/demo-app/exposure' && request.method() === 'GET') {
+        await route.fulfill({ status: 502, json: { error: 'supervisor unavailable' } });
+        return true;
+      }
+      if (path === '/api/apps/demo-app/exposure' && request.method() === 'PUT') {
+        saved = request.postDataJSON();
+        await route.fulfill({ json: {} });
+        return true;
+      }
+      if (path === '/api/apps/demo-app/services') {
+        await route.fulfill({ json: [] });
+        return true;
+      }
+      return false;
+    });
+
+    await page.goto('/apps');
+    await expect(page.getByText('Loading installed apps...')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Open Demo App details', exact: true }).click();
+    await page.getByRole('button', { name: 'Exposure', exact: true }).click();
+
+    const dialog = page.locator('.fixed.inset-0').filter({ hasText: 'Exposure — demo-app' });
+    await expect(dialog.getByText(/Failed to load exposure/)).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Retry' })).toBeVisible();
+    expect(saved).toBeNull();
+  });
+
   test('clearing a resource field drops it from the whole resources object', async ({ page }) => {
     let saved: any = null;
     await mockInstalledApp(page, async (route, path, request) => {
@@ -797,7 +828,8 @@ test.describe('app UI safety', () => {
     await page.getByRole('button', { name: 'Install Broken App' }).click();
     const dialog = page.locator('.fixed.inset-0');
     await expect(dialog.getByRole('alert')).toContainText(/Failed to load app details|HTTP 500/);
-    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    // Two controls are named Close (the icon button and the footer button).
+    await dialog.getByRole('button', { name: 'Close', exact: true }).last().click();
     await expect(dialog).toBeHidden();
   });
 });
