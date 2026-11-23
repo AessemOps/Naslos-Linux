@@ -382,27 +382,86 @@ async fn cmd_backups(receiver: String, identity: Option<String>, json: bool) -> 
     Ok(())
 }
 
+/// The regular files a directory backup contains, plus the symlinks that were
+/// deliberately skipped.
+struct CollectedFiles {
+    files: Vec<PathBuf>,
+    skipped_symlinks: Vec<PathBuf>,
+}
+
 /// Walk a directory, returning its regular files in a stable order so the same
-/// tree always produces the same stream.
-fn collect_files(root: &Path) -> Result<Vec<PathBuf>, String> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+/// tree always produces the same stream. Symlinks are never followed: a
+/// planted symlink must not archive the identity/KEK (or anything else)
+/// outside the requested root (B-8). Directory cycles and paths that resolve
+/// outside the root are refused.
+fn collect_files(root: &Path) -> Result<CollectedFiles, String> {
+    fn walk(
+        root: &Path,
+        canonical_root: &Path,
+        dir: &Path,
+        visited: &mut std::collections::HashSet<PathBuf>,
+        out: &mut Vec<PathBuf>,
+        skipped_symlinks: &mut Vec<PathBuf>,
+    ) -> Result<(), String> {
+        let canonical_dir = std::fs::canonicalize(dir)
+            .map_err(|e| format!("cannot resolve {}: {e}", dir.display()))?;
+        if !canonical_dir.starts_with(canonical_root) {
+            return Err(format!(
+                "refusing to archive {}: it resolves outside {}",
+                dir.display(),
+                root.display()
+            ));
+        }
+        if !visited.insert(canonical_dir) {
+            return Err(format!(
+                "refusing to archive {}: the directory tree contains a cycle",
+                dir.display()
+            ));
+        }
         let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         for entry in entries {
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
-            let meta = entry.metadata().map_err(|e| e.to_string())?;
+            let meta = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+            if meta.file_type().is_symlink() {
+                skipped_symlinks.push(path);
+                continue;
+            }
             if meta.is_dir() {
-                walk(&path, out)?;
+                walk(root, canonical_root, &path, visited, out, skipped_symlinks)?;
             } else if meta.is_file() {
+                let canonical_file = std::fs::canonicalize(&path)
+                    .map_err(|e| format!("cannot resolve {}: {e}", path.display()))?;
+                if !canonical_file.starts_with(canonical_root) {
+                    return Err(format!(
+                        "refusing to archive {}: it resolves outside {}",
+                        path.display(),
+                        root.display()
+                    ));
+                }
                 out.push(path);
             }
         }
         Ok(())
     }
+    let canonical_root = std::fs::canonicalize(root)
+        .map_err(|e| format!("cannot resolve {}: {e}", root.display()))?;
     let mut files = Vec::new();
-    walk(root, &mut files)?;
+    let mut skipped_symlinks = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    walk(
+        root,
+        &canonical_root,
+        root,
+        &mut visited,
+        &mut files,
+        &mut skipped_symlinks,
+    )?;
     files.sort();
-    Ok(files)
+    Ok(CollectedFiles {
+        files,
+        skipped_symlinks,
+    })
 }
 
 fn parent_dirs(rel: &str) -> Vec<String> {
@@ -413,8 +472,30 @@ fn parent_dirs(rel: &str) -> Vec<String> {
 /// Write a tar archive of `files` (with their parent directories) to `out`.
 fn write_tar(root: &Path, files: &[PathBuf], out: &mut dyn Write) -> Result<(), String> {
     let mut builder = tar::Builder::new(out);
+    // Even though `collect_files` never returns a symlink, a path can be
+    // replaced between the walk and the archive. Never follow it into the
+    // archive (B-8).
+    builder.follow_symlinks(false);
+    let canonical_root = std::fs::canonicalize(root)
+        .map_err(|e| format!("cannot resolve {}: {e}", root.display()))?;
     let mut written_dirs = std::collections::HashSet::new();
     for file in files {
+        let meta = std::fs::symlink_metadata(file).map_err(|e| e.to_string())?;
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return Err(format!(
+                "refusing to archive {}: it is no longer a regular file",
+                file.display()
+            ));
+        }
+        let canonical_file = std::fs::canonicalize(file)
+            .map_err(|e| format!("cannot resolve {}: {e}", file.display()))?;
+        if !canonical_file.starts_with(&canonical_root) {
+            return Err(format!(
+                "refusing to archive {}: it resolves outside {}",
+                file.display(),
+                root.display()
+            ));
+        }
         let rel = file
             .strip_prefix(root)
             .map_err(|e| e.to_string())?
@@ -515,7 +596,14 @@ async fn cmd_push(
 
     let mut reader: Box<dyn tokio::io::AsyncRead + Unpin + Send> = match source_kind {
         Source::Dir(root) => {
-            let files = collect_files(&root)?;
+            let collected = collect_files(&root)?;
+            for skipped in &collected.skipped_symlinks {
+                eprintln!(
+                    "skipping symlink {} (symlinks are never followed into a backup)",
+                    skipped.display()
+                );
+            }
+            let files = collected.files;
             let (read_half, write_half) = tokio::io::duplex(64 << 10);
             let root_clone = root.clone();
             tokio::task::spawn_blocking(move || {
@@ -634,6 +722,32 @@ async fn cmd_restore(
     validate_source(&source)?;
     let (id, _) = load_or_create(identity.as_deref(), None)?;
     let chain = chain.unwrap_or_default();
+    let client = client(&receiver, id);
+    // Resolve the chain summary the signed manifest must agree with before
+    // writing anything: the listing is receiver-supplied and unsigned, so the
+    // client cross-checks GUIDs, kind and snapshot names (B-5).
+    let sequence = client.restore_sequence(&source, &chain).await?;
+    let expected = if chain.is_empty() {
+        sequence
+            .last()
+            .cloned()
+            .ok_or_else(|| format!("no backup of {source} is stored here"))?
+    } else {
+        sequence
+            .iter()
+            .find(|summary| summary.chain == chain)
+            .cloned()
+            .ok_or_else(|| format!("chain {chain} is not stored for {source}"))?
+    };
+    // Keep the default path's restore chain empty so `Client::restore` still
+    // runs its last-published freshness check against the local anchor; only
+    // an explicit --chain pins the manifest to that chain id. The summary
+    // cross-check above applies in both cases.
+    let restore_chain = if chain.is_empty() {
+        chain.as_str()
+    } else {
+        expected.chain.as_str()
+    };
 
     enum Out {
         Sink,
@@ -656,14 +770,19 @@ async fn cmd_restore(
     let result = match dest {
         Some(Out::Sink) => {
             let mut sink = tokio::io::sink();
-            let (result, error) = client(&receiver, id)
+            let (result, error) = client
                 .restore(RestoreOptions {
                     source: &source,
-                    chain: &chain,
+                    chain: restore_chain,
                     out: &mut sink,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
                     expected_sequence: None,
+                    expected_from_guid: &expected.from_guid,
+                    expected_to_guid: &expected.to_guid,
+                    expected_kind: &expected.kind,
+                    expected_from_snapshot: &expected.from_snapshot,
+                    expected_to_snapshot: &expected.to_snapshot,
                 })
                 .await;
             if let Some(e) = error {
@@ -673,14 +792,19 @@ async fn cmd_restore(
         }
         Some(Out::Stdout) => {
             let mut stdout = tokio::io::stdout();
-            let (result, error) = client(&receiver, id)
+            let (result, error) = client
                 .restore(RestoreOptions {
                     source: &source,
-                    chain: &chain,
+                    chain: restore_chain,
                     out: &mut stdout,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
                     expected_sequence: None,
+                    expected_from_guid: &expected.from_guid,
+                    expected_to_guid: &expected.to_guid,
+                    expected_kind: &expected.kind,
+                    expected_from_snapshot: &expected.from_snapshot,
+                    expected_to_snapshot: &expected.to_snapshot,
                 })
                 .await;
             if let Some(e) = error {
@@ -695,14 +819,19 @@ async fn cmd_restore(
             let mut file = tokio::fs::File::create(&path)
                 .await
                 .map_err(|e| e.to_string())?;
-            let (result, error) = client(&receiver, id)
+            let (result, error) = client
                 .restore(RestoreOptions {
                     source: &source,
-                    chain: &chain,
+                    chain: restore_chain,
                     out: &mut file,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
                     expected_sequence: None,
+                    expected_from_guid: &expected.from_guid,
+                    expected_to_guid: &expected.to_guid,
+                    expected_kind: &expected.kind,
+                    expected_from_snapshot: &expected.from_snapshot,
+                    expected_to_snapshot: &expected.to_snapshot,
                 })
                 .await;
             if let Some(e) = error {
@@ -719,14 +848,19 @@ async fn cmd_restore(
                 let mut bridge = tokio_util::io::SyncIoBridge::new(read_half);
                 extract_tar(&mut bridge, &dest)
             });
-            let (result, error) = client(&receiver, id)
+            let (result, error) = client
                 .restore(RestoreOptions {
                     source: &source,
-                    chain: &chain,
+                    chain: restore_chain,
                     out: &mut write_half,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
                     expected_sequence: None,
+                    expected_from_guid: &expected.from_guid,
+                    expected_to_guid: &expected.to_guid,
+                    expected_kind: &expected.kind,
+                    expected_from_snapshot: &expected.from_snapshot,
+                    expected_to_snapshot: &expected.to_snapshot,
                 })
                 .await;
             // Signal EOF to the extractor and let it report its own error.
@@ -785,4 +919,80 @@ async fn cmd_prune(
     let removed = client(&receiver, id).prune(&source, keep).await?;
     println!("kept the newest {keep} chains of {source}, removed {removed}");
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+
+    use super::{collect_files, write_tar};
+    use std::io::Read;
+
+    /// A symlink planted in the backed-up tree must never be followed: the
+    /// archive must contain only the real file, never the sentinel outside the
+    /// root (B-8).
+    #[test]
+    fn a_planted_symlink_is_never_followed_into_the_archive() {
+        let root = tempfile::tempdir().expect("root tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let sentinel = outside.path().join("buddy-identity.json");
+        std::fs::write(&sentinel, b"canary-private-key-material").expect("write the sentinel");
+        std::fs::create_dir(root.path().join("media")).expect("create a real directory");
+        std::fs::write(root.path().join("media/keep.txt"), b"keep-me").expect("write a real file");
+        std::os::unix::fs::symlink(&sentinel, root.path().join("identity-link"))
+            .expect("plant a file symlink");
+        std::os::unix::fs::symlink(outside.path(), root.path().join("outside-link"))
+            .expect("plant a directory symlink");
+
+        let collected = collect_files(root.path()).expect("walk the tree");
+        assert_eq!(
+            collected.files.len(),
+            1,
+            "only the regular file is collected"
+        );
+        assert!(collected.files[0].ends_with("media/keep.txt"));
+        assert_eq!(
+            collected.skipped_symlinks.len(),
+            2,
+            "both planted symlinks are skipped"
+        );
+
+        let mut archive = Vec::new();
+        write_tar(root.path(), &collected.files, &mut archive).expect("write the archive");
+        let mut found = Vec::new();
+        let mut reader = tar::Archive::new(&archive[..]);
+        for entry in reader.entries().expect("read the archive") {
+            let mut entry = entry.expect("archive entry");
+            let path = entry
+                .path()
+                .expect("entry path")
+                .to_string_lossy()
+                .to_string();
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data).expect("entry body");
+            found.push((path, data));
+        }
+        assert!(
+            found
+                .iter()
+                .any(|(path, data)| path == "media/keep.txt" && data == b"keep-me"),
+            "the regular file must be archived: {found:?}"
+        );
+        assert!(
+            !found
+                .iter()
+                .any(|(_, data)| String::from_utf8_lossy(data).contains("canary-private-key")),
+            "the sentinel outside the root must never enter the archive"
+        );
+
+        // Even if a caller hands `write_tar` a symlink directly, it refuses.
+        let direct = std::fs::read_link(root.path().join("identity-link")).expect("readlink");
+        assert_eq!(direct, sentinel);
+        let mut bytes = Vec::new();
+        assert!(write_tar(
+            root.path(),
+            &[root.path().join("identity-link")],
+            &mut bytes
+        )
+        .is_err());
+    }
 }
