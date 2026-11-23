@@ -22,14 +22,86 @@ kubectl exec -n naslos statefulset/naslos-openldap -- \
 
 ### Restore
 
+`slapadd` must never run against a live slapd: it rewrites the mdb database
+files underneath the running server and corrupts the directory. Stop the
+StatefulSet, restore into the (now exclusively owned) data volume from a
+one-off pod, then start it again. The API reconnects automatically on its next
+operation; users cannot log in (and the UI's authenticated calls fail) while
+slapd is down.
+
 ```bash
-# Stop writes, restore, restart
-kubectl exec -n naslos statefulset/naslos-openldap -- \
-  slapadd -F /etc/ldap/slapd.d -n 1 -l backup.ldif
+# 1. Take a fresh backup and stop the only writer.
+kubectl -n naslos scale statefulset/naslos-openldap --replicas=0
+kubectl -n naslos wait --for=delete pod/naslos-openldap-0 --timeout=120s
 ```
 
-(Stop the API or put LDAP in read-only mode first; the API reconnects
-automatically on the next operation.)
+Run the restore pod with the same two PVCs the StatefulSet uses plus the
+backups PVC. `slapadd` must run as the image's `openldap` user so the created
+files keep the ownership slapd expects:
+
+```bash
+kubectl -n naslos apply -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: naslos-openldap-restore
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
+    runAsNonRoot: true
+  containers:
+    - name: restore
+      image: ghcr.io/aessemops/naslos-openldap:<version>
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      volumeMounts:
+        - name: data
+          mountPath: /var/lib/ldap
+        - name: config
+          mountPath: /etc/ldap/slapd.d
+        - name: backups
+          mountPath: /backups
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: data-naslos-openldap-0
+    - name: config
+      persistentVolumeClaim:
+        claimName: config-naslos-openldap-0
+    - name: backups
+      persistentVolumeClaim:
+        claimName: naslos-openldap-backups
+EOF
+
+# 2. Restore the config first only if cn=config was lost (a data-only restore
+#    against the existing config is the normal case):
+kubectl -n naslos exec naslos-openldap-restore -- \
+  slapadd -F /etc/ldap/slapd.d -n 0 -l /backups/ldap/config_<timestamp>.ldif
+kubectl -n naslos exec naslos-openldap-restore -- \
+  slapadd -F /etc/ldap/slapd.d -n 1 -l /backups/ldap/data_<timestamp>.ldif
+
+# 3. Start the server again and remove the helper pod.
+kubectl -n naslos delete pod naslos-openldap-restore
+kubectl -n naslos scale statefulset/naslos-openldap --replicas=1
+kubectl -n naslos rollout status statefulset/naslos-openldap
+```
+
+### Sizing and limits
+
+`openldap.dataSize`, `openldap.configSize` and `openldap.storageClassName`
+are install-time settings: the StatefulSet's `volumeClaimTemplates` create the
+PVCs once, so editing them on an existing install does not resize or move the
+volumes (grow the PVC with its storage class first). The mdb map limit is also
+fixed at directory initialisation: `olcDbMaxsize` is 1 GiB in
+`openldap/image/entrypoint.sh`, so a larger `dataSize` alone does not raise
+the database limit.
 
 ## Upgrading
 
