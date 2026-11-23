@@ -334,14 +334,21 @@ test.describe('image library confirmations', () => {
     page: any,
     options: {
       images?: any[];
+      imagesAfter?: any[];
       upload?: (offset: number, final: boolean, call: number) => any;
       importStatus?: number;
       importError?: string;
     } = {}
   ) {
-    const uploads: { offset: number; final: boolean; confirm: string | null }[] = [];
+    const uploads: {
+      offset: number;
+      final: boolean;
+      confirm: string | null;
+      owner: string | null;
+    }[] = [];
     const imports: any[] = [];
     let calls = 0;
+    let libraryCalls = 0;
     await page.route(/\/api\//, async (route: any) => {
       const request = route.request();
       const url = new URL(request.url());
@@ -354,16 +361,20 @@ test.describe('image library confirmations', () => {
       if (path === '/api/virt/vms') return route.fulfill({ json: [] });
       if (path === '/api/volumes/zfs') return route.fulfill({ json: [{ name: 'tank' }] });
       if (path === '/api/virt/images') {
-        return route.fulfill({
-          json: { images: options.images ?? [existing], importing: [], errors: {} }
-        });
+        libraryCalls += 1;
+        const images =
+          libraryCalls > 1 && options.imagesAfter
+            ? options.imagesAfter
+            : options.images ?? [existing];
+        return route.fulfill({ json: { images, importing: [], errors: {} } });
       }
       if (path === '/api/virt/images/upload') {
         const offset = Number(url.searchParams.get('offset') ?? '0');
         const final = url.searchParams.get('final') === 'true';
         const confirm = url.searchParams.get('confirm');
+        const owner = url.searchParams.get('owner');
         calls += 1;
-        uploads.push({ offset, final, confirm });
+        uploads.push({ offset, final, confirm, owner });
         if (options.upload) return route.fulfill(options.upload(offset, final, calls));
         const sent = request.postDataBuffer()?.length ?? 0;
         return route.fulfill({ json: { name: 'debian.iso', sizeBytes: offset + sent } });
@@ -404,6 +415,7 @@ test.describe('image library confirmations', () => {
 
     await expect.poll(() => uploads.length).toBe(1);
     expect(uploads[0].confirm).toBe('debian.iso');
+    expect(uploads[0].owner).toBeTruthy();
   });
 
   test('a new image name uploads without the replace confirmation', async ({ page }) => {
@@ -420,6 +432,41 @@ test.describe('image library confirmations', () => {
     await page.getByRole('button', { name: 'Upload', exact: true }).click();
     await expect.poll(() => uploads.length).toBe(1);
     expect(uploads[0].confirm).toBeNull();
+    expect(uploads[0].owner).toBeTruthy();
+  });
+
+  test('a 409 refreshes a stale listing so the replace confirmation appears', async ({ page }) => {
+    const conflict = '"debian.iso" already exists in the library; pass confirm=debian.iso to replace it';
+    const { uploads } = await mockImages(page, {
+      images: [],
+      imagesAfter: [existing],
+      upload: (offset, _final, call) =>
+        call === 1
+          ? { status: 409, json: { error: conflict } }
+          : { json: { name: 'debian.iso', sizeBytes: offset + 4 } }
+    });
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+
+    // The loaded listing predates the image, so no replace checkbox exists.
+    await page.locator('#img-file').setInputFiles({
+      name: 'debian.iso',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('data')
+    });
+    await expect(page.locator('#img-replace')).toBeHidden();
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+
+    await expect(page.getByRole('alert')).toContainText('already exists');
+    // The 409 reloaded the library: the name is now listed, so the checkbox
+    // is reachable and the retry can send the confirmation.
+    await expect(page.locator('#img-replace')).toBeVisible();
+    await page.locator('#img-replace').check();
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await expect.poll(() => uploads.length).toBe(2);
+    expect(uploads[1].confirm).toBe('debian.iso');
+    expect(uploads[1].owner).toBe(uploads[0].owner);
   });
 
   test('a URL import over an existing image needs the confirmation and shows a conflict', async ({ page }) => {
@@ -441,6 +488,30 @@ test.describe('image library confirmations', () => {
     await expect.poll(() => imports.length).toBe(1);
     expect(imports[0].confirm).toBe('debian.iso');
     await expect(page.getByRole('alert')).toContainText(conflict);
+  });
+
+  test('a 409 import refreshes a stale listing and enables the confirmation', async ({ page }) => {
+    const conflict = 'cannot replace "debian.iso": VM uitest-vm is running attaches it';
+    const { imports } = await mockImages(page, {
+      images: [],
+      imagesAfter: [existing],
+      importStatus: 409,
+      importError: conflict
+    });
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+
+    await page.locator('#img-url').fill('https://mirror.example/debian.iso');
+    await expect(page.locator('#img-import-replace')).toBeHidden();
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+
+    await expect(page.getByRole('alert')).toContainText(conflict);
+    await expect(page.locator('#img-import-replace')).toBeVisible();
+    await page.locator('#img-import-replace').check();
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+    await expect.poll(() => imports.length).toBe(2);
+    expect(imports[1].confirm).toBe('debian.iso');
   });
 
   test('an over-cap upload error is shown to the operator', async ({ page }) => {
@@ -493,5 +564,9 @@ test.describe('image library confirmations', () => {
     await expect.poll(() => uploads.length).toBe(4);
     expect(uploads[2].offset).toBe(0);
     expect(uploads[3].offset).toBe(8 * 1024 * 1024);
+    // The retry stays the same client: one owner token across all chunks.
+    const owners = new Set(uploads.map((u) => u.owner));
+    expect(owners.size).toBe(1);
+    expect(uploads[0].owner).toBeTruthy();
   });
 });

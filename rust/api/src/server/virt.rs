@@ -700,12 +700,33 @@ pub async fn image_upload_post(
     // Replacing an existing library image needs the same explicit
     // confirmation as every destructive route; vmd enforces confirm == name.
     let confirm = query.get("confirm").cloned();
+    // The browser generates one owner token per upload session and echoes it
+    // on every chunk, so vmd can refuse a different client instead of
+    // discarding the active upload's progress.
+    let owner = query
+        .get("owner")
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty());
+    let Some(owner) = owner else {
+        return bad_request("an upload owner token is required");
+    };
+    if owner.len() > 128 || owner.chars().any(|c| c.is_control()) {
+        return bad_request("the upload owner token is not valid");
+    }
     let client = match vmd_client(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
     match client
-        .upload_chunk(&pool, &name, offset, final_chunk, confirm.as_deref(), body)
+        .upload_chunk(
+            &pool,
+            &name,
+            offset,
+            final_chunk,
+            confirm.as_deref(),
+            owner,
+            body,
+        )
         .await
     {
         Ok(size) => json(

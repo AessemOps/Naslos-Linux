@@ -20,6 +20,9 @@
   // failed upload resumes instead of truncating and starting at zero.
   let uploadKey = '';
   let uploadOffset = 0;
+  // One owner token per upload session, echoed on every chunk so vmd can
+  // refuse a different client instead of discarding active progress.
+  let uploadOwner = '';
   // Replacing a library file needs an explicit acknowledgement (vmd requires
   // confirm=<name>); the checkbox appears only when the target name is already
   // in the loaded library.
@@ -39,6 +42,13 @@
 
   function urlFileName(url: string): string {
     return url.split('/').pop()?.split('?')[0] || 'image.iso';
+  }
+
+  function newUploadOwner(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return `upload-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
   }
 
   // The upload target is the selected file's name; the import target is the
@@ -95,7 +105,11 @@
     if (uploadKey !== key) {
       uploadKey = key;
       uploadOffset = 0;
+      uploadOwner = newUploadOwner();
+    } else if (!uploadOwner) {
+      uploadOwner = newUploadOwner();
     }
+    const owner = uploadOwner;
     let offset = uploadOffset;
     const total = file.size || 1;
     uploading = true;
@@ -110,7 +124,7 @@
     const sendChunk = () => {
       const slice = file.slice(offset, offset + CHUNK);
       const final = offset + CHUNK >= file.size;
-      xhr.open('POST', `/api/virt/images/upload?pool=${encodeURIComponent(pool)}&name=${encodeURIComponent(name)}&offset=${offset}&final=${final}${confirmQuery}`);
+      xhr.open('POST', `/api/virt/images/upload?pool=${encodeURIComponent(pool)}&name=${encodeURIComponent(name)}&offset=${offset}&final=${final}${confirmQuery}&owner=${encodeURIComponent(owner)}`);
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) {
@@ -137,6 +151,7 @@
             uploadProgress = 100;
             uploadKey = '';
             uploadOffset = 0;
+            uploadOwner = '';
             uploadFile = null;
             load();
           } else {
@@ -165,9 +180,19 @@
               // must start over (the same file will still be too large).
               uploadKey = '';
               uploadOffset = 0;
+              uploadOwner = '';
               uploadProgress = 0;
             }
-            error = detail;
+            if (xhr.status === 409) {
+              // The loaded listing was stale (the image already exists) or
+              // another client owns the name: refresh so the replace checkbox
+              // can appear, then keep the server's reason visible.
+              load().finally(() => {
+                error = detail;
+              });
+            } else {
+              error = detail;
+            }
           }
         }
       };
@@ -198,7 +223,13 @@
         })
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (!res.ok) {
+        const message = data.error || `HTTP ${res.status}`;
+        // A stale listing hides the replace checkbox; refresh it before the
+        // catch displays the conflict.
+        if (res.status === 409) await load();
+        throw new Error(message);
+      }
       importUrl = '';
       importName = '';
       importSha = '';

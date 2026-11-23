@@ -385,6 +385,7 @@ impl Client {
     /// a multi-gigabyte ISO never lands in API memory. `confirm` must equal
     /// the image name to replace an existing library image (vmd refuses the
     /// overwrite without it).
+    #[allow(clippy::too_many_arguments)]
     pub async fn upload_chunk(
         &self,
         pool: &str,
@@ -392,15 +393,17 @@ impl Client {
         offset: u64,
         final_chunk: bool,
         confirm: Option<&str>,
+        owner: &str,
         body: axum::body::Body,
     ) -> Result<u64, VmdError> {
         use futures::StreamExt;
         let mut path = format!(
-            "/api/v1/images/upload?pool={}&name={}&offset={}&final={}",
+            "/api/v1/images/upload?pool={}&name={}&offset={}&final={}&owner={}",
             crate::agent::escape_component(pool),
             crate::agent::escape_component(name),
             offset,
-            final_chunk
+            final_chunk,
+            crate::agent::escape_component(owner)
         );
         if let Some(confirm) = confirm {
             path.push_str(&format!(

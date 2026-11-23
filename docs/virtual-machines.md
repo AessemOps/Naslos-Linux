@@ -178,20 +178,25 @@ boots straight to SSH.
   - vmd stages the upload in `<name>.part` (created with `create_new` and
     `O_NOFOLLOW`) and renames it into the library only on the `final=true`
     chunk. A failed or over-cap upload never replaces the previous image,
-    and a planted symlink is refused rather than followed.
+    and a planted symlink is refused rather than followed. A failed publish
+    removes its staged file, and the next upload (or URL import) start
+    sweeps any orphaned `.part` files left by a crash.
   - `offset` must equal the current staged size, so chunks are strictly
-    contiguous. Only the upload that started at 0 can append; a stale offset,
-    a lost staging file and an expired session all tell the caller to restart
-    from offset 0, and a fresh upload at 0 then supersedes the abandoned
-    session. A retried chunk rewinds the staged file to the request's start
-    offset. An idle session expires after two hours (each chunk refreshes it).
-    A chunk can never attach to a URL import's staging file.
+    contiguous. The browser generates one owner token per upload and echoes
+    it on every chunk; a chunk from a different owner is refused (`409`)
+    instead of discarding the active upload's progress. A stale offset, a
+    lost staging file and an expired session all tell the caller to restart
+    from offset 0: the same owner may then restart its own session, and only
+    an idle session (two hours; each chunk refreshes it) may be superseded by
+    another owner. A retried chunk rewinds the staged file to the request's
+    start offset. A chunk can never attach to a URL import's staging file.
   - The 32 GiB cap applies to the whole upload (`offset + bytes`), not to
     one request; an over-cap upload is removed and returns `413`.
   - Replacing an existing library image requires `confirm=<name>`; the
     Images panel detects that the upload/import target is already listed and
     shows an explicit "Replace the existing image" checkbox before it sends
-    the confirmation. vmd refuses the replacement (or a delete) while a
+    the confirmation. A `409` reloads the listing first, so a stale library
+    view still reveals the checkbox instead of looping on the same refusal. vmd refuses the replacement (or a delete) while a
     running/starting VM attaches the file as its ISO or `disk.sourceImage`
     (`409`), including a re-check immediately before a URL import publishes.
   - The API route forwards the confirmation verbatim: a re-upload that

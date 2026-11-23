@@ -225,6 +225,10 @@ pub async fn image_upload_post(
     // An explicit `confirm=<name>` is required to replace an existing image;
     // the same explicit confirmation is what the UI sends for a re-upload.
     let confirm_overwrite = query.get("confirm").map(String::as_str) == Some(name.as_str());
+    // The browser generates one owner token per upload session and echoes it
+    // on every chunk; a chunk from another client is refused instead of
+    // silently discarding the active upload's progress.
+    let owner = query.get("owner").map(String::as_str).unwrap_or_default();
     // The overwrite decision (first chunk) and the rename (final chunk) both
     // check attachment; a VM could start using the existing image while a
     // multi-chunk replacement is in flight.
@@ -252,6 +256,7 @@ pub async fn image_upload_post(
         offset,
         final_chunk,
         confirm_overwrite,
+        owner,
         body,
     )
     .await

@@ -12,9 +12,10 @@
 //! and `O_NOFOLLOW`, then renamed into place. That makes the size cap a real
 //! cap (an over-cap upload never becomes a library file), keeps a failed
 //! upload from destroying the previous image, and refuses a pre-existing
-//! symlink instead of following it. One upload session owns a name at a time,
-//! chunks must arrive at exactly the current end of the staged file, and
-//! replacing an existing image needs an explicit `confirm=<name>`.
+//! symlink instead of following it. One client (identified by an owner token)
+//! owns a upload name at a time, chunks must arrive at exactly the current end
+//! of the staged file, and replacing an existing image needs an explicit
+//! `confirm=<name>`.
 
 use crate::model::{library_path, valid_library_name, valid_pool_component, ImageEntry};
 use futures::StreamExt;
@@ -41,9 +42,11 @@ enum SessionKind {
     Import,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Session {
     kind: SessionKind,
+    /// The client token that owns an upload; empty for a server-side import.
+    owner: String,
     started: Instant,
 }
 
@@ -80,7 +83,7 @@ async fn upload_lock(path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
     lock.lock_owned().await
 }
 
-fn begin_upload(path: &Path, kind: SessionKind) -> Result<(), String> {
+fn begin_upload(path: &Path, kind: SessionKind, owner: &str) -> Result<(), String> {
     let mut registry = registry_guard();
     registry
         .active
@@ -95,30 +98,47 @@ fn begin_upload(path: &Path, kind: SessionKind) -> Result<(), String> {
         path.to_path_buf(),
         Session {
             kind,
+            owner: owner.to_string(),
             started: Instant::now(),
         },
     );
     Ok(())
 }
 
-fn session_kind(path: &Path) -> Option<SessionKind> {
+/// The live (non-expired) session for a name, if any.
+///
+/// An abandoned upload (client gone, API restarted) must not hold the name
+/// forever; pruning on every read keeps the TTL effective even when no new
+/// upload starts.
+fn live_session(path: &Path) -> Option<Session> {
     let mut registry = registry_guard();
     if registry
         .active
         .get(path)
         .is_some_and(|session| session.started.elapsed() >= UPLOAD_SESSION_TTL)
     {
-        // An abandoned upload (client gone, API restarted) must not hold the
-        // name forever; pruning on every read keeps the TTL effective even
-        // when no new upload starts.
         registry.active.remove(path);
         return None;
     }
-    registry.active.get(path).map(|session| session.kind)
+    registry.active.get(path).cloned()
+}
+
+fn session_kind(path: &Path) -> Option<SessionKind> {
+    live_session(path).map(|session| session.kind)
 }
 
 fn upload_active(path: &Path) -> bool {
     session_kind(path) == Some(SessionKind::Upload)
+}
+
+/// A client token identifying one upload session (the Images panel sends a
+/// UUID). Printable ASCII keeps it safe in a query string and in logs.
+fn valid_owner(owner: &str) -> bool {
+    !owner.is_empty()
+        && owner.len() <= 128
+        && owner
+            .chars()
+            .all(|c| c.is_ascii_graphic() && !c.is_control())
 }
 
 /// Refresh an active session so the TTL is an idle timeout, not a hard cap on
@@ -141,7 +161,7 @@ struct ImportSession {
 
 impl ImportSession {
     fn begin(path: &Path) -> Result<Self, String> {
-        begin_upload(path, SessionKind::Import)?;
+        begin_upload(path, SessionKind::Import, "")?;
         Ok(Self {
             path: path.to_path_buf(),
         })
@@ -258,6 +278,38 @@ async fn clear_stale_part(part: &Path) -> Result<(), String> {
     }
 }
 
+/// Remove `<name>.part` files that no live session owns (a crashed upload or
+/// a failed publish). Active uploads and imports are keyed by their final path
+/// and are left untouched; symlinks and non-files are left for the explicit
+/// path checks to report. Best effort: a sweep failure must not fail the
+/// caller's upload.
+async fn sweep_orphan_parts(dir: &Path) {
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(base) = name.strip_suffix(".part") else {
+            continue;
+        };
+        if live_session(&dir.join(base)).is_some() {
+            continue;
+        }
+        let Ok(meta) = tokio::fs::symlink_metadata(entry.path()).await else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        if tokio::fs::remove_file(entry.path()).await.is_ok() {
+            tracing::info!(
+                "removed the orphaned staged image upload {}",
+                entry.path().display()
+            );
+        }
+    }
+}
+
 async fn open_new_part(part: &Path) -> Result<tokio::fs::File, String> {
     tokio::fs::OpenOptions::new()
         .write(true)
@@ -320,6 +372,7 @@ pub async fn list(root: &Path, pool: &str) -> Vec<ImageEntry> {
 /// `confirm_overwrite` is the caller's explicit `confirm=<name>`: replacing an
 /// existing library image otherwise fails. The existing image is untouched
 /// until the final rename, so a failed replace does not destroy it.
+#[allow(clippy::too_many_arguments)]
 pub async fn write_chunk(
     root: &Path,
     pool: &str,
@@ -327,6 +380,7 @@ pub async fn write_chunk(
     offset: u64,
     final_chunk: bool,
     confirm_overwrite: bool,
+    owner: &str,
     body: axum::body::Body,
 ) -> Result<u64, String> {
     write_chunk_capped(
@@ -336,6 +390,7 @@ pub async fn write_chunk(
         offset,
         final_chunk,
         confirm_overwrite,
+        owner,
         body,
         MAX_IMAGE_BYTES,
     )
@@ -350,6 +405,7 @@ async fn write_chunk_capped(
     offset: u64,
     final_chunk: bool,
     confirm_overwrite: bool,
+    owner: &str,
     body: axum::body::Body,
     max_bytes: u64,
 ) -> Result<u64, String> {
@@ -371,28 +427,48 @@ async fn write_chunk_capped(
             "offset {offset} is past the {max_bytes}-byte library limit"
         ));
     }
+    if !valid_owner(owner) {
+        return Err("a 1-128 character upload owner token is required on every chunk".to_string());
+    }
+    let parent = path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.to_path_buf());
 
     let mut file = if offset == 0 {
-        if session_kind(&path) == Some(SessionKind::Import) {
-            return Err(format!(
-                "an import of {name:?} is in progress; wait for it to finish"
-            ));
-        }
-        // A fresh upload at offset 0 is an explicit restart: the UI resets to
-        // zero after a stale-offset error, and the operator re-uploading a
-        // file must not be blocked by an abandoned session. The per-name lock
-        // still serializes chunks, so two uploads never write concurrently.
-        if upload_active(&path) {
-            finish_upload(&path);
-        }
+        // Refusal checks come first: a refused overwrite (missing confirm, a
+        // symlinked target, …) must leave any live session and its staged
+        // file untouched.
         let exists = refuse_symlink(&path, "the image").await?;
         if exists && !confirm_overwrite {
             return Err(format!(
                 "{name:?} already exists in the library; pass confirm={name} to replace it"
             ));
         }
+        match live_session(&path) {
+            Some(session) if session.kind == SessionKind::Import => {
+                return Err(format!(
+                    "an import of {name:?} is in progress; wait for it to finish"
+                ));
+            }
+            Some(session) if session.owner != owner => {
+                // Another client owns a live upload of this name. Its staged
+                // file is not ours to discard; only an abandoned (expired)
+                // session may be superseded.
+                return Err(format!(
+                    "another upload of {name:?} is in progress from a different client; wait for it to finish"
+                ));
+            }
+            Some(_) => {
+                // The same owner restarting at zero is the UI's recovery path
+                // after a stale-offset error: replace its own session.
+                finish_upload(&path);
+            }
+            None => {}
+        }
+        sweep_orphan_parts(&parent).await;
         clear_stale_part(&part).await?;
-        begin_upload(&path, SessionKind::Upload)?;
+        begin_upload(&path, SessionKind::Upload, owner)?;
         match open_new_part(&part).await {
             Ok(file) => file,
             Err(e) => {
@@ -401,9 +477,19 @@ async fn write_chunk_capped(
             }
         }
     } else {
-        if !upload_active(&path) {
+        let Some(session) = live_session(&path) else {
             return Err(format!(
                 "no upload of {name:?} is in progress; start at offset 0"
+            ));
+        };
+        if session.kind == SessionKind::Import {
+            return Err(format!(
+                "an import of {name:?} is in progress; wait for it to finish"
+            ));
+        }
+        if session.owner != owner {
+            return Err(format!(
+                "another upload of {name:?} is in progress from a different client; wait for it to finish"
             ));
         }
         touch_session(&path);
@@ -486,6 +572,9 @@ async fn write_chunk_capped(
     }
     drop(file);
     if let Err(e) = tokio::fs::rename(&part, &path).await {
+        // An invisible staged file would still occupy the dataset; publish
+        // failures must not leave it behind.
+        let _ = tokio::fs::remove_file(&part).await;
         finish_upload(&path);
         return Err(format!("installing {}: {e}", path.display()));
     }
@@ -546,6 +635,9 @@ where
     let _session = {
         let _guard = upload_lock(&path).await;
         let session = ImportSession::begin(&path)?;
+        if let Some(parent) = path.parent() {
+            sweep_orphan_parts(parent).await;
+        }
         clear_stale_part(&part).await?;
         session
     };
@@ -660,9 +752,14 @@ async fn publish_import(
         let _ = tokio::fs::remove_file(part).await;
         return Err(e);
     }
-    tokio::fs::rename(part, path)
-        .await
-        .map_err(|e| format!("installing {}: {e}", path.display()))
+    if let Err(e) = tokio::fs::rename(part, path).await {
+        // The staged file is invisible to `list()` but still occupies the
+        // dataset; a failed rename must not leave it behind to be counted
+        // against the library cap forever.
+        let _ = tokio::fs::remove_file(part).await;
+        return Err(format!("installing {}: {e}", path.display()));
+    }
+    Ok(())
 }
 
 /// Resolve a relative redirect against the current URL.
@@ -802,6 +899,9 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
+    /// The owner token most tests use; the mismatch tests pass their own.
+    const TEST_OWNER: &str = "test-owner";
+
     fn body(bytes: &[u8]) -> Body {
         Body::from(bytes.to_vec())
     }
@@ -859,6 +959,7 @@ mod tests {
             0,
             false,
             false,
+            TEST_OWNER,
             body(b"hello "),
         )
         .await
@@ -871,6 +972,7 @@ mod tests {
             6,
             true,
             false,
+            TEST_OWNER,
             body(b"world"),
         )
         .await
@@ -888,18 +990,45 @@ mod tests {
     #[tokio::test]
     async fn an_offset_must_equal_the_uploaded_size() {
         let dir = root();
-        write_chunk(dir.path(), "tank", "a.iso", 0, false, false, body(b"1234"))
-            .await
-            .unwrap();
-        let err = write_chunk(dir.path(), "tank", "a.iso", 2, false, false, body(b"xx"))
-            .await
-            .unwrap_err();
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            false,
+            false,
+            TEST_OWNER,
+            body(b"1234"),
+        )
+        .await
+        .unwrap();
+        let err = write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            2,
+            false,
+            false,
+            TEST_OWNER,
+            body(b"xx"),
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("does not match"), "{err}");
         assert!(err.contains("restart from offset 0"), "{err}");
         // The staged file is unchanged, so the correct offset still works.
-        write_chunk(dir.path(), "tank", "a.iso", 4, true, false, body(b"56"))
-            .await
-            .unwrap();
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            4,
+            true,
+            false,
+            TEST_OWNER,
+            body(b"56"),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             tokio::fs::read(dir.path().join("tank/vms/isos/a.iso"))
                 .await
@@ -911,14 +1040,32 @@ mod tests {
     #[tokio::test]
     async fn a_fresh_upload_at_zero_recovers_from_a_stale_offset() {
         let dir = root();
-        write_chunk(dir.path(), "tank", "a.iso", 0, false, false, body(b"1234"))
-            .await
-            .unwrap();
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            false,
+            false,
+            TEST_OWNER,
+            body(b"1234"),
+        )
+        .await
+        .unwrap();
         // A stale offset tells the UI to restart from zero; that restart must
         // be accepted even though the abandoned session is still registered.
-        let total = write_chunk(dir.path(), "tank", "a.iso", 0, true, false, body(b"fresh"))
-            .await
-            .expect("restart from zero");
+        let total = write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            false,
+            TEST_OWNER,
+            body(b"fresh"),
+        )
+        .await
+        .expect("restart from zero");
         assert_eq!(total, 5);
         assert_eq!(
             tokio::fs::read(dir.path().join("tank/vms/isos/a.iso"))
@@ -927,29 +1074,312 @@ mod tests {
             b"fresh"
         );
         // The superseded stream cannot keep appending.
-        let err = write_chunk(dir.path(), "tank", "a.iso", 4, false, false, body(b"x"))
+        let err = write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            4,
+            false,
+            false,
+            TEST_OWNER,
+            body(b"x"),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("no upload"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_second_client_cannot_steal_a_live_upload() {
+        let dir = root();
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            false,
+            false,
+            "owner-a",
+            body(b"1234"),
+        )
+        .await
+        .unwrap();
+
+        // A different client at offset 0 must not reset the live session.
+        let err = write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            false,
+            false,
+            "owner-b",
+            body(b"zz"),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("different client"), "{err}");
+        assert_eq!(
+            tokio::fs::read(dir.path().join("tank/vms/isos/a.iso.part"))
+                .await
+                .unwrap(),
+            b"1234",
+            "the first client's staged bytes must survive"
+        );
+
+        // The owner is checked on continuations too.
+        let err = write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            4,
+            true,
+            false,
+            "owner-b",
+            body(b"56"),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("different client"), "{err}");
+
+        // The original owner can finish normally.
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            4,
+            true,
+            false,
+            "owner-a",
+            body(b"56"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tokio::fs::read(dir.path().join("tank/vms/isos/a.iso"))
+                .await
+                .unwrap(),
+            b"123456"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_overwrite_leaves_a_live_session_intact() {
+        let dir = root();
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            false,
+            "owner-a",
+            body(b"old"),
+        )
+        .await
+        .unwrap();
+        // Start an explicit replacement (confirm) with one chunk.
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            false,
+            true,
+            "owner-a",
+            body(b"new-"),
+        )
+        .await
+        .unwrap();
+
+        // A refused overwrite (no confirm) must not cancel that upload.
+        let err = write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            false,
+            "owner-a",
+            body(b"x"),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("confirm=a.iso"), "{err}");
+        assert_eq!(
+            tokio::fs::read(dir.path().join("tank/vms/isos/a.iso.part"))
+                .await
+                .unwrap(),
+            b"new-",
+            "the refused request must not clear the staged file"
+        );
+
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            4,
+            true,
+            true,
+            "owner-a",
+            body(b"body"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tokio::fs::read(dir.path().join("tank/vms/isos/a.iso"))
+                .await
+                .unwrap(),
+            b"new-body"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_session_may_be_superseded_by_another_owner() {
+        let dir = root();
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            false,
+            false,
+            "owner-a",
+            body(b"1234"),
+        )
+        .await
+        .unwrap();
+        // Age the session past the idle TTL, as a crashed client would.
+        let path = library_path(dir.path(), "tank", "a.iso");
+        {
+            let mut registry = registry_guard();
+            if let Some(session) = registry.active.get_mut(&path) {
+                session.started = Instant::now() - UPLOAD_SESSION_TTL - Duration::from_secs(1);
+            }
+        }
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            false,
+            "owner-b",
+            body(b"fresh"),
+        )
+        .await
+        .expect("an abandoned session may be superseded");
+        assert_eq!(
+            tokio::fs::read(dir.path().join("tank/vms/isos/a.iso"))
+                .await
+                .unwrap(),
+            b"fresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_upload_without_an_owner_is_refused_before_any_state() {
+        let dir = root();
+        let err = write_chunk(dir.path(), "tank", "a.iso", 0, true, false, "", body(b"x"))
             .await
             .unwrap_err();
-        assert!(err.contains("no upload"), "{err}");
+        assert!(err.contains("owner token"), "{err}");
+        assert!(list(dir.path(), "tank").await.is_empty());
+        assert!(live_session(&library_path(dir.path(), "tank", "a.iso")).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_later_upload_cleans_orphaned_part_files() {
+        let dir = root();
+        let isos = dir.path().join("tank/vms/isos");
+        tokio::fs::create_dir_all(&isos).await.unwrap();
+        // A crashed previous upload of this name and of another name.
+        tokio::fs::write(isos.join("a.iso.part"), b"junk")
+            .await
+            .unwrap();
+        tokio::fs::write(isos.join("crashed.iso.part"), b"orphan")
+            .await
+            .unwrap();
+
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            false,
+            TEST_OWNER,
+            body(b"fresh"),
+        )
+        .await
+        .expect("the retry starts clean");
+        assert_eq!(tokio::fs::read(isos.join("a.iso")).await.unwrap(), b"fresh");
+        assert!(!isos.join("crashed.iso.part").exists());
+        assert!(!isos.join("a.iso.part").exists());
+    }
+
+    #[tokio::test]
+    async fn a_failed_publish_rename_removes_the_staged_file() {
+        let dir = root();
+        let part = dir.path().join("new.part");
+        let live = dir.path().join("live.iso");
+        tokio::fs::write(&part, b"new").await.unwrap();
+        // Renaming a file over a directory fails on Linux.
+        tokio::fs::create_dir(&live).await.unwrap();
+        let err = publish_import(&part, &live, async { Ok(()) })
+            .await
+            .unwrap_err();
+        assert!(err.contains("installing"), "{err}");
+        assert!(
+            !part.exists(),
+            "a failed publish must not leave the staged file behind"
+        );
     }
 
     #[tokio::test]
     async fn a_lost_staged_file_tells_the_client_to_start_at_zero() {
         let dir = root();
-        write_chunk(dir.path(), "tank", "a.iso", 0, false, false, body(b"1234"))
-            .await
-            .unwrap();
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            false,
+            false,
+            TEST_OWNER,
+            body(b"1234"),
+        )
+        .await
+        .unwrap();
         tokio::fs::remove_file(dir.path().join("tank/vms/isos/a.iso.part"))
             .await
             .unwrap();
-        let err = write_chunk(dir.path(), "tank", "a.iso", 4, false, false, body(b"x"))
-            .await
-            .unwrap_err();
+        let err = write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            4,
+            false,
+            false,
+            TEST_OWNER,
+            body(b"x"),
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("start at offset 0"), "{err}");
         // The lingering session must not block the recovery upload.
-        write_chunk(dir.path(), "tank", "a.iso", 0, true, false, body(b"ok"))
-            .await
-            .expect("restart after the staged file was lost");
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            false,
+            TEST_OWNER,
+            body(b"ok"),
+        )
+        .await
+        .expect("restart after the staged file was lost");
     }
 
     #[tokio::test]
@@ -961,21 +1391,48 @@ mod tests {
         tokio::fs::write(dir.path().join("tank/vms/isos/a.iso.part"), b"1234")
             .await
             .unwrap();
-        let err = write_chunk(dir.path(), "tank", "a.iso", 4, true, false, body(b"56"))
-            .await
-            .unwrap_err();
+        let err = write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            4,
+            true,
+            false,
+            TEST_OWNER,
+            body(b"56"),
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("no upload"), "{err}");
     }
 
     #[tokio::test]
     async fn replacing_an_image_needs_explicit_confirmation() {
         let dir = root();
-        write_chunk(dir.path(), "tank", "a.iso", 0, true, false, body(b"old"))
-            .await
-            .unwrap();
-        let err = write_chunk(dir.path(), "tank", "a.iso", 0, true, false, body(b"new"))
-            .await
-            .unwrap_err();
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            false,
+            TEST_OWNER,
+            body(b"old"),
+        )
+        .await
+        .unwrap();
+        let err = write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            false,
+            TEST_OWNER,
+            body(b"new"),
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("confirm=a.iso"), "{err}");
         assert_eq!(
             tokio::fs::read(dir.path().join("tank/vms/isos/a.iso"))
@@ -984,9 +1441,18 @@ mod tests {
             b"old",
             "a refused replace must keep the existing image"
         );
-        write_chunk(dir.path(), "tank", "a.iso", 0, true, true, body(b"new"))
-            .await
-            .unwrap();
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            true,
+            TEST_OWNER,
+            body(b"new"),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             tokio::fs::read(dir.path().join("tank/vms/isos/a.iso"))
                 .await
@@ -1004,9 +1470,18 @@ mod tests {
         tokio::fs::write(&outside, b"do not touch").await.unwrap();
         std::os::unix::fs::symlink(&outside, isos.join("a.iso")).unwrap();
 
-        let err = write_chunk(dir.path(), "tank", "a.iso", 0, true, true, body(b"x"))
-            .await
-            .unwrap_err();
+        let err = write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            true,
+            TEST_OWNER,
+            body(b"x"),
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("symlink"), "{err}");
         assert_eq!(tokio::fs::read(&outside).await.unwrap(), b"do not touch");
 
@@ -1019,9 +1494,18 @@ mod tests {
     #[tokio::test]
     async fn a_failed_replace_keeps_the_previous_image_and_no_part_file() {
         let dir = root();
-        write_chunk(dir.path(), "tank", "a.iso", 0, true, false, body(b"good"))
-            .await
-            .unwrap();
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            false,
+            TEST_OWNER,
+            body(b"good"),
+        )
+        .await
+        .unwrap();
         // A replacement that exceeds the cap (a tiny cap here) must leave the
         // previous image untouched and must not publish a partial file.
         let err = write_chunk_capped(
@@ -1031,6 +1515,7 @@ mod tests {
             0,
             true,
             true,
+            TEST_OWNER,
             body(b"too large"),
             4,
         )
@@ -1062,6 +1547,7 @@ mod tests {
             0,
             true,
             false,
+            TEST_OWNER,
             body(b"0123456789"),
             8,
         )
@@ -1071,9 +1557,19 @@ mod tests {
         assert!(list(dir.path(), "tank").await.is_empty());
         assert!(!dir.path().join("tank/vms/isos/a.iso.part").exists());
         // The session must be released: a new upload can start at offset 0.
-        write_chunk_capped(dir.path(), "tank", "a.iso", 0, true, false, body(b"ok"), 8)
-            .await
-            .expect("a new upload after a cap failure");
+        write_chunk_capped(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            false,
+            TEST_OWNER,
+            body(b"ok"),
+            8,
+        )
+        .await
+        .expect("a new upload after a cap failure");
     }
 
     #[tokio::test]
@@ -1086,6 +1582,7 @@ mod tests {
             0,
             false,
             false,
+            TEST_OWNER,
             body(b"12345"),
             8,
         )
@@ -1101,6 +1598,7 @@ mod tests {
             5,
             false,
             false,
+            TEST_OWNER,
             body(b"1234"),
             8,
         )
@@ -1147,9 +1645,18 @@ mod tests {
         tokio::fs::create_dir_all(&outside).await.unwrap();
         std::os::unix::fs::symlink(&outside, dir.path().join("tank/vms/isos")).unwrap();
 
-        let err = write_chunk(dir.path(), "tank", "a.iso", 0, true, false, body(b"x"))
-            .await
-            .unwrap_err();
+        let err = write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            false,
+            TEST_OWNER,
+            body(b"x"),
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("symlink"), "{err}");
         assert!(list(dir.path(), "tank").await.is_empty());
         let err = delete(dir.path(), "tank", "a.iso").await.unwrap_err();
@@ -1170,13 +1677,14 @@ mod tests {
                 path.clone(),
                 Session {
                     kind: SessionKind::Upload,
+                    owner: "old-owner".to_string(),
                     started: Instant::now() - UPLOAD_SESSION_TTL - Duration::from_secs(1),
                 },
             );
         }
         assert!(session_kind(&path).is_none());
         assert!(!upload_active(&path));
-        assert!(begin_upload(&path, SessionKind::Upload).is_ok());
+        assert!(begin_upload(&path, SessionKind::Upload, TEST_OWNER).is_ok());
         finish_upload(&path);
     }
 
@@ -1184,16 +1692,16 @@ mod tests {
     fn an_import_session_refuses_upload_chunks() {
         let dir = root();
         let path = library_path(dir.path(), "tank", "a.iso");
-        begin_upload(&path, SessionKind::Import).unwrap();
+        begin_upload(&path, SessionKind::Import, "").unwrap();
         assert_eq!(session_kind(&path), Some(SessionKind::Import));
         assert!(
             !upload_active(&path),
             "an import's staging file is not an upload target"
         );
-        assert!(begin_upload(&path, SessionKind::Upload).is_err());
+        assert!(begin_upload(&path, SessionKind::Upload, TEST_OWNER).is_err());
         finish_upload(&path);
         assert!(session_kind(&path).is_none());
-        begin_upload(&path, SessionKind::Upload).unwrap();
+        begin_upload(&path, SessionKind::Upload, TEST_OWNER).unwrap();
         finish_upload(&path);
     }
 

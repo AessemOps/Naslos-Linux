@@ -508,7 +508,7 @@ async fn image_upload_accepts_octet_stream_bodies() {
     // content-type carve-out is scoped to /api/virt/images/upload only.
     let upload = Request::builder()
         .method("POST")
-        .uri("/api/virt/images/upload?pool=tank&name=a.iso&offset=0")
+        .uri("/api/virt/images/upload?pool=tank&name=a.iso&offset=0&owner=test-owner")
         .header("X-Naslos-Proxy-Secret", SECRET)
         .header("Remote-User", "admin")
         .header("Remote-Groups", "naslos_admins")
@@ -519,6 +519,25 @@ async fn image_upload_accepts_octet_stream_bodies() {
     let (status, _b, _r) = send(with_peer(upload, [127, 0, 0, 1])).await;
     // No vmd client: 503 from the handler, NOT 415 from the middleware.
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    // Every chunk belongs to one upload session; the owner token is required.
+    let unowned = Request::builder()
+        .method("POST")
+        .uri("/api/virt/images/upload?pool=tank&name=a.iso&offset=0")
+        .header("X-Naslos-Proxy-Secret", SECRET)
+        .header("Remote-User", "admin")
+        .header("Remote-Groups", "naslos_admins")
+        .header("Host", "naslos.local")
+        .header("Content-Type", "application/octet-stream")
+        .body(Body::from(vec![0u8; 4]))
+        .unwrap();
+    let (status, body, _r) = send(with_peer(unowned, [127, 0, 0, 1])).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("owner token"),
+        "the error should name the missing token: {}",
+        body["error"]
+    );
 
     // The carve-out must not leak onto other POST routes.
     let other = Request::builder()
