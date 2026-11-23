@@ -145,3 +145,35 @@ async fn share_delete_reports_an_apply_failure_and_keeps_the_share() {
         .collect();
     assert_eq!(names, vec!["media"], "{body}");
 }
+
+#[tokio::test]
+async fn mutations_and_applies_return_503_when_the_share_store_is_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("shares.json");
+    std::fs::write(&store, "{not json").unwrap();
+
+    let mut state = AppState::for_test(SECRET);
+    state.shares = std::sync::Mutex::new(naslos_api::shares::Manager::new(
+        store.to_str().unwrap(),
+        "/var/mnt",
+    ));
+    state.samba_users = std::sync::Mutex::new(naslos_api::shares::SambaUserStore::new(""));
+    let state = Arc::new(state);
+
+    let (status, body) = create_media(state.clone()).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("corrupt"),
+        "{body}"
+    );
+
+    let (status, body) = call(state, "POST", "/api/shares/apply", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("corrupt"),
+        "{body}"
+    );
+
+    // The unparsed file is never replaced by a mutation.
+    assert_eq!(std::fs::read_to_string(&store).unwrap(), "{not json");
+}

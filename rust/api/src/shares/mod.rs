@@ -11,7 +11,8 @@ pub mod smbusers;
 
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A share protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -153,10 +154,45 @@ pub struct Manager {
     shares: HashMap<String, Share>,
     config_path: String,
     zfs_base: String,
-    /// Whether the persisted share list was read successfully (an empty path
-    /// is treated as loaded). A missing or corrupt file must not be rendered
-    /// and pushed as "no shares" over a working node configuration.
+    /// Whether the persisted share list was read successfully. A missing,
+    /// empty or empty-array file is a valid empty store (fresh install) and
+    /// loads; only an existing unparsable file fails closed. A failed store
+    /// must not be rendered and pushed as "no shares" over a working node
+    /// configuration.
     loaded: bool,
+    /// Why the store failed to load, with recovery guidance. Present exactly
+    /// when `loaded` is false.
+    load_error: Option<String>,
+    /// Monotonic counter folded into each rendered revision, so two applies
+    /// rendered in the same millisecond still order deterministically.
+    apply_seq: u64,
+}
+
+/// Save a copy of an unparsable store before refusing to touch it.
+///
+/// The original file is left in place: the operator must repair or remove it
+/// explicitly, so a restart can never silently replace it with an empty store.
+/// An existing backup is never overwritten.
+pub(crate) fn backup_corrupt_store(path: &str, data: &[u8]) -> Result<PathBuf, String> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for attempt in 0..100u32 {
+        let suffix = if attempt == 0 {
+            format!(".corrupt-{stamp}")
+        } else {
+            format!(".corrupt-{stamp}-{attempt}")
+        };
+        let backup = PathBuf::from(format!("{path}{suffix}"));
+        if backup.exists() {
+            continue;
+        }
+        std::fs::write(&backup, data)
+            .map_err(|e| format!("saving corrupt-store backup {}: {e}", backup.display()))?;
+        return Ok(backup);
+    }
+    Err("could not find a free filename for the corrupt-store backup".to_string())
 }
 
 /// The directory tree shares may live under (overridable for development).
@@ -181,6 +217,8 @@ impl Manager {
             config_path: config_path.to_string(),
             zfs_base: base,
             loaded: false,
+            load_error: None,
+            apply_seq: 0,
         };
         m.load();
         m
@@ -199,16 +237,63 @@ impl Manager {
         self.loaded
     }
 
+    /// Fail closed unless the persisted store was read successfully.
+    ///
+    /// Every mutation and every apply must call this first: writing a fresh
+    /// list over an unreadable file would discard the only copy of the shares.
+    pub fn require_loaded(&self) -> Result<(), String> {
+        if self.loaded {
+            Ok(())
+        } else {
+            Err(self
+                .load_error
+                .clone()
+                .unwrap_or_else(|| format!("share store {} is unavailable", self.config_path)))
+        }
+    }
+
     fn load(&mut self) {
+        self.loaded = false;
+        self.load_error = None;
         if self.config_path.is_empty() {
             self.loaded = true;
             return;
         }
-        let Ok(data) = std::fs::read(&self.config_path) else {
-            return;
+        let data = match std::fs::read(&self.config_path) {
+            Ok(data) => data,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Fresh install: no store yet. Start empty and create the
+                // file on the first save; this must not block share creation.
+                self.loaded = true;
+                return;
+            }
+            Err(e) => {
+                self.load_error = Some(format!(
+                    "share store {} could not be read: {e}; refusing to overwrite it",
+                    self.config_path
+                ));
+                return;
+            }
         };
-        let Ok(list) = serde_json::from_slice::<Vec<Share>>(&data) else {
+        if data.iter().all(|b| b.is_ascii_whitespace()) {
+            // An empty file (for example a freshly provisioned volume) is a
+            // valid empty store, not a corruption.
+            self.loaded = true;
             return;
+        }
+        let list = match serde_json::from_slice::<Vec<Share>>(&data) {
+            Ok(list) => list,
+            Err(e) => {
+                let backup = match backup_corrupt_store(&self.config_path, &data) {
+                    Ok(path) => format!(" (backup saved to {})", path.display()),
+                    Err(backup_err) => format!(" ({backup_err})"),
+                };
+                self.load_error = Some(format!(
+                    "share store {} is corrupt: {e}{backup}; repair it or replace it with a valid store before changing shares",
+                    self.config_path
+                ));
+                return;
+            }
         };
         self.loaded = true;
         for mut s in list {
@@ -225,12 +310,18 @@ impl Manager {
         }
     }
 
-    /// Persist shares atomically (temp file + rename), 0600.
-    fn save(&self) -> Result<(), String> {
+    /// Persist a candidate share map without touching in-memory state.
+    ///
+    /// Mutations write the new map first and only swap it into `self.shares`
+    /// after the rename succeeded, so a failed save leaves memory and disk in
+    /// agreement (R-049b-shares).
+    fn write_snapshot(&self, shares: &HashMap<String, Share>) -> Result<(), String> {
+        self.require_loaded()?;
         if self.config_path.is_empty() {
             return Ok(());
         }
-        let list = self.list();
+        let mut list: Vec<Share> = shares.values().cloned().collect();
+        list.sort_by(|a, b| a.name.cmp(&b.name));
         let mut data =
             serde_json::to_vec_pretty(&list).map_err(|e| format!("marshaling shares: {e}"))?;
         data.push(b'\n');
@@ -315,17 +406,15 @@ impl Manager {
             enabled: req.enabled.unwrap_or(true),
         };
         validate_share_fields(&share)?;
-        self.shares.insert(share.name.clone(), share.clone());
-        if let Err(e) = self.save() {
-            self.shares.remove(&share.name);
-            return Err(e);
-        }
+        let mut next = self.shares.clone();
+        next.insert(share.name.clone(), share.clone());
+        self.write_snapshot(&next)?;
+        self.shares = next;
         Ok(share)
     }
 
     pub fn update(&mut self, name: &str, req: &UpdateShareRequest) -> Result<Share, String> {
         let mut share = self.get(name)?;
-        let previous = share.clone();
 
         if let Some(path) = &req.path {
             share.path = self.normalize_path(path)?;
@@ -365,25 +454,30 @@ impl Manager {
         }
 
         validate_share_fields(&share)?;
-        self.shares.insert(name.to_string(), share.clone());
-        if let Err(e) = self.save() {
-            self.shares.insert(name.to_string(), previous);
-            return Err(e);
-        }
+        let mut next = self.shares.clone();
+        next.insert(name.to_string(), share.clone());
+        self.write_snapshot(&next)?;
+        self.shares = next;
         Ok(share)
     }
 
     pub fn delete(&mut self, name: &str) -> Result<(), String> {
         self.get(name)?;
-        self.shares.remove(name);
-        self.save()
+        let mut next = self.shares.clone();
+        next.remove(name);
+        self.write_snapshot(&next)?;
+        self.shares = next;
+        Ok(())
     }
 
     /// Put `share` back (used to roll a handler back when the node rejected the
     /// rendered config, AUD-2611-T10-2).
     pub fn restore(&mut self, share: Share) -> Result<(), String> {
-        self.shares.insert(share.name.clone(), share);
-        self.save()
+        let mut next = self.shares.clone();
+        next.insert(share.name.clone(), share);
+        self.write_snapshot(&next)?;
+        self.shares = next;
+        Ok(())
     }
 
     /// Validate that `path` is inside the ZFS base and is a directory.
@@ -446,8 +540,14 @@ impl Manager {
     }
 
     /// The rendered config bundle for the current share state.
-    pub fn render_config_bundle(&self) -> ConfigBundle {
+    ///
+    /// Each call allocates a strictly increasing revision: (epoch millis,
+    /// in-process sequence, nonce, content hash). The agent rejects a revision
+    /// that is not newer than the one already applied, and the API serialises
+    /// applies, so an out-of-order push can never win (R-054).
+    pub fn render_config_bundle(&mut self) -> ConfigBundle {
         let enabled = self.shares.values().filter(|s| s.enabled).count() as i32;
+        self.apply_seq = self.apply_seq.saturating_add(1);
         ConfigBundle {
             samba_conf: self.generate_samba_config(),
             ganesha_conf: self.generate_ganesha_config(),
@@ -457,8 +557,25 @@ impl Manager {
         }
     }
 
-    /// A stable content hash of the enabled share set.
+    /// A monotonic revision plus a content fingerprint of the share set.
     fn revision(&self) -> String {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        format!(
+            "{millis:013}-{:010}-{nonce:08x}-{}",
+            self.apply_seq,
+            self.content_fingerprint()
+        )
+    }
+
+    /// A stable content hash of the enabled share set.
+    fn content_fingerprint(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         for s in self.list() {
@@ -560,10 +677,13 @@ pub fn validate_share_name(name: &str) -> Result<(), String> {
                 | '+'
                 | ';'
                 | ','
+                | '#'
+                | '{'
+                | '}'
         )
     }) {
         return Err(
-            "share name must not contain any of / \\ [ ] \" ' : * ? < > = + ; ,".to_string(),
+            "share name must not contain any of / \\ [ ] \" ' : * ? < > = + ; , # { }".to_string(),
         );
     }
     if name.contains(['\n', '\r', '\0', '\t']) {
@@ -579,12 +699,20 @@ pub fn validate_share_name(name: &str) -> Result<(), String> {
 pub fn validate_share_fields(share: &Share) -> Result<(), String> {
     validate_no_control_chars("description", &share.description)?;
     validate_no_control_chars("path", &share.path)?;
+    // A trailing backslash continues the directive on the next line, and '#'
+    // starts a comment, in both smb.conf and ganesha.conf. Rejecting them here
+    // keeps the rendered files one-directive-per-line and parseable (R-021).
+    if share.description.contains(['\\', '#']) {
+        return Err(
+            "description must not contain '\\' (line continuation) or '#' (comment)".to_string(),
+        );
+    }
     // The path is interpolated unquoted into ganesha.conf (`Path = …;`), whose
     // grammar uses ';' and braces. Reject anything that could close the
     // statement or the EXPORT block (SEC-2026-B4).
-    if share.path.contains([';', '{', '}', '"', '#']) {
+    if share.path.contains([';', '{', '}', '"', '#', '\\']) {
         return Err(format!(
-            "path {:?} must not contain ';', '{{', '}}', '\"' or '#'",
+            "path {:?} must not contain ';', '{{', '}}', '\"', '#' or '\\'",
             share.path
         ));
     }
@@ -715,7 +843,10 @@ mod tests {
     fn manager_reports_whether_the_share_file_loaded() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("shares.json");
-        assert!(!Manager::new(missing.to_str().unwrap(), "/var/mnt").loaded());
+        assert!(
+            Manager::new(missing.to_str().unwrap(), "/var/mnt").loaded(),
+            "a missing store is a valid empty store on a fresh install"
+        );
 
         let corrupt = dir.path().join("corrupt.json");
         std::fs::write(&corrupt, "{not json").unwrap();
@@ -725,8 +856,128 @@ mod tests {
         std::fs::write(&empty, "[]").unwrap();
         assert!(Manager::new(empty.to_str().unwrap(), "/var/mnt").loaded());
 
+        let zero_byte = dir.path().join("zero.json");
+        std::fs::write(&zero_byte, "").unwrap();
+        assert!(Manager::new(zero_byte.to_str().unwrap(), "/var/mnt").loaded());
+
         // An empty path is an in-memory test manager, not a failed load.
         assert!(Manager::new("", "/var/mnt").loaded());
+    }
+
+    #[test]
+    fn missing_store_allows_the_first_share_and_is_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("shares.json");
+        let mut mgr = Manager::new(store.to_str().unwrap(), "/var/mnt");
+        assert!(mgr.loaded());
+
+        let req = CreateShareRequest {
+            name: "media".into(),
+            path: "/var/mnt/tank/media".into(),
+            ..Default::default()
+        };
+        mgr.create(&req).unwrap();
+        assert!(store.exists(), "the first save must create the store");
+
+        let reloaded = Manager::new(store.to_str().unwrap(), "/var/mnt");
+        assert!(reloaded.loaded());
+        assert_eq!(reloaded.list().len(), 1);
+        assert_eq!(reloaded.list()[0].name, "media");
+    }
+
+    #[test]
+    fn corrupt_share_store_is_backed_up_and_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("shares.json");
+        std::fs::write(&store, "{not json").unwrap();
+
+        let mut mgr = Manager::new(store.to_str().unwrap(), "/var/mnt");
+        assert!(!mgr.loaded());
+        let err = mgr.require_loaded().unwrap_err();
+        assert!(err.contains("corrupt"), "{err}");
+        assert!(err.contains(".corrupt-"), "{err}");
+
+        let backups: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "one corrupt backup expected");
+        assert_eq!(
+            std::fs::read_to_string(backups[0].path()).unwrap(),
+            "{not json"
+        );
+
+        let req = CreateShareRequest {
+            name: "media".into(),
+            path: "/var/mnt/tank/media".into(),
+            ..Default::default()
+        };
+        let err = mgr.create(&req).unwrap_err();
+        assert!(err.contains("corrupt"), "{err}");
+        // The unparsed file is still in place, untouched.
+        assert_eq!(std::fs::read_to_string(&store).unwrap(), "{not json");
+        assert!(mgr.list().is_empty());
+    }
+
+    #[test]
+    fn failed_save_does_not_change_in_memory_shares() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("shares.json");
+        std::fs::write(&store, "[]").unwrap();
+        let blocker = dir.path().join("blocked");
+        std::fs::write(&blocker, "not a directory").unwrap();
+
+        let mut mgr = Manager::new(store.to_str().unwrap(), "/var/mnt");
+        assert!(mgr.loaded());
+        mgr.config_path = blocker.join("shares.json").to_string_lossy().into_owned();
+
+        let req = CreateShareRequest {
+            name: "media".into(),
+            path: "/var/mnt/tank/media".into(),
+            ..Default::default()
+        };
+        assert!(mgr.create(&req).is_err());
+        assert!(
+            mgr.list().is_empty(),
+            "a failed save must not leave the share in memory"
+        );
+        assert_eq!(std::fs::read_to_string(&store).unwrap(), "[]");
+    }
+
+    #[test]
+    fn share_name_rejects_config_structure_characters() {
+        for name in ["a\\b", "a#b", "a{b", "a}b"] {
+            assert!(validate_share_name(name).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn description_and_path_reject_line_continuations_and_comments() {
+        let mut share = Share {
+            name: "media".into(),
+            path: "/var/mnt/tank/media".into(),
+            protocol: Protocol::Smb,
+            description: String::new(),
+            read_only: false,
+            browseable: true,
+            allowed_hosts: Vec::new(),
+            valid_users: Vec::new(),
+            valid_groups: Vec::new(),
+            time_machine: false,
+            no_root_squash: false,
+            shadow_copies: false,
+            audit: false,
+            created_at: None,
+            enabled: true,
+        };
+        for description in ["line\\", "comment # hidden"] {
+            share.description = description.into();
+            assert!(validate_share_fields(&share).is_err(), "{description}");
+        }
+        share.description.clear();
+        share.path = "/var/mnt/tank/media\\".into();
+        assert!(validate_share_fields(&share).is_err());
     }
 
     #[cfg(unix)]

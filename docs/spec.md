@@ -780,7 +780,12 @@ later phases and are marked **[OPEN]** below.
   path MUST exist as a folder; the API MUST provide folder creation and listing
   confined to the datasets so an operator can point a share at a new folder
   inside the pool without leaving the UI, and that creation MUST be refused
-  outside the datasets and MUST NOT be able to delete non-empty folders. Share
+  outside the datasets and MUST NOT be able to delete non-empty folders. Folder
+  creation MUST resolve the nearest existing ancestor inside canonicalised
+  `/var/mnt`, create with `O_NOFOLLOW`/`mkdirat` (or an equivalent race-safe
+  check), and give the new folder the share service ownership and mode
+  (`10001:10000`, `02770`) or inherit the parent's ownership when it cannot
+  chown. Share
   paths MUST be editable, and a path change MUST be validated like a create.
   `GET /api/shares/paths` MUST offer only dataset mountpoints, and the serving
   containers MUST log whether each share path is on a mounted filesystem.
@@ -806,8 +811,14 @@ later phases and are marked **[OPEN]** below.
 - **FR-SHR-06** — Rendered configuration MUST reach the node without the API
   needing cluster RBAC: the privileged agent MUST be the only writer of the
   host configuration, writing atomically, and MUST NOT rewrite unchanged files.
-  A new configuration MUST NOT be applied unless it validates (`testparm`), so
-  a bad render leaves the previous working configuration serving.
+  A new configuration MUST NOT be applied unless it validates: the agent MUST
+  reject structural SMB/Ganesha defects and run `testparm` when available, and
+  the serving containers MUST still run `testparm` before reload. A failed
+  apply MUST leave (or restore) the previous working configuration serving.
+  Share names MUST reject `\`, `#`, `{` and `}`, and paths/descriptions MUST
+  reject line-continuation characters (`\`) and comment starts (`#` in a
+  description), so one field cannot inject a directive.
+  *(agent validation + render tests)*
 - **FR-SHR-07** — Share access MUST be restrictable by **user and by LDAP
   group**. Group entries MUST be rendered as `@group`, and the group's real
   membership MUST be resolvable on the node (see FR-IDN-13). A name MUST NOT be
@@ -860,6 +871,17 @@ later phases and are marked **[OPEN]** below.
   *(render + validation + contract + UI tests)*
 - **FR-SHR-16** — A share path MUST NOT contain a `.zfs` component: the ZFS
   snapshot directory MUST NOT be exportable as a share. *(validation test)*
+- **FR-SHR-17** — A share or SMB account store that is missing, zero-byte, or
+  an empty JSON array MUST load as a valid empty store, so a fresh install can
+  create its first share/account and the file is written on that first save.
+  An existing unparsable store MUST NOT be overwritten: the API MUST preserve a
+  `.corrupt-<timestamp>` copy, MUST fail closed with `503` on every mutation and
+  apply, and MUST NOT change in-memory state until the candidate has been
+  written to disk. *(store regression tests)*
+- **FR-SHR-18** — Share applies MUST be ordered: each render carries a
+  monotonically increasing revision with a nonce, applies are serialised in the
+  API, and the agent MUST refuse a revision that is not newer than the applied
+  one (surfaced as `409 Conflict`). *(revision tests)*
 
 #### NFSv3 (`FR-NFS3`) — all `[OPEN]`
 
