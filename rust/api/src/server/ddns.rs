@@ -84,17 +84,33 @@ fn entry_view(entry: &Entry) -> serde_json::Value {
     value
 }
 
+/// The 503 shape for a DDNS store that failed to load. Presenting it as an
+/// empty list would hide the only copy of the entries and invite overwrites.
+fn store_unavailable(manager: &crate::ddns::Manager) -> Option<Response> {
+    manager.load_error().map(|error| {
+        json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": error }),
+        )
+    })
+}
+
 /// `GET|POST /api/ddns`
 pub async fn ddns_get(State(state): State<Arc<AppState>>) -> Response {
     match &state.ddns {
-        Some(manager) => json(
-            StatusCode::OK,
-            serde_json::json!({
-                "entries": manager.store().list().iter().map(entry_view).collect::<Vec<_>>(),
-                "enabled": true,
-                "intervalSeconds": manager.interval().as_secs(),
-            }),
-        ),
+        Some(manager) => {
+            if let Some(response) = store_unavailable(manager) {
+                return response;
+            }
+            json(
+                StatusCode::OK,
+                serde_json::json!({
+                    "entries": manager.store().list().iter().map(entry_view).collect::<Vec<_>>(),
+                    "enabled": true,
+                    "intervalSeconds": manager.interval().as_secs(),
+                }),
+            )
+        }
         None => json(
             StatusCode::OK,
             serde_json::json!({ "entries": [], "enabled": false }),
@@ -139,6 +155,9 @@ pub async fn ddns_detail_get(
             serde_json::json!({ "error": "ddns entry not found" }),
         );
     };
+    if let Some(response) = store_unavailable(manager) {
+        return response;
+    }
     match manager.store().get(&id) {
         Ok(e) => json(StatusCode::OK, entry_view(&e)),
         Err(e) => json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
@@ -156,6 +175,9 @@ pub async fn ddns_detail_put(
             serde_json::json!({ "error": "ddns entry not found" }),
         );
     };
+    if let Some(response) = store_unavailable(manager) {
+        return response;
+    }
     let existing = match manager.store().get(&id) {
         Ok(e) => e,
         Err(e) => return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
@@ -177,6 +199,11 @@ pub async fn ddns_detail_delete(
             serde_json::json!({ "error": "ddns entry not found" }),
         );
     };
+    // Fail closed before the lookup: a store that did not load must answer
+    // 503, not "not found" from the empty in-memory map.
+    if let Some(response) = store_unavailable(manager) {
+        return response;
+    }
     let entry = match manager.store().get(&id) {
         Ok(e) => e,
         Err(e) => return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
@@ -220,6 +247,9 @@ pub async fn ddns_run_post(State(state): State<Arc<AppState>>, Path(id): Path<St
             serde_json::json!({ "error": "dynamic DNS is not enabled" }),
         );
     };
+    if let Some(response) = store_unavailable(manager) {
+        return response;
+    }
     if let Err(e) = manager.store().get(&id) {
         return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e }));
     }
@@ -248,6 +278,9 @@ async fn upsert(state: &Arc<AppState>, existing: Option<Entry>, req: DdnsRequest
             serde_json::json!({ "error": "dynamic DNS is not enabled" }),
         );
     };
+    if let Some(response) = store_unavailable(manager) {
+        return response;
+    }
 
     let provider_name = if !req.provider.trim().is_empty() {
         req.provider.trim().to_string()
@@ -430,7 +463,7 @@ async fn upsert(state: &Arc<AppState>, existing: Option<Entry>, req: DdnsRequest
             Some(entry.id.clone()),
             serde_json::json!({ "provider": entry.provider, "transport": "http" }),
         );
-        if let Err(e) = state.audit.record_once(&pending, 200) {
+        if let Err(e) = state.audit.record_once_async(&pending, 200).await {
             tracing::warn!("could not audit the DDNS plaintext-HTTP acknowledgement: {e}");
         }
     }
@@ -510,6 +543,28 @@ mod tests {
         assert!(!text.contains("legacy-key"), "{text}");
         assert!(text.contains("\"redactedProviderConfigKeys\""), "{text}");
         assert_eq!(value["providerConfig"]["method"], "GET");
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_store_answers_503_instead_of_an_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ddns.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let manager = crate::ddns::Manager::new(crate::ddns::Options {
+            registry: Arc::new(crate::providers::Registry::load("")),
+            store_path: path.display().to_string(),
+            apps_namespace: "naslos-apps".to_string(),
+            kube: None,
+            ip_sources: Vec::new(),
+            ipv6_sources: Vec::new(),
+            interval: std::time::Duration::from_secs(300),
+            cooldown: std::time::Duration::from_secs(300),
+        });
+        assert!(manager.load_error().is_some(), "load must fail closed");
+        let mut state = AppState::for_test("s");
+        state.ddns = Some(Arc::new(manager));
+        let response = ddns_get(State(Arc::new(state))).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]

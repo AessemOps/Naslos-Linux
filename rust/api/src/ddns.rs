@@ -108,6 +108,13 @@ pub fn new_id() -> String {
 pub struct Store {
     path: String,
     entries: Mutex<HashMap<String, Entry>>,
+    /// Whether the persisted entry list was read successfully. A missing or
+    /// empty file is a valid empty store (fresh install); an unparsable file
+    /// fails closed so the next mutation cannot overwrite the only copy.
+    loaded: std::sync::atomic::AtomicBool,
+    /// Why the store failed to load, with recovery guidance. Present exactly
+    /// when `loaded` is false.
+    load_error: Mutex<Option<String>>,
 }
 
 impl Store {
@@ -115,26 +122,78 @@ impl Store {
         Self {
             path: path.to_string(),
             entries: Mutex::new(HashMap::new()),
+            // An empty path is an in-memory test store, not a failed load.
+            loaded: std::sync::atomic::AtomicBool::new(path.is_empty()),
+            load_error: Mutex::new(None),
+        }
+    }
+
+    /// Whether the persisted entry list was read successfully.
+    pub fn loaded(&self) -> bool {
+        self.loaded.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn load_error(&self) -> Option<String> {
+        self.load_error.lock().unwrap().clone()
+    }
+
+    /// Fail closed unless the persisted store was read successfully.
+    pub fn require_loaded(&self) -> Result<(), String> {
+        if self.loaded() {
+            Ok(())
+        } else {
+            Err(self
+                .load_error()
+                .unwrap_or_else(|| format!("ddns store {} is unavailable", self.path)))
         }
     }
 
     pub fn load(&self) -> Result<(), String> {
+        self.loaded
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        *self.load_error.lock().unwrap() = None;
         if self.path.is_empty() {
+            self.loaded.store(true, std::sync::atomic::Ordering::SeqCst);
             return Ok(());
         }
         let data = match std::fs::read(&self.path) {
             Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(format!("reading ddns file: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.loaded.store(true, std::sync::atomic::Ordering::SeqCst);
+                return Ok(());
+            }
+            Err(e) => {
+                let message = format!(
+                    "ddns store {} could not be read: {e}; refusing to overwrite it",
+                    self.path
+                );
+                *self.load_error.lock().unwrap() = Some(message.clone());
+                return Err(message);
+            }
         };
-        let list: Vec<Entry> =
-            serde_json::from_slice(&data).map_err(|e| format!("parsing ddns file: {e}"))?;
+        let list: Vec<Entry> = match serde_json::from_slice(&data) {
+            Ok(list) => list,
+            Err(e) => {
+                let backup = match crate::shares::backup_corrupt_store(&self.path, &data) {
+                    Ok(path) => format!(" (backup saved to {})", path.display()),
+                    Err(backup_err) => format!(" ({backup_err})"),
+                };
+                let message = format!(
+                    "ddns store {} is corrupt: {e}{backup}; repair it or replace it with a valid store before changing entries",
+                    self.path
+                );
+                *self.load_error.lock().unwrap() = Some(message.clone());
+                return Err(message);
+            }
+        };
         let mut guard = self.entries.lock().unwrap();
+        guard.clear();
         for e in list {
             if !e.id.is_empty() {
                 guard.insert(e.id.clone(), e);
             }
         }
+        self.loaded.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -155,12 +214,14 @@ impl Store {
     }
 
     pub fn put(&self, e: Entry) -> Result<(), String> {
+        self.require_loaded()?;
         let mut guard = self.entries.lock().unwrap();
         guard.insert(e.id.clone(), e);
         self.save_locked(&guard)
     }
 
     pub fn delete(&self, id: &str) -> Result<(), String> {
+        self.require_loaded()?;
         let mut guard = self.entries.lock().unwrap();
         if guard.remove(id).is_none() {
             return Err(format!("ddns entry {id:?} not found"));
@@ -169,6 +230,7 @@ impl Store {
     }
 
     pub fn update(&self, id: &str, mutate: impl FnOnce(&mut Entry)) -> Result<Entry, String> {
+        self.require_loaded()?;
         let mut guard = self.entries.lock().unwrap();
         let e = guard
             .get_mut(id)
@@ -180,6 +242,7 @@ impl Store {
     }
 
     fn save_locked(&self, guard: &HashMap<String, Entry>) -> Result<(), String> {
+        self.require_loaded()?;
         if self.path.is_empty() {
             return Ok(());
         }
@@ -438,12 +501,11 @@ pub struct Manager {
     cooldown: Duration,
     client: reqwest::Client,
     resolver: Arc<dyn Resolver>,
-    last_load_err: Option<String>,
 }
 
 impl Manager {
     pub fn new(opts: Options) -> Self {
-        let mut m = Self {
+        let m = Self {
             registry: opts.registry,
             store: Arc::new(Store::new(&opts.store_path)),
             apps_namespace: opts.apps_namespace,
@@ -462,16 +524,17 @@ impl Manager {
             },
             client: default_client(),
             resolver: Arc::new(SystemResolver),
-            last_load_err: None,
         };
         if let Err(e) = m.store.load() {
-            m.last_load_err = Some(e);
+            tracing::warn!("could not load the DDNS entries: {e}");
         }
         m
     }
 
+    /// Why the persisted entry store failed to load, if it did. Handlers
+    /// surface this instead of presenting a corrupt store as an empty one.
     pub fn load_error(&self) -> Option<String> {
-        self.last_load_err.clone()
+        self.store.load_error()
     }
 
     pub fn store(&self) -> &Store {
@@ -881,6 +944,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ddns.json");
         let store = Store::new(&path.display().to_string());
+        store.load().unwrap();
         store
             .put(Entry {
                 id: "abc".into(),
@@ -891,6 +955,40 @@ mod tests {
         let reloaded = Store::new(&path.display().to_string());
         reloaded.load().unwrap();
         assert_eq!(reloaded.get("abc").unwrap().provider, "cloudflare");
+    }
+
+    #[test]
+    fn a_corrupt_store_is_backed_up_and_mutations_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ddns.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let store = Store::new(&path.display().to_string());
+        let error = store.load().unwrap_err();
+        assert!(error.contains("corrupt"), "{error}");
+        assert!(error.contains(".corrupt-"), "{error}");
+        assert!(!store.loaded());
+        assert!(store.load_error().is_some());
+
+        assert!(store
+            .put(Entry {
+                id: "abc".into(),
+                provider: "cloudflare".into(),
+                ..Default::default()
+            })
+            .is_err());
+        assert!(store.delete("abc").is_err());
+        assert!(store
+            .update("abc", |e| e.provider = "other".into())
+            .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json");
+        assert!(store.list().is_empty());
+
+        let backups = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+            .count();
+        assert_eq!(backups, 1, "one corrupt backup");
     }
 
     #[test]

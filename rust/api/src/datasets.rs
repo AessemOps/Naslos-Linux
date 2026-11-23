@@ -44,6 +44,13 @@ pub struct Registry {
     path: String,
     buddy_host_path: String,
     inner: Mutex<BTreeMap<String, ManagedDataset>>,
+    /// Whether the persisted registry was read and validated successfully. A
+    /// missing file is a valid empty registry (fresh install); an unreadable
+    /// or invalid file fails closed so consumers (notably the dataset destroy
+    /// guard) never treat an unproven registry as "no attachments".
+    loaded: bool,
+    /// Why the registry failed to load, with recovery guidance.
+    load_error: Option<String>,
 }
 
 impl Registry {
@@ -52,6 +59,9 @@ impl Registry {
             path: path.to_string(),
             buddy_host_path: buddy_host_path.to_string(),
             inner: Mutex::new(BTreeMap::new()),
+            // An empty path is an in-memory test registry, not a failed load.
+            loaded: path.is_empty(),
+            load_error: None,
         };
         if !path.is_empty() {
             if let Err(e) = registry.load() {
@@ -61,17 +71,79 @@ impl Registry {
         registry
     }
 
+    /// Whether the persisted registry was read successfully.
+    pub fn loaded(&self) -> bool {
+        self.loaded
+    }
+
+    pub fn load_error(&self) -> Option<String> {
+        self.load_error.clone()
+    }
+
+    /// Fail closed unless the persisted registry loaded: writing a fresh list
+    /// over an unreadable file would drop every attachment record.
+    pub fn require_loaded(&self) -> Result<(), String> {
+        if self.loaded {
+            Ok(())
+        } else {
+            Err(self
+                .load_error
+                .clone()
+                .unwrap_or_else(|| format!("dataset registry {} is unavailable", self.path)))
+        }
+    }
+
     fn load(&mut self) -> Result<(), String> {
+        self.loaded = false;
+        self.load_error = None;
         if self.path.is_empty() || !Path::new(&self.path).exists() {
+            self.loaded = true;
             return Ok(());
         }
-        let data = std::fs::read(&self.path).map_err(|e| e.to_string())?;
-        let list: Vec<ManagedDataset> =
-            serde_json::from_slice(&data).map_err(|e| format!("parsing {}: {e}", self.path))?;
-        let mut inner = self.inner.lock().unwrap();
+        let data = match std::fs::read(&self.path) {
+            Ok(data) => data,
+            Err(e) => {
+                let message = format!(
+                    "dataset registry {} could not be read: {e}; refusing to overwrite it",
+                    self.path
+                );
+                self.load_error = Some(message.clone());
+                return Err(message);
+            }
+        };
+        let list: Vec<ManagedDataset> = match serde_json::from_slice(&data) {
+            Ok(list) => list,
+            Err(e) => {
+                let backup = match crate::shares::backup_corrupt_store(&self.path, &data) {
+                    Ok(path) => format!(" (backup saved to {})", path.display()),
+                    Err(backup_err) => format!(" ({backup_err})"),
+                };
+                let message = format!(
+                    "dataset registry {} is corrupt: {e}{backup}; repair it or replace it with a valid registry before changing datasets",
+                    self.path
+                );
+                self.load_error = Some(message.clone());
+                return Err(message);
+            }
+        };
+        // Never trust a record the API did not validate itself: a dropped or
+        // forged field must fail the whole load, not silently unblock a
+        // destroy. Build a candidate map and publish it only when every record
+        // passes.
+        let mut candidate = BTreeMap::new();
         for ds in list {
-            inner.insert(ds.name.clone(), ds);
+            if let Err(e) = validate(&ds, &self.buddy_host_path) {
+                let message = format!(
+                    "dataset registry {} contains an invalid record ({:?}): {e}; repair it or replace it with a valid registry before changing datasets",
+                    self.path, ds.name
+                );
+                self.load_error = Some(message.clone());
+                return Err(message);
+            }
+            candidate.insert(ds.name.clone(), ds);
         }
+        *self.inner.lock().unwrap() = candidate;
+        self.loaded = true;
         Ok(())
     }
 
@@ -94,6 +166,7 @@ impl Registry {
     }
 
     pub fn update_config(&self, ds: ManagedDataset) -> Result<ManagedDataset, String> {
+        self.require_loaded()?;
         let ds = self.check(&ds)?;
         let mut inner = self.inner.lock().unwrap();
         let Some(existing) = inner.get(&ds.name) else {
@@ -125,6 +198,7 @@ impl Registry {
     }
 
     pub fn add(&self, ds: ManagedDataset) -> Result<ManagedDataset, String> {
+        self.require_loaded()?;
         let mut ds = self.check(&ds)?;
         if ds.created_at.is_none() {
             ds.created_at = Some(Utc::now());
@@ -144,6 +218,7 @@ impl Registry {
     /// datasets accept many. The reservation is persisted before the PV/PVC is
     /// created so two concurrent installs cannot both claim a private dataset.
     pub fn attach(&self, name: &str, app: &str) -> Result<(), String> {
+        self.require_loaded()?;
         let mut inner = self.inner.lock().unwrap();
         let Some(existing) = inner.get(name) else {
             return Err(format!("dataset {name:?} is not registered"));
@@ -169,6 +244,7 @@ impl Registry {
     }
 
     pub fn detach(&self, name: &str, app: &str) -> Result<(), String> {
+        self.require_loaded()?;
         let mut inner = self.inner.lock().unwrap();
         if !inner.contains_key(name) {
             return Ok(());
@@ -185,6 +261,7 @@ impl Registry {
     }
 
     pub fn remove(&self, name: &str) -> Result<(), String> {
+        self.require_loaded()?;
         let mut inner = self.inner.lock().unwrap();
         if let Some(ds) = inner.get(name) {
             if !ds.attached_to.is_empty() {
@@ -204,6 +281,7 @@ impl Registry {
     }
 
     fn save_locked(&self, inner: &BTreeMap<String, ManagedDataset>) -> Result<(), String> {
+        self.require_loaded()?;
         if self.path.is_empty() {
             return Ok(());
         }
@@ -434,6 +512,46 @@ mod tests {
         reloaded.remove("media").unwrap();
         assert!(reloaded.list().is_empty());
     }
+    #[test]
+    fn a_corrupt_registry_is_backed_up_and_mutations_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("datasets.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let store = Registry::new(&path.display().to_string(), "");
+        assert!(!store.loaded());
+        let error = store.require_loaded().unwrap_err();
+        assert!(error.contains("corrupt"), "{error}");
+        assert!(error.contains(".corrupt-"), "{error}");
+        assert!(store.list().is_empty());
+
+        assert!(store.add(ds("media", "/var/mnt/tank/media")).is_err());
+        assert!(store.attach("media", "sonarr").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json");
+
+        let backups = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+            .count();
+        assert_eq!(backups, 1, "one corrupt backup");
+    }
+
+    #[test]
+    fn an_invalid_record_fails_the_registry_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("datasets.json");
+        // A record outside /var/mnt could never have been registered through
+        // the API, so the whole file is untrustworthy.
+        let bad = vec![ds("media", "/etc")];
+        std::fs::write(&path, serde_json::to_vec(&bad).unwrap()).unwrap();
+        let store = Registry::new(&path.display().to_string(), "");
+        assert!(!store.loaded());
+        let error = store.require_loaded().unwrap_err();
+        assert!(error.contains("invalid record"), "{error}");
+        assert!(store.list().is_empty(), "no partial load");
+        assert!(store.add(ds("media", "/var/mnt/tank/media")).is_err());
+    }
+
     #[test]
     fn a_failed_save_does_not_commit_the_mutation_to_memory() {
         let dir = tempfile::tempdir().unwrap();

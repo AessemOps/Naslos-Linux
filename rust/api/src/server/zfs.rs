@@ -1432,22 +1432,29 @@ pub async fn datasets_delete(
     }
 }
 
-/// Refuse a destroy while any live consumer owns the dataset. This runs after
-/// a fresh dataset list: shares must be loaded (fail closed on a corrupt
-/// store), shares and registered app mounts are matched in both directions,
-/// and VM/replication ownership is checked by path.
-fn require_destroy_unblocked(
+/// Why a live consumer owns this dataset, if any. Runs after a fresh dataset
+/// list: the share store and the app dataset registry must both be loaded
+/// (fail closed — an unreadable store proves nothing), and VM, share and
+/// registered-app ownership are matched by path in both directions.
+///
+/// Shared with local replication: a forced full receive destroys the
+/// destination's contents exactly like a destroy, so it must pass the same
+/// ownership guards.
+pub(crate) fn dataset_consumer_conflict(
     state: &AppState,
     name: &str,
     datasets: &[crate::agent::Dataset],
-) -> Result<(), (StatusCode, String)> {
+) -> Result<(), String> {
     if let Some(owner) = vm_dataset_owner(state, name) {
-        return Err((
-            StatusCode::CONFLICT,
-            format!(
-                "dataset {name} is owned by {owner}; delete the VM through /api/virt/vms instead"
-            ),
+        return Err(format!(
+            "dataset {name} is owned by {owner}; delete the VM through /api/virt/vms instead"
         ));
+    }
+
+    if !state.datasets_registry.loaded() {
+        return Err(
+            "the dataset registry is not loaded; refusing to treat the dataset as unattached without proving no app mounts it".to_string(),
+        );
     }
 
     let mountpoints = subtree_mountpoints(datasets, name);
@@ -1458,12 +1465,9 @@ fn require_destroy_unblocked(
         }
         let host = ds.host_path.trim_end_matches('/');
         if mountpoints.iter().any(|mp| paths_overlap(mp, host)) {
-            return Err((
-                StatusCode::CONFLICT,
-                format!(
-                    "dataset {name} backs {host}, which is attached to app(s) {}; detach the dataset first",
-                    ds.attached_to.join(", ")
-                ),
+            return Err(format!(
+                "dataset {name} backs {host}, which is attached to app(s) {}; detach the dataset first",
+                ds.attached_to.join(", ")
             ));
         }
     }
@@ -1471,33 +1475,47 @@ fn require_destroy_unblocked(
     {
         let shares = state.shares.lock().unwrap();
         if !shares.loaded() {
-            return Err((
-                StatusCode::CONFLICT,
+            return Err(
                 "the share configuration is not loaded; refusing to destroy a dataset without proving no share serves it".to_string(),
-            ));
+            );
         }
         for share in shares.list() {
             if mountpoints
                 .iter()
                 .any(|mp| paths_overlap(mp, share.path.trim_end_matches('/')))
             {
-                return Err((
-                    StatusCode::CONFLICT,
-                    format!(
-                        "dataset {name} overlaps path {}, which share {:?} is serving; delete or repoint the share first",
-                        share.path, share.name
-                    ),
+                return Err(format!(
+                    "dataset {name} overlaps path {}, which share {:?} is serving; delete or repoint the share first",
+                    share.path, share.name
                 ));
             }
         }
     }
 
+    Ok(())
+}
+
+/// Refuse a destroy while any live consumer owns the dataset. Only a job that
+/// is still writing blocks: finished jobs remain in the bounded history for
+/// the UI, but a completed replication must not freeze both datasets forever.
+fn require_destroy_unblocked(
+    state: &AppState,
+    name: &str,
+    datasets: &[crate::agent::Dataset],
+) -> Result<(), (StatusCode, String)> {
+    if let Err(message) = dataset_consumer_conflict(state, name, datasets) {
+        return Err((StatusCode::CONFLICT, message));
+    }
+
     for job in state.replication_jobs.list() {
+        if !job.is_running() {
+            continue;
+        }
         if paths_overlap(job.destination(), name) || paths_overlap(job.source(), name) {
             return Err((
                 StatusCode::CONFLICT,
                 format!(
-                    "dataset {name} is used by replication job {} ({} -> {}); wait for it to finish or remove the job's destination first",
+                    "dataset {name} is being written by replication job {} ({} -> {}); wait for it to finish or cancel the job",
                     job.id(),
                     job.source(),
                     job.destination()
@@ -2064,11 +2082,11 @@ mod tests {
     }
 
     #[test]
-    fn destroy_guard_rejects_a_replication_source_or_destination() {
+    fn destroy_guard_rejects_a_running_replication_source_or_destination() {
         let state = AppState::for_test("s");
         state
             .replication_jobs
-            .remember_for_test("tank/src", "tank/replica");
+            .remember_running_for_test("tank/src", "tank/replica");
         let datasets = vec![plain_dataset("tank/replica", "/var/mnt/tank/replica", "1")];
         let err = require_destroy_unblocked(&state, "tank/replica", &datasets)
             .expect_err("replication destination");
@@ -2077,6 +2095,35 @@ mod tests {
         let err = require_destroy_unblocked(&state, "tank/src", &datasets)
             .expect_err("replication source");
         assert_eq!(err.0, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn destroy_guard_ignores_a_finished_replication_job() {
+        let state = AppState::for_test("s");
+        state
+            .replication_jobs
+            .remember_for_test("tank/src", "tank/replica");
+        let datasets = vec![plain_dataset("tank/replica", "/var/mnt/tank/replica", "1")];
+        require_destroy_unblocked(&state, "tank/replica", &datasets)
+            .expect("a finished job must not block its destination");
+        require_destroy_unblocked(&state, "tank/src", &datasets)
+            .expect("a finished job must not block its source");
+    }
+
+    #[test]
+    fn destroy_guard_fails_closed_when_the_dataset_registry_is_not_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("datasets.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let registry = crate::datasets::Registry::new(&path.display().to_string(), "");
+        assert!(!registry.loaded());
+        let mut state = AppState::for_test("s");
+        state.datasets_registry = std::sync::Arc::new(registry);
+        let datasets = vec![plain_dataset("tank/media", "/var/mnt/tank/media", "1")];
+        let err = require_destroy_unblocked(&state, "tank/media", &datasets)
+            .expect_err("an unloaded registry must fail closed");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert!(err.1.contains("dataset registry"), "{}", err.1);
     }
 
     #[test]

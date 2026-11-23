@@ -26,15 +26,20 @@ pub fn validate_source(source: &str) -> Result<(), String> {
             "invalid source {source:?}: it must be a relative logical name"
         ));
     }
-    let mut chars = source.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit() => {}
-        _ => return Err(invalid_source(source)),
-    }
-    if !chars
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '/' | '-'))
-    {
-        return Err(invalid_source(source));
+    // Every path segment must begin with a lowercase letter or digit: a
+    // segment like `.hidden` would make the source's bytes invisible to the
+    // usage scan (the same quota bypass the chain-id rule closes).
+    for segment in source.split('/') {
+        let mut chars = segment.chars();
+        match chars.next() {
+            Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit() => {}
+            _ => return Err(invalid_source(source)),
+        }
+        if !chars
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+        {
+            return Err(invalid_source(source));
+        }
     }
     Ok(())
 }
@@ -115,7 +120,19 @@ impl Peer {
     }
 }
 
-/// The peer registry, persisted as JSON.
+/// Why a revoke failed. The API maps an I/O failure to 500 (the peer is still
+/// authorized) instead of pretending it was unknown (B-3).
+#[derive(Debug, thiserror::Error)]
+pub enum PeerRemoveError {
+    #[error("peer {0:?} not found")]
+    NotFound(String),
+    #[error("{0}")]
+    Save(String),
+}
+
+/// The peer registry, persisted as JSON. Mutations are persist-then-swap: a
+/// failed save leaves the in-memory registry identical to the file, so a
+/// revoke cannot look applied only until the next restart (B-3).
 pub struct PeerStore {
     path: String,
     peers: Mutex<HashMap<String, Peer>>,
@@ -201,17 +218,27 @@ impl PeerStore {
                 ));
             }
         }
-        guard.insert(p.name.clone(), p);
-        self.save(&guard)
+        let mut candidate = guard.clone();
+        candidate.insert(p.name.clone(), p);
+        self.save(&candidate)?;
+        *guard = candidate;
+        Ok(())
     }
 
-    /// Revoke a peer's access.
-    pub fn remove(&self, name: &str) -> Result<(), String> {
+    /// Revoke a peer's access. The revoked registry is written before the
+    /// in-memory map is replaced, so a full or read-only state volume reports
+    /// the failure and leaves the peer authorized instead of revoking it until
+    /// the next restart.
+    pub fn remove(&self, name: &str) -> Result<(), PeerRemoveError> {
         let mut guard = self.peers.lock().unwrap();
-        if guard.remove(name).is_none() {
-            return Err(format!("peer {name:?} not found"));
+        if !guard.contains_key(name) {
+            return Err(PeerRemoveError::NotFound(name.to_string()));
         }
-        self.save(&guard)
+        let mut candidate = guard.clone();
+        candidate.remove(name);
+        self.save(&candidate).map_err(PeerRemoveError::Save)?;
+        *guard = candidate;
+        Ok(())
     }
 
     pub fn list(&self) -> Vec<Peer> {
@@ -250,15 +277,53 @@ impl PeerStore {
 
 #[cfg(test)]
 mod tests {
+    use super::super::keys::new_identity;
     use super::*;
 
     #[test]
     fn source_validation() {
         assert!(validate_source("naslos-a/tank/data").is_ok());
+        assert!(validate_source("naslos-a/data.v2").is_ok());
         assert!(validate_source("").is_err());
         assert!(validate_source("/abs").is_err());
         assert!(validate_source("a/../b").is_err());
         assert!(validate_source("Upper/Case").is_err());
+        // A dot-led segment would be invisible to the usage scan.
+        assert!(validate_source("naslos-a/.hidden").is_err());
+        assert!(validate_source("naslos-a/./data").is_err());
+        assert!(validate_source("a//b").is_err());
+    }
+
+    #[test]
+    fn a_failed_revoke_save_keeps_the_peer_authorized() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("peers.json");
+        let store = PeerStore::new(path.to_str().unwrap());
+        let id = new_identity("p").unwrap();
+        store
+            .add(Peer {
+                name: "p".into(),
+                public_key: id.public_key.clone(),
+                enabled: true,
+                ..Default::default()
+            })
+            .unwrap();
+        // A directory at the store path makes the atomic rename fail even when
+        // the tests run as root (permission bits would not).
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        let err = store.remove("p").unwrap_err();
+        assert!(matches!(err, PeerRemoveError::Save(_)), "{err:?}");
+        assert!(
+            store.get("p").is_some(),
+            "a failed revoke must not drop the live entry"
+        );
+        assert!(store.by_fingerprint(&id.fingerprint().unwrap()).is_some());
+        assert!(matches!(
+            store.remove("absent").unwrap_err(),
+            PeerRemoveError::NotFound(_)
+        ));
     }
 
     #[test]
