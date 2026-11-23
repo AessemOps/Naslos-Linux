@@ -621,6 +621,10 @@ async fn run_send_job(
     }
     let _ = std::fs::remove_file(&state_path);
 
+    // Keep one Buddy snapshot by default (the base for the next incremental)
+    // and honour the caller's retention; older ones leaked forever (R-059).
+    prune_buddy_snapshots(&agent, &dataset, prune_keep).await;
+
     let res = SendResult {
         status: "backed up".to_string(),
         dataset: dataset.clone(),
@@ -662,6 +666,42 @@ async fn run_send_job(
             .record_result(&schedule_id, &receiver, true, "");
     }
     notify(&state, &job.snapshot()).await;
+}
+
+/// Destroy older `buddy-*` snapshots of `dataset`, keeping the newest `keep`
+/// (at least one, so the next incremental has a base).
+async fn prune_buddy_snapshots(agent: &crate::agent::Client, dataset: &str, keep: usize) {
+    let keep = keep.max(1);
+    let paths = match agent.snapshot_paths(dataset).await {
+        Ok(paths) => paths,
+        Err(e) => {
+            tracing::warn!("buddy send: cannot list snapshots of {dataset} for pruning: {e}");
+            return;
+        }
+    };
+    for name in buddy_snapshots_to_prune(&paths, dataset, keep) {
+        if let Err(e) = agent.destroy_snapshot(dataset, &name).await {
+            tracing::warn!("buddy send: cannot destroy old snapshot {dataset}@{name}: {e}");
+        }
+    }
+}
+
+/// The oldest `buddy-*` snapshots of `dataset` beyond the newest `keep`, in
+/// creation order (as returned by the agent).
+fn buddy_snapshots_to_prune(paths: &[String], dataset: &str, keep: usize) -> Vec<String> {
+    let prefix = format!("{dataset}@");
+    let names: Vec<&str> = paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(&prefix))
+        .filter(|name| name.starts_with("buddy-"))
+        .collect();
+    if names.len() <= keep {
+        return Vec::new();
+    }
+    names[..names.len() - keep]
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect()
 }
 
 fn save_send_state(path: &std::path::Path, state: &InstanceSendState) -> Result<(), String> {
@@ -904,8 +944,25 @@ const _: Duration = Duration::from_secs(0);
 #[cfg(test)]
 mod tests {
     use super::{
-        require_publish_evidence, require_stream_matches_dataset, send_shortfall_allowance,
+        buddy_snapshots_to_prune, require_publish_evidence, require_stream_matches_dataset,
+        send_shortfall_allowance,
     };
+
+    #[test]
+    fn only_old_buddy_snapshots_of_the_dataset_are_pruned() {
+        let paths = vec![
+            "tank/data@buddy-1".to_string(),
+            "tank/data@manual".to_string(),
+            "tank/data@buddy-2".to_string(),
+            "tank/other@buddy-3".to_string(),
+            "tank/data@buddy-4".to_string(),
+        ];
+        assert_eq!(
+            buddy_snapshots_to_prune(&paths, "tank/data", 2),
+            vec!["buddy-1".to_string()]
+        );
+        assert!(buddy_snapshots_to_prune(&paths, "tank/data", 5).is_empty());
+    }
 
     #[test]
     fn a_full_send_still_requires_dataset_contents() {
