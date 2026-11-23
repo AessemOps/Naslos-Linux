@@ -878,6 +878,9 @@ pub struct JobOptions<'a> {
     pub pack_sha256: &'a str,
     pub pack_sig_url: &'a str,
     pub pack_pubkey: &'a str,
+    /// The configured update source. The Job's fallback download validates the
+    /// pack URL host against it, so a mirror channel must reach the Job too.
+    pub source: &'a str,
     pub release_name: &'a str,
     pub service_account: &'a str,
     pub talos_secret: &'a str,
@@ -1010,6 +1013,10 @@ pub fn job_spec(o: &JobOptions<'_>) -> serde_json::Value {
                             {"name": "NASLOS_RELEASE", "value": o.release_name},
                             {"name": "NASLOS_WORKLOAD_NAMESPACE", "value": o.workload_namespace},
                             {"name": "NASLOS_STATE_DIR", "value": STATE_MOUNT},
+                            // The Job's own pack download validates the URL
+                            // host against this source; without it only
+                            // GitHub hosts pass, which breaks mirror channels.
+                            {"name": "SYSTEM_UPDATES_SOURCE", "value": o.source},
                             {"name": "TALOSCONFIG", "value": "/var/run/secrets/talos.dev/config"},
                             {"name": "TALOS_NODES", "value": o.talos_nodes},
                             {"name": "HOME", "value": "/tmp"},
@@ -1179,6 +1186,7 @@ mod tests {
             pack_sha256: "abc",
             pack_sig_url: "https://example/pack.tar.gz.sig",
             pack_pubkey: KEY,
+            source: "https://api.github.com/repos/AessemOps/Naslos-Linux/releases",
             release_name: "naslos",
             service_account: "naslos-upgrader",
             talos_secret: "naslos-talosconfig",
@@ -1245,6 +1253,7 @@ mod tests {
             pack_sha256: "abc",
             pack_sig_url: "",
             pack_pubkey: "",
+            source: "https://api.github.com/repos/AessemOps/Naslos-Linux/releases",
             release_name: "naslos",
             service_account: "naslos-upgrader",
             talos_secret: "naslos-talosconfig",
@@ -1321,13 +1330,14 @@ mod tests {
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
     }
 
-    fn sample_job_args(
+    fn sample_job(
         state_pvc: &str,
         pack_sig_url: &str,
         pack_pubkey: &str,
+        source: &str,
         talos_secret: &str,
-    ) -> Vec<String> {
-        let spec = job_spec(&JobOptions {
+    ) -> serde_json::Value {
+        job_spec(&JobOptions {
             name: "naslos-system-op-1-ab",
             namespace: "naslos",
             image: "ghcr.io/aessemops/naslos-api@sha256:dead",
@@ -1339,6 +1349,7 @@ mod tests {
             pack_sha256: "abababababababababababababababababababababababababababababababab",
             pack_sig_url,
             pack_pubkey,
+            source,
             release_name: "naslos",
             service_account: "naslos-upgrader",
             talos_secret,
@@ -1347,8 +1358,18 @@ mod tests {
             workload_namespace: "naslos-privileged",
             backoff_limit: 3,
             ttl_seconds: 3600,
-        });
-        spec["spec"]["template"]["spec"]["containers"][0]["args"]
+        })["spec"]["template"]["spec"]["containers"][0]
+            .clone()
+    }
+
+    fn sample_job_args(
+        state_pvc: &str,
+        pack_sig_url: &str,
+        pack_pubkey: &str,
+        source: &str,
+        talos_secret: &str,
+    ) -> Vec<String> {
+        sample_job(state_pvc, pack_sig_url, pack_pubkey, source, talos_secret)["args"]
             .as_array()
             .expect("container args")
             .iter()
@@ -1425,9 +1446,15 @@ mod tests {
             ("", "https://github.com/o/r/pack.sig", "abc", ""),
         ] {
             emitted.extend(
-                sample_job_args(state_pvc, pack_sig_url, pack_pubkey, talos_secret)
-                    .into_iter()
-                    .filter(|arg| arg.starts_with("--")),
+                sample_job_args(
+                    state_pvc,
+                    pack_sig_url,
+                    pack_pubkey,
+                    "https://api.github.com/repos/AessemOps/Naslos-Linux/releases",
+                    talos_secret,
+                )
+                .into_iter()
+                .filter(|arg| arg.starts_with("--")),
             );
         }
         for flag in [
@@ -1501,7 +1528,13 @@ mod tests {
             ("", KEY, 20),
             ("", "", 20),
         ] {
-            let args = sample_job_args(state_pvc, SIG, pack_pubkey, "naslos-talosconfig");
+            let args = sample_job_args(
+                state_pvc,
+                SIG,
+                pack_pubkey,
+                "https://api.github.com/repos/AessemOps/Naslos-Linux/releases",
+                "naslos-talosconfig",
+            );
             assert_eq!(
                 args.len(),
                 expected_len,
@@ -1550,21 +1583,127 @@ mod tests {
             format!("c.args[21] == '{STATE_MOUNT}/updates/pack-' + c.args[7] + '.tar.gz'");
         assert!(flat.contains(&pack_pin), "missing {pack_pin:?}");
         assert!(flat.contains("c.args[23] == c.args[21] + '.sig'"));
-        let args = sample_job_args("naslos-shares-config", SIG, KEY, "naslos-talosconfig");
-        assert_eq!(args[13], SIG);
-        assert_eq!(args[14], "--pack-pubkey");
-        assert_eq!(args[15], KEY);
-        assert_eq!(args[20], "--pack-file");
-        assert_eq!(
-            args[21],
-            format!("{STATE_MOUNT}/updates/pack-{}.tar.gz", args[7])
+        // The Job must receive the configured source so a mirror channel's
+        // pack URL passes its own host check (finding: mirror upgrades).
+        assert!(
+            flat.contains("'SYSTEM_UPDATES_SOURCE'"),
+            "the policy must admit the source env the Job needs"
         );
-        assert_eq!(args[23], format!("{}.sig", args[21]));
-        let args = sample_job_args("naslos-shares-config", "", "", "naslos-talosconfig");
-        assert_eq!(args[13], "");
-        assert_eq!(args[14], "--pack-pubkey");
-        assert_eq!(args[15], "");
-        assert_eq!(args.len(), 20);
+        // Value-level coverage: for each layout the emitted values must be the
+        // ones the policy branch admits (empty pair without a key, channel
+        // prefix + pinned key with one, cached path only with both a key and
+        // the state claim).
+        const GITHUB: &str = "https://api.github.com/repos/AessemOps/Naslos-Linux/releases";
+        const PACK: &str = "https://github.com/o/r/releases/download/v0.3.1/pack.tar.gz";
+        for (state_pvc, key) in [
+            ("naslos-shares-config", ""),
+            ("naslos-shares-config", KEY),
+            ("", KEY),
+            ("", ""),
+        ] {
+            let container = sample_job(
+                state_pvc,
+                if key.is_empty() { "" } else { SIG },
+                key,
+                GITHUB,
+                "naslos-talosconfig",
+            );
+            let args: Vec<&str> = container["args"]
+                .as_array()
+                .expect("container args")
+                .iter()
+                .filter_map(|arg| arg.as_str())
+                .collect();
+            let source = container["env"]
+                .as_array()
+                .expect("container env")
+                .iter()
+                .find(|entry| entry["name"] == "SYSTEM_UPDATES_SOURCE")
+                .expect("SYSTEM_UPDATES_SOURCE env")["value"]
+                .as_str()
+                .expect("source value");
+            assert_eq!(source, GITHUB);
+            assert_eq!(args[8], "--pack-url");
+            assert_eq!(args[9], PACK);
+            assert!(args[9].starts_with("https://github.com/o/r/releases/download/"));
+            assert_eq!(args[12], "--pack-sig-url");
+            assert_eq!(args[13], if key.is_empty() { "" } else { SIG });
+            assert_eq!(args[14], "--pack-pubkey");
+            assert_eq!(args[15], key);
+            if key.is_empty() {
+                assert!(args[13].is_empty());
+            } else {
+                assert!(!args[13].is_empty());
+                // The policy requires the signature URL under the same channel
+                // prefix as the pack URL.
+                let origin = |url: &str| url.split('/').take(3).collect::<Vec<_>>().join("/");
+                assert_eq!(origin(args[13]), origin(args[9]));
+            }
+            let cached = !state_pvc.is_empty() && !key.is_empty();
+            assert_eq!(
+                args.contains(&"--pack-file"),
+                cached,
+                "cached pack layout for state_pvc={state_pvc:?} key={key:?}"
+            );
+            assert_eq!(args.len(), if cached { 24 } else { 20 });
+            if cached {
+                assert_eq!(args[20], "--pack-file");
+                assert_eq!(
+                    args[21],
+                    format!("{STATE_MOUNT}/updates/pack-{}.tar.gz", args[7])
+                );
+                assert_eq!(args[22], "--pack-sig-file");
+                assert_eq!(args[23], format!("{}.sig", args[21]));
+            }
+        }
+    }
+
+    /// Finding: the default (no-key) path is a Job-side download, so a mirror
+    /// channel must reach the Job as SYSTEM_UPDATES_SOURCE or its pack URL is
+    /// rejected by the Job's own host check. The policy derives the mirror
+    /// host prefix from the same value.
+    #[test]
+    fn mirror_channel_source_reaches_the_job_and_is_accepted() {
+        const SOURCE: &str = "https://mirror.example/naslos/releases.json";
+        const PACK: &str = "https://mirror.example/packs/naslos-install-pack-0.3.1.tar.gz";
+        let spec = job_spec(&JobOptions {
+            name: "naslos-system-op-1-ab",
+            namespace: "naslos",
+            image: "ghcr.io/aessemops/naslos-api@sha256:dead",
+            op: "naslos",
+            operation_id: "1-ab",
+            from: "0.3.0",
+            version: "0.3.1",
+            pack_url: PACK,
+            pack_sha256: "abababababababababababababababababababababababababababababababab",
+            pack_sig_url: "",
+            pack_pubkey: "",
+            source: SOURCE,
+            release_name: "naslos",
+            service_account: "naslos-upgrader",
+            talos_secret: "naslos-talosconfig",
+            talos_nodes: "10.0.0.1",
+            state_pvc: "naslos-shares-config",
+            workload_namespace: "naslos-privileged",
+            backoff_limit: 3,
+            ttl_seconds: 3600,
+        });
+        let env = spec["spec"]["template"]["spec"]["containers"][0]["env"]
+            .as_array()
+            .expect("container env");
+        let source = env
+            .iter()
+            .find(|entry| entry["name"] == "SYSTEM_UPDATES_SOURCE")
+            .expect("SYSTEM_UPDATES_SOURCE env")["value"]
+            .as_str()
+            .expect("source value");
+        assert_eq!(source, SOURCE);
+        // The bug this guards: with an empty source only GitHub hosts pass.
+        assert!(crate::system::pack_url_allowed(PACK, "").is_err());
+        assert!(crate::system::pack_url_allowed(PACK, source).is_ok());
+        // The policy derives a host-root prefix for non-GitHub sources.
+        let policy = chart_policy_source();
+        assert!(policy.contains("$packUrlPrefix = printf \"%s/\" $host"));
     }
 
     /// Finding 2: the strict signature mode must be wired end-to-end. The API
@@ -1581,13 +1720,13 @@ mod tests {
             "api-deployment.yaml does not set {PACK_PUBKEY_ENV}"
         );
         assert!(
-            deployment.contains("$updates.packPubkey"),
-            "the API env must come from system.updates.packPubkey"
+            deployment.contains("$updates.packPubkey | default \"\" | trim"),
+            "the API env must come from system.updates.packPubkey, trimmed"
         );
         let policy = chart_policy_source();
         assert!(
-            policy.contains("$packPubkey := $updates.packPubkey"),
-            "the policy must read the same chart value"
+            policy.contains("$packPubkey := $updates.packPubkey | default \"\" | trim"),
+            "the policy must read the same chart value, trimmed"
         );
         assert!(
             policy.contains("c.args[15] == '{{ $packPubkey }}'"),

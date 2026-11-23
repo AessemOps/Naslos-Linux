@@ -341,6 +341,7 @@ pub async fn operation_post(State(state): State<Arc<AppState>>, body: Body) -> R
         pack_sha256: &candidate.pack_sha256,
         pack_sig_url: &candidate.pack_sig_url,
         pack_pubkey: checker.pack_pubkey(),
+        source: checker.source(),
         release_name: &state.system.release_name,
         service_account: state.system.service_account(),
         talos_secret: &state.system.talos_secret,

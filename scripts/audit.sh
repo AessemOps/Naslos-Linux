@@ -1020,6 +1020,7 @@ for fragment in (
     "object.spec.restartPolicy == 'Never'",
     "object.spec.securityContext.runAsGroup == 65532",
     "object.spec.securityContext.fsGroup == 65532",
+    "'SYSTEM_UPDATES_SOURCE'",
 ):
     assert fragment in expr, f"upgrader policy is missing {fragment!r}"
 
@@ -1068,22 +1069,24 @@ assert 443 in ports, ports
 print("system upgrade render ok")
 PY
   rm -f "$f"
-  # Signature mode: configuring a pack key must reach the API env and render
-  # the "key pinned + signature required + cached-pack layout" policy, so the
-  # API-writable cache is only used with a verifiable signature.
+  # Signature mode: a padded key (e.g. a --set-file trailing newline) must be
+  # trimmed once and used everywhere, and the policy must require the pinned
+  # key plus the cached layout.
   key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-  f2=$(mktemp) || return 1
+  kv=$(mktemp) || return 1
+  printf 'system:\n  updates:\n    packPubkey: "  %s  "\n' "$key" >"$kv"
+  f2=$(mktemp) || { rm -f "$kv"; return 1; }
   if ! helm template naslos "$root/charts/naslos" -n naslos \
     -f "$root/charts/naslos/values.yaml" \
     -f "$root/charts/naslos/values-installer.yaml" \
+    -f "$kv" \
     --set release.profile=installer \
     --set release.naslosVersion=0.3.0 \
     --set release.chartVersion=0.3.0 \
     --set release.talosVersion=v1.14.6 \
     --set release.schematicId=abc \
-    --set release.kubernetesVersion=v1.37.0 \
-    --set system.updates.packPubkey="$key" >"$f2" 2>/dev/null; then
-    rm -f "$f2"
+    --set release.kubernetesVersion=v1.37.0 >"$f2" 2>/dev/null; then
+    rm -f "$f2" "$kv"
     return 1
   fi
   python3 - "$f2" "$key" <<'PY' || rc=1
@@ -1113,6 +1116,7 @@ for fragment in (
 ):
     assert fragment in expr, f"strict signature mode is missing {fragment!r}"
 assert "c.args.size() == 20" not in expr, expr
+assert f"'{key}  '" not in expr, "the pinned key must be trimmed"
 
 api = find("Deployment", "naslos-api")
 assert api, "API Deployment missing"
@@ -1124,7 +1128,57 @@ assert api_env.get("SYSTEM_UPDATES_PACK_PUBKEY") == key, \
     api_env.get("SYSTEM_UPDATES_PACK_PUBKEY")
 print("strict signature render ok")
 PY
-  rm -f "$f2"
+  rm -f "$f2" "$kv"
+  # Mirror channel: the policy prefix follows the configured host (host root,
+  # matching the Job's pack_url_allowed host check) and the API env carries the
+  # same source the Job receives at runtime.
+  src="https://mirror.example/naslos/releases.json"
+  f3=$(mktemp) || return 1
+  if ! helm template naslos "$root/charts/naslos" -n naslos \
+    -f "$root/charts/naslos/values.yaml" \
+    -f "$root/charts/naslos/values-installer.yaml" \
+    --set release.profile=installer \
+    --set release.naslosVersion=0.3.0 \
+    --set release.chartVersion=0.3.0 \
+    --set release.talosVersion=v1.14.6 \
+    --set release.schematicId=abc \
+    --set release.kubernetesVersion=v1.37.0 \
+    --set system.updates.source="$src" >"$f3" 2>/dev/null; then
+    rm -f "$f3"
+    return 1
+  fi
+  python3 - "$f3" "$src" <<'PY' || rc=1
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+src = sys.argv[2]
+
+def find(kind, name):
+    for d in docs:
+        if d.get("kind") == kind and d.get("metadata", {}).get("name") == name:
+            return d
+    return None
+
+vap = find("ValidatingAdmissionPolicy", "naslos-upgrader-guard")
+assert vap, "upgrader ValidatingAdmissionPolicy missing"
+expr = "\n".join(v.get("expression", "") for v in vap["spec"]["validations"])
+for fragment in (
+    "c.args[9].startsWith('https://mirror.example/')",
+    "c.args[13] == ''",
+    "c.args[15] == ''",
+    "'SYSTEM_UPDATES_SOURCE'",
+):
+    assert fragment in expr, f"mirror channel is missing {fragment!r}"
+
+api = find("Deployment", "naslos-api")
+assert api, "API Deployment missing"
+api_env = {
+    e["name"]: e.get("value")
+    for e in api["spec"]["template"]["spec"]["containers"][0].get("env", [])
+}
+assert api_env.get("SYSTEM_UPDATES_SOURCE") == src, api_env.get("SYSTEM_UPDATES_SOURCE")
+print("mirror channel render ok")
+PY
+  rm -f "$f3"
   return "$rc"
 }
 

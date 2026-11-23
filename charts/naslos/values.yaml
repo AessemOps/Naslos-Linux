@@ -229,10 +229,12 @@ system:
     # the state volume, because that claim is mounted read-write by the API
     # pod that also builds the Job (a compromised API could substitute the
     # file). Set this to the base64/hex public key of a release channel that
-    # publishes `<pack>.tar.gz.sig`: the chart passes it to the API as
-    # SYSTEM_UPDATES_PACK_PUBKEY, the API refuses releases without a valid
-    # signature, and the admission policy pins this exact key into the Job,
-    # which then verifies the cached pack and signature against it.
+    # publishes `<pack>.tar.gz.sig`: the chart passes it (trimmed) to the API
+    # as SYSTEM_UPDATES_PACK_PUBKEY, the API refuses releases without a valid
+    # signature, and the admission policy pins this exact key into the Job.
+    # With `api.sharesConfig.enabled` the Job then uses the cached pack and
+    # verifies it against the key; without the state claim it downloads both
+    # the pack and its signature from the channel and verifies them.
     #
     # Residual without a key: the release channel (its TLS and asset
     # immutability) is the trust anchor. A compromised API can only choose

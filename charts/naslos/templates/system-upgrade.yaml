@@ -30,7 +30,7 @@ on the state volume. Left empty, the policy requires the 20-argument URL layout
 with empty signature values: the pack comes from the channel-pinned release URL
 and the API-writable cache is not trusted. See the positional validation below.
 */}}
-{{- $packPubkey := $updates.packPubkey | default "" }}
+{{- $packPubkey := $updates.packPubkey | default "" | trim }}
 {{- /*
 The operation may only fetch a pack from this release channel. The API's
 update check (and the Job's own fallback download) accepts the configured
@@ -248,13 +248,13 @@ spec:
         object.spec.containers.all(c,
         c.env.all(e,
         e.name in ['NASLOS_NAMESPACE', 'NASLOS_RELEASE',
-        'NASLOS_WORKLOAD_NAMESPACE', 'NASLOS_STATE_DIR', 'TALOSCONFIG',
-        'TALOS_NODES', 'HOME', 'HELM_CACHE_HOME', 'HELM_CONFIG_HOME',
-        'HELM_DATA_HOME'] &&
+        'NASLOS_WORKLOAD_NAMESPACE', 'NASLOS_STATE_DIR', 'SYSTEM_UPDATES_SOURCE',
+        'TALOSCONFIG', 'TALOS_NODES', 'HOME', 'HELM_CACHE_HOME',
+        'HELM_CONFIG_HOME', 'HELM_DATA_HOME'] &&
         !has(e.valueFrom)))
       message: >-
-        upgrader env may only set the documented NASLOS_/HELM_/TALOS_ variables
-        to literal values
+        upgrader env may only set the documented NASLOS_/SYSTEM_UPDATES_/HELM_/
+        TALOS_ variables to literal values
     # Volumes: tmp emptyDir, the configured Talos Secret, the configured state
     # claim (or an emptyDir when the chart has no state volume), and the
     # ServiceAccount token projection the API server injects before this policy
