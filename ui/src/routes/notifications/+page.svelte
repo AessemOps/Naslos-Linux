@@ -2,20 +2,28 @@
   import { onMount } from 'svelte';
   import LoadingState from '$lib/components/LoadingState.svelte';
 
+  // GET responses are category/presence-only: the destination values and
+  // credentials are write-only, so the form keeps its own drafts.
   interface Settings {
     enabled: boolean;
-    serverUrl: string;
-    topic: string;
+    category?: string;
+    hasServerUrl: boolean;
+    hasTopic: boolean;
     hasAuthToken: boolean;
-    email: string;
+    hasUrlToken: boolean;
+    hasEmail: boolean;
+    allowInsecureHttp: boolean;
     enabledEvents: string[];
     minSeverity: string;
   }
 
   interface WebhookSettings {
     enabled: boolean;
-    url: string;
+    category?: string;
+    hasUrl: boolean;
+    hasUrlToken: boolean;
     hasAuthToken: boolean;
+    allowInsecureHttp: boolean;
     enabledEvents: string[];
     minSeverity: string;
   }
@@ -45,17 +53,21 @@
 
   let settings: Settings = {
     enabled: false,
-    serverUrl: 'https://ntfy.sh',
-    topic: 'naslos-alerts',
+    hasServerUrl: false,
+    hasTopic: false,
     hasAuthToken: false,
-    email: '',
+    hasUrlToken: false,
+    hasEmail: false,
+    allowInsecureHttp: false,
     enabledEvents: ['zfs_health', 'disk_failure'],
     minSeverity: 'warning'
   };
   let webhook: WebhookSettings = {
     enabled: false,
-    url: '',
+    hasUrl: false,
+    hasUrlToken: false,
     hasAuthToken: false,
+    allowInsecureHttp: false,
     enabledEvents: ['zfs_health', 'disk_failure'],
     minSeverity: 'warning'
   };
@@ -88,12 +100,19 @@
   let syslogLoading = true;
   let smtpSaving = false;
   let syslogSaving = false;
-  // The stored token is never sent back to the browser; this holds a replacement
-  // the operator types, and clearAuthToken is the explicit request to erase it.
+  // Write-only ntfy destinations/credentials. Blank drafts are omitted from a
+  // save (keep the stored value); the clear flags are the only way to send "".
+  let serverUrlInput = '';
+  let clearServerUrl = false;
+  let topicInput = '';
+  let clearTopic = false;
+  let emailInput = '';
+  let clearEmail = false;
   let authToken = '';
   let clearAuthToken = false;
-  // Same write-only convention for the webhook channel: the stored token is
-  // never sent to the browser.
+  // Same write-only convention for the webhook channel.
+  let webhookUrlInput = '';
+  let clearWebhookUrl = false;
   let webhookAuthToken = '';
   let clearWebhookAuthToken = false;
   let loading = true;
@@ -138,6 +157,12 @@
         throw new Error(`HTTP ${res.status}`);
       }
       settings = await res.json();
+      serverUrlInput = '';
+      clearServerUrl = false;
+      topicInput = '';
+      clearTopic = false;
+      emailInput = '';
+      clearEmail = false;
       authToken = '';
       clearAuthToken = false;
     } catch (e) {
@@ -152,12 +177,31 @@
     saving = true;
     message = '';
     try {
-      // Omit authToken entirely to keep the stored one; send "" only when the
-      // operator explicitly asks to clear it.
-      const payload: Record<string, unknown> = { ...settings };
+      // Build the payload explicitly: the GET flags are read-only, and an
+      // omitted destination/token keeps its stored value. Only an explicit
+      // clear sends "".
+      const payload: Record<string, unknown> = {
+        enabled: settings.enabled,
+        enabledEvents: settings.enabledEvents,
+        minSeverity: settings.minSeverity,
+        allowInsecureHttp: settings.allowInsecureHttp
+      };
+      const setDestination = (
+        key: string,
+        value: string,
+        hasStored: boolean,
+        clear: boolean
+      ) => {
+        const text = value.trim();
+        if (text !== '') payload[key] = text;
+        else if (clear && hasStored) payload[key] = '';
+      };
+      setDestination('serverUrl', serverUrlInput, settings.hasServerUrl, clearServerUrl);
+      setDestination('topic', topicInput, settings.hasTopic, clearTopic);
+      setDestination('email', emailInput, settings.hasEmail, clearEmail);
       if (authToken.trim() !== '') {
         payload.authToken = authToken.trim();
-      } else if (clearAuthToken) {
+      } else if (clearAuthToken && settings.hasAuthToken) {
         payload.authToken = '';
       }
       const res = await fetch('/api/notifications', {
@@ -209,6 +253,8 @@
         throw new Error(`HTTP ${res.status}`);
       }
       webhook = await res.json();
+      webhookUrlInput = '';
+      clearWebhookUrl = false;
       webhookAuthToken = '';
       clearWebhookAuthToken = false;
     } catch (e) {
@@ -223,10 +269,18 @@
     webhookSaving = true;
     message = '';
     try {
-      const payload: Record<string, unknown> = { ...webhook };
+      const payload: Record<string, unknown> = {
+        enabled: webhook.enabled,
+        enabledEvents: webhook.enabledEvents,
+        minSeverity: webhook.minSeverity,
+        allowInsecureHttp: webhook.allowInsecureHttp
+      };
+      const url = webhookUrlInput.trim();
+      if (url !== '') payload.url = url;
+      else if (clearWebhookUrl && webhook.hasUrl) payload.url = '';
       if (webhookAuthToken.trim() !== '') {
         payload.authToken = webhookAuthToken.trim();
-      } else if (clearWebhookAuthToken) {
+      } else if (clearWebhookAuthToken && webhook.hasAuthToken) {
         payload.authToken = '';
       }
       const res = await fetch('/api/notifications/webhook', {
@@ -498,16 +552,53 @@
       </div>
 
       <div class="card space-y-4">
-        <h2 class="text-lg font-bold">Server Settings</h2>
+        <h2 class="text-lg font-bold">
+          Server Settings
+          {#if settings.hasUrlToken}
+            <span class="ml-2 text-xs font-normal px-2 py-0.5 rounded bg-naslos-border text-gray-300">destination/token configured</span>
+          {/if}
+        </h2>
         <div>
           <label class="label" for="notify-field-1">ntfy Server URL</label>
-          <input id="notify-field-1" type="text" bind:value={settings.serverUrl} class="input w-full" placeholder="https://ntfy.sh" />
-          <p class="text-xs text-gray-500 mt-1">Use https://ntfy.sh for the public server, or self-host your own.</p>
+          <input
+            id="notify-field-1"
+            type="text"
+            bind:value={serverUrlInput}
+            class="input w-full"
+            placeholder={settings.hasServerUrl ? 'Stored — leave blank to keep' : 'https://ntfy.sh'}
+          />
+          {#if settings.hasServerUrl}
+            <label class="flex items-center gap-2 mt-2 text-sm text-gray-400">
+              <input type="checkbox" bind:checked={clearServerUrl} class="w-4 h-4 rounded" />
+              Clear the stored server URL
+            </label>
+          {/if}
+          <p class="text-xs text-gray-500 mt-1">
+            {settings.hasServerUrl
+              ? 'A server URL is configured but not shown. Leave this blank to keep it.'
+              : 'No server URL stored. Use https://ntfy.sh for the public server, or self-host your own.'}
+          </p>
         </div>
         <div>
           <label class="label" for="notify-field-2">Topic</label>
-          <input id="notify-field-2" type="text" bind:value={settings.topic} class="input w-full" placeholder="naslos-alerts" />
-          <p class="text-xs text-gray-500 mt-1">Subscribe to this topic in the ntfy app to receive notifications.</p>
+          <input
+            id="notify-field-2"
+            type="text"
+            bind:value={topicInput}
+            class="input w-full"
+            placeholder={settings.hasTopic ? 'Stored — leave blank to keep' : 'naslos-alerts'}
+          />
+          {#if settings.hasTopic}
+            <label class="flex items-center gap-2 mt-2 text-sm text-gray-400">
+              <input type="checkbox" bind:checked={clearTopic} class="w-4 h-4 rounded" />
+              Clear the stored topic
+            </label>
+          {/if}
+          <p class="text-xs text-gray-500 mt-1">
+            {settings.hasTopic
+              ? 'A topic is configured but not shown. Leave this blank to keep it.'
+              : 'Subscribe to this topic in the ntfy app to receive notifications.'}
+          </p>
         </div>
         <div>
           <label class="label" for="notify-field-3">Auth Token (optional)</label>
@@ -528,7 +619,34 @@
         </div>
         <div>
           <label class="label" for="notify-field-4">Email (optional)</label>
-          <input id="notify-field-4" type="email" bind:value={settings.email} class="input w-full" placeholder="your@email.com" />
+          <input
+            id="notify-field-4"
+            type="email"
+            bind:value={emailInput}
+            class="input w-full"
+            placeholder={settings.hasEmail ? 'Stored — leave blank to keep' : 'your@email.com'}
+          />
+          {#if settings.hasEmail}
+            <label class="flex items-center gap-2 mt-2 text-sm text-gray-400">
+              <input type="checkbox" bind:checked={clearEmail} class="w-4 h-4 rounded" />
+              Clear the stored email
+            </label>
+          {/if}
+          <p class="text-xs text-gray-500 mt-1">
+            {settings.hasEmail
+              ? 'An email address is configured but not shown. Leave this blank to keep it.'
+              : 'Optional X-Email header value.'}
+          </p>
+        </div>
+        <div>
+          <label class="flex items-start gap-2 text-sm text-gray-300 cursor-pointer">
+            <input type="checkbox" bind:checked={settings.allowInsecureHttp} class="w-4 h-4 rounded mt-0.5" />
+            <span>Allow plaintext HTTP with credentials</span>
+          </label>
+          <p class="text-xs text-amber-300 mt-1">
+            Only for a trusted <span class="font-mono">http</span> server: the bearer token and topic
+            travel unencrypted. Enabling this is recorded in the audit log.
+          </p>
         </div>
       </div>
 
@@ -555,7 +673,12 @@
         <label class="flex items-center gap-4 cursor-pointer">
           <input type="checkbox" bind:checked={webhook.enabled} disabled={webhookLoading} class="w-5 h-5 rounded" />
           <div>
-            <div class="font-medium">Webhook Channel</div>
+            <div class="font-medium">
+              Webhook Channel
+              {#if webhook.hasUrlToken}
+                <span class="ml-2 text-xs font-normal px-2 py-0.5 rounded bg-naslos-border text-gray-300">configured</span>
+              {/if}
+            </div>
             <div class="text-sm text-gray-400">POST each selected event as JSON to an external webhook.</div>
           </div>
         </label>
@@ -565,8 +688,24 @@
         {:else}
           <div>
             <label class="label" for="webhook-field-1">Webhook URL</label>
-            <input id="webhook-field-1" type="text" bind:value={webhook.url} class="input w-full" placeholder="https://hooks.example.com/naslos" />
-            <p class="text-xs text-gray-500 mt-1">Only http/https public targets are accepted; loopback, private, link-local and metadata addresses are refused.</p>
+            <input
+              id="webhook-field-1"
+              type="text"
+              bind:value={webhookUrlInput}
+              class="input w-full"
+              placeholder={webhook.hasUrl ? 'Stored — leave blank to keep' : 'https://hooks.example.com/naslos'}
+            />
+            {#if webhook.hasUrl}
+              <label class="flex items-center gap-2 mt-2 text-sm text-gray-400">
+                <input type="checkbox" bind:checked={clearWebhookUrl} class="w-4 h-4 rounded" />
+                Clear the stored webhook URL
+              </label>
+            {/if}
+            <p class="text-xs text-gray-500 mt-1">
+              {webhook.hasUrl
+                ? 'A URL is configured but not shown. Leave this blank to keep it.'
+                : 'Only http/https public targets are accepted; loopback, private, link-local and metadata addresses are refused.'}
+            </p>
           </div>
           <div>
             <label class="label" for="webhook-field-2">Bearer Token (optional)</label>
@@ -584,6 +723,16 @@
               </label>
             {/if}
             <p class="text-xs text-gray-500 mt-1">Sent as an Authorization header. The stored token is never shown or returned.</p>
+          </div>
+          <div>
+            <label class="flex items-start gap-2 text-sm text-gray-300 cursor-pointer">
+              <input type="checkbox" bind:checked={webhook.allowInsecureHttp} class="w-4 h-4 rounded mt-0.5" />
+              <span>Allow plaintext HTTP with credentials</span>
+            </label>
+            <p class="text-xs text-amber-300 mt-1">
+              Only for a trusted <span class="font-mono">http</span> target: the bearer token travels
+              unencrypted. Enabling this is recorded in the audit log.
+            </p>
           </div>
           <div>
             <div class="label">Events</div>

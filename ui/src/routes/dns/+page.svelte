@@ -15,6 +15,7 @@
     enabled: boolean;
     credentialsSecret?: string;
     credentialFields?: string[];
+    redactedProviderConfigKeys?: string[];
     lastIP?: string;
     lastStatus?: string;
     lastError?: string;
@@ -175,6 +176,12 @@
             <p class="text-xs text-gray-500">
               {#if entry.lastIP}IP {entry.lastIP}{/if}{entry.ttl ? ` • TTL ${entry.ttl}` : ''}{entry.nextRunAt ? ` • next ${new Date(entry.nextRunAt).toLocaleTimeString()}` : ''}
             </p>
+            {#if (entry.redactedProviderConfigKeys?.length ?? 0) > 0}
+              <p class="text-xs text-gray-500 mt-1">
+                Configured (values hidden):
+                <span class="font-mono">{entry.redactedProviderConfigKeys?.join(', ')}</span>.
+              </p>
+            {/if}
             {#if entry.lastError}<p class="text-xs text-amber-400 mt-1">{entry.lastError}</p>{/if}
           </div>
           <div class="flex gap-2">

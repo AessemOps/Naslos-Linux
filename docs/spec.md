@@ -1223,7 +1223,11 @@ with a sibling `naslos-app.yaml` install-config. See
 ### 3.7 Notifications (`FR-NTF`)
 
 - **FR-NTF-01** — System events (Talos / Kubernetes / ZFS) MUST push to ntfy
-  topics with a severity level.
+  topics with a severity level. The settings UI MUST treat the server URL,
+  topic, email and token as write-only: never prefill them, show configured
+  placeholders from the `has*` flags, send only values the operator edited,
+  and send an empty string only for an explicit clear. A plaintext-HTTP
+  acknowledgement MUST be an explicit checkbox with a warning.
 - **FR-NTF-02** — The API MUST expose `POST /api/notifications/test` to send
   a test notification.
 
@@ -1248,7 +1252,9 @@ additive: ntfy keeps its existing behavior (FR-NTF-01/02) and settings.
   `url_validation_accepts_public_http_targets`,
   `url_validation_refuses_bad_schemes_and_credentials`,
   `url_validation_refuses_non_public_targets`; contract test
-  `webhook_test_route_requires_enabled_and_guards_at_send_time`)*
+  `webhook_test_route_requires_enabled_and_guards_at_send_time`). A bearer
+  token over plaintext `http` MUST require an explicit, audited
+  `allowInsecureHttp` acknowledgement in the UI.
 - **FR-ALT-03** — A webhook delivery MUST be a JSON `POST` whose stable shape
   is `source`, `event`, `title`, `message`, `severity` and `tags`, and it MUST
   NOT contain channel settings, credentials or the bearer token. *(webhook
@@ -1261,10 +1267,12 @@ additive: ntfy keeps its existing behavior (FR-NTF-01/02) and settings.
   `a_failing_channel_does_not_suppress_the_other`,
   `test_action_is_not_gated_by_event_routing`; contract test
   `webhook_channel_crud_never_returns_the_token`)*
-- **FR-ALT-05** — The webhook bearer token MUST be write-only: the settings
-  response MUST expose only `hasAuthToken`, an omitted token MUST keep the
-  stored value, an empty string MUST clear it, and the settings file MUST be
-  mode `0600`. *(webhook test:
+- **FR-ALT-05** — The webhook URL and bearer token MUST be write-only: the
+  settings response MUST expose only `hasUrl`/`hasAuthToken`/`hasUrlToken`, an
+  omitted field MUST keep the stored value, an empty string MUST clear it, and
+  the settings file MUST be mode `0600`. The UI MUST show configured
+  placeholders rather than the values, send only edited fields, and require an
+  explicit clear to send an empty string. *(webhook test:
   `settings_survive_a_reload_and_the_token_stays_write_only`; contract test
   `webhook_channel_crud_never_returns_the_token`)*
 - **FR-ALT-06** — The API MUST expose a webhook test action that sends a
@@ -1467,10 +1475,14 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   solver or a built-in DDNS driver MUST require no code change. An invalid or
   unreadable override MUST be skipped with a logged error and surfaced by
   `GET /api/providers`, never fatal. *(providers tests)*
-- **FR-DNS-02** — DDNS entry CRUD MUST NOT return credential values: the API
-  MUST return only the Secret name and which credential fields are set. Secret
-  fields submitted through the API MUST be written to a Kubernetes Secret and
-  MUST NOT be persisted in the entry store. *(ddns tests, `TestDdnsNeverReturnsCredentialValues`)*
+- **FR-DNS-02** — DDNS entry CRUD MUST NOT return credential values or
+  credential-bearing config: the API MUST return only the Secret name, which
+  credential fields are set, the safe `providerConfig`, and the names of
+  redacted keys in `redactedProviderConfigKeys`. Secret fields submitted
+  through the API MUST be written to a Kubernetes Secret and MUST NOT be
+  persisted in the entry store. The UI MUST not prefill redacted values, MUST
+  show them as configured instead, and MUST send only edited fields (an empty
+  string only from an explicit clear). *(ddns tests, `TestDdnsNeverReturnsCredentialValues`)*
 - **FR-DNS-03** — A background reconciler MUST detect the public IP on an
   interval (`DDNS_INTERVAL_SECONDS`, default 300) from an ordered list of
   sources (HTTP URLs and DNS fetchers `dns:opendns`/`dns:google`), DNS-resolve
@@ -1492,7 +1504,10 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   built-in solver), and the existing `cloudflare`, `rfc2136` and `passthrough`
   output MUST be preserved. OVH MUST support both its DynHost service
   (`mode: dynamic`, username/password, the default) and the signed ZoneDNS API
-  (`mode: api`). *(certs tests: `TestSpecOVH`, `TestSpecCloudflareSolverShape`,
+  (`mode: api`). Domain responses MUST report `solverConfigured` instead of the
+  solver body and filter `providerConfig`; the UI MUST show that configured
+  state and MUST NOT send the solver or redacted values unless the operator
+  edits them. *(certs tests: `TestSpecOVH`, `TestSpecCloudflareSolverShape`,
   `TestSpecRFC2136SolverShape`, `TestSpecPassthroughIsUnchanged`;
   `TestOVHDriverDynHostMode`)*
 - **FR-DNS-06** — A force-run endpoint (`POST /api/ddns/{id}/run`) MUST exist

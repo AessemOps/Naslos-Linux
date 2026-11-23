@@ -98,10 +98,10 @@ test.describe('app DNS records', () => {
         }
       })
     );
-    await page.route('**/api/ddns', (route) =>
+    await page.route('**/api/ddns', (route: any) =>
       route.fulfill({ json: { entries: [], enabled: true } })
     );
-    await page.route('**/api/providers', (route) =>
+    await page.route('**/api/providers', (route: any) =>
       route.fulfill({
         json: {
           providers: [
@@ -115,5 +115,117 @@ test.describe('app DNS records', () => {
     await page.getByRole('button', { name: '+ Add Domain' }).click();
     await expect(page.getByLabel(/Create DNS records for apps/)).toBeDisabled();
     await expect(page.getByText('No non-wildcard DDNS entry exists yet')).toBeVisible();
+  });
+});
+
+test.describe('redacted domain config', () => {
+  const providers = [
+    {
+      name: 'cloudflare',
+      displayName: 'Cloudflare',
+      certManager: true,
+      fields: [
+        { key: 'apiToken', label: 'API token', type: 'string', required: true, secret: true },
+        { key: 'proxied', label: 'Proxied (orange cloud)', type: 'bool', default: 'false' }
+      ]
+    },
+    { name: 'passthrough', displayName: 'Passthrough', certManager: true, fields: [] }
+  ];
+  const cloudflareDomain = {
+    baseDomain: 'example.test',
+    dnsProvider: 'cloudflare',
+    credentialsSecret: 'naslos-domain-example-test-creds',
+    providerConfig: {},
+    redactedProviderConfigKeys: ['legacyKey'],
+    acmeEmail: 'ops@example.test',
+    environment: 'staging',
+    primary: false,
+    sso: false,
+    solverConfigured: false
+  };
+  const passthroughDomain = {
+    baseDomain: 'pass.test',
+    dnsProvider: 'passthrough',
+    credentialsSecret: '',
+    providerConfig: {},
+    acmeEmail: 'ops@pass.test',
+    environment: 'staging',
+    primary: false,
+    sso: false,
+    solverConfigured: true
+  };
+
+  async function mockDomains(page: any, putBody: { value: any }) {
+    await page.route(/\/api\/domains(\/.*)?$/, async (route: any) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (request.method() === 'PUT') {
+        putBody.value = request.postDataJSON();
+        return route.fulfill({ json: { ...cloudflareDomain, ...putBody.value } });
+      }
+      if (path.endsWith('/certificate')) {
+        return route.fulfill({ json: { status: 'ready', reason: '', secretName: 'tls' } });
+      }
+      return route.fulfill({
+        json: {
+          domains: [cloudflareDomain, passthroughDomain],
+          baseDomain: 'example.test',
+          certManager: true,
+          selectableDomains: ['example.test', 'pass.test'],
+          ssoDomains: ['example.test']
+        }
+      });
+    });
+    await page.route('**/api/providers', (route: any) =>
+      route.fulfill({ json: { providers } })
+    );
+    await page.route('**/api/ddns', (route: any) =>
+      route.fulfill({ json: { entries: [], enabled: false, intervalSeconds: 300 } })
+    );
+  }
+
+  test('provider secrets are not prefilled or cleared by an unrelated save', async ({ page }) => {
+    const put: { value: any } = { value: null };
+    await mockDomains(page, put);
+
+    await page.goto('/domains');
+    await expect(page.getByText('Loading domains...')).toBeHidden({ timeout: 10_000 });
+    await expect(page.getByText(/Configured \(values hidden\)/)).toBeVisible();
+    const row = page.locator('.card', { hasText: 'example.test' });
+    await row.getByRole('button', { name: 'Edit', exact: true }).click();
+
+    await expect(page.locator('#domain-field-apiToken')).toHaveValue('');
+    await expect(page.locator('#domain-field-apiToken')).toHaveAttribute('placeholder', /unchanged/);
+    await expect(page.locator('#domain-clear-apiToken')).toBeVisible();
+
+    await page.getByLabel('ACME email').fill('new@example.test');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect.poll(() => put.value).toBeTruthy();
+    expect(put.value.acmeEmail).toBe('new@example.test');
+    expect(put.value).not.toHaveProperty('solver');
+    // An empty fields map still lets the server preserve stored config and
+    // secrets; it must not carry blank apiToken/proxied values.
+    expect(put.value.fields).toEqual({});
+    expect(JSON.stringify(put.value)).not.toContain('apiToken');
+  });
+
+  test('a configured passthrough solver is indicated and not sent on an unrelated save', async ({ page }) => {
+    const put: { value: any } = { value: null };
+    await mockDomains(page, put);
+
+    await page.goto('/domains');
+    await expect(page.getByText('Loading domains...')).toBeHidden({ timeout: 10_000 });
+    const row = page.locator('.card', { hasText: 'pass.test' });
+    await row.getByRole('button', { name: 'Edit', exact: true }).click();
+
+    await expect(page.locator('#domain-solver')).toHaveValue('');
+    await expect(page.locator('#domain-solver')).toHaveAttribute('placeholder', /Configured/);
+    await expect(page.getByText('A solver is configured; its body is not returned')).toBeVisible();
+
+    await page.locator('#domain-env').selectOption('production');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect.poll(() => put.value).toBeTruthy();
+    expect(put.value.environment).toBe('production');
+    expect(put.value).not.toHaveProperty('solver');
   });
 });

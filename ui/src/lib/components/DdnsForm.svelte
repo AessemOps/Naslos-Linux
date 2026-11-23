@@ -3,7 +3,7 @@
   import Icon from '$lib/components/Icon.svelte';
   import { createEventDispatcher } from 'svelte';
   import ProviderFields from './ProviderFields.svelte';
-  import { visibleFields } from '$lib/providerFields';
+  import { changedProviderFields, providerDefaults, visibleFields } from '$lib/providerFields';
 
   export let entry: any | null = null;
   export let providers: any[] = [];
@@ -21,7 +21,27 @@
   let recordType = entry?.recordType || 'A';
   let ttl = entry?.ttl ?? 0;
   let enabled = entry ? !!entry.enabled : true;
-  let fieldValues: Record<string, string> = { ...(entry?.providerConfig || {}) };
+  // Provider config keys the API redacts from the response (credentials and
+  // free-form templates such as updateUrl/body). They are never prefilled.
+  let redactedKeys: string[] = Array.isArray(entry?.redactedProviderConfigKeys)
+    ? [...entry.redactedProviderConfigKeys]
+    : [];
+
+  function fieldsFor(name: string): any[] {
+    return (ddnsProviders.find((p) => p.name === name)?.fields ?? []).filter(
+      (f: any) => f.scope !== 'cert'
+    );
+  }
+
+  function defaultsFor(name: string, seed: Record<string, string>): Record<string, string> {
+    return providerDefaults(fieldsFor(name), seed, redactedKeys);
+  }
+
+  let fieldValues: Record<string, string> = defaultsFor(providerName, {
+    ...(entry?.providerConfig || {})
+  });
+  let initialValues: Record<string, string> = { ...fieldValues };
+  let clearedFields: Record<string, boolean> = {};
   let saving = false;
   let running = false;
   let error = '';
@@ -40,13 +60,15 @@
 
   // Switch provider: keep the selection in sync and prefill field defaults.
   function onProviderChange(event: Event) {
-    providerName = (event.currentTarget as HTMLSelectElement).value;
-    const selected = ddnsProviders.find((p) => p.name === providerName);
-    const next: Record<string, string> = {};
-    for (const f of (selected?.fields ?? []).filter((x: any) => x.scope !== 'cert')) {
-      next[f.key] = f.default ?? '';
-    }
-    fieldValues = next;
+    const nextName = (event.currentTarget as HTMLSelectElement).value;
+    if (nextName === providerName) return;
+    providerName = nextName;
+    // A different provider starts from its own defaults; the previous
+    // provider's redacted keys and clear choices do not carry over.
+    redactedKeys = [];
+    clearedFields = {};
+    fieldValues = defaultsFor(providerName, {});
+    initialValues = { ...fieldValues };
   }
 
   const dispatch = createEventDispatcher();
@@ -59,7 +81,15 @@
       recordType,
       ttl: Number(ttl) || 0,
       enabled,
-      fields: fieldValues
+      // Only edited values (plus explicit clears) are sent, so saving an
+      // unrelated field never blanks a stored credential or template.
+      fields: changedProviderFields(
+        ddnsFields,
+        fieldValues,
+        initialValues,
+        clearedFields,
+        redactedKeys
+      )
     };
   }
 
@@ -154,9 +184,17 @@
           values={fieldValues}
           idPrefix="ddns"
           secretSet={entry?.credentialFields || []}
+          redactedKeys={redactedKeys}
+          cleared={clearedFields}
           unchangedPlaceholder="•••••• (unchanged)"
           on:change={() => (fieldValues = { ...fieldValues })}
         />
+        {#if redactedKeys.length > 0}
+          <p class="text-xs text-gray-500">
+            Stored and redacted: <span class="font-mono">{redactedKeys.join(', ')}</span>.
+            Their values are not returned; leave a field blank to keep it, or tick Clear to revoke it.
+          </p>
+        {/if}
       </div>
 
       {#if notice}<div class="p-3 rounded-lg bg-green-900/30 border border-green-700 text-green-300 text-sm">{notice}</div>{/if}
