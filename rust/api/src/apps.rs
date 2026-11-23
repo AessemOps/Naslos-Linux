@@ -5586,14 +5586,14 @@ mod host_uniqueness_tests {
     #[test]
     fn exposure_host_resolves_the_default_base_and_normalizes_case() {
         assert_eq!(
-            exposure_host("Media", "Example.COM", "naslos.local"),
+            exposure_host("Media", "Example.COM", "apps.example"),
             "media.example.com"
         );
         assert_eq!(
-            exposure_host("media", "", "naslos.local"),
-            "media.naslos.local"
+            exposure_host("media", "", "apps.example"),
+            "media.apps.example"
         );
-        assert_eq!(exposure_host("", "example.com", "naslos.local"), "");
+        assert_eq!(exposure_host("", "example.com", "apps.example"), "");
         assert_eq!(
             exposure_host("media", "example.com", ""),
             "media.example.com"
