@@ -114,7 +114,7 @@ the **workstation→apiserver LAN path flaked** with intermittent
 in-cluster access stayed healthy and Talos services reported 337h uptime;
 retrying or using the browser path worked around it. Worth watching.
 
-## Production instance (2026-11-21)
+## Production instance (2026-11-23)
 
 - **Hardware:** the production NAS is the bare-metal node `talos-zgr-9yg` at
   `192.168.1.38` (Talos v1.14.6, Kubernetes v1.37.0, control-plane Ready). The
@@ -122,52 +122,35 @@ retrying or using the browser path worked around it. Worth watching.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.7.0`**, revision 62
-  (2026-11-22), deployed with `make install-vm` after a UI upgrade applied the
-  installer profile; the node runs the v0.7.0 release images, digest-pinned
-  (public GHCR): API `97e7b80f…`, UI `43dd2f64…`, agent `1c7e42b5…`, OpenLDAP
-  `3795e1ab…`, Samba `d3559d89…`, NFS `b3a8a0c3…`, terminal `f3ee4584…`, vmd
-  `24f36e0c…`. `virt.enabled: true`. `/api/system/version` reports the
-  `release.*` facts from `values-vm.yaml`: Naslos/chart **0.7.0**, profile
-  `installer`, Talos pin **v1.14.6** and k8s v1.37.0; the node runs Talos
-  **v1.14.6**. The web upgrader is enabled (SA `naslos-upgrader` +
-  cluster-admin binding, the `naslos-api-system` Role/RoleBinding, and the
-  upgrader admission policy). The private registry `192.168.1.2:30095` is
-  retired — do not build/push local images. `/api/health` is green, both ZFS
-  pools are ONLINE with no data errors, the ZFS inventory is identical to the
-  pre-0.6.0 snapshot (24 entries), and the full Playwright suite passed on
-  revision 62: **80 passed, 5 skipped, 0 failed**. Live checks passed for
-  encryption create/unlock/lock-refusal/destroy with key deletion, the audit
-  hash chain (`/api/audit/verify`), reporting metadata, SMTP/syslog settings,
-  and a config export → import dry-run (25 unchanged, 13 skipped, 0 changes).
-- **Latest release:** `v0.7.0` (2026-11-22) and installer `naslos-v0.7.0`
-  are published; the pack `naslos-install-pack-0.7.0.tar.gz` is attached and
-  its images are digest-pinned. It completes the P0/P1 runtime slices: raw-key
-  ZFS encryption with Secret custody and explicit unlock/lock, SMTP + syslog
-  alerts, config import/restore, RBAC phase 2 plus append-only audit v1,
-  bounded historical reporting, and shadow-copy-compatible scheduled
-  snapshots. The node is on 0.7.0 revision 62. Caveats: RBAC only admits
-  admins until Authelia admission for the new groups ships; encryption keys
-  live in Kubernetes Secrets (etcd at-rest encryption is not configured) and
-  require manual unlock after boot; audit is fail-closed on the state volume
-  (16 MiB/90 d); reporting adds a 256 MiB PVC; config import does not reinstall
-  apps or inject credentials; SMTP/syslog LAN targets need `nodeCIDR` or
-  `extraEgressCIDRs`; scheduled snapshots were renamed and legacy
-  `naslos-auto-*` pruning lasts one release. The API still uses `Recreate`;
-  the chart now clears a pre-0.6.0 `rollingUpdate` block so UI/installer
-  upgrades from 0.5.x work.
-- **0.7.1 remediation (in progress, not deployed):** the platform-chart branch
-  (`fix/0.7.1-platform-chart`) changes deploy behavior that the next release
-  must carry: `make install-vm` now requires `VM_IP=<node-ip>` and installs
-  `local-path` + the `naslos-talosconfig` Secret itself; Traefik runs with
-  namespaced RBAC (no cluster-wide Secret read) watching only
-  `naslos-apps`/`naslos-apps-priv`; the production overlay no longer renders
-  the shared `/var/mnt` datasets PV/PVC (per-app claims only); Authelia,
-  Samba, NFS, the OpenLDAP backup Job and the upgrader admission policy are
-  hardened; the state and OpenLDAP-backup PVCs are kept on uninstall; git/DDNS
-  egress is scoped to the API pod; and base images/local-path are digest
-  pinned. The node keeps 0.7.0 revision 62 until the 0.7.1 pack is released
-  and deployed.
+- **Deployed release:** Helm `naslos` chart **`naslos-0.7.6`**, revision 73
+  (2026-11-23), upgraded in place from 0.7.0 through the web upgrader. The node
+  runs the v0.7.6 images (public GHCR, digest-pinned by the pack): API
+  `6a10d41d…`, agent `90b8101b…`, UI `02737a6e…`, OpenLDAP `d19a44fd…`, Samba
+  `7260852a…`, NFS `91e7bf19…`, terminal `7f2190bb…`, vmd `58436c61…`.
+  `/api/system/version` reports Naslos/chart 0.7.6, profile `installer`, Talos
+  v1.14.6 and k8s v1.37.0. The upgrade live drill reached `succeeded`;
+  API/Authelia/OpenLDAP/Traefik/UI and the privileged Samba/NFS/agent/terminal
+  pods are Running. `values-vm.yaml` carries the 0.7.6 digests.
+- **Latest release:** `v0.7.6` (2026-11-23) and installer `naslos-v0.7.6` are
+  published; `naslos-install-pack-0.7.6.tar.gz` is attached with every image
+  digest-pinned. It carries the 0.7.1 security/data-integrity remediation and
+  the five live upgrade blockers found on the node: forced Helm field conflicts
+  (`--force-conflicts`, `naslos-install.exe` ownership), Authelia's read-only
+  LDAP ACL applied on upgrade, a 10-minute workload readiness window, a bounded
+  chown init container for the legacy Authelia `/config` PVC, and Samba's
+  `NET_BIND_SERVICE`. Operator actions: reissue MCP `write` tokens as `full`,
+  migrate catalog charts off native Ingress, and back up `buddy-identity.json`
+  plus the Buddy KEK Secret before the next identity change.
+- **0.7.1–0.7.6 deploy behavior:** `make install-vm` requires
+  `VM_IP=<node-ip>` and installs `local-path` + the `naslos-talosconfig`
+  Secret; Traefik uses namespaced RBAC watching only the shared/per-app
+  namespaces; the production overlay renders no shared `/var/mnt` datasets
+  PV/PVC; Authelia, Samba, NFS, OpenLDAP/backup and the upgrader policy are
+  hardened; state/backup PVCs are kept on uninstall; git/DDNS egress is scoped
+  to the API pod; base images and local-path are digest-pinned. Traefik still
+  reads Secrets inside its watched namespaces (dynamic per-domain TLS names
+  defeat a fixed allowlist); legacy shared-namespace app installs still hold
+  the wildcard Secret and should move to per-app namespaces.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
