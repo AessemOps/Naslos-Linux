@@ -323,3 +323,318 @@ test.describe('VM destructive confirmations', () => {
     await expect.poll(() => restores.some((url) => url.includes('confirm=uitest-vm'))).toBe(true);
   });
 });
+
+// Image-library replace confirmation (FR-VMT-07). The API is mocked; these
+// assert the UI only sends confirm=<name> after an explicit acknowledgement and
+// that vmd's conflict/over-cap errors reach the operator.
+test.describe('image library confirmations', () => {
+  const existing = { name: 'debian.iso', sizeBytes: 4096 };
+
+  async function mockImages(
+    page: any,
+    options: {
+      images?: any[];
+      imagesAfter?: any[];
+      upload?: (offset: number, final: boolean, call: number) => any;
+      importStatus?: number;
+      importError?: string;
+    } = {}
+  ) {
+    const uploads: {
+      offset: number;
+      final: boolean;
+      confirm: string | null;
+      owner: string | null;
+    }[] = [];
+    const imports: any[] = [];
+    const cancels: { name: string | null; owner: string | null }[] = [];
+    let calls = 0;
+    let libraryCalls = 0;
+    await page.route(/\/api\//, async (route: any) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const path = url.pathname;
+      if (path === '/api/virt/capabilities') {
+        return route.fulfill({
+          json: { kvm: true, cpuModel: 'Test CPU', nested: false, secureBoot: false, nics: [] }
+        });
+      }
+      if (path === '/api/virt/vms') return route.fulfill({ json: [] });
+      if (path === '/api/volumes/zfs') return route.fulfill({ json: [{ name: 'tank' }] });
+      if (path === '/api/virt/images') {
+        libraryCalls += 1;
+        const images =
+          libraryCalls > 1 && options.imagesAfter
+            ? options.imagesAfter
+            : options.images ?? [existing];
+        return route.fulfill({ json: { images, importing: [], errors: {} } });
+      }
+      if (path === '/api/virt/images/upload' && request.method() === 'DELETE') {
+        const name = url.searchParams.get('name');
+        cancels.push({ name, owner: url.searchParams.get('owner') });
+        return route.fulfill({ json: { status: 'cancelled', name } });
+      }
+      if (path === '/api/virt/images/upload') {
+        const offset = Number(url.searchParams.get('offset') ?? '0');
+        const final = url.searchParams.get('final') === 'true';
+        const confirm = url.searchParams.get('confirm');
+        const owner = url.searchParams.get('owner');
+        calls += 1;
+        uploads.push({ offset, final, confirm, owner });
+        if (options.upload) return route.fulfill(options.upload(offset, final, calls));
+        const sent = request.postDataBuffer()?.length ?? 0;
+        return route.fulfill({ json: { name: 'debian.iso', sizeBytes: offset + sent } });
+      }
+      if (path === '/api/virt/images/import') {
+        imports.push(request.postDataJSON());
+        return route.fulfill({
+          status: options.importStatus ?? 202,
+          json: options.importStatus && options.importStatus >= 400
+            ? { error: options.importError ?? 'refused' }
+            : { status: 'import started', name: 'debian.iso' }
+        });
+      }
+      return route.fulfill({ json: {} });
+    });
+    return { uploads, imports, cancels };
+  }
+
+  test('uploading over an existing image needs the explicit replace confirmation', async ({ page }) => {
+    const { uploads } = await mockImages(page);
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+    await expect(page.getByRole('heading', { name: /Images — tank\/vms\/isos/ })).toBeVisible();
+
+    await page.locator('#img-file').setInputFiles({
+      name: 'debian.iso',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('tiny-image')
+    });
+    await expect(page.locator('#img-replace')).toBeVisible();
+    const upload = page.getByRole('button', { name: 'Upload', exact: true });
+    await expect(upload).toBeDisabled();
+
+    await page.locator('#img-replace').check();
+    await expect(upload).toBeEnabled();
+    await upload.click();
+
+    await expect.poll(() => uploads.length).toBe(1);
+    expect(uploads[0].confirm).toBe('debian.iso');
+    expect(uploads[0].owner).toBeTruthy();
+  });
+
+  test('a new image name uploads without the replace confirmation', async ({ page }) => {
+    const { uploads } = await mockImages(page);
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+    await page.locator('#img-file').setInputFiles({
+      name: 'new-image.iso',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('fresh')
+    });
+    await expect(page.locator('#img-replace')).toBeHidden();
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await expect.poll(() => uploads.length).toBe(1);
+    expect(uploads[0].confirm).toBeNull();
+    expect(uploads[0].owner).toBeTruthy();
+  });
+
+  test('the upload owner token survives a panel reload', async ({ page }) => {
+    const { uploads } = await mockImages(page, {
+      images: [],
+      upload: () => ({ status: 500, json: { error: 'transient failure' } })
+    });
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+    await page.locator('#img-file').setInputFiles({
+      name: 'debian.iso',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('data')
+    });
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('transient failure');
+    await expect.poll(() => uploads.length).toBe(1);
+    const owner = uploads[0].owner;
+    expect(owner).toBeTruthy();
+
+    // Reloading the SPA remounts the panel. The token comes back from
+    // sessionStorage instead of minting one the live vmd session would refuse.
+    await page.reload();
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+    await page.locator('#img-file').setInputFiles({
+      name: 'debian.iso',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('data')
+    });
+    await expect(page.getByRole('button', { name: /cancel upload/i })).toBeVisible();
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await expect.poll(() => uploads.length).toBe(2);
+    expect(uploads[1].owner).toBe(owner);
+  });
+
+  test('cancelling an upload releases the server session', async ({ page }) => {
+    const { uploads, cancels } = await mockImages(page, {
+      images: [],
+      upload: (offset, _final, call) =>
+        call === 1
+          ? { json: { name: 'big.iso', sizeBytes: offset + 8 * 1024 * 1024 } }
+          : { status: 500, json: { error: 'transient failure' } }
+    });
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+    await page.locator('#img-file').setInputFiles({
+      name: 'big.iso',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.alloc(9 * 1024 * 1024)
+    });
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('transient failure');
+    expect(uploads.length).toBe(2);
+
+    await page.getByRole('button', { name: /cancel upload/i }).click();
+    await expect.poll(() => cancels.length).toBe(1);
+    expect(cancels[0].name).toBe('big.iso');
+    expect(cancels[0].owner).toBe(uploads[0].owner);
+    await expect(page.getByRole('alert')).toContainText('cancelled');
+  });
+
+  test('a 409 refreshes a stale listing so the replace confirmation appears', async ({ page }) => {
+    const conflict = '"debian.iso" already exists in the library; pass confirm=debian.iso to replace it';
+    const { uploads } = await mockImages(page, {
+      images: [],
+      imagesAfter: [existing],
+      upload: (offset, _final, call) =>
+        call === 1
+          ? { status: 409, json: { error: conflict } }
+          : { json: { name: 'debian.iso', sizeBytes: offset + 4 } }
+    });
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+
+    // The loaded listing predates the image, so no replace checkbox exists.
+    await page.locator('#img-file').setInputFiles({
+      name: 'debian.iso',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('data')
+    });
+    await expect(page.locator('#img-replace')).toBeHidden();
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+
+    await expect(page.getByRole('alert')).toContainText('already exists');
+    // The 409 reloaded the library: the name is now listed, so the checkbox
+    // is reachable and the retry can send the confirmation.
+    await expect(page.locator('#img-replace')).toBeVisible();
+    await page.locator('#img-replace').check();
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await expect.poll(() => uploads.length).toBe(2);
+    expect(uploads[1].confirm).toBe('debian.iso');
+    expect(uploads[1].owner).toBe(uploads[0].owner);
+  });
+
+  test('a URL import over an existing image needs the confirmation and shows a conflict', async ({ page }) => {
+    const conflict = 'cannot replace "debian.iso": VM uitest-vm is running attaches it';
+    const { imports } = await mockImages(page, { importStatus: 409, importError: conflict });
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+
+    await page.locator('#img-url').fill('https://mirror.example/debian.iso');
+    await expect(page.locator('#img-import-replace')).toBeVisible();
+    const start = page.getByRole('button', { name: 'Import', exact: true });
+    await expect(start).toBeDisabled();
+
+    await page.locator('#img-import-replace').check();
+    await expect(start).toBeEnabled();
+    await start.click();
+
+    await expect.poll(() => imports.length).toBe(1);
+    expect(imports[0].confirm).toBe('debian.iso');
+    await expect(page.getByRole('alert')).toContainText(conflict);
+  });
+
+  test('a 409 import refreshes a stale listing and enables the confirmation', async ({ page }) => {
+    const conflict = 'cannot replace "debian.iso": VM uitest-vm is running attaches it';
+    const { imports } = await mockImages(page, {
+      images: [],
+      imagesAfter: [existing],
+      importStatus: 409,
+      importError: conflict
+    });
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+
+    await page.locator('#img-url').fill('https://mirror.example/debian.iso');
+    await expect(page.locator('#img-import-replace')).toBeHidden();
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+
+    await expect(page.getByRole('alert')).toContainText(conflict);
+    await expect(page.locator('#img-import-replace')).toBeVisible();
+    await page.locator('#img-import-replace').check();
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+    await expect.poll(() => imports.length).toBe(2);
+    expect(imports[1].confirm).toBe('debian.iso');
+  });
+
+  test('an over-cap upload error is shown to the operator', async ({ page }) => {
+    const message = 'the image exceeds the 34359738368-byte library limit; the staged upload was removed';
+    await mockImages(page, {
+      upload: () => ({ status: 413, json: { error: message } })
+    });
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+    await page.locator('#img-file').setInputFiles({
+      name: 'huge.iso',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('x')
+    });
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('library limit');
+  });
+
+  test('a lost partial upload resets the resume point and retries from zero', async ({ page }) => {
+    const stale = 'the staged upload of "big.iso" is gone; start at offset 0';
+    let staleSent = false;
+    const { uploads } = await mockImages(page, {
+      images: [],
+      upload: (offset, final, call) => {
+        if (offset > 0 && !staleSent) {
+          staleSent = true;
+          return { status: 409, json: { error: stale } };
+        }
+        const chunk = final ? 1024 * 1024 : 8 * 1024 * 1024;
+        return { json: { name: 'big.iso', sizeBytes: offset + chunk } };
+      }
+    });
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+    // 9 MiB: the first 8 MiB chunk succeeds, the final chunk hits the stale
+    // staging error.
+    await page.locator('#img-file').setInputFiles({
+      name: 'big.iso',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.alloc(9 * 1024 * 1024)
+    });
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('no longer has the partial upload');
+    expect(uploads.map((u) => u.offset)).toEqual([0, 8 * 1024 * 1024]);
+
+    // The retry starts over at zero instead of repeating the stale offset.
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await expect.poll(() => uploads.length).toBe(4);
+    expect(uploads[2].offset).toBe(0);
+    expect(uploads[3].offset).toBe(8 * 1024 * 1024);
+    // The retry stays the same client: one owner token across all chunks.
+    const owners = new Set(uploads.map((u) => u.owner));
+    expect(owners.size).toBe(1);
+    expect(uploads[0].owner).toBeTruthy();
+  });
+});

@@ -20,13 +20,126 @@
   // failed upload resumes instead of truncating and starting at zero.
   let uploadKey = '';
   let uploadOffset = 0;
+  // One owner token per upload session, echoed on every chunk so vmd can
+  // refuse a different client instead of discarding active progress. It is
+  // mirrored into sessionStorage per pool+name so a panel remount (reload,
+  // tab switch) resumes the same server session instead of minting a new
+  // token that the live session would refuse.
+  let uploadOwner = '';
+  let ownerScope = '';
+  let uploadGeneration = 0;
+  let uploadXhr: XMLHttpRequest | null = null;
+  let cancelling = false;
+  // Replacing a library file needs an explicit acknowledgement (vmd requires
+  // confirm=<name>); the checkbox appears only when the target name is already
+  // in the loaded library.
+  let replaceUpload = false;
+  let uploadTarget = '';
+  let uploadReplaces = false;
 
   let importUrl = '';
   let importName = '';
   let importSha = '';
   let importingUrl = false;
+  let replaceImport = false;
+  let importTarget = '';
+  let importReplaces = false;
 
   const CHUNK = 8 * 1024 * 1024;
+
+  function urlFileName(url: string): string {
+    return url.split('/').pop()?.split('?')[0] || 'image.iso';
+  }
+
+  function newUploadOwner(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return `upload-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+
+  function ownerStorageKey(poolName: string, name: string): string {
+    return `naslos:upload-owner:${poolName}/${name}`;
+  }
+
+  function storedOwner(poolName: string, name: string): string {
+    if (!name) return '';
+    try {
+      return sessionStorage.getItem(ownerStorageKey(poolName, name)) ?? '';
+    } catch {
+      // Blocked storage only costs reload persistence; the upload still works.
+      return '';
+    }
+  }
+
+  function rememberOwner(poolName: string, name: string, owner: string) {
+    if (!name) return;
+    try {
+      if (owner) sessionStorage.setItem(ownerStorageKey(poolName, name), owner);
+      else sessionStorage.removeItem(ownerStorageKey(poolName, name));
+    } catch {
+      // See storedOwner.
+    }
+  }
+
+  // Restore the token whenever the selected target (or pool) changes, so the
+  // cancel action is available before the first retry.
+  $: {
+    const scope = `${pool}/${uploadTarget}`;
+    if (scope !== ownerScope) {
+      ownerScope = scope;
+      uploadOwner = uploadTarget ? storedOwner(pool, uploadTarget) : '';
+    }
+  }
+
+  async function releaseUpload(name: string, owner: string): Promise<boolean> {
+    if (!name || !owner) return false;
+    try {
+      const res = await fetch(
+        `/api/virt/images/upload?pool=${encodeURIComponent(pool)}&name=${encodeURIComponent(name)}&owner=${encodeURIComponent(owner)}`,
+        { method: 'DELETE' }
+      );
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async function cancelUpload() {
+    if (cancelling) return;
+    const name = uploadTarget || uploadFile?.[0]?.name || '';
+    const owner = uploadOwner || storedOwner(pool, name);
+    cancelling = true;
+    // Invalidate every callback of the aborted transfer before the DELETE
+    // releases the server session.
+    uploadGeneration += 1;
+    uploadXhr?.abort();
+    uploadXhr = null;
+    const released = await releaseUpload(name, owner);
+    if (released) rememberOwner(pool, name, '');
+    uploadOwner = '';
+    uploading = false;
+    uploadProgress = 0;
+    uploadKey = '';
+    uploadOffset = 0;
+    cancelling = false;
+    // Reload first: load() clears the error banner, and the operator should
+    // still see the cancellation result.
+    await load();
+    error = released
+      ? 'Upload cancelled; the staged file was removed.'
+      : 'Upload cancelled locally; the server session will expire if it was not released.';
+  }
+
+  // The upload target is the selected file's name; the import target is the
+  // explicit name or the URL's file name. Both are matched against the loaded
+  // listing, which is what the operator sees.
+  $: uploadTarget = uploadFile?.[0]?.name ?? '';
+  $: uploadReplaces = uploadTarget !== '' && images.some((img) => img.name === uploadTarget);
+  $: if (!uploadReplaces) replaceUpload = false;
+  $: importTarget = importName.trim() || (importUrl.trim() ? urlFileName(importUrl.trim()) : '');
+  $: importReplaces = importTarget !== '' && images.some((img) => img.name === importTarget);
+  $: if (!importReplaces) replaceImport = false;
 
   $: pool, refreshKey, load();
 
@@ -66,23 +179,37 @@
   // 8 MiB octet-stream requests the API relays to vmd.
   function upload() {
     const file = uploadFile?.[0];
-    if (!file || uploading) return;
+    if (!file || uploading || cancelling) return;
     const name = file.name;
     const key = `${file.name}:${file.size}:${file.lastModified}`;
+    const stored = storedOwner(pool, name);
     if (uploadKey !== key) {
       uploadKey = key;
       uploadOffset = 0;
+      uploadOwner = stored || newUploadOwner();
+      rememberOwner(pool, name, uploadOwner);
+    } else if (!uploadOwner) {
+      uploadOwner = stored || newUploadOwner();
+      rememberOwner(pool, name, uploadOwner);
     }
+    const owner = uploadOwner;
+    const generation = ++uploadGeneration;
     let offset = uploadOffset;
     const total = file.size || 1;
     uploading = true;
     uploadProgress = Math.round((offset / total) * 100);
     error = '';
+    // vmd requires the exact name as confirmation to overwrite an existing
+    // image; a fresh upload does not need it.
+    const confirmQuery = replaceUpload && name === uploadTarget
+      ? `&confirm=${encodeURIComponent(name)}`
+      : '';
     const xhr = new XMLHttpRequest();
+    uploadXhr = xhr;
     const sendChunk = () => {
       const slice = file.slice(offset, offset + CHUNK);
       const final = offset + CHUNK >= file.size;
-      xhr.open('POST', `/api/virt/images/upload?pool=${encodeURIComponent(pool)}&name=${encodeURIComponent(name)}&offset=${offset}&final=${final}`);
+      xhr.open('POST', `/api/virt/images/upload?pool=${encodeURIComponent(pool)}&name=${encodeURIComponent(name)}&offset=${offset}&final=${final}${confirmQuery}&owner=${encodeURIComponent(owner)}`);
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) {
@@ -90,6 +217,8 @@
         }
       };
       xhr.onload = () => {
+        if (generation !== uploadGeneration) return;
+        if (uploadXhr === xhr) uploadXhr = null;
         if (xhr.status >= 200 && xhr.status < 300) {
           // Trust the size the server reports: it is the confirmed file length,
           // not just what the browser believes it sent.
@@ -109,6 +238,8 @@
             uploadProgress = 100;
             uploadKey = '';
             uploadOffset = 0;
+            rememberOwner(pool, name, '');
+            uploadOwner = '';
             uploadFile = null;
             load();
           } else {
@@ -122,17 +253,51 @@
           } catch {
             // Keep the HTTP fallback.
           }
-          if (/past the end/i.test(detail)) {
+          // vmd reports a lost/reset staging file as "start at offset 0" or
+          // "restart from offset 0"; older releases said "past the end".
+          // Reset the resume point so the retry is accepted instead of
+          // repeating the same stale offset forever.
+          if (/past the end|start at offset 0|restart from offset 0/i.test(detail)) {
             uploadKey = key;
             uploadOffset = 0;
             uploadProgress = 0;
             error = 'The server no longer has the partial upload; retry to start from the beginning.';
           } else {
-            error = detail;
+            if (xhr.status === 413) {
+              // Over the library cap: vmd removed the staged file, so a retry
+              // must start over (the same file will still be too large).
+              uploadKey = '';
+              uploadOffset = 0;
+              rememberOwner(pool, name, '');
+              uploadOwner = '';
+              uploadProgress = 0;
+            }
+            if (xhr.status === 409) {
+              if (/different client/i.test(detail)) {
+                // Another client owns the live session: release any session
+                // this token still owns (best effort) and surface the reason.
+                void releaseUpload(name, owner).then((released) => {
+                  if (released) {
+                    rememberOwner(pool, name, '');
+                    uploadOwner = '';
+                  }
+                });
+              }
+              // The loaded listing was stale (the image already exists) or
+              // another client owns the name: refresh so the replace checkbox
+              // can appear, then keep the server's reason visible.
+              load().finally(() => {
+                if (generation === uploadGeneration) error = detail;
+              });
+            } else {
+              error = detail;
+            }
           }
         }
       };
       xhr.onerror = () => {
+        if (generation !== uploadGeneration) return;
+        if (uploadXhr === xhr) uploadXhr = null;
         uploading = false;
         error = 'The upload connection failed; retry to resume from the last confirmed chunk.';
       };
@@ -146,7 +311,7 @@
     importingUrl = true;
     error = '';
     try {
-      const name = importName.trim() || importUrl.split('/').pop()?.split('?')[0] || 'image.iso';
+      const name = importTarget;
       const res = await fetch('/api/virt/images/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -154,14 +319,22 @@
           pool,
           name,
           url: importUrl.trim(),
-          sha256: importSha.trim() || null
+          sha256: importSha.trim() || null,
+          confirm: replaceImport && name === importTarget ? name : null
         })
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (!res.ok) {
+        const message = data.error || `HTTP ${res.status}`;
+        // A stale listing hides the replace checkbox; refresh it before the
+        // catch displays the conflict.
+        if (res.status === 409) await load();
+        throw new Error(message);
+      }
       importUrl = '';
       importName = '';
       importSha = '';
+      replaceImport = false;
       // The import runs server-side; poll until it lands in the listing.
       pollImport(name);
     } catch (e: unknown) {
@@ -220,13 +393,28 @@
       <label class="label" for="img-file">Upload a file (ISO or cloud image)</label>
       <input id="img-file" type="file" class="input" bind:files={uploadFile} disabled={uploading} />
     </div>
-    <button class="btn btn-primary" on:click={upload} disabled={!uploadFile || uploading}>
+    <button class="btn btn-primary" on:click={upload}
+      disabled={!uploadFile || uploading || cancelling || (uploadReplaces && !replaceUpload)}>
       {uploading ? `Uploading… ${uploadProgress}%` : 'Upload'}
     </button>
+    {#if uploading || (uploadTarget && (uploadOwner || storedOwner(pool, uploadTarget)))}
+      <button class="btn btn-secondary" on:click={cancelUpload} disabled={cancelling}>
+        {cancelling ? 'Cancelling…' : 'Cancel upload'}
+      </button>
+    {/if}
     {#if uploading}
       <progress class="w-48" value={uploadProgress} max="100"></progress>
     {/if}
   </div>
+  {#if uploadReplaces}
+    <label class="flex items-center gap-2 text-sm text-amber-300 mt-2">
+      <input id="img-replace" type="checkbox" class="w-4 h-4 rounded" bind:checked={replaceUpload} />
+      <span>
+        Replace the existing image <code class="font-mono text-xs">{uploadTarget}</code>: the current file is
+        overwritten when the upload finishes. Stop every VM using it first.
+      </span>
+    </label>
+  {/if}
   <p class="text-xs text-gray-500 mt-2">
     Uploaded in 8 MiB chunks; a failed chunk resumes from the last confirmed offset. Names are flat
     (letters, digits, '-', '_', '.').
@@ -244,10 +432,20 @@
       <label class="label" for="img-name">Name (optional)</label>
       <input id="img-name" class="input w-full" bind:value={importName} placeholder="from the URL" disabled={importingUrl} />
     </div>
-    <button class="btn btn-primary" on:click={importFromUrl} disabled={importingUrl || !importUrl.trim()}>
+    <button class="btn btn-primary" on:click={importFromUrl}
+      disabled={importingUrl || !importUrl.trim() || (importReplaces && !replaceImport)}>
       {importingUrl ? 'Starting…' : 'Import'}
     </button>
   </div>
+  {#if importReplaces}
+    <label class="flex items-center gap-2 text-sm text-amber-300 mt-2">
+      <input id="img-import-replace" type="checkbox" class="w-4 h-4 rounded" bind:checked={replaceImport} />
+      <span>
+        Replace the existing image <code class="font-mono text-xs">{importTarget}</code>: it is overwritten
+        once the download completes. Stop every VM using it first.
+      </span>
+    </label>
+  {/if}
   <div class="mt-2">
     <label class="label" for="img-sha">sha256 (optional, verified)</label>
     <input id="img-sha" class="input w-full max-w-md font-mono text-xs" bind:value={importSha}

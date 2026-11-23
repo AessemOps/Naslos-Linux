@@ -21,6 +21,22 @@ use naslos_vmd::model::{validate_snapshot_name, DesiredState, VmSpec};
 /// Largest single upload chunk the API relays (the UI sends 8 MiB chunks).
 const MAX_CHUNK_BYTES: usize = 64 * 1024 * 1024;
 
+/// Map a supervisor error to the closest API status so a refused overwrite
+/// (confirm required, image in use) reaches the caller as a conflict instead
+/// of a misleading bad gateway.
+fn vmd_error_status(e: &vmd::VmdError) -> StatusCode {
+    match e.status {
+        409 => StatusCode::CONFLICT,
+        400 => StatusCode::BAD_REQUEST,
+        404 => StatusCode::NOT_FOUND,
+        // The image cap is a payload problem the caller can act on, not a
+        // supervisor outage; a body/media-type refusal keeps its own code too.
+        413 => StatusCode::PAYLOAD_TOO_LARGE,
+        415 => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        _ => StatusCode::BAD_GATEWAY,
+    }
+}
+
 #[allow(clippy::result_large_err)]
 fn vmd_client(state: &AppState) -> Result<Arc<vmd::Client>, Response> {
     state.vmd.clone().ok_or_else(|| {
@@ -681,12 +697,33 @@ pub async fn image_upload_post(
             );
         }
     }
+    // Replacing an existing library image needs the same explicit
+    // confirmation as every destructive route; vmd enforces confirm == name.
+    let confirm = query.get("confirm").cloned();
+    // The browser generates one owner token per upload session and echoes it
+    // on every chunk, so vmd can refuse a different client instead of
+    // discarding the active upload's progress.
+    let owner = query
+        .get("owner")
+        .map(|v| v.trim())
+        .filter(|v| naslos_vmd::model::valid_upload_owner(v));
+    let Some(owner) = owner else {
+        return bad_request("the owner parameter must be 1-128 printable ASCII characters");
+    };
     let client = match vmd_client(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
     match client
-        .upload_chunk(&pool, &name, offset, final_chunk, body)
+        .upload_chunk(
+            &pool,
+            &name,
+            offset,
+            final_chunk,
+            confirm.as_deref(),
+            owner,
+            body,
+        )
         .await
     {
         Ok(size) => json(
@@ -694,7 +731,7 @@ pub async fn image_upload_post(
             serde_json::json!({ "name": name, "sizeBytes": size }),
         ),
         Err(e) => json(
-            StatusCode::BAD_GATEWAY,
+            vmd_error_status(&e),
             serde_json::json!({ "error": e.to_string() }),
         ),
     }
@@ -710,6 +747,8 @@ pub struct ImportRequest {
     url: String,
     #[serde(default)]
     sha256: Option<String>,
+    #[serde(default)]
+    confirm: Option<String>,
 }
 
 pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
@@ -737,7 +776,13 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
     // FR-DNS-07 SSRF guard) and runs the download; errors surface in the
     // images listing while it runs.
     match client
-        .import_image(&req.pool, &req.name, req.url.trim(), req.sha256.as_deref())
+        .import_image(
+            &req.pool,
+            &req.name,
+            req.url.trim(),
+            req.sha256.as_deref(),
+            req.confirm.as_deref(),
+        )
         .await
     {
         Ok(()) => json(
@@ -749,7 +794,42 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
             }),
         ),
         Err(e) => json(
-            StatusCode::BAD_GATEWAY,
+            vmd_error_status(&e),
+            serde_json::json!({ "error": e.to_string() }),
+        ),
+    }
+}
+
+/// `DELETE /api/virt/images/upload?pool=&name=&owner=` — release this
+/// client's upload session (and its staged file). Only the owner may cancel;
+/// a missing session is an idempotent success.
+pub async fn image_upload_cancel(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let pool = query.get("pool").cloned().unwrap_or_default();
+    let name = query.get("name").cloned().unwrap_or_default();
+    if !naslos_vmd::model::valid_pool_component(&pool) {
+        return bad_request(&format!("pool {pool:?} is not a valid dataset component"));
+    }
+    let owner = query
+        .get("owner")
+        .map(|v| v.trim())
+        .filter(|v| naslos_vmd::model::valid_upload_owner(v));
+    let Some(owner) = owner else {
+        return bad_request("the owner parameter must be 1-128 printable ASCII characters");
+    };
+    let client = match vmd_client(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    match client.cancel_upload(&pool, &name, owner).await {
+        Ok(()) => json(
+            StatusCode::OK,
+            serde_json::json!({ "status": "cancelled", "name": name }),
+        ),
+        Err(e) => json(
+            vmd_error_status(&e),
             serde_json::json!({ "error": e.to_string() }),
         ),
     }
@@ -774,7 +854,7 @@ pub async fn image_delete(
             serde_json::json!({ "status": "deleted", "name": name }),
         ),
         Err(e) => json(
-            StatusCode::BAD_GATEWAY,
+            vmd_error_status(&e),
             serde_json::json!({ "error": e.to_string() }),
         ),
     }
@@ -1361,6 +1441,24 @@ mod tests {
             Err(response) => response,
         };
         assert_eq!(error.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn supervisor_statuses_map_to_caller_actionable_codes() {
+        let error = |status| vmd::VmdError {
+            status,
+            message: "refused".to_string(),
+        };
+        assert_eq!(vmd_error_status(&error(400)), StatusCode::BAD_REQUEST);
+        assert_eq!(vmd_error_status(&error(404)), StatusCode::NOT_FOUND);
+        assert_eq!(vmd_error_status(&error(409)), StatusCode::CONFLICT);
+        assert_eq!(vmd_error_status(&error(413)), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            vmd_error_status(&error(415)),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+        // A supervisor crash is still a bad gateway.
+        assert_eq!(vmd_error_status(&error(500)), StatusCode::BAD_GATEWAY);
     }
 
     #[test]

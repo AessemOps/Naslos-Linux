@@ -669,9 +669,10 @@ shell, never an arbitrary command.
 | GET/POST | `/api/virt/vms/{name}/snapshots` | List / create a ZFS snapshot of the VM dataset (validated name) |
 | POST | `/api/virt/vms/{name}/snapshots/{snap}/restore` | `zfs rollback -r` (`?confirm=<name>` required); 409 unless vmd reports the VM `stopped`, 503/502 when vmd is absent/unreadable; newer snapshots and all later guest state are destroyed, stated in the response |
 | GET | `/api/virt/images?pool=` | Per-pool library listing plus in-flight imports and their last errors |
-| POST | `/api/virt/images/upload?pool=&name=&offset=&final=` | One upload chunk, `application/octet-stream` (the API's only non-JSON body, scoped to this route), streamed through to the supervisor |
-| POST | `/api/virt/images/import` | Server-side URL import → `202`; the SSRF guard lives in the supervisor; errors surface in the listing |
-| DELETE | `/api/virt/images/{name}?pool=` | Delete a library file |
+| POST | `/api/virt/images/upload?pool=&name=&offset=&final=&owner=&confirm=` | One upload chunk, `application/octet-stream` (the API's only non-JSON body, scoped to this route), streamed through to the supervisor. `owner` is **required** on every chunk: 1-128 printable ASCII characters that identify the upload session; a chunk with a different owner, or an `offset` that does not equal the staged size, is refused. `confirm=<name>` is required when the target already exists. `413` when the whole upload would exceed the 32 GiB cap |
+| DELETE | `/api/virt/images/upload?pool=&name=&owner=` | Abandon this client's upload session and delete its staged `.part` file. Only the session owner may cancel (409 otherwise); an already released/absent session is an idempotent `200` |
+| POST | `/api/virt/images/import` | Server-side URL import → `202`; body `{pool,name,url,sha256?,confirm?}` (`confirm` = the name to replace an existing file); the SSRF guard lives in the supervisor; errors surface in the listing |
+| DELETE | `/api/virt/images/{name}?pool=` | Delete a library file (409 while a running/starting VM attaches it) |
 | GET | `/api/ws/vm/{name}/vnc` | Console: plain GET = preflight (`vncPort`, per-boot `vncPassword`, `ready to attach`; 409 while stopped); websocket upgrade = RFB bridge to QEMU's loopback VNC (origin must be exactly the HTTPS request `Host`, per-VM attach rate limit, session caps like `/api/ws/exec`); audited begin/end and 503 while the audit log is degraded |
 
 ### Static assets

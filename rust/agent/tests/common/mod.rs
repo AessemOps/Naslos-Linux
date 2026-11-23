@@ -89,8 +89,26 @@ impl FakeHost {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         std::fs::create_dir_all(root.join("dev")).unwrap();
+        // Empty host mount table: a test that needs a mounted disk writes its
+        // own lines, and every other test is hermetic (the guard does not fall
+        // back to the test runner's /proc/mounts).
+        std::fs::create_dir_all(root.join("proc")).unwrap();
+        std::fs::write(root.join("proc/mounts"), b"").unwrap();
         for name in ["sdb", "sdc", "sdd", "sde", "sdb1", "sdb2", "sdc2"] {
             std::fs::write(root.join("dev").join(name), b"").unwrap();
+        }
+        // sysfs block layout: partitions live under the whole disk's entry.
+        for (disk, partition) in [("sdb", "sdb1"), ("sdb", "sdb2"), ("sdc", "sdc2")] {
+            std::fs::create_dir_all(root.join("sys/class/block").join(disk)).unwrap();
+            std::fs::create_dir_all(root.join("sys/class/block").join(disk).join(partition))
+                .unwrap();
+            // The kernel's class directory also lists each partition as its
+            // own entry, a symlink to the nested node; holder lookups use it.
+            std::os::unix::fs::symlink(
+                format!("{disk}/{partition}"),
+                root.join("sys/class/block").join(partition),
+            )
+            .unwrap();
         }
         Self { _dir: dir, root }
     }
