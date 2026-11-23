@@ -24,9 +24,9 @@
 api:
   image:
     repository: ghcr.io/aessemops/naslos-api
-    # v0.7.5 release image (NAT-only VM networking; per-namespace app status);
+    # v0.7.6 release image (NAT-only VM networking; per-namespace app status);
     # the digest is the pin that actually gets pulled (FR-INSTALL-13).
-    tag: "0.7.5"
+    tag: "0.7.6"
     digest: ""
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
@@ -45,21 +45,21 @@ api:
 agent:
   image:
     repository: ghcr.io/aessemops/naslos-agent
-    # Pinned by digest from the v0.7.5 release (NAS-022).
-    tag: "0.7.5"
+    # Pinned by digest from the v0.7.6 release (NAS-022).
+    tag: "0.7.6"
     digest: ""
 ui:
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    # v0.7.5 release image; the digest is the pin (FR-INSTALL-13).
-    tag: "0.7.5"
+    # v0.7.6 release image; the digest is the pin (FR-INSTALL-13).
+    tag: "0.7.6"
     digest: ""
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
     image:
       repository: ghcr.io/aessemops/naslos-samba
-      tag: "0.7.5"
+      tag: "0.7.6"
       digest: ""
   nfs:
     image:
@@ -67,12 +67,12 @@ shares:
       # The NFS image needs CAP_SYS_RESOURCE for PR_SET_IO_FLUSHER (added in
       # nfs-daemonset.yaml); with that, Ganesha 6.5 starts with the same
       # rendered ganesha.conf as 4.x.
-      tag: "0.7.5"
+      tag: "0.7.6"
       digest: ""
 terminal:
   image:
     repository: ghcr.io/aessemops/naslos-terminal
-    tag: "0.7.5"
+    tag: "0.7.6"
     digest: ""
 # Virtual machines (FR-VMT). The vmd image fixes the startup panic (an
 # explicit rustls crypto provider), so the supervisor is enabled with its
@@ -82,13 +82,13 @@ virt:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-vmd
-    # v0.7.5 release image (NAT-only networking; keeps the supervisor fixes).
-    tag: "0.7.5"
+    # v0.7.6 release image (NAT-only networking; keeps the supervisor fixes).
+    tag: "0.7.6"
     digest: ""
 openldap:
   # Debian 13 / slapd 2.6.10 with /var/run/slapd created in the image and
   # LDAPS-only listening (LDAP_TLS_ENFORCE; no plaintext ldap:///).
-  image: ghcr.io/aessemops/naslos-openldap:0.7.5
+  image: ghcr.io/aessemops/naslos-openldap:0.7.6
   # OpenLDAP host is the service name for internal cluster references.
   host: naslos-openldap
   # No bindPassword here. The chart reads the service password from the
@@ -262,8 +262,8 @@ ovhWebhook:
 # SA/RBAC/Job resources render. Keep these in step with the deployed release.
 release:
   profile: installer
-  naslosVersion: "0.7.5"
-  chartVersion: "0.7.5"
+  naslosVersion: "0.7.6"
+  chartVersion: "0.7.6"
   talosVersion: "v1.14.6"
   kubernetesVersion: "v1.37.0"
   schematicId: "4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c"
