@@ -73,7 +73,7 @@ pub const PLATFORM_SENSITIVE_VALUE_KEYS: [&str; 33] = [
 /// chart's naming (`extraContainers`, `sidecarContainers`, `podSpec`, …), plus
 /// fields that can execute code or change the runtime environment. Matching is
 /// case-insensitive.
-pub const PLATFORM_SENSITIVE_KEY_FRAGMENTS: [&str; 40] = [
+pub const PLATFORM_SENSITIVE_KEY_FRAGMENTS: [&str; 41] = [
     "affinity",
     "allowprivilegeescalation",
     "apparmor",
@@ -113,6 +113,7 @@ pub const PLATFORM_SENSITIVE_KEY_FRAGMENTS: [&str; 40] = [
     "terminationgrace",
     "tolerations",
     "topologyspread",
+    "volumemount",
     "windowsoptions",
 ];
 
@@ -5855,6 +5856,9 @@ mod values_whitelist_tests {
                 "topologySpreadConstraints": { "type": "array" },
                 "hostUsers": { "type": "boolean" },
                 "sysctls": { "type": "array" },
+                "volumeMount": { "type": "object" },
+                "extraVolumeMounts": { "type": "array" },
+                "additionalVolumeMounts": { "type": "array" },
                 "allowed": { "type": "string" }
             }
         });
@@ -5874,6 +5878,9 @@ mod values_whitelist_tests {
             "topologySpreadConstraints": [],
             "hostUsers": false,
             "sysctls": [{ "name": "kernel.unprivileged_userns_clone", "value": "1" }],
+            "volumeMount": { "name": "host", "mountPath": "/" },
+            "extraVolumeMounts": [],
+            "additionalVolumeMounts": [],
             "allowed": "yes"
         });
         let keys = [
@@ -5892,6 +5899,9 @@ mod values_whitelist_tests {
             "topologySpreadConstraints",
             "hostUsers",
             "sysctls",
+            "volumeMount",
+            "extraVolumeMounts",
+            "additionalVolumeMounts",
         ];
 
         // Install path: the submitted values.

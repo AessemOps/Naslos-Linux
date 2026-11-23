@@ -418,8 +418,8 @@ are filtered. A map-typed `additionalProperties` schema is preserved as the
 per-key whitelist for dynamic fields, and a composed schema (`$ref`, `allOf`,
 `anyOf`, `oneOf`) is resolved when whitelisting and validating; composed nodes
 are not force-hardened with `additionalProperties: false`, which would reject
-sibling properties. `allOf`/`$ref` union their property maps (a key missing
-from one branch is still stripped unless every branch allows it), an `anyOf`/
+sibling properties. `allOf`/`$ref` union their property maps (a key declared by
+any branch is kept; only a key no branch declares is stripped), an `anyOf`/
 `oneOf` key is allowed when any branch allows it, and an empty or
 `required`-only branch never disables the whitelist. Values outside
 the schema that come from the chart/catalog defaults are still sent to Helm —
