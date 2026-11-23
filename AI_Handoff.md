@@ -122,52 +122,40 @@ retrying or using the browser path worked around it. Worth watching.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.7.0`**, revision 62
-  (2026-11-22), deployed with `make install-vm` after a UI upgrade applied the
-  installer profile; the node runs the v0.7.0 release images, digest-pinned
-  (public GHCR): API `97e7b80f…`, UI `43dd2f64…`, agent `1c7e42b5…`, OpenLDAP
-  `3795e1ab…`, Samba `d3559d89…`, NFS `b3a8a0c3…`, terminal `f3ee4584…`, vmd
-  `24f36e0c…`. `virt.enabled: true`. `/api/system/version` reports the
-  `release.*` facts from `values-vm.yaml`: Naslos/chart **0.7.0**, profile
-  `installer`, Talos pin **v1.14.6** and k8s v1.37.0; the node runs Talos
-  **v1.14.6**. The web upgrader is enabled (SA `naslos-upgrader` +
-  cluster-admin binding, the `naslos-api-system` Role/RoleBinding, and the
-  upgrader admission policy). The private registry `192.168.1.2:30095` is
-  retired — do not build/push local images. `/api/health` is green, both ZFS
-  pools are ONLINE with no data errors, the ZFS inventory is identical to the
-  pre-0.6.0 snapshot (24 entries), and the full Playwright suite passed on
-  revision 62: **80 passed, 5 skipped, 0 failed**. Live checks passed for
-  encryption create/unlock/lock-refusal/destroy with key deletion, the audit
-  hash chain (`/api/audit/verify`), reporting metadata, SMTP/syslog settings,
-  and a config export → import dry-run (25 unchanged, 13 skipped, 0 changes).
-- **Latest release:** `v0.7.0` (2026-11-22) and installer `naslos-v0.7.0`
-  are published; the pack `naslos-install-pack-0.7.0.tar.gz` is attached and
-  its images are digest-pinned. It completes the P0/P1 runtime slices: raw-key
-  ZFS encryption with Secret custody and explicit unlock/lock, SMTP + syslog
-  alerts, config import/restore, RBAC phase 2 plus append-only audit v1,
-  bounded historical reporting, and shadow-copy-compatible scheduled
-  snapshots. The node is on 0.7.0 revision 62. Caveats: RBAC only admits
-  admins until Authelia admission for the new groups ships; encryption keys
-  live in Kubernetes Secrets (etcd at-rest encryption is not configured) and
-  require manual unlock after boot; audit is fail-closed on the state volume
-  (16 MiB/90 d); reporting adds a 256 MiB PVC; config import does not reinstall
-  apps or inject credentials; SMTP/syslog LAN targets need `nodeCIDR` or
-  `extraEgressCIDRs`; scheduled snapshots were renamed and legacy
-  `naslos-auto-*` pruning lasts one release. The API still uses `Recreate`;
-  the chart now clears a pre-0.6.0 `rollingUpdate` block so UI/installer
-  upgrades from 0.5.x work.
-- **0.7.1 remediation (in progress, not deployed):** the platform-chart branch
-  (`fix/0.7.1-platform-chart`) changes deploy behavior that the next release
-  must carry: `make install-vm` now requires `VM_IP=<node-ip>` and installs
-  `local-path` + the `naslos-talosconfig` Secret itself; Traefik runs with
-  namespaced RBAC (no cluster-wide Secret read) watching only
-  `naslos-apps`/`naslos-apps-priv`; the production overlay no longer renders
-  the shared `/var/mnt` datasets PV/PVC (per-app claims only); Authelia,
-  Samba, NFS, the OpenLDAP backup Job and the upgrader admission policy are
-  hardened; the state and OpenLDAP-backup PVCs are kept on uninstall; git/DDNS
-  egress is scoped to the API pod; and base images/local-path are digest
-  pinned. The node keeps 0.7.0 revision 62 until the 0.7.1 pack is released
-  and deployed.
+- **Deployed release:** Helm `naslos` chart **`naslos-0.7.6`**, appVersion 0.7.6,
+  revision 74 (2026-11-24, `make install-vm VM_IP=<node-ip>` with
+  `values.yaml` + `values-vm.yaml`). The 0.7.6 UI/installer upgrade had dropped
+  `naslos` from Traefik's watched namespaces (gotcha #21), so
+  `https://naslos.local/` returned a bare 404 while app domains kept working,
+  and it re-applied the installer profile (buddy off). Revision 74 restores the
+  platform routes, `buddy.enabled: true` and `virt.enabled: true`.
+  `/api/health` is green, `/` redirects to the Authelia portal and `/authelia/`
+  answers 200; OpenLDAP/Authelia settled after the rollout. Images resolve by
+  the `0.7.6` tag: the repo values carry no digests (the released pack does), so
+  a local `make install-vm` renders `digest: ""`.
+- **Latest release:** `v0.7.6` (2026-11-24) and installer `naslos-v0.7.6` are
+  published; the pack `naslos-install-pack-0.7.6.tar.gz` is attached and its
+  images are digest-pinned. The 0.7.x series completed the 0.7.1
+  security/data-integrity remediation (#245): namespaced Traefik RBAC,
+  hardened Authelia/Samba/NFS, scoped git/DDNS egress, digest-pinned base
+  images, and the per-app dataset claims, plus the 0.7.4 OpenLDAP ACL
+  reconcile, 0.7.5 Authelia session-PVC ownership and 0.7.6 Samba
+  `NET_BIND_SERVICE` fixes. The 0.7.0 P0/P1 runtime features (ZFS encryption,
+  SMTP/syslog alerts, config import, RBAC+audit, reporting, snapshots) are
+  unchanged — see the 0.7.0 notes below for their limits. **Deploy caveat:**
+  the 0.7.1+ namespaced Traefik needs the release namespace in
+  `traefik.providers.kubernetesCRD.namespaces` (gotcha #21).
+- **0.7.1 remediation (deployed in 0.7.2–0.7.6):** `make install-vm` now
+  requires `VM_IP=<node-ip>` and installs `local-path` + the
+  `naslos-talosconfig` Secret itself; Traefik runs with namespaced RBAC (no
+  cluster-wide Secret read) watching the release namespace plus
+  `naslos-apps`/`naslos-apps-priv` and the per-app pool; the production overlay
+  no longer renders the shared `/var/mnt` datasets PV/PVC (per-app claims
+  only); Authelia, Samba, NFS, the OpenLDAP backup Job and the upgrader
+  admission policy are hardened; the state and OpenLDAP-backup PVCs are kept on
+  uninstall; git/DDNS egress is scoped to the API pod; and base
+  images/local-path are digest pinned. The node runs it on revision 74
+  (0.7.6).
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
@@ -607,9 +595,29 @@ sh scripts/audit.sh
     `buddy.enabled` became `false` and `buddy.receiveHostPath` disappeared while
     `virt` and networking survived; Playwright caught it as a Buddy 503.
     Re-running `make install-vm` (values.yaml + values-vm.yaml) restored Buddy
-    at revision 62. After any UI-driven upgrade, compare `helm get values
-    naslos` with `values-vm.yaml` (buddy, virt, nodeCIDR and storage/dataset
-    settings) and re-run `make install-vm` if a node-only value was lost.
+    at revision 62. The 0.7.6 UI upgrade repeated the pattern and also applied
+    the installer Traefik values; the node lost `naslos` from the watched
+    namespaces (gotcha #21), which only a chart/values fix plus
+    `make install-vm` repairs. After any UI-driven upgrade, compare
+    `helm get values naslos` with `values-vm.yaml` (buddy, virt, nodeCIDR,
+    Traefik namespaces and storage/dataset settings) and re-run `make
+    install-vm` if a node-only value was lost.
+
+21. **Traefik's CRD provider does not watch the release namespace
+    automatically** (found 2026-11-24: `https://naslos.local/` answered a bare
+    404 after the 0.7.6 upgrade while every app domain kept working). With
+    `rbac.namespaced: true` the upstream chart adds the release namespace to
+    the Role/RoleBinding list, but the `providers.kubernetesCRD.namespaces`
+    helper emits the values list verbatim when it is non-empty and never
+    prepends the release namespace. Every platform IngressRoute (UI, API,
+    Authelia portal, MCP, dashboard) lives in `naslos`, so omitting `naslos`
+    from `traefik.providers.kubernetesCRD.namespaces` leaves them all unread —
+    Traefik has no matching router and returns its own 404 for `/`, `/api/*`
+    and `/authelia/*`. The base values and both overlays now list `naslos`
+    first, and `scripts/audit.sh` (`check_security_rendering`) asserts the
+    rendered `--providers.kubernetescrd.namespaces=naslos,…` arg. If the
+    domain root 404s after an upgrade, check that argument before anything
+    else.
 
 ## History
 
