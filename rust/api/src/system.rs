@@ -21,6 +21,10 @@ pub const OPERATION_PREFIX: &str = "naslos-system-op-";
 pub const STATE_MOUNT: &str = "/var/lib/naslos";
 /// Largest release metadata/text asset (releases JSON, sha256, signature).
 pub const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
+/// API environment variable carrying the detached pack-signature public key
+/// (FR-UPD). The chart renders it from `system.updates.packPubkey`, and the
+/// admission policy pins the same value into the Job's `--pack-pubkey`.
+pub const PACK_PUBKEY_ENV: &str = "SYSTEM_UPDATES_PACK_PUBKEY";
 
 /// What the installed pack pinned (rendered by the chart from `release.*`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -377,7 +381,7 @@ impl Checker {
         // I-7: every redirect hop is re-validated against `pack_url_allowed`,
         // not just the first URL the release lists.
         let client = pack_client(Duration::from_secs(300), &source).ok()?;
-        let pack_pubkey = std::env::var("SYSTEM_UPDATES_PACK_PUBKEY")
+        let pack_pubkey = std::env::var(PACK_PUBKEY_ENV)
             .unwrap_or_default()
             .trim()
             .to_string();
@@ -912,13 +916,18 @@ pub fn job_spec(o: &JobOptions<'_>) -> serde_json::Value {
     // C-1c: the API downloads, verifies and caches the pack on the shared state
     // volume during the update check, and this Job mounts that claim at
     // `STATE_MOUNT`. Point the operation at the cached file (and its detached
-    // signature) so the upgrade itself needs no egress under the namespace
-    // default-deny; `--pack-url`/`--pack-sig-url` stay as the fallback path,
-    // which the `naslos-system-op-egress` policy covers on 443.
-    let pack_file = if o.state_pvc.is_empty() {
-        String::new()
-    } else {
+    // signature) only when the Job can verify a signature under the pinned key,
+    // so the upgrade needs no second download and the cache is a real anchor.
+    // Without a key the cache is written by the same API pod that builds this
+    // Job, so pinning the path alone would let a compromised API substitute its
+    // own pack; the admission policy then admits only the 20-argument layout and
+    // the Job downloads from the channel-pinned release URL instead
+    // (`naslos-system-op-egress` covers that on 443).
+    let cached_pack = !o.state_pvc.is_empty() && !o.pack_pubkey.is_empty();
+    let pack_file = if cached_pack {
         format!("{STATE_MOUNT}/updates/pack-{}.tar.gz", o.version)
+    } else {
+        String::new()
     };
     let pack_sig_file = if pack_file.is_empty() {
         String::new()
@@ -1157,6 +1166,7 @@ mod tests {
 
     #[test]
     fn job_spec_is_locked_down() {
+        const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
         let spec = job_spec(&JobOptions {
             name: "naslos-system-op-1-ab",
             namespace: "naslos",
@@ -1167,8 +1177,8 @@ mod tests {
             version: "0.3.1",
             pack_url: "https://example/pack.tar.gz",
             pack_sha256: "abc",
-            pack_sig_url: "",
-            pack_pubkey: "",
+            pack_sig_url: "https://example/pack.tar.gz.sig",
+            pack_pubkey: KEY,
             release_name: "naslos",
             service_account: "naslos-upgrader",
             talos_secret: "naslos-talosconfig",
@@ -1220,6 +1230,35 @@ mod tests {
             .expect("TALOS_NODES env");
         assert_eq!(talos_nodes["value"], "192.168.1.117");
         assert_eq!(spec["metadata"]["labels"]["naslos.io/operation-id"], "1-ab");
+        assert_eq!(args[15], KEY);
+        // The anchor decision: without a pinned key the cached pack is not
+        // handed over, because the API pod can write that path.
+        let url_only = job_spec(&JobOptions {
+            name: "naslos-system-op-1-ab",
+            namespace: "naslos",
+            image: "ghcr.io/aessemops/naslos-api@sha256:dead",
+            op: "naslos",
+            operation_id: "1-ab",
+            from: "0.3.0",
+            version: "0.3.1",
+            pack_url: "https://example/pack.tar.gz",
+            pack_sha256: "abc",
+            pack_sig_url: "",
+            pack_pubkey: "",
+            release_name: "naslos",
+            service_account: "naslos-upgrader",
+            talos_secret: "naslos-talosconfig",
+            talos_nodes: "192.168.1.117",
+            state_pvc: "naslos-shares-config",
+            workload_namespace: "naslos-privileged",
+            backoff_limit: 3,
+            ttl_seconds: 3600,
+        });
+        let url_args = url_only["spec"]["template"]["spec"]["containers"][0]["args"]
+            .as_array()
+            .expect("container args");
+        assert!(!url_args.iter().any(|arg| arg == "--pack-file"));
+        assert!(!url_args.iter().any(|arg| arg == "--pack-sig-file"));
     }
 
     #[test]
@@ -1442,18 +1481,37 @@ mod tests {
         pins
     }
 
-    /// C-1a follow-up: the policy no longer pins only flag names. A Job creator
-    /// with the upgrader ServiceAccount could otherwise pass an arbitrary
-    /// `--pack-url` plus a matching sha256 and no signature. The emitted layout
-    /// (flag at every even index, value at the next) and the cached-pack path
-    /// must stay identical in both files.
+    /// C-1a follow-up: the policy pins the argument values, not just the flag
+    /// names, so a Job creator cannot point the cluster-admin operation at an
+    /// arbitrary pack. The emitted layout (flag at every even index, value at
+    /// the next) and the cached-pack/signature layout must stay identical in
+    /// both files. The cached-pack layout is only emitted when a signature key
+    /// is pinned (the anchor decision); without it the Job downloads from the
+    /// channel-pinned URL.
     #[test]
     fn job_argument_positions_match_the_policy() {
         let source = chart_policy_source();
         let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
         let pins: HashMap<usize, String> = positional_arg_pins(&source).into_iter().collect();
-        for state_pvc in ["naslos-shares-config", ""] {
-            let args = sample_job_args(state_pvc, "", "", "naslos-talosconfig");
+        const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        const SIG: &str = "https://github.com/o/r/releases/download/v0.3.1/pack.tar.gz.sig";
+        for (state_pvc, pack_pubkey, expected_len) in [
+            ("naslos-shares-config", "", 20),
+            ("naslos-shares-config", KEY, 24),
+            ("", KEY, 20),
+            ("", "", 20),
+        ] {
+            let args = sample_job_args(state_pvc, SIG, pack_pubkey, "naslos-talosconfig");
+            assert_eq!(
+                args.len(),
+                expected_len,
+                "unexpected layout for state_pvc={state_pvc:?} key={pack_pubkey:?}"
+            );
+            assert_eq!(
+                args.iter().any(|arg| arg == "--pack-file"),
+                expected_len == 24,
+                "the cached pack must only appear with a pinned signature key"
+            );
             for (index, arg) in args.iter().enumerate() {
                 if arg.starts_with("--") {
                     assert_eq!(
@@ -1464,15 +1522,24 @@ mod tests {
                 }
             }
         }
-        // Layout sizes and the paths composed from the version argument.
+        // Layout sizes, the paths composed from the version argument, and the
+        // signature branch pins.
         for fragment in [
+            "{{- if and $packPubkey .Values.api.sharesConfig.enabled }}",
             "c.args.size() == 24",
             "c.args.size() == 20",
-            "(c.args[13] == '') == (c.args[15] == '')",
+            "$packPubkey := $updates.packPubkey",
             "c.args[9].startsWith('{{ $packUrlPrefix }}')",
-            "c.args[13].startsWith('{{ $packUrlPrefix }}')",
             "c.args[17] == '{{ .Release.Namespace }}'",
             "c.args[19] == '{{ .Release.Name }}'",
+            // Signature mode: the key is pinned by value and the URL must be
+            // a channel asset.
+            "c.args[13] != ''",
+            "c.args[13].startsWith('{{ $packUrlPrefix }}')",
+            "c.args[15] == '{{ $packPubkey }}'",
+            // No key: the layout carries empty signature values.
+            "c.args[13] == ''",
+            "c.args[15] == ''",
         ] {
             assert!(
                 flat.contains(fragment),
@@ -1483,27 +1550,49 @@ mod tests {
             format!("c.args[21] == '{STATE_MOUNT}/updates/pack-' + c.args[7] + '.tar.gz'");
         assert!(flat.contains(&pack_pin), "missing {pack_pin:?}");
         assert!(flat.contains("c.args[23] == c.args[21] + '.sig'"));
-        // Optional strict mode: with a configured pack key, a Job that omits
-        // the signature pair (or passes empty values) is denied.
-        for fragment in [
-            "$packPubkey := $updates.packPubkey",
-            "c.args[13] != ''",
-            "c.args[15] != ''",
-        ] {
-            assert!(
-                flat.contains(fragment),
-                "the strict signature pin is missing {fragment:?}"
-            );
-        }
-        let args = sample_job_args("naslos-shares-config", "", "", "naslos-talosconfig");
+        let args = sample_job_args("naslos-shares-config", SIG, KEY, "naslos-talosconfig");
+        assert_eq!(args[13], SIG);
+        assert_eq!(args[14], "--pack-pubkey");
+        assert_eq!(args[15], KEY);
         assert_eq!(args[20], "--pack-file");
         assert_eq!(
             args[21],
             format!("{STATE_MOUNT}/updates/pack-{}.tar.gz", args[7])
         );
         assert_eq!(args[23], format!("{}.sig", args[21]));
-        let args = sample_job_args("", "", "", "naslos-talosconfig");
+        let args = sample_job_args("naslos-shares-config", "", "", "naslos-talosconfig");
+        assert_eq!(args[13], "");
+        assert_eq!(args[14], "--pack-pubkey");
+        assert_eq!(args[15], "");
         assert_eq!(args.len(), 20);
+    }
+
+    /// Finding 2: the strict signature mode must be wired end-to-end. The API
+    /// builds the Job args from `PACK_PUBKEY_ENV`, so the Deployment must set
+    /// that exact variable from the same chart value the policy pins.
+    #[test]
+    fn strict_signature_mode_is_wired_from_the_chart_to_the_api() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../charts/naslos/templates/api-deployment.yaml");
+        let deployment = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        assert!(
+            deployment.contains(&format!("name: {PACK_PUBKEY_ENV}")),
+            "api-deployment.yaml does not set {PACK_PUBKEY_ENV}"
+        );
+        assert!(
+            deployment.contains("$updates.packPubkey"),
+            "the API env must come from system.updates.packPubkey"
+        );
+        let policy = chart_policy_source();
+        assert!(
+            policy.contains("$packPubkey := $updates.packPubkey"),
+            "the policy must read the same chart value"
+        );
+        assert!(
+            policy.contains("c.args[15] == '{{ $packPubkey }}'"),
+            "the policy must pin --pack-pubkey to the configured key"
+        );
     }
 
     /// C-1c follow-up: the API server injects the ServiceAccount token

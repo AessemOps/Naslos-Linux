@@ -470,6 +470,12 @@ spec:
               value: {{ $updates.enabled | default true | quote }}
             - name: SYSTEM_UPDATES_SOURCE
               value: {{ $updates.source | default "https://api.github.com/repos/AessemOps/Naslos-Linux/releases" | quote }}
+            # Detached pack signature (FR-UPD): the same value the upgrader
+            # admission policy pins into the Job's --pack-pubkey. Empty
+            # disables signature verification; setting it requires the release
+            # channel to publish <pack>.sig and turns on strict mode.
+            - name: SYSTEM_UPDATES_PACK_PUBKEY
+              value: {{ $updates.packPubkey | default "" | quote }}
             - name: SYSTEM_UPDATES_INTERVAL_HOURS
               value: {{ $updates.intervalHours | default 24 | quote }}
             - name: SYSTEM_UPGRADER_SERVICE_ACCOUNT

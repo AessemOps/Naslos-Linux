@@ -23,10 +23,12 @@ into an arbitrary pod launcher.
 {{- $talosSecret := .Values.api.talosConfigSecret | default "" }}
 {{- $statePvc := ternary "naslos-shares-config" "" .Values.api.sharesConfig.enabled }}
 {{- /*
-Optional strict signature mode. Set system.updates.packPubkey (and give the API
-the same key as SYSTEM_UPDATES_PACK_PUBKEY) to require every web upgrade to
-pass both --pack-sig-url and --pack-pubkey. Left empty, the policy still
-rejects a half-filled pair; see the positional validation below.
+Pack-signature trust anchor. Set system.updates.packPubkey (the chart wires it
+to the API as SYSTEM_UPDATES_PACK_PUBKEY) to require every web upgrade to carry
+that exact key plus a signature URL; only then does the Job use the cached pack
+on the state volume. Left empty, the policy requires the 20-argument URL layout
+with empty signature values: the pack comes from the channel-pinned release URL
+and the API-writable cache is not trusted. See the positional validation below.
 */}}
 {{- $packPubkey := $updates.packPubkey | default "" }}
 {{- /*
@@ -194,12 +196,15 @@ spec:
     # matching --sha256 and no signature and run attacker-authored charts.
     # Pin every position job_spec emits: the release-channel URL prefix, the
     # cached-pack path the API writes, the chart namespace/release, and the
-    # signature flags (a half-filled signature pair is denied; the optional
-    # packPubkey strict mode also rejects an empty pair). Positional pinning
-    # makes the Job layout itself part of the contract.
+    # signature values. Without a pack key the Job must use the 20-argument
+    # URL layout with empty signature values: the cached file lives on a claim
+    # the API mounts read-write, so it is only a trust anchor when the Job can
+    # verify a detached signature under a pinned key. With a key configured,
+    # `--pack-pubkey` must equal that key exactly, `--pack-sig-url` must be a
+    # channel URL, and the 24-argument cached-pack layout is required.
     - expression: >-
         object.spec.containers.all(c,
-        {{- if .Values.api.sharesConfig.enabled }}
+        {{- if and $packPubkey .Values.api.sharesConfig.enabled }}
         c.args.size() == 24 &&
         c.args[20] == '--pack-file' &&
         c.args[21] == '/var/lib/naslos/updates/pack-' + c.args[7] + '.tar.gz' &&
@@ -221,13 +226,15 @@ spec:
         c.args[10] == '--sha256' &&
         c.args[11].matches('^[0-9a-f]{64}$') &&
         c.args[12] == '--pack-sig-url' &&
-        (c.args[13] == '' || c.args[13].startsWith('{{ $packUrlPrefix }}')) &&
-        c.args[14] == '--pack-pubkey' &&
-        (c.args[15] == '' || c.args[15].matches('^[A-Za-z0-9+/=_-]{40,120}$')) &&
-        (c.args[13] == '') == (c.args[15] == '') &&
         {{- if $packPubkey }}
         c.args[13] != '' &&
-        c.args[15] != '' &&
+        c.args[13].startsWith('{{ $packUrlPrefix }}') &&
+        c.args[14] == '--pack-pubkey' &&
+        c.args[15] == '{{ $packPubkey }}' &&
+        {{- else }}
+        c.args[13] == '' &&
+        c.args[14] == '--pack-pubkey' &&
+        c.args[15] == '' &&
         {{- end }}
         c.args[16] == '--namespace' &&
         c.args[17] == '{{ .Release.Namespace }}' &&
@@ -235,8 +242,8 @@ spec:
         c.args[19] == '{{ .Release.Name }}')
       message: >-
         upgrader args must carry the documented flags with pinned values: the
-        configured release channel for the pack, the API's cached pack path and
-        the matching signature pair
+        configured release channel for the pack, the API's cached pack path
+        (signature mode only) and the configured signature key
     - expression: >-
         object.spec.containers.all(c,
         c.env.all(e,

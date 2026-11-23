@@ -360,10 +360,7 @@ operation at an arbitrary pack): `--pack-url`/`--pack-sig-url` must live under
 the release channel derived from `system.updates.source` (a GitHub source maps
 to its `github.com/<owner>/<repo>/releases/download/` prefix, a mirror source
 to its https host), `--pack-file`/`--pack-sig-file` must be the API's cached
-path, `--namespace`/`--release` must be the chart values, and the signature
-pair must be both empty or both present. Setting `system.updates.packPubkey`
-(and giving the API the same key as `SYSTEM_UPDATES_PACK_PUBKEY`) turns on the
-strict mode: the Job must then carry both signature values. The API server
+path, and `--namespace`/`--release` must be the chart values. The API server
 injects the ServiceAccount token projection before admission; the policy admits
 exactly that volume and mount (`kube-api-access-*`, three pinned sources,
 mounted at `/var/run/secrets/kubernetes.io/serviceaccount`) and nothing
@@ -371,28 +368,46 @@ broader. Any other Job using that ServiceAccount is denied. Changing
 `SYSTEM_UPDATES_SOURCE` outside the chart value makes the policy deny the Job,
 so override the value instead of only the environment.
 
-**Pack handoff (why the upgrade does not re-download).** The update check
+**Pack trust anchor.** The release pipeline publishes only
+`naslos-install-pack-<version>.tar.gz` and `.sha256` today; there is no pack
+signing step and no `.sig` asset, so the chart cannot default to a published
+key. The state volume is also mounted read-write by the API pod that builds the
+Job, so a cached `pack-<version>.tar.gz` at the pinned path is only trusted as
+far as the API pod is trusted. The policy therefore does **not** hand the Job
+the cached pack unless a signature key is configured:
+
+- **Default (no `system.updates.packPubkey`):** the Job runs the 20-argument
+  URL layout with empty `--pack-sig-url`/`--pack-pubkey`. It downloads the pack
+  from the channel-pinned release URL and the admission policy rejects any
+  `--pack-file`. A compromised API can then only choose among *published*
+  packs of the configured channel — it cannot substitute its own charts. This
+  is the trust anchor that remains without signing infrastructure.
+- **Signature mode (`system.updates.packPubkey` set):** the chart passes the
+  key to the API as `SYSTEM_UPDATES_PACK_PUBKEY` and the policy pins that exact
+  value into the Job, requires a non-empty channel `--pack-sig-url`, and
+  switches to the 24-argument cached-pack layout. The Job re-verifies the
+  cached pack and `.sig` against the pinned key, so a compromised API can no
+  longer fabricate content at the pinned path. Signature mode requires the
+  channel to publish `<pack>.tar.gz.sig`; a release without one is refused by
+  the update check (fail closed).
+
+**Pack handoff (why the upgrade may not re-download).** The update check
 downloads the release pack, verifies its sha256 (and detached Ed25519 signature
 when `SYSTEM_UPDATES_PACK_PUBKEY` is configured) and caches it on the state
-volume at `/var/lib/naslos/updates/pack-<version>.tar.gz` plus `.sig`. The Job
-mounts the same `naslos-shares-config` claim at `/var/lib/naslos` and reads
-that already-verified file, re-checking the approved sha256 and signature
-before extracting; a cached file that does not match fails the operation
-instead of falling back. This keeps the upgrade working under the namespace
-default-deny and across a Talos reboot retry. `naslos-system-op-egress` allows
-HTTPS `443` for the Job as a fallback when the cache is absent (a profile
-without `api.sharesConfig.enabled`, or an overridden `SYSTEM_UPDATES_CACHE`
-outside `/var/lib/naslos`); in that case the pack is downloaded and verified in
-the Job instead. Downloads never follow more than five redirects and every hop
-must stay on the update source or a GitHub asset host; the body is streamed
-under a 512 MiB cap after a `Content-Length` check.
+volume at `/var/lib/naslos/updates/pack-<version>.tar.gz` plus `.sig`. In
+signature mode the Job mounts the same `naslos-shares-config` claim at
+`/var/lib/naslos` and reads that already-verified file, re-checking the
+approved sha256 and signature before extracting; a cached file that does not
+match fails the operation instead of falling back. Without a key the Job does
+not read the cache and downloads the pack from the channel-pinned URL instead
+(the `naslos-system-op-egress` policy admits HTTPS `443` for exactly that).
+Downloads never follow more than five redirects and every hop must stay on the
+update source or a GitHub asset host; the body is streamed under a 512 MiB cap
+after a `Content-Length` check.
 
 Signature enforcement is fail-closed: a release that publishes `.sig` requires
 `SYSTEM_UPDATES_PACK_PUBKEY`, and a configured key requires every release to be
-signed. The chart does not set that variable, so a signed release channel needs
-it added through a values overlay (the API reads it from its environment, and
-the Job re-verifies the cached signature with the same key passed in
-`--pack-pubkey`).
+signed.
 
 **Failure handling.** A failed Helm upgrade, a workload that does not become
 ready, or a pack-digest mismatch on the *running* pods all roll the release

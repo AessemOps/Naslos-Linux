@@ -961,27 +961,38 @@ for bad in ("--privileged", "--pack-url-evil", "--command", "--mount"):
 
 # C-1a follow-up: the policy pins the values, not just the flag names. An
 # attacker with the upgrader ServiceAccount must not be able to point the
-# operation at an arbitrary pack. The render has api.sharesConfig enabled, so
-# the cached-pack layout (24 args) is the expected one.
+# operation at an arbitrary pack. With no pack key configured, the Job must use
+# the URL-only layout (20 args) with empty signature values: the cached file is
+# writable by the API pod and is not a trust anchor without a signature.
 for fragment in (
-    "c.args.size() == 24",
-    "c.args[20] == '--pack-file'",
-    "c.args[21] == '/var/lib/naslos/updates/pack-' + c.args[7] + '.tar.gz'",
-    "c.args[22] == '--pack-sig-file'",
-    "c.args[23] == c.args[21] + '.sig'",
+    "c.args.size() == 20",
     "c.args[8] == '--pack-url'",
     f"c.args[9].startsWith('{pack_prefix}')",
-    f"c.args[13].startsWith('{pack_prefix}')",
     "c.args[11].matches('^[0-9a-f]{64}$')",
-    "(c.args[13] == '') == (c.args[15] == '')",
+    "c.args[13] == ''",
+    "c.args[14] == '--pack-pubkey'",
+    "c.args[15] == ''",
     "c.args[17] == 'naslos'",
     "c.args[19] == 'naslos'",
 ):
     assert fragment in expr, f"upgrader policy is missing value pin {fragment!r}"
-# The rendered policy must take exactly one layout branch, not both, and the
-# optional strict signature mode is off until a key is configured.
+# The rendered policy takes exactly one layout branch, and the cached pack is
+# not admitted without a signature key.
 assert expr.count("c.args.size() ==") == 1, expr
+assert "c.args.size() == 24" not in expr, "cached pack admitted without a key"
+assert "c.args[20]" not in expr, "cached pack path admitted without a key"
 assert "c.args[13] != ''" not in expr, "strict signature mode must be opt-in"
+
+# The API builds the Job from SYSTEM_UPDATES_PACK_PUBKEY; it must be wired even
+# when signature mode is off (empty value), or enabling it denies every Job.
+api = find("Deployment", "naslos-api")
+assert api, "API Deployment missing"
+api_env = {
+    e["name"]: e.get("value")
+    for e in api["spec"]["template"]["spec"]["containers"][0].get("env", [])
+}
+assert api_env.get("SYSTEM_UPDATES_PACK_PUBKEY") == "", \
+    api_env.get("SYSTEM_UPDATES_PACK_PUBKEY")
 
 # C-1b: containment. Each of these closes a way to run arbitrary code with the
 # cluster-admin ServiceAccount: a shell probe, a lifecycle hook, envFrom, a
@@ -1057,8 +1068,10 @@ assert 443 in ports, ports
 print("system upgrade render ok")
 PY
   rm -f "$f"
-  # Optional strict signature mode: configuring a pack key must render the
-  # "signature required" pins, and a Job that omits the pair must be denied.
+  # Signature mode: configuring a pack key must reach the API env and render
+  # the "key pinned + signature required + cached-pack layout" policy, so the
+  # API-writable cache is only used with a verifiable signature.
+  key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
   f2=$(mktemp) || return 1
   if ! helm template naslos "$root/charts/naslos" -n naslos \
     -f "$root/charts/naslos/values.yaml" \
@@ -1069,21 +1082,46 @@ PY
     --set release.talosVersion=v1.14.6 \
     --set release.schematicId=abc \
     --set release.kubernetesVersion=v1.37.0 \
-    --set system.updates.packPubkey=abc >"$f2" 2>/dev/null; then
+    --set system.updates.packPubkey="$key" >"$f2" 2>/dev/null; then
     rm -f "$f2"
     return 1
   fi
-  python3 - "$f2" <<'PY' || rc=1
+  python3 - "$f2" "$key" <<'PY' || rc=1
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
-vap = next(
-    d for d in docs
-    if d.get("kind") == "ValidatingAdmissionPolicy"
-    and d["metadata"]["name"] == "naslos-upgrader-guard"
-)
+key = sys.argv[2]
+
+def find(kind, name):
+    for d in docs:
+        if d.get("kind") == kind and d.get("metadata", {}).get("name") == name:
+            return d
+    return None
+
+vap = find("ValidatingAdmissionPolicy", "naslos-upgrader-guard")
+assert vap, "upgrader ValidatingAdmissionPolicy missing"
 expr = "\n".join(v.get("expression", "") for v in vap["spec"]["validations"])
-for fragment in ("c.args[13] != ''", "c.args[15] != ''"):
+for fragment in (
+    "c.args.size() == 24",
+    "c.args[20] == '--pack-file'",
+    "c.args[21] == '/var/lib/naslos/updates/pack-' + c.args[7] + '.tar.gz'",
+    "c.args[22] == '--pack-sig-file'",
+    "c.args[23] == c.args[21] + '.sig'",
+    "c.args[13] != ''",
+    "c.args[13].startsWith(",
+    "c.args[14] == '--pack-pubkey'",
+    f"c.args[15] == '{key}'",
+):
     assert fragment in expr, f"strict signature mode is missing {fragment!r}"
+assert "c.args.size() == 20" not in expr, expr
+
+api = find("Deployment", "naslos-api")
+assert api, "API Deployment missing"
+api_env = {
+    e["name"]: e.get("value")
+    for e in api["spec"]["template"]["spec"]["containers"][0].get("env", [])
+}
+assert api_env.get("SYSTEM_UPDATES_PACK_PUBKEY") == key, \
+    api_env.get("SYSTEM_UPDATES_PACK_PUBKEY")
 print("strict signature render ok")
 PY
   rm -f "$f2"
