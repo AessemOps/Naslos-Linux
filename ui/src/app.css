@@ -1,6 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../tailwind.config.js";
 
 /* ---------------------------------------------------------------------------
    Design tokens. Every Tailwind color family used by the UI resolves here
@@ -139,6 +138,15 @@
 }
 
 @layer base {
+  /* Tailwind v4 defaults border-color to currentColor; restore the v3 default
+     (the themed gray-200 token) so bare `border` classes keep their look. */
+  *,
+  ::before,
+  ::after,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: rgb(var(--gray-200) / 1);
+  }
   :focus-visible {
     outline: 2px solid rgb(var(--n-accent));
     outline-offset: 2px;
@@ -184,7 +192,7 @@
     @apply bg-naslos-surface rounded-xl border border-naslos-border p-6;
   }
   .input {
-    @apply bg-naslos-dark border border-naslos-border rounded-lg px-3 py-2 text-gray-100 focus:outline-none focus:border-naslos-primary;
+    @apply bg-naslos-dark border border-naslos-border rounded-lg px-3 py-2 text-gray-100 focus:outline-hidden focus:border-naslos-primary;
   }
   .label {
     @apply text-sm font-medium text-gray-400 mb-1 block;
