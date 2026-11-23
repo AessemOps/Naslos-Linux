@@ -140,6 +140,23 @@ check_share_paths() {
   return 0
 }
 
+# set_ini_value rewrites the first `key=value` line of an ini-style file.
+# The value reaches awk through the environment, not a sed replacement or an
+# `awk -v` assignment: SMB_DISCOVERY_NAME is operator input and a `&`, `/` or
+# `\` there would otherwise corrupt a sed expression or be escape-processed by
+# awk (`-v value=a\b` becomes `ab`). Environment values are passed verbatim.
+set_ini_value() {
+  set_ini_file="$1"
+  NASLOS_INI_KEY="$2" NASLOS_INI_VALUE="$3" awk '
+    index($0, ENVIRON["NASLOS_INI_KEY"] "=") == 1 {
+      print ENVIRON["NASLOS_INI_KEY"] "=" ENVIRON["NASLOS_INI_VALUE"]
+      next
+    }
+    { print }
+  ' "$set_ini_file" >"$set_ini_file.naslos-tmp" &&
+    mv "$set_ini_file.naslos-tmp" "$set_ini_file"
+}
+
 # start_discovery advertises this host as an SMB server so it shows up when a
 # client browses the network (Dolphin/Finder via mDNS, Windows via WSD). It is
 # best-effort: if discovery cannot start, SMB itself keeps working, so a
@@ -155,12 +172,12 @@ start_discovery() {
 
   # Advertise under the configured name; it must match the Samba NetBIOS name
   # the API renders into smb.conf, or clients see two different hosts.
-  sed -i "s/^host-name=.*/host-name=${name}/" /etc/avahi/avahi-daemon.conf
+  set_ini_value /etc/avahi/avahi-daemon.conf host-name "$name"
 
   iface="${SMB_DISCOVERY_INTERFACE:-}"
   [ -z "$iface" ] && iface="$(detect_lan_interface)"
   if [ -n "$iface" ]; then
-    sed -i "s|^allow-interfaces=.*|allow-interfaces=${iface}|" /etc/avahi/avahi-daemon.conf
+    set_ini_value /etc/avahi/avahi-daemon.conf allow-interfaces "$iface"
     log "restricting discovery to interface $iface"
   fi
 
