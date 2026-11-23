@@ -171,7 +171,10 @@ jobs:
           VERSION: ${{ needs.guard.outputs.version }}
         run: |
           set -euo pipefail
-          image="${{ matrix.repository }}"
+          # image-matrix.json has no `repository` key; build the ref the same
+          # way the tag step does so this check inspects the real image instead
+          # of an empty name (which made the guard fail open).
+          image="ghcr.io/aessemops/naslos-${{ matrix.name }}"
           if docker buildx imagetools inspect "${image}:${VERSION}" >/dev/null 2>&1; then
             echo "release: ${image}:${VERSION} already exists. Re-running a release would move the tag while the attached pack keeps the old digests. Delete the release and tag, then re-run." >&2
             exit 1
@@ -248,6 +251,67 @@ jobs:
             dist/digests/digest-openldap.txt \
             dist/digests/digest-vmd.txt > dist/image-digests.json
           cat dist/image-digests.json
+
+      # C-6: values-vm.yaml is the overlay `make install-vm` applies to the
+      # production node, so every digest pin it carries must be an image this
+      # release built. Clear stale pins in the release commit; the follow-up
+      # pin commit records the published digests. A pin that disagrees with
+      # the build (or a component missing from the digest map) fails here
+      # instead of silently deploying a different image than the pack.
+      - name: Verify values-vm digests match this release's images
+        if: needs.guard.outputs.publish == 'true'
+        run: |
+          python3 - <<'PY'
+          import json
+          import sys
+
+          import yaml
+
+          built = json.load(open("dist/image-digests.json", encoding="utf-8"))
+          vm = yaml.safe_load(open("charts/naslos/values-vm.yaml", encoding="utf-8"))
+
+          def built_digest(component):
+              ref = built.get(component, "")
+              return ref.rsplit("@sha256:", 1)[-1] if "@sha256:" in ref else ""
+
+          def pinned_digest(value):
+              text = str(value or "")
+              return text.rsplit("sha256:", 1)[-1] if "sha256:" in text else ""
+
+          images = {
+              "api": vm["api"]["image"],
+              "agent": vm["agent"]["image"],
+              "ui": vm["ui"]["image"],
+              "samba": vm["shares"]["smb"]["image"],
+              "nfs": vm["shares"]["nfs"]["image"],
+              "terminal": vm["terminal"]["image"],
+              "vmd": vm["virt"]["image"],
+              "openldap": vm["openldap"],
+          }
+
+          errors = []
+          for component, image in images.items():
+              if component not in built:
+                  errors.append(f"{component}: missing from dist/image-digests.json")
+                  continue
+              pinned = pinned_digest(image.get("digest") if component != "openldap" else image.get("image"))
+              if not pinned:
+                  # Tag-only pin: `scripts/check-release-version.sh` already
+                  # required the tag to equal appVersion.
+                  continue
+              expected = built_digest(component)
+              if pinned != expected:
+                  errors.append(
+                      f"{component}: values-vm pins sha256:{pinned} but this "
+                      f"release built {built.get(component, '<missing>')}"
+                  )
+
+          if errors:
+              for error in errors:
+                  print(f"release: values-vm digest mismatch: {error}", file=sys.stderr)
+              sys.exit(1)
+          print("release: values-vm digest pins match the built images")
+          PY
 
       - name: Verify every digest resolves
         run: |
