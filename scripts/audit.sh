@@ -1179,7 +1179,9 @@ if have helm; then
   # C-4/R13: the app-isolation boundary (Helm Role, admission policy, Traefik
   # plugin) has its own render assertions; they were not wired into either
   # audit.sh or CI, so a values/template edit could undo them silently.
-  run "app isolation chart assertions (C-4)" scripts/test-app-isolation.sh
+  # The isolation script is not committed with the executable bit, so it
+  # runs through `sh` regardless of file mode.
+  run "app isolation chart assertions (C-4)" sh scripts/test-app-isolation.sh
   run "authelia ldap password is a Secret file (AUDIT-M3)" check_authelia_ldap_secret
   run "authelia SSO fragments + scoped RBAC (FR-APP-15)" check_authelia_sso_fragments
   run "network policy intent (AUDIT-M4)" check_network_policies
