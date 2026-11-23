@@ -437,11 +437,35 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
         .as_ref()
         .map(|prev| prev.dns_provider != domain.dns_provider)
         .unwrap_or(false);
-    // A provider change swaps the credential model entirely. Without the new
-    // provider's fields the effective solver would be rendered from the old
-    // provider's config, so require the fields instead of skipping validation.
-    if provider_changed && fields.is_none() {
-        return bad_request("changing dnsProvider requires submitting the new provider's fields");
+    // A provider change swaps the credential model. Demand the new provider's
+    // fields unless the target renders no provider-supplied credentials:
+    // passthrough uses the submitted raw solver, and a provider with no secret
+    // credential fields (rfc2136) renders from config/defaults plus the stored
+    // Secret name. Everything else would point the new solver at the old
+    // provider's Secret keys.
+    let no_fields = fields.as_ref().map(|f| f.is_empty()).unwrap_or(true);
+    if provider_changed {
+        let solver_ready = solver_submitted
+            && domain
+                .solver
+                .as_ref()
+                .map(|solver| !solver_is_explicitly_empty(solver))
+                .unwrap_or(false);
+        if let Some(provider) = state.providers.get(&domain.dns_provider) {
+            if provider.is_passthrough() {
+                // The raw solver is the whole credential model: never fall back
+                // to a stale solver from the previous provider.
+                if !solver_ready {
+                    return bad_request(
+                        "changing dnsProvider to passthrough requires submitting a solver",
+                    );
+                }
+            } else if no_fields && provider_change_requires_fields(provider) {
+                return bad_request(
+                    "changing dnsProvider requires submitting the new provider's fields",
+                );
+            }
+        }
     }
     // Preserve write-only fields that an update omitted. The UI never receives
     // the solver or credential values back, so omission must not erase them.
@@ -470,12 +494,20 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
     if let Err(e) = validate_app_records(state, &domain) {
         return bad_request(&e);
     }
+    // A create may name a credentials Secret the operator already provisioned
+    // out of band (the documented MCP `domain_create` path: credentialsSecret
+    // plus providerConfig, no fields). In that case the Secret name and the
+    // submitted config are validated, but the provider's fields are not
+    // required because the resolver cannot write the Secret it cannot see.
+    let supplied_credentials_only =
+        existing.is_none() && no_fields && !domain.credentials_secret.is_empty();
     // Resolve the provider fields on every write, not only when `fields` was
     // submitted: an omitted key preserves the stored config, but a create or a
     // provider change must still satisfy the provider's required secret fields
     // and the effective solver must be re-validated (I-3).
     let submitted_fields = fields.unwrap_or_default();
-    let enforce_credentials = existing.is_none() || provider_changed;
+    let enforce_credentials =
+        !supplied_credentials_only && (existing.is_none() || provider_changed);
     if let Err(e) = apply_domain_fields(
         state,
         &mut domain,
@@ -483,6 +515,7 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
         existing.as_ref(),
         enforce_credentials,
         provider_changed,
+        supplied_credentials_only,
     )
     .await
     {
@@ -549,10 +582,18 @@ fn validate_app_records(state: &AppState, domain: &Domain) -> Result<(), String>
     Ok(())
 }
 
+/// Whether a provider's solver renders credentials from its fields. Such a
+/// provider needs a `fields` submission (or an out-of-band Secret) when it is
+/// the target of a provider change.
+fn provider_change_requires_fields(provider: &crate::providers::Provider) -> bool {
+    provider.fields_for("cert").iter().any(|field| field.secret)
+}
+
 /// Split a submitted field map into the non-secret providerConfig and a
 /// credential Secret. The resolver runs on every write for cert-manager
 /// providers; `create_or_changed` enforces the provider's required secret
 /// fields when there is no stored credential model to fall back on.
+#[allow(clippy::too_many_arguments)]
 async fn apply_domain_fields(
     state: &Arc<AppState>,
     domain: &mut Domain,
@@ -560,6 +601,7 @@ async fn apply_domain_fields(
     existing: Option<&Domain>,
     create_or_changed: bool,
     provider_changed: bool,
+    supplied_credentials_only: bool,
 ) -> Result<(), String> {
     let p = state
         .providers
@@ -572,6 +614,10 @@ async fn apply_domain_fields(
         ));
     }
     if p.is_passthrough() {
+        if provider_changed {
+            // The raw solver replaces any provider-rendered credential config.
+            domain.provider_config.clear();
+        }
         return Ok(());
     }
     // An operator-supplied Secret name must stay inside the Naslos convention
@@ -581,11 +627,16 @@ async fn apply_domain_fields(
         crate::kube::validate_credentials_secret(&domain.credentials_secret)?;
     }
     // Never inherit the previous provider's config after a provider switch: its
-    // keys mean something else to the new provider.
+    // keys mean something else to the new provider. A create that only names an
+    // out-of-band Secret keeps and validates the submitted providerConfig.
     let existing_config = if provider_changed {
         None
+    } else if let Some(prev) = existing {
+        Some(prev.provider_config.clone())
+    } else if supplied_credentials_only {
+        Some(domain.provider_config.clone())
     } else {
-        existing.map(|d| d.provider_config.clone())
+        None
     };
     let resolved = p.resolve_fields(
         "cert",

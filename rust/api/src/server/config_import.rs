@@ -624,7 +624,20 @@ async fn plan_shares(
             enabled: record.enabled,
         };
         if let Err(e) = shares::validate_share_fields(&candidate) {
-            errors.push(format!("{label}: {e}"));
+            // One invalid record must not abort the whole restore: skip this
+            // share with its own reason, like the other record kinds do for
+            // entries that cannot be applied.
+            plans.push(SharePlan {
+                entry: record.name.clone(),
+                create: CreateShareRequest {
+                    name: record.name.clone(),
+                    path: path.clone(),
+                    protocol,
+                    ..Default::default()
+                },
+                existing,
+                outcome: Outcome::Skipped(format!("the share definition is invalid: {e}")),
+            });
             continue;
         }
 
@@ -1726,8 +1739,10 @@ fn apply_shares(state: &AppState, plans: &mut [SharePlan]) {
                     valid_groups: Some(plan.create.valid_groups.clone()),
                     time_machine: Some(plan.create.time_machine),
                     no_root_squash: Some(plan.create.no_root_squash),
-                    shadow_copies: None,
-                    audit: None,
+                    // `plan.create` carries the effective SMB options for an
+                    // existing share: the local values the import preserves.
+                    shadow_copies: Some(plan.create.shadow_copies),
+                    audit: Some(plan.create.audit),
                     enabled: plan.create.enabled,
                 };
                 manager.update(&plan.create.name, &request).map(|_| ())
