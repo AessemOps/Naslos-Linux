@@ -87,6 +87,7 @@
         <select
           id="exposure-domain"
           class="input w-auto max-w-[14rem]"
+          aria-label="Exposure base domain"
           value={baseDomain}
           on:change={(e) => chooseDomain((e.currentTarget as HTMLSelectElement).value)}
         >

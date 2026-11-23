@@ -159,25 +159,39 @@ impl ScheduleStore {
         self.entries.lock().unwrap().get(id).cloned()
     }
 
+    /// Persist-then-swap: a failed save leaves memory identical to the file,
+    /// so a deleted schedule cannot reappear after a restart (B-3).
     pub fn put(&self, e: ScheduleEntry) -> Result<(), String> {
         let mut guard = self.entries.lock().unwrap();
-        guard.insert(e.id.clone(), e);
-        self.save(&guard)
+        let mut candidate = guard.clone();
+        candidate.insert(e.id.clone(), e);
+        self.save(&candidate)?;
+        *guard = candidate;
+        Ok(())
     }
 
     pub fn remove(&self, id: &str) -> Result<(), String> {
         let mut guard = self.entries.lock().unwrap();
-        if guard.remove(id).is_none() {
+        if !guard.contains_key(id) {
             return Err(format!("schedule {id:?} not found"));
         }
-        self.save(&guard)
+        let mut candidate = guard.clone();
+        candidate.remove(id);
+        self.save(&candidate)?;
+        *guard = candidate;
+        Ok(())
     }
 
     /// Record one destination's outcome; the entry is "ok" only when every
-    /// destination succeeded.
+    /// destination succeeded. Best effort by design (it is progress, not a
+    /// security decision), but the candidate is still saved before the live
+    /// map is replaced so a failed write never divides the two.
     pub fn record_result(&self, id: &str, receiver: &str, ok: bool, job_err: &str) {
         let mut guard = self.entries.lock().unwrap();
-        let Some(e) = guard.get_mut(id) else { return };
+        let mut candidate = guard.clone();
+        let Some(e) = candidate.get_mut(id) else {
+            return;
+        };
         let now = Utc::now();
         e.last_run = Some(now);
         let receiver = if receiver.is_empty() {
@@ -199,7 +213,9 @@ impl ScheduleStore {
             e.last_result = "ok".to_string();
             e.last_error.clear();
             e.next_run = Some(compute_next_run(e, now));
-            let _ = self.save(&guard);
+            if self.save(&candidate).is_ok() {
+                *guard = candidate;
+            }
             return;
         }
         let failed = failed.unwrap();
@@ -210,15 +226,20 @@ impl ScheduleStore {
             e.last_error = format!("backup to {failed} failed");
         }
         e.next_run = Some(compute_next_run(e, now));
-        let _ = self.save(&guard);
+        if self.save(&candidate).is_ok() {
+            *guard = candidate;
+        }
     }
 
     /// Advance an entry's next run (called once when a fan-out starts).
     pub fn advance_next_run(&self, id: &str, now: DateTime<Utc>) {
         let mut guard = self.entries.lock().unwrap();
-        if let Some(e) = guard.get_mut(id) {
+        let mut candidate = guard.clone();
+        if let Some(e) = candidate.get_mut(id) {
             e.next_run = Some(compute_next_run(e, now));
-            let _ = self.save(&guard);
+            if self.save(&candidate).is_ok() {
+                *guard = candidate;
+            }
         }
     }
 }
@@ -457,6 +478,28 @@ mod tests {
         assert!(parse_run_at(Cadence::Weekly, "Mon 02:30").is_ok());
         assert!(parse_run_at(Cadence::Weekly, "Funday 02:30").is_err());
         assert!(parse_run_at(Cadence::Hourly, "").is_ok());
+    }
+
+    #[test]
+    fn a_failed_schedule_delete_keeps_the_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("schedules.json");
+        let store = ScheduleStore::new(path.to_str().unwrap());
+        store
+            .put(ScheduleEntry {
+                id: "s1".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        // A directory at the store path makes the atomic rename fail even when
+        // the tests run as root (permission bits would not).
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(store.remove("s1").is_err());
+        assert!(
+            store.get("s1").is_some(),
+            "a failed delete must not drop the live entry"
+        );
     }
 
     #[test]

@@ -103,6 +103,7 @@ fn store_status(err: &StoreError) -> StatusCode {
     match err {
         StoreError::Quota { .. } => StatusCode::PAYLOAD_TOO_LARGE,
         StoreError::NoSpace => StatusCode::INSUFFICIENT_STORAGE,
+        StoreError::Invalid(_) => StatusCode::BAD_REQUEST,
         StoreError::Other(_) => StatusCode::CONFLICT,
     }
 }
@@ -310,12 +311,16 @@ pub async fn enroll(State(receiver): State<BuddyState>, body: Body) -> Response 
         }
     }
 
-    let mut used = receiver.enroll_used.lock().unwrap();
-    if (*used || receiver.store.enrollment_used()) && !receiver.enroll_open {
-        return json(
-            StatusCode::FORBIDDEN,
-            serde_json::json!({ "error": "this enrollment token has already been used" }),
-        );
+    {
+        // Fast path. The authoritative single-use check is the one below,
+        // inside the enrollment lock.
+        let used = receiver.enroll_used.lock().unwrap();
+        if (*used || receiver.store.enrollment_used()) && !receiver.enroll_open {
+            return json(
+                StatusCode::FORBIDDEN,
+                serde_json::json!({ "error": "this enrollment token has already been used" }),
+            );
+        }
     }
     // A peer may not grant itself more than the receiver's configured default
     // (PF-M10 / SEC-2026-C9).
@@ -324,12 +329,15 @@ pub async fn enroll(State(receiver): State<BuddyState>, body: Body) -> Response 
         Ok((_, fingerprint)) => fingerprint,
         Err(e) => return bad_request(&e),
     };
-    let pending = match receiver.begin_mutation(
-        &actor,
-        "buddy.enroll",
-        Some(req.name.clone()),
-        serde_json::json!({ "quotaBytes": quota, "sources": req.sources }),
-    ) {
+    let pending = match receiver
+        .begin_mutation(
+            &actor,
+            "buddy.enroll",
+            Some(req.name.clone()),
+            serde_json::json!({ "quotaBytes": quota, "sources": req.sources }),
+        )
+        .await
+    {
         Ok(p) => p,
         Err(resp) => return resp,
     };
@@ -341,32 +349,56 @@ pub async fn enroll(State(receiver): State<BuddyState>, body: Body) -> Response 
         enabled: true,
         ..Default::default()
     };
-    if !receiver.enroll_open {
-        // Record single use before the key is authorized. If the marker cannot
-        // be written the enrollment fails closed (SEC-2026-C21).
-        if let Err(e) = receiver.store.mark_enrollment_used() {
-            let _ = receiver.finish_mutation(pending, StatusCode::INTERNAL_SERVER_ERROR);
-            return json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({ "error": format!("cannot record the enrollment token as used: {e}") }),
-            );
+    // The check, the spent-token marker and the key insertion are one atomic
+    // step under the enrollment lock: two enroll requests with the same token
+    // can never both pass. The block is synchronous, so the guard is released
+    // before any later `.await` and the handler future stays Send.
+    let outcome: Result<crate::buddy::Peer, Response> = {
+        let mut used = receiver.enroll_used.lock().unwrap();
+        if (*used || receiver.store.enrollment_used()) && !receiver.enroll_open {
+            Err(json(
+                StatusCode::FORBIDDEN,
+                serde_json::json!({ "error": "this enrollment token has already been used" }),
+            ))
+        } else {
+            // Record single use before the key is authorized. If the marker
+            // cannot be written the enrollment fails closed (SEC-2026-C21).
+            let marker = if receiver.enroll_open {
+                Ok(())
+            } else {
+                receiver.store.mark_enrollment_used()
+            };
+            match marker {
+                Err(e) => Err(json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({ "error": format!("cannot record the enrollment token as used: {e}") }),
+                )),
+                Ok(()) => match receiver.peers.add(peer) {
+                    Ok(()) => {
+                        if !receiver.enroll_open {
+                            *used = true;
+                        }
+                        Ok(receiver.peers.get(&req.name).unwrap_or_default())
+                    }
+                    Err(e) => Err(bad_request(&e)),
+                },
+            }
         }
-        *used = true;
-    }
-    match receiver.peers.add(peer) {
-        Ok(()) => {
-            if let Err(resp) = receiver.finish_mutation(pending, StatusCode::CREATED) {
+    };
+    match outcome {
+        Ok(added) => {
+            if let Err(resp) = receiver.finish_mutation(pending, StatusCode::CREATED).await {
                 return resp;
             }
-            let added = receiver.peers.get(&req.name).unwrap_or_default();
             json(
                 StatusCode::CREATED,
                 serde_json::json!({ "status": "enrolled", "name": added.name, "fingerprint": added.fingerprint }),
             )
         }
-        Err(e) => {
-            let _ = receiver.finish_mutation(pending, StatusCode::BAD_REQUEST);
-            bad_request(&e)
+        Err(resp) => {
+            let status = resp.status();
+            let _ = receiver.finish_mutation(pending, status).await;
+            resp
         }
     }
 }
@@ -514,7 +546,7 @@ pub async fn chunks(
         peer.quota_bytes,
     ) {
         Ok(()) => {
-            if let Err(resp) = receiver.record_mutation(pending, StatusCode::CREATED) {
+            if let Err(resp) = receiver.record_mutation(pending, StatusCode::CREATED).await {
                 return resp;
             }
             json(
@@ -524,10 +556,10 @@ pub async fn chunks(
         }
         Err(e) => {
             let status = store_status(&e);
-            let _ = receiver.record_mutation(pending, status);
+            let _ = receiver.record_mutation(pending, status).await;
             let msg = match &e {
                 StoreError::Quota { .. } | StoreError::NoSpace => e.to_string(),
-                StoreError::Other(m) => m.clone(),
+                StoreError::Invalid(m) | StoreError::Other(m) => m.clone(),
             };
             json(status, serde_json::json!({ "error": msg }))
         }
@@ -760,33 +792,34 @@ pub async fn manifest(
             }),
         );
     }
-    let pending = match receiver.begin_mutation(
-        &peer.fingerprint,
-        "buddy.manifest.put",
-        Some(format!("{source}@{}", manifest.chain)),
-        serde_json::json!({
-            "sequence": manifest.sequence,
-            "chunks": manifest.chunks.len(),
-            "fromSnapshot": manifest.from_snapshot,
-            "toSnapshot": manifest.to_snapshot,
-        }),
-    ) {
+    let pending = match receiver
+        .begin_mutation(
+            &peer.fingerprint,
+            "buddy.manifest.put",
+            Some(format!("{source}@{}", manifest.chain)),
+            serde_json::json!({
+                "sequence": manifest.sequence,
+                "chunks": manifest.chunks.len(),
+                "fromSnapshot": manifest.from_snapshot,
+                "toSnapshot": manifest.to_snapshot,
+            }),
+        )
+        .await
+    {
         Ok(p) => p,
         Err(resp) => return resp,
     };
-    if let Err(e) = receiver
-        .store
-        .put_manifest(&peer.fingerprint, &source, &manifest)
+    if let Err(e) =
+        receiver
+            .store
+            .put_manifest_within(&peer.fingerprint, &source, &manifest, peer.quota_bytes)
     {
-        let _ = receiver.finish_mutation(pending, StatusCode::INTERNAL_SERVER_ERROR);
-        return json(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            serde_json::json!({ "error": e.to_string() }),
-        );
+        let status = store_status(&e);
+        let _ = receiver.finish_mutation(pending, status).await;
+        return json(status, serde_json::json!({ "error": e.to_string() }));
     }
-    receiver.store.invalidate_usage(&peer.fingerprint);
     let sealed: i64 = manifest.chunks.iter().map(|c| c.sealed_bytes).sum();
-    if let Err(resp) = receiver.finish_mutation(pending, StatusCode::OK) {
+    if let Err(resp) = receiver.finish_mutation(pending, StatusCode::OK).await {
         return resp;
     }
     json(
@@ -834,18 +867,25 @@ pub async fn prune(
     if req.keep < 1 {
         return bad_request("keep must be at least 1");
     }
-    let pending = match receiver.begin_mutation(
-        &peer.fingerprint,
-        "buddy.prune",
-        Some(source.clone()),
-        serde_json::json!({ "keep": req.keep }),
-    ) {
+    let pending = match receiver
+        .begin_mutation(
+            &peer.fingerprint,
+            "buddy.prune",
+            Some(source.clone()),
+            serde_json::json!({ "keep": req.keep }),
+        )
+        .await
+    {
         Ok(p) => p,
         Err(resp) => return resp,
     };
     match receiver.store.prune(&peer.fingerprint, &source, req.keep) {
         Ok(removed) => {
-            if let Err(resp) = receiver.finish_mutation(pending, StatusCode::OK) {
+            // Deleting chains changes the on-disk total; drop the cached
+            // usage so the sender's next quota check is not based on the
+            // pre-prune number (B-2).
+            receiver.store.invalidate_usage(&peer.fingerprint);
+            if let Err(resp) = receiver.finish_mutation(pending, StatusCode::OK).await {
                 return resp;
             }
             json(
@@ -854,7 +894,9 @@ pub async fn prune(
             )
         }
         Err(e) => {
-            let _ = receiver.finish_mutation(pending, StatusCode::INTERNAL_SERVER_ERROR);
+            let _ = receiver
+                .finish_mutation(pending, StatusCode::INTERNAL_SERVER_ERROR)
+                .await;
             json(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 serde_json::json!({ "error": e.to_string() }),
@@ -888,9 +930,10 @@ impl BuddyState {
 
     /// Refuse a receiver mutation before it happens when the audit log cannot
     /// record it (R-027). The standalone receiver has no audit log, so it is
-    /// unaffected.
+    /// unaffected. The durable append runs on the blocking pool (FR-AUD-08):
+    /// the receiver handlers are async and must not fsync on a Tokio worker.
     #[allow(clippy::result_large_err)]
-    fn begin_mutation(
+    async fn begin_mutation(
         &self,
         actor: &str,
         action: &str,
@@ -907,7 +950,7 @@ impl BuddyState {
             ));
         }
         let pending = crate::audit::Pending::system(actor, action, target, params);
-        audit.begin(pending.clone()).map_err(|e| {
+        audit.begin_async(pending.clone()).await.map_err(|e| {
             audit.mark_degraded(&e);
             json(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -942,7 +985,7 @@ impl BuddyState {
     }
 
     #[allow(clippy::result_large_err)]
-    fn record_mutation(
+    async fn record_mutation(
         &self,
         pending: Option<crate::audit::Pending>,
         status: StatusCode,
@@ -950,17 +993,20 @@ impl BuddyState {
         let (Some(audit), Some(pending)) = (self.audit(), pending) else {
             return Ok(());
         };
-        audit.record_once(&pending, status.as_u16()).map_err(|e| {
-            audit.mark_degraded(&e);
-            json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({ "error": format!("the audit record failed ({e}); the mutation may have applied") }),
-            )
-        })
+        audit
+            .record_once_async(&pending, status.as_u16())
+            .await
+            .map_err(|e| {
+                audit.mark_degraded(&e);
+                json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({ "error": format!("the audit record failed ({e}); the mutation may have applied") }),
+                )
+            })
     }
 
     #[allow(clippy::result_large_err)]
-    fn finish_mutation(
+    async fn finish_mutation(
         &self,
         pending: Option<crate::audit::Pending>,
         status: StatusCode,
@@ -968,13 +1014,16 @@ impl BuddyState {
         let (Some(audit), Some(pending)) = (self.audit(), pending) else {
             return Ok(());
         };
-        audit.finish(&pending, status.as_u16()).map_err(|e| {
-            audit.mark_degraded(&e);
-            json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({ "error": format!("the audit end record failed ({e}); the mutation may have applied") }),
-            )
-        })
+        audit
+            .finish_async(&pending, status.as_u16())
+            .await
+            .map_err(|e| {
+                audit.mark_degraded(&e);
+                json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({ "error": format!("the audit end record failed ({e}); the mutation may have applied") }),
+                )
+            })
     }
 }
 

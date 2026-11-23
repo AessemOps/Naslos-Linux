@@ -163,6 +163,11 @@ pub struct Store {
     /// Token id -> most recent calls, newest last (capped per token).
     recent: Mutex<HashMap<String, VecDeque<CallRecord>>>,
     last_used_flush: Mutex<std::time::Instant>,
+    /// Set when the persisted config could not be read or parsed. Mutations
+    /// are refused and the original file is preserved (plus a `.corrupt-<ts>`
+    /// copy), so a corrupt file can never be replaced by an empty token list
+    /// that silently deletes every hash (A-2).
+    load_error: Mutex<Option<String>>,
 }
 
 /// The token resolved from a verified `Authorization: Bearer` header. Stashed
@@ -185,6 +190,7 @@ impl Store {
             }),
             recent: Mutex::new(HashMap::new()),
             last_used_flush: Mutex::new(std::time::Instant::now()),
+            load_error: Mutex::new(None),
         };
         store.load();
         store
@@ -197,12 +203,25 @@ impl Store {
     }
 
     fn load(&mut self) {
+        *self.load_error.lock().unwrap() = None;
         if self.path.is_empty() {
             return;
         }
-        let Ok(data) = std::fs::read(&self.path) else {
-            return;
+        let data = match std::fs::read(&self.path) {
+            Ok(data) => data,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                *self.load_error.lock().unwrap() = Some(format!(
+                    "the MCP config {} could not be read: {e}; refusing to change MCP settings",
+                    self.path
+                ));
+                return;
+            }
         };
+        if data.iter().all(|b| b.is_ascii_whitespace()) {
+            // A freshly provisioned empty file is a valid empty store.
+            return;
+        }
         match serde_json::from_slice::<Persisted>(&data) {
             Ok(p) => {
                 let mut inner = self.inner.lock().unwrap();
@@ -212,7 +231,28 @@ impl Store {
                 inner.enabled = p.enabled;
                 inner.tokens = p.tokens;
             }
-            Err(e) => tracing::warn!("could not load the MCP config: {e}"),
+            Err(e) => {
+                let backup = match crate::shares::backup_corrupt_store(&self.path, &data) {
+                    Ok(path) => format!(" (backup saved to {})", path.display()),
+                    Err(backup_err) => format!(" ({backup_err})"),
+                };
+                let message = format!(
+                    "the MCP config {} is corrupt: {e}{backup}; repair it or replace it with a valid store before changing MCP settings",
+                    self.path
+                );
+                tracing::error!("{message}");
+                *self.load_error.lock().unwrap() = Some(message);
+            }
+        }
+    }
+
+    /// Fail closed unless the persisted config was read successfully. Every
+    /// mutation calls this first: writing over an unreadable file would
+    /// permanently delete every stored token hash.
+    pub fn require_loaded(&self) -> Result<(), String> {
+        match self.load_error.lock().unwrap().clone() {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 
@@ -235,9 +275,15 @@ impl Store {
     }
 
     pub fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.require_loaded()?;
         let mut inner = self.inner.lock().unwrap();
-        inner.enabled = enabled;
-        Self::save_with_path(&self.path, &inner)
+        let candidate = Inner {
+            enabled,
+            tokens: inner.tokens.clone(),
+        };
+        Self::save_with_path(&self.path, &candidate)?;
+        *inner = candidate;
+        Ok(())
     }
     /// Tokens without the hash, for the Settings UI.
     pub fn tokens_public(&self) -> Vec<TokenRecord> {
@@ -280,6 +326,7 @@ impl Store {
         {
             return Err("token name may only use letters, digits, - _ . and spaces".into());
         }
+        self.require_loaded()?;
         let mut inner = self.inner.lock().unwrap();
         if inner
             .tokens
@@ -310,8 +357,13 @@ impl Store {
             expires_at: expires_at.map(|at| at.to_rfc3339()),
             last_used_at: None,
         };
-        inner.tokens.push(record.clone());
-        Self::save_with_path(&self.path, &inner)?;
+        let mut candidate = Inner {
+            enabled: inner.enabled,
+            tokens: inner.tokens.clone(),
+        };
+        candidate.tokens.push(record.clone());
+        Self::save_with_path(&self.path, &candidate)?;
+        *inner = candidate;
         Ok((record, plaintext))
     }
 
@@ -340,21 +392,37 @@ impl Store {
     }
 
     pub fn revoke(&self, id: &str) -> Result<bool, String> {
+        self.require_loaded()?;
         let mut inner = self.inner.lock().unwrap();
-        let before = inner.tokens.len();
-        inner.tokens.retain(|t| t.id != id);
-        let removed = inner.tokens.len() < before;
-        if removed {
-            Self::save_with_path(&self.path, &inner)?;
-            self.recent.lock().unwrap().remove(id);
+        if !inner.tokens.iter().any(|t| t.id == id) {
+            return Ok(false);
         }
-        Ok(removed)
+        // Persist-then-swap: a failed save must not revoke the token only
+        // until the next restart (B-3).
+        let candidate = Inner {
+            enabled: inner.enabled,
+            tokens: inner
+                .tokens
+                .iter()
+                .filter(|t| t.id != id)
+                .cloned()
+                .collect(),
+        };
+        Self::save_with_path(&self.path, &candidate)?;
+        *inner = candidate;
+        drop(inner);
+        self.recent.lock().unwrap().remove(id);
+        Ok(true)
     }
 
     /// Record a token's use. The in-memory value updates immediately; the
     /// flush to disk is debounced so a chatty MCP client cannot turn every
     /// call into a write.
     pub fn record_last_used(&self, id: &str) {
+        if self.load_error.lock().unwrap().is_some() {
+            // Never write over a store that failed to load.
+            return;
+        }
         let mut flush = false;
         {
             let mut inner = self.inner.lock().unwrap();
@@ -617,6 +685,63 @@ mod tests {
         assert!(Scope::Full.allows(Scope::Full));
         assert_eq!(Scope::parse("READ"), Some(Scope::Read));
         assert_eq!(Scope::parse("nope"), None);
+    }
+
+    #[test]
+    fn a_corrupt_config_fails_closed_and_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        let corrupt = b"{this is not json";
+        std::fs::write(&path, corrupt).unwrap();
+
+        let store = Store::new(path.to_str().unwrap());
+        assert!(store.require_loaded().is_err());
+        assert!(store.set_enabled(true).is_err());
+        assert!(store
+            .create_token("blocked", Scope::Read, None, "admin")
+            .is_err());
+        assert!(store.revoke("anything").is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            corrupt,
+            "the file is untouched"
+        );
+
+        let backups: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "the corrupt file is backed up");
+        assert_eq!(std::fs::read(backups[0].path()).unwrap(), corrupt);
+
+        // An operator repair plus a restart loads again.
+        std::fs::write(&path, br#"{"enabled":true,"tokens":[]}"#).unwrap();
+        let repaired = Store::new(path.to_str().unwrap());
+        assert!(repaired.require_loaded().is_ok());
+        assert!(repaired.enabled());
+    }
+
+    #[test]
+    fn a_failed_revoke_save_leaves_the_token_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        let store = Store::new(path.to_str().unwrap());
+        store.set_enabled(true).unwrap();
+        let (record, plaintext) = store
+            .create_token("keeper", Scope::Read, None, "admin")
+            .unwrap();
+        // A directory at the store path makes the atomic rename fail even when
+        // the tests run as root (permission bits would not).
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        assert!(store.revoke(&record.id).is_err());
+        assert!(
+            store.verify(&plaintext).is_some(),
+            "a failed revoke must not revoke the token in memory"
+        );
+        assert_eq!(store.token_count(), 1);
     }
 
     #[test]

@@ -1,13 +1,5 @@
 <script lang="ts">
-  interface ProviderField {
-    key: string;
-    label: string;
-    type: string;
-    default?: string;
-    enum?: string[];
-    required?: boolean;
-    secret?: boolean;
-  }
+  import type { ProviderField } from '$lib/providerFields';
 
   export let fields: ProviderField[] = [];
   // Mutated in place: the parent's object is the value store.

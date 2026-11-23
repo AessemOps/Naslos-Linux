@@ -6,28 +6,7 @@
   import VmWizard from '$lib/components/VmWizard.svelte';
   import VmDetail from '$lib/components/VmDetail.svelte';
   import VmImages from '$lib/components/VmImages.svelte';
-
-  interface VmView {
-    name: string;
-    pool: string;
-    cpu: number;
-    memMiB: number;
-    autostart: boolean;
-    desired: string;
-    firmware: string;
-    secureBoot?: boolean;
-    disk: { sizeGB: number; format: string; bus: string; sourceImage?: string | null };
-    net: { mode: string; forwards: Array<{ host: number; dst: number }>; nic?: string | null };
-    cloudInit?: { hostname: string; user: string; sshKeys: string[] } | null;
-    iso?: string | null;
-    state: string;
-    pid?: number | null;
-    cpuPercent?: number | null;
-    memUsedMiB?: number | null;
-    vncPort?: number | null;
-    unexpectedExit: boolean;
-    lastError: string;
-  }
+  import type { VmImage, VmPayload, VmView } from '$lib/vmTypes';
 
   let vms: VmView[] = [];
   let pools: string[] = [];
@@ -41,6 +20,10 @@
   let imagesOpen = false;
   let imagePool = '';
   let imagesRefreshKey = 0;
+  // The wizard's image library is per pool: selecting a different pool in the
+  // create form reloads it so imported ISOs/cloud images are selectable.
+  let wizardImages: VmImage[] = [];
+  let wizardImagesSeq = 0;
 
   let error = '';
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -111,7 +94,31 @@
     };
   });
 
-  async function createOrUpdate(payload: any, isEdit: boolean): Promise<string | null> {
+  async function loadWizardImages(pool: string) {
+    const seq = ++wizardImagesSeq;
+    if (!pool) {
+      wizardImages = [];
+      return;
+    }
+    try {
+      const res = await fetch(`/api/virt/images?pool=${encodeURIComponent(pool)}`);
+      if (!res.ok) {
+        // Drop the previous pool's list on failure: the wizard must not
+        // offer an image that does not exist in the selected pool.
+        if (seq === wizardImagesSeq) wizardImages = [];
+        return;
+      }
+      const data = await res.json();
+      if (seq !== wizardImagesSeq) return;
+      wizardImages = Array.isArray(data.images) ? data.images : [];
+    } catch {
+      if (seq === wizardImagesSeq) wizardImages = [];
+      // The wizard still works with an empty library; the Images panel reports
+      // the real error.
+    }
+  }
+
+  async function createOrUpdate(payload: VmPayload, isEdit: boolean): Promise<string | null> {
     try {
       const res = await fetch(isEdit ? `/api/virt/vms/${encodeURIComponent(payload.name)}` : '/api/virt/vms', {
         method: isEdit ? 'PUT' : 'POST',
@@ -140,7 +147,34 @@
   }
 
   async function toggleAutostart(vm: VmView): Promise<string | null> {
-    return createOrUpdate({ ...vm, autostart: !vm.autostart }, true);
+    // Send only the spec fields; the live view carries state/pid/usage keys
+    // the API does not persist.
+    const payload: VmPayload = {
+      name: vm.name,
+      pool: vm.pool,
+      cpu: vm.cpu,
+      memMiB: vm.memMiB,
+      autostart: !vm.autostart,
+      firmware: vm.firmware,
+      secureBoot: !!vm.secureBoot,
+      desired: vm.desired,
+      disk: {
+        sizeGB: vm.disk.sizeGB,
+        format: vm.disk.format,
+        bus: vm.disk.bus,
+        sourceImage: vm.disk.sourceImage ?? null
+      },
+      net: { mode: vm.net.mode, forwards: vm.net.forwards ?? [] },
+      iso: vm.iso ?? null
+    };
+    if (vm.cloudInit) {
+      payload.cloudInit = {
+        hostname: vm.cloudInit.hostname,
+        user: vm.cloudInit.user,
+        sshKeys: vm.cloudInit.sshKeys ?? []
+      };
+    }
+    return createOrUpdate(payload, true);
   }
 
   async function snapshot(name: string, snapName: string): Promise<string | null> {
@@ -198,11 +232,13 @@
     if (pools.length === 0) await loadPools();
     editing = null;
     wizardOpen = true;
+    loadWizardImages(pools[0] ?? '');
   }
 
   async function openEdit(vm: VmView) {
     editing = vm;
     wizardOpen = true;
+    loadWizardImages(vm.pool);
   }
 
   async function openImages(pool?: string) {
@@ -299,7 +335,7 @@
               <td class="px-4 py-3">{vm.disk.sizeGB} GB {vm.disk.format}</td>
               <td class="px-4 py-3">
                 {#if vm.net.mode === 'nat'}
-                  NAT{#if vm.net.forwards.length} · {vm.net.forwards.length} forward(s){/if}
+                  NAT{#if vm.net.forwards?.length} · {vm.net.forwards.length} forward(s){/if}
                 {:else}
                   LAN on {vm.net.nic}
                 {/if}
@@ -333,8 +369,9 @@
   {/if}
 </div>
 
-<VmWizard open={wizardOpen} vm={editing} pools={pools}
+<VmWizard open={wizardOpen} vm={editing} pools={pools} images={wizardImages}
   secureBootAvailable={!!capabilities?.secureBoot}
+  on:poolchange={(event) => loadWizardImages(event.detail)}
   close={() => (wizardOpen = false)} submit={createOrUpdate} />
 
 {#if selected}

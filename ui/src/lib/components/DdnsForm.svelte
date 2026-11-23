@@ -4,9 +4,10 @@
   import { createEventDispatcher } from 'svelte';
   import ProviderFields from './ProviderFields.svelte';
   import { changedProviderFields, providerDefaults, visibleFields } from '$lib/providerFields';
+  import type { DdnsEntryView, DnsProviderView } from '$lib/dnsTypes';
 
-  export let entry: any | null = null;
-  export let providers: any[] = [];
+  export let entry: DdnsEntryView | null = null;
+  export let providers: DnsProviderView[] = [];
 
   const ddnsProviders = providers.filter((p) => p.ddns);
 
@@ -27,9 +28,13 @@
     ? [...entry.redactedProviderConfigKeys]
     : [];
 
-  function fieldsFor(name: string): any[] {
+  // The provider the loaded credential fields belong to. After a provider
+  // change the old Secret must not be presented as covering the new fields.
+  const loadedProvider = entry?.provider ?? '';
+
+  function fieldsFor(name: string) {
     return (ddnsProviders.find((p) => p.name === name)?.fields ?? []).filter(
-      (f: any) => f.scope !== 'cert'
+      (f) => f.scope !== 'cert'
     );
   }
 
@@ -54,9 +59,10 @@
   // Hide certificate-only fields (scope) and fields whose showIf rule is not met
   // (e.g. OVH's ZoneDNS fields unless mode is api).
   $: ddnsFields = visibleFields(
-    currentFields.filter((f: any) => f.scope !== 'cert'),
+    currentFields.filter((f) => f.scope !== 'cert'),
     fieldValues
   );
+  $: providerChanged = !!entry && providerName !== loadedProvider;
 
   // Switch provider: keep the selection in sync and prefill field defaults.
   function onProviderChange(event: Event) {
@@ -73,7 +79,7 @@
 
   const dispatch = createEventDispatcher();
 
-  function body(): Record<string, any> {
+  function body(): Record<string, unknown> {
     return {
       provider: providerName,
       zone,
@@ -98,6 +104,16 @@
     error = '';
     notice = '';
     try {
+      if (!entry || providerName !== loadedProvider) {
+        const missing = ddnsFields.filter(
+          (field) => field.required && !String(fieldValues[field.key] ?? '').trim()
+        );
+        if (missing.length > 0) {
+          throw new Error(
+            `Enter ${missing.map((field) => field.label || field.key).join(', ')} for ${providerName}.`
+          );
+        }
+      }
       const path = entry ? `/api/ddns/${encodeURIComponent(entry.id)}` : '/api/ddns';
       const res = await fetch(path, {
         method: entry ? 'PUT' : 'POST',
@@ -120,8 +136,8 @@
         return;
       }
       dispatch('close');
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     } finally {
       saving = false;
       running = false;
@@ -183,7 +199,7 @@
           fields={ddnsFields}
           values={fieldValues}
           idPrefix="ddns"
-          secretSet={entry?.credentialFields || []}
+          secretSet={!providerChanged ? entry?.credentialFields || [] : []}
           redactedKeys={redactedKeys}
           cleared={clearedFields}
           unchangedPlaceholder="•••••• (unchanged)"
