@@ -105,7 +105,18 @@ impl SambaUserStore {
             }
         };
         if data.iter().all(|b| b.is_ascii_whitespace()) {
-            self.loaded = true;
+            // Writes are durable (temp `fsync` + rename + directory `fsync`),
+            // so an existing empty file is not a crash artefact: treating it
+            // as "no accounts" would mirror an empty account database over a
+            // working node. Fail closed and preserve it instead.
+            let backup = match backup_corrupt_store(&self.path, &data) {
+                Ok(path) => format!(" (backup saved to {})", path.display()),
+                Err(backup_err) => format!(" ({backup_err})"),
+            };
+            self.load_error = Some(format!(
+                "SMB account store {} is empty; repair it or replace it with a valid store before changing accounts{backup}",
+                self.path
+            ));
             return;
         }
         let list = match serde_json::from_slice::<Vec<SambaUser>>(&data) {
@@ -182,8 +193,14 @@ impl SambaUserStore {
         data.push(b'\n');
 
         let path = Path::new(&self.path);
-        let dir = path.parent().unwrap_or_else(|| Path::new("."));
-        if !dir.as_os_str().is_empty() && dir != Path::new(".") {
+        // A single-component relative store path has an empty parent; the
+        // directory to fsync (and to place the temp file in) is the working
+        // directory itself, never "".
+        let dir = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        if dir != Path::new(".") {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("creating SMB account directory: {e}"))?;
         }
@@ -200,6 +217,8 @@ impl SambaUserStore {
                 .map_err(|e| format!("writing SMB accounts: {e}"))?;
             f.write_all(&data)
                 .map_err(|e| format!("writing SMB accounts: {e}"))?;
+            f.sync_all()
+                .map_err(|e| format!("syncing SMB accounts: {e}"))?;
         }
         let tmp_path = tmp.into_temp_path();
         std::fs::set_permissions(
@@ -209,6 +228,11 @@ impl SambaUserStore {
         .map_err(|e| format!("setting SMB account file mode: {e}"))?;
         std::fs::rename(&tmp_path, &self.path)
             .map_err(|e| format!("replacing SMB accounts: {e}"))?;
+        // Durability: the rename itself must survive a crash, or the store
+        // can come back as a missing/empty mirror.
+        std::fs::File::open(dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| format!("syncing the SMB account directory: {e}"))?;
         Ok(())
     }
 
@@ -664,9 +688,16 @@ mod tests {
         std::fs::write(&empty, "[]").unwrap();
         assert!(SambaUserStore::new(empty.to_str().unwrap()).loaded());
 
-        let zero_byte = dir.path().join("zero.json");
-        std::fs::write(&zero_byte, "").unwrap();
-        assert!(SambaUserStore::new(zero_byte.to_str().unwrap()).loaded());
+        // With durable writes in place an existing empty/whitespace file is
+        // not a crash artefact: it must fail closed instead of mirroring an
+        // empty account database over a working node.
+        for (name, contents) in [("zero.json", ""), ("blank.json", "  \n\t\n")] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, contents).unwrap();
+            let store = SambaUserStore::new(path.to_str().unwrap());
+            assert!(!store.loaded(), "{name} must be corrupt");
+            assert!(store.require_loaded().unwrap_err().contains("empty"));
+        }
 
         // An empty path is an in-memory test store, not a failed load.
         assert!(SambaUserStore::new("").loaded());
