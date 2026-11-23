@@ -958,14 +958,17 @@ with a sibling `naslos-app.yaml` install-config. See
   namespaces, whose policy always allows public egress.
   *(routing tests, apps tests, server tests)*
 - **FR-APP-11** — The API MUST own one Traefik `IngressRoute` per app plus its
-  middlewares and the per-app Internet-egress `NetworkPolicy` in the app
-  namespace, and MUST reconcile them on startup and delete them on uninstall.
-  When an app installs into a dedicated (isolated) baseline namespace with
-  `internet` on, the API MUST apply the egress policy **before** the Helm
-  install wait, remove it if the install fails, and sweep API-created
-  policies left by an interrupted install before the reserved namespace is
-  reused (and at startup). *(routing tests, apps tests; startup call in
-  `main.rs` after SEC-2026-H9)*
+  middlewares in the platform apps namespace (where the domain wildcard TLS
+  `Secret` lives), targeting the app's `Service` in its own namespace, and the
+  per-app Internet-egress `NetworkPolicy` in the app namespace; it MUST
+  reconcile them on startup and delete them on uninstall. An app namespace
+  MUST NOT receive a copy of the wildcard TLS private key (R-002). When an app
+  installs into a dedicated (isolated) baseline namespace with `internet` on,
+  the API MUST apply the egress policy **before** the Helm install wait, remove
+  it if the install fails, and sweep API-created policies left by an
+  interrupted install before the reserved namespace is reused (and at
+  startup). *(routing tests, apps tests; startup call in `main.rs` after
+  SEC-2026-H9)*
 - **FR-APP-16** — When a manifest declares no route target, the API MUST
   discover the release's Services from its Helm labels, route to one, and expose
   the candidates for the operator to pick. *(discovery_test.go)*
@@ -1126,6 +1129,33 @@ with a sibling `naslos-app.yaml` install-config. See
   404s); the primary MUST NOT be demotable, and a domain MUST NOT be demoted
   while an installed app requires auth on it. *(chart render: authelia-config +
   naslos-authelia-sso; authelia tests; routing tests; server tests)*
+- **FR-APP-28** — The exposure UI MUST require an explicit confirmation before
+  saving `auth: false`, and MUST warn when a base-domain change would flip
+  authentication off. The exact strings are normative (UI-02):
+  - Confirmation title: `Turn off authentication for this app?`
+  - Confirmation body: `Without Authelia, anyone who can reach this app's address can use it. Only turn authentication off if the app has its own login or is meant to be public.`
+  - Confirm action: `Turn off authentication`
+  - Cancel action: `Keep authentication on`
+  - Domain-change warning: `Changing the base domain to {baseDomain} turns authentication off because {baseDomain} is not in the SSO domain list. The app will be reachable without an Authelia sign-in.`
+  - Domain-change confirm: `Change domain and turn authentication off`
+  - Domain-change cancel: `Keep the current domain`
+  *(UI-02; server tests, UI review)*
+- **FR-APP-29** — The reduced Helm identity MUST NOT hold `Ingress` or
+  `NetworkPolicy` write rights in any app namespace, the native Kubernetes
+  Ingress provider and default `IngressClass` MUST be disabled, and a
+  fail-closed admission policy MUST reject `Ingress`/`NetworkPolicy` writes
+  from that identity and any object whose `metadata.namespace` differs from the
+  request namespace. *(scripts/test-app-isolation.sh; chart render)*
+- **FR-APP-30** — App TLS MUST terminate on a `Secret` that already lives in the
+  platform apps namespace; the API MUST NOT write a `kubernetes.io/tls`
+  `Secret` or copy a private key into an app namespace. *(routing tests:
+  `exposure_never_renders_a_tls_secret_or_key`,
+  `app_route_lives_in_the_platform_namespace`)*
+- **FR-APP-31** — The parent-domain Authelia session cookie MUST stay available
+  to `forwardAuth` for SSO, but it MUST be deleted from the request before an
+  app backend receives it. *(routing tests:
+  `cookie_strip_runs_after_forwardauth_on_every_app_route`;
+  scripts/test-app-isolation.sh)*
 
 
 ### 3.5 Dashboard & metrics (`FR-MET`)
