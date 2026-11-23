@@ -39,10 +39,19 @@ pub fn default_driver(driver: &str, client: reqwest::Client) -> Result<Box<dyn D
     })
 }
 
-async fn read_body(resp: reqwest::Response) -> String {
+async fn read_body(mut resp: reqwest::Response) -> String {
     const MAX: usize = 8 * 1024;
-    let bytes = resp.bytes().await.unwrap_or_default();
-    String::from_utf8_lossy(&bytes[..bytes.len().min(MAX)]).into_owned()
+    let mut buf = Vec::new();
+    while buf.len() < MAX {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let take = (MAX - buf.len()).min(chunk.len());
+                buf.extend_from_slice(&chunk[..take]);
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 fn status_ok(status: reqwest::StatusCode, want: u16) -> bool {
@@ -764,26 +773,18 @@ impl Driver for HttpDriver {
             }
         }
         let target = guard_url(&rendered_url)?;
-        default_guard(&target).map_err(|e| format!("refusing to call {target}: {e}"))?;
-        // `default_guard` resolves the host, but reqwest would resolve it again
-        // when it connects (DNS rebinding between the check and the request).
-        // Resolve once here and pin the connection to the vetted address.
         let host = target
             .host_str()
-            .ok_or_else(|| format!("{target} has no host"))?
+            .ok_or_else(|| "the DDNS URL has no host".to_string())?
             .to_string();
         let port = target.port_or_known_default().unwrap_or(443);
-        use std::net::ToSocketAddrs;
-        let addrs: Vec<std::net::SocketAddr> = (host.as_str(), port)
-            .to_socket_addrs()
-            .map_err(|e| format!("cannot resolve {host:?}: {e}"))?
-            .collect();
+        // Resolve once asynchronously and pin the connection to the vetted
+        // address, so reqwest does not resolve again (DNS rebinding).
+        let addrs = resolve_public(&host, port).await?;
         let Some(pinned) = addrs.first().copied() else {
-            return Err(format!("{host:?} did not resolve"));
+            return Err("the DDNS host did not resolve".to_string());
         };
-        if addrs.iter().any(|a| blocked_ip(&a.ip())) {
-            return Err(format!("refusing to call {target}: non-public address"));
-        }
+        require_secure_transport(&target, r)?;
         let client = if host.parse::<std::net::IpAddr>().is_ok() {
             // A literal address cannot be rebound; the shared client is fine.
             self.client.clone()
@@ -947,28 +948,200 @@ fn apply_auth(
     }
 }
 
+/// A parsed template node.
+enum TmplNode {
+    Text(String),
+    Expr(String),
+    If {
+        cond: String,
+        then_nodes: Vec<TmplNode>,
+        else_nodes: Vec<TmplNode>,
+    },
+}
+
 /// Render the generic driver's `{{...}}` template. Supports `{{fqdn .record
 /// .zone}}`, `{{label .record .zone}}`, `{{.zone}}`/`.record`/`.type`/`.ip`/
-/// `.ttl`, `{{.secret.KEY}}` and `{{.config.KEY}}`. A missing key is an error
-/// (Go's `missingkey=error`).
+/// `.ttl`, `{{.secret.KEY}}`, `{{.config.KEY}}`, and `{{if COND}}...{{else}}
+/// ...{{end}}` blocks where `COND` is `eq A B`/`ne A B` or a single operand
+/// (truthy when non-empty). A missing key in output is an error (Go's
+/// `missingkey=error`); a missing key in a condition is empty/false so optional
+/// credentials can be probed with `{{if .secret.token}}`.
 fn render_template(tmpl: &str, r: &UpdateRequest) -> Result<String, String> {
+    let nodes = parse_template(tmpl)?;
     let mut out = String::with_capacity(tmpl.len());
+    render_nodes(&nodes, r, &mut out)?;
+    Ok(out)
+}
+
+enum TmplToken {
+    Text(String),
+    Expr(String),
+}
+
+fn tokenize_template(tmpl: &str) -> Result<Vec<TmplToken>, String> {
+    let mut tokens = Vec::new();
     let mut rest = tmpl;
     while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
+        if start > 0 {
+            tokens.push(TmplToken::Text(rest[..start].to_string()));
+        }
         let after = &rest[start + 2..];
         let end = after
             .find("}}")
             .ok_or_else(|| "unterminated template expression".to_string())?;
-        let expr = after[..end].trim();
-        out.push_str(&eval_expr(expr, r)?);
+        tokens.push(TmplToken::Expr(after[..end].trim().to_string()));
         rest = &after[end + 2..];
     }
-    out.push_str(rest);
-    Ok(out)
+    if !rest.is_empty() {
+        tokens.push(TmplToken::Text(rest.to_string()));
+    }
+    Ok(tokens)
+}
+
+fn parse_template(tmpl: &str) -> Result<Vec<TmplNode>, String> {
+    let tokens = tokenize_template(tmpl)?;
+    let mut i = 0;
+    let (nodes, _) = parse_nodes(&tokens, &mut i, false)?;
+    Ok(nodes)
+}
+
+/// Parse tokens into nodes. `nested` is true inside an `{{if}}` block, where a
+/// `{{else}}` or `{{end}}` terminates the current sequence.
+fn parse_nodes(
+    tokens: &[TmplToken],
+    i: &mut usize,
+    nested: bool,
+) -> Result<(Vec<TmplNode>, bool), String> {
+    let mut nodes = Vec::new();
+    while *i < tokens.len() {
+        match &tokens[*i] {
+            TmplToken::Text(text) => {
+                nodes.push(TmplNode::Text(text.clone()));
+                *i += 1;
+            }
+            TmplToken::Expr(expr) => {
+                if expr == "else" {
+                    if !nested {
+                        return Err("unexpected {{else}}".to_string());
+                    }
+                    *i += 1;
+                    return Ok((nodes, true));
+                }
+                if expr == "end" {
+                    if !nested {
+                        return Err("unexpected {{end}}".to_string());
+                    }
+                    *i += 1;
+                    return Ok((nodes, false));
+                }
+                if let Some(cond) = expr.strip_prefix("if").map(str::trim) {
+                    if cond.is_empty() {
+                        return Err("{{if}} needs a condition".to_string());
+                    }
+                    *i += 1;
+                    let (then_nodes, saw_else) = parse_nodes(tokens, i, true)?;
+                    let else_nodes = if saw_else {
+                        parse_nodes(tokens, i, true)?.0
+                    } else {
+                        Vec::new()
+                    };
+                    nodes.push(TmplNode::If {
+                        cond: cond.to_string(),
+                        then_nodes,
+                        else_nodes,
+                    });
+                    continue;
+                }
+                nodes.push(TmplNode::Expr(expr.clone()));
+                *i += 1;
+            }
+        }
+    }
+    if nested {
+        return Err("unterminated {{if}}: missing {{end}}".to_string());
+    }
+    Ok((nodes, false))
+}
+
+fn render_nodes(nodes: &[TmplNode], r: &UpdateRequest, out: &mut String) -> Result<(), String> {
+    for node in nodes {
+        match node {
+            TmplNode::Text(text) => out.push_str(text),
+            TmplNode::Expr(expr) => out.push_str(&eval_expr(expr, r)?),
+            TmplNode::If {
+                cond,
+                then_nodes,
+                else_nodes,
+            } => {
+                if eval_cond(cond, r)? {
+                    render_nodes(then_nodes, r, out)?;
+                } else {
+                    render_nodes(else_nodes, r, out)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Split a condition into whitespace-separated arguments, keeping double-quoted
+/// literals intact.
+fn split_args(expr: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    for ch in expr.chars() {
+        match ch {
+            '"' => {
+                quoted = !quoted;
+                current.push(ch);
+            }
+            c if c.is_whitespace() && !quoted => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
+fn eval_cond(cond: &str, r: &UpdateRequest) -> Result<bool, String> {
+    let args = split_args(cond);
+    match args.first().map(String::as_str) {
+        Some("eq") | Some("ne") if args.len() == 3 => {
+            let equal = eval_operand(&args[1], r)? == eval_operand(&args[2], r)?;
+            Ok(if args[0] == "eq" { equal } else { !equal })
+        }
+        Some("eq") | Some("ne") => Err(format!(
+            "template condition {{{{{cond}}}}} needs exactly two operands"
+        )),
+        _ => Ok(truthy(&eval_operand(cond, r)?)),
+    }
+}
+
+fn truthy(value: &str) -> bool {
+    !value.is_empty() && !value.eq_ignore_ascii_case("false")
+}
+
+fn eval_operand(operand: &str, r: &UpdateRequest) -> Result<String, String> {
+    if let Some(literal) = operand.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        return Ok(literal.to_string());
+    }
+    eval_expr_lenient(operand, r)
 }
 
 fn eval_expr(expr: &str, r: &UpdateRequest) -> Result<String, String> {
+    eval_expr_mode(expr, r, false)
+}
+
+/// Evaluate an expression. In lenient mode (conditions) a missing `.secret.KEY`
+/// or `.config.KEY` is empty instead of an error.
+fn eval_expr_mode(expr: &str, r: &UpdateRequest, lenient: bool) -> Result<String, String> {
     match expr {
         "fqdn .record .zone" => Ok(fqdn(&r.zone, &r.record)),
         "label .record .zone" => Ok(zone_label(&r.zone, &r.record)),
@@ -979,20 +1152,26 @@ fn eval_expr(expr: &str, r: &UpdateRequest) -> Result<String, String> {
         ".ttl" => Ok(r.ttl.to_string()),
         e if e.starts_with(".secret.") => {
             let key = &e[".secret.".len()..];
-            r.secret
-                .get(key)
-                .cloned()
-                .ok_or_else(|| format!("missing secret value {key:?}"))
+            match r.secret.get(key) {
+                Some(value) => Ok(value.clone()),
+                None if lenient => Ok(String::new()),
+                None => Err(format!("missing secret value {key:?}")),
+            }
         }
         e if e.starts_with(".config.") => {
             let key = &e[".config.".len()..];
-            r.config
-                .get(key)
-                .cloned()
-                .ok_or_else(|| format!("missing config value {key:?}"))
+            match r.config.get(key) {
+                Some(value) => Ok(value.clone()),
+                None if lenient => Ok(String::new()),
+                None => Err(format!("missing config value {key:?}")),
+            }
         }
         other => Err(format!("unsupported template expression {{{{{other}}}}}")),
     }
+}
+
+fn eval_expr_lenient(expr: &str, r: &UpdateRequest) -> Result<String, String> {
+    eval_expr_mode(expr, r, true)
 }
 
 fn guard_url(raw: &str) -> Result<reqwest::Url, String> {
@@ -1006,33 +1185,51 @@ fn guard_url(raw: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
-/// Reject targets that resolve to a non-routable address (a basic SSRF guard).
-fn default_guard(url: &reqwest::Url) -> Result<(), String> {
-    let host = url.host_str().ok_or("URL has no host")?;
+/// Resolve a target asynchronously and reject any non-routable address.
+async fn resolve_public(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, String> {
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return if blocked_ip(&ip) {
-            Err(format!("target {host} is not a public address"))
-        } else {
-            Ok(())
-        };
-    }
-    use std::net::ToSocketAddrs;
-    let addrs = (host, 0u16)
-        .to_socket_addrs()
-        .map_err(|e| format!("cannot resolve {host:?}: {e}"))?;
-    let mut any = false;
-    for addr in addrs {
-        any = true;
-        if blocked_ip(&addr.ip()) {
-            return Err(format!(
-                "target {host} resolves to a non-public address {}",
-                addr.ip()
-            ));
+        if blocked_ip(&ip) {
+            return Err("the DDNS target is not a public address".to_string());
         }
+        return Ok(vec![std::net::SocketAddr::new(ip, port)]);
     }
-    if !any {
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| format!("cannot resolve {host:?}"))?
+        .collect();
+    if addrs.is_empty() {
         return Err(format!("{host:?} did not resolve"));
     }
+    if addrs.iter().any(|addr| blocked_ip(&addr.ip())) {
+        return Err("the DDNS target resolves to a non-public address".to_string());
+    }
+    Ok(addrs)
+}
+
+/// Reject a plaintext `http` update that carries a provider credential unless
+/// the generic driver's `allowInsecureHttp` acknowledgement is set.
+fn require_secure_transport(target: &reqwest::Url, r: &UpdateRequest) -> Result<(), String> {
+    if target.scheme() != "http" {
+        return Ok(());
+    }
+    let has_secret = r.secret.values().any(|v| !v.trim().is_empty());
+    let auth = config_value(&r.config, "authType").to_lowercase();
+    let authenticated = has_secret
+        || matches!(auth.as_str(), "basic" | "bearer" | "header" | "query")
+        || !target.username().is_empty()
+        || target.password().is_some();
+    if !authenticated {
+        return Ok(());
+    }
+    if config_value(&r.config, "allowInsecureHttp") != "true" {
+        return Err(
+            "refusing to send DDNS credentials over plaintext http; use https or set allowInsecureHttp"
+                .to_string(),
+        );
+    }
+    tracing::warn!(
+        "DDNS credentials are being sent over plaintext http (allowInsecureHttp acknowledged)"
+    );
     Ok(())
 }
 
@@ -1138,6 +1335,113 @@ mod tests {
     }
 
     #[test]
+    fn template_render_if_else_and_truthiness() {
+        let r = UpdateRequest {
+            zone: "example.com".into(),
+            record: "home".into(),
+            record_type: "AAAA".into(),
+            ip: "2001:db8::1".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            render_template("{{if eq .type \"AAAA\"}}v6{{else}}v4{{end}}", &r).unwrap(),
+            "v6"
+        );
+        assert_eq!(
+            render_template("{{if eq .type \"A\"}}v6{{else}}v4{{end}}", &r).unwrap(),
+            "v4"
+        );
+        assert_eq!(
+            render_template("{{if .secret.token}}token{{else}}user{{end}}", &r).unwrap(),
+            "user"
+        );
+        assert_eq!(
+            render_template("{{if .record}}named{{end}}", &r).unwrap(),
+            "named"
+        );
+        assert_eq!(
+            render_template("{{if eq .ttl \"0\"}}zero{{end}}", &r).unwrap(),
+            "zero"
+        );
+        assert!(render_template("{{if .secret.token}}x", &r).is_err());
+        assert!(render_template("{{else}}", &r).is_err());
+        assert!(render_template("{{end}}", &r).is_err());
+        assert!(render_template("{{if bogus 1}}x{{end}}", &r).is_err());
+    }
+
+    #[test]
+    fn every_builtin_http_provider_renders_a_and_aaaa() {
+        use crate::providers::Registry;
+        let registry = Registry::load("");
+        assert!(registry.errors().is_empty(), "{:?}", registry.errors());
+        let mut checked = Vec::new();
+        for p in registry.list() {
+            let Some(ddns) = &p.ddns else { continue };
+            if ddns.driver != "http" || !ddns.defaults.contains_key("updateUrl") {
+                continue;
+            }
+            let mut config = ddns.defaults.clone();
+            let mut secret = HashMap::new();
+            for field in &p.fields {
+                if field.secret {
+                    secret.insert(field.key.clone(), "credential".to_string());
+                } else {
+                    config
+                        .entry(field.key.clone())
+                        .or_insert_with(|| "demo".to_string());
+                }
+            }
+            for record_type in ["A", "AAAA"] {
+                let r = UpdateRequest {
+                    zone: "example.com".into(),
+                    record: "home".into(),
+                    record_type: record_type.into(),
+                    ip: if record_type == "A" {
+                        "192.0.2.10".into()
+                    } else {
+                        "2001:db8::10".into()
+                    },
+                    ttl: 300,
+                    config: config.clone(),
+                    secret: secret.clone(),
+                };
+                let url = render_template(&config["updateUrl"], &r)
+                    .unwrap_or_else(|e| panic!("{} {record_type}: {e}", p.name));
+                assert!(
+                    !url.contains("{{") && !url.contains("}}"),
+                    "{}: {url}",
+                    p.name
+                );
+                let parsed = reqwest::Url::parse(&url)
+                    .unwrap_or_else(|e| panic!("{} {record_type} produced {url}: {e}", p.name));
+                assert!(parsed.host_str().is_some(), "{}: {url}", p.name);
+                if record_type == "AAAA" && config["updateUrl"].contains(".ip") {
+                    assert!(
+                        url.contains("2001:db8::10") || url.contains("2001%3Adb8%3A%3A10"),
+                        "{} AAAA URL lacks the IPv6 address: {url}",
+                        p.name
+                    );
+                }
+            }
+            checked.push(p.name.clone());
+        }
+        for required in [
+            "desec",
+            "duckdns",
+            "dynu",
+            "dynv6",
+            "freedns",
+            "namecheap",
+            "spdyn",
+        ] {
+            assert!(
+                checked.iter().any(|n| n == required),
+                "{required} not checked"
+            );
+        }
+    }
+
+    #[test]
     fn blocked_ip_covers_mapped_and_ula_addresses() {
         use std::net::IpAddr;
         for bad in [
@@ -1167,11 +1471,30 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn guard_blocks_private_targets() {
+        assert!(resolve_public("127.0.0.1", 80).await.is_err());
+        assert!(resolve_public("10.0.0.1", 80).await.is_err());
+        assert!(resolve_public("8.8.8.8", 443).await.is_ok());
+    }
+
     #[test]
-    fn guard_blocks_private_targets() {
-        let url = reqwest::Url::parse("http://127.0.0.1/update").unwrap();
-        assert!(default_guard(&url).is_err());
-        let url = reqwest::Url::parse("http://10.0.0.1/x").unwrap();
-        assert!(default_guard(&url).is_err());
+    fn plaintext_ddns_credentials_need_an_acknowledgement() {
+        let url = reqwest::Url::parse("http://dns.example/update?token=x").unwrap();
+        let mut r = UpdateRequest {
+            secret: HashMap::from([("token".to_string(), "abc".to_string())]),
+            ..Default::default()
+        };
+        assert!(require_secure_transport(&url, &r).is_err());
+        r.config
+            .insert("allowInsecureHttp".to_string(), "true".to_string());
+        assert!(require_secure_transport(&url, &r).is_ok());
+        // No credential: plaintext is allowed.
+        r.secret.clear();
+        r.config.remove("allowInsecureHttp");
+        assert!(require_secure_transport(&url, &r).is_ok());
+        // A credential embedded in the URL userinfo is also refused.
+        let url = reqwest::Url::parse("http://user:pass@dns.example/update").unwrap();
+        assert!(require_secure_transport(&url, &r).is_err());
     }
 }

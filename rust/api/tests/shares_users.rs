@@ -228,8 +228,12 @@ async fn notification_settings_shape() {
     let (status, body, _r) = call("GET", "/api/notifications", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["enabled"], false);
-    assert_eq!(body["serverUrl"], "https://ntfy.sh");
+    assert_eq!(body["category"], "ntfy");
+    assert_eq!(body["hasServerUrl"], true);
+    assert_eq!(body["hasTopic"], true);
     assert_eq!(body["hasAuthToken"], false);
+    assert!(body.get("serverUrl").is_none());
+    assert!(body.get("topic").is_none());
     assert!(body["enabledEvents"].as_array().unwrap().len() == 2);
 }
 

@@ -285,25 +285,31 @@ pub async fn detect_ip(client: &reqwest::Client, source: &str) -> Result<String,
     if source.is_empty() {
         return Err("no public-IP source is configured".to_string());
     }
-    let resp = client
+    let mut resp = client
         .get(source)
         .send()
         .await
-        .map_err(|e| format!("detecting the public IP: {e}"))?;
+        .map_err(|_| "detecting the public IP failed".to_string())?;
     if !resp.status().is_success() {
         return Err(format!(
             "IP source {source} returned HTTP {}",
             resp.status().as_u16()
         ));
     }
-    // Cap the response before decoding and never let a source advertise a
-    // loopback/private/ULA address as the node's public IP.
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("reading the IP source response: {e}"))?;
-    let head = &bytes[..bytes.len().min(4096)];
-    let body = String::from_utf8_lossy(head);
+    // Cap the response with a chunked read before decoding and never let a
+    // source advertise a loopback/private/ULA address as the node's public IP.
+    const MAX_IP_BODY: usize = 4096;
+    let mut bytes = Vec::new();
+    while bytes.len() < MAX_IP_BODY {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let take = (MAX_IP_BODY - bytes.len()).min(chunk.len());
+                bytes.extend_from_slice(&chunk[..take]);
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    let body = String::from_utf8_lossy(&bytes);
     let ip: IpAddr = body.trim().parse().map_err(|_| {
         format!(
             "IP source {source} returned {:?}, not an IP",
@@ -796,6 +802,36 @@ pub async fn write_secret(
     }
     for (k, v) in data {
         merged.insert(k.clone(), v.clone());
+    }
+    kube.write_secret(namespace, name, &merged).await
+}
+
+/// Delete specific keys from a credential Secret. Keys that are not present
+/// are ignored; an empty Secret is left in place.
+pub async fn remove_secret_keys(
+    kube: &crate::kube::Client,
+    namespace: &str,
+    name: &str,
+    keys: &[String],
+) -> Result<(), String> {
+    if name.is_empty() || keys.is_empty() {
+        return Ok(());
+    }
+    let Some(existing) = kube.get_json("secret", name, namespace).await? else {
+        return Ok(());
+    };
+    let mut merged: HashMap<String, String> = HashMap::new();
+    if let Some(d) = existing.get("data").and_then(|v| v.as_object()) {
+        for (k, v) in d {
+            if let Some(s) = v.as_str() {
+                if let Ok(raw) = base64_decode(s) {
+                    merged.insert(k.clone(), String::from_utf8_lossy(&raw).into_owned());
+                }
+            }
+        }
+    }
+    for key in keys {
+        merged.remove(key);
     }
     kube.write_secret(namespace, name, &merged).await
 }
