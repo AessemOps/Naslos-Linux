@@ -1,26 +1,27 @@
 {{- /*
 NetworkPolicy intent for the Naslos namespace (AUDIT-M4).
 
-These objects record the intended call graph. **They are inert on the current
-flannel install**: flannel has no policy controller, so `NetworkPolicy` resources
-are accepted by the API server and silently do nothing. They are NOT a complete
-remediation even after a policy-capable CNI is installed, for two reasons the
-operator must handle in the enforcement window:
+Cilium is the installed CNI (bootstrap/vm/naslos-vm.yaml replaces flannel), so
+these objects are enforced. The upstream `NetworkPolicy` objects below scope
+traffic by pod identity and port; the `CiliumNetworkPolicy` objects at the
+bottom cover what the upstream API cannot express (the reserved `host` and
+`kube-apiserver` entities).
+
+Two things stay operator configuration, never guesses:
 
 1. The privileged agent is `hostNetwork` (and so are samba/nfs). Policy CNIs do
    not apply pod-level NetworkPolicy to host-network pods, so
-   `naslos-agent-ingress` cannot restrict :9090 to the API by itself - that needs
-   a node-level rule (Talos/nftables, or a Cilium host firewall policy keyed to
-   the API pod IP).
+   `naslos-agent-ingress` cannot restrict :9090 to the API by itself - that
+   needs a node-level rule (Talos/nftables, or the optional Cilium host
+   firewall policy keyed to the API pod labels below).
 2. Traefik binds hostPort 80/443, so the entry traffic's source is the node
    address, expressed here via `networkPolicy.ingressPluginsCIDR`.
 
-The host/node CIDRs are configuration, not guesses: `networkPolicy.nodeCIDR`
-defaults to empty because a wrong value silently breaks the enforcement window.
-Set it (e.g. the node subnet) before installing a policy CNI.
+`networkPolicy.nodeCIDR` defaults to empty because a wrong value silently
+breaks egress to the hostNetwork services. Set it (the node subnet) before
+installing.
 
-Enabled by default: a no-op under flannel, and a latent protection when the CNI
-changes. Set networkPolicy.enabled=false to skip rendering entirely.
+Enabled by default. Set networkPolicy.enabled=false to skip rendering entirely.
 */}}
 {{- if .Values.networkPolicy.enabled }}
 {{- $ns := .Release.Namespace }}
@@ -175,8 +176,6 @@ spec:
           port: 80
         - protocol: TCP
           port: 443
-        - protocol: TCP
-          port: 8080
 ---
 # API: proxied by Traefik, and reached by the UI's nginx as the upstream for the
 # relative /api/* calls (a second path that bypasses the proxy for static-asset
@@ -524,6 +523,34 @@ spec:
         - protocol: TCP
           port: 443
 {{- end }}
+---
+# C-1c: the web-upgrade operation's fallback path. The Job normally reads the
+# API's already-verified pack from the shared state volume (no network); this
+# policy makes the `--pack-url` download reachable when that cache is absent
+# (a profile without the state volume). Scoped to the Job pod and to HTTPS,
+# like the API's image-egress policy; the pack and its CDN redirect targets are
+# release assets, so the destination set cannot be pinned by CIDR.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-system-op-egress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-system-op
+    app.kubernetes.io/component: upgrader
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-system-op
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: "0.0.0.0/0"
+      ports:
+        - protocol: TCP
+          port: 443
 {{- if .Values.networkPolicy.gitEgress }}
 ---
 # Git chart repository clones (FR-APP, R-069): scoped to the API pod in the
@@ -695,11 +722,22 @@ metadata:
 spec:
   endpointSelector: {}
   egress:
-    # The API server, kubelet, and other node-local services.
+    # P-1/R5: node-local services, narrowed to the ports a pod actually dials:
+    # the API server (6443) and kubelet (10250) for every workload, and the
+    # Talos API (50000) for the upgrader Job's `talosctl`. The agent/vmd
+    # listeners (:9090/:9091) are granted separately to the API pod only.
     - toEntities:
         - host
         - kube-apiserver
         - remote-node
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+            - port: "10250"
+              protocol: TCP
+            - port: "50000"
+              protocol: TCP
     # Cluster DNS regardless of datapath (the upstream rule above covers the
     # CIDR/selector cases; this is the entity-based equivalent).
     - toEndpoints:
@@ -732,6 +770,14 @@ spec:
         - host
         - kube-apiserver
         - remote-node
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+            - port: "10250"
+              protocol: TCP
+            - port: "50000"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: kube-system
@@ -743,6 +789,34 @@ spec:
             - port: "53"
               protocol: TCP
 {{- end }}
+---
+# R5/P-1: the hostNetwork agent (:9090) and vmd (:9091) are reachable from the
+# API pod alone. This is the egress half of that intent; the policies are
+# additive, so the `naslos-allow-host` rule above no longer needs a no-port
+# `toEntities: host` grant for every pod in the namespace. `endpointSelector`
+# scopes the rule to the API pod labels (the egress equivalent of an ingress
+# `fromEndpoints` peer).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: naslos-api-host-egress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-api
+    app.kubernetes.io/component: api
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-api
+  egress:
+    - toEntities:
+        - host
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+            - port: "9091"
+              protocol: TCP
 {{- if .Values.networkPolicy.cilium.hostFirewall }}
 ---
 # CiliumClusterwideNetworkPolicy + the Cilium host firewall: the ONLY way to
@@ -750,7 +824,9 @@ spec:
 # node IP at :9090, and pod-level NetworkPolicy does not apply to host-network
 # pods, so `naslos-agent-ingress` above cannot see it. With
 # `enable-host-firewall: true`, Cilium programmes nftables on the node for
-# policies that select a node, and this opens :9090 to the API pod only.
+# policies that select a node, and this opens the agent (:9090) and vmd (:9091)
+# to the API pod only, while keeping the control-plane and LAN services the
+# node serves reachable.
 #
 # IMPORTANT - semantics and blast radius: selecting a node here turns on the
 # HOST FIREWALL for that node and makes node ingress default-deny for anything
@@ -792,17 +868,28 @@ spec:
     matchLabels:
       {{ .Values.networkPolicy.cilium.hostFirewallNodeLabel | default "naslos.io/host-firewall" | quote }}: {{ "true" | quote }}
   ingress:
-    # Everything the cluster itself needs to reach on the node (API server,
-    # kubelet, the agent on :9090). `fromEntities: cluster` is the correct way
-    # to express "anything inside the cluster"; the per-pod :9090 restriction
-    # is enforced on top by naslos-agent-ingress for non-hostNetwork pod
-    # traffic, and by this rule's port list.
-    - fromEntities:
-        - cluster
+    # P-2: the agent (:9090) and vmd (:9091) are reachable from the API pod
+    # only, by identity. The previous rule allowed `fromEntities: cluster` on
+    # :9090 and nothing on :9091 (so enabling the host firewall broke the VNC
+    # tunnel), which is exactly the too-broad/too-narrow pair this fixes.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: {{ $ns }}
+            app.kubernetes.io/name: naslos-api
       toPorts:
         - ports:
             - port: "9090"
               protocol: TCP
+            - port: "9091"
+              protocol: TCP
+    # The cluster control plane (API server 6443, kubelet 10250) and the Talos
+    # API (50000, used by the upgrader Job's talosctl) must stay reachable from
+    # inside the cluster. Keep this rule separate from the API-pod one so the
+    # agent/vmd listeners are not re-opened to every pod.
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
             - port: "6443"
               protocol: TCP
             - port: "10250"
@@ -838,6 +925,20 @@ spec:
               protocol: TCP
             - port: "2049"
               protocol: TCP
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+    {{- end }}
+    # Public app/exposure traffic: the node is internet-facing when the
+    # installer (or the operator) sets networkPolicy.publicIngressCIDR.
+    # Without this the host firewall would drop public 80/443 the moment it is
+    # enabled, even though Traefik is meant to serve it.
+    {{- with $publicIngressCIDR }}
+    - fromCIDR:
+        - {{ . | quote }}
+      toPorts:
+        - ports:
             - port: "80"
               protocol: TCP
             - port: "443"

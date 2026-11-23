@@ -105,6 +105,14 @@ pub struct Cli {
     /// Optional base64/hex Ed25519 public key used to verify the pack.
     #[arg(long, default_value = "")]
     pub pack_pubkey: String,
+    /// Cached, already-verified pack on the shared state volume (C-1c). When
+    /// set and valid this is used instead of a network download, so the Job
+    /// completes under the namespace default-deny.
+    #[arg(long, default_value = "")]
+    pub pack_file: String,
+    /// Cached detached signature beside `--pack-file`.
+    #[arg(long, default_value = "")]
+    pub pack_sig_file: String,
     #[arg(long, default_value = "naslos")]
     pub namespace: String,
     #[arg(long, default_value = "naslos")]
@@ -176,6 +184,13 @@ mod tests {
         assert!(crate::system::pack_url_allowed(
             "https://mirror.example/packs/pack.tar.gz",
             "https://mirror.example/releases.json"
+        )
+        .is_ok());
+        // GitHub redirects release assets to this host; the hop check must
+        // admit it or every real download fails after the redirect.
+        assert!(crate::system::pack_url_allowed(
+            "https://release-assets.githubusercontent.com/github-production-release-asset/x",
+            "https://api.github.com/repos/o/r/releases"
         )
         .is_ok());
         assert!(crate::system::pack_url_allowed(
