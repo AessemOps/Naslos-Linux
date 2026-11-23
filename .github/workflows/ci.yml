@@ -63,8 +63,10 @@ jobs:
           curl -fsSL -o trivy_checksums.txt "${base}/trivy_${version}_checksums.txt"
           grep " ${tarball}\$" trivy_checksums.txt | sha256sum -c -
           tar -xzf "$tarball" trivy
-          install -m 0755 trivy /usr/local/bin/trivy
-          trivy --version
+          mkdir -p "$RUNNER_TEMP/bin"
+          install -m 0755 trivy "$RUNNER_TEMP/bin/trivy"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/trivy" --version
 
       - name: Rust advisories, licenses, bans, sources
         run: cd rust && cargo audit --ignore RUSTSEC-2026-0119 --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0387 && cargo deny check advisories bans licenses sources
@@ -95,9 +97,10 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.12"
+      - name: Set up Python
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
       - name: Install UI dependencies
         # The committed lock is resolved here (glibc); ui/Dockerfile resolves
@@ -129,8 +132,10 @@ jobs:
           curl -fsSL -o gitleaks_checksums.txt "${base}/gitleaks_${version}_checksums.txt"
           grep " ${tarball}\$" gitleaks_checksums.txt | sha256sum -c -
           tar -xzf "$tarball" gitleaks
-          install -m 0755 gitleaks /usr/local/bin/gitleaks
-          gitleaks version
+          mkdir -p "$RUNNER_TEMP/bin"
+          install -m 0755 gitleaks "$RUNNER_TEMP/bin/gitleaks"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/gitleaks" version
 
       - name: Scan the working tree
         run: gitleaks dir . --no-banner --redact
@@ -173,7 +178,9 @@ jobs:
           curl -fsSL -o trivy_checksums.txt "${base}/trivy_${version}_checksums.txt"
           grep " ${tarball}\$" trivy_checksums.txt | sha256sum -c -
           tar -xzf "$tarball" trivy
-          install -m 0755 trivy /usr/local/bin/trivy
+          mkdir -p "$RUNNER_TEMP/bin"
+          install -m 0755 trivy "$RUNNER_TEMP/bin/trivy"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Scan ${{ matrix.name }} for HIGH/CRITICAL CVEs
         run: |
@@ -195,9 +202,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.12"
+      - name: Set up Python
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet pyyaml
 
       - name: Build the install pack (tag placeholders)
         run: make install-pack
