@@ -112,3 +112,107 @@ test('virtual machine routes are owner-only', async ({ request }) => {
   const vms = await res.json();
   expect(Array.isArray(vms)).toBeTruthy();
 });
+
+// UI confirmation regressions (FR-VMT-03/09). The API is mocked; these assert
+// that cancel sends nothing and the confirmed requests carry the VM name.
+test.describe('VM destructive confirmations', () => {
+  const vm = {
+    name: 'uitest-vm',
+    pool: 'tank',
+    cpu: 2,
+    memMiB: 1024,
+    autostart: false,
+    desired: 'stopped',
+    firmware: 'uefi',
+    secureBoot: false,
+    disk: { sizeGB: 8, format: 'qcow2', bus: 'virtio', sourceImage: null },
+    net: { mode: 'nat', forwards: [] },
+    cloudInit: null,
+    iso: null,
+    state: 'stopped',
+    pid: null,
+    cpuPercent: 0,
+    memUsedMiB: 0,
+    unexpectedExit: false,
+    lastError: ''
+  };
+
+  async function mockVmPage(page: any, onRequest?: (method: string, url: string) => any) {
+    await page.route(/\/api\//, async (route: any) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const path = url.pathname;
+      if (onRequest && (await onRequest(request.method(), request.url()))) {
+        return route.fulfill({ json: {} });
+      }
+      if (path === '/api/virt/capabilities') {
+        return route.fulfill({
+          json: { kvm: true, cpuModel: 'Test CPU', nested: false, secureBoot: false, nics: [] }
+        });
+      }
+      if (path === '/api/virt/vms') return route.fulfill({ json: [vm] });
+      if (path === '/api/volumes/zfs') return route.fulfill({ json: [{ name: 'tank' }] });
+      if (path === '/api/virt/vms/uitest-vm/snapshots') {
+        return route.fulfill({ json: [{ name: 'snap1', created: '2026-01-01T00:00:00Z' }] });
+      }
+      return route.fulfill({ json: {} });
+    });
+  }
+
+  test('VM delete requires the typed name and sends confirm', async ({ page }) => {
+    const deletes: string[] = [];
+    await mockVmPage(page, (method, url) => {
+      if (method === 'DELETE' && url.includes('/api/virt/vms/')) {
+        deletes.push(url);
+        return true;
+      }
+      return undefined;
+    });
+
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    const row = page.locator('tr').filter({ hasText: 'uitest-vm' });
+    await expect(row).toBeVisible();
+
+    page.once('dialog', (dialog) => dialog.dismiss());
+    await row.getByRole('button', { name: 'Delete' }).click();
+    await expect(row).toBeVisible();
+    expect(deletes).toHaveLength(0);
+
+    page.once('dialog', (dialog) => dialog.accept('wrong-name'));
+    page.once('dialog', (dialog) => dialog.accept());
+    await row.getByRole('button', { name: 'Delete' }).click();
+    await expect(row).toBeVisible();
+    expect(deletes).toHaveLength(0);
+
+    page.once('dialog', (dialog) => dialog.accept('uitest-vm'));
+    await row.getByRole('button', { name: 'Delete' }).click();
+    await expect.poll(() => deletes.some((url) => url.includes('confirm=uitest-vm'))).toBe(true);
+  });
+
+  test('snapshot restore requires the typed VM name and sends confirm', async ({ page }) => {
+    const restores: string[] = [];
+    await mockVmPage(page, (method, url) => {
+      if (method === 'POST' && url.includes('/restore')) {
+        restores.push(url);
+        return true;
+      }
+      return undefined;
+    });
+
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.locator('tr').filter({ hasText: 'uitest-vm' }).getByRole('button', { name: 'Open' }).click();
+
+    const restore = page.getByRole('button', { name: 'Restore', exact: true });
+    await expect(restore).toBeEnabled({ timeout: 10_000 });
+
+    page.once('dialog', (dialog) => dialog.dismiss());
+    await restore.click();
+    expect(restores).toHaveLength(0);
+
+    page.once('dialog', (dialog) => dialog.accept('uitest-vm'));
+    await restore.click();
+    await expect.poll(() => restores.some((url) => url.includes('confirm=uitest-vm'))).toBe(true);
+  });
+});

@@ -1729,8 +1729,9 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   through the agent; the first start creates the disk image blank (`qcow2`
   sparse by default, `raw` optional) or seeds it from a library cloud image
   and resizes it to the declared size. Deleting a VM MUST refuse while it is
-  running and MUST destroy the dataset only after the record is removed,
-  restoring the record if the destroy fails.
+  running, MUST require `confirm=<vm name>`, and MUST destroy the dataset only
+  after the record is removed, restoring the record if the destroy fails. The
+  UI MUST ask the operator to type the VM name before sending that request.
 - **FR-VMT-04** — Networking v1 is NAT (slirp) with per-VM editable TCP port
   forwards exposed on the node; that is the only mode. A LAN mode that gives
   the guest its own DHCP address is **[OPEN]**: the planned path is a Talos
@@ -1772,10 +1773,12 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   requested and MUST NOT attach the console after unmount.
 - **FR-VMT-09** — Snapshots MUST be ordinary ZFS snapshots of the VM dataset
   (created/listed via the agent, crash-consistent while the VM runs, backed
-  up by Buddy like any dataset). Restore MUST refuse a running VM and MUST
-  roll the dataset back (`zfs rollback -r`, deleting newer snapshots). A
-  failed snapshot listing MUST render an error with a retry in that section,
-  not the empty state.
+  up by Buddy like any dataset). Restore MUST refuse a running VM, MUST
+  require `confirm=<vm name>`, and MUST roll the dataset back
+  (`zfs rollback -r`, deleting newer snapshots). The UI MUST ask the operator
+  to type the VM name before sending the restore request. A failed snapshot
+  listing MUST render an error with a retry in that section, not the empty
+  state.
 - **FR-VMT-10** — `state` MUST be derived live from the supervisor, never
   persisted. The API MUST push the desired config at its own startup with
   `desired=running` for autostart-marked VMs (pod restart = VM restart for

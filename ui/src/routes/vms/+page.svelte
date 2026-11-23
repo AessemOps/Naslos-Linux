@@ -160,7 +160,9 @@
 
   async function restore(name: string, snapName: string): Promise<string | null> {
     try {
-      const res = await fetch(`/api/virt/vms/${encodeURIComponent(name)}/snapshots/${encodeURIComponent(snapName)}/restore`, {
+      // VmDetail gates this with a typed VM-name prompt before calling here;
+      // the API requires the same name as an explicit confirmation.
+      const res = await fetch(`/api/virt/vms/${encodeURIComponent(name)}/snapshots/${encodeURIComponent(snapName)}/restore?confirm=${encodeURIComponent(name)}`, {
         method: 'POST'
       });
       const data = await res.json().catch(() => ({}));
@@ -172,10 +174,17 @@
   }
 
   async function removeVm(vm: VmView) {
-    if (!confirm(`Delete ${vm.name}? Its dataset (${vm.pool}/vms/${vm.name}) and everything on it is destroyed.`)) return;
+    const typed = prompt(
+      `Destroy VM ${vm.name}? Its dataset (${vm.pool}/vms/${vm.name}) and everything on it is destroyed. Type the VM name to confirm.`
+    );
+    if (typed === null) return;
+    if (typed.trim() !== vm.name) {
+      alert('VM name did not match; nothing was destroyed.');
+      return;
+    }
     error = '';
     try {
-      const res = await fetch(`/api/virt/vms/${encodeURIComponent(vm.name)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/virt/vms/${encodeURIComponent(vm.name)}?confirm=${encodeURIComponent(vm.name)}`, { method: 'DELETE' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       if (selected?.name === vm.name) selected = null;

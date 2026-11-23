@@ -96,7 +96,14 @@
   }
 
   async function onRestore(snap: string) {
-    if (!confirm(`Roll ${vm.name} back to ${snap}? Snapshots taken after it are deleted.`)) return;
+    const typed = prompt(
+      `Restore ${vm.name} to snapshot ${snap}? Snapshots taken after it are deleted. Type the VM name to confirm.`
+    );
+    if (typed === null) return;
+    if (typed.trim() !== vm.name) {
+      alert('VM name did not match; nothing was restored.');
+      return;
+    }
     const err = await restore(vm.name, snap);
     if (err) {
       error = err;
