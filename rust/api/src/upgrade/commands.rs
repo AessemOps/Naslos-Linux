@@ -23,7 +23,7 @@ pub async fn run(binary: &str, args: &[String], timeout: Duration) -> Result<Str
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         let err = err.trim();
-        let err = if err.len() > 4096 { &err[..4096] } else { err };
+        let err = stderr_tail(err, 4096);
         return Err(format!(
             "{binary} {} exited {}: {err}",
             args.join(" "),
@@ -69,7 +69,7 @@ pub async fn run_stdin(
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         let err = err.trim();
-        let err = if err.len() > 4096 { &err[..4096] } else { err };
+        let err = stderr_tail(err, 4096);
         return Err(format!(
             "{binary} {} exited {}: {err}",
             args.join(" "),
@@ -77,6 +77,20 @@ pub async fn run_stdin(
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Keep the end of a long stderr. The actionable failure follows the warnings
+/// (a helm upgrade prints a PodSecurity warning per workload first), so the
+/// head-only truncation used to hide the real cause behind 4 KiB of warnings.
+fn stderr_tail(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut start = s.len() - max;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
 }
 
 pub fn kubectl() -> String {
@@ -94,4 +108,24 @@ pub fn talosctl() -> String {
 /// The API image's in-cluster kubeconfig (the Job's service account).
 pub fn kubeconfig() -> Option<String> {
     crate::helm::resolve_api_kubeconfig().map(|p| p.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stderr_truncation_keeps_the_failure_at_the_end() {
+        let mut text = "warnings.go: would violate PodSecurity\n".repeat(200);
+        text.push_str("Error: conflict occurred while applying object");
+        let tail = stderr_tail(&text, 256);
+        assert!(tail.len() <= 256);
+        assert!(tail.contains("conflict occurred"), "{tail}");
+        assert!(!text.starts_with(tail));
+    }
+
+    #[test]
+    fn short_stderr_is_unchanged() {
+        assert_eq!(stderr_tail("boom", 4096), "boom");
+    }
 }

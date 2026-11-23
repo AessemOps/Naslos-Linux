@@ -638,34 +638,44 @@ async fn helm_history_latest(cli: &Cli) -> Result<i64, String> {
         .unwrap_or(0))
 }
 
+fn helm_upgrade_args(
+    release: &str,
+    chart: &Path,
+    namespace: &str,
+    overrides: &Path,
+) -> Vec<String> {
+    vec![
+        "upgrade".into(),
+        release.into(),
+        chart.display().to_string(),
+        "-n".into(),
+        namespace.into(),
+        "-f".into(),
+        chart.join("values.yaml").display().to_string(),
+        "-f".into(),
+        chart.join("values-installer.yaml").display().to_string(),
+        "-f".into(),
+        overrides.display().to_string(),
+        // The release stores the installer's fully merged values, including
+        // old image digests. Reset to chart defaults + this pack's values so
+        // every image and non-engine value comes from the new release.
+        "--reset-values".into(),
+        "--wait=false".into(),
+        "--skip-schema-validation".into(),
+        // The release was first installed by the desktop engine
+        // (`naslos-install.exe`), whose server-side apply owns many fields.
+        // Without this the upgrade fails with "Apply failed with 1 conflict"
+        // on every field this release changes (network policies, RBAC,
+        // Traefik args, Authelia env) and rolls back to the previous revision.
+        "--force-conflicts".into(),
+        "--timeout".into(),
+        "10m".into(),
+    ]
+}
+
 async fn helm_upgrade(cli: &Cli, chart: &Path, overrides: &Path) -> Result<(), String> {
-    run_helm(
-        cli,
-        &[
-            "upgrade".into(),
-            cli.release.clone(),
-            chart.display().to_string(),
-            "-n".into(),
-            cli.namespace.clone(),
-            "-f".into(),
-            chart.join("values.yaml").display().to_string(),
-            "-f".into(),
-            chart.join("values-installer.yaml").display().to_string(),
-            "-f".into(),
-            overrides.display().to_string(),
-            // The release stores the installer's fully merged values, including
-            // old image digests. Reset to chart defaults + this pack's values so
-            // every image and non-engine value comes from the new release.
-            "--reset-values".into(),
-            "--wait=false".into(),
-            "--skip-schema-validation".into(),
-            "--timeout".into(),
-            "10m".into(),
-        ],
-        HELM_TIMEOUT,
-    )
-    .await
-    .map(|_| ())
+    let args = helm_upgrade_args(&cli.release, chart, &cli.namespace, overrides);
+    run_helm(cli, &args, HELM_TIMEOUT).await.map(|_| ())
 }
 
 async fn rollback(cli: &Cli, revision: i64) -> Result<(), String> {
@@ -680,6 +690,7 @@ async fn rollback(cli: &Cli, revision: i64) -> Result<(), String> {
             revision.to_string(),
             "-n".into(),
             cli.namespace.clone(),
+            "--force-conflicts".into(),
             "--wait".into(),
             "--timeout".into(),
             "10m".into(),
@@ -1126,5 +1137,18 @@ mod tests {
         assert!(is_live_running_pod(&explicit_null));
         let pending = serde_json::json!({"status": {"phase": "Pending"}});
         assert!(!is_live_running_pod(&pending));
+    }
+
+    #[test]
+    fn the_platform_upgrade_forces_apply_conflicts() {
+        let args = helm_upgrade_args(
+            "naslos",
+            Path::new("/var/lib/naslos/updates/pack-0.7.2/charts/naslos"),
+            "naslos",
+            Path::new("/var/lib/naslos/upgrade-overrides.json"),
+        );
+        assert!(args.contains(&"--force-conflicts".to_string()), "{args:?}");
+        assert!(args.contains(&"--reset-values".to_string()), "{args:?}");
+        assert_eq!(args.first().map(String::as_str), Some("upgrade"));
     }
 }
