@@ -499,15 +499,16 @@ https://naslos.local
 The chart runs Traefik with `rbac.namespaced: true`, which replaces the
 upstream ClusterRole/ClusterRoleBinding with a Role/RoleBinding in the release
 namespace and in every namespace listed under
-`providers.kubernetesCRD.namespaces` (`naslos-apps`, `naslos-apps-priv`). A
-compromised Traefik pod can therefore read Secrets only in those namespaces,
-not cluster-wide; the residual is that it can read *all* Secrets in them
+`providers.kubernetesCRD.namespaces`. The production and installer overlays
+list the shared app namespaces (`naslos-apps`, `naslos-apps-priv`) plus the
+fixed isolation pool (`naslos-app-1..32`, `naslos-app-p1..p4`), so an app route
+or its copied TLS Secret is readable where it is created. A compromised
+Traefik pod can therefore read Secrets only in those platform namespaces, not
+cluster-wide; the residual is that it can read *all* Secrets in them
 (including the per-domain TLS copies and the app catalog credentials), because
 `rbac.secretResourceNames` cannot express Traefik's per-domain TLS Secret names.
-Routes rendered into a per-app isolation namespace (`naslos-app-*`) need that
-namespace added to `providers.kubernetesCRD.namespaces` and a matching Traefik
-RoleBinding; until the app-isolation work wires that, isolated app exposure
-requires the same two namespaces as a platform-level allowlist. Keep
+When you change `apps.isolation.namespaces` or `privilegedNamespaces`, update
+the overlays' watched list in the same change. Keep
 `apps.officialSource.credentialsSecret` empty on public catalogs, as the chart
 does.
 

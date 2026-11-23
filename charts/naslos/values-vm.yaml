@@ -166,6 +166,54 @@ traefik:
       hostPort: 443
   service:
     type: ClusterIP
+  # R-011: namespaced RBAC. The list replaces the base value and names every
+  # namespace with an IngressRoute/TLS copy: the shared app namespaces and the
+  # fixed per-app isolation pool (baseline 1-32, privileged p1-p4). Keep it in
+  # step with apps.isolation.namespaces/privilegedNamespaces.
+  rbac:
+    namespaced: true
+  providers:
+    kubernetesCRD:
+      namespaces:
+        - naslos-apps
+        - naslos-apps-priv
+        - naslos-app-1
+        - naslos-app-2
+        - naslos-app-3
+        - naslos-app-4
+        - naslos-app-5
+        - naslos-app-6
+        - naslos-app-7
+        - naslos-app-8
+        - naslos-app-9
+        - naslos-app-10
+        - naslos-app-11
+        - naslos-app-12
+        - naslos-app-13
+        - naslos-app-14
+        - naslos-app-15
+        - naslos-app-16
+        - naslos-app-17
+        - naslos-app-18
+        - naslos-app-19
+        - naslos-app-20
+        - naslos-app-21
+        - naslos-app-22
+        - naslos-app-23
+        - naslos-app-24
+        - naslos-app-25
+        - naslos-app-26
+        - naslos-app-27
+        - naslos-app-28
+        - naslos-app-29
+        - naslos-app-30
+        - naslos-app-31
+        - naslos-app-32
+        - naslos-app-p1
+        - naslos-app-p2
+        - naslos-app-p3
+        - naslos-app-p4
+
 
 # IngressRoutes + Authelia forwardAuth. This is what makes every request
 # authenticated; there is no other entry point.

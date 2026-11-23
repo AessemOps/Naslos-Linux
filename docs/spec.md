@@ -119,11 +119,12 @@ unmodified Talos installation, administered through a web UI.
   `a_full_tool_without_confirm_is_refused_before_dispatch`,
   `forged_identity_cannot_bypass_the_public_auth_layers`)*
 - **SEC-18** — Traefik MUST NOT hold cluster-wide Secret read: it MUST run with
-  namespaced RBAC (a Role/RoleBinding in the release and watched app
-  namespaces), watch only those namespaces through the CRD provider, and render
-  no Traefik ClusterRole/ClusterRoleBinding. The residual (all Secrets inside
-  the watched namespaces, because per-domain TLS Secret names are dynamic) MUST
-  be documented. *(audit `check_security_rendering`)*
+  namespaced RBAC (a Role/RoleBinding in the release namespace, the shared app
+  namespaces and every per-app isolation namespace), watch only those
+  namespaces through the CRD provider, and render no Traefik
+  ClusterRole/ClusterRoleBinding. The residual (all Secrets inside the watched
+  namespaces, because per-domain TLS Secret names are dynamic) MUST be
+  documented. *(audit `check_security_rendering`)*
 - **SEC-19** — Authelia MUST mount a `ca.crt`-only Secret for LDAPS trust, never
   the LDAP server private key; it MUST run non-root with all capabilities
   dropped, no privilege escalation, RuntimeDefault seccomp and a read-only root

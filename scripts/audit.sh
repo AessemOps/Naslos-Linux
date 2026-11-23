@@ -133,7 +133,7 @@ assert not [d for d in docs if d.get("kind") == "PersistentVolumeClaim" and d["m
     "the production overlay must not render the shared datasets claim"
 # R-011: Traefik is namespaced, watches only the app namespaces, and holds no
 # ClusterRole/ClusterRoleBinding.
-for ns_name in ("naslos", "naslos-apps", "naslos-apps-priv"):
+for ns_name in ("naslos", "naslos-apps", "naslos-apps-priv", "naslos-app-1", "naslos-app-p1"):
     role = [d for d in docs if d.get("kind") == "Role" and d["metadata"]["name"] == "naslos-traefik" and d["metadata"].get("namespace") == ns_name]
     assert role, f"namespaced Traefik Role missing in {ns_name}"
     assert any(
@@ -146,7 +146,7 @@ assert not [d for d in docs if d.get("kind") == "ClusterRoleBinding" and d["meta
 traefik = find("Deployment", "naslos-traefik")
 assert traefik, "Traefik Deployment missing"
 args = " ".join(traefik["spec"]["template"]["spec"]["containers"][0].get("args", []))
-assert "--providers.kubernetescrd.namespaces=naslos-apps,naslos-apps-priv" in args.replace(" ", ""), args
+assert "--providers.kubernetescrd.namespaces=naslos-apps,naslos-apps-priv,naslos-app-1" in args.replace(" ", ""), args
 assert "--providers.kubernetesingress" not in args or "providers.kubernetesingress.namespaces" in args, args
 # R-036: Authelia is hardened and mounts only the CA Secret, never the LDAP
 # server key.

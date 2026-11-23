@@ -248,11 +248,11 @@ namespace so the API never needs Secret read access in the release namespace
    add back the required set, disable privilege escalation, use RuntimeDefault
    seccomp and a read-only image root with explicit writable volumes.
 5. **Traefik RBAC.** Traefik runs with namespaced RBAC: a Role in the release
-   namespace and in each watched app namespace, no ClusterRole/ClusterRoleBinding.
-   It can read Secrets only there (the per-domain TLS copies need dynamic names,
-   so a `secretResourceNames` allowlist is not possible); routes in per-app
-   isolation namespaces need that namespace added to the watched list and a
-   matching RoleBinding.
+   namespace, the shared app namespaces and the fixed per-app isolation pool,
+   and no ClusterRole/ClusterRoleBinding. It can read Secrets only there (the
+   per-domain TLS copies need dynamic names, so a `secretResourceNames`
+   allowlist is not possible). The watched list lives in the VM/installer
+   overlays and must match `apps.isolation.*` when the pool changes.
 
 ## Layer 5 — Key Data Flows
 
