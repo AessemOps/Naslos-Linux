@@ -18,7 +18,7 @@ path = "src/lib.rs"
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.9", features = ["tls-rustls"] }
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
