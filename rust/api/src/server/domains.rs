@@ -22,13 +22,26 @@ struct DomainRequest {
     fields: Option<HashMap<String, String>>,
     #[serde(skip)]
     solver_submitted: bool,
+    /// Presence flags for record fields whose omission must preserve the
+    /// stored value. The serde defaults make an omitted key look like an
+    /// empty one, so the raw body is inspected before decoding.
+    #[serde(skip)]
+    environment_submitted: bool,
+    #[serde(skip)]
+    acme_email_submitted: bool,
+    #[serde(skip)]
+    app_records_submitted: bool,
 }
 
-/// Decode a domain request while recording whether `solver` was present.
+/// Decode a domain request while recording which omission-sensitive keys were
+/// present.
 #[allow(clippy::result_large_err)]
 async fn read_domain_request(body: Body) -> Result<DomainRequest, Response> {
     let value: serde_json::Value = super::zfs::read_json(body).await?;
     let solver_submitted = value.get("solver").is_some();
+    let environment_submitted = value.get("environment").is_some();
+    let acme_email_submitted = value.get("acmeEmail").is_some();
+    let app_records_submitted = value.get("appRecordsDdnsEntry").is_some();
     let mut req: DomainRequest = serde_json::from_value(value).map_err(|e| {
         json(
             StatusCode::BAD_REQUEST,
@@ -36,6 +49,9 @@ async fn read_domain_request(body: Body) -> Result<DomainRequest, Response> {
         )
     })?;
     req.solver_submitted = solver_submitted;
+    req.environment_submitted = environment_submitted;
+    req.acme_email_submitted = acme_email_submitted;
+    req.app_records_submitted = app_records_submitted;
     Ok(req)
 }
 
@@ -436,10 +452,12 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
         mut domain,
         fields,
         solver_submitted,
+        environment_submitted,
+        acme_email_submitted,
+        app_records_submitted,
     } = req;
-    if domain.environment.is_empty() {
-        domain.environment = "staging".to_string();
-    }
+    // An explicitly submitted blank app-record target clears the link; an
+    // omitted key is restored from the stored record below.
     if domain
         .app_records_ddns_entry
         .as_deref()
@@ -499,7 +517,24 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
     }
     // Preserve write-only fields that an update omitted. The UI never receives
     // the solver or credential values back, so omission must not erase them.
+    // The MCP tools send a partial body, so an omitted environment/acmeEmail/
+    // app-record link must keep the stored value instead of resetting the
+    // record (the UI sends them explicitly; explicit values still apply).
     if let Some(prev) = &existing {
+        if !environment_submitted {
+            domain.environment = prev.environment.clone();
+        }
+        if !acme_email_submitted {
+            domain.acme_email = prev.acme_email.clone();
+        }
+        if !app_records_submitted {
+            domain.app_records_ddns_entry = prev.app_records_ddns_entry.clone();
+        }
+        // Primary and SSO are server-owned (the chart owns the primary domain
+        // and POST /api/domains/{domain}/sso owns SSO); neither UI nor MCP
+        // sends them on update.
+        domain.primary = prev.primary;
+        domain.sso = prev.sso;
         if domain.credentials_secret.is_empty() {
             domain.credentials_secret = prev.credentials_secret.clone();
         }
@@ -512,6 +547,12 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
         if fields.is_none() && !provider_changed {
             domain.provider_config = prev.provider_config.clone();
         }
+    }
+    // Default a blank environment only after omission preservation: an omitted
+    // value on an update keeps the stored server/PKI environment, while an
+    // explicit empty value still takes the documented staging default.
+    if domain.environment.is_empty() {
+        domain.environment = "staging".to_string();
     }
     // An explicit empty solver clears it only for provider-rendered solvers;
     // passthrough still needs one and is rejected by `validate` below.
@@ -561,8 +602,6 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
     let now = chrono::Utc::now();
     if let Some(prev) = &existing {
         domain.created_at = prev.created_at;
-        // The SSO flag is owned by POST /api/domains/{domain}/sso.
-        domain.sso = prev.sso;
     } else {
         domain.created_at = Some(now);
     }
@@ -837,6 +876,7 @@ mod tests {
             },
             fields: None,
             solver_submitted: true,
+            ..Default::default()
         };
         let response = upsert_domain(&state, req, StatusCode::CREATED).await;
         assert_eq!(response.status(), StatusCode::CREATED);

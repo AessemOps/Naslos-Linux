@@ -1073,6 +1073,124 @@ async fn domain_provider_change_accepts_an_out_of_band_credentials_secret() {
 }
 
 #[tokio::test]
+async fn domain_provider_change_preserves_omitted_record_fields() {
+    let mut st = AppState::for_test(SECRET);
+    let ddns = test_ddns_manager(&st);
+    ddns.store()
+        .put(naslos_api::ddns::Entry {
+            id: "ddns-1".into(),
+            provider: "ovh".into(),
+            zone: "example.test".into(),
+            record: "home".into(),
+            record_type: "A".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    st.ddns = Some(Arc::new(ddns));
+    st.domains
+        .upsert(naslos_api::certs::Domain {
+            base_domain: "example.test".into(),
+            dns_provider: "cloudflare".into(),
+            credentials_secret: "naslos-domain-example-test-creds".into(),
+            provider_config: std::collections::HashMap::from([(
+                "proxied".to_string(),
+                "true".to_string(),
+            )]),
+            environment: "production".into(),
+            acme_email: "ops@example.test".into(),
+            app_records_ddns_entry: Some("ddns-1".into()),
+            primary: true,
+            sso: true,
+            ..Default::default()
+        })
+        .unwrap();
+    let st = Arc::new(st);
+
+    // The MCP domain_update shape sends no environment, acmeEmail or app-record
+    // key: those fields keep their stored values instead of resetting the
+    // domain to staging with no email and no app CNAMEs.
+    let switch = r#"{"baseDomain":"example.test","dnsProvider":"ovh","credentialsSecret":"naslos-domain-ovh-creds","providerConfig":{"endpoint":"ovh-ca"}}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(switch)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = st.domains.get("example.test").unwrap();
+    assert_eq!(stored.dns_provider, "ovh");
+    assert_eq!(stored.environment, "production");
+    assert_eq!(stored.acme_email, "ops@example.test");
+    assert_eq!(stored.app_records_ddns_entry.as_deref(), Some("ddns-1"));
+    assert!(stored.primary);
+    assert!(stored.sso);
+}
+
+#[tokio::test]
+async fn domain_update_applies_explicit_record_fields_and_keeps_server_flags() {
+    let mut st = AppState::for_test(SECRET);
+    let ddns = test_ddns_manager(&st);
+    for id in ["ddns-1", "ddns-2"] {
+        ddns.store()
+            .put(naslos_api::ddns::Entry {
+                id: id.into(),
+                provider: "ovh".into(),
+                zone: "example.test".into(),
+                record: "home".into(),
+                record_type: "A".into(),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    st.ddns = Some(Arc::new(ddns));
+    st.domains
+        .upsert(naslos_api::certs::Domain {
+            base_domain: "example.test".into(),
+            dns_provider: "cloudflare".into(),
+            credentials_secret: "naslos-domain-example-test-creds".into(),
+            environment: "production".into(),
+            acme_email: "old@example.test".into(),
+            app_records_ddns_entry: Some("ddns-1".into()),
+            primary: true,
+            sso: true,
+            ..Default::default()
+        })
+        .unwrap();
+    let st = Arc::new(st);
+
+    // The UI PUT shape always sends environment/acmeEmail/appRecordsDdnsEntry
+    // (and fields). Explicit values still apply; the server-owned primary/sso
+    // flags it does not send survive.
+    let payload = r#"{"baseDomain":"example.test","dnsProvider":"cloudflare","credentialsSecret":"naslos-domain-example-test-creds","acmeEmail":"new@example.test","environment":"staging","appRecordsDdnsEntry":"ddns-2","fields":{}}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = st.domains.get("example.test").unwrap();
+    assert_eq!(stored.environment, "staging");
+    assert_eq!(stored.acme_email, "new@example.test");
+    assert_eq!(stored.app_records_ddns_entry.as_deref(), Some("ddns-2"));
+    assert!(stored.primary);
+    assert!(stored.sso);
+
+    // An explicit null app-record target still clears the link.
+    let payload = r#"{"baseDomain":"example.test","dnsProvider":"cloudflare","credentialsSecret":"naslos-domain-example-test-creds","acmeEmail":"new@example.test","environment":"staging","appRecordsDdnsEntry":null,"fields":{}}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(st
+        .domains
+        .get("example.test")
+        .unwrap()
+        .app_records_ddns_entry
+        .is_none());
+}
+
+#[tokio::test]
 async fn notification_test_route_requires_enabled_and_bypasses_the_severity_floor() {
     // Disabled: an explicit client error, not a false "sent".
     let (status, body, _r) = send(admin_request("POST", "/api/notifications/test", None)).await;
