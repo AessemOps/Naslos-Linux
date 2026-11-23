@@ -41,22 +41,60 @@ for values_file in values.yaml values-installer.yaml values-vm.yaml; do
 import re
 import sys
 
-text = open(sys.argv[1], encoding="utf-8").read()
-expected = sys.argv[2]
-label = sys.argv[3]
-tags = set(re.findall(r'^\s*tag:\s*"([^"]+)"', text, re.M))
-tags |= set(re.findall(r'naslos-[a-z]+:([0-9]+\.[0-9]+\.[0-9]+)', text))
-bad = sorted(tag for tag in tags if tag != expected)
-if not tags:
-    print(f"release guard: {label} pins no image tags", file=sys.stderr)
-    sys.exit(1)
-if bad:
-    print(
-        f"release guard: {label} tags "
-        + ", ".join(bad)
-        + f" do not match appVersion {expected}",
-        file=sys.stderr,
-    )
+import yaml
+
+path, expected, label = sys.argv[1:4]
+doc = yaml.safe_load(open(path, encoding="utf-8"))
+errors = []
+
+
+def check_ref(ref, where):
+    ref = ref.strip()
+    if "@sha256:" in ref:
+        digest = ref.rsplit("@sha256:", 1)[1]
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            errors.append(f"{where}: invalid digest in {ref}")
+        return
+    name = ref.rsplit("/", 1)[-1]
+    if ":" not in name:
+        errors.append(f"{where}: image {ref} has no tag or digest")
+        return
+    tag = name.rsplit(":", 1)[1]
+    if "naslos-" in ref and tag != expected:
+        errors.append(f"{where}: naslos image tag {tag} != appVersion {expected} ({ref})")
+
+
+def walk(node, where):
+    if isinstance(node, dict):
+        repository = node.get("repository")
+        if isinstance(repository, str) and repository:
+            tag = node.get("tag")
+            digest = node.get("digest")
+            if digest:
+                digest_hex = str(digest).removeprefix("sha256:")
+                if not re.fullmatch(r"[0-9a-f]{64}", digest_hex):
+                    errors.append(f"{where}.digest: invalid sha256 {digest}")
+            elif tag is None or str(tag) == "":
+                errors.append(f"{where}: repository {repository} has no tag or digest")
+            elif "naslos-" in repository and str(tag) != expected:
+                errors.append(
+                    f"{where}.tag: {tag} != appVersion {expected} ({repository})"
+                )
+        for key, value in node.items():
+            child = f"{where}.{key}" if where else key
+            if key in ("image", "provisionerImage", "helperImage") and isinstance(value, str):
+                check_ref(value, child)
+            else:
+                walk(value, child)
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            walk(value, f"{where}[{index}]")
+
+
+walk(doc, "")
+if errors:
+    for error in errors:
+        print(f"release guard: {label} {error}", file=sys.stderr)
     sys.exit(1)
 PY
     then

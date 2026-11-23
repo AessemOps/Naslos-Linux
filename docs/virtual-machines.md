@@ -237,3 +237,16 @@ The full gate from the plan, for the record:
    re-pushes the desired state, so desired-running VMs restart — an
    explicitly stopped VM stays stopped. A killed QEMU raises
    `vm_exited_unexpected`.
+
+## VNC console exposure
+
+The vmd pod is hostNetwork because VM NAT host forwards must bind the node's
+ports, but VNC is not one of them: vmd binds each QEMU console to `127.0.0.1`
+and streams it through the authenticated `/api/ws/vm/<name>/vnc` WebSocket.
+The chart exposes only the headless 9091 Service, runs vmd in the privileged
+workload namespace with `hostPID`/`hostIPC` off and no service-account token,
+and does not publish a 5900-range port. The pod deliberately has no memory
+limit: QEMU children count against its cgroup, so a limit below the sum of the
+declared guest memory (plus overhead) would OOM-kill running VMs; size the node
+for that sum instead. A future per-VM memory limit belongs with the VM spec
+(WP-03), not a static pod limit.

@@ -8,7 +8,7 @@
 # The QEMU binaries are unmodified distro packages; Naslos only orchestrates
 # them, so the GPL does not extend to the Naslos sources (AGPL) or images.
 
-FROM rust:1.100-slim AS builder
+FROM rust:1.100-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9ae AS builder
 
 WORKDIR /build
 COPY rust/Cargo.toml Cargo.toml
@@ -35,7 +35,7 @@ RUN touch vmd/src/main.rs vmd/src/lib.rs \
     && cargo build --release --locked --package naslos-vmd \
     && strip target/release/naslos-vmd
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 # qemu-system-x86: the hypervisor (QMP, VNC, slirp NAT with port forwards).
 # qemu-utils: qemu-img for blank/cloud-image disks.

@@ -448,6 +448,24 @@ traefik:
   providers:
     kubernetesCRD:
       allowExternalNameServices: true
+      # R-011: watch only the release namespace (implicit) and the shared app
+      # namespaces. The upstream chart's ClusterRole grants Secret read in every
+      # namespace; `rbac.namespaced` below turns that into a Role per watched
+      # namespace, so a compromised Traefik pod can read Secrets only in
+      # `naslos` and these namespaces. The VM/installer overlays replace this
+      # list with the shared namespaces plus the fixed per-app isolation pool
+      # (Traefik needs Service access there for cross-namespace routes); see
+      # docs/deployment.md "Traefik RBAC".
+      namespaces:
+        - naslos-apps
+        - naslos-apps-priv
+  # R-011: no cluster-wide RBAC. The chart renders a Role/RoleBinding in each
+  # namespace listed above (and the release namespace) instead of the upstream
+  # ClusterRole/ClusterRoleBinding. `rbac.secretResourceNames` is deliberately
+  # left empty: Traefik must get TLS Secrets whose names are per-domain, so a
+  # fixed allowlist would break app certificates.
+  rbac:
+    namespaced: true
   # hostPort 80/443 can only be held by one pod on this single node, so the
   # chart default (maxSurge 1, maxUnavailable 0) deadlocks: the new pod never
   # becomes Ready because the old one still owns the ports. terminate the old
@@ -482,7 +500,7 @@ apps:
   # `local-path-storage`; chart values are pointed at that class.
   poolStorage:
     enabled: true
-    provisionerImage: rancher/local-path-provisioner:v0.0.26
+    provisionerImage: rancher/local-path-provisioner:v0.0.26@sha256:aee53cadc62bd023911e7f077877d047c5b3c269f9bba25724d558654f43cea0
   # Per-app namespaces + per-dataset PV/PVCs (D3/F1, Option A). The pool is
   # fixed-size; the API assigns new installs to a free namespace and creates one
   # claim per selected managed dataset. Existing apps stay in the legacy
@@ -516,17 +534,19 @@ apps:
       requestsMemory: 8Gi
       limitsCpu: "8"
       limitsMemory: 16Gi
-  # Dataset access for baseline apps. PSA `baseline` forbids hostPath, but Naslos
-  # datasets are host directories, so the platform exposes them as a static RWX
-  # PV and the `naslos-datasets` PVC that apps mount. Privileged apps mount the
-  # host path directly.
+  # Dataset access for legacy baseline apps. PSA `baseline` forbids hostPath,
+  # but Naslos datasets are host directories, so this opt-in exposes them as a
+  # static RWX PV and the `naslos-datasets` PVC that apps mount. Privileged apps
+  # mount the host path directly. The VM and installer overlays disable this
+  # (R-012); per-app claims are the supported path.
   datasets:
     enabled: true
     hostPath: /var/mnt
     size: 10Ti
     # D3/F1: refuse to render when the Buddy receive store is nested inside the
-    # app datasets root. The VM overlay still sets this to true until the Buddy
-    # dataset is remounted outside /var/mnt (docs/datasets-isolation.md).
+    # app datasets root. Production/installer do not render the root at all;
+    # an install that opts into the legacy claim must move the Buddy store out
+    # (docs/datasets-isolation.md).
     allowBuddyStore: false
   # TTL after which a cached repository clone is refreshed.
   refreshTTL: 15m
@@ -626,6 +646,25 @@ authelia:
       limits:
         cpu: 500m
         memory: 256Mi
+    # R-036: run Authelia unprivileged with an immutable root filesystem.
+    # /config is the session PVC and /tmp is an emptyDir below; everything else
+    # (ConfigMap, Secret mounts, certificates) is already read-only.
+    securityContext:
+      pod:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      container:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
     # The SSO fragments (session cookies + access-control rules) rendered from
     # the runtime SSO domain list by templates/authelia-sso.yaml and rewritten by
     # the API when a domain is promoted/demoted. Mounted read-only; the config's
@@ -634,10 +673,14 @@ authelia:
       - name: authelia-sso
         configMap:
           name: naslos-authelia-sso
+      - name: tmp
+        emptyDir: {}
     extraVolumeMounts:
       - name: authelia-sso
         mountPath: /config-sso
         readOnly: true
+      - name: tmp
+        mountPath: /tmp
   configMap:
     # Use our own ConfigMap (charts/naslos/templates/authelia-config.yaml,
     # wired up with the LDAP backend) instead of the authelia subchart's
@@ -669,11 +712,12 @@ authelia:
         items:
           - key: service-password
             path: service-password
-  # Trust the openldap self-signed CA for the ldaps:// connection — the
-  # chart-generated secret already has a ca.crt key; the authelia chart mounts
-  # every key of this secret at /certificates and trusts them as additional CAs.
+  # Trust the openldap self-signed CA for the ldaps:// connection. R-036:
+  # mount the CA-only Secret, never `naslos-openldap-tls`, whose `ldap.key` is
+  # the LDAP server private key. The authelia chart mounts every key of this
+  # Secret at /certificates and trusts them as additional CAs.
   certificates:
-    existingSecret: naslos-openldap-tls
+    existingSecret: naslos-openldap-ca
   # Persist Authelia's SQLite session/storage DB — without this, /config
   # doesn't exist and Authelia fatals at startup with "unable to open
   # database file: no such file or directory".
@@ -760,6 +804,14 @@ openldap:
     # storageClassName uses the cluster default.
     size: 2Gi
     storageClassName: ""
+    # R-037: the slapcat Job is a short-lived offline dump; bound it.
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
 
 # No `namespace` value: every template uses `.Release.Namespace`, so the chart
 # installs under any release namespace (`helm -n <ns>`), which is what multi-

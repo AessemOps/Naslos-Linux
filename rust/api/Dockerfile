@@ -4,7 +4,7 @@
 # SDKs, so this image ships pinned `helm`, `kubectl` and `talosctl` plus `git`
 # for the chart-repository cache. That adds image size, not idle RSS.
 
-FROM rust:1.100-alpine AS builder
+FROM rust:1.100-alpine@sha256:8d0e82abfdf9a38071e07cabc5afba4ddbe077631a80e4e742a760c38beadc33 AS builder
 RUN apk add --no-cache musl-dev
 
 WORKDIR /build
@@ -27,7 +27,7 @@ COPY rust/vmd/src vmd/src
 RUN touch agent/src/lib.rs agent/src/main.rs api/src/lib.rs api/src/main.rs vmd/src/lib.rs vmd/src/main.rs \
     && cargo build --release --locked --package naslos-api
 
-FROM alpine:3.24
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 # Pinned to the versions the repo runs against (node Talos v1.14.6, K8s v1.37,
 # Helm v4.3). `git` powers the chart-repository cache; `openssh-client` is for

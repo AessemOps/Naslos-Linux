@@ -33,13 +33,15 @@
   limit in Apps → Installed`. Growing the provisioned pool itself needs a chart
   change (raise `apps.isolation.namespaces`) and a platform upgrade.
 - **Dataset exposure (legacy).** `apps.datasets.hostPath` (default `/var/mnt`) is
-  mounted into legacy baseline apps. Fresh installs set
-  `apps.datasets.enabled=false` in the installer overlay and use only per-app
-  claims; the VM overlay keeps it for records that predate isolation. The chart refuses `/`, `/var`, `/etc`, `/home`,
-  `/root`, `/usr`, `/system`, and refuses a Buddy store nested inside the root
-  unless `apps.datasets.allowBuddyStore=true`. The VM overlay sets that flag
-  until the Buddy dataset is moved outside `/var/mnt`; see
-  `docs/datasets-isolation.md` for the recommended per-app isolation design.
+  mounted into legacy baseline apps. Fresh installs and the production VM
+  overlay set `apps.datasets.enabled=false` and use only per-app claims, so the
+  shared root is not rendered at all: VM datasets (`<pool>/vms`), the Buddy
+  store and every other sibling under `/var/mnt` stay outside any app-visible
+  volume. Installs that deliberately keep the legacy claim still get the chart
+  guards: it refuses `/`, `/var`, `/etc`, `/home`, `/root`, `/usr`, `/system`,
+  and refuses a Buddy store nested inside the root unless
+  `apps.datasets.allowBuddyStore=true`. See `docs/datasets-isolation.md` for the
+  per-app isolation design.
 - **Catalog tracking and pinning.** By default the VM and installer overlays
   leave `apps.officialSource.commit` empty, so the API follows the configured
   channel branch (`main`) and a catalog refresh picks up new charts without a
@@ -126,6 +128,20 @@ prefix and takes precedence over `tag`; leave it empty to keep the tag behaviour
 explicit `--set api.image.digest=` (empty). `openldap.image` is a full image
 reference, so pin it there directly (`repo@sha256:…`).
 
+R-035: the build inputs are pinned too. Every Dockerfile base image is
+`tag@sha256:…` (Debian bookworm/trixie slim, Alpine 3.24, the Rust and Node
+images, nginx-unprivileged), `bootstrap/local-path/local-path-storage.yaml`
+pins both the provisioner and its busybox helper, and every GitHub Action is
+referenced by commit SHA. `scripts/check-release-version.sh` walks
+`values.yaml`, `values-installer.yaml` and `values-vm.yaml` and checks every
+`image`/`provisionerImage` reference, including `@sha256:` and
+`image.digest` forms; a naslos image tag must equal `appVersion` and an
+unpinned non-naslos image fails the guard. The release guard also requires a
+`vX.Y.Z` tag to point at a commit already on `master`. Residual: digest pins
+are updated by hand (there is no automated digest-update workflow), so a
+refresh means editing the Dockerfile digest and re-running the image build;
+the release pack remains the authoritative per-release digest map.
+
 ## GHCR images + release tags
 
 Every Naslos image lives in GHCR. A **release** publishes the same images
@@ -201,7 +217,7 @@ not installed (e.g. `smbclient`, `avahi-utils`, `nfs-common`, `procps`).
 | `make cert-manager` | Install cert-manager in the `cert-manager` namespace (CRDs come from `make crds`) |
 | `make cert-manager-webhook-ovh` | Install the OVH DNS-01 webhook in `cert-manager` (group `ovh.naslos.local`) |
 | `make install` | `helm dependency update && helm upgrade --install naslos charts/naslos -n naslos --create-namespace` (does **not** install cert-manager) |
-| `make install-vm` | `make install` with the VM values **and its prerequisites** (`crds`, `cert-manager`, `cert-manager-webhook-ovh`): Traefik on hostPort 80/443 with Authelia forwardAuth (see below). This is the only posture |
+| `make install-vm` | `make install` with the VM values **and its prerequisites** (`crds`, `cert-manager`, `cert-manager-webhook-ovh`, `local-path`, `naslos-talosconfig`, then a preflight that fails closed): Traefik on hostPort 80/443 with Authelia forwardAuth (see below). Requires `VM_IP=<node-ip>` (no default). This is the only posture |
 | `make install-pack` | Build `dist/naslos-install-pack-<version>.tar.gz` for the desktop installer (FR-INSTALL; [installer-contract](installer-contract.md)) |
 | `make uninstall` | `helm uninstall naslos -n naslos` |
 | `make dev-cluster` | `talosctl cluster create --name naslos-dev` from the rendered schematic |
@@ -280,8 +296,8 @@ of the chart now, so there is no separate step for it:
 # Make kubectl/helm talk to the new cluster
 talosctl kubeconfig --nodes 192.168.1.96 --endpoints 192.168.1.96 -f ~/.kube/config
 
-# Deploy local-path-provisioner (single-node VM, no ZFS pool required).
-# Pinned in-repo; the installer pack ships the same file.
+# `make install-vm` does this for you (targets `local-path` and
+# `naslos-talosconfig`, both idempotent). To prepare a node by hand:
 kubectl apply -f bootstrap/local-path/local-path-storage.yaml
 kubectl wait --for=condition=ready pod -l app=local-path-provisioner -n local-path-storage --timeout=120s
 kubectl label ns local-path-storage pod-security.kubernetes.io/enforce=privileged --overwrite
@@ -289,16 +305,21 @@ kubectl patch storageclass local-path \
   -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
 ```
 
-Then install the rest of Naslos:
+Then install Naslos. `VM_IP` is required: it both fills the endpoint in the
+`naslos-talosconfig` Secret the API mounts and identifies the node:
 
 ```bash
-make install-vm
+make install-vm VM_IP=<node-ip>
 ```
+
+A missing `VM_IP`, `local-path` StorageClass or `naslos-talosconfig` Secret
+fails the preflight with the exact target to run; the Helm upgrade is never
+attempted half-provisioned (R-068).
 
 If you used a custom registry/tag, pass the overrides to Helm:
 
 ```bash
-make install-vm HELM_FLAGS="\
+make install-vm VM_IP=<node-ip> HELM_FLAGS="\
   --set api.image.repository=docker.io/myuser/naslos-api \
   --set api.image.tag=latest \
   --set agent.image.repository=docker.io/myuser/naslos-agent \
@@ -473,6 +494,24 @@ https://naslos.local
   the sidebar for administrators only. The API is not exposed on any port
   (`api.insecure` off) and Authelia denies non-admin accounts on `/traefik`.
 
+### Traefik RBAC (R-011)
+
+The chart runs Traefik with `rbac.namespaced: true`, which replaces the
+upstream ClusterRole/ClusterRoleBinding with a Role/RoleBinding in the release
+namespace and in every namespace listed under
+`providers.kubernetesCRD.namespaces`. The production and installer overlays
+list the shared app namespaces (`naslos-apps`, `naslos-apps-priv`) plus the
+fixed isolation pool (`naslos-app-1..32`, `naslos-app-p1..p4`), so an app route
+or its copied TLS Secret is readable where it is created. A compromised
+Traefik pod can therefore read Secrets only in those platform namespaces, not
+cluster-wide; the residual is that it can read *all* Secrets in them
+(including the per-domain TLS copies and the app catalog credentials), because
+`rbac.secretResourceNames` cannot express Traefik's per-domain TLS Secret names.
+When you change `apps.isolation.namespaces` or `privilegedNamespaces`, update
+the overlays' watched list in the same change. Keep
+`apps.officialSource.credentialsSecret` empty on public catalogs, as the chart
+does.
+
 ### First install / creating the operator
 
 The chart does not seed a human account, and `/api/users` is an owner route, so
@@ -484,7 +523,7 @@ direct `ldapadd`) are in
 [identity-sso.md](identity-sso.md#deployment--first-admin).
 
 ```bash
-make install-vm
+make install-vm VM_IP=<node-ip>
 ```
 
 Verify, in order: `kubectl -n naslos get ingressroute` shows `naslos-ui`,
@@ -504,7 +543,7 @@ cluster access:
 ```bash
 helm -n naslos rollback naslos          # previous release
 # or, after a bad commit:
-git revert <sha> && make install-vm
+git revert <sha> && make install-vm VM_IP=<node-ip>
 ```
 
 Pools, datasets and the state PVC (shares, buddy identity, notifications) are

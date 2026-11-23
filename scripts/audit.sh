@@ -86,6 +86,25 @@ for ns_name in ("naslos", "naslos-privileged"):
         any(t.get("namespaceSelector", {}).get("matchLabels", {}).get("naslos.local/apps") == "true" for t in rule.get("to", []))
         for rule in matches[0]["spec"]["egress"]
     ), f"app-namespace egress missing in {ns_name}"
+# R-069: git/DDNS Internet egress is scoped to the API pod, never the
+# namespace-wide policy (which also covers the privileged workload namespace).
+for ns_name in ("naslos", "naslos-privileged"):
+    policies = [d for d in docs if d.get("kind") == "NetworkPolicy"
+                and d["metadata"]["name"] == "naslos-workload-egress"
+                and d["metadata"]["namespace"] == ns_name]
+    for policy in policies:
+        ports = {p.get("port") for rule in policy["spec"]["egress"] for p in rule.get("ports", [])}
+        assert 22 not in ports and 9418 not in ports and 80 not in ports, (ns_name, ports)
+for policy_name, want_ports in {
+    "naslos-api-git-egress": {22, 443, 9418},
+    "naslos-api-ddns-egress": {53, 80, 443},
+}.items():
+    policy = find("NetworkPolicy", policy_name)
+    assert policy, f"{policy_name} missing"
+    assert policy["metadata"]["namespace"] == "naslos", policy["metadata"]
+    assert policy["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"] == "naslos-api", policy["spec"]["podSelector"]
+    ports = {p.get("port") for rule in policy["spec"]["egress"] for p in rule.get("ports", [])}
+    assert want_ports <= ports, (policy_name, ports)
 ns = find("Namespace", "naslos-app-1")
 assert ns, "per-app namespace missing"
 assert ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "baseline"
@@ -107,17 +126,103 @@ mounts = {m["name"] for m in dp["spec"]["template"]["spec"]["containers"][0].get
 assert "ldap-bind" in mounts, mounts
 assert "tmp" in mounts, mounts
 assert dp["spec"]["template"]["spec"]["containers"][0]["securityContext"]["readOnlyRootFilesystem"] is True
-pv = find("PersistentVolume", "naslos-datasets")
-if pv:
-    root = pv["spec"]["hostPath"]["path"]
-    buddy = ""
-    for volume in dp["spec"]["template"]["spec"].get("volumes", []):
-        if volume.get("name") == "buddy-data" and "hostPath" in volume:
-            buddy = volume["hostPath"]["path"]
-    if buddy and (buddy == root or buddy.startswith(root.rstrip("/") + "/")):
-        print(f"NOTICE: buddy.receiveHostPath {buddy} is inside the app datasets root {root} (D3/F1 open)")
-    if root in ("/", "/var", "/etc", "/home", "/root"):
-        raise AssertionError(f"unsafe apps.datasets.hostPath {root}")
+# R-012: the production overlay must not render the shared /var/mnt PV/PVC.
+assert find("PersistentVolume", "naslos-datasets") is None, \
+    "the production overlay must not expose the shared datasets root"
+assert not [d for d in docs if d.get("kind") == "PersistentVolumeClaim" and d["metadata"]["name"] == "naslos-datasets"], \
+    "the production overlay must not render the shared datasets claim"
+# R-011: Traefik is namespaced, watches only the app namespaces, and holds no
+# ClusterRole/ClusterRoleBinding.
+for ns_name in ("naslos", "naslos-apps", "naslos-apps-priv", "naslos-app-1", "naslos-app-p1"):
+    role = [d for d in docs if d.get("kind") == "Role" and d["metadata"]["name"] == "naslos-traefik" and d["metadata"].get("namespace") == ns_name]
+    assert role, f"namespaced Traefik Role missing in {ns_name}"
+    assert any(
+        "secrets" in rule.get("resources", []) for rule in role[0]["rules"]
+    ), f"Traefik Role in {ns_name} lacks Secret access"
+assert not [d for d in docs if d.get("kind") == "ClusterRole" and d["metadata"]["name"] == "naslos-traefik"], \
+    "Traefik must not render a ClusterRole"
+assert not [d for d in docs if d.get("kind") == "ClusterRoleBinding" and d["metadata"]["name"] == "naslos-traefik"], \
+    "Traefik must not render a ClusterRoleBinding"
+traefik = find("Deployment", "naslos-traefik")
+assert traefik, "Traefik Deployment missing"
+args = " ".join(traefik["spec"]["template"]["spec"]["containers"][0].get("args", []))
+assert "--providers.kubernetescrd.namespaces=naslos-apps,naslos-apps-priv,naslos-app-1" in args.replace(" ", ""), args
+assert "--providers.kubernetesingress" not in args or "providers.kubernetesingress.namespaces" in args, args
+# R-036: Authelia is hardened and mounts only the CA Secret, never the LDAP
+# server key.
+authelia = find("StatefulSet", "naslos-authelia")
+assert authelia, "Authelia StatefulSet missing"
+aut_spec = authelia["spec"]["template"]["spec"]
+assert aut_spec.get("securityContext", {}).get("runAsNonRoot") is True, aut_spec.get("securityContext")
+aut_ctr = aut_spec["containers"][0]
+aut_sc = aut_ctr.get("securityContext", {})
+for key, value in {
+    "allowPrivilegeEscalation": False,
+    "readOnlyRootFilesystem": True,
+    "runAsNonRoot": True,
+}.items():
+    assert aut_sc.get(key) is value, (key, aut_sc)
+assert aut_sc.get("capabilities", {}).get("drop") == ["ALL"], aut_sc
+assert aut_sc.get("seccompProfile", {}).get("type") == "RuntimeDefault", aut_sc
+aut_cert_volume = next(v for v in aut_spec["volumes"] if v["name"] == "certificates")
+assert aut_cert_volume["secret"]["secretName"] == "naslos-openldap-ca", aut_cert_volume
+ca_secret = find("Secret", "naslos-openldap-ca")
+assert ca_secret and list(ca_secret.get("data", ca_secret.get("stringData", {}))) == ["ca.crt"], ca_secret
+# R-037: OpenLDAP receives its admin password as a file, and the backup Job is
+# hardened and never mounts a service-account token.
+sts = find("StatefulSet", "naslos-openldap")
+sts_ctr = sts["spec"]["template"]["spec"]["containers"][0]
+sts_env = {e["name"]: e for e in sts_ctr["env"]}
+assert "LDAP_ADMIN_PASSWORD_FILE" in sts_env, sts_env
+assert "LDAP_ADMIN_PASSWORD" not in sts_env, sts_env
+sts_mounts = {m["name"] for m in sts_ctr.get("volumeMounts", [])}
+assert "admin-password" in sts_mounts, sts_mounts
+backup = find("CronJob", "naslos-openldap-backup")
+backup_pod = backup["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+assert backup_pod.get("automountServiceAccountToken") is False, backup_pod
+assert backup_pod.get("securityContext", {}).get("runAsNonRoot") is True, backup_pod
+backup_ctr = backup_pod["containers"][0]
+for key, value in {
+    "allowPrivilegeEscalation": False,
+    "readOnlyRootFilesystem": True,
+    "runAsNonRoot": True,
+}.items():
+    assert backup_ctr["securityContext"].get(key) is value, (key, backup_ctr["securityContext"])
+assert backup_ctr["securityContext"]["capabilities"]["drop"] == ["ALL"], backup_ctr["securityContext"]
+assert backup_ctr.get("resources", {}).get("limits"), backup_ctr
+# R-070: the state and backup claims survive `helm uninstall`.
+for pvc_name in ("naslos-shares-config", "naslos-openldap-backups"):
+    pvc = find("PersistentVolumeClaim", pvc_name)
+    assert pvc, f"{pvc_name} PVC missing"
+    assert pvc["metadata"].get("annotations", {}).get("helm.sh/resource-policy") == "keep", \
+        f"{pvc_name} must be kept on uninstall"
+# R-030 chart: the upgrader admission policy pins image, entrypoint, args, env,
+# volumes and securityContext.
+vap = find("ValidatingAdmissionPolicy", "naslos-upgrader-guard")
+assert vap, "upgrader ValidatingAdmissionPolicy missing"
+expressions = " ".join(v["expression"] for v in vap["spec"]["validations"])
+for fragment in (
+    "naslos-upgrade",
+    "^--(op|operation-id|from|version|pack-url|sha256|namespace|release)",
+    "NASLOS_NAMESPACE",
+    "hostPath",
+    "/var/lib/naslos",
+    "runAsUser == 65532",
+    "readOnlyRootFilesystem == true",
+    "drop.exists(cap, cap == 'ALL')",
+):
+    assert fragment in expressions, f"upgrader policy is missing {fragment!r}"
+# The upgrader path itself grants no exec: the API's operation Role is
+# jobs/pods/log/configmap only, and no rule attached to the upgrader identity
+# names pods/exec (the web terminal has its own dedicated Role).
+api_system = find("Role", "naslos-api-system")
+assert api_system, "API system Role missing"
+for rule in api_system["rules"]:
+    assert "pods/exec" not in rule.get("resources", []), rule
+for doc in docs:
+    if doc.get("kind") in ("Role", "ClusterRole") and "upgrader" in doc["metadata"]["name"]:
+        for rule in doc.get("rules", []):
+            assert "pods/exec" not in rule.get("resources", []), doc["metadata"]["name"]
 secret = find("Secret", "naslos-buddy-kek")
 assert secret, "generated buddy KEK Secret missing"
 raw = base64.b64decode(secret["data"]["kek"])
@@ -141,6 +246,32 @@ for kind, name in [
     assert doc, f"{kind}/{name} missing"
     if doc["spec"]["template"]["spec"].get("automountServiceAccountToken") is not False:
         raise AssertionError(f"{kind}/{name} automounts a service-account token")
+# R-038: Samba/NFS keep root only for their datastore work, with no inherited
+# capabilities, no privilege escalation, seccomp and a read-only root.
+for name in ("naslos-samba", "naslos-nfs"):
+    ds = find("DaemonSet", name)
+    ctr = ds["spec"]["template"]["spec"]["containers"][0]
+    sc = ctr.get("securityContext", {})
+    assert sc.get("allowPrivilegeEscalation") is False, (name, sc)
+    assert sc.get("readOnlyRootFilesystem") is True, (name, sc)
+    assert sc.get("seccompProfile", {}).get("type") == "RuntimeDefault", (name, sc)
+    assert sc.get("capabilities", {}).get("drop") == ["ALL"], (name, sc)
+    assert "SYS_ADMIN" not in sc.get("capabilities", {}).get("add", []), (name, sc)
+    mounts = {m["mountPath"] for m in ctr.get("volumeMounts", [])}
+    assert "/tmp" in mounts, (name, mounts)
+    if name == "naslos-samba":
+        assert "/etc/avahi" in mounts, (name, mounts)
+# R-034 chart side: vmd keeps hostNetwork (NAT forwards) but no host PID/IPC,
+# no service-account token and no VNC port in any Service or containerPort.
+vmd = find("Deployment", "naslos-vmd")
+vmd_pod = vmd["spec"]["template"]["spec"]
+assert vmd_pod.get("hostNetwork") is True, vmd_pod
+assert vmd_pod.get("hostPID") is False and vmd_pod.get("hostIPC") is False, vmd_pod
+assert vmd_pod.get("automountServiceAccountToken") is False, vmd_pod
+vmd_ctr = vmd_pod["containers"][0]
+assert not [p for p in vmd_ctr.get("ports", []) if 5900 <= int(p.get("containerPort", 0)) <= 5915], vmd_ctr
+vmd_svc = find("Service", "naslos-vmd")
+assert [p["port"] for p in vmd_svc["spec"]["ports"]] == [9091], vmd_svc["spec"]["ports"]
 PY
   py_status=$?
   rm -f "$f"
@@ -619,22 +750,34 @@ for d in docs:
         assert "stsIncludeSubdomains" not in d["spec"]["headers"], \
             "security-headers must not set stsIncludeSubdomains"
 
-# FR-DNS-03: the DDNS egress is port-scoped to HTTP/HTTPS and DNS (80/443/53),
-# CIDR-scoped, and granted only to the release namespace (the API is the DDNS
-# client).
-egress_policies = [
+# FR-DNS-03/R-069: Internet egress is scoped to the API pod, never the
+# namespace-wide policy. DDNS is port-scoped to HTTP/HTTPS and DNS (80/443/53)
+# and CIDR-scoped; git is port-scoped to 22/443/9418.
+def egress_ports(d):
+    return {p.get("port") for rule in d["spec"].get("egress", []) for p in rule.get("ports", [])}
+workload_policies = [
     d for d in docs
     if d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == "naslos-workload-egress"
 ]
-def ddns_rules(policy):
-    return [r for r in policy["spec"].get("egress", [])
-            if {p.get("port") for p in r.get("ports", [])} == {443, 80, 53}]
-ddns_namespaces = [p["metadata"].get("namespace") for p in egress_policies if ddns_rules(p)]
-assert ddns_namespaces == ["naslos"], \
-    f"the DDNS egress rule must exist only in the release namespace, got {ddns_namespaces}"
-for r in ddns_rules(next(p for p in egress_policies if p["metadata"].get("namespace") == "naslos")):
-    assert all("ipBlock" in p for p in r.get("to", [])), \
-        "the DDNS egress rule must be CIDR-scoped, never a pod selector"
+for policy in workload_policies:
+    ports = egress_ports(policy)
+    assert not ({"80", "443", 80, 443} & ports), \
+        f"the namespace-wide egress policy must not grant public HTTP(S): {policy['metadata']}"
+    assert 22 not in ports and 9418 not in ports, \
+        f"the namespace-wide egress policy must not grant git: {policy['metadata']}"
+for name, expected in {
+    "naslos-api-ddns-egress": {80, 443, 53},
+    "naslos-api-git-egress": {22, 443, 9418},
+}.items():
+    policy = next((d for d in docs if d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == name), None)
+    assert policy, f"missing the {name} policy"
+    assert policy["metadata"]["namespace"] == "naslos", policy["metadata"]
+    assert policy["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"] == "naslos-api", \
+        f"{name} must select the API pod"
+    assert expected <= egress_ports(policy), (name, egress_ports(policy))
+    for rule in policy["spec"].get("egress", []):
+        assert all("ipBlock" in target for target in rule.get("to", [])), \
+            f"{name} egress must be CIDR-scoped, never a pod selector"
 print("network policy intent ok")
 PY
   rc=$?

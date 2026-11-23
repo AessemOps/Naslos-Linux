@@ -118,6 +118,25 @@ unmodified Talos installation, administered through a web UI.
   `ten_failures_block_the_source_ip`, `a_read_token_cannot_call_a_write_tool`,
   `a_full_tool_without_confirm_is_refused_before_dispatch`,
   `forged_identity_cannot_bypass_the_public_auth_layers`)*
+- **SEC-18** — Traefik MUST NOT hold cluster-wide Secret read: it MUST run with
+  namespaced RBAC (a Role/RoleBinding in the release namespace, the shared app
+  namespaces and every per-app isolation namespace), watch only those
+  namespaces through the CRD provider, and render no Traefik
+  ClusterRole/ClusterRoleBinding. The residual (all Secrets inside the watched
+  namespaces, because per-domain TLS Secret names are dynamic) MUST be
+  documented. *(audit `check_security_rendering`)*
+- **SEC-19** — Authelia MUST mount a `ca.crt`-only Secret for LDAPS trust, never
+  the LDAP server private key; it MUST run non-root with all capabilities
+  dropped, no privilege escalation, RuntimeDefault seccomp and a read-only root
+  filesystem with explicit writable mounts (`/config` PVC, `/tmp` emptyDir).
+  *(audit `check_security_rendering`)*
+- **SEC-20** — The Samba and NFS containers MUST run with `drop: [ALL]` and only
+  the capabilities their datastore operations need, no privilege escalation,
+  RuntimeDefault seccomp and a read-only image root with explicit writable
+  volumes. The OpenLDAP admin password MUST reach the server as a mounted file,
+  and the slapcat backup Job MUST run non-root with no service-account token,
+  resource limits and the same container hardening. *(audit
+  `check_security_rendering`)*
 - **SEC-4** — The user's LDAP password MUST be mirrored to Samba's passdb as
   an NT hash at password-change time; plaintext passwords MUST NOT be stored
   anywhere.
@@ -970,10 +989,14 @@ with a sibling `naslos-app.yaml` install-config. See
   path directly). The API MUST inject the authoritative `datasets` list — one
   `{name, mountPath: "/datasets/<name>", claim|hostPath}` entry per dataset —
   strip client-supplied `datasets`/`datasetsClaim`/`datasetsClaims` values, and
-  never hand a chart the `/var/mnt` root. Records that carry datasets MUST be
-  migrated once to that layout, and a record without a per-app namespace MUST
-  NOT gain or change datasets without a reinstall. *(chart render gate +
-  `apps::dataset_layout_tests` + `apps::value_schema_tests` pool-limit tests)*
+  never hand a chart the `/var/mnt` root. The production overlay and fresh
+  installs MUST disable the legacy shared `naslos-datasets` PV/PVC entirely, so
+  VM datasets, the Buddy store and other siblings under `/var/mnt` are not
+  app-visible; the legacy claim exists only for installs that opt into it.
+  Records that carry datasets MUST be migrated once to that layout, and a
+  record without a per-app namespace MUST NOT gain or change datasets without a
+  reinstall. *(chart render gate + `apps::dataset_layout_tests` +
+  `apps::value_schema_tests` pool-limit tests)*
 - **FR-APP-21** — An app install MAY select a ZFS pool for the chart's own
   persistence PVCs. When `pool` is set the API MUST reject a pool that does not
   exist, provision a pool-scoped local-path provisioner and StorageClass
@@ -1588,6 +1611,19 @@ implemented here).
   the pack build MUST fail closed when a chart image has no digest. *(audit
   `check_image_digest_render` / `check_pack_digest_pinning`; workflow
   `.github/workflows/release.yml`)*
+- **FR-INSTALL-14** — Build inputs MUST be pinned: every Dockerfile base image
+  and both `bootstrap/local-path` images by `tag@sha256:…`, every GitHub Action
+  by commit SHA, and `scripts/check-release-version.sh` MUST parse every
+  `image`/`provisionerImage` reference in `values.yaml`,
+  `values-installer.yaml` and `values-vm.yaml`, including `@sha256:` and
+  `image.digest` forms (a naslos tag must equal `appVersion`; an unpinned image
+  fails). A `vX.Y.Z` release tag MUST point at a commit already on `master`.
+  *(audit `check-release-version.sh 0.7.0`; workflow
+  `.github/workflows/release.yml` guard)*
+- **FR-INSTALL-15** — `helm uninstall` MUST keep the platform namespace, the
+  `naslos-shares-config` state claim (Buddy identity, VM records, config) and
+  the `naslos-openldap-backups` claim; deleting them is a separate operator
+  action. *(audit `check_security_rendering` keep assertions)*
 
 ### 3.11 System upgrades (`FR-UPD`)
 
@@ -1626,9 +1662,12 @@ A node installed from an installer pack can be upgraded from the web UI. A
   detect the A/B rollback after reboot. A Kubernetes upgrade MUST dry-run first
   and report that it has no automatic rollback.
 - **FR-UPD-07** — A `ValidatingAdmissionPolicy` MUST reject any pod using the
-  `naslos-upgrader` ServiceAccount unless every container runs a
-  `ghcr.io/aessemops/naslos-api@sha256:` image with the `naslos-upgrade`
-  entrypoint.
+  `naslos-upgrader` ServiceAccount unless every container runs exactly one
+  `ghcr.io/aessemops/naslos-api@sha256:` container with the `naslos-upgrade`
+  entrypoint, only the documented operation flags and NASLOS_/HELM_/TALOS_ env
+  names, only the `tmp`/`talosconfig`/`state` volumes (no hostPath or subPath),
+  and a fixed non-root (`65532`), no-privilege-escalation, read-only-root,
+  `ALL`-dropped, RuntimeDefault-seccomp pod. *(audit `check_security_rendering`)*
 - **FR-UPD-08** — The status/lock MUST live in the
   `naslos-system-operation` ConfigMap (`phase`, `steps`, timestamps, result)
   and MUST survive API restarts and node reboots. The API's RBAC MUST be
@@ -1767,7 +1806,11 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   opt-out short of an explicit `VMD_ALLOW_PLAINTEXT=1` for development. The
   QEMU VNC listener MUST be password-protected (the password is set over
   QMP per boot and handed to the browser only through the owner-gated
-  preflight).
+  preflight) and MUST bind `127.0.0.1`, never `0.0.0.0`: the console is
+  reachable only through the authenticated WebSocket bridge. The vmd pod may
+  use hostNetwork for NAT forwards but MUST NOT publish a VNC port/Service,
+  enable host PID/IPC or mount a service-account token. *(WP-03 vmd bind
+  test; chart audit `check_security_rendering`)*
 - **FR-VMT-12** — Secure Boot MUST be an optional per-VM flag
   (`secureBoot`, default `false`) and MUST be valid only with UEFI firmware.
   The supervisor MUST boot a Secure Boot guest with the OVMF `*.secboot.fd`
