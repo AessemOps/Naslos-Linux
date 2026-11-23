@@ -128,6 +128,41 @@ if "--providers.kubernetescrd.allowCrossNamespace=true" not in args:
     fail("traefik CRD provider does not allow cross-namespace Services")
 if not any(a.startswith("--providers.kubernetescrd") for a in args):
     fail("traefik CRD provider is not enabled")
+
+# FR-MCP/SEC: the MCP route matches exactly /mcp and /mcp/... so nothing
+# else (e.g. /mcpfoo) is proxied without forwardAuth, and the Authelia
+# bypass regex covers the same paths and nothing more.
+mcp_routes = [
+    r
+    for d in by_kind("IngressRoute")
+    if d["metadata"]["name"] == "naslos-mcp"
+    for r in d.get("spec", {}).get("routes", [])
+]
+if not mcp_routes:
+    fail("IngressRoute/naslos-mcp is missing (mcp.available should default on)")
+for r in mcp_routes:
+    match = r.get("match", "")
+    if "Path(`/mcp`)" not in match or "PathPrefix(`/mcp/`)" not in match:
+        fail(f"naslos-mcp matcher is not the exact /mcp pair: {match}")
+    if "PathPrefix(`/mcp`)" in match:
+        fail(f"naslos-mcp matcher still contains the bare PathPrefix(`/mcp`): {match}")
+# The Authelia configuration is rendered as a ConfigMap named authelia-config
+# (consumed by the subchart); scan both kinds for the bypass either way.
+authelia_cfg = [
+    d
+    for kind in ("ConfigMap", "Secret")
+    for d in by_kind(kind)
+    if "authelia" in d["metadata"]["name"]
+]
+bypass_ok = any(
+    "^/mcp(/.*)?$" in str(doc) for doc in authelia_cfg
+)
+if not bypass_ok:
+    fail("the Authelia bypass regex ^/mcp(/.*)?$ is missing")
+bare_bypass = any("`^/mcp" in str(doc) or "PathPrefix('/mcp')" in str(doc)
+                  for doc in authelia_cfg)
+if bare_bypass:
+    fail("the Authelia MCP bypass is wider than the Traefik route matcher")
 if by_kind("IngressClass"):
     fail("an IngressClass is still created")
 
