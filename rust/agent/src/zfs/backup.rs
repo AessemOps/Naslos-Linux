@@ -126,6 +126,16 @@ pub const OWNED_SNAPSHOT_PREFIXES: [&str; 3] = ["naslos-rep-", "naslos-", "buddy
 
 /// The `zfs receive` argv. `-u` pauses mounting and `-x` drops the stream's
 /// host layout so a peer cannot choose where the dataset lands.
+///
+/// The excluded-property policy is deliberate and narrow:
+/// - `mountpoint` and `canmount` would let a peer choose any host path (or
+///   hide a dataset from the deliberate mount pass),
+/// - `sharenfs`/`sharesmb` would make the received dataset an export without
+///   the share store or the export-canary checks ever seeing it.
+///
+/// Everything else (compression, quota, recordsize, …) is kept from the
+/// stream: it describes the data, not this node's layout. `finalize_receive`
+/// then sets `/var/mnt/<pool>/…` and mounts the tree explicitly.
 pub fn receive_command_line(dataset: &str, force: bool) -> Vec<String> {
     let mut argv: Vec<String> = vec!["receive".into(), "-u".into()];
     for prop in ["mountpoint", "canmount", "sharenfs", "sharesmb"] {
@@ -331,8 +341,17 @@ impl ZfsClient {
     }
 
     /// Set the server-chosen mountpoint after a successful receive and mount
-    /// the dataset deliberately. A mount failure is reported as a warning: the
-    /// received data is already durable and must not be reported as lost.
+    /// the received tree deliberately.
+    ///
+    /// A recursive receive creates the children but `-u` leaves every dataset
+    /// unmounted, so only mounting the root would send child writes into
+    /// shadow directories under the root's mountpoint. The tree is enumerated
+    /// with a scoped `zfs list -r <dataset>`; `zfs mount -a` is never used
+    /// because it would also mount unrelated datasets.
+    ///
+    /// A mount failure is reported as a warning: the received data is already
+    /// durable and must not be reported as lost. Failing to set the root
+    /// mountpoint is still an error (there is no usable layout at all).
     pub async fn finalize_receive(&self, dataset: &str) -> ZfsResult<ReceiveFinalize> {
         validate_dataset_path(dataset)?;
         let mountpoint = receive_mountpoint(dataset).ok_or_else(|| {
@@ -349,7 +368,87 @@ impl ZfsClient {
                 e.message
             )));
         }
+
         let mut warnings = Vec::new();
+        let listing = self
+            .host_exec(
+                ZFS_BIN,
+                &[
+                    "list".to_string(),
+                    "-H".to_string(),
+                    "-o".to_string(),
+                    "name,mountpoint,canmount".to_string(),
+                    "-r".to_string(),
+                    dataset.to_string(),
+                ],
+            )
+            .await;
+        let rows = match listing {
+            Ok(out) => out,
+            Err(e) => {
+                warnings.push(format!(
+                    "received {dataset} but could not list its children, so only the root was mounted: {}",
+                    e.output.trim()
+                ));
+                // Still try the root; the data is durable either way.
+                self.mount_received(dataset, &mountpoint, &mut warnings)
+                    .await;
+                return Ok(ReceiveFinalize {
+                    mountpoint,
+                    warnings,
+                });
+            }
+        };
+
+        // `zfs list -r` prints parents before children, so each mountpoint
+        // exists by the time its dataset is mounted.
+        for line in rows.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let fields: Vec<&str> = line.split('\t').collect();
+            if fields.len() < 3 {
+                continue;
+            }
+            let (child, current, canmount) = (fields[0], fields[1], fields[2]);
+            let Some(expected) = receive_mountpoint(child) else {
+                warnings.push(format!(
+                    "received {child} but it is outside {dataset}; left it unmounted"
+                ));
+                continue;
+            };
+            if child == dataset {
+                if current != expected {
+                    // The root mountpoint was set just above; a stale value
+                    // means `zfs set` did not take effect, which is worth a
+                    // warning instead of mounting onto the wrong path.
+                    warnings.push(format!(
+                        "received {child} but its mountpoint is {current:?} instead of {expected:?}; not mounted"
+                    ));
+                    continue;
+                }
+            } else if current != expected {
+                let prop = format!("mountpoint={expected}");
+                if let Err(e) = self
+                    .host_exec(ZFS_BIN, &["set".to_string(), prop, child.to_string()])
+                    .await
+                {
+                    warnings.push(format!(
+                        "received {child} but could not set its mountpoint to {expected}: {}",
+                        e.output.trim()
+                    ));
+                    continue;
+                }
+            }
+            if canmount == "off" {
+                continue;
+            }
+            self.mount_received(child, &expected, &mut warnings).await;
+        }
+        Ok(ReceiveFinalize {
+            mountpoint,
+            warnings,
+        })
+    }
+
+    async fn mount_received(&self, dataset: &str, mountpoint: &str, warnings: &mut Vec<String>) {
         match self
             .host_exec(ZFS_BIN, &["mount".to_string(), dataset.to_string()])
             .await
@@ -365,10 +464,33 @@ impl ZfsClient {
                 }
             }
         }
-        Ok(ReceiveFinalize {
-            mountpoint,
-            warnings,
-        })
+    }
+
+    /// Discard the partial state of a failed receive.
+    ///
+    /// `zfs receive -A` aborts an interrupted receive: it clears the resume
+    /// token, destroys `%recv` snapshots and rolls a partially received
+    /// incremental back to its pre-receive state (or destroys a dataset a
+    /// failed full receive created). This is best effort — the caller has
+    /// already failed and must not mask the original error.
+    pub async fn abort_receive(&self, dataset: &str) {
+        if validate_dataset_path(dataset).is_err() {
+            return;
+        }
+        match self
+            .host_exec(
+                ZFS_BIN,
+                &["receive".to_string(), "-A".to_string(), dataset.to_string()],
+            )
+            .await
+        {
+            Ok(_) => tracing::info!("discarded the partial receive of {dataset}"),
+            Err(e) => tracing::warn!(
+                "could not discard the partial receive of {dataset}: {}: {}",
+                e.output.trim(),
+                e.message
+            ),
+        }
     }
 
     async fn runner_spawn_out(&self, argv: &[String]) -> ZfsResult<(BoxedRead, Waiter)> {

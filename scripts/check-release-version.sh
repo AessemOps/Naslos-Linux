@@ -7,7 +7,8 @@
 #   - charts/naslos/Chart.yaml  `version`
 #   - charts/naslos/Chart.yaml  `appVersion` (quotes stripped)
 #   - ui/package.json           `version`
-#   - charts/naslos/values.yaml and values-installer.yaml image tags
+#   - charts/naslos/values.yaml, values-installer.yaml and values-vm.yaml image
+#     tags (a digest pin does not exempt the tag check)
 #
 # Usage: scripts/check-release-version.sh <X.Y.Z>
 set -euo pipefail
@@ -51,9 +52,19 @@ errors = []
 def check_ref(ref, where):
     ref = ref.strip()
     if "@sha256:" in ref:
-        digest = ref.rsplit("@sha256:", 1)[1]
+        before, digest = ref.rsplit("@sha256:", 1)
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             errors.append(f"{where}: invalid digest in {ref}")
+        # A digest does not exempt the tag: when both are present the tag must
+        # still name the version being released, so a stale `:0.7.1@sha256:...`
+        # cannot ride along in a 0.7.2 release.
+        name = before.rsplit("/", 1)[-1]
+        if ":" in name:
+            tag = name.rsplit(":", 1)[1]
+            if "naslos-" in ref and tag != expected:
+                errors.append(
+                    f"{where}: naslos image tag {tag} != appVersion {expected} ({ref})"
+                )
         return
     name = ref.rsplit("/", 1)[-1]
     if ":" not in name:
@@ -74,8 +85,13 @@ def walk(node, where):
                 digest_hex = str(digest).removeprefix("sha256:")
                 if not re.fullmatch(r"[0-9a-f]{64}", digest_hex):
                     errors.append(f"{where}.digest: invalid sha256 {digest}")
-            elif tag is None or str(tag) == "":
-                errors.append(f"{where}: repository {repository} has no tag or digest")
+            # Tag and digest are independent pins: a digest must not make the
+            # tag check a no-op, or a 0.7.2 release could advertise 0.7.1 tags.
+            if tag is None or str(tag) == "":
+                if not digest:
+                    errors.append(
+                        f"{where}: repository {repository} has no tag or digest"
+                    )
             elif "naslos-" in repository and str(tag) != expected:
                 errors.append(
                     f"{where}.tag: {tag} != appVersion {expected} ({repository})"

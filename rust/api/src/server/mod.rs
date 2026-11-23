@@ -219,7 +219,10 @@ fn owner_routes() -> Router<Arc<AppState>> {
             post(virt::vm_snapshot_restore_post),
         )
         .route("/api/virt/images", get(virt::images_get))
-        .route("/api/virt/images/upload", post(virt::image_upload_post))
+        .route(
+            "/api/virt/images/upload",
+            post(virt::image_upload_post).delete(virt::image_upload_cancel),
+        )
         .route("/api/virt/images/import", post(virt::image_import_post))
         .route(
             "/api/virt/images/{name}",

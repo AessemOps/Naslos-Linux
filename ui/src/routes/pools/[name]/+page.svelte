@@ -451,6 +451,9 @@
     showAddDriveModal = true;
     disksError = '';
     selectedDisks = [];
+    // The force acknowledgement is per selection: a previous modal's tick must
+    // never authorize wiping disks chosen in a later one.
+    addForce = false;
     addError = '';
     try {
       const res = await fetch('/api/disks');
@@ -484,6 +487,8 @@
     selectedDisks = selectedDisks.includes(device)
       ? selectedDisks.filter(d => d !== device)
       : [...selectedDisks, device];
+    // A changed selection invalidates the previous explicit confirmation.
+    addForce = false;
   }
 
   // What each topology costs: this is shown before the button is pressed, not

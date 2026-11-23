@@ -23,8 +23,9 @@ impl SharesClient {
     ///
     /// The rendered files are validated before the first rename, every write
     /// is snapshot-then-atomic, and a failure restores the previous working
-    /// files. A revision that is not newer than the on-host one is refused
-    /// (R-021, R-054).
+    /// files. A strictly older revision is refused (R-021, R-054); an equal
+    /// revision is an idempotent retry, because the revision file is written
+    /// last and an interrupted apply must be safely retryable.
     pub fn apply(&self, cfg: &Config) -> Result<Status, String> {
         if !super::is_available(self.host_root()) {
             return Err(format!(
@@ -45,6 +46,9 @@ impl SharesClient {
                 cfg.revision, current_revision
             ));
         }
+        // An equal revision is a retry of an interrupted apply: fall through
+        // and let the per-file comparison below skip everything already in
+        // place. A stale revision is still refused above.
 
         // smbd needs its private/state/lock dirs before it starts, and the
         // staged testparm file lives in CONFIG_DIR.
@@ -341,14 +345,23 @@ fn parse_revision(revision: &str) -> Option<(u128, u64)> {
     Some((millis, sequence))
 }
 
-/// Whether `new` must be refused because it is not newer than `current`.
+/// Whether `new` is older than `current` and must be refused.
 ///
-/// A legacy revision (the old content hash) has no ordering prefix and is
-/// accepted as older, so the first apply after an upgrade still lands.
+/// An equal revision is not stale: the revision file is written after every
+/// other file, so the API retrying the same revision after an interrupted
+/// apply must succeed as a no-op. A legacy revision (the old content hash) has
+/// no ordering prefix and is accepted, so the first apply after an upgrade
+/// still lands.
 pub fn revision_is_stale(new: &str, current: &str) -> bool {
+    revision_order(new, current) == Some(std::cmp::Ordering::Less)
+}
+
+/// Compare the ordering prefixes of two revisions. `None` when either side has
+/// no ordering prefix; such a pair is always accepted.
+fn revision_order(new: &str, current: &str) -> Option<std::cmp::Ordering> {
     match (parse_revision(new), parse_revision(current)) {
-        (Some(new), Some(current)) => new <= current,
-        _ => false,
+        (Some(new), Some(current)) => Some(new.cmp(&current)),
+        _ => None,
     }
 }
 
@@ -489,6 +502,30 @@ mod tests {
     }
 
     #[test]
+    fn an_equal_revision_is_an_idempotent_retry() {
+        let (_dir, client) = client();
+        let cfg = config(
+            "0000000000005-0000000001-00000001-eeee",
+            GOOD_SAMBA,
+            GOOD_GANESHA,
+        );
+        client.apply(&cfg).unwrap();
+        // The API retries the same revision after an interrupted apply; the
+        // second call must succeed and leave the same configuration.
+        let retried = client.apply(&cfg).unwrap();
+        assert!(retried.applied);
+        assert_eq!(retried.revision, cfg.revision);
+        assert_eq!(
+            read_host_file(&client.host_path(SAMBA_CONF_PATH)),
+            GOOD_SAMBA
+        );
+        assert_eq!(
+            read_host_file(&client.host_path(GANESHA_CONF_PATH)),
+            GOOD_GANESHA
+        );
+    }
+
+    #[test]
     fn revision_ordering_accepts_legacy_current_hashes() {
         assert!(!revision_is_stale(
             "0000000000002-0000000002-00000000-x",
@@ -498,7 +535,7 @@ mod tests {
             "0000000000001-0000000001-00000000-x",
             "0000000000002-0000000002-00000000-x"
         ));
-        assert!(revision_is_stale(
+        assert!(!revision_is_stale(
             "0000000000002-0000000002-00000000-x",
             "0000000000002-0000000002-00000000-x"
         ));

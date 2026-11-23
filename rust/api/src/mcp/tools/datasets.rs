@@ -2,7 +2,8 @@
 //! operator registry apps can be granted access to.
 
 use super::{
-    b, confirm_field, no_args, s, schema, str_map, Confirm, Method, Scope, Special, ToolDef,
+    b, confirm_field, confirm_tuple, no_args, s, schema, str_map, Confirm, Method, Scope, Special,
+    ToolDef,
 };
 
 pub const TOOLS: &[ToolDef] = &[
@@ -37,21 +38,21 @@ pub const TOOLS: &[ToolDef] = &[
     ),
     tool!(
         "dataset_delete",
-        "Delete a ZFS dataset and everything stored under its mountpoint.",
+        "Delete a ZFS dataset and everything stored under its mountpoint. Confirm the dataset and whether the delete is recursive.",
         Full,
         DELETE,
         "/api/datasets",
         query = ["name", "recursive"],
         confirm = Confirm::Arg("name"),
         || schema(
-            &["name"],
+            &["name", "recursive"],
             &[
                 ("name", s("The full dataset path (pool/name).")),
                 (
                     "recursive",
-                    b("Also delete child datasets (default false).")
+                    b("Also delete child datasets. Required: it is part of the confirm target (true|false).")
                 ),
-                confirm_field(),
+                confirm_tuple(&["name", "recursive"]),
             ],
         )
     ),

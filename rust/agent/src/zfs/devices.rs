@@ -174,6 +174,149 @@ pub(crate) fn whole_disk_path(dev: &str) -> Option<String> {
     None
 }
 
+/// Whether `candidate` is `disk` itself or one of its partitions.
+///
+/// The naming convention is the fallback for a node whose sysfs tree is not
+/// readable: `sda` owns `sda1`, `nvme0n1` owns `nvme0n1p1`.
+fn is_partition_of(disk: &str, candidate: &str) -> bool {
+    if candidate == disk {
+        return true;
+    }
+    let rest = candidate.strip_prefix(disk).unwrap_or_default();
+    if disk.starts_with("nvme") || disk.starts_with("mmcblk") {
+        return rest
+            .strip_prefix('p')
+            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+    }
+    !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+}
+
+/// The disk itself plus its partitions, from `/sys/class/block/<disk>/*`.
+///
+/// The authoritative set is the kernel's sysfs tree; a partition listed there
+/// is checked even when its device node name does not follow the usual
+/// convention. The naming fallback keeps the guard useful when sysfs is not
+/// mounted into the agent.
+fn disk_and_partitions(host_root: &std::path::Path, disk: &str) -> Vec<String> {
+    let mut devices = vec![disk.to_string()];
+    for dir in ["sys/class/block", "sys/block"] {
+        let Ok(entries) = std::fs::read_dir(host_root.join(dir).join(disk)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let candidate = entry.file_name().to_string_lossy().into_owned();
+            if is_partition_of(disk, &candidate) && !devices.contains(&candidate) {
+                devices.push(candidate);
+            }
+        }
+        break;
+    }
+    devices
+}
+
+/// The host's mount table. Prefer the host root's own `/proc/mounts`; the
+/// agent's view is only a fallback for a node where `/host/proc` is not
+/// mounted. An existing but empty host table is taken at face value.
+fn host_mounts(host_root: &std::path::Path) -> Vec<(String, String)> {
+    let host_table = host_root.join("proc/mounts");
+    let tables = if host_table.exists() {
+        vec![host_table]
+    } else {
+        vec![std::path::PathBuf::from("/proc/mounts")]
+    };
+    let mut mounts = Vec::new();
+    for table in tables {
+        let Ok(contents) = std::fs::read_to_string(&table) else {
+            continue;
+        };
+        for line in contents.lines() {
+            let mut fields = line.split_whitespace();
+            let Some(source) = fields.next() else {
+                continue;
+            };
+            let mountpoint = fields.next().unwrap_or("");
+            mounts.push((source.to_string(), mountpoint.to_string()));
+        }
+        break;
+    }
+    mounts
+}
+
+/// Whether a mount source names `disk` or one of its partitions. Aliases
+/// (`/dev/disk/by-id/…`, `/dev/mapper/…`) are resolved inside the host root
+/// so they cannot hide a mounted system partition.
+fn source_is_disk(host_root: &std::path::Path, source: &str, disk: &str) -> bool {
+    let Some(name) = source.strip_prefix("/dev/") else {
+        // UUID=/PARTUUID=/overlay/tmpfs: no device path to compare.
+        return false;
+    };
+    if name.is_empty() {
+        return false;
+    }
+    let base = name.rsplit('/').next().unwrap_or(name);
+    if is_partition_of(disk, base) {
+        return true;
+    }
+    match std::fs::canonicalize(join_host(host_root, source)) {
+        Ok(resolved) => resolved
+            .file_name()
+            .and_then(|f| f.to_str())
+            .is_some_and(|base| is_partition_of(disk, base)),
+        Err(_) => false,
+    }
+}
+
+/// Why a whole disk must not be handed to ZFS, or `None` when nothing
+/// visible uses it.
+///
+/// The API excludes the Talos system disk when it lists candidates, but the
+/// agent is the last line of defense: a bug or a direct API call could
+/// otherwise `wipefs --all` the disk the node boots from. A disk is refused
+/// when the host's mount table shows any of its partitions (or the disk
+/// itself) mounted, when a partition backs the host root, or when a
+/// device-mapper/md holder claims one of its partitions.
+pub fn disk_in_use(host_root: &std::path::Path, disk: &str) -> Option<String> {
+    let Some(name) = disk.strip_prefix("/dev/") else {
+        return Some("it is not a /dev block device".to_string());
+    };
+    if name.is_empty() || name.contains('/') {
+        return Some("it is not a plain /dev block device name".to_string());
+    }
+    let devices = disk_and_partitions(host_root, name);
+    for (source, mountpoint) in host_mounts(host_root) {
+        if devices
+            .iter()
+            .any(|device| source_is_disk(host_root, &source, device))
+        {
+            if mountpoint == "/" {
+                return Some(
+                    "it backs the host root filesystem (/) or one of its system partitions"
+                        .to_string(),
+                );
+            }
+            return Some(format!("it is mounted at {mountpoint}"));
+        }
+    }
+
+    // LVM/LUKS/md can layer a holder over a partition. A holder means a live
+    // consumer even when the mount source no longer names the partition.
+    for device in &devices {
+        for dir in ["sys/class/block", "sys/block"] {
+            let Ok(entries) = std::fs::read_dir(host_root.join(dir).join(device).join("holders"))
+            else {
+                continue;
+            };
+            if let Some(holder) = entries.flatten().next() {
+                return Some(format!(
+                    "it is held by the {} device-mapper/md device",
+                    holder.file_name().to_string_lossy()
+                ));
+            }
+        }
+    }
+    None
+}
+
 impl ZfsClient {
     /// Map every disk currently in a pool to that pool's name.
     ///
@@ -326,6 +469,16 @@ impl ZfsClient {
                     "disk {} belongs to exported pool {:?}; import or destroy that pool first",
                     dev,
                     owner
+                ));
+            }
+        }
+        // The agent refuses a mounted/system disk even when the API's
+        // candidate list is wrong (defense in depth; `zpool add` writes
+        // labels just like create).
+        for dev in &clean {
+            if let Some(reason) = disk_in_use(&self.host_root, dev) {
+                return Err(crate::conflict!(
+                    "refusing to add {dev} to pool {pool}: {reason}"
                 ));
             }
         }

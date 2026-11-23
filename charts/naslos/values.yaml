@@ -21,7 +21,7 @@ api:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-api
-    tag: "0.7.1"
+    tag: "0.7.2"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -223,6 +223,23 @@ system:
     enabled: true
     source: "https://api.github.com/repos/AessemOps/Naslos-Linux/releases"
     intervalHours: 24
+    # Detached Ed25519 pack signature (FR-UPD). Empty disables signature
+    # verification: the upgrader Job then downloads the pack from the
+    # channel-pinned release URL and is NOT allowed to use the cached copy on
+    # the state volume, because that claim is mounted read-write by the API
+    # pod that also builds the Job (a compromised API could substitute the
+    # file). Set this to the base64/hex public key of a release channel that
+    # publishes `<pack>.tar.gz.sig`: the chart passes it (trimmed) to the API
+    # as SYSTEM_UPDATES_PACK_PUBKEY, the API refuses releases without a valid
+    # signature, and the admission policy pins this exact key into the Job.
+    # With `api.sharesConfig.enabled` the Job then uses the cached pack and
+    # verifies it against the key; without the state claim it downloads both
+    # the pack and its signature from the channel and verifies them.
+    #
+    # Residual without a key: the release channel (its TLS and asset
+    # immutability) is the trust anchor. A compromised API can only choose
+    # among published release packs, not substitute its own charts.
+    packPubkey: ""
   upgrade:
     # The ServiceAccount the upgrader Job runs as. The chart binds it to
     # cluster-admin (it drives Talos and Helm for the whole node) and an
@@ -241,7 +258,7 @@ ui:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    tag: "0.7.1"
+    tag: "0.7.2"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -272,7 +289,7 @@ agent:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-agent
-    tag: "0.7.1"
+    tag: "0.7.2"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -355,7 +372,7 @@ shares:
     timeMachine: true
     image:
       repository: ghcr.io/aessemops/naslos-samba
-      tag: "0.7.1"
+      tag: "0.7.2"
       # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
       # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
       # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -389,7 +406,7 @@ shares:
     enabled: true
     image:
       repository: ghcr.io/aessemops/naslos-nfs
-      tag: "0.7.1"
+      tag: "0.7.2"
       # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
       # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
       # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -473,11 +490,25 @@ traefik:
   ingressClass:
     enabled: false
     isDefaultClass: false
-  # R-011: no cluster-wide RBAC. The chart renders a Role/RoleBinding in each
-  # namespace listed above (and the release namespace) instead of the upstream
-  # ClusterRole/ClusterRoleBinding. `rbac.secretResourceNames` is deliberately
-  # left empty: Traefik must get TLS Secrets whose names are per-domain, so a
-  # fixed allowlist would break app certificates.
+  # R-011/C-5: no cluster-wide RBAC. The subchart renders a Role/RoleBinding in
+  # each watched namespace (and the release namespace) instead of an upstream
+  # ClusterRole/ClusterRoleBinding.
+  #
+  # Accepted residual (C-5): that Role grants get,list,watch on every Secret in
+  # every watched namespace, including the release namespace's Talos config,
+  # proxy secret, LDAP passwords, agent/vmd tokens and Buddy KEK. It cannot be
+  # narrowed: Traefik's kubernetesCRD client unconditionally starts a Secret
+  # informer for each watched namespace and refuses to start the provider if
+  # any cache fails to sync
+  # (pkg/provider/kubernetes/crd/client.go, factoriesSecret/WaitForCacheSync).
+  # Kubernetes RBAC `resourceNames` does not match list/watch (the request has
+  # no name and Traefik sends no metadata.name field selector), and dropping
+  # the rules or the namespace breaks routing entirely. Per-domain TLS Secret
+  # names are dynamic anyway (naslos-<domain>-tls), so `secretResourceNames`
+  # cannot enumerate them. The real fix is to stop storing platform
+  # credentials in watched namespaces (or give Traefik its own watch topology);
+  # that is a platform change, not a values edit. Do not "fix" this by adding
+  # resourceNames or removing secrets rules: the provider will not start.
   rbac:
     namespaced: true
   # Local middleware that deletes the parent-domain `authelia_session` cookie
@@ -846,7 +877,7 @@ openldap:
   #   ghcr.io/aessemops/naslos-openldap@sha256:<digest>
   # Used by the OpenLDAP StatefulSet, the bootstrap Job, the backup CronJob and
   # the API's wait-for-ldap init container.
-  image: ghcr.io/aessemops/naslos-openldap:0.7.1
+  image: ghcr.io/aessemops/naslos-openldap:0.7.2
   imagePullPolicy: IfNotPresent
   # LDAP hostname used as Authelia's TLS `server_name` (and added as a
   # certificate SAN). The internal directory suffix is fixed at
@@ -870,6 +901,12 @@ openldap:
   # real value here.
   adminPassword: ""
   bindPassword: ""
+  # Install-time immutable. The StatefulSet's volumeClaimTemplates create the
+  # data/config PVCs once; changing these values or storageClassName on an
+  # existing install does NOT resize or move them (expand the PVC with the
+  # storage class first). The directory's mdb map is also fixed at bootstrap:
+  # olcDbMaxsize is capped at 1 GiB in openldap/image/entrypoint.sh, so raising
+  # dataSize alone does not raise the database limit.
   storageClassName: local-path
   dataSize: 1Gi
   configSize: 100Mi
@@ -887,7 +924,9 @@ openldap:
       # generation + full schema/module/database slapadd bootstrap) and caused
       # the container to be OOMKilled before slapd ever finished starting.
       memory: 1Gi
-  # Nightly slapcat backup onto the config volume; keeps the last `retain`.
+  # Nightly slapcat backup onto the dedicated backups volume; keeps the last
+  # `retain`. slapcat reads the live server (it is not an offline dump), so the
+  # data/config PVCs are mounted read-write for mdb's lock file.
   backup:
     enabled: true
     schedule: "0 3 * * *"
@@ -896,7 +935,8 @@ openldap:
     # storageClassName uses the cluster default.
     size: 2Gi
     storageClassName: ""
-    # R-037: the slapcat Job is a short-lived offline dump; bound it.
+    # R-037: the slapcat Job is short-lived; bound it. It runs against the
+    # live server, so its dump is consistent but not an offline file copy.
     resources:
       requests:
         cpu: 50m
@@ -1057,7 +1097,7 @@ terminal:
   # The terminal's endpoints are owner routes like any other, so they are gated
   # by `auth` above (previously a separate terminal.requireAuth switch).
   # digest (NAS-022): pin the exact image; empty means "use the tag".
-  image: { repository: ghcr.io/aessemops/naslos-terminal, tag: "0.7.1", digest: "", pullPolicy: IfNotPresent }
+  image: { repository: ghcr.io/aessemops/naslos-terminal, tag: "0.7.2", digest: "", pullPolicy: IfNotPresent }
   resources:
     requests:
       cpu: 10m
@@ -1076,7 +1116,7 @@ virt:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-vmd
-    tag: "0.7.1"
+    tag: "0.7.2"
     # Pin the exact image (NAS-022): repo@sha256:… is immutable; a mutable tag
     # plus pullPolicy IfNotPresent can keep running old code after a retag.
     digest: ""

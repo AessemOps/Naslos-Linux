@@ -44,6 +44,14 @@ pub struct VmView {
 pub struct Store {
     path: String,
     inner: Mutex<Vec<VmSpec>>,
+    /// Whether the persisted VM list was read and validated successfully. A
+    /// missing or empty file is a valid empty store (fresh install); an
+    /// unreadable or invalid file fails closed so the next write cannot
+    /// overwrite the only copy with an empty list.
+    loaded: std::sync::atomic::AtomicBool,
+    /// Why the store failed to load, with recovery guidance. Present exactly
+    /// when `loaded` is false.
+    load_error: Mutex<Option<String>>,
 }
 
 impl Store {
@@ -51,6 +59,9 @@ impl Store {
         let store = Self {
             path: path.to_string(),
             inner: Mutex::new(Vec::new()),
+            // An empty path is an in-memory test store, not a failed load.
+            loaded: std::sync::atomic::AtomicBool::new(path.is_empty()),
+            load_error: Mutex::new(None),
         };
         if !path.is_empty() {
             if let Err(e) = store.load() {
@@ -66,25 +77,82 @@ impl Store {
         )
     }
 
+    /// Whether the persisted VM list was read successfully.
+    pub fn loaded(&self) -> bool {
+        self.loaded.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn load_error(&self) -> Option<String> {
+        self.load_error.lock().unwrap().clone()
+    }
+
+    /// Fail closed unless the persisted store was read successfully.
+    pub fn require_loaded(&self) -> Result<(), String> {
+        if self.loaded() {
+            Ok(())
+        } else {
+            Err(self
+                .load_error()
+                .unwrap_or_else(|| format!("VM store {} is unavailable", self.path)))
+        }
+    }
+
     fn load(&self) -> Result<(), String> {
+        self.loaded
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        *self.load_error.lock().unwrap() = None;
         if self.path.is_empty() || !std::path::Path::new(&self.path).exists() {
+            self.loaded.store(true, std::sync::atomic::Ordering::SeqCst);
             return Ok(());
         }
-        let data = std::fs::read(&self.path).map_err(|e| e.to_string())?;
-        let list: Vec<VmSpec> =
-            serde_json::from_slice(&data).map_err(|e| format!("parsing {}: {e}", self.path))?;
-        let mut inner = self.inner.lock().unwrap();
-        inner.clear();
+        let data = match std::fs::read(&self.path) {
+            Ok(data) => data,
+            Err(e) => {
+                let message = format!(
+                    "VM store {} could not be read: {e}; refusing to overwrite it",
+                    self.path
+                );
+                *self.load_error.lock().unwrap() = Some(message.clone());
+                return Err(message);
+            }
+        };
+        let list: Vec<VmSpec> = match serde_json::from_slice(&data) {
+            Ok(list) => list,
+            Err(e) => {
+                let backup = match crate::shares::backup_corrupt_store(&self.path, &data) {
+                    Ok(path) => format!(" (backup saved to {})", path.display()),
+                    Err(backup_err) => format!(" ({backup_err})"),
+                };
+                let message = format!(
+                    "VM store {} is corrupt: {e}{backup}; repair it or replace it with a valid store before changing VMs",
+                    self.path
+                );
+                *self.load_error.lock().unwrap() = Some(message.clone());
+                return Err(message);
+            }
+        };
+        // Never trust the on-disk file: re-validate everything
+        // (SEC-2026-B12 pattern). Build the candidate first so a bad record
+        // cannot leave a partial list behind.
+        let mut candidate = Vec::with_capacity(list.len());
         for spec in list {
-            // Never trust the on-disk file: re-validate everything
-            // (SEC-2026-B12 pattern).
-            naslos_vmd::model::validate_vm(&spec)?;
-            inner.push(spec);
+            if let Err(e) = naslos_vmd::model::validate_vm(&spec) {
+                let message = format!(
+                    "VM store {} contains an invalid record ({:?}): {e}; repair it or replace it with a valid store before changing VMs",
+                    self.path, spec.name
+                );
+                *self.load_error.lock().unwrap() = Some(message.clone());
+                return Err(message);
+            }
+            candidate.push(spec);
         }
+        *self.inner.lock().unwrap() = candidate;
+        self.loaded.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
     fn save_locked(&self, inner: &[VmSpec]) -> Result<(), String> {
+        self.require_loaded()?;
         if self.path.is_empty() {
             return Ok(());
         }
@@ -441,6 +509,48 @@ mod tests {
         assert!(store
             .validate_cross_vm_ports("alpha", &spec("alpha"))
             .is_ok());
+    }
+
+    #[test]
+    fn a_corrupt_store_is_backed_up_and_mutations_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vms.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let store = Store::new(&path.display().to_string());
+        assert!(!store.loaded());
+        let err = store.require_loaded().unwrap_err();
+        assert!(err.contains("corrupt"), "{err}");
+        assert!(err.contains(".corrupt-"), "{err}");
+
+        assert!(store.create(spec("alpha")).is_err());
+        assert!(store.update("alpha", spec("alpha")).is_err());
+        assert!(store.remove("alpha").is_err());
+        assert!(store.set_desired("alpha", DesiredState::Running).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json");
+        assert!(store.list().is_empty());
+
+        let backups = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+            .count();
+        assert_eq!(backups, 1, "one corrupt backup");
+    }
+
+    #[test]
+    fn an_invalid_record_fails_the_whole_store_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vms.json");
+        let mut bad = serde_json::to_value(spec("bad")).unwrap();
+        bad["name"] = serde_json::json!("UPPER");
+        std::fs::write(&path, serde_json::to_vec(&vec![bad]).unwrap()).unwrap();
+
+        let store = Store::new(&path.display().to_string());
+        assert!(!store.loaded());
+        let err = store.require_loaded().unwrap_err();
+        assert!(err.contains("invalid record"), "{err}");
+        assert!(store.list().is_empty(), "no partial load");
+        assert!(store.create(spec("alpha")).is_err());
     }
 
     #[test]

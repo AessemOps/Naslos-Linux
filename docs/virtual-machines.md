@@ -151,8 +151,10 @@ boots straight to SSH.
   `vnc_bridge` opens a WebSocket to `/api/v1/vms/{name}/vnc?port=<port>` on
   vmd with the bearer token, and vmd proxies the bytes to
   `127.0.0.1:<port>`. The route is behind the same token middleware as every
-  other vmd API and refuses any port outside the configured VNC display
-  range, so a token cannot turn it into a general loopback proxy.
+  other vmd API, refuses any port outside the configured VNC display range,
+  and requires the path VM name to own that port (`5900 + display`). Both
+  checks together mean a token cannot turn the tunnel into a proxy for
+  another VM's console or an arbitrary loopback service.
 - Each console session writes an audit begin/end record attributed to the
   owner; the route refuses to start (`503`) while the audit log is degraded,
   and a failed audit write during the session marks the log degraded.
@@ -169,18 +171,61 @@ boots straight to SSH.
 
 - Browser upload: chunked (8 MiB `application/octet-stream` requests, XHR
   progress), relayed by the API **without buffering the file in API
-  memory**, appended at an explicit offset by vmd. A failed chunk resumes
-  from the last confirmed offset. The upload route is the API's only
-  non-JSON body; the content-type carve-out is scoped to
+  memory**, appended at an explicit offset by vmd. The route is the API's
+  only non-JSON body; the content-type carve-out is scoped to
   `/api/virt/images/upload` (contract-tested) and octet-stream still
   forces a CORS preflight, so the CSRF posture is unchanged.
+  - vmd stages the upload in `<name>.part` (created with `create_new` and
+    `O_NOFOLLOW`) and renames it into the library only on the `final=true`
+    chunk. A failed or over-cap upload never replaces the previous image,
+    and a planted symlink is refused rather than followed. A failed publish
+    removes its staged file, and the next upload (or URL import) start
+    sweeps any orphaned `.part` files left by a crash.
+  - `offset` must equal the current staged size, so chunks are strictly
+    contiguous. The browser generates one owner token per upload (mandatory
+    `owner` query parameter on every chunk) and echoes it; a chunk from a
+    different owner is refused (`409`) instead of discarding the active
+    upload's progress. The token is stored in `sessionStorage` per pool+name,
+    so a panel reload resumes the same server session; a fresh browser starts
+    clean only once the old session is reclaimable (an idle session expires
+    after two hours, and each chunk refreshes it). A stale offset, a lost
+    staging file and an expired session all tell the caller to restart from
+    offset 0: the same owner may then restart its own session, and only an
+    idle session may be superseded by another owner. A retried chunk rewinds
+    the staged file to the request's start offset. A chunk can never attach to
+    a URL import's staging file.
+  - `DELETE /api/virt/images/upload?pool=&name=&owner=` releases a session:
+    only its owner may delete the staged `.part` (409 for another client or a
+    URL import; an absent session is an idempotent `200`). The panel calls it
+    from its "Cancel upload" action and after an owner-mismatch conflict.
+  - The 32 GiB cap applies to the whole upload (`offset + bytes`), not to
+    one request; an over-cap upload is removed and returns `413`.
+  - Replacing an existing library image requires `confirm=<name>`; the
+    Images panel detects that the upload/import target is already listed and
+    shows an explicit "Replace the existing image" checkbox before it sends
+    the confirmation. A `409` reloads the listing first, so a stale library
+    view still reveals the checkbox instead of looping on the same refusal. vmd refuses the replacement (or a delete) while a
+    running/starting VM attaches the file as its ISO or `disk.sourceImage`
+    (`409`), including a re-check immediately before a URL import publishes.
+  - The API route forwards the confirmation verbatim: a re-upload that
+    would replace an existing image must send `confirm=<name>` on
+    `/api/virt/images/upload`, and a refused overwrite reaches the caller
+    as `409 Conflict` (not a bad-gateway) with the supervisor's reason.
 - URL import: the node downloads the image itself (`202 Accepted`; errors
   surface in the library listing). vmd is hostNetwork, whose traffic is
   exempt from pod egress policy, so the FR-DNS-07 SSRF guard is the
   control: http(s) only, every resolved address must be public
   (loopback/private/link-local/CGNAT/NAT64/mapped-v6 all refused),
   redirects re-validated hop by hop and pinned to the vetted address, 3
-  hops max, optional sha256 verified (mismatch deletes the file).
+  hops max, optional sha256 verified (mismatch deletes the staged file).
+  Importing over an existing library name likewise requires an explicit
+  `"confirm": "<name>"` field in the `POST /api/virt/images/import` body;
+  without it the import refuses to replace the existing image and records
+  the refusal in the library listing.
+  The download is staged in `<name>.part` like an upload, and replacing an
+  existing image needs `"confirm": "<name>"` in the request body.
+- Deletion is `DELETE /api/virt/images/{name}` (there is no mutating GET
+  alias); it refuses while a running VM attaches the image.
 
 ## Autostart, failure events, stats
 
@@ -192,6 +237,14 @@ boots straight to SSH.
   host-root bind is Bidirectional so the mount reaches the host and
   propagates into vmd's `/var/mnt` without a pod restart (a pre-Bidirectional
   agent left the mount pod-local and this wait was the 60s failure).
+- Reconciles are serialized and generation-checked: two config pushes never
+  run two reconcilers at once, a slow older push is a no-op, and a start
+  reserves the VM name + VNC display under the state lock before the 60 s
+  dataset wait. QEMU is spawned with `kill_on_drop(true)`, so a cancelled
+  start or a supervisor shutdown cannot orphan a process.
+- The watchdog reconciles every 30 s: a desired-running VM whose QEMU
+  exited is restarted (and re-reported in the live view), and a reaped
+  entry is treated as absent by start/stop instead of as alive.
 - A VM that fails to start or exits unexpectedly raises an ntfy
   notification (`vm_failed` / `vm_exited_unexpected`) — enable them on the
   Notifications page. Transitions only: one message per failure.
@@ -217,6 +270,15 @@ boots straight to SSH.
   validates, vmd re-validates, then renders). Secure Boot is a boolean enum
   choice, never a caller-supplied firmware path, and the render pins the
   secboot/SMM/secure-pflash options.
+- Every vmd-created path under `<pool>/vms` (`disk.qcow2`, `vars*.fd`,
+  `qemu.log`, `seed.iso`, library images and the `.part` staging files) is
+  checked with `symlink_metadata`/`O_NOFOLLOW` and a pre-existing symlink is
+  refused. A share-writable dataset directory therefore cannot redirect a
+  QEMU open, a log truncate, or an image write to a host file.
+- The cloud-init seed quotes every YAML scalar (single quotes, `''` escape)
+  and rejects every control character (including `\r`, NEL and U+2028/2029)
+  in an SSH key, so a key comment cannot inject another cloud-config
+  directive.
 - Secure Boot is guest firmware trust, not additional host isolation: vmd is
   still privileged, the Secure Boot pair comes from the same distro `ovmf`
   package already in the image, and no new host mount or device is added.

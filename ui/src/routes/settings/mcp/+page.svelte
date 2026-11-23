@@ -39,6 +39,7 @@
 
   let settings: McpSettings = empty;
   let loading = true;
+  let loaded = false;
   let toggling = false;
   let error = '';
 
@@ -85,12 +86,17 @@
   }
 
   async function load() {
+    loading = true;
+    error = '';
     try {
       const res = await fetch('/api/mcp');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       settings = await res.json();
+      loaded = true;
     } catch (e) {
-      error = 'Failed to load MCP settings: ' + e;
+      // The default (disabled, empty) state must never be editable: flipping
+      // the toggle or revoking from a failed load would act on unknown data.
+      error = 'Failed to load MCP settings: ' + (e instanceof Error ? e.message : String(e));
     } finally {
       loading = false;
     }
@@ -207,6 +213,11 @@
 
   {#if loading}
     <LoadingState label="Loading MCP settings…" />
+  {:else if !loaded}
+    <div role="alert" class="card border-red-500/50 mb-6">
+      <p class="text-sm text-red-300">{error || 'The MCP settings could not be loaded.'}</p>
+      <button type="button" class="btn btn-secondary mt-3" on:click={load}>Retry</button>
+    </div>
   {:else}
     {#if error}
       <div class="card border-red-500/50 mb-6 flex items-start gap-3">

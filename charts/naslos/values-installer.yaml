@@ -28,27 +28,27 @@
 api:
   image:
     repository: ghcr.io/aessemops/naslos-api
-    tag: "0.7.1"
+    tag: "0.7.2"
   # The API manages the node via the Talos API; the installer creates this
   # Secret from the kubeconfig/talosconfig it generated.
   talosConfigSecret: "naslos-talosconfig"
 agent:
   image:
     repository: ghcr.io/aessemops/naslos-agent
-    tag: "0.7.1"
+    tag: "0.7.2"
 ui:
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    tag: "0.7.1"
+    tag: "0.7.2"
 shares:
   smb:
     image:
       repository: ghcr.io/aessemops/naslos-samba
-      tag: "0.7.1"
+      tag: "0.7.2"
   nfs:
     image:
       repository: ghcr.io/aessemops/naslos-nfs
-      tag: "0.7.1"
+      tag: "0.7.2"
   # The advertised SMB/mDNS name. `shares.discovery.name` feeds both
   # SMB_DISCOVERY_NAME (samba) and SMB_NETBIOS_NAME (api), so clients see one
   # identity. The installer sets it to the chosen short name (the first label of
@@ -59,13 +59,13 @@ shares:
 terminal:
   image:
     repository: ghcr.io/aessemops/naslos-terminal
-    tag: "0.7.1"
+    tag: "0.7.2"
 virt:
   image:
     repository: ghcr.io/aessemops/naslos-vmd
-    tag: "0.7.1"
+    tag: "0.7.2"
 openldap:
-  image: ghcr.io/aessemops/naslos-openldap:0.7.1
+  image: ghcr.io/aessemops/naslos-openldap:0.7.2
 
 # --- identity ---
 # The public name: session cookie domain, TOTP issuer and TLS SAN. The installer
@@ -129,52 +129,12 @@ traefik:
         - naslos-app-p2
         - naslos-app-p3
         - naslos-app-p4
+# The UI/API/portal IngressRoutes are enabled with the chart default; the
+# Traefik RBAC and watch list live under `traefik` above. `ingress.rbac`
+# and `ingress.providers` are not read by any template (a dead duplicate
+# that shadowed nothing), so they were removed (C-8).
 ingress:
   enabled: true
-
-  rbac:
-    namespaced: true
-  providers:
-    kubernetesCRD:
-      namespaces:
-        - naslos-apps
-        - naslos-apps-priv
-        - naslos-app-1
-        - naslos-app-2
-        - naslos-app-3
-        - naslos-app-4
-        - naslos-app-5
-        - naslos-app-6
-        - naslos-app-7
-        - naslos-app-8
-        - naslos-app-9
-        - naslos-app-10
-        - naslos-app-11
-        - naslos-app-12
-        - naslos-app-13
-        - naslos-app-14
-        - naslos-app-15
-        - naslos-app-16
-        - naslos-app-17
-        - naslos-app-18
-        - naslos-app-19
-        - naslos-app-20
-        - naslos-app-21
-        - naslos-app-22
-        - naslos-app-23
-        - naslos-app-24
-        - naslos-app-25
-        - naslos-app-26
-        - naslos-app-27
-        - naslos-app-28
-        - naslos-app-29
-        - naslos-app-30
-        - naslos-app-31
-        - naslos-app-32
-        - naslos-app-p1
-        - naslos-app-p2
-        - naslos-app-p3
-        - naslos-app-p4
 
 # --- app catalog / dynamic DNS ---
 apps:

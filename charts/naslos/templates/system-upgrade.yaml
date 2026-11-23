@@ -20,6 +20,34 @@ into an arbitrary pod launcher.
 {{- $updates := $system.updates | default dict }}
 {{- $sa := $upgrade.serviceAccount | default "naslos-upgrader" }}
 {{- $cm := $upgrade.configMap | default "naslos-system-operation" }}
+{{- $talosSecret := .Values.api.talosConfigSecret | default "" }}
+{{- $statePvc := ternary "naslos-shares-config" "" .Values.api.sharesConfig.enabled }}
+{{- /*
+Pack-signature trust anchor. Set system.updates.packPubkey (the chart wires it
+to the API as SYSTEM_UPDATES_PACK_PUBKEY) to require every web upgrade to carry
+that exact key plus a signature URL; only then does the Job use the cached pack
+on the state volume. Left empty, the policy requires the 20-argument URL layout
+with empty signature values: the pack comes from the channel-pinned release URL
+and the API-writable cache is not trusted. See the positional validation below.
+*/}}
+{{- $packPubkey := $updates.packPubkey | default "" | trim }}
+{{- /*
+The operation may only fetch a pack from this release channel. The API's
+update check (and the Job's own fallback download) accepts the configured
+update source or a GitHub release asset host; the policy pins the same idea at
+admission time: a GitHub source resolves to its repo's release-download prefix,
+any other (mirror) source to its https host. Changing SYSTEM_UPDATES_SOURCE
+outside this value would make the policy deny the Job, so override the value.
+*/}}
+{{- $updateSource := $updates.source | default "https://api.github.com/repos/AessemOps/Naslos-Linux/releases" }}
+{{- $packUrlPrefix := $updateSource }}
+{{- if regexMatch "^https://api\\.github\\.com/repos/[^/]+/[^/]+" $updateSource }}
+{{- $repo := regexReplaceAll "^https://api\\.github\\.com/repos/([^/]+/[^/]+).*$" $updateSource "${1}" }}
+{{- $packUrlPrefix = printf "https://github.com/%s/releases/download/" $repo }}
+{{- else }}
+{{- $host := regexFind "^https://[^/]+" $updateSource }}
+{{- if $host }}{{ $packUrlPrefix = printf "%s/" $host }}{{ end }}
+{{- end }}
 {{- if and .Values.ui.enabled $release.profile }}
 apiVersion: v1
 kind: ServiceAccount
@@ -127,54 +155,154 @@ spec:
         pods using the naslos-upgrader ServiceAccount must run exactly one
         ghcr.io/aessemops/naslos-api@sha256: container
     - expression: >-
-        object.spec.containers.all(c,
-        c.command.size() > 0 && c.command[0] == 'naslos-upgrade')
+        object.spec.containers.all(c, c.command == ['naslos-upgrade'])
       message: >-
         pods using the naslos-upgrader ServiceAccount must run the
-        naslos-upgrade entrypoint
+        naslos-upgrade entrypoint and nothing else
     - expression: >-
         !has(object.spec.initContainers) &&
         !has(object.spec.ephemeralContainers)
       message: >-
         the upgrader pod may not run init or ephemeral containers
+    # C-1b: the policy admitted a lifecycle hook, an exec probe or envFrom
+    # before, each of which turns this cluster-admin Job into an arbitrary
+    # command runner (a probe can read the Talos config Secret and the Buddy
+    # KEK). None of them is used by the operation.
+    - expression: >-
+        object.spec.containers.all(c,
+        !has(c.lifecycle) &&
+        !has(c.livenessProbe) &&
+        !has(c.readinessProbe) &&
+        !has(c.startupProbe) &&
+        !has(c.envFrom))
+      message: >-
+        the upgrader container may not declare lifecycle hooks, probes or
+        envFrom
     # R-030: the API chooses the Job spec, so pin the arguments to the
     # documented flags (the operation cannot turn the Job into an arbitrary
     # command) and env names to the NASLOS_*/HELM_* set the binary consumes.
+    # Keep this list identical to the flags rust/api/src/system.rs emits: a
+    # flag missing here denies every web upgrade at admission (C-1a).
     - expression: >-
         object.spec.containers.all(c,
         c.args.all(a,
         !a.startsWith('--') ||
-        a.matches('^--(op|operation-id|from|version|pack-url|sha256|namespace|release)(=|$)')))
+        a.matches('^--(op|operation-id|from|version|pack-url|sha256|pack-sig-url|pack-pubkey|pack-file|pack-sig-file|namespace|release)(=|$)')))
       message: >-
         upgrader args may only use the operation flags
+    # The flag allowlist above is not enough on its own: the values decide what
+    # the cluster-admin operation installs. A Job creator with the upgrader
+    # ServiceAccount could otherwise pass an arbitrary --pack-url with a
+    # matching --sha256 and no signature and run attacker-authored charts.
+    # Pin every position job_spec emits: the release-channel URL prefix, the
+    # cached-pack path the API writes, the chart namespace/release, and the
+    # signature values. Without a pack key the Job must use the 20-argument
+    # URL layout with empty signature values: the cached file lives on a claim
+    # the API mounts read-write, so it is only a trust anchor when the Job can
+    # verify a detached signature under a pinned key. With a key configured,
+    # `--pack-pubkey` must equal that key exactly, `--pack-sig-url` must be a
+    # channel URL, and the 24-argument cached-pack layout is required.
+    - expression: >-
+        object.spec.containers.all(c,
+        {{- if and $packPubkey .Values.api.sharesConfig.enabled }}
+        c.args.size() == 24 &&
+        c.args[20] == '--pack-file' &&
+        c.args[21] == '/var/lib/naslos/updates/pack-' + c.args[7] + '.tar.gz' &&
+        c.args[22] == '--pack-sig-file' &&
+        c.args[23] == c.args[21] + '.sig' &&
+        {{- else }}
+        c.args.size() == 20 &&
+        {{- end }}
+        c.args[0] == '--op' &&
+        c.args[1] in ['naslos', 'talos', 'kubernetes'] &&
+        c.args[2] == '--operation-id' &&
+        c.args[3].matches('^[0-9]+-[0-9a-f]{8}$') &&
+        c.args[4] == '--from' &&
+        c.args[5].matches('^v?[0-9]+\\.[0-9]+\\.[0-9]+$') &&
+        c.args[6] == '--version' &&
+        c.args[7].matches('^v?[0-9]+\\.[0-9]+\\.[0-9]+$') &&
+        c.args[8] == '--pack-url' &&
+        c.args[9].startsWith('{{ $packUrlPrefix }}') &&
+        c.args[10] == '--sha256' &&
+        c.args[11].matches('^[0-9a-f]{64}$') &&
+        c.args[12] == '--pack-sig-url' &&
+        {{- if $packPubkey }}
+        c.args[13] != '' &&
+        c.args[13].startsWith('{{ $packUrlPrefix }}') &&
+        c.args[14] == '--pack-pubkey' &&
+        c.args[15] == '{{ $packPubkey }}' &&
+        {{- else }}
+        c.args[13] == '' &&
+        c.args[14] == '--pack-pubkey' &&
+        c.args[15] == '' &&
+        {{- end }}
+        c.args[16] == '--namespace' &&
+        c.args[17] == '{{ .Release.Namespace }}' &&
+        c.args[18] == '--release' &&
+        c.args[19] == '{{ .Release.Name }}')
+      message: >-
+        upgrader args must carry the documented flags with pinned values: the
+        configured release channel for the pack, the API's cached pack path
+        (signature mode only) and the configured signature key
     - expression: >-
         object.spec.containers.all(c,
         c.env.all(e,
         e.name in ['NASLOS_NAMESPACE', 'NASLOS_RELEASE',
-        'NASLOS_WORKLOAD_NAMESPACE', 'NASLOS_STATE_DIR', 'TALOSCONFIG',
-        'TALOS_NODES', 'HOME', 'HELM_CACHE_HOME', 'HELM_CONFIG_HOME',
-        'HELM_DATA_HOME']))
+        'NASLOS_WORKLOAD_NAMESPACE', 'NASLOS_STATE_DIR', 'SYSTEM_UPDATES_SOURCE',
+        'TALOSCONFIG', 'TALOS_NODES', 'HOME', 'HELM_CACHE_HOME',
+        'HELM_CONFIG_HOME', 'HELM_DATA_HOME'] &&
+        !has(e.valueFrom)))
       message: >-
-        upgrader env may only set the documented NASLOS_/HELM_/TALOS_ variables
-    # Volumes: tmp emptyDir, the Talos Secret, and the state claim/emptyDir.
-    # No hostPath, no extra volume, no subPath mount.
+        upgrader env may only set the documented NASLOS_/SYSTEM_UPDATES_/HELM_/
+        TALOS_ variables to literal values
+    # Volumes: tmp emptyDir, the configured Talos Secret, the configured state
+    # claim (or an emptyDir when the chart has no state volume), and the
+    # ServiceAccount token projection the API server injects before this policy
+    # runs. That injected volume/mount is required (the Job's helm/kubectl use
+    # the in-cluster config), and it is admitted only in its standard shape:
+    # name prefix `kube-api-access-`, exactly three sources (bound SA token,
+    # the root-CA ConfigMap, the namespace downward API). Nothing broader.
     - expression: >-
         object.spec.volumes.all(v,
-        v.name in ['tmp', 'talosconfig', 'state'] &&
         !has(v.hostPath) &&
         ((v.name == 'tmp' && has(v.emptyDir)) ||
-        (v.name == 'talosconfig' && has(v.secret)) ||
-        (v.name == 'state' && (has(v.persistentVolumeClaim) || has(v.emptyDir)))))
+        (v.name == 'talosconfig' && has(v.secret) &&
+        v.secret.secretName == '{{ $talosSecret }}' &&
+        v.secret.items.size() == 1 &&
+        v.secret.items[0].key == 'talosconfig' &&
+        v.secret.items[0].path == 'config') ||
+        (v.name == 'state' && ((has(v.persistentVolumeClaim) &&
+        v.persistentVolumeClaim.claimName == '{{ $statePvc }}') ||
+        ('{{ $statePvc }}' == '' && has(v.emptyDir)))) ||
+        (v.name.startsWith('kube-api-access-') &&
+        has(v.projected) &&
+        v.projected.sources.size() == 3 &&
+        v.projected.sources[0].serviceAccountToken.path == 'token' &&
+        v.projected.sources[1].configMap.name == 'kube-root-ca.crt' &&
+        v.projected.sources[1].configMap.items.size() == 1 &&
+        v.projected.sources[1].configMap.items[0].key == 'ca.crt' &&
+        v.projected.sources[1].configMap.items[0].path == 'ca.crt' &&
+        v.projected.sources[2].downwardAPI.items.size() == 1 &&
+        v.projected.sources[2].downwardAPI.items[0].path == 'namespace' &&
+        v.projected.sources[2].downwardAPI.items[0].fieldRef.fieldPath ==
+        'metadata.namespace')))
       message: >-
-        upgrader volumes are limited to tmp, talosconfig and state (no hostPath)
+        upgrader volumes are limited to tmp, the configured Talos Secret, the
+        configured state claim and the standard ServiceAccount token projection
     - expression: >-
         object.spec.containers.all(c,
         c.volumeMounts.all(m,
-        m.mountPath in ['/tmp', '/var/run/secrets/talos.dev', '/var/lib/naslos'] &&
-        !has(m.subPath)))
+        !has(m.subPath) && !has(m.subPathExpr) &&
+        ((m.name == 'tmp' && m.mountPath == '/tmp') ||
+        (m.name == 'talosconfig' &&
+        m.mountPath == '/var/run/secrets/talos.dev' && m.readOnly == true) ||
+        (m.name == 'state' && m.mountPath == '/var/lib/naslos') ||
+        (m.name.startsWith('kube-api-access-') &&
+        m.mountPath == '/var/run/secrets/kubernetes.io/serviceaccount' &&
+        m.readOnly == true))))
       message: >-
-        upgrader mounts may only target /tmp, /var/run/secrets/talos.dev and
-        /var/lib/naslos without subPath
+        upgrader mounts may only target /tmp, /var/run/secrets/talos.dev (read
+        only), /var/lib/naslos and the standard ServiceAccount token mount
     # Pod and container isolation, pinned to what naslos-upgrade actually
     # needs. This stops a caller from gaining host namespaces or a writable
     # root through a mutated Job.
@@ -182,20 +310,39 @@ spec:
         (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
         (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
         (!has(object.spec.hostIPC) || object.spec.hostIPC == false) &&
+        object.spec.restartPolicy == 'Never' &&
         object.spec.securityContext.runAsNonRoot == true &&
         object.spec.securityContext.runAsUser == 65532 &&
+        object.spec.securityContext.runAsGroup == 65532 &&
+        object.spec.securityContext.fsGroup == 65532 &&
+        (!has(object.spec.securityContext.sysctls) ||
+        object.spec.securityContext.sysctls.size() == 0) &&
+        !has(object.spec.securityContext.supplementalGroups) &&
         object.spec.securityContext.seccompProfile.type == 'RuntimeDefault'
       message: >-
         upgrader pods must be non-root (65532), without host namespaces, with
-        RuntimeDefault seccomp
+        RuntimeDefault seccomp and restartPolicy Never
     - expression: >-
         object.spec.containers.all(c,
+        has(c.securityContext) &&
         c.securityContext.allowPrivilegeEscalation == false &&
         c.securityContext.readOnlyRootFilesystem == true &&
-        c.securityContext.capabilities.drop.exists(cap, cap == 'ALL'))
+        has(c.securityContext.capabilities) &&
+        c.securityContext.capabilities.drop.exists(cap, cap == 'ALL') &&
+        (!has(c.securityContext.capabilities.add) ||
+        c.securityContext.capabilities.add.size() == 0) &&
+        (!has(c.securityContext.privileged) ||
+        c.securityContext.privileged == false) &&
+        !has(c.securityContext.runAsUser) &&
+        !has(c.securityContext.runAsGroup) &&
+        !has(c.securityContext.runAsNonRoot) &&
+        !has(c.securityContext.seccompProfile) &&
+        !has(c.securityContext.procMount) &&
+        !has(c.securityContext.seLinuxOptions) &&
+        !has(c.securityContext.windowsOptions))
       message: >-
-        upgrader containers must drop ALL, forbid privilege escalation and use
-        a read-only root
+        upgrader containers must drop ALL, forbid privilege escalation, use a
+        read-only root and may not override the pod security context
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

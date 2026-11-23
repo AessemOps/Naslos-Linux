@@ -50,10 +50,21 @@ scope:
 reviewed allowlist in `rust/api/src/mcp/tools/mod.rs`; anything that touches
 identities (users, groups, passwords), credentials (SMTP/notification
 secrets), trust enrollments (Buddy peers, DNS/SSO domains) or arbitrary
-egress (URL imports, chart sources) is `full`. The synthetic identity a call
-runs as is the scope's role (`read` → read-only, `write` → operator,
-`full` → admin), so a `write` token cannot create or update a user even if a
-future tool classification is wrong.
+egress (URL imports, chart sources, Buddy receiver URLs) is `full`. Buddy
+sends and schedules are `full` for exactly that reason: their receiver is an
+arbitrary base URL, and a schedule repeats the egress persistently. No
+`write`-scoped tool accepts an http(s) URL argument (a registry test enforces
+this).
+
+The synthetic identity a call runs as carries the scope's groups (`read` →
+read-only, `write` → operator, `full` → admin) so handlers that audit or
+inspect the acting user behave as they do on `/api`. It is **not** a second
+authorization layer: `require_role` is not mounted on the internal router (the
+current route table is admin-only, so mounting it would not express narrower
+scopes). The runtime enforcement is the `tools/call` scope re-check, and the
+review gate is the reviewed `WRITE_ALLOWLIST` / `FULL_ONLY_TOOLS` registry
+tests. A tool misclassified as `write` would be reachable by a `write` token;
+the classification tests above, not a hidden middleware, are what stop that.
 
 > **Breaking change (0.7.1):** the identity/credential/egress tools used to
 > be reachable with a `write` token. Existing `write` tokens must be
@@ -84,6 +95,22 @@ check. `buddy_identity_create` with `"replace": true` requires the literal
 `confirm: "replace"` (the identity name alone is not enough). This is the
 guard that keeps an enthusiastic LLM from destroying "old-media" when the
 user asked about it.
+
+Multi-field actions confirm the **whole target**, not one convenient field:
+
+| Tool | `confirm` value |
+| --- | --- |
+| `vm_snapshot_restore` | `<vm>@<snapshot>` (e.g. `web-1@pre-upgrade`) |
+| `dataset_delete` | `<dataset>@<recursive>` where recursive is required and literal `true`/`false` (e.g. `tank/media@false`) |
+| `network_change_apply` | `<link>@<sha256>` — the link, `@`, and the lowercase hex SHA-256 of the compact JSON arguments object **without** `confirm`, object keys sorted |
+
+The payload hash on a network change binds the confirmation to the whole
+request, so a caller cannot confirm a safe-looking link while changing its
+addresses, gateway or MTU. A confirmation that repeats only the first field
+is refused with the expected target. Routes that also re-check their own
+`?confirm=` query (dataset/pool delete, VM delete, VM snapshot restore)
+receive the plain primary target value (the name), never the composite
+string.
 
 ## Connect a client
 

@@ -51,6 +51,14 @@
   let selectableDomains: string[] = [];
   let ssoDomains: string[] = [];
   let appRecordDomains = new Set<string>();
+  // Optional source state: a failed registry/pool/domain GET must be shown as
+  // an error with Retry, never as an empty "none available" list.
+  let datasetsLoaded = false;
+  let poolsLoaded = false;
+  let domainsLoaded = false;
+  let datasetsError = '';
+  let poolsError = '';
+  let domainsError = '';
   let confirmed = false;
   let unsafeConfirmed = false;
   let privilegedConfirmed = false;
@@ -123,23 +131,72 @@
     return out;
   }
 
-  async function loadApp() {
+  async function loadDatasets() {
+    datasetsError = '';
     try {
-      const [res, registryRes, poolsRes, domainRes] = await Promise.all([
-        fetch(`/api/catalog/${encodeURIComponent(appName)}`),
-        fetch('/api/datasets/registry'),
-        fetch('/api/volumes/zfs'),
-        fetch('/api/domains')
-      ]);
+      const res = await fetch('/api/datasets/registry');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      managedDatasets = Array.isArray(data) ? data : [];
+      datasetsLoaded = true;
+    } catch (e) {
+      datasetsError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function loadPools() {
+    poolsError = '';
+    try {
+      const res = await fetch('/api/volumes/zfs');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const pools = await res.json();
+      storagePools = Array.isArray(pools)
+        ? pools.map((pool: any) => pool.name).filter((name: any) => typeof name === 'string')
+        : [];
+      poolsLoaded = true;
+    } catch (e) {
+      poolsError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function loadDomains() {
+    domainsError = '';
+    try {
+      const res = await fetch('/api/domains');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const domainData = await res.json();
+      baseDomain = domainData.baseDomain || '';
+      const domains = Array.isArray(domainData.domains) ? domainData.domains : [];
+      selectableDomains =
+        Array.isArray(domainData.selectableDomains) && domainData.selectableDomains.length > 0
+          ? domainData.selectableDomains
+          : [baseDomain, ...domains.map((d: any) => d.baseDomain)].filter(Boolean);
+      // Older APIs do not return ssoDomains; the primary is always SSO.
+      ssoDomains =
+        Array.isArray(domainData.ssoDomains) && domainData.ssoDomains.length > 0
+          ? domainData.ssoDomains
+          : [baseDomain].filter(Boolean);
+      appRecordDomains = new Set(
+        domains
+          .filter((domain: any) => domain.appRecordsDdnsEntry)
+          .map((domain: any) => domain.baseDomain)
+      );
+      domainsLoaded = true;
+    } catch (e) {
+      domainsError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function loadApp() {
+    loading = true;
+    error = '';
+    // Optional endpoints load independently: one failing source must not take
+    // the whole install form down or masquerade as an empty list.
+    const optional = Promise.allSettled([loadDatasets(), loadPools(), loadDomains()]);
+    try {
+      const res = await fetch(`/api/catalog/${encodeURIComponent(appName)}`);
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
-      }
-      if (registryRes.ok) managedDatasets = await registryRes.json();
-      if (poolsRes.ok) {
-        const pools = await poolsRes.json();
-        storagePools = Array.isArray(pools)
-          ? pools.map((pool: any) => pool.name).filter((name: any) => typeof name === 'string')
-          : [];
       }
       app = await res.json();
       if (app) {
@@ -160,28 +217,10 @@
           exposure.localOnly = true;
         }
       }
-      if (domainRes.ok) {
-        const domainData = await domainRes.json();
-        baseDomain = domainData.baseDomain || '';
-        const domains = Array.isArray(domainData.domains) ? domainData.domains : [];
-        selectableDomains =
-          Array.isArray(domainData.selectableDomains) && domainData.selectableDomains.length > 0
-            ? domainData.selectableDomains
-            : [baseDomain, ...domains.map((d: any) => d.baseDomain)].filter(Boolean);
-        // Older APIs do not return ssoDomains; the primary is always SSO.
-        ssoDomains =
-          Array.isArray(domainData.ssoDomains) && domainData.ssoDomains.length > 0
-            ? domainData.ssoDomains
-            : [baseDomain].filter(Boolean);
-        appRecordDomains = new Set(
-          domains
-            .filter((domain: any) => domain.appRecordsDdnsEntry)
-            .map((domain: any) => domain.baseDomain)
-        );
-      }
     } catch (e) {
-      error = 'Failed to load app details: ' + e;
+      error = 'Failed to load app details: ' + (e instanceof Error ? e.message : String(e));
     } finally {
+      await optional;
       loading = false;
     }
   }
@@ -279,7 +318,14 @@
           {/if}
           <div class="mt-4">
             <span class="label">Datasets</span>
-            {#if managedDatasets.length === 0}
+            {#if datasetsError}
+              <p role="alert" class="text-xs text-red-300">
+                Registered datasets are unavailable: {datasetsError}.
+                <button type="button" class="underline hover:text-red-200" on:click={loadDatasets}>Retry</button>
+              </p>
+            {:else if !datasetsLoaded}
+              <p class="text-xs text-gray-500">Loading registered datasets…</p>
+            {:else if managedDatasets.length === 0}
               <p class="text-xs text-gray-500">
                 No datasets are registered yet. Register one under Datasets to attach it to this app.
               </p>
@@ -326,19 +372,36 @@
                 <option value={pool}>{pool}</option>
               {/each}
             </select>
+            {#if poolsError}
+              <p role="alert" class="text-xs text-red-300 mt-1">
+                Storage pools are unavailable: {poolsError}.
+                <button type="button" class="underline hover:text-red-200" on:click={loadPools}>Retry</button>
+              </p>
+            {:else if !poolsLoaded}
+              <p class="text-xs text-gray-500 mt-1">Loading storage pools…</p>
+            {/if}
             <p class="text-xs text-gray-500 mt-1">
               App config, database and upload PVCs are created under /var/mnt/&lt;pool&gt;/apps.
               The dataset above is separate: it controls the app's media/data volume.
             </p>
           </div>
         {:else if activeStep === 'exposure'}
-          <ExposureForm
-            bind:exposure
-            bind:baseDomain
-            {selectableDomains}
-            {ssoDomains}
-            on:change={() => (unsafeConfirmed = false)}
-          />
+          {#if domainsError}
+            <div role="alert" class="card border-red-700 bg-red-900/20 text-red-300 text-sm">
+              <p>Domains are unavailable: {domainsError}.</p>
+              <button type="button" class="btn btn-secondary mt-3" on:click={loadDomains}>Retry</button>
+            </div>
+          {:else if !domainsLoaded}
+            <p class="text-sm text-gray-400">Loading domains…</p>
+          {:else}
+            <ExposureForm
+              bind:exposure
+              bind:baseDomain
+              {selectableDomains}
+              {ssoDomains}
+              on:change={() => (unsafeConfirmed = false)}
+            />
+          {/if}
           {#if exposure.subdomain && appRecordDomains.has(baseDomain)}
             <p class="mt-4 p-3 rounded-lg border border-naslos-border bg-naslos-dark/40 text-xs text-gray-300">
               A CNAME <span class="font-mono">{exposure.subdomain}.{baseDomain}</span> will be created on

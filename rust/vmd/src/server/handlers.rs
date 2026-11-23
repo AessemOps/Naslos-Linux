@@ -77,6 +77,15 @@ pub async fn vm_vnc_tunnel(
             format!("port {port} is outside the configured VNC display range"),
         );
     }
+    // The name must own the port. Without this a valid API token could proxy
+    // any other VM's console (or any loopback service in the display range)
+    // by asking for a different VM name.
+    if state.supervisor.vnc_port_for(&name).await != Some(port) {
+        return write_error(
+            StatusCode::NOT_FOUND,
+            format!("VM {name:?} is not listening on port {port}"),
+        );
+    }
     ws.on_upgrade(move |socket| tunnel_vnc(socket, name, port))
 }
 
@@ -170,7 +179,7 @@ pub async fn images_get(
             format!("pool {pool:?} is not a valid dataset component"),
         );
     }
-    let list = images::list(&pool).await;
+    let list = images::list(&state.datasets_root, &pool).await;
     let registry = state.imports.lock().await;
     let importing: Vec<String> = registry.active.iter().cloned().collect();
     let errors = registry.errors.clone();
@@ -185,6 +194,7 @@ pub async fn images_get(
 }
 
 pub async fn image_upload_post(
+    State(state): State<Arc<AppState>>,
     Query(query): Query<HashMap<String, String>>,
     body: Body,
 ) -> Response {
@@ -212,13 +222,68 @@ pub async fn image_upload_post(
         .get("final")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
-    match images::write_chunk(&pool, &name, offset, final_chunk, body).await {
+    // An explicit `confirm=<name>` is required to replace an existing image;
+    // the same explicit confirmation is what the UI sends for a re-upload.
+    let confirm_overwrite = query.get("confirm").map(String::as_str) == Some(name.as_str());
+    // The browser generates one owner token per upload session and echoes it
+    // on every chunk; a chunk from another client is refused instead of
+    // silently discarding the active upload's progress.
+    let owner = query.get("owner").map(String::as_str).unwrap_or_default();
+    // The overwrite decision (first chunk) and the rename (final chunk) both
+    // check attachment; a VM could start using the existing image while a
+    // multi-chunk replacement is in flight.
+    if offset == 0 || final_chunk {
+        if let Some(owner) = state.supervisor.image_in_use(&pool, &name).await {
+            return write_error(
+                StatusCode::CONFLICT,
+                format!("cannot replace {name:?}: {owner} attaches it"),
+            );
+        }
+    }
+    if offset == 0 {
+        let registry = state.imports.lock().await;
+        if registry.active.contains(&name) {
+            return write_error(
+                StatusCode::CONFLICT,
+                format!("{name:?} is being imported; wait for the import to finish"),
+            );
+        }
+    }
+    match images::write_chunk(
+        &state.datasets_root,
+        &pool,
+        &name,
+        offset,
+        final_chunk,
+        confirm_overwrite,
+        owner,
+        body,
+    )
+    .await
+    {
         Ok(size) => json_response(
             StatusCode::OK,
             &serde_json::json!({ "name": name, "sizeBytes": size }),
         ),
-        Err(e) => write_error(StatusCode::BAD_REQUEST, e),
+        Err(e) => image_error(e),
     }
+}
+
+/// Map an image-library failure to the status the caller can act on.
+fn image_error(message: String) -> Response {
+    let status = if message.contains("library limit") {
+        StatusCode::PAYLOAD_TOO_LARGE
+    } else if message.contains("already exists")
+        || message.contains("already in progress")
+        || message.contains("no upload of")
+        || message.contains("symlink")
+        || message.contains("in progress")
+    {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+    write_error(status, message)
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -231,6 +296,9 @@ pub struct ImportRequest {
     pub url: String,
     #[serde(default)]
     pub sha256: Option<String>,
+    /// Must equal `name` to replace an existing library image.
+    #[serde(default)]
+    pub confirm: Option<String>,
 }
 
 pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
@@ -240,6 +308,21 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
     };
     if !crate::model::valid_pool_component(&req.pool) {
         return write_error(StatusCode::BAD_REQUEST, "a valid pool is required");
+    }
+    if let Some(owner) = state.supervisor.image_in_use(&req.pool, &req.name).await {
+        return write_error(
+            StatusCode::CONFLICT,
+            format!("cannot replace {:?}: {owner} attaches it", req.name),
+        );
+    }
+    if images::upload_in_progress(&state.datasets_root, &req.pool, &req.name) {
+        return write_error(
+            StatusCode::CONFLICT,
+            format!(
+                "{:?} is being uploaded; wait for the upload to finish",
+                req.name
+            ),
+        );
     }
     // One import per target name; a second concurrent import of the same
     // file would interleave writes.
@@ -258,8 +341,35 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
     let name = req.name.clone();
     let url = req.url.clone();
     let sha256 = req.sha256.clone();
+    let confirm_overwrite = req.confirm.as_deref() == Some(req.name.as_str());
+    let datasets_root = state.datasets_root.clone();
+    let supervisor = state.supervisor.clone();
+    let check_pool = pool.clone();
+    let check_name = name.clone();
     tokio::spawn(async move {
-        let outcome = images::import_url(&pool, &name, &url, sha256.as_deref()).await;
+        // A long download can outlive the initial attachment check: re-check
+        // right before the staged file replaces the library entry.
+        let before_publish = move || {
+            let supervisor = supervisor.clone();
+            let pool = check_pool.clone();
+            let name = check_name.clone();
+            async move {
+                match supervisor.image_in_use(&pool, &name).await {
+                    Some(owner) => Err(format!("cannot replace {name:?}: {owner} attaches it")),
+                    None => Ok(()),
+                }
+            }
+        };
+        let outcome = images::import_url(
+            &datasets_root,
+            &pool,
+            &name,
+            &url,
+            sha256.as_deref(),
+            confirm_overwrite,
+            before_publish,
+        )
+        .await;
         let mut registry = imports.lock().await;
         registry.active.remove(&name);
         match outcome {
@@ -279,8 +389,27 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
     )
 }
 
+/// `DELETE /api/v1/images/upload?pool=&name=&owner=` — abandon this owner's
+/// upload session and delete its staged file. A different owner is refused;
+/// a missing session is an idempotent success (and clears a stale stage).
+pub async fn image_upload_cancel(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let pool = query.get("pool").cloned().unwrap_or_default();
+    let name = query.get("name").cloned().unwrap_or_default();
+    let owner = query.get("owner").map(String::as_str).unwrap_or_default();
+    match images::cancel_upload(&state.datasets_root, &pool, &name, owner).await {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &serde_json::json!({ "status": "cancelled", "name": name }),
+        ),
+        Err(e) => image_error(e),
+    }
+}
+
 pub async fn image_delete(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Query(query): Query<HashMap<String, String>>,
     Path(name): Path<String>,
 ) -> Response {
@@ -291,11 +420,17 @@ pub async fn image_delete(
             format!("pool {pool:?} is not a valid dataset component"),
         );
     }
-    match images::delete(&pool, &name).await {
+    if let Some(owner) = state.supervisor.image_in_use(&pool, &name).await {
+        return write_error(
+            StatusCode::CONFLICT,
+            format!("cannot delete {name:?}: {owner} attaches it"),
+        );
+    }
+    match images::delete(&state.datasets_root, &pool, &name).await {
         Ok(()) => json_response(
             StatusCode::OK,
             &serde_json::json!({ "status": "deleted", "name": name }),
         ),
-        Err(e) => write_error(StatusCode::BAD_REQUEST, e),
+        Err(e) => image_error(e),
     }
 }

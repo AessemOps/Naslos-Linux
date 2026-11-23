@@ -215,7 +215,7 @@ that rewrites the path — an error nobody can debug otherwise.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/enroll` | Bootstrap: a peer presents the receiver's one-time token and its public key. The only unsigned call. The token is burned before the key is authorized (a failed write fails the enrollment), and the requested quota is capped at the receiver's configured default. |
+| POST | `/enroll` | Bootstrap: a peer presents the receiver's one-time token and its public key. The only unsigned call. The token is burned before the key is authorized (a failed write fails the enrollment), and the requested quota is capped at the receiver's configured default. **The token is a bearer secret: send this call over HTTPS or a trusted private network only.** |
 | GET | `/status` | Free space, bytes stored for this key, quota, sources, last backup, current chain per source |
 | GET | `/backups` | Rows: source, chain, kind, created, chunks, stored bytes |
 | GET | `/chains/{source}` | Chain list (newest first) with GUIDs, for showing a source's history. Bounded to the newest 500 chains and reports `truncated`/`total` |
@@ -290,10 +290,26 @@ network symptom, not the client giving up — check the value above and the node
 
 - **Replay cache:** a nonce is kept for its full window. When a key reaches the
   per-key cap the receiver refuses new requests instead of evicting an
-  unexpired nonce (eviction made a captured request replayable).
-- **Manifest rollback:** for the same chain, a manifest whose `sequence` is
-  strictly older than the stored one is refused. An equal sequence is accepted
-  because it is the idempotent re-PUT of a retried publish.
+  unexpired nonce (eviction made a captured request replayable). The append is
+  fsynced and is serialized with compaction under one lock; compaction runs on
+  a growth factor (the file must at least double), never on every request. A
+  malformed `.nonces` line makes the receiver refuse peer requests until the
+  file is repaired, rather than silently forgetting replay entries.
+- **Manifest rollback:** `sequence` is monotonic across a source's whole chain
+  history, not just within one chain. A manifest on a new chain whose sequence
+  is lower than the current chain's is refused, and an equal-sequence re-PUT is
+  accepted only when it is byte-identical to the stored manifest.
+- **Manifest accounting:** a published manifest must list chunks that exist and
+  are exactly the `sealedBytes` it claims. Manifest, GUID index and
+  `current.json` bytes are quota-charged like chunks.
+- **Quota accounting:** every stored file is billed as at least one filesystem
+  block and rounded up to whole blocks, so zero- or one-byte writes cannot skip
+  the quota or the free-space reserve. Usage is computed under the same lock as
+  the quota check and is re-read after a prune.
+- **Revocation is durable:** a peer revoke, MCP-token revoke or schedule delete
+  is written to disk before the in-memory store changes. A failed write (full
+  or read-only state volume) returns an error and leaves the principal
+  authorized; it never looks revoked until the next restart.
 - **One job per `(receiver, source)`:** the conflict check and job registration
   happen under one lock, so two sends cannot share and overwrite one resume
   state file.
@@ -301,7 +317,13 @@ network symptom, not the client giving up — check the value above and the node
   `lastRun`, `lastResult`, `lastError` and the per-receiver result map, so the
   Schedules page reflects a failing nightly backup instead of showing nothing.
 - **Restore target:** the dataset name is validated at the API before any
-  stream is opened.
+  stream is opened, and concurrent restores of one dataset are refused.
+- **Only 2xx is success:** the sender treats every redirect or error status as
+  a failed push, so a redirecting intermediate cannot produce a false
+  "backed up" result, and the resume state survives the failure.
+- **Signed manifest ↔ summary:** the restore cross-checks `fromGUID`, `toGUID`,
+  `kind`, `fromSnapshot` and `toSnapshot` between the unsigned chain listing
+  and the signed manifest before writing plaintext.
 
 ## 4. The envelope
 
@@ -451,12 +473,45 @@ buddyctl prune https://naslos-b --source naslos-a/data --keep 7
 `buddyctl` is built from the repo (`make buddyctl` → `bin/buddyctl`) and needs only
 network access to the receiver: it is not a cluster component.
 
-Every chain is verified end-to-end **before** the first `zfs receive`. When the
+Every chain is verified end-to-end **before** the first `zfs receive`. Each
+manifest's `fromGUID`, `toGUID`, `kind`, `fromSnapshot` and `toSnapshot` are
+cross-checked against the receiver's chain summary before a single plaintext
+byte is written: the summary is receiver-supplied and unsigned, so a receiver
+cannot pair a validly signed manifest with a different listing entry. When the
 destination dataset already exists the API snapshots it first, records the
 applied-chain index beside the identity, and on any failure rolls the dataset
 back to that snapshot and deletes it; a failed restore therefore leaves the
-destination as it was and is never reported as successful. A successful restore
-destroys the pre-restore snapshot.
+destination as it was and is never reported as successful. The snapshot is
+destroyed **only after** a successful rollback: if the rollback fails, both the
+snapshot and the progress marker are kept and the error names the snapshot, so
+the data can still be recovered. A destination that did not exist before the
+restore is destroyed on failure instead of being left half-applied. A
+successful restore removes the progress marker before destroying the
+pre-restore snapshot. Before acting on a marker, a restore probes the agent's
+live snapshot listing: a snapshot absent from a successful listing is treated
+as already gone, so a crash or failed unlink in that window cannot block later
+restores. A listing failure keeps the marker unless the destination dataset
+itself is gone (nothing left to recover), in which case the stale marker is
+dropped and a fresh restore recreates the dataset. If a failed receive has lost
+its rollback point while the destination dataset still exists, the destination
+may be half-applied with no rollback point: the marker records a `rollbackLost`
+flag, the error says so, and every later restore refuses with 409 naming the
+dataset until an operator destroys the dataset (which removes the wedge) or
+verifies/repairs it manually and removes the marker. Otherwise a marker is
+dropped only after the rollback succeeded. Restores of the same destination
+dataset are serialized: a second request while one is running is refused, and
+the progress marker is keyed by source **and** dataset and is removed only once
+the dataset it names has been recovered.
+
+The freshness check has one honest limitation: the signed manifest proves the
+sender produced that chain, but replaying an older signed chain is only
+detectable against the sender's local per-source publish anchor
+(`buddy-sequences/` beside the identity file). On a machine that never
+published to that receiver (`last_published_sequence == 0`) there is no anchor,
+so a receiver that consistently withholds newer chains cannot be detected by
+freshness alone. Integrity (signature, chunk digests, GUID/kind/snapshot
+cross-checks, contiguity) still holds. Keep `buddy-sequences/` with the
+identity backup when moving an instance.
 
 An interrupted push is continued, not restarted:
 
@@ -557,7 +612,20 @@ docker run -d --name buddy-receiver --restart unless-stopped \
   naslos-buddy-receiver
 ```
 
-Senders then use `http://host:8484` exactly as they would use a Naslos instance.
+Senders then use that receiver exactly as they would use a Naslos instance: the
+URL of the TLS terminator in front of it, or `http://host:8484` only on a
+trusted private network.
+
+> **Do not enroll over plain HTTP.** The receiver itself speaks plain HTTP on
+> port 8484. The `/enroll` call carries the **one-time enrollment token** in the
+> request body, and `http://` exposes it (and every later request's metadata) to
+> anyone on the path. Run a TLS terminator in front of it — Caddy, nginx,
+> stunnel, or the ingress you already operate — and use its `https://` URL for
+> enrollment and sends, or restrict port 8484 to a trusted private network or
+> VPN. Chunks and manifests are end-to-end encrypted and signed, so a
+> compromised transport cannot read or forge backups; it can still steal a
+> not-yet-burned enrollment token and authorize its own key.
+
 Two volumes are all the state there is: `/data` (ciphertext) and `/config`
 (`peers.json`). Keep a copy of `/config` if you want to keep the authorized keys,
 or to move them to another receiver.
@@ -598,8 +666,11 @@ error instead of writing damaged data. The Rust buddy suite in
   can impersonate a sender, and revoking that key (`DELETE /api/buddy/peers?name=…`)
   stops further pushes immediately.
 - A sender cannot write outside its own namespace, beyond its quota, or into
-  another key's tree: the source name is validated (no `..`, no absolute paths),
-  scope is enforced per key, and quota is checked before every chunk is stored.
+  another key's tree: the source name is validated (relative, lowercase, no
+  `..`, no dot-led path segment), scope is enforced per key, chain ids are
+  restricted to `[a-z0-9]{1,64}`, chunks must be structurally valid `NBC2`
+  envelopes within the chain's index cap, and quota plus the free-space reserve
+  are checked before every write — including manifests.
 
 **Not protected (yet)**
 
