@@ -968,4 +968,36 @@ mod tests {
         let live = sup.live().await;
         assert!(live.is_empty());
     }
+
+    #[test]
+    fn cpu_percent_of_a_nonexistent_pid_is_zero() {
+        let percent = cpu_percent(u32::MAX, 4, std::time::Instant::now());
+        assert_eq!(
+            percent, 0.0,
+            "/proc must not exist for an impossible pid, so cpu_percent must be 0.0"
+        );
+    }
+
+    #[test]
+    fn cpu_percent_of_this_process_stays_within_the_cpu_cap() {
+        let percent = cpu_percent(std::process::id(), 4, std::time::Instant::now());
+        assert!(
+            (0.0..=400.0).contains(&percent),
+            "cpu_percent with 4 vCPUs must stay within 0..=400, got {percent}"
+        );
+        assert!(
+            percent.is_finite(),
+            "cpu_percent must be finite, got {percent}"
+        );
+    }
+
+    #[test]
+    fn cpu_percent_with_zero_cpus_caps_at_one_cpu() {
+        // The cap is max(1) * 100, so a zero vCPU count may not exceed 100%.
+        let percent = cpu_percent(std::process::id(), 0, std::time::Instant::now());
+        assert!(
+            (0.0..=100.0).contains(&percent),
+            "cpu_percent with 0 vCPUs must stay within 0..=100, got {percent}"
+        );
+    }
 }
