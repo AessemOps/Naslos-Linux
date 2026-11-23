@@ -36,7 +36,7 @@ hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
 include_dir = "0.7"
 ipnet = "2"
 naslos-vmd = { path = "../vmd", version = "0.1.0" }
-portable-pty = "0.8"
+portable-pty = "0.9"
 tar = "0.4"
 libc = "0.2"
 ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
