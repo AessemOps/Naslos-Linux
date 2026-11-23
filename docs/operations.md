@@ -89,6 +89,12 @@ The admin password is only required while the `admin` step is still pending.
   ```
   The upgrader does this automatically; do it by hand only if the Job itself
   failed or the API is gone.
+- **`Apply failed with 1 conflict` on a Naslos upgrade**: the release was
+  first installed by the desktop engine, whose server-side apply owns fields
+  this release changes. The upgrader forces conflicts on `helm upgrade` and
+  `helm rollback`; an older release without that flag must be upgraded to a
+  build that has it. The Helm history description carries the full conflict
+  list (`helm -n naslos history naslos --max 2`).
 - **Talos A/B rollback**: Talos boots the previous slot automatically. Confirm
   with `talosctl -n <node> get version`; the operation reports `failed` with
   "rolled back". Fix the cause (image/schematic) before retrying.

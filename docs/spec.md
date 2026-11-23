@@ -1909,8 +1909,12 @@ A node installed from an installer pack can be upgraded from the web UI. A
   changing the node.
 - **FR-UPD-06** — A Naslos upgrade MUST rebuild only the installer's override
   keys from the current release, MUST `helm upgrade --reset-values` from the
-  new pack, MUST verify the running images against the pack's digests, and MUST
-  roll back to the previous Helm revision on failure. A Talos upgrade MUST
+  new pack, MUST force server-side apply conflicts (`--force-conflicts`) so a
+  release first installed by the desktop engine can be upgraded by the
+  in-cluster Helm CLI, MUST verify the running images against the pack's
+  digests, and MUST roll back to the previous Helm revision on failure. A
+  failed command MUST report the end of stderr: Helm prints a PodSecurity
+  warning per workload before the actionable error. A Talos upgrade MUST
   detect the A/B rollback after reboot. A Kubernetes upgrade MUST dry-run first
   and report that it has no automatic rollback.
 - **FR-UPD-07** — A `ValidatingAdmissionPolicy` MUST reject any pod using the
