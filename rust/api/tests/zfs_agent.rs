@@ -195,6 +195,13 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
     })
 }
 
+fn state_with_agent_and_vmd(agent_base: &str, vmd_base: &str) -> Arc<AppState> {
+    let mut state = state_with_agent(agent_base);
+    let vmd = naslos_api::vmd::Client::new(vmd_base, "token", "").unwrap();
+    Arc::get_mut(&mut state).expect("a fresh state").vmd = Some(Arc::new(vmd));
+    state
+}
+
 async fn call(
     state: Arc<AppState>,
     method: &str,
@@ -475,13 +482,9 @@ async fn disk_health_is_non_fatal_when_the_agent_fails() {
 // ---- VM delete (FR-VMT support) -------------------------------------------
 
 #[tokio::test]
-async fn vm_delete_destroys_the_dataset_recursively() {
-    // A VM dataset owns its snapshots, so the delete must pass
-    // recursive=true: a non-recursive destroy fails with "filesystem has
-    // children" the moment the VM ever had one (found by the live drill —
-    // deleting a VM after its snapshot step always 502'd). The mock agent
-    // records the request line; this harness has no vmd, so the post-destroy
-    // config push 502s after the destroy already succeeded.
+async fn vm_delete_fails_closed_when_vmd_is_absent() {
+    // R-019: no vmd means no live report, so a delete must be refused before
+    // it reaches the agent. The old code fell through to the dataset destroy.
     let uris: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let recorder = uris.clone();
     let app = Router::new().route(
@@ -502,8 +505,31 @@ async fn vm_delete_destroys_the_dataset_recursively() {
     });
     let state = state_with_agent(&format!("http://{addr}"));
 
-    let spec = naslos_vmd::model::VmSpec {
-        name: "drill-vm".into(),
+    let spec = vm_spec("drill-vm");
+    state.vms.create(spec).expect("seed record");
+
+    let (status, _body) = call(
+        state.clone(),
+        "DELETE",
+        "/api/virt/vms/drill-vm?confirm=drill-vm",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "no vmd in this harness: fail closed"
+    );
+    assert!(
+        uris.lock().unwrap().is_empty(),
+        "the dataset must not be destroyed without a live report"
+    );
+    assert!(state.vms.get("drill-vm").is_some(), "the record survives");
+}
+
+fn vm_spec(name: &str) -> naslos_vmd::model::VmSpec {
+    naslos_vmd::model::VmSpec {
+        name: name.into(),
         pool: "tank".into(),
         cpu: 1,
         mem_mib: 256,
@@ -518,11 +544,75 @@ async fn vm_delete_destroys_the_dataset_recursively() {
         net: naslos_vmd::model::NetSpec::default(),
         cloud_init: None,
         iso: None,
-    };
-    state.vms.create(spec).expect("seed record");
+    }
+}
 
-    let (status, _body) = call(state.clone(), "DELETE", "/api/virt/vms/drill-vm", None).await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY, "no vmd in this harness");
+#[tokio::test]
+async fn vm_delete_destroys_the_dataset_recursively() {
+    // A VM dataset owns its snapshots, so the delete must pass
+    // recursive=true: a non-recursive destroy fails with "filesystem has
+    // children" the moment the VM ever had one. vmd reports the VM stopped,
+    // so the fail-closed guard lets the destroy through.
+    let uris: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = uris.clone();
+    let agent = Router::new().route(
+        "/api/v1/datasets/{*rest}",
+        axum::routing::delete(move |req: Request<Body>| {
+            let recorder = recorder.clone();
+            async move {
+                let line = format!("{} {}", req.method(), req.uri());
+                recorder.lock().unwrap().push(line);
+                (StatusCode::OK, Json(json!({ "status": "destroyed" })))
+            }
+        }),
+    );
+    let agent_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let agent_addr = agent_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(agent_listener, agent).await.unwrap();
+    });
+
+    let vmd = Router::new()
+        .route(
+            "/api/v1/vms",
+            get(|| async {
+                Json(json!([{
+                    "name": "drill-vm",
+                    "state": "stopped",
+                    "pid": null,
+                    "vncPort": null,
+                    "vncPassword": "",
+                    "cpuPercent": 0.0,
+                    "memUsedMiB": 0,
+                    "unexpectedExit": false,
+                    "lastError": ""
+                }]))
+            }),
+        )
+        .route(
+            "/api/v1/vms/config",
+            put(|| async { Json(json!({ "revision": "test" })) }),
+        );
+    let vmd_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let vmd_addr = vmd_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(vmd_listener, vmd).await.unwrap();
+    });
+
+    let state = state_with_agent_and_vmd(
+        &format!("http://{agent_addr}"),
+        &format!("http://{vmd_addr}"),
+    );
+    state.vms.create(vm_spec("drill-vm")).expect("seed record");
+
+    let (status, _body) = call(
+        state,
+        "DELETE",
+        "/api/virt/vms/drill-vm?confirm=drill-vm",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
     let uris = uris.lock().unwrap();
     let destroy = uris
         .iter()

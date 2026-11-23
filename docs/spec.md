@@ -1977,9 +1977,15 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   (`<pool>/vms/<name>`) with `quota` equal to the declared disk size, created
   through the agent; the first start creates the disk image blank (`qcow2`
   sparse by default, `raw` optional) or seeds it from a library cloud image
-  and resizes it to the declared size. Deleting a VM MUST refuse while it is
-  running and MUST destroy the dataset only after the record is removed,
-  restoring the record if the destroy fails.
+  and resizes it to the declared size. `disk.format`, `disk.bus`,
+  `disk.sourceImage` and `pool` MUST be immutable after creation, and a
+  `sizeGB` change MUST be refused (`409`) until a supervisor resize API
+  (qemu-img resize plus a dataset quota change) exists. Deleting a VM MUST
+  require `confirm=<name>`, MUST refuse while the VM is not positively
+  reported `stopped`, MUST fail closed (`503` when vmd is absent, `502` when
+  its live report is unreadable) and MUST serialize with start/stop/restore
+  through a per-VM lifecycle lock; it destroys the dataset only after the
+  record is removed, restoring the record if the destroy fails.
 - **FR-VMT-04** — Networking v1 is NAT (slirp) with per-VM editable TCP port
   forwards exposed on the node; that is the only mode. A LAN mode that gives
   the guest its own DHCP address is **[OPEN]**: the planned path is a Talos
@@ -2009,15 +2015,23 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
 - **FR-VMT-08** — The console MUST be reachable from the browser:
   `GET /api/ws/vm/{name}/vnc` (plain GET) is a preflight returning the VNC
   port, the per-boot VNC password and `ready to attach`; the same route with
-  a websocket upgrade bridges RFB bytes to QEMU's VNC listener (noVNC
-  client, `@novnc/novnc`). The bridge MUST enforce the `/api/ws/exec`
-  posture: same-origin check, finite session caps (max session, idle
-  timeout, concurrent session semaphore). The credentials MUST appear only
+  a websocket upgrade bridges RFB bytes through an authenticated vmd tunnel
+  to QEMU's loopback VNC listener (noVNC client, `@novnc/novnc`). The bridge
+  MUST enforce a strict origin policy:
+  the browser `Origin` must be exactly the HTTPS authority of the request's own `Host` (port included); HTTP and
+  SSO/base-domain expansion are refused — plus finite session caps (max
+  session, idle timeout, concurrent session semaphore) and a per-VM attach
+  rate limit. Every console session MUST be audited (begin/end) and MUST be
+  refused while the audit log is degraded. The credentials MUST appear only
   in the preflight response, never in list/detail payloads.
 - **FR-VMT-09** — Snapshots MUST be ordinary ZFS snapshots of the VM dataset
   (created/listed via the agent, crash-consistent while the VM runs, backed
-  up by Buddy like any dataset). Restore MUST refuse a running VM and MUST
-  roll the dataset back (`zfs rollback -r`, deleting newer snapshots).
+  up by Buddy like any dataset). Restore MUST require `confirm=<name>`, MUST
+  fail closed when vmd is absent or its live report is unreadable, MUST
+  refuse any VM not positively reported `stopped`, and MUST roll the dataset
+  back (`zfs rollback -r`, deleting newer snapshots). The response and the
+  UI MUST state that the rollback destroys newer snapshots and every change
+  written after the target.
 - **FR-VMT-10** — `state` MUST be derived live from the supervisor, never
   persisted. The API MUST push the desired config at its own startup with
   `desired=running` for autostart-marked VMs (pod restart = VM restart for
@@ -2032,11 +2046,14 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   opt-out short of an explicit `VMD_ALLOW_PLAINTEXT=1` for development. The
   QEMU VNC listener MUST be password-protected (the password is set over
   QMP per boot and handed to the browser only through the owner-gated
-  preflight) and MUST bind `127.0.0.1`, never `0.0.0.0`: the console is
-  reachable only through the authenticated WebSocket bridge. The vmd pod may
-  use hostNetwork for NAT forwards but MUST NOT publish a VNC port/Service,
-  enable host PID/IPC or mount a service-account token. *(WP-03 vmd bind
-  test; chart audit `check_security_rendering`)*
+  preflight) and MUST bind loopback only (`127.0.0.1`), never `0.0.0.0`: the
+  console is reached only through the API bridge, which MUST tunnel RFB over
+  an authenticated route on vmd's existing TLS listener (bearer token, target
+  port restricted to the configured VNC display range). The vmd pod may use
+  hostNetwork for NAT forwards but MUST NOT publish a VNC port/Service, enable
+  host PID/IPC or mount a service-account token. A failure to generate the
+  per-boot password MUST fail the start closed. *(WP-03 vmd bind test; chart
+  audit `check_security_rendering`)*
 - **FR-VMT-12** — Secure Boot MUST be an optional per-VM flag
   (`secureBoot`, default `false`) and MUST be valid only with UEFI firmware.
   The supervisor MUST boot a Secure Boot guest with the OVMF `*.secboot.fd`
@@ -2547,10 +2564,10 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
 | `/api/shares/status` | GET | Rendered revision + what the node has applied |
 | `/api/virt/capabilities` | GET | Node virtualization preflight (FR-VMT-01) |
 | `/api/virt/vms` | GET, POST | VM records merged with live state / create (dataset + record + push) |
-| `/api/virt/vms/{name}` | GET, PUT, DELETE | Detail / update / delete (refuses a running VM) |
+| `/api/virt/vms/{name}` | GET, PUT, DELETE | Detail / update (pool, `disk.format`, `disk.bus`, `disk.sourceImage` immutable; size change 409) / delete (`?confirm=<name>`; fail closed unless vmd reports `stopped`) |
 | `/api/virt/vms/{name}/start` `stop` `force-stop` `restart` | POST | Lifecycle actions (stop = graceful ACPI; restart = force-stop + start) |
 | `/api/virt/vms/{name}/snapshots` | GET, POST | List / create a ZFS snapshot of the VM dataset |
-| `/api/virt/vms/{name}/snapshots/{snap}/restore` | POST | `zfs rollback -r`; refuses a running VM |
+| `/api/virt/vms/{name}/snapshots/{snap}/restore` | POST | `zfs rollback -r` (`?confirm=<name>`; fail closed unless vmd reports `stopped`; newer snapshots lost) |
 | `/api/virt/images?pool=` | GET | Per-pool library listing (imports + last errors included) |
 | `/api/virt/images/upload?pool=&name=&offset=&final=` | POST | One upload chunk (`application/octet-stream`, the only non-JSON body) |
 | `/api/virt/images/import` | POST | Server-side URL import (202; SSRF-guarded in the supervisor) |
@@ -2810,10 +2827,11 @@ Dynamic DNS and the provider registry are verified by
 | `naslos_vmd::model::tests::*` | FR-VMT-02/12 (name/range/enum/cloud-init/secure-boot validation, legacy-record defaults, library traversal guards) |
 | `naslos_vmd::args::tests::*` (golden argv) | FR-VMT-02/05/12 (SEC-1: the exact QEMU command line is a pinned, reviewable diff; Secure Boot pins the secboot pair, SMM and secure pflash) |
 | `naslos_vmd::capabilities::tests::*` | FR-VMT-01/12 (Secure Boot availability is reported, never inferred from a plain UEFI pair) |
-| `naslos_vmd::qmp::tests::*`, `naslos_vmd::supervisor::tests::*` | FR-VMT-10 (QMP round-trip incl. event skipping, reconcile invariants, force-stop guards) |
+| `naslos_vmd::qmp::tests::*`, `naslos_vmd::supervisor::tests::*` | FR-VMT-10/11 (QMP round-trip incl. event skipping, reconcile invariants, force-stop guards, VNC tunnel display range) |
+| `naslos_vmd::server::tests::*` (VNC tunnel) | FR-VMT-08/11 (authenticated tunnel proxies bytes to the loopback display port, out-of-range port refused) |
 | `naslos_vmd::images::tests::*` | FR-VMT-07 (SSRF guard covers mapped/ULA addresses, scheme allowlist, upload name guards, redirect resolution) |
 | `naslos_vmd::cloudinit::tests::*` | FR-VMT-06 (no password fields, pwauth disabled, instance-id tracks the seed) |
-| `naslos_api::virt::tests::*` | FR-VMT-10/12 (store round-trip + revalidation, legacy records default `secureBoot` off, boot render marks autostart VMs, views survive a dead supervisor, credentials stay out of payloads) |
+| `naslos_api::virt::tests::*`, `naslos_api::server::virt::tests::*` | FR-VMT-03/09/10/12 (store round-trip + revalidation, legacy records default `secureBoot` off, boot render marks autostart VMs, views survive a dead supervisor, credentials stay out of payloads; delete/restore confirm and fail-closed checks, immutable disk/pool fields, per-VM lifecycle locks, console origin/audit refusals) |
 | `contract.rs` virt tests (fail-closed shapes, octet-stream scoped to the upload route only, console origin/auth) | FR-VMT-08/11 |
 | `ui/tests/vms.spec.ts` (capability-skip) | FR-VMT-01 (banner on KVM-less nodes, list contract, preflight 409 on a stopped VM) |
 

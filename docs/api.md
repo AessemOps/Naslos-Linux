@@ -656,15 +656,15 @@ shell, never an arbitrary command.
 | GET | `/api/virt/capabilities` | Node preflight: KVM, CPU model, nested, physical NICs, and whether the supervisor image ships the OVMF Secure Boot firmware pair (`secureBoot`). 503 when the supervisor is not deployed/reachable |
 | GET | `/api/virt/vms` | VM records merged with live state (`running`/`stopped`/`unknown`; live `pid`, `cpuPercent`, `memUsedMiB`, `unexpectedExit`, `lastError`) |
 | POST | `/api/virt/vms` | Create: validates (`secureBoot` is UEFI-only and defaults off), creates `<pool>/vms/<name>` (quota = disk size) + the pool's `vms/isos` library via the agent, stores the record, pushes the desired config; rolls the record back if the push fails |
-| GET/PUT/DELETE | `/api/virt/vms/{name}` | Detail (merged view) / update (name immutable; the supervisor recreates the QEMU process when the rendered args change, including `secureBoot`) / delete (409 while running; destroys the dataset, restoring the record if the destroy fails) |
+| GET/PUT/DELETE | `/api/virt/vms/{name}` | Detail (merged view) / update (name, pool, `disk.format`, `disk.bus` and `disk.sourceImage` immutable; a `disk.sizeGB` change is 409 until a resize API exists; the supervisor recreates the QEMU process when the rendered args change) / delete (`?confirm=<name>` required; 409 unless vmd reports the VM `stopped`, 503/502 when vmd is absent/unreadable; destroys the dataset, restoring the record if the destroy fails) |
 | POST | `/api/virt/vms/{name}/start` `stop` `force-stop` `restart` | Lifecycle. `stop` = graceful ACPI shutdown (vmd escalates to SIGTERM/SIGKILL); `restart` = force-stop + start |
 | GET/POST | `/api/virt/vms/{name}/snapshots` | List / create a ZFS snapshot of the VM dataset (validated name) |
-| POST | `/api/virt/vms/{name}/snapshots/{snap}/restore` | `zfs rollback -r`; 409 while running (newer snapshots are deleted, stated in the response) |
+| POST | `/api/virt/vms/{name}/snapshots/{snap}/restore` | `zfs rollback -r` (`?confirm=<name>` required); 409 unless vmd reports the VM `stopped`, 503/502 when vmd is absent/unreadable; newer snapshots and all later guest state are destroyed, stated in the response |
 | GET | `/api/virt/images?pool=` | Per-pool library listing plus in-flight imports and their last errors |
 | POST | `/api/virt/images/upload?pool=&name=&offset=&final=` | One upload chunk, `application/octet-stream` (the API's only non-JSON body, scoped to this route), streamed through to the supervisor |
 | POST | `/api/virt/images/import` | Server-side URL import → `202`; the SSRF guard lives in the supervisor; errors surface in the listing |
 | DELETE | `/api/virt/images/{name}?pool=` | Delete a library file |
-| GET | `/api/ws/vm/{name}/vnc` | Console: plain GET = preflight (`vncPort`, per-boot `vncPassword`, `ready to attach`; 409 while stopped); websocket upgrade = RFB bridge to QEMU's VNC (same-origin check, session caps like `/api/ws/exec`) |
+| GET | `/api/ws/vm/{name}/vnc` | Console: plain GET = preflight (`vncPort`, per-boot `vncPassword`, `ready to attach`; 409 while stopped); websocket upgrade = RFB bridge to QEMU's loopback VNC (origin must be exactly the HTTPS request `Host`, per-VM attach rate limit, session caps like `/api/ws/exec`); audited begin/end and 503 while the audit log is degraded |
 
 ### Static assets
 

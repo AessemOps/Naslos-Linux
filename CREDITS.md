@@ -95,6 +95,7 @@ adds the same set plus the agent-pattern token/TLS server. Direct dependencies:
 | thiserror | 2 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror |
 | tokio | 1 | MIT | https://github.com/tokio-rs/tokio |
 | tokio-rustls | 0.26 | MIT OR Apache-2.0 | https://github.com/rustls/tokio-rustls |
+| tokio-tungstenite | 0.29 | MIT | https://github.com/snapview/tokio-tungstenite |
 | tokio-util | 0.7 | MIT | https://github.com/tokio-rs/tokio |
 | webpki-roots | 1 | CDLA-Permissive-2.0 | https://github.com/rustls/webpki-roots |
 | tower / tower-http | 0.5 / 0.6 | MIT | https://github.com/tower-rs/tower |

@@ -15,7 +15,7 @@ name = "naslos_vmd"
 path = "src/lib.rs"
 
 [dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 # Explicit, not just transitive: the crate graph pulls rustls via axum-server
 # (ring) and reqwest (aws-lc-rs), which leaves both crypto providers compiled
@@ -43,5 +43,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
+tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }
 

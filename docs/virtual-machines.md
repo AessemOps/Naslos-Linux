@@ -7,7 +7,7 @@ libvirt and no KubeVirt; a ~3k-line privileged supervisor (`naslos-vmd`)
 owns the QEMU processes and nothing else.
 
 ```
-browser ── noVNC (RFB over WS) ──> naslos-api ── TCP bridge ──> QEMU VNC (per-VM password)
+browser ── noVNC (RFB over WS) ──> naslos-api ── WS tunnel (vmd TLS + token) ──> naslos-vmd ── 127.0.0.1 TCP ──> QEMU VNC
 browser ── /api/virt/* ──> naslos-api ── token+TLS ──> naslos-vmd (QMP) ──> QEMU
 naslos-api ── zfs create/destroy/rollback ──> naslos-agent ──> ZFS datasets
 ```
@@ -39,6 +39,12 @@ entire command line is pinned by unit tests.
   the file name stays, the format flag changes), created **sparse** on first
   start, or seeded from a library cloud image (`disk.sourceImage`) with
   `qemu-img convert` + resize to the declared size.
+- `disk.format`, `disk.bus`, `disk.sourceImage` and `pool` are **immutable
+  after creation**; the API answers `409` if an edit tries to change them.
+  A `disk.sizeGB` change is also refused (`409`): growing a disk needs
+  `qemu-img resize` plus a matching `zfs set quota`, and the supervisor API
+  does not expose that yet — recreate the VM at the new size instead. The
+  residual is tracked with R-047.
 - UEFI vars are a per-VM copy (`<dataset>/vars.fd`) made on first start;
   Secure Boot uses a separate copy (`<dataset>/vars.secboot.fd`) so the two
   NVRAM stores never mix. The seed ISO is `<dataset>/seed.iso`, regenerated
@@ -50,9 +56,16 @@ entire command line is pinned by unit tests.
 - Snapshots are ordinary ZFS snapshots of the dataset (created through the
   agent, so Buddy backs them up like any other dataset). While a VM runs a
   snapshot is **crash-consistent** — the equivalent of yanking the power
-  cord; prefer stopping the VM for a clean backup point. Restore is
-  `zfs rollback -r` and refuses a running VM; newer snapshots are deleted
-  by the rollback, which the UI states before you confirm.
+  cord; prefer stopping the VM for a clean backup point.
+- Restore is `zfs rollback -r` and rolls the dataset back to the target:
+  **every snapshot newer than it is destroyed, and the guest loses all state
+  written after that point** (the reset is irreversible). The call requires
+  `?confirm=<name>`; a missing or mismatched name is `400`. It fails closed —
+  `503` when vmd is absent, `502` when the live report is unreadable, `409`
+  unless the VM is positively reported `stopped`. Deleting a VM carries the
+  same `confirm=<name>` requirement and the same fail-closed checks, and both
+  serialize with start/stop through a per-VM lifecycle lock so a delete can
+  never interleave with a queued start.
 
 ## Firmware and Secure Boot
 
@@ -127,9 +140,22 @@ boots straight to SSH.
   first".
 - A websocket upgrade bridges RFB bytes to QEMU's VNC listener on the
   node — the websockify pattern implemented inside the API (no extra
-  process). The bridge enforces the `/api/ws/exec` posture: same-origin
-  check, max-session/idle timeouts, and a concurrent-session semaphore
-  (`api.virtConsole` values: 4 h / 10 min / 4 sessions).
+  process). The bridge enforces a strict origin policy (the browser
+  `Origin` must be exactly the HTTPS authority of the request's own `Host`,
+  port included; HTTP and SSO/base-domain expansion are refused), a per-VM
+  attach rate limit, max-session/idle timeouts and a concurrent-session
+  semaphore (`api.virtConsole` values: 4 h / 10 min / 4 sessions).
+- QEMU's VNC listener binds **loopback only** (`127.0.0.1`), so it is never
+  directly reachable from the LAN or the pod network. The API bridges through
+  an authenticated tunnel on vmd's existing TLS listener: the API's
+  `vnc_bridge` opens a WebSocket to `/api/v1/vms/{name}/vnc?port=<port>` on
+  vmd with the bearer token, and vmd proxies the bytes to
+  `127.0.0.1:<port>`. The route is behind the same token middleware as every
+  other vmd API and refuses any port outside the configured VNC display
+  range, so a token cannot turn it into a general loopback proxy.
+- Each console session writes an audit begin/end record attributed to the
+  owner; the route refuses to start (`503`) while the audit log is degraded,
+  and a failed audit write during the session marks the log degraded.
 - The client is noVNC (`@novnc/novnc` 1.5.0, MPL-2.0 — see CREDITS.md),
   which performs the standard VNC auth against QEMU using the per-boot
   password vmd set over QMP. QEMU's VNC listener is password-protected;
@@ -196,10 +222,11 @@ boots straight to SSH.
   package already in the image, and no new host mount or device is added.
   TPM (`swtpm`) is not installed and no TPM device exists until the `[OPEN]`
   work in `docs/vm-parity.md` lands.
-- The QEMU VNC listener binds the node with a per-boot password; the
-  password only travels to the browser via the owner-gated preflight. If
-  you want the port unreachable from the LAN, firewall 5900-5916 at the
-  router — the UI console keeps working because the API bridges it.
+- The QEMU VNC listener binds loopback (`127.0.0.1`) with a per-boot
+  password; the password only travels to the browser via the owner-gated
+  preflight, and a failure to generate it refuses the start. The RFB port is
+  not reachable from the LAN at all. Console sessions are audited and
+  refused while the audit log is degraded.
 
 ## Chart values
 
@@ -230,8 +257,9 @@ The full gate from the plan, for the record:
    confirm the guest reports Secure Boot enabled (`mokutil --sb-state`, or
    `dmesg | grep -i secure` for a Linux guest). A `secureBoot` request on an
    image without the firmware pair must fail with an actionable error.
-7. Stop (graceful ACPI), snapshot, restore (refuses while running), force
-   stop, delete → dataset destroyed.
+7. Stop (graceful ACPI), snapshot, restore with `?confirm=<name>`
+   (refuses while running and destroys newer snapshots), force stop, delete
+   with `?confirm=<name>` → dataset destroyed.
 8. Kill the vmd pod → its QEMU children die with it (they live in the pod's
    PID namespace); the API watcher notices the supervisor's return and
    re-pushes the desired state, so desired-running VMs restart — an

@@ -490,7 +490,7 @@ impl Supervisor {
             .allocate_display()
             .await
             .ok_or_else(|| "no free VNC display in the configured range".to_string())?;
-        let password = vnc_password();
+        let password = vnc_password()?;
 
         let iso_path = match &spec.iso {
             Some(iso) => {
@@ -663,6 +663,16 @@ impl Supervisor {
         self.state.lock().await.running.get(name).map(|r| r.pid())
     }
 
+    /// Whether `port` is one of the VNC TCP ports this supervisor may
+    /// allocate. The tunnel route refuses anything outside the configured
+    /// display range, so a valid API token cannot turn it into a general
+    /// loopback port proxy.
+    pub fn vnc_port_in_range(&self, port: u16) -> bool {
+        let first = 5900u32 + u32::from(self.vnc_first_display);
+        let end = first + u32::from(self.vnc_display_count);
+        (first..end).contains(&u32::from(port))
+    }
+
     async fn allocate_display(&self) -> Option<u16> {
         let state = self.state.lock().await;
         for display in self.vnc_first_display..self.vnc_first_display + self.vnc_display_count {
@@ -792,13 +802,17 @@ fn tail_qemu_log(dir: &str) -> String {
         .unwrap_or_default()
 }
 
-fn vnc_password() -> String {
+fn vnc_password() -> Result<String, String> {
     const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
     let mut raw = [0u8; VNC_PASSWORD_LEN];
-    let _ = getrandom::fill(&mut raw);
-    raw.iter()
+    // Fail closed: a predictable password would make the console's only
+    // authentication layer worthless, so a start that cannot get entropy is
+    // refused instead of falling back to zeros.
+    getrandom::fill(&mut raw).map_err(|e| format!("generating the VNC password: {e}"))?;
+    Ok(raw
+        .iter()
         .map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char)
-        .collect()
+        .collect())
 }
 
 /// The background watchdog: reaps children and keeps state fresh even when
@@ -858,8 +872,18 @@ mod tests {
     }
 
     #[test]
+    fn the_vnc_tunnel_range_is_exactly_the_configured_displays() {
+        let sup = supervisor(); // first display 1, 16 displays
+        assert!(sup.vnc_port_in_range(5901));
+        assert!(sup.vnc_port_in_range(5916));
+        assert!(!sup.vnc_port_in_range(5900));
+        assert!(!sup.vnc_port_in_range(5917));
+        assert!(!sup.vnc_port_in_range(22));
+    }
+
+    #[test]
     fn vnc_passwords_are_8_alphanumeric_chars() {
-        let password = vnc_password();
+        let password = vnc_password().unwrap();
         assert_eq!(password.len(), 8);
         assert!(
             password.chars().all(|c| c.is_ascii_alphanumeric()),
