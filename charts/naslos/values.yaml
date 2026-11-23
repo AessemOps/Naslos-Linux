@@ -452,9 +452,10 @@ traefik:
       # namespaces. The upstream chart's ClusterRole grants Secret read in every
       # namespace; `rbac.namespaced` below turns that into a Role per watched
       # namespace, so a compromised Traefik pod can read Secrets only in
-      # `naslos` and these namespaces. App routes in a per-app isolation
-      # namespace (`naslos-app-*`) need that namespace added here and covered by
-      # a Traefik RoleBinding; see docs/deployment.md "Traefik RBAC".
+      # `naslos` and these namespaces. The VM/installer overlays replace this
+      # list with the shared namespaces plus the fixed per-app isolation pool
+      # (Traefik needs Service access there for cross-namespace routes); see
+      # docs/deployment.md "Traefik RBAC".
       namespaces:
         - naslos-apps
         - naslos-apps-priv
