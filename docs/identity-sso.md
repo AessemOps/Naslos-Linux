@@ -215,8 +215,9 @@ itself uses the separate `authelia-service` account, which has `auth` on
 `userPassword` and `read` elsewhere but no `write` ACL (FR-IDN-17): a
 compromised Authelia cannot change groups or passwords. The account and its
 `authelia-password` Secret key are created by the bootstrap Job; the ACL ships
-in the OpenLDAP image, so an existing directory needs it applied out of band
-(`openldap/image/test-authelia-acl.sh` is the drill).
+in the OpenLDAP image and the entrypoint reconciles it on every start, so a
+directory upgraded from an older release gains the clauses without a manual
+`ldapmodify` (`openldap/image/test-authelia-acl.sh` remains the drill).
 
 ## Deployment & first admin
 
