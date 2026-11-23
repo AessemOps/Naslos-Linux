@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use chrono::{DateTime, Utc};
@@ -262,6 +262,7 @@ struct Plan {
     datasets: Vec<DatasetPlan>,
     apps: Vec<SkipReport>,
     warnings: Vec<String>,
+    structural_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -316,6 +317,8 @@ struct ImportReport {
     schema_version: u32,
     dry_run: bool,
     applied: bool,
+    partial: bool,
+    structural_only: bool,
     sections: BTreeMap<String, SectionReport>,
     totals: Totals,
     warnings: Vec<String>,
@@ -340,7 +343,14 @@ pub async fn import_config(
     let bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(bytes) => bytes,
         Err(e) => {
-            return bad_request(&format!("reading the config import body: {e}"));
+            // axum reports the body cap as a length-limit error; an oversized
+            // restore must be 413, not a generic 400.
+            return json(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                serde_json::json!({
+                    "error": format!("the config import body exceeds the {} byte limit: {e}", MAX_BODY_BYTES),
+                }),
+            );
         }
     };
     let document: ImportDocument = match serde_json::from_slice(&bytes) {
@@ -366,7 +376,7 @@ pub async fn import_config(
         }
     };
     if apply {
-        apply_plan(&state, &mut plan);
+        apply_plan(&state, &mut plan).await;
         tracing::info!(
             created = plan_created(&plan),
             updated = plan_updated(&plan),
@@ -438,14 +448,25 @@ async fn build_plan(state: &AppState, document: &ImportDocument) -> Result<Plan,
     {
         warnings.push("primary is server-owned and was ignored for imported domains".to_string());
     }
-    if state.agent.is_none()
-        && !(document.shares.is_empty()
-            && document.storage_schedules.is_empty()
-            && document.buddy_schedules.is_empty()
-            && document.dataset_registry.is_empty())
-    {
+    let needs_live_validation = !(document.shares.is_empty()
+        && document.storage_schedules.is_empty()
+        && document.buddy_schedules.is_empty()
+        && document.dataset_registry.is_empty());
+    let mut structural_only = state.agent.is_none() && needs_live_validation;
+    if let Some(agent) = &state.agent {
+        if needs_live_validation && agent.list_datasets().await.is_err() {
+            // A configured but unreachable agent must never degrade silently:
+            // the planner could then accept a path or target that the node
+            // does not have. Say so in the report and mark the plan structural.
+            structural_only = true;
+            warnings.push(
+                "the configured agent is unreachable; share paths and dataset/pool targets were validated structurally only, not against the node"
+                    .to_string(),
+            );
+        }
+    } else if structural_only {
         warnings.push(
-            "the agent is unavailable; dataset and pool targets were validated structurally only"
+            "the agent is unavailable; share paths and dataset/pool targets were validated structurally only"
                 .to_string(),
         );
     }
@@ -461,6 +482,7 @@ async fn build_plan(state: &AppState, document: &ImportDocument) -> Result<Plan,
         datasets,
         apps,
         warnings,
+        structural_only,
     })
 }
 
@@ -480,7 +502,20 @@ async fn plan_shares(
     for (index, record) in document.shares.iter().enumerate() {
         let label = format!("shares[{index}] ({})", record.name);
         if !seen.insert(record.name.clone()) {
-            errors.push(format!("{label}: duplicate share name"));
+            plans.push(SharePlan {
+                entry: record.name.clone(),
+                create: CreateShareRequest {
+                    name: record.name.clone(),
+                    path: record.path.clone(),
+                    description: record.description.clone(),
+                    ..Default::default()
+                },
+                existing: None,
+                outcome: Outcome::Skipped(
+                    "another imported share already uses this name; only the first is imported"
+                        .to_string(),
+                ),
+            });
             continue;
         }
         if let Err(e) = shares::validate_share_name(&record.name) {
@@ -662,6 +697,11 @@ async fn plan_storage(
     let current = state.storage_schedules.list();
     let mut plans = Vec::new();
     let mut seen = HashSet::new();
+    // Enabled snapshot schedules already accepted in this plan. The overlap
+    // guard in `validate_schedule` only sees the persisted store, so two
+    // imported schedules covering the same dataset would otherwise both be
+    // accepted and fight over the same snapshot names.
+    let mut planned_snapshots: Vec<StorageSchedule> = Vec::new();
 
     for (index, record) in document.storage_schedules.iter().enumerate() {
         let label = format!(
@@ -743,11 +783,26 @@ async fn plan_storage(
             .as_ref()
             .map(|schedule| storage_changes(schedule, &value))
             .unwrap_or_default();
-        let outcome = match &existing {
+        let mut outcome = match &existing {
             None => Outcome::Created(None),
             Some(schedule) if changes.is_empty() => Outcome::Unchanged,
             Some(schedule) => Outcome::Updated(Some(schedule.id.clone()), changes.clone()),
         };
+        if value.enabled && value.kind == ScheduleKind::Snapshot {
+            if let Some(other) = planned_snapshots
+                .iter()
+                .find(|other| storage_schedules::snapshot_schedules_overlap(other, &value))
+            {
+                outcome = Outcome::Skipped(format!(
+                    "another imported snapshot schedule ({}) already covers {:?}{}; only one enabled schedule per dataset is allowed",
+                    kind_name(other.kind),
+                    other.target,
+                    if other.recursive { " recursively" } else { "" }
+                ));
+            } else {
+                planned_snapshots.push(value.clone());
+            }
+        }
         plans.push(StoragePlan {
             entry: label,
             value,
@@ -868,7 +923,19 @@ fn plan_ddns(
             continue;
         }
         if !seen_ids.insert(record.id.clone()) {
-            errors.push(format!("{label}: duplicate exported id"));
+            plans.push(DdnsPlan {
+                entry: label,
+                original_id: record.id.clone(),
+                value: ddns::Entry::default(),
+                existing: None,
+                changes: Vec::new(),
+                requires_credentials: false,
+                needs_config: false,
+                outcome: Outcome::Skipped(
+                    "another imported DDNS entry already uses this exported id; only the first is imported"
+                        .to_string(),
+                ),
+            });
             continue;
         }
         let Some(provider) = state.providers.get(record.provider.trim()) else {
@@ -913,7 +980,19 @@ fn plan_ddns(
             record.provider.trim()
         );
         if !seen_keys.insert(key) {
-            errors.push(format!("{label}: duplicate provider/zone/record/type"));
+            plans.push(DdnsPlan {
+                entry: label,
+                original_id: record.id.clone(),
+                value: ddns::Entry::default(),
+                existing: None,
+                changes: Vec::new(),
+                requires_credentials: false,
+                needs_config: false,
+                outcome: Outcome::Skipped(
+                    "another imported DDNS entry already uses this provider/zone/record/type; only the first is imported"
+                        .to_string(),
+                ),
+            });
             continue;
         }
         let existing_matches: Vec<ddns::Entry> = live
@@ -996,11 +1075,15 @@ fn plan_domains(
     errors: &mut Vec<String>,
 ) -> Vec<DomainPlan> {
     let live_ddns = state.ddns.as_ref().map(|manager| manager.store().list());
-    let imported_ddns: HashMap<&str, usize> = ddns
-        .iter()
-        .enumerate()
-        .map(|(index, plan)| (plan.original_id.as_str(), index))
-        .collect();
+    let imported_ddns: HashMap<&str, usize> =
+        ddns.iter()
+            .enumerate()
+            .fold(HashMap::new(), |mut map, (index, plan)| {
+                // Keep the first plan for a duplicated exported id: the second is
+                // skipped, and a domain reference must resolve to the imported one.
+                map.entry(plan.original_id.as_str()).or_insert(index);
+                map
+            });
     let mut plans = Vec::new();
     let mut seen = HashSet::new();
 
@@ -1008,7 +1091,21 @@ fn plan_domains(
         let base_domain = record.base_domain.trim();
         let label = format!("domains[{index}] ({base_domain})");
         if !seen.insert(base_domain.to_string()) {
-            errors.push(format!("{label}: duplicate base domain"));
+            plans.push(DomainPlan {
+                entry: base_domain.to_string(),
+                value: Domain {
+                    base_domain: base_domain.to_string(),
+                    ..Default::default()
+                },
+                existing: None,
+                ddns_ref: None,
+                changes: Vec::new(),
+                requires_credentials: false,
+                outcome: Outcome::Skipped(
+                    "another imported domain already uses this base domain; only the first is imported"
+                        .to_string(),
+                ),
+            });
             continue;
         }
         if !certs::is_dns1123_subdomain(base_domain) {
@@ -1140,7 +1237,9 @@ fn plan_domains(
         value.provider_config = provider_config;
         value.acme_email = record.acme_email.trim().to_string();
         value.environment = environment;
-        value.sso = record.sso;
+        // The primary domain is always an SSO domain; an imported record must
+        // not be able to demote it.
+        value.sso = record.sso || base_domain == state.base_domain;
         value.app_records_ddns_entry = match &ddns_ref {
             None => None,
             Some(DdnsRef::Existing(id)) => Some(id.clone()),
@@ -1207,7 +1306,23 @@ async fn plan_datasets(
     for (index, record) in document.dataset_registry.iter().enumerate() {
         let label = format!("datasetRegistry[{index}] ({})", record.name);
         if !seen.insert(record.name.clone()) {
-            errors.push(format!("{label}: duplicate dataset name"));
+            plans.push(DatasetPlan {
+                entry: record.name.clone(),
+                value: ManagedDataset {
+                    name: record.name.clone(),
+                    host_path: record.host_path.clone(),
+                    shared: false,
+                    warning_acknowledged: false,
+                    created_at: None,
+                    attached_to: Vec::new(),
+                },
+                existing: None,
+                changes: Vec::new(),
+                outcome: Outcome::Skipped(
+                    "another imported dataset already uses this name; only the first is imported"
+                        .to_string(),
+                ),
+            });
             continue;
         }
         let candidate = ManagedDataset {
@@ -1301,7 +1416,11 @@ fn plan_apps(
     for (index, record) in document.apps.iter().enumerate() {
         let label = format!("apps[{index}] ({})", record.name);
         if !seen.insert(record.name.clone()) {
-            errors.push(format!("{label}: duplicate app name"));
+            skipped.push(SkipReport {
+                entry: record.name.clone(),
+                reason: "another imported app already uses this name; only the first is reported"
+                    .to_string(),
+            });
             continue;
         }
         if let Err(e) = validate_app(record) {
@@ -1530,14 +1649,41 @@ fn ddns_changes(existing: &ddns::Entry, value: &ddns::Entry) -> Vec<String> {
     changes
 }
 
-fn apply_plan(state: &AppState, plan: &mut Plan) {
-    let mut ddns_ids = HashMap::new();
-    apply_shares(state, &mut plan.shares);
-    apply_storage(state, &mut plan.storage);
-    apply_buddy(state, &mut plan.buddy);
-    apply_ddns(state, &mut plan.ddns, &mut ddns_ids);
-    apply_domains(state, &mut plan.domains, &ddns_ids);
-    apply_datasets(state, &mut plan.datasets);
+async fn apply_plan(state: &Arc<AppState>, plan: &mut Plan) {
+    // The store writes are synchronous and fsync a file per record; keep them
+    // off the async worker. The plan moves into the blocking task and comes
+    // back enriched with the per-entry outcomes.
+    let staged = std::mem::take(plan);
+    let state_for_writes = state.clone();
+    let written = tokio::task::spawn_blocking(move || {
+        let mut staged = staged;
+        let mut ddns_ids = HashMap::new();
+        apply_shares(&state_for_writes, &mut staged.shares);
+        apply_storage(&state_for_writes, &mut staged.storage);
+        apply_buddy(&state_for_writes, &mut staged.buddy);
+        apply_ddns(&state_for_writes, &mut staged.ddns, &mut ddns_ids);
+        apply_datasets(&state_for_writes, &mut staged.datasets);
+        (staged, ddns_ids)
+    })
+    .await;
+    let (mut staged, ddns_ids) = match written {
+        Ok(written) => written,
+        Err(e) => {
+            // A panicked writer must not look like a clean no-op import.
+            plan.warnings
+                .push(format!("the config import writer task failed: {e}"));
+            plan.warnings.push(
+                "no record outcomes were reported for this apply; re-run the dry-run plan before retrying"
+                    .to_string(),
+            );
+            return;
+        }
+    };
+
+    let mut warnings = Vec::new();
+    apply_domains(state, &mut staged.domains, &ddns_ids, &mut warnings).await;
+    staged.warnings.extend(warnings);
+    *plan = staged;
 }
 
 fn apply_shares(state: &AppState, plans: &mut [SharePlan]) {
@@ -1545,6 +1691,15 @@ fn apply_shares(state: &AppState, plans: &mut [SharePlan]) {
     for plan in plans {
         if !is_write(&plan.outcome) {
             continue;
+        }
+        // The plan validated this path without holding the share lock. Check it
+        // again immediately before the write so a symlink planted between plan
+        // and apply cannot be exported (TOCTOU, R-052).
+        if std::fs::metadata(manager.zfs_base()).is_ok() {
+            if let Err(e) = manager.validate_path(&plan.create.path) {
+                plan.outcome = Outcome::Failed(format!("revalidating the share path: {e}"));
+                continue;
+            }
         }
         let result = match &plan.existing {
             Some(_) => {
@@ -1579,6 +1734,13 @@ fn apply_storage(state: &AppState, plans: &mut [StoragePlan]) {
         }
         match &plan.existing {
             Some(existing) => {
+                // Capture the persisted record (including scheduler runtime
+                // state) so a failed save can be rolled back instead of being
+                // reported as applied.
+                let previous = state
+                    .storage_schedules
+                    .get(&existing.id)
+                    .unwrap_or_else(|| existing.clone());
                 let mut value = plan.value.clone();
                 value.id = existing.id.clone();
                 value.next_run = Some(schedule::next_run(value.cadence, &value.run_at, Utc::now()));
@@ -1588,7 +1750,13 @@ fn apply_storage(state: &AppState, plans: &mut [StoragePlan]) {
                         plan.outcome = Outcome::Updated(Some(id), plan.changes.clone());
                     }
                     Err(e) => {
-                        plan.outcome = Outcome::Failed(format!("saving the schedule: {e}"));
+                        let rollback = state.storage_schedules.put(previous);
+                        plan.outcome = match rollback {
+                            Ok(()) => Outcome::Failed(format!("saving the schedule: {e}")),
+                            Err(rollback_error) => Outcome::Failed(format!(
+                                "saving the schedule: {e}; rolling back the previous schedule also failed: {rollback_error}"
+                            )),
+                        };
                     }
                 }
             }
@@ -1600,7 +1768,13 @@ fn apply_storage(state: &AppState, plans: &mut [StoragePlan]) {
                 match state.storage_schedules.put(value) {
                     Ok(()) => plan.outcome = Outcome::Created(Some(id)),
                     Err(e) => {
-                        plan.outcome = Outcome::Failed(format!("saving the schedule: {e}"));
+                        let rollback = state.storage_schedules.remove(&id);
+                        plan.outcome = match rollback {
+                            Ok(()) => Outcome::Failed(format!("saving the schedule: {e}")),
+                            Err(rollback_error) => Outcome::Failed(format!(
+                                "saving the schedule: {e}; removing the partial record also failed: {rollback_error}"
+                            )),
+                        };
                     }
                 }
             }
@@ -1615,6 +1789,10 @@ fn apply_buddy(state: &AppState, plans: &mut [BuddyPlan]) {
         }
         match &plan.existing {
             Some(existing) => {
+                let previous = state
+                    .buddy_schedules
+                    .get(&existing.id)
+                    .unwrap_or_else(|| existing.clone());
                 let mut value = existing.clone();
                 value.dataset = plan.value.dataset.clone();
                 value.source = plan.value.source.clone();
@@ -1634,7 +1812,13 @@ fn apply_buddy(state: &AppState, plans: &mut [BuddyPlan]) {
                         plan.outcome = Outcome::Updated(Some(id), plan.changes.clone());
                     }
                     Err(e) => {
-                        plan.outcome = Outcome::Failed(format!("saving the schedule: {e}"));
+                        let rollback = state.buddy_schedules.put(previous);
+                        plan.outcome = match rollback {
+                            Ok(()) => Outcome::Failed(format!("saving the schedule: {e}")),
+                            Err(rollback_error) => Outcome::Failed(format!(
+                                "saving the schedule: {e}; rolling back the previous schedule also failed: {rollback_error}"
+                            )),
+                        };
                     }
                 }
             }
@@ -1649,7 +1833,13 @@ fn apply_buddy(state: &AppState, plans: &mut [BuddyPlan]) {
                 match state.buddy_schedules.put(value) {
                     Ok(()) => plan.outcome = Outcome::Created(Some(id)),
                     Err(e) => {
-                        plan.outcome = Outcome::Failed(format!("saving the schedule: {e}"));
+                        let rollback = state.buddy_schedules.remove(&id);
+                        plan.outcome = match rollback {
+                            Ok(()) => Outcome::Failed(format!("saving the schedule: {e}")),
+                            Err(rollback_error) => Outcome::Failed(format!(
+                                "saving the schedule: {e}; removing the partial record also failed: {rollback_error}"
+                            )),
+                        };
                     }
                 }
             }
@@ -1670,6 +1860,7 @@ fn apply_ddns(state: &AppState, plans: &mut [DdnsPlan], ids: &mut HashMap<String
         }
         match &plan.existing {
             Some(existing) => {
+                let previous = manager.store().get(&existing.id).ok();
                 let mut value = plan.value.clone();
                 value.id = existing.id.clone();
                 let id = value.id.clone();
@@ -1679,7 +1870,16 @@ fn apply_ddns(state: &AppState, plans: &mut [DdnsPlan], ids: &mut HashMap<String
                         plan.outcome = Outcome::Updated(Some(id), plan.changes.clone());
                     }
                     Err(e) => {
-                        plan.outcome = Outcome::Failed(format!("saving the DDNS entry: {e}"));
+                        let rollback = match previous {
+                            Some(previous) => manager.store().put(previous),
+                            None => Ok(()),
+                        };
+                        plan.outcome = match rollback {
+                            Ok(()) => Outcome::Failed(format!("saving the DDNS entry: {e}")),
+                            Err(rollback_error) => Outcome::Failed(format!(
+                                "saving the DDNS entry: {e}; rolling back the previous entry also failed: {rollback_error}"
+                            )),
+                        };
                     }
                 }
             }
@@ -1693,7 +1893,13 @@ fn apply_ddns(state: &AppState, plans: &mut [DdnsPlan], ids: &mut HashMap<String
                         plan.outcome = Outcome::Created(Some(id));
                     }
                     Err(e) => {
-                        plan.outcome = Outcome::Failed(format!("saving the DDNS entry: {e}"));
+                        let rollback = manager.store().delete(&id);
+                        plan.outcome = match rollback {
+                            Ok(()) => Outcome::Failed(format!("saving the DDNS entry: {e}")),
+                            Err(rollback_error) => Outcome::Failed(format!(
+                                "saving the DDNS entry: {e}; removing the partial entry also failed: {rollback_error}"
+                            )),
+                        };
                     }
                 }
             }
@@ -1701,7 +1907,12 @@ fn apply_ddns(state: &AppState, plans: &mut [DdnsPlan], ids: &mut HashMap<String
     }
 }
 
-fn apply_domains(state: &AppState, plans: &mut [DomainPlan], ddns_ids: &HashMap<String, String>) {
+async fn apply_domains(
+    state: &Arc<AppState>,
+    plans: &mut [DomainPlan],
+    ddns_ids: &HashMap<String, String>,
+    warnings: &mut Vec<String>,
+) {
     for plan in plans {
         if !is_write(&plan.outcome) {
             continue;
@@ -1737,17 +1948,78 @@ fn apply_domains(state: &AppState, plans: &mut [DomainPlan], ddns_ids: &HashMap<
         if plan.existing.is_none() {
             value.created_at = Some(now);
         }
-        match state.domains.upsert(value) {
-            Ok(()) => {
-                plan.outcome = match &plan.existing {
-                    None => Outcome::Created(None),
-                    Some(_) => Outcome::Updated(None, changes),
+        let base_domain = value.base_domain.clone();
+        let previous = plan.existing.clone();
+        if let Err(e) = state.domains.upsert(value.clone()) {
+            plan.outcome = Outcome::Failed(format!("saving the domain: {e}"));
+            continue;
+        }
+
+        // Enforce the SSO invariants through the same handler the UI uses.
+        // `sync_sso_state` is private to `server::domains`, so calling the
+        // handler is the shared hook that also runs the Authelia sync.
+        if base_domain != state.base_domain {
+            let response = crate::server::domains::domain_sso_post(
+                State(state.clone()),
+                Path(base_domain.clone()),
+                Body::from(serde_json::json!({ "enabled": value.sso }).to_string()),
+            )
+            .await;
+            if !response.status().is_success() {
+                let status = response.status();
+                let detail = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                    .await
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .and_then(|body| {
+                        body.get("error")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| status.to_string());
+                let rollback = match &previous {
+                    Some(previous) => state.domains.upsert(previous.clone()),
+                    None => state.domains.delete(&base_domain),
                 };
-            }
-            Err(e) => {
-                plan.outcome = Outcome::Failed(format!("saving the domain: {e}"));
+                plan.outcome = match rollback {
+                    Ok(()) => Outcome::Failed(format!(
+                        "saving the domain: the imported sso value was rejected: {detail}"
+                    )),
+                    Err(rollback_error) => Outcome::Failed(format!(
+                        "saving the domain: the imported sso value was rejected: {detail}; rolling back the previous domain also failed: {rollback_error}"
+                    )),
+                };
+                continue;
             }
         }
+
+        // Re-render the Issuer/Certificate for the imported provider config
+        // and reconcile the app DNS records, exactly like PUT /api/domains.
+        let domain = state.domains.get(&base_domain).unwrap_or(value);
+        if let Some(certs) = &state.certs {
+            match certs.apply(&domain).await {
+                Ok(()) => {
+                    let _ = state.domains.update(&base_domain, |d| d.last_error.clear());
+                }
+                Err(e) => {
+                    let error = e.clone();
+                    let _ = state.domains.update(&base_domain, |d| {
+                        d.last_error = error.clone();
+                        d.updated_at = Some(Utc::now());
+                    });
+                    warnings.push(format!(
+                        "domain {base_domain:?}: certificate reconciliation failed: {e}"
+                    ));
+                }
+            }
+        }
+        if let Some(manager) = &state.app_manager {
+            manager.reconcile_dns_for_domain(&base_domain).await;
+        }
+        plan.outcome = match &plan.existing {
+            None => Outcome::Created(None),
+            Some(_) => Outcome::Updated(None, changes),
+        };
     }
 }
 
@@ -1756,6 +2028,10 @@ fn apply_datasets(state: &AppState, plans: &mut [DatasetPlan]) {
         if !is_write(&plan.outcome) {
             continue;
         }
+        let previous = plan
+            .existing
+            .as_ref()
+            .and_then(|existing| state.datasets_registry.get(&existing.name));
         let result = match &plan.existing {
             Some(_) => state
                 .datasets_registry
@@ -1771,7 +2047,16 @@ fn apply_datasets(state: &AppState, plans: &mut [DatasetPlan]) {
                 };
             }
             Err(e) => {
-                plan.outcome = Outcome::Failed(format!("saving the dataset: {e}"));
+                let rollback = match previous {
+                    Some(previous) => state.datasets_registry.update_config(previous).map(|_| ()),
+                    None => state.datasets_registry.remove(&plan.value.name),
+                };
+                plan.outcome = match rollback {
+                    Ok(()) => Outcome::Failed(format!("saving the dataset: {e}")),
+                    Err(rollback_error) => Outcome::Failed(format!(
+                        "saving the dataset: {e}; rolling back the previous record also failed: {rollback_error}"
+                    )),
+                };
             }
         }
     }
@@ -1887,11 +2172,18 @@ fn build_report(plan: &Plan, schema_version: u32, dry_run: bool) -> ImportReport
         totals.skipped += section.skipped.len();
         totals.failed += section.failed.len();
     }
+    // An apply that saved nothing new is still applied (idempotent re-run); a
+    // partially saved plan is reported as partial, never as fully applied.
+    let wrote = totals.created + totals.updated > 0;
+    let applied = !dry_run && totals.failed == 0;
+    let partial = !dry_run && totals.failed > 0 && wrote;
     ImportReport {
         kind: KIND,
         schema_version,
         dry_run,
-        applied: !dry_run,
+        applied,
+        partial,
+        structural_only: plan.structural_only,
         sections,
         totals,
         warnings: plan.warnings.clone(),
