@@ -4,7 +4,8 @@
 //! manifest signature, the chain's contiguity and every chunk's digest, so a
 //! restore either lands whole or fails loudly.
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::Body;
 use axum::extract::State;
@@ -21,6 +22,48 @@ use crate::state::AppState;
 
 fn bad_request(msg: &str) -> Response {
     json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": msg }))
+}
+
+/// The datasets with a restore currently running. Whole restores are
+/// serialized per destination: two concurrent restores of the same dataset
+/// would interleave their per-chain receives and share one recovery point, so
+/// the second could destroy the first's crash marker (B-7).
+fn active_restores() -> &'static Mutex<HashSet<String>> {
+    static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Releases the per-dataset restore slot on every exit path.
+struct RestoreFlight {
+    dataset: String,
+}
+
+impl RestoreFlight {
+    /// `None` when a restore of this dataset is already in progress.
+    fn acquire(dataset: &str) -> Option<Self> {
+        let mut active = match active_restores().lock() {
+            Ok(guard) => guard,
+            // A panic in another test/request cannot make the slot silently
+            // disappear: recover the set and keep enforcing single-flight.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if !active.insert(dataset.to_string()) {
+            return None;
+        }
+        Some(Self {
+            dataset: dataset.to_string(),
+        })
+    }
+}
+
+impl Drop for RestoreFlight {
+    fn drop(&mut self) {
+        let mut active = match active_restores().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        active.remove(&self.dataset);
+    }
 }
 
 /// Validate a buddy URL (http/https only, with a host).
@@ -157,6 +200,11 @@ pub async fn restore(State(state): State<Arc<AppState>>, body: Body) -> Response
                     progress: None,
                     skip_signature_check: false,
                     expected_sequence: Some(chain.sequence),
+                    expected_from_guid: &chain.from_guid,
+                    expected_to_guid: &chain.to_guid,
+                    expected_kind: &chain.kind,
+                    expected_from_snapshot: &chain.from_snapshot,
+                    expected_to_snapshot: &chain.to_snapshot,
                 })
                 .await;
             if let Some(e) = err {
@@ -189,25 +237,38 @@ pub async fn restore(State(state): State<Arc<AppState>>, body: Body) -> Response
         );
     };
 
+    // One whole restore per destination dataset: concurrent restores would
+    // interleave per-chain receives and share one recovery point (B-7).
+    let Some(_flight) = RestoreFlight::acquire(&dataset) else {
+        return json(
+            StatusCode::CONFLICT,
+            serde_json::json!({
+                "error": format!("a restore of {dataset} is already in progress on this instance; wait for it to finish or fail before retrying")
+            }),
+        );
+    };
+
     // A previous attempt may have died mid-restore. Roll the destination back
     // to the snapshot taken before that attempt, then start over: a partially
-    // applied receive cannot be resumed safely (R-059).
-    let progress_path = restore_progress_path(&source);
+    // applied receive cannot be resumed safely (R-059). The marker is keyed
+    // by source and dataset, and is removed only once the dataset it names has
+    // actually been recovered.
+    let progress_path = restore_progress_path(&source, &dataset);
     if let Some(prev) = RestoreProgress::load(&progress_path) {
-        if prev.dataset == dataset
-            && prev.receiver == receiver
-            && prev.source == source
-            && !prev.snapshot.is_empty()
-        {
-            if let Err(e) = agent.rollback_snapshot(&dataset, &prev.snapshot).await {
-                tracing::warn!(
-                    "buddy restore: cannot roll {dataset} back to {} after an interrupted restore: {e}",
-                    prev.snapshot
-                );
-            }
-            let _ = agent.destroy_snapshot(&dataset, &prev.snapshot).await;
+        if prev.dataset != dataset || prev.source != source {
+            return json(
+                StatusCode::CONFLICT,
+                serde_json::json!({
+                    "error": format!(
+                        "the restore marker {progress_path} names {} of {:?}, not {dataset} of {source:?}; inspect and remove it before retrying",
+                        prev.dataset, prev.source
+                    )
+                }),
+            );
         }
-        let _ = std::fs::remove_file(&progress_path);
+        if let Err(e) = recover_interrupted_restore(&agent, &dataset, &prev, &progress_path).await {
+            return json(StatusCode::CONFLICT, serde_json::json!({ "error": e }));
+        }
     }
 
     // Verify every chain end-to-end before the first `zfs receive`, so a
@@ -284,6 +345,11 @@ pub async fn restore(State(state): State<Arc<AppState>>, body: Body) -> Response
                     progress: None,
                     skip_signature_check: false,
                     expected_sequence: Some(chain.sequence),
+                    expected_from_guid: &chain.from_guid,
+                    expected_to_guid: &chain.to_guid,
+                    expected_kind: &chain.kind,
+                    expected_from_snapshot: &chain.from_snapshot,
+                    expected_to_snapshot: &chain.to_snapshot,
                 })
                 .await;
             drop(writer);
@@ -323,28 +389,32 @@ pub async fn restore(State(state): State<Arc<AppState>>, body: Body) -> Response
     let (applied, total_chunks, total_bytes) = match outcome {
         Ok(v) => v,
         Err((status, error)) => {
-            if !progress.snapshot.is_empty() {
-                if let Err(e) = agent.rollback_snapshot(&dataset, &progress.snapshot).await {
-                    tracing::warn!(
-                        "buddy restore: cannot roll {dataset} back to {}: {e}",
-                        progress.snapshot
-                    );
-                }
-                let _ = agent.destroy_snapshot(&dataset, &progress.snapshot).await;
-            }
-            let _ = std::fs::remove_file(&progress_path);
+            // Undo the partial receive. The recovery point (snapshot or a
+            // freshly created dataset) is destroyed only after the rollback
+            // succeeded; when it cannot be finished, both it and the marker
+            // stay and the error names the recovery point (B-4).
+            let error =
+                match cleanup_failed_restore(&agent, &dataset, &progress, &progress_path).await {
+                    Ok(()) => error,
+                    Err(cleanup) => format!("{error}; {cleanup}"),
+                };
             return json(status, serde_json::json!({ "error": error }));
         }
     };
     if !progress.snapshot.is_empty() {
         if let Err(e) = agent.destroy_snapshot(&dataset, &progress.snapshot).await {
             tracing::warn!(
-                "buddy restore: cannot destroy the pre-restore snapshot {}: {e}",
+                "buddy restore: cannot destroy the pre-restore snapshot {} of {dataset}: {e}; \
+                 the restore succeeded, so delete that snapshot manually after verifying the data",
                 progress.snapshot
             );
         }
     }
-    let _ = std::fs::remove_file(&progress_path);
+    if let Err(e) = std::fs::remove_file(&progress_path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("buddy restore: cannot remove the restore marker {progress_path}: {e}");
+        }
+    }
 
     let last = sequence.last().cloned().unwrap_or_default();
     json(
@@ -366,6 +436,106 @@ pub async fn restore(State(state): State<Arc<AppState>>, body: Body) -> Response
     )
 }
 
+/// Undo an interrupted restore recorded in `prev`. The snapshot (or the
+/// freshly created destination) is destroyed only after the rollback
+/// succeeded, and the marker is removed only after that cleanup. On any
+/// failure both stay put and the returned error names the recovery point.
+async fn recover_interrupted_restore(
+    agent: &crate::agent::Client,
+    dataset: &str,
+    prev: &RestoreProgress,
+    progress_path: &str,
+) -> Result<(), String> {
+    if !prev.snapshot.is_empty() {
+        agent
+            .rollback_snapshot(dataset, &prev.snapshot)
+            .await
+            .map_err(|e| {
+                format!(
+                    "a previous restore of {dataset} was interrupted and rolling it back to snapshot {:?} failed: {e}; \
+                     the snapshot and the restore marker {progress_path} are kept, so the dataset can still be recovered",
+                    prev.snapshot
+                )
+            })?;
+        agent
+            .destroy_snapshot(dataset, &prev.snapshot)
+            .await
+            .map_err(|e| {
+                format!(
+                    "a previous restore of {dataset} was rolled back to snapshot {:?}, but deleting that snapshot failed: {e}; \
+                     the snapshot and the restore marker {progress_path} are kept for cleanup",
+                    prev.snapshot
+                )
+            })?;
+    } else {
+        // The interrupted attempt created the destination from nothing and
+        // recorded no rollback point, so removing the partial dataset is the
+        // only recovery. A destination that is already gone counts as done.
+        match agent.destroy_dataset(dataset, true).await {
+            Ok(()) => {}
+            Err(e) if e.status == 404 => {}
+            Err(e) => {
+                return Err(format!(
+                    "a previous restore created {dataset} and failed part-way; destroying the partial dataset failed: {e}; \
+                     the restore marker {progress_path} is kept for cleanup"
+                ))
+            }
+        }
+    }
+    if let Err(e) = std::fs::remove_file(progress_path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("buddy restore: cannot remove the restore marker {progress_path}: {e}");
+        }
+    }
+    Ok(())
+}
+
+/// Undo a failed in-flight restore. Returns an error describing the leftover
+/// recovery point; the caller appends it to the original restore error.
+async fn cleanup_failed_restore(
+    agent: &crate::agent::Client,
+    dataset: &str,
+    progress: &RestoreProgress,
+    progress_path: &str,
+) -> Result<(), String> {
+    if !progress.snapshot.is_empty() {
+        if let Err(e) = agent.rollback_snapshot(dataset, &progress.snapshot).await {
+            return Err(format!(
+                "rolling {dataset} back to snapshot {:?} failed: {e}; the snapshot and the restore marker {progress_path} are kept, \
+                 so restore the dataset from that snapshot before deleting it",
+                progress.snapshot
+            ));
+        }
+        if let Err(e) = agent.destroy_snapshot(dataset, &progress.snapshot).await {
+            return Err(format!(
+                "{dataset} was rolled back to snapshot {:?}, but deleting that snapshot failed: {e}; \
+                 the snapshot and the restore marker {progress_path} are kept for cleanup",
+                progress.snapshot
+            ));
+        }
+    } else {
+        // There was no pre-restore snapshot because the destination did not
+        // exist: the failed receive created it, so destroy it rather than
+        // leaving a half-applied dataset with no recovery point.
+        match agent.destroy_dataset(dataset, true).await {
+            Ok(()) => {}
+            Err(e) if e.status == 404 => {}
+            Err(e) => {
+                return Err(format!(
+                    "the partially created destination {dataset} could not be destroyed: {e}; \
+                     the restore marker {progress_path} is kept for cleanup"
+                ))
+            }
+        }
+    }
+    if let Err(e) = std::fs::remove_file(progress_path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("buddy restore: cannot remove the restore marker {progress_path}: {e}");
+        }
+    }
+    Ok(())
+}
+
 async fn verify_chain(
     client: &Client,
     source: &str,
@@ -382,6 +552,11 @@ async fn verify_chain(
             progress: None,
             skip_signature_check: false,
             expected_sequence: Some(chain.sequence),
+            expected_from_guid: &chain.from_guid,
+            expected_to_guid: &chain.to_guid,
+            expected_kind: &chain.kind,
+            expected_from_snapshot: &chain.from_snapshot,
+            expected_to_snapshot: &chain.to_snapshot,
         })
         .await;
     match err {
@@ -423,8 +598,8 @@ fn random_suffix() -> String {
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn restore_progress_path(source: &str) -> String {
-    let digest = sha2::Sha256::digest(source.as_bytes());
+fn restore_progress_path(source: &str, dataset: &str) -> String {
+    let digest = sha2::Sha256::digest(format!("{source}|{dataset}").as_bytes());
     format!("{}/restore-{}.json", sequence_dir(), hex(&digest[..8]))
 }
 
@@ -434,16 +609,24 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{restore_progress_path, RestoreProgress};
+    use super::{restore_progress_path, RestoreFlight, RestoreProgress};
 
     #[test]
-    fn restore_progress_round_trips_and_is_keyed_per_source() {
+    fn restore_progress_round_trips_and_is_keyed_per_source_and_dataset() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("restore.json");
         let path = path.to_str().unwrap();
         assert_ne!(
-            restore_progress_path("naslos-a/data"),
-            restore_progress_path("naslos-a/other")
+            restore_progress_path("naslos-a/data", "test/restored"),
+            restore_progress_path("naslos-a/other", "test/restored")
+        );
+        assert_ne!(
+            restore_progress_path("naslos-a/data", "test/restored"),
+            restore_progress_path("naslos-a/data", "test/other")
+        );
+        assert_eq!(
+            restore_progress_path("naslos-a/data", "test/restored"),
+            restore_progress_path("naslos-a/data", "test/restored")
         );
         let progress = RestoreProgress {
             dataset: "test/restored".to_string(),
@@ -461,5 +644,21 @@ mod tests {
         assert_eq!(loaded.chunks, 7);
         let raw = std::fs::read_to_string(path).unwrap();
         assert!(raw.contains("appliedChains"), "{raw}");
+    }
+
+    #[test]
+    fn a_second_restore_of_the_same_dataset_is_refused_until_the_first_finishes() {
+        let first = RestoreFlight::acquire("test/single-flight").expect("first restore acquires");
+        assert!(
+            RestoreFlight::acquire("test/single-flight").is_none(),
+            "a concurrent restore of the same dataset must be refused"
+        );
+        // A different dataset is independent.
+        let other = RestoreFlight::acquire("test/other").expect("different dataset acquires");
+        drop(other);
+        drop(first);
+        let again = RestoreFlight::acquire("test/single-flight")
+            .expect("the slot is released when the restore ends");
+        drop(again);
     }
 }

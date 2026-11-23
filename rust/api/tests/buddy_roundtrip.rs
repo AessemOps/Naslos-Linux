@@ -67,6 +67,10 @@ async fn push_then_restore_round_trip() {
     );
     assert_eq!(result.plain_bytes, plaintext.len() as i64);
 
+    let manifest = result
+        .manifest
+        .clone()
+        .expect("a successful push returns the published manifest");
     let mut out: Vec<u8> = Vec::new();
     let (restored, err) = client
         .restore(RestoreOptions {
@@ -75,7 +79,12 @@ async fn push_then_restore_round_trip() {
             out: &mut out,
             progress: None,
             skip_signature_check: false,
-            expected_sequence: None,
+            expected_sequence: Some(manifest.sequence),
+            expected_from_guid: &manifest.from_guid,
+            expected_to_guid: &manifest.to_guid,
+            expected_kind: &manifest.kind,
+            expected_from_snapshot: &manifest.from_snapshot,
+            expected_to_snapshot: &manifest.to_snapshot,
         })
         .await;
     assert!(err.is_none(), "restore failed: {err:?}");
