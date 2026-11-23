@@ -41,7 +41,7 @@ pub struct ToolDef {
 }
 
 /// What the `confirm` argument of a destructive tool must equal.
-#[derive(Default, Clone, Copy, PartialEq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub enum Confirm {
     #[default]
     /// Not a destructive tool.
@@ -112,9 +112,6 @@ pub const WRITE_ALLOWLIST: &[&str] = &[
     "vm_stop",
     "vm_restart",
     "vm_snapshot_create",
-    // Buddy backup runs and schedules (the trust enrollment is `full`).
-    "buddy_send",
-    "buddy_schedule_create",
 ];
 
 /// `Full` tools whose control is the scope itself rather than a repeat-the-
@@ -140,6 +137,10 @@ pub const FULL_NO_CONFIRM_ALLOWLIST: &[&str] = &[
     "source_refresh",
     "vm_image_import_url",
     "buddy_peer_add",
+    // Buddy sends and schedules take an arbitrary receiver base URL, so they
+    // are `full` (arbitrary egress); the scope is their control (B-9).
+    "buddy_send",
+    "buddy_schedule_create",
     "system_updates_check",
 ];
 
@@ -167,6 +168,10 @@ pub const FULL_ONLY_TOOLS: &[&str] = &[
     "source_refresh",
     "vm_image_import_url",
     "buddy_peer_add",
+    // Arbitrary egress: a buddy send or schedule ships sealed backups to the
+    // URL it is given.
+    "buddy_send",
+    "buddy_schedule_create",
     "system_updates_check",
 ];
 
@@ -284,6 +289,144 @@ fn confirm_target(args: &JsonObject, param: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+/// Destructive tools whose confirm target is a tuple of the named arguments,
+/// joined with `@` in order: `vm_snapshot_restore` = `<name>@<snap>` and
+/// `dataset_delete` = `<name>@<recursive>`. Repeating only one field would let
+/// a confirmation approve a different snapshot or a recursive delete (B-14).
+const CONFIRM_TUPLE_TOOLS: &[(&str, &[&str])] = &[
+    ("vm_snapshot_restore", &["name", "snap"]),
+    ("dataset_delete", &["name", "recursive"]),
+];
+
+/// Destructive tools whose confirm target is
+/// `<argument>@<sha256 of the arguments without confirm>`. The hash binds the
+/// confirmation to the whole payload, so a caller cannot confirm a link while
+/// changing its addressing, gateway or MTU (B-14).
+const CONFIRM_PAYLOAD_HASH_TOOLS: &[(&str, &str)] = &[("network_change_apply", "link")];
+
+/// A non-empty argument rendered into a confirm tuple: strings as-is,
+/// booleans as `true`/`false`, numbers in decimal.
+fn confirm_value(args: &JsonObject, param: &str) -> Option<String> {
+    match args.get(param) {
+        Some(Value::String(text)) if !text.is_empty() => Some(text.clone()),
+        Some(Value::Bool(flag)) => Some(flag.to_string()),
+        Some(Value::Number(number)) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
+/// JSON with object keys sorted, so the payload hash does not depend on the
+/// client's key order.
+fn canonical_json(value: &Value, out: &mut String) {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (index, key) in keys.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&Value::String((*key).clone()).to_string());
+                out.push(':');
+                if let Some(value) = map.get(*key) {
+                    canonical_json(value, out);
+                }
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                canonical_json(item, out);
+            }
+            out.push(']');
+        }
+        other => out.push_str(&other.to_string()),
+    }
+}
+
+/// The `<sha256>` half of a payload-confirm target. Shared with the tests so
+/// they build the same target the dispatcher checks.
+fn payload_confirm_hash(args: &JsonObject) -> String {
+    let mut without_confirm = args.clone();
+    without_confirm.remove("confirm");
+    let mut canonical = String::new();
+    canonical_json(&Value::Object(without_confirm), &mut canonical);
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(canonical.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The value an API handler expects in its own `?confirm=` query argument.
+/// Some destructive routes (dataset/pool delete, VM delete, VM snapshot
+/// restore) re-check `confirm` themselves; the MCP safety target can be a
+/// tuple or payload hash, so the handler gets the primary target value (the
+/// first tuple field / the link), never the composite string.
+fn handler_confirm_value(tool: &ToolDef, args: &JsonObject) -> Option<String> {
+    if let Some((_, fields)) = CONFIRM_TUPLE_TOOLS
+        .iter()
+        .find(|(name, _)| *name == tool.name)
+    {
+        return fields.first().and_then(|field| confirm_value(args, field));
+    }
+    if let Some((_, field)) = CONFIRM_PAYLOAD_HASH_TOOLS
+        .iter()
+        .find(|(name, _)| *name == tool.name)
+    {
+        return confirm_value(args, field);
+    }
+    match tool.confirm {
+        Confirm::No => None,
+        Confirm::Arg(param) => confirm_target(args, param),
+        Confirm::Literal(literal) => Some(literal.to_string()),
+        Confirm::ArgOrLiteral { arg, flag, literal } => {
+            if args.get(flag).and_then(Value::as_bool).unwrap_or(false) {
+                Some(literal.to_string())
+            } else {
+                confirm_target(args, arg)
+            }
+        }
+    }
+}
+
+/// The multi-field confirm target for `tool`, when its registry `Confirm`
+/// would repeat only one field of a multi-field action.
+fn tuple_confirm_target(tool: &ToolDef, args: &JsonObject) -> Option<Result<String, CallError>> {
+    if let Some((_, fields)) = CONFIRM_TUPLE_TOOLS
+        .iter()
+        .find(|(name, _)| *name == tool.name)
+    {
+        let mut values = Vec::with_capacity(fields.len());
+        for field in *fields {
+            match confirm_value(args, field) {
+                Some(value) => values.push(value),
+                None => {
+                    return Some(Err(CallError::ConfirmTarget {
+                        param: static_param(field),
+                    }))
+                }
+            }
+        }
+        return Some(Ok(values.join("@")));
+    }
+    if let Some((_, field)) = CONFIRM_PAYLOAD_HASH_TOOLS
+        .iter()
+        .find(|(name, _)| *name == tool.name)
+    {
+        return Some(match confirm_value(args, field) {
+            Some(value) => Ok(format!("{value}@{}", payload_confirm_hash(args))),
+            None => Err(CallError::ConfirmTarget {
+                param: static_param(field),
+            }),
+        });
+    }
+    None
+}
+
 /// The registry only uses a fixed set of placeholder names; map any future
 /// stragglers onto `name` so the error text stays `&'static`.
 fn static_param(param: &str) -> &'static str {
@@ -294,6 +437,7 @@ fn static_param(param: &str) -> &'static str {
         "id" => "id",
         "service" => "service",
         "snap" => "snap",
+        "recursive" => "recursive",
         _ => "name",
     }
 }
@@ -354,6 +498,18 @@ pub async fn dispatch(
         record_mcp_refusal(state, token, name, None, "failed", "unknown_tool").await;
         return Err(CallError::UnknownTool);
     };
+    dispatch_tool(state, token, tool, args).await
+}
+
+/// The dispatch half of [`dispatch`], taking the registry entry directly so
+/// tests can drive a fabricated (deliberately misclassified) tool.
+async fn dispatch_tool(
+    state: &Arc<AppState>,
+    token: &TokenAuth,
+    tool: &ToolDef,
+    args: &JsonObject,
+) -> Result<Outcome, CallError> {
+    let name = tool.name;
 
     // Scope: re-checked here even though tools/list filtered, because a
     // client may call an unlisted tool.
@@ -369,42 +525,51 @@ pub async fn dispatch(
     // before any dispatch. The target comes from the same resolved argument
     // used in the path/query, never a second lookup. A missing or empty
     // target is refused: it must never make the check vacuous (R-025).
-    let target = match tool.confirm {
-        Confirm::No => String::new(),
-        Confirm::Arg(param) => match confirm_target(args, param) {
-            Some(value) => value,
-            None => {
-                record_mcp_refusal(state, token, name, Some(tool), "denied", "confirm_target")
-                    .await;
-                return Err(CallError::ConfirmTarget {
-                    param: static_param(param),
-                });
-            }
-        },
-        Confirm::Literal(lit) => lit.to_string(),
-        Confirm::ArgOrLiteral { arg, flag, literal } => {
-            if args.get(flag).and_then(Value::as_bool).unwrap_or(false) {
-                literal.to_string()
-            } else {
-                match confirm_target(args, arg) {
-                    Some(value) => value,
-                    None => {
-                        record_mcp_refusal(
-                            state,
-                            token,
-                            name,
-                            Some(tool),
-                            "denied",
-                            "confirm_target",
-                        )
+    // Tools whose action spans several fields use a tuple or payload-hash
+    // target instead of the single registry argument (B-14).
+    let target = match tuple_confirm_target(tool, args) {
+        Some(Ok(target)) => target,
+        Some(Err(err)) => {
+            record_mcp_refusal(state, token, name, Some(tool), "denied", "confirm_target").await;
+            return Err(err);
+        }
+        None => match tool.confirm {
+            Confirm::No => String::new(),
+            Confirm::Arg(param) => match confirm_target(args, param) {
+                Some(value) => value,
+                None => {
+                    record_mcp_refusal(state, token, name, Some(tool), "denied", "confirm_target")
                         .await;
-                        return Err(CallError::ConfirmTarget {
-                            param: static_param(arg),
-                        });
+                    return Err(CallError::ConfirmTarget {
+                        param: static_param(param),
+                    });
+                }
+            },
+            Confirm::Literal(lit) => lit.to_string(),
+            Confirm::ArgOrLiteral { arg, flag, literal } => {
+                if args.get(flag).and_then(Value::as_bool).unwrap_or(false) {
+                    literal.to_string()
+                } else {
+                    match confirm_target(args, arg) {
+                        Some(value) => value,
+                        None => {
+                            record_mcp_refusal(
+                                state,
+                                token,
+                                name,
+                                Some(tool),
+                                "denied",
+                                "confirm_target",
+                            )
+                            .await;
+                            return Err(CallError::ConfirmTarget {
+                                param: static_param(arg),
+                            });
+                        }
                     }
                 }
             }
-        }
+        },
     };
     if !target.is_empty() {
         let confirm = args.get("confirm").and_then(Value::as_str).unwrap_or("");
@@ -434,7 +599,15 @@ pub async fn dispatch(
             return Err(err);
         }
     };
-    let uri = format!("{path}{}", query_string(tool, args));
+    let mut uri = format!("{path}{}", query_string(tool, args));
+    // Several destructive handlers re-check `?confirm=` against the primary
+    // target. The MCP safety target may be a tuple or payload hash, so append
+    // the plain primary value the handler expects (B-14).
+    if let Some(confirm) = handler_confirm_value(tool, args) {
+        uri.push(if uri.contains('?') { '&' } else { '?' });
+        uri.push_str("confirm=");
+        push_encoded(&mut uri, &confirm);
+    }
     let audit_target = crate::rbac::action_target(tool.path, &path);
     let audit = crate::audit::Pending::mcp(
         &token.id,
@@ -645,6 +818,37 @@ pub(crate) fn confirm_field() -> (&'static str, Value) {
     (
         "confirm",
         s("Safety check: repeat the exact target value (the same value as the tool's target argument). Required for destructive tools."),
+    )
+}
+
+/// The `confirm` argument of a destructive tool whose target spans several
+/// arguments: they are joined with `@` in the given order.
+pub(crate) fn confirm_tuple(fields: &[&str]) -> (&'static str, Value) {
+    let expected = fields.join("@");
+    let example = fields
+        .iter()
+        .map(|field| format!("<{field}>"))
+        .collect::<Vec<_>>()
+        .join("@");
+    (
+        "confirm",
+        s(&format!(
+            "Safety check: repeat the target fields joined by '@' in this order: {expected}. \
+             For example {example:?}."
+        )),
+    )
+}
+
+/// The `confirm` argument of a destructive tool whose payload is a whole
+/// request body: `<argument>@<sha256 of the arguments without confirm>`.
+pub(crate) fn confirm_payload(argument: &str) -> (&'static str, Value) {
+    (
+        "confirm",
+        s(&format!(
+            "Safety check: \"<{argument}>@<sha256>\". After '{argument}', add '@' and the lowercase hex \
+             SHA-256 of the compact JSON arguments object without the confirm field, with object keys \
+             sorted. This binds the confirmation to the whole payload, not only the link."
+        )),
     )
 }
 
@@ -982,5 +1186,373 @@ mod tests {
             .unwrap()
             .records
             .is_empty());
+    }
+
+    /// Whether a schema declares an argument that is an http(s) URL (by name
+    /// or description), recursively through nested items/objects.
+    fn schema_takes_url(value: &Value) -> bool {
+        match value {
+            Value::Object(map) => {
+                if let Some(properties) = map.get("properties").and_then(Value::as_object) {
+                    for (name, spec) in properties {
+                        let name = name.to_ascii_lowercase();
+                        if name.contains("url")
+                            || name.contains("uri")
+                            || name.contains("receiver")
+                            || name.contains("endpoint")
+                            || name.contains("webhook")
+                        {
+                            return true;
+                        }
+                        if let Some(description) = spec.get("description").and_then(Value::as_str) {
+                            let description = description.to_ascii_lowercase();
+                            if description.contains("http://")
+                                || description.contains("https://")
+                                || description.contains(" url")
+                                || description.contains("url ")
+                            {
+                                return true;
+                            }
+                        }
+                        if schema_takes_url(spec) {
+                            return true;
+                        }
+                    }
+                }
+                map.values().any(schema_takes_url)
+            }
+            Value::Array(items) => items.iter().any(schema_takes_url),
+            _ => false,
+        }
+    }
+
+    /// Arbitrary egress is `full`: no `write` token may make the API fetch or
+    /// push to a caller-supplied http(s) URL (B-9).
+    #[test]
+    fn no_write_scoped_tool_takes_an_http_url() {
+        for tool in all_tools() {
+            if tool.level != Scope::Write {
+                continue;
+            }
+            assert!(
+                !schema_takes_url(&(tool.schema)()),
+                "{} is Write-scoped but declares a URL argument; arbitrary egress is Full",
+                tool.name
+            );
+        }
+    }
+
+    /// Every `full` tool whose control is the scope instead of a confirm target
+    /// is on the reviewed allowlist, and the allowlist holds only those tools.
+    #[test]
+    fn the_full_no_confirm_allowlist_matches_the_registry() {
+        for tool in all_tools() {
+            let properties = (tool.schema)()
+                .get("properties")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let declares_confirm = properties.contains_key("confirm");
+            if tool.level == Scope::Full && !declares_confirm {
+                assert!(
+                    FULL_NO_CONFIRM_ALLOWLIST.contains(&tool.name),
+                    "{} is full, declares no confirm, and is not on the reviewed allowlist",
+                    tool.name
+                );
+            }
+            if declares_confirm {
+                assert!(
+                    !FULL_NO_CONFIRM_ALLOWLIST.contains(&tool.name),
+                    "{} declares confirm but is listed as a no-confirm full tool",
+                    tool.name
+                );
+            }
+        }
+        for name in FULL_NO_CONFIRM_ALLOWLIST {
+            let tool = find_tool(name).unwrap_or_else(|| panic!("{name} is not a tool"));
+            assert_eq!(tool.level, Scope::Full, "{name} must be Full");
+            assert_eq!(tool.confirm, Confirm::No, "{name} must have no confirm");
+        }
+    }
+
+    /// Multi-field destructive tools require the whole target, not one field
+    /// (B-14).
+    #[tokio::test]
+    async fn multi_field_destructive_tools_confirm_the_whole_target() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let full = token("full", Scope::Full);
+
+        // vm_snapshot_restore: <name>@<snapshot>, and the handler still gets
+        // its plain ?confirm=<name> query.
+        let mut vm = JsonObject::new();
+        vm.insert("name".into(), serde_json::json!("vm-a"));
+        vm.insert("snap".into(), serde_json::json!("snap-1"));
+        vm.insert("confirm".into(), serde_json::json!("vm-a"));
+        let err = dispatch(&state, &full, "vm_snapshot_restore", &vm)
+            .await
+            .expect_err("confirming only the VM name is under-specified");
+        assert!(
+            matches!(&err, CallError::Confirm { target } if target == "vm-a@snap-1"),
+            "{err:?}"
+        );
+        vm.insert("confirm".into(), serde_json::json!("vm-a@snap-1"));
+        let outcome = dispatch(&state, &full, "vm_snapshot_restore", &vm)
+            .await
+            .expect("the tuple confirm reaches the handler");
+        assert_eq!(outcome.status, 404, "unknown VM in the test store");
+
+        // dataset_delete: <name>@<recursive>, with recursive required.
+        let mut dataset = JsonObject::new();
+        dataset.insert("name".into(), serde_json::json!("test/data"));
+        dataset.insert("recursive".into(), serde_json::json!(true));
+        dataset.insert("confirm".into(), serde_json::json!("test/data"));
+        let err = dispatch(&state, &full, "dataset_delete", &dataset)
+            .await
+            .expect_err("confirming only the dataset name is under-specified");
+        assert!(
+            matches!(&err, CallError::Confirm { target } if target == "test/data@true"),
+            "{err:?}"
+        );
+        dataset.insert("confirm".into(), serde_json::json!("test/data@true"));
+        let outcome = dispatch(&state, &full, "dataset_delete", &dataset)
+            .await
+            .expect("the tuple confirm reaches the handler");
+        assert_eq!(outcome.status, 502, "no agent in the test state");
+
+        let mut missing = JsonObject::new();
+        missing.insert("name".into(), serde_json::json!("test/data"));
+        missing.insert("confirm".into(), serde_json::json!("test/data"));
+        let err = dispatch(&state, &full, "dataset_delete", &missing)
+            .await
+            .expect_err("the recursive flag is part of the confirm target");
+        assert!(
+            matches!(err, CallError::ConfirmTarget { param: "recursive" }),
+            "{err:?}"
+        );
+
+        // network_change_apply: <link>@<sha256 of the payload>.
+        let mut network = JsonObject::new();
+        network.insert("link".into(), serde_json::json!("eth0"));
+        network.insert("addressing".into(), serde_json::json!("static"));
+        network.insert("addresses".into(), serde_json::json!(["192.0.2.10/24"]));
+        let expected = format!("eth0@{}", payload_confirm_hash(&network));
+        network.insert("confirm".into(), serde_json::json!("eth0"));
+        let err = dispatch(&state, &full, "network_change_apply", &network)
+            .await
+            .expect_err("confirming only the link is under-specified");
+        assert!(
+            matches!(&err, CallError::Confirm { target } if target == &expected),
+            "{err:?}"
+        );
+        network.insert("confirm".into(), serde_json::Value::String(expected));
+        let outcome = dispatch(&state, &full, "network_change_apply", &network)
+            .await
+            .expect("the payload-hash confirm reaches the handler");
+        assert_eq!(
+            outcome.status, 503,
+            "Talos is unavailable in the test state"
+        );
+    }
+
+    /// A deliberately misclassified tool proves there is no second role layer
+    /// on the internal router: a `write` (operator) token reaches an
+    /// admin-only handler, so the registry scope table is the enforcement and
+    /// `docs/mcp.md` must not claim otherwise (B-13).
+    #[tokio::test]
+    async fn a_misclassified_write_tool_reaches_the_handler_so_scope_is_the_enforcement() {
+        static MISCLASSIFIED: ToolDef = ToolDef {
+            name: "misclassified_user_delete",
+            desc: "test-only: an admin-only route deliberately classified Write",
+            level: Scope::Write,
+            method: Method::DELETE,
+            path: "/api/users/{uid}",
+            query: &["uid"],
+            confirm: Confirm::No,
+            schema: no_args,
+            special: Special::None,
+        };
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let mut args = JsonObject::new();
+        args.insert("uid".into(), serde_json::json!("probe"));
+
+        let err = dispatch_tool(&state, &token("reader", Scope::Read), &MISCLASSIFIED, &args)
+            .await
+            .expect_err("a read token is below the tool's declared scope");
+        assert!(matches!(err, CallError::Scope { .. }), "{err:?}");
+
+        let outcome = dispatch_tool(
+            &state,
+            &token("writer", Scope::Write),
+            &MISCLASSIFIED,
+            &args,
+        )
+        .await
+        .expect("the scope table admits a Write tool to a Write token");
+        assert_eq!(
+            outcome.status, 503,
+            "the operator-scoped synthetic identity reached the admin-only handler \
+             (LDAP is unconfigured here): require_role is not mounted on the internal router"
+        );
+    }
+
+    /// Restores an environment variable when it drops, including on an
+    /// assertion panic, so an env-mutating test cannot leak a temp path into
+    /// the other lib tests that run in parallel.
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: std::path::PathBuf) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn sample_string(tool: &str, property: &str, public_key: &str) -> String {
+        match property {
+            "dataset" => "test/data".to_string(),
+            "source" => "naslos-test/data".to_string(),
+            "receiver" => "https://127.0.0.1:1".to_string(),
+            "publicKey" => public_key.to_string(),
+            "name" if tool == "buddy_peer_add" => "probe-peer".to_string(),
+            "name" => "probe-identity".to_string(),
+            "id" => "probe-id".to_string(),
+            "chain" => "probe-chain".to_string(),
+            "runAt" => "03:00".to_string(),
+            "allowedSources" => "naslos-test/".to_string(),
+            _ => "probe".to_string(),
+        }
+    }
+
+    /// Build schema-shaped arguments: every declared property at its declared
+    /// type (enum first value, booleans false, integers 1, arrays of one
+    /// sample string) plus the confirm value the tool requires.
+    fn schema_shaped_args(tool: &ToolDef, public_key: &str) -> JsonObject {
+        let schema = (tool.schema)();
+        let properties = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let mut args = JsonObject::new();
+        for (name, spec) in &properties {
+            let value = if let Some(first) = spec
+                .get("enum")
+                .and_then(Value::as_array)
+                .and_then(|values| values.first())
+                .and_then(Value::as_str)
+            {
+                Value::String(first.to_string())
+            } else {
+                match spec.get("type").and_then(Value::as_str) {
+                    Some("string") => Value::String(sample_string(tool.name, name, public_key)),
+                    Some("boolean") => Value::Bool(false),
+                    Some("integer") => Value::Number(1.into()),
+                    Some("array") => Value::Array(vec![Value::String(sample_string(
+                        tool.name, name, public_key,
+                    ))]),
+                    Some("object") => Value::Object(JsonObject::new()),
+                    _ => Value::Null,
+                }
+            };
+            args.insert(name.clone(), value);
+        }
+        if let Some(confirm) = handler_confirm_value(tool, &args) {
+            args.insert("confirm".into(), Value::String(confirm));
+        }
+        args
+    }
+
+    fn assert_not_a_deserialization_error(tool: &str, outcome: &Outcome) {
+        if outcome.status != 400 {
+            return;
+        }
+        let error = serde_json::from_str::<Value>(&outcome.body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        for needle in [
+            "invalid type",
+            "missing field",
+            "unknown field",
+            "invalid value",
+            "invalid length",
+        ] {
+            assert!(
+                !error.contains(needle),
+                "{tool}: schema-shaped arguments failed to deserialize: {error}"
+            );
+        }
+    }
+
+    /// Every buddy tool must accept arguments shaped exactly like its declared
+    /// schema; the previous tests never exercised request deserialization, so
+    /// schema/handler drift stayed invisible (B-12).
+    #[tokio::test]
+    async fn buddy_tools_accept_schema_shaped_arguments() {
+        use crate::buddy::auth::Authenticator;
+        use crate::buddy::keys::new_identity;
+        use crate::buddy::{Peer, PeerStore, Store};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let identity = Arc::new(new_identity("probe").expect("identity"));
+        let peers = Arc::new(PeerStore::new(""));
+        peers
+            .add(Peer {
+                name: "sender".into(),
+                public_key: identity.public_key.clone(),
+                enabled: true,
+                ..Default::default()
+            })
+            .expect("add the sender peer");
+        let store = Arc::new(Store::new(&dir.path().display().to_string()));
+        let auth = Arc::new(Authenticator::new(peers.clone()));
+        let mut receiver = crate::server::buddy::Receiver::new(store, peers, auth, "naslos-test");
+        receiver.enroll_token = String::new();
+
+        let mut state = AppState::for_test("test-secret");
+        state.buddy = Some(Arc::new(receiver));
+        // Let buddy_send/buddy_restore get past their agent check; the
+        // identity file below is still absent, so they stop before any I/O.
+        state.agent = Some(Arc::new(
+            crate::agent::Client::new("http://127.0.0.1:1", "", "").expect("agent client"),
+        ));
+        let state = Arc::new(state);
+        // Restored by the guard (even on a panic), so no dangling temp path is
+        // left for parallel tests.
+        let _buddy_identity = EnvGuard::set("BUDDY_IDENTITY", dir.path().join("identity.json"));
+        let full = token("full", Scope::Full);
+
+        for tool in crate::mcp::tools::buddy::TOOLS {
+            let args = schema_shaped_args(tool, &identity.public_key);
+            let outcome = dispatch(&state, &full, tool.name, &args)
+                .await
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "{}: schema-shaped arguments were refused before dispatch: {}",
+                        tool.name,
+                        err.message()
+                    )
+                });
+            assert_not_a_deserialization_error(tool.name, &outcome);
+        }
     }
 }
