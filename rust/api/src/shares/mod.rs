@@ -303,11 +303,6 @@ impl Manager {
         }
     }
 
-    /// Persist the current shares (temp file + rename), 0600.
-    fn save(&self) -> Result<(), String> {
-        self.write_snapshot(&self.shares)
-    }
-
     /// Persist a candidate share map without touching in-memory state.
     ///
     /// Mutations write the new map first and only swap it into `self.shares`

@@ -10,6 +10,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// One pending host write: new content plus the previous state to restore.
+struct PendingWrite<'a> {
+    target: PathBuf,
+    content: &'a str,
+    mode: u32,
+    original: Option<(String, u32)>,
+}
+
 impl SharesClient {
     /// Write the rendered configuration to the host and report the result.
     ///
@@ -73,7 +81,7 @@ impl SharesClient {
 
         // Snapshot the previous content of every file that will change, so a
         // mid-apply failure can put the working configuration back.
-        let mut writes: Vec<(PathBuf, &str, u32, Option<(String, u32)>)> = Vec::new();
+        let mut writes: Vec<PendingWrite<'_>> = Vec::new();
         for (in_host, content, mode) in files {
             let target = self.host_path(in_host);
             let current = std::fs::read_to_string(&target).ok();
@@ -87,24 +95,25 @@ impl SharesClient {
                 }
                 continue;
             }
-            writes.push((
+            writes.push(PendingWrite {
                 target,
                 content,
                 mode,
-                current.map(|data| (data, current_mode.unwrap_or(mode))),
-            ));
+                original: current.map(|data| (data, current_mode.unwrap_or(mode))),
+            });
         }
 
-        let mut written: Vec<(&PathBuf, &Option<(String, u32)>)> = Vec::new();
-        for (target, content, mode, original) in &writes {
-            if let Err(e) = write_atomic(target, content, *mode) {
-                for (path, previous) in written.iter().rev() {
-                    match previous {
+        let mut written: Vec<usize> = Vec::new();
+        for (idx, write) in writes.iter().enumerate() {
+            if let Err(e) = write_atomic(&write.target, write.content, write.mode) {
+                for previous in written.iter().rev() {
+                    let previous = &writes[*previous];
+                    match &previous.original {
                         Some((data, old_mode)) => {
-                            let _ = write_atomic(path, data, *old_mode);
+                            let _ = write_atomic(&previous.target, data, *old_mode);
                         }
                         None => {
-                            let _ = std::fs::remove_file(path);
+                            let _ = std::fs::remove_file(&previous.target);
                         }
                     }
                 }
@@ -112,7 +121,7 @@ impl SharesClient {
                     "applying share configuration failed ({e}); the previous configuration was restored"
                 ));
             }
-            written.push((target, original));
+            written.push(idx);
         }
 
         self.status()
