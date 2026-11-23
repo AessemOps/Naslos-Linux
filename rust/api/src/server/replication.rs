@@ -103,6 +103,24 @@ pub struct JobPublic {
     error: String,
 }
 
+impl JobPublic {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub fn destination(&self) -> &str {
+        &self.destination
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.state == JobState::Running
+    }
+}
+
 fn is_zero_usize(n: &usize) -> bool {
     *n == 0
 }
@@ -189,6 +207,35 @@ impl ReplicationJobManager {
         kept.reverse();
         inner.0.retain(|id, _| kept.contains(id));
         inner.1 = kept;
+    }
+
+    /// Test-only seam: record a finished job so unconditional ownership
+    /// guards (dataset destroy) can be exercised without running a stream.
+    #[cfg(test)]
+    pub(crate) fn remember_for_test(&self, source: &str, destination: &str) {
+        let now = Utc::now();
+        let public = JobPublic {
+            id: "test-job".to_string(),
+            source: source.to_string(),
+            destination: destination.to_string(),
+            snapshot: String::new(),
+            recursive: false,
+            prune_keep: 0,
+            state: JobState::Succeeded,
+            started_at: now,
+            finished_at: Some(now),
+            progress: ProgressView::default(),
+            incremental: false,
+            estimated_bytes: 0,
+            result: None,
+            error: String::new(),
+        };
+        let job = Arc::new(ReplicationJob {
+            public: Mutex::new(public),
+            handle: Mutex::new(None),
+        });
+        let mut inner = self.inner.lock().unwrap();
+        Self::insert_locked(&mut inner, "test-job", job);
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<ReplicationJob>> {
@@ -540,6 +587,8 @@ async fn stream_one(
         item
     });
     let reader = tokio_util::io::StreamReader::new(stream);
+    // `receive_stream_body` takes the API dataset lock for the destination;
+    // the agent holds the same lock until the last byte is written.
     agent
         .receive_stream_body(destination, force, reader)
         .await

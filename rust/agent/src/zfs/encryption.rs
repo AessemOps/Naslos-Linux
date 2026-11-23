@@ -504,6 +504,9 @@ impl ZfsClient {
     ) -> ZfsResult<()> {
         super::dataset::validate_new_dataset_path(name)?;
         super::dataset::validate_dataset_options(options)?;
+        // A create and a destroy of the same name must not interleave (the
+        // existence check and the create are two host commands).
+        let _dataset_guard = self.lock_dataset_mutation(name).await;
 
         let plan = parse_plan(options)?;
         let Some(plan) = plan else {

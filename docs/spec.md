@@ -202,7 +202,14 @@ Requirement IDs are stable: never renumber, only deprecate.
 - **FR-STO-02** — The disk wizard MUST advise a topology (mirror / RAIDZ1 /
   RAIDZ2) from the number and size of selected disks.
 - **FR-STO-03** — Pools MUST be importable from the UI when they exist on
-  disk but are not yet imported (`zpool import` discovery + import).
+  disk but are not yet imported (`zpool import` discovery + import). Import
+  MUST NOT mount (`zpool import -N`): the agent MUST enumerate the stored
+  mountpoints, remap anything outside `/var/mnt/<pool>/…`, and only then mount
+  each dataset deliberately. `zpool import -f` MUST require an explicit
+  `confirm=<pool>` (or `confirm=all`) instead of being the default. *(tests:
+  `zfs_safety::import_uses_no_mount_then_remaps_and_mounts_deliberately`,
+  `zfs_storage_safety::a_forced_import_needs_a_matching_confirmation`,
+  `http_contract::a_forced_import_requires_confirmation`)*
 - **FR-STO-04** — Pools MUST auto-import at boot via `zfs-service`
   (`zpool import -fal`).
 - **FR-STO-05** — Pool deletion MUST require explicit user confirmation and
@@ -222,11 +229,22 @@ Requirement IDs are stable: never renumber, only deprecate.
   that would overwrite the owning pool's label. The UI MUST state, before the
   operation, that a redundancy-less vdev lowers the pool's fault tolerance and
   that the change is not reversible.
-- **FR-STO-09** — Dataset destruction MUST be explicit: a non-empty dataset
-  MUST require the recursive flag (the UI MUST say what that destroys), a pool's
-  root dataset MUST NOT be destroyable through the dataset API, and a dataset
-  that a share is serving (or that backs a share's path) MUST be refused with a
-  conflict instead of removing the share's data.
+- **FR-STO-09** — Dataset destruction MUST be explicit: EVERY dataset destroy
+  MUST require `confirm` equal to the full dataset name, a non-empty dataset
+  MUST require the recursive flag (the UI MUST say what that destroys), and a
+  pool's root dataset MUST NOT be destroyable through the dataset API. A zvol
+  MUST be refused and is only deletable through `/api/zvols`; a dataset owned by
+  a VM (`<pool>/vms/…`), an app-attached registered dataset, or a replication
+  job MUST be refused with `409` naming the owner. A share guard MUST match
+  component boundaries in both directions (the dataset is inside a share path
+  **or** a share path is inside the dataset) and MUST fail closed when the share
+  store is not loaded. Create/destroy/zvol-create/receive/rollback MUST be
+  serialized per dataset name in both the API and the agent, the destroy MUST be
+  bound to the GUID the API listed (not the reusable name), the path MUST be
+  re-validated immediately before the call, and a busy dataset MUST return
+  `409` naming the consumer. *(tests: `zfs_storage_safety::*`,
+  `zfs::tests::destroy_guard_*`, `zfs_dataset::destroy_dataset_*`,
+  `http_contract::a_busy_zvol_delete_is_409`)*
 - **FR-STO-10** — Scheduled snapshots MUST be creatable, listable, updatable and
   deletable per dataset (`GET|POST|DELETE /api/storage/schedules`, kind
   `snapshot`) with a cadence (hourly/daily/weekly, UTC `runAt`), an optional
@@ -383,13 +401,15 @@ and `zfs change-key` only rewraps an existing key.
   change the receiver's zero-knowledge guarantee. **[OPEN]** for the raw-send
   choice.
 - **FR-ENC-09** — Destroying an encrypted dataset (or a subtree containing one)
-  MUST require an explicit confirmation that the key is destroyed with it and
-  the data is unrecoverable without a backup; after a successful destroy the
-  API MUST delete the key Secret(s) and MUST present key deletion as
-  irreversible. **[OPEN]** for consumers: a share or app mount whose path is
-  inside a locked encrypted dataset MUST be refused rather than served empty
-  or served from the parent dataset. Verified for destroy by the
-  `datasets_delete` handler (confirm + post-destroy Secret deletion).
+  MUST require the same explicit confirmation as any destroy (the key is
+  destroyed with it and the data is unrecoverable without a backup); after a
+  successful destroy the API MUST delete the key Secret(s), and MUST bind that
+  deletion to the encryption roots/GUIDs it verified before the destroy. Key
+  deletion MUST be presented as irreversible. **[OPEN]** for consumers: a share
+  or app mount whose path is inside a locked encrypted dataset MUST be refused
+  rather than served empty or served from the parent dataset. Verified by
+  `datasets_delete` (confirm + GUID verification + post-destroy Secret
+  deletion) and `zfs_storage_safety::an_encrypted_subtree_destroy_reports_key_cleanup`.
 - **FR-ENC-10** — **[OPEN]** Key lifecycle: the owner MUST be able to rotate an
   encrypted dataset's key with `zfs change-key` (raw→passphrase and back) and
   MUST be able to back up/restore the key material without exposing it to the
@@ -585,13 +605,23 @@ cloud sync remain `[OPEN]` below.
   `replication::a_common_guid_makes_the_send_incremental`,
   `zfs_backup::send_command_line_recursive_replication_stream`,
   `zfs_backup::snapshot_listing_is_recursive_only_when_requested`)*
-- **FR-REP-04** — Receive safety: an incremental receive MUST NOT use
-  `zfs receive -F`. A full stream replaces the destination dataset's contents,
-  so the destination is a replica target: the full send MUST be refused when the
-  destination holds any snapshot not carrying this pair's replication prefix, or
-  any child dataset. A user snapshot on the destination MUST NEVER be destroyed
-  by replication; the API documentation MUST state that a full send replaces
-  the destination's data. *(tests:
+- **FR-REP-04** — Receive safety: every receive MUST run as
+  `zfs receive -u -x mountpoint -x canmount -x sharenfs -x sharesmb` so the
+  stream cannot choose the host mount layout, and the API MUST set a
+  server-chosen mountpoint (`/var/mnt/<pool>/…`) after a successful receive.
+  An incremental receive MUST NOT use `zfs receive -F`; a forced (`-F`) receive
+  MUST require explicit confirmation and MUST be refused when the destination
+  holds any snapshot Naslos did not create or any child dataset. A full stream
+  replaces the destination dataset's contents, so the destination is a replica
+  target: the full send MUST be refused when the destination holds any snapshot
+  not carrying this pair's replication prefix, or any child dataset. A user
+  snapshot on the destination MUST NEVER be destroyed by replication; the API
+  documentation MUST state that a full send replaces the destination's data.
+  *(tests: `zfs_safety::receive_drops_stream_mount_properties_and_defers_mounting`,
+  `zfs_safety::forced_receive_refuses_a_foreign_snapshot`,
+  `zfs_safety::finalize_receive_sets_the_server_mountpoint`,
+  `http_contract::a_forced_receive_requires_confirmation`,
+  `zfs_storage_safety::a_forced_receive_forwards_the_confirmation_query`,
   `replication::a_full_send_refuses_foreign_snapshots_and_child_datasets`,
   `replication::a_destination_that_already_has_the_target_is_up_to_date`)*
 - **FR-REP-05** — Retention (`pruneKeep`, 0 = keep all) MUST destroy only

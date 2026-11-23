@@ -191,12 +191,12 @@ are in-memory (a restart abandons a running job; the app record and
 | GET | `/api/disks/health` | Per-disk SMART + ZFS health: Talos inventory merged with the agent's `smartctl` and `zpool status` data. `smartctlAvailable:false` is a normal 200 (virtio/USB/RAID); see FR-DHK |
 | POST | `/api/disks/recommend` | `{disks:[...]}` → `VolumeAdvisor` topology recommendation |
 | GET | `/api/volumes/zfs` | List ZFS pools via `naslos-agent` (`agent.ListPools`) |
-| POST | `/api/volumes/zfs` | Create pool `{name, topology, disks, options, wipeConfirmed}` via `naslos-agent` (validated: ZFS-safe name, non-empty disks, known topology; a disk with an existing filesystem needs `wipeConfirmed`, a `zfs_member` disk is refused) |
+| POST | `/api/volumes/zfs` | Create pool `{name, topology, disks, options, wipeConfirmed}` via `naslos-agent` (validated: ZFS-safe name, non-empty disks, known topology; a disk with an existing filesystem needs `wipeConfirmed`, a `zfs_member` disk is refused). `encryption`/`keyformat`/`keylocation` are refused before any disk is wiped; a follow-up property failure returns `201 {partial:true, warnings, repair}` with the pool left in place |
 | GET | `/api/volumes/zfs/{name}` | Structured health data (device tree, IO stats, scan state, errors) |
 | DELETE | `/api/volumes/zfs/{name}?confirm=<name>` | Destroy a pool via `naslos-agent`. `confirm` must repeat the pool name; `force=true` adds `zpool destroy -f` (absent by default, so a pool with mounted datasets is refused rather than force-destroyed) |
 | GET | `/api/volumes/zfs/{name}/health` | Structured health data (alias) |
 | GET | `/api/volumes/zfs/import` | List pools available for import (on disk but not imported) |
-| POST | `/api/volumes/zfs/import` | Import: `{"name":"tank"}` for one pool, `{"all":true}` for every importable pool. A missing/malformed body is a 400, never an implicit import-all |
+| POST | `/api/volumes/zfs/import` | Import: `{"name":"tank"}` for one pool, `{"all":true}` for every importable pool. The agent imports with `-N`, remaps stored mountpoints to `/var/mnt/<pool>/…`, and mounts deliberately. `force:true` requires `confirm` equal to the name (or `all`) and is never implied. A missing/malformed body is a 400, never an implicit import-all |
 | POST | `/api/volumes/zfs/{name}/devices` | Attach disks: `{disks, topology, force, wipeConfirmed}` → `zpool add`. Refuses a disk already in any pool (even with `force`), a disk holding a ZFS label, a non-`/dev` path, an unknown disk, and too few disks for the topology (FR-STO-08). A disk with another filesystem signature needs `wipeConfirmed`. |
 | POST | `/api/volumes/zfs/{name}/scrub` | Start a scrub now (`202`). `409` while `zpool status` reports a scrub or resilver in progress (FR-STO-11) |
 | GET/POST/DELETE | `/api/storage/schedules` | Periodic snapshot and scrub schedules (`{id, kind, target, cadence, runAt, keep, recursive, enabled}`; `?id=` deletes). Only one enabled snapshot schedule may cover a dataset tree (recursive overlap is refused; legacy duplicates are disabled on load), and an update that omits `enabled` keeps the stored value. Snapshot runs create `naslos-YYYY-MM-DD_HH-MM-SS` (UTC) and record `user:naslos:schedule=<schedule>`; a failed property write removes the just-created snapshot(s). Retention prunes only snapshots carrying that property (plus legacy `naslos-auto-<schedule>-…` names for one release), never user snapshots; scrub runs are daily/weekly and report the scan result (FR-STO-10/11) |
@@ -205,14 +205,14 @@ are in-memory (a restart abandons a running job; the app record and
 | POST | `/api/datasets/registry` | Register a dataset `{name, hostPath, shared, warningAcknowledged?}`. The path must be a mounted ZFS dataset below `/var/mnt`, must not overlap the Buddy store, and a `shared` dataset requires `warningAcknowledged:true` (400 otherwise) |
 | DELETE | `/api/datasets/registry/{name}` | Unregister a dataset; existing app claims are untouched |
 | POST | `/api/datasets` | Create: `{pool, name, options}` → `zfs create -p` (validated name + safe option subset, FR-STO-07). With `encryption` + `keyformat=raw` the API generates a 32-byte key into a Secret in the `naslos-keys` namespace, then sends it to the agent over the authenticated channel; the response is `201 {status, name, encryption, keystatus:"available"}`. `keyformat=passphrase` and a request-supplied `keylocation` are refused until FR-ENC-05 ships. A retry whose key Secret already exists is `409` rather than overwriting it (FR-ENC-03/06; see [dataset-encryption.md](dataset-encryption.md)) |
-| DELETE | `/api/datasets?name=<pool>/<name>&recursive=true&confirm=<name>` | Destroy a dataset. Empty → plain destroy; non-empty needs `recursive=true`; a pool root dataset is refused; a dataset backing a share's path is refused with 409. An encrypted dataset (or a subtree containing one) additionally requires `confirm=<name>`; after a successful destroy its key Secret(s) are deleted (crypto-shredding), and `keysDeleted` reports whether cleanup succeeded. A failed destroy keeps every key (FR-STO-09, FR-ENC-09) |
+| DELETE | `/api/datasets?name=<pool>/<name>&recursive=true&confirm=<name>` | Destroy a dataset. `confirm` equal to the full name is required for EVERY destroy; non-empty needs `recursive=true`; a pool root dataset is refused. A zvol is refused (409; use `/api/zvols`), as is a VM dataset (`<pool>/vms/…`), an app-attached registered dataset, or a replication source/destination. The share guard matches ancestor and descendant paths in both directions and fails closed when shares are not loaded. The destroy is bound to the listed dataset GUID and only then are its key Secret(s) deleted (crypto-shredding); `keysDeleted` reports cleanup. A failed destroy restores mountpoint/canmount and keeps every key (FR-STO-09, FR-ENC-09) |
 | GET | `/api/datasets/keystatus?name=<pool>/<name>` | Authoritative `zfs get` encryption state: `{name, encryption, keystatus, encryptionRoot, mounted}` (FR-ENC-04) |
 | POST | `/api/datasets/unlock` | `{name}` → load the dataset's key from its Secret. Admin-only, idempotent when already unlocked; a missing key Secret is `409` (restore it before unlocking). No key bytes are accepted or returned (FR-ENC-03/04) |
 | POST | `/api/datasets/lock` | `{name}` → unload the key and remove the transient keyfile. Refused while the dataset or a descendant is mounted; idempotent when already locked (FR-ENC-04) |
 | GET | `/api/zvols?pool=<pool>` | List ZFS zvols (`volsize`, `volsizeBytes`, `volblocksize`, compression, used/avail/refer); omit `pool` for every pool |
 | POST | `/api/zvols` | Create `{pool, name, size, options}` → `zfs create -V`. Validated name and size; only `volblocksize` (512–16M, power of two) and `compression` are accepted (FR-ZVOL-01/02) |
 | PUT | `/api/zvols?name=<pool>/<zvol>` | Resize `{size}` → `zfs set volsize`; growth only, refused while the zvol is in use (FR-ZVOL-03) |
-| DELETE | `/api/zvols?name=<pool>/<zvol>&confirm=<pool>/<zvol>` | Destroy a zvol. `confirm` must repeat the full name; a path that is not a `type=volume` and an in-use zvol are refused (FR-ZVOL-03) |
+| DELETE | `/api/zvols?name=<pool>/<zvol>&confirm=<pool>/<zvol>` | Destroy a zvol. `confirm` must repeat the full name; a path that is not a `type=volume` and an in-use zvol are refused with 409 (FR-ZVOL-03) |
 
 The actual ZFS work is delegated to `naslos-agent` on each node:
 `chroot /host zpool …` / `chroot /host zfs …`. The API reaches the agent
@@ -709,9 +709,9 @@ rule, client configuration).
 | POST | `/api/v1/pools` | Create pool `{name, topology, disks, options}` |
 | GET | `/api/v1/pools/{name}` | Structured health data (device tree, IO stats, scan, errors) |
 | GET | `/api/v1/disks/health` | Per-whole-disk SMART (read-only, `-n standby`) + ZFS vdev state/errors. Requires the agent bearer token; SMART unavailable is a 200 with `smartctlAvailable:false` |
-| DELETE | `/api/v1/pools/{name}` | Destroy pool |
+| DELETE | `/api/v1/pools/{name}` | Destroy pool; the agent requires `confirm=<name>` |
 | GET | `/api/v1/pools/import` | List pools available for import (`zpool import` dry-run) |
-| POST | `/api/v1/pools/import` | Import pool(s): `{"name":"tank"}` or `{}` for all |
+| POST | `/api/v1/pools/import` | Import pool(s): `{"name":"tank"}` or `{"all":true}`; `force:true` requires `confirm` equal to the name (or `all`). Always `zpool import -N`, then remap + mount |
 | GET/POST | `/api/v1/datasets/{pool}` | List / create dataset. A create may carry `key` (32 raw bytes in the JSON body) with `encryption`+`keyformat=raw`; the agent writes a 0600 tmpfs keyfile, creates and verifies the exact dataset, and removes the file. The key is never logged, echoed or put in argv |
 | GET/POST | `/api/v1/encryption/status/{dataset}`, `/api/v1/encryption/unlock`, `/api/v1/encryption/lock` | Read `encryption`/`keystatus`/`encryptionroot`/`mounted`; load a key (`{dataset, key}`); unload it (`{dataset}`). Refuses to lock a mounted dataset or descendant |
 | GET/POST/PUT/DELETE | `/api/v1/zvols` | List (`?pool=`), create `{name, size, options}`, resize `{size}` (`?name=`) or destroy (`?name=&confirm=`) a zvol. Property surface is `volblocksize` + `compression` only (FR-ZVOL) |
@@ -719,7 +719,7 @@ rule, client configuration).
 | GET/PUT | `/api/v1/snapshot-properties/{dataset}` | List snapshots as `{path, schedule}` from `user:naslos:schedule` / record the owner (`{name, schedule, recursive}`). Only that fixed property; the value is validated and argv-only (FR-STO-10) |
 | POST | `/api/v1/pools/{pool}/scrub` | Start `zpool scrub <pool>` (pool name validated; no other arguments) |
 | GET | `/api/v1/zfs/send/{dataset}?to=&from=&raw=&estimate=` | Stream a `zfs send` (or report its size with `estimate=true`) |
-| POST | `/api/v1/zfs/receive/{dataset}?force=` | Stream a restore into `zfs receive` |
+| POST | `/api/v1/zfs/receive/{dataset}?force=&confirm=` | Stream a restore into `zfs receive -u -x mountpoint,canmount,sharenfs,sharesmb`. `force=true` requires `confirm=<dataset>` and is refused when the destination has a foreign snapshot or child dataset; after success the agent sets `/var/mnt/<pool>/…` and mounts it |
 | GET | `/api/v1/zfs/snapshots/{dataset}` | Snapshots as `{dataset, name, guid, created}` (the owning dataset matters for recursive listings; the GUID is how an incremental base is found) |
 
 ## Environment variables (`naslos-api`)
@@ -840,6 +840,8 @@ Agent-side SMART controls:
   (the agent creates the pool; `zfs-service` re-imports on boot).
 - To import an existing pool, the UI calls `GET /api/volumes/zfs/import` to discover
   pools on disk, then `POST /api/volumes/zfs/import` with `{"name":"tank"}` to import.
+  The agent imports with `-N`, remaps mountpoints to `/var/mnt/<pool>/…`, and mounts
+  deliberately; a forced import additionally needs `{force:true, confirm:"tank"}`.
   Pools already imported do not appear in the list.
 - The app catalog merges `DefaultValues` with request `values` (request wins)
   before `helm install`; apps install into the `naslos-apps` namespace (a chart

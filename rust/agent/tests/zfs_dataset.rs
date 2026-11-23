@@ -149,39 +149,271 @@ async fn create_dataset_refusals() {
     }
 }
 
+fn state_response() -> &'static str {
+    "mountpoint\t/var/mnt/tank/stale\ncanmount\ton\nmounted\tyes\nguid\t1\ncreatetxg\t9\n"
+}
+
 #[tokio::test]
-async fn destroy_dataset_requires_recursive_flag() {
+async fn destroy_dataset_checks_identity_then_destroys() {
     let host = FakeHost::new();
-    let runner = Arc::new(FakeRunner::new(&[]));
+    let runner = Arc::new(FakeRunner::new(&["filesystem\t1\n", ""]));
     let calls = runner.calls();
     let c = client(&host, runner);
 
     c.destroy_dataset("tank/media", false)
         .await
         .expect("destroy");
-    assert_eq!(
-        calls.lock().unwrap()[0],
-        "/usr/local/sbin/zfs destroy tank/media"
-    );
+    {
+        let all = calls.lock().unwrap();
+        assert_eq!(
+            all[0],
+            "/usr/local/sbin/zfs list -H -o type,guid tank/media"
+        );
+        assert_eq!(all[1], "/usr/local/sbin/zfs destroy tank/media");
+    }
 
     let host = FakeHost::new();
-    let runner = Arc::new(FakeRunner::new(&[]));
+    let runner = Arc::new(FakeRunner::new(&["filesystem\t1\n", ""]));
     let calls = runner.calls();
     let c = client(&host, runner);
     c.destroy_dataset("tank/media", true)
         .await
         .expect("destroy -r");
     assert_eq!(
-        calls.lock().unwrap()[0],
+        calls.lock().unwrap()[1],
         "/usr/local/sbin/zfs destroy -r tank/media"
     );
 
     let host = FakeHost::new();
-    let runner = Arc::new(FakeRunner::new(&[]));
+    let runner = Arc::new(FakeRunner::new(&["filesystem\t1\n"]));
     let calls = runner.calls();
     let c = client(&host, runner);
     assert!(c.destroy_dataset("tank", true).await.is_err());
     assert!(calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn destroy_dataset_refuses_a_zvol_target() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&["volume\t7\n"]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    let err = c
+        .destroy_dataset("tank/vol", false)
+        .await
+        .expect_err("zvol");
+    assert!(err.to_string().contains("zvol"), "{err}");
+    assert!(err.to_string().contains("/api/zvols"), "{err}");
+    assert_eq!(calls.lock().unwrap().len(), 1, "no destroy command");
+}
+
+#[tokio::test]
+async fn destroy_dataset_verifies_the_expected_guid_first() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&["filesystem\t1\n"]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    let err = c
+        .destroy_dataset_with_guid("tank/media", false, Some("2"))
+        .await
+        .expect_err("guid mismatch");
+    assert!(
+        err.to_string().contains("changed before the destroy"),
+        "{err}"
+    );
+    assert_eq!(calls.lock().unwrap().len(), 1, "no destroy command");
+}
+
+#[tokio::test]
+async fn destroy_dataset_does_not_unmount_on_other_errors() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "filesystem\t1\n",
+        "ERR:cannot destroy 'tank/live': dataset is in use\n",
+    ]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    assert!(c.destroy_dataset("tank/live", false).await.is_err());
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        2,
+        "a non-busy error must not unmount"
+    );
+}
+
+#[tokio::test]
+async fn destroy_dataset_recovers_from_stale_mount() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "filesystem\t1\n",
+        "ERR:cannot destroy 'tank/stale': dataset is busy\n",
+        state_response(),
+        "", // zfs unmount -f
+        state_response(),
+        "", // zfs destroy (retry)
+    ]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    c.destroy_dataset("tank/stale", true)
+        .await
+        .expect("should recover from a stale mount");
+    let all = calls.lock().unwrap();
+    assert_eq!(all.len(), 6, "expected 6 commands; got {all:?}");
+    assert_eq!(
+        all[0],
+        "/usr/local/sbin/zfs list -H -o type,guid tank/stale"
+    );
+    assert_eq!(all[1], "/usr/local/sbin/zfs destroy -r tank/stale");
+    assert_eq!(
+        all[2],
+        "/usr/local/sbin/zfs get -H -o property,value mountpoint,canmount,mounted,guid,createtxg tank/stale"
+    );
+    assert_eq!(all[3], "/usr/local/sbin/zfs unmount -f tank/stale");
+    assert_eq!(all[4], all[2]);
+    assert_eq!(all[5], all[1]);
+}
+
+#[tokio::test]
+async fn destroy_dataset_restores_the_mount_when_the_retry_still_fails() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "filesystem\t1\n",
+        "ERR:cannot destroy 'tank/stale': dataset is busy\n",
+        state_response(),
+        "", // unmount succeeds
+        state_response(),
+        "ERR:cannot destroy 'tank/stale': dataset is busy\n",
+        state_response(),
+        "", // clear mountpoint
+        "ERR:cannot destroy 'tank/stale': dataset is busy\n",
+        "", // restore zfs set
+        "", // restore zfs mount
+    ]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    let err = c
+        .destroy_dataset("tank/stale", false)
+        .await
+        .expect_err("still busy");
+    assert!(err.is_conflict(), "{err:?}");
+    let all = calls.lock().unwrap();
+    assert_eq!(
+        all[9],
+        "/usr/local/sbin/zfs set mountpoint=/var/mnt/tank/stale canmount=on tank/stale"
+    );
+    assert_eq!(all[10], "/usr/local/sbin/zfs mount tank/stale");
+}
+
+#[tokio::test]
+async fn destroy_dataset_clears_stale_mountpoint() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "filesystem\t1\n",
+        "ERR:cannot destroy 'tank/stale': dataset is busy\n",
+        state_response(),
+        "ERR:cannot unmount 'tank/stale': not currently mounted\n",
+        state_response(),
+        "", // zfs set mountpoint=none
+        "", // zfs destroy (retry)
+    ]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    c.destroy_dataset("tank/stale", true)
+        .await
+        .expect("should clear the stale mountpoint and succeed");
+    let all = calls.lock().unwrap();
+    assert_eq!(all.len(), 7, "expected 7 commands; got {all:?}");
+    assert_eq!(
+        all[5],
+        "/usr/local/sbin/zfs set mountpoint=none canmount=off tank/stale"
+    );
+    assert_eq!(all[6], "/usr/local/sbin/zfs destroy -r tank/stale");
+}
+
+#[tokio::test]
+async fn destroy_dataset_restores_when_clearing_the_mountpoint_fails() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "filesystem\t1\n",
+        "ERR:dataset is busy\n",
+        state_response(),
+        "", // unmount
+        state_response(),
+        "ERR:cannot destroy 'tank/stale': dataset is busy\n",
+        state_response(),
+        "ERR:cannot set property\n",
+        "", // restore zfs set
+        "", // restore zfs mount
+    ]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    let err = c
+        .destroy_dataset("tank/stale", false)
+        .await
+        .expect_err("property failure");
+    assert!(
+        err.to_string()
+            .contains("clearing the mountpoint also failed"),
+        "{err:?}"
+    );
+    assert_eq!(
+        calls.lock().unwrap()[8],
+        "/usr/local/sbin/zfs set mountpoint=/var/mnt/tank/stale canmount=on tank/stale"
+    );
+}
+
+#[tokio::test]
+async fn destroy_dataset_restores_when_the_forced_unmount_fails() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "filesystem\t1\n",
+        "ERR:dataset is busy\n",
+        state_response(),
+        "ERR:dataset is in use\n",
+        "", // restore zfs set
+        "", // restore zfs mount
+    ]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    let err = c
+        .destroy_dataset("tank/stale", false)
+        .await
+        .expect_err("error");
+    assert!(err.to_string().contains("forced unmount"), "{err:?}");
+    assert_eq!(
+        calls.lock().unwrap()[4],
+        "/usr/local/sbin/zfs set mountpoint=/var/mnt/tank/stale canmount=on tank/stale"
+    );
+}
+
+#[tokio::test]
+async fn destroy_dataset_refuses_a_changed_generation_before_a_retry() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "filesystem\t1\n",
+        "ERR:dataset is busy\n",
+        "mountpoint\t/var/mnt/tank/stale\ncanmount\ton\nmounted\tyes\nguid\t1\ncreatetxg\t9\n",
+        "", // unmount
+        "mountpoint\t/var/mnt/tank/stale\ncanmount\ton\nmounted\tyes\nguid\t2\ncreatetxg\t10\n",
+    ]));
+    let calls = runner.calls();
+    let c = client(&host, runner);
+
+    let err = c
+        .destroy_dataset("tank/stale", false)
+        .await
+        .expect_err("generation changed");
+    assert!(err.is_conflict(), "{err:?}");
+    assert!(err.to_string().contains("changed"), "{err}");
+    assert_eq!(calls.lock().unwrap().len(), 5, "no second destroy");
 }
 
 #[test]
@@ -200,91 +432,6 @@ fn validate_dataset_name_cases() {
             "ValidateDatasetName({bad:?})"
         );
     }
-}
-
-#[tokio::test]
-async fn destroy_dataset_recovers_from_stale_mount() {
-    let host = FakeHost::new();
-    let runner = Arc::new(FakeRunner::new(&[
-        "ERR:cannot destroy 'tank/stale': dataset is busy\n",
-        "", // zfs unmount -f
-        "", // zfs destroy (retry)
-    ]));
-    let calls = runner.calls();
-    let c = client(&host, runner);
-
-    c.destroy_dataset("tank/stale", true)
-        .await
-        .expect("should recover from a stale mount");
-    let all = calls.lock().unwrap();
-    assert_eq!(
-        all.len(),
-        3,
-        "expected destroy, unmount, destroy; got {all:?}"
-    );
-    assert_eq!(all[0], "/usr/local/sbin/zfs destroy -r tank/stale");
-    assert_eq!(all[1], "/usr/local/sbin/zfs unmount -f tank/stale");
-    assert_eq!(all[2], all[0]);
-}
-
-#[tokio::test]
-async fn destroy_dataset_does_not_unmount_on_other_errors() {
-    let host = FakeHost::new();
-    let runner = Arc::new(FakeRunner::new(&[
-        "ERR:cannot destroy 'tank/live': dataset is in use\n",
-    ]));
-    let calls = runner.calls();
-    let c = client(&host, runner);
-
-    assert!(c.destroy_dataset("tank/live", false).await.is_err());
-    assert_eq!(
-        calls.lock().unwrap().len(),
-        1,
-        "a non-busy error must not unmount"
-    );
-}
-
-#[tokio::test]
-async fn destroy_dataset_reports_unmount_failure() {
-    let host = FakeHost::new();
-    let runner = Arc::new(FakeRunner::new(&[
-        "ERR:dataset is busy\n",
-        "ERR:dataset is in use\n",
-    ]));
-    let calls = runner.calls();
-    let c = client(&host, runner);
-
-    let err = c
-        .destroy_dataset("tank/stale", false)
-        .await
-        .expect_err("error");
-    assert!(err.to_string().contains("forced unmount"), "{err:?}");
-    assert_eq!(calls.lock().unwrap().len(), 2);
-}
-
-#[tokio::test]
-async fn destroy_dataset_clears_stale_mountpoint() {
-    let host = FakeHost::new();
-    let runner = Arc::new(FakeRunner::new(&[
-        "ERR:cannot destroy 'tank/stale': dataset is busy\n",
-        "ERR:cannot unmount 'tank/stale': not currently mounted\n",
-        "", // zfs set mountpoint=none
-        "", // zfs destroy (retry)
-    ]));
-    let calls = runner.calls();
-    let c = client(&host, runner);
-
-    c.destroy_dataset("tank/stale", true)
-        .await
-        .expect("should clear the stale mountpoint and succeed");
-    let all = calls.lock().unwrap();
-    assert_eq!(all.len(), 4, "expected 4 commands; got {all:?}");
-    assert_eq!(all[1], "/usr/local/sbin/zfs unmount -f tank/stale");
-    assert_eq!(
-        all[2],
-        "/usr/local/sbin/zfs set mountpoint=none canmount=off tank/stale"
-    );
-    assert_eq!(all[3], "/usr/local/sbin/zfs destroy -r tank/stale");
 }
 
 #[test]

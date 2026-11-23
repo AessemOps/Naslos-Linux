@@ -225,9 +225,15 @@ SATA/NVMe disk should report a health status; a virtio disk will not.
 - Confirm the ZFS extension is installed: on the node,
   `ls /host/usr/local/sbin/zpool`.
 - Check `zfs-service` ran: `zpool import -fal` output in node system logs.
-- If the pool is foreign, clear properties and re-import:
+- The agent imports with `zpool import -N`, remaps every stored mountpoint to
+  `/var/mnt/<pool>/…`, and mounts deliberately. A forced import is never
+  automatic: it needs `{force:true, confirm:"<pool>"}` on
+  `POST /api/volumes/zfs/import`. If you must do it by hand on the node, keep
+  `-N` and inspect `zfs get mountpoint` before mounting:
   ```bash
-  zpool import -f <pool>; zfs set context=none … <pool>
+  zpool import -N -f <pool>
+  zfs list -H -o name,mountpoint,canmount -r <pool>   # remap anything outside /var/mnt/<pool>
+  zfs set context=none … <pool>
   ```
 
 ### Users/Groups page says "Identity/LDAP is not reachable"

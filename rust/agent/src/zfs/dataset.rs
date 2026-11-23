@@ -3,9 +3,9 @@
 
 use super::devices::validate_pool_name;
 use super::{ZfsClient, ZFS_BIN};
-use crate::invalid;
 use crate::zfs::validation::{ZfsError, ZfsResult};
 use crate::zfs::{Dataset, SnapshotSchedule};
+use crate::{conflict, invalid};
 
 /// The only snapshot user property Naslos writes: the id of the storage
 /// schedule that created the snapshot. Retention uses it instead of trusting a
@@ -267,6 +267,23 @@ pub fn validate_new_dataset_path(name: &str) -> ZfsResult<()> {
     validate_dataset_path(name)
 }
 
+/// The mount state captured before the stale-mount ladder changes anything.
+struct DatasetSnapshot {
+    mountpoint: String,
+    canmount: String,
+    mounted: bool,
+    guid: String,
+    createtxg: String,
+}
+
+/// Append a restore failure to the primary error instead of hiding it.
+fn restore_note(restore: Result<(), String>) -> String {
+    match restore {
+        Ok(()) => String::new(),
+        Err(e) => format!("; the original mount state could not be restored: {e}"),
+    }
+}
+
 impl ZfsClient {
     /// Every dataset on the node, with exact and human sizes.
     pub async fn all_datasets(&self) -> ZfsResult<Vec<Dataset>> {
@@ -278,7 +295,7 @@ impl ZfsClient {
                     "-H",
                     "-p",
                     "-o",
-                    "name,used,avail,refer,mountpoint,mounted,encryption,keystatus,encryptionroot",
+                    "name,used,avail,refer,mountpoint,mounted,encryption,keystatus,encryptionroot,guid",
                     "-t",
                     "filesystem",
                     "-r",
@@ -315,6 +332,12 @@ impl ZfsClient {
                 encryption_root: normalise_encryption_root(
                     fields.get(8).copied().unwrap_or_default(),
                 ),
+                guid: fields
+                    .get(9)
+                    .copied()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
             });
         }
         Ok(datasets)
@@ -330,7 +353,7 @@ impl ZfsClient {
                     "list",
                     "-H",
                     "-o",
-                    "name,used,avail,refer,mountpoint,mounted,encryption,keystatus,encryptionroot",
+                    "name,used,avail,refer,mountpoint,mounted,encryption,keystatus,encryptionroot,guid",
                     "-r",
                     pool,
                 ]),
@@ -363,6 +386,12 @@ impl ZfsClient {
                 encryption_root: normalise_encryption_root(
                     fields.get(8).copied().unwrap_or_default(),
                 ),
+                guid: fields
+                    .get(9)
+                    .copied()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
             });
         }
         Ok(datasets)
@@ -382,8 +411,53 @@ impl ZfsClient {
     }
 
     /// Destroy a dataset, recovering from the AV-8 stale-mount "busy" case.
+    ///
+    /// Every failure path restores the original `mountpoint`/`canmount` and
+    /// remounts a dataset the ladder unmounted: a refused destroy must leave
+    /// the dataset exactly as it was. The dataset GUID is re-checked before
+    /// each retry so a name that was destroyed and recreated in between is
+    /// never mistaken for the original target.
     pub async fn destroy_dataset(&self, name: &str, recursive: bool) -> ZfsResult<()> {
+        self.destroy_dataset_with_guid(name, recursive, None).await
+    }
+
+    /// Destroy a dataset, binding the operation to the GUID the caller saw.
+    ///
+    /// The API captures the GUID from its dataset listing and passes it here;
+    /// a mismatch is a conflict, not a destroy of whatever now carries the
+    /// name.
+    pub async fn destroy_dataset_with_guid(
+        &self,
+        name: &str,
+        recursive: bool,
+        expected_guid: Option<&str>,
+    ) -> ZfsResult<()> {
         validate_dataset_path(name)?;
+        let _guard = self.lock_dataset_mutation(name).await;
+
+        // A volume and a filesystem can share a name; only the filesystem API
+        // may destroy a filesystem, and only `/api/zvols` may destroy a volume.
+        // The same read returns the GUID, so the expected generation is
+        // verified before the first destructive command.
+        let Some((kind, guid)) = self.dataset_identity(name).await? else {
+            return Ok(());
+        };
+        match kind.as_str() {
+            "volume" => {
+                return Err(conflict!(
+                    "{name} is a zvol; block volumes are only deletable through /api/zvols"
+                ))
+            }
+            "filesystem" => {}
+            other => return Err(conflict!("{name} is a {other}, not a filesystem dataset")),
+        }
+        if let Some(expected) = expected_guid {
+            if guid != expected {
+                return Err(conflict!(
+                    "dataset {name} changed before the destroy (GUID {guid} != expected {expected}); retry the request"
+                ));
+            }
+        }
 
         let mut argv: Vec<String> = vec!["destroy".into()];
         if recursive {
@@ -404,6 +478,21 @@ impl ZfsClient {
             )));
         }
 
+        // Capture the state only once the ladder is needed. Nothing has been
+        // changed yet, so this is the state to restore on failure.
+        let Some(state) = self.dataset_snapshot(name).await? else {
+            return Ok(());
+        };
+        if let Some(expected) = expected_guid {
+            if state.guid != expected {
+                return Err(conflict!(
+                    "dataset {name} changed while it was being destroyed (GUID {} != expected {}); retry the request",
+                    state.guid,
+                    expected
+                ));
+            }
+        }
+
         // Rung 1: `zfs unmount -f` releases a mount a dead namespace still
         // tracks.
         tracing::warn!("dataset {} is busy; forcing an unmount and retrying", name);
@@ -412,6 +501,7 @@ impl ZfsClient {
             .await;
         match unmount {
             Ok(_) => {
+                self.ensure_dataset_unchanged(name, &state).await?;
                 result = self.host_exec(ZFS_BIN, &argv).await;
                 if result.is_ok() {
                     return Ok(());
@@ -423,13 +513,27 @@ impl ZfsClient {
                     .to_ascii_lowercase()
                     .contains("not currently mounted")
                 {
+                    let restore = self.restore_dataset_state(name, &state).await;
                     return Err(invalid!(
-                        "destroying dataset: it is busy ({}) and the forced unmount also failed: {}: {}",
+                        "destroying dataset: it is busy ({}) and the forced unmount also failed: {}: {}{}",
                         err.output.trim(),
                         unmount_err.output.trim(),
-                        unmount_err.message
+                        unmount_err.message,
+                        restore_note(restore)
                     ));
                 }
+            }
+        }
+
+        if let Err(retry_err) = &result {
+            if !is_busy_error(&retry_err.output) {
+                let restore = self.restore_dataset_state(name, &state).await;
+                return Err(ZfsError::Other(format!(
+                    "destroying dataset after the forced unmount: {}: {}{}",
+                    retry_err.output.trim(),
+                    retry_err.message,
+                    restore_note(restore)
+                )));
             }
         }
 
@@ -438,6 +542,7 @@ impl ZfsClient {
             "dataset {} is still busy with no live mount; clearing its mountpoint and retrying",
             name
         );
+        self.ensure_dataset_unchanged(name, &state).await?;
         let prop = self
             .host_exec(
                 ZFS_BIN,
@@ -445,31 +550,181 @@ impl ZfsClient {
             )
             .await;
         if let Err(prop_err) = prop {
+            let restore = self.restore_dataset_state(name, &state).await;
             return Err(invalid!(
-                "destroying dataset: it is busy with no live mount ({}) and clearing the mountpoint also failed: {}: {}",
+                "destroying dataset: it is busy with no live mount ({}) and clearing the mountpoint also failed: {}: {}{}",
                 err.output.trim(),
                 prop_err.output.trim(),
-                prop_err.message
+                prop_err.message,
+                restore_note(restore)
             ));
         }
 
         match self.host_exec(ZFS_BIN, &argv).await {
             Ok(_) => Ok(()),
             Err(retry_err) => {
+                let restore = self.restore_dataset_state(name, &state).await;
                 if is_busy_error(&retry_err.output) {
-                    Err(invalid!(
-                        "destroying dataset: it is still busy with mounted=no, no snapshots, children or holds ({}). This is the openzfs leaked-reference case that needs a pool export/import (the agent does not export, as that would take the shares offline)",
-                        retry_err.output.trim()
+                    Err(conflict!(
+                        "dataset {name} is busy with mounted=no, no snapshots, children or holds ({}). This is the openzfs leaked-reference case that needs a pool export/import (the agent does not export, as that would take the shares offline){}",
+                        retry_err.output.trim(),
+                        restore_note(restore)
                     ))
                 } else {
                     Err(ZfsError::Other(format!(
-                        "destroying dataset after clearing its mountpoint: {}: {}",
+                        "destroying dataset after clearing its mountpoint: {}: {}{}",
                         retry_err.output.trim(),
-                        retry_err.message
+                        retry_err.message,
+                        restore_note(restore)
                     )))
                 }
             }
         }
+    }
+
+    /// `zfs list -o type,guid` for one path. `None` means the path does not
+    /// exist (or the host could not report it, which a destroy treats as
+    /// absent).
+    async fn dataset_identity(&self, name: &str) -> ZfsResult<Option<(String, String)>> {
+        match self
+            .host_exec(ZFS_BIN, &strings(&["list", "-H", "-o", "type,guid", name]))
+            .await
+        {
+            Ok(out) => {
+                let line = out.trim();
+                if line.is_empty() {
+                    return Ok(None);
+                }
+                let (kind, guid) = line.split_once('\t').unwrap_or((line, ""));
+                Ok(Some((kind.trim().to_string(), guid.trim().to_string())))
+            }
+            Err(e) => {
+                if e.output.to_ascii_lowercase().contains("does not exist") {
+                    Ok(None)
+                } else {
+                    Err(ZfsError::Other(format!(
+                        "checking the type of {name}: {}: {}",
+                        e.output.trim(),
+                        e.message
+                    )))
+                }
+            }
+        }
+    }
+
+    /// The mount state a failed destroy must restore.
+    async fn dataset_snapshot(&self, name: &str) -> ZfsResult<Option<DatasetSnapshot>> {
+        let out = match self
+            .host_exec(
+                ZFS_BIN,
+                &strings(&[
+                    "get",
+                    "-H",
+                    "-o",
+                    "property,value",
+                    "mountpoint,canmount,mounted,guid,createtxg",
+                    name,
+                ]),
+            )
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => {
+                if e.output.to_ascii_lowercase().contains("does not exist") {
+                    return Ok(None);
+                }
+                return Err(ZfsError::Other(format!(
+                    "reading the state of {name}: {}: {}",
+                    e.output.trim(),
+                    e.message
+                )));
+            }
+        };
+        let mut mountpoint = None;
+        let mut canmount = None;
+        let mut mounted = false;
+        let mut guid = String::new();
+        let mut createtxg = String::new();
+        for line in out.lines() {
+            let Some((key, value)) = line.split_once('\t') else {
+                continue;
+            };
+            match key.trim() {
+                "mountpoint" => mountpoint = Some(value.trim().to_string()),
+                "canmount" => canmount = Some(value.trim().to_string()),
+                "mounted" => mounted = value.trim() == "yes",
+                "guid" => guid = value.trim().to_string(),
+                "createtxg" => createtxg = value.trim().to_string(),
+                _ => {}
+            }
+        }
+        let (Some(mountpoint), Some(canmount)) = (mountpoint, canmount) else {
+            return Ok(None);
+        };
+        Ok(Some(DatasetSnapshot {
+            mountpoint,
+            canmount,
+            mounted,
+            guid,
+            createtxg,
+        }))
+    }
+
+    /// Refuse a retry when the dataset was replaced under the same name.
+    async fn ensure_dataset_unchanged(
+        &self,
+        name: &str,
+        before: &DatasetSnapshot,
+    ) -> ZfsResult<()> {
+        let Some(now) = self.dataset_snapshot(name).await? else {
+            return Err(conflict!(
+                "dataset {name} disappeared while it was being destroyed"
+            ));
+        };
+        if now.guid != before.guid || now.createtxg != before.createtxg {
+            return Err(conflict!(
+                "dataset {name} changed while it was being destroyed; retry the request"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Put `mountpoint`/`canmount` back and remount if the destroy ladder took
+    /// the dataset offline. Best effort: the caller reports the outcome.
+    async fn restore_dataset_state(
+        &self,
+        name: &str,
+        state: &DatasetSnapshot,
+    ) -> Result<(), String> {
+        let mountpoint = format!("mountpoint={}", state.mountpoint);
+        let canmount = format!("canmount={}", state.canmount);
+        self.host_exec(ZFS_BIN, &strings(&["set", &mountpoint, &canmount, name]))
+            .await
+            .map_err(|e| {
+                format!(
+                    "restoring mountpoint/canmount: {}: {}",
+                    e.output.trim(),
+                    e.message
+                )
+            })?;
+        if state.mounted && state.canmount != "off" {
+            match self.host_exec(ZFS_BIN, &strings(&["mount", name])).await {
+                Ok(_) => {}
+                Err(e) => {
+                    let lower = e.output.to_ascii_lowercase();
+                    if !lower.contains("already mounted")
+                        && !lower.contains("filesystem is already mounted")
+                    {
+                        return Err(format!(
+                            "restoring the mount: {}: {}",
+                            e.output.trim(),
+                            e.message
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Create a snapshot.
@@ -707,6 +962,7 @@ impl ZfsClient {
     pub async fn rollback(&self, dataset: &str, snap_name: &str) -> ZfsResult<()> {
         validate_dataset_path(dataset)?;
         super::backup::validate_snapshot_name(snap_name)?;
+        let _guard = self.lock_dataset_mutation(dataset).await;
         let name = format!("{dataset}@{snap_name}");
         match self
             .host_exec(ZFS_BIN, &strings(&["rollback", "-r", &name]))
