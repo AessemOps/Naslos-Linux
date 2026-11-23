@@ -121,6 +121,16 @@
   let webhookSaving = false;
   let message = '';
   let messageType = '';
+  // Per-source load state: a failed GET must never leave an editable default
+  // form whose Save would disable the channel or wipe its targets.
+  let settingsLoaded = false;
+  let webhookLoaded = false;
+  let smtpLoaded = false;
+  let syslogLoaded = false;
+  let settingsError = '';
+  let webhookError = '';
+  let smtpError = '';
+  let syslogError = '';
 
   const eventTypes = [
     { id: 'zfs_health', label: 'ZFS Pool Health' },
@@ -151,6 +161,7 @@
   ];
 
   async function loadSettings() {
+    settingsError = '';
     try {
       const res = await fetch('/api/notifications');
       if (!res.ok) {
@@ -165,15 +176,21 @@
       clearEmail = false;
       authToken = '';
       clearAuthToken = false;
+      settingsLoaded = true;
     } catch (e) {
-      message = 'Failed to load notification settings: ' + e;
-      messageType = 'error';
+      settingsError =
+        'Failed to load notification settings: ' + (e instanceof Error ? e.message : String(e));
     } finally {
       loading = false;
     }
   }
 
   async function save() {
+    if (!settingsLoaded) {
+      message = 'The notification settings could not be loaded; retry before saving.';
+      messageType = 'error';
+      return;
+    }
     saving = true;
     message = '';
     try {
@@ -210,7 +227,10 @@
         body: JSON.stringify(payload)
       });
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+        // The API explains allowInsecureHttp and URL validation failures in the
+        // body; a bare status code hid the fixable cause.
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
       }
       message = 'Settings saved successfully!';
       messageType = 'success';
@@ -247,6 +267,8 @@
   }
 
   async function loadWebhook() {
+    webhookLoading = true;
+    webhookError = '';
     try {
       const res = await fetch('/api/notifications/webhook');
       if (!res.ok) {
@@ -257,15 +279,21 @@
       clearWebhookUrl = false;
       webhookAuthToken = '';
       clearWebhookAuthToken = false;
+      webhookLoaded = true;
     } catch (e) {
-      message = 'Failed to load webhook settings: ' + e;
-      messageType = 'error';
+      webhookError =
+        'Failed to load webhook settings: ' + (e instanceof Error ? e.message : String(e));
     } finally {
       webhookLoading = false;
     }
   }
 
   async function saveWebhook() {
+    if (!webhookLoaded) {
+      message = 'The webhook settings could not be loaded; retry before saving.';
+      messageType = 'error';
+      return;
+    }
     webhookSaving = true;
     message = '';
     try {
@@ -348,6 +376,8 @@
   }
 
   async function loadSmtp() {
+    smtpLoading = true;
+    smtpError = '';
     try {
       const res = await fetch('/api/notifications/smtp');
       if (!res.ok) {
@@ -357,21 +387,38 @@
       smtpRecipients = smtp.to.join(', ');
       smtpPassword = '';
       clearSmtpPassword = false;
+      smtpLoaded = true;
     } catch (e) {
-      message = 'Failed to load SMTP settings: ' + e;
-      messageType = 'error';
+      smtpError = 'Failed to load SMTP settings: ' + (e instanceof Error ? e.message : String(e));
     } finally {
       smtpLoading = false;
     }
   }
 
   async function saveSmtp() {
+    if (!smtpLoaded) {
+      message = 'The SMTP settings could not be loaded; retry before saving.';
+      messageType = 'error';
+      return;
+    }
     smtpSaving = true;
     message = '';
     try {
+      // Explicit body: the GET view's read-only flags (hasPassword, category)
+      // must never be echoed into a save.
       const payload: Record<string, unknown> = {
-        ...smtp,
-        to: smtpRecipients.split(',').map((r) => r.trim()).filter((r) => r !== '')
+        enabled: smtp.enabled,
+        host: smtp.host,
+        port: Number(smtp.port),
+        tls: smtp.tls,
+        username: smtp.username,
+        from: smtp.from,
+        to: smtpRecipients
+          .split(',')
+          .map((r) => r.trim())
+          .filter((r) => r !== ''),
+        enabledEvents: smtp.enabledEvents,
+        minSeverity: smtp.minSeverity
       };
       if (smtpPassword.trim() !== '') {
         payload.password = smtpPassword;
@@ -443,28 +490,46 @@
   }
 
   async function loadSyslog() {
+    syslogLoading = true;
+    syslogError = '';
     try {
       const res = await fetch('/api/notifications/syslog');
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
       syslog = await res.json();
+      syslogLoaded = true;
     } catch (e) {
-      message = 'Failed to load syslog settings: ' + e;
-      messageType = 'error';
+      syslogError =
+        'Failed to load syslog settings: ' + (e instanceof Error ? e.message : String(e));
     } finally {
       syslogLoading = false;
     }
   }
 
   async function saveSyslog() {
+    if (!syslogLoaded) {
+      message = 'The syslog settings could not be loaded; retry before saving.';
+      messageType = 'error';
+      return;
+    }
     syslogSaving = true;
     message = '';
     try {
+      // Explicit body: never echo read-only view fields back to the API.
+      const payload = {
+        enabled: syslog.enabled,
+        protocol: syslog.protocol,
+        host: syslog.host,
+        port: Number(syslog.port),
+        facility: syslog.facility,
+        enabledEvents: syslog.enabledEvents,
+        minSeverity: syslog.minSeverity
+      };
       const res = await fetch('/api/notifications/syslog', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(syslog)
+        body: JSON.stringify(payload)
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -541,6 +606,12 @@
     <LoadingState label="Loading settings..." />
   {:else}
     <div class="space-y-6">
+      {#if !settingsLoaded}
+        <div role="alert" class="card border-red-700 bg-red-900/20 text-red-300 text-sm">
+          <p>{settingsError || 'The notification settings could not be loaded.'}</p>
+          <button type="button" class="btn btn-secondary mt-3" on:click={loadSettings}>Retry</button>
+        </div>
+      {:else}
       <div class="card">
         <label class="flex items-center gap-4 cursor-pointer">
           <input type="checkbox" bind:checked={settings.enabled} class="w-5 h-5 rounded" />
@@ -605,6 +676,7 @@
           <input
             id="notify-field-3"
             type="password"
+            autocomplete="new-password"
             bind:value={authToken}
             class="input w-full"
             placeholder={settings.hasAuthToken ? 'Stored — leave blank to keep' : 'Bearer token'}
@@ -668,10 +740,11 @@
           {#each severityLevels as level}<option value={level.id}>{level.label}</option>{/each}
         </select>
       </div>
+      {/if}
 
       <div class="card space-y-4">
         <label class="flex items-center gap-4 cursor-pointer">
-          <input type="checkbox" bind:checked={webhook.enabled} disabled={webhookLoading} class="w-5 h-5 rounded" />
+          <input type="checkbox" bind:checked={webhook.enabled} disabled={webhookLoading || !webhookLoaded} class="w-5 h-5 rounded" />
           <div>
             <div class="font-medium">
               Webhook Channel
@@ -685,6 +758,11 @@
 
         {#if webhookLoading}
           <LoadingState label="Loading webhook settings..." />
+        {:else if !webhookLoaded}
+          <div role="alert" class="card border-red-700 bg-red-900/20 text-red-300 text-sm">
+            <p>{webhookError || 'The webhook settings could not be loaded.'}</p>
+            <button type="button" class="btn btn-secondary mt-3" on:click={loadWebhook}>Retry</button>
+          </div>
         {:else}
           <div>
             <label class="label" for="webhook-field-1">Webhook URL</label>
@@ -712,6 +790,7 @@
             <input
               id="webhook-field-2"
               type="password"
+              autocomplete="new-password"
               bind:value={webhookAuthToken}
               class="input w-full"
               placeholder={webhook.hasAuthToken ? 'Stored — leave blank to keep' : 'Bearer token'}
@@ -761,7 +840,7 @@
 
       <div class="card space-y-4">
         <label class="flex items-center gap-4 cursor-pointer">
-          <input type="checkbox" bind:checked={smtp.enabled} disabled={smtpLoading} class="w-5 h-5 rounded" />
+          <input type="checkbox" bind:checked={smtp.enabled} disabled={smtpLoading || !smtpLoaded} class="w-5 h-5 rounded" />
           <div>
             <div class="font-medium">SMTP Email Channel</div>
             <div class="text-sm text-gray-400">Email each selected event through your own relay.</div>
@@ -770,6 +849,11 @@
 
         {#if smtpLoading}
           <LoadingState label="Loading SMTP settings..." />
+        {:else if !smtpLoaded}
+          <div role="alert" class="card border-red-700 bg-red-900/20 text-red-300 text-sm">
+            <p>{smtpError || 'The SMTP settings could not be loaded.'}</p>
+            <button type="button" class="btn btn-secondary mt-3" on:click={loadSmtp}>Retry</button>
+          </div>
         {:else}
           <div class="grid gap-4 sm:grid-cols-3">
             <div class="sm:col-span-2">
@@ -850,7 +934,7 @@
 
       <div class="card space-y-4">
         <label class="flex items-center gap-4 cursor-pointer">
-          <input type="checkbox" bind:checked={syslog.enabled} disabled={syslogLoading} class="w-5 h-5 rounded" />
+          <input type="checkbox" bind:checked={syslog.enabled} disabled={syslogLoading || !syslogLoaded} class="w-5 h-5 rounded" />
           <div>
             <div class="font-medium">Syslog Channel</div>
             <div class="text-sm text-gray-400">Forward each selected event as an RFC 5424 message.</div>
@@ -859,6 +943,11 @@
 
         {#if syslogLoading}
           <LoadingState label="Loading syslog settings..." />
+        {:else if !syslogLoaded}
+          <div role="alert" class="card border-red-700 bg-red-900/20 text-red-300 text-sm">
+            <p>{syslogError || 'The syslog settings could not be loaded.'}</p>
+            <button type="button" class="btn btn-secondary mt-3" on:click={loadSyslog}>Retry</button>
+          </div>
         {:else}
           <div class="grid gap-4 sm:grid-cols-3">
             <div class="sm:col-span-2">
@@ -921,8 +1010,8 @@
       {/if}
 
       <div class="flex gap-3">
-        <button class="btn btn-primary" on:click={save} disabled={saving}>{saving ? 'Saving...' : 'Save Settings'}</button>
-        <button class="btn btn-secondary" on:click={sendTest} disabled={!settings.enabled}>Send Test</button>
+        <button class="btn btn-primary" on:click={save} disabled={saving || !settingsLoaded}>{saving ? 'Saving...' : 'Save Settings'}</button>
+        <button class="btn btn-secondary" on:click={sendTest} disabled={!settings.enabled || !settingsLoaded}>Send Test</button>
       </div>
     </div>
   {/if}

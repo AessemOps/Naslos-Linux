@@ -137,12 +137,22 @@ test.describe('VM destructive confirmations', () => {
     lastError: ''
   };
 
-  async function mockVmPage(page: any, onRequest?: (method: string, url: string) => any) {
+  async function mockVmPage(
+    page: any,
+    vms: any[] = [vm],
+    onRequest?: (method: string, url: string, body: any) => any
+  ) {
     await page.route(/\/api\//, async (route: any) => {
       const request = route.request();
       const url = new URL(request.url());
       const path = url.pathname;
-      if (onRequest && (await onRequest(request.method(), request.url()))) {
+      let body: any = null;
+      try {
+        body = request.postDataJSON();
+      } catch {
+        body = null;
+      }
+      if (onRequest && (await onRequest(request.method(), request.url(), body))) {
         return route.fulfill({ json: {} });
       }
       if (path === '/api/virt/capabilities') {
@@ -150,9 +160,12 @@ test.describe('VM destructive confirmations', () => {
           json: { kvm: true, cpuModel: 'Test CPU', nested: false, secureBoot: false, nics: [] }
         });
       }
-      if (path === '/api/virt/vms') return route.fulfill({ json: [vm] });
+      if (path === '/api/virt/vms') return route.fulfill({ json: vms });
+      if (path === '/api/virt/images') {
+        return route.fulfill({ json: { images: [], importing: [], errors: {} } });
+      }
       if (path === '/api/volumes/zfs') return route.fulfill({ json: [{ name: 'tank' }] });
-      if (path === '/api/virt/vms/uitest-vm/snapshots') {
+      if (/^\/api\/virt\/vms\/[^/]+\/snapshots$/.test(path)) {
         return route.fulfill({ json: [{ name: 'snap1', created: '2026-01-01T00:00:00Z' }] });
       }
       return route.fulfill({ json: {} });
@@ -161,7 +174,7 @@ test.describe('VM destructive confirmations', () => {
 
   test('VM delete requires the typed name and sends confirm', async ({ page }) => {
     const deletes: string[] = [];
-    await mockVmPage(page, (method, url) => {
+    await mockVmPage(page, [vm], (method, url) => {
       if (method === 'DELETE' && url.includes('/api/virt/vms/')) {
         deletes.push(url);
         return true;
@@ -179,8 +192,13 @@ test.describe('VM destructive confirmations', () => {
     await expect(row).toBeVisible();
     expect(deletes).toHaveLength(0);
 
-    page.once('dialog', (dialog) => dialog.accept('wrong-name'));
-    page.once('dialog', (dialog) => dialog.accept());
+    // A mismatched prompt is followed by an alert: register the alert handler
+    // only after the prompt is accepted, or both `once` handlers would fire on
+    // the same dialog event.
+    page.once('dialog', async (dialog) => {
+      page.once('dialog', (alert) => alert.accept());
+      await dialog.accept('wrong-name');
+    });
     await row.getByRole('button', { name: 'Delete' }).click();
     await expect(row).toBeVisible();
     expect(deletes).toHaveLength(0);
@@ -190,9 +208,98 @@ test.describe('VM destructive confirmations', () => {
     await expect.poll(() => deletes.some((url) => url.includes('confirm=uitest-vm'))).toBe(true);
   });
 
+  test('the create wizard loads the image library for the selected pool', async ({ page }) => {
+    await mockVmPage(page, [vm]);
+    const imageRequests: string[] = [];
+    await page.route('**/api/virt/images?pool=*', async (route: any) => {
+      imageRequests.push(route.request().url());
+      await route.fulfill({
+        json: {
+          images: [
+            { name: 'debian-13-netinst.iso', sizeBytes: 1024 },
+            { name: 'debian-13-cloud.qcow2', sizeBytes: 2048 }
+          ],
+          importing: [],
+          errors: {}
+        }
+      });
+    });
+
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'New VM' }).click();
+    await expect(page.getByRole('heading', { name: 'New virtual machine' })).toBeVisible();
+
+    // Imported ISOs/cloud images are selectable, not just an empty library.
+    await expect(page.locator('#vm-iso option')).toContainText(['debian-13-netinst.iso']);
+    await page.locator('#vm-boot').selectOption('image');
+    await expect(page.locator('#vm-img option')).toContainText(['debian-13-cloud.qcow2']);
+    expect(imageRequests.some((url) => url.includes('pool=tank'))).toBe(true);
+  });
+
+  test('editing a VM without cloud-init or forwards keeps both absent', async ({ page }) => {
+    const bare = { ...vm, name: 'uitest-bare', net: { mode: 'nat' }, cloudInit: null };
+    const puts: any[] = [];
+    await mockVmPage(page, [bare], (method, _url, body) => {
+      if (method === 'PUT') {
+        puts.push(body);
+        return true;
+      }
+      return undefined;
+    });
+
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    const row = page.locator('tr').filter({ hasText: 'uitest-bare' });
+    await row.getByRole('button', { name: 'Edit' }).click();
+    await expect(page.getByRole('heading', { name: 'Edit uitest-bare' })).toBeVisible();
+
+    // The bare record must not crash the wizard: cloud-init is simply off and
+    // the forwards list renders empty.
+    await expect(page.getByRole('checkbox', { name: /Configure the guest on first boot/ })).not.toBeChecked();
+    await page.getByRole('button', { name: 'Save changes' }).click();
+
+    await expect.poll(() => puts.length).toBe(1);
+    expect(puts[0].net.forwards).toEqual([]);
+    expect(puts[0]).not.toHaveProperty('cloudInit');
+  });
+
+  test('editing a VM with cloud-init preserves every key and the forwards', async ({ page }) => {
+    const keys = ['ssh-ed25519 AAAATESTKEYONE drill@one', 'ssh-rsa AAAATESTKEYTWO drill@two'];
+    const cloudy = {
+      ...vm,
+      name: 'uitest-cloud',
+      net: { mode: 'nat', forwards: [{ host: 5901, dst: 22 }, { host: 8080, dst: 80 }] },
+      cloudInit: { hostname: 'cloudy', user: 'ops', sshKeys: keys }
+    };
+    const puts: any[] = [];
+    await mockVmPage(page, [cloudy], (method, _url, body) => {
+      if (method === 'PUT') {
+        puts.push(body);
+        return true;
+      }
+      return undefined;
+    });
+
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    const row = page.locator('tr').filter({ hasText: 'uitest-cloud' });
+    await row.getByRole('button', { name: 'Edit' }).click();
+    await expect(page.getByRole('heading', { name: 'Edit uitest-cloud' })).toBeVisible();
+
+    await expect(page.locator('#vm-ci-host')).toHaveValue('cloudy');
+    await expect(page.locator('#vm-ci-user')).toHaveValue('ops');
+    await expect(page.locator('#vm-ci-keys')).toHaveValue(keys.join('\n'));
+
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await expect.poll(() => puts.length).toBe(1);
+    expect(puts[0].cloudInit).toEqual({ hostname: 'cloudy', user: 'ops', sshKeys: keys });
+    expect(puts[0].net.forwards).toEqual([{ host: 5901, dst: 22 }, { host: 8080, dst: 80 }]);
+  });
+
   test('snapshot restore requires the typed VM name and sends confirm', async ({ page }) => {
     const restores: string[] = [];
-    await mockVmPage(page, (method, url) => {
+    await mockVmPage(page, [vm], (method, url) => {
       if (method === 'POST' && url.includes('/restore')) {
         restores.push(url);
         return true;

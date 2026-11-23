@@ -5,8 +5,13 @@
   import ProviderFields from './ProviderFields.svelte';
   import InfoBubble from './InfoBubble.svelte';
   import { changedProviderFields, providerDefaults, visibleFields } from '$lib/providerFields';
+  import type { DdnsEntryView, DnsProviderView, DomainView } from '$lib/dnsTypes';
 
-  export let domain: any | null = null;
+  export let domain: DomainView | null = null;
+
+  // Which provider the loaded credentials belong to. A provider change must
+  // never treat the old Secret as covering the new provider's fields.
+  const loadedProvider = domain?.dnsProvider ?? '';
 
   let baseDomain = domain?.baseDomain || '';
   let dnsProvider = domain?.dnsProvider || 'cloudflare';
@@ -18,7 +23,7 @@
   let solverConfigured = !!domain?.solverConfigured;
   let saving = false;
   let error = '';
-  let providers: any[] = [];
+  let providers: DnsProviderView[] = [];
   // Credential-bearing and free-form providerConfig keys are redacted from the
   // response and must not be prefilled or blanked by an unrelated save.
   let redactedKeys: string[] = Array.isArray(domain?.redactedProviderConfigKeys)
@@ -27,38 +32,56 @@
   let fieldValues: Record<string, string> = { ...(domain?.providerConfig || {}) };
   let initialValues: Record<string, string> = { ...fieldValues };
   let clearedFields: Record<string, boolean> = {};
-  let ddnsEntries: { id: string; provider: string; zone: string; record: string }[] = [];
+  let ddnsEntries: DdnsEntryView[] = [];
   let ddnsEnabled = false;
-  let ddnsLoaded = false;
+  // pending = the GET has not answered yet; failed must not look like "no
+  // entries exist" or a save would detach every app CNAME.
+  let ddnsState: 'pending' | 'ok' | 'failed' = 'pending';
   let appRecordsEntry = domain?.appRecordsDdnsEntry || '';
   let appRecordsEnabled = !!appRecordsEntry;
 
   const dispatch = createEventDispatcher();
 
-  onMount(async () => {
+  async function loadDdns() {
+    ddnsState = 'pending';
     try {
-      const [res, ddnsRes] = await Promise.all([fetch('/api/providers'), fetch('/api/ddns')]);
-      if (ddnsRes.ok) {
-        const ddns = await ddnsRes.json();
-        ddnsEnabled = ddns.enabled !== false;
-        ddnsEntries = (Array.isArray(ddns.entries) ? ddns.entries : []).filter(
-          (entry: any) => typeof entry.record === 'string' && !entry.record.startsWith('*.')
-        );
-      }
-      ddnsLoaded = true;
+      const res = await fetch('/api/ddns');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const ddns = await res.json();
+      ddnsEnabled = ddns.enabled !== false;
+      ddnsEntries = (Array.isArray(ddns.entries) ? ddns.entries : []).filter(
+        (entry: DdnsEntryView) => typeof entry.record === 'string' && !entry.record.startsWith('*.')
+      );
+      ddnsState = 'ok';
+    } catch {
+      // Keep the stored app-record target values and disable the control; the
+      // save path below preserves them instead of sending null.
+      ddnsState = 'failed';
+    }
+  }
+
+  async function loadProviders() {
+    try {
+      const res = await fetch('/api/providers');
       if (!res.ok) return;
       const data = await res.json();
-      providers = (Array.isArray(data.providers) ? data.providers : []).filter((p: any) => p.certManager);
-      if (!providers.some((p: any) => p.name === dnsProvider) && providers.length) {
+      providers = (Array.isArray(data.providers) ? data.providers : []).filter(
+        (p: DnsProviderView) => p.certManager
+      );
+      if (!providers.some((p) => p.name === dnsProvider) && providers.length) {
         dnsProvider = providers[0].name;
       }
       fieldValues = defaultsFor(dnsProvider, fieldValues);
       initialValues = { ...fieldValues };
       clearedFields = {};
     } catch {
-      ddnsLoaded = true;
       // The hardcoded fallbacks below keep the form usable if the API is down.
     }
+  }
+
+  onMount(() => {
+    loadProviders();
+    loadDdns();
   });
 
   // Svelte 5 does not track state read inside a function called from the
@@ -68,33 +91,38 @@
   // Hide DDNS-only fields; showIf rules whose controller is absent here (no
   // `mode` in the cert form) are ignored, so shared fields stay visible.
   $: certFields = visibleFields(
-    currentFields.filter((f: any) => f.scope !== 'ddns'),
+    currentFields.filter((f) => f.scope !== 'ddns'),
     fieldValues
   );
   $: appRecordsSupported = ['ovh', 'cloudflare'].includes(dnsProvider);
   $: appRecordsUnavailable =
-    !appRecordsSupported || !ddnsEnabled || ddnsEntries.length === 0;
-  $: if (ddnsLoaded && appRecordsUnavailable) {
+    ddnsState !== 'ok' || !appRecordsSupported || !ddnsEnabled || ddnsEntries.length === 0;
+  // Only a successful, complete DDNS load may clear the stored selection.
+  $: if (ddnsState === 'ok' && appRecordsSupported && (appRecordsUnavailable || !ddnsEnabled)) {
     appRecordsEnabled = false;
   }
-  $: if (appRecordsEnabled && !appRecordsEntry && ddnsEntries.length > 0) {
+  $: if (ddnsState === 'ok' && appRecordsEnabled && !appRecordsEntry && ddnsEntries.length > 0) {
     appRecordsEntry = ddnsEntries[0].id;
   }
   $: if (
-    ddnsLoaded &&
+    ddnsState === 'ok' &&
     appRecordsEnabled &&
     appRecordsEntry &&
     !ddnsEntries.some((entry) => entry.id === appRecordsEntry)
   ) {
     appRecordsEntry = ddnsEntries.length > 0 ? ddnsEntries[0].id : '';
   }
-  function entryLabel(entry: { zone: string; record: string }): string {
+  // An edit whose provider changed no longer has "already stored" credentials
+  // for the selected provider: every required value must be entered again.
+  $: providerChanged = !!domain && dnsProvider !== loadedProvider;
+
+  function entryLabel(entry: DdnsEntryView): string {
     return entry.record === '@' || !entry.record ? entry.zone : `${entry.record}.${entry.zone}`;
   }
 
-  function fieldsFor(name: string): any[] {
+  function fieldsFor(name: string) {
     const selected = providers.find((p) => p.name === name);
-    return (selected?.fields ?? []).filter((f: any) => f.scope !== 'ddns');
+    return (selected?.fields ?? []).filter((f) => f.scope !== 'ddns');
   }
 
   function defaultsFor(name: string, seed: Record<string, string>): Record<string, string> {
@@ -105,6 +133,10 @@
     const nextName = (event.currentTarget as HTMLSelectElement).value;
     if (nextName === dnsProvider) return;
     dnsProvider = nextName;
+    // The old provider's Secret, redacted keys and clear choices do not belong
+    // to the new provider. Clearing the name lets the server derive/accept a
+    // fresh Secret when the new provider needs one.
+    credentialsSecret = '';
     redactedKeys = [];
     clearedFields = {};
     fieldValues = defaultsFor(dnsProvider, {});
@@ -117,13 +149,22 @@
     saving = true;
     error = '';
     try {
-      const body: Record<string, any> = {
+      if (ddnsState !== 'ok' && !domain) {
+        throw new Error('Wait for the DDNS entries to load before saving.');
+      }
+      const appRecordTarget =
+        ddnsState === 'ok'
+          ? appRecordsEnabled && appRecordsEntry
+            ? appRecordsEntry
+            : null
+          : (domain?.appRecordsDdnsEntry ?? null);
+      const body: Record<string, unknown> = {
         baseDomain,
         dnsProvider,
         credentialsSecret,
         acmeEmail,
         environment,
-        appRecordsDdnsEntry: appRecordsEnabled && appRecordsEntry ? appRecordsEntry : null
+        appRecordsDdnsEntry: appRecordTarget
       };
       if (dnsProvider === 'passthrough') {
         const text = solverText.trim();
@@ -137,6 +178,16 @@
           throw new Error('A solver is required for the passthrough provider.');
         }
       } else if (certFields.length > 0) {
+        if (!domain || dnsProvider !== loadedProvider) {
+          const missing = certFields.filter(
+            (field) => field.required && !String(fieldValues[field.key] ?? '').trim()
+          );
+          if (missing.length > 0) {
+            throw new Error(
+              `Enter ${missing.map((field) => field.label || field.key).join(', ')} for ${dnsProvider}.`
+            );
+          }
+        }
         // Send only the fields the operator edited. Omitted (and blank)
         // write-only fields keep their stored value instead of clearing it.
         // Send `fields` even when nothing changed: the server's resolver then
@@ -160,8 +211,8 @@
         throw new Error(data.error || 'Save failed');
       }
       dispatch('close');
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     } finally {
       saving = false;
     }
@@ -220,7 +271,9 @@
           fields={certFields}
           values={fieldValues}
           idPrefix="domain"
-          secretSet={domain?.credentialsSecret ? certFields.filter((f: any) => f.secret).map((f: any) => f.key) : []}
+          secretSet={!providerChanged && domain?.credentialsSecret
+            ? certFields.filter((f) => f.secret).map((f) => f.key)
+            : []}
           redactedKeys={redactedKeys}
           cleared={clearedFields}
           unchangedPlaceholder="•••••• (unchanged)"
@@ -257,7 +310,7 @@
             type="checkbox"
             class="mt-1"
             bind:checked={appRecordsEnabled}
-            disabled={appRecordsUnavailable}
+            disabled={appRecordsUnavailable || ddnsState !== 'ok'}
           />
           <span class="text-sm">
             Create DNS records for apps
@@ -267,7 +320,20 @@
             </span>
           </span>
         </label>
-        {#if appRecordsUnavailable}
+        {#if ddnsState === 'failed'}
+          <p class="text-xs text-amber-300 mt-2" role="alert">
+            Could not load the DDNS entries. The stored app-record target
+            {#if domain?.appRecordsDdnsEntry}
+              is kept unchanged
+            {:else}
+              cannot be selected
+            {/if}
+            and the control is disabled.
+            <button type="button" class="underline hover:text-amber-200" on:click={loadDdns}>Retry</button>
+          </p>
+        {:else if ddnsState === 'pending'}
+          <p class="text-xs text-gray-500 mt-2">Loading DDNS entries…</p>
+        {:else if appRecordsUnavailable}
           <p class="text-xs text-amber-300 mt-2">
             {#if !appRecordsSupported}
               Only OVH (ZoneDNS API keys) and Cloudflare domains can create app records.

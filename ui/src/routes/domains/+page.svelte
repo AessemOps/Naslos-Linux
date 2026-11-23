@@ -30,12 +30,35 @@
   let showForm = false;
   let editing: Domain | null = null;
   let ddnsEntries: { id: string; zone: string; record: string }[] = [];
+  // The DDNS list is optional for the domains list but labels the app-record
+  // targets; a failure gets its own retry instead of silently emptying it.
+  let ddnsError = '';
+
+  async function loadDdns() {
+    ddnsError = '';
+    try {
+      const res = await fetch('/api/ddns');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const ddns = await res.json();
+      ddnsEntries = Array.isArray(ddns.entries) ? ddns.entries : [];
+    } catch (e) {
+      ddnsError = e instanceof Error ? e.message : String(e);
+    }
+  }
 
   async function load() {
     loading = true;
     error = '';
+    ddnsError = '';
+    // The DDNS list only labels app-record targets: a failure must not take
+    // the domains list down, and it must not look like an empty entry list.
+    const [domainsResult, ddnsResult] = await Promise.allSettled([
+      fetch('/api/domains'),
+      fetch('/api/ddns')
+    ]);
     try {
-      const [res, ddnsRes] = await Promise.all([fetch('/api/domains'), fetch('/api/ddns')]);
+      if (domainsResult.status === 'rejected') throw domainsResult.reason;
+      const res = domainsResult.value;
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
@@ -44,16 +67,23 @@
       baseDomain = data.baseDomain || '';
       certManager = !!data.certManager;
       ssoDomains = Array.isArray(data.ssoDomains) ? data.ssoDomains : [];
-      if (ddnsRes.ok) {
-        const ddns = await ddnsRes.json();
-        ddnsEntries = Array.isArray(ddns.entries) ? ddns.entries : [];
-      }
     } catch (e) {
-      error = 'Failed to load domains: ' + e;
+      error = 'Failed to load domains: ' + (e instanceof Error ? e.message : String(e));
       domains = [];
-    } finally {
-      loading = false;
     }
+    if (ddnsResult.status === 'fulfilled' && ddnsResult.value.ok) {
+      try {
+        const ddns = await ddnsResult.value.json();
+        ddnsEntries = Array.isArray(ddns.entries) ? ddns.entries : [];
+      } catch (e) {
+        ddnsError = e instanceof Error ? e.message : String(e);
+      }
+    } else if (ddnsResult.status === 'fulfilled') {
+      ddnsError = `HTTP ${ddnsResult.value.status}`;
+    } else {
+      ddnsError = ddnsResult.reason instanceof Error ? ddnsResult.reason.message : String(ddnsResult.reason);
+    }
+    loading = false;
   }
 
   // The effective SSO list is the source of truth (the primary is always in it,
@@ -130,6 +160,14 @@
 
   {#if error}
     <div role="alert" class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
+  {/if}
+
+  {#if ddnsError}
+    <div role="alert" class="card border-amber-700 bg-amber-900/20 text-amber-200 p-4 mb-4 text-sm">
+      App-record target labels are unavailable because the DDNS entries could not be loaded
+      ({ddnsError}). Stored targets are shown by id.
+      <button type="button" class="underline hover:text-amber-100 ml-1" on:click={loadDdns}>Retry</button>
+    </div>
   {/if}
 
   {#if loading}
