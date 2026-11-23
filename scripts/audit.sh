@@ -153,7 +153,22 @@ assert "--providers.kubernetesingress" not in args or "providers.kubernetesingre
 authelia = find("StatefulSet", "naslos-authelia")
 assert authelia, "Authelia StatefulSet missing"
 aut_spec = authelia["spec"]["template"]["spec"]
-assert aut_spec.get("securityContext", {}).get("runAsNonRoot") is True, aut_spec.get("securityContext")
+# The Authelia container stays non-root (asserted below). The pod-level flag is
+# off only so the one-shot PVC ownership init container can run as root; that
+# container is fixed to chown with CHOWN/DAC_OVERRIDE/FOWNER and a read-only
+# root, and the service container keeps its own runAsNonRoot.
+aut_pod_sc = aut_spec.get("securityContext", {})
+assert aut_pod_sc.get("runAsUser") == 1000, aut_pod_sc
+assert aut_pod_sc.get("runAsNonRoot") is False, aut_pod_sc
+aut_init = {c["name"]: c for c in aut_spec.get("initContainers", [])}
+chown = aut_init.get("fix-config-ownership")
+assert chown, "the /config ownership init container is missing"
+assert chown["securityContext"].get("runAsUser") == 0, chown["securityContext"]
+assert set(chown["securityContext"].get("capabilities", {}).get("add", [])) == {
+    "CHOWN", "DAC_OVERRIDE", "FOWNER"
+}, chown["securityContext"]
+assert chown["securityContext"].get("readOnlyRootFilesystem") is True, chown["securityContext"]
+assert any(m["name"] == "authelia" for m in chown.get("volumeMounts", [])), chown
 aut_ctr = aut_spec["containers"][0]
 aut_sc = aut_ctr.get("securityContext", {})
 for key, value in {

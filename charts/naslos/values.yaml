@@ -21,7 +21,7 @@ api:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-api
-    tag: "0.7.4"
+    tag: "0.7.5"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -258,7 +258,7 @@ ui:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    tag: "0.7.4"
+    tag: "0.7.5"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -289,7 +289,7 @@ agent:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-agent
-    tag: "0.7.4"
+    tag: "0.7.5"
     # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
     # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
     # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -372,7 +372,7 @@ shares:
     timeMachine: true
     image:
       repository: ghcr.io/aessemops/naslos-samba
-      tag: "0.7.4"
+      tag: "0.7.5"
       # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
       # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
       # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -406,7 +406,7 @@ shares:
     enabled: true
     image:
       repository: ghcr.io/aessemops/naslos-nfs
-      tag: "0.7.4"
+      tag: "0.7.5"
       # Pin the exact image (NAS-022). A tag is mutable, so a retag plus
       # pullPolicy: IfNotPresent can keep running old code; repo@sha256:… is
       # immutable. Set it from `docker inspect --format='{{index .RepoDigests 0}}'`
@@ -768,7 +768,10 @@ authelia:
     # (ConfigMap, Secret mounts, certificates) is already read-only.
     securityContext:
       pod:
-        runAsNonRoot: true
+        # The Authelia container below stays non-root. `runAsNonRoot` is off at
+        # pod level only so the one-shot ownership init container can run as
+        # root; the container-level flags still enforce non-root for Authelia.
+        runAsNonRoot: false
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
@@ -782,6 +785,28 @@ authelia:
           drop: [ALL]
         seccompProfile:
           type: RuntimeDefault
+    # R-036 follow-up: the session PVC was created by the pre-hardening
+    # release and is root-owned; local-path does not apply fsGroup. Authelia
+    # (uid 1000) then cannot open db.sqlite3 and crashloops while the upgrader
+    # waits for the StatefulSet. Chown the mounted PVC once per start, before
+    # Authelia starts. The init container has no network and only CHOWN/
+    # DAC_OVERRIDE/FOWNER, with a read-only root.
+    initContainers:
+      - name: fix-config-ownership
+        image: alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c", "chown -R 1000:1000 /config"]
+        volumeMounts:
+          - name: authelia
+            mountPath: /config
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+            add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
     # The SSO fragments (session cookies + access-control rules) rendered from
     # the runtime SSO domain list by templates/authelia-sso.yaml and rewritten by
     # the API when a domain is promoted/demoted. Mounted read-only; the config's
@@ -877,7 +902,7 @@ openldap:
   #   ghcr.io/aessemops/naslos-openldap@sha256:<digest>
   # Used by the OpenLDAP StatefulSet, the bootstrap Job, the backup CronJob and
   # the API's wait-for-ldap init container.
-  image: ghcr.io/aessemops/naslos-openldap:0.7.4
+  image: ghcr.io/aessemops/naslos-openldap:0.7.5
   imagePullPolicy: IfNotPresent
   # LDAP hostname used as Authelia's TLS `server_name` (and added as a
   # certificate SAN). The internal directory suffix is fixed at
@@ -1097,7 +1122,7 @@ terminal:
   # The terminal's endpoints are owner routes like any other, so they are gated
   # by `auth` above (previously a separate terminal.requireAuth switch).
   # digest (NAS-022): pin the exact image; empty means "use the tag".
-  image: { repository: ghcr.io/aessemops/naslos-terminal, tag: "0.7.4", digest: "", pullPolicy: IfNotPresent }
+  image: { repository: ghcr.io/aessemops/naslos-terminal, tag: "0.7.5", digest: "", pullPolicy: IfNotPresent }
   resources:
     requests:
       cpu: 10m
@@ -1116,7 +1141,7 @@ virt:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-vmd
-    tag: "0.7.4"
+    tag: "0.7.5"
     # Pin the exact image (NAS-022): repo@sha256:… is immutable; a mutable tag
     # plus pullPolicy IfNotPresent can keep running old code after a retag.
     digest: ""
