@@ -3,9 +3,12 @@ Buddy Backup key-encryption key (PF-M14).
 
 The KEK unwraps the per-chain DEKs, so it must not live beside the identity
 private key in buddy-identity.json. Resolution order:
-  1. buddy.kekSecret: an operator-managed Secret (not rendered here);
+  1. buddy.kekImport: one-time migration of the `kek` field from an existing
+     buddy-identity.json into this Secret (R-013). Back up the identity file and
+     any existing KEK Secret before using it, then clear the value;
   2. the existing `naslos-buddy-kek` Secret's `kek` key (upgrades);
   3. a fresh 32-byte random value (first install).
+buddy.kekSecret still bypasses this template entirely.
 
 Only rendered for the built-in Secret; the API mounts `kek` from whichever
 Secret is selected.
@@ -15,7 +18,9 @@ Secret is selected.
 {{- $key := .Values.buddy.kekSecretKey | default "kek" }}
 {{- $existing := lookup "v1" "Secret" .Release.Namespace $name }}
 {{- $value := "" }}
-{{- if and $existing (index $existing.data $key) }}
+{{- if .Values.buddy.kekImport }}
+{{- $value = .Values.buddy.kekImport | trim }}
+{{- else if and $existing (index $existing.data $key) }}
 {{- $value = index $existing.data $key | b64dec }}
 {{- else }}
 {{- $value = randBytes 32 }}

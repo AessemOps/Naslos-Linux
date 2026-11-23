@@ -30,6 +30,10 @@ pub struct Status {
     pub version: String,
     #[serde(default)]
     pub receiver: String,
+    /// Per-instance signing audience (R-017). Older receivers omit it, so the
+    /// client falls back to `receiver` for compatibility.
+    #[serde(default)]
+    pub audience: String,
     #[serde(default, rename = "keyId")]
     pub key_id: String,
     #[serde(default, rename = "freeBytes")]
@@ -175,6 +179,10 @@ pub struct ChainState {
     pub generation: u16,
     #[serde(rename = "startedAt", default)]
     pub started_at: Option<DateTime<Utc>>,
+    /// Last chunk index handled by this attempt. Persisted with the resume
+    /// state so an interrupted push records where it stopped (R-059).
+    #[serde(rename = "resumeIndex", default)]
+    pub resume_index: i64,
 }
 
 impl ChainState {
@@ -195,6 +203,7 @@ impl ChainState {
             prefix: base64::engine::general_purpose::STANDARD.encode(prefix),
             generation: 0,
             started_at: Some(Utc::now()),
+            resume_index: -1,
         })
     }
 
@@ -513,7 +522,11 @@ impl Client {
         match result {
             Ok((data, _)) => {
                 if let Ok(status) = serde_json::from_slice::<Status>(&data) {
-                    cache.audience = status.receiver;
+                    cache.audience = if status.audience.is_empty() {
+                        status.receiver
+                    } else {
+                        status.audience
+                    };
                 }
                 Ok(cache.audience.clone())
             }
@@ -564,9 +577,20 @@ impl Client {
                     .header("Content-Type", "application/json")
                     .body(body.to_vec());
             }
-            let resp = rb.send().await.map_err(|e| e.to_string())?;
+            let mut resp = rb.send().await.map_err(|e| e.to_string())?;
             let status = resp.status().as_u16();
-            let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+            // Read the body incrementally and stop at the cap instead of
+            // buffering whatever the receiver (or a proxy) sends (R-059).
+            let mut bytes = Vec::new();
+            while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+                if bytes.len().saturating_add(chunk.len()) > MAX_MANIFEST_BYTES {
+                    return Err(format!(
+                        "{} {path}: response exceeded the {MAX_MANIFEST_BYTES}-byte cap",
+                        method.as_str()
+                    ));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
             if status == 401
                 && attempt < REPLAY_BACKOFF_SECS.len()
                 && String::from_utf8_lossy(&bytes).contains("retry after the replay window")
@@ -579,12 +603,6 @@ impl Client {
                 attempt += 1;
                 tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                 continue;
-            }
-            if bytes.len() > MAX_MANIFEST_BYTES {
-                return Err(format!(
-                    "{} {path}: response exceeded the {MAX_MANIFEST_BYTES}-byte cap",
-                    method.as_str()
-                ));
             }
             if status >= 400 {
                 return Err(format!(
@@ -604,7 +622,11 @@ impl Client {
         let status: Status =
             serde_json::from_slice(&data).map_err(|e| format!("parsing status: {e}"))?;
         let mut cache = self.audience.lock().await;
-        cache.audience = status.receiver.clone();
+        cache.audience = if status.audience.is_empty() {
+            status.receiver.clone()
+        } else {
+            status.audience.clone()
+        };
         cache.known = true;
         Ok(status)
     }
@@ -990,6 +1012,10 @@ impl Client {
                     uploaded: result.uploaded,
                     skipped: result.skipped,
                 });
+            }
+            state.resume_index = index;
+            if let Err(e) = (opts.save_state)(&state) {
+                return (result, Some(format!("persisting the resume state: {e}")));
             }
             index += 1;
             if short_tail {

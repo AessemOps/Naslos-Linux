@@ -1484,7 +1484,11 @@ See `docs/buddy-backup.md`.
   the sender (OpenSSH form): the signature MUST cover the method, the full request
   URI, the SHA-256 of the body, a timestamp and a nonce. The receiver MUST reject
   a timestamp outside 5 minutes of its clock and MUST reject a repeated nonce.
-  Enrollment of a first key MUST be possible with a single-use token.
+  Enrollment of a first key MUST be possible with a single-use token. The signed
+  audience MUST identify the receiver instance uniquely, derived from a
+  per-instance random id (the display name is not unique and MUST NOT be the
+  audience), and the sender MUST learn it from the authenticated `/status`
+  discovery call.
 - **FR-BUD-04** — The payload MUST be sent as independently sealed, fixed-size
   chunks whose nonce is derived from a per-chain prefix and the chunk index, and
   whose AEAD additional data MUST bind the source, the chain, the index and the
@@ -1556,6 +1560,24 @@ See `docs/buddy-backup.md`.
 - **FR-BUD-17** — A schedule MUST only reference a dataset that exists on the node
   when it is created (an exact match, not a pool-prefix guess), so a typo fails at
   creation rather than at the first run.
+- **FR-BUD-18** — Loading an identity MUST NOT discard a stored KEK. When
+  `BUDDY_KEK` differs from the key persisted in `buddy-identity.json` the load
+  MUST fail closed with a migration error that names both backups, because
+  silently replacing the KEK makes every received chunk undecryptable. An
+  upgrade MAY import the file KEK into the Secret (`buddy.kekImport`) exactly
+  once; the operator MUST back up the identity file and the KEK Secret before
+  that migration.
+- **FR-BUD-19** — A restore MUST verify every chain of the sequence end-to-end
+  before the first `zfs receive`, MUST snapshot an existing destination before
+  applying, MUST record the applied-chain progress beside the identity, and MUST
+  roll the destination back (or leave it untouched) if any chain fails. A
+  partially applied restore MUST NOT be reported as successful.
+- **FR-BUD-20** — A sender MUST retain the snapshot it just published and prune
+  older Buddy snapshots according to the configured keep count (at least one), so
+  repeated sends do not leak snapshots on the source dataset.
+- **FR-BUD-21** — The signed manifest's `createdAt` MUST be canonicalized to
+  millisecond precision before signing and verification, so a Rust and a Go
+  implementation produce identical signed bytes for the same timestamp.
 
 ### 3.9 Dynamic DNS & DNS providers (`FR-DNS`)
 
@@ -2324,10 +2346,12 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
   arguments; the existing in-memory ring MAY remain as a UI convenience.
   System actors MUST be recorded for scheduled/background work, and Buddy
   peer mutations MUST record the peer key fingerprint rather than a
-  username. **[IMPLEMENTED — MCP] [OPEN — system actors and Buddy peer
-  fingerprints]** *(tests: `mcp_read_calls_are_audited_without_arguments`,
+  username. **[IMPLEMENTED — MCP and Buddy receiver enroll/chunk/manifest/
+  prune] [OPEN — system actors]** *(tests:
+  `mcp_read_calls_are_audited_without_arguments`,
   `refused_mcp_calls_are_audited_without_arguments`,
-  `mcp_mutations_fail_closed_when_audit_is_degraded`)*
+  `mcp_mutations_fail_closed_when_audit_is_degraded`; receiver mutations
+  refuse with 503 while the audit log is degraded)*
 
 ---
 

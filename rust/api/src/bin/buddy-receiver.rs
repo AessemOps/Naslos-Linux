@@ -56,7 +56,7 @@ fn router(receiver: Arc<Receiver>) -> Router {
             &format!("{PATH_PREFIX}/prune/{{*source}}"),
             post(buddy::prune),
         )
-        .with_state(BuddyState(receiver))
+        .with_state(BuddyState::new(receiver))
 }
 
 fn human_bytes(n: i64) -> String {

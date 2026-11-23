@@ -6,7 +6,7 @@
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 
 use super::envelope::{chunk_plain_len, CHUNK_PLAIN_SIZE, MAX_SEALED_CHUNK_SIZE};
 use super::Manifest;
@@ -52,6 +52,9 @@ pub struct Store {
     root: String,
     usage: Mutex<HashMap<String, i64>>,
     loaded: Mutex<HashMap<String, bool>>,
+    /// One lock per chunk path, so a stat + quota reserve + rename of the same
+    /// index cannot interleave with a concurrent replacement (R-058).
+    chunk_locks: Mutex<HashMap<String, Weak<Mutex<()>>>>,
 }
 
 impl Store {
@@ -60,7 +63,21 @@ impl Store {
             root: dir.to_string(),
             usage: Mutex::new(HashMap::new()),
             loaded: Mutex::new(HashMap::new()),
+            chunk_locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn chunk_lock(&self, key: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.chunk_locks.lock().unwrap();
+        if let Some(existing) = locks.get(key).and_then(Weak::upgrade) {
+            return existing;
+        }
+        if locks.len() > 1024 {
+            locks.retain(|_, weak| weak.strong_count() > 0);
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(key.to_string(), Arc::downgrade(&lock));
+        lock
     }
 
     pub fn root(&self) -> &str {
@@ -157,6 +174,10 @@ impl Store {
         let dir = self.chain_dir(key_id, source, chain)?;
         std::fs::create_dir_all(&dir)?;
         let target = dir.join(chunk_name(index));
+
+        // Serialize the read-reserve-rename sequence for this chunk path.
+        let lock = self.chunk_lock(&target.to_string_lossy());
+        let _guard = lock.lock().unwrap();
 
         let mut replaced: i64 = 0;
         if let Ok(existing) = std::fs::read(&target) {
@@ -1051,6 +1072,56 @@ mod tests {
         let err = store.put_manifest(&kid, "src", &stale).unwrap_err();
         assert!(format!("{err:?}").contains("stale manifest"), "{err:?}");
         assert_eq!(store.manifest(&kid, "src").unwrap().sequence, 4);
+    }
+
+    #[test]
+    fn concurrent_same_chunk_uploads_reserve_quota_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(dir.path().to_str().unwrap()));
+        let kid = key_id();
+        let sealed = vec![0xABu8; 32 * 1024];
+        for index in 0..25 {
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let mut handles = Vec::new();
+            for _ in 0..2 {
+                let store = store.clone();
+                let sealed = sealed.clone();
+                let barrier = barrier.clone();
+                let kid = kid.clone();
+                handles.push(std::thread::spawn(move || {
+                    barrier.wait();
+                    store.put_chunk_within(&kid, "src", "c1", index, &sealed, 0)
+                }));
+            }
+            for handle in handles {
+                handle.join().unwrap().unwrap();
+            }
+        }
+        assert_eq!(store.usage(&kid).unwrap(), (sealed.len() * 25) as i64);
+    }
+
+    #[test]
+    fn concurrent_different_chunk_content_keeps_one_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(dir.path().to_str().unwrap()));
+        let kid = key_id();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for byte in [0x11u8, 0x22] {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            let kid = kid.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                store.put_chunk_within(&kid, "src", "c1", 0, &vec![byte; 4096], 0)
+            }));
+        }
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        assert_eq!(store.usage(&kid).unwrap(), 4096);
     }
 
     #[test]

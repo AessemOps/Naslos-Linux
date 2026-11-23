@@ -86,9 +86,45 @@ fn new_identity_with_env(name: &str, env_kek: bool) -> Result<Identity, String> 
     })
 }
 
-/// Read an identity file. When `BUDDY_KEK` is set, the persisted `kek` field is
-/// removed and the file rewritten (PF-M14), so at-rest copies stop yielding the
-/// key that unwraps every backup.
+/// Reconcile the KEK persisted in the identity file with `BUDDY_KEK`.
+///
+/// Returns `true` when the environment supplies the *same* key, in which case
+/// the at-rest copy may be dropped (PF-M14). A different key is a hard error:
+/// clearing the stored KEK would make every previously received chunk
+/// undecryptable and the receiver would silently start a new key lineage
+/// (R-013). The file is never modified on a mismatch.
+fn reconcile_kek(path: &str, stored: &str, env: Option<&str>) -> Result<bool, String> {
+    let Some(env) = env.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(false);
+    };
+    if stored.trim().is_empty() {
+        return Ok(false);
+    }
+    if decode_kek(stored)? != decode_kek(env)? {
+        return Err(format!(
+            "refusing to load identity {path}: {ENV_KEK} does not match the KEK stored in the identity file. \
+             Nothing was deleted. Back up buddy-identity.json and the KEK Secret first, then either unset \
+             {ENV_KEK} to keep using the file KEK or migrate the file KEK into the Secret with buddy.kekImport \
+             (see docs/buddy-backup.md, \"KEK backup and migration\")"
+        ));
+    }
+    Ok(true)
+}
+
+fn decode_kek(source: &str) -> Result<Vec<u8>, String> {
+    let kek = base64::engine::general_purpose::STANDARD
+        .decode(source.trim())
+        .map_err(|e| format!("decoding kek: {e}"))?;
+    if kek.len() != 32 {
+        return Err(format!("kek must be 32 bytes, got {}", kek.len()));
+    }
+    Ok(kek)
+}
+
+/// Read an identity file. When `BUDDY_KEK` is set and equals the persisted
+/// `kek`, the field is removed and the file rewritten (PF-M14), so at-rest
+/// copies stop yielding the key that unwraps every backup. A different
+/// `BUDDY_KEK` fails closed (R-013).
 pub fn load_identity(path: &str) -> Result<Identity, String> {
     let data = std::fs::read(path).map_err(|e| e.to_string())?;
     let mut id: Identity =
@@ -96,7 +132,8 @@ pub fn load_identity(path: &str) -> Result<Identity, String> {
     if id.private_key.is_empty() || id.public_key.is_empty() {
         return Err(format!("identity {path} is incomplete"));
     }
-    if env_kek_is_set() && !id.kek.is_empty() {
+    let env = std::env::var(ENV_KEK).ok();
+    if reconcile_kek(path, &id.kek, env.as_deref())? {
         id.kek.clear();
         id.save(path)?;
     }
@@ -171,13 +208,7 @@ impl Identity {
                 "no KEK: set {ENV_KEK} (recommended) or restore the identity file's kek field"
             ));
         }
-        let kek = base64::engine::general_purpose::STANDARD
-            .decode(source)
-            .map_err(|e| format!("decoding kek: {e}"))?;
-        if kek.len() != 32 {
-            return Err(format!("kek must be 32 bytes, got {}", kek.len()));
-        }
-        Ok(kek)
+        decode_kek(&source)
     }
 }
 
@@ -239,6 +270,18 @@ mod tests {
         assert!(id.kek.is_empty());
         let json = serde_json::to_string(&id).unwrap();
         assert!(!json.contains("kek"), "kek must not be serialized: {json}");
+    }
+
+    #[test]
+    fn a_mismatched_env_kek_fails_closed_without_touching_the_file() {
+        let file_kek = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        let other = base64::engine::general_purpose::STANDARD.encode([9u8; 32]);
+        let err = reconcile_kek("/data/buddy-identity.json", &file_kek, Some(&other)).unwrap_err();
+        assert!(err.contains("does not match"), "{err}");
+        assert!(err.contains("Nothing was deleted"), "{err}");
+        assert!(reconcile_kek("/data/buddy-identity.json", &file_kek, Some(&file_kek)).unwrap());
+        assert!(!reconcile_kek("/data/buddy-identity.json", &file_kek, None).unwrap());
+        assert!(!reconcile_kek("/data/buddy-identity.json", "", Some(&other)).unwrap());
     }
 
     #[test]
