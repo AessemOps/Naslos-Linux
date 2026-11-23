@@ -2,6 +2,7 @@
 //! of `server/buddy_send.go`).
 
 use crate::buddy::keys::{load_identity, new_identity};
+use crate::buddy::peers::PeerRemoveError;
 use crate::buddy::Peer;
 use crate::json;
 use crate::state::AppState;
@@ -154,7 +155,18 @@ pub async fn peers_delete(
                 "note": "chunks already received stay until they are pruned: revoking a key stops new pushes, it is not a delete of existing backups",
             }),
         ),
-        Err(e) => json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
+        // A failed save means the revoke did not happen: the peer is still
+        // authorized, so report a server error rather than a missing peer.
+        Err(PeerRemoveError::NotFound(_)) => json(
+            StatusCode::NOT_FOUND,
+            serde_json::json!({ "error": format!("peer {name:?} not found") }),
+        ),
+        Err(e @ PeerRemoveError::Save(_)) => json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({
+                "error": format!("the peer registry could not be written ({e}); the key is still authorized, fix the state volume and retry"),
+            }),
+        ),
     }
 }
 

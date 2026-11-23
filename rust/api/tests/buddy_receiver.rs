@@ -112,7 +112,7 @@ async fn enroll_status_chunk_and_manifest() {
     let dek = [5u8; 32];
     let prefix = new_stream_prefix().unwrap();
     let source = "naslos-test/data";
-    let chain = "chain-1";
+    let chain = "0f3c";
     let plain = b"hello buddy receiver";
     let (sealed, digest) = seal_chunk(&dek, &prefix, 0, source, chain, 0, plain).unwrap();
     let chunk_uri = format!("/api/buddy/v1/chunks/{source}?chain={chain}&index=0");
@@ -173,7 +173,72 @@ async fn enroll_status_chunk_and_manifest() {
         "/api/buddy/v1/manifest/naslos-test/data",
         b"",
     );
-    let (status, resp) = send(state, req).await;
+    let (status, resp) = send(state.clone(), req).await;
     assert_eq!(status, StatusCode::OK, "{resp}");
     assert_eq!(resp["chain"], chain);
+
+    // A structurally invalid chunk is refused and never stored.
+    for bad in [Vec::new(), b"not-an-envelope".to_vec()] {
+        let uri = format!("/api/buddy/v1/chunks/{source}?chain={chain}&index=7");
+        let (status, resp) = send(state.clone(), signed(&state, &id, "PUT", &uri, &bad)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{resp}");
+    }
+
+    // Chain ids use the client format; a dot-led id is refused.
+    let dot_uri = format!("/api/buddy/v1/chunks/{source}?chain=.hidden&index=0");
+    let (status, resp) = send(state.clone(), signed(&state, &id, "PUT", &dot_uri, &sealed)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{resp}");
+
+    // A manifest may not claim more bytes than the stored chunk holds.
+    let mut lying = manifest.clone();
+    lying.sequence = 2;
+    lying.chunks[0].sealed_bytes += 1;
+    lying.sign(&id).unwrap();
+    let body = serde_json::to_vec(&lying).unwrap();
+    let (status, resp) = send(
+        state.clone(),
+        signed(
+            &state,
+            &id,
+            "PUT",
+            &format!("/api/buddy/v1/manifest/{source}"),
+            &body,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{resp}");
+
+    // A new chain may not lower the source's sequence. Give it its own
+    // (valid, signed) chunks so the handler's presence check passes and the
+    // store's sequence rule is what refuses it.
+    let earlier_chain = "2f3c";
+    let earlier_uri = format!("/api/buddy/v1/chunks/{source}?chain={earlier_chain}&index=0");
+    let (status, resp) = send(
+        state.clone(),
+        signed(&state, &id, "PUT", &earlier_uri, &sealed),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{resp}");
+    let mut earlier = manifest.clone();
+    earlier.chain = earlier_chain.to_string();
+    earlier.sequence = 0;
+    earlier.to_guid = "guid-0".to_string();
+    earlier.sign(&id).unwrap();
+    let body = serde_json::to_vec(&earlier).unwrap();
+    let (status, resp) = send(
+        state.clone(),
+        signed(
+            &state,
+            &id,
+            "PUT",
+            &format!("/api/buddy/v1/manifest/{source}"),
+            &body,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{resp}");
+    assert!(
+        resp["error"].as_str().unwrap_or_default().contains("older"),
+        "{resp}"
+    );
 }
