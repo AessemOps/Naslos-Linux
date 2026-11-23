@@ -43,12 +43,29 @@ spec:
       # file system") that fails the container before entrypoint even
       # runs; disabling the automount avoids that mount altogether.
       automountServiceAccountToken: false
+      # The Job only runs ldapsearch/ldapmodify/slappasswd over the network as
+      # the image's openldap user; it never needs root or a writable image.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
         # Wait for OpenLDAP to be ready (uses ldapsearch from the Naslos
         # OpenLDAP image so the VM does not need to pull busybox externally).
         - name: wait-for-ldap
           image: "{{ .Values.openldap.image }}"
           imagePullPolicy: {{ .Values.openldap.imagePullPolicy | default "IfNotPresent" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
           env:
             # Verify the server certificate against the Naslos CA rather than
             # disabling verification (AUDIT-L9).
@@ -71,6 +88,14 @@ spec:
         - name: bootstrap
           image: "{{ .Values.openldap.image }}"
           imagePullPolicy: {{ .Values.openldap.imagePullPolicy | default "IfNotPresent" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
           env:
             - name: LDAPTLS_CACERT
               value: /ldap-ca/ca.crt
@@ -144,7 +169,12 @@ spec:
             - name: ldap-ca
               mountPath: /ldap-ca
               readOnly: true
+            # The script writes its LDIFs here; the image root is read-only.
+            - name: tmp
+              mountPath: /tmp
       volumes:
+        - name: tmp
+          emptyDir: {}
         - name: secrets
           secret:
             secretName: naslos-openldap

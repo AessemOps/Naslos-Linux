@@ -55,6 +55,18 @@ spec:
         - name: wait-for-ldap
           image: "{{ .Values.openldap.image }}"
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          # Only ldapsearch runs here; the image's openldap user can do that
+          # without any capability or a writable root.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 101
+            runAsGroup: 101
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
           env:
             {{- if .Values.api.ldapCA.secretName }}
             # Verify the server certificate against the Naslos CA instead of
@@ -103,14 +115,25 @@ spec:
         # "mkdir …: permission denied" while the UI looked healthy. Only the
         # dataset root is chowned: the per-key trees inside are created by the API
         # itself, so a recursive walk (slow on a large store) buys nothing.
-        # The API image is distroless (no shell), so this reuses the Debian-based
-        # OpenLDAP image that this pod already pulls for the LDAP wait above.
+        # The API container runs as 65532, so this init container intentionally
+        # keeps uid 0 for the single chown, with every capability dropped except
+        # CAP_CHOWN and a read-only root. It reuses the Debian-based OpenLDAP
+        # image that this pod already pulls for the LDAP wait above instead of
+        # adding another image (the API image is Alpine, not distroless, but it
+        # is unprivileged by design).
         - name: fix-receive-dataset-ownership
           image: "{{ .Values.openldap.image }}"
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
           securityContext:
             runAsUser: 0
             runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN]
+            seccompProfile:
+              type: RuntimeDefault
           command:
             - /bin/sh
             - -c
