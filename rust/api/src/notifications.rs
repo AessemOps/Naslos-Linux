@@ -156,7 +156,8 @@ impl Manager {
             .any(|e| e == event)
     }
 
-    /// Send a notification via ntfy.
+    /// Send a notification via ntfy. A notification dropped by the channel's
+    /// enabled flag or severity floor is `Ok(())`, like the other channels.
     pub async fn send(&self, notif: &Notification) -> Result<(), String> {
         let settings = self.get_settings();
         if !settings.enabled {
@@ -165,12 +166,38 @@ impl Manager {
         if !severity_meets_threshold(&notif.severity, &settings.min_severity) {
             return Ok(());
         }
-        validate_settings(&settings)?;
+        self.publish(&settings, notif).await
+    }
+
+    /// Send a test notification. Requires the channel to be enabled but
+    /// bypasses the severity floor, so the transport can be verified before
+    /// events are routed to it.
+    pub async fn send_test(&self) -> Result<(), String> {
+        let settings = self.get_settings();
+        if !settings.enabled {
+            return Err("ntfy channel is disabled".to_string());
+        }
+        self.publish(
+            &settings,
+            &Notification {
+                title: "Naslos Test".to_string(),
+                message: "This is a test notification from Naslos.".to_string(),
+                severity: SEVERITY_INFO.to_string(),
+                tags: vec!["white_check_mark".to_string(), "naslos".to_string()],
+            },
+        )
+        .await
+    }
+
+    /// Deliver one notification to the configured topic, without routing or
+    /// severity filtering.
+    async fn publish(&self, settings: &Settings, notif: &Notification) -> Result<(), String> {
+        validate_settings(settings)?;
         let target = notification_url(&settings.server_url, &settings.topic)?;
         // Resolve once more at send time and pin the connection to the vetted
         // address, so the host cannot be rebound between validation and the
         // request (AUD-2611-T7-1).
-        let client = self.pinned_client(&target, &settings).await?;
+        let client = self.pinned_client(&target, settings).await?;
 
         let mut rb = client
             .post(&target)
@@ -225,17 +252,6 @@ impl Manager {
             .resolve(host, pinned)
             .build()
             .map_err(|e| format!("building the ntfy client: {e}"))
-    }
-
-    /// Send a test notification.
-    pub async fn send_test(&self) -> Result<(), String> {
-        self.send(&Notification {
-            title: "Naslos Test".to_string(),
-            message: "This is a test notification from Naslos.".to_string(),
-            severity: SEVERITY_INFO.to_string(),
-            tags: vec!["white_check_mark".to_string(), "naslos".to_string()],
-        })
-        .await
     }
 }
 
@@ -520,5 +536,12 @@ mod tests {
         // Some("") clears it.
         m.update_settings(s, Some("")).unwrap();
         assert_eq!(m.get_settings().auth_token, "");
+    }
+
+    #[tokio::test]
+    async fn send_test_requires_an_enabled_channel() {
+        let m = Manager::new("");
+        let error = m.send_test().await.unwrap_err();
+        assert!(error.contains("disabled"), "{error}");
     }
 }

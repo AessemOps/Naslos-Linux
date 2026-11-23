@@ -180,9 +180,20 @@ the agent's `zfs send` stream into `zfs receive`; `recursive` uses `zfs send -r`
   implicitly), and identical or nested paths are refused.
 - Incremental vs full is chosen from the newest **snapshot GUID** the source and
   destination share, not from snapshot names.
-- Every receive uses `-u` and excludes `mountpoint`, `canmount`, `sharenfs` and
-  `sharesmb` from the stream; after a successful receive the API sets
-  `/var/mnt/<pool>/…` as the mountpoint and mounts it deliberately.
+- Every receive uses `-u` and excludes exactly `mountpoint`, `canmount`,
+  `sharenfs` and `sharesmb` from the stream (`-x`). The policy is deliberate:
+  the first two would let a peer choose this node's host paths or hide a
+  dataset from the mount pass; the last two would create an export the share
+  store and the export canaries never saw. Every other streamed property
+  (compression, quota, recordsize, …) describes the data and is kept.
+- After a successful receive the agent sets `/var/mnt/<pool>/…` as the root
+  mountpoint, enumerates the **received tree** with a scoped
+  `zfs list -H -o name,mountpoint,canmount -r <dataset>`, remaps each child to
+  `/var/mnt/<pool>/…` and mounts every dataset explicitly. A recursive
+  receive that mounted only the root would leave child writes in shadow
+  directories under the root's mountpoint; `zfs mount -a` is never used
+  (it would mount unrelated datasets). Child mount failures are reported in
+  the response's `warnings` array, which is unchanged in shape.
 - A full send replaces the destination dataset's contents, so the destination is
   a replica target: it is refused if the destination has a snapshot that does
   not carry this pair's `naslos-rep-…` prefix, or any child dataset. `-F` is
@@ -329,7 +340,13 @@ checks stand between a request and `wipefs --all`:
    suspended pool is exactly that case), and refuse any disk that appears in
    `zpool import` output — the label would be destroyed before the import flow
    could recover it. A process-wide mutex serializes check → wipe → create, so
-   two concurrent requests cannot both claim one disk.
+   two concurrent requests cannot both claim one disk. The agent also refuses
+   any candidate (data disk or cache) whose partitions are mounted, whose
+   partition backs the host root, or whose partition has a device-mapper/md
+   holder: it reads the host's `/proc/mounts` and
+   `/sys/class/block/<disk>/*` itself, because the API-side system-disk
+   exclusion must not be the only guard before `wipefs --all`/`zpool create`.
+   The same guard runs on `zpool add`.
 
 The UI mirrors the rules: disks holding a ZFS label are not selectable, a disk
 with existing data shows a signature badge, and the create button stays
@@ -353,3 +370,21 @@ Concurrent `zfs send`/`receive` streams are capped (`agent.maxStreams`,
 replication job holds two slots (its send and its receive), and a Buddy transfer
 uses the same pool, so size the cap for the number of concurrent transfers plus
 headroom.
+
+### Receive limits and failure cleanup
+
+- A single receive body is capped at **1 TiB** (`MAX_STREAM_BODY_BYTES`,
+  `1 << 40`). The cap is a stream-size limit, not a dataset quota: a larger
+  legitimate restore must be split (for example a full send followed by
+  incrementals) or performed with the ZFS CLI on the node. The agent returns
+  `400` and stops reading; the API surfaces that as a failed job.
+- A mid-stream failure (stalled body, read error, body over the cap, a
+  broken pipe, or a non-zero `zfs receive` exit) aborts the receive with
+  `zfs receive -A <dataset>` before the error response. That clears the
+  resume token, destroys any `%recv` snapshot and rolls a partial
+  incremental back to its pre-receive state (a partial full receive's
+  dataset is destroyed). The cleanup is best effort and logged; the
+  original error is what the caller sees.
+- Receive cleanup runs under the same per-dataset mutation lock as the
+  receive itself, so a concurrent create/destroy/rollback cannot interleave
+  with it.

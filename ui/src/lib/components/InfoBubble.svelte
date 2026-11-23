@@ -40,7 +40,7 @@
   <span class="relative inline-flex">
     <button
       type="button"
-      class="inline-flex h-6 w-6 items-center justify-center rounded-full text-sm leading-none text-gray-400 hover:text-naslos-strong focus:text-naslos-strong focus:outline-none"
+      class="inline-flex h-6 w-6 items-center justify-center rounded-full text-sm leading-none text-gray-400 hover:text-naslos-strong focus:text-naslos-strong focus:outline-hidden"
       aria-label={label}
       aria-expanded={open}
       aria-controls={id}

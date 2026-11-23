@@ -153,7 +153,22 @@ assert "--providers.kubernetesingress" not in args or "providers.kubernetesingre
 authelia = find("StatefulSet", "naslos-authelia")
 assert authelia, "Authelia StatefulSet missing"
 aut_spec = authelia["spec"]["template"]["spec"]
-assert aut_spec.get("securityContext", {}).get("runAsNonRoot") is True, aut_spec.get("securityContext")
+# The Authelia container stays non-root (asserted below). The pod-level flag is
+# off only so the one-shot PVC ownership init container can run as root; that
+# container is fixed to chown with CHOWN/DAC_OVERRIDE/FOWNER and a read-only
+# root, and the service container keeps its own runAsNonRoot.
+aut_pod_sc = aut_spec.get("securityContext", {})
+assert aut_pod_sc.get("runAsUser") == 1000, aut_pod_sc
+assert aut_pod_sc.get("runAsNonRoot") is False, aut_pod_sc
+aut_init = {c["name"]: c for c in aut_spec.get("initContainers", [])}
+chown = aut_init.get("fix-config-ownership")
+assert chown, "the /config ownership init container is missing"
+assert chown["securityContext"].get("runAsUser") == 0, chown["securityContext"]
+assert set(chown["securityContext"].get("capabilities", {}).get("add", [])) == {
+    "CHOWN", "DAC_OVERRIDE", "FOWNER"
+}, chown["securityContext"]
+assert chown["securityContext"].get("readOnlyRootFilesystem") is True, chown["securityContext"]
+assert any(m["name"] == "authelia" for m in chown.get("volumeMounts", [])), chown
 aut_ctr = aut_spec["containers"][0]
 aut_sc = aut_ctr.get("securityContext", {})
 for key, value in {
@@ -197,13 +212,16 @@ for pvc_name in ("naslos-shares-config", "naslos-openldap-backups"):
     assert pvc["metadata"].get("annotations", {}).get("helm.sh/resource-policy") == "keep", \
         f"{pvc_name} must be kept on uninstall"
 # R-030 chart: the upgrader admission policy pins image, entrypoint, args, env,
-# volumes and securityContext.
+# volumes and securityContext. The arg allowlist is checked exhaustively in
+# check_system_upgrade_render (C-1a); here it only has to be present.
 vap = find("ValidatingAdmissionPolicy", "naslos-upgrader-guard")
 assert vap, "upgrader ValidatingAdmissionPolicy missing"
 expressions = " ".join(v["expression"] for v in vap["spec"]["validations"])
 for fragment in (
     "naslos-upgrade",
-    "^--(op|operation-id|from|version|pack-url|sha256|namespace|release)",
+    "pack-sig-url",
+    "pack-pubkey",
+    "pack-file",
     "NASLOS_NAMESPACE",
     "hostPath",
     "/var/lib/naslos",
@@ -908,30 +926,274 @@ check_system_upgrade_render() {
     "kind: ValidatingAdmissionPolicyBinding" \
     "name: NASLOS_RELEASE_PROFILE" \
     "name: NASLOS_API_IMAGE" \
-    "name: SYSTEM_UPGRADER_STATE_PVC" \
-    "command\[0\] == 'naslos-upgrade'"; do
-    if ! grep -q "$needle" "$f"; then
+    "name: SYSTEM_UPGRADER_STATE_PVC"; do
+    if ! grep -qF "$needle" "$f"; then
       echo "missing from the rendered installer profile: $needle" >&2
       rc=1
     fi
   done
-  # The API creates the upgrader Job with kubectl apply, so its namespaced
-  # Role must include patch (the 0.3.3 live upgrade failed without it).
-  python3 - "$f" <<'PY' || rc=1
-import sys, yaml
-docs = list(yaml.safe_load_all(open(sys.argv[1])))
-for doc in docs:
-    if not doc or doc.get("kind") != "Role":
-        continue
-    if doc.get("metadata", {}).get("name") != "naslos-api-system":
-        continue
-    for rule in doc.get("rules", []):
-        if "batch" in rule.get("apiGroups", []) and "jobs" in rule.get("resources", []):
-            if "patch" in rule.get("verbs", []):
-                raise SystemExit(0)
-raise SystemExit("naslos-api-system Role cannot patch jobs")
+  python3 - "$f" "$root/charts/naslos/values.yaml" <<'PY' || rc=1
+import re, sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+values = yaml.safe_load(open(sys.argv[2]))
+
+def find(kind, name):
+    for d in docs:
+        if d.get("kind") == kind and d.get("metadata", {}).get("name") == name:
+            return d
+    return None
+
+# The same derivation the template performs: the configured release channel
+# decides which pack URLs the Job may be handed.
+source = ((values.get("system") or {}).get("updates") or {}).get("source") \
+    or "https://api.github.com/repos/AessemOps/Naslos-Linux/releases"
+github = re.match(r"^https://api\.github\.com/repos/([^/]+/[^/]+)", source)
+if github:
+    pack_prefix = f"https://github.com/{github.group(1)}/releases/download/"
+else:
+    host = re.match(r"^https://[^/]+", source)
+    pack_prefix = f"{host.group(0)}/" if host else source
+
+# C-1a: the arg allowlist must admit exactly the flags job_spec emits. The
+# check used to grep a truncated regex, so the policy could deny every upgrade
+# while CI stayed green.
+vap = find("ValidatingAdmissionPolicy", "naslos-upgrader-guard")
+assert vap, "upgrader ValidatingAdmissionPolicy missing"
+expr = "\n".join(v.get("expression", "") for v in vap["spec"]["validations"])
+match = re.search(r"a\.matches\('([^']+)'\)", expr)
+assert match, "the upgrader policy has no arg allowlist"
+allow = re.compile(match.group(1))
+flags = [
+    "--op", "--operation-id", "--from", "--version", "--pack-url",
+    "--sha256", "--pack-sig-url", "--pack-pubkey", "--pack-file",
+    "--pack-sig-file", "--namespace", "--release",
+]
+for flag in flags:
+    assert allow.search(flag), f"the upgrader arg allowlist denies {flag} (C-1a)"
+# Negative control: it is a flag set, not a prefix match.
+for bad in ("--privileged", "--pack-url-evil", "--command", "--mount"):
+    assert not allow.search(bad), f"the upgrader arg allowlist admits {bad}"
+
+# C-1a follow-up: the policy pins the values, not just the flag names. An
+# attacker with the upgrader ServiceAccount must not be able to point the
+# operation at an arbitrary pack. With no pack key configured, the Job must use
+# the URL-only layout (20 args) with empty signature values: the cached file is
+# writable by the API pod and is not a trust anchor without a signature.
+for fragment in (
+    "c.args.size() == 20",
+    "c.args[8] == '--pack-url'",
+    f"c.args[9].startsWith('{pack_prefix}')",
+    "c.args[11].matches('^[0-9a-f]{64}$')",
+    "c.args[13] == ''",
+    "c.args[14] == '--pack-pubkey'",
+    "c.args[15] == ''",
+    "c.args[17] == 'naslos'",
+    "c.args[19] == 'naslos'",
+):
+    assert fragment in expr, f"upgrader policy is missing value pin {fragment!r}"
+# The rendered policy takes exactly one layout branch, and the cached pack is
+# not admitted without a signature key.
+assert expr.count("c.args.size() ==") == 1, expr
+assert "c.args.size() == 24" not in expr, "cached pack admitted without a key"
+assert "c.args[20]" not in expr, "cached pack path admitted without a key"
+assert "c.args[13] != ''" not in expr, "strict signature mode must be opt-in"
+
+# The API builds the Job from SYSTEM_UPDATES_PACK_PUBKEY; it must be wired even
+# when signature mode is off (empty value), or enabling it denies every Job.
+api = find("Deployment", "naslos-api")
+assert api, "API Deployment missing"
+api_env = {
+    e["name"]: e.get("value")
+    for e in api["spec"]["template"]["spec"]["containers"][0].get("env", [])
+}
+assert api_env.get("SYSTEM_UPDATES_PACK_PUBKEY") == "", \
+    api_env.get("SYSTEM_UPDATES_PACK_PUBKEY")
+
+# C-1b: containment. Each of these closes a way to run arbitrary code with the
+# cluster-admin ServiceAccount: a shell probe, a lifecycle hook, envFrom, a
+# privileged container, an added capability, a container-level identity
+# override, or a Secret/claim that is not the chart-configured one.
+for fragment in (
+    "command == ['naslos-upgrade']",
+    "!has(c.lifecycle)",
+    "!has(c.livenessProbe)",
+    "!has(c.readinessProbe)",
+    "!has(c.startupProbe)",
+    "!has(c.envFrom)",
+    "!has(e.valueFrom)",
+    "!has(c.securityContext.privileged)",
+    "c.securityContext.capabilities.add.size() == 0",
+    "!has(c.securityContext.runAsUser)",
+    "!has(c.securityContext.runAsGroup)",
+    "!has(c.securityContext.runAsNonRoot)",
+    "!has(c.securityContext.seccompProfile)",
+    "v.secret.secretName == 'naslos-talosconfig'",
+    "v.secret.items[0].key == 'talosconfig'",
+    "v.persistentVolumeClaim.claimName == 'naslos-shares-config'",
+    "!has(m.subPath)",
+    "m.mountPath == '/var/run/secrets/talos.dev'",
+    "object.spec.restartPolicy == 'Never'",
+    "object.spec.securityContext.runAsGroup == 65532",
+    "object.spec.securityContext.fsGroup == 65532",
+    "'SYSTEM_UPDATES_SOURCE'",
+):
+    assert fragment in expr, f"upgrader policy is missing {fragment!r}"
+
+# C-1c follow-up: the API server injects the ServiceAccount token projection
+# before admission, so the exact injected shape must be admitted. The negative
+# case is structural: the only prefix-based admission is `kube-api-access-`
+# with the pinned three-source projection, and every other volume name is an
+# exact literal, so a differently-named injected volume matches nothing.
+for fragment in (
+    "v.name.startsWith('kube-api-access-')",
+    "has(v.projected)",
+    "v.projected.sources.size() == 3",
+    "v.projected.sources[0].serviceAccountToken.path == 'token'",
+    "v.projected.sources[1].configMap.name == 'kube-root-ca.crt'",
+    "v.projected.sources[1].configMap.items[0].key == 'ca.crt'",
+    "v.projected.sources[2].downwardAPI.items[0].path == 'namespace'",
+    "v.projected.sources[2].downwardAPI.items[0].fieldRef.fieldPath == 'metadata.namespace'",
+    "m.name.startsWith('kube-api-access-')",
+    "m.mountPath == '/var/run/secrets/kubernetes.io/serviceaccount'",
+):
+    assert fragment in expr, f"upgrader policy does not admit the injected token: {fragment!r}"
+assert re.findall(r"v\.name\.startsWith\('([^']+)'\)", expr) == ["kube-api-access-"], expr
+assert re.findall(r"m\.name\.startsWith\('([^']+)'\)", expr) == ["kube-api-access-"], expr
+assert re.findall(r"v\.name == '([^']+)'", expr) == ["tmp", "talosconfig", "state"], expr
+assert re.findall(r"m\.name == '([^']+)'", expr) == ["tmp", "talosconfig", "state"], expr
+
+# The API creates the upgrader Job with kubectl apply, so its namespaced
+# Role must include patch (the 0.3.3 live upgrade failed without it).
+role = find("Role", "naslos-api-system")
+assert role, "API system Role missing"
+assert any(
+    "batch" in rule.get("apiGroups", [])
+    and "jobs" in rule.get("resources", [])
+    and "patch" in rule.get("verbs", [])
+    for rule in role.get("rules", [])
+), "naslos-api-system Role cannot patch jobs"
+
+# C-1c: the Job is handed the cached pack on the state volume, and a fallback
+# egress policy selects its pod so a missing cache can still download over 443.
+sysop = find("NetworkPolicy", "naslos-system-op-egress")
+assert sysop, "the upgrader Job has no egress policy (C-1c)"
+assert sysop["spec"]["podSelector"]["matchLabels"].get("app.kubernetes.io/name") == "naslos-system-op", \
+    sysop["spec"]["podSelector"]
+ports = {p.get("port") for rule in sysop["spec"]["egress"] for p in rule.get("ports", [])}
+assert 443 in ports, ports
+print("system upgrade render ok")
 PY
   rm -f "$f"
+  # Signature mode: a padded key (e.g. a --set-file trailing newline) must be
+  # trimmed once and used everywhere, and the policy must require the pinned
+  # key plus the cached layout.
+  key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  kv=$(mktemp) || return 1
+  printf 'system:\n  updates:\n    packPubkey: "  %s  "\n' "$key" >"$kv"
+  f2=$(mktemp) || { rm -f "$kv"; return 1; }
+  if ! helm template naslos "$root/charts/naslos" -n naslos \
+    -f "$root/charts/naslos/values.yaml" \
+    -f "$root/charts/naslos/values-installer.yaml" \
+    -f "$kv" \
+    --set release.profile=installer \
+    --set release.naslosVersion=0.3.0 \
+    --set release.chartVersion=0.3.0 \
+    --set release.talosVersion=v1.14.6 \
+    --set release.schematicId=abc \
+    --set release.kubernetesVersion=v1.37.0 >"$f2" 2>/dev/null; then
+    rm -f "$f2" "$kv"
+    return 1
+  fi
+  python3 - "$f2" "$key" <<'PY' || rc=1
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+key = sys.argv[2]
+
+def find(kind, name):
+    for d in docs:
+        if d.get("kind") == kind and d.get("metadata", {}).get("name") == name:
+            return d
+    return None
+
+vap = find("ValidatingAdmissionPolicy", "naslos-upgrader-guard")
+assert vap, "upgrader ValidatingAdmissionPolicy missing"
+expr = "\n".join(v.get("expression", "") for v in vap["spec"]["validations"])
+for fragment in (
+    "c.args.size() == 24",
+    "c.args[20] == '--pack-file'",
+    "c.args[21] == '/var/lib/naslos/updates/pack-' + c.args[7] + '.tar.gz'",
+    "c.args[22] == '--pack-sig-file'",
+    "c.args[23] == c.args[21] + '.sig'",
+    "c.args[13] != ''",
+    "c.args[13].startsWith(",
+    "c.args[14] == '--pack-pubkey'",
+    f"c.args[15] == '{key}'",
+):
+    assert fragment in expr, f"strict signature mode is missing {fragment!r}"
+assert "c.args.size() == 20" not in expr, expr
+assert f"'{key}  '" not in expr, "the pinned key must be trimmed"
+
+api = find("Deployment", "naslos-api")
+assert api, "API Deployment missing"
+api_env = {
+    e["name"]: e.get("value")
+    for e in api["spec"]["template"]["spec"]["containers"][0].get("env", [])
+}
+assert api_env.get("SYSTEM_UPDATES_PACK_PUBKEY") == key, \
+    api_env.get("SYSTEM_UPDATES_PACK_PUBKEY")
+print("strict signature render ok")
+PY
+  rm -f "$f2" "$kv"
+  # Mirror channel: the policy prefix follows the configured host (host root,
+  # matching the Job's pack_url_allowed host check) and the API env carries the
+  # same source the Job receives at runtime.
+  src="https://mirror.example/naslos/releases.json"
+  f3=$(mktemp) || return 1
+  if ! helm template naslos "$root/charts/naslos" -n naslos \
+    -f "$root/charts/naslos/values.yaml" \
+    -f "$root/charts/naslos/values-installer.yaml" \
+    --set release.profile=installer \
+    --set release.naslosVersion=0.3.0 \
+    --set release.chartVersion=0.3.0 \
+    --set release.talosVersion=v1.14.6 \
+    --set release.schematicId=abc \
+    --set release.kubernetesVersion=v1.37.0 \
+    --set system.updates.source="$src" >"$f3" 2>/dev/null; then
+    rm -f "$f3"
+    return 1
+  fi
+  python3 - "$f3" "$src" <<'PY' || rc=1
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+src = sys.argv[2]
+
+def find(kind, name):
+    for d in docs:
+        if d.get("kind") == kind and d.get("metadata", {}).get("name") == name:
+            return d
+    return None
+
+vap = find("ValidatingAdmissionPolicy", "naslos-upgrader-guard")
+assert vap, "upgrader ValidatingAdmissionPolicy missing"
+expr = "\n".join(v.get("expression", "") for v in vap["spec"]["validations"])
+for fragment in (
+    "c.args[9].startsWith('https://mirror.example/')",
+    "c.args[13] == ''",
+    "c.args[15] == ''",
+    "'SYSTEM_UPDATES_SOURCE'",
+):
+    assert fragment in expr, f"mirror channel is missing {fragment!r}"
+
+api = find("Deployment", "naslos-api")
+assert api, "API Deployment missing"
+api_env = {
+    e["name"]: e.get("value")
+    for e in api["spec"]["template"]["spec"]["containers"][0].get("env", [])
+}
+assert api_env.get("SYSTEM_UPDATES_SOURCE") == src, api_env.get("SYSTEM_UPDATES_SOURCE")
+print("mirror channel render ok")
+PY
+  rm -f "$f3"
   return "$rc"
 }
 
@@ -950,13 +1212,14 @@ check_image_digest_render() {
     --set shares.smb.image.digest="sha256:$hex" \
     --set shares.nfs.image.digest="sha256:$hex" \
     --set terminal.image.digest="sha256:$hex" \
+    --set virt.image.digest="sha256:$hex" \
     --set openldap.image="ghcr.io/aessemops/naslos-openldap@sha256:$hex" \
     >"$f" 2>/dev/null; then
     rm -f "$f"
     return 1
   fi
   ok=1
-  for repo in naslos-api naslos-agent naslos-ui naslos-samba naslos-nfs naslos-terminal naslos-openldap; do
+  for repo in naslos-api naslos-agent naslos-ui naslos-samba naslos-nfs naslos-terminal naslos-vmd naslos-openldap; do
     grep -qF "ghcr.io/aessemops/${repo}@sha256:${hex}" "$f" || ok=0
   done
   # The digest must win over the tag: the installer profile's tag must be gone.
@@ -1109,6 +1372,12 @@ if have helm; then
   run "chart images render by digest (FR-INSTALL-13)" check_image_digest_render
   run "system upgrade plumbing renders (FR-UPD)" check_system_upgrade_render
   run "install pack pins image digests (FR-INSTALL-13)" check_pack_digest_pinning
+  # C-4/R13: the app-isolation boundary (Helm Role, admission policy, Traefik
+  # plugin) has its own render assertions; they were not wired into either
+  # audit.sh or CI, so a values/template edit could undo them silently.
+  # The isolation script is not committed with the executable bit, so it
+  # runs through `sh` regardless of file mode.
+  run "app isolation chart assertions (C-4)" sh scripts/test-app-isolation.sh
   run "authelia ldap password is a Secret file (AUDIT-M3)" check_authelia_ldap_secret
   run "authelia SSO fragments + scoped RBAC (FR-APP-15)" check_authelia_sso_fragments
   run "network policy intent (AUDIT-M4)" check_network_policies

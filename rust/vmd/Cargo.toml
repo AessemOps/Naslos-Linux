@@ -16,7 +16,7 @@ path = "src/lib.rs"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.9", features = ["tls-rustls"] }
 # Explicit, not just transitive: the crate graph pulls rustls via axum-server
 # (ring) and reqwest (aws-lc-rs), which leaves both crypto providers compiled
 # and makes rustls refuse to guess at startup. Declaring ring here mirrors the
@@ -38,11 +38,11 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io", "compat"] }
 tempfile = "3"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["limit", "timeout"] }
+tower-http = { version = "0.7", features = ["limit", "timeout"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 tower = { version = "0.5", features = ["util"] }
 

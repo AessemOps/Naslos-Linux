@@ -4,9 +4,10 @@ The identity Helm runs as (SEC-2026-D1/D4).
 Installing a chart with the API's own ServiceAccount let the chart's manifests
 create Traefik `IngressRoute`/`Middleware` objects (host hijack, same-origin with
 the UI) and cert-manager objects. Helm now runs as `naslos-helm`, a namespaced
-account that can create workloads, Services, ConfigMaps, Secrets, PVCs and
-Ingresses but NOT trajectories/certificates or RBAC. The API keeps those rights
-and creates the app route/certificate itself.
+account that can create workloads, Services, ConfigMaps, Secrets and PVCs but
+NOT Ingress/NetworkPolicy, traefik.io routes/middlewares, cert-manager objects
+or RBAC (the admission policy in app-admission.yaml enforces the same boundary).
+The API keeps those rights and creates the app route/certificate itself.
 
 The token Secret is a long-lived, controller-populated
 `kubernetes.io/service-account-token` in the release namespace (so the API pod

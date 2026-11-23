@@ -8,6 +8,7 @@
 //! `GitBackend` trait (the plan's bundled-CLI approach, consistent with
 //! helm/talosctl), so the repository logic is testable without a real remote.
 
+use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -301,9 +302,16 @@ pub fn validate_name(name: &str) -> Result<(), String> {
 }
 
 /// Persists the configured sources as JSON.
+///
+/// Loading skips (and logs) individual invalid records instead of aborting
+/// the whole file, and a file that cannot be parsed at all fails closed: the
+/// store refuses every mutation so the official-source re-seed cannot replace
+/// the operator's file with a one-entry list (S-12). Mutations are
+/// persist-then-swap, so a failed save leaves memory unchanged.
 pub struct Store {
     path: String,
     sources: Mutex<HashMap<String, Source>>,
+    load_error: Mutex<Option<String>>,
 }
 
 impl Store {
@@ -311,6 +319,7 @@ impl Store {
         Self {
             path: path.to_string(),
             sources: Mutex::new(HashMap::new()),
+            load_error: Mutex::new(None),
         }
     }
 
@@ -320,31 +329,79 @@ impl Store {
         Self::new(&path)
     }
 
+    /// Fail closed unless the persisted file was read successfully.
+    pub fn require_loaded(&self) -> Result<(), String> {
+        match self.load_error.lock().unwrap().clone() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     pub fn load(&self) -> Result<(), String> {
+        *self.load_error.lock().unwrap() = None;
         if self.path.is_empty() {
             return Ok(());
         }
         let data = match std::fs::read(&self.path) {
             Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(format!("reading sources file: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.sources.lock().unwrap().clear();
+                return Ok(());
+            }
+            Err(e) => {
+                let message = format!(
+                    "reading the chart source store {}: {e}; refusing to overwrite it",
+                    self.path
+                );
+                *self.load_error.lock().unwrap() = Some(message.clone());
+                return Err(message);
+            }
         };
-        let list: Vec<Source> =
-            serde_json::from_slice(&data).map_err(|e| format!("parsing sources file: {e}"))?;
-        let mut guard = self.sources.lock().unwrap();
+        if data.iter().all(|b| b.is_ascii_whitespace()) {
+            self.sources.lock().unwrap().clear();
+            return Ok(());
+        }
+        let list: Vec<Source> = match serde_json::from_slice(&data) {
+            Ok(list) => list,
+            Err(e) => {
+                let backup = match crate::shares::backup_corrupt_store(&self.path, &data) {
+                    Ok(path) => format!(" (backup saved to {})", path.display()),
+                    Err(backup_err) => format!(" ({backup_err})"),
+                };
+                let message = format!(
+                    "the chart source store {} is corrupt: {e}{backup}; repair it or replace it with a valid store before changing sources",
+                    self.path
+                );
+                tracing::error!("{message}");
+                *self.load_error.lock().unwrap() = Some(message.clone());
+                return Err(message);
+            }
+        };
+        // Build a fresh map: an entry that fails validation is reported and
+        // skipped, never allowed to abort the rest of the file.
+        let mut loaded = HashMap::new();
         for mut src in list {
             if src.name.is_empty() {
+                tracing::warn!("skipping a chart source with no name");
                 continue;
             }
             // The name becomes a directory under the cache and is later passed
             // to remove_dir_all; never trust it from the on-disk file
             // (SEC-2026-B12).
-            validate_name(&src.name)?;
+            if let Err(e) = validate_name(&src.name) {
+                tracing::warn!(
+                    "skipping the chart source {:?} from {}: {e}",
+                    src.name,
+                    self.path
+                );
+                continue;
+            }
             if src.channels.is_empty() {
                 src.channels = default_channels();
             }
-            guard.insert(src.name.clone(), src);
+            loaded.insert(src.name.clone(), src);
         }
+        *self.sources.lock().unwrap() = loaded;
         Ok(())
     }
 
@@ -377,29 +434,41 @@ impl Store {
     }
 
     pub fn upsert(&self, mut src: Source) -> Result<(), String> {
+        self.require_loaded()?;
         src.normalize()?;
         let mut guard = self.sources.lock().unwrap();
-        guard.insert(src.name.clone(), src);
-        self.save_locked(&guard)
+        let mut candidate = guard.clone();
+        candidate.insert(src.name.clone(), src);
+        self.save_locked(&candidate)?;
+        *guard = candidate;
+        Ok(())
     }
 
     pub fn update(&self, name: &str, mutate: impl FnOnce(&mut Source)) -> Result<Source, String> {
+        self.require_loaded()?;
         let mut guard = self.sources.lock().unwrap();
-        let src = guard
+        let mut candidate = guard.clone();
+        let src = candidate
             .get_mut(name)
             .ok_or_else(|| format!("source {name:?} not found"))?;
         mutate(src);
         let out = src.clone();
-        self.save_locked(&guard)?;
+        self.save_locked(&candidate)?;
+        *guard = candidate;
         Ok(out)
     }
 
     pub fn delete(&self, name: &str) -> Result<(), String> {
+        self.require_loaded()?;
         let mut guard = self.sources.lock().unwrap();
-        if guard.remove(name).is_none() {
+        if !guard.contains_key(name) {
             return Err(format!("source {name:?} not found"));
         }
-        self.save_locked(&guard)
+        let mut candidate = guard.clone();
+        candidate.remove(name);
+        self.save_locked(&candidate)?;
+        *guard = candidate;
+        Ok(())
     }
 }
 
@@ -460,6 +529,13 @@ impl GitCliBackend {
     pub fn new() -> Self {
         Self {
             binary: std::env::var("GIT_BIN").unwrap_or_else(|_| "git".to_string()),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_binary(binary: &str) -> Self {
+        Self {
+            binary: binary.to_string(),
         }
     }
 
@@ -527,12 +603,14 @@ impl GitBackend for GitCliBackend {
         dir: &str,
         auth: &GitAuth,
     ) -> Result<(), String> {
-        // HTTPS token: embed as basic auth in the URL (go-git used
-        // x-access-token). SSH: point GIT_SSH_COMMAND at a temp key.
+        // HTTPS token: per-invocation `http.extraheader` from the child's
+        // scrubbed environment, never in argv and never in the clone URL (so
+        // it cannot be persisted in `.git/config`) (A-5/S-4). SSH: point
+        // GIT_SSH_COMMAND at a temp key.
         validate_source_url(url)?;
         let mut key_file = None;
-        let (clone_url, env) = if !auth.token.is_empty() {
-            (inject_token(url, &auth.token), Vec::new())
+        let env = if !auth.token.is_empty() {
+            token_config_env(&auth.token)
         } else if !auth.ssh_key.is_empty() {
             // Host-key verification is mandatory: without a pinned known_hosts
             // an on-path attacker could serve an arbitrary chart (and the API
@@ -547,19 +625,16 @@ impl GitBackend for GitCliBackend {
             let file = write_ssh_key(&auth.ssh_key)?;
             let key_path = file.path().to_path_buf();
             key_file = Some(file);
-            (
-                url.to_string(),
-                vec![(
-                    "GIT_SSH_COMMAND".to_string(),
-                    format!(
-                        "ssh -i {} -o StrictHostKeyChecking=yes -o UserKnownHostsFile={}",
-                        shell_quote(&key_path.display().to_string()),
-                        shell_quote(&known_hosts)
-                    ),
-                )],
-            )
+            vec![(
+                "GIT_SSH_COMMAND".to_string(),
+                format!(
+                    "ssh -i {} -o StrictHostKeyChecking=yes -o UserKnownHostsFile={}",
+                    shell_quote(&key_path.display().to_string()),
+                    shell_quote(&known_hosts)
+                ),
+            )]
         } else {
-            (url.to_string(), Vec::new())
+            Vec::new()
         };
 
         let result = async {
@@ -579,13 +654,46 @@ impl GitBackend for GitCliBackend {
                         "1".into(),
                         "--no-tags".into(),
                         "--".into(),
-                        clone_url,
+                        url.into(),
                         dir.into(),
                     ],
                     &env,
                 )
                 .await?;
             } else {
+                // A cache created by an older build may keep a token-bearing
+                // `remote.origin.url`; rewrite it to the clean URL so a
+                // rotated token actually takes effect and the secret stops
+                // living in `.git/config`.
+                let stored = self
+                    .run_stdout(
+                        &[
+                            "-C".into(),
+                            dir.into(),
+                            "remote".into(),
+                            "get-url".into(),
+                            "origin".into(),
+                        ],
+                        &env,
+                    )
+                    .await
+                    .unwrap_or_default();
+                if stored.trim() != url {
+                    self.run(
+                        &[
+                            "-C".into(),
+                            dir.into(),
+                            "remote".into(),
+                            "set-url".into(),
+                            "origin".into(),
+                            url.into(),
+                        ],
+                        &env,
+                    )
+                    .await?;
+                }
+                // The fetch carries the credential explicitly (the same
+                // header env), so rotation needs no cache deletion.
                 self.run(
                     &[
                         "-C".into(),
@@ -751,13 +859,23 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// Embed an HTTPS token as basic auth (x-access-token).
-fn inject_token(url: &str, token: &str) -> String {
-    if let Some(rest) = url.strip_prefix("https://") {
-        format!("https://x-access-token:{token}@{rest}")
-    } else {
-        url.to_string()
-    }
+/// The git config a token-authenticated invocation needs, passed through the
+/// child's environment (`GIT_CONFIG_*`) instead of argv: the Authorization
+/// header then never shows up in `ps` output or in `.git/config`.
+fn token_config_env(token: &str) -> Vec<(String, String)> {
+    use base64::engine::general_purpose::STANDARD;
+    let basic = STANDARD.encode(format!("x-access-token:{token}"));
+    vec![
+        ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+        (
+            "GIT_CONFIG_KEY_0".to_string(),
+            "http.extraheader".to_string(),
+        ),
+        (
+            "GIT_CONFIG_VALUE_0".to_string(),
+            format!("Authorization: Basic {basic}"),
+        ),
+    ]
 }
 
 fn write_ssh_key(key: &[u8]) -> Result<tempfile::NamedTempFile, String> {
@@ -924,8 +1042,22 @@ impl Manager {
             self.record_sync(&src.name, channel, Some(&e));
             return Err(format!("refreshing {}/{channel}: {e}", src.name));
         }
+        self.secure_cache_dirs(&src.name, &dir);
         self.record_sync(&src.name, channel, None);
         Ok(())
+    }
+
+    /// The cache holds a full working tree (including `.git/config`); keep it
+    /// unreadable to other local users. 0750 also covers caches created by
+    /// older builds with the process umask.
+    fn secure_cache_dirs(&self, source: &str, dir: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let cache = PathBuf::from(&self.cache_dir);
+        for path in [cache.clone(), cache.join(source), PathBuf::from(dir)] {
+            if path.exists() {
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o750));
+            }
+        }
     }
 
     fn auth_for(&self, src: &Source) -> Result<GitAuth, String> {
@@ -1213,6 +1345,21 @@ pub(crate) fn write_atomic(
     )
     .map_err(|e| format!("setting mode: {e}"))?;
     std::fs::rename(&tmp_path, target).map_err(|e| format!("replacing: {e}"))?;
+    // The rename itself should be durable: without the parent-directory fsync
+    // a crash can lose the new name (or resurrect the old file) even though
+    // the data was synced (B-3). It is best effort: the rename already
+    // committed the new content, so reporting a failed save here would make a
+    // caller retry a mutation that did land and diverge memory from disk
+    // (matching shares::Manager::write_snapshot, which has no directory
+    // fsync at all).
+    let sync_dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    if let Err(e) = std::fs::File::open(sync_dir).and_then(|handle| handle.sync_all()) {
+        tracing::warn!("could not fsync the directory for {path} after rename: {e}");
+    }
     Ok(())
 }
 
@@ -1239,16 +1386,158 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_source_names_are_refused_on_load() {
+    fn unsafe_source_names_are_skipped_without_losing_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sources.json");
-        std::fs::write(
-            &path,
-            r#"[{"name":"../escape","url":"https://example.com/r.git"}]"#,
-        )
-        .unwrap();
+        let original = r#"[{"name":"../escape","url":"https://example.com/r.git"},{"name":"good","url":"https://example.com/good.git"}]"#;
+        std::fs::write(&path, original).unwrap();
+        let store = Store::new(&path.display().to_string());
+        store
+            .load()
+            .expect("one bad record must not abort the file");
+        let names: Vec<String> = store.list().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, vec!["good"]);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "loading must not rewrite the file"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_source_store_refuses_mutations_and_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sources.json");
+        let corrupt = b"[not json";
+        std::fs::write(&path, corrupt).unwrap();
         let store = Store::new(&path.display().to_string());
         assert!(store.load().is_err());
+        assert!(store.require_loaded().is_err());
+        assert!(store
+            .upsert(Source {
+                name: "official".into(),
+                url: "https://example.com/r.git".into(),
+                official: true,
+                ..Default::default()
+            })
+            .is_err());
+        assert!(store.delete("official").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+        let backups: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert_eq!(backups.len(), 1);
+    }
+
+    #[test]
+    fn a_failed_source_save_restores_the_previous_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sources.json");
+        let store = Store::new(&path.display().to_string());
+        store.upsert(source("keeper")).unwrap();
+        // A directory at the store path makes the atomic rename fail even when
+        // the tests run as root (permission bits would not).
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(store.upsert(source("newcomer")).is_err());
+        assert!(store.delete("keeper").is_err());
+        let names: Vec<String> = store.list().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, vec!["keeper"]);
+    }
+
+    #[tokio::test]
+    async fn token_auth_stays_out_of_argv_and_the_remote_url() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let repo = cache.join("src").join("prod");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let capture = dir.path().join("git.log");
+        let script = dir.path().join("fake-git.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {log}\nprintf 'GIT_CONFIG_COUNT=%s\\n' \"$GIT_CONFIG_COUNT\" >> {log}\nprintf 'GIT_CONFIG_KEY_0=%s\\n' \"$GIT_CONFIG_KEY_0\" >> {log}\nprintf 'GIT_CONFIG_VALUE_0=%s\\n' \"$GIT_CONFIG_VALUE_0\" >> {log}\necho 'https://x-access-token:stale-token@example.com/r.git'\n",
+                log = capture.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let backend = GitCliBackend::with_binary(&script.display().to_string());
+        let auth = GitAuth {
+            token: "sekrit-token".into(),
+            ssh_key: Vec::new(),
+        };
+        backend
+            .sync(
+                "https://example.com/r.git",
+                "Prod",
+                "",
+                &repo.display().to_string(),
+                &auth,
+            )
+            .await
+            .unwrap();
+
+        let log = std::fs::read_to_string(&capture).unwrap();
+        assert!(
+            !log.contains("sekrit-token") && !log.contains("stale-token"),
+            "the token must never reach argv or a remote URL: {log}"
+        );
+        assert!(log.contains("https://example.com/r.git"), "{log}");
+        assert!(log.contains("remote\nset-url\norigin"), "{log}");
+        assert!(log.contains("fetch\n--depth\n1\norigin\nProd"), "{log}");
+        let header = format!(
+            "Authorization: Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("x-access-token:sekrit-token")
+        );
+        assert!(
+            log.contains(&format!("GIT_CONFIG_VALUE_0={header}")),
+            "{log}"
+        );
+        assert!(log.contains("GIT_CONFIG_KEY_0=http.extraheader"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn refreshed_cache_directories_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        struct CreatingBackend;
+        #[async_trait::async_trait]
+        impl GitBackend for CreatingBackend {
+            async fn sync(
+                &self,
+                _url: &str,
+                _branch: &str,
+                _commit: &str,
+                dir: &str,
+                _auth: &GitAuth,
+            ) -> Result<(), String> {
+                std::fs::create_dir_all(Path::new(dir).join("apps/nginx"))
+                    .map_err(|e| e.to_string())?;
+                std::fs::write(Path::new(dir).join(".git"), b"").map_err(|e| e.to_string())?;
+                Ok(())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("charts");
+        let store = Arc::new(Store::new(""));
+        store.upsert(source("official")).unwrap();
+        let manager = Manager::new(
+            store,
+            &cache_dir.display().to_string(),
+            DEFAULT_TTL,
+            None,
+            Arc::new(CreatingBackend),
+        );
+        manager.refresh("official", "Prod").await.unwrap();
+        let channel_dir = cache_dir.join("official").join("prod");
+        for path in [cache_dir.clone(), cache_dir.join("official"), channel_dir] {
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o750, "{} is {mode:o}", path.display());
+        }
     }
 
     #[test]

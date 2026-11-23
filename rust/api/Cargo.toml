@@ -19,7 +19,7 @@ name = "naslos_api"
 path = "src/lib.rs"
 
 [dependencies]
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 base64 = "0.23"
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 flate2 = "1"
@@ -27,7 +27,7 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 bytes = "1"
 futures = "0.3"
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.9", features = ["tls-rustls"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 getrandom = "0.4"
@@ -36,7 +36,7 @@ hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
 include_dir = "0.7"
 ipnet = "2"
 naslos-vmd = { path = "../vmd", version = "0.1.0" }
-portable-pty = "0.8"
+portable-pty = "0.9"
 tar = "0.4"
 libc = "0.2"
 ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
@@ -55,7 +55,7 @@ rustls-pemfile = "2"
 tokio-rustls = "0.26"
 webpki-roots = "1"
 serde = { version = "1", features = ["derive"] }
-sha1 = "0.10"
+sha1 = "0.11"
 ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "alloc", "rand_core", "std"] }
 sha2 = "0.11"
 tempfile = "3"
@@ -65,12 +65,12 @@ subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io", "io-util"] }
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 # MCP dispatch calls the internal axum router via ServiceExt::oneshot.
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-jsonschema = { version = "0.60", default-features = false }
+jsonschema = { version = "0.61", default-features = false }
 
 [dev-dependencies]
 http-body-util = "0.1"

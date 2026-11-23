@@ -2,8 +2,8 @@
 //! `zfs/operations.go`).
 
 use super::devices::{
-    args2, canonical_dev, is_whole_disk, normalize_vdev_topology, validate_pool_name, vdev_label,
-    vdev_minimum_disks, whole_disk_path,
+    args2, canonical_dev, disk_in_use, is_whole_disk, normalize_vdev_topology, validate_pool_name,
+    vdev_label, vdev_minimum_disks, whole_disk_path,
 };
 use super::types::{
     ImportablePool, Pool, PoolConfig, PoolDevice, PoolHealth, PoolIOStats, ZfsDiskHealth,
@@ -291,6 +291,22 @@ impl ZfsClient {
                 return Err(invalid!(
                     "disk {} cannot be both a data disk and the cache device",
                     cache
+                ));
+            }
+        }
+
+        // Agent-side system-disk guard: pool ownership alone does not protect
+        // a mounted disk (for example the Talos root/state partitions). The
+        // guard runs before wipefs and before `zpool create -f`, because both
+        // destroy the disk's existing contents.
+        let mut candidates = disks.clone();
+        if !cache.is_empty() {
+            candidates.push(cache.clone());
+        }
+        for disk in &candidates {
+            if let Some(reason) = disk_in_use(&self.host_root, disk) {
+                return Err(crate::conflict!(
+                    "refusing to create a pool on {disk}: {reason}"
                 ));
             }
         }

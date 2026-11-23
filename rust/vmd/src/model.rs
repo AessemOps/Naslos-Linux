@@ -3,6 +3,7 @@
 //! with. `state` is always derived from vmd and never persisted.
 
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -182,14 +183,15 @@ pub struct ImageEntry {
 /// root every share path already uses.
 pub const DATASETS_ROOT: &str = "/var/mnt";
 
-/// Host path of a VM's dataset directory.
-pub fn vm_dir(pool: &str, name: &str) -> String {
-    format!("{DATASETS_ROOT}/{pool}/vms/{name}")
+/// Host path of a VM's dataset directory. `root` is the datasets root
+/// (`/var/mnt` in production) so tests never touch the host layout.
+pub fn vm_dir(root: &Path, pool: &str, name: &str) -> PathBuf {
+    root.join(pool).join("vms").join(name)
 }
 
 /// Host path of the image library of one pool.
-pub fn isos_dir(pool: &str) -> String {
-    format!("{DATASETS_ROOT}/{pool}/vms/isos")
+pub fn isos_dir(root: &Path, pool: &str) -> PathBuf {
+    root.join(pool).join("vms").join("isos")
 }
 
 /// A VM record references a library file as `isos/<file>` (the DM-7 shape);
@@ -207,8 +209,15 @@ pub fn library_file(reference: &str) -> Result<String, String> {
 }
 
 /// Host path of a bare library file name under one pool.
-pub fn library_path(pool: &str, name: &str) -> String {
-    format!("{}/{name}", isos_dir(pool))
+pub fn library_path(root: &Path, pool: &str, name: &str) -> PathBuf {
+    isos_dir(root, pool).join(name)
+}
+
+/// Upload-session owner tokens: 1-128 printable ASCII characters (the Images
+/// panel sends a UUID). Shared with the API so both layers reject the same
+/// values before vmd has to explain itself.
+pub fn valid_upload_owner(owner: &str) -> bool {
+    !owner.is_empty() && owner.len() <= 128 && owner.chars().all(|c| c.is_ascii_graphic())
 }
 
 /// Library file names are flat basenames; no path traversal may reach the
@@ -218,6 +227,11 @@ pub fn valid_library_name(file: &str) -> bool {
         return false;
     }
     if file.starts_with('.') || file.contains('/') || file.contains('\\') {
+        return false;
+    }
+    // `.part` is vmd's upload/import staging suffix; a library name ending in
+    // it could collide with an in-flight staging file.
+    if file.ends_with(".part") {
         return false;
     }
     file.chars()
@@ -358,10 +372,16 @@ fn validate_cloud_init(ci: &CloudInitSpec) -> Result<(), String> {
         return Err("cloud-init accepts at most 20 SSH keys".to_string());
     }
     for key in &ci.ssh_keys {
-        if key.len() > 8192 || key.contains('\n') || !key.starts_with("ssh-") {
+        // YAML treats \r, \t and the Unicode line separators as structure, not
+        // as data. A key is a single line; any control character could break
+        // out of the scalar and inject another cloud-config directive.
+        let has_control = key
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'));
+        if key.len() > 8192 || has_control || !key.starts_with("ssh-") {
             let shown: String = key.chars().take(24).collect();
             return Err(format!(
-                "SSH key {shown:?}… does not look like a public key line (ssh-ed25519/ssh-rsa/…)"
+                "SSH key {shown:?}… must be one public key line (ssh-ed25519/ssh-rsa/…), without control characters"
             ));
         }
     }
@@ -535,10 +555,30 @@ mod tests {
     }
 
     #[test]
+    fn upload_owner_tokens_are_printable_ascii() {
+        assert!(valid_upload_owner("6c1f3a4e-0b2d-4c3f-9a8e-0123456789ab"));
+        assert!(!valid_upload_owner(""));
+        assert!(!valid_upload_owner("two words"));
+        assert!(!valid_upload_owner("café"));
+        assert!(!valid_upload_owner("line\nbreak"));
+        assert!(!valid_upload_owner(&"x".repeat(129)));
+        assert!(valid_upload_owner(&"x".repeat(128)));
+    }
+
+    #[test]
     fn library_names_reject_traversal() {
         assert!(valid_library_name("debian-13-netinst.iso"));
         assert!(valid_library_name("ubuntu-24.04.qcow2"));
-        for bad in ["", ".hidden", "a/b", "..", "a\\b", "a b", &"x".repeat(201)] {
+        for bad in [
+            "",
+            ".hidden",
+            "a/b",
+            "..",
+            "a\\b",
+            "a b",
+            "debian.iso.part",
+            &"x".repeat(201),
+        ] {
             assert!(!valid_library_name(bad), "{bad:?}");
         }
     }
@@ -565,7 +605,23 @@ mod tests {
         spec.cloud_init = Some(ci.clone());
         assert!(validate_vm(&spec).is_err());
         ci.ssh_keys = (0..21).map(|i| format!("ssh-ed25519 AAAAkey{i}")).collect();
-        spec.cloud_init = Some(ci);
+        spec.cloud_init = Some(ci.clone());
         assert!(validate_vm(&spec).is_err());
+
+        // Every YAML line break, not just \n, must be refused: a key is one
+        // scalar line and a control character could inject a directive.
+        for bad in [
+            "ssh-ed25519 AAAAkey\r",
+            "ssh-ed25519 AAAAkey\tcomment",
+            "ssh-ed25519 AAAAkey\u{0}b",
+            "ssh-ed25519 AAAAkey\u{85}next",
+            "ssh-ed25519 AAAAkey\u{2028}next",
+            "ssh-ed25519 AAAAkey\u{2029}next",
+        ] {
+            ci.ssh_keys = vec![bad.to_string()];
+            spec.cloud_init = Some(ci.clone());
+            let err = validate_vm(&spec).expect_err(bad);
+            assert!(err.contains("control characters"), "{bad}: {err}");
+        }
     }
 }

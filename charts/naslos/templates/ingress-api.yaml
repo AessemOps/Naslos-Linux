@@ -51,7 +51,11 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`{{ .Values.domain }}`) && PathPrefix(`/mcp`)
+    # Path('/mcp') || PathPrefix('/mcp/'): a bare PathPrefix('/mcp') also
+    # matches /mcpfoo, which would be proxied without forwardAuth. This route
+    # has no Authelia middleware, so its matcher is exactly the Authelia
+    # bypass regex and nothing else.
+    - match: Host(`{{ .Values.domain }}`) && (Path(`/mcp`) || PathPrefix(`/mcp/`))
       kind: Rule
       middlewares:
         - name: strip-client-identity

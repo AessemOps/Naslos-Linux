@@ -3,7 +3,8 @@
 #
 # Renders the chart with the hardened app-isolation overlay and checks the
 # security invariants that a values/template edit could silently undo:
-#   - the Helm identity can never write Ingress/NetworkPolicy;
+#   - the Helm identity can never write Ingress/NetworkPolicy, traefik.io,
+#     cert-manager.io, non-ClusterIP Services or platform Secrets (C-4);
 #   - native Kubernetes Ingress is disabled;
 #   - the admission policy and its binding exist;
 #   - the Authelia session-cookie strip plugin is wired into Traefik.
@@ -22,7 +23,7 @@ fi
 out=$(mktemp)
 trap 'rm -f "$out"' EXIT
 
-helm template naslos "$chart" \
+helm template naslos "$chart" -n naslos \
   -f "$chart/values.yaml" \
   -f "$chart/values-vm.yaml" \
   --set openldap.bindPassword=lint-only >"$out"
@@ -55,9 +56,12 @@ for kind in ("Role", "ClusterRole"):
                 "ingresses" in resources or "networkpolicies" in resources
             ):
                 fail(f"{kind}/{role['metadata']['name']} still grants {resources}")
+            for forbidden in ("traefik.io", "cert-manager.io", "acme.cert-manager.io"):
+                if forbidden in groups:
+                    fail(f"{kind}/{role['metadata']['name']} grants {forbidden}")
 
-# R-001: the admission policy denies Helm Ingress/NetworkPolicy and namespace
-# spoofing, and is enforced (Deny), not audit-only.
+# R-001/C-4: the admission policy denies the whole Helm exposure surface and is
+# enforced (Deny), not audit-only.
 policies = {d["metadata"]["name"]: d for d in by_kind("ValidatingAdmissionPolicy")}
 binding = {
     d["metadata"]["name"]: d
@@ -71,11 +75,72 @@ if not any("networking.k8s.io" in e and "ingresses" in e for e in ex):
     fail("admission policy does not deny Helm Ingress/NetworkPolicy writes")
 if not any("request.namespace" in e for e in ex):
     fail("admission policy does not reject cross-namespace metadata")
+for needle, what in (
+    ("traefik.io", "traefik.io IngressRoute/Middleware writes"),
+    ("cert-manager.io", "cert-manager.io writes"),
+    ("acme.cert-manager.io", "acme.cert-manager.io writes"),
+    ("ClusterIP", "non-ClusterIP Services"),
+    ("externalIPs", "Services with externalIPs"),
+):
+    if not any(needle in e for e in ex):
+        fail(f"admission policy does not deny {what}")
+if not any("secrets" in e for e in ex):
+    fail("admission policy does not deny platform Secrets")
+# The reserved list is enumerated (a blanket naslos-* prefix would also block
+# app releases whose own names start with naslos-): every platform Secret
+# name and the two API-managed prefixes must appear in the expression.
+secret_expr = next((e for e in ex if "secrets" in e), "")
+for reserved in (
+    "naslos-proxy",
+    "naslos-tls",
+    "naslos-agent",
+    "naslos-agent-tls",
+    "naslos-agent-tls-ca",
+    "naslos-vmd",
+    "naslos-vmd-tls",
+    "naslos-vmd-tls-ca",
+    "naslos-buddy",
+    "naslos-buddy-kek",
+    "naslos-authelia",
+    "naslos-authelia-jwt",
+    "naslos-openldap",
+    "naslos-openldap-tls",
+    "naslos-openldap-ca",
+    "naslos-talosconfig",
+    "naslos-charts-deploy-key",
+    "naslos-ddns-",
+    "naslos-env-",
+    "naslos-dataset-key-",
+):
+    if f"'{reserved}'" not in secret_expr:
+        fail(f"admission policy does not reserve the Secret {reserved}")
+if "startsWith('naslos-')" in secret_expr:
+    fail("admission policy uses the blanket naslos-* prefix, which blocks naslos-* release names")
 b = binding.get("naslos-helm-app-isolation")
 if not b:
     fail("ValidatingAdmissionPolicyBinding/naslos-helm-app-isolation is missing")
 if "Deny" not in b.get("spec", {}).get("validationActions", []):
     fail("admission policy binding is not Deny-enforced")
+
+# R-011: Traefik stays namespaced; every watched namespace gets a Role/RoleBinding
+# (the Secret access in them is a documented residual, see values.yaml).
+traefik_roles = {
+    d["metadata"].get("namespace")
+    for d in by_kind("Role")
+    if d["metadata"]["name"] == "naslos-traefik"
+}
+traefik_bindings = {
+    d["metadata"].get("namespace")
+    for d in by_kind("RoleBinding")
+    if d["metadata"]["name"] == "naslos-traefik"
+}
+for ns in ("naslos", "naslos-apps", "naslos-apps-priv", "naslos-app-1", "naslos-app-p1"):
+    if ns not in traefik_roles or ns not in traefik_bindings:
+        fail(f"Traefik Role/RoleBinding missing in {ns}")
+if any(d["metadata"]["name"] == "naslos-traefik" for d in by_kind("ClusterRole")):
+    fail("Traefik must not render a ClusterRole")
+if any(d["metadata"]["name"] == "naslos-traefik" for d in by_kind("ClusterRoleBinding")):
+    fail("Traefik must not render a ClusterRoleBinding")
 
 # R-001: native Ingress provider/class is off; the CRD provider still serves
 # the API's IngressRoutes and allows cross-namespace Service targets.
@@ -93,6 +158,58 @@ if "--providers.kubernetescrd.allowCrossNamespace=true" not in args:
     fail("traefik CRD provider does not allow cross-namespace Services")
 if not any(a.startswith("--providers.kubernetescrd") for a in args):
     fail("traefik CRD provider is not enabled")
+
+# FR-MCP/SEC: the MCP route matches exactly /mcp and /mcp/... so nothing
+# else (e.g. /mcpfoo) is proxied without forwardAuth, and the Authelia
+# bypass regex covers the same paths and nothing more.
+mcp_routes = [
+    r
+    for d in by_kind("IngressRoute")
+    if d["metadata"]["name"] == "naslos-mcp"
+    for r in d.get("spec", {}).get("routes", [])
+]
+if not mcp_routes:
+    fail("IngressRoute/naslos-mcp is missing (mcp.available should default on)")
+for r in mcp_routes:
+    match = r.get("match", "")
+    if "Path(`/mcp`)" not in match or "PathPrefix(`/mcp/`)" not in match:
+        fail(f"naslos-mcp matcher is not the exact /mcp pair: {match}")
+    if "PathPrefix(`/mcp`)" in match:
+        fail(f"naslos-mcp matcher still contains the bare PathPrefix(`/mcp`): {match}")
+# The Authelia configuration is the `authelia-config` ConfigMap's
+# configuration.yml. Parse it and compare the MCP bypass rule's resource list
+# to the exact expected string: a widened regex (for example ^/mcp.* or
+# ^/mcp([/?].*)?$) must fail, not merely lack the expected substring.
+authelia_cms = [
+    d for d in by_kind("ConfigMap") if d["metadata"]["name"] == "authelia-config"
+]
+if not authelia_cms:
+    fail("ConfigMap/authelia-config is missing")
+raw_cfg = authelia_cms[0].get("data", {}).get("configuration.yml", "")
+# Authelia's own `{{ fileContent ".../rules.yml" | nindent 4 }}` directives
+# inject the runtime SSO fragments; they are not YAML, so drop those
+# placeholder lines before parsing the static rules.
+static_cfg = "\n".join(
+    line for line in raw_cfg.splitlines() if not line.strip().startswith("{{")
+)
+authelia_cfg = yaml.safe_load(static_cfg)
+if not isinstance(authelia_cfg, dict):
+    fail("authelia-config configuration.yml did not parse to a mapping")
+mcp_bypass = [
+    rule
+    for rule in authelia_cfg.get("access_control", {}).get("rules", [])
+    if any(str(res).startswith("^/mcp") for res in rule.get("resources", []))
+]
+if len(mcp_bypass) != 1:
+    fail(f"expected exactly one Authelia MCP bypass rule, found {len(mcp_bypass)}")
+mcp_rule = mcp_bypass[0]
+if mcp_rule.get("policy") != "bypass":
+    fail(f"the Authelia MCP rule is not a bypass: {mcp_rule.get('policy')!r}")
+if mcp_rule.get("resources") != ["^/mcp(/.*)?$"]:
+    fail(
+        "the Authelia MCP bypass is not exactly ^/mcp(/.*)?$: "
+        f"{mcp_rule.get('resources')!r}"
+    )
 if by_kind("IngressClass"):
     fail("an IngressClass is still created")
 

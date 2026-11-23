@@ -62,21 +62,9 @@ pub async fn require_auth(
         return unauthorized();
     }
 
-    // Reject cross-origin state changes (CSRF) and non-JSON request bodies.
-    // Browsers always send `Origin`/`Sec-Fetch-Site` on cross-origin requests;
-    // non-browser clients send neither, so the API/CLI contract is unchanged.
-    if !same_origin_request(&req) {
-        return forbidden("Cross-origin request refused");
-    }
-    if !request_body_is_json(&req) {
-        return (
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "Unsupported Media Type\n",
-        )
-            .into_response_plain();
-    }
-
-    // Extract the user from the Remote-User header.
+    // Extract the identity once the proxy checks pass, before the CSRF and
+    // content-type refusals: those happen after authentication, so they are
+    // recorded with the real actor instead of vanishing unaudited.
     let username = req
         .headers()
         .get("Remote-User")
@@ -86,7 +74,6 @@ pub async fn require_auth(
     if username.is_empty() {
         return unauthorized();
     }
-
     let user = Arc::new(UserInfo {
         username,
         groups: parse_groups(
@@ -108,9 +95,86 @@ pub async fn require_auth(
             .unwrap_or("")
             .to_string(),
     });
+
+    // Reject cross-origin state changes (CSRF) and non-JSON request bodies.
+    // Browsers always send `Origin`/`Sec-Fetch-Site` on cross-origin requests;
+    // non-browser clients send neither, so the API/CLI contract is unchanged.
+    if !same_origin_request(&req) {
+        let pending = denial_pending(&req, &user);
+        record_denial(&state, pending, "csrf").await;
+        return forbidden("Cross-origin request refused");
+    }
+    if !request_body_is_json(&req) {
+        let pending = denial_pending(&req, &user);
+        record_denial(&state, pending, "content_type").await;
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Unsupported Media Type\n",
+        )
+            .into_response_plain();
+    }
+
     req.extensions_mut().insert(user);
 
     next.run(req).await
+}
+
+/// Build the denial record from the request. Everything is copied here, on
+/// purpose: holding `&Request` across the audit `.await` would make the
+/// middleware future non-`Send`.
+fn denial_pending(req: &Request, user: &UserInfo) -> crate::audit::Pending {
+    let request_id = req
+        .extensions()
+        .get::<crate::audit::RequestId>()
+        .map(|id| id.0.clone())
+        .unwrap_or_else(|| {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            format!("auth-{nanos}")
+        });
+    let path = req.uri().path();
+    let template = crate::rbac::route_template(req.method(), path);
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip().to_string());
+    let user_agent = req
+        .headers()
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.chars()
+                .take(160)
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect::<String>()
+        });
+    crate::audit::Pending::user(
+        user,
+        req.method(),
+        path,
+        template,
+        peer,
+        user_agent,
+        request_id,
+    )
+}
+
+/// Record a refusal that happens after the proxy checks (the actor is known)
+/// but before the audit middleware runs, so a denied CSRF/content-type request
+/// is still attributable. A failed record degrades the log exactly like a
+/// failed middleware write.
+async fn record_denial(state: &Arc<AppState>, pending: crate::audit::Pending, error_code: &str) {
+    if let Err(e) = state
+        .audit
+        .record_refusal_async(&pending, "denied", error_code)
+        .await
+    {
+        if state.audit.note_write_failure(&e) {
+            crate::audit::spawn_degraded_alert(state.clone(), e);
+        }
+    }
 }
 
 /// The SEC-10 trust checks, shared by `/api` (`require_auth`) and the `/mcp`
@@ -267,3 +331,94 @@ impl PlainResponse for (StatusCode, &str) {
 }
 
 use axum::response::IntoResponse;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::extract::ConnectInfo;
+    use axum::routing::post;
+    use axum::Router;
+    use std::net::SocketAddr;
+    use tower::ServiceExt;
+
+    fn request(site: Option<&str>, content_type: Option<&str>) -> Request {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/shares")
+            .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5555u16))))
+            .header(PROXY_SECRET_HEADER, "test-secret")
+            .header("Remote-User", "boss")
+            .header("Remote-Groups", "naslos_admins");
+        if let Some(site) = site {
+            builder = builder.header("sec-fetch-site", site);
+        }
+        if let Some(content_type) = content_type {
+            builder = builder.header(CONTENT_TYPE, content_type);
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    fn app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/api/shares", post(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(state, require_auth))
+    }
+
+    fn denials(state: &Arc<AppState>) -> Vec<serde_json::Value> {
+        state
+            .audit
+            .query(&crate::audit::AuditQuery::default())
+            .expect("audit query")
+            .records
+            .into_iter()
+            .filter(|record| record["outcome"]["state"] == "denied")
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_csrf_denial_is_audited_with_the_authenticated_actor() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let response = app(state.clone())
+            .oneshot(request(Some("cross-site"), Some("application/json")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let denials = denials(&state);
+        assert_eq!(denials.len(), 1, "{denials:?}");
+        assert_eq!(denials[0]["actor"]["name"], "boss");
+        assert_eq!(denials[0]["outcome"]["errorCode"], "csrf");
+        assert_eq!(denials[0]["source"]["method"], "POST");
+        assert_eq!(denials[0]["source"]["route"], "/api/shares");
+    }
+
+    #[tokio::test]
+    async fn a_content_type_denial_is_audited_with_the_authenticated_actor() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let response = app(state.clone())
+            .oneshot(request(None, Some("text/plain")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        let denials = denials(&state);
+        assert_eq!(denials.len(), 1, "{denials:?}");
+        assert_eq!(denials[0]["actor"]["name"], "boss");
+        assert_eq!(denials[0]["outcome"]["errorCode"], "content_type");
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_peer_is_refused_without_an_audit_record() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let mut req = request(Some("same-origin"), Some("application/json"));
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([10, 9, 9, 9], 5555u16))));
+        let response = app(state.clone()).oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            denials(&state).is_empty(),
+            "an unauthenticated peer must not invent an actor"
+        );
+    }
+}

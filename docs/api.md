@@ -158,9 +158,9 @@ are in-memory (a restart abandons a running job; the app record and
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/domains` | List domains + cert-manager availability, plus `baseDomain`, `selectableDomains` and `ssoDomains`. Each domain carries `appRecordsDdnsEntry` and `appRecordsSupported` (provider is `ovh`/`cloudflare`) |
-| POST | `/api/domains` | Add a domain `{baseDomain, dnsProvider, acmeEmail, environment, credentialsSecret?, fields?, appRecordsDdnsEntry?}` (`fields` = provider fields; secret fields → a Secret). An explicit `credentialsSecret` must be a DNS-1123 name starting with `naslos-` (SEC-2026-D12). `appRecordsDdnsEntry` opts the domain into app CNAMEs; it must name a non-wildcard DDNS entry and the provider must be `ovh` or `cloudflare` (400 otherwise) |
+| POST | `/api/domains` | Add a domain `{baseDomain, dnsProvider, acmeEmail, environment, credentialsSecret?, providerConfig?, fields?, appRecordsDdnsEntry?}` (`fields` = provider fields; secret fields → a Secret). An explicit `credentialsSecret` must be a DNS-1123 name starting with `naslos-` (SEC-2026-D12). A create that names `credentialsSecret` and omits `fields` keeps the submitted `providerConfig` and does not require the provider's credential fields: the operator provisioned the Secret out of band (the documented MCP `domain_create` path). The Secret name, the submitted config and the effective solver are still validated. `appRecordsDdnsEntry` opts the domain into app CNAMEs; it must name a non-wildcard DDNS entry and the provider must be `ovh` or `cloudflare` (400 otherwise) |
 | GET | `/api/domains/{domain}` | Read one domain |
-| PUT | `/api/domains/{domain}` | Update a domain (re-renders its Issuer/Certificate) |
+| PUT | `/api/domains/{domain}` | Update the domain named by the path (re-renders its Issuer/Certificate). A body `baseDomain` must equal the path value; a mismatch is `400`, and an empty `baseDomain` is taken from the path. Omitted fields are preserved: `solver` (explicit `null`/`{}` clears a provider-rendered solver; passthrough still requires one), `credentialsSecret`, `fields`/`providerConfig`, and the record fields `environment`, `acmeEmail` and `appRecordsDdnsEntry` (the MCP `domain_update` body is partial; the UI always sends them, so an explicit value still applies and an explicit `null` app-record target still clears the link). The server-owned `primary`/`sso` flags are never changed by a PUT (`POST /api/domains/{domain}/sso` owns SSO). Field resolution runs on every update to a cert-manager provider, so a stored config is re-validated against the current provider schema and a `credentialsSecret` outside the DNS-1123/`naslos-` convention is `400`. A `dnsProvider` change needs the new provider's `fields` unless the target renders no provider-supplied credentials: switching to `passthrough` with a submitted `solver`, to a provider with no secret credential fields, or naming an out-of-band `credentialsSecret` with its `providerConfig` (validated and used for the new solver; the MCP `domain_update` path) is allowed (`400` otherwise). On a provider change the old `providerConfig` is never inherited; the submitted config is used for an out-of-band Secret, and required secret fields are enforced on the `fields` path. `lastError` is redacted against the stored solver/provider values before it is stored or returned |
 | DELETE | `/api/domains/{domain}` | Remove a domain and its CRs |
 | GET | `/api/domains/{domain}/certificate` | Certificate readiness/conditions |
 | POST | `/api/domains/{domain}/sso` | Promote/demote a domain in the runtime SSO list: `{enabled}`. The primary is 400; demoting while an app requires auth on it, or a chart `SSO_DOMAINS` entry, is 409 |
@@ -465,7 +465,8 @@ value. All routes are admin-only (owner router).
     { "name": "media", "path": "/var/mnt/tank/media", "protocol": "smb",
       "description": "Media", "readOnly": false, "browseable": true,
       "allowedHosts": [], "validUsers": [], "validGroups": [],
-      "timeMachine": false, "noRootSquash": false, "enabled": true }
+      "timeMachine": false, "noRootSquash": false,
+      "shadowCopies": true, "audit": true, "enabled": true }
   ],
   "storageSchedules": [
     { "id": "snap-1", "kind": "snapshot", "target": "tank/media",
@@ -535,6 +536,13 @@ stripped. The default is a dry-run plan; an apply needs both query parameters:
 curl -sk -X POST "https://<naslos-host>/api/system/config/import?apply=true&confirm=apply" \
   -H "Content-Type: application/json" --data-binary @naslos-config-export.json
 ```
+
+Share records include the SMB options `shadowCopies` and `audit` (DM-4/DM-9).
+A newly created share takes the exported values; an existing share keeps its
+local SMB options because the import never toggles them. Documents produced
+before 0.7.2 omit both keys (they default to `false`). A share record that
+fails validation (for example SMB-only options combined with an NFS record) is
+skipped with a per-record reason instead of rejecting the whole document.
 
 The response is a per-section report. `id` is present for server-keyed records
 that already exist, including dry-run updates; records that would be created
@@ -661,9 +669,10 @@ shell, never an arbitrary command.
 | GET/POST | `/api/virt/vms/{name}/snapshots` | List / create a ZFS snapshot of the VM dataset (validated name) |
 | POST | `/api/virt/vms/{name}/snapshots/{snap}/restore` | `zfs rollback -r` (`?confirm=<name>` required); 409 unless vmd reports the VM `stopped`, 503/502 when vmd is absent/unreadable; newer snapshots and all later guest state are destroyed, stated in the response |
 | GET | `/api/virt/images?pool=` | Per-pool library listing plus in-flight imports and their last errors |
-| POST | `/api/virt/images/upload?pool=&name=&offset=&final=` | One upload chunk, `application/octet-stream` (the API's only non-JSON body, scoped to this route), streamed through to the supervisor |
-| POST | `/api/virt/images/import` | Server-side URL import → `202`; the SSRF guard lives in the supervisor; errors surface in the listing |
-| DELETE | `/api/virt/images/{name}?pool=` | Delete a library file |
+| POST | `/api/virt/images/upload?pool=&name=&offset=&final=&owner=&confirm=` | One upload chunk, `application/octet-stream` (the API's only non-JSON body, scoped to this route), streamed through to the supervisor. `owner` is **required** on every chunk: 1-128 printable ASCII characters that identify the upload session; a chunk with a different owner, or an `offset` that does not equal the staged size, is refused. `confirm=<name>` is required when the target already exists. `413` when the whole upload would exceed the 32 GiB cap |
+| DELETE | `/api/virt/images/upload?pool=&name=&owner=` | Abandon this client's upload session and delete its staged `.part` file. Only the session owner may cancel (409 otherwise); an already released/absent session is an idempotent `200` |
+| POST | `/api/virt/images/import` | Server-side URL import → `202`; body `{pool,name,url,sha256?,confirm?}` (`confirm` = the name to replace an existing file); the SSRF guard lives in the supervisor; errors surface in the listing |
+| DELETE | `/api/virt/images/{name}?pool=` | Delete a library file (409 while a running/starting VM attaches it) |
 | GET | `/api/ws/vm/{name}/vnc` | Console: plain GET = preflight (`vncPort`, per-boot `vncPassword`, `ready to attach`; 409 while stopped); websocket upgrade = RFB bridge to QEMU's loopback VNC (origin must be exactly the HTTPS request `Host`, per-VM attach rate limit, session caps like `/api/ws/exec`); audited begin/end and 503 while the audit log is degraded |
 
 ### Static assets

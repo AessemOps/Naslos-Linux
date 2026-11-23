@@ -79,6 +79,15 @@ pub struct StorageSchedule {
     pub last_error: String,
     #[serde(default, rename = "nextRun", skip_serializing_if = "Option::is_none")]
     pub next_run: Option<DateTime<Utc>>,
+    /// When the current run of transient agent failures started. Anchors the
+    /// one-hour retry window so it accumulates across retries instead of being
+    /// reset by every attempt. Cleared by a normal result.
+    #[serde(
+        default,
+        rename = "retrySince",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub retry_since: Option<DateTime<Utc>>,
 }
 
 impl Default for StorageSchedule {
@@ -96,6 +105,7 @@ impl Default for StorageSchedule {
             last_result: String::new(),
             last_error: String::new(),
             next_run: None,
+            retry_since: None,
         }
     }
 }
@@ -398,13 +408,42 @@ impl StorageScheduleStore {
         self.entries.lock().unwrap().get(id).cloned()
     }
 
+    /// A snapshot of the store, for validation that must not race an insert.
+    fn snapshot(&self) -> HashMap<String, StorageSchedule> {
+        self.entries.lock().unwrap().clone()
+    }
+
+    /// Insert a schedule without the API-level overlap guard. Config import
+    /// and tests seed legacy/ambiguous states through this path; the HTTP
+    /// handler uses [`put_checked`](Self::put_checked).
     pub fn put(&self, e: StorageSchedule) -> Result<(), String> {
+        self.put_inner(e, false)
+    }
+
+    /// Insert a schedule with the overlap check under the same lock as the
+    /// insert, so two requests validated against the same pre-insert state
+    /// cannot both succeed.
+    pub fn put_checked(&self, e: StorageSchedule) -> Result<(), String> {
+        self.put_inner(e, true)
+    }
+
+    fn put_inner(&self, e: StorageSchedule, enforce_overlap: bool) -> Result<(), String> {
         if let Some(error) = self.mutation_error() {
             return Err(error);
         }
         let mut guard = self.entries.lock().unwrap();
-        guard.insert(e.id.clone(), e);
-        self.save(&guard)
+        if enforce_overlap {
+            if let Some(other) = overlap_conflict(&guard, &e) {
+                return Err(overlap_message(&e, &other));
+            }
+        }
+        // Publish only after a successful save, so a failed write leaves the
+        // in-memory store unchanged.
+        let mut candidate = guard.clone();
+        candidate.insert(e.id.clone(), e);
+        self.save(&candidate)?;
+        *guard = candidate;
+        Ok(())
     }
 
     pub fn remove(&self, id: &str) -> Result<(), String> {
@@ -421,26 +460,54 @@ impl StorageScheduleStore {
     /// Replace a schedule's editable fields while preserving the runtime state
     /// (`lastRun`, `lastResult`, `lastError`) recorded by the scheduler. The
     /// merge happens under the store lock so a result recorded while the
-    /// request was being validated is not overwritten.
+    /// request was being validated is not overwritten. No API-level overlap
+    /// guard: config import uses this path.
     pub fn update_config(&self, e: StorageSchedule) -> Result<StorageSchedule, String> {
+        self.update_config_inner(e, false)
+    }
+
+    /// Merge an edit with the overlap check under the store lock, so an edit
+    /// that moves a schedule onto a just-created one is refused atomically.
+    pub fn update_config_checked(&self, e: StorageSchedule) -> Result<StorageSchedule, String> {
+        self.update_config_inner(e, true)
+    }
+
+    fn update_config_inner(
+        &self,
+        e: StorageSchedule,
+        enforce_overlap: bool,
+    ) -> Result<StorageSchedule, String> {
         if let Some(error) = self.mutation_error() {
             return Err(error);
         }
         let mut guard = self.entries.lock().unwrap();
-        let Some(existing) = guard.get_mut(&e.id) else {
+        let Some(existing) = guard.get(&e.id) else {
             return Err(format!("schedule {:?} not found", e.id));
         };
-        existing.kind = e.kind;
-        existing.target = e.target;
-        existing.cadence = e.cadence;
-        existing.run_at = e.run_at;
-        existing.keep = e.keep;
-        existing.recursive = e.recursive;
-        existing.enabled = e.enabled;
-        existing.next_run = e.next_run;
-        let saved = existing.clone();
-        self.save(&guard)?;
-        Ok(saved)
+        // Merge into a candidate, never into the live map: a refused overlap
+        // or a failed save must leave the stored runtime state untouched.
+        let mut merged = existing.clone();
+        merged.kind = e.kind;
+        merged.target = e.target;
+        merged.cadence = e.cadence;
+        merged.run_at = e.run_at;
+        merged.keep = e.keep;
+        merged.recursive = e.recursive;
+        merged.enabled = e.enabled;
+        merged.next_run = e.next_run;
+        // Re-check the overlap under the same lock as the merge and insert, so
+        // an edit that moves a schedule onto a just-created one is refused
+        // atomically instead of at the next scheduler tick.
+        if enforce_overlap {
+            if let Some(other) = overlap_conflict(&guard, &merged) {
+                return Err(overlap_message(&merged, &other));
+            }
+        }
+        let mut candidate = guard.clone();
+        candidate.insert(merged.id.clone(), merged.clone());
+        self.save(&candidate)?;
+        *guard = candidate;
+        Ok(merged)
     }
 
     /// Advance the next run without recording an outcome.
@@ -462,6 +529,8 @@ impl StorageScheduleStore {
         e.last_result = result.to_string();
         e.last_error = err.to_string();
         e.next_run = Some(next_run(e.cadence, &e.run_at, now));
+        // A normal outcome ends the transient-failure window.
+        e.retry_since = None;
         if let Err(save_err) = self.save(&guard) {
             tracing::warn!("storage scheduler: could not persist schedule state: {save_err}");
         }
@@ -473,25 +542,64 @@ impl StorageScheduleStore {
     /// recorded as a normal failure and the cadence advances, so a permanently
     /// broken agent does not retry forever.
     pub fn record_failure_keep_next(&self, id: &str, err: &str) {
-        let now = Utc::now();
+        self.record_failure_keep_next_at(id, err, Utc::now());
+    }
+
+    /// [`record_failure_keep_next`](Self::record_failure_keep_next) with an
+    /// explicit clock, so the retry-window accumulation is testable.
+    fn record_failure_keep_next_at(&self, id: &str, err: &str, now: DateTime<Utc>) {
         let mut guard = self.entries.lock().unwrap();
         let Some(e) = guard.get_mut(id) else { return };
-        let failed_since = if e.last_result == "failed" {
-            e.last_run
-        } else {
-            None
-        };
+        // Anchor the window on the transition into failure; `last_run` moves
+        // on every retry and must not restart the hour.
+        let retry_since = e.retry_since.unwrap_or(now);
+        e.retry_since = Some(retry_since);
         e.last_run = Some(now);
         e.last_result = "failed".to_string();
         e.last_error = err.to_string();
-        if failed_since.is_some_and(|since| (now - since).num_seconds() >= AGENT_RETRY_WINDOW_SECS)
-        {
+        if (now - retry_since).num_seconds() >= AGENT_RETRY_WINDOW_SECS {
             e.next_run = Some(next_run(e.cadence, &e.run_at, now));
+            e.retry_since = None;
         }
         if let Err(save_err) = self.save(&guard) {
             tracing::warn!("storage scheduler: could not persist schedule state: {save_err}");
         }
     }
+}
+
+/// The user-facing overlap refusal, shared by request validation and the
+/// authoritative check under the store lock.
+fn overlap_message(e: &StorageSchedule, other: &StorageSchedule) -> String {
+    format!(
+        "dataset {:?} already has snapshot schedule {:?} covering {:?}{}",
+        e.target,
+        other.id,
+        other.target,
+        if other.recursive { " recursively" } else { "" }
+    )
+}
+
+/// The enabled snapshot schedule `e` would collide with, if any. An update
+/// that leaves its own target/recursive/enabled unchanged may keep an overlap
+/// it inherited from a legacy store, so the operator can still edit `keep` or
+/// disable it.
+fn overlap_conflict(
+    entries: &HashMap<String, StorageSchedule>,
+    e: &StorageSchedule,
+) -> Option<StorageSchedule> {
+    if e.kind != ScheduleKind::Snapshot || !e.enabled {
+        return None;
+    }
+    let unchanged = entries
+        .get(&e.id)
+        .is_some_and(|old| old.enabled && old.target == e.target && old.recursive == e.recursive);
+    if unchanged {
+        return None;
+    }
+    entries
+        .values()
+        .find(|s| s.id != e.id && s.enabled && snapshot_schedules_overlap(s, e))
+        .cloned()
 }
 
 /// Validate a schedule. The agent checks are best-effort, like the buddy
@@ -512,34 +620,11 @@ pub async fn validate_schedule(state: &AppState, e: &mut StorageSchedule) -> Res
             // enabled schedules covering the same dataset (exactly or through a
             // recursive ancestor/descendant) would create the same name and
             // fight over ownership.
-            if e.enabled {
-                let existing = state.storage_schedules.get(&e.id);
-                let conflict = state
-                    .storage_schedules
-                    .list()
-                    .into_iter()
-                    .find(|s| s.id != e.id && s.enabled && snapshot_schedules_overlap(s, e));
-                if let Some(other) = conflict {
-                    // A 0.6.0 store can still contain an overlapping pair when
-                    // this request reaches validation (for example an in-memory
-                    // store in a test, or a store written by the old API after
-                    // startup). Updating either entry in place must stay
-                    // possible so the operator can change `keep` or disable it;
-                    // only creating, moving or re-enabling can introduce a new
-                    // collision.
-                    let unchanged = existing.as_ref().is_some_and(|old| {
-                        old.enabled && old.target == e.target && old.recursive == e.recursive
-                    });
-                    if !unchanged {
-                        return Err(format!(
-                            "dataset {:?} already has snapshot schedule {:?} covering {:?}{}",
-                            e.target,
-                            other.id,
-                            other.target,
-                            if other.recursive { " recursively" } else { "" }
-                        ));
-                    }
-                }
+            // Advisory check for a fast 400. The authoritative check runs
+            // under the store lock in `put`/`update_config`, so a schedule
+            // created between this read and the insert cannot slip in.
+            if let Some(other) = overlap_conflict(&state.storage_schedules.snapshot(), e) {
+                return Err(overlap_message(e, &other));
             }
             if let Some(agent) = &state.agent {
                 if let Ok(datasets) = agent.list_datasets().await {
@@ -674,8 +759,11 @@ pub async fn schedules_post(State(state): State<Arc<AppState>>, body: Body) -> R
     let saved = if updating {
         // Merge under the store lock; a stale read here would overwrite a
         // lastRun/lastResult recorded while validation was awaiting the agent.
-        match state.storage_schedules.update_config(entry) {
+        match state.storage_schedules.update_config_checked(entry) {
             Ok(saved) => saved,
+            // The overlap can only surface here when another request created
+            // the conflicting schedule after validation; it is still a 400.
+            Err(e) if e.contains("already has snapshot schedule") => return bad_request(&e),
             Err(e) => {
                 return json(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -684,7 +772,10 @@ pub async fn schedules_post(State(state): State<Arc<AppState>>, body: Body) -> R
             }
         }
     } else {
-        if let Err(e) = state.storage_schedules.put(entry.clone()) {
+        if let Err(e) = state.storage_schedules.put_checked(entry.clone()) {
+            if e.contains("already has snapshot schedule") {
+                return bad_request(&e);
+            }
             return json(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 serde_json::json!({ "error": format!("saving the schedule: {e}") }),
@@ -1145,26 +1236,73 @@ mod tests {
         let mut entry = stored_schedule("retry", "tank/data", false, true);
         entry.cadence = Cadence::Daily;
         entry.run_at = "02:30".into();
-        entry.next_run = Some(Utc.with_ymd_and_hms(2026, 1, 5, 2, 30, 0).unwrap());
+        let due = Utc.with_ymd_and_hms(2026, 1, 5, 2, 30, 0).unwrap();
+        entry.next_run = Some(due);
         store.put(entry).unwrap();
 
-        // First attempt records the failure but keeps `nextRun` so the next
-        // tick retries it.
-        store.record_failure_keep_next("retry", "agent unavailable");
+        // First real failure: `nextRun` is kept so the next tick retries it,
+        // and the anchor is recorded.
+        store.record_failure_keep_next_at("retry", "agent unavailable", due);
         let first = store.get("retry").unwrap();
         assert_eq!(first.last_result, "failed");
-        assert_eq!(
-            first.next_run,
-            Some(Utc.with_ymd_and_hms(2026, 1, 5, 2, 30, 0).unwrap())
-        );
+        assert_eq!(first.next_run, Some(due));
+        assert_eq!(first.retry_since, Some(due));
 
-        // Pretend the failure started more than the retry window ago.
-        let mut aged = first;
-        aged.last_run = Some(Utc::now() - chrono::Duration::seconds(AGENT_RETRY_WINDOW_SECS + 1));
-        store.put(aged).unwrap();
-        store.record_failure_keep_next("retry", "agent unavailable");
+        // A second consecutive real failure half an hour later moves
+        // `lastRun` but not the retry anchor: the hour keeps accumulating.
+        store.record_failure_keep_next_at(
+            "retry",
+            "agent unavailable",
+            due + chrono::Duration::minutes(30),
+        );
+        let second = store.get("retry").unwrap();
+        assert_eq!(second.retry_since, Some(due));
+        assert_eq!(second.next_run, Some(due), "still inside the window");
+
+        // The third failure passes the one-hour window: the attempt becomes a
+        // normal failure and the cadence advances.
+        let past = due + chrono::Duration::minutes(61);
+        store.record_failure_keep_next_at("retry", "agent unavailable", past);
         let last = store.get("retry").unwrap();
-        assert!(last.next_run.unwrap() > Utc::now());
+        assert!(last.next_run.unwrap() > past);
+        assert_eq!(last.retry_since, None);
+
+        // A normal result also closes the window.
+        store.record_failure_keep_next_at("retry", "agent unavailable", past);
+        store.record_result("retry", "ok", "");
+        assert_eq!(store.get("retry").unwrap().retry_since, None);
+    }
+
+    #[test]
+    fn the_store_refuses_an_overlapping_insert_under_its_own_lock() {
+        let store = StorageScheduleStore::new("");
+        store
+            .put_checked(stored_schedule("a", "tank/data", false, true))
+            .unwrap();
+
+        // This bypasses `validate_schedule`: only the store lock can stop a
+        // second enabled snapshot schedule for the same dataset.
+        let err = store
+            .put_checked(stored_schedule("b", "tank/data", false, true))
+            .expect_err("an overlapping insert must be refused");
+        assert!(err.contains("already has snapshot schedule"), "{err}");
+        assert!(store.get("b").is_none(), "the refused insert is not stored");
+
+        // Disabled entries may overlap: they never run.
+        store
+            .put_checked(stored_schedule("c", "tank/data", false, false))
+            .unwrap();
+
+        // Re-targeting an existing schedule onto another's dataset is refused
+        // atomically and leaves the stored record untouched.
+        store
+            .put_checked(stored_schedule("d", "tank/other", false, true))
+            .unwrap();
+        let err = store
+            .update_config_checked(stored_schedule("d", "tank/data", false, true))
+            .expect_err("a move onto another schedule must be refused");
+        assert!(err.contains("already has snapshot schedule"), "{err}");
+        assert_eq!(store.get("d").unwrap().target, "tank/other");
     }
 
     fn naslos_agent_snapshot_charset(name: &str) -> bool {

@@ -5,11 +5,13 @@ pub mod auth;
 pub mod error;
 mod handlers;
 
+use crate::model::DATASETS_ROOT;
 use crate::supervisor::Supervisor;
 use axum::routing::{delete, get, post, put};
 use axum::{middleware, Router};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -25,14 +27,19 @@ pub struct AppState {
     pub auth_token: String,
     pub supervisor: Arc<Supervisor>,
     pub imports: Arc<Mutex<ImportRegistry>>,
+    /// Root the pool datasets are mounted under (`/var/mnt`).
+    pub datasets_root: PathBuf,
 }
 
-/// Authentication options. `tls_*` empty means plain HTTP (local development).
+/// Service options. `tls_*` empty means plain HTTP (local development).
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     pub auth_token: String,
     pub tls_cert_file: String,
     pub tls_key_file: String,
+    /// Datasets root; empty means `/var/mnt`. Tests set a temp directory and
+    /// pass the same root to the supervisor.
+    pub datasets_root: PathBuf,
 }
 
 pub struct Server {
@@ -44,12 +51,18 @@ pub struct Server {
 
 impl Server {
     pub fn new(addr: impl Into<String>, supervisor: Arc<Supervisor>, opts: Options) -> Self {
+        let datasets_root = if opts.datasets_root.as_os_str().is_empty() {
+            PathBuf::from(DATASETS_ROOT)
+        } else {
+            opts.datasets_root
+        };
         Self {
             addr: addr.into(),
             state: Arc::new(AppState {
                 auth_token: opts.auth_token,
                 supervisor,
                 imports: Arc::new(Mutex::new(ImportRegistry::default())),
+                datasets_root,
             }),
             tls_cert_file: opts.tls_cert_file,
             tls_key_file: opts.tls_key_file,
@@ -69,12 +82,14 @@ impl Server {
             )
             .route("/api/v1/vms/{name}/vnc", get(handlers::vm_vnc_tunnel))
             .route("/api/v1/images", get(handlers::images_get))
-            .route("/api/v1/images/upload", post(handlers::image_upload_post))
-            .route("/api/v1/images/import", post(handlers::image_import_post))
             .route(
-                "/api/v1/images/{name}",
-                delete(handlers::image_delete).get(handlers::image_delete),
+                "/api/v1/images/upload",
+                post(handlers::image_upload_post).delete(handlers::image_upload_cancel),
             )
+            .route("/api/v1/images/import", post(handlers::image_import_post))
+            // DELETE only: a mutating GET (a link, a prefetch, a browser
+            // retry) must not be able to delete a library image.
+            .route("/api/v1/images/{name}", delete(handlers::image_delete))
             .layer(middleware::from_fn_with_state(
                 self.state.clone(),
                 auth::require_auth,
@@ -168,11 +183,12 @@ mod tests {
     }
 
     fn test_server() -> Server {
-        let supervisor = Arc::new(Supervisor::new(
+        let supervisor = Arc::new(Supervisor::with_datasets_root(
             false,
             1,
             16,
             PathBuf::from("/tmp/vmd-test"),
+            PathBuf::from("/tmp/vmd-test-datasets"),
         ));
         Server::new(
             "127.0.0.1:0",
@@ -181,6 +197,7 @@ mod tests {
                 auth_token: "token".into(),
                 tls_cert_file: String::new(),
                 tls_key_file: String::new(),
+                datasets_root: PathBuf::new(),
             },
         )
     }
@@ -273,12 +290,19 @@ mod tests {
         });
 
         let dir = tempfile::tempdir().unwrap();
-        let supervisor = Arc::new(Supervisor::new(
+        let vnc_display = vnc_port - 5900;
+        let supervisor = Arc::new(Supervisor::with_datasets_root(
             false,
-            vnc_port - 5900,
+            vnc_display,
             1,
             dir.path().to_path_buf(),
+            dir.path().join("datasets"),
         ));
+        // The tunnel binds the VM name to its own display: register the
+        // process that owns this port.
+        supervisor
+            .test_register_running("drill-vm", vnc_display)
+            .await;
         let server = Server::new(
             "127.0.0.1:0",
             supervisor,
@@ -286,6 +310,7 @@ mod tests {
                 auth_token: "token".into(),
                 tls_cert_file: String::new(),
                 tls_key_file: String::new(),
+                datasets_root: PathBuf::new(),
             },
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -320,6 +345,57 @@ mod tests {
             tokio_tungstenite::connect_async(request).await.is_err(),
             "a port outside the display range must be refused"
         );
+
+        // A different VM name with a valid display-range port is refused: the
+        // name must own the port, or the tunnel would proxy another console.
+        let other = format!("ws://{addr}/api/v1/vms/other-vm/vnc?port={vnc_port}");
+        let mut request = other.as_str().into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("authorization", "Bearer token".parse().unwrap());
+        assert!(
+            tokio_tungstenite::connect_async(request).await.is_err(),
+            "a name that does not own the display must be refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_an_image_is_delete_only() {
+        let server = test_server();
+        for method in ["GET", "POST"] {
+            let response = server
+                .router()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/images/a.iso?pool=tank")
+                        .method(method)
+                        .header("authorization", "Bearer token")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{method} must not delete an image"
+            );
+        }
+        // DELETE is routed (the image does not exist, so it is a 400 and not a
+        // 405: the mutating alias is gone).
+        let response = server
+            .router()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/images/a.iso?pool=tank")
+                    .method("DELETE")
+                    .header("authorization", "Bearer token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

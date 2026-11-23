@@ -242,6 +242,13 @@ fn solver_for(d: &Domain) -> Result<serde_json::Value, String> {
 pub struct Store {
     path: String,
     domains: std::sync::Mutex<HashMap<String, Domain>>,
+    /// Whether the persisted domain list was read successfully. A missing or
+    /// empty file is a valid empty store (fresh install); an unparsable file
+    /// fails closed so the next mutation cannot overwrite the only copy.
+    loaded: std::sync::atomic::AtomicBool,
+    /// Why the store failed to load, with recovery guidance. Present exactly
+    /// when `loaded` is false.
+    load_error: std::sync::Mutex<Option<String>>,
 }
 
 impl Store {
@@ -249,6 +256,9 @@ impl Store {
         Self {
             path: path.to_string(),
             domains: std::sync::Mutex::new(HashMap::new()),
+            // An empty path is an in-memory test store, not a failed load.
+            loaded: std::sync::atomic::AtomicBool::new(path.is_empty()),
+            load_error: std::sync::Mutex::new(None),
         }
     }
 
@@ -259,23 +269,73 @@ impl Store {
         )
     }
 
+    /// Whether the persisted domain list was read successfully.
+    pub fn loaded(&self) -> bool {
+        self.loaded.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn load_error(&self) -> Option<String> {
+        self.load_error.lock().unwrap().clone()
+    }
+
+    /// Fail closed unless the persisted store was read successfully: writing a
+    /// fresh list over an unreadable file would discard the only copy.
+    pub fn require_loaded(&self) -> Result<(), String> {
+        if self.loaded() {
+            Ok(())
+        } else {
+            Err(self
+                .load_error()
+                .unwrap_or_else(|| format!("domain store {} is unavailable", self.path)))
+        }
+    }
+
     pub fn load(&self) -> Result<(), String> {
+        self.loaded
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        *self.load_error.lock().unwrap() = None;
         if self.path.is_empty() {
+            self.loaded.store(true, std::sync::atomic::Ordering::SeqCst);
             return Ok(());
         }
         let data = match std::fs::read(&self.path) {
             Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(format!("reading domains file: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.loaded.store(true, std::sync::atomic::Ordering::SeqCst);
+                return Ok(());
+            }
+            Err(e) => {
+                let message = format!(
+                    "domain store {} could not be read: {e}; refusing to overwrite it",
+                    self.path
+                );
+                *self.load_error.lock().unwrap() = Some(message.clone());
+                return Err(message);
+            }
         };
-        let list: Vec<Domain> =
-            serde_json::from_slice(&data).map_err(|e| format!("parsing domains file: {e}"))?;
+        let list: Vec<Domain> = match serde_json::from_slice(&data) {
+            Ok(list) => list,
+            Err(e) => {
+                let backup = match crate::shares::backup_corrupt_store(&self.path, &data) {
+                    Ok(path) => format!(" (backup saved to {})", path.display()),
+                    Err(backup_err) => format!(" ({backup_err})"),
+                };
+                let message = format!(
+                    "domain store {} is corrupt: {e}{backup}; repair it or replace it with a valid store before changing domains",
+                    self.path
+                );
+                *self.load_error.lock().unwrap() = Some(message.clone());
+                return Err(message);
+            }
+        };
         let mut guard = self.domains.lock().unwrap();
+        guard.clear();
         for d in list {
             if !d.base_domain.is_empty() {
                 guard.insert(d.base_domain.clone(), d);
             }
         }
+        self.loaded.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -296,12 +356,14 @@ impl Store {
     }
 
     pub fn upsert(&self, d: Domain) -> Result<(), String> {
+        self.require_loaded()?;
         let mut guard = self.domains.lock().unwrap();
         guard.insert(d.base_domain.clone(), d);
         self.save_locked(&guard)
     }
 
     pub fn delete(&self, name: &str) -> Result<(), String> {
+        self.require_loaded()?;
         let mut guard = self.domains.lock().unwrap();
         if guard.remove(name).is_none() {
             return Err(format!("domain {name:?} not found"));
@@ -310,6 +372,7 @@ impl Store {
     }
 
     pub fn update(&self, name: &str, mutate: impl FnOnce(&mut Domain)) -> Result<Domain, String> {
+        self.require_loaded()?;
         let mut guard = self.domains.lock().unwrap();
         let d = guard
             .get_mut(name)
@@ -321,6 +384,7 @@ impl Store {
     }
 
     fn save_locked(&self, guard: &HashMap<String, Domain>) -> Result<(), String> {
+        self.require_loaded()?;
         if self.path.is_empty() {
             return Ok(());
         }
@@ -490,5 +554,44 @@ mod tests {
         assert_eq!(got.environment, "production");
         assert_eq!(got.secret_name(), "naslos-example-com-tls");
         assert_eq!(got.issuer_name(), "naslos-acme-example-com");
+    }
+
+    #[test]
+    fn a_corrupt_store_is_backed_up_and_mutations_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("domains.json");
+        std::fs::write(&path, "{not json").unwrap();
+
+        let store = Store::new(&path.display().to_string());
+        let error = store.load().unwrap_err();
+        assert!(error.contains("corrupt"), "{error}");
+        assert!(error.contains(".corrupt-"), "{error}");
+        assert!(!store.loaded());
+        assert!(store.require_loaded().is_err());
+
+        // The corrupt file stays in place and is never replaced by a write.
+        assert!(store.upsert(cloudflare("example.com")).is_err());
+        assert!(store.delete("example.com").is_err());
+        assert!(store
+            .update("example.com", |d| d.environment = "production".into())
+            .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json");
+
+        let backups = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".corrupt-"))
+            .count();
+        assert_eq!(backups, 1, "one corrupt backup");
+    }
+
+    #[test]
+    fn a_missing_store_is_a_valid_empty_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(&dir.path().join("domains.json").display().to_string());
+        store.load().unwrap();
+        assert!(store.loaded());
+        store.upsert(cloudflare("example.com")).unwrap();
+        assert_eq!(store.list().len(), 1);
     }
 }

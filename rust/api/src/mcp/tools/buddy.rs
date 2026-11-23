@@ -1,9 +1,10 @@
 //! Buddy backup tools (FR-MCP). Sends are long-running jobs (poll with
 //! buddy_job_get); restores overwrite local datasets and confirm on the
-//! dataset name.
+//! dataset name. `receiver` is always the receiver's base URL, never a peer
+//! name (the peer label only exists on the receiver's own enrollment list).
 
 use super::{
-    b, confirm_field, n, no_args, s, s_enum, schema, Confirm, Method, Scope, Special, ToolDef,
+    arr, b, confirm_field, n, no_args, s, s_enum, schema, Confirm, Method, Scope, Special, ToolDef,
 };
 
 pub const TOOLS: &[ToolDef] = &[
@@ -25,7 +26,7 @@ pub const TOOLS: &[ToolDef] = &[
     ),
     tool!(
         "buddy_identity_get",
-        "This instance's backup identity (public key) and its receivers.",
+        "This instance's backup identity: public key, fingerprint and file path. It does not return receivers (use buddy_peer_list).",
         Read,
         GET,
         "/api/buddy/identity",
@@ -57,8 +58,8 @@ pub const TOOLS: &[ToolDef] = &[
     ),
     tool!(
         "buddy_send",
-        "Start a backup send of one dataset to a peer. Long-running: poll buddy_job_get.",
-        Write,
+        "Start a backup send of one dataset to a receiver URL. Arbitrary egress, so this is full scope. Long-running: poll buddy_job_get.",
+        Full,
         POST,
         "/api/buddy/send",
         || schema(
@@ -71,7 +72,7 @@ pub const TOOLS: &[ToolDef] = &[
                 ),
                 (
                     "receiver",
-                    s("The peer name to send to (from buddy_peer_list).")
+                    s("The receiver's base URL (http(s)://…), not a peer name.")
                 ),
                 (
                     "pruneKeep",
@@ -95,10 +96,16 @@ pub const TOOLS: &[ToolDef] = &[
                     "name",
                     s("The peer name (how the instance identifies itself when enrolling).")
                 ),
-                ("publicKey", s("The peer's Ed25519 public key (base64).")),
+                (
+                    "publicKey",
+                    s("The peer's OpenSSH public key line, e.g. \"ssh-ed25519 AAAA… comment\" (not a bare base64 blob).")
+                ),
                 (
                     "allowedSources",
-                    s("Optional: restrict which source names the peer may present.")
+                    arr(
+                        "Optional source names the peer may present; an array of strings, not a JSON-encoded string.",
+                        s("A source name, e.g. naslos-a/")
+                    )
                 ),
                 (
                     "quotaBytes",
@@ -110,32 +117,37 @@ pub const TOOLS: &[ToolDef] = &[
     ),
     tool!(
         "buddy_schedule_create",
-        "Create a recurring backup schedule for one dataset.",
-        Write,
+        "Create a recurring backup schedule for one dataset. Receiver URLs are arbitrary egress, so this is full scope.",
+        Full,
         POST,
         "/api/buddy/schedules",
         || schema(
-            &["id", "dataset", "source", "receivers"],
+            &["dataset", "source"],
             &[
-                ("id", s("A unique schedule id.")),
+                ("id", s("Optional unique schedule id (generated when omitted).")),
                 ("dataset", s("The dataset to back up.")),
                 ("source", s("The source name presented to receivers.")),
                 (
                     "receivers",
-                    s("One receiver name or a comma-separated list.")
-                ),
-                (
-                    "cadence",
-                    s_enum(
-                        "How often to run.",
-                        &["hourly", "daily", "weekly", "monthly"]
+                    arr(
+                        "One or more receiver base URLs (http(s)://…), as an array of strings.",
+                        s("A receiver base URL.")
                     )
                 ),
                 (
+                    "receiver",
+                    s("Optional single receiver base URL; use receivers for several.")
+                ),
+                (
+                    "cadence",
+                    s_enum("How often to run.", &["hourly", "daily", "weekly"])
+                ),
+                (
                     "runAt",
-                    s("The run time (HH:MM for daily, day name or date for others).")
+                    s("The run time: HH:MM for daily, \"Day HH:MM\" (three-letter weekday) for weekly; ignored for hourly.")
                 ),
                 ("pruneKeep", n("How many chains to keep on the receiver.")),
+                ("enabled", b("Whether the schedule runs (default true).")),
             ],
         )
     ),
@@ -150,7 +162,10 @@ pub const TOOLS: &[ToolDef] = &[
             &["source", "receiver", "dataset"],
             &[
                 ("source", s("The source name the backup was sent under.")),
-                ("receiver", s("The peer holding the backup.")),
+                (
+                    "receiver",
+                    s("The receiver's base URL (http(s)://…), not a peer name.")
+                ),
                 (
                     "dataset",
                     s("The local dataset (pool/name) to restore into.")
@@ -167,7 +182,7 @@ pub const TOOLS: &[ToolDef] = &[
     ),
     tool!(
         "buddy_peer_delete",
-        "Remove an enrolled peer and its stored backups.",
+        "Revoke an enrolled peer's key. Existing received backups are kept until they are pruned; this does not destroy them.",
         Full,
         DELETE,
         "/api/buddy/peers",
@@ -175,7 +190,7 @@ pub const TOOLS: &[ToolDef] = &[
         confirm = Confirm::Arg("name"),
         || schema(
             &["name"],
-            &[("name", s("The peer to delete.")), confirm_field()]
+            &[("name", s("The peer to revoke.")), confirm_field()]
         )
     ),
     tool!(

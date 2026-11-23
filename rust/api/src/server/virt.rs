@@ -21,6 +21,22 @@ use naslos_vmd::model::{validate_snapshot_name, DesiredState, VmSpec};
 /// Largest single upload chunk the API relays (the UI sends 8 MiB chunks).
 const MAX_CHUNK_BYTES: usize = 64 * 1024 * 1024;
 
+/// Map a supervisor error to the closest API status so a refused overwrite
+/// (confirm required, image in use) reaches the caller as a conflict instead
+/// of a misleading bad gateway.
+fn vmd_error_status(e: &vmd::VmdError) -> StatusCode {
+    match e.status {
+        409 => StatusCode::CONFLICT,
+        400 => StatusCode::BAD_REQUEST,
+        404 => StatusCode::NOT_FOUND,
+        // The image cap is a payload problem the caller can act on, not a
+        // supervisor outage; a body/media-type refusal keeps its own code too.
+        413 => StatusCode::PAYLOAD_TOO_LARGE,
+        415 => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        _ => StatusCode::BAD_GATEWAY,
+    }
+}
+
 #[allow(clippy::result_large_err)]
 fn vmd_client(state: &AppState) -> Result<Arc<vmd::Client>, Response> {
     state.vmd.clone().ok_or_else(|| {
@@ -63,20 +79,29 @@ async fn ensure_stopped_for(
             "cannot verify that VM {name:?} is stopped before you {action} it: {e}"
         ))
     })?;
-    if let Some(entry) = live.iter().find(|l| l.name == name) {
-        if entry.state != "stopped" {
-            return Err(json(
-                StatusCode::CONFLICT,
-                serde_json::json!({
-                    "error": format!(
-                        "VM {name:?} is {}; stop it before you {action} it",
-                        entry.state
-                    )
-                }),
-            ));
-        }
+    match live.iter().find(|l| l.name == name) {
+        // Only a positive `stopped` entry proves the VM is not running. A VM
+        // absent from a successful report is an inconsistent supervisor state
+        // (for example a restart mid-reconcile), not evidence of safety.
+        Some(entry) if entry.state == "stopped" => Ok(client),
+        Some(entry) => Err(json(
+            StatusCode::CONFLICT,
+            serde_json::json!({
+                "error": format!(
+                    "VM {name:?} is {}; stop it before you {action} it",
+                    entry.state
+                )
+            }),
+        )),
+        None => Err(json(
+            StatusCode::CONFLICT,
+            serde_json::json!({
+                "error": format!(
+                    "VM {name:?} is missing from the supervisor's live report; refusing to {action} it until the supervisor reports it as stopped"
+                )
+            }),
+        )),
     }
-    Ok(client)
 }
 
 #[allow(clippy::result_large_err)]
@@ -91,6 +116,9 @@ fn agent_client(state: &AppState) -> Result<Arc<crate::agent::Client>, Response>
 
 /// Render the whole desired config and push it to vmd.
 async fn push_config(state: &AppState, boot: bool) -> Result<(), String> {
+    // A store that failed to load must never be pushed as "no VMs": the
+    // supervisor would stop every running guest.
+    state.vms.require_loaded()?;
     let client = state
         .vmd
         .clone()
@@ -121,6 +149,12 @@ pub async fn capabilities_get(State(state): State<Arc<AppState>>) -> Response {
 // ---- CRUD ----------------------------------------------------------------
 
 pub async fn vms_get(State(state): State<Arc<AppState>>) -> Response {
+    if let Err(e) = state.vms.require_loaded() {
+        return json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": e }),
+        );
+    }
     let records = state.vms.list();
     let live = match state.vmd.clone() {
         Some(client) => client.vms_live().await.ok(),
@@ -131,6 +165,14 @@ pub async fn vms_get(State(state): State<Arc<AppState>>) -> Response {
 }
 
 pub async fn vms_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    // Refuse before touching the host: creating a dataset for a record the
+    // unloaded store cannot persist would leave an orphan behind.
+    if let Err(e) = state.vms.require_loaded() {
+        return json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": e }),
+        );
+    }
     let spec: VmSpec = match read_json(body).await {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -208,6 +250,12 @@ pub async fn vm_detail_get(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Response {
+    if let Err(e) = state.vms.require_loaded() {
+        return json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": e }),
+        );
+    }
     let Some(spec) = state.vms.get(&name) else {
         return not_found(&name);
     };
@@ -649,12 +697,33 @@ pub async fn image_upload_post(
             );
         }
     }
+    // Replacing an existing library image needs the same explicit
+    // confirmation as every destructive route; vmd enforces confirm == name.
+    let confirm = query.get("confirm").cloned();
+    // The browser generates one owner token per upload session and echoes it
+    // on every chunk, so vmd can refuse a different client instead of
+    // discarding the active upload's progress.
+    let owner = query
+        .get("owner")
+        .map(|v| v.trim())
+        .filter(|v| naslos_vmd::model::valid_upload_owner(v));
+    let Some(owner) = owner else {
+        return bad_request("the owner parameter must be 1-128 printable ASCII characters");
+    };
     let client = match vmd_client(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
     match client
-        .upload_chunk(&pool, &name, offset, final_chunk, body)
+        .upload_chunk(
+            &pool,
+            &name,
+            offset,
+            final_chunk,
+            confirm.as_deref(),
+            owner,
+            body,
+        )
         .await
     {
         Ok(size) => json(
@@ -662,7 +731,7 @@ pub async fn image_upload_post(
             serde_json::json!({ "name": name, "sizeBytes": size }),
         ),
         Err(e) => json(
-            StatusCode::BAD_GATEWAY,
+            vmd_error_status(&e),
             serde_json::json!({ "error": e.to_string() }),
         ),
     }
@@ -678,6 +747,8 @@ pub struct ImportRequest {
     url: String,
     #[serde(default)]
     sha256: Option<String>,
+    #[serde(default)]
+    confirm: Option<String>,
 }
 
 pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
@@ -705,7 +776,13 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
     // FR-DNS-07 SSRF guard) and runs the download; errors surface in the
     // images listing while it runs.
     match client
-        .import_image(&req.pool, &req.name, req.url.trim(), req.sha256.as_deref())
+        .import_image(
+            &req.pool,
+            &req.name,
+            req.url.trim(),
+            req.sha256.as_deref(),
+            req.confirm.as_deref(),
+        )
         .await
     {
         Ok(()) => json(
@@ -717,7 +794,42 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
             }),
         ),
         Err(e) => json(
-            StatusCode::BAD_GATEWAY,
+            vmd_error_status(&e),
+            serde_json::json!({ "error": e.to_string() }),
+        ),
+    }
+}
+
+/// `DELETE /api/virt/images/upload?pool=&name=&owner=` — release this
+/// client's upload session (and its staged file). Only the owner may cancel;
+/// a missing session is an idempotent success.
+pub async fn image_upload_cancel(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let pool = query.get("pool").cloned().unwrap_or_default();
+    let name = query.get("name").cloned().unwrap_or_default();
+    if !naslos_vmd::model::valid_pool_component(&pool) {
+        return bad_request(&format!("pool {pool:?} is not a valid dataset component"));
+    }
+    let owner = query
+        .get("owner")
+        .map(|v| v.trim())
+        .filter(|v| naslos_vmd::model::valid_upload_owner(v));
+    let Some(owner) = owner else {
+        return bad_request("the owner parameter must be 1-128 printable ASCII characters");
+    };
+    let client = match vmd_client(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    match client.cancel_upload(&pool, &name, owner).await {
+        Ok(()) => json(
+            StatusCode::OK,
+            serde_json::json!({ "status": "cancelled", "name": name }),
+        ),
+        Err(e) => json(
+            vmd_error_status(&e),
             serde_json::json!({ "error": e.to_string() }),
         ),
     }
@@ -742,7 +854,7 @@ pub async fn image_delete(
             serde_json::json!({ "status": "deleted", "name": name }),
         ),
         Err(e) => json(
-            StatusCode::BAD_GATEWAY,
+            vmd_error_status(&e),
             serde_json::json!({ "error": e.to_string() }),
         ),
     }
@@ -876,12 +988,13 @@ pub async fn vm_vnc_ws(
         );
     }
     let pending = console_session_pending(&request, &name);
-    let audit = state.audit.clone();
     let (mut parts, _body) = request.into_parts();
     let ws = match WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
         Ok(ws) => ws,
         Err(e) => return e.into_response(),
     };
+    // Acquire the session slot before the durable begin record: a refused
+    // attach must not leave an orphan begin (A-7).
     let permit = match console_slots().clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
@@ -893,21 +1006,31 @@ pub async fn vm_vnc_ws(
             )
         }
     };
-    let pending = match audit.begin(pending) {
-        Ok(pending) => pending,
+    // The durable begin/end pair runs through `SessionAudit`, which keeps the
+    // fsync on the blocking pool (FR-AUD-08).
+    let session = match crate::audit::SessionAudit::begin(&state, pending).await {
+        Ok(session) => session,
         Err(e) => {
-            audit.mark_degraded(&format!("console session begin: {e}"));
             return json(
                 StatusCode::SERVICE_UNAVAILABLE,
                 serde_json::json!({ "error": format!("audit unavailable: {e}") }),
             );
         }
     };
+    let state_for_task = state.clone();
 
     ws.max_message_size(1 << 20)
         .max_frame_size(256 << 10)
         .on_upgrade(move |socket| {
-            vnc_bridge(socket, client, name, vnc_port, permit, audit, pending)
+            vnc_bridge(
+                socket,
+                client,
+                name,
+                vnc_port,
+                permit,
+                state_for_task,
+                session,
+            )
         })
 }
 
@@ -1000,18 +1123,6 @@ fn console_session_pending(request: &Request, name: &str) -> crate::audit::Pendi
     }
 }
 
-fn finish_console_session(
-    audit: &crate::audit::AuditLog,
-    pending: &crate::audit::Pending,
-    status: u16,
-) {
-    if let Err(e) = audit.finish(pending, status) {
-        if audit.mark_degraded(&format!("console session end: {e}")) {
-            tracing::error!("console session audit end failed: {e}");
-        }
-    }
-}
-
 /// Bridge one console: browser WebSocket <-> the authenticated vmd console
 /// tunnel. QEMU's VNC listener binds loopback only, so the API never dials it
 /// directly: `Client::vnc_tunnel` opens a WebSocket on vmd's TLS listener and
@@ -1023,8 +1134,8 @@ async fn vnc_bridge(
     vm_name: String,
     vnc_port: u16,
     _slot: tokio::sync::OwnedSemaphorePermit,
-    audit: crate::audit::AuditLog,
-    pending: crate::audit::Pending,
+    state: Arc<AppState>,
+    session: crate::audit::SessionAudit,
 ) {
     use tokio_tungstenite::tungstenite::Message as TunnelMessage;
 
@@ -1039,13 +1150,13 @@ async fn vnc_bridge(
         Ok(Err(e)) => {
             tracing::warn!("console bridge: vmd tunnel refused for {vm_name}: {e}");
             let _ = socket.close().await;
-            finish_console_session(&audit, &pending, 502);
+            session.finish(&state, 502).await;
             return;
         }
         Err(_) => {
             tracing::warn!("console bridge: opening the vmd tunnel timed out for {vm_name}");
             let _ = socket.close().await;
-            finish_console_session(&audit, &pending, 504);
+            session.finish(&state, 504).await;
             return;
         }
     };
@@ -1107,7 +1218,7 @@ async fn vnc_bridge(
     let _ = tunnel_sender.close().await;
     pump.abort();
     let _ = pump.await;
-    finish_console_session(&audit, &pending, 101);
+    session.finish(&state, 101).await;
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -1284,6 +1395,70 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
         )
+    }
+
+    async fn vmd_with_live(body: serde_json::Value) -> Arc<AppState> {
+        use axum::routing::get;
+        use axum::Router;
+        let app = Router::new().route(
+            "/api/v1/vms",
+            get(move || {
+                let body = body.clone();
+                async move { axum::Json(body) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut state = AppState::for_test("test-secret");
+        state.vmd = Some(Arc::new(
+            vmd::Client::new(&format!("http://{addr}"), "token", "").expect("vmd client"),
+        ));
+        state.vms.create(spec("vm1")).unwrap();
+        Arc::new(state)
+    }
+
+    #[tokio::test]
+    async fn a_vm_absent_from_a_successful_live_report_is_not_stopped() {
+        let state = vmd_with_live(serde_json::json!([
+            { "name": "other", "state": "stopped" }
+        ]))
+        .await;
+        let error = match ensure_stopped_for(&state, "vm1", "delete it").await {
+            Ok(_) => panic!("an absent VM must fail closed"),
+            Err(response) => response,
+        };
+        assert_eq!(error.status(), StatusCode::CONFLICT);
+
+        // The same report with an explicit stopped entry is accepted.
+        let state = vmd_with_live(serde_json::json!([{ "name": "vm1", "state": "stopped" }])).await;
+        assert!(ensure_stopped_for(&state, "vm1", "delete it").await.is_ok());
+
+        // Any other state is refused.
+        let state = vmd_with_live(serde_json::json!([{ "name": "vm1", "state": "running" }])).await;
+        let error = match ensure_stopped_for(&state, "vm1", "delete it").await {
+            Ok(_) => panic!("a running VM must be refused"),
+            Err(response) => response,
+        };
+        assert_eq!(error.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn supervisor_statuses_map_to_caller_actionable_codes() {
+        let error = |status| vmd::VmdError {
+            status,
+            message: "refused".to_string(),
+        };
+        assert_eq!(vmd_error_status(&error(400)), StatusCode::BAD_REQUEST);
+        assert_eq!(vmd_error_status(&error(404)), StatusCode::NOT_FOUND);
+        assert_eq!(vmd_error_status(&error(409)), StatusCode::CONFLICT);
+        assert_eq!(vmd_error_status(&error(413)), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            vmd_error_status(&error(415)),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+        // A supervisor crash is still a bad gateway.
+        assert_eq!(vmd_error_status(&error(500)), StatusCode::BAD_GATEWAY);
     }
 
     #[test]

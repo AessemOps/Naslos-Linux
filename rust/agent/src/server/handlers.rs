@@ -1073,6 +1073,10 @@ pub async fn zfs_receive(
             Err(_) => {
                 let _ = stdin.shutdown().await;
                 let _ = wait.await;
+                // A stalled stream leaves a partially received dataset (and
+                // possibly a %recv snapshot); discard it so a retry starts
+                // from a known state.
+                zfs.abort_receive(&dataset).await;
                 return write_error(
                     StatusCode::GATEWAY_TIMEOUT,
                     "restore stream stalled (no data within the idle deadline)",
@@ -1085,6 +1089,7 @@ pub async fn zfs_receive(
             Err(e) => {
                 let _ = stdin.shutdown().await;
                 let _ = wait.await;
+                zfs.abort_receive(&dataset).await;
                 return write_error(
                     StatusCode::BAD_REQUEST,
                     format!("reading the restore stream: {e}"),
@@ -1095,6 +1100,7 @@ pub async fn zfs_receive(
         if written > MAX_STREAM_BODY_BYTES {
             let _ = stdin.shutdown().await;
             let _ = wait.await;
+            zfs.abort_receive(&dataset).await;
             return write_error(
                 StatusCode::BAD_REQUEST,
                 "reading the restore stream: request body too large",
@@ -1103,6 +1109,7 @@ pub async fn zfs_receive(
         if let Err(e) = stdin.write_all(&chunk).await {
             let _ = stdin.shutdown().await;
             let _ = wait.await;
+            zfs.abort_receive(&dataset).await;
             return write_error(
                 StatusCode::BAD_REQUEST,
                 format!("reading the restore stream: {e}"),
@@ -1112,6 +1119,7 @@ pub async fn zfs_receive(
 
     if let Err(e) = stdin.shutdown().await {
         let _ = wait.await;
+        zfs.abort_receive(&dataset).await;
         return write_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("closing the restore stream: {e}"),
@@ -1139,7 +1147,10 @@ pub async fn zfs_receive(
                 }),
             )
         }
-        Err(e) => write_error(StatusCode::UNPROCESSABLE_ENTITY, e),
+        Err(e) => {
+            zfs.abort_receive(&dataset).await;
+            write_error(StatusCode::UNPROCESSABLE_ENTITY, e)
+        }
     }
 }
 

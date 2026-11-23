@@ -163,6 +163,16 @@ pub struct RestoreOptions<'a> {
     /// The sequence the caller validated in `restore_sequence`. When set, a
     /// receiver that swaps in a different (older) manifest is refused.
     pub expected_sequence: Option<u64>,
+    /// The chain summary the caller resolved before restoring (from
+    /// `restore_sequence`/`chains`). The receiver supplies that summary without
+    /// a signature, so every field is cross-checked against the signed
+    /// manifest before a single plaintext byte is written: a receiver cannot
+    /// pair a signed manifest with a different unsigned listing entry.
+    pub expected_from_guid: &'a str,
+    pub expected_to_guid: &'a str,
+    pub expected_kind: &'a str,
+    pub expected_from_snapshot: &'a str,
+    pub expected_to_snapshot: &'a str,
 }
 
 /// Resume state for an interrupted push. Holds the chain's DEK, so it is as
@@ -604,12 +614,20 @@ impl Client {
                 tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                 continue;
             }
-            if status >= 400 {
-                return Err(format!(
-                    "{} {path}: {}",
-                    method.as_str(),
+            if !(200..300).contains(&status) {
+                // Only a 2xx means the receiver applied the request. A 3xx in
+                // particular means the request was answered by something else
+                // (a redirecting proxy or a misconfigured receiver), so
+                // counting it as success would prune the resume state for a
+                // backup that does not exist (B-10).
+                let detail = if (300..400).contains(&status) {
+                    format!(
+                        "unexpected HTTP {status} (redirects are not followed and never count as success)"
+                    )
+                } else {
                     describe_error(status, &bytes)
-                ));
+                };
+                return Err(format!("{} {path}: {detail}", method.as_str()));
             }
             return Ok((bytes.to_vec(), status));
         }
@@ -1147,6 +1165,42 @@ impl Client {
                 _ => {}
             }
         }
+        // The chain listing the caller followed is receiver-supplied and
+        // unsigned. Cross-check every identity-bearing field against the
+        // signed manifest before reading a chunk or writing plaintext, so a
+        // receiver cannot answer the signed request for chain A while the
+        // restore sequence was built from a different chain's summary.
+        let mut mismatch = None;
+        for (field, expected, actual) in [
+            (
+                "fromGUID",
+                opts.expected_from_guid,
+                manifest.from_guid.as_str(),
+            ),
+            ("toGUID", opts.expected_to_guid, manifest.to_guid.as_str()),
+            ("kind", opts.expected_kind, manifest.kind.as_str()),
+            (
+                "fromSnapshot",
+                opts.expected_from_snapshot,
+                manifest.from_snapshot.as_str(),
+            ),
+            (
+                "toSnapshot",
+                opts.expected_to_snapshot,
+                manifest.to_snapshot.as_str(),
+            ),
+        ] {
+            if expected != actual {
+                mismatch = Some(format!(
+                    "refusing to restore chain {}: the signed manifest's {field} is {actual:?}, but the receiver's chain summary said {expected:?}",
+                    manifest.chain
+                ));
+                break;
+            }
+        }
+        if let Some(e) = mismatch {
+            return (result, Some(e));
+        }
         let prefix = match manifest.stream_prefix_bytes() {
             Ok(p) => p,
             Err(e) => return (result, Some(format!("refusing to restore: {e}"))),
@@ -1269,6 +1323,9 @@ fn describe_error(status: u16, data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{describe_error, validate_restore_sequence, ChainSummary};
+    use base64::Engine;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn chain(name: &str, from: &str, to: &str, sequence: u64) -> ChainSummary {
         ChainSummary {
@@ -1359,5 +1416,322 @@ mod tests {
         let message = describe_error(500, &[0xff, 0xfe]);
         assert!(message.ends_with(" (500)"), "{message}");
         assert_eq!(message, "\u{FFFD}\u{FFFD} (500)");
+    }
+
+    /// A minimal HTTP/1.1 stub for the sender client tests. One request per
+    /// connection, `Connection: close`, JSON content type.
+    async fn http_stub<F>(handler: F) -> (String, tokio::task::JoinHandle<()>)
+    where
+        F: Fn(&str, &str) -> (u16, &'static str, Vec<u8>) + Send + Sync + 'static,
+    {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind the test receiver");
+        let addr = listener.local_addr().expect("local address");
+        let handler = Arc::new(handler);
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let handler = handler.clone();
+                tokio::spawn(async move {
+                    use tokio::io::AsyncWriteExt;
+                    let Some((method, path)) = read_http_request(&mut socket).await else {
+                        return;
+                    };
+                    let (status, reason, body) = handler(&method, &path);
+                    let head = format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = socket.write_all(head.as_bytes()).await;
+                    let _ = socket.write_all(&body).await;
+                });
+            }
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    async fn read_http_request(socket: &mut tokio::net::TcpStream) -> Option<(String, String)> {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let header_end = loop {
+            let mut chunk = [0u8; 1024];
+            let n = socket.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+            if buf.len() > 64 * 1024 {
+                return None;
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+        let mut lines = head.lines();
+        let mut first = lines.next()?.split_whitespace();
+        let method = first.next()?.to_string();
+        let path = first.next()?.to_string();
+        let content_length = lines
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("content-length") {
+                    value.trim().parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        let mut remaining = content_length.saturating_sub(buf.len().saturating_sub(header_end));
+        while remaining > 0 {
+            let mut chunk = [0u8; 8192];
+            let n = socket.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                break;
+            }
+            remaining = remaining.saturating_sub(n);
+        }
+        Some((method, path))
+    }
+
+    fn test_identity() -> Arc<super::Identity> {
+        Arc::new(
+            super::super::keys::new_identity("sender").expect("generate the test sender identity"),
+        )
+    }
+
+    fn options<'a>(
+        out: &'a mut (dyn tokio::io::AsyncWrite + Unpin + Send),
+        expected: &'a ChainSummary,
+    ) -> super::RestoreOptions<'a> {
+        super::RestoreOptions {
+            source: "naslos-test/data",
+            chain: &expected.chain,
+            out,
+            progress: None,
+            skip_signature_check: false,
+            expected_sequence: Some(expected.sequence),
+            expected_from_guid: &expected.from_guid,
+            expected_to_guid: &expected.to_guid,
+            expected_kind: &expected.kind,
+            expected_from_snapshot: &expected.from_snapshot,
+            expected_to_snapshot: &expected.to_snapshot,
+        }
+    }
+
+    /// A receiving side that answers every request with a redirect. A 302 is
+    /// not an acknowledgement: push must fail and must not publish a manifest
+    /// or drop the resume state.
+    #[tokio::test]
+    async fn a_redirecting_receiver_fails_the_push_and_keeps_the_resume_state() {
+        let (base, server) = http_stub(|method, path| {
+            if path.starts_with("/api/buddy/v1/status") {
+                (200, "OK", b"{}".to_vec())
+            } else if method == "GET" && path.starts_with("/api/buddy/v1/chunks/") {
+                (200, "OK", br#"{"published":false,"chunks":[]}"#.to_vec())
+            } else if method == "PUT" && path.starts_with("/api/buddy/v1/chunks/") {
+                (200, "OK", b"{}".to_vec())
+            } else if method == "PUT" && path.starts_with("/api/buddy/v1/manifest/") {
+                (302, "Found", Vec::new())
+            } else {
+                (404, "Not Found", b"{}".to_vec())
+            }
+        })
+        .await;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state_path = dir.path().join("buddy-state.json");
+        let state_shown = state_path.display().to_string();
+        let state = super::ChainState::new("naslos-test/data", "raw").expect("chain state");
+        state.save(&state_shown).expect("persist the resume state");
+
+        let client = super::Client::new(&base, test_identity());
+        let mut reader: &[u8] = b"hello";
+        let (result, error) = client
+            .push(super::PushOptions {
+                source: "naslos-test/data",
+                kind: "raw",
+                reader: &mut reader,
+                state: Some(state.clone()),
+                from_snapshot: "",
+                to_snapshot: "",
+                from_guid: "",
+                to_guid: "",
+                prune_keep: 1,
+                progress: None,
+                before_publish: None,
+                save_state: &|s| s.save(&state_shown),
+            })
+            .await;
+
+        server.abort();
+        let error = error.expect("a 302 must not be reported as a successful backup");
+        assert!(error.contains("302"), "{error}");
+        assert!(
+            result.manifest.is_none(),
+            "a manifest must not be published from a redirect"
+        );
+        let resumed = super::ChainState::load(&state_shown)
+            .expect("the resume state must survive a failed publish");
+        assert_eq!(resumed.chain, result.chain);
+        assert!(
+            resumed.generation >= 1,
+            "the persisted generation must not be reused"
+        );
+    }
+
+    fn signed_manifest(identity: &super::Identity, sequence: u64) -> (super::Manifest, Vec<u8>) {
+        let kek = identity.kek_bytes().expect("identity KEK");
+        let dek = super::super::envelope::generate_dek().expect("data key");
+        let prefix = super::new_stream_prefix().expect("stream prefix");
+        let mut manifest = super::Manifest {
+            version: super::ENVELOPE_VERSION,
+            source: "naslos-test/data".to_string(),
+            chain: "abcd".to_string(),
+            kind: "tar".to_string(),
+            from_snapshot: "snap-a".to_string(),
+            to_snapshot: "snap-b".to_string(),
+            from_guid: "guid-a".to_string(),
+            to_guid: "guid-b".to_string(),
+            created_at: chrono::Utc::now(),
+            key_id: String::new(),
+            sequence,
+            generation: 1,
+            stream_prefix: base64::engine::general_purpose::STANDARD.encode(prefix),
+            chunk_plain_size: super::CHUNK_PLAIN_SIZE as i64,
+            chunks: Vec::new(),
+            dek_wrapped: super::wrap_dek(&kek, &dek, "naslos-test/data", "abcd")
+                .expect("wrap the data key"),
+            signature: String::new(),
+        };
+        manifest.sign(identity).expect("sign the test manifest");
+        let body = serde_json::to_vec(&manifest).expect("serialize the test manifest");
+        (manifest, body)
+    }
+
+    /// A manifest that disagrees with the unsigned chain summary must be
+    /// refused before any chunk is fetched (and so before any plaintext is
+    /// produced).
+    #[tokio::test]
+    async fn a_manifest_that_disagrees_with_the_summary_is_refused_before_chunks() {
+        let identity = test_identity();
+        let (_, manifest_body) = signed_manifest(&identity, 1);
+        let chunk_requests = Arc::new(AtomicUsize::new(0));
+        let counter = chunk_requests.clone();
+        let (base, server) = http_stub(move |_method, path| {
+            if path.starts_with("/api/buddy/v1/status") {
+                (200, "OK", b"{}".to_vec())
+            } else if path.starts_with("/api/buddy/v1/manifest/") {
+                (200, "OK", manifest_body.clone())
+            } else if path.starts_with("/api/buddy/v1/chunks/") {
+                counter.fetch_add(1, Ordering::Relaxed);
+                (404, "Not Found", b"{}".to_vec())
+            } else {
+                (404, "Not Found", b"{}".to_vec())
+            }
+        })
+        .await;
+
+        let client = super::Client::new(&base, identity);
+        type Corrupt = fn(&mut ChainSummary);
+        let mismatches: [(&str, Corrupt); 5] = [
+            ("fromGUID", |c| c.from_guid = "other-a".into()),
+            ("toGUID", |c| c.to_guid = "other-b".into()),
+            ("kind", |c| c.kind = "zfs-send".into()),
+            ("fromSnapshot", |c| c.from_snapshot = "other-a".into()),
+            ("toSnapshot", |c| c.to_snapshot = "other-b".into()),
+        ];
+        for (field, corrupt) in mismatches {
+            let mut summary = ChainSummary {
+                chain: "abcd".to_string(),
+                kind: "tar".to_string(),
+                from_snapshot: "snap-a".to_string(),
+                to_snapshot: "snap-b".to_string(),
+                from_guid: "guid-a".to_string(),
+                to_guid: "guid-b".to_string(),
+                sequence: 1,
+                ..Default::default()
+            };
+            corrupt(&mut summary);
+            let mut sink = tokio::io::sink();
+            let (_, error) = client.restore(options(&mut sink, &summary)).await;
+            let error = error.unwrap_or_else(|| panic!("{field} mismatch must be refused"));
+            assert!(error.contains(field), "{field}: {error}");
+        }
+        server.abort();
+        assert_eq!(
+            chunk_requests.load(Ordering::Relaxed),
+            0,
+            "no chunk may be fetched for a manifest that disagrees with the summary"
+        );
+    }
+
+    /// The default restore path (no `--chain`) must keep the restore chain
+    /// empty so the local publish anchor still refuses a replayed older signed
+    /// chain; the summary cross-check fields alone are not a freshness check.
+    #[tokio::test]
+    async fn a_default_restore_refuses_a_replayed_older_chain_against_the_local_anchor() {
+        let identity = test_identity();
+        let (manifest, body) = signed_manifest(&identity, 1);
+        let chunk_requests = Arc::new(AtomicUsize::new(0));
+        let counter = chunk_requests.clone();
+        let (base, server) = http_stub(move |_method, path| {
+            if path.starts_with("/api/buddy/v1/status") {
+                (200, "OK", b"{}".to_vec())
+            } else if path.starts_with("/api/buddy/v1/manifest/") {
+                (200, "OK", body.clone())
+            } else if path.starts_with("/api/buddy/v1/chunks/") {
+                counter.fetch_add(1, Ordering::Relaxed);
+                (404, "Not Found", b"{}".to_vec())
+            } else {
+                (404, "Not Found", b"{}".to_vec())
+            }
+        })
+        .await;
+
+        let mut client = super::Client::new(&base, identity);
+        let anchor_dir = tempfile::tempdir().expect("tempdir");
+        client.sequence_dir = anchor_dir.path().display().to_string();
+        client
+            .record_published_sequence("naslos-test/data", 2)
+            .expect("record the local publish anchor");
+
+        let mut sink = tokio::io::sink();
+        let summary = ChainSummary {
+            chain: manifest.chain.clone(),
+            kind: manifest.kind.clone(),
+            from_snapshot: manifest.from_snapshot.clone(),
+            to_snapshot: manifest.to_snapshot.clone(),
+            from_guid: manifest.from_guid.clone(),
+            to_guid: manifest.to_guid.clone(),
+            sequence: manifest.sequence,
+            ..Default::default()
+        };
+        let (_, error) = client
+            .restore(super::RestoreOptions {
+                source: "naslos-test/data",
+                chain: "",
+                out: &mut sink,
+                progress: None,
+                skip_signature_check: false,
+                expected_sequence: None,
+                expected_from_guid: &summary.from_guid,
+                expected_to_guid: &summary.to_guid,
+                expected_kind: &summary.kind,
+                expected_from_snapshot: &summary.from_snapshot,
+                expected_to_snapshot: &summary.to_snapshot,
+            })
+            .await;
+        server.abort();
+        let error = error.expect("a replayed older chain must be refused by the local anchor");
+        assert!(error.contains("stale manifest"), "{error}");
+        assert_eq!(
+            chunk_requests.load(Ordering::Relaxed),
+            0,
+            "no chunk may be fetched for a replayed chain"
+        );
     }
 }

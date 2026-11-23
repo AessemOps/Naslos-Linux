@@ -1,10 +1,11 @@
 //! Host-network tools (FR-MCP). Applying a network change reconfigures the
 //! node's interface and can sever the UI connection; reverting is the escape
-//! hatch. Both are `full` and confirm on the change id / link name.
+//! hatch. Both are `full`: applying confirms the link **and** the whole
+//! payload hash, reverting confirms the change id.
 
 use super::{
-    arr, b, confirm_field, free_map, n, no_args, s, s_enum, schema, Confirm, Method, Scope,
-    Special, ToolDef,
+    arr, b, confirm_field, confirm_payload, free_map, n, no_args, s, s_enum, schema, Confirm,
+    Method, Scope, Special, ToolDef,
 };
 
 pub const TOOLS: &[ToolDef] = &[
@@ -26,7 +27,7 @@ pub const TOOLS: &[ToolDef] = &[
     ),
     tool!(
         "network_change_apply",
-        "Start a host network change (long-running; poll network_change_get). Can disconnect the node if the values are wrong.",
+        "Start a host network change (long-running; poll network_change_get). Can disconnect the node if the values are wrong. Confirm the link and the whole payload.",
         Full,
         POST,
         "/api/network/changes",
@@ -44,7 +45,7 @@ pub const TOOLS: &[ToolDef] = &[
                 ),
                 ("searchDomains", free_map("DNS search domains: {\"mode\": …, \"domains\": [...]}."),
                 ),
-                confirm_field(),
+                confirm_payload("link"),
             ],
         )
     ),

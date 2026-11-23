@@ -4,9 +4,11 @@ openldap/manifests/backup-cronjob.yaml.
 
 slapcat writes to a dedicated backup PVC (SEC-2026-F5): the previous destination
 was the 100 MiB config volume, so a few retained dumps could fill the volume
-slapd itself needs. The data volume is mounted read-write because the mdb
-backend maps a lock file beside the database even for a read. Both StatefulSet
-PVCs are created by its volumeClaimTemplates, so their names follow
+slapd itself needs. slapcat reads the *live* server (it is an online,
+transaction-consistent export, not an offline file copy), so the data volume is
+mounted read-write: the mdb backend maps a lock file beside the database even
+for a read. Restores must still stop slapd first (docs/operations.md). Both
+StatefulSet PVCs are created by its volumeClaimTemplates, so their names follow
 <template>-<statefulset>-0.
 */}}
 {{- if .Values.openldap.enabled }}
@@ -87,13 +89,15 @@ spec:
                 - -c
                 - |
                   set -e
-                  # Backups go on the config volume (mounted at /backups here).
+                  # Backups go on the dedicated naslos-openldap-backups PVC
+                  # (mounted at /backups here), never the config volume.
                   BACKUP_DIR="/backups/ldap"
                   mkdir -p "${BACKUP_DIR}"
                   TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
                   # slapcat needs the *configuration* directory (-F) to know the
                   # databases; both commands read the live databases through it.
+                  # This is an online dump; do not use it as an offline copy.
                   slapcat -F /etc/ldap/slapd.d -n 0 -l "${BACKUP_DIR}/config_${TIMESTAMP}.ldif"
                   slapcat -F /etc/ldap/slapd.d -n 1 -l "${BACKUP_DIR}/data_${TIMESTAMP}.ldif"
 

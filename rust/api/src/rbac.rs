@@ -202,6 +202,7 @@ pub static ROUTES: &[RouteRule] = &[
     ),
     route!("GET", "/api/virt/images", ADMIN),
     route!("POST", "/api/virt/images/upload", ADMIN),
+    route!("DELETE", "/api/virt/images/upload", ADMIN),
     route!("POST", "/api/virt/images/import", ADMIN),
     route!("DELETE", "/api/virt/images/{name}", ADMIN),
     // WebSockets and pods.

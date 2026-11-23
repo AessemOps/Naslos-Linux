@@ -138,7 +138,10 @@ unmodified Talos installation, administered through a web UI.
 - **SEC-19** — Authelia MUST mount a `ca.crt`-only Secret for LDAPS trust, never
   the LDAP server private key; it MUST run non-root with all capabilities
   dropped, no privilege escalation, RuntimeDefault seccomp and a read-only root
-  filesystem with explicit writable mounts (`/config` PVC, `/tmp` emptyDir).
+  filesystem with explicit writable mounts (`/config` PVC, `/tmp` emptyDir). A
+  one-shot ownership init container MAY run as root with only
+  CHOWN/DAC_OVERRIDE/FOWNER to make a legacy root-owned `/config` PVC writable;
+  the Authelia container itself stays non-root.
   *(audit `check_security_rendering`)*
 - **SEC-20** — The Samba and NFS containers MUST run with `drop: [ALL]` and only
   the capabilities their datastore operations need, no privilege escalation,
@@ -634,6 +637,11 @@ cloud sync remain `[OPEN]` below.
   `zfs receive -u -x mountpoint -x canmount -x sharenfs -x sharesmb` so the
   stream cannot choose the host mount layout, and the API MUST set a
   server-chosen mountpoint (`/var/mnt/<pool>/…`) after a successful receive.
+  A recursive receive MUST mount the received tree (the root and its
+  children, scoped to the received hierarchy — never a blind
+  `zfs mount -a`), and a receive whose mount fails MUST fail the
+  replication/restore job with the mount error surfaced, never report
+  success with unmounted children.
   An incremental receive MUST NOT use `zfs receive -F`; a forced (`-F`) receive
   MUST require explicit confirmation and MUST be refused when the destination
   holds any snapshot Naslos did not create or any child dataset. A full stream
@@ -1909,8 +1917,14 @@ A node installed from an installer pack can be upgraded from the web UI. A
   changing the node.
 - **FR-UPD-06** — A Naslos upgrade MUST rebuild only the installer's override
   keys from the current release, MUST `helm upgrade --reset-values` from the
-  new pack, MUST verify the running images against the pack's digests, and MUST
-  roll back to the previous Helm revision on failure. A Talos upgrade MUST
+  new pack, MUST force server-side apply conflicts (`--force-conflicts`) so a
+  release first installed by the desktop engine can be upgraded by the
+  in-cluster Helm CLI, MUST verify the running images against the pack's
+  digests, and MUST roll back to the previous Helm revision on failure. The
+  workload readiness window MUST cover the Authelia LDAP startup backoff (at
+  least ten minutes) before a timeout rolls the release back. A
+  failed command MUST report the end of stderr: Helm prints a PodSecurity
+  warning per workload before the actionable error. A Talos upgrade MUST
   detect the A/B rollback after reboot. A Kubernetes upgrade MUST dry-run first
   and report that it has no automatic rollback.
 - **FR-UPD-07** — A `ValidatingAdmissionPolicy` MUST reject any pod using the
@@ -2041,8 +2055,11 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   to the vetted address), optional sha256 verification — and (c) delete.
   A retried browser upload MUST resume at the last offset the supervisor
   confirmed; when the partial upload no longer exists the UI MUST say so and
-  restart from zero. The library lives at `<pool>/vms/isos`, flat file names
-  only.
+  restart from zero. Replacing an existing library image MUST require an
+  explicit confirmation equal to the image name (`confirm=<name>` on upload,
+  a `confirm` field on import), and a replacement or delete MUST be refused
+  while a running or starting VM attaches the image. The library lives at
+  `<pool>/vms/isos`, flat file names only.
 - **FR-VMT-08** — The console MUST be reachable from the browser:
   `GET /api/ws/vm/{name}/vnc` (plain GET) is a preflight returning the VNC
   port, the per-boot VNC password and `ready to attach`; the same route with
@@ -2133,10 +2150,13 @@ Naslos 0.4.4 ships a first-party MCP (Model Context Protocol) endpoint: a
 Streamable HTTP server **inside the existing `naslos-api` pod** — no new
 image, Service, deployment or NetworkPolicy — that exposes the API's
 owner routes to AI assistants and other programmatic clients through
-scoped bearer tokens. Traefik routes `Host(apex) && PathPrefix('/mcp')`
-to the API without the Authelia forwardAuth (a programmatic client cannot
-complete an interactive 2FA login); the Authelia bypass lives next to the
-buddy bypass, and the API's own guard keeps SEC-10 in force. See
+scoped bearer tokens. Traefik routes `Host(apex) && (Path('/mcp') ||
+PathPrefix('/mcp/'))` to the API without the Authelia forwardAuth (a
+programmatic client cannot complete an interactive 2FA login); the
+matching Authelia bypass (`^/mcp(/.*)?$`) lives next to the buddy bypass,
+and the API's own guard keeps SEC-10 in force. The exact-match pair means
+a path like `/mcpfoo` never matches the route or the bypass, so nothing
+outside the MCP endpoint shares its unauthenticated posture. See
 `docs/mcp.md` for the operator guide.
 
 - **FR-MCP-01** — The endpoint MUST be off by default: state persists in

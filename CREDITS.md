@@ -59,7 +59,7 @@ adds the same set plus the agent-pattern token/TLS server. Direct dependencies:
 
 | Component | Version | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
-| aes-gcm | 0.10 | Apache-2.0 OR MIT | https://github.com/RustCrypto/AEADs |
+| aes-gcm | 0.11 | Apache-2.0 OR MIT | https://github.com/RustCrypto/AEADs |
 | anyhow | 1 | MIT OR Apache-2.0 | https://github.com/dtolnay/anyhow |
 | base64 | 0.22 | MIT OR Apache-2.0 | https://github.com/marshallpierce/rust-base64 |
 | async-trait | 0.1 | MIT OR Apache-2.0 | https://github.com/dtolnay/async-trait |
@@ -131,12 +131,11 @@ produce the shipped static assets):
 | @sveltejs/kit | ^2.0.0 | MIT | https://github.com/sveltejs/kit |
 | @sveltejs/adapter-static | ^3.0.0 | MIT | https://github.com/sveltejs/kit |
 | @sveltejs/vite-plugin-svelte | ^4.0.4 | MIT | https://github.com/sveltejs/vite-plugin-svelte |
+| @tailwindcss/vite | ^4.3.5 | MIT | https://github.com/tailwindlabs/tailwindcss |
 | @types/node | ^20.0.0 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
-| autoprefixer | ^10.4.0 | MIT | https://github.com/postcss/autoprefixer |
-| postcss | ^8.4.0 | MIT | https://github.com/postcss/postcss |
 | svelte | ^5.57.1 | MIT | https://github.com/sveltejs/svelte |
 | svelte-check | ^4.7.6 | MIT | https://github.com/sveltejs/language-tools |
-| tailwindcss | ^3.0.0 | MIT | https://github.com/tailwindlabs/tailwindcss |
+| tailwindcss | ^4.3.5 | MIT | https://github.com/tailwindlabs/tailwindcss |
 | typescript | ^5.0.0 | Apache-2.0 | https://github.com/microsoft/TypeScript |
 | vite | ^5.0.0 | MIT | https://github.com/vitejs/vite |
 
