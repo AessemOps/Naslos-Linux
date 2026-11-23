@@ -279,18 +279,9 @@ mod tests {
         let err = reconcile_kek("/data/buddy-identity.json", &file_kek, Some(&other)).unwrap_err();
         assert!(err.contains("does not match"), "{err}");
         assert!(err.contains("Nothing was deleted"), "{err}");
-        assert_eq!(
-            reconcile_kek("/data/buddy-identity.json", &file_kek, Some(&file_kek)).unwrap(),
-            true
-        );
-        assert_eq!(
-            reconcile_kek("/data/buddy-identity.json", &file_kek, None).unwrap(),
-            false
-        );
-        assert_eq!(
-            reconcile_kek("/data/buddy-identity.json", "", Some(&other)).unwrap(),
-            false
-        );
+        assert!(reconcile_kek("/data/buddy-identity.json", &file_kek, Some(&file_kek)).unwrap());
+        assert!(!reconcile_kek("/data/buddy-identity.json", &file_kek, None).unwrap());
+        assert!(!reconcile_kek("/data/buddy-identity.json", "", Some(&other)).unwrap());
     }
 
     #[test]

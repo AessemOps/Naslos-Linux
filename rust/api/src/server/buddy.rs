@@ -889,6 +889,7 @@ impl BuddyState {
     /// Refuse a receiver mutation before it happens when the audit log cannot
     /// record it (R-027). The standalone receiver has no audit log, so it is
     /// unaffected.
+    #[allow(clippy::result_large_err)]
     fn begin_mutation(
         &self,
         actor: &str,
@@ -918,6 +919,7 @@ impl BuddyState {
 
     /// Like `begin_mutation` but for high-volume mutations (chunk uploads):
     /// check the log before the write and record one end record afterwards.
+    #[allow(clippy::result_large_err)]
     fn pending_mutation(
         &self,
         actor: &str,
@@ -939,6 +941,7 @@ impl BuddyState {
         )))
     }
 
+    #[allow(clippy::result_large_err)]
     fn record_mutation(
         &self,
         pending: Option<crate::audit::Pending>,
@@ -956,6 +959,7 @@ impl BuddyState {
         })
     }
 
+    #[allow(clippy::result_large_err)]
     fn finish_mutation(
         &self,
         pending: Option<crate::audit::Pending>,

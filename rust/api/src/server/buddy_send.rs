@@ -990,7 +990,7 @@ mod tests {
             false
         )
         .is_err());
-        assert!(require_stream_matches_dataset("tank/data", used, 0).is_err());
+        assert!(require_stream_matches_dataset("tank/data", used, 1).is_err());
     }
 
     #[test]

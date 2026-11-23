@@ -194,16 +194,18 @@ pub async fn restore(State(state): State<Arc<AppState>>, body: Body) -> Response
     // applied receive cannot be resumed safely (R-059).
     let progress_path = restore_progress_path(&source);
     if let Some(prev) = RestoreProgress::load(&progress_path) {
-        if prev.dataset == dataset && prev.receiver == receiver && prev.source == source {
-            if !prev.snapshot.is_empty() {
-                if let Err(e) = agent.rollback_snapshot(&dataset, &prev.snapshot).await {
-                    tracing::warn!(
-                        "buddy restore: cannot roll {dataset} back to {} after an interrupted restore: {e}",
-                        prev.snapshot
-                    );
-                }
-                let _ = agent.destroy_snapshot(&dataset, &prev.snapshot).await;
+        if prev.dataset == dataset
+            && prev.receiver == receiver
+            && prev.source == source
+            && !prev.snapshot.is_empty()
+        {
+            if let Err(e) = agent.rollback_snapshot(&dataset, &prev.snapshot).await {
+                tracing::warn!(
+                    "buddy restore: cannot roll {dataset} back to {} after an interrupted restore: {e}",
+                    prev.snapshot
+                );
             }
+            let _ = agent.destroy_snapshot(&dataset, &prev.snapshot).await;
         }
         let _ = std::fs::remove_file(&progress_path);
     }
