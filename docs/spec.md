@@ -1020,7 +1020,12 @@ with a sibling `naslos-app.yaml` install-config. See
   in both the flat (`resources.requests|limits`) and per-component
   (`resources.<component>.requests|limits`) layouts the catalog charts use.
   Saving MUST enqueue the normal upgrade job (`PUT /api/apps/{name}` with
-  `{values:{resources}}`), preserving resource keys the form does not edit. The
+  `{values:{resources}}`), preserving resource keys the form does not edit.
+  The submitted `resources` object (including its `requests`/`limits` and
+  per-component maps) MUST replace the stored object rather than deep-merge,
+  so a key omitted by the form is cleared; an empty object clears all limits,
+  and explicit `null` entries are pruned as removals. *(apps
+  `resource_quantity_tests`)* The
   API MUST reject an invalid CPU/memory quantity (anything other than a
   non-negative decimal with an optional decimal or binary suffix) on install and
   upgrade before Helm runs, and MUST reject aggregate totals above the app

@@ -1658,6 +1658,11 @@ impl Manager {
             &serde_json::Value::Object(rec.values.clone()),
             Some(&client_values),
         );
+        // The Resources editor submits the complete `resources` object built
+        // from its form; an omitted key means "cleared". Deep-merging that
+        // object would keep the old value, so replace it wholesale (R-052 /
+        // UI-03). A null top-level value clears the object.
+        replace_resource_values(&mut merged, &client_values);
 
         // A redacted secret comes back as `null`; keep the stored value. This
         // walks the schema's JSON-pointer paths, so nested secrets keep their
@@ -3835,6 +3840,23 @@ fn format_bytes(bytes: f64) -> String {
 /// Reject invalid CPU/memory quantities before Helm hands them to Kubernetes,
 /// where the failure would surface as an opaque `--wait` timeout. Other keys
 /// under `requests`/`limits` (e.g. `ephemeral-storage`) are left to Kubernetes.
+/// Replace the platform-edited `resources` object instead of deep-merging it.
+/// An omitted key is a cleared field; the drawer sends the complete object
+/// built from its form. A `null` top-level value removes the object.
+pub fn replace_resource_values(
+    merged: &mut serde_json::Map<String, serde_json::Value>,
+    incoming: &serde_json::Map<String, serde_json::Value>,
+) {
+    let Some(resources) = incoming.get("resources") else {
+        return;
+    };
+    if resources.is_null() {
+        merged.remove("resources");
+    } else {
+        merged.insert("resources".to_string(), resources.clone());
+    }
+}
+
 /// Remove `null` resource entries so a cleared field is a removal, not a Helm
 /// value. Handles the flat layout (`resources.requests.cpu`) and the
 /// per-component layout (`resources.<component>.limits.cpu`) the catalog uses.
@@ -4982,7 +5004,8 @@ mod value_coercion_tests {
 #[cfg(test)]
 mod resource_quantity_tests {
     use super::{
-        prune_null_resources, quantity_number, resource_totals, validate_resource_quantities,
+        prune_null_resources, quantity_number, replace_resource_values, resource_totals,
+        validate_resource_quantities,
     };
     use serde_json::json;
 
@@ -5047,6 +5070,47 @@ mod resource_quantity_tests {
     fn missing_resources_is_fine() {
         let map = serde_json::Map::new();
         assert!(validate_resource_quantities(&map).is_ok());
+    }
+
+    #[test]
+    fn resources_replace_instead_of_deep_merging_so_omitted_keys_clear() {
+        let mut stored = values(json!({
+            "requests": { "cpu": "100m", "memory": "256Mi" },
+            "limits": { "cpu": "1", "memory": "1Gi" }
+        }));
+        let incoming = json!({
+            "resources": { "requests": { "cpu": "200m" } }
+        });
+        let incoming = incoming.as_object().unwrap();
+        replace_resource_values(&mut stored, incoming);
+        prune_null_resources(&mut stored);
+        assert_eq!(stored["resources"]["requests"]["cpu"], json!("200m"));
+        assert!(
+            stored["resources"]["requests"].get("memory").is_none(),
+            "an omitted memory request must be cleared"
+        );
+        assert!(
+            stored["resources"].get("limits").is_none(),
+            "the complete object replaces the stored resources"
+        );
+    }
+
+    #[test]
+    fn clearing_all_resources_replaces_the_object_with_an_empty_one() {
+        let mut stored = values(json!({
+            "requests": { "cpu": "100m" },
+            "limits": { "memory": "1Gi" }
+        }));
+        let incoming = json!({ "resources": {} });
+        replace_resource_values(&mut stored, incoming.as_object().unwrap());
+        prune_null_resources(&mut stored);
+        assert_eq!(stored["resources"], json!({}));
+        assert!(stored["resources"].get("requests").is_none());
+        assert!(stored["resources"].get("limits").is_none());
+
+        let incoming = json!({ "resources": null });
+        replace_resource_values(&mut stored, incoming.as_object().unwrap());
+        assert!(stored.get("resources").is_none());
     }
 
     #[test]
