@@ -21,6 +21,18 @@ use naslos_vmd::model::{validate_snapshot_name, DesiredState, VmSpec};
 /// Largest single upload chunk the API relays (the UI sends 8 MiB chunks).
 const MAX_CHUNK_BYTES: usize = 64 * 1024 * 1024;
 
+/// Map a supervisor error to the closest API status so a refused overwrite
+/// (confirm required, image in use) reaches the caller as a conflict instead
+/// of a misleading bad gateway.
+fn vmd_error_status(e: &vmd::VmdError) -> StatusCode {
+    match e.status {
+        409 => StatusCode::CONFLICT,
+        400 => StatusCode::BAD_REQUEST,
+        404 => StatusCode::NOT_FOUND,
+        _ => StatusCode::BAD_GATEWAY,
+    }
+}
+
 #[allow(clippy::result_large_err)]
 fn vmd_client(state: &AppState) -> Result<Arc<vmd::Client>, Response> {
     state.vmd.clone().ok_or_else(|| {
@@ -649,12 +661,15 @@ pub async fn image_upload_post(
             );
         }
     }
+    // Replacing an existing library image needs the same explicit
+    // confirmation as every destructive route; vmd enforces confirm == name.
+    let confirm = query.get("confirm").cloned();
     let client = match vmd_client(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
     match client
-        .upload_chunk(&pool, &name, offset, final_chunk, body)
+        .upload_chunk(&pool, &name, offset, final_chunk, confirm.as_deref(), body)
         .await
     {
         Ok(size) => json(
@@ -662,7 +677,7 @@ pub async fn image_upload_post(
             serde_json::json!({ "name": name, "sizeBytes": size }),
         ),
         Err(e) => json(
-            StatusCode::BAD_GATEWAY,
+            vmd_error_status(&e),
             serde_json::json!({ "error": e.to_string() }),
         ),
     }
@@ -678,6 +693,8 @@ pub struct ImportRequest {
     url: String,
     #[serde(default)]
     sha256: Option<String>,
+    #[serde(default)]
+    confirm: Option<String>,
 }
 
 pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
@@ -705,7 +722,13 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
     // FR-DNS-07 SSRF guard) and runs the download; errors surface in the
     // images listing while it runs.
     match client
-        .import_image(&req.pool, &req.name, req.url.trim(), req.sha256.as_deref())
+        .import_image(
+            &req.pool,
+            &req.name,
+            req.url.trim(),
+            req.sha256.as_deref(),
+            req.confirm.as_deref(),
+        )
         .await
     {
         Ok(()) => json(
@@ -717,7 +740,7 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
             }),
         ),
         Err(e) => json(
-            StatusCode::BAD_GATEWAY,
+            vmd_error_status(&e),
             serde_json::json!({ "error": e.to_string() }),
         ),
     }
@@ -742,7 +765,7 @@ pub async fn image_delete(
             serde_json::json!({ "status": "deleted", "name": name }),
         ),
         Err(e) => json(
-            StatusCode::BAD_GATEWAY,
+            vmd_error_status(&e),
             serde_json::json!({ "error": e.to_string() }),
         ),
     }

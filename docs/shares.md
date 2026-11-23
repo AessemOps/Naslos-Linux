@@ -67,9 +67,11 @@ definition back too.
 
 Applies are serialised and carry a strictly increasing revision
 (`<epoch-millis>-<sequence>-<nonce>-<content-hash>`). The agent refuses a
-revision that is not newer than the one already on the host with a stale-revision
-error, which the API surfaces as `409 Conflict`; an out-of-order push can never
-overwrite a newer configuration.
+revision that is older than the one already on the host with a
+stale-revision error, which the API surfaces as `409 Conflict`; an
+out-of-order push can never overwrite a newer configuration. An equal
+revision is accepted as an idempotent retry, so a re-push of the same
+configuration after a transient failure is a no-op rather than an error.
 
 ## Share model
 

@@ -191,6 +191,10 @@ boots straight to SSH.
   - Replacing an existing library image requires `confirm=<name>`. vmd
     refuses the replacement (or a delete) while a running/starting VM
     attaches the file as its ISO or `disk.sourceImage` (`409`).
+  - The API route forwards the confirmation verbatim: a re-upload that
+    would replace an existing image must send `confirm=<name>` on
+    `/api/virt/images/upload`, and a refused overwrite reaches the caller
+    as `409 Conflict` (not a bad-gateway) with the supervisor's reason.
 - URL import: the node downloads the image itself (`202 Accepted`; errors
   surface in the library listing). vmd is hostNetwork, whose traffic is
   exempt from pod egress policy, so the FR-DNS-07 SSRF guard is the
@@ -198,6 +202,10 @@ boots straight to SSH.
   (loopback/private/link-local/CGNAT/NAT64/mapped-v6 all refused),
   redirects re-validated hop by hop and pinned to the vetted address, 3
   hops max, optional sha256 verified (mismatch deletes the staged file).
+  Importing over an existing library name likewise requires an explicit
+  `"confirm": "<name>"` field in the `POST /api/virt/images/import` body;
+  without it the import refuses to replace the existing image and records
+  the refusal in the library listing.
   The download is staged in `<name>.part` like an upload, and replacing an
   existing image needs `"confirm": "<name>"` in the request body.
 - Deletion is `DELETE /api/virt/images/{name}` (there is no mutating GET

@@ -634,6 +634,11 @@ cloud sync remain `[OPEN]` below.
   `zfs receive -u -x mountpoint -x canmount -x sharenfs -x sharesmb` so the
   stream cannot choose the host mount layout, and the API MUST set a
   server-chosen mountpoint (`/var/mnt/<pool>/…`) after a successful receive.
+  A recursive receive MUST mount the received tree (the root and its
+  children, scoped to the received hierarchy — never a blind
+  `zfs mount -a`), and a receive whose mount fails MUST fail the
+  replication/restore job with the mount error surfaced, never report
+  success with unmounted children.
   An incremental receive MUST NOT use `zfs receive -F`; a forced (`-F`) receive
   MUST require explicit confirmation and MUST be refused when the destination
   holds any snapshot Naslos did not create or any child dataset. A full stream
@@ -2041,8 +2046,11 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   to the vetted address), optional sha256 verification — and (c) delete.
   A retried browser upload MUST resume at the last offset the supervisor
   confirmed; when the partial upload no longer exists the UI MUST say so and
-  restart from zero. The library lives at `<pool>/vms/isos`, flat file names
-  only.
+  restart from zero. Replacing an existing library image MUST require an
+  explicit confirmation equal to the image name (`confirm=<name>` on upload,
+  a `confirm` field on import), and a replacement or delete MUST be refused
+  while a running or starting VM attaches the image. The library lives at
+  `<pool>/vms/isos`, flat file names only.
 - **FR-VMT-08** — The console MUST be reachable from the browser:
   `GET /api/ws/vm/{name}/vnc` (plain GET) is a preflight returning the VNC
   port, the per-boot VNC password and `ready to attach`; the same route with

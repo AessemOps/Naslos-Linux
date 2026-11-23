@@ -382,23 +382,32 @@ impl Client {
     }
 
     /// Stream one upload chunk to vmd. The body is relayed (not buffered) so
-    /// a multi-gigabyte ISO never lands in API memory.
+    /// a multi-gigabyte ISO never lands in API memory. `confirm` must equal
+    /// the image name to replace an existing library image (vmd refuses the
+    /// overwrite without it).
     pub async fn upload_chunk(
         &self,
         pool: &str,
         name: &str,
         offset: u64,
         final_chunk: bool,
+        confirm: Option<&str>,
         body: axum::body::Body,
     ) -> Result<u64, VmdError> {
         use futures::StreamExt;
-        let path = format!(
+        let mut path = format!(
             "/api/v1/images/upload?pool={}&name={}&offset={}&final={}",
             crate::agent::escape_component(pool),
             crate::agent::escape_component(name),
             offset,
             final_chunk
         );
+        if let Some(confirm) = confirm {
+            path.push_str(&format!(
+                "&confirm={}",
+                crate::agent::escape_component(confirm)
+            ));
+        }
         let stream = body.into_data_stream();
         let body = reqwest::Body::wrap_stream(stream.map(|r| r.map_err(std::io::Error::other)));
         let resp = self
@@ -447,17 +456,22 @@ impl Client {
     }
 
     /// Ask vmd to import an image from a URL (the SSRF guard lives in vmd:
-    /// it is hostNetwork, whose egress is exempt from pod policy).
+    /// it is hostNetwork, whose egress is exempt from pod policy). `confirm`
+    /// must equal the image name to replace an existing library image.
     pub async fn import_image(
         &self,
         pool: &str,
         name: &str,
         url: &str,
         sha256: Option<&str>,
+        confirm: Option<&str>,
     ) -> Result<(), VmdError> {
         let mut payload = serde_json::json!({ "pool": pool, "name": name, "url": url });
         if let Some(sha) = sha256 {
             payload["sha256"] = serde_json::Value::String(sha.to_string());
+        }
+        if let Some(confirm) = confirm {
+            payload["confirm"] = serde_json::Value::String(confirm.to_string());
         }
         let rb = self
             .request(reqwest::Method::POST, "/api/v1/images/import")
