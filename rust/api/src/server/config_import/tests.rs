@@ -36,6 +36,8 @@ fn share(name: &str, path: &str) -> Value {
         "validGroups": [],
         "timeMachine": false,
         "noRootSquash": false,
+        "shadowCopies": false,
+        "audit": false,
         "enabled": true
     })
 }
@@ -988,6 +990,8 @@ async fn an_exported_document_round_trips_through_import() {
             path: "/var/mnt/tank/media".into(),
             protocol: Protocol::Smb,
             description: "Media".into(),
+            shadow_copies: true,
+            audit: true,
             enabled: Some(true),
             ..Default::default()
         })
@@ -1079,6 +1083,8 @@ async fn an_exported_document_round_trips_through_import() {
     let reexported = serde_json::to_value(config_export::build(&target, Utc::now())).unwrap();
     assert_eq!(reexported["shares"][0]["name"], "media");
     assert_eq!(reexported["shares"][0]["path"], "/var/mnt/tank/media");
+    assert_eq!(reexported["shares"][0]["shadowCopies"], true);
+    assert_eq!(reexported["shares"][0]["audit"], true);
     assert_eq!(
         reexported["datasetRegistry"],
         json!([{
@@ -1138,4 +1144,67 @@ async fn an_exported_document_round_trips_through_import() {
         .datasets
         .iter()
         .all(|entry| matches!(entry.outcome, Outcome::Unchanged)));
+}
+
+#[tokio::test]
+async fn existing_share_smb_options_are_preserved_on_import() {
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
+    state
+        .shares
+        .lock()
+        .unwrap()
+        .create(&CreateShareRequest {
+            name: "media".into(),
+            path: "/var/mnt/tank/media".into(),
+            protocol: Protocol::Smb,
+            enabled: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let mut record = share("media", "/var/mnt/tank/media");
+    record["shadowCopies"] = json!(true);
+    record["audit"] = json!(true);
+    let mut value = base_doc();
+    value["shares"] = json!([record]);
+    let mut plan = build_plan(&state, &parse(value)).await.unwrap();
+    // Existing shares keep their local SMB options, so only those two fields
+    // differ and the record is still unchanged.
+    assert!(matches!(plan.shares[0].outcome, Outcome::Unchanged));
+    apply_plan(&state, &mut plan).await;
+
+    let stored = state
+        .shares
+        .lock()
+        .unwrap()
+        .list()
+        .into_iter()
+        .find(|share| share.name == "media")
+        .unwrap();
+    assert!(!stored.shadow_copies);
+    assert!(!stored.audit);
+}
+
+#[tokio::test]
+async fn a_new_share_takes_the_exported_smb_options() {
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
+    let mut record = share("media", "/var/mnt/tank/media");
+    record["shadowCopies"] = json!(true);
+    record["audit"] = json!(true);
+    let mut value = base_doc();
+    value["shares"] = json!([record]);
+    let mut plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert!(matches!(plan.shares[0].outcome, Outcome::Created(None)));
+    apply_plan(&state, &mut plan).await;
+
+    let stored = state
+        .shares
+        .lock()
+        .unwrap()
+        .list()
+        .into_iter()
+        .find(|share| share.name == "media")
+        .unwrap();
+    assert!(stored.shadow_copies);
+    assert!(stored.audit);
 }

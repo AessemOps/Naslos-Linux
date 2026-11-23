@@ -76,6 +76,12 @@ Otherwise it POSTs to `{serverUrl}/{topic}` with headers:
 - `Authorization: Bearer <token>` — if configured
 - `X-Email` — if configured
 
+A dropped message is not an error. The manual `POST /api/notifications/test`
+action is different: it requires the channel to be enabled (`400` when it is
+not) and publishes the info-severity test message directly, bypassing event
+routing and the severity floor, so the transport is verified even when
+`minSeverity` is `warning` or higher. A delivery failure is `502`.
+
 HTTP client timeout is 10 s. Redirects are disabled, so a 3xx response is a
 failed delivery, not a success. Delivery errors are category-only (timeout,
 connect, redirect, rejected status); they never contain the publish URL, the
@@ -325,7 +331,7 @@ severities:
 | --- | --- | --- |
 | GET | `/api/notifications` | Redacted ntfy settings (destination/token never returned) |
 | PUT | `/api/notifications` | Update ntfy settings (`400` for an invalid or incomplete target) |
-| POST | `/api/notifications/test` | Send a test notification ("Naslos Test", info severity) |
+| POST | `/api/notifications/test` | Send a test notification ("Naslos Test", info severity; bypasses the severity floor; `400` when disabled, `502` on delivery failure) |
 | GET/PUT/DELETE | `/api/notifications/webhook` | Generic webhook channel settings / reset |
 | POST | `/api/notifications/webhook/test` | Send a test webhook |
 | GET/PUT/DELETE | `/api/notifications/smtp` | SMTP channel settings / reset (never returns the password) |

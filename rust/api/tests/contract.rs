@@ -759,6 +759,175 @@ async fn domain_update_preserves_an_omitted_solver() {
 }
 
 #[tokio::test]
+async fn domain_put_pins_the_path_domain_and_rejects_a_body_rename() {
+    let st = Arc::new(AppState::for_test(SECRET));
+    let created = r#"{"baseDomain":"passthrough.example.test","dnsProvider":"passthrough","solver":{"webhook":{"groupName":"example.test","solverName":"passthrough"}},"environment":"staging"}"#;
+    let (status, _body, _raw) = send_state(
+        st.clone(),
+        admin_request("POST", "/api/domains", Some(created)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // A body that names a different domain must not create or overwrite it:
+    // the URL and audit target name this record.
+    let renamed = r#"{"baseDomain":"other.example.test","dnsProvider":"passthrough","solver":{"webhook":{"groupName":"example.test","solverName":"passthrough"}},"environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request(
+            "PUT",
+            "/api/domains/passthrough.example.test",
+            Some(renamed),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("baseDomain"));
+    assert!(st.domains.get("other.example.test").is_err());
+    assert_eq!(
+        st.domains
+            .get("passthrough.example.test")
+            .unwrap()
+            .solver
+            .as_ref()
+            .unwrap()["webhook"]["solverName"],
+        "passthrough"
+    );
+
+    // An empty body baseDomain is taken from the path.
+    let update = r#"{"baseDomain":"","dnsProvider":"passthrough","acmeEmail":"ops@example.test","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/passthrough.example.test", Some(update)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        st.domains
+            .get("passthrough.example.test")
+            .unwrap()
+            .acme_email,
+        "ops@example.test"
+    );
+}
+
+#[tokio::test]
+async fn domain_updates_always_run_effective_provider_validation() {
+    let st = Arc::new(AppState::for_test(SECRET));
+    // Seed a cert-manager domain as a successful create would leave it.
+    st.domains
+        .upsert(naslos_api::certs::Domain {
+            base_domain: "example.test".into(),
+            dns_provider: "cloudflare".into(),
+            credentials_secret: "naslos-domain-example-test-creds".into(),
+            provider_config: std::collections::HashMap::from([(
+                "proxied".to_string(),
+                "true".to_string(),
+            )]),
+            solver: Some(serde_json::json!({"stale": "dead-data"})),
+            environment: "staging".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // A provider switch without fields is rejected instead of rendering the
+    // new provider's solver from the old provider's config.
+    let switch = r#"{"baseDomain":"example.test","dnsProvider":"ovh","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(switch)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("dnsProvider"));
+    assert_eq!(
+        st.domains.get("example.test").unwrap().dns_provider,
+        "cloudflare"
+    );
+
+    // An arbitrary Secret name is refused even when `fields` is omitted (the
+    // resolver now runs on every write, not only when fields are submitted).
+    let evil = r#"{"baseDomain":"example.test","dnsProvider":"cloudflare","credentialsSecret":"some-other-secret","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(evil)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("naslos-"));
+    assert_eq!(
+        st.domains.get("example.test").unwrap().credentials_secret,
+        "naslos-domain-example-test-creds"
+    );
+
+    // Omitted fields keeps the stored provider config; an explicit null clears
+    // a provider-rendered solver (passthrough would still reject the clear).
+    let keep = r#"{"baseDomain":"example.test","dnsProvider":"cloudflare","solver":null,"environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(keep)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = st.domains.get("example.test").unwrap();
+    assert_eq!(
+        stored.provider_config.get("proxied").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        stored.credentials_secret,
+        "naslos-domain-example-test-creds"
+    );
+    assert!(stored.solver.is_none());
+
+    // Creating a cert-manager domain without fields now fails in the field
+    // resolver (required secret field) instead of skipping validation.
+    let fresh =
+        r#"{"baseDomain":"fresh.example.test","dnsProvider":"cloudflare","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("POST", "/api/domains", Some(fresh)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("apiToken"));
+}
+
+#[tokio::test]
+async fn notification_test_route_requires_enabled_and_bypasses_the_severity_floor() {
+    // Disabled: an explicit client error, not a false "sent".
+    let (status, body, _r) = send(admin_request("POST", "/api/notifications/test", None)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "ntfy channel is disabled");
+
+    // Enabled with the default warning floor: the info-severity test must still
+    // reach the transport (and fail on this non-public target) instead of being
+    // silently dropped by the severity filter.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notifications.json");
+    std::fs::write(
+        &path,
+        r#"{"enabled":true,"serverUrl":"http://127.0.0.1","topic":"alerts","enabledEvents":["disk_failure"],"minSeverity":"warning"}"#,
+    )
+    .unwrap();
+    let mut st = AppState::for_test(SECRET);
+    st.notifications = Arc::new(naslos_api::notifications::Manager::new(
+        path.to_str().unwrap(),
+    ));
+    let (status, body, raw) = send_state(
+        Arc::new(st),
+        admin_request("POST", "/api/notifications/test", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("non-public"),
+        "{body}"
+    );
+    assert!(!raw.contains("test notification sent"));
+}
+
+#[tokio::test]
 async fn webhook_test_route_requires_enabled_and_guards_at_send_time() {
     // Disabled: an explicit client error rather than a false success.
     let (status, body, _r) = send(admin_request(

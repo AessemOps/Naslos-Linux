@@ -71,6 +71,8 @@ pub struct ShareExport {
     pub valid_groups: Vec<String>,
     pub time_machine: bool,
     pub no_root_squash: bool,
+    pub shadow_copies: bool,
+    pub audit: bool,
     pub enabled: bool,
 }
 
@@ -88,6 +90,8 @@ impl ShareExport {
             valid_groups: share.valid_groups.clone(),
             time_machine: share.time_machine,
             no_root_squash: share.no_root_squash,
+            shadow_copies: share.shadow_copies,
+            audit: share.audit,
             enabled: share.enabled,
         }
     }
@@ -287,8 +291,18 @@ impl AppExport {
     fn project(record: &Record, app: Option<&App>) -> Self {
         let (values, redacted_keys) = match app {
             Some(app) => {
-                let (values, keys) =
-                    redact_values(&record.values, &crate::apps::secret_value_keys(&app.schema));
+                // The current catalog schema is authoritative for today's
+                // secret-marked properties, but a value that was secret when the
+                // app was installed must stay redacted even if the catalog has
+                // drifted (R-020). Union both sources of truth.
+                let mut secret_keys = crate::apps::secret_value_keys(&app.schema);
+                secret_keys.extend(
+                    record
+                        .redacted_keys
+                        .iter()
+                        .filter_map(|pointer| pointer_key_name(pointer)),
+                );
+                let (values, keys) = redact_values(&record.values, &secret_keys);
                 (Some(values), keys)
             }
             None => (None, Vec::new()),
@@ -310,6 +324,22 @@ impl AppExport {
             // map still exports as `{}` because there is nothing to hide.
             values_omitted: app.is_none() && !record.values.is_empty(),
         }
+    }
+}
+
+/// The property name at the end of a persisted JSON-pointer (`/auth/password`
+/// → `password`, `/licenseData` → `licenseData`). The config export redacts by
+/// name at any depth, so a nested pointer's leaf is the safe key to remove.
+fn pointer_key_name(pointer: &str) -> Option<String> {
+    let key = pointer
+        .rsplit('/')
+        .next()?
+        .replace("~1", "/")
+        .replace("~0", "~");
+    if key.is_empty() {
+        None
+    } else {
+        Some(key)
     }
 }
 
@@ -632,6 +662,8 @@ mod tests {
         "validGroups",
         "timeMachine",
         "noRootSquash",
+        "shadowCopies",
+        "audit",
         "enabled",
     ];
     const STORAGE_SCHEDULE_KEYS: &[&str] = &[
@@ -736,6 +768,8 @@ mod tests {
                 protocol: Protocol::Smb,
                 description: "Media".into(),
                 browseable: Some(true),
+                shadow_copies: true,
+                audit: true,
                 enabled: Some(true),
                 ..Default::default()
             })
@@ -821,6 +855,8 @@ mod tests {
 
         assert_eq!(value["shares"][0]["name"], "media");
         assert_eq!(value["shares"][0]["protocol"], "smb");
+        assert_eq!(value["shares"][0]["shadowCopies"], true);
+        assert_eq!(value["shares"][0]["audit"], true);
         assert_eq!(value["storageSchedules"][0]["kind"], "snapshot");
         assert_eq!(value["storageSchedules"][0]["cadence"], "daily");
         assert_eq!(value["buddySchedules"][0]["receivers"], json!(["peer-a"]));
@@ -998,6 +1034,43 @@ mod tests {
         let value = serde_json::to_value(export).unwrap();
         assert_eq!(value["valuesOmitted"], true);
         assert!(value.get("values").is_none(), "{value}");
+    }
+
+    #[test]
+    fn persisted_redacted_keys_are_unioned_with_the_catalog_schema() {
+        // The current schema does not mark licenseData at all; only the record
+        // remembers it was secret when the app was installed (R-020 / I-9).
+        let app = App {
+            name: "demo".into(),
+            schema: json!({
+                "type": "object",
+                "properties": { "replicas": {"type": "integer"} }
+            }),
+            ..Default::default()
+        };
+        let mut record = Record {
+            name: "demo".into(),
+            redacted_keys: vec!["/licenseData".into()],
+            ..Default::default()
+        };
+        record.values = json!({
+            "replicas": 2,
+            "licenseData": CANARY,
+            "nested": {"licenseData": CANARY}
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let value = serde_json::to_value(AppExport::project(&record, Some(&app))).unwrap();
+        assert!(value["values"].get("licenseData").is_none(), "{value}");
+        assert!(
+            value["values"]["nested"].get("licenseData").is_none(),
+            "{value}"
+        );
+        assert_eq!(value["values"]["replicas"], 2);
+        assert_eq!(value["redactedKeys"], json!(["licenseData"]));
+        assert!(!value.to_string().contains(CANARY), "{value}");
     }
 
     #[test]

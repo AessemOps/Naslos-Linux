@@ -64,6 +64,12 @@ pub struct ShareRecord {
     pub valid_groups: Vec<String>,
     pub time_machine: bool,
     pub no_root_squash: bool,
+    /// SMB shadow copies; exported since 0.7.2, defaulted for older documents.
+    #[serde(default)]
+    pub shadow_copies: bool,
+    /// SMB `full_audit`; exported since 0.7.2, defaulted for older documents.
+    #[serde(default)]
+    pub audit: bool,
     pub enabled: bool,
 }
 
@@ -589,6 +595,17 @@ async fn plan_shares(
         let allowed_hosts = shares::normalize_list(&record.allowed_hosts);
         let valid_users = shares::normalize_list(&record.valid_users);
         let valid_groups = shares::normalize_list(&record.valid_groups);
+        let existing = current
+            .iter()
+            .find(|share| share.name == record.name)
+            .cloned();
+        // A new share takes the exported SMB options; an existing share keeps
+        // its local values (the import must not silently toggle shadow copies
+        // or audit logging on a running share).
+        let (shadow_copies, audit) = match &existing {
+            Some(existing) => (existing.shadow_copies, existing.audit),
+            None => (record.shadow_copies, record.audit),
+        };
         let candidate = shares::Share {
             name: record.name.clone(),
             path: path.clone(),
@@ -601,8 +618,8 @@ async fn plan_shares(
             valid_groups: valid_groups.clone(),
             time_machine: record.time_machine,
             no_root_squash: record.no_root_squash,
-            shadow_copies: false,
-            audit: false,
+            shadow_copies,
+            audit,
             created_at: None,
             enabled: record.enabled,
         };
@@ -623,14 +640,10 @@ async fn plan_shares(
             valid_groups,
             time_machine: record.time_machine,
             no_root_squash: record.no_root_squash,
-            shadow_copies: false,
-            audit: false,
+            shadow_copies,
+            audit,
             enabled: Some(record.enabled),
         };
-        let existing = current
-            .iter()
-            .find(|share| share.name == record.name)
-            .cloned();
         let mut changes = Vec::new();
         let outcome = match &existing {
             None => Outcome::Created(None),

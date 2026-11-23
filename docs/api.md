@@ -160,7 +160,7 @@ are in-memory (a restart abandons a running job; the app record and
 | GET | `/api/domains` | List domains + cert-manager availability, plus `baseDomain`, `selectableDomains` and `ssoDomains`. Each domain carries `appRecordsDdnsEntry` and `appRecordsSupported` (provider is `ovh`/`cloudflare`) |
 | POST | `/api/domains` | Add a domain `{baseDomain, dnsProvider, acmeEmail, environment, credentialsSecret?, fields?, appRecordsDdnsEntry?}` (`fields` = provider fields; secret fields → a Secret). An explicit `credentialsSecret` must be a DNS-1123 name starting with `naslos-` (SEC-2026-D12). `appRecordsDdnsEntry` opts the domain into app CNAMEs; it must name a non-wildcard DDNS entry and the provider must be `ovh` or `cloudflare` (400 otherwise) |
 | GET | `/api/domains/{domain}` | Read one domain |
-| PUT | `/api/domains/{domain}` | Update a domain (re-renders its Issuer/Certificate) |
+| PUT | `/api/domains/{domain}` | Update the domain named by the path (re-renders its Issuer/Certificate). A body `baseDomain` must equal the path value; a mismatch is `400`, and an empty `baseDomain` is taken from the path. Omitted write-only fields are preserved: `solver` (explicit `null`/`{}` clears a provider-rendered solver; passthrough still requires one), `credentialsSecret` and `fields`/`providerConfig`. Field resolution runs on every update to a cert-manager provider, so a stored config is re-validated against the current provider schema and a `credentialsSecret` outside the DNS-1123/`naslos-` convention is `400`. Changing `dnsProvider` requires submitting the new provider's `fields` (`400` otherwise); on a provider change the old `providerConfig` is never inherited and required secret fields are enforced. `lastError` is redacted against the stored solver/provider values before it is stored or returned |
 | DELETE | `/api/domains/{domain}` | Remove a domain and its CRs |
 | GET | `/api/domains/{domain}/certificate` | Certificate readiness/conditions |
 | POST | `/api/domains/{domain}/sso` | Promote/demote a domain in the runtime SSO list: `{enabled}`. The primary is 400; demoting while an app requires auth on it, or a chart `SSO_DOMAINS` entry, is 409 |
@@ -465,7 +465,8 @@ value. All routes are admin-only (owner router).
     { "name": "media", "path": "/var/mnt/tank/media", "protocol": "smb",
       "description": "Media", "readOnly": false, "browseable": true,
       "allowedHosts": [], "validUsers": [], "validGroups": [],
-      "timeMachine": false, "noRootSquash": false, "enabled": true }
+      "timeMachine": false, "noRootSquash": false,
+      "shadowCopies": true, "audit": true, "enabled": true }
   ],
   "storageSchedules": [
     { "id": "snap-1", "kind": "snapshot", "target": "tank/media",
@@ -535,6 +536,11 @@ stripped. The default is a dry-run plan; an apply needs both query parameters:
 curl -sk -X POST "https://<naslos-host>/api/system/config/import?apply=true&confirm=apply" \
   -H "Content-Type: application/json" --data-binary @naslos-config-export.json
 ```
+
+Share records include the SMB options `shadowCopies` and `audit` (DM-4/DM-9).
+A newly created share takes the exported values; an existing share keeps its
+local SMB options because the import never toggles them. Documents produced
+before 0.7.2 omit both keys (they default to `false`).
 
 The response is a per-section report. `id` is present for server-keyed records
 that already exist, including dry-run updates; records that would be created

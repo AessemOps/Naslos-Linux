@@ -69,7 +69,7 @@ pub async fn notifications_put(State(state): State<Arc<AppState>>, body: Body) -
     {
         Ok(()) => {
             let saved = state.notifications.get_settings();
-            audit_insecure_ack(&state, "ntfy", &saved.server_url, saved.allow_insecure_http);
+            audit_insecure_ack(&state, "ntfy", &saved.server_url, saved.allow_insecure_http).await;
             json(
                 StatusCode::OK,
                 serde_json::json!({ "status": "notification settings updated" }),
@@ -83,8 +83,9 @@ pub async fn notifications_put(State(state): State<Arc<AppState>>, body: Body) -
 }
 
 /// Record an operator's explicit plaintext-HTTP acknowledgement in the audit
-/// log. Settings values (URL, token) are never included.
-fn audit_insecure_ack(state: &AppState, channel: &str, url: &str, acknowledged: bool) {
+/// log. Settings values (URL, token) are never included. The fsync-ing append
+/// runs on the blocking pool so it cannot stall a Tokio worker (FR-AUD-08).
+async fn audit_insecure_ack(state: &AppState, channel: &str, url: &str, acknowledged: bool) {
     let plaintext = url.trim().to_ascii_lowercase().starts_with("http://");
     if !plaintext || !acknowledged {
         return;
@@ -95,13 +96,19 @@ fn audit_insecure_ack(state: &AppState, channel: &str, url: &str, acknowledged: 
         Some(channel.to_string()),
         serde_json::json!({ "channel": channel, "transport": "http" }),
     );
-    if let Err(e) = state.audit.record_once(&pending, 200) {
+    if let Err(e) = state.audit.record_once_async(&pending, 200).await {
         tracing::warn!("could not audit the {channel} plaintext-HTTP acknowledgement: {e}");
     }
 }
 
 /// `POST /api/notifications/test`
 pub async fn notification_test_post(State(state): State<Arc<AppState>>) -> Response {
+    if !state.notifications.get_settings().enabled {
+        return json(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({ "error": "ntfy channel is disabled" }),
+        );
+    }
     match state.notifications.send_test().await {
         Ok(()) => json(
             StatusCode::OK,
@@ -162,7 +169,7 @@ pub async fn webhook_put(State(state): State<Arc<AppState>>, body: Body) -> Resp
     {
         Ok(()) => {
             let saved = state.webhook.get_settings();
-            audit_insecure_ack(&state, "webhook", &saved.url, saved.allow_insecure_http);
+            audit_insecure_ack(&state, "webhook", &saved.url, saved.allow_insecure_http).await;
             json(
                 StatusCode::OK,
                 serde_json::json!({ "status": "webhook settings updated" }),
