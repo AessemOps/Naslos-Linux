@@ -1543,12 +1543,7 @@ mod tests {
         );
     }
 
-    /// A manifest that disagrees with the unsigned chain summary must be
-    /// refused before any chunk is fetched (and so before any plaintext is
-    /// produced).
-    #[tokio::test]
-    async fn a_manifest_that_disagrees_with_the_summary_is_refused_before_chunks() {
-        let identity = test_identity();
+    fn signed_manifest(identity: &super::Identity, sequence: u64) -> (super::Manifest, Vec<u8>) {
         let kek = identity.kek_bytes().expect("identity KEK");
         let dek = super::super::envelope::generate_dek().expect("data key");
         let prefix = super::new_stream_prefix().expect("stream prefix");
@@ -1563,7 +1558,7 @@ mod tests {
             to_guid: "guid-b".to_string(),
             created_at: chrono::Utc::now(),
             key_id: String::new(),
-            sequence: 1,
+            sequence,
             generation: 1,
             stream_prefix: base64::engine::general_purpose::STANDARD.encode(prefix),
             chunk_plain_size: super::CHUNK_PLAIN_SIZE as i64,
@@ -1572,8 +1567,18 @@ mod tests {
                 .expect("wrap the data key"),
             signature: String::new(),
         };
-        manifest.sign(&identity).expect("sign the test manifest");
-        let manifest_body = serde_json::to_vec(&manifest).expect("serialize the test manifest");
+        manifest.sign(identity).expect("sign the test manifest");
+        let body = serde_json::to_vec(&manifest).expect("serialize the test manifest");
+        (manifest, body)
+    }
+
+    /// A manifest that disagrees with the unsigned chain summary must be
+    /// refused before any chunk is fetched (and so before any plaintext is
+    /// produced).
+    #[tokio::test]
+    async fn a_manifest_that_disagrees_with_the_summary_is_refused_before_chunks() {
+        let identity = test_identity();
+        let (_, manifest_body) = signed_manifest(&identity, 1);
         let chunk_requests = Arc::new(AtomicUsize::new(0));
         let counter = chunk_requests.clone();
         let (base, server) = http_stub(move |_method, path| {
@@ -1621,6 +1626,72 @@ mod tests {
             chunk_requests.load(Ordering::Relaxed),
             0,
             "no chunk may be fetched for a manifest that disagrees with the summary"
+        );
+    }
+
+    /// The default restore path (no `--chain`) must keep the restore chain
+    /// empty so the local publish anchor still refuses a replayed older signed
+    /// chain; the summary cross-check fields alone are not a freshness check.
+    #[tokio::test]
+    async fn a_default_restore_refuses_a_replayed_older_chain_against_the_local_anchor() {
+        let identity = test_identity();
+        let (manifest, body) = signed_manifest(&identity, 1);
+        let chunk_requests = Arc::new(AtomicUsize::new(0));
+        let counter = chunk_requests.clone();
+        let (base, server) = http_stub(move |_method, path| {
+            if path.starts_with("/api/buddy/v1/status") {
+                (200, "OK", b"{}".to_vec())
+            } else if path.starts_with("/api/buddy/v1/manifest/") {
+                (200, "OK", body.clone())
+            } else if path.starts_with("/api/buddy/v1/chunks/") {
+                counter.fetch_add(1, Ordering::Relaxed);
+                (404, "Not Found", b"{}".to_vec())
+            } else {
+                (404, "Not Found", b"{}".to_vec())
+            }
+        })
+        .await;
+
+        let mut client = super::Client::new(&base, identity);
+        let anchor_dir = tempfile::tempdir().expect("tempdir");
+        client.sequence_dir = anchor_dir.path().display().to_string();
+        client
+            .record_published_sequence("naslos-test/data", 2)
+            .expect("record the local publish anchor");
+
+        let mut sink = tokio::io::sink();
+        let summary = ChainSummary {
+            chain: manifest.chain.clone(),
+            kind: manifest.kind.clone(),
+            from_snapshot: manifest.from_snapshot.clone(),
+            to_snapshot: manifest.to_snapshot.clone(),
+            from_guid: manifest.from_guid.clone(),
+            to_guid: manifest.to_guid.clone(),
+            sequence: manifest.sequence,
+            ..Default::default()
+        };
+        let (_, error) = client
+            .restore(super::RestoreOptions {
+                source: "naslos-test/data",
+                chain: "",
+                out: &mut sink,
+                progress: None,
+                skip_signature_check: false,
+                expected_sequence: None,
+                expected_from_guid: &summary.from_guid,
+                expected_to_guid: &summary.to_guid,
+                expected_kind: &summary.kind,
+                expected_from_snapshot: &summary.from_snapshot,
+                expected_to_snapshot: &summary.to_snapshot,
+            })
+            .await;
+        server.abort();
+        let error = error.expect("a replayed older chain must be refused by the local anchor");
+        assert!(error.contains("stale manifest"), "{error}");
+        assert_eq!(
+            chunk_requests.load(Ordering::Relaxed),
+            0,
+            "no chunk may be fetched for a replayed chain"
         );
     }
 }

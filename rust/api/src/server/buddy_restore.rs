@@ -452,11 +452,9 @@ pub async fn restore(State(state): State<Arc<AppState>>, body: Body) -> Response
 
 /// Whether a rollback/destroy failure means the snapshot no longer exists.
 ///
-/// The success path removes the progress marker before destroying the
-/// pre-restore snapshot. A crash (or a failed unlink) in that window leaves a
-/// marker naming a snapshot that is already gone; such a marker is stale, not
-/// a recovery blocker. Treat a missing snapshot as already recovered instead
-/// of returning a permanent 409.
+/// This is only a secondary signal: the agent redacts a missing-snapshot
+/// `ZfsError` to a 500 (`internal error (ref …)`), not a 404, so recovery
+/// probes the live snapshot listing before relying on it.
 fn snapshot_already_gone(error: &crate::agent::AgentError) -> bool {
     if error.status == 404 {
         return true;
@@ -467,12 +465,75 @@ fn snapshot_already_gone(error: &crate::agent::AgentError) -> bool {
         .any(|needle| message.contains(needle))
 }
 
+/// Whether the live agent still has `dataset@snapshot`. `Ok(false)` means a
+/// successful listing does not contain it (it is gone); `Err` means the
+/// listing itself failed, so the snapshot's state is unknown.
+async fn live_snapshot_exists(
+    agent: &crate::agent::Client,
+    dataset: &str,
+    snapshot: &str,
+) -> Result<bool, String> {
+    let paths = agent
+        .snapshot_paths(dataset)
+        .await
+        .map_err(|e| format!("the agent could not list the snapshots of {dataset}: {e}"))?;
+    let full = format!("{dataset}@{snapshot}");
+    Ok(paths.iter().any(|path| path == &full))
+}
+
+/// Whether the dataset still exists according to the live dataset listing.
+async fn live_dataset_exists(agent: &crate::agent::Client, dataset: &str) -> Result<bool, String> {
+    let datasets = agent
+        .list_datasets()
+        .await
+        .map_err(|e| format!("the agent could not list datasets: {e}"))?;
+    Ok(datasets.iter().any(|entry| entry.name == dataset))
+}
+
+fn remove_marker(progress_path: &str) {
+    if let Err(e) = std::fs::remove_file(progress_path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("buddy restore: cannot remove the restore marker {progress_path}: {e}");
+        }
+    }
+}
+
+/// A failed receive whose rollback point is gone cannot be undone. Keep the
+/// marker while the destination still exists (it may be half-applied); drop it
+/// only when the dataset itself is gone (nothing left to recover).
+async fn keep_marker_without_rollback(
+    agent: &crate::agent::Client,
+    dataset: &str,
+    snapshot: &str,
+    progress_path: &str,
+) -> Result<(), String> {
+    match live_dataset_exists(agent, dataset).await {
+        Ok(false) => {
+            tracing::warn!(
+                "buddy restore: {dataset} no longer exists, so its failed restore has nothing left to recover; \
+                 dropping the restore marker"
+            );
+            remove_marker(progress_path);
+            Ok(())
+        }
+        Ok(true) => Err(format!(
+            "the restore of {dataset} failed and its rollback snapshot {snapshot:?} is gone, so the destination may be half-applied \
+             with no rollback point; the restore marker {progress_path} is kept for inspection"
+        )),
+        Err(e) => Err(format!(
+            "the restore of {dataset} failed and its rollback snapshot {snapshot:?} is gone; {e}, so the destination could not be checked; \
+             the restore marker {progress_path} is kept because it may be half-applied"
+        )),
+    }
+}
+
 /// Undo an interrupted restore recorded in `prev`. The snapshot (or the
 /// freshly created destination) is destroyed only after the rollback
 /// succeeded, and the marker is removed only after that cleanup. On any
 /// failure both stay put and the returned error names the recovery point. A
-/// missing snapshot is a stale marker from the success-path crash window and
-/// is treated as already recovered.
+/// snapshot absent from a successful live listing is a stale marker from the
+/// success-path crash window and is treated as already recovered; a listing
+/// failure is a hard failure.
 async fn recover_interrupted_restore(
     agent: &crate::agent::Client,
     dataset: &str,
@@ -480,37 +541,54 @@ async fn recover_interrupted_restore(
     progress_path: &str,
 ) -> Result<(), String> {
     if !prev.snapshot.is_empty() {
-        match agent.rollback_snapshot(dataset, &prev.snapshot).await {
-            Ok(()) => match agent.destroy_snapshot(dataset, &prev.snapshot).await {
-                Ok(()) => {}
-                Err(e) if snapshot_already_gone(&e) => {
-                    tracing::warn!(
-                        "buddy restore: the interrupted restore's snapshot {} of {dataset} is already gone",
-                        prev.snapshot
-                    );
-                }
-                Err(e) => {
-                    return Err(format!(
-                        "a previous restore of {dataset} was rolled back to snapshot {:?}, but deleting that snapshot failed: {e}; \
-                         the snapshot and the restore marker {progress_path} are kept for cleanup",
-                        prev.snapshot
-                    ))
-                }
-            },
-            Err(e) if snapshot_already_gone(&e) => {
+        match live_snapshot_exists(agent, dataset, &prev.snapshot).await {
+            Ok(false) => {
                 tracing::warn!(
-                    "buddy restore: the interrupted restore of {dataset} names snapshot {:?}, which no longer exists; \
-                     treating the stale marker as recovered",
+                    "buddy restore: the interrupted restore of {dataset} names snapshot {:?}, which is absent from the live snapshot \
+                     listing; treating the stale marker as recovered",
                     prev.snapshot
                 );
             }
             Err(e) => {
                 return Err(format!(
-                    "a previous restore of {dataset} was interrupted and rolling it back to snapshot {:?} failed: {e}; \
-                     the snapshot and the restore marker {progress_path} are kept, so the dataset can still be recovered",
-                    prev.snapshot
+                    "a previous restore of {dataset} is recorded, but {e}; the snapshot and the restore marker {progress_path} are kept, \
+                     so the dataset can still be recovered"
                 ))
             }
+            Ok(true) => match agent.rollback_snapshot(dataset, &prev.snapshot).await {
+                Ok(()) => match agent.destroy_snapshot(dataset, &prev.snapshot).await {
+                    Ok(()) => {}
+                    Err(e) if snapshot_already_gone(&e) => {
+                        tracing::warn!(
+                            "buddy restore: the interrupted restore's snapshot {} of {dataset} is already gone",
+                            prev.snapshot
+                        );
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "a previous restore of {dataset} was rolled back to snapshot {:?}, but deleting that snapshot failed: {e}; \
+                             the snapshot and the restore marker {progress_path} are kept for cleanup",
+                            prev.snapshot
+                        ))
+                    }
+                },
+                Err(e) if snapshot_already_gone(&e) => {
+                    // The snapshot disappeared between the probe and the
+                    // rollback. The listing is authoritative for "%s gone".
+                    tracing::warn!(
+                        "buddy restore: the interrupted restore of {dataset} names snapshot {:?}, which no longer exists; \
+                         treating the stale marker as recovered",
+                        prev.snapshot
+                    );
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "a previous restore of {dataset} was interrupted and rolling it back to snapshot {:?} failed: {e}; \
+                         the snapshot and the restore marker {progress_path} are kept, so the dataset can still be recovered",
+                        prev.snapshot
+                    ))
+                }
+            },
         }
     } else {
         // The interrupted attempt created the destination from nothing and
@@ -527,11 +605,7 @@ async fn recover_interrupted_restore(
             }
         }
     }
-    if let Err(e) = std::fs::remove_file(progress_path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!("buddy restore: cannot remove the restore marker {progress_path}: {e}");
-        }
-    }
+    remove_marker(progress_path);
     Ok(())
 }
 
@@ -544,6 +618,19 @@ async fn cleanup_failed_restore(
     progress_path: &str,
 ) -> Result<(), String> {
     if !progress.snapshot.is_empty() {
+        let snapshot_exists = match live_snapshot_exists(agent, dataset, &progress.snapshot).await {
+            Ok(exists) => exists,
+            Err(e) => {
+                return Err(format!(
+                    "the restore of {dataset} failed, and {e}; the restore marker {progress_path} is kept because the destination may be \
+                     half-applied"
+                ))
+            }
+        };
+        if !snapshot_exists {
+            return keep_marker_without_rollback(agent, dataset, &progress.snapshot, progress_path)
+                .await;
+        }
         match agent.rollback_snapshot(dataset, &progress.snapshot).await {
             Ok(()) => match agent.destroy_snapshot(dataset, &progress.snapshot).await {
                 Ok(()) => {}
@@ -562,15 +649,16 @@ async fn cleanup_failed_restore(
                 }
             },
             Err(e) if snapshot_already_gone(&e) => {
-                // Nothing is left to roll back to. The receive failed, so the
-                // caller still receives the original error; dropping the
-                // marker keeps the next attempt from blocking on a gone
-                // snapshot.
-                tracing::warn!(
-                    "buddy restore: the snapshot {} of {dataset} is already gone, so the partial receive could not be rolled back; \
-                     the restore marker {progress_path} is dropped, verify the destination before retrying",
-                    progress.snapshot
-                );
+                // The snapshot vanished between the probe and the rollback;
+                // the receive failed, so keep the marker if the destination
+                // may still be half-applied.
+                return keep_marker_without_rollback(
+                    agent,
+                    dataset,
+                    &progress.snapshot,
+                    progress_path,
+                )
+                .await;
             }
             Err(e) => {
                 return Err(format!(
@@ -595,11 +683,7 @@ async fn cleanup_failed_restore(
             }
         }
     }
-    if let Err(e) = std::fs::remove_file(progress_path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!("buddy restore: cannot remove the restore marker {progress_path}: {e}");
-        }
-    }
+    remove_marker(progress_path);
     Ok(())
 }
 
@@ -681,26 +765,31 @@ mod tests {
         RestoreProgress,
     };
 
-    /// A stub agent that answers every request with one status, for driving
-    /// the snapshot recovery paths without a node.
-    async fn agent_stub(
-        status: u16,
-        reason: &'static str,
-        body: &'static str,
-    ) -> (String, tokio::task::JoinHandle<()>) {
+    /// A stub agent whose responses are routed by method and path.
+    async fn agent_stub<F>(handler: F) -> (String, tokio::task::JoinHandle<()>)
+    where
+        F: Fn(&str, &str) -> (u16, &'static str, &'static str) + Send + Sync + 'static,
+    {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind the test agent");
         let addr = listener.local_addr().expect("local address");
+        let handler = std::sync::Arc::new(handler);
         let handle = tokio::spawn(async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
                     break;
                 };
+                let handler = handler.clone();
                 tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     let mut buf = [0u8; 8192];
-                    let _ = socket.read(&mut buf).await;
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]);
+                    let mut parts = head.lines().next().unwrap_or("").split_whitespace();
+                    let method = parts.next().unwrap_or("");
+                    let path = parts.next().unwrap_or("");
+                    let (status, reason, body) = handler(method, path);
                     let head = format!(
                         "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                         body.len()
@@ -779,14 +868,28 @@ mod tests {
     }
 
     /// The success path removes the marker before the snapshot; a crash in
-    /// that window leaves a marker naming a gone snapshot. Recovery must drop
-    /// the stale marker, not return a permanent 409.
+    /// that window leaves a marker naming a gone snapshot. Recovery probes the
+    /// live snapshot listing and drops the stale marker instead of returning a
+    /// permanent 409 (the agent reports a missing snapshot to rollback as a
+    /// redacted 500, so the probe is what makes this work in production).
     #[tokio::test]
     async fn a_marker_whose_snapshot_is_gone_is_recovered_not_a_permanent_conflict() {
         let dir = tempfile::tempdir().expect("tempdir");
         let marker = dir.path().join("restore.json");
         let progress = write_marker(&marker, "buddy-restore-gone");
-        let (url, stub) = agent_stub(404, "Not Found", r#"{"error":"snapshot not found"}"#).await;
+        let (url, stub) = agent_stub(|method, path| {
+            if method == "GET" && path.starts_with("/api/v1/snapshots/test/restored") {
+                (200, "OK", "[]")
+            } else {
+                // A rollback here would be a bug: the probe must short-circuit.
+                (
+                    500,
+                    "Internal Server Error",
+                    r#"{"error":"unexpected request"}"#,
+                )
+            }
+        })
+        .await;
         let agent = crate::agent::Client::new(&url, "test", "").expect("agent client");
 
         let result = recover_interrupted_restore(
@@ -804,6 +907,36 @@ mod tests {
         );
     }
 
+    /// A listing failure is a hard failure: the snapshot's state is unknown,
+    /// so the marker must stay.
+    #[tokio::test]
+    async fn a_snapshot_listing_error_keeps_the_marker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("restore.json");
+        let progress = write_marker(&marker, "buddy-restore-kept");
+        let (url, stub) =
+            agent_stub(|_method, _path| (500, "Internal Server Error", r#"{"error":"zfs busy"}"#))
+                .await;
+        let agent = crate::agent::Client::new(&url, "test", "").expect("agent client");
+
+        let result = recover_interrupted_restore(
+            &agent,
+            "test/restored",
+            &progress,
+            &marker.display().to_string(),
+        )
+        .await;
+        stub.abort();
+        assert!(
+            result.is_err(),
+            "a listing error must not be assumed to mean gone"
+        );
+        assert!(
+            marker.exists(),
+            "the marker must be kept when the state is unknown"
+        );
+    }
+
     /// A rollback that fails for a real reason still keeps the recovery point
     /// and names the snapshot in the error.
     #[tokio::test]
@@ -811,11 +944,19 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let marker = dir.path().join("restore.json");
         let progress = write_marker(&marker, "buddy-restore-kept");
-        let (url, stub) = agent_stub(
-            500,
-            "Internal Server Error",
-            r#"{"error":"rollback failed"}"#,
-        )
+        let (url, stub) = agent_stub(|method, path| {
+            if method == "GET" && path.starts_with("/api/v1/snapshots/test/restored") {
+                (200, "OK", r#"["test/restored@buddy-restore-kept"]"#)
+            } else if method == "POST" && path.starts_with("/api/v1/rollback/") {
+                (
+                    500,
+                    "Internal Server Error",
+                    r#"{"error":"rollback failed"}"#,
+                )
+            } else {
+                (404, "Not Found", r#"{"error":"unexpected request"}"#)
+            }
+        })
         .await;
         let agent = crate::agent::Client::new(&url, "test", "").expect("agent client");
 
@@ -832,13 +973,57 @@ mod tests {
         assert!(marker.exists(), "the marker must be kept for recovery");
     }
 
-    /// The same missing-snapshot rule applies to the failed in-flight cleanup.
+    /// A failed receive whose snapshot is gone but whose destination still
+    /// exists may be half-applied: keep the marker and say so.
     #[tokio::test]
-    async fn a_failed_restore_with_a_gone_snapshot_drops_the_marker() {
+    async fn a_failed_restore_with_a_gone_snapshot_keeps_the_marker_while_the_dataset_exists() {
         let dir = tempfile::tempdir().expect("tempdir");
         let marker = dir.path().join("restore.json");
         let progress = write_marker(&marker, "buddy-restore-gone");
-        let (url, stub) = agent_stub(404, "Not Found", r#"{"error":"snapshot not found"}"#).await;
+        let (url, stub) = agent_stub(|method, path| {
+            if method == "GET" && path.starts_with("/api/v1/snapshots/test/restored") {
+                (200, "OK", "[]")
+            } else if method == "GET" && path == "/api/v1/datasets" {
+                (200, "OK", r#"[{"name":"test/restored"}]"#)
+            } else {
+                (404, "Not Found", r#"{"error":"unexpected request"}"#)
+            }
+        })
+        .await;
+        let agent = crate::agent::Client::new(&url, "test", "").expect("agent client");
+
+        let error = cleanup_failed_restore(
+            &agent,
+            "test/restored",
+            &progress,
+            &marker.display().to_string(),
+        )
+        .await
+        .expect_err("a half-applied destination with no rollback point must be reported");
+        stub.abort();
+        assert!(error.contains("test/restored"), "{error}");
+        assert!(error.contains("half-applied"), "{error}");
+        assert!(marker.exists(), "the marker must be kept for inspection");
+    }
+
+    /// A failed receive whose snapshot and dataset are both gone has nothing
+    /// to recover, so the marker is dropped.
+    #[tokio::test]
+    async fn a_failed_restore_with_a_gone_dataset_drops_the_marker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("restore.json");
+        let progress = write_marker(&marker, "buddy-restore-gone");
+        let (url, stub) = agent_stub(|method, path| {
+            if method == "GET"
+                && (path.starts_with("/api/v1/snapshots/test/restored")
+                    || path == "/api/v1/datasets")
+            {
+                (200, "OK", "[]")
+            } else {
+                (404, "Not Found", r#"{"error":"unexpected request"}"#)
+            }
+        })
+        .await;
         let agent = crate::agent::Client::new(&url, "test", "").expect("agent client");
 
         let result = cleanup_failed_restore(
@@ -852,7 +1037,40 @@ mod tests {
         assert!(result.is_ok(), "{result:?}");
         assert!(
             !marker.exists(),
-            "the marker must be dropped when there is nothing left to roll back to"
+            "a marker for a dataset that no longer exists has nothing to recover"
         );
+    }
+
+    /// A rollback that genuinely succeeds is the other case that drops the
+    /// marker after a failed receive.
+    #[tokio::test]
+    async fn a_failed_restore_that_rolls_back_cleanly_drops_the_marker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("restore.json");
+        let progress = write_marker(&marker, "buddy-restore-kept");
+        let (url, stub) = agent_stub(|method, path| {
+            if method == "GET" && path.starts_with("/api/v1/snapshots/test/restored") {
+                (200, "OK", r#"["test/restored@buddy-restore-kept"]"#)
+            } else if (method == "POST" && path.starts_with("/api/v1/rollback/"))
+                || (method == "DELETE" && path.starts_with("/api/v1/snapshots/test/restored"))
+            {
+                (200, "OK", "null")
+            } else {
+                (404, "Not Found", r#"{"error":"unexpected request"}"#)
+            }
+        })
+        .await;
+        let agent = crate::agent::Client::new(&url, "test", "").expect("agent client");
+
+        let result = cleanup_failed_restore(
+            &agent,
+            "test/restored",
+            &progress,
+            &marker.display().to_string(),
+        )
+        .await;
+        stub.abort();
+        assert!(result.is_ok(), "{result:?}");
+        assert!(!marker.exists(), "a clean rollback finishes the recovery");
     }
 }

@@ -739,6 +739,15 @@ async fn cmd_restore(
             .cloned()
             .ok_or_else(|| format!("chain {chain} is not stored for {source}"))?
     };
+    // Keep the default path's restore chain empty so `Client::restore` still
+    // runs its last-published freshness check against the local anchor; only
+    // an explicit --chain pins the manifest to that chain id. The summary
+    // cross-check above applies in both cases.
+    let restore_chain = if chain.is_empty() {
+        chain.as_str()
+    } else {
+        expected.chain.as_str()
+    };
 
     enum Out {
         Sink,
@@ -764,7 +773,7 @@ async fn cmd_restore(
             let (result, error) = client
                 .restore(RestoreOptions {
                     source: &source,
-                    chain: &expected.chain,
+                    chain: restore_chain,
                     out: &mut sink,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
@@ -786,7 +795,7 @@ async fn cmd_restore(
             let (result, error) = client
                 .restore(RestoreOptions {
                     source: &source,
-                    chain: &expected.chain,
+                    chain: restore_chain,
                     out: &mut stdout,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
@@ -813,7 +822,7 @@ async fn cmd_restore(
             let (result, error) = client
                 .restore(RestoreOptions {
                     source: &source,
-                    chain: &expected.chain,
+                    chain: restore_chain,
                     out: &mut file,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
@@ -842,7 +851,7 @@ async fn cmd_restore(
             let (result, error) = client
                 .restore(RestoreOptions {
                     source: &source,
-                    chain: &expected.chain,
+                    chain: restore_chain,
                     out: &mut write_half,
                     progress: progress_ref.map(|f| f as &(dyn Fn(i64, usize, i64) + Send + Sync)),
                     skip_signature_check: false,
