@@ -42,6 +42,9 @@ const ok = (cond, msg) => {
   console.log(`   ok: ${msg}`);
 };
 
+// Everything below runs under try/finally: a failed assertion must still stop
+// the VM and remove the VM/image, never leave a running guest behind.
+try {
 // Step 2: capabilities
 step('capabilities');
 {
@@ -173,7 +176,9 @@ step('snapshot + restore while stopped');
   ok(res.status() < 300, `snapshot accepted: ${res.status()} ${await res.text()}`);
   const list = await (await ctx.get(`/api/virt/vms/${VM}/snapshots`)).json();
   ok(JSON.stringify(list).includes('drill-snap'), 'snapshot listed');
-  const restore = await ctx.post(`/api/virt/vms/${VM}/snapshots/drill-snap/restore`);
+  const restore = await ctx.post(
+    `/api/virt/vms/${VM}/snapshots/drill-snap/restore?confirm=${encodeURIComponent(VM)}`
+  );
   ok(restore.status() < 300, `restore (stopped) accepted: ${restore.status()}`);
 }
 
@@ -188,7 +193,9 @@ step('restore refuses while running');
     const vm = Array.isArray(vms) ? vms.find((v) => v.name === VM) : vms;
     if (vm && vm.state === 'running') break;
   }
-  const restore = await ctx.post(`/api/virt/vms/${VM}/snapshots/drill-snap/restore`);
+  const restore = await ctx.post(
+    `/api/virt/vms/${VM}/snapshots/drill-snap/restore?confirm=${encodeURIComponent(VM)}`
+  );
   ok(restore.status() === 409, `restore while running refused: ${restore.status()} ${(await restore.json()).error || ''}`);
 }
 
@@ -203,7 +210,7 @@ step('force stop + delete');
     const vm = Array.isArray(vms) ? vms.find((v) => v.name === VM) : vms;
     if (vm && vm.state === 'stopped') break;
   }
-  const del = await ctx.delete(`/api/virt/vms/${VM}`);
+  const del = await ctx.delete(`/api/virt/vms/${VM}?confirm=${encodeURIComponent(VM)}`);
   ok(del.status() < 300, `delete accepted: ${del.status()} ${await del.text()}`);
   const ds = await (await ctx.get('/api/datasets')).json();
   ok(
@@ -219,5 +226,25 @@ step('delete imported image');
   ok(res.status() < 300, `image deleted: ${res.status()} ${await res.text()}`);
 }
 
-await ctx.dispose();
 console.log('\nLIVE DRILL PASSED');
+} finally {
+  // Best-effort teardown. Each call is independent so one failure (for
+  // example, the VM was never created) cannot skip the image cleanup.
+  const cleanup = async (label, fn) => {
+    try {
+      await fn();
+    } catch (e) {
+      console.error(`cleanup (${label}) failed: ${e}`);
+    }
+  };
+  await cleanup('force-stop', () =>
+    ctx.post(`/api/virt/vms/${VM}/force-stop?confirm=${encodeURIComponent(VM)}`)
+  );
+  await cleanup('delete VM', () =>
+    ctx.delete(`/api/virt/vms/${VM}?confirm=${encodeURIComponent(VM)}`)
+  );
+  await cleanup('delete image', () =>
+    ctx.delete(`/api/virt/images/${IMAGE}?pool=${encodeURIComponent(POOL)}`)
+  );
+  await ctx.dispose();
+}
