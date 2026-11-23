@@ -30,6 +30,10 @@ pub struct Status {
     pub version: String,
     #[serde(default)]
     pub receiver: String,
+    /// Per-instance signing audience (R-017). Older receivers omit it, so the
+    /// client falls back to `receiver` for compatibility.
+    #[serde(default)]
+    pub audience: String,
     #[serde(default, rename = "keyId")]
     pub key_id: String,
     #[serde(default, rename = "freeBytes")]
@@ -513,7 +517,11 @@ impl Client {
         match result {
             Ok((data, _)) => {
                 if let Ok(status) = serde_json::from_slice::<Status>(&data) {
-                    cache.audience = status.receiver;
+                    cache.audience = if status.audience.is_empty() {
+                        status.receiver
+                    } else {
+                        status.audience
+                    };
                 }
                 Ok(cache.audience.clone())
             }
@@ -604,7 +612,11 @@ impl Client {
         let status: Status =
             serde_json::from_slice(&data).map_err(|e| format!("parsing status: {e}"))?;
         let mut cache = self.audience.lock().await;
-        cache.audience = status.receiver.clone();
+        cache.audience = if status.audience.is_empty() {
+            status.receiver.clone()
+        } else {
+            status.audience.clone()
+        };
         cache.known = true;
         Ok(status)
     }

@@ -42,6 +42,11 @@ pub struct Receiver {
     pub peers: Arc<PeerStore>,
     pub auth: Arc<Authenticator>,
     pub name: String,
+    /// Audience that signed peer requests must name. It was the operator-chosen
+    /// `name`, which is not unique, so two receivers called "naslos" accepted
+    /// each other's replayed requests (R-017). A per-instance random id makes
+    /// it unique; it is published by the read-only `/status` discovery call.
+    pub audience: String,
     pub version: String,
     pub enroll_token: String,
     pub enroll_open: bool,
@@ -61,6 +66,7 @@ impl Receiver {
             peers,
             auth,
             name: name.to_string(),
+            audience: instance_audience(name),
             version: std::env::var("BUDDY_VERSION").unwrap_or_else(|_| "0.1.0".to_string()),
             enroll_token: String::new(),
             enroll_open: false,
@@ -68,6 +74,25 @@ impl Receiver {
             enroll_used: Mutex::new(false),
         }
     }
+}
+
+/// Build the signing audience for this receiver instance. The receiver has no
+/// mandatory keypair of its own, so use a per-process random id rather than the
+/// non-unique display name (R-017). The name is kept as a readable prefix.
+fn instance_audience(name: &str) -> String {
+    let name = match name.trim() {
+        "" => "receiver",
+        name => name,
+    };
+    let mut id = [0u8; 16];
+    if getrandom::fill(&mut id).is_err() {
+        return format!(
+            "naslos-buddy:{name}:{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+    }
+    let id: String = id.iter().map(|b| format!("{b:02x}")).collect();
+    format!("naslos-buddy:{name}:{id}")
 }
 
 fn bad_request(msg: &str) -> Response {
@@ -116,7 +141,7 @@ fn authenticate(
             body_digest,
             method,
             uri,
-            &receiver.name,
+            &receiver.audience,
             chrono::Utc::now(),
         )
         .map_err(|e| json(StatusCode::UNAUTHORIZED, serde_json::json!({ "error": e })))
@@ -215,6 +240,7 @@ pub async fn status(
         serde_json::json!({
             "version": receiver.version,
             "receiver": receiver.name,
+            "audience": receiver.audience,
             "keyId": peer.fingerprint,
             "freeBytes": free,
             "usedBytes": used,
@@ -795,7 +821,28 @@ impl axum::extract::FromRef<Arc<AppState>> for BuddyState {
 
 #[cfg(test)]
 mod tests {
-    use super::enrollment_quota;
+    use super::{enrollment_quota, instance_audience, Receiver};
+    use std::sync::Arc;
+
+    fn receiver_named(name: &str) -> Receiver {
+        let peers = Arc::new(crate::buddy::peers::PeerStore::new(""));
+        let auth = Arc::new(crate::buddy::auth::Authenticator::new(peers.clone()));
+        let store = Arc::new(crate::buddy::store::Store::new("/nonexistent-buddy-test"));
+        Receiver::new(store, peers, auth, name)
+    }
+
+    #[test]
+    fn two_receivers_with_the_same_name_get_distinct_audiences() {
+        let a = receiver_named("naslos");
+        let b = receiver_named("naslos");
+        assert_eq!(a.name, b.name);
+        assert_ne!(
+            a.audience, b.audience,
+            "equal operator names must not share a signing audience"
+        );
+        assert!(!a.audience.is_empty());
+        assert_eq!(instance_audience("  ").matches(':').count(), 2);
+    }
 
     #[test]
     fn enrollment_cannot_raise_its_own_quota() {
