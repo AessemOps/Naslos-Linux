@@ -373,10 +373,17 @@ async fn write_chunk_capped(
     }
 
     let mut file = if offset == 0 {
-        if session_kind(&path).is_some() {
+        if session_kind(&path) == Some(SessionKind::Import) {
             return Err(format!(
-                "another upload or import of {name:?} is already in progress"
+                "an import of {name:?} is in progress; wait for it to finish"
             ));
+        }
+        // A fresh upload at offset 0 is an explicit restart: the UI resets to
+        // zero after a stale-offset error, and the operator re-uploading a
+        // file must not be blocked by an abandoned session. The per-name lock
+        // still serializes chunks, so two uploads never write concurrently.
+        if upload_active(&path) {
+            finish_upload(&path);
         }
         let exists = refuse_symlink(&path, "the image").await?;
         if exists && !confirm_overwrite {
@@ -417,7 +424,7 @@ async fn write_chunk_capped(
         }
         if meta.len() != offset {
             return Err(format!(
-                "offset {offset} does not match the {} bytes uploaded so far; send chunks in order",
+                "offset {offset} does not match the {} bytes uploaded so far; restart from offset 0",
                 meta.len()
             ));
         }
@@ -488,14 +495,24 @@ async fn write_chunk_capped(
 
 /// Import an image from a URL. The target is re-resolved and re-checked on
 /// every redirect hop; an optional sha256 pins the content.
-pub async fn import_url(
+///
+/// `before_publish` runs immediately before the staged file replaces the
+/// library entry. The caller uses it to re-check that no VM started using the
+/// image while the (possibly long) download ran; returning an error discards
+/// the staged file and leaves the previous image untouched.
+pub async fn import_url<F, Fut>(
     root: &Path,
     pool: &str,
     name: &str,
     url: &str,
     sha256: Option<&str>,
     confirm_overwrite: bool,
-) -> Result<u64, String> {
+    before_publish: F,
+) -> Result<u64, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
     use tokio::io::AsyncWriteExt;
 
     if !valid_pool_component(pool) {
@@ -623,10 +640,29 @@ pub async fn import_url(
             ));
         }
     }
-    tokio::fs::rename(&part, &path)
-        .await
-        .map_err(|e| format!("installing {}: {e}", path.display()))?;
+    // A VM may have started using this image while the download ran. Publish
+    // is the last point before the library entry changes, so the attachment
+    // check and the rename are adjacent (vmd's supervisor state is the source
+    // of truth, and a start can only race this narrow window).
+    publish_import(&part, &path, before_publish()).await?;
     Ok(written)
+}
+
+/// Publish a fully downloaded staging file after the caller's last-moment
+/// check. A refused check removes the staged file and leaves the library
+/// entry untouched.
+async fn publish_import(
+    part: &Path,
+    path: &Path,
+    before_publish: impl std::future::Future<Output = Result<(), String>>,
+) -> Result<(), String> {
+    if let Err(e) = before_publish.await {
+        let _ = tokio::fs::remove_file(part).await;
+        return Err(e);
+    }
+    tokio::fs::rename(part, path)
+        .await
+        .map_err(|e| format!("installing {}: {e}", path.display()))
 }
 
 /// Resolve a relative redirect against the current URL.
@@ -859,6 +895,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("does not match"), "{err}");
+        assert!(err.contains("restart from offset 0"), "{err}");
         // The staged file is unchanged, so the correct offset still works.
         write_chunk(dir.path(), "tank", "a.iso", 4, true, false, body(b"56"))
             .await
@@ -869,6 +906,50 @@ mod tests {
                 .unwrap(),
             b"123456"
         );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_upload_at_zero_recovers_from_a_stale_offset() {
+        let dir = root();
+        write_chunk(dir.path(), "tank", "a.iso", 0, false, false, body(b"1234"))
+            .await
+            .unwrap();
+        // A stale offset tells the UI to restart from zero; that restart must
+        // be accepted even though the abandoned session is still registered.
+        let total = write_chunk(dir.path(), "tank", "a.iso", 0, true, false, body(b"fresh"))
+            .await
+            .expect("restart from zero");
+        assert_eq!(total, 5);
+        assert_eq!(
+            tokio::fs::read(dir.path().join("tank/vms/isos/a.iso"))
+                .await
+                .unwrap(),
+            b"fresh"
+        );
+        // The superseded stream cannot keep appending.
+        let err = write_chunk(dir.path(), "tank", "a.iso", 4, false, false, body(b"x"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("no upload"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_lost_staged_file_tells_the_client_to_start_at_zero() {
+        let dir = root();
+        write_chunk(dir.path(), "tank", "a.iso", 0, false, false, body(b"1234"))
+            .await
+            .unwrap();
+        tokio::fs::remove_file(dir.path().join("tank/vms/isos/a.iso.part"))
+            .await
+            .unwrap();
+        let err = write_chunk(dir.path(), "tank", "a.iso", 4, false, false, body(b"x"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("start at offset 0"), "{err}");
+        // The lingering session must not block the recovery upload.
+        write_chunk(dir.path(), "tank", "a.iso", 0, true, false, body(b"ok"))
+            .await
+            .expect("restart after the staged file was lost");
     }
 
     #[tokio::test]
@@ -1028,6 +1109,32 @@ mod tests {
         assert!(err.contains("limit"), "{err}");
         assert!(list(dir.path(), "tank").await.is_empty());
         assert!(!dir.path().join("tank/vms/isos/a.iso.part").exists());
+    }
+
+    #[tokio::test]
+    async fn a_refused_publish_check_keeps_the_previous_image() {
+        let dir = root();
+        let part = dir.path().join("new.part");
+        let live = dir.path().join("live.iso");
+        tokio::fs::write(&part, b"new").await.unwrap();
+        tokio::fs::write(&live, b"old").await.unwrap();
+
+        let err = publish_import(&part, &live, async {
+            Err("cannot replace \"live.iso\": VM vm1 is running attaches it".to_string())
+        })
+        .await
+        .unwrap_err();
+        assert!(err.contains("vm1"), "{err}");
+        assert_eq!(tokio::fs::read(&live).await.unwrap(), b"old");
+        assert!(!part.exists(), "a refused publish removes the staged file");
+
+        // With no refusal, the staged file replaces the entry atomically.
+        tokio::fs::write(&part, b"new").await.unwrap();
+        publish_import(&part, &live, async { Ok(()) })
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read(&live).await.unwrap(), b"new");
+        assert!(!part.exists());
     }
 
     #[tokio::test]

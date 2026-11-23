@@ -338,7 +338,23 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
     let sha256 = req.sha256.clone();
     let confirm_overwrite = req.confirm.as_deref() == Some(req.name.as_str());
     let datasets_root = state.datasets_root.clone();
+    let supervisor = state.supervisor.clone();
+    let check_pool = pool.clone();
+    let check_name = name.clone();
     tokio::spawn(async move {
+        // A long download can outlive the initial attachment check: re-check
+        // right before the staged file replaces the library entry.
+        let before_publish = move || {
+            let supervisor = supervisor.clone();
+            let pool = check_pool.clone();
+            let name = check_name.clone();
+            async move {
+                match supervisor.image_in_use(&pool, &name).await {
+                    Some(owner) => Err(format!("cannot replace {name:?}: {owner} attaches it")),
+                    None => Ok(()),
+                }
+            }
+        };
         let outcome = images::import_url(
             &datasets_root,
             &pool,
@@ -346,6 +362,7 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
             &url,
             sha256.as_deref(),
             confirm_overwrite,
+            before_publish,
         )
         .await;
         let mut registry = imports.lock().await;

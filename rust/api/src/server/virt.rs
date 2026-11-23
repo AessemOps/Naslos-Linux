@@ -29,6 +29,10 @@ fn vmd_error_status(e: &vmd::VmdError) -> StatusCode {
         409 => StatusCode::CONFLICT,
         400 => StatusCode::BAD_REQUEST,
         404 => StatusCode::NOT_FOUND,
+        // The image cap is a payload problem the caller can act on, not a
+        // supervisor outage; a body/media-type refusal keeps its own code too.
+        413 => StatusCode::PAYLOAD_TOO_LARGE,
+        415 => StatusCode::UNSUPPORTED_MEDIA_TYPE,
         _ => StatusCode::BAD_GATEWAY,
     }
 }
@@ -1307,6 +1311,24 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
         )
+    }
+
+    #[test]
+    fn supervisor_statuses_map_to_caller_actionable_codes() {
+        let error = |status| vmd::VmdError {
+            status,
+            message: "refused".to_string(),
+        };
+        assert_eq!(vmd_error_status(&error(400)), StatusCode::BAD_REQUEST);
+        assert_eq!(vmd_error_status(&error(404)), StatusCode::NOT_FOUND);
+        assert_eq!(vmd_error_status(&error(409)), StatusCode::CONFLICT);
+        assert_eq!(vmd_error_status(&error(413)), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            vmd_error_status(&error(415)),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+        // A supervisor crash is still a bad gateway.
+        assert_eq!(vmd_error_status(&error(500)), StatusCode::BAD_GATEWAY);
     }
 
     #[test]

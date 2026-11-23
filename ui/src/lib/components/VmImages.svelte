@@ -20,13 +20,36 @@
   // failed upload resumes instead of truncating and starting at zero.
   let uploadKey = '';
   let uploadOffset = 0;
+  // Replacing a library file needs an explicit acknowledgement (vmd requires
+  // confirm=<name>); the checkbox appears only when the target name is already
+  // in the loaded library.
+  let replaceUpload = false;
+  let uploadTarget = '';
+  let uploadReplaces = false;
 
   let importUrl = '';
   let importName = '';
   let importSha = '';
   let importingUrl = false;
+  let replaceImport = false;
+  let importTarget = '';
+  let importReplaces = false;
 
   const CHUNK = 8 * 1024 * 1024;
+
+  function urlFileName(url: string): string {
+    return url.split('/').pop()?.split('?')[0] || 'image.iso';
+  }
+
+  // The upload target is the selected file's name; the import target is the
+  // explicit name or the URL's file name. Both are matched against the loaded
+  // listing, which is what the operator sees.
+  $: uploadTarget = uploadFile?.[0]?.name ?? '';
+  $: uploadReplaces = uploadTarget !== '' && images.some((img) => img.name === uploadTarget);
+  $: if (!uploadReplaces) replaceUpload = false;
+  $: importTarget = importName.trim() || (importUrl.trim() ? urlFileName(importUrl.trim()) : '');
+  $: importReplaces = importTarget !== '' && images.some((img) => img.name === importTarget);
+  $: if (!importReplaces) replaceImport = false;
 
   $: pool, refreshKey, load();
 
@@ -78,11 +101,16 @@
     uploading = true;
     uploadProgress = Math.round((offset / total) * 100);
     error = '';
+    // vmd requires the exact name as confirmation to overwrite an existing
+    // image; a fresh upload does not need it.
+    const confirmQuery = replaceUpload && name === uploadTarget
+      ? `&confirm=${encodeURIComponent(name)}`
+      : '';
     const xhr = new XMLHttpRequest();
     const sendChunk = () => {
       const slice = file.slice(offset, offset + CHUNK);
       const final = offset + CHUNK >= file.size;
-      xhr.open('POST', `/api/virt/images/upload?pool=${encodeURIComponent(pool)}&name=${encodeURIComponent(name)}&offset=${offset}&final=${final}`);
+      xhr.open('POST', `/api/virt/images/upload?pool=${encodeURIComponent(pool)}&name=${encodeURIComponent(name)}&offset=${offset}&final=${final}${confirmQuery}`);
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) {
@@ -122,12 +150,23 @@
           } catch {
             // Keep the HTTP fallback.
           }
-          if (/past the end/i.test(detail)) {
+          // vmd reports a lost/reset staging file as "start at offset 0" or
+          // "restart from offset 0"; older releases said "past the end".
+          // Reset the resume point so the retry is accepted instead of
+          // repeating the same stale offset forever.
+          if (/past the end|start at offset 0|restart from offset 0/i.test(detail)) {
             uploadKey = key;
             uploadOffset = 0;
             uploadProgress = 0;
             error = 'The server no longer has the partial upload; retry to start from the beginning.';
           } else {
+            if (xhr.status === 413) {
+              // Over the library cap: vmd removed the staged file, so a retry
+              // must start over (the same file will still be too large).
+              uploadKey = '';
+              uploadOffset = 0;
+              uploadProgress = 0;
+            }
             error = detail;
           }
         }
@@ -146,7 +185,7 @@
     importingUrl = true;
     error = '';
     try {
-      const name = importName.trim() || importUrl.split('/').pop()?.split('?')[0] || 'image.iso';
+      const name = importTarget;
       const res = await fetch('/api/virt/images/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -154,7 +193,8 @@
           pool,
           name,
           url: importUrl.trim(),
-          sha256: importSha.trim() || null
+          sha256: importSha.trim() || null,
+          confirm: replaceImport && name === importTarget ? name : null
         })
       });
       const data = await res.json();
@@ -162,6 +202,7 @@
       importUrl = '';
       importName = '';
       importSha = '';
+      replaceImport = false;
       // The import runs server-side; poll until it lands in the listing.
       pollImport(name);
     } catch (e: unknown) {
@@ -220,13 +261,23 @@
       <label class="label" for="img-file">Upload a file (ISO or cloud image)</label>
       <input id="img-file" type="file" class="input" bind:files={uploadFile} disabled={uploading} />
     </div>
-    <button class="btn btn-primary" on:click={upload} disabled={!uploadFile || uploading}>
+    <button class="btn btn-primary" on:click={upload}
+      disabled={!uploadFile || uploading || (uploadReplaces && !replaceUpload)}>
       {uploading ? `Uploading… ${uploadProgress}%` : 'Upload'}
     </button>
     {#if uploading}
       <progress class="w-48" value={uploadProgress} max="100"></progress>
     {/if}
   </div>
+  {#if uploadReplaces}
+    <label class="flex items-center gap-2 text-sm text-amber-300 mt-2">
+      <input id="img-replace" type="checkbox" class="w-4 h-4 rounded" bind:checked={replaceUpload} />
+      <span>
+        Replace the existing image <code class="font-mono text-xs">{uploadTarget}</code>: the current file is
+        overwritten when the upload finishes. Stop every VM using it first.
+      </span>
+    </label>
+  {/if}
   <p class="text-xs text-gray-500 mt-2">
     Uploaded in 8 MiB chunks; a failed chunk resumes from the last confirmed offset. Names are flat
     (letters, digits, '-', '_', '.').
@@ -244,10 +295,20 @@
       <label class="label" for="img-name">Name (optional)</label>
       <input id="img-name" class="input w-full" bind:value={importName} placeholder="from the URL" disabled={importingUrl} />
     </div>
-    <button class="btn btn-primary" on:click={importFromUrl} disabled={importingUrl || !importUrl.trim()}>
+    <button class="btn btn-primary" on:click={importFromUrl}
+      disabled={importingUrl || !importUrl.trim() || (importReplaces && !replaceImport)}>
       {importingUrl ? 'Starting…' : 'Import'}
     </button>
   </div>
+  {#if importReplaces}
+    <label class="flex items-center gap-2 text-sm text-amber-300 mt-2">
+      <input id="img-import-replace" type="checkbox" class="w-4 h-4 rounded" bind:checked={replaceImport} />
+      <span>
+        Replace the existing image <code class="font-mono text-xs">{importTarget}</code>: it is overwritten
+        once the download completes. Stop every VM using it first.
+      </span>
+    </label>
+  {/if}
   <div class="mt-2">
     <label class="label" for="img-sha">sha256 (optional, verified)</label>
     <input id="img-sha" class="input w-full max-w-md font-mono text-xs" bind:value={importSha}

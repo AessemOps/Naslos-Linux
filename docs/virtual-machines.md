@@ -180,17 +180,20 @@ boots straight to SSH.
     chunk. A failed or over-cap upload never replaces the previous image,
     and a planted symlink is refused rather than followed.
   - `offset` must equal the current staged size, so chunks are strictly
-    contiguous and only the upload that started at 0 can append. A retried
-    chunk rewinds the staged file to the request's start offset.
-  - One upload session owns a library name; a concurrent upload of the same
-    name is refused. An idle session expires after two hours (each chunk
-    refreshes it), after which a new upload at offset 0 clears the stale
-    staging file.
+    contiguous. Only the upload that started at 0 can append; a stale offset,
+    a lost staging file and an expired session all tell the caller to restart
+    from offset 0, and a fresh upload at 0 then supersedes the abandoned
+    session. A retried chunk rewinds the staged file to the request's start
+    offset. An idle session expires after two hours (each chunk refreshes it).
+    A chunk can never attach to a URL import's staging file.
   - The 32 GiB cap applies to the whole upload (`offset + bytes`), not to
     one request; an over-cap upload is removed and returns `413`.
-  - Replacing an existing library image requires `confirm=<name>`. vmd
-    refuses the replacement (or a delete) while a running/starting VM
-    attaches the file as its ISO or `disk.sourceImage` (`409`).
+  - Replacing an existing library image requires `confirm=<name>`; the
+    Images panel detects that the upload/import target is already listed and
+    shows an explicit "Replace the existing image" checkbox before it sends
+    the confirmation. vmd refuses the replacement (or a delete) while a
+    running/starting VM attaches the file as its ISO or `disk.sourceImage`
+    (`409`), including a re-check immediately before a URL import publishes.
   - The API route forwards the confirmation verbatim: a re-upload that
     would replace an existing image must send `confirm=<name>` on
     `/api/virt/images/upload`, and a refused overwrite reaches the caller
