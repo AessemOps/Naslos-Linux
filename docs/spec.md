@@ -1211,6 +1211,17 @@ with a sibling `naslos-app.yaml` install-config. See
   topics with a severity level.
 - **FR-NTF-02** — The API MUST expose `POST /api/notifications/test` to send
   a test notification.
+- **FR-NTF-03** — ntfy settings responses MUST NOT echo the server URL, topic,
+  email address or token: `GET /api/notifications` MUST return only
+  `category: "ntfy"`, presence flags (`hasServerUrl`, `hasTopic`,
+  `hasAuthToken`, `hasUrlToken`, `hasEmail`), `allowInsecureHttp`, the routed
+  events and minimum severity. Those destination values are write-only: an
+  omitted field keeps the stored value and an empty string clears it. An
+  enabled channel MUST have a non-empty server URL and topic (400 otherwise),
+  a redirect MUST NOT count as success, and delivery errors MUST be
+  category-only (never the publish URL or topic). A bearer token over
+  plaintext `http` MUST be refused unless `allowInsecureHttp` is explicitly
+  set, and that acknowledgement MUST be written to the audit log.
 
 ### 3.7.1 Alert channels (`FR-ALT`)
 
@@ -1227,9 +1238,12 @@ additive: ntfy keeps its existing behavior (FR-NTF-01/02) and settings.
 - **FR-ALT-02** — The generic webhook channel MUST accept only `http`/`https`
   targets, MUST refuse a URL with embedded credentials, and MUST refuse a
   target that resolves to a loopback, private, link-local, CGNAT, metadata,
-  benchmark, reserved, ULA or IPv4-mapped non-public address. It MUST resolve
-  the host when the settings are saved and again at send time, pin the
-  connection to the vetted address, and follow no redirects. *(webhook tests:
+  benchmark, reserved, ULA or IPv4-mapped non-public address. It MUST
+  syntax-check the URL and a literal address when settings are saved and
+  resolve the host asynchronously at send time with `tokio::net::lookup_host`,
+  pin the connection to the vetted address, and follow no redirects. A
+  bearer token over plaintext `http` MUST be refused unless
+  `allowInsecureHttp` is explicitly set and audited. *(webhook tests:
   `url_validation_accepts_public_http_targets`,
   `url_validation_refuses_bad_schemes_and_credentials`,
   `url_validation_refuses_non_public_targets`; contract test
@@ -1241,15 +1255,17 @@ additive: ntfy keeps its existing behavior (FR-NTF-01/02) and settings.
 - **FR-ALT-04** — Webhook delivery MUST be a single attempt with a finite
   timeout, no retry queue and no unbounded buffering. A response body MUST be
   read only up to a fixed bound and MUST NOT be surfaced in an error, a log or
-  an API response. Delivery errors MUST NOT contain the target URL, its path or
+  an API response. A 3xx response MUST be a failed delivery (redirects are
+  disabled), so only a 2xx is success. Delivery errors MUST NOT contain the target URL, its path or
   query, or the token. *(webhook tests:
   `a_failing_channel_does_not_suppress_the_other`,
   `test_action_is_not_gated_by_event_routing`; contract test
   `webhook_channel_crud_never_returns_the_token`)*
-- **FR-ALT-05** — The webhook bearer token MUST be write-only: the settings
-  response MUST expose only `hasAuthToken`, an omitted token MUST keep the
-  stored value, an empty string MUST clear it, and the settings file MUST be
-  mode `0600`. *(webhook test:
+- **FR-ALT-05** — The webhook URL and bearer token MUST be write-only: the
+  settings response MUST expose only `category: "webhook"` plus
+  `hasUrl`/`hasAuthToken`/`hasUrlToken`, an omitted field MUST keep the stored
+  value, an empty string MUST clear it, and the settings file MUST be mode
+  `0600`. *(webhook test:
   `settings_survive_a_reload_and_the_token_stays_write_only`; contract test
   `webhook_channel_crud_never_returns_the_token`)*
 - **FR-ALT-06** — The API MUST expose a webhook test action that sends a
@@ -1452,10 +1468,15 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   solver or a built-in DDNS driver MUST require no code change. An invalid or
   unreadable override MUST be skipped with a logged error and surfaced by
   `GET /api/providers`, never fatal. *(providers tests)*
-- **FR-DNS-02** — DDNS entry CRUD MUST NOT return credential values: the API
-  MUST return only the Secret name and which credential fields are set. Secret
-  fields submitted through the API MUST be written to a Kubernetes Secret and
-  MUST NOT be persisted in the entry store. *(ddns tests, `TestDdnsNeverReturnsCredentialValues`)*
+- **FR-DNS-02** — DDNS entry CRUD MUST NOT return credential values or
+  credential-bearing config: the API MUST return only the Secret name, which
+  credential fields are set, the export-safe `providerConfig` keys (sensitive
+  and free-form `updateUrl`/`body` values omitted, their names reported in
+  `redactedProviderConfigKeys`). Secret fields and legacy credential keys
+  submitted through the API MUST be written to a Kubernetes Secret and MUST
+  NOT be persisted in plaintext in the entry store; a credential submitted
+  explicitly empty MUST be removed from the Secret (clearing is revocation).
+  *(ddns tests, `TestDdnsNeverReturnsCredentialValues`)*
 - **FR-DNS-03** — A background reconciler MUST detect the public IP on an
   interval (`DDNS_INTERVAL_SECONDS`, default 300) from an ordered list of
   sources (HTTP URLs and DNS fetchers `dns:opendns`/`dns:google`), DNS-resolve
@@ -1477,7 +1498,9 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   built-in solver), and the existing `cloudflare`, `rfc2136` and `passthrough`
   output MUST be preserved. OVH MUST support both its DynHost service
   (`mode: dynamic`, username/password, the default) and the signed ZoneDNS API
-  (`mode: api`). *(certs tests: `TestSpecOVH`, `TestSpecCloudflareSolverShape`,
+  (`mode: api`). Domain responses MUST project the `solver` away (only
+  `solverConfigured` is reported) and apply the same export-safe filter to
+  `providerConfig`. *(certs tests: `TestSpecOVH`, `TestSpecCloudflareSolverShape`,
   `TestSpecRFC2136SolverShape`, `TestSpecPassthroughIsUnchanged`;
   `TestOVHDriverDynHostMode`)*
 - **FR-DNS-06** — A force-run endpoint (`POST /api/ddns/{id}/run`) MUST exist
@@ -1485,16 +1508,22 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   the DNS pre-check and the cooldown.
   *(ddns tests: `TestManagerUpdatesWhenDNSDiffersAndRespectsCooldown`)*
 - **FR-DNS-07** — The generic `http` driver MUST render operator-supplied
-  URL/body templates, apply the configured authentication, and MUST refuse a
-  target that is not a public address (loopback, private, link-local or cluster
-  service ranges), so an admin-supplied URL cannot be used as an SSRF pivot.
+  URL/body templates, including `{{if COND}}...{{else}}...{{end}}` blocks with
+  `eq`/`ne` and truthiness, apply the configured authentication, and MUST
+  refuse a target that is not a public address (loopback, private, link-local
+  or cluster service ranges), so an admin-supplied URL cannot be used as an
+  SSRF pivot. Credentials MUST NOT be sent over plaintext `http` unless the
+  provider config acknowledges `allowInsecureHttp: true` (audited). Response
+  bodies MUST be read with a fixed cap via chunked reads.
   *(ddns tests: `TestHTTPDriverRejectsNonPublicTargets`)*
 - **FR-DNS-08** — The provider set MUST include, beyond the cert-manager
   providers, the DDNS providers ported from ddns-updater (`duckdns`, `dynu`,
   `noip`, `freedns`, `namecheap`, `desec`, `spdyn`, `selfhost.de`, `dynv6`,
   `digitalocean`, `godaddy`, `porkbun`) plus the generic custom provider, each
   as YAML where a built-in driver suffices. Every built-in DDNS provider MUST
-  resolve to a known driver. *(ddns test: `TestBuiltinProvidersHaveKnownDrivers`)*
+  resolve to a known driver, and every built-in `http` provider's template MUST
+  render for both A and AAAA. *(ddns tests: `TestBuiltinProvidersHaveKnownDrivers`,
+  `every_builtin_http_provider_renders_a_and_aaaa`)*
 
 - **FR-DNS-09** — App DNS records MUST be opt-in per domain:
   `appRecordsDdnsEntry` names a non-wildcard DDNS entry, and only domains whose
@@ -1514,8 +1543,11 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   `POST /api/apps/{name}/dns/reconcile`, and retried on the catalog-refresh
   cadence while in error; deleting a DDNS entry referenced by a domain MUST be
   a 409. Uninstall, exposure removal and domain removal MUST delete owned
-  records; a chart/domain update removes the old record before creating the new
-  one. *(dnsrecords tests, apps tests, server tests)*
+  records. On a rename or domain/provider move the API MUST plan and
+  create/update the new record first, then delete the previous owned record; an
+  adopted record MUST be marked not-owned and MUST never be deleted. A cleanup
+  failure MUST NOT fail the new state. *(dnsrecords tests, apps tests, server
+  tests)*
 
 ### 3.10 Installer & first-run provisioning (`FR-INSTALL`)
 

@@ -92,6 +92,36 @@ ddns:                           # optional: DDNS support
   info bubble next to the "DNS-01 provider" selector; it does not affect solver
   rendering or validation.
 
+### Generic HTTP templates
+
+The `http` driver's `updateUrl` and `body` are mini templates: `{{fqdn .record
+.zone}}`, `{{label .record .zone}}`, `{{.zone}}`, `{{.record}}`, `{{.type}}`,
+`{{.ip}}`, `{{.ttl}}`, `{{.secret.KEY}}` and `{{.config.KEY}}`. Conditional
+blocks are supported and are what the built-in providers use to select the
+IPv4/IPv6 endpoint or parameter:
+
+```yaml
+updateUrl: >-
+  https://dns.example/update?host={{if label .record .zone}}{{label .record .zone}}{{else}}@{{end}}&addr={{if eq .type "AAAA"}}v6={{.ip}}{{else}}v4={{.ip}}{{end}}
+```
+
+`{{if expr}}...{{else}}...{{end}}` accepts `eq A B`, `ne A B`, or a single
+expression; truthy means non-empty (and not the string `false`). A missing
+`.secret.KEY`/`.config.KEY` inside a condition is empty, so optional
+credentials can be probed. A missing key in an output expression is an error.
+Nested blocks and `{{else if ...}}` are not supported.
+
+Every built-in `http` provider is tested to render both A (IPv4) and AAAA
+(IPv6) URLs.
+
+### Plaintext HTTP
+
+A credential over plaintext `http` is refused. The generic provider exposes a
+boolean `allowInsecureHttp` field; setting it to `true` is an explicit
+acknowledgement, logged to the audit log (`ddns` /
+`insecure_http_acknowledged`) and warned at send time. HTTPS remains the only
+credential-safe transport.
+
 ### Where definitions come from
 
 1. **Embedded defaults** (`rust/api/src/providers/builtin/`): `ovh`,
@@ -107,8 +137,14 @@ An invalid or unreadable override is **skipped**, logged, and reported by
 
 `GET /api/ddns` returns `{entries, enabled, intervalSeconds}`. An entry is
 `{id, provider, zone, record, recordType, ttl, enabled, providerConfig,
-credentialsSecret, credentialFields, lastIP, lastStatus, lastError, lastRunAt,
-nextRunAt}`.
+redactedProviderConfigKeys, credentialsSecret, credentialFields, lastIP,
+lastStatus, lastError, lastRunAt, nextRunAt}`. `providerConfig` is projected
+through the export-safe filter: credential-like keys (for example a legacy
+`applicationKey`) and free-form templates (`updateUrl`, `body`, or any value
+that embeds userinfo/a token) are omitted, and their names are listed in
+`redactedProviderConfigKeys`. Those fields are write-only: send them in
+`fields` to set them, omit them to keep them, or send an empty string to clear
+them.
 
 | Action | API |
 | --- | --- |
@@ -119,8 +155,10 @@ nextRunAt}`.
 The create/update body carries a `fields` map with every provider field. Secret
 fields are written to a Secret named `naslos-ddns-<id>` in the apps namespace
 (`naslos-apps`); the response returns the Secret name and which fields are set —
-**never their values**. An omitted or empty secret field on update keeps the
-stored value.
+**never their values**. An omitted secret field on update keeps the stored
+value; a secret field submitted explicitly **empty** is deleted from the
+Secret, so clearing a credential revokes it. This also removes a legacy
+credential key that older entries stored in `providerConfig`.
 
 - `record` is the subdomain label (`@` or empty for the apex).
 - `recordType` is `A` or `AAAA`.
@@ -133,6 +171,9 @@ stored value.
 - No Secret access is added in the release namespace, so the proxy secret, LDAP
   bind password and Authelia keys remain unreadable by the API (see the
   `naslos-api-platform-read` Role and its assertion in `scripts/audit.sh`).
+- App DNS records that point at a DDNS entry use the same state: a rename
+  creates/updates the new CNAME first and deletes the old owned record
+  afterwards; an adopted record is never owned and is never deleted.
 - Domains use the same model: secret fields submitted through the Domains form
   are written to `naslos-domain-<domain>-creds` (or an existing
   `credentialsSecret`) and never returned. An explicit `credentialsSecret` must
