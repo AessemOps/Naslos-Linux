@@ -160,6 +160,15 @@
     'local0', 'local1', 'local2', 'local3', 'local4', 'local5', 'local6', 'local7'
   ];
 
+  // A cleared port input is undefined; Number(undefined) is NaN and
+  // JSON.stringify turns it into null, which the API's u16 rejects. Omit the
+  // key instead so the server applies its default.
+  const portField = (raw: unknown): Record<string, number> => {
+    if (raw === '' || raw === null || raw === undefined) return {};
+    const n = Number(raw);
+    return Number.isFinite(n) ? { port: n } : {};
+  };
+
   async function loadSettings() {
     settingsError = '';
     try {
@@ -180,6 +189,9 @@
     } catch (e) {
       settingsError =
         'Failed to load notification settings: ' + (e instanceof Error ? e.message : String(e));
+      // A failed RELOAD must not leave the previous values editable: fall
+      // back to the error state so Save is refused until a Retry succeeds.
+      settingsLoaded = false;
     } finally {
       loading = false;
     }
@@ -409,7 +421,7 @@
       const payload: Record<string, unknown> = {
         enabled: smtp.enabled,
         host: smtp.host,
-        port: Number(smtp.port),
+        ...portField(smtp.port),
         tls: smtp.tls,
         username: smtp.username,
         from: smtp.from,
@@ -521,7 +533,7 @@
         enabled: syslog.enabled,
         protocol: syslog.protocol,
         host: syslog.host,
-        port: Number(syslog.port),
+        ...portField(syslog.port),
         facility: syslog.facility,
         enabledEvents: syslog.enabledEvents,
         minSeverity: syslog.minSeverity

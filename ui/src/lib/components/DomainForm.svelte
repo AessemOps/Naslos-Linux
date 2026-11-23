@@ -149,7 +149,10 @@
     saving = true;
     error = '';
     try {
-      if (ddnsState !== 'ok' && !domain) {
+      // Only the edit path needs the DDNS list loaded (to preserve the
+      // stored app-record target); creating a new domain has nothing to
+      // preserve and must not be blocked by a DDNS outage.
+      if (ddnsState !== 'ok' && domain) {
         throw new Error('Wait for the DDNS entries to load before saving.');
       }
       const appRecordTarget =

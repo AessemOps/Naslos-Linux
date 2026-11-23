@@ -102,11 +102,17 @@
     }
     try {
       const res = await fetch(`/api/virt/images?pool=${encodeURIComponent(pool)}`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        // Drop the previous pool's list on failure: the wizard must not
+        // offer an image that does not exist in the selected pool.
+        if (seq === wizardImagesSeq) wizardImages = [];
+        return;
+      }
       const data = await res.json();
       if (seq !== wizardImagesSeq) return;
       wizardImages = Array.isArray(data.images) ? data.images : [];
     } catch {
+      if (seq === wizardImagesSeq) wizardImages = [];
       // The wizard still works with an empty library; the Images panel reports
       // the real error.
     }
