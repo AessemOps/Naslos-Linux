@@ -216,3 +216,12 @@ via `storageState`; a target that does not challenge is an error.
 - Read [`AI_Handoff.md`](AI_Handoff.md) → "Operational gotchas" before drilling;
   it lists the hard-won traps (mount propagation, PSA, egress, `--reuse-values`,
   image tags).
+
+## Parallel work
+- For independent work packages, spawn one Agent Manager worktree session per package
+  (agent_manager mode=worktree, branchName=<wp-branch>, baseBranch=master, a self-contained prompt each).
+- Packages that edit the same files run in sequence, not in parallel.
+- Each session commits only to its own branch and opens a PR. Never use git stash.
+- Use `agent_manager action=list` to monitor and `action=prompt` to send follow-ups.
+- Use `task` subagents (explore/general) for read-only research.
+- `.kilo/setup-script` (local, gitignored) prepares each new worktree; see the workspace `AGENTS.md`.
