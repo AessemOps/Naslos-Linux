@@ -90,6 +90,13 @@
   `0.0.0.0/0`; narrow `networkPolicy.gitEgressCIDRs` for an air-gapped or
   egress-restricted network. `apps.officialSource.channels` maps channels to
   branches (e.g. `{Prod: main}` for a repository with only `main`).
+- **Cilium node access (R5).** The `naslos-allow-host` policies grant
+  node-local services only on 6443 (API server), 10250 (kubelet) and 50000
+  (the upgrader's `talosctl`); the agent `:9090` and vmd `:9091` listeners are
+  granted to the API pod alone by `naslos-api-host-egress`. The optional host
+  firewall (`networkPolicy.cilium.hostFirewall`) follows the same split and
+  additionally admits public 80/443 from `networkPolicy.publicIngressCIDR`;
+  keep it off unless you have console access (see the template header).
 - **Datasets for apps.** `apps.datasets` publishes the host datasets root
   (default `/var/mnt`) as a static RWX `naslos-datasets` PV/PVC that baseline
   apps mount, because PSA `baseline` forbids `hostPath` in `naslos-apps`.
@@ -340,6 +347,86 @@ The production profile (`charts/naslos/values-vm.yaml`) sets
 versions and schematic id, so the API polls releases and the System page can
 apply them. Bump those facts with every deployed release; without them the
 updater will not start (`Checker::from_env` ignores a non-installer profile).
+
+The operation itself runs in a Job (`naslos-system-op-*`) as the
+`naslos-upgrader` cluster-admin ServiceAccount. Its admission policy
+(`system-upgrade.yaml`) pins the exact surface the binary needs: the published
+API image, `command: ["naslos-upgrade"]`, the documented flags and env names,
+no lifecycle/probes/envFrom, no init/ephemeral containers, no host namespaces,
+no added capabilities, a non-root read-only container, and the Talos Secret /
+state claim named by the chart values. The argument **values** are pinned too
+(a flag-name allowlist alone would let a Job creator point the cluster-admin
+operation at an arbitrary pack): `--pack-url`/`--pack-sig-url` must live under
+the release channel derived from `system.updates.source` (a GitHub source maps
+to its `github.com/<owner>/<repo>/releases/download/` prefix, a mirror source
+to its https host), `--pack-file`/`--pack-sig-file` may only be the API's
+cached path (and only in signature mode with the state claim, see below), and
+`--namespace`/`--release` must be the chart values. The Job also receives
+`SYSTEM_UPDATES_SOURCE` so its own download host check accepts a mirror
+channel. The API server
+injects the ServiceAccount token projection before admission; the policy admits
+exactly that volume and mount (`kube-api-access-*`, three pinned sources,
+mounted at `/var/run/secrets/kubernetes.io/serviceaccount`) and nothing
+broader. Any other Job using that ServiceAccount is denied. Changing
+`SYSTEM_UPDATES_SOURCE` outside the chart value makes the policy deny the Job,
+so override the value instead of only the environment.
+
+**Pack trust anchor.** The release pipeline publishes only
+`naslos-install-pack-<version>.tar.gz` and `.sha256` today; there is no pack
+signing step and no `.sig` asset, so the chart cannot default to a published
+key. The state volume is also mounted read-write by the API pod that builds the
+Job, so a cached `pack-<version>.tar.gz` at the pinned path is only trusted as
+far as the API pod is trusted. The policy therefore does **not** hand the Job
+the cached pack unless a signature key is configured:
+
+- **Default (no `system.updates.packPubkey`):** the Job runs the 20-argument
+  URL layout with empty `--pack-sig-url`/`--pack-pubkey` (regardless of
+  `api.sharesConfig.enabled`). It downloads the pack from the channel-pinned
+  release URL and the admission policy rejects any `--pack-file`. A compromised
+  API can then only choose among *published* packs of the configured channel —
+  it cannot substitute its own charts. This is the trust anchor that remains
+  without signing infrastructure.
+- **Signature mode (`system.updates.packPubkey` set):** the chart passes the
+  key (trimmed) to the API as `SYSTEM_UPDATES_PACK_PUBKEY`, the API hands it to
+  the Job, and the policy pins that exact value, requiring a non-empty channel
+  `--pack-sig-url`. With `api.sharesConfig.enabled` the policy also requires
+  the 24-argument cached-pack layout: the Job re-verifies the cached pack and
+  `.sig` against the pinned key, so a compromised API cannot fabricate content
+  at the pinned path. Without the state claim the Job keeps the 20-argument
+  layout and downloads both the pack and its signature from the channel, still
+  verified against the pinned key. Signature mode requires the channel to
+  publish `<pack>.tar.gz.sig`; a release without one is refused by the update
+  check (fail closed).
+
+**Pack handoff (why the upgrade may not re-download).** The update check
+downloads the release pack, verifies its sha256 (and detached Ed25519 signature
+when `SYSTEM_UPDATES_PACK_PUBKEY` is configured) and caches it on the state
+volume at `/var/lib/naslos/updates/pack-<version>.tar.gz` plus `.sig`. In
+signature mode with `api.sharesConfig.enabled` the Job mounts the same
+`naslos-shares-config` claim at `/var/lib/naslos` and reads that already-verified
+file, re-checking the approved sha256 and signature before extracting; a cached
+file that does not match fails the operation instead of falling back. Without a
+key (or without the state claim) the Job does not read the cache and downloads
+the pack from the channel-pinned URL instead (the `naslos-system-op-egress`
+policy admits HTTPS `443` for exactly that; `SYSTEM_UPDATES_SOURCE` reaches the
+Job so a mirror channel's URL passes its host check). Downloads never follow
+more than five redirects and every hop must stay on the update source or a
+GitHub asset host; the body is streamed under a 512 MiB cap after a
+`Content-Length` check.
+
+Signature enforcement is fail-closed: a release that publishes `.sig` requires
+`SYSTEM_UPDATES_PACK_PUBKEY`, and a configured key requires every release to be
+signed.
+
+**Failure handling.** A failed Helm upgrade, a workload that does not become
+ready, or a pack-digest mismatch on the *running* pods all roll the release
+back to the previous Helm revision (FR-UPD-06). The workload gate waits for the
+API, UI, OpenLDAP, Authelia, the terminal and the agent/samba/nfs DaemonSets;
+a workload the chart did not render (SMB/NFS disabled, terminal off) is skipped
+instead of failing the upgrade. The image check reads only live pods (pods
+being deleted by the rollout are ignored, so their old digest is not drift) and
+runs after every one of those workloads has been waited for. A rollback failure
+is reported in the operation log with the revision to restore manually.
 
 ### 4. Access the UI
 

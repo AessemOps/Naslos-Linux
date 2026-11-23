@@ -34,8 +34,8 @@ icon: "📺"                    # short text fallback shown when the chart has n
 website: https://jellyfin.org
 version: 10.9.0                # informational; Chart.yaml's version wins
 tags: [media, streaming]
-schema:                        # JSON Schema (object) driving the config form
-  type: object
+schema:                        # JSON Schema (object) driving the config form;
+  type: object                 # its property tree is the install/update whitelist
   properties:
     timezone: { type: string, title: Timezone, default: UTC }
   required: []
@@ -136,9 +136,16 @@ are masked in API responses at every nesting depth by their JSON-pointer path
 pointer list is persisted on the installed-app record as `secretPaths` and
 returned as `redactedKeys`. The
 config form receives the same list and an untouched field is sent back as
-`null`, which the API treats as "keep the stored value" on upgrade. If the
-catalog entry is missing and the record has no persisted pointer list, the API
-omits the value map entirely and sets `valuesOmitted: true` rather than guess.
+`null`, which the API treats as "keep the stored value" on upgrade. Redaction
+uses the **union** of the persisted pointers and the pointers the current
+catalog schema declares: a catalog entry that declares no secret (or has no
+schema at all) cannot un-mask a value the record knows is secret, and a schema
+that adds a pointer masks it immediately. A redacted field whose value came
+from the chart or catalog defaults (so it is not in the stored override diff)
+is restored from those defaults on reconfigure instead of being overwritten
+with the `null` the form echoed back. If the catalog entry is missing and
+the record has no persisted pointer list, the API omits the value map entirely
+and sets `valuesOmitted: true` rather than guess.
 
 ## Environment variables
 
@@ -196,10 +203,10 @@ app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
 | --- | --- | --- |
 | List catalog | `GET /api/catalog` | Source/channel-tagged summaries |
 | Catalog detail | `GET /api/catalog/{name}` | Full entry incl. `schema`, `services`, `exposure`, `capabilities` |
-| Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed, privilegedConfirmed?, datasets?, env?}` | `confirmed` MUST be `true`; a catalog entry with `privileged: true` also requires `privilegedConfirmed: true`, and the UI shows a second, red confirmation (SEC-2026-D8). Defaults are merged and the result is validated against the catalog's JSON schema inside the install job; a violation fails the job (the request is still `202`) (SEC-2026-D7). `env` is rejected with a 400 when the chart lacks the `env` capability. `datasets` selects any number of registered datasets; with `apps.isolation.enabled` the app gets its own namespace, a PV/PVC per dataset (baseline) or host paths (privileged), and the chart receives the platform-owned `datasets` value (one `{name, mountPath: "/datasets/<name>", claim|hostPath}` entry each, plus the legacy `datasetsClaim`/`datasetsClaims` or first `hostPath`). Chart loaded from the clone. Enqueues an install job → `202 {jobId, state}` |
+| Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed, privilegedConfirmed?, datasets?, env?}` | `confirmed` MUST be `true`; a catalog entry with `privileged: true` also requires `privilegedConfirmed: true`, and the UI shows a second, red confirmation (SEC-2026-D8). Defaults are merged, client keys outside the catalog schema are stripped, and the result is validated against the schema inside the install job; a violation fails the job (the request is still `202`) (SEC-2026-D7). Only the operator's override diff (plus platform-derived values such as the pool StorageClass) is stored on the record — the chart defaults are not persisted, so a later chart bump applies its new defaults. A host (`subdomain` + effective `baseDomain`, including the catalog default) already claimed by another installed app makes the job fail naming the owner (S-8). `env` is rejected with a 400 when the chart lacks the `env` capability. `datasets` selects any number of registered datasets; with `apps.isolation.enabled` the app gets its own namespace, a PV/PVC per dataset (baseline) or host paths (privileged), and the chart receives the platform-owned `datasets` value (one `{name, mountPath: "/datasets/<name>", claim|hostPath}` entry each, plus the legacy `datasetsClaim`/`datasetsClaims` or first `hostPath`). Chart loaded from the clone. Enqueues an install job → `202 {jobId, state}` |
 | List installed | `GET /api/apps` | Records + live status, orphan flag, URL |
 | Detail | `GET /api/apps/{name}` | Record + status |
-| Reconfigure | `PUT /api/apps/{name} {values, datasets?, env?}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}`. An omitted `env` keeps the variables, `[]` removes them; a submitted list replaces them (a `secret` with `value:null` keeps the stored value). `datasets` omitted keeps the selection, `[]` detaches all (an isolated app must keep at least one), a list reconciles adds/removes; removed claims are deleted after Helm succeeds. The submitted `resources` object replaces the stored one (an omitted key is a cleared field, `{}` clears all limits; explicit nulls are pruned). The merged values are validated against the catalog schema and their `resources` CPU/memory quantities and namespace quota before Helm. A dataset change on a record outside a per-app isolation namespace fails the job with a reinstall message |
+| Reconfigure | `PUT /api/apps/{name} {values, datasets?, env?}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}`. An omitted `env` keeps the variables, `[]` removes them; a submitted list replaces them (a `secret` with `value:null` keeps the stored value). `datasets` omitted keeps the selection, `[]` detaches all (an isolated app must keep at least one), a list reconciles adds/removes; removed claims are deleted after Helm succeeds. The submitted `resources` object replaces the stored one (an omitted key is a cleared field, `{}` clears all limits; explicit nulls are pruned). The upgrade re-reads the chart and merges its **new** defaults underneath the stored override diff, so changed defaults (including `image.tag`) reach the release; the platform-owned pool StorageClass under `persistence` is re-applied after the merge. The merged values are validated against the catalog schema and their `resources` CPU/memory quantities and namespace quota before Helm. A dataset change on a record outside a per-app isolation namespace fails the job with a reinstall message |
 | Exposure | `GET`/`PUT /api/apps/{name}/exposure` | Orthogonal toggles + `baseDomain`, re-renders the route (synchronous) |
 | Route targets | `GET /api/apps/{name}/services` | Services the release rendered (discovery fallback / UI picker) |
 | Logs | `GET /api/apps/{name}/pods` + `GET /api/ws/logs` | Pods/containers of the app for the drawer's live log pane (read-only; tail 200 + follow). The API's `pods/log` grant is `get`-only in the app namespace |
@@ -387,6 +394,39 @@ while any installed app has `auth` on that domain.
 | `type: object` (nested) | nested section |
 | `required`, `default` | marked / prefilled |
 
+The schema is also the **whitelist of client-settable Helm values** (S-1). At
+catalog load every object node that declares `properties` is hardened with
+`additionalProperties: false`, so a catalog cannot accidentally accept
+arbitrary keys. On install and reconfigure, any submitted key that is not in
+the schema's property tree is dropped (the job log lists the stripped paths)
+and the rest is validated against the schema. Four classes of chart value are
+never accepted from a client, even when a schema lists them: `image`,
+`privileged`, `hostPath`, `serviceAccount`, plus every key whose name
+identifies a container/pod-spec control — `command`, `args`, `extraContainers`,
+`sidecars`, `tolerations`, `nodeSelector`, `priorityClassName`, pod affinity
+(`podAffinity`, `nodeAffinity`, `podAntiAffinity`), `hostAliases`, `hostPort`,
+`runtimeClassName`, `capabilities`, `allowPrivilegeEscalation`,
+`seccompProfile`, `lifecycle`, `dnsPolicy`, `dnsConfig`,
+`topologySpreadConstraints`, `hostUsers`, `sysctls`, `podSecurityContext`,
+`securityContext`, `imagePullPolicy`, `hostNetwork`, `hostPID`, `hostIPC`,
+`volumes`, `volumeMounts`, `containers`, `initContainers`,
+`serviceAccountName`, `automountServiceAccountToken` and similarly named
+variants (matched case-insensitively by name fragment and by a
+`…Command`/`…Args` suffix). Charts may still set those through their own
+`values.yaml` or the manifest `defaultValues`; only operator-supplied values
+are filtered. A map-typed `additionalProperties` schema is preserved as the
+per-key whitelist for dynamic fields, and a composed schema (`$ref`, `allOf`,
+`anyOf`, `oneOf`) is resolved when whitelisting and validating; composed nodes
+are not force-hardened with `additionalProperties: false`, which would reject
+sibling properties. `allOf`/`$ref` union their property maps (a key declared by
+any branch is kept; only a key no branch declares is stripped), an `anyOf`/
+`oneOf` key is allowed when any branch allows it, and an empty or
+`required`-only branch never disables the whitelist. Values outside
+the schema that come from the chart/catalog defaults are still sent to Helm —
+they are simply not validated by the catalog schema. The drawer's `resources`
+editor is the one client value accepted outside the schema (no catalog declares
+it): it still goes through the CPU/memory quantity and namespace-quota checks.
+
 Naslos datasets are owned by `admin:naslos_users` (10001:10000). An app that
 mounts a dataset must run with group `10000`; the install form sets PUID/PGID
 to `10001`/`10000` when the first dataset is selected, and the group select can
@@ -459,9 +499,22 @@ charts, or `hostPath` for privileged charts.
   job re-resolves the (refreshable) catalog. `Manager::install` refuses a
   privileged app whose request did not carry the confirmation, so a catalog
   refresh between confirm and execution cannot silently escalate.
-- **Upgrade validates values.** `PUT /api/apps/{name}` runs the same `schema`
-  validation as install before calling Helm, plus the `resources` CPU/memory
-  quantity check used by the drawer's resource editor.
+- **Upgrade validates values.** `PUT /api/apps/{name}` runs the same
+  schema-whitelist validation as install before calling Helm, plus the
+  `resources` CPU/memory quantity check used by the drawer's resource editor.
+- **Client values are schema-whitelisted.** Install and reconfigure strip keys
+  outside the catalog schema's property tree and every platform-sensitive key
+  (`image`, `privileged`, `hostPath`, `serviceAccount`, …), so a values blob
+  cannot replace the app image or mount an arbitrary host path (S-1).
+- **Chart defaults flow through upgrades.** The record stores only the
+  operator's override diff; upgrade re-reads the target chart and merges its
+  current defaults underneath, so a chart bump's changed `image.tag` and other
+  defaults are applied (S-2).
+- **A host has one owner.** Install and exposure updates reject a
+  `subdomain.<baseDomain>` that another installed app already claims, naming
+  the owning app (S-8). The comparison and the record write happen under one
+  store lock, so two concurrent installs (or an install racing an exposure
+  update) cannot both claim the same host.
 - **Secret values are not returned.** Catalog fields marked
   `format: password` (or `writeOnly: true`) are masked as `null` in
   `GET /api/apps` and `GET /api/apps/{name}`, with the names listed in

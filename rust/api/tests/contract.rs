@@ -778,6 +778,472 @@ async fn domain_update_preserves_an_omitted_solver() {
 }
 
 #[tokio::test]
+async fn domain_put_pins_the_path_domain_and_rejects_a_body_rename() {
+    let st = Arc::new(AppState::for_test(SECRET));
+    let created = r#"{"baseDomain":"passthrough.example.test","dnsProvider":"passthrough","solver":{"webhook":{"groupName":"example.test","solverName":"passthrough"}},"environment":"staging"}"#;
+    let (status, _body, _raw) = send_state(
+        st.clone(),
+        admin_request("POST", "/api/domains", Some(created)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // A body that names a different domain must not create or overwrite it:
+    // the URL and audit target name this record.
+    let renamed = r#"{"baseDomain":"other.example.test","dnsProvider":"passthrough","solver":{"webhook":{"groupName":"example.test","solverName":"passthrough"}},"environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request(
+            "PUT",
+            "/api/domains/passthrough.example.test",
+            Some(renamed),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("baseDomain"));
+    assert!(st.domains.get("other.example.test").is_err());
+    assert_eq!(
+        st.domains
+            .get("passthrough.example.test")
+            .unwrap()
+            .solver
+            .as_ref()
+            .unwrap()["webhook"]["solverName"],
+        "passthrough"
+    );
+
+    // An empty body baseDomain is taken from the path.
+    let update = r#"{"baseDomain":"","dnsProvider":"passthrough","acmeEmail":"ops@example.test","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/passthrough.example.test", Some(update)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        st.domains
+            .get("passthrough.example.test")
+            .unwrap()
+            .acme_email,
+        "ops@example.test"
+    );
+}
+
+#[tokio::test]
+async fn domain_updates_always_run_effective_provider_validation() {
+    let st = Arc::new(AppState::for_test(SECRET));
+    // Seed a cert-manager domain as a successful create would leave it.
+    st.domains
+        .upsert(naslos_api::certs::Domain {
+            base_domain: "example.test".into(),
+            dns_provider: "cloudflare".into(),
+            credentials_secret: "naslos-domain-example-test-creds".into(),
+            provider_config: std::collections::HashMap::from([(
+                "proxied".to_string(),
+                "true".to_string(),
+            )]),
+            solver: Some(serde_json::json!({"stale": "dead-data"})),
+            environment: "staging".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // A provider switch without fields is rejected instead of rendering the
+    // new provider's solver from the old provider's config.
+    let switch = r#"{"baseDomain":"example.test","dnsProvider":"ovh","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(switch)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("dnsProvider"));
+    assert_eq!(
+        st.domains.get("example.test").unwrap().dns_provider,
+        "cloudflare"
+    );
+
+    // An arbitrary Secret name is refused even when `fields` is omitted (the
+    // resolver now runs on every write, not only when fields are submitted).
+    let evil = r#"{"baseDomain":"example.test","dnsProvider":"cloudflare","credentialsSecret":"some-other-secret","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(evil)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("naslos-"));
+    assert_eq!(
+        st.domains.get("example.test").unwrap().credentials_secret,
+        "naslos-domain-example-test-creds"
+    );
+
+    // Omitted fields keeps the stored provider config; an explicit null clears
+    // a provider-rendered solver (passthrough would still reject the clear).
+    let keep = r#"{"baseDomain":"example.test","dnsProvider":"cloudflare","solver":null,"environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(keep)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = st.domains.get("example.test").unwrap();
+    assert_eq!(
+        stored.provider_config.get("proxied").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        stored.credentials_secret,
+        "naslos-domain-example-test-creds"
+    );
+    assert!(stored.solver.is_none());
+
+    // Creating a cert-manager domain without fields now fails in the field
+    // resolver (required secret field) instead of skipping validation.
+    let fresh =
+        r#"{"baseDomain":"fresh.example.test","dnsProvider":"cloudflare","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("POST", "/api/domains", Some(fresh)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("apiToken"));
+}
+
+#[tokio::test]
+async fn domain_provider_changes_allow_credentialless_and_passthrough_targets() {
+    let st = Arc::new(AppState::for_test(SECRET));
+    let seed = |name: &str, secret: &str| naslos_api::certs::Domain {
+        base_domain: name.into(),
+        dns_provider: "cloudflare".into(),
+        credentials_secret: secret.into(),
+        provider_config: std::collections::HashMap::from([(
+            "proxied".to_string(),
+            "true".to_string(),
+        )]),
+        environment: "staging".into(),
+        ..Default::default()
+    };
+    st.domains
+        .upsert(seed("rfc.example.test", "naslos-domain-rfc-creds"))
+        .unwrap();
+    st.domains
+        .upsert(seed("raw.example.test", "naslos-domain-raw-creds"))
+        .unwrap();
+    st.domains
+        .upsert(seed("raw2.example.test", "naslos-domain-raw2-creds"))
+        .unwrap();
+
+    // A provider with no secret credential fields (rfc2136) can be selected
+    // without `fields`: the stored Secret name is rendered into the solver.
+    let switch =
+        r#"{"baseDomain":"rfc.example.test","dnsProvider":"rfc2136","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/rfc.example.test", Some(switch)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = st.domains.get("rfc.example.test").unwrap();
+    assert_eq!(stored.dns_provider, "rfc2136");
+    assert!(stored.provider_config.is_empty());
+
+    // Switching to passthrough needs no fields when the raw solver is
+    // submitted (the UI sends only `solver` for this provider).
+    let switch = r#"{"baseDomain":"raw.example.test","dnsProvider":"passthrough","solver":{"webhook":{"groupName":"example.test","solverName":"passthrough"}},"environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/raw.example.test", Some(switch)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = st.domains.get("raw.example.test").unwrap();
+    assert_eq!(stored.dns_provider, "passthrough");
+    assert!(stored.solver.is_some());
+    assert!(stored.provider_config.is_empty());
+
+    // A passthrough switch without a solver is still rejected.
+    let switch =
+        r#"{"baseDomain":"raw2.example.test","dnsProvider":"passthrough","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/raw2.example.test", Some(switch)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("solver"));
+    assert_eq!(
+        st.domains.get("raw2.example.test").unwrap().dns_provider,
+        "cloudflare"
+    );
+}
+
+#[tokio::test]
+async fn domain_create_accepts_an_out_of_band_credentials_secret() {
+    let st = Arc::new(AppState::for_test(SECRET));
+    // The documented MCP domain_create shape: credentialsSecret + providerConfig,
+    // no `fields`; the operator provisioned the Secret out of band.
+    let payload = r#"{"baseDomain":"example.test","dnsProvider":"cloudflare","credentialsSecret":"naslos-domain-example-creds","providerConfig":{"proxied":"true"},"environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("POST", "/api/domains", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let stored = st.domains.get("example.test").unwrap();
+    assert_eq!(stored.credentials_secret, "naslos-domain-example-creds");
+    assert_eq!(
+        stored.provider_config.get("proxied").map(String::as_str),
+        Some("true")
+    );
+
+    // The effective solver is still validated against the submitted config.
+    let invalid = r#"{"baseDomain":"bad.example.test","dnsProvider":"cloudflare","credentialsSecret":"naslos-domain-bad-creds","providerConfig":{"proxied":"yes"},"environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("POST", "/api/domains", Some(invalid)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("proxied"),
+        "{body}"
+    );
+
+    // The Secret name convention still applies.
+    let evil = r#"{"baseDomain":"evil.example.test","dnsProvider":"cloudflare","credentialsSecret":"some-other-secret","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("POST", "/api/domains", Some(evil)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("naslos-"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn domain_provider_change_accepts_an_out_of_band_credentials_secret() {
+    let st = Arc::new(AppState::for_test(SECRET));
+    st.domains
+        .upsert(naslos_api::certs::Domain {
+            base_domain: "example.test".into(),
+            dns_provider: "cloudflare".into(),
+            credentials_secret: "naslos-domain-example-test-creds".into(),
+            provider_config: std::collections::HashMap::from([(
+                "proxied".to_string(),
+                "true".to_string(),
+            )]),
+            environment: "staging".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // MCP domain_update shape: a provider change with only credentialsSecret
+    // and providerConfig (no fields); the Secret is provisioned out of band.
+    let switch = r#"{"baseDomain":"example.test","dnsProvider":"ovh","credentialsSecret":"naslos-domain-ovh-creds","providerConfig":{"endpoint":"ovh-ca"},"environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(switch)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = st.domains.get("example.test").unwrap();
+    assert_eq!(stored.dns_provider, "ovh");
+    assert_eq!(stored.credentials_secret, "naslos-domain-ovh-creds");
+    // The submitted config is validated and kept; the old provider's keys are
+    // not inherited.
+    assert_eq!(
+        stored.provider_config.get("endpoint").map(String::as_str),
+        Some("ovh-ca")
+    );
+    assert!(!stored.provider_config.contains_key("proxied"));
+
+    // The submitted Secret name is still format-validated.
+    let bad_secret = r#"{"baseDomain":"example.test","dnsProvider":"cloudflare","credentialsSecret":"other-secret","providerConfig":{},"environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(bad_secret)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("naslos-"),
+        "{body}"
+    );
+    assert_eq!(st.domains.get("example.test").unwrap().dns_provider, "ovh");
+
+    // Without fields, a credentialsSecret or a passthrough solver a
+    // credential-bearing provider change is still rejected.
+    let bare =
+        r#"{"baseDomain":"example.test","dnsProvider":"cloudflare","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(bare)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("dnsProvider"));
+    assert_eq!(st.domains.get("example.test").unwrap().dns_provider, "ovh");
+}
+
+#[tokio::test]
+async fn domain_provider_change_preserves_omitted_record_fields() {
+    let mut st = AppState::for_test(SECRET);
+    let ddns = test_ddns_manager(&st);
+    ddns.store()
+        .put(naslos_api::ddns::Entry {
+            id: "ddns-1".into(),
+            provider: "ovh".into(),
+            zone: "example.test".into(),
+            record: "home".into(),
+            record_type: "A".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    st.ddns = Some(Arc::new(ddns));
+    st.domains
+        .upsert(naslos_api::certs::Domain {
+            base_domain: "example.test".into(),
+            dns_provider: "cloudflare".into(),
+            credentials_secret: "naslos-domain-example-test-creds".into(),
+            provider_config: std::collections::HashMap::from([(
+                "proxied".to_string(),
+                "true".to_string(),
+            )]),
+            environment: "production".into(),
+            acme_email: "ops@example.test".into(),
+            app_records_ddns_entry: Some("ddns-1".into()),
+            primary: true,
+            sso: true,
+            ..Default::default()
+        })
+        .unwrap();
+    let st = Arc::new(st);
+
+    // The MCP domain_update shape sends no environment, acmeEmail or app-record
+    // key: those fields keep their stored values instead of resetting the
+    // domain to staging with no email and no app CNAMEs.
+    let switch = r#"{"baseDomain":"example.test","dnsProvider":"ovh","credentialsSecret":"naslos-domain-ovh-creds","providerConfig":{"endpoint":"ovh-ca"}}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(switch)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = st.domains.get("example.test").unwrap();
+    assert_eq!(stored.dns_provider, "ovh");
+    assert_eq!(stored.environment, "production");
+    assert_eq!(stored.acme_email, "ops@example.test");
+    assert_eq!(stored.app_records_ddns_entry.as_deref(), Some("ddns-1"));
+    assert!(stored.primary);
+    assert!(stored.sso);
+}
+
+#[tokio::test]
+async fn domain_update_applies_explicit_record_fields_and_keeps_server_flags() {
+    let mut st = AppState::for_test(SECRET);
+    let ddns = test_ddns_manager(&st);
+    for id in ["ddns-1", "ddns-2"] {
+        ddns.store()
+            .put(naslos_api::ddns::Entry {
+                id: id.into(),
+                provider: "ovh".into(),
+                zone: "example.test".into(),
+                record: "home".into(),
+                record_type: "A".into(),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    st.ddns = Some(Arc::new(ddns));
+    st.domains
+        .upsert(naslos_api::certs::Domain {
+            base_domain: "example.test".into(),
+            dns_provider: "cloudflare".into(),
+            credentials_secret: "naslos-domain-example-test-creds".into(),
+            environment: "production".into(),
+            acme_email: "old@example.test".into(),
+            app_records_ddns_entry: Some("ddns-1".into()),
+            primary: true,
+            sso: true,
+            ..Default::default()
+        })
+        .unwrap();
+    let st = Arc::new(st);
+
+    // The UI PUT shape always sends environment/acmeEmail/appRecordsDdnsEntry
+    // (and fields). Explicit values still apply; the server-owned primary/sso
+    // flags it does not send survive.
+    let payload = r#"{"baseDomain":"example.test","dnsProvider":"cloudflare","credentialsSecret":"naslos-domain-example-test-creds","acmeEmail":"new@example.test","environment":"staging","appRecordsDdnsEntry":"ddns-2","fields":{}}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = st.domains.get("example.test").unwrap();
+    assert_eq!(stored.environment, "staging");
+    assert_eq!(stored.acme_email, "new@example.test");
+    assert_eq!(stored.app_records_ddns_entry.as_deref(), Some("ddns-2"));
+    assert!(stored.primary);
+    assert!(stored.sso);
+
+    // An explicit null app-record target still clears the link.
+    let payload = r#"{"baseDomain":"example.test","dnsProvider":"cloudflare","credentialsSecret":"naslos-domain-example-test-creds","acmeEmail":"new@example.test","environment":"staging","appRecordsDdnsEntry":null,"fields":{}}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(payload)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(st
+        .domains
+        .get("example.test")
+        .unwrap()
+        .app_records_ddns_entry
+        .is_none());
+}
+
+#[tokio::test]
+async fn notification_test_route_requires_enabled_and_bypasses_the_severity_floor() {
+    // Disabled: an explicit client error, not a false "sent".
+    let (status, body, _r) = send(admin_request("POST", "/api/notifications/test", None)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "ntfy channel is disabled");
+
+    // Enabled with the default warning floor: the info-severity test must still
+    // reach the transport (and fail on this non-public target) instead of being
+    // silently dropped by the severity filter.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notifications.json");
+    std::fs::write(
+        &path,
+        r#"{"enabled":true,"serverUrl":"http://127.0.0.1","topic":"alerts","enabledEvents":["disk_failure"],"minSeverity":"warning"}"#,
+    )
+    .unwrap();
+    let mut st = AppState::for_test(SECRET);
+    st.notifications = Arc::new(naslos_api::notifications::Manager::new(
+        path.to_str().unwrap(),
+    ));
+    let (status, body, raw) = send_state(
+        Arc::new(st),
+        admin_request("POST", "/api/notifications/test", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("non-public"),
+        "{body}"
+    );
+    assert!(!raw.contains("test notification sent"));
+}
+
+#[tokio::test]
 async fn webhook_test_route_requires_enabled_and_guards_at_send_time() {
     // Disabled: an explicit client error rather than a false success.
     let (status, body, _r) = send(admin_request(

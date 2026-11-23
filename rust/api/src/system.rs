@@ -15,6 +15,16 @@ pub const DEFAULT_SOURCE: &str = "https://api.github.com/repos/AessemOps/Naslos-
 pub const CHECK_FILE: &str = "check.json";
 pub const OPERATION_CONFIGMAP: &str = "naslos-system-operation";
 pub const OPERATION_PREFIX: &str = "naslos-system-op-";
+/// Where the API caches the verified pack inside the state volume. The
+/// upgrader Job mounts the same claim at `/var/lib/naslos`, so this path is
+/// also the Job's `--pack-file` (C-1c, see `job_spec`).
+pub const STATE_MOUNT: &str = "/var/lib/naslos";
+/// Largest release metadata/text asset (releases JSON, sha256, signature).
+pub const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
+/// API environment variable carrying the detached pack-signature public key
+/// (FR-UPD). The chart renders it from `system.updates.packPubkey`, and the
+/// admission policy pins the same value into the Job's `--pack-pubkey`.
+pub const PACK_PUBKEY_ENV: &str = "SYSTEM_UPDATES_PACK_PUBKEY";
 
 /// What the installed pack pinned (rendered by the chart from `release.*`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -128,6 +138,10 @@ pub struct Candidate {
     #[serde(default)]
     pub pack_attested: bool,
     pub pack_path: String,
+    /// Cached detached signature beside `pack_path`, when the release has one.
+    /// Verifying it locally is what keeps the Job off the network (C-1c).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pack_sig_path: String,
     pub talos_version: String,
     pub kubernetes_version: String,
     pub api_image: String,
@@ -364,11 +378,10 @@ impl Checker {
             .filter(|n| *n > 0)
             .map(|h| Duration::from_secs(h * 3600))
             .unwrap_or(Duration::from_secs(24 * 3600));
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(300))
-            .build()
-            .ok()?;
-        let pack_pubkey = std::env::var("SYSTEM_UPDATES_PACK_PUBKEY")
+        // I-7: every redirect hop is re-validated against `pack_url_allowed`,
+        // not just the first URL the release lists.
+        let client = pack_client(Duration::from_secs(300), &source).ok()?;
+        let pack_pubkey = std::env::var(PACK_PUBKEY_ENV)
             .unwrap_or_default()
             .trim()
             .to_string();
@@ -546,6 +559,7 @@ impl Checker {
         // unsigned. The sha256 fetched from the same origin is not an
         // independent trust anchor on its own.
         let mut pack_attested = false;
+        let mut signature: Option<String> = None;
         if let Some(sig_url) = pack_sig_url.as_deref() {
             if self.pack_pubkey.is_empty() {
                 return Err(format!(
@@ -555,13 +569,14 @@ impl Checker {
             }
             pack_url_allowed(sig_url, &self.source)
                 .map_err(|e| format!("release {}: {e}", version.as_tag()))?;
-            let signature = self
+            let text = self
                 .download_text(sig_url)
                 .await
                 .map_err(|e| format!("release {}: {e}", version.as_tag()))?;
-            crate::upgrade::verify_pack_signature(&bytes, &signature, &self.pack_pubkey)
+            crate::upgrade::verify_pack_signature(&bytes, &text, &self.pack_pubkey)
                 .map_err(|e| format!("release {}: {e}", version.as_tag()))?;
             pack_attested = true;
+            signature = Some(text);
         } else if !self.pack_pubkey.is_empty() {
             return Err(format!(
                 "release {} has no pack signature but SYSTEM_UPDATES_PACK_PUBKEY is configured",
@@ -577,6 +592,18 @@ impl Checker {
                 meta.naslos_version
             ));
         }
+        let pack_path = self
+            .cache_dir
+            .join(format!("pack-{version}.tar.gz"))
+            .display()
+            .to_string();
+        // The Job verifies the cached signature offline; keep the exact bytes
+        // the API just checked (C-1c).
+        let pack_sig_path = if signature.is_some() {
+            format!("{pack_path}.sig")
+        } else {
+            String::new()
+        };
         let candidate = Candidate {
             version: version.to_string(),
             notes_url: release.html_url.clone().unwrap_or_default(),
@@ -586,16 +613,13 @@ impl Checker {
             pack_sha256: pack_sha,
             pack_sig_url: pack_sig_url.unwrap_or_default(),
             pack_attested,
-            pack_path: self
-                .cache_dir
-                .join(format!("pack-{version}.tar.gz"))
-                .display()
-                .to_string(),
+            pack_path,
+            pack_sig_path,
             talos_version: meta.talos_version.clone(),
             kubernetes_version: meta.kubernetes_version.clone(),
             api_image: meta.api_image().unwrap_or_default().to_string(),
         };
-        self.store_pack(&candidate, &bytes)?;
+        self.store_pack(&candidate, &bytes, signature.as_deref())?;
         Ok(candidate)
     }
 
@@ -606,55 +630,62 @@ impl Checker {
     }
 
     async fn download_text(&self, url: &str) -> Result<String, String> {
-        let resp = self
-            .client
-            .get(url)
-            .header("User-Agent", "naslos-api")
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|e| format!("GET {url}: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("GET {url}: HTTP {}", resp.status()));
-        }
-        resp.text().await.map_err(|e| format!("reading {url}: {e}"))
+        let bytes = download_capped(
+            &self.client,
+            url,
+            "release metadata",
+            MAX_TEXT_BYTES,
+            "naslos-api",
+        )
+        .await?;
+        String::from_utf8(bytes).map_err(|_| format!("GET {url}: body is not UTF-8"))
     }
 
     async fn download_bytes(&self, url: &str) -> Result<Vec<u8>, String> {
-        let resp = self
-            .client
-            .get(url)
-            .header("User-Agent", "naslos-api")
-            .send()
-            .await
-            .map_err(|e| format!("GET {url}: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("GET {url}: HTTP {}", resp.status()));
-        }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("reading {url}: {e}"))?;
-        if bytes.len() > 512 * 1024 * 1024 {
-            return Err(format!("GET {url}: pack is larger than 512 MiB"));
-        }
-        Ok(bytes.to_vec())
+        download_capped(
+            &self.client,
+            url,
+            "pack",
+            crate::upgrade::MAX_PACK_BYTES,
+            "naslos-api",
+        )
+        .await
     }
 
-    fn store_pack(&self, candidate: &Candidate, bytes: &[u8]) -> Result<(), String> {
+    fn store_pack(
+        &self,
+        candidate: &Candidate,
+        bytes: &[u8],
+        signature: Option<&str>,
+    ) -> Result<(), String> {
         std::fs::create_dir_all(&self.cache_dir)
             .map_err(|e| format!("creating {}: {e}", self.cache_dir.display()))?;
         let path = Path::new(&candidate.pack_path);
         let tmp = path.with_extension("tar.gz.tmp");
         std::fs::write(&tmp, bytes).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
         std::fs::rename(&tmp, path).map_err(|e| format!("renaming {}: {e}", tmp.display()))?;
+        let sig_path = PathBuf::from(format!("{}.sig", path.display()));
+        match signature {
+            Some(text) => {
+                let tmp = sig_path.with_extension("sig.tmp");
+                std::fs::write(&tmp, text.as_bytes())
+                    .map_err(|e| format!("writing {}: {e}", tmp.display()))?;
+                std::fs::rename(&tmp, &sig_path)
+                    .map_err(|e| format!("renaming {}: {e}", tmp.display()))?;
+            }
+            None => {
+                let _ = std::fs::remove_file(&sig_path);
+            }
+        }
         // Keep only the offered pack: the state PVC is small and an older
         // candidate is never run once a newer check has replaced it.
         if let Ok(entries) = std::fs::read_dir(&self.cache_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                if name.starts_with("pack-") && name.ends_with(".tar.gz") && entry.path() != path {
+                let is_pack = name.starts_with("pack-")
+                    && (name.ends_with(".tar.gz") || name.ends_with(".tar.gz.sig"));
+                if is_pack && entry.path() != path && entry.path() != sig_path {
                     let _ = std::fs::remove_file(entry.path());
                 }
             }
@@ -733,6 +764,9 @@ pub fn pack_url_allowed(url: &str, source: &str) -> Result<(), String> {
     const GITHUB_HOSTS: &[&str] = &[
         "github.com",
         "objects.githubusercontent.com",
+        // GitHub redirects release assets here; still a GitHub-controlled
+        // https host and the bytes are re-checked against the approved sha256.
+        "release-assets.githubusercontent.com",
         "codeload.github.com",
         "api.github.com",
     ];
@@ -749,6 +783,76 @@ pub fn pack_url_allowed(url: &str, source: &str) -> Result<(), String> {
             "pack URL host {host:?} is not the update source or a GitHub asset host"
         ))
     }
+}
+
+/// Redirect policy for release and pack downloads (I-7). The API used to follow
+/// up to ten redirects and validate only the URL the release listed, so a
+/// misconfigured or hostile mirror could bounce the download anywhere. Each hop
+/// is now re-checked against `pack_url_allowed`; a hop that fails is a hard
+/// error, not a follow.
+pub fn pack_redirect_policy(source: &str) -> reqwest::redirect::Policy {
+    let source = source.to_string();
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= 5 {
+            return attempt.error("too many redirects while fetching the pack");
+        }
+        match pack_url_allowed(attempt.url().as_str(), &source) {
+            Ok(()) => attempt.follow(),
+            Err(e) => attempt.error(e),
+        }
+    })
+}
+
+/// Build the HTTP client used by the update poller and the upgrader Job with
+/// the hop-validating redirect policy.
+pub fn pack_client(timeout: Duration, source: &str) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(pack_redirect_policy(source))
+        .build()
+        .map_err(|e| format!("building the download client: {e}"))
+}
+
+/// Download with a hard byte cap and a Content-Length pre-check, so a hostile
+/// or broken asset cannot exhaust memory (I-7; the updater Job uses the same
+/// helper as the API). `what` names the asset in errors.
+pub async fn download_capped(
+    client: &reqwest::Client,
+    url: &str,
+    what: &str,
+    cap: usize,
+    user_agent: &str,
+) -> Result<Vec<u8>, String> {
+    let resp = client
+        .get(url)
+        .header("User-Agent", user_agent)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("GET {url}: HTTP {}", resp.status()));
+    }
+    if let Some(length) = resp.content_length() {
+        if length > cap as u64 {
+            return Err(format!(
+                "GET {url}: {what} is {length} bytes, larger than the {cap} byte cap"
+            ));
+        }
+    }
+    let mut out = Vec::new();
+    let mut resp = resp;
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("reading the {what}: {e}"))?
+    {
+        if out.len().saturating_add(chunk.len()) > cap {
+            return Err(format!("GET {url}: {what} exceeds the {cap} byte cap"));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
 }
 
 /// Whether a ConfigMap phase is an active lock.
@@ -774,6 +878,9 @@ pub struct JobOptions<'a> {
     pub pack_sha256: &'a str,
     pub pack_sig_url: &'a str,
     pub pack_pubkey: &'a str,
+    /// The configured update source. The Job's fallback download validates the
+    /// pack URL host against it, so a mirror channel must reach the Job too.
+    pub source: &'a str,
     pub release_name: &'a str,
     pub service_account: &'a str,
     pub talos_secret: &'a str,
@@ -804,10 +911,59 @@ pub fn job_spec(o: &JobOptions<'_>) -> serde_json::Value {
             "name": "state",
             "persistentVolumeClaim": {"claimName": o.state_pvc}
         }));
-        mounts.push(serde_json::json!({"name": "state", "mountPath": "/var/lib/naslos"}));
+        mounts.push(serde_json::json!({"name": "state", "mountPath": STATE_MOUNT}));
     } else {
         volumes.push(serde_json::json!({"name": "state", "emptyDir": {}}));
-        mounts.push(serde_json::json!({"name": "state", "mountPath": "/var/lib/naslos"}));
+        mounts.push(serde_json::json!({"name": "state", "mountPath": STATE_MOUNT}));
+    }
+    // C-1c: the API downloads, verifies and caches the pack on the shared state
+    // volume during the update check, and this Job mounts that claim at
+    // `STATE_MOUNT`. Point the operation at the cached file (and its detached
+    // signature) only when the Job can verify a signature under the pinned key,
+    // so the upgrade needs no second download and the cache is a real anchor.
+    // Without a key the cache is written by the same API pod that builds this
+    // Job, so pinning the path alone would let a compromised API substitute its
+    // own pack; the admission policy then admits only the 20-argument layout and
+    // the Job downloads from the channel-pinned release URL instead
+    // (`naslos-system-op-egress` covers that on 443).
+    let cached_pack = !o.state_pvc.is_empty() && !o.pack_pubkey.is_empty();
+    let pack_file = if cached_pack {
+        format!("{STATE_MOUNT}/updates/pack-{}.tar.gz", o.version)
+    } else {
+        String::new()
+    };
+    let pack_sig_file = if pack_file.is_empty() {
+        String::new()
+    } else {
+        format!("{pack_file}.sig")
+    };
+    let mut args = vec![
+        serde_json::json!("--op"),
+        serde_json::json!(o.op),
+        serde_json::json!("--operation-id"),
+        serde_json::json!(o.operation_id),
+        serde_json::json!("--from"),
+        serde_json::json!(o.from),
+        serde_json::json!("--version"),
+        serde_json::json!(o.version),
+        serde_json::json!("--pack-url"),
+        serde_json::json!(o.pack_url),
+        serde_json::json!("--sha256"),
+        serde_json::json!(o.pack_sha256),
+        serde_json::json!("--pack-sig-url"),
+        serde_json::json!(o.pack_sig_url),
+        serde_json::json!("--pack-pubkey"),
+        serde_json::json!(o.pack_pubkey),
+        serde_json::json!("--namespace"),
+        serde_json::json!(o.namespace),
+        serde_json::json!("--release"),
+        serde_json::json!(o.release_name),
+    ];
+    if !pack_file.is_empty() {
+        args.push(serde_json::json!("--pack-file"));
+        args.push(serde_json::json!(pack_file));
+        args.push(serde_json::json!("--pack-sig-file"));
+        args.push(serde_json::json!(pack_sig_file));
     }
 
     serde_json::json!({
@@ -851,23 +1007,16 @@ pub fn job_spec(o: &JobOptions<'_>) -> serde_json::Value {
                         "image": o.image,
                         "imagePullPolicy": "IfNotPresent",
                         "command": ["naslos-upgrade"],
-                        "args": [
-                            "--op", o.op,
-                            "--operation-id", o.operation_id,
-                            "--from", o.from,
-                            "--version", o.version,
-                            "--pack-url", o.pack_url,
-                            "--sha256", o.pack_sha256,
-                            "--pack-sig-url", o.pack_sig_url,
-                            "--pack-pubkey", o.pack_pubkey,
-                            "--namespace", o.namespace,
-                            "--release", o.release_name,
-                        ],
+                        "args": args,
                         "env": [
                             {"name": "NASLOS_NAMESPACE", "value": o.namespace},
                             {"name": "NASLOS_RELEASE", "value": o.release_name},
                             {"name": "NASLOS_WORKLOAD_NAMESPACE", "value": o.workload_namespace},
-                            {"name": "NASLOS_STATE_DIR", "value": "/var/lib/naslos"},
+                            {"name": "NASLOS_STATE_DIR", "value": STATE_MOUNT},
+                            // The Job's own pack download validates the URL
+                            // host against this source; without it only
+                            // GitHub hosts pass, which breaks mirror channels.
+                            {"name": "SYSTEM_UPDATES_SOURCE", "value": o.source},
                             {"name": "TALOSCONFIG", "value": "/var/run/secrets/talos.dev/config"},
                             {"name": "TALOS_NODES", "value": o.talos_nodes},
                             {"name": "HOME", "value": "/tmp"},
@@ -1024,6 +1173,7 @@ mod tests {
 
     #[test]
     fn job_spec_is_locked_down() {
+        const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
         let spec = job_spec(&JobOptions {
             name: "naslos-system-op-1-ab",
             namespace: "naslos",
@@ -1034,8 +1184,9 @@ mod tests {
             version: "0.3.1",
             pack_url: "https://example/pack.tar.gz",
             pack_sha256: "abc",
-            pack_sig_url: "",
-            pack_pubkey: "",
+            pack_sig_url: "https://example/pack.tar.gz.sig",
+            pack_pubkey: KEY,
+            source: "https://api.github.com/repos/AessemOps/Naslos-Linux/releases",
             release_name: "naslos",
             service_account: "naslos-upgrader",
             talos_secret: "naslos-talosconfig",
@@ -1061,6 +1212,23 @@ mod tests {
             "talosconfig"
         );
         assert_eq!(pod["containers"][0]["volumeMounts"][2]["name"], "state");
+        let args = pod["containers"][0]["args"]
+            .as_array()
+            .expect("container args");
+        let args: Vec<&str> = args.iter().filter_map(|a| a.as_str()).collect();
+        for (flag, value) in [
+            ("--pack-file", "/var/lib/naslos/updates/pack-0.3.1.tar.gz"),
+            (
+                "--pack-sig-file",
+                "/var/lib/naslos/updates/pack-0.3.1.tar.gz.sig",
+            ),
+        ] {
+            let index = args
+                .iter()
+                .position(|arg| *arg == flag)
+                .unwrap_or_else(|| panic!("job spec must emit {flag}"));
+            assert_eq!(args[index + 1], value);
+        }
         let env = pod["containers"][0]["env"]
             .as_array()
             .expect("container env");
@@ -1070,6 +1238,36 @@ mod tests {
             .expect("TALOS_NODES env");
         assert_eq!(talos_nodes["value"], "192.168.1.117");
         assert_eq!(spec["metadata"]["labels"]["naslos.io/operation-id"], "1-ab");
+        assert_eq!(args[15], KEY);
+        // The anchor decision: without a pinned key the cached pack is not
+        // handed over, because the API pod can write that path.
+        let url_only = job_spec(&JobOptions {
+            name: "naslos-system-op-1-ab",
+            namespace: "naslos",
+            image: "ghcr.io/aessemops/naslos-api@sha256:dead",
+            op: "naslos",
+            operation_id: "1-ab",
+            from: "0.3.0",
+            version: "0.3.1",
+            pack_url: "https://example/pack.tar.gz",
+            pack_sha256: "abc",
+            pack_sig_url: "",
+            pack_pubkey: "",
+            source: "https://api.github.com/repos/AessemOps/Naslos-Linux/releases",
+            release_name: "naslos",
+            service_account: "naslos-upgrader",
+            talos_secret: "naslos-talosconfig",
+            talos_nodes: "192.168.1.117",
+            state_pvc: "naslos-shares-config",
+            workload_namespace: "naslos-privileged",
+            backoff_limit: 3,
+            ttl_seconds: 3600,
+        });
+        let url_args = url_only["spec"]["template"]["spec"]["containers"][0]["args"]
+            .as_array()
+            .expect("container args");
+        assert!(!url_args.iter().any(|arg| arg == "--pack-file"));
+        assert!(!url_args.iter().any(|arg| arg == "--pack-sig-file"));
     }
 
     #[test]
@@ -1124,5 +1322,462 @@ mod tests {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
         assert!(!id.ends_with('-'));
         assert_eq!(operation_job_name(&id), format!("naslos-system-op-{id}"));
+    }
+
+    fn chart_policy_source() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../charts/naslos/templates/system-upgrade.yaml");
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
+    }
+
+    fn sample_job(
+        state_pvc: &str,
+        pack_sig_url: &str,
+        pack_pubkey: &str,
+        source: &str,
+        talos_secret: &str,
+    ) -> serde_json::Value {
+        job_spec(&JobOptions {
+            name: "naslos-system-op-1-ab",
+            namespace: "naslos",
+            image: "ghcr.io/aessemops/naslos-api@sha256:dead",
+            op: "naslos",
+            operation_id: "1-ab",
+            from: "0.3.0",
+            version: "0.3.1",
+            pack_url: "https://github.com/o/r/releases/download/v0.3.1/pack.tar.gz",
+            pack_sha256: "abababababababababababababababababababababababababababababababab",
+            pack_sig_url,
+            pack_pubkey,
+            source,
+            release_name: "naslos",
+            service_account: "naslos-upgrader",
+            talos_secret,
+            talos_nodes: "10.0.0.1",
+            state_pvc,
+            workload_namespace: "naslos-privileged",
+            backoff_limit: 3,
+            ttl_seconds: 3600,
+        })["spec"]["template"]["spec"]["containers"][0]
+            .clone()
+    }
+
+    fn sample_job_args(
+        state_pvc: &str,
+        pack_sig_url: &str,
+        pack_pubkey: &str,
+        source: &str,
+        talos_secret: &str,
+    ) -> Vec<String> {
+        sample_job(state_pvc, pack_sig_url, pack_pubkey, source, talos_secret)["args"]
+            .as_array()
+            .expect("container args")
+            .iter()
+            .map(|arg| arg.as_str().expect("string arg").to_string())
+            .collect()
+    }
+
+    /// The VAP carries its arg allowlist as a CEL `a.matches('<regex>')` literal.
+    fn policy_arg_regex(source: &str) -> &str {
+        let marker = "a.matches('";
+        let start = source
+            .find(marker)
+            .unwrap_or_else(|| panic!("the upgrader policy has no arg allowlist"))
+            + marker.len();
+        let rest = &source[start..];
+        let end = rest
+            .find('\'')
+            .unwrap_or_else(|| panic!("the upgrader arg allowlist is not a quoted literal"));
+        &rest[..end]
+    }
+
+    /// Evaluate the policy's `^--(a|b|…)(=|$)` allowlist for one argument, the
+    /// way CEL `matches` does for a flag (a non-flag value never reaches it).
+    fn policy_allows(regex: &str, arg: &str) -> bool {
+        let body = regex
+            .strip_prefix("^--(")
+            .unwrap_or_else(|| panic!("unexpected upgrader arg allowlist shape: {regex:?}"));
+        let body = body
+            .strip_suffix(")(=|$)")
+            .unwrap_or_else(|| panic!("unexpected upgrader arg allowlist shape: {regex:?}"));
+        match arg.strip_prefix("--") {
+            Some(flag) => body
+                .split('|')
+                .any(|allowed| flag == allowed || flag.starts_with(&format!("{allowed}="))),
+            None => false,
+        }
+    }
+
+    /// All quoted operands following `marker` (which ends with its opening
+    /// quote), in source order.
+    fn quoted_operands(source: &str, marker: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = source;
+        while let Some(pos) = rest.find(marker) {
+            let after = &rest[pos + marker.len()..];
+            match after.find('\'') {
+                Some(end) => {
+                    out.push(after[..end].to_string());
+                    rest = &after[end + 1..];
+                }
+                None => break,
+            }
+        }
+        out
+    }
+
+    /// C-1a: the chart's admission policy must admit every flag `job_spec`
+    /// emits. The two drifted once (`--pack-sig-url`/`--pack-pubkey` were
+    /// emitted but not allowed), which denied every web upgrade at admission.
+    #[test]
+    fn every_job_argument_is_admitted_by_the_chart_policy() {
+        let source = chart_policy_source();
+        let regex = policy_arg_regex(&source).to_string();
+        let mut emitted: Vec<String> = Vec::new();
+        for (state_pvc, pack_sig_url, pack_pubkey, talos_secret) in [
+            ("naslos-shares-config", "", "", "naslos-talosconfig"),
+            (
+                "naslos-shares-config",
+                "https://github.com/o/r/pack.sig",
+                "abc",
+                "",
+            ),
+            ("", "", "", "naslos-talosconfig"),
+            ("", "https://github.com/o/r/pack.sig", "abc", ""),
+        ] {
+            emitted.extend(
+                sample_job_args(
+                    state_pvc,
+                    pack_sig_url,
+                    pack_pubkey,
+                    "https://api.github.com/repos/AessemOps/Naslos-Linux/releases",
+                    talos_secret,
+                )
+                .into_iter()
+                .filter(|arg| arg.starts_with("--")),
+            );
+        }
+        for flag in [
+            "--pack-url",
+            "--pack-sig-url",
+            "--pack-pubkey",
+            "--pack-file",
+            "--pack-sig-file",
+        ] {
+            assert!(
+                emitted.iter().any(|arg| arg == flag),
+                "job_spec no longer emits {flag}; update this test"
+            );
+        }
+        for arg in &emitted {
+            assert!(
+                policy_allows(&regex, arg),
+                "the chart admission policy denies job_spec argument {arg:?}"
+            );
+        }
+        // Negative control: the allowlist is a flag set, not a prefix match.
+        for denied in ["--privileged", "--pack-url-evil", "--command"] {
+            assert!(!policy_allows(&regex, denied), "{denied} must stay denied");
+        }
+    }
+
+    /// Every `c.args[<n>] == '<literal>'` pin in the policy, as (index, value).
+    fn positional_arg_pins(source: &str) -> Vec<(usize, String)> {
+        let mut pins = Vec::new();
+        let mut rest = source;
+        while let Some(pos) = rest.find("c.args[") {
+            rest = &rest[pos + "c.args[".len()..];
+            let Some(end) = rest.find(']') else { break };
+            let Ok(index) = rest[..end].parse::<usize>() else {
+                continue;
+            };
+            let after = rest[end + 1..].trim_start();
+            let Some(after) = after.strip_prefix("==") else {
+                continue;
+            };
+            let after = after.trim_start();
+            let Some(after) = after.strip_prefix('\'') else {
+                continue;
+            };
+            let Some(literal_end) = after.find('\'') else {
+                continue;
+            };
+            pins.push((index, after[..literal_end].to_string()));
+            rest = &after[literal_end..];
+        }
+        pins
+    }
+
+    /// C-1a follow-up: the policy pins the argument values, not just the flag
+    /// names, so a Job creator cannot point the cluster-admin operation at an
+    /// arbitrary pack. The emitted layout (flag at every even index, value at
+    /// the next) and the cached-pack/signature layout must stay identical in
+    /// both files. The cached-pack layout is only emitted when a signature key
+    /// is pinned (the anchor decision); without it the Job downloads from the
+    /// channel-pinned URL.
+    #[test]
+    fn job_argument_positions_match_the_policy() {
+        let source = chart_policy_source();
+        let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        let pins: HashMap<usize, String> = positional_arg_pins(&source).into_iter().collect();
+        const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        const SIG: &str = "https://github.com/o/r/releases/download/v0.3.1/pack.tar.gz.sig";
+        for (state_pvc, pack_pubkey, expected_len) in [
+            ("naslos-shares-config", "", 20),
+            ("naslos-shares-config", KEY, 24),
+            ("", KEY, 20),
+            ("", "", 20),
+        ] {
+            let args = sample_job_args(
+                state_pvc,
+                SIG,
+                pack_pubkey,
+                "https://api.github.com/repos/AessemOps/Naslos-Linux/releases",
+                "naslos-talosconfig",
+            );
+            assert_eq!(
+                args.len(),
+                expected_len,
+                "unexpected layout for state_pvc={state_pvc:?} key={pack_pubkey:?}"
+            );
+            assert_eq!(
+                args.iter().any(|arg| arg == "--pack-file"),
+                expected_len == 24,
+                "the cached pack must only appear with a pinned signature key"
+            );
+            for (index, arg) in args.iter().enumerate() {
+                if arg.starts_with("--") {
+                    assert_eq!(
+                        pins.get(&index),
+                        Some(arg),
+                        "the policy's positional pin for args[{index}] drifted from job_spec"
+                    );
+                }
+            }
+        }
+        // Layout sizes, the paths composed from the version argument, and the
+        // signature branch pins.
+        for fragment in [
+            "{{- if and $packPubkey .Values.api.sharesConfig.enabled }}",
+            "c.args.size() == 24",
+            "c.args.size() == 20",
+            "$packPubkey := $updates.packPubkey",
+            "c.args[9].startsWith('{{ $packUrlPrefix }}')",
+            "c.args[17] == '{{ .Release.Namespace }}'",
+            "c.args[19] == '{{ .Release.Name }}'",
+            // Signature mode: the key is pinned by value and the URL must be
+            // a channel asset.
+            "c.args[13] != ''",
+            "c.args[13].startsWith('{{ $packUrlPrefix }}')",
+            "c.args[15] == '{{ $packPubkey }}'",
+            // No key: the layout carries empty signature values.
+            "c.args[13] == ''",
+            "c.args[15] == ''",
+        ] {
+            assert!(
+                flat.contains(fragment),
+                "the policy lost the value pin {fragment:?}"
+            );
+        }
+        let pack_pin =
+            format!("c.args[21] == '{STATE_MOUNT}/updates/pack-' + c.args[7] + '.tar.gz'");
+        assert!(flat.contains(&pack_pin), "missing {pack_pin:?}");
+        assert!(flat.contains("c.args[23] == c.args[21] + '.sig'"));
+        // The Job must receive the configured source so a mirror channel's
+        // pack URL passes its own host check (finding: mirror upgrades).
+        assert!(
+            flat.contains("'SYSTEM_UPDATES_SOURCE'"),
+            "the policy must admit the source env the Job needs"
+        );
+        // Value-level coverage: for each layout the emitted values must be the
+        // ones the policy branch admits (empty pair without a key, channel
+        // prefix + pinned key with one, cached path only with both a key and
+        // the state claim).
+        const GITHUB: &str = "https://api.github.com/repos/AessemOps/Naslos-Linux/releases";
+        const PACK: &str = "https://github.com/o/r/releases/download/v0.3.1/pack.tar.gz";
+        for (state_pvc, key) in [
+            ("naslos-shares-config", ""),
+            ("naslos-shares-config", KEY),
+            ("", KEY),
+            ("", ""),
+        ] {
+            let container = sample_job(
+                state_pvc,
+                if key.is_empty() { "" } else { SIG },
+                key,
+                GITHUB,
+                "naslos-talosconfig",
+            );
+            let args: Vec<&str> = container["args"]
+                .as_array()
+                .expect("container args")
+                .iter()
+                .filter_map(|arg| arg.as_str())
+                .collect();
+            let source = container["env"]
+                .as_array()
+                .expect("container env")
+                .iter()
+                .find(|entry| entry["name"] == "SYSTEM_UPDATES_SOURCE")
+                .expect("SYSTEM_UPDATES_SOURCE env")["value"]
+                .as_str()
+                .expect("source value");
+            assert_eq!(source, GITHUB);
+            assert_eq!(args[8], "--pack-url");
+            assert_eq!(args[9], PACK);
+            assert!(args[9].starts_with("https://github.com/o/r/releases/download/"));
+            assert_eq!(args[12], "--pack-sig-url");
+            assert_eq!(args[13], if key.is_empty() { "" } else { SIG });
+            assert_eq!(args[14], "--pack-pubkey");
+            assert_eq!(args[15], key);
+            if key.is_empty() {
+                assert!(args[13].is_empty());
+            } else {
+                assert!(!args[13].is_empty());
+                // The policy requires the signature URL under the same channel
+                // prefix as the pack URL.
+                let origin = |url: &str| url.split('/').take(3).collect::<Vec<_>>().join("/");
+                assert_eq!(origin(args[13]), origin(args[9]));
+            }
+            let cached = !state_pvc.is_empty() && !key.is_empty();
+            assert_eq!(
+                args.contains(&"--pack-file"),
+                cached,
+                "cached pack layout for state_pvc={state_pvc:?} key={key:?}"
+            );
+            assert_eq!(args.len(), if cached { 24 } else { 20 });
+            if cached {
+                assert_eq!(args[20], "--pack-file");
+                assert_eq!(
+                    args[21],
+                    format!("{STATE_MOUNT}/updates/pack-{}.tar.gz", args[7])
+                );
+                assert_eq!(args[22], "--pack-sig-file");
+                assert_eq!(args[23], format!("{}.sig", args[21]));
+            }
+        }
+    }
+
+    /// Finding: the default (no-key) path is a Job-side download, so a mirror
+    /// channel must reach the Job as SYSTEM_UPDATES_SOURCE or its pack URL is
+    /// rejected by the Job's own host check. The policy derives the mirror
+    /// host prefix from the same value.
+    #[test]
+    fn mirror_channel_source_reaches_the_job_and_is_accepted() {
+        const SOURCE: &str = "https://mirror.example/naslos/releases.json";
+        const PACK: &str = "https://mirror.example/packs/naslos-install-pack-0.3.1.tar.gz";
+        let spec = job_spec(&JobOptions {
+            name: "naslos-system-op-1-ab",
+            namespace: "naslos",
+            image: "ghcr.io/aessemops/naslos-api@sha256:dead",
+            op: "naslos",
+            operation_id: "1-ab",
+            from: "0.3.0",
+            version: "0.3.1",
+            pack_url: PACK,
+            pack_sha256: "abababababababababababababababababababababababababababababababab",
+            pack_sig_url: "",
+            pack_pubkey: "",
+            source: SOURCE,
+            release_name: "naslos",
+            service_account: "naslos-upgrader",
+            talos_secret: "naslos-talosconfig",
+            talos_nodes: "10.0.0.1",
+            state_pvc: "naslos-shares-config",
+            workload_namespace: "naslos-privileged",
+            backoff_limit: 3,
+            ttl_seconds: 3600,
+        });
+        let env = spec["spec"]["template"]["spec"]["containers"][0]["env"]
+            .as_array()
+            .expect("container env");
+        let source = env
+            .iter()
+            .find(|entry| entry["name"] == "SYSTEM_UPDATES_SOURCE")
+            .expect("SYSTEM_UPDATES_SOURCE env")["value"]
+            .as_str()
+            .expect("source value");
+        assert_eq!(source, SOURCE);
+        // The bug this guards: with an empty source only GitHub hosts pass.
+        assert!(crate::system::pack_url_allowed(PACK, "").is_err());
+        assert!(crate::system::pack_url_allowed(PACK, source).is_ok());
+        // The policy derives a host-root prefix for non-GitHub sources.
+        let policy = chart_policy_source();
+        assert!(policy.contains("$packUrlPrefix = printf \"%s/\" $host"));
+    }
+
+    /// Finding 2: the strict signature mode must be wired end-to-end. The API
+    /// builds the Job args from `PACK_PUBKEY_ENV`, so the Deployment must set
+    /// that exact variable from the same chart value the policy pins.
+    #[test]
+    fn strict_signature_mode_is_wired_from_the_chart_to_the_api() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../charts/naslos/templates/api-deployment.yaml");
+        let deployment = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        assert!(
+            deployment.contains(&format!("name: {PACK_PUBKEY_ENV}")),
+            "api-deployment.yaml does not set {PACK_PUBKEY_ENV}"
+        );
+        assert!(
+            deployment.contains("$updates.packPubkey | default \"\" | trim"),
+            "the API env must come from system.updates.packPubkey, trimmed"
+        );
+        let policy = chart_policy_source();
+        assert!(
+            policy.contains("$packPubkey := $updates.packPubkey | default \"\" | trim"),
+            "the policy must read the same chart value, trimmed"
+        );
+        assert!(
+            policy.contains("c.args[15] == '{{ $packPubkey }}'"),
+            "the policy must pin --pack-pubkey to the configured key"
+        );
+    }
+
+    /// C-1c follow-up: the API server injects the ServiceAccount token
+    /// projection before admission, so the volume/mount allowlists must admit
+    /// its exact shape - and nothing broader. The only prefix-based admission
+    /// is the injected name; every other name must match an exact literal, so a
+    /// differently-named injected volume is denied.
+    #[test]
+    fn policy_admits_only_the_injected_service_account_volume() {
+        let source = chart_policy_source();
+        // Line wrapping is cosmetic inside the folded CEL literal.
+        let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        for fragment in [
+            "v.name.startsWith('kube-api-access-')",
+            "has(v.projected)",
+            "v.projected.sources.size() == 3",
+            "v.projected.sources[0].serviceAccountToken.path == 'token'",
+            "v.projected.sources[1].configMap.name == 'kube-root-ca.crt'",
+            "v.projected.sources[1].configMap.items.size() == 1",
+            "v.projected.sources[1].configMap.items[0].key == 'ca.crt'",
+            "v.projected.sources[2].downwardAPI.items[0].path == 'namespace'",
+            "v.projected.sources[2].downwardAPI.items[0].fieldRef.fieldPath == 'metadata.namespace'",
+            "m.name.startsWith('kube-api-access-')",
+            "m.mountPath == '/var/run/secrets/kubernetes.io/serviceaccount'",
+            "m.readOnly == true",
+        ] {
+            assert!(
+                flat.contains(fragment),
+                "the policy does not admit the injected ServiceAccount token shape: {fragment:?}"
+            );
+        }
+        assert_eq!(
+            quoted_operands(&source, "v.name.startsWith('"),
+            ["kube-api-access-"]
+        );
+        assert_eq!(
+            quoted_operands(&source, "v.name == '"),
+            ["tmp", "talosconfig", "state"]
+        );
+        assert_eq!(
+            quoted_operands(&source, "m.name.startsWith('"),
+            ["kube-api-access-"]
+        );
+        assert_eq!(
+            quoted_operands(&source, "m.name == '"),
+            ["tmp", "talosconfig", "state"]
+        );
     }
 }

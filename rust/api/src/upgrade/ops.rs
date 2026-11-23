@@ -127,7 +127,15 @@ pub async fn naslos(cli: &Cli, writer: &mut Writer) -> Result<String, String> {
             "Checking the running images against the pack",
         )
         .await;
-    verify_images(cli, &meta).await?;
+    // FR-UPD-06: a digest mismatch after the Helm upgrade is a failed upgrade
+    // like any other, so it must take the same rollback path.
+    if let Err(e) = verify_images(cli, &meta).await {
+        let rollback = rollback(cli, previous).await;
+        return Err(match rollback {
+            Ok(()) => format!("{e}; rolled back to revision {previous}"),
+            Err(r) => format!("{e}; rollback failed: {r}"),
+        });
+    }
     writer
         .step(
             "images",
@@ -340,15 +348,41 @@ async fn download_and_extract(cli: &Cli) -> Result<(PackMetadata, PathBuf), Stri
     // (never trusted from the API response), and an available signature is
     // verified against the configured key.
     let source = std::env::var("SYSTEM_UPDATES_SOURCE").unwrap_or_default();
-    crate::system::pack_url_allowed(&cli.pack_url, &source)?;
     if cli.sha256.len() != 64 || !cli.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("--sha256 must be 64 hex characters".into());
     }
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(600))
-        .build()
-        .map_err(|e| format!("building the download client: {e}"))?;
-    let bytes = download_capped(&client, &cli.pack_url, "pack").await?;
+    // C-1c: the API verifies and caches the pack on the shared state volume
+    // before it creates this Job, and the Job mounts the same claim at the
+    // same path. Prefer that file: the namespace default-deny has no egress
+    // for the Job except the fallback policy, and a Talos reboot retry must
+    // not depend on a second download. A cached file that is present but does
+    // not match the approved digest fails closed instead of falling back.
+    let bytes = match read_cached_file(&cli.pack_file, "pack")? {
+        Some(bytes) => {
+            let got = crate::pack::hex_sha256(&bytes);
+            if !got.eq_ignore_ascii_case(&cli.sha256) {
+                return Err(format!(
+                    "the cached pack {} does not match the approved sha256 (got {got}, approved {})",
+                    cli.pack_file, cli.sha256
+                ));
+            }
+            bytes
+        }
+        None => {
+            // Fallback: the URL path. `download_capped` enforces the byte cap,
+            // and the client re-validates every redirect hop.
+            crate::system::pack_url_allowed(&cli.pack_url, &source)?;
+            let client = crate::system::pack_client(Duration::from_secs(600), &source)?;
+            crate::system::download_capped(
+                &client,
+                &cli.pack_url,
+                "pack",
+                crate::upgrade::MAX_PACK_BYTES,
+                "naslos-upgrade",
+            )
+            .await?
+        }
+    };
     let got = crate::pack::hex_sha256(&bytes);
     if !got.eq_ignore_ascii_case(&cli.sha256) {
         return Err(format!(
@@ -356,22 +390,45 @@ async fn download_and_extract(cli: &Cli) -> Result<(PackMetadata, PathBuf), Stri
             cli.sha256
         ));
     }
-    match (cli.pack_sig_url.is_empty(), cli.pack_pubkey.is_empty()) {
-        (false, false) => {
+    // Signature first from the cached copy (no network), then from the release
+    // URL as the fallback. The (url, key) combinations stay as strict as the
+    // update check: a published signature requires a key, and a configured key
+    // requires a signature.
+    let signature = match read_cached_file(&cli.pack_sig_file, "pack signature")? {
+        Some(bytes) => Some(
+            String::from_utf8(bytes)
+                .map_err(|_| "the cached pack signature is not UTF-8".to_string())?,
+        ),
+        None if cli.pack_sig_url.is_empty() => None,
+        None => {
             crate::system::pack_url_allowed(&cli.pack_sig_url, &source)?;
-            let signature = String::from_utf8(
-                download_capped(&client, &cli.pack_sig_url, "pack signature").await?,
+            let client = crate::system::pack_client(Duration::from_secs(600), &source)?;
+            Some(
+                String::from_utf8(
+                    crate::system::download_capped(
+                        &client,
+                        &cli.pack_sig_url,
+                        "pack signature",
+                        crate::upgrade::MAX_PACK_BYTES,
+                        "naslos-upgrade",
+                    )
+                    .await?,
+                )
+                .map_err(|_| "the pack signature is not UTF-8".to_string())?,
             )
-            .map_err(|_| "the pack signature is not UTF-8".to_string())?;
-            crate::upgrade::verify_pack_signature(&bytes, &signature, &cli.pack_pubkey)?;
         }
-        (false, true) => {
-            return Err("a pack signature URL is set but no --pack-pubkey is configured".into())
+    };
+    match (signature.as_deref(), cli.pack_pubkey.is_empty()) {
+        (Some(signature), false) => {
+            crate::upgrade::verify_pack_signature(&bytes, signature, &cli.pack_pubkey)?;
         }
-        (true, false) => {
-            return Err("a pack public key is configured but the release has no signature".into())
+        (Some(_), true) => {
+            return Err("a pack signature is available but no --pack-pubkey is configured".into())
         }
-        (true, true) => {}
+        (None, false) => {
+            return Err("a pack public key is configured but no pack signature is available".into())
+        }
+        (None, true) => {}
     }
     let dest = Path::new(&cli.state_dir)
         .join("updates")
@@ -384,46 +441,35 @@ async fn download_and_extract(cli: &Cli) -> Result<(PackMetadata, PathBuf), Stri
     Ok((meta, dest))
 }
 
-/// Download with a hard size cap and a matching Content-Length check, so a
-/// hostile or broken asset cannot exhaust the Job's memory (R-063).
-async fn download_capped(
-    client: &reqwest::Client,
-    url: &str,
-    what: &str,
-) -> Result<Vec<u8>, String> {
-    let resp = client
-        .get(url)
-        .header("User-Agent", "naslos-upgrade")
-        .send()
-        .await
-        .map_err(|e| format!("GET {url}: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("GET {url}: HTTP {}", resp.status()));
+/// Read a file the API cached on the shared state volume. A missing file is
+/// `None` (the caller falls back to its URL); an unreadable or oversized file
+/// is an error, because silently downloading instead could mask corruption.
+/// The read itself is capped, so a file that grows after the metadata check
+/// still cannot exhaust memory.
+fn read_cached_file(path: &str, what: &str) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read;
+
+    if path.is_empty() {
+        return Ok(None);
     }
-    if let Some(length) = resp.content_length() {
-        if length > crate::upgrade::MAX_PACK_BYTES as u64 {
-            return Err(format!(
-                "{what} is {length} bytes, larger than the {} byte cap",
-                crate::upgrade::MAX_PACK_BYTES
-            ));
-        }
+    let path = Path::new(path);
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("reading the cached {what} {}: {e}", path.display())),
+    };
+    let mut bytes = Vec::new();
+    file.take(crate::upgrade::MAX_PACK_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("reading the cached {what} {}: {e}", path.display()))?;
+    if bytes.len() > crate::upgrade::MAX_PACK_BYTES {
+        return Err(format!(
+            "the cached {what} {} is larger than the {} byte cap",
+            path.display(),
+            crate::upgrade::MAX_PACK_BYTES
+        ));
     }
-    let mut out = Vec::new();
-    let mut resp = resp;
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| format!("reading the {what}: {e}"))?
-    {
-        if out.len().saturating_add(chunk.len()) > crate::upgrade::MAX_PACK_BYTES {
-            return Err(format!(
-                "{what} exceeds the {} byte cap",
-                crate::upgrade::MAX_PACK_BYTES
-            ));
-        }
-        out.extend_from_slice(&chunk);
-    }
-    Ok(out)
+    Ok(Some(bytes))
 }
 
 struct ReleaseFacts {
@@ -645,19 +691,33 @@ async fn rollback(cli: &Cli, revision: i64) -> Result<(), String> {
 }
 
 async fn wait_for_workloads(cli: &Cli) -> Result<(), String> {
+    let workload_ns =
+        std::env::var("NASLOS_WORKLOAD_NAMESPACE").unwrap_or_else(|_| "naslos-privileged".into());
     for (namespace, kind, name) in [
         (cli.namespace.as_str(), "statefulset", "naslos-openldap"),
         (cli.namespace.as_str(), "statefulset", "naslos-authelia"),
         (cli.namespace.as_str(), "deployment", "naslos-api"),
         (cli.namespace.as_str(), "deployment", "naslos-ui"),
+        // The terminal is in the same image-check set below; waiting for it
+        // too keeps the two lists identical, so a Recreate window (its
+        // strategy) cannot make the image check see no running pod and fail a
+        // good upgrade. A workload the chart did not render is skipped by
+        // `wait_rollout`, like every optional workload here.
+        (workload_ns.as_str(), "deployment", "naslos-terminal"),
     ] {
         wait_rollout(cli, namespace, kind, name).await?;
+    }
+    // I-5: the privileged DaemonSets carry the pack's digests too, so a
+    // successful rollout there is part of the workload gate (and the source
+    // for the running-image check below).
+    for name in ["naslos-agent", "naslos-samba", "naslos-nfs"] {
+        wait_rollout(cli, &workload_ns, "daemonset", name).await?;
     }
     Ok(())
 }
 
 async fn wait_rollout(cli: &Cli, namespace: &str, kind: &str, name: &str) -> Result<(), String> {
-    run_kubectl(
+    match run_kubectl(
         cli,
         &[
             "rollout".into(),
@@ -670,7 +730,15 @@ async fn wait_rollout(cli: &Cli, namespace: &str, kind: &str, name: &str) -> Res
         KUBECTL_TIMEOUT,
     )
     .await
-    .map(|_| ())
+    {
+        Ok(_) => Ok(()),
+        // The chart renders SMB, NFS, the terminal and the DaemonSets
+        // conditionally. A workload that is not part of this install has no
+        // rollout to wait for; treating that as a failure rolled back a good
+        // upgrade (I-5 follow-up).
+        Err(e) if e.contains("NotFound") || e.contains("not found") => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 async fn wait_for_node(cli: &Cli) -> Result<(), String> {
@@ -777,7 +845,9 @@ async fn verify_images(cli: &Cli, meta: &PackMetadata) -> Result<(), String> {
         if !expected.contains("@sha256:") {
             continue;
         }
-        let out = match run_kubectl(
+        // Verify the pods that are actually running, not the pod template: a
+        // rollout can lag a template edit, and FR-UPD-06 is about what serves.
+        let workload = match run_kubectl(
             cli,
             &[
                 "get".into(),
@@ -796,25 +866,98 @@ async fn verify_images(cli: &Cli, meta: &PackMetadata) -> Result<(), String> {
             Err(e) if e.contains("NotFound") || e.contains("not found") => continue,
             Err(e) => return Err(e),
         };
-        let value: Value =
-            serde_json::from_str(out.trim()).map_err(|e| format!("parsing {kind}/{name}: {e}"))?;
-        let images = value
-            .pointer("/spec/template/spec/containers")
-            .and_then(Value::as_array)
-            .map(|containers| {
-                containers
+        let workload: Value = serde_json::from_str(workload.trim())
+            .map_err(|e| format!("parsing {kind}/{name}: {e}"))?;
+        let selector = workload
+            .pointer("/spec/selector/matchLabels")
+            .and_then(Value::as_object)
+            .map(|labels| {
+                labels
                     .iter()
-                    .filter_map(|c| c.get("image").and_then(Value::as_str))
+                    .filter_map(|(key, value)| value.as_str().map(|v| format!("{key}={v}")))
                     .collect::<Vec<_>>()
+                    .join(",")
             })
             .unwrap_or_default();
-        if !images.iter().any(|image| image == expected) {
-            return Err(format!(
-                "{kind}/{name} runs {images:?}, the pack pins {expected}"
-            ));
+        if selector.is_empty() {
+            return Err(format!("{kind}/{name} has no matchLabels selector"));
+        }
+        let out = run_kubectl(
+            cli,
+            &[
+                "get".into(),
+                "pods".into(),
+                "-n".into(),
+                namespace.into(),
+                "-l".into(),
+                selector,
+                "-o".into(),
+                "json".into(),
+            ],
+            KUBECTL_TIMEOUT,
+        )
+        .await?;
+        let pods: Value = serde_json::from_str(out.trim())
+            .map_err(|e| format!("parsing {kind}/{name} pods: {e}"))?;
+        let running: Vec<&Value> = pods
+            .get("items")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|pod| is_live_running_pod(pod))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if running.is_empty() {
+            return Err(format!("{kind}/{name} has no running pods"));
+        }
+        // Only the component's own repository is compared: a pod may carry a
+        // legitimate sidecar, but a stale digest of the same repository is the
+        // drift the pack check must catch.
+        let repository = expected.split('@').next().unwrap_or(expected);
+        for pod in running {
+            let pod_name = pod
+                .pointer("/metadata/name")
+                .and_then(Value::as_str)
+                .unwrap_or("<unnamed>");
+            let images = pod
+                .pointer("/spec/containers")
+                .and_then(Value::as_array)
+                .map(|containers| {
+                    containers
+                        .iter()
+                        .filter_map(|c| c.get("image").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if !images.iter().any(|image| *image == expected) {
+                return Err(format!(
+                    "{kind}/{name} pod {pod_name} runs {images:?}, the pack pins {expected}"
+                ));
+            }
+            if let Some(stale) = images
+                .iter()
+                .find(|image| image.split('@').next() == Some(repository) && **image != expected)
+            {
+                return Err(format!(
+                    "{kind}/{name} pod {pod_name} still runs {stale}, the pack pins {expected}"
+                ));
+            }
         }
     }
     Ok(())
+}
+
+/// Whether a pod is a live replica the image check should compare. A
+/// terminating pod (`deletionTimestamp` set) is being replaced by the rollout,
+/// so its old digest is not drift; this is the same live-pod rule the app
+/// image check uses (FR-APP-27).
+fn is_live_running_pod(pod: &Value) -> bool {
+    pod.pointer("/status/phase").and_then(Value::as_str) == Some("Running")
+        && !pod
+            .pointer("/metadata/deletionTimestamp")
+            .is_some_and(|stamp| !stamp.is_null())
 }
 
 /// After a reboot the Talos API can lag the kubelet; retry briefly instead of
@@ -965,5 +1108,23 @@ mod tests {
         assert!(!full.iter().any(|arg| arg == "--nodes"));
         assert_eq!(full[0], "--talosconfig");
         assert_eq!(full[2], "etcd");
+    }
+
+    #[test]
+    fn terminating_pods_are_not_live_replicas() {
+        let running = serde_json::json!({"status": {"phase": "Running"}});
+        assert!(is_live_running_pod(&running));
+        let terminating = serde_json::json!({
+            "metadata": {"deletionTimestamp": "2026-01-01T00:00:00Z"},
+            "status": {"phase": "Running"},
+        });
+        assert!(!is_live_running_pod(&terminating));
+        let explicit_null = serde_json::json!({
+            "metadata": {"deletionTimestamp": null},
+            "status": {"phase": "Running"},
+        });
+        assert!(is_live_running_pod(&explicit_null));
+        let pending = serde_json::json!({"status": {"phase": "Pending"}});
+        assert!(!is_live_running_pod(&pending));
     }
 }
