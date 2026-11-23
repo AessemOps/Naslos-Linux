@@ -139,7 +139,7 @@ samba, nfs, **terminal**), `naslos-apps`, `naslos-apps-priv`, and `naslos-keys`
 | `statefulset/naslos-authelia`, pod `naslos-authelia-0` | `naslos` | deterministic exec target for TOTP generation |
 | `secret/naslos-proxy` (key `secret`) | `naslos` | `X-Naslos-Proxy-Secret` value |
 | `secret/naslos-tls` (`tls.crt`/`tls.key`) | `naslos` | optional OS trust-store import |
-| `secret/naslos-openldap` (`admin-password`, `service-password`) | `naslos` | chart-generated LDAP credentials |
+| `secret/naslos-openldap` (`admin-password`, `service-password`, `authelia-password`) | `naslos` | chart-generated LDAP credentials; `service-password` is the API write bind, `authelia-password` the read-only Authelia bind (FR-IDN-17) |
 | `secret/naslos-openldap-tls` (`ca.crt`, `ldap.crt`, `ldap.key`) | `naslos` | chart-generated LDAP TLS |
 | `deploy/naslos-api`, `secret/naslos-talosconfig` | `naslos` | health + node management |
 

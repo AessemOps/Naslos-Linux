@@ -138,7 +138,9 @@ data:
         group_name_attribute: cn
         mail_attribute: mail
         display_name_attribute: displayName
-        user: {{ .Values.openldap.bindDN | default "cn=naslos-service,ou=services,dc=naslos,dc=local" }}
+        # R-010: read-only bind account; cn=naslos-service stays the API's
+        # write account and is never handed to Authelia.
+        user: {{ include "naslos.openldapAutheliaBindDN" . }}
         # AUDIT-M3: no `password` key here — Authelia reads the bind password
         # from AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE, the mounted
         # naslos-openldap Secret (see values.yaml). Never put it back.

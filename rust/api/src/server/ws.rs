@@ -5,13 +5,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{FromRequestParts, Query, Request, State};
+use axum::extract::{Extension, FromRequestParts, Query, Request, State};
 use axum::http::{header::HOST, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use futures::{SinkExt, StreamExt};
 use tokio::io::AsyncReadExt;
 
 use super::pods::{default_namespace, validate_kube_name};
+use crate::audit::SessionAudit;
+use crate::auth::UserInfo;
 use crate::json;
 use crate::state::AppState;
 
@@ -101,11 +103,15 @@ fn exec_slots() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
 /// `GET /api/ws/logs?namespace&pod&container`
 pub async fn logs_ws(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<Arc<UserInfo>>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if !origin_allowed(&headers, &allowed_origins(&state)) {
+    if let Some(response) = audit_degraded(&state) {
+        return response;
+    }
+    if !origin_allowed(&headers, &[]) {
         return json(
             StatusCode::FORBIDDEN,
             serde_json::json!({ "error": "websocket origin refused" }),
@@ -130,9 +136,24 @@ pub async fn logs_ws(
         return json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": e }));
     }
 
+    let target = format!("{namespace}/{pod}/{container}");
+    let pending = crate::audit::Pending::session(
+        &user,
+        "logs",
+        &axum::http::Method::GET,
+        "/api/ws/logs",
+        &target,
+    );
+    let audit = match SessionAudit::begin(&state, pending).await {
+        Ok(audit) => audit,
+        Err(_) => return audit_refused(),
+    };
     ws.max_message_size(4 << 20)
         .max_frame_size(1 << 20)
-        .on_upgrade(move |socket| logs_stream(socket, namespace, pod, container))
+        .on_upgrade(move |socket| async move {
+            logs_stream(socket, namespace, pod, container).await;
+            audit.finish(&state, 101).await;
+        })
 }
 
 async fn logs_stream(socket: WebSocket, namespace: String, pod: String, container: String) {
@@ -238,7 +259,19 @@ pub async fn exec_ws(
     Query(query): Query<HashMap<String, String>>,
     request: Request,
 ) -> Response {
-    if !origin_allowed(request.headers(), &allowed_origins(&state)) {
+    let user = request
+        .extensions()
+        .get::<Arc<UserInfo>>()
+        .cloned()
+        .unwrap_or_else(|| {
+            Arc::new(UserInfo {
+                username: String::new(),
+                groups: Vec::new(),
+                email: String::new(),
+                display_name: String::new(),
+            })
+        });
+    if !origin_allowed(request.headers(), &[]) {
         return json(
             StatusCode::FORBIDDEN,
             serde_json::json!({ "error": "websocket origin refused" }),
@@ -327,6 +360,23 @@ pub async fn exec_ws(
         Ok(ws) => ws,
         Err(e) => return e.into_response(),
     };
+    // The audit log is the precondition for opening an interactive session:
+    // refuse the upgrade when it is degraded (R-027-core).
+    if let Some(response) = audit_degraded(&state) {
+        return response;
+    }
+    let target = format!("{namespace}/{pod}/{resolved}");
+    let pending = crate::audit::Pending::session(
+        &user,
+        "terminal",
+        &axum::http::Method::GET,
+        "/api/ws/exec",
+        &target,
+    );
+    let audit = match SessionAudit::begin(&state, pending).await {
+        Ok(audit) => audit,
+        Err(_) => return audit_refused(),
+    };
     let permit = match exec_slots().clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
@@ -339,30 +389,40 @@ pub async fn exec_ws(
 
     ws.max_message_size(1 << 20)
         .max_frame_size(256 << 10)
-        .on_upgrade(move |socket| exec_session(socket, namespace, pod, resolved, command, permit))
+        .on_upgrade(move |socket| async move {
+            exec_session(socket, namespace, pod, resolved, command, permit).await;
+            audit.finish(&state, 101).await;
+        })
 }
 
-/// Hosts that may open a terminal WebSocket in addition to the request's own
-/// `Host` (the configured primary domain and SSO domains).
-fn allowed_origins(state: &AppState) -> Vec<String> {
-    let mut out = Vec::new();
-    if !state.base_domain.is_empty() {
-        out.push(state.base_domain.clone());
-    }
-    for d in &state.sso_domains {
-        if !d.is_empty() {
-            out.push(d.clone());
-        }
-    }
-    out
+/// The 503 shape for a degraded audit log: a session that cannot be recorded
+/// is never opened.
+fn audit_degraded(state: &Arc<AppState>) -> Option<Response> {
+    state.audit.status().ne("ok").then(|| {
+        json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": "audit unavailable: sessions are refused until the audit log is repaired" }),
+        )
+    })
 }
 
-/// Same-host WebSocket origin check (port of the Go `CheckOrigin`, NAS-009).
+fn audit_refused() -> Response {
+    json(
+        StatusCode::SERVICE_UNAVAILABLE,
+        serde_json::json!({ "error": "audit unavailable: the session could not be recorded" }),
+    )
+}
+
+/// Same-host WebSocket origin check (port of the Go `CheckOrigin`, NAS-009;
+/// tightened by R-028a).
 ///
 /// Browsers always send `Origin` on a WebSocket handshake; non-browser clients
-/// (CLI, tests) do not. A present `Origin` must be `http(s)://` and match the
-/// request host or a configured domain, otherwise the upgrade is refused.
-pub(crate) fn origin_allowed(headers: &HeaderMap, extra_hosts: &[String]) -> bool {
+/// (CLI, tests) do not. A present `Origin` must be `https` and its authority
+/// must be **exactly** the request `Host` (including the port). SSO domains
+/// are not an expansion: an SSO page that wants the terminal must be served
+/// from the same authority. `http` is refused so a downgraded origin cannot
+/// borrow the session.
+pub(crate) fn origin_allowed(headers: &HeaderMap, _extra_hosts: &[String]) -> bool {
     let Some(origin) = headers
         .get(axum::http::header::ORIGIN)
         .and_then(|v| v.to_str().ok())
@@ -373,7 +433,12 @@ pub(crate) fn origin_allowed(headers: &HeaderMap, extra_hosts: &[String]) -> boo
         Ok(uri) => uri,
         Err(_) => return false,
     };
-    if !matches!(uri.scheme_str(), Some("http" | "https")) {
+    if uri.scheme_str() != Some("https") {
+        return false;
+    }
+    // Reject an origin that carries a path/query: an Origin header is an
+    // origin, not a URL.
+    if uri.path_and_query().is_some_and(|pq| pq.as_str() != "/") {
         return false;
     }
     let Some(authority) = uri.authority().map(|a| a.to_string()) else {
@@ -382,27 +447,11 @@ pub(crate) fn origin_allowed(headers: &HeaderMap, extra_hosts: &[String]) -> boo
     // `Host`, never `X-Forwarded-Host`: a hop that forwards the client value
     // would otherwise let `Origin: https://evil` + `X-Forwarded-Host: evil`
     // pass this check. Traefik preserves the real Host.
-    let request_host = headers
+    headers
         .get(HOST)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.trim());
-    if let Some(host) = request_host {
-        if authority.eq_ignore_ascii_case(host) {
-            return true;
-        }
-    }
-    let origin_host = authority
-        .strip_prefix('[')
-        .and_then(|rest| rest.split(']').next())
-        .unwrap_or_else(|| {
-            authority
-                .rsplit_once(':')
-                .map(|(h, _)| h)
-                .unwrap_or(&authority)
-        });
-    extra_hosts.iter().any(|allowed| {
-        origin_host.eq_ignore_ascii_case(allowed) || authority.eq_ignore_ascii_case(allowed)
-    })
+        .map(str::trim)
+        .is_some_and(|host| !host.is_empty() && authority.eq_ignore_ascii_case(host))
 }
 
 fn resolve_container(pod: &serde_json::Value, requested: &str) -> Result<String, String> {
@@ -652,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn same_host_origin_is_allowed() {
+    fn same_authority_over_https_is_allowed() {
         assert!(origin_allowed(
             &headers(Some("https://naslos.local"), "naslos.local"),
             &[]
@@ -664,7 +713,19 @@ mod tests {
     }
 
     #[test]
-    fn foreign_origin_is_refused() {
+    fn a_port_mismatch_is_refused() {
+        assert!(!origin_allowed(
+            &headers(Some("https://naslos.local:8443"), "naslos.local"),
+            &[]
+        ));
+        assert!(!origin_allowed(
+            &headers(Some("https://naslos.local"), "naslos.local:8443"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn foreign_origins_are_refused() {
         assert!(!origin_allowed(
             &headers(Some("https://evil.naslos.local"), "naslos.local"),
             &[]
@@ -673,13 +734,30 @@ mod tests {
             &headers(Some("https://evil.example"), "naslos.local"),
             &[]
         ));
+        assert!(!origin_allowed(
+            &headers(Some("https://naslos.local/terminal"), "naslos.local"),
+            &[]
+        ));
     }
 
     #[test]
-    fn opaque_and_non_http_origins_are_refused() {
+    fn http_and_opaque_origins_are_refused() {
+        // A downgraded origin must not borrow the session (R-028a).
+        assert!(!origin_allowed(
+            &headers(Some("http://naslos.local"), "naslos.local"),
+            &[]
+        ));
         assert!(!origin_allowed(&headers(Some("null"), "naslos.local"), &[]));
         assert!(!origin_allowed(
             &headers(Some("file://naslos.local"), "naslos.local"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn an_sso_domain_is_not_an_origin_expansion() {
+        assert!(!origin_allowed(
+            &headers(Some("https://sso.example"), "naslos.local"),
             &[]
         ));
     }
@@ -691,13 +769,5 @@ mod tests {
         let mut h = headers(Some("https://evil.example"), "naslos.local");
         h.insert("x-forwarded-host", "evil.example".parse().unwrap());
         assert!(!origin_allowed(&h, &[]));
-    }
-
-    #[test]
-    fn configured_domain_is_allowed_even_with_a_port() {
-        assert!(origin_allowed(
-            &headers(Some("https://naslos.local:8443"), "10.0.0.1:8080"),
-            &["naslos.local".to_string()]
-        ));
     }
 }

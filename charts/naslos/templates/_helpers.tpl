@@ -57,6 +57,12 @@ on a rename.
 {{- index $v "baseDN" | default "dc=naslos,dc=local" -}}
 {{- end -}}
 
+{{- define "naslos.openldapAutheliaBindDN" -}}
+{{- $v := get .Values "openldap" | default dict -}}
+{{- $bind := index $v "autheliaBindDN" | default "" -}}
+{{- if $bind -}}{{ $bind }}{{- else -}}{{ printf "cn=authelia-service,ou=services,%s" (include "naslos.openldapBaseDN" .) }}{{- end -}}
+{{- end -}}
+
 {{- define "naslos.openldapBindDN" -}}
 {{- $v := get .Values "openldap" | default dict -}}
 {{- $bind := index $v "bindDN" | default "" -}}
