@@ -1,10 +1,10 @@
 //! VM tools (FR-MCP). Image upload is deliberately NOT a tool (binary
-//! streams); importing by URL is supported. All VM writes are per-VM and
-//! the destructive ones confirm on the VM name.
+//! streams); importing by URL is supported. Destructive VM tools confirm on
+//! the VM name; snapshot restore confirms the VM **and** the snapshot.
 
 use super::{
-    b, confirm_field, free_map, n, no_args, s, s_enum, schema, Confirm, Method, Scope, Special,
-    ToolDef,
+    b, confirm_field, confirm_tuple, free_map, n, no_args, s, s_enum, schema, Confirm, Method,
+    Scope, Special, ToolDef,
 };
 
 pub const TOOLS: &[ToolDef] = &[
@@ -206,7 +206,7 @@ pub const TOOLS: &[ToolDef] = &[
     ),
     tool!(
         "vm_snapshot_restore",
-        "Roll a VM's dataset back to a snapshot (changes since the snapshot are lost).",
+        "Roll a VM's dataset back to a snapshot (changes since the snapshot are lost). Confirm both the VM and the snapshot.",
         Full,
         POST,
         "/api/virt/vms/{name}/snapshots/{snap}/restore",
@@ -219,7 +219,7 @@ pub const TOOLS: &[ToolDef] = &[
                     "snap",
                     s("The snapshot to restore (from vm_snapshot_list).")
                 ),
-                confirm_field(),
+                confirm_tuple(&["name", "snap"]),
             ],
         )
     ),
