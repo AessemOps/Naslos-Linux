@@ -1750,8 +1750,9 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
 - **FR-VMT-08** — The console MUST be reachable from the browser:
   `GET /api/ws/vm/{name}/vnc` (plain GET) is a preflight returning the VNC
   port, the per-boot VNC password and `ready to attach`; the same route with
-  a websocket upgrade bridges RFB bytes to QEMU's VNC listener (noVNC
-  client, `@novnc/novnc`). The bridge MUST enforce a strict origin policy:
+  a websocket upgrade bridges RFB bytes through an authenticated vmd tunnel
+  to QEMU's loopback VNC listener (noVNC client, `@novnc/novnc`). The bridge
+  MUST enforce a strict origin policy:
   the browser `Origin` must be exactly the HTTPS authority of the request's own `Host` (port included); HTTP and
   SSO/base-domain expansion are refused — plus finite session caps (max
   session, idle timeout, concurrent session semaphore) and a per-VM attach
@@ -1781,8 +1782,11 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   QEMU VNC listener MUST be password-protected (the password is set over
   QMP per boot and handed to the browser only through the owner-gated
   preflight) and MUST bind loopback only (`127.0.0.1`); it is reached through
-  the API bridge, never directly. A failure to generate the per-boot password
-  MUST fail the start closed.
+  the API bridge, never directly. The API MUST tunnel RFB over an
+  authenticated route on vmd's existing TLS listener (bearer token, target
+  port restricted to the configured VNC display range), so no raw VNC port
+  is exposed to the pod network or the LAN. A failure to generate the
+  per-boot password MUST fail the start closed.
 - **FR-VMT-12** — Secure Boot MUST be an optional per-VM flag
   (`secureBoot`, default `false`) and MUST be valid only with UEFI firmware.
   The supervisor MUST boot a Secure Boot guest with the OVMF `*.secboot.fd`
@@ -2504,7 +2508,8 @@ Dynamic DNS and the provider registry are verified by
 | `naslos_vmd::model::tests::*` | FR-VMT-02/12 (name/range/enum/cloud-init/secure-boot validation, legacy-record defaults, library traversal guards) |
 | `naslos_vmd::args::tests::*` (golden argv) | FR-VMT-02/05/12 (SEC-1: the exact QEMU command line is a pinned, reviewable diff; Secure Boot pins the secboot pair, SMM and secure pflash) |
 | `naslos_vmd::capabilities::tests::*` | FR-VMT-01/12 (Secure Boot availability is reported, never inferred from a plain UEFI pair) |
-| `naslos_vmd::qmp::tests::*`, `naslos_vmd::supervisor::tests::*` | FR-VMT-10 (QMP round-trip incl. event skipping, reconcile invariants, force-stop guards) |
+| `naslos_vmd::qmp::tests::*`, `naslos_vmd::supervisor::tests::*` | FR-VMT-10/11 (QMP round-trip incl. event skipping, reconcile invariants, force-stop guards, VNC tunnel display range) |
+| `naslos_vmd::server::tests::*` (VNC tunnel) | FR-VMT-08/11 (authenticated tunnel proxies bytes to the loopback display port, out-of-range port refused) |
 | `naslos_vmd::images::tests::*` | FR-VMT-07 (SSRF guard covers mapped/ULA addresses, scheme allowlist, upload name guards, redirect resolution) |
 | `naslos_vmd::cloudinit::tests::*` | FR-VMT-06 (no password fields, pwauth disabled, instance-id tracks the seed) |
 | `naslos_api::virt::tests::*`, `naslos_api::server::virt::tests::*` | FR-VMT-03/09/10/12 (store round-trip + revalidation, legacy records default `secureBoot` off, boot render marks autostart VMs, views survive a dead supervisor, credentials stay out of payloads; delete/restore confirm and fail-closed checks, immutable disk/pool fields, per-VM lifecycle locks, console origin/audit refusals) |

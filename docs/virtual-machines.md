@@ -7,7 +7,7 @@ libvirt and no KubeVirt; a ~3k-line privileged supervisor (`naslos-vmd`)
 owns the QEMU processes and nothing else.
 
 ```
-browser ── noVNC (RFB over WS) ──> naslos-api ── TCP bridge ──> QEMU VNC (per-VM password)
+browser ── noVNC (RFB over WS) ──> naslos-api ── WS tunnel (vmd TLS + token) ──> naslos-vmd ── 127.0.0.1 TCP ──> QEMU VNC
 browser ── /api/virt/* ──> naslos-api ── token+TLS ──> naslos-vmd (QMP) ──> QEMU
 naslos-api ── zfs create/destroy/rollback ──> naslos-agent ──> ZFS datasets
 ```
@@ -146,11 +146,13 @@ boots straight to SSH.
   attach rate limit, max-session/idle timeouts and a concurrent-session
   semaphore (`api.virtConsole` values: 4 h / 10 min / 4 sessions).
 - QEMU's VNC listener binds **loopback only** (`127.0.0.1`), so it is never
-  directly reachable from the LAN. Reaching it from the API pod requires a
-  proxy from vmd (loopback listener plus a vmd-side TCP proxy or a chart
-  port that only the API may reach); that chart/API plumbing is owned by the
-  separate chart work package and is the remaining integration step for the
-  console after this change.
+  directly reachable from the LAN or the pod network. The API bridges through
+  an authenticated tunnel on vmd's existing TLS listener: the API's
+  `vnc_bridge` opens a WebSocket to `/api/v1/vms/{name}/vnc?port=<port>` on
+  vmd with the bearer token, and vmd proxies the bytes to
+  `127.0.0.1:<port>`. The route is behind the same token middleware as every
+  other vmd API and refuses any port outside the configured VNC display
+  range, so a token cannot turn it into a general loopback proxy.
 - Each console session writes an audit begin/end record attributed to the
   owner; the route refuses to start (`503`) while the audit log is degraded,
   and a failed audit write during the session marks the log degraded.
