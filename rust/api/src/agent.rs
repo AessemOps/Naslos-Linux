@@ -82,6 +82,23 @@ pub struct CreatePoolRequest {
     pub options: std::collections::HashMap<String, String>,
 }
 
+/// The agent's pool-create report. `partial` means the pool exists but a
+/// follow-up property/step failed; `repair` names the commands an operator
+/// (or a retry) must apply.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CreatePoolResult {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub partial: bool,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub repair: Vec<String>,
+}
+
 /// A ZFS dataset (mirrors the agent's `Dataset` JSON shape).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Dataset {
@@ -107,6 +124,9 @@ pub struct Dataset {
     /// The dataset whose key this dataset uses.
     #[serde(default, rename = "encryptionRoot")]
     pub encryption_root: String,
+    /// ZFS's stable object GUID (destroy and key-deletion binding).
+    #[serde(default)]
+    pub guid: String,
 }
 
 /// The agent's encryption state for one dataset.
@@ -333,6 +353,10 @@ pub struct Client {
     /// (`DEFAULT_STREAM_IDLE_TIMEOUT`). Using `http` for a long `zfs send`
     /// silently truncated the backup after 180 s.
     stream_http: reqwest::Client,
+    /// Destructive host mutations (wipe/create/destroy/receive/rollback): only
+    /// a connect deadline. An HTTP timeout must never cancel a wipe or destroy
+    /// halfway through (R-045).
+    mutation_http: reqwest::Client,
 }
 
 impl Client {
@@ -400,11 +424,19 @@ impl Client {
             .read_timeout(stream_idle)
             .build()
             .map_err(|e| format!("building the agent streaming HTTP client: {e}"))?;
+        // No total deadline (not even a read deadline): a pool wipe or a
+        // recursive destroy that runs for minutes must reach a deterministic
+        // result, not a client-side abort that leaves an unknown state.
+        let mutation_http = Self::builder(ca_file)?
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .map_err(|e| format!("building the agent mutation HTTP client: {e}"))?;
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             token: token.to_string(),
             http,
             stream_http,
+            mutation_http,
         })
     }
 
@@ -435,6 +467,11 @@ impl Client {
     /// Like `request`, but on the streaming client (idle deadline only).
     fn stream_request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         self.authorize(self.stream_http.request(method, self.url(path)))
+    }
+
+    /// Like `request`, but with no total deadline (host mutations only).
+    fn mutation_request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        self.authorize(self.mutation_http.request(method, self.url(path)))
     }
 
     fn url(&self, path: &str) -> String {
@@ -509,9 +546,12 @@ impl Client {
         Ok(pools)
     }
 
-    pub async fn create_pool(&self, req: &CreatePoolRequest) -> Result<(), AgentError> {
-        self.do_empty(
-            self.request(reqwest::Method::POST, "/api/v1/pools")
+    pub async fn create_pool(
+        &self,
+        req: &CreatePoolRequest,
+    ) -> Result<CreatePoolResult, AgentError> {
+        self.do_json(
+            self.mutation_request(reqwest::Method::POST, "/api/v1/pools")
                 .json(req),
         )
         .await
@@ -521,7 +561,7 @@ impl Client {
     /// `confirm` to repeat the pool name.
     pub async fn delete_pool(&self, name: &str, force: bool) -> Result<(), AgentError> {
         let path = format!("/api/v1/pools/{name}?confirm={name}&force={force}");
-        self.do_empty(self.request(reqwest::Method::DELETE, &path))
+        self.do_empty(self.mutation_request(reqwest::Method::DELETE, &path))
             .await
     }
 
@@ -553,10 +593,19 @@ impl Client {
         Ok(pools)
     }
 
-    pub async fn import_pool(&self, name: &str) -> Result<(), AgentError> {
+    pub async fn import_pool(
+        &self,
+        name: &str,
+        force: bool,
+        confirm: &str,
+    ) -> Result<(), AgentError> {
         self.do_empty(
-            self.request(reqwest::Method::POST, "/api/v1/pools/import")
-                .json(&serde_json::json!({ "name": name })),
+            self.mutation_request(reqwest::Method::POST, "/api/v1/pools/import")
+                .json(&serde_json::json!({
+                    "name": name,
+                    "force": force,
+                    "confirm": confirm,
+                })),
         )
         .await
     }
@@ -569,7 +618,7 @@ impl Client {
         force: bool,
     ) -> Result<(), AgentError> {
         self.do_empty(
-            self.request(
+            self.mutation_request(
                 reqwest::Method::POST,
                 &format!("/api/v1/pools/{pool}/devices"),
             )
@@ -596,7 +645,7 @@ impl Client {
         options: &std::collections::HashMap<String, String>,
     ) -> Result<(), AgentError> {
         self.do_empty(
-            self.request(
+            self.mutation_request(
                 reqwest::Method::POST,
                 &format!("/api/v1/datasets/{}", escape_component(pool)),
             )
@@ -615,7 +664,7 @@ impl Client {
         key: &[u8],
     ) -> Result<(), AgentError> {
         self.do_empty(
-            self.request(
+            self.mutation_request(
                 reqwest::Method::POST,
                 &format!("/api/v1/datasets/{}", escape_component(pool)),
             )
@@ -649,11 +698,32 @@ impl Client {
     }
 
     pub async fn destroy_dataset(&self, name: &str, recursive: bool) -> Result<(), AgentError> {
-        let mut path = format!("/api/v1/datasets/{}", escape_dataset_path(name));
+        // VM delete calls this path directly; the handler-owned destroy does
+        // its own locking and calls `destroy_dataset_with_guid` instead.
+        let _guard = crate::server::zfs::lock_dataset(name).await;
+        self.destroy_dataset_with_guid(name, recursive, None).await
+    }
+
+    /// Destroy a dataset, binding the operation to the GUID the API listed.
+    pub async fn destroy_dataset_with_guid(
+        &self,
+        name: &str,
+        recursive: bool,
+        guid: Option<&str>,
+    ) -> Result<(), AgentError> {
+        let mut query = Vec::new();
         if recursive {
-            path.push_str("?recursive=true");
+            query.push("recursive=true".to_string());
         }
-        self.do_empty(self.request(reqwest::Method::DELETE, &path))
+        if let Some(guid) = guid.filter(|g| !g.is_empty()) {
+            query.push(format!("guid={}", query_escape(guid)));
+        }
+        let mut path = format!("/api/v1/datasets/{}", escape_dataset_path(name));
+        if !query.is_empty() {
+            path.push('?');
+            path.push_str(&query.join("&"));
+        }
+        self.do_empty(self.mutation_request(reqwest::Method::DELETE, &path))
             .await
     }
 
@@ -678,17 +748,18 @@ impl Client {
         size: &str,
         options: &std::collections::HashMap<String, String>,
     ) -> Result<(), AgentError> {
-        self.do_empty(self.request(reqwest::Method::POST, "/api/v1/zvols").json(
-            &serde_json::json!({
-                "name": name, "size": size, "options": options
-            }),
-        ))
+        self.do_empty(
+            self.mutation_request(reqwest::Method::POST, "/api/v1/zvols")
+                .json(&serde_json::json!({
+                    "name": name, "size": size, "options": options
+                })),
+        )
         .await
     }
 
     pub async fn resize_zvol(&self, name: &str, size: &str) -> Result<(), AgentError> {
         self.do_empty(
-            self.request(
+            self.mutation_request(
                 reqwest::Method::PUT,
                 &format!("/api/v1/zvols?name={}", query_escape(name)),
             )
@@ -704,7 +775,7 @@ impl Client {
             query_escape(name),
             query_escape(confirm)
         );
-        self.do_empty(self.request(reqwest::Method::DELETE, &path))
+        self.do_empty(self.mutation_request(reqwest::Method::DELETE, &path))
             .await
     }
 
@@ -1174,7 +1245,7 @@ impl Client {
             escape_dataset_path(dataset),
             query_escape(name)
         );
-        self.do_empty(self.request(reqwest::Method::DELETE, &path))
+        self.do_empty(self.mutation_request(reqwest::Method::DELETE, &path))
             .await
     }
 
@@ -1187,9 +1258,12 @@ impl Client {
 
     /// Roll a dataset back to one of its snapshots (`zfs rollback -r`).
     pub async fn rollback_snapshot(&self, dataset: &str, name: &str) -> Result<(), AgentError> {
+        // The VM restore route calls this directly; the agent also locks, but
+        // the API-side lock keeps its check-then-act sequence ordered too.
+        let _guard = crate::server::zfs::lock_dataset(dataset).await;
         let path = format!("/api/v1/rollback/{}", escape_dataset_path(dataset));
         self.do_empty(
-            self.request(reqwest::Method::POST, &path)
+            self.mutation_request(reqwest::Method::POST, &path)
                 .json(&serde_json::json!({ "name": name })),
         )
         .await
@@ -1203,11 +1277,19 @@ impl Client {
         force: bool,
         reader: impl tokio::io::AsyncRead + Send + 'static,
     ) -> Result<(), AgentError> {
-        let path = format!(
+        // Serialize receive against create/destroy/rollback for this name.
+        // Both replication and Buddy restore call this one place.
+        let _guard = crate::server::zfs::lock_dataset(dataset).await;
+        // `force=true` is the API's explicit confirmation: the agent refuses
+        // `-F` without a matching `confirm` query.
+        let mut path = format!(
             "/api/v1/zfs/receive/{}?force={}",
             escape_dataset_path(dataset),
             force
         );
+        if force {
+            path.push_str(&format!("&confirm={}", query_escape(dataset)));
+        }
         let stream = tokio_util::io::ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
         let resp = self
