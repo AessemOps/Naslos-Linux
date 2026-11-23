@@ -616,6 +616,10 @@ pub async fn cancel_upload(root: &Path, pool: &str, name: &str, owner: &str) -> 
             "a 1-128 character upload owner token is required to cancel an upload".to_string(),
         );
     }
+    // The same symlink guard every mutating library route uses: cancellation
+    // must not follow a symlinked pool/vms/isos component out of the dataset
+    // before unlinking the staged part.
+    library_dir(root, pool, false).await?;
     let path = library_path(root, pool, name);
     let part = part_path(&path);
     // The same lock every chunk takes: cancellation cannot interleave with a
@@ -1848,6 +1852,30 @@ mod tests {
         assert!(
             std::fs::read_dir(&outside).unwrap().next().is_none(),
             "nothing may be written through the library symlink"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_upload_refuses_a_symlinked_library_directory() {
+        let dir = root();
+        tokio::fs::create_dir_all(dir.path().join("tank/vms"))
+            .await
+            .unwrap();
+        let outside = dir.path().join("outside");
+        tokio::fs::create_dir_all(&outside).await.unwrap();
+        std::os::unix::fs::symlink(&outside, dir.path().join("tank/vms/isos")).unwrap();
+        // A staged part behind the symlink that cancel must not unlink.
+        tokio::fs::write(outside.join("a.iso.part"), b"staged")
+            .await
+            .unwrap();
+
+        let err = cancel_upload(dir.path(), "tank", "a.iso", TEST_OWNER)
+            .await
+            .unwrap_err();
+        assert!(err.contains("symlink"), "{err}");
+        assert!(
+            std::fs::read(outside.join("a.iso.part")).is_ok(),
+            "cancel must not unlink through the library symlink"
         );
     }
 
