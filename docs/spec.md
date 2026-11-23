@@ -138,7 +138,10 @@ unmodified Talos installation, administered through a web UI.
 - **SEC-19** — Authelia MUST mount a `ca.crt`-only Secret for LDAPS trust, never
   the LDAP server private key; it MUST run non-root with all capabilities
   dropped, no privilege escalation, RuntimeDefault seccomp and a read-only root
-  filesystem with explicit writable mounts (`/config` PVC, `/tmp` emptyDir).
+  filesystem with explicit writable mounts (`/config` PVC, `/tmp` emptyDir). A
+  one-shot ownership init container MAY run as root with only
+  CHOWN/DAC_OVERRIDE/FOWNER to make a legacy root-owned `/config` PVC writable;
+  the Authelia container itself stays non-root.
   *(audit `check_security_rendering`)*
 - **SEC-20** — The Samba and NFS containers MUST run with `drop: [ALL]` and only
   the capabilities their datastore operations need, no privilege escalation,
