@@ -100,7 +100,7 @@ if by_kind("IngressClass"):
 # and its source is shipped by the chart for Traefik to load.
 if not any(
     a.startswith("--experimental.localPlugins.naslos-cookie-strip.moduleName=")
-    and a.endswith("naslos.local/cookiestrip")
+    and a.endswith("naslos/cookiestrip")
     for a in args
 ):
     fail("traefik does not load the naslos-cookie-strip local plugin")

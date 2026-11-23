@@ -471,17 +471,17 @@ traefik:
     localPlugins:
       naslos-cookie-strip:
         type: inlinePlugin
-        moduleName: naslos.local/cookiestrip
-        mountPath: /plugins-local/src/naslos.local/cookiestrip
+        moduleName: naslos/cookiestrip
+        mountPath: /plugins-local/src/naslos/cookiestrip
         source:
           go.mod: |
-            module naslos.local/cookiestrip
+            module naslos/cookiestrip
 
             go 1.22
           .traefik.yml: |
             displayName: Naslos Authelia cookie strip
             type: middleware
-            import: naslos.local/cookiestrip
+            import: naslos/cookiestrip
             summary: Removes the parent-domain Authelia session cookie before proxying a request to an app backend.
             testData: {}
           plugin.go: |
