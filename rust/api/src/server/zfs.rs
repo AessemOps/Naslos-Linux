@@ -15,7 +15,81 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+
+// ---- Dataset mutation serialization --------------------------------------
+
+/// One async mutex per dataset path. The agent serializes too, but the API's
+/// check-then-act sequence (ownership checks, GUID capture, key deletion) must
+/// also see one mutation at a time for a name.
+static DATASET_LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
+
+/// Serialize create/destroy/zvol-create/zvol-delete/receive for one name.
+pub(crate) async fn lock_dataset(name: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = {
+        let locks = DATASET_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut locks = locks.lock().unwrap();
+        locks
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+    lock.lock_owned().await
+}
+
+/// Component-boundary overlap: equal, or one path is inside the other. A
+/// prefix check alone (`starts_with("/var/mnt/tank")`) would call
+/// `/var/mnt/tank2` a child of `/var/mnt/tank`.
+pub(crate) fn paths_overlap(a: &str, b: &str) -> bool {
+    let a = a.trim_end_matches('/');
+    let b = b.trim_end_matches('/');
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
+}
+
+/// Mountpoints of a dataset and every descendant, plus the server-chosen
+/// mountpoint for the target itself (covers `canmount=off`/`none` subtrees).
+fn subtree_mountpoints(datasets: &[crate::agent::Dataset], name: &str) -> Vec<String> {
+    let prefix = format!("{name}/");
+    let mut points: Vec<String> = datasets
+        .iter()
+        .filter(|d| d.name == name || d.name.starts_with(&prefix))
+        .filter(|d| !d.mountpoint.is_empty() && d.mountpoint != "none")
+        .map(|d| d.mountpoint.trim_end_matches('/').to_string())
+        .collect();
+    let expected = format!("/var/mnt/{name}");
+    if !points.contains(&expected) {
+        points.push(expected);
+    }
+    points
+}
+
+/// The VM that owns a dataset path, if any. `<pool>/vms` is reserved for VM
+/// storage; `<pool>/vms/<name>` is one VM's disk dataset.
+fn vm_dataset_owner(state: &AppState, name: &str) -> Option<String> {
+    let (pool, rest) = name.split_once('/')?;
+    if rest == "vms" {
+        return Some("the VM dataset tree (<pool>/vms)".to_string());
+    }
+    let vm_part = rest.strip_prefix("vms/")?;
+    let vm_name = vm_part.split('/').next().unwrap_or(vm_part);
+    if vm_name == "isos" {
+        return Some("the VM image library (<pool>/vms/isos)".to_string());
+    }
+    if let Some(vm) = state.vms.get(vm_name) {
+        if vm.pool == pool {
+            return Some(format!("VM {vm_name:?}"));
+        }
+    }
+    if vm_part.is_empty() {
+        Some("the VM dataset tree (<pool>/vms)".to_string())
+    } else {
+        Some(format!("the VM dataset tree (<pool>/vms/{vm_name})"))
+    }
+}
 
 // ---- Validation (ported from zfs.go) -------------------------------------
 
@@ -312,6 +386,28 @@ pub fn validate_dataset_create_options(options: &HashMap<String, String>) -> Res
     Ok(())
 }
 
+/// Pool-create options. Encryption is create-only in ZFS: `zpool create`
+/// cannot apply it and a follow-up `zfs set encryption=…` always fails, so the
+/// request is refused before any disk is wiped (R-043).
+pub fn validate_pool_create_options(options: &HashMap<String, String>) -> Result<(), String> {
+    for key in options.keys() {
+        if matches!(
+            key.as_str(),
+            "encryption" | "keyformat" | "keylocation" | "encryptionroot"
+        ) {
+            return Err(format!(
+                "{key} is a create-only encryption property; a pool cannot be created with it (create the pool, then create encrypted child datasets)"
+            ));
+        }
+        if matches!(key.as_str(), "volsize" | "volblocksize" | "volmode") {
+            return Err(format!(
+                "{key} is a zvol property and cannot be set on a pool"
+            ));
+        }
+    }
+    validate_dataset_create_options(options)
+}
+
 /// Map a partition device (`/dev/sdc2`, `/dev/nvme0n1p1`) to its whole disk.
 /// Returns `None` for a whole disk or a non-partition device.
 pub(crate) fn whole_disk_path(dev: &str) -> Option<String> {
@@ -471,6 +567,9 @@ pub async fn pools_post(State(state): State<Arc<AppState>>, body: Body) -> Respo
             serde_json::json!({ "error": format!("invalid pool name {:?}: must start with a letter or digit and contain only letters, digits, '.', '_', ':' or '-'", req.name) }),
         );
     }
+    if let Err(e) = validate_pool_create_options(&req.options) {
+        return bad_request(&e);
+    }
     if req.disks.is_empty() {
         return bad_request("at least one disk is required");
     }
@@ -507,18 +606,31 @@ pub async fn pools_post(State(state): State<Arc<AppState>>, body: Body) -> Respo
         options: req.options.clone(),
     };
     match client.create_pool(&create).await {
-        Ok(()) => json(
+        Ok(report) => json(
             StatusCode::CREATED,
-            serde_json::json!({ "status": "pool created", "pool": req.name, "topology": req.topology }),
+            serde_json::json!({
+                "status": if report.partial { "pool created with warnings" } else { "pool created" },
+                "pool": req.name,
+                "topology": req.topology,
+                "partial": report.partial,
+                "warnings": report.warnings,
+                "repair": report.repair,
+            }),
         ),
         Err(e) => write_agent_error(&e),
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct ImportBody {
     #[serde(default)]
     name: String,
+    /// Explicit confirmation for `zpool import -f`.
+    #[serde(default)]
+    force: bool,
+    /// Must repeat the pool name when `force` is set.
+    #[serde(default)]
+    confirm: String,
 }
 
 /// The pool name to import. An empty (or malformed) body is an error: the
@@ -557,11 +669,18 @@ pub async fn import_post(State(state): State<Arc<AppState>>, body: Body) -> Resp
         Ok(req) => req,
         Err(resp) => return resp,
     };
+    let force = req.force;
+    let confirm = req.confirm.trim().to_string();
+    if force && confirm != req.name.trim() {
+        return bad_request(
+            "a forced import requires confirm=<pool name>; it can take over a pool another node still serves",
+        );
+    }
     let name = match import_pool_name(req) {
         Ok(name) => name,
         Err(e) => return bad_request(&e),
     };
-    match client.import_pool(&name).await {
+    match client.import_pool(&name, force, &confirm).await {
         Ok(()) => json(
             StatusCode::OK,
             serde_json::json!({ "status": "pool imported", "pool": name }),
@@ -812,6 +931,10 @@ pub async fn datasets_post(State(state): State<Arc<AppState>>, body: Body) -> Re
         Ok(plan) => plan,
         Err(e) => return bad_request(&e),
     };
+    let full = format!("{}/{}", req.pool, req.name);
+    // Hold this for the whole check → Secret → create sequence. The agent
+    // locks the same name too, so a destroy cannot race the create.
+    let _guard = lock_dataset(&full).await;
     if let Err(e) = require_pool(&state, &req.pool).await {
         return bad_request(&e);
     }
@@ -844,8 +967,9 @@ pub async fn datasets_post(State(state): State<Arc<AppState>>, body: Body) -> Re
         return bad_request(dataset_encryption::PASSPHRASE_NOT_IMPLEMENTED);
     }
 
-    let _guard = DATASET_CREATE_LOCK.lock().await;
-    let full = format!("{}/{}", req.pool, req.name);
+    // The API runs one replica; this lock still prevents an encrypted create
+    // from interleaving with a key check in the same process.
+    let _key_guard = DATASET_CREATE_LOCK.lock().await;
     let datasets = match client.list_datasets().await {
         Ok(datasets) => datasets,
         Err(e) => return write_agent_error(&e),
@@ -1163,24 +1287,106 @@ pub async fn datasets_delete(
     if let Err(e) = validate_dataset_path(&name) {
         return bad_request(&e);
     }
+    // Every destroy is irreversible: no dataset type gets a confirmation-free
+    // path (R-004).
+    if query.get("confirm").map(String::as_str) != Some(name.as_str()) {
+        return bad_request(
+            "destroying a dataset requires confirm=<dataset name>; the data and its snapshots are irrecoverable",
+        );
+    }
     let client = match agent(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
+
+    // Serialize the whole check → GUID verification → destroy → key deletion
+    // sequence for this name. The agent locks the name as well.
+    let _guard = lock_dataset(&name).await;
+
+    // A zvol and a filesystem can share a name; only /api/zvols may destroy a
+    // block volume.
+    let zvols = match client.list_zvols().await {
+        Ok(zvols) => zvols,
+        Err(e) => return write_agent_error(&e),
+    };
+    if zvols.iter().any(|z| z.name == name) {
+        return json(
+            StatusCode::CONFLICT,
+            serde_json::json!({
+                "error": format!("{name} is a zvol; block volumes are only deletable through /api/zvols")
+            }),
+        );
+    }
+
     let datasets = match client.list_datasets().await {
         Ok(datasets) => datasets,
         Err(e) => return write_agent_error(&e),
     };
+    let Some(target) = datasets.iter().find(|d| d.name == name).cloned() else {
+        return json(
+            StatusCode::NOT_FOUND,
+            serde_json::json!({ "error": format!("dataset {name} does not exist") }),
+        );
+    };
+    if let Err((status, message)) = require_destroy_unblocked(&state, &name, &datasets) {
+        return json(status, serde_json::json!({ "error": message }));
+    }
+
     let (encrypted_subtree, encrypted_roots) = encryption_roots_in_subtree(&datasets, &name);
-    if encrypted_subtree && query.get("confirm").map(String::as_str) != Some(name.as_str()) {
-        return bad_request(
-            "destroying an encrypted dataset requires confirm=<dataset name>; its key Secret is destroyed with it and the data is unrecoverable without a backup",
+    let root_guids: Vec<(String, String)> = datasets
+        .iter()
+        .filter(|d| encrypted_roots.contains(&d.name))
+        .map(|d| (d.name.clone(), d.guid.clone()))
+        .collect();
+
+    // Re-validate the path and re-verify the GUIDs immediately before the
+    // destructive agent call: ownership checks above are asynchronous guesses
+    // about live state, and the key Secret may only be deleted for the exact
+    // dataset generation that was verified here.
+    if let Err(e) = validate_dataset_path(&name) {
+        return bad_request(&e);
+    }
+    if query.get("confirm").map(String::as_str) != Some(name.as_str()) {
+        return bad_request("destroying a dataset requires confirm=<dataset name>");
+    }
+    let current = match client.list_datasets().await {
+        Ok(datasets) => datasets,
+        Err(e) => return write_agent_error(&e),
+    };
+    let Some(current_target) = current.iter().find(|d| d.name == name) else {
+        return json(
+            StatusCode::CONFLICT,
+            serde_json::json!({ "error": format!("dataset {name} disappeared; retry the request") }),
+        );
+    };
+    if !target.guid.is_empty() && current_target.guid != target.guid {
+        return json(
+            StatusCode::CONFLICT,
+            serde_json::json!({
+                "error": format!("dataset {name} changed or was recreated; retry the request")
+            }),
         );
     }
-    if let Err(e) = require_unused_by_shares(&state, &name).await {
-        return json(StatusCode::CONFLICT, serde_json::json!({ "error": e }));
+    for (root, guid) in &root_guids {
+        let unchanged = current
+            .iter()
+            .find(|d| d.name == *root)
+            .is_some_and(|d| d.guid == *guid || guid.is_empty());
+        if !unchanged {
+            return json(
+                StatusCode::CONFLICT,
+                serde_json::json!({
+                    "error": format!("encryption root {root} changed while the destroy was being prepared; retry the request")
+                }),
+            );
+        }
     }
-    match client.destroy_dataset(&name, recursive).await {
+    let expected_guid = (!target.guid.is_empty()).then_some(target.guid.as_str());
+
+    match client
+        .destroy_dataset_with_guid(&name, recursive, expected_guid)
+        .await
+    {
         Ok(()) => {
             tracing::info!(
                 "destroyed dataset {} (recursive={}, encrypted={})",
@@ -1190,7 +1396,8 @@ pub async fn datasets_delete(
             );
             // `true` only when there was nothing to delete or every delete
             // succeeded; a missing Kubernetes client with roots to delete is
-            // not a successful crypto-shred.
+            // not a successful crypto-shred. Only roots whose GUIDs were
+            // verified above are removed.
             let mut keys_deleted = encrypted_roots.is_empty();
             if let Some(kube) = state.kube.as_ref() {
                 keys_deleted = true;
@@ -1216,12 +1423,90 @@ pub async fn datasets_delete(
                 serde_json::json!({
                     "status": "dataset destroyed",
                     "name": name,
+                    "guid": target.guid,
                     "keysDeleted": keys_deleted
                 }),
             )
         }
         Err(e) => write_agent_error(&e),
     }
+}
+
+/// Refuse a destroy while any live consumer owns the dataset. This runs after
+/// a fresh dataset list: shares must be loaded (fail closed on a corrupt
+/// store), shares and registered app mounts are matched in both directions,
+/// and VM/replication ownership is checked by path.
+fn require_destroy_unblocked(
+    state: &AppState,
+    name: &str,
+    datasets: &[crate::agent::Dataset],
+) -> Result<(), (StatusCode, String)> {
+    if let Some(owner) = vm_dataset_owner(state, name) {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "dataset {name} is owned by {owner}; delete the VM through /api/virt/vms instead"
+            ),
+        ));
+    }
+
+    let mountpoints = subtree_mountpoints(datasets, name);
+
+    for ds in state.datasets_registry.list() {
+        if ds.attached_to.is_empty() {
+            continue;
+        }
+        let host = ds.host_path.trim_end_matches('/');
+        if mountpoints.iter().any(|mp| paths_overlap(mp, host)) {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "dataset {name} backs {host}, which is attached to app(s) {}; detach the dataset first",
+                    ds.attached_to.join(", ")
+                ),
+            ));
+        }
+    }
+
+    {
+        let shares = state.shares.lock().unwrap();
+        if !shares.loaded() {
+            return Err((
+                StatusCode::CONFLICT,
+                "the share configuration is not loaded; refusing to destroy a dataset without proving no share serves it".to_string(),
+            ));
+        }
+        for share in shares.list() {
+            if mountpoints
+                .iter()
+                .any(|mp| paths_overlap(mp, share.path.trim_end_matches('/')))
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!(
+                        "dataset {name} overlaps path {}, which share {:?} is serving; delete or repoint the share first",
+                        share.path, share.name
+                    ),
+                ));
+            }
+        }
+    }
+
+    for job in state.replication_jobs.list() {
+        if paths_overlap(job.destination(), name) || paths_overlap(job.source(), name) {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "dataset {name} is used by replication job {} ({} -> {}); wait for it to finish or remove the job's destination first",
+                    job.id(),
+                    job.source(),
+                    job.destination()
+                ),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 // ---- zvols ---------------------------------------------------------------
@@ -1286,6 +1571,7 @@ pub async fn zvols_post(State(state): State<Arc<AppState>>, body: Body) -> Respo
         Err(resp) => return resp,
     };
     let name = format!("{}/{}", req.pool, req.name);
+    let _guard = lock_dataset(&name).await;
     match client.create_zvol(&name, &req.size, &req.options).await {
         Ok(()) => {
             tracing::info!("created zvol {}", logsafe::field(&name));
@@ -1327,6 +1613,7 @@ pub async fn zvols_resize(
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    let _guard = lock_dataset(&name).await;
     match client.resize_zvol(&name, &req.size).await {
         Ok(()) => {
             tracing::info!(
@@ -1363,6 +1650,7 @@ pub async fn zvols_delete(
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    let _guard = lock_dataset(&name).await;
     match client.delete_zvol(&name, &name).await {
         Ok(()) => {
             tracing::info!("destroyed zvol {}", logsafe::field(&name));
@@ -1373,41 +1661,6 @@ pub async fn zvols_delete(
         }
         Err(e) => write_agent_error(&e),
     }
-}
-
-/// Refuse to destroy a dataset that a share serves (or a parent of one).
-async fn require_unused_by_shares(state: &AppState, name: &str) -> Result<(), String> {
-    let client = match state.agent.clone() {
-        Some(c) => c,
-        None => return Ok(()),
-    };
-    let datasets = client
-        .list_datasets()
-        .await
-        .map_err(|e| format!("cannot verify which paths dataset {name} backs: {e}"))?;
-
-    let mut mountpoints = Vec::new();
-    for d in &datasets {
-        if (d.name == name || d.name.starts_with(&format!("{name}/")))
-            && !d.mountpoint.is_empty()
-            && d.mountpoint != "none"
-        {
-            mountpoints.push(d.mountpoint.clone());
-        }
-    }
-
-    let shares = state.shares.lock().unwrap();
-    for share in shares.list() {
-        for mp in &mountpoints {
-            if share.path == *mp || share.path.starts_with(&format!("{mp}/")) {
-                return Err(format!(
-                    "dataset {name} backs path {mp}, which share {:?} is serving: delete or repoint the share first",
-                    share.name
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn bad_request(msg: &str) -> Response {
@@ -1576,17 +1829,24 @@ mod tests {
     #[test]
     fn import_requires_an_explicit_pool_name() {
         assert!(import_pool_name(ImportBody {
-            name: String::new()
+            name: String::new(),
+            ..Default::default()
         })
         .is_err());
-        assert!(import_pool_name(ImportBody { name: "  ".into() }).is_err());
         assert!(import_pool_name(ImportBody {
-            name: "../tank".into()
+            name: "  ".into(),
+            ..Default::default()
+        })
+        .is_err());
+        assert!(import_pool_name(ImportBody {
+            name: "../tank".into(),
+            ..Default::default()
         })
         .is_err());
         assert_eq!(
             import_pool_name(ImportBody {
-                name: "tank".into()
+                name: "tank".into(),
+                ..Default::default()
             })
             .unwrap(),
             "tank"
@@ -1674,5 +1934,192 @@ mod tests {
                 "tank/secure/docs/own".to_string(),
             ])
         );
+    }
+    fn plain_dataset(name: &str, mountpoint: &str, guid: &str) -> crate::agent::Dataset {
+        crate::agent::Dataset {
+            name: name.to_string(),
+            mountpoint: mountpoint.to_string(),
+            guid: guid.to_string(),
+            encryption: "off".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn vm_spec(name: &str, pool: &str) -> naslos_vmd::model::VmSpec {
+        naslos_vmd::model::VmSpec {
+            name: name.into(),
+            pool: pool.into(),
+            cpu: 1,
+            mem_mib: 256,
+            autostart: false,
+            firmware: naslos_vmd::model::Firmware::default(),
+            secure_boot: false,
+            desired: naslos_vmd::model::DesiredState::default(),
+            disk: naslos_vmd::model::DiskSpec {
+                size_gb: 2,
+                ..Default::default()
+            },
+            net: naslos_vmd::model::NetSpec::default(),
+            cloud_init: None,
+            iso: None,
+        }
+    }
+
+    #[test]
+    fn overlap_uses_component_boundaries_in_both_directions() {
+        assert!(paths_overlap("/var/mnt/tank/media", "/var/mnt/tank/media"));
+        assert!(paths_overlap("/var/mnt/tank", "/var/mnt/tank/media"));
+        assert!(paths_overlap("/var/mnt/tank/media", "/var/mnt/tank"));
+        assert!(paths_overlap(
+            "/var/mnt/tank/media",
+            "/var/mnt/tank/media/sub"
+        ));
+        assert!(!paths_overlap("/var/mnt/tank2", "/var/mnt/tank"));
+        assert!(!paths_overlap("/var/mnt/other", "/var/mnt/tank/media"));
+    }
+
+    #[test]
+    fn destroy_guard_rejects_a_vm_dataset() {
+        let state = AppState::for_test("s");
+        state.vms.create(vm_spec("alpha", "tank")).expect("vm");
+        let datasets = vec![plain_dataset(
+            "tank/vms/alpha",
+            "/var/mnt/tank/vms/alpha",
+            "1",
+        )];
+        let err = require_destroy_unblocked(&state, "tank/vms/alpha", &datasets)
+            .expect_err("vm dataset must be refused");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert!(err.1.contains("VM"), "{}", err.1);
+    }
+
+    #[test]
+    fn destroy_guard_rejects_an_attached_app_dataset() {
+        let state = AppState::for_test("s");
+        state
+            .datasets_registry
+            .add(crate::datasets::ManagedDataset {
+                name: "media".into(),
+                host_path: "/var/mnt/tank/media".into(),
+                shared: false,
+                warning_acknowledged: false,
+                created_at: None,
+                attached_to: Vec::new(),
+            })
+            .expect("register");
+        state
+            .datasets_registry
+            .attach("media", "sonarr")
+            .expect("attach");
+        let datasets = vec![plain_dataset("tank", "/var/mnt/tank", "1")];
+        let err = require_destroy_unblocked(&state, "tank", &datasets)
+            .expect_err("an attached app dataset blocks its parent");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert!(err.1.contains("sonarr"), "{}", err.1);
+    }
+
+    #[test]
+    fn destroy_guard_rejects_a_share_inside_or_above_the_dataset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shares.json");
+        std::fs::write(
+            &path,
+            r#"[{"name":"media","path":"/var/mnt/tank/media/sub","protocol":"smb","enabled":true}]"#,
+        )
+        .unwrap();
+        let state = AppState::for_test("s");
+        *state.shares.lock().unwrap() =
+            crate::shares::Manager::new(&path.display().to_string(), "/var/mnt");
+        assert!(state.shares.lock().unwrap().loaded());
+
+        let datasets = vec![
+            plain_dataset("tank", "/var/mnt/tank", "1"),
+            plain_dataset("tank/media", "/var/mnt/tank/media", "2"),
+        ];
+        // A child share blocks the parent dataset.
+        let err = require_destroy_unblocked(&state, "tank", &datasets)
+            .expect_err("ancestor share must block");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert!(err.1.contains("media"), "{}", err.1);
+        // And a share path inside the dataset blocks it directly.
+        let err = require_destroy_unblocked(&state, "tank/media", &datasets)
+            .expect_err("share path inside the dataset must block");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn destroy_guard_fails_closed_when_shares_are_not_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shares.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let state = AppState::for_test("s");
+        *state.shares.lock().unwrap() =
+            crate::shares::Manager::new(&path.display().to_string(), "/var/mnt");
+        assert!(!state.shares.lock().unwrap().loaded());
+        let datasets = vec![plain_dataset("tank/media", "/var/mnt/tank/media", "1")];
+        let err = require_destroy_unblocked(&state, "tank/media", &datasets)
+            .expect_err("an unloaded share store must fail closed");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert!(err.1.contains("not loaded"), "{}", err.1);
+    }
+
+    #[test]
+    fn destroy_guard_rejects_a_replication_source_or_destination() {
+        let state = AppState::for_test("s");
+        state
+            .replication_jobs
+            .remember_for_test("tank/src", "tank/replica");
+        let datasets = vec![plain_dataset("tank/replica", "/var/mnt/tank/replica", "1")];
+        let err = require_destroy_unblocked(&state, "tank/replica", &datasets)
+            .expect_err("replication destination");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert!(err.1.contains("replication job"), "{}", err.1);
+        let err = require_destroy_unblocked(&state, "tank/src", &datasets)
+            .expect_err("replication source");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn pool_create_refuses_create_only_encryption_options() {
+        for key in ["encryption", "keyformat", "keylocation"] {
+            let options = HashMap::from([(key.to_string(), "aes-256-gcm".to_string())]);
+            let err = validate_pool_create_options(&options).unwrap_err();
+            assert!(err.contains("create-only encryption"), "{key}: {err}");
+        }
+        assert!(validate_pool_create_options(&HashMap::from([(
+            "compression".to_string(),
+            "zstd".to_string()
+        )]))
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn api_dataset_locks_serialize_the_same_name_only() {
+        let guard = lock_dataset("tank/lock-test").await;
+        let waiter = tokio::spawn(async {
+            let _guard = lock_dataset("tank/lock-test").await;
+            true
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(!waiter.is_finished(), "the same name must wait");
+        drop(guard);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+                .await
+                .expect("released")
+                .expect("task")
+        );
+
+        let guard = lock_dataset("tank/lock-test").await;
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                lock_dataset("tank/lock-other")
+            )
+            .await
+            .is_ok(),
+            "different names must not block each other"
+        );
+        drop(guard);
     }
 }

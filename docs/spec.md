@@ -103,8 +103,12 @@ unmodified Talos installation, administered through a web UI.
   `application/json`; non-browser clients that send neither header remain
   supported.
 - **SEC-16** — A WebSocket upgrade MUST be refused unless a present `Origin`
-  matches the request host (ports aside) or a configured Naslos domain.
-  Non-browser clients that send no `Origin` remain supported.
+  is exactly `https://<request Host>` including the port. `http` is refused,
+  SSO domains are not an expansion, and a path/query in the header is
+  refused. Non-browser clients that send no `Origin` remain supported.
+  *(R-028a; tests `same_authority_over_https_is_allowed`,
+  `a_port_mismatch_is_refused`, `http_and_opaque_origins_are_refused`,
+  `an_sso_domain_is_not_an_origin_expansion`)*
 - **SEC-17** — The MCP endpoint MUST authenticate clients with operator-created
   bearer tokens: the stored form is a SHA-256 hash compared in constant time,
   the plaintext is shown exactly once at creation, every token carries one
@@ -113,11 +117,36 @@ unmodified Talos installation, administered through a web UI.
   to the resolved target before dispatch. The endpoint MUST refuse every
   request while MCP is disabled (404), apply the SEC-10 proxy trust checks
   with no opt-out, refuse a foreign `Origin` (SEC-16 rules), and block a
-  source address after ten failed attempts inside five minutes. *(contract
+  presented token digest and a source address after ten failed attempts
+  inside five minutes. A valid token is verified before the backoff table and
+  MUST NOT be blocked by another client's failures; expiry is range-checked
+  on create and an unparsable stored `expiresAt` fails closed. *(contract
   tests: `the_full_chain_rejects_every_shortcut`, `disabled_answers_404`,
-  `ten_failures_block_the_source_ip`, `a_read_token_cannot_call_a_write_tool`,
+  `failures_block_the_bad_token_but_never_a_valid_one`,
+  `a_read_token_cannot_call_a_write_tool`,
   `a_full_tool_without_confirm_is_refused_before_dispatch`,
-  `forged_identity_cannot_bypass_the_public_auth_layers`)*
+  `forged_identity_cannot_bypass_the_public_auth_layers`,
+  `an_out_of_range_expiry_is_rejected_not_wrapped`,
+  `a_malformed_expiry_fails_closed`)*
+- **SEC-18** — Traefik MUST NOT hold cluster-wide Secret read: it MUST run with
+  namespaced RBAC (a Role/RoleBinding in the release namespace, the shared app
+  namespaces and every per-app isolation namespace), watch only those
+  namespaces through the CRD provider, and render no Traefik
+  ClusterRole/ClusterRoleBinding. The residual (all Secrets inside the watched
+  namespaces, because per-domain TLS Secret names are dynamic) MUST be
+  documented. *(audit `check_security_rendering`)*
+- **SEC-19** — Authelia MUST mount a `ca.crt`-only Secret for LDAPS trust, never
+  the LDAP server private key; it MUST run non-root with all capabilities
+  dropped, no privilege escalation, RuntimeDefault seccomp and a read-only root
+  filesystem with explicit writable mounts (`/config` PVC, `/tmp` emptyDir).
+  *(audit `check_security_rendering`)*
+- **SEC-20** — The Samba and NFS containers MUST run with `drop: [ALL]` and only
+  the capabilities their datastore operations need, no privilege escalation,
+  RuntimeDefault seccomp and a read-only image root with explicit writable
+  volumes. The OpenLDAP admin password MUST reach the server as a mounted file,
+  and the slapcat backup Job MUST run non-root with no service-account token,
+  resource limits and the same container hardening. *(audit
+  `check_security_rendering`)*
 - **SEC-4** — The user's LDAP password MUST be mirrored to Samba's passdb as
   an NT hash at password-change time; plaintext passwords MUST NOT be stored
   anywhere.
@@ -181,15 +210,26 @@ Requirement IDs are stable: never renumber, only deprecate.
   defaults: `ashift=12`, `compression=zstd`, `xattr=sa`,
   `acltype=posixacl`, `atime=off`.
 - **FR-STO-02** — The disk wizard MUST advise a topology (mirror / RAIDZ1 /
-  RAIDZ2) from the number and size of selected disks.
+  RAIDZ2) from the number and size of selected disks. "Create another pool"
+  MUST start a clean run (no inherited disks, name, topology or wipe
+  confirmations) and reload the disk inventory.
 - **FR-STO-03** — Pools MUST be importable from the UI when they exist on
-  disk but are not yet imported (`zpool import` discovery + import).
+  disk but are not yet imported (`zpool import` discovery + import). Import
+  MUST NOT mount (`zpool import -N`): the agent MUST enumerate the stored
+  mountpoints, remap anything outside `/var/mnt/<pool>/…`, and only then mount
+  each dataset deliberately. `zpool import -f` MUST require an explicit
+  `confirm=<pool>` (or `confirm=all`) instead of being the default. *(tests:
+  `zfs_safety::import_uses_no_mount_then_remaps_and_mounts_deliberately`,
+  `zfs_storage_safety::a_forced_import_needs_a_matching_confirmation`,
+  `http_contract::a_forced_import_requires_confirmation`)*
 - **FR-STO-04** — Pools MUST auto-import at boot via `zfs-service`
   (`zpool import -fal`).
 - **FR-STO-05** — Pool deletion MUST require explicit user confirmation and
   MUST NOT be undoable (the UI MUST state this).
 - **FR-STO-06** — Pool health view MUST expose: device tree, IO stats, scan
-  state, and error summary (from `zpool status` / `zpool iostat`).
+  state, and error summary (from `zpool status` / `zpool iostat`). The page
+  MUST follow a changed pool route parameter and reload that pool's health,
+  datasets and schedules instead of reusing the previously opened pool.
 - **FR-STO-07** — Datasets and snapshots on a pool MUST be creatable and
   listable from the UI via the agent. Dataset names MUST be validated
   (ZFS-safe per component, no traversal, no snapshot `@`), and creation MUST
@@ -203,11 +243,24 @@ Requirement IDs are stable: never renumber, only deprecate.
   that would overwrite the owning pool's label. The UI MUST state, before the
   operation, that a redundancy-less vdev lowers the pool's fault tolerance and
   that the change is not reversible.
-- **FR-STO-09** — Dataset destruction MUST be explicit: a non-empty dataset
-  MUST require the recursive flag (the UI MUST say what that destroys), a pool's
-  root dataset MUST NOT be destroyable through the dataset API, and a dataset
-  that a share is serving (or that backs a share's path) MUST be refused with a
-  conflict instead of removing the share's data.
+- **FR-STO-09** — Dataset destruction MUST be explicit: EVERY dataset destroy
+  MUST require `confirm` equal to the full dataset name, a non-empty dataset
+  MUST require the recursive flag (the UI MUST say what that destroys), and a
+  pool's root dataset MUST NOT be destroyable through the dataset API. A zvol
+  MUST be refused and is only deletable through `/api/zvols`; a dataset owned by
+  a VM (`<pool>/vms/…`), an app-attached registered dataset, or a replication
+  job MUST be refused with `409` naming the owner. A share guard MUST match
+  component boundaries in both directions (the dataset is inside a share path
+  **or** a share path is inside the dataset) and MUST fail closed when the share
+  store is not loaded. Create/destroy/zvol-create/receive/rollback MUST be
+  serialized per dataset name in both the API and the agent, the destroy MUST be
+  bound to the GUID the API listed (not the reusable name), the path MUST be
+  re-validated immediately before the call, and a busy dataset MUST return
+  `409` naming the consumer. The UI MUST require the operator to type the
+  dataset name before **every** destroy (plain or encrypted) and MUST send
+  `confirm=<dataset name>` only after that prompt succeeds. *(tests:
+  `zfs_storage_safety::*`, `zfs::tests::destroy_guard_*`,
+  `zfs_dataset::destroy_dataset_*`, `http_contract::a_busy_zvol_delete_is_409`)*
 - **FR-STO-10** — Scheduled snapshots MUST be creatable, listable, updatable and
   deletable per dataset (`GET|POST|DELETE /api/storage/schedules`, kind
   `snapshot`) with a cadence (hourly/daily/weekly, UTC `runAt`), an optional
@@ -238,15 +291,24 @@ Requirement IDs are stable: never renumber, only deprecate.
   `lastResult`, `lastError` and `nextRun` MUST persist
   on the state volume, a run missed while the API was down MUST fire once at
   startup, and a failed run MUST be recorded without disabling the schedule.
-  A run that cannot reach the agent MUST be retried on the next tick instead of
-  consuming the cadence interval.
+  A run that cannot reach the agent MUST be retried on the next tick within a
+  bounded window (one hour) instead of consuming the cadence interval forever;
+  every retryable agent 5xx counts as transient. A schedule store that cannot
+  be parsed MUST be preserved as `<file>.corrupt-<epoch>` and MUST refuse
+  mutations instead of being silently replaced with an empty store.
+  *(schedule tests: `snapshot_target_overlap_covers_recursive_descendants_only`,
+  `loading_disables_preexisting_overlapping_schedules`,
+  `legacy_060_prefix_matches_the_captured_release_fixture`,
+  `a_corrupt_store_is_preserved_and_refuses_mutations`,
+  `a_transient_failure_retries_then_records_a_failure_after_the_window`)*
 - **FR-STO-11** — Each pool MUST support an optional scrub schedule (kind
   `scrub`, daily or weekly only) and a manual "scrub now"
   (`POST /api/volumes/zfs/{pool}/scrub`). The manual route MUST answer `409`
   while `zpool status` reports a scrub or resilver in progress. A scheduled run
   MUST NOT start a second scrub: it records `skipped`, or advances its next run
-  without replacing an in-flight result of its own. The agent MUST run only
-  `zpool scrub <validated pool>` (no user-controlled arguments), and the
+  without replacing an in-flight result of its own. A failed pool-health read
+  MUST NOT replace an in-flight scrub's `started` result. The agent MUST run
+  only `zpool scrub <validated pool>` (no user-controlled arguments), and the
   schedule's `lastResult` MUST be derived from the pool's `scan` line once the
   scrub finishes (ok only with zero errors). The UI MUST expose the schedule's
   last/next run and result on the pool page.
@@ -364,13 +426,15 @@ and `zfs change-key` only rewraps an existing key.
   change the receiver's zero-knowledge guarantee. **[OPEN]** for the raw-send
   choice.
 - **FR-ENC-09** — Destroying an encrypted dataset (or a subtree containing one)
-  MUST require an explicit confirmation that the key is destroyed with it and
-  the data is unrecoverable without a backup; after a successful destroy the
-  API MUST delete the key Secret(s) and MUST present key deletion as
-  irreversible. **[OPEN]** for consumers: a share or app mount whose path is
-  inside a locked encrypted dataset MUST be refused rather than served empty
-  or served from the parent dataset. Verified for destroy by the
-  `datasets_delete` handler (confirm + post-destroy Secret deletion).
+  MUST require the same explicit confirmation as any destroy (the key is
+  destroyed with it and the data is unrecoverable without a backup); after a
+  successful destroy the API MUST delete the key Secret(s), and MUST bind that
+  deletion to the encryption roots/GUIDs it verified before the destroy. Key
+  deletion MUST be presented as irreversible. **[OPEN]** for consumers: a share
+  or app mount whose path is inside a locked encrypted dataset MUST be refused
+  rather than served empty or served from the parent dataset. Verified by
+  `datasets_delete` (confirm + GUID verification + post-destroy Secret
+  deletion) and `zfs_storage_safety::an_encrypted_subtree_destroy_reports_key_cleanup`.
 - **FR-ENC-10** — **[OPEN]** Key lifecycle: the owner MUST be able to rotate an
   encrypted dataset's key with `zfs change-key` (raw→passphrase and back) and
   MUST be able to back up/restore the key material without exposing it to the
@@ -566,13 +630,23 @@ cloud sync remain `[OPEN]` below.
   `replication::a_common_guid_makes_the_send_incremental`,
   `zfs_backup::send_command_line_recursive_replication_stream`,
   `zfs_backup::snapshot_listing_is_recursive_only_when_requested`)*
-- **FR-REP-04** — Receive safety: an incremental receive MUST NOT use
-  `zfs receive -F`. A full stream replaces the destination dataset's contents,
-  so the destination is a replica target: the full send MUST be refused when the
-  destination holds any snapshot not carrying this pair's replication prefix, or
-  any child dataset. A user snapshot on the destination MUST NEVER be destroyed
-  by replication; the API documentation MUST state that a full send replaces
-  the destination's data. *(tests:
+- **FR-REP-04** — Receive safety: every receive MUST run as
+  `zfs receive -u -x mountpoint -x canmount -x sharenfs -x sharesmb` so the
+  stream cannot choose the host mount layout, and the API MUST set a
+  server-chosen mountpoint (`/var/mnt/<pool>/…`) after a successful receive.
+  An incremental receive MUST NOT use `zfs receive -F`; a forced (`-F`) receive
+  MUST require explicit confirmation and MUST be refused when the destination
+  holds any snapshot Naslos did not create or any child dataset. A full stream
+  replaces the destination dataset's contents, so the destination is a replica
+  target: the full send MUST be refused when the destination holds any snapshot
+  not carrying this pair's replication prefix, or any child dataset. A user
+  snapshot on the destination MUST NEVER be destroyed by replication; the API
+  documentation MUST state that a full send replaces the destination's data.
+  *(tests: `zfs_safety::receive_drops_stream_mount_properties_and_defers_mounting`,
+  `zfs_safety::forced_receive_refuses_a_foreign_snapshot`,
+  `zfs_safety::finalize_receive_sets_the_server_mountpoint`,
+  `http_contract::a_forced_receive_requires_confirmation`,
+  `zfs_storage_safety::a_forced_receive_forwards_the_confirmation_query`,
   `replication::a_full_send_refuses_foreign_snapshots_and_child_datasets`,
   `replication::a_destination_that_already_has_the_target_is_up_to_date`)*
 - **FR-REP-05** — Retention (`pruneKeep`, 0 = keep all) MUST destroy only
@@ -624,7 +698,9 @@ cloud sync remain `[OPEN]` below.
 - **FR-IDN-09** — Password changes MUST update both LDAP `userPassword` and
   the Samba NT hash (same password everywhere).
 - **FR-IDN-10** — Web login MUST flow through Authelia forwardAuth; API
-  routes behind Traefik MUST reject unauthenticated requests.
+  routes behind Traefik MUST reject unauthenticated requests. The UI sign-out
+  MUST check the logout response: a failure MUST surface an error with the
+  portal as the fallback and MUST NOT redirect as if the session ended.
 - **FR-IDN-11** — LDAP connectivity MUST NOT be established at process start.
   The client MUST connect lazily and re-establish the connection automatically
   after failure, so that:
@@ -654,6 +730,13 @@ cloud sync remain `[OPEN]` below.
   passdb account and its NSS entry.
 - **FR-IDN-16** — Change detection for the node's mirror MUST NOT rely on
   whole-second timestamps: two writes in the same second MUST both take effect.
+- **FR-IDN-17** — Authelia MUST bind with a dedicated read-only account
+  (`cn=authelia-service,ou=services,…`: `auth` on `userPassword`, `read`
+  elsewhere, no `write` ACL), separate from the API/bootstrap write account
+  (`cn=naslos-service`), so an Authelia compromise cannot modify groups or
+  passwords. Existing directories need the new ACL applied out of band
+  (fresh installs get it from the image); the account is created/updated by
+  the bootstrap Job. *(drill: `openldap/image/test-authelia-acl.sh`)*
 
 ### 3.2.1 External directory (`FR-EXT`)
 
@@ -731,7 +814,12 @@ later phases and are marked **[OPEN]** below.
   path MUST exist as a folder; the API MUST provide folder creation and listing
   confined to the datasets so an operator can point a share at a new folder
   inside the pool without leaving the UI, and that creation MUST be refused
-  outside the datasets and MUST NOT be able to delete non-empty folders. Share
+  outside the datasets and MUST NOT be able to delete non-empty folders. Folder
+  creation MUST resolve the nearest existing ancestor inside canonicalised
+  `/var/mnt`, create with `O_NOFOLLOW`/`mkdirat` (or an equivalent race-safe
+  check), and give the new folder the share service ownership and mode
+  (`10001:10000`, `02770`) or inherit the parent's ownership when it cannot
+  chown. Share
   paths MUST be editable, and a path change MUST be validated like a create.
   `GET /api/shares/paths` MUST offer only dataset mountpoints, and the serving
   containers MUST log whether each share path is on a mounted filesystem.
@@ -757,8 +845,14 @@ later phases and are marked **[OPEN]** below.
 - **FR-SHR-06** — Rendered configuration MUST reach the node without the API
   needing cluster RBAC: the privileged agent MUST be the only writer of the
   host configuration, writing atomically, and MUST NOT rewrite unchanged files.
-  A new configuration MUST NOT be applied unless it validates (`testparm`), so
-  a bad render leaves the previous working configuration serving.
+  A new configuration MUST NOT be applied unless it validates: the agent MUST
+  reject structural SMB/Ganesha defects and run `testparm` when available, and
+  the serving containers MUST still run `testparm` before reload. A failed
+  apply MUST leave (or restore) the previous working configuration serving.
+  Share names MUST reject `\`, `#`, `{` and `}`, and paths/descriptions MUST
+  reject line-continuation characters (`\`) and comment starts (`#` in a
+  description), so one field cannot inject a directive.
+  *(agent validation + render tests)*
 - **FR-SHR-07** — Share access MUST be restrictable by **user and by LDAP
   group**. Group entries MUST be rendered as `@group`, and the group's real
   membership MUST be resolvable on the node (see FR-IDN-13). A name MUST NOT be
@@ -811,6 +905,17 @@ later phases and are marked **[OPEN]** below.
   *(render + validation + contract + UI tests)*
 - **FR-SHR-16** — A share path MUST NOT contain a `.zfs` component: the ZFS
   snapshot directory MUST NOT be exportable as a share. *(validation test)*
+- **FR-SHR-17** — A share or SMB account store that is missing, zero-byte, or
+  an empty JSON array MUST load as a valid empty store, so a fresh install can
+  create its first share/account and the file is written on that first save.
+  An existing unparsable store MUST NOT be overwritten: the API MUST preserve a
+  `.corrupt-<timestamp>` copy, MUST fail closed with `503` on every mutation and
+  apply, and MUST NOT change in-memory state until the candidate has been
+  written to disk. *(store regression tests)*
+- **FR-SHR-18** — Share applies MUST be ordered: each render carries a
+  monotonically increasing revision with a nonce, applies are serialised in the
+  API, and the agent MUST refuse a revision that is not newer than the applied
+  one (surfaced as `409 Conflict`). *(revision tests)*
 
 #### NFSv3 (`FR-NFS3`) — all `[OPEN]`
 
@@ -936,17 +1041,23 @@ with a sibling `naslos-app.yaml` install-config. See
   accepted only for an app in a dedicated (isolated) baseline namespace, where
   the app MUST be denied public egress while keeping cluster DNS and
   app-to-app traffic; the API MUST reject the opt-out for privileged or shared
-  namespaces, whose policy always allows public egress.
+  namespaces, whose policy always allows public egress. The exposure editor
+  MUST flag an exposed route without auth or TLS and MUST require an explicit
+  acknowledgement before saving it; changing to a non-SSO domain MUST warn
+  that Authelia login was turned off rather than doing so silently.
   *(routing tests, apps tests, server tests)*
 - **FR-APP-11** — The API MUST own one Traefik `IngressRoute` per app plus its
-  middlewares and the per-app Internet-egress `NetworkPolicy` in the app
-  namespace, and MUST reconcile them on startup and delete them on uninstall.
-  When an app installs into a dedicated (isolated) baseline namespace with
-  `internet` on, the API MUST apply the egress policy **before** the Helm
-  install wait, remove it if the install fails, and sweep API-created
-  policies left by an interrupted install before the reserved namespace is
-  reused (and at startup). *(routing tests, apps tests; startup call in
-  `main.rs` after SEC-2026-H9)*
+  middlewares in the platform apps namespace (where the domain wildcard TLS
+  `Secret` lives), targeting the app's `Service` in its own namespace, and the
+  per-app Internet-egress `NetworkPolicy` in the app namespace; it MUST
+  reconcile them on startup and delete them on uninstall. An app namespace
+  MUST NOT receive a copy of the wildcard TLS private key (R-002). When an app
+  installs into a dedicated (isolated) baseline namespace with `internet` on,
+  the API MUST apply the egress policy **before** the Helm install wait, remove
+  it if the install fails, and sweep API-created policies left by an
+  interrupted install before the reserved namespace is reused (and at
+  startup). *(routing tests, apps tests; startup call in `main.rs` after
+  SEC-2026-H9)*
 - **FR-APP-16** — When a manifest declares no route target, the API MUST
   discover the release's Services from its Helm labels, route to one, and expose
   the candidates for the operator to pick. *(discovery_test.go)*
@@ -970,10 +1081,14 @@ with a sibling `naslos-app.yaml` install-config. See
   path directly). The API MUST inject the authoritative `datasets` list — one
   `{name, mountPath: "/datasets/<name>", claim|hostPath}` entry per dataset —
   strip client-supplied `datasets`/`datasetsClaim`/`datasetsClaims` values, and
-  never hand a chart the `/var/mnt` root. Records that carry datasets MUST be
-  migrated once to that layout, and a record without a per-app namespace MUST
-  NOT gain or change datasets without a reinstall. *(chart render gate +
-  `apps::dataset_layout_tests` + `apps::value_schema_tests` pool-limit tests)*
+  never hand a chart the `/var/mnt` root. The production overlay and fresh
+  installs MUST disable the legacy shared `naslos-datasets` PV/PVC entirely, so
+  VM datasets, the Buddy store and other siblings under `/var/mnt` are not
+  app-visible; the legacy claim exists only for installs that opt into it.
+  Records that carry datasets MUST be migrated once to that layout, and a
+  record without a per-app namespace MUST NOT gain or change datasets without a
+  reinstall. *(chart render gate + `apps::dataset_layout_tests` +
+  `apps::value_schema_tests` pool-limit tests)*
 - **FR-APP-21** — An app install MAY select a ZFS pool for the chart's own
   persistence PVCs. When `pool` is set the API MUST reject a pool that does not
   exist, provision a pool-scoped local-path provisioner and StorageClass
@@ -1020,13 +1135,21 @@ with a sibling `naslos-app.yaml` install-config. See
   in both the flat (`resources.requests|limits`) and per-component
   (`resources.<component>.requests|limits`) layouts the catalog charts use.
   Saving MUST enqueue the normal upgrade job (`PUT /api/apps/{name}` with
-  `{values:{resources}}`), preserving resource keys the form does not edit. The
+  `{values:{resources}}`), preserving resource keys the form does not edit.
+  The submitted `resources` object (including its `requests`/`limits` and
+  per-component maps) MUST replace the stored object rather than deep-merge,
+  so a key omitted by the form is cleared; an empty object clears all limits,
+  and explicit `null` entries are pruned as removals. *(apps
+  `resource_quantity_tests`)* The
   API MUST reject an invalid CPU/memory quantity (anything other than a
   non-negative decimal with an optional decimal or binary suffix) on install and
   upgrade before Helm runs, and MUST reject aggregate totals above the app
   namespace's `naslos-app-quota`. `GET /api/apps/{name}/quota` MUST report that
   quota (`{available, namespace, hard}`) so the drawer shows the effective cap.
-  The quota itself MUST be configurable (`apps.isolation.quota`).
+  The quota itself MUST be configurable (`apps.isolation.quota`). Clearing a
+  field MUST remove it from the complete `resources` object the drawer sends
+  (never as JSON `null`), and a reload after the upgrade MUST show the
+  request/limit gone.
   *(apps::resource_quantity_tests, UI check)*
 - **FR-APP-26** — A chart MAY declare `capabilities: [env]`. For such a chart
   the owner MUST be able to set custom environment variables per installed app.
@@ -1069,6 +1192,48 @@ with a sibling `naslos-app.yaml` install-config. See
   `lastError` while keeping the drift for retry. The chart MUST allow API-only
   egress to HTTPS registries (`networkPolicy.imageEgress`, default on).
   *(images tests, apps update tests, chart render gate, live drill)*
+- **FR-APP-28** — App values marked secret by the catalog schema (`format:
+  password` or `writeOnly: true`) MUST be redacted at every nesting depth by
+  walking the schema's JSON-pointer paths, not by comparing leaf names with
+  top-level keys. The pointer list MUST be persisted on the record
+  (`secretPaths`) and returned to the UI as `redactedKeys` so a later read can
+  still redact when the catalog entry is unavailable; a client echoing a redacted nested value back as `null` on an
+  upgrade MUST keep the stored value. When the catalog has no entry and the
+  record has no persisted pointer list, every value MUST be omitted from the
+  response (`valuesOmitted: true`) rather than returned unredacted. *(apps
+  record/redaction tests)*
+- **FR-APP-29** — An install MUST record the source, channel and exact chart
+  version it resolved, and an upgrade MUST resolve the chart from that recorded
+  source/channel; a different source is only used when the request pins it
+  explicitly, so a user source that later wins the bare app name cannot silently
+  take over an installed app. A request MAY pin `source`, `channel` and
+  `chartVersion`; a pinned version MUST match the version in the copied chart.
+  Every install/upgrade MUST render from a private copy of the chart taken under
+  a per-source read lock, so a concurrent refresh cannot change the tree while
+  Helm reads it, and cache freshness MUST be tracked per exact channel rather
+  than per source. *(catalog pinning tests, chartsrepo snapshot tests)*
+- **FR-APP-30** — An install MUST roll back every resource the attempt created
+  when it fails after provisioning: dataset claims/PVs, their registry
+  attachments, the env Secret and any pre-created egress policy. A namespace
+  handed back by a failed attempt MUST be swept by platform label before reuse
+  (claims/PVs and env Secrets of apps with no record), and a release with the
+  same name left by a timed-out attempt MUST be removed first. A Helm write
+  MUST have an outer guard longer than its wait plus rollback, and a timed-out
+  write MUST schedule a detached uninstall/rollback. Startup MUST backfill
+  releases that have no record as orphaned records so they stay visible and
+  uninstallable. *(apps lifecycle tests, helm tests)*
+- **FR-APP-31** — Exposure updates MUST serialize with the app's lifecycle lock
+  and be refused with `409` while an install/upgrade/uninstall job for the app
+  is running, and MUST write only the exposure-owned fields. The app store MUST
+  behave transactionally: a failed durable save MUST restore the in-memory
+  record (upsert/update/delete). A registry image lookup MUST reject a
+  non-public registry host (IP literal, loopback/private, single-label or
+  `.local`/`.internal`/`.svc`) and resolve names through a public-only resolver
+  so DNS cannot rebind the request. The seeded official source name MUST be
+  reserved (an admin source cannot overwrite it), source URLs MUST NOT embed
+  credentials, and a source's `lastError` MUST have URL credentials redacted.
+  `split_chart` MUST parse a trailing semver including prerelease/build
+  suffixes. *(apps store tests, images tests, chartsrepo tests, helm tests)*
 - **FR-APP-19** — Chart installs MUST run as a namespaced identity that cannot
   create Traefik `IngressRoute`/`Middleware` or cert-manager objects; the API
   MUST own the app's route and certificate. *(chart render gate:
@@ -1103,6 +1268,33 @@ with a sibling `naslos-app.yaml` install-config. See
   404s); the primary MUST NOT be demotable, and a domain MUST NOT be demoted
   while an installed app requires auth on it. *(chart render: authelia-config +
   naslos-authelia-sso; authelia tests; routing tests; server tests)*
+- **FR-APP-28** — The exposure UI MUST require an explicit confirmation before
+  saving `auth: false`, and MUST warn when a base-domain change would flip
+  authentication off. The exact strings are normative (UI-02):
+  - Confirmation title: `Turn off authentication for this app?`
+  - Confirmation body: `Without Authelia, anyone who can reach this app's address can use it. Only turn authentication off if the app has its own login or is meant to be public.`
+  - Confirm action: `Turn off authentication`
+  - Cancel action: `Keep authentication on`
+  - Domain-change warning: `Changing the base domain to {baseDomain} turns authentication off because {baseDomain} is not in the SSO domain list. The app will be reachable without an Authelia sign-in.`
+  - Domain-change confirm: `Change domain and turn authentication off`
+  - Domain-change cancel: `Keep the current domain`
+  *(UI-02; server tests, UI review)*
+- **FR-APP-29** — The reduced Helm identity MUST NOT hold `Ingress` or
+  `NetworkPolicy` write rights in any app namespace, the native Kubernetes
+  Ingress provider and default `IngressClass` MUST be disabled, and a
+  fail-closed admission policy MUST reject `Ingress`/`NetworkPolicy` writes
+  from that identity and any object whose `metadata.namespace` differs from the
+  request namespace. *(scripts/test-app-isolation.sh; chart render)*
+- **FR-APP-30** — App TLS MUST terminate on a `Secret` that already lives in the
+  platform apps namespace; the API MUST NOT write a `kubernetes.io/tls`
+  `Secret` or copy a private key into an app namespace. *(routing tests:
+  `exposure_never_renders_a_tls_secret_or_key`,
+  `app_route_lives_in_the_platform_namespace`)*
+- **FR-APP-31** — The parent-domain Authelia session cookie MUST stay available
+  to `forwardAuth` for SSO, but it MUST be deleted from the request before an
+  app backend receives it. *(routing tests:
+  `cookie_strip_runs_after_forwardauth_on_every_app_route`;
+  scripts/test-app-isolation.sh)*
 
 
 ### 3.5 Dashboard & metrics (`FR-MET`)
@@ -1208,9 +1400,24 @@ with a sibling `naslos-app.yaml` install-config. See
 ### 3.7 Notifications (`FR-NTF`)
 
 - **FR-NTF-01** — System events (Talos / Kubernetes / ZFS) MUST push to ntfy
-  topics with a severity level.
+  topics with a severity level. The settings UI MUST treat the server URL,
+  topic, email and token as write-only: never prefill them, show configured
+  placeholders from the `has*` flags, send only values the operator edited,
+  and send an empty string only for an explicit clear. A plaintext-HTTP
+  acknowledgement MUST be an explicit checkbox with a warning.
 - **FR-NTF-02** — The API MUST expose `POST /api/notifications/test` to send
   a test notification.
+- **FR-NTF-03** — ntfy settings responses MUST NOT echo the server URL, topic,
+  email address or token: `GET /api/notifications` MUST return only
+  `category: "ntfy"`, presence flags (`hasServerUrl`, `hasTopic`,
+  `hasAuthToken`, `hasUrlToken`, `hasEmail`), `allowInsecureHttp`, the routed
+  events and minimum severity. Those destination values are write-only: an
+  omitted field keeps the stored value and an empty string clears it. An
+  enabled channel MUST have a non-empty server URL and topic (400 otherwise),
+  a redirect MUST NOT count as success, and delivery errors MUST be
+  category-only (never the publish URL or topic). A bearer token over
+  plaintext `http` MUST be refused unless `allowInsecureHttp` is explicitly
+  set, and that acknowledgement MUST be written to the audit log.
 
 ### 3.7.1 Alert channels (`FR-ALT`)
 
@@ -1227,13 +1434,18 @@ additive: ntfy keeps its existing behavior (FR-NTF-01/02) and settings.
 - **FR-ALT-02** — The generic webhook channel MUST accept only `http`/`https`
   targets, MUST refuse a URL with embedded credentials, and MUST refuse a
   target that resolves to a loopback, private, link-local, CGNAT, metadata,
-  benchmark, reserved, ULA or IPv4-mapped non-public address. It MUST resolve
-  the host when the settings are saved and again at send time, pin the
-  connection to the vetted address, and follow no redirects. *(webhook tests:
+  benchmark, reserved, ULA or IPv4-mapped non-public address. It MUST
+  syntax-check the URL and a literal address when settings are saved and
+  resolve the host asynchronously at send time with `tokio::net::lookup_host`,
+  pin the connection to the vetted address, and follow no redirects. A
+  bearer token over plaintext `http` MUST be refused unless
+  `allowInsecureHttp` is explicitly set and audited. *(webhook tests:
   `url_validation_accepts_public_http_targets`,
   `url_validation_refuses_bad_schemes_and_credentials`,
   `url_validation_refuses_non_public_targets`; contract test
-  `webhook_test_route_requires_enabled_and_guards_at_send_time`)*
+  `webhook_test_route_requires_enabled_and_guards_at_send_time`). A bearer
+  token over plaintext `http` MUST require an explicit, audited
+  `allowInsecureHttp` acknowledgement in the UI.
 - **FR-ALT-03** — A webhook delivery MUST be a JSON `POST` whose stable shape
   is `source`, `event`, `title`, `message`, `severity` and `tags`, and it MUST
   NOT contain channel settings, credentials or the bearer token. *(webhook
@@ -1241,15 +1453,19 @@ additive: ntfy keeps its existing behavior (FR-NTF-01/02) and settings.
 - **FR-ALT-04** — Webhook delivery MUST be a single attempt with a finite
   timeout, no retry queue and no unbounded buffering. A response body MUST be
   read only up to a fixed bound and MUST NOT be surfaced in an error, a log or
-  an API response. Delivery errors MUST NOT contain the target URL, its path or
+  an API response. A 3xx response MUST be a failed delivery (redirects are
+  disabled), so only a 2xx is success. Delivery errors MUST NOT contain the target URL, its path or
   query, or the token. *(webhook tests:
   `a_failing_channel_does_not_suppress_the_other`,
   `test_action_is_not_gated_by_event_routing`; contract test
   `webhook_channel_crud_never_returns_the_token`)*
-- **FR-ALT-05** — The webhook bearer token MUST be write-only: the settings
-  response MUST expose only `hasAuthToken`, an omitted token MUST keep the
-  stored value, an empty string MUST clear it, and the settings file MUST be
-  mode `0600`. *(webhook test:
+- **FR-ALT-05** — The webhook URL and bearer token MUST be write-only: the
+  settings response MUST expose only `category: "webhook"` plus
+  `hasUrl`/`hasAuthToken`/`hasUrlToken`, an omitted field MUST keep the stored
+  value, an empty string MUST clear it, and the settings file MUST be mode
+  `0600`. The UI MUST show configured placeholders rather than the values,
+  send only edited fields, and require an explicit clear to send an empty
+  string. *(webhook test:
   `settings_survive_a_reload_and_the_token_stays_write_only`; contract test
   `webhook_channel_crud_never_returns_the_token`)*
 - **FR-ALT-06** — The API MUST expose a webhook test action that sends a
@@ -1325,7 +1541,12 @@ Prometheus, Grafana or an external time-series service.
   aside, a corrupt/truncated tail is repaired, and an unopenable store answers
   `available:false`; tests `corrupt_tail_is_truncated_and_the_store_keeps_writing`,
   `corrupt_header_is_moved_aside_and_recreated`,
-  `a_directory_instead_of_a_file_degrades_to_unavailable`.*
+  `a_directory_instead_of_a_file_degrades_to_unavailable`. History scans are
+  streamed record-by-record: queries and retention filter by resolution, series
+  and window before allocating, and the startup scan is released before the
+  rollup rebuild. A prune rewrite opens the replacement handle before the
+  rename, so a failed reopen cannot leave appends on an unlinked inode; test
+  `a_failed_rewrite_keeps_the_store_appendable`.*
 - **FR-RPT-04** — The API and UI MUST expose only the 24 h, 7 d and 30 d views
   over the fixed series allowlist, authenticated like every other owner route,
   and MUST NOT return unbounded raw samples. *Implemented: `GET /api/reports`
@@ -1365,7 +1586,11 @@ See `docs/buddy-backup.md`.
   the sender (OpenSSH form): the signature MUST cover the method, the full request
   URI, the SHA-256 of the body, a timestamp and a nonce. The receiver MUST reject
   a timestamp outside 5 minutes of its clock and MUST reject a repeated nonce.
-  Enrollment of a first key MUST be possible with a single-use token.
+  Enrollment of a first key MUST be possible with a single-use token. The signed
+  audience MUST identify the receiver instance uniquely, derived from a
+  per-instance random id (the display name is not unique and MUST NOT be the
+  audience), and the sender MUST learn it from the authenticated `/status`
+  discovery call.
 - **FR-BUD-04** — The payload MUST be sent as independently sealed, fixed-size
   chunks whose nonce is derived from a per-chain prefix and the chunk index, and
   whose AEAD additional data MUST bind the source, the chain, the index and the
@@ -1437,6 +1662,24 @@ See `docs/buddy-backup.md`.
 - **FR-BUD-17** — A schedule MUST only reference a dataset that exists on the node
   when it is created (an exact match, not a pool-prefix guess), so a typo fails at
   creation rather than at the first run.
+- **FR-BUD-18** — Loading an identity MUST NOT discard a stored KEK. When
+  `BUDDY_KEK` differs from the key persisted in `buddy-identity.json` the load
+  MUST fail closed with a migration error that names both backups, because
+  silently replacing the KEK makes every received chunk undecryptable. An
+  upgrade MAY import the file KEK into the Secret (`buddy.kekImport`) exactly
+  once; the operator MUST back up the identity file and the KEK Secret before
+  that migration.
+- **FR-BUD-19** — A restore MUST verify every chain of the sequence end-to-end
+  before the first `zfs receive`, MUST snapshot an existing destination before
+  applying, MUST record the applied-chain progress beside the identity, and MUST
+  roll the destination back (or leave it untouched) if any chain fails. A
+  partially applied restore MUST NOT be reported as successful.
+- **FR-BUD-20** — A sender MUST retain the snapshot it just published and prune
+  older Buddy snapshots according to the configured keep count (at least one), so
+  repeated sends do not leak snapshots on the source dataset.
+- **FR-BUD-21** — The signed manifest's `createdAt` MUST be canonicalized to
+  millisecond precision before signing and verification, so a Rust and a Go
+  implementation produce identical signed bytes for the same timestamp.
 
 ### 3.9 Dynamic DNS & DNS providers (`FR-DNS`)
 
@@ -1452,10 +1695,17 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   solver or a built-in DDNS driver MUST require no code change. An invalid or
   unreadable override MUST be skipped with a logged error and surfaced by
   `GET /api/providers`, never fatal. *(providers tests)*
-- **FR-DNS-02** — DDNS entry CRUD MUST NOT return credential values: the API
-  MUST return only the Secret name and which credential fields are set. Secret
-  fields submitted through the API MUST be written to a Kubernetes Secret and
-  MUST NOT be persisted in the entry store. *(ddns tests, `TestDdnsNeverReturnsCredentialValues`)*
+- **FR-DNS-02** — DDNS entry CRUD MUST NOT return credential values or
+  credential-bearing config: the API MUST return only the Secret name, which
+  credential fields are set, the export-safe `providerConfig` keys (sensitive
+  and free-form `updateUrl`/`body` values omitted, their names reported in
+  `redactedProviderConfigKeys`). Secret fields and legacy credential keys
+  submitted through the API MUST be written to a Kubernetes Secret and MUST
+  NOT be persisted in plaintext in the entry store; a credential submitted
+  explicitly empty MUST be removed from the Secret (clearing is revocation).
+  The UI MUST not prefill redacted values, MUST show them as configured
+  instead, and MUST send only edited fields (an empty string only from an
+  explicit clear). *(ddns tests, `TestDdnsNeverReturnsCredentialValues`)*
 - **FR-DNS-03** — A background reconciler MUST detect the public IP on an
   interval (`DDNS_INTERVAL_SECONDS`, default 300) from an ordered list of
   sources (HTTP URLs and DNS fetchers `dns:opendns`/`dns:google`), DNS-resolve
@@ -1477,7 +1727,15 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   built-in solver), and the existing `cloudflare`, `rfc2136` and `passthrough`
   output MUST be preserved. OVH MUST support both its DynHost service
   (`mode: dynamic`, username/password, the default) and the signed ZoneDNS API
-  (`mode: api`). *(certs tests: `TestSpecOVH`, `TestSpecCloudflareSolverShape`,
+  (`mode: api`). Domain responses MUST project the `solver` away (only
+  `solverConfigured` is reported) and apply the same export-safe filter to
+  `providerConfig`. Because those values are write-only, a domain update that
+  omits `solver`, `providerConfig` or `credentialsSecret` MUST preserve the
+  stored values and validate the effective (stored + submitted) record; an
+  explicit empty `solver` MUST clear it only for a provider-rendered solver
+  (passthrough still requires one). The UI MUST show that configured state and
+  MUST NOT send the solver or redacted values unless the operator edits them.
+  *(certs tests: `TestSpecOVH`, `TestSpecCloudflareSolverShape`,
   `TestSpecRFC2136SolverShape`, `TestSpecPassthroughIsUnchanged`;
   `TestOVHDriverDynHostMode`)*
 - **FR-DNS-06** — A force-run endpoint (`POST /api/ddns/{id}/run`) MUST exist
@@ -1485,16 +1743,22 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   the DNS pre-check and the cooldown.
   *(ddns tests: `TestManagerUpdatesWhenDNSDiffersAndRespectsCooldown`)*
 - **FR-DNS-07** — The generic `http` driver MUST render operator-supplied
-  URL/body templates, apply the configured authentication, and MUST refuse a
-  target that is not a public address (loopback, private, link-local or cluster
-  service ranges), so an admin-supplied URL cannot be used as an SSRF pivot.
+  URL/body templates, including `{{if COND}}...{{else}}...{{end}}` blocks with
+  `eq`/`ne` and truthiness, apply the configured authentication, and MUST
+  refuse a target that is not a public address (loopback, private, link-local
+  or cluster service ranges), so an admin-supplied URL cannot be used as an
+  SSRF pivot. Credentials MUST NOT be sent over plaintext `http` unless the
+  provider config acknowledges `allowInsecureHttp: true` (audited). Response
+  bodies MUST be read with a fixed cap via chunked reads.
   *(ddns tests: `TestHTTPDriverRejectsNonPublicTargets`)*
 - **FR-DNS-08** — The provider set MUST include, beyond the cert-manager
   providers, the DDNS providers ported from ddns-updater (`duckdns`, `dynu`,
   `noip`, `freedns`, `namecheap`, `desec`, `spdyn`, `selfhost.de`, `dynv6`,
   `digitalocean`, `godaddy`, `porkbun`) plus the generic custom provider, each
   as YAML where a built-in driver suffices. Every built-in DDNS provider MUST
-  resolve to a known driver. *(ddns test: `TestBuiltinProvidersHaveKnownDrivers`)*
+  resolve to a known driver, and every built-in `http` provider's template MUST
+  render for both A and AAAA. *(ddns tests: `TestBuiltinProvidersHaveKnownDrivers`,
+  `every_builtin_http_provider_renders_a_and_aaaa`)*
 
 - **FR-DNS-09** — App DNS records MUST be opt-in per domain:
   `appRecordsDdnsEntry` names a non-wildcard DDNS entry, and only domains whose
@@ -1514,8 +1778,11 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   `POST /api/apps/{name}/dns/reconcile`, and retried on the catalog-refresh
   cadence while in error; deleting a DDNS entry referenced by a domain MUST be
   a 409. Uninstall, exposure removal and domain removal MUST delete owned
-  records; a chart/domain update removes the old record before creating the new
-  one. *(dnsrecords tests, apps tests, server tests)*
+  records. On a rename or domain/provider move the API MUST plan and
+  create/update the new record first, then delete the previous owned record; an
+  adopted record MUST be marked not-owned and MUST never be deleted. A cleanup
+  failure MUST NOT fail the new state. *(dnsrecords tests, apps tests, server
+  tests)*
 
 ### 3.10 Installer & first-run provisioning (`FR-INSTALL`)
 
@@ -1588,6 +1855,19 @@ implemented here).
   the pack build MUST fail closed when a chart image has no digest. *(audit
   `check_image_digest_render` / `check_pack_digest_pinning`; workflow
   `.github/workflows/release.yml`)*
+- **FR-INSTALL-14** — Build inputs MUST be pinned: every Dockerfile base image
+  and both `bootstrap/local-path` images by `tag@sha256:…`, every GitHub Action
+  by commit SHA, and `scripts/check-release-version.sh` MUST parse every
+  `image`/`provisionerImage` reference in `values.yaml`,
+  `values-installer.yaml` and `values-vm.yaml`, including `@sha256:` and
+  `image.digest` forms (a naslos tag must equal `appVersion`; an unpinned image
+  fails). A `vX.Y.Z` release tag MUST point at a commit already on `master`.
+  *(audit `check-release-version.sh 0.7.0`; workflow
+  `.github/workflows/release.yml` guard)*
+- **FR-INSTALL-15** — `helm uninstall` MUST keep the platform namespace, the
+  `naslos-shares-config` state claim (Buddy identity, VM records, config) and
+  the `naslos-openldap-backups` claim; deleting them is a separate operator
+  action. *(audit `check_security_rendering` keep assertions)*
 
 ### 3.11 System upgrades (`FR-UPD`)
 
@@ -1602,7 +1882,15 @@ A node installed from an installer pack can be upgraded from the web UI. A
 - **FR-UPD-02** — The API MUST check the newest strict `vX.Y.Z` GitHub release
   (or a configured mirror), MUST download the pack and its `.sha256`, MUST
   verify the tarball sha256 and every member checksum, and MUST cache nothing
-  that fails. The source is `system.updates.source`.
+  that fails. The source is `system.updates.source`. Pack and signature URLs
+  MUST be `https` and their host MUST be the update source or a GitHub asset
+  host; the download MUST be capped (512 MiB). When the release publishes
+  `<pack>.sig`, it MUST verify against `SYSTEM_UPDATES_PACK_PUBKEY` (Ed25519);
+  when a key is configured but the release is unsigned, the candidate MUST be
+  rejected. The Job MUST re-verify the sha256 (and the signature when passed)
+  before extraction, and `--version`/`--from` MUST be strict semver.
+  *(tests: `pack_urls_are_https_and_host_allowlisted`,
+  `pack_signature_roundtrip_and_tamper`)*
 - **FR-UPD-03** — The API MUST offer the newest release whose `talosVersion` and
   `kubernetesVersion` are each at most one minor ahead of the running versions,
   MUST name the blocking reason otherwise, and MUST block a Naslos upgrade while
@@ -1626,9 +1914,12 @@ A node installed from an installer pack can be upgraded from the web UI. A
   detect the A/B rollback after reboot. A Kubernetes upgrade MUST dry-run first
   and report that it has no automatic rollback.
 - **FR-UPD-07** — A `ValidatingAdmissionPolicy` MUST reject any pod using the
-  `naslos-upgrader` ServiceAccount unless every container runs a
-  `ghcr.io/aessemops/naslos-api@sha256:` image with the `naslos-upgrade`
-  entrypoint.
+  `naslos-upgrader` ServiceAccount unless every container runs exactly one
+  `ghcr.io/aessemops/naslos-api@sha256:` container with the `naslos-upgrade`
+  entrypoint, only the documented operation flags and NASLOS_/HELM_/TALOS_ env
+  names, only the `tmp`/`talosconfig`/`state` volumes (no hostPath or subPath),
+  and a fixed non-root (`65532`), no-privilege-escalation, read-only-root,
+  `ALL`-dropped, RuntimeDefault-seccomp pod. *(audit `check_security_rendering`)*
 - **FR-UPD-08** — The status/lock MUST live in the
   `naslos-system-operation` ConfigMap (`phase`, `steps`, timestamps, result)
   and MUST survive API restarts and node reboots. The API's RBAC MUST be
@@ -1639,7 +1930,8 @@ A node installed from an installer pack can be upgraded from the web UI. A
 - **FR-UPD-10** — The UI MUST show the version table, the available release and
   notes link, the three ordered actions with disabled reasons, typed-version
   confirmation dialogs (the Talos one warning about downtime), a progress panel
-  that keeps polling through the reboot, and an update badge.
+  that keeps polling through the reboot, and an update badge. The release-notes
+  link MUST render only when `notesUrl` is an absolute `https://` URL.
 
 ### 3.12 Host network configuration (`FR-NET`)
 
@@ -1712,9 +2004,16 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   (`<pool>/vms/<name>`) with `quota` equal to the declared disk size, created
   through the agent; the first start creates the disk image blank (`qcow2`
   sparse by default, `raw` optional) or seeds it from a library cloud image
-  and resizes it to the declared size. Deleting a VM MUST refuse while it is
-  running and MUST destroy the dataset only after the record is removed,
-  restoring the record if the destroy fails.
+  and resizes it to the declared size. `disk.format`, `disk.bus`,
+  `disk.sourceImage` and `pool` MUST be immutable after creation, and a
+  `sizeGB` change MUST be refused (`409`) until a supervisor resize API
+  (qemu-img resize plus a dataset quota change) exists. Deleting a VM MUST
+  require `confirm=<name>`, MUST refuse while the VM is not positively
+  reported `stopped`, MUST fail closed (`503` when vmd is absent, `502` when
+  its live report is unreadable) and MUST serialize with start/stop/restore
+  through a per-VM lifecycle lock; it destroys the dataset only after the
+  record is removed, restoring the record if the destroy fails. The UI MUST
+  ask the operator to type the VM name before sending that request.
 - **FR-VMT-04** — Networking v1 is NAT (slirp) with per-VM editable TCP port
   forwards exposed on the node; that is the only mode. A LAN mode that gives
   the guest its own DHCP address is **[OPEN]**: the planned path is a Talos
@@ -1740,19 +2039,34 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   (b) server-side URL import restricted to public http(s) targets — the
   FR-DNS-07 SSRF guard (redirects re-validated hop by hop, connection pinned
   to the vetted address), optional sha256 verification — and (c) delete.
-  The library lives at `<pool>/vms/isos`, flat file names only.
+  A retried browser upload MUST resume at the last offset the supervisor
+  confirmed; when the partial upload no longer exists the UI MUST say so and
+  restart from zero. The library lives at `<pool>/vms/isos`, flat file names
+  only.
 - **FR-VMT-08** — The console MUST be reachable from the browser:
   `GET /api/ws/vm/{name}/vnc` (plain GET) is a preflight returning the VNC
   port, the per-boot VNC password and `ready to attach`; the same route with
-  a websocket upgrade bridges RFB bytes to QEMU's VNC listener (noVNC
-  client, `@novnc/novnc`). The bridge MUST enforce the `/api/ws/exec`
-  posture: same-origin check, finite session caps (max session, idle
-  timeout, concurrent session semaphore). The credentials MUST appear only
-  in the preflight response, never in list/detail payloads.
+  a websocket upgrade bridges RFB bytes through an authenticated vmd tunnel
+  to QEMU's loopback VNC listener (noVNC client, `@novnc/novnc`). The bridge
+  MUST enforce a strict origin policy:
+  the browser `Origin` must be exactly the HTTPS authority of the request's own `Host` (port included); HTTP and
+  SSO/base-domain expansion are refused — plus finite session caps (max
+  session, idle timeout, concurrent session semaphore) and a per-VM attach
+  rate limit. Every console session MUST be audited (begin/end) and MUST be
+  refused while the audit log is degraded. The credentials MUST appear only
+  in the preflight response, never in list/detail payloads. The noVNC client
+  MUST abort an in-flight preflight when the drawer closes or a disconnect is
+  requested and MUST NOT attach the console after unmount.
 - **FR-VMT-09** — Snapshots MUST be ordinary ZFS snapshots of the VM dataset
   (created/listed via the agent, crash-consistent while the VM runs, backed
-  up by Buddy like any dataset). Restore MUST refuse a running VM and MUST
-  roll the dataset back (`zfs rollback -r`, deleting newer snapshots).
+  up by Buddy like any dataset). Restore MUST require `confirm=<name>`, MUST
+  fail closed when vmd is absent or its live report is unreadable, MUST
+  refuse any VM not positively reported `stopped`, and MUST roll the dataset
+  back (`zfs rollback -r`, deleting newer snapshots). The response and the
+  UI MUST state that the rollback destroys newer snapshots and every change
+  written after the target. The UI MUST ask the operator to type the VM name
+  before sending the restore request. A failed snapshot listing MUST render
+  an error with a retry in that section, not the empty state.
 - **FR-VMT-10** — `state` MUST be derived live from the supervisor, never
   persisted. The API MUST push the desired config at its own startup with
   `desired=running` for autostart-marked VMs (pod restart = VM restart for
@@ -1767,7 +2081,14 @@ is ~3k lines of audited Rust (see `.kilo/plans/…-qemu-hypervisor.md`).
   opt-out short of an explicit `VMD_ALLOW_PLAINTEXT=1` for development. The
   QEMU VNC listener MUST be password-protected (the password is set over
   QMP per boot and handed to the browser only through the owner-gated
-  preflight).
+  preflight) and MUST bind loopback only (`127.0.0.1`), never `0.0.0.0`: the
+  console is reached only through the API bridge, which MUST tunnel RFB over
+  an authenticated route on vmd's existing TLS listener (bearer token, target
+  port restricted to the configured VNC display range). The vmd pod may use
+  hostNetwork for NAT forwards but MUST NOT publish a VNC port/Service, enable
+  host PID/IPC or mount a service-account token. A failure to generate the
+  per-boot password MUST fail the start closed. *(WP-03 vmd bind test; chart
+  audit `check_security_rendering`)*
 - **FR-VMT-12** — Secure Boot MUST be an optional per-VM flag
   (`secureBoot`, default `false`) and MUST be valid only with UEFI firmware.
   The supervisor MUST boot a Secure Boot guest with the OVMF `*.secboot.fd`
@@ -1829,22 +2150,38 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
   shows the plaintext exactly once and every other view (Settings UI,
   `GET /api/mcp`) omits both the plaintext and the hash. Tokens verify by
   SHA-256 hash with constant-time comparison, may expire, and revoke via
-  `DELETE /api/mcp/tokens/{id}`. New tokens default to the `read` scope:
+  `DELETE /api/mcp/tokens/{id}`. `expiresInDays` MUST fit a `DateTime`
+  (`try_days` + `checked_add_signed`); a stored `expiresAt` that cannot be
+  parsed is treated as expired. New tokens default to the `read` scope:
   a `full` token is an administrator without 2FA. *(SEC-17)*
 - **FR-MCP-03** — Scopes: every tool declares `read` < `write` < `full`.
   `tools/list` MUST only list the tools the calling token's scope allows,
   and `tools/call` MUST re-check the scope (a client can call an unlisted
-  tool). Refusals return tool errors the caller's LLM can read, never a
-  protocol-level failure.
+  tool). Every tool reachable at `write` MUST be on the reviewed allowlist
+  (`WRITE_ALLOWLIST` in `rust/api/src/mcp/tools/mod.rs`); identity,
+  credential, trust-enrollment and arbitrary-egress tools MUST be `full`
+  (`FULL_ONLY_TOOLS`), so a `write` token cannot create/update users,
+  passwords or groups or enroll a Buddy peer. **Breaking change (0.7.1):
+  existing `write` tokens must be reissued as `full` for that access.**
+  Refusals return tool errors the caller's LLM can read, never a
+  protocol-level failure. *(tests:
+  `every_write_tool_is_on_the_reviewed_allowlist`,
+  `identity_credential_and_egress_tools_are_full`,
+  `write_token_cannot_create_or_update_identities`)*
 - **FR-MCP-04** — Destructive (full-scope) tools MUST require a `confirm`
   argument equal to the resolved target (the same resolved value used in
   the path or query, never a second lookup), checked before any dispatch.
-  The `initialize` instructions MUST state the rule.
+  A missing or empty target MUST be refused, never treated as "no check
+  needed". `buddy_identity_create` with `{"replace": true}` MUST require the
+  literal `confirm: "replace"`. The `initialize` instructions MUST state the
+  rule. *(tests: `destructive_tools_refuse_an_empty_target`,
+  `replacing_the_buddy_identity_requires_the_literal_confirm`)*
 - **FR-MCP-05** — Tool dispatch MUST call the real handlers through the
   same router surface `build_router` mounts (split into `owner_routes()`
-  and `user_routes()`), with a synthetic `mcp:<token>` admin identity
-  injected per call — the internal router is never reachable from the
-  HTTP listener. Tools get API behavior for free: validation, JSON error
+  and `user_routes()`), with a synthetic `mcp:<token>` identity whose role
+  is the token scope's role (`read` → read-only, `write` → operator,
+  `full` → admin) injected per call — the internal router is never
+  reachable from the HTTP listener. Tools get API behavior for free: validation, JSON error
   bodies, and 503 for absent subsystems; the registry stays a declarative
   table plus one dispatcher. *(contract tests:
   `every_registry_tool_matches_a_real_route`,
@@ -1922,17 +2259,28 @@ follow-up.
   never overwrite a credential Secret, and never write a Secret, TLS key, Buddy
   identity/KEK, token or other credential. A referenced DDNS entry MUST be
   remapped to the server's ID even when the domain would otherwise be
-  unchanged; an ambiguous existing match, or a second imported record with the
-  same natural key, MUST be skipped rather than guessed at; a legacy AFP share
-  MUST be reported skipped; a provider change MUST clear the previous
+  unchanged; in every section, an ambiguous existing match or a second imported
+  record with the same natural key MUST be reported `skipped` (the first record
+  wins) rather than aborting the whole import or being guessed at; a legacy AFP
+  share MUST be reported skipped; a provider change MUST clear the previous
   provider's credential Secret and request re-entry; and an entry whose
   credentials were removed is imported without them with a report note to
   re-enter them through the existing endpoint. When the agent is reachable,
   share paths, dataset/pool targets and registered dataset paths MUST be
-  revalidated read-only against the node, and the Buddy receive store and its
-  parent paths MUST be refused as app datasets; without an agent they are
-  validated structurally and the report says so. *(config import tests:
-  `unknown_top_level_and_record_fields_are_rejected`,
+  revalidated read-only against the node, share paths MUST be validated again
+  under the share lock immediately before create/update, and the Buddy receive
+  store and its parent paths MUST be refused as app datasets. A configured but
+  unreachable agent MUST NOT silently degrade: the report MUST carry a warning
+  and `structuralOnly: true` (an absent agent validates structurally and says
+  so). Imported snapshot schedules MUST pass the same one-enabled-schedule
+  overlap guard against both the persisted store and the schedules earlier in
+  the same plan. After a domain upsert, import MUST run the same certificate
+  render, SSO handler invariants/Authelia sync and app DNS reconciliation as
+  the domain endpoint, and an imported `sso` value that the SSO handler rejects
+  MUST fail and roll back that record. A failed save MUST be rolled back before
+  the entry is reported `failed`, and the response MUST report `applied: false`
+  with `partial: true` when only part of the plan was saved. *(config import
+  tests: `unknown_top_level_and_record_fields_are_rejected`,
   `envelope_version_and_kind_are_strict`,
   `secret_shaped_app_values_are_rejected`,
   `secret_and_free_form_provider_fields_are_rejected`,
@@ -1944,7 +2292,14 @@ follow-up.
   `ambiguous_existing_schedules_are_skipped`,
   `duplicate_storage_schedules_are_skipped_not_fatal`,
   `duplicate_buddy_schedules_are_skipped_not_fatal`,
-  `trimmed_domain_duplicates_are_rejected`,
+  `duplicate_shares_are_skipped_not_fatal`,
+  `duplicate_ddns_entries_are_skipped_not_fatal`,
+  `duplicate_dataset_records_are_skipped_not_fatal`,
+  `duplicate_apps_are_skipped_not_fatal`,
+  `trimmed_domain_duplicates_are_skipped`,
+  `imported_overlapping_snapshot_schedules_are_skipped`,
+  `a_symlink_planted_after_the_plan_is_refused_at_apply`,
+  `an_unreachable_agent_marks_the_plan_structural_only`,
   `legacy_afp_shares_are_skipped`,
   `a_provider_change_clears_the_old_credentials`,
   `the_buddy_store_and_parent_paths_are_refused`,
@@ -1961,10 +2316,12 @@ follow-up.
   material, so it cannot recreate a node. Neither format supersedes the other.
 - **FR-CFG-06** — Import is a declarative-record restore, not an app reinstall
   or a credential restore. Installing exported app records, restoring provider
-  credentials, automatically pushing the restored Samba/NFS configuration
-  during import (the existing `/api/shares/apply` step remains manual), and
-  reconciling certificates/SSO immediately after import remain `[OPEN]`; the
-  import report names the follow-up and the app section is reported skipped.
+  credentials, and automatically pushing the restored Samba/NFS configuration
+  during import (the existing `/api/shares/apply` step remains manual) remain
+  `[OPEN]`; the import report names the follow-up and the app section is
+  reported skipped. Imported domains DO reconcile, however: the record is
+  saved, then its Issuer/Certificate is rendered, the SSO handler invariants
+  and Authelia sync run, and app DNS records are reconciled (FR-CFG-04).
 ### 3.16 RBAC roles (`FR-RBAC`)
 
 Naslos adds three privileged roles on top of the authenticated baseline:
@@ -2036,11 +2393,13 @@ parity (FR-RBAC-07) remain open.
   NOT become a role escalation path: `read`, `write` and `full` stay
   authoritative (FR-MCP-03/04), `tools/list` filtering is not enforcement,
   and `tools/call` MUST re-check the token scope against the route's minimum
-  role before dispatch. The synthetic MCP identity MUST carry the effective
-  role for audit, and the internal router MUST stay unreachable from the HTTP
-  listener. **[OPEN — phase 4]** Token scopes and `confirm` stay authoritative
-  and every call is durably audited now; scope-to-route-role parity waits
-  until routes are delegated. Existing regression test:
+  role before dispatch. The synthetic MCP identity MUST carry the scope's
+  effective role (`read` → read-only, `write` → operator, `full` → admin),
+  and the internal router MUST stay unreachable from the HTTP listener.
+  **[IMPLEMENTED — scope level + synthetic role] [OPEN — phase 4]** Token
+  scopes and `confirm` stay authoritative and every call is durably audited;
+  identity/credential/egress tools are `full`, so a `write` token cannot
+  reach them even before routes are delegated. Existing regression test:
   `internal_router_answers_with_a_synthetic_identity_and_hides_public_routes`.*
 - **FR-RBAC-08** — Migration MUST be behavior-preserving for existing admins:
   `naslos_admins` keeps full access without joining a new group, every
@@ -2090,13 +2449,14 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
   `record_shape_and_chain`, `request_ids_are_validated`)*
 - **FR-AUD-03** — The audit log MUST cover every unsafe `/api` request that
   reaches a handler (including 4xx/5xx outcomes and authorization denials
-  with a known actor), every MCP `tools/call`, terminal/VNC session
-  open/close, Buddy peer mutations, and background mutations (snapshots,
-  scrub, SMART, replication/cloud sync, DDNS, certificates, Buddy schedules,
-  network watchdog, upgrades). Ordinary safe reads, health probes and
-  unauthenticated `401`s MUST NOT flood the durable log.
-  **[IMPLEMENTED — HTTP/MCP] [OPEN — terminal/VNC sessions, Buddy peer
-  mutations, background/system jobs]** *(tests:
+  with a known actor, plus role-denied safe methods), every MCP `tools/call`,
+  terminal session open/close, Buddy peer mutations, and background mutations
+  (snapshots, scrub, SMART, replication/cloud sync, DDNS, certificates,
+  Buddy schedules, network watchdog, upgrades). Ordinary safe reads, health
+  probes and unauthenticated `401`s MUST NOT flood the durable log. A
+  WebSocket upgrade MUST be refused with `503` while the log is degraded.
+  **[IMPLEMENTED — HTTP/MCP/terminal] [OPEN — VNC (WP-03), Buddy peer
+  mutations (WP-06), background/system jobs]** *(tests:
   `denied_mutations_are_audited_with_the_actor`,
   `audit_records_a_mutation_and_refuses_after_degrade`,
   `mcp_read_calls_are_audited_without_arguments`)*
@@ -2127,11 +2487,14 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
   detect edited, reordered, deleted, inserted or truncated records. A keyed
   MAC or off-box checkpoint SHOULD be added because a plain hash chain cannot
   stop a writer with full volume access. Verification failure MUST NOT
-  auto-repair or truncate the log. **[IMPLEMENTED]** The plain hash chain
-  remains the baseline; a keyed MAC/off-box checkpoint is still a SHOULD.
-  *(tests: `chain_detects_edited_and_deleted_records`,
+  auto-repair or truncate the log; an on-demand verify that fails MUST mark
+  the log degraded and raise one alert **before** returning, so mutations
+  are refused from then on. **[IMPLEMENTED]** The plain hash chain remains
+  the baseline; a keyed MAC/off-box checkpoint is still a SHOULD. *(tests:
+  `chain_detects_edited_and_deleted_records`,
   `truncating_the_active_tail_fails_verification`,
-  `a_missing_checkpoint_fails_verification`)*
+  `a_missing_checkpoint_fails_verification`,
+  `tampering_after_startup_degrades_and_refuses_mutations`)*
 - **FR-AUD-07** — Retention MUST be bounded by age and bytes (proposed
   defaults 90 days / 16 MiB, 8 MiB segments, below the shared state
   volume). Pruning MUST remove only the oldest sealed segments, MUST never remove the active segment or the newest
@@ -2146,12 +2509,15 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
   subsequent mutations and return an explicit error that the action may have
   applied; it MUST NOT return a success response with an unaudited outcome.
   While degraded, reads MAY proceed and `/api/ready` MUST report the audit
-  state. A missing/unwritable audit directory at startup MUST be a fatal
+  state. Durable appends (fsync included) MUST run on the Tokio blocking pool,
+  never on an async worker, and no `std::sync::Mutex` may be held across an
+  `.await`. A missing/unwritable audit directory at startup MUST be a fatal
   configuration error for the API. **[IMPLEMENTED]** *(tests:
   `degraded_log_refuses_begin`, `audit_begin_failure_refuses_the_mutation_without_a_record`,
   `audit_end_failure_degrades_and_reports_may_have_applied`,
   `audit_records_a_mutation_and_refuses_after_degrade`,
-  `mcp_mutations_fail_closed_when_audit_is_degraded`)*
+  `mcp_mutations_fail_closed_when_audit_is_degraded`,
+  `durable_appends_do_not_block_the_async_runtime`)*
 - **FR-AUD-09** — Audit access MUST be admin-only and owner-gated: a bounded
   query, chain verification and JSONL export MAY be exposed at
   `/api/audit`, `/api/audit/verify` and `/api/audit/export`; there MUST be no
@@ -2165,10 +2531,12 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
   arguments; the existing in-memory ring MAY remain as a UI convenience.
   System actors MUST be recorded for scheduled/background work, and Buddy
   peer mutations MUST record the peer key fingerprint rather than a
-  username. **[IMPLEMENTED — MCP] [OPEN — system actors and Buddy peer
-  fingerprints]** *(tests: `mcp_read_calls_are_audited_without_arguments`,
+  username. **[IMPLEMENTED — MCP and Buddy receiver enroll/chunk/manifest/
+  prune] [OPEN — system actors]** *(tests:
+  `mcp_read_calls_are_audited_without_arguments`,
   `refused_mcp_calls_are_audited_without_arguments`,
-  `mcp_mutations_fail_closed_when_audit_is_degraded`)*
+  `mcp_mutations_fail_closed_when_audit_is_degraded`; receiver mutations
+  refuse with 503 while the audit log is degraded)*
 
 ---
 
@@ -2231,10 +2599,10 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
 | `/api/shares/status` | GET | Rendered revision + what the node has applied |
 | `/api/virt/capabilities` | GET | Node virtualization preflight (FR-VMT-01) |
 | `/api/virt/vms` | GET, POST | VM records merged with live state / create (dataset + record + push) |
-| `/api/virt/vms/{name}` | GET, PUT, DELETE | Detail / update / delete (refuses a running VM) |
+| `/api/virt/vms/{name}` | GET, PUT, DELETE | Detail / update (pool, `disk.format`, `disk.bus`, `disk.sourceImage` immutable; size change 409) / delete (`?confirm=<name>`; fail closed unless vmd reports `stopped`) |
 | `/api/virt/vms/{name}/start` `stop` `force-stop` `restart` | POST | Lifecycle actions (stop = graceful ACPI; restart = force-stop + start) |
 | `/api/virt/vms/{name}/snapshots` | GET, POST | List / create a ZFS snapshot of the VM dataset |
-| `/api/virt/vms/{name}/snapshots/{snap}/restore` | POST | `zfs rollback -r`; refuses a running VM |
+| `/api/virt/vms/{name}/snapshots/{snap}/restore` | POST | `zfs rollback -r` (`?confirm=<name>`; fail closed unless vmd reports `stopped`; newer snapshots lost) |
 | `/api/virt/images?pool=` | GET | Per-pool library listing (imports + last errors included) |
 | `/api/virt/images/upload?pool=&name=&offset=&final=` | POST | One upload chunk (`application/octet-stream`, the only non-JSON body) |
 | `/api/virt/images/import` | POST | Server-side URL import (202; SSRF-guarded in the supervisor) |
@@ -2332,7 +2700,9 @@ operator and read-only users receive `403` on owner routes.
 - **NFR-4 Resilience** — The API MUST return usable (non-crashing) responses
   when a dependency is down: LDAP failures yield `503` with the underlying
   cause (FR-IDN-11) while non-identity features keep working (FR-IDN-12); the
-  UI MUST show errors, never silently freeze. A component MUST also survive a
+  UI MUST show errors, never silently freeze. A failed catalog load MUST leave
+  a closable error instead of a blank modal, and a failed per-section fetch
+  MUST show a retry in that section. A component MUST also survive a
   **node reboot**: startup MUST NOT depend on another component already being
   resolvable, or it will crash-loop in the race (nginx resolving the API host
   name at boot was exactly that failure, so the UI waits for the name first).
@@ -2481,6 +2851,11 @@ Dynamic DNS and the provider registry are verified by
 | `shares::acl::tests::*` | FR-ACL-01/02 (fixed preset allow-list, POSIX mode/entry mapping, no world-write, owner/group/other resolution, service-account lockout refusal) |
 | `apps::dataset_layout_tests::*` | FR-APP-20 (selection normalisation, one claim/hostPath entry per dataset, client value stripping, chart support scan) |
 | `apps::resource_quantity_tests::*` | FR-APP-25 (flat and per-component resources, quantity grammar, non-quantity types, unrelated keys) |
+| `apps::lifecycle_hardening_tests::*` | FR-APP-28/30/31 (nested pointer redaction, no-catalog fail-closed, persisted pointers, nested null restore, transactional store, field-wise exposure, orphan label sweep) |
+| `catalog::tests::an_app_is_pinned_to_its_exact_source_and_channel`, `an_explicit_channel_is_not_swapped_for_prod` | FR-APP-29 (source/channel pinning for installed apps and updates) |
+| `chartsrepo::tests::a_chart_snapshot_is_a_private_copy`, `the_official_source_name_cannot_be_taken_over`, `source_urls_reject_embedded_credentials` | FR-APP-29/31 (private chart snapshot, reserved official source, no URL credentials, redacted lastError) |
+| `helm::tests::split_chart_name_and_version` | FR-APP-31 (trailing semver with prerelease/build suffixes) |
+| `images::tests::rejects_private_registry_hosts` | FR-APP-31 (registry SSRF: IP literals/private/single-label hosts refused) |
 | `TestManagerUpdateSkipsUnchangedAndHidesSecrets`, `TestDdnsNeverReturnsCredentialValues` | FR-DNS-02/03/06 (skip-when-unchanged, force-run, no credential values) |
 | `TestManagerRecordsCredentialErrors`, `TestDetectIPValidatesResponse` | FR-DNS-03 (errors recorded, IP response validated) |
 | `TestOVHDriverUpdate`, `TestCloudflareDriverCreateAndUpdate`, `TestHTTPDriverRendersAndAuthenticates` | FR-DNS-01 (drivers: URL/method/body/signature/auth) |
@@ -2489,10 +2864,11 @@ Dynamic DNS and the provider registry are verified by
 | `naslos_vmd::model::tests::*` | FR-VMT-02/12 (name/range/enum/cloud-init/secure-boot validation, legacy-record defaults, library traversal guards) |
 | `naslos_vmd::args::tests::*` (golden argv) | FR-VMT-02/05/12 (SEC-1: the exact QEMU command line is a pinned, reviewable diff; Secure Boot pins the secboot pair, SMM and secure pflash) |
 | `naslos_vmd::capabilities::tests::*` | FR-VMT-01/12 (Secure Boot availability is reported, never inferred from a plain UEFI pair) |
-| `naslos_vmd::qmp::tests::*`, `naslos_vmd::supervisor::tests::*` | FR-VMT-10 (QMP round-trip incl. event skipping, reconcile invariants, force-stop guards) |
+| `naslos_vmd::qmp::tests::*`, `naslos_vmd::supervisor::tests::*` | FR-VMT-10/11 (QMP round-trip incl. event skipping, reconcile invariants, force-stop guards, VNC tunnel display range) |
+| `naslos_vmd::server::tests::*` (VNC tunnel) | FR-VMT-08/11 (authenticated tunnel proxies bytes to the loopback display port, out-of-range port refused) |
 | `naslos_vmd::images::tests::*` | FR-VMT-07 (SSRF guard covers mapped/ULA addresses, scheme allowlist, upload name guards, redirect resolution) |
 | `naslos_vmd::cloudinit::tests::*` | FR-VMT-06 (no password fields, pwauth disabled, instance-id tracks the seed) |
-| `naslos_api::virt::tests::*` | FR-VMT-10/12 (store round-trip + revalidation, legacy records default `secureBoot` off, boot render marks autostart VMs, views survive a dead supervisor, credentials stay out of payloads) |
+| `naslos_api::virt::tests::*`, `naslos_api::server::virt::tests::*` | FR-VMT-03/09/10/12 (store round-trip + revalidation, legacy records default `secureBoot` off, boot render marks autostart VMs, views survive a dead supervisor, credentials stay out of payloads; delete/restore confirm and fail-closed checks, immutable disk/pool fields, per-VM lifecycle locks, console origin/audit refusals) |
 | `contract.rs` virt tests (fail-closed shapes, octet-stream scoped to the upload route only, console origin/auth) | FR-VMT-08/11 |
 | `ui/tests/vms.spec.ts` (capability-skip) | FR-VMT-01 (banner on KVM-less nodes, list contract, preflight 409 on a stopped VM) |
 

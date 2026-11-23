@@ -4,7 +4,7 @@
   import { createEventDispatcher, onMount } from 'svelte';
   import ProviderFields from './ProviderFields.svelte';
   import InfoBubble from './InfoBubble.svelte';
-  import { visibleFields } from '$lib/providerFields';
+  import { changedProviderFields, providerDefaults, visibleFields } from '$lib/providerFields';
 
   export let domain: any | null = null;
 
@@ -13,11 +13,20 @@
   let credentialsSecret = domain?.credentialsSecret || '';
   let acmeEmail = domain?.acmeEmail || '';
   let environment = domain?.environment || 'staging';
-  let solverText = domain?.solver ? JSON.stringify(domain.solver, null, 2) : '';
+  // The solver body is never returned; only its presence is reported.
+  let solverText = '';
+  let solverConfigured = !!domain?.solverConfigured;
   let saving = false;
   let error = '';
   let providers: any[] = [];
+  // Credential-bearing and free-form providerConfig keys are redacted from the
+  // response and must not be prefilled or blanked by an unrelated save.
+  let redactedKeys: string[] = Array.isArray(domain?.redactedProviderConfigKeys)
+    ? [...domain.redactedProviderConfigKeys]
+    : [];
   let fieldValues: Record<string, string> = { ...(domain?.providerConfig || {}) };
+  let initialValues: Record<string, string> = { ...fieldValues };
+  let clearedFields: Record<string, boolean> = {};
   let ddnsEntries: { id: string; provider: string; zone: string; record: string }[] = [];
   let ddnsEnabled = false;
   let ddnsLoaded = false;
@@ -44,6 +53,8 @@
         dnsProvider = providers[0].name;
       }
       fieldValues = defaultsFor(dnsProvider, fieldValues);
+      initialValues = { ...fieldValues };
+      clearedFields = {};
     } catch {
       ddnsLoaded = true;
       // The hardcoded fallbacks below keep the form usable if the API is down.
@@ -81,20 +92,25 @@
     return entry.record === '@' || !entry.record ? entry.zone : `${entry.record}.${entry.zone}`;
   }
 
-  function defaultsFor(name: string, seed: Record<string, string>): Record<string, string> {
-    const next: Record<string, string> = { ...seed };
+  function fieldsFor(name: string): any[] {
     const selected = providers.find((p) => p.name === name);
-    for (const f of (selected?.fields ?? []).filter((x: any) => x.scope !== 'ddns')) {
-      if (next[f.key] === undefined) {
-        next[f.key] = f.default ?? '';
-      }
-    }
-    return next;
+    return (selected?.fields ?? []).filter((f: any) => f.scope !== 'ddns');
+  }
+
+  function defaultsFor(name: string, seed: Record<string, string>): Record<string, string> {
+    return providerDefaults(fieldsFor(name), seed, redactedKeys);
   }
 
   function onProviderChange(event: Event) {
-    dnsProvider = (event.currentTarget as HTMLSelectElement).value;
+    const nextName = (event.currentTarget as HTMLSelectElement).value;
+    if (nextName === dnsProvider) return;
+    dnsProvider = nextName;
+    redactedKeys = [];
+    clearedFields = {};
     fieldValues = defaultsFor(dnsProvider, {});
+    initialValues = { ...fieldValues };
+    solverConfigured = false;
+    solverText = '';
   }
 
   async function save() {
@@ -110,13 +126,29 @@
         appRecordsDdnsEntry: appRecordsEnabled && appRecordsEntry ? appRecordsEntry : null
       };
       if (dnsProvider === 'passthrough') {
-        try {
-          body.solver = JSON.parse(solverText);
-        } catch {
-          throw new Error('Solver must be valid JSON');
+        const text = solverText.trim();
+        if (text !== '') {
+          try {
+            body.solver = JSON.parse(text);
+          } catch {
+            throw new Error('Solver must be valid JSON');
+          }
+        } else if (!solverConfigured) {
+          throw new Error('A solver is required for the passthrough provider.');
         }
       } else if (certFields.length > 0) {
-        body.fields = fieldValues;
+        // Send only the fields the operator edited. Omitted (and blank)
+        // write-only fields keep their stored value instead of clearing it.
+        // Send `fields` even when nothing changed: the server's resolver then
+        // preserves the stored safe config and credentials. Omitting the key
+        // entirely would replace providerConfig with an empty map.
+        body.fields = changedProviderFields(
+          certFields,
+          fieldValues,
+          initialValues,
+          clearedFields,
+          redactedKeys
+        );
       }
       const res = await fetch(`/api/domains/${encodeURIComponent(baseDomain)}`, {
         method: 'PUT',
@@ -170,7 +202,18 @@
       {#if dnsProvider === 'passthrough'}
         <div>
           <label class="label" for="domain-solver">Solver (JSON)</label>
-          <textarea id="domain-solver" class="input h-32 font-mono text-sm" bind:value={solverText}></textarea>
+          <textarea
+            id="domain-solver"
+            class="input h-32 font-mono text-sm"
+            bind:value={solverText}
+            placeholder={solverConfigured ? 'Configured — paste a replacement solver to change it' : ''}
+          ></textarea>
+          {#if solverConfigured}
+            <p class="text-xs text-amber-300 mt-1">
+              A solver is configured; its body is not returned. Leave this blank to keep the stored
+              solver, or paste a replacement.
+            </p>
+          {/if}
         </div>
       {:else if certFields.length > 0}
         <ProviderFields
@@ -178,9 +221,17 @@
           values={fieldValues}
           idPrefix="domain"
           secretSet={domain?.credentialsSecret ? certFields.filter((f: any) => f.secret).map((f: any) => f.key) : []}
+          redactedKeys={redactedKeys}
+          cleared={clearedFields}
           unchangedPlaceholder="•••••• (unchanged)"
           on:change={() => (fieldValues = { ...fieldValues })}
         />
+        {#if redactedKeys.length > 0}
+          <p class="text-xs text-gray-500">
+            Stored and redacted: <span class="font-mono">{redactedKeys.join(', ')}</span>.
+            Their values are not returned; leave a field blank to keep it, or tick Clear to remove it.
+          </p>
+        {/if}
       {:else}
         <div>
           <label class="label" for="domain-secret">Credentials Secret</label>

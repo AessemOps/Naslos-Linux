@@ -239,6 +239,9 @@ pub struct FieldResolution {
     pub config: HashMap<String, String>,
     pub secret_values: HashMap<String, String>,
     pub credential_fields: Vec<String>,
+    /// Secret keys the operator explicitly submitted empty; the caller must
+    /// delete them from the stored Secret (clearing is revocation).
+    pub removed_secret_keys: Vec<String>,
 }
 
 impl Provider {
@@ -255,6 +258,7 @@ impl Provider {
             config: HashMap::new(),
             secret_values: HashMap::new(),
             credential_fields: existing_credential_fields.to_vec(),
+            removed_secret_keys: Vec::new(),
         };
 
         for f in self.fields_for_scope(scope) {
@@ -303,6 +307,10 @@ impl Provider {
                     }
                     continue;
                 }
+                // Explicitly empty: revoke the stored key, do not silently
+                // keep it usable.
+                out.removed_secret_keys.push(f.secret_key_or());
+                out.credential_fields.retain(|k| k != &f.key);
             }
             if create && f.required {
                 return Err(format!("field {:?} is required", f.key));
@@ -603,6 +611,26 @@ mod tests {
         assert!(p.is_passthrough());
         assert!(p.supports_certificates());
         assert!(!p.has_cert_manager());
+    }
+
+    #[test]
+    fn clearing_a_secret_field_marks_it_for_revocation() {
+        let r = Registry::load("");
+        let spdyn = r.get("spdyn").unwrap();
+        let existing = HashMap::from([("password".to_string(), "old".to_string())]);
+        let submitted = HashMap::from([("token".to_string(), String::new())]);
+        let res = spdyn
+            .resolve_fields(
+                "ddns",
+                &submitted,
+                Some(&existing),
+                &["password".to_string(), "token".to_string()],
+                false,
+            )
+            .unwrap();
+        assert_eq!(res.removed_secret_keys, vec!["token".to_string()]);
+        assert!(!res.credential_fields.contains(&"token".to_string()));
+        assert!(!res.secret_values.contains_key("token"));
     }
 
     #[test]

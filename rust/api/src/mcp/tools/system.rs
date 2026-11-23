@@ -51,7 +51,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "system_updates_check",
         "Re-check for a newer Naslos release now (refreshes system_updates_get).",
-        Write,
+        Full,
         POST,
         "/api/system/updates/check",
         no_args
@@ -66,7 +66,7 @@ pub const TOOLS: &[ToolDef] = &[
         || schema(
             &["op", "version"],
             &[
-                ("op", s_enum("The operation to start.", &["upgrade"])),
+                ("op", s_enum("The operation to start.", &["naslos", "talos", "kubernetes"])),
                 ("version", s("The target release version, e.g. \"0.4.4\".")),
                 confirm_field(),
             ],

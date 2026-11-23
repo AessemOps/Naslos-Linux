@@ -25,6 +25,16 @@
   let loading = true;
   let saving = false;
   let error = '';
+  let unsafeAcknowledged = false;
+
+  // Same rule as the install wizard: an exposed route without Authelia auth or
+  // TLS is an operator decision that must be acknowledged explicitly, never a
+  // silent side effect of editing the form.
+  $: unsafeExposure = !!exposure.subdomain && (!exposure.tls || !exposure.auth);
+
+  function onExposureChange() {
+    unsafeAcknowledged = false;
+  }
 
   const dispatch = createEventDispatcher();
 
@@ -52,6 +62,10 @@
   }
 
   async function save() {
+    if (unsafeExposure && !unsafeAcknowledged) {
+      error = 'Confirm that this app will be exposed without full protection before saving.';
+      return;
+    }
     saving = true;
     error = '';
     try {
@@ -86,13 +100,37 @@
       {#if loading}
         <p class="text-gray-400">Loading exposure...</p>
       {:else}
-        <ExposureForm bind:exposure bind:baseDomain {selectableDomains} {ssoDomains} {services} />
+        <ExposureForm
+          bind:exposure
+          bind:baseDomain
+          {selectableDomains}
+          {ssoDomains}
+          {services}
+          on:change={onExposureChange}
+        />
+        {#if unsafeExposure}
+          <div class="mt-5 p-4 rounded-lg border border-red-700 bg-red-900/30 text-red-200 text-sm">
+            <p class="font-medium mb-1">This app will be exposed without full protection</p>
+            <p>
+              {#if !exposure.auth}Without Naslos login (auth is off).{/if}
+              {#if !exposure.tls}Without TLS (traffic is cleartext).{/if}
+              Anything that can reach <span class="font-mono">{exposure.subdomain}.{baseDomain}</span>
+              can use its admin interface.
+            </p>
+          </div>
+          <label class="mt-3 flex items-start gap-3 cursor-pointer">
+            <input type="checkbox" class="mt-1" bind:checked={unsafeAcknowledged} />
+            <span class="font-medium text-red-300">
+              I understand this app is reachable without {#if !exposure.auth}Naslos login{/if}{#if !exposure.auth && !exposure.tls} and {/if}{#if !exposure.tls}encryption{/if}.
+            </span>
+          </label>
+        {/if}
       {/if}
       {#if error}<div role="alert" class="mt-4 p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
     </div>
     <div class="p-6 border-t border-naslos-border flex justify-end gap-3">
       <button class="btn btn-secondary" on:click={() => dispatch('close')}>Cancel</button>
-      <button class="btn btn-primary" on:click={save} disabled={saving || loading}>{saving ? 'Saving...' : 'Save'}</button>
+      <button class="btn btn-primary" on:click={save} disabled={saving || loading || (unsafeExposure && !unsafeAcknowledged)}>{saving ? 'Saving...' : 'Save'}</button>
     </div>
   </div>
 </div>

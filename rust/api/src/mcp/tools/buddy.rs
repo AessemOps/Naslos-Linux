@@ -85,7 +85,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "buddy_peer_add",
         "Enroll a backup peer (its public key, allowed sources, quota).",
-        Write,
+        Full,
         POST,
         "/api/buddy/peers",
         || schema(
@@ -209,8 +209,13 @@ pub const TOOLS: &[ToolDef] = &[
         Full,
         POST,
         "/api/buddy/identity",
-        confirm = Confirm::Arg("name"),
-        || schema(
+        confirm = Confirm::ArgOrLiteral {
+            arg: "name",
+            flag: "replace",
+            literal: "replace",
+        },
+        || {
+            schema(
             &["name"],
             &[
                 ("name", s("The identity name to create."),),
@@ -218,8 +223,12 @@ pub const TOOLS: &[ToolDef] = &[
                     "replace",
                     b("Replace an existing identity (old receivers must re-enroll).")
                 ),
-                confirm_field(),
+                (
+                    "confirm",
+                    s("Safety check: repeat the identity name, or the literal \"replace\" when replace is true.")
+                ),
             ],
         )
+        }
     ),
 ];

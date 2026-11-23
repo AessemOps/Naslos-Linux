@@ -160,7 +160,7 @@ fn apply_restricts_secret_mirrors() {
     let c = client(&root);
     let cfg = Config {
         samba_conf: "[global]\n   workgroup = NASLOS\n".into(),
-        ganesha_conf: "EXPORT {\n}\n".into(),
+        ganesha_conf: "EXPORT {\n    Path = /var/mnt/test;\n}\n".into(),
         samba_users:
             "alice:0:NO_PASSWORD:8846F7EAEE8FB117AD06BDD830B7586C:[U          ]:LCT-00000000:\n"
                 .into(),

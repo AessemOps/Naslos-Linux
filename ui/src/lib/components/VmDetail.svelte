@@ -14,6 +14,7 @@
 
   let snapshots: any[] = [];
   let snapshotsLoading = false;
+  let snapshotsError = '';
   let snapName = '';
   let busy = false;
   let error = '';
@@ -43,6 +44,7 @@
   async function loadSnapshots() {
     if (!vm) return;
     snapshotsLoading = true;
+    snapshotsError = '';
     try {
       const res = await fetch(`/api/virt/vms/${encodeURIComponent(vm.name)}/snapshots`);
       const data = await res.json();
@@ -50,6 +52,7 @@
       snapshots = Array.isArray(data) ? data : [];
     } catch (e: any) {
       snapshots = [];
+      snapshotsError = e?.message || 'Failed to load snapshots.';
     } finally {
       snapshotsLoading = false;
     }
@@ -93,7 +96,14 @@
   }
 
   async function onRestore(snap: string) {
-    if (!confirm(`Roll ${vm.name} back to ${snap}? Snapshots taken after it are deleted.`)) return;
+    const typed = prompt(
+      `Restore ${vm.name} to snapshot ${snap}? Snapshots taken after it are deleted. Type the VM name to confirm.`
+    );
+    if (typed === null) return;
+    if (typed.trim() !== vm.name) {
+      alert('VM name did not match; nothing was restored.');
+      return;
+    }
     const err = await restore(vm.name, snap);
     if (err) {
       error = err;
@@ -204,6 +214,11 @@
       </p>
       {#if snapshotsLoading}
         <p class="text-sm text-gray-400">Loading snapshots…</p>
+      {:else if snapshotsError}
+        <div role="alert" class="card mb-6 border-red-700 bg-red-900/20 text-red-300 text-sm">
+          <p>Could not load snapshots: {snapshotsError}</p>
+          <button class="btn btn-secondary text-sm mt-3" on:click={loadSnapshots}>Retry</button>
+        </div>
       {:else}
         <div class="card overflow-x-auto p-0 mb-6">
           <table class="w-full text-sm">

@@ -2,6 +2,7 @@
         buddyctl buddy-receiver-image \
         bootstrap bootstrap-vm dev-cluster crds \
         cert-manager cert-manager-crds cert-manager-webhook-ovh \
+        local-path naslos-talosconfig install-vm-preflight \
         install install-vm install-pack uninstall clean
 
 DOCKER := docker
@@ -9,10 +10,13 @@ TALOSCTL := talosctl
 KUBECTL := kubectl
 HELM := helm
 
-VM_IP := 192.168.1.96
+# The node IP has no default: the VM overlay is for the single node, and a
+# stale hard-coded address silently deploys (or waits on) the wrong host.
+VM_IP ?=
 VM_CONFIG_DIR := bootstrap/vm
 REGISTRY ?= ghcr.io/aessemops
-IMAGE_TAG ?= 0.1.0
+# Image tag defaults to the chart appVersion, not a stale literal.
+IMAGE_TAG ?= $(shell awk '/^appVersion:/ {gsub(/"/, "", $$2); print $$2; exit}' charts/naslos/Chart.yaml)
 # Version of the install pack (defaults to the chart version when empty).
 PACK_VERSION ?=
 # Optional digest map for the install pack (FR-INSTALL-13): a JSON file
@@ -261,12 +265,37 @@ install: crds
 		--take-ownership \
 		$(AUTHELIA_CONFIG_FLAG)
 
+# Pinned local-path provisioner (R-068). OpenLDAP's default storageClassName is
+# local-path and fresh nodes have no provisioner, so `make install-vm` installs
+# the in-repo manifest and makes the class default. Idempotent.
+local-path:
+	$(KUBECTL) apply -f bootstrap/local-path/local-path-storage.yaml
+	$(KUBECTL) wait --for=condition=ready pod -l app=local-path-provisioner -n local-path-storage --timeout=120s || true
+	$(KUBECTL) label ns local-path-storage pod-security.kubernetes.io/enforce=privileged --overwrite || true
+	$(KUBECTL) patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' || true
+
+# The API pod reads /var/run/secrets/talos.dev/config from this Secret; without
+# it the API never becomes Ready (R-068). Built from bootstrap/vm/talosconfig
+# with the node endpoint filled in, because the CLI config has no endpoints.
+naslos-talosconfig:
+	@test -n "$(VM_IP)" || { echo "ERROR: VM_IP is required (set VM_IP=<node-ip>)"; exit 1; }
+	@test -f $(VM_CONFIG_DIR)/talosconfig || { echo "ERROR: $(VM_CONFIG_DIR)/talosconfig is missing; run 'make bootstrap-vm' first"; exit 1; }
+	$(KUBECTL) create namespace naslos --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	@python3 -c 'import sys,yaml; src,dst,ip=sys.argv[1:4]; cfg=yaml.safe_load(open(src)); ctx=cfg["contexts"][cfg["context"]]; ctx["endpoints"]=[ip]; open(dst,"w").write(yaml.safe_dump(cfg))' $(VM_CONFIG_DIR)/talosconfig $(VM_CONFIG_DIR)/talosconfig-pod $(VM_IP)
+	$(KUBECTL) create secret generic naslos-talosconfig -n naslos --from-file=talosconfig=$(VM_CONFIG_DIR)/talosconfig-pod --dry-run=client -o yaml | $(KUBECTL) apply -f -
+
+# Fail clearly before the Helm upgrade if the prerequisites above did not land.
+install-vm-preflight:
+	@test -n "$(VM_IP)" || { echo "ERROR: VM_IP is required (set VM_IP=<node-ip>; there is no default)"; exit 1; }
+	@$(KUBECTL) get storageclass local-path >/dev/null 2>&1 || { echo "ERROR: local-path StorageClass is missing (run 'make local-path')"; exit 1; }
+	@$(KUBECTL) -n naslos get secret naslos-talosconfig >/dev/null 2>&1 || { echo "ERROR: naslos-talosconfig Secret is missing (run 'make naslos-talosconfig VM_IP=<node-ip>')"; exit 1; }
+
 # Install Naslos on the single-node VM: Traefik on the node's 80/443 with
 # Authelia forwardAuth (https://naslos.local), and every route authenticated.
 # values-vm.yaml is the only profile; there is no unauthenticated posture to
 # switch to or roll back into. cert-manager and the OVH webhook install first so
 # a Domain's Issuer can be reconciled immediately.
-install-vm: crds cert-manager cert-manager-webhook-ovh
+install-vm: crds cert-manager cert-manager-webhook-ovh local-path naslos-talosconfig install-vm-preflight
 	$(HELM) dependency update $(CHART_DIR)
 	# One-time migration: Authelia moved from a DaemonSet to a StatefulSet (the
 	# API restarts it by deleting the deterministic pod naslos-authelia-0 for the

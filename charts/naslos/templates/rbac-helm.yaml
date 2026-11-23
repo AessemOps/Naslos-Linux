@@ -61,12 +61,11 @@ rules:
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["networking.k8s.io"]
-    resources: ["ingresses", "networkpolicies"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Deliberately absent: traefik.io (routes/middlewares), cert-manager.io
-  # (certificates/issuers), rbac.authorization.k8s.io (roles/bindings) and all
-  # cluster-scoped writes.
+  # Deliberately absent: networking.k8s.io (Ingress/NetworkPolicy), traefik.io
+  # (routes/middlewares), cert-manager.io (certificates/issuers),
+  # rbac.authorization.k8s.io (roles/bindings) and all cluster-scoped writes.
+  # The API owns exposure and isolation policy; a chart that ships an Ingress
+  # or NetworkPolicy fails admission instead of racing the API (R-001).
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

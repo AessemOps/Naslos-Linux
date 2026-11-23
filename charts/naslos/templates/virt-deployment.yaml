@@ -52,13 +52,20 @@ spec:
       # hostNetwork: the API reaches vmd at the node's own address (the
       # headless Service advertises it), and QEMU's NAT hostfwd binds the
       # node's ports so LAN clients reach the forwards without any routing.
+      # R-034: host namespaces beyond the network one are not needed; VNC is
+      # bound to loopback by vmd (WP-03) and proxied over /api/ws/vm/<name>/vnc,
+      # so this pod exposes no console port on the LAN.
       hostNetwork: true
+      hostPID: false
+      hostIPC: false
       containers:
         - name: vmd
           image: {{ include "naslos.image" $virt.image }}
           imagePullPolicy: {{ $virt.image.pullPolicy }}
           securityContext:
-            # QEMU supervision needs /dev/kvm and writes into the VM datasets.
+            # QEMU supervision needs /dev/kvm (device cgroup) and writes into
+            # the VM datasets; the pod runs only in the privileged workload
+            # namespace, with no service-account token and no host PID/IPC.
             privileged: true
           env:
             # Every request but /health must carry the shared bearer token

@@ -121,6 +121,12 @@ pub struct Candidate {
     pub published_at: String,
     pub pack_url: String,
     pub pack_sha256: String,
+    /// Detached signature asset, when the release publishes one (R-063).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pack_sig_url: String,
+    /// Whether the pack signature verified against the configured key.
+    #[serde(default)]
+    pub pack_attested: bool,
     pub pack_path: String,
     pub talos_version: String,
     pub kubernetes_version: String,
@@ -301,6 +307,10 @@ pub struct Checker {
     facts: ReleaseFacts,
     client: reqwest::Client,
     interval: Duration,
+    /// Ed25519 public key for pack signatures; empty means "no signature
+    /// verification configured" and the sha256 from the release is the
+    /// trust anchor (documented residual, R-063).
+    pack_pubkey: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -358,12 +368,17 @@ impl Checker {
             .timeout(Duration::from_secs(300))
             .build()
             .ok()?;
+        let pack_pubkey = std::env::var("SYSTEM_UPDATES_PACK_PUBKEY")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         Some(Self {
             source,
             cache_dir,
             facts,
             client,
             interval,
+            pack_pubkey,
         })
     }
 
@@ -381,6 +396,10 @@ impl Checker {
 
     pub fn cache_dir(&self) -> &Path {
         &self.cache_dir
+    }
+
+    pub fn pack_pubkey(&self) -> &str {
+        &self.pack_pubkey
     }
 
     pub fn load_cached(&self) -> Option<UpdateCheck> {
@@ -491,8 +510,10 @@ impl Checker {
         version: &Version,
         release: &ReleaseEntry,
     ) -> Result<Candidate, String> {
-        let (pack_url, pack_sha_url) = pack_assets(release, version)
+        let (pack_url, pack_sha_url, pack_sig_url) = pack_assets(release, version)
             .ok_or_else(|| format!("release {} has no install pack", version.as_tag()))?;
+        pack_url_allowed(&pack_url, &self.source)
+            .map_err(|e| format!("release {}: {e}", version.as_tag()))?;
         let pack_sha = self
             .download_text(&pack_sha_url)
             .await
@@ -520,6 +541,33 @@ impl Checker {
                 version.as_tag()
             ));
         }
+        // R-063: verify a detached signature whenever the release publishes
+        // one, and fail closed if a key is configured but the release is
+        // unsigned. The sha256 fetched from the same origin is not an
+        // independent trust anchor on its own.
+        let mut pack_attested = false;
+        if let Some(sig_url) = pack_sig_url.as_deref() {
+            if self.pack_pubkey.is_empty() {
+                return Err(format!(
+                    "release {} publishes a pack signature but SYSTEM_UPDATES_PACK_PUBKEY is not configured",
+                    version.as_tag()
+                ));
+            }
+            pack_url_allowed(sig_url, &self.source)
+                .map_err(|e| format!("release {}: {e}", version.as_tag()))?;
+            let signature = self
+                .download_text(sig_url)
+                .await
+                .map_err(|e| format!("release {}: {e}", version.as_tag()))?;
+            crate::upgrade::verify_pack_signature(&bytes, &signature, &self.pack_pubkey)
+                .map_err(|e| format!("release {}: {e}", version.as_tag()))?;
+            pack_attested = true;
+        } else if !self.pack_pubkey.is_empty() {
+            return Err(format!(
+                "release {} has no pack signature but SYSTEM_UPDATES_PACK_PUBKEY is configured",
+                version.as_tag()
+            ));
+        }
         let meta = crate::pack::verify_pack(&bytes)
             .map_err(|e| format!("release {}: {e}", version.as_tag()))?;
         if meta.naslos_version != version.to_string() {
@@ -536,6 +584,8 @@ impl Checker {
             published_at: release.published_at.clone().unwrap_or_default(),
             pack_url,
             pack_sha256: pack_sha,
+            pack_sig_url: pack_sig_url.unwrap_or_default(),
+            pack_attested,
             pack_path: self
                 .cache_dir
                 .join(format!("pack-{version}.tar.gz"))
@@ -634,10 +684,14 @@ pub fn releases_url(source: &str) -> String {
     format!("{}/releases.json", source.trim_end_matches('/'))
 }
 
-fn pack_assets(release: &ReleaseEntry, version: &Version) -> Option<(String, String)> {
+fn pack_assets(
+    release: &ReleaseEntry,
+    version: &Version,
+) -> Option<(String, String, Option<String>)> {
     let pack = format!("naslos-install-pack-{version}.tar.gz");
     let mut pack_url = None;
     let mut sha_url = None;
+    let mut sig_url = None;
     for asset in release.assets.as_deref().unwrap_or_default() {
         let Some(name) = asset.name.as_deref() else {
             continue;
@@ -652,9 +706,49 @@ fn pack_assets(release: &ReleaseEntry, version: &Version) -> Option<(String, Str
             pack_url = Some(url.to_string());
         } else if name == format!("{pack}.sha256") {
             sha_url = Some(url.to_string());
+        } else if name == format!("{pack}.sig") {
+            sig_url = Some(url.to_string());
         }
     }
-    Some((pack_url?, sha_url?))
+    Some((pack_url?, sha_url?, sig_url))
+}
+
+/// The hosts a pack download may start from (R-063): the configured update
+/// source or a GitHub release/CDN host. The check is https-only; GitHub's
+/// redirect to the CDN is authenticated by TLS and the sha256 is re-checked
+/// inside the Job.
+pub fn pack_url_allowed(url: &str, source: &str) -> Result<(), String> {
+    let uri: reqwest::Url = url
+        .parse()
+        .map_err(|e| format!("pack URL {url:?} is not a URL: {e}"))?;
+    if uri.scheme() != "https" {
+        return Err(format!("pack URL {url:?} must use https"));
+    }
+    let host = uri
+        .host_str()
+        .ok_or_else(|| format!("pack URL {url:?} has no host"))?;
+    let source_host = reqwest::Url::parse(source)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string));
+    const GITHUB_HOSTS: &[&str] = &[
+        "github.com",
+        "objects.githubusercontent.com",
+        "codeload.github.com",
+        "api.github.com",
+    ];
+    if GITHUB_HOSTS
+        .iter()
+        .any(|allowed| host.eq_ignore_ascii_case(allowed))
+        || source_host
+            .as_deref()
+            .is_some_and(|source| source.eq_ignore_ascii_case(host))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "pack URL host {host:?} is not the update source or a GitHub asset host"
+        ))
+    }
 }
 
 /// Whether a ConfigMap phase is an active lock.
@@ -678,6 +772,8 @@ pub struct JobOptions<'a> {
     pub version: &'a str,
     pub pack_url: &'a str,
     pub pack_sha256: &'a str,
+    pub pack_sig_url: &'a str,
+    pub pack_pubkey: &'a str,
     pub release_name: &'a str,
     pub service_account: &'a str,
     pub talos_secret: &'a str,
@@ -762,6 +858,8 @@ pub fn job_spec(o: &JobOptions<'_>) -> serde_json::Value {
                             "--version", o.version,
                             "--pack-url", o.pack_url,
                             "--sha256", o.pack_sha256,
+                            "--pack-sig-url", o.pack_sig_url,
+                            "--pack-pubkey", o.pack_pubkey,
                             "--namespace", o.namespace,
                             "--release", o.release_name,
                         ],
@@ -936,6 +1034,8 @@ mod tests {
             version: "0.3.1",
             pack_url: "https://example/pack.tar.gz",
             pack_sha256: "abc",
+            pack_sig_url: "",
+            pack_pubkey: "",
             release_name: "naslos",
             service_account: "naslos-upgrader",
             talos_secret: "naslos-talosconfig",
@@ -994,9 +1094,10 @@ mod tests {
         let (version, release) = &selected[0];
         assert_eq!(version.to_string(), "0.3.1");
         assert_eq!(release.html_url.as_deref(), Some("https://example/0.3.1"));
-        let (pack, sha) = pack_assets(release, version).expect("pack assets");
+        let (pack, sha, sig) = pack_assets(release, version).expect("pack assets");
         assert_eq!(pack, "https://example/pack");
         assert_eq!(sha, "https://example/sha");
+        assert_eq!(sig, None);
     }
 
     #[test]

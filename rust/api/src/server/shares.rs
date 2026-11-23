@@ -12,6 +12,42 @@ use axum::response::Response;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Serialises every share mutation and apply. Renders get a monotonic
+/// revision, but two overlapping applies could otherwise reach the agent out
+/// of order; taking this lock around "mutate then apply" keeps the node on the
+/// newest state (R-054).
+static APPLY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 503 when either persisted store failed to load. A corrupt store must never
+/// be replaced with an empty one by a mutation (R-008).
+fn store_unavailable(state: &AppState) -> Option<Response> {
+    if let Err(e) = state.shares.lock().unwrap().require_loaded() {
+        return Some(json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": e }),
+        ));
+    }
+    if let Err(e) = state.samba_users.lock().unwrap().require_loaded() {
+        return Some(json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": e }),
+        ));
+    }
+    None
+}
+
+fn apply_failure(context: &str, err: String) -> Response {
+    let status = if err.contains("stale revision") {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::BAD_GATEWAY
+    };
+    json(
+        status,
+        serde_json::json!({ "error": format!("{context}: {err}") }),
+    )
+}
+
 #[allow(clippy::result_large_err)]
 fn agent(state: &AppState) -> Result<Arc<crate::agent::Client>, Response> {
     state.agent.clone().ok_or_else(|| {
@@ -32,6 +68,10 @@ pub async fn shares_post(State(state): State<Arc<AppState>>, body: Body) -> Resp
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    let _apply = APPLY_LOCK.lock().await;
+    if let Some(resp) = store_unavailable(&state) {
+        return resp;
+    }
     if let Err(e) = require_dataset_path(&state, &req.path).await {
         return bad_request(&e);
     }
@@ -42,14 +82,11 @@ pub async fn shares_post(State(state): State<Arc<AppState>>, body: Body) -> Resp
         Ok(s) => s,
         Err(e) => return bad_request(&e),
     };
-    if let Err(e) = apply_shares_config(&state).await {
+    if let Err(e) = apply_shares_config_locked(&state).await {
         // The node never got the new share: roll the record back so the next
         // create does not see a phantom share, and report the failure.
         let _ = state.shares.lock().unwrap().delete(&created.name);
-        return json(
-            StatusCode::BAD_GATEWAY,
-            serde_json::json!({ "error": format!("share was not applied to the node: {e}") }),
-        );
+        return apply_failure("share was not applied to the node", e);
     }
     json(StatusCode::CREATED, serde_json::to_value(created).unwrap())
 }
@@ -73,6 +110,10 @@ pub async fn share_detail_put(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    let _apply = APPLY_LOCK.lock().await;
+    if let Some(resp) = store_unavailable(&state) {
+        return resp;
+    }
     if let Some(path) = &req.path {
         if let Err(e) = require_dataset_path(&state, path).await {
             return bad_request(&e);
@@ -86,14 +127,11 @@ pub async fn share_detail_put(
         Ok(s) => s,
         Err(e) => return bad_request(&e),
     };
-    if let Err(e) = apply_shares_config(&state).await {
+    if let Err(e) = apply_shares_config_locked(&state).await {
         if let Some(previous) = previous {
             let _ = state.shares.lock().unwrap().restore(previous);
         }
-        return json(
-            StatusCode::BAD_GATEWAY,
-            serde_json::json!({ "error": format!("share change was not applied to the node: {e}") }),
-        );
+        return apply_failure("share change was not applied to the node", e);
     }
     json(StatusCode::OK, serde_json::to_value(updated).unwrap())
 }
@@ -102,6 +140,10 @@ pub async fn share_detail_delete(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Response {
+    let _apply = APPLY_LOCK.lock().await;
+    if let Some(resp) = store_unavailable(&state) {
+        return resp;
+    }
     let previous = match state.shares.lock().unwrap().get(&name) {
         Ok(share) => share,
         Err(e) => return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
@@ -109,12 +151,9 @@ pub async fn share_detail_delete(
     if let Err(e) = state.shares.lock().unwrap().delete(&name) {
         return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e }));
     }
-    if let Err(e) = apply_shares_config(&state).await {
+    if let Err(e) = apply_shares_config_locked(&state).await {
         let _ = state.shares.lock().unwrap().restore(previous);
-        return json(
-            StatusCode::BAD_GATEWAY,
-            serde_json::json!({ "error": format!("share deletion was not applied to the node: {e}") }),
-        );
+        return apply_failure("share deletion was not applied to the node", e);
     }
     json(
         StatusCode::OK,
@@ -232,9 +271,13 @@ pub async fn shares_status_get(State(state): State<Arc<AppState>>) -> Response {
 }
 
 pub async fn shares_apply_post(State(state): State<Arc<AppState>>) -> Response {
-    match apply_shares_config(&state).await {
+    let _apply = APPLY_LOCK.lock().await;
+    if let Some(resp) = store_unavailable(&state) {
+        return resp;
+    }
+    match apply_shares_config_locked(&state).await {
         Ok(status) => json(StatusCode::OK, serde_json::to_value(status).unwrap()),
-        Err(e) => json(StatusCode::BAD_GATEWAY, serde_json::json!({ "error": e })),
+        Err(e) => apply_failure("failed to apply shares config", e),
     }
 }
 
@@ -343,9 +386,22 @@ async fn ldap_nss_groups(state: &AppState) -> Result<Vec<NssGroup>, String> {
 }
 
 /// Render the share configuration and push it to the agent.
+///
+/// Serialised with every mutation so an apply can never overtake a newer one.
 pub async fn apply_shares_config(
     state: &AppState,
 ) -> Result<crate::agent::SharesConfigStatus, String> {
+    let _apply = APPLY_LOCK.lock().await;
+    apply_shares_config_locked(state).await
+}
+
+/// The body of [`apply_shares_config`], for callers already holding the apply
+/// lock (they must, otherwise two mutations can interleave with their apply).
+async fn apply_shares_config_locked(
+    state: &AppState,
+) -> Result<crate::agent::SharesConfigStatus, String> {
+    state.shares.lock().unwrap().require_loaded()?;
+    state.samba_users.lock().unwrap().require_loaded()?;
     let bundle = state.shares.lock().unwrap().render_config_bundle();
 
     // Resolve LDAP group membership BEFORE locking the account store: a

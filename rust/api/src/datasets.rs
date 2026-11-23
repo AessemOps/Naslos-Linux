@@ -96,7 +96,7 @@ impl Registry {
     pub fn update_config(&self, ds: ManagedDataset) -> Result<ManagedDataset, String> {
         let ds = self.check(&ds)?;
         let mut inner = self.inner.lock().unwrap();
-        let Some(existing) = inner.get_mut(&ds.name) else {
+        let Some(existing) = inner.get(&ds.name) else {
             return Err(format!("dataset {:?} is not registered", ds.name));
         };
         if existing.host_path != ds.host_path && !existing.attached_to.is_empty() {
@@ -113,11 +113,14 @@ impl Registry {
                 existing.attached_to.join(", ")
             ));
         }
-        existing.host_path = ds.host_path;
-        existing.shared = ds.shared;
-        existing.warning_acknowledged = ds.warning_acknowledged;
-        let out = existing.clone();
-        self.save_locked(&inner)?;
+        let mut candidate = inner.clone();
+        let updated = candidate.get_mut(&ds.name).expect("checked above");
+        updated.host_path = ds.host_path;
+        updated.shared = ds.shared;
+        updated.warning_acknowledged = ds.warning_acknowledged;
+        let out = updated.clone();
+        self.save_locked(&candidate)?;
+        *inner = candidate;
         Ok(out)
     }
 
@@ -130,8 +133,10 @@ impl Registry {
         if inner.contains_key(&ds.name) {
             return Err(format!("dataset {:?} is already registered", ds.name));
         }
-        inner.insert(ds.name.clone(), ds.clone());
-        self.save_locked(&inner)?;
+        let mut candidate = inner.clone();
+        candidate.insert(ds.name.clone(), ds.clone());
+        self.save_locked(&candidate)?;
+        *inner = candidate;
         Ok(ds)
     }
 
@@ -140,29 +145,43 @@ impl Registry {
     /// created so two concurrent installs cannot both claim a private dataset.
     pub fn attach(&self, name: &str, app: &str) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let Some(ds) = inner.get_mut(name) else {
+        let Some(existing) = inner.get(name) else {
             return Err(format!("dataset {name:?} is not registered"));
         };
-        if ds.attached_to.iter().any(|a| a == app) {
+        if existing.attached_to.iter().any(|a| a == app) {
             return Ok(());
         }
-        if !ds.shared && !ds.attached_to.is_empty() {
+        if !existing.shared && !existing.attached_to.is_empty() {
             return Err(format!(
                 "dataset {name:?} is private and already attached to {}; register it as shared to attach it again",
-                ds.attached_to.join(", ")
+                existing.attached_to.join(", ")
             ));
         }
-        ds.attached_to.push(app.to_string());
-        self.save_locked(&inner)
+        let mut candidate = inner.clone();
+        candidate
+            .get_mut(name)
+            .expect("checked above")
+            .attached_to
+            .push(app.to_string());
+        self.save_locked(&candidate)?;
+        *inner = candidate;
+        Ok(())
     }
 
     pub fn detach(&self, name: &str, app: &str) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let Some(ds) = inner.get_mut(name) else {
+        if !inner.contains_key(name) {
             return Ok(());
-        };
-        ds.attached_to.retain(|a| a != app);
-        self.save_locked(&inner)
+        }
+        let mut candidate = inner.clone();
+        candidate
+            .get_mut(name)
+            .expect("checked above")
+            .attached_to
+            .retain(|a| a != app);
+        self.save_locked(&candidate)?;
+        *inner = candidate;
+        Ok(())
     }
 
     pub fn remove(&self, name: &str) -> Result<(), String> {
@@ -175,10 +194,13 @@ impl Registry {
                 ));
             }
         }
-        if inner.remove(name).is_none() {
+        let mut candidate = inner.clone();
+        if candidate.remove(name).is_none() {
             return Err(format!("dataset {name:?} is not registered"));
         }
-        self.save_locked(&inner)
+        self.save_locked(&candidate)?;
+        *inner = candidate;
+        Ok(())
     }
 
     fn save_locked(&self, inner: &BTreeMap<String, ManagedDataset>) -> Result<(), String> {
@@ -411,5 +433,39 @@ mod tests {
         );
         reloaded.remove("media").unwrap();
         assert!(reloaded.list().is_empty());
+    }
+    #[test]
+    fn a_failed_save_does_not_commit_the_mutation_to_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        // The parent is a regular file, so the atomic temp-file creation
+        // fails after the in-memory candidate was built.
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let store = Registry::new(&blocker.join("datasets.json").display().to_string(), "");
+        let err = store
+            .add(ds("media", "/var/mnt/tank/media"))
+            .expect_err("the save must fail");
+        assert!(!err.is_empty());
+        assert!(
+            store.list().is_empty(),
+            "a failed save must not leave a phantom record"
+        );
+
+        // Also seed a real store, then make the save fail and prove the old
+        // value survives.
+        let store_dir = tempfile::tempdir().unwrap();
+        let path = store_dir.path().join("datasets.json");
+        let store = Registry::new(&path.display().to_string(), "");
+        store.add(ds("media", "/var/mnt/tank/media")).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let err = store
+            .attach("media", "sonarr")
+            .expect_err("the save must fail");
+        assert!(!err.is_empty());
+        assert!(
+            store.get("media").unwrap().attached_to.is_empty(),
+            "a failed save must roll the attachment back"
+        );
     }
 }

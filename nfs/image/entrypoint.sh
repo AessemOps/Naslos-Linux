@@ -101,6 +101,12 @@ check_export_paths
     # Advance the hash first: a config that fails to reload must not be retried
     # in a tight loop, and the next real change will be picked up regardless.
     LAST_HASH="$CUR_HASH"
+    opens="$(tr -cd '{' < "$CONF" 2>/dev/null | wc -c)"
+    closes="$(tr -cd '}' < "$CONF" 2>/dev/null | wc -c)"
+    if [ ! -s "$CONF" ] || [ "$opens" != "$closes" ]; then
+      log "ERROR: ganesha.conf is empty or has unbalanced blocks - keeping the running exports"
+      continue
+    fi
     log "configuration changed - reloading exports (SIGHUP)"
     kill -HUP "$NFSD_PID" 2>/dev/null || log "WARN: could not signal ganesha.nfsd"
 

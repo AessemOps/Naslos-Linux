@@ -46,13 +46,51 @@ pub(crate) fn validate_record_label(record: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The export-safe view of a DDNS entry. Credential-bearing config keys and
+/// free-form templates (`updateUrl`, `body`) are write-only: they are omitted
+/// rather than echoed. Their names are listed in `redactedProviderConfigKeys`
+/// so the UI can show that a value is stored.
+fn entry_view(entry: &Entry) -> serde_json::Value {
+    let mut value = serde_json::to_value(entry).unwrap_or_default();
+    let mut safe = serde_json::Map::new();
+    let mut redacted: Vec<String> = Vec::new();
+    for (key, val) in &entry.provider_config {
+        if crate::server::config_export::is_sensitive_key(key)
+            || crate::server::config_export::is_free_form_value_key(key)
+            || crate::server::config_export::value_looks_sensitive(val)
+        {
+            redacted.push(key.clone());
+        } else {
+            safe.insert(key.clone(), serde_json::json!(val));
+        }
+    }
+    redacted.sort();
+    if let Some(obj) = value.as_object_mut() {
+        if safe.is_empty() {
+            obj.remove("providerConfig");
+        } else {
+            obj.insert(
+                "providerConfig".to_string(),
+                serde_json::Value::Object(safe),
+            );
+        }
+        if !redacted.is_empty() {
+            obj.insert(
+                "redactedProviderConfigKeys".to_string(),
+                serde_json::json!(redacted),
+            );
+        }
+    }
+    value
+}
+
 /// `GET|POST /api/ddns`
 pub async fn ddns_get(State(state): State<Arc<AppState>>) -> Response {
     match &state.ddns {
         Some(manager) => json(
             StatusCode::OK,
             serde_json::json!({
-                "entries": manager.store().list(),
+                "entries": manager.store().list().iter().map(entry_view).collect::<Vec<_>>(),
                 "enabled": true,
                 "intervalSeconds": manager.interval().as_secs(),
             }),
@@ -102,7 +140,7 @@ pub async fn ddns_detail_get(
         );
     };
     match manager.store().get(&id) {
-        Ok(e) => json(StatusCode::OK, serde_json::to_value(e).unwrap()),
+        Ok(e) => json(StatusCode::OK, entry_view(&e)),
         Err(e) => json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
     }
 }
@@ -188,10 +226,13 @@ pub async fn ddns_run_post(State(state): State<Arc<AppState>>, Path(id): Path<St
     match manager.run(&id, true).await {
         Ok(()) => {
             let entry = manager.store().get(&id).ok();
-            json(StatusCode::OK, serde_json::to_value(entry).unwrap())
+            json(
+                StatusCode::OK,
+                serde_json::to_value(entry.map(|e| entry_view(&e))).unwrap(),
+            )
         }
         Err(e) => {
-            let entry = manager.store().get(&id).ok();
+            let entry = manager.store().get(&id).ok().map(|e| entry_view(&e));
             json(
                 StatusCode::BAD_GATEWAY,
                 serde_json::json!({ "error": e, "entry": entry }),
@@ -342,6 +383,27 @@ async fn upsert(state: &Arc<AppState>, existing: Option<Entry>, req: DdnsRequest
         }
         entry.credentials_secret = secret_name;
     }
+    if !resolved.removed_secret_keys.is_empty() && !entry.credentials_secret.is_empty() {
+        let Some(kube) = &state.kube else {
+            return json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({ "error": "cannot reach the Kubernetes API to revoke credentials" }),
+            );
+        };
+        if let Err(e) = ddns::remove_secret_keys(
+            kube,
+            &state.apps_namespace,
+            &entry.credentials_secret,
+            &resolved.removed_secret_keys,
+        )
+        .await
+        {
+            return json(
+                StatusCode::BAD_GATEWAY,
+                serde_json::json!({ "error": format!("revoking credentials: {e}") }),
+            );
+        }
+    }
     if !p.secret_fields().is_empty() && entry.credentials_secret.is_empty() {
         for f in p.secret_fields() {
             if f.required {
@@ -355,6 +417,22 @@ async fn upsert(state: &Arc<AppState>, existing: Option<Entry>, req: DdnsRequest
             StatusCode::INTERNAL_SERVER_ERROR,
             serde_json::json!({ "error": e }),
         );
+    }
+    if p.ddns.as_ref().map(|d| d.driver.as_str()) == Some("http")
+        && crate::ddns::config_value(&entry.provider_config, "updateUrl")
+            .to_ascii_lowercase()
+            .starts_with("http://")
+        && crate::ddns::config_value(&entry.provider_config, "allowInsecureHttp") == "true"
+    {
+        let pending = crate::audit::Pending::system(
+            "ddns",
+            "insecure_http_acknowledged",
+            Some(entry.id.clone()),
+            serde_json::json!({ "provider": entry.provider, "transport": "http" }),
+        );
+        if let Err(e) = state.audit.record_once(&pending, 200) {
+            tracing::warn!("could not audit the DDNS plaintext-HTTP acknowledgement: {e}");
+        }
     }
     // A target change updates every app CNAME that points at this entry.
     if let Some(apps) = &state.app_manager {
@@ -374,7 +452,7 @@ async fn upsert(state: &Arc<AppState>, existing: Option<Entry>, req: DdnsRequest
     } else {
         StatusCode::CREATED
     };
-    json(status, serde_json::to_value(entry).unwrap())
+    json(status, entry_view(&entry))
 }
 
 /// Base domains that use this DDNS entry for automatic app records.
@@ -407,6 +485,32 @@ pub fn ddns_sources(list: &str, fallback: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entry_view_is_write_only_for_templates_and_credentials() {
+        let entry = Entry {
+            id: "abc".into(),
+            provider: "generic".into(),
+            zone: "example.com".into(),
+            record: "home".into(),
+            record_type: "A".into(),
+            provider_config: HashMap::from([
+                ("method".to_string(), "GET".to_string()),
+                (
+                    "updateUrl".to_string(),
+                    "https://dns.example/update?token=secret".to_string(),
+                ),
+                ("applicationKey".to_string(), "legacy-key".to_string()),
+            ]),
+            ..Default::default()
+        };
+        let value = entry_view(&entry);
+        let text = value.to_string();
+        assert!(!text.contains("dns.example"), "{text}");
+        assert!(!text.contains("legacy-key"), "{text}");
+        assert!(text.contains("\"redactedProviderConfigKeys\""), "{text}");
+        assert_eq!(value["providerConfig"]["method"], "GET");
+    }
 
     #[test]
     fn record_label_validation() {

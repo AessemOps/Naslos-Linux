@@ -13,9 +13,9 @@ use super::dataset::{
 use super::devices::validate_pool_name;
 use super::runner::join_host;
 use super::{ZfsClient, ZFS_BIN};
-use crate::invalid;
 use crate::zfs::validation::{ZfsError, ZfsResult};
 use crate::zfs::Zvol;
+use crate::{conflict, invalid};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -181,6 +181,7 @@ impl ZfsClient {
         validate_new_dataset_path(name)?;
         validate_volsize(size)?;
         validate_zvol_options(options)?;
+        let _guard = self.lock_dataset_mutation(name).await;
 
         let mut argv: Vec<String> = vec![
             "create".into(),
@@ -215,9 +216,10 @@ impl ZfsClient {
     pub async fn resize_zvol(&self, name: &str, size: &str) -> ZfsResult<()> {
         validate_dataset_path(name)?;
         let wanted = validate_volsize(size)?;
+        let _guard = self.lock_dataset_mutation(name).await;
         self.require_zvol(name).await?;
         if let Some(reason) = zvol_in_use(&self.host_root, name) {
-            return Err(invalid!(
+            return Err(conflict!(
                 "zvol {name} is in use ({reason}); stop the consumer before resizing it"
             ));
         }
@@ -253,7 +255,7 @@ impl ZfsClient {
         {
             Ok(_) => Ok(()),
             Err(e) if is_zvol_busy(&e.output) => {
-                Err(invalid!("zvol {name} is in use: {}", e.output.trim()))
+                Err(conflict!("zvol {name} is in use: {}", e.output.trim()))
             }
             Err(e) => Err(ZfsError::Other(format!(
                 "resizing zvol: {}: {}",
@@ -268,9 +270,10 @@ impl ZfsClient {
     /// ladder): a busy zvol has a live consumer, which must be stopped first.
     pub async fn destroy_zvol(&self, name: &str) -> ZfsResult<()> {
         validate_dataset_path(name)?;
+        let _guard = self.lock_dataset_mutation(name).await;
         self.require_zvol(name).await?;
         if let Some(reason) = zvol_in_use(&self.host_root, name) {
-            return Err(invalid!(
+            return Err(conflict!(
                 "zvol {name} is in use ({reason}); stop the consumer before deleting it"
             ));
         }
@@ -281,7 +284,7 @@ impl ZfsClient {
         {
             Ok(_) => Ok(()),
             Err(e) if is_zvol_busy(&e.output) => {
-                Err(invalid!("zvol {name} is in use: {}", e.output.trim()))
+                Err(conflict!("zvol {name} is in use: {}", e.output.trim()))
             }
             Err(e) => Err(ZfsError::Other(format!(
                 "destroying zvol: {}: {}",

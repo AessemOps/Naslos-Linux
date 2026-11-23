@@ -56,11 +56,11 @@ spec:
               value: "naslos.local"
             - name: LDAP_ORGANISATION
               value: {{ .Values.openldap.organisation | default "Naslos" | quote }}
-            - name: LDAP_ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: naslos-openldap
-                  key: admin-password
+            # R-037: hand the admin password to the entrypoint as a file, not
+            # an environment value, so it cannot leak through `kubectl describe`
+            # or a process environment dump.
+            - name: LDAP_ADMIN_PASSWORD_FILE
+              value: /run/secrets/openldap/admin-password
             - name: LDAP_TLS
               value: "true"
           volumeMounts:
@@ -70,6 +70,9 @@ spec:
               mountPath: /etc/ldap/slapd.d
             - name: certs
               mountPath: /container/service/slapd/assets/certs
+              readOnly: true
+            - name: admin-password
+              mountPath: /run/secrets/openldap
               readOnly: true
           resources:
             {{- toYaml (.Values.openldap.resources | default (dict "requests" (dict "cpu" "100m" "memory" "256Mi") "limits" (dict "cpu" "500m" "memory" "1Gi"))) | nindent 12 }}
@@ -84,6 +87,15 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
       volumes:
+        # R-037: only the admin-password key; the service bind password stays
+        # in the Secret and is not mounted into this pod.
+        - name: admin-password
+          secret:
+            secretName: naslos-openldap
+            defaultMode: 0440
+            items:
+              - key: admin-password
+                path: admin-password
         - name: certs
           secret:
             secretName: naslos-openldap-tls

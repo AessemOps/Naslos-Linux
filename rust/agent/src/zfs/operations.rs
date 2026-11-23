@@ -30,6 +30,62 @@ pub fn default_options() -> std::collections::HashMap<String, String> {
     .collect()
 }
 
+/// Pool-create options. Encryption properties are create-only in ZFS and a
+/// `zfs set encryption=…` after `zpool create` always fails, leaving a pool
+/// without the requested encryption; they are refused before `wipefs`.
+pub fn validate_pool_options(options: &HashMap<String, String>) -> ZfsResult<()> {
+    for key in options.keys() {
+        if matches!(
+            key.as_str(),
+            "encryption" | "keyformat" | "keylocation" | "encryptionroot"
+        ) {
+            return Err(invalid!(
+                "{key} is a create-only encryption property; pool creation cannot enable it (create the pool, then create encrypted child datasets)"
+            ));
+        }
+        if matches!(key.as_str(), "volsize" | "volblocksize" | "volmode") {
+            return Err(invalid!(
+                "{key} is a zvol property and cannot be set on a pool"
+            ));
+        }
+    }
+    super::dataset::validate_dataset_options(options)
+}
+
+/// The outcome of a pool create. `partial` means `zpool create` succeeded but
+/// a follow-up step failed; the pool exists and the repair list names the
+/// property that still needs to be applied.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct PoolCreateReport {
+    pub created: bool,
+    pub partial: bool,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub repair: Vec<String>,
+}
+
+/// The mountpoint an imported dataset must have. The pool root lives at
+/// `/var/mnt/<pool>`; every child repeats its path below the pool.
+pub fn imported_mountpoint(pool: &str, dataset: &str) -> Option<String> {
+    if dataset == pool {
+        return Some(format!("/var/mnt/{pool}"));
+    }
+    let relative = dataset.strip_prefix(&format!("{pool}/"))?;
+    if relative.is_empty() {
+        return None;
+    }
+    Some(format!("/var/mnt/{pool}/{relative}"))
+}
+
+fn record_pool_failure(report: &mut PoolCreateReport, step: &str, err: String, repair: String) {
+    report.partial = true;
+    report
+        .warnings
+        .push(format!("the pool was created but {step} failed: {err}"));
+    report.repair.push(repair);
+}
+
 impl ZfsClient {
     /// All pools with their member disks. A pool whose status cannot be read
     /// is still listed, without its disks (display path only — use
@@ -168,10 +224,16 @@ impl ZfsClient {
     }
 
     /// Create a pool with best-practice options.
-    pub async fn create_pool(&self, cfg: &PoolConfig) -> ZfsResult<()> {
+    pub async fn create_pool(&self, cfg: &PoolConfig) -> ZfsResult<PoolCreateReport> {
         validate_pool_name(&cfg.name)?;
         let topology = normalize_vdev_topology(&cfg.topology)?;
-        super::dataset::validate_dataset_options(&cfg.options)?;
+        validate_pool_options(&cfg.options)?;
+        // Build and validate the exact property set that will be applied after
+        // create, before any disk is wiped.
+        let mut planned_options = default_options();
+        for (key, value) in &cfg.options {
+            planned_options.insert(key.clone(), value.trim().to_string());
+        }
         if cfg.disks.is_empty() {
             return Err(ZfsError::Validation("at least one disk is required".into()));
         }
@@ -274,38 +336,43 @@ impl ZfsClient {
         }
 
         // Writable mountpoint (Talos root is read-only).
+        let mut report = PoolCreateReport {
+            created: true,
+            ..Default::default()
+        };
         let mountpoint = format!("/var/mnt/{}", cfg.name);
         let mp_arg = format!("mountpoint={mountpoint}");
         if let Err(e) = self
             .host_exec(ZFS_BIN, &args(&["set", &mp_arg, &cfg.name]))
             .await
         {
-            return Err(ZfsError::Other(format!(
-                "setting mountpoint: {}",
-                e.message
-            )));
+            record_pool_failure(
+                &mut report,
+                "setting its mountpoint",
+                format!("{}: {}", e.output.trim(), e.message),
+                format!("zfs set {mp_arg} {}", cfg.name),
+            );
         }
 
         // Apply dataset options (defaults merged with the request), sorted so the
         // command sequence is deterministic.
-        let mut opts = default_options();
-        for (k, v) in &cfg.options {
-            // Validate and emit the same trimmed value; validation trims, so
-            // passing the raw string made zfs reject `" 100G "`.
-            opts.insert(k.clone(), v.trim().to_string());
-        }
-        let mut keys: Vec<&String> = opts.keys().collect();
+        let mut keys: Vec<&String> = planned_options.keys().collect();
         keys.sort();
         for k in keys {
             if k == "mountpoint" {
                 continue;
             }
-            let set_arg = format!("{}={}", k, opts[k]);
+            let set_arg = format!("{}={}", k, planned_options[k]);
             if let Err(e) = self
                 .host_exec(ZFS_BIN, &args(&["set", &set_arg, &cfg.name]))
                 .await
             {
-                return Err(ZfsError::Other(format!("setting {}: {}", k, e.message)));
+                record_pool_failure(
+                    &mut report,
+                    &format!("setting {k}"),
+                    format!("{}: {}", e.output.trim(), e.message),
+                    format!("zfs set {set_arg} {}", cfg.name),
+                );
             }
         }
 
@@ -324,10 +391,15 @@ impl ZfsClient {
             )
             .await
         {
-            return Err(ZfsError::Other(format!(
-                "disabling SELinux on pool: {}",
-                e.message
-            )));
+            record_pool_failure(
+                &mut report,
+                "disabling SELinux contexts",
+                format!("{}: {}", e.output.trim(), e.message),
+                format!(
+                    "zfs set context=none fscontext=none defcontext=none rootcontext=none {}",
+                    cfg.name
+                ),
+            );
         }
 
         if !cache.is_empty() {
@@ -335,14 +407,16 @@ impl ZfsClient {
                 .host_exec(ZPOOL_BIN, &args(&["add", &cfg.name, "cache", &cache]))
                 .await
             {
-                return Err(ZfsError::Other(format!(
-                    "adding cache device {}: {}",
-                    cache, e.message
-                )));
+                record_pool_failure(
+                    &mut report,
+                    &format!("adding cache device {cache}"),
+                    format!("{}: {}", e.output.trim(), e.message),
+                    format!("zpool add {} cache {cache}", cfg.name),
+                );
             }
         }
 
-        Ok(())
+        Ok(report)
     }
 
     /// Destroy a pool.
@@ -469,20 +543,123 @@ impl ZfsClient {
     }
 
     /// Import an existing pool, or every available pool when `name` is empty.
-    pub async fn import_pool(&self, name: &str) -> ZfsResult<()> {
-        let argv: Vec<String> = if name.is_empty() {
-            args(&["import", "-f"])
-        } else {
+    ///
+    /// Import never mounts (`-N`): the stored mountpoints are enumerated,
+    /// remapped to `/var/mnt/<pool>/…`, and only then mounted deliberately.
+    /// `-f` is refused unless the caller explicitly confirmed it; an automatic
+    /// force-import could take over a pool another node still serves.
+    pub async fn import_pool(&self, name: &str, force: bool) -> ZfsResult<()> {
+        if !name.is_empty() {
             validate_pool_name(name)?;
-            args(&["import", "-f", name])
-        };
-        match self.host_exec(ZPOOL_BIN, &argv).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(ZfsError::Other(format!(
+        }
+        let before: std::collections::HashSet<String> = self
+            .pool_rows()
+            .await?
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+
+        let mut argv: Vec<String> = args(&["import", "-N"]);
+        if force {
+            argv.push("-f".into());
+        }
+        if !name.is_empty() {
+            argv.push(name.to_string());
+        }
+        if let Err(e) = self.host_exec(ZPOOL_BIN, &argv).await {
+            return Err(ZfsError::Other(format!(
                 "importing pool: {}: {}",
                 e.output, e.message
-            ))),
+            )));
         }
+
+        let imported: Vec<String> = self
+            .pool_rows()
+            .await?
+            .into_iter()
+            .map(|p| p.name)
+            .filter(|pool| !before.contains(pool))
+            .collect();
+        for pool in imported {
+            // A mountpoint failure must not fail the import: the pool exists
+            // and serving it deliberately is the next step.
+            if let Err(e) = self.reconcile_import_mountpoints(&pool).await {
+                tracing::warn!("imported pool {} but could not mount it safely: {e}", pool);
+            }
+        }
+        Ok(())
+    }
+
+    /// Enumerate a newly imported pool's stored mountpoints, remap anything
+    /// outside `/var/mnt/<pool>`, then mount each dataset deliberately.
+    async fn reconcile_import_mountpoints(&self, pool: &str) -> ZfsResult<()> {
+        let out = match self
+            .host_exec(
+                ZFS_BIN,
+                &args(&["list", "-H", "-o", "name,mountpoint,canmount", "-r", pool]),
+            )
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => {
+                return Err(ZfsError::Other(format!(
+                    "listing mountpoints of imported pool {pool}: {}: {}",
+                    e.output.trim(),
+                    e.message
+                )))
+            }
+        };
+        for line in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let fields: Vec<&str> = line.split('\t').collect();
+            if fields.len() < 3 {
+                continue;
+            }
+            let (dataset, mountpoint, canmount) = (fields[0], fields[1], fields[2]);
+            let Some(expected) = imported_mountpoint(pool, dataset) else {
+                return Err(crate::invalid!(
+                    "imported dataset {dataset:?} is outside pool {pool}; refusing to mount it"
+                ));
+            };
+            if mountpoint != expected {
+                let prop = format!("mountpoint={expected}");
+                if let Err(e) = self
+                    .host_exec(ZFS_BIN, &args(&["set", &prop, dataset]))
+                    .await
+                {
+                    return Err(ZfsError::Other(format!(
+                        "remapping {dataset} from {mountpoint:?} to {expected}: {}: {}",
+                        e.output.trim(),
+                        e.message
+                    )));
+                }
+                tracing::warn!(
+                    "remapped imported dataset {} mountpoint {:?} -> {:?}",
+                    dataset,
+                    mountpoint,
+                    expected
+                );
+            }
+            if canmount == "off" {
+                continue;
+            }
+            match self.host_exec(ZFS_BIN, &args(&["mount", dataset])).await {
+                Ok(_) => {}
+                Err(e) => {
+                    let lower = e.output.to_ascii_lowercase();
+                    if !lower.contains("already mounted")
+                        && !lower.contains("filesystem is already mounted")
+                    {
+                        tracing::warn!(
+                            "imported dataset {} was not mounted at {}: {}",
+                            dataset,
+                            expected,
+                            e.output.trim()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Export a pool.

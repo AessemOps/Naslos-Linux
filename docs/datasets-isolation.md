@@ -271,12 +271,14 @@ copy. Rolling back is the reverse `zfs set mountpoint` plus the previous values.
 
 ## 6. Interim guardrails already in place
 
-- The chart rejects an obviously unsafe `apps.datasets.hostPath` (`/`, `/var`,
-  `/etc`, `/home`, `/root`; see `apps-datasets.yaml`) and refuses to render when
-  `buddy.receiveHostPath` is inside the exposed root unless
-  `apps.datasets.allowBuddyStore=true` is set explicitly. The VM overlay sets
-  that flag with a comment until the Buddy dataset is remounted; the audit also
-  prints a notice for that profile.
+- The production VM overlay sets `apps.datasets.enabled=false`, so the shared
+  `naslos-datasets` PV/PVC is not rendered at all: legacy apps cannot mount
+  `/var/mnt`, and VM datasets, the Buddy store and every sibling are outside
+  any app-visible volume. The installer overlay does the same. Installs that
+  deliberately opt into the legacy claim still get the chart guards: an
+  obviously unsafe `apps.datasets.hostPath` (`/`, `/var`, `/etc`, `/home`,
+  `/root`) is rejected, and a `buddy.receiveHostPath` inside the exposed root
+  requires `apps.datasets.allowBuddyStore=true` explicitly.
 - Helm cannot create Traefik/cert-manager/RBAC objects, and the app Jobs/UI
   require explicit install confirmation (including a separate privileged
   confirmation).
@@ -290,8 +292,10 @@ New installs are isolated: a chart in `naslos-app-*` cannot mount another app's
 claim (different namespaces) and only sees the datasets attached to it. A
 shared dataset is intentionally visible to every app it is attached to.
 
-Legacy records in `naslos-apps`/`naslos-apps-priv` still see the shared
-`/var/mnt` PVC (and the encrypted Buddy store on the VM) until they are
-reinstalled into an isolated namespace and the shared PV/PVC is removed. This
-residual is recorded as **D3/F1 open for legacy apps** in
-`docs/AUDIT-2026-10-24.md`.
+Records in `naslos-apps`/`naslos-apps-priv` can only see `/var/mnt` on an
+install that explicitly keeps `apps.datasets.enabled=true`; the production and
+installer overlays disable it (R-012), so the encrypted Buddy store and VM
+datasets are not app-visible there. Reinstalling a legacy record into an
+isolated namespace is still required to attach datasets per claim. The
+remaining D3/F1 residual is limited to opt-in shared-root installs, as recorded
+in `docs/AUDIT-2026-10-24.md`.

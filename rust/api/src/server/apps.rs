@@ -1,7 +1,7 @@
 //! Installed-app handlers and the async job endpoints (port of
 //! `server/apps.go` app part and `server/app_jobs.go`).
 
-use crate::apps::{ExposurePatch, InstallRequest};
+use crate::apps::{ChartPin, ExposurePatch, InstallRequest};
 use crate::json;
 use crate::state::AppState;
 use axum::body::Body;
@@ -65,6 +65,12 @@ struct InstallBody {
     pool: String,
     #[serde(default)]
     env: Vec<crate::app_env::EnvVar>,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    channel: String,
+    #[serde(default, rename = "chartVersion")]
+    chart_version: String,
 }
 
 /// A privileged catalog entry moves the app into the PSA-privileged namespace,
@@ -90,8 +96,17 @@ pub async fn apps_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
     if !req.confirmed {
         return bad_request("install must be explicitly confirmed");
     }
+    let pin = ChartPin {
+        source: req.source.clone(),
+        channel: req.channel.clone(),
+        chart_version: req.chart_version.clone(),
+    };
     let privileged = match state.catalog.load() {
-        Some(catalog) => match catalog.get(&req.name) {
+        Some(catalog) => match if pin.source.is_empty() {
+            catalog.get(&req.name)
+        } else {
+            catalog.get_from_source(&req.name, &pin.source, &pin.channel)
+        } {
             Ok(app) => {
                 if !req.env.is_empty()
                     && !app
@@ -142,6 +157,7 @@ pub async fn apps_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
         pool: req.pool.clone(),
         privileged_confirmed: req.privileged_confirmed,
         env: req.env.clone(),
+        pin,
     };
     match state.app_jobs.enqueue(
         JobKind::Install,
@@ -151,6 +167,7 @@ pub async fn apps_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
         None,
         None,
         None,
+        ChartPin::default(),
         state.app_manager.clone(),
     ) {
         Ok(job) => accepted(&job),
@@ -351,6 +368,15 @@ struct UpgradeBody {
     /// Omitted keeps the stored environment; `[]` removes every variable.
     #[serde(default)]
     env: Option<Vec<crate::app_env::EnvVar>>,
+    /// Omitted keeps the installed source/channel and takes the current chart
+    /// version from that same source. A different source is an explicit
+    /// migration (R-051/R-065).
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    channel: String,
+    #[serde(default, rename = "chartVersion")]
+    chart_version: String,
 }
 
 pub async fn app_detail_put(
@@ -368,6 +394,11 @@ pub async fn app_detail_put(
     if let Err(e) = manager.get(&name) {
         return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e }));
     }
+    let pin = ChartPin {
+        source: req.source,
+        channel: req.channel,
+        chart_version: req.chart_version,
+    };
     let job = match state.app_jobs.enqueue(
         JobKind::Upgrade,
         &name,
@@ -376,6 +407,7 @@ pub async fn app_detail_put(
         req.values,
         req.datasets,
         req.env,
+        pin,
         Some(manager),
     ) {
         Ok(job) => job,
@@ -402,6 +434,7 @@ pub async fn app_detail_delete(
         None,
         None,
         None,
+        ChartPin::default(),
         Some(manager),
     ) {
         Ok(job) => job,
@@ -507,6 +540,13 @@ pub async fn app_exposure_put(
     Path(name): Path<String>,
     body: Body,
 ) -> Response {
+    // Exposure writes must queue behind a running install/upgrade/uninstall of
+    // the same app; otherwise a read-modify-write loses the job's record
+    // update (R-050). Checked before the manager lookup so the conflict is
+    // observable even during shutdown.
+    if let Some(conflict) = state.app_jobs.conflicting(&name) {
+        return conflict_response(&conflict);
+    }
     let Some(manager) = state.app_manager.clone() else {
         return app_unavailable();
     };
@@ -617,8 +657,26 @@ fn conflict_response(conflict: &super::app_jobs::JobPublic) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{pod_summary, require_privileged_confirmation};
+    use super::{app_exposure_put, pod_summary, require_privileged_confirmation};
+    use crate::state::AppState;
+    use axum::body::Body;
+    use axum::extract::{Path, State};
+    use axum::http::StatusCode;
     use serde_json::json;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn exposure_updates_are_refused_while_a_lifecycle_job_runs() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        state.app_jobs.add_running_for_test("demo");
+        let response = app_exposure_put(
+            State(state),
+            Path("demo".to_string()),
+            Body::from(r#"{ "exposure": { "tls": true } }"#),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
 
     #[test]
     fn privileged_installs_need_a_second_confirmation() {

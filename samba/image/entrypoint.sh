@@ -269,7 +269,9 @@ start_discovery
     [ "$CUR_HASH" = "$CONF_HASH" ] && continue
     CONF_HASH="$CUR_HASH"
 
-    if testparm -s "$CONF" >/dev/null 2>&1; then
+    if [ ! -s "$CONF" ]; then
+      log "ERROR: new configuration is empty - keeping the running configuration"
+    elif testparm -s "$CONF" >/dev/null 2>&1; then
       log "configuration changed - reloading smbd"
       smbcontrol_out="$(smbcontrol smbd reload-config 2>&1)" || true
       [ -n "$smbcontrol_out" ] && log "$smbcontrol_out"

@@ -250,6 +250,105 @@ impl Pending {
             started: Instant::now(),
         }
     }
+
+    /// A long-lived session (WebSocket terminal/VNC, Buddy receive stream).
+    /// `kind` becomes `session.<kind>`; the target is the resolved resource.
+    pub fn session(
+        user: &UserInfo,
+        kind: &str,
+        method: &Method,
+        route: &str,
+        target: &str,
+    ) -> Self {
+        Self {
+            request_id: random_hex(16),
+            actor: Actor {
+                kind: "user".to_string(),
+                id: None,
+                name: user.username.clone(),
+                role: Some(
+                    crate::rbac::role_for_groups(&user.groups)
+                        .as_str()
+                        .to_string(),
+                ),
+                groups: user.groups.clone(),
+                auth: "authelia".to_string(),
+            },
+            source: Source {
+                method: method.as_str().to_string(),
+                path: route.to_string(),
+                route: route.to_string(),
+                peer: None,
+                client: None,
+                user_agent: None,
+            },
+            action: Action {
+                name: format!("session.{kind}"),
+                target: Some(target.to_string()),
+                phase: String::new(),
+                params: json!({}),
+            },
+            correlation: Correlation {
+                mcp_call_id: None,
+                job_id: None,
+                operation_id: None,
+            },
+            started: Instant::now(),
+        }
+    }
+}
+
+/// Audit handle for a long-lived session. Shared helper for the terminal/VNC
+/// WebSocket handlers (R-027-core) and the Buddy receiver (WP-06).
+///
+/// `SessionAudit::begin` writes the durable begin record; `Err` means the
+/// caller must refuse the upgrade with 503. `finish` writes the end record and
+/// degrades the log (with one alert) if that write fails, because the session
+/// already happened.
+pub struct SessionAudit {
+    pending: Pending,
+}
+
+impl SessionAudit {
+    pub async fn begin(state: &Arc<AppState>, pending: Pending) -> Result<Self, String> {
+        let pending = state.audit.begin_async(pending).await.inspect_err(|e| {
+            if state.audit.mark_degraded(e) {
+                spawn_degraded_alert(state.clone(), e.clone());
+            }
+        })?;
+        Ok(Self { pending })
+    }
+
+    pub async fn finish(&self, state: &Arc<AppState>, status: u16) {
+        if let Err(e) = state.audit.finish_async(&self.pending, status).await {
+            if state.audit.mark_degraded(&e) {
+                spawn_degraded_alert(state.clone(), e);
+            }
+        }
+    }
+}
+
+/// A role denial on a safe method is audited here because the audit
+/// middleware only opens a begin/end pair for unsafe methods (R-027-core).
+/// One end-only record carries the authenticated actor and the route
+/// template, never the concrete path.
+pub async fn record_role_denied(
+    state: &Arc<AppState>,
+    user: &UserInfo,
+    method: &Method,
+    path: &str,
+) {
+    let template = crate::rbac::route_template(method, path);
+    let pending = Pending::user(user, method, path, template, None, None, random_hex(16));
+    if let Err(e) = state
+        .audit
+        .record_refusal_async(&pending, "denied", "role")
+        .await
+    {
+        if state.audit.mark_degraded(&e) {
+            spawn_degraded_alert(state.clone(), e);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +462,9 @@ struct AuditState {
     fail_next_append: bool,
     #[cfg(test)]
     fail_next_end: bool,
+    /// Test-only fsync stand-in: a deliberate delay inside the append path.
+    #[cfg(test)]
+    append_delay: Option<std::time::Duration>,
 }
 
 struct Inner {
@@ -435,6 +537,8 @@ impl AuditLog {
             fail_next_append: false,
             #[cfg(test)]
             fail_next_end: false,
+            #[cfg(test)]
+            append_delay: None,
         };
 
         if !report.ok {
@@ -554,6 +658,11 @@ impl AuditLog {
         self.inner.state.lock().unwrap().fail_next_end = true;
     }
 
+    #[cfg(test)]
+    pub fn set_append_delay(&self, delay: Option<std::time::Duration>) {
+        self.inner.state.lock().unwrap().append_delay = delay;
+    }
+
     /// Mark the chain degraded. Returns `true` only for the first transition,
     /// so callers can raise exactly one alert.
     pub fn mark_degraded(&self, reason: &str) -> bool {
@@ -618,6 +727,48 @@ impl AuditLog {
             duration_ms: Some(pending.started.elapsed().as_millis().min(u64::MAX as u128) as u64),
         };
         self.append(pending, "end", &outcome)
+    }
+
+    /// Async variants used by request paths. The durable append (fsync
+    /// included) runs on the blocking pool so a slow disk never stalls the
+    /// Tokio workers and the `std::sync::Mutex` is never held across an
+    /// `.await` (R-062).
+    pub async fn begin_async(&self, pending: Pending) -> Result<Pending, String> {
+        let log = self.clone();
+        tokio::task::spawn_blocking(move || log.begin(pending))
+            .await
+            .map_err(|e| format!("audit begin task failed: {e}"))?
+    }
+
+    pub async fn finish_async(&self, pending: &Pending, status: u16) -> Result<(), String> {
+        let log = self.clone();
+        let pending = pending.clone();
+        tokio::task::spawn_blocking(move || log.finish(&pending, status))
+            .await
+            .map_err(|e| format!("audit finish task failed: {e}"))?
+    }
+
+    pub async fn record_once_async(&self, pending: &Pending, status: u16) -> Result<(), String> {
+        let log = self.clone();
+        let pending = pending.clone();
+        tokio::task::spawn_blocking(move || log.record_once(&pending, status))
+            .await
+            .map_err(|e| format!("audit record task failed: {e}"))?
+    }
+
+    pub async fn record_refusal_async(
+        &self,
+        pending: &Pending,
+        state: &str,
+        error_code: &str,
+    ) -> Result<(), String> {
+        let log = self.clone();
+        let pending = pending.clone();
+        let state = state.to_string();
+        let error_code = error_code.to_string();
+        tokio::task::spawn_blocking(move || log.record_refusal(&pending, &state, &error_code))
+            .await
+            .map_err(|e| format!("audit refusal task failed: {e}"))?
     }
 
     fn append(&self, pending: &Pending, phase: &str, outcome: &Outcome) -> Result<(), String> {
@@ -783,6 +934,10 @@ impl AuditLog {
             state.fail_next_append = false;
             return Err("injected audit append failure".to_string());
         }
+        #[cfg(test)]
+        if let Some(delay) = state.append_delay {
+            std::thread::sleep(delay);
+        }
         let seq = state.next_seq;
         let now = Utc::now();
         let value = record_value(pending, seq, &state.prev_hash, phase, outcome, now);
@@ -888,7 +1043,33 @@ impl AuditLog {
         Ok(out)
     }
 
+    /// Re-verify the retained chain. On failure the log becomes degraded
+    /// **before** this returns, so a caller can never observe a failed report
+    /// while mutations keep flowing (R-026).
     pub fn verify(&self) -> VerifyReport {
+        self.verify_with_transition().0
+    }
+
+    /// Like [`verify`](Self::verify), plus whether this call caused the
+    /// transition to degraded (the caller alerts exactly once).
+    pub fn verify_with_transition(&self) -> (VerifyReport, bool) {
+        let report = self.verify_locked();
+        let mut transitioned = false;
+        if !report.ok {
+            let reason = if report.errors.is_empty() {
+                "audit chain verification failed".to_string()
+            } else {
+                report.errors.join("; ")
+            };
+            transitioned = self.mark_degraded(&reason);
+            if transitioned {
+                tracing::error!("audit chain verification failed: {reason}");
+            }
+        }
+        (report, transitioned)
+    }
+
+    fn verify_locked(&self) -> VerifyReport {
         let _state = self.inner.state.lock().unwrap();
         let paths = match segment_paths(&self.inner.segments_dir) {
             Ok(paths) => paths,
@@ -1502,7 +1683,7 @@ fn should_audit(method: &Method, path: &str) -> bool {
     if crate::rbac::is_unsafe(method) {
         return true;
     }
-    path == "/api/audit" || path.starts_with("/api/audit/")
+    path == "/api/audit" || path.starts_with("/api/audit/") || path == "/api/system/config/export"
 }
 
 /// The request id attached by [`request_id_middleware`]. It is correlation
@@ -1589,10 +1770,14 @@ pub async fn middleware(State(state): State<Arc<AppState>>, req: Request, next: 
 
     let response = match pending {
         None => next.run(req).await,
-        Some(pending) => match state.audit.begin(pending) {
+        Some(pending) => match state.audit.begin_async(pending).await {
             Ok(pending) => {
                 let response = next.run(req).await;
-                if let Err(e) = state.audit.finish(&pending, response.status().as_u16()) {
+                if let Err(e) = state
+                    .audit
+                    .finish_async(&pending, response.status().as_u16())
+                    .await
+                {
                     if state.audit.mark_degraded(&e) {
                         spawn_degraded_alert(state.clone(), e.clone());
                     }
@@ -1798,11 +1983,20 @@ pub async fn list(State(state): State<Arc<AppState>>, Query(query): Query<AuditQ
 /// `GET /api/audit/verify` — re-verify the retained chain on demand.
 pub async fn verify(State(state): State<Arc<AppState>>) -> Response {
     let audit = state.audit.clone();
-    match tokio::task::spawn_blocking(move || audit.verify()).await {
-        Ok(report) => crate::json(
-            StatusCode::OK,
-            serde_json::to_value(report).unwrap_or_default(),
-        ),
+    match tokio::task::spawn_blocking(move || audit.verify_with_transition()).await {
+        Ok((report, transitioned)) => {
+            if transitioned {
+                let reason = state
+                    .audit
+                    .degraded_reason()
+                    .unwrap_or_else(|| "audit chain verification failed".to_string());
+                spawn_degraded_alert(state.clone(), reason);
+            }
+            crate::json(
+                StatusCode::OK,
+                serde_json::to_value(report).unwrap_or_default(),
+            )
+        }
         Err(e) => crate::json(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("audit verify task failed: {e}") }),
@@ -2163,6 +2357,78 @@ mod tests {
         assert!(err.contains("degraded"), "{err}");
         assert_eq!(log.status(), "degraded");
         assert!(log.read_records().unwrap().is_empty());
+    }
+
+    fn pending_post(request_id: &str) -> Pending {
+        let user = user("boss", &["naslos_admins"]);
+        Pending::user(
+            &user,
+            &Method::POST,
+            "/api/shares",
+            "/api/shares",
+            Some("127.0.0.1".to_string()),
+            None,
+            request_id.to_string(),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn durable_appends_do_not_block_the_async_runtime() {
+        let log = AuditLog::for_test();
+        // Stand-in for a slow fsync inside the append path.
+        log.set_append_delay(Some(std::time::Duration::from_millis(300)));
+        let begin = {
+            let log = log.clone();
+            tokio::spawn(async move { log.begin_async(pending_post("slow-begin")).await })
+        };
+        // On a one-worker runtime this timer only runs if the append is on the
+        // blocking pool (R-062), not on the worker.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !begin.is_finished(),
+            "begin_async must run its fsync off the runtime worker"
+        );
+        let pending = begin.await.expect("join").expect("begin");
+        log.finish_async(&pending, 201).await.expect("finish");
+        assert_eq!(log.read_records().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn tampering_after_startup_degrades_and_refuses_mutations() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = AuditLog::open(dir.path().to_path_buf(), AuditConfig::for_test()).unwrap();
+        let pending = begin_post(&log, "req-good");
+        log.finish(&pending, 201).unwrap();
+        assert_eq!(log.status(), "ok");
+
+        // Mutate a sealed record on disk after the process trusted the chain.
+        let mut tampered = false;
+        for entry in std::fs::read_dir(&log.inner.segments_dir)
+            .unwrap()
+            .flatten()
+        {
+            let path = entry.path();
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            if let Some(pos) = bytes.windows(4).position(|w| w == b"boss") {
+                let mut changed = bytes.clone();
+                changed[pos..pos + 4].copy_from_slice(b"bosz");
+                std::fs::write(&path, changed).unwrap();
+                tampered = true;
+                break;
+            }
+        }
+        assert!(tampered, "the fixture segment must contain the actor name");
+
+        let report = log.verify();
+        assert!(!report.ok, "verify must fail on the tampered chain");
+        assert_eq!(log.status(), "degraded", "verify must mark degraded");
+        let err = log
+            .begin(pending_post("req-after-tamper"))
+            .err()
+            .expect("mutations must be refused after tampering");
+        assert!(err.contains("degraded"), "{err}");
     }
 
     #[test]

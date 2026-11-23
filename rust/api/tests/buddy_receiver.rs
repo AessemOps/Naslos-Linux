@@ -52,9 +52,20 @@ async fn send(state: Arc<AppState>, req: Request<Body>) -> (StatusCode, Value) {
     )
 }
 
-fn signed(id: &naslos_api::buddy::Identity, method: &str, uri: &str, body: &[u8]) -> Request<Body> {
+fn signed(
+    state: &Arc<AppState>,
+    id: &naslos_api::buddy::Identity,
+    method: &str,
+    uri: &str,
+    body: &[u8],
+) -> Request<Body> {
+    let audience = &state
+        .buddy
+        .as_ref()
+        .expect("the test mounts a receiver")
+        .audience;
     let digest = body_digest(body);
-    let auth = sign_request_for(id, method, uri, &digest, RECEIVER, Utc::now()).unwrap();
+    let auth = sign_request_for(id, method, uri, &digest, audience, Utc::now()).unwrap();
     let mut b = Request::builder().method(method).uri(uri);
     for (k, v) in auth_headers(&auth) {
         b = b.header(k, v);
@@ -90,7 +101,7 @@ async fn enroll_status_chunk_and_manifest() {
     // Status is authenticated and reports the key.
     let (status, body) = send(
         state.clone(),
-        signed(&id, "GET", "/api/buddy/v1/status", b""),
+        signed(&state, &id, "GET", "/api/buddy/v1/status", b""),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -105,7 +116,11 @@ async fn enroll_status_chunk_and_manifest() {
     let plain = b"hello buddy receiver";
     let (sealed, digest) = seal_chunk(&dek, &prefix, 0, source, chain, 0, plain).unwrap();
     let chunk_uri = format!("/api/buddy/v1/chunks/{source}?chain={chain}&index=0");
-    let (status, body) = send(state.clone(), signed(&id, "PUT", &chunk_uri, &sealed)).await;
+    let (status, body) = send(
+        state.clone(),
+        signed(&state, &id, "PUT", &chunk_uri, &sealed),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 
     // Publish a signed manifest covering it.
@@ -139,6 +154,7 @@ async fn enroll_status_chunk_and_manifest() {
     let (status, resp) = send(
         state.clone(),
         signed(
+            &state,
             &id,
             "PUT",
             &format!("/api/buddy/v1/manifest/{source}"),
@@ -150,11 +166,14 @@ async fn enroll_status_chunk_and_manifest() {
     assert_eq!(resp["chain"], chain);
 
     // The backup is now visible.
-    let (status, resp) = send(
-        state,
-        signed(&id, "GET", "/api/buddy/v1/manifest/naslos-test/data", b""),
-    )
-    .await;
+    let req = signed(
+        &state,
+        &id,
+        "GET",
+        "/api/buddy/v1/manifest/naslos-test/data",
+        b"",
+    );
+    let (status, resp) = send(state, req).await;
     assert_eq!(status, StatusCode::OK, "{resp}");
     assert_eq!(resp["chain"], chain);
 }

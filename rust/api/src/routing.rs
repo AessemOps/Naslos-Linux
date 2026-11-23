@@ -1,6 +1,8 @@
 //! Traefik exposure layer for installed apps (port of `api/internal/routing`).
-//! One IngressRoute per app plus the middlewares it references, in the apps
-//! namespace, applied through the kube adapter.
+//! One IngressRoute per app plus the middlewares it references, rendered in the
+//! platform apps namespace (next to the domain TLS Secrets) and targeting the
+//! app Service in its own namespace. The per-app Internet-egress NetworkPolicy
+//! stays in the app namespace.
 
 use std::sync::Arc;
 
@@ -8,6 +10,12 @@ use crate::apps::{DiscoveredService, Record, Router};
 
 pub const FORWARD_AUTH_NAME: &str = "naslos-app-forwardauth-authelia";
 pub const SECURITY_HEADERS_NAME: &str = "naslos-app-security-headers";
+/// Deletes the parent-domain Authelia session cookie before the app backend
+/// sees it (R-003). The plugin is shipped by the chart as a Traefik local
+/// plugin; the middleware is rendered next to the route.
+pub const STRIP_AUTH_COOKIE_NAME: &str = "naslos-app-strip-authelia-cookie";
+/// Key of the chart-shipped Traefik local plugin used by the middleware.
+pub const STRIP_AUTH_COOKIE_PLUGIN: &str = "naslos-cookie-strip";
 pub const PORTAL_EXTERNAL_SERVICE_NAME: &str = "naslos-authelia-portal";
 pub const PORTAL_LABEL_KEY: &str = "naslos.local/sso-portal";
 
@@ -15,7 +23,13 @@ pub const PORTAL_LABEL_KEY: &str = "naslos.local/sso-portal";
 #[derive(Debug, Clone, Default)]
 pub struct Spec {
     pub name: String,
+    /// Namespace the app's workloads run in (the Service target).
     pub namespace: String,
+    /// Namespace the API's IngressRoute and middlewares are written to. It is
+    /// the platform apps namespace, where the domain TLS Secrets live, so the
+    /// wildcard private key is never copied into an app namespace (R-002).
+    /// Empty means "same as `namespace`".
+    pub route_namespace: String,
     pub subdomain: String,
     pub base_domain: String,
     pub tls: bool,
@@ -43,6 +57,15 @@ impl Spec {
             String::new()
         } else {
             format!("{}.{}", self.subdomain, self.base_domain)
+        }
+    }
+
+    /// The namespace that holds the route and its middlewares.
+    pub fn route_namespace(&self) -> &str {
+        if self.route_namespace.is_empty() {
+            &self.namespace
+        } else {
+            &self.route_namespace
         }
     }
 }
@@ -104,35 +127,50 @@ pub fn render(spec: &Spec) -> Result<Vec<serde_json::Value>, String> {
         ));
     }
 
+    let route_ns = spec.route_namespace().to_string();
     let security = serde_json::json!({
-        "name": SECURITY_HEADERS_NAME, "namespace": spec.namespace
+        "name": SECURITY_HEADERS_NAME, "namespace": route_ns
     });
     let allowlist = serde_json::json!({
-        "name": format!("{}-ipallowlist", spec.name), "namespace": spec.namespace
+        "name": format!("{}-ipallowlist", spec.name), "namespace": route_ns
+    });
+    let strip_cookie = serde_json::json!({
+        "name": STRIP_AUTH_COOKIE_NAME, "namespace": route_ns
     });
 
     let mut public_middlewares = vec![security.clone()];
     if spec.auth {
         public_middlewares.push(serde_json::json!({
-            "name": FORWARD_AUTH_NAME, "namespace": spec.namespace
+            "name": FORWARD_AUTH_NAME, "namespace": route_ns
         }));
     }
     if spec.local_only {
         public_middlewares.push(allowlist.clone());
     }
+    // Always last: forwardAuth must still see the session cookie, and the app
+    // backend must never see it (R-003).
+    public_middlewares.push(strip_cookie.clone());
 
     let entry_point = if spec.tls { "websecure" } else { "web" };
-    let mut objects = vec![security_headers_middleware(&spec.namespace)];
+    let mut objects = vec![security_headers_middleware(spec)];
     if forward_auth {
         objects.push(forward_auth_middleware(spec));
     }
     if spec.local_only {
         objects.push(ip_allowlist_middleware(spec));
     }
+    objects.push(strip_cookie_middleware(spec));
 
-    let service = serde_json::json!({
+    let mut service = serde_json::json!({
         "name": spec.service, "port": spec.port, "scheme": scheme
     });
+    if spec.namespace != route_ns {
+        // The route lives in the platform apps namespace, where the domain TLS
+        // Secret was issued; Traefik proxies to the app's Service in its
+        // isolated namespace (allowCrossNamespace). The wildcard private key is
+        // never written into the app namespace (R-002).
+        service["namespace"] = serde_json::json!(spec.namespace);
+    }
     let mut routes = Vec::new();
 
     if !spec.auth && !spec.protected_paths.is_empty() {
@@ -144,11 +182,12 @@ pub fn render(spec: &Spec) -> Result<Vec<serde_json::Value>, String> {
             .join(" || ");
         let mut protected_middlewares = vec![
             security,
-            serde_json::json!({ "name": FORWARD_AUTH_NAME, "namespace": spec.namespace }),
+            serde_json::json!({ "name": FORWARD_AUTH_NAME, "namespace": route_ns }),
         ];
         if spec.local_only {
             protected_middlewares.push(allowlist);
         }
+        protected_middlewares.push(strip_cookie);
         routes.push(serde_json::json!({
             "match": format!("Host(`{}`) && ({paths})", spec.host()),
             "kind": "Rule",
@@ -172,13 +211,19 @@ pub fn render(spec: &Spec) -> Result<Vec<serde_json::Value>, String> {
         "entryPoints": [entry_point],
         "routes": routes,
     });
-    if spec.tls && !spec.tls_secret.is_empty() {
-        route_spec["tls"] = serde_json::json!({ "secretName": spec.tls_secret });
+    if spec.tls {
+        // With no domain-specific Secret the route still requests TLS and
+        // Traefik serves its default certificate; nothing secret is copied.
+        if spec.tls_secret.is_empty() {
+            route_spec["tls"] = serde_json::json!({});
+        } else {
+            route_spec["tls"] = serde_json::json!({ "secretName": spec.tls_secret });
+        }
     }
     objects.push(serde_json::json!({
         "apiVersion": "traefik.io/v1alpha1",
         "kind": "IngressRoute",
-        "metadata": { "name": spec.name, "namespace": spec.namespace },
+        "metadata": { "name": spec.name, "namespace": route_ns },
         "spec": route_spec,
     }));
     Ok(objects)
@@ -257,11 +302,11 @@ pub fn internet_policy_for(name: &str, namespace: &str) -> serde_json::Value {
     })
 }
 
-fn security_headers_middleware(namespace: &str) -> serde_json::Value {
+fn security_headers_middleware(spec: &Spec) -> serde_json::Value {
     serde_json::json!({
         "apiVersion": "traefik.io/v1alpha1",
         "kind": "Middleware",
-        "metadata": { "name": SECURITY_HEADERS_NAME, "namespace": namespace },
+        "metadata": { "name": SECURITY_HEADERS_NAME, "namespace": spec.route_namespace() },
         "spec": { "headers": {
             "browserXssFilter": true,
             "contentTypeNosniff": true,
@@ -296,7 +341,7 @@ fn forward_auth_middleware(spec: &Spec) -> serde_json::Value {
     serde_json::json!({
         "apiVersion": "traefik.io/v1alpha1",
         "kind": "Middleware",
-        "metadata": { "name": FORWARD_AUTH_NAME, "namespace": spec.namespace },
+        "metadata": { "name": FORWARD_AUTH_NAME, "namespace": spec.route_namespace() },
         "spec": { "forwardAuth": {
             "address": address,
             "authResponseHeaders": ["Remote-User", "Remote-Groups", "Remote-Email", "Remote-Name"],
@@ -304,11 +349,20 @@ fn forward_auth_middleware(spec: &Spec) -> serde_json::Value {
     })
 }
 
+fn strip_cookie_middleware(spec: &Spec) -> serde_json::Value {
+    serde_json::json!({
+        "apiVersion": "traefik.io/v1alpha1",
+        "kind": "Middleware",
+        "metadata": { "name": STRIP_AUTH_COOKIE_NAME, "namespace": spec.route_namespace() },
+        "spec": { "plugin": { STRIP_AUTH_COOKIE_PLUGIN: {} } },
+    })
+}
+
 fn ip_allowlist_middleware(spec: &Spec) -> serde_json::Value {
     serde_json::json!({
         "apiVersion": "traefik.io/v1alpha1",
         "kind": "Middleware",
-        "metadata": { "name": format!("{}-ipallowlist", spec.name), "namespace": spec.namespace },
+        "metadata": { "name": format!("{}-ipallowlist", spec.name), "namespace": spec.route_namespace() },
         "spec": { "ipAllowList": { "sourceRange": [spec.local_only_cidr] } },
     })
 }
@@ -325,10 +379,6 @@ pub struct Options {
     pub authelia_port: i64,
     pub authelia_namespace: String,
     pub local_only_cidr: String,
-    /// Release namespace holding the platform TLS Secret.
-    pub release_namespace: String,
-    /// Platform TLS Secret used when no domain-specific Secret exists.
-    pub fallback_tls_secret: String,
     /// Resolves the TLS Secret for a base domain (the wildcard Certificate's
     /// secretName). When absent, `tls_secret` is used.
     pub tls_secret_for: Option<TlsSecretResolver>,
@@ -351,16 +401,18 @@ impl KubeRouter {
         } else {
             namespace.to_string()
         };
-        let mut tls_secret = self.opts.tls_secret.clone();
-        if let Some(resolver) = &self.opts.tls_secret_for {
-            let resolved = resolver(base_domain);
-            if !resolved.is_empty() {
-                tls_secret = resolved;
-            }
-        }
+        // The domain record is authoritative: its wildcard Secret is in the
+        // platform apps namespace, beside the route. With no record the route
+        // asks for TLS and Traefik serves its default certificate; nothing is
+        // copied from another namespace (R-002).
+        let tls_secret = match &self.opts.tls_secret_for {
+            Some(resolver) => resolver(base_domain),
+            None => self.opts.tls_secret.clone(),
+        };
         Spec {
             name: rec.name.clone(),
             namespace,
+            route_namespace: self.opts.namespace.clone(),
             subdomain: rec.exposure.subdomain.clone(),
             base_domain: base_domain.to_string(),
             tls: rec.exposure.tls,
@@ -506,63 +558,6 @@ impl KubeRouter {
         });
         vec![svc, route]
     }
-
-    /// Copy the domain/default TLS Secret into the app namespace. An
-    /// IngressRoute can only reference a Secret in its own namespace, and the
-    /// domain Certificates live in the shared apps namespace.
-    async fn copy_tls_secret(&self, target: &str, name: &str) -> Result<(), String> {
-        let mut found = None;
-        for (namespace, source_name) in [
-            (self.opts.namespace.as_str(), name),
-            (
-                self.opts.release_namespace.as_str(),
-                self.opts.fallback_tls_secret.as_str(),
-            ),
-        ] {
-            if namespace.is_empty() || source_name.is_empty() {
-                continue;
-            }
-            match self.kube.get_json("secret", source_name, namespace).await {
-                Ok(Some(secret)) => {
-                    found = Some(secret);
-                    break;
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    return Err(format!(
-                        "reading TLS secret {source_name:?} in {namespace}: {e}"
-                    ))
-                }
-            }
-        }
-        let Some(mut secret) = found else {
-            return Err(format!(
-                "no TLS secret {name:?} in {} or {}; cannot expose this app with TLS",
-                self.opts.namespace, self.opts.release_namespace
-            ));
-        };
-        if let Some(meta) = secret.get_mut("metadata").and_then(|m| m.as_object_mut()) {
-            for key in [
-                "resourceVersion",
-                "uid",
-                "creationTimestamp",
-                "ownerReferences",
-                "managedFields",
-                "selfLink",
-            ] {
-                meta.remove(key);
-            }
-            meta.insert("namespace".to_string(), serde_json::json!(target));
-            meta.insert("name".to_string(), serde_json::json!(name));
-        }
-        if let Some(obj) = secret.as_object_mut() {
-            obj.remove("status");
-        }
-        self.kube
-            .apply(&secret)
-            .await
-            .map_err(|e| format!("copying TLS secret {name:?} to {target}: {e}"))
-    }
 }
 
 #[async_trait::async_trait]
@@ -605,22 +600,14 @@ impl Router for KubeRouter {
         } else {
             match render(&spec) {
                 Ok(objects) if objects.is_empty() => {
-                    if let Err(e) = self.delete_route(&spec.namespace, &rec.name).await {
+                    if let Err(e) = self.delete_route(&spec, &rec.name).await {
                         errs.push(e);
                     }
                 }
                 Ok(objects) => {
-                    if spec.tls
-                        && !spec.tls_secret.is_empty()
-                        && spec.namespace != self.opts.namespace
-                    {
-                        if let Err(e) = self
-                            .copy_tls_secret(&spec.namespace, &spec.tls_secret)
-                            .await
-                        {
-                            errs.push(e);
-                        }
-                    }
+                    // No TLS Secret is copied: the route lives in the platform
+                    // apps namespace, next to the Secret cert-manager issued
+                    // for the base domain (R-002).
                     for obj in &objects {
                         if let Err(e) = self.apply_object(obj).await {
                             errs.push(e);
@@ -657,12 +644,26 @@ impl Router for KubeRouter {
         self.kube
             .delete("networkpolicy", &internet_policy_name(name), &namespace)
             .await?;
-        self.delete_route(&namespace, name).await
+        self.delete_route_in(&namespace, name).await?;
+        // The route now lives in the platform apps namespace; remove any route
+        // an older release rendered into the app namespace as well.
+        if namespace != self.opts.namespace {
+            self.delete_route_in(&self.opts.namespace, name).await?;
+        }
+        Ok(())
     }
 }
 
 impl KubeRouter {
-    async fn delete_route(&self, namespace: &str, name: &str) -> Result<(), String> {
+    async fn delete_route(&self, spec: &Spec, name: &str) -> Result<(), String> {
+        self.delete_route_in(spec.route_namespace(), name).await?;
+        if spec.route_namespace() != spec.namespace {
+            self.delete_route_in(&spec.namespace, name).await?;
+        }
+        Ok(())
+    }
+
+    async fn delete_route_in(&self, namespace: &str, name: &str) -> Result<(), String> {
         self.kube.delete("ingressroute", name, namespace).await?;
         self.kube
             .delete("middleware", &format!("{name}-ipallowlist"), namespace)
@@ -800,11 +801,20 @@ mod tests {
         }
     }
 
+    fn middleware_names(route: &serde_json::Value, index: usize) -> Vec<String> {
+        route["spec"]["routes"][index]["middlewares"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
     #[test]
     fn render_basic_route() {
         let objects = render(&spec()).unwrap();
-        // security headers + route
-        assert_eq!(objects.len(), 2);
+        // security headers + cookie strip + route
+        assert_eq!(objects.len(), 3);
         let route = objects.last().unwrap();
         assert_eq!(route["kind"], "IngressRoute");
         assert_eq!(
@@ -852,7 +862,7 @@ mod tests {
         s.authelia_port = 80;
         s.authelia_namespace = "naslos".into();
         let objects = render(&s).unwrap();
-        assert_eq!(objects.len(), 3);
+        assert_eq!(objects.len(), 4);
         let fwd = objects
             .iter()
             .find(|o| o["metadata"]["name"] == FORWARD_AUTH_NAME);
@@ -871,8 +881,8 @@ mod tests {
         s.authelia_namespace = "naslos".into();
         s.protected_paths = vec!["/preferences".into(), "/stats".into()];
         let objects = render(&s).unwrap();
-        // security headers + forwardAuth + route
-        assert_eq!(objects.len(), 3);
+        // security headers + forwardAuth + cookie strip + route
+        assert_eq!(objects.len(), 4);
         let route = objects.last().unwrap();
         let routes = route["spec"]["routes"].as_array().unwrap();
         assert_eq!(routes.len(), 2);
@@ -881,14 +891,103 @@ mod tests {
             routes[0]["match"],
             "Host(`nginx.naslos.local`) && (PathPrefix(`/preferences`) || PathPrefix(`/stats`))"
         );
-        let protected = routes[0]["middlewares"].as_array().unwrap();
-        assert_eq!(protected[0]["name"], SECURITY_HEADERS_NAME);
-        assert_eq!(protected[1]["name"], FORWARD_AUTH_NAME);
+        let protected = middleware_names(route, 0);
+        assert_eq!(protected[0], SECURITY_HEADERS_NAME);
+        assert_eq!(protected[1], FORWARD_AUTH_NAME);
+        assert_eq!(protected.last().unwrap(), STRIP_AUTH_COOKIE_NAME);
         // The catch-all stays public: search and static assets need no login.
         assert_eq!(routes[1]["match"], "Host(`nginx.naslos.local`)");
-        let public = routes[1]["middlewares"].as_array().unwrap();
-        assert_eq!(public.len(), 1);
-        assert_eq!(public[0]["name"], SECURITY_HEADERS_NAME);
+        let public = middleware_names(route, 1);
+        assert_eq!(public, vec![SECURITY_HEADERS_NAME, STRIP_AUTH_COOKIE_NAME]);
+    }
+
+    #[test]
+    fn exposure_never_renders_a_tls_secret_or_key() {
+        let mut s = spec();
+        s.namespace = "naslos-app-4".into();
+        s.route_namespace = "naslos-apps".into();
+        let objects = render(&s).unwrap();
+        for obj in &objects {
+            assert_ne!(obj["kind"], "Secret", "render must not create Secrets");
+        }
+        let rendered = serde_json::to_string(&objects).unwrap();
+        assert!(!rendered.contains("tls.key"));
+        assert!(!rendered.contains("kubernetes.io/tls"));
+    }
+
+    #[test]
+    fn app_route_lives_in_the_platform_namespace() {
+        let mut s = spec();
+        s.namespace = "naslos-app-4".into();
+        s.route_namespace = "naslos-apps".into();
+        let objects = render(&s).unwrap();
+        for obj in &objects {
+            assert_eq!(
+                obj["metadata"]["namespace"], "naslos-apps",
+                "{} must live beside the domain TLS Secret",
+                obj["metadata"]["name"]
+            );
+        }
+        let route = objects.last().unwrap();
+        assert_eq!(
+            route["spec"]["routes"][0]["services"][0]["namespace"],
+            "naslos-app-4"
+        );
+        assert_eq!(
+            route["spec"]["tls"]["secretName"], "naslos-naslos-local-tls",
+            "the platform-issued Secret is referenced, not copied"
+        );
+    }
+
+    #[test]
+    fn tls_without_a_platform_secret_uses_the_default_certificate() {
+        let mut s = spec();
+        s.tls_secret = String::new();
+        let objects = render(&s).unwrap();
+        let route = objects.last().unwrap();
+        assert_eq!(route["spec"]["tls"], serde_json::json!({}));
+        assert!(objects.iter().all(|o| o["kind"] != "Secret"));
+    }
+
+    #[test]
+    fn cookie_strip_runs_after_forwardauth_on_every_app_route() {
+        let mut s = spec();
+        s.auth = true;
+        s.authelia_service = "naslos-authelia".into();
+        s.authelia_port = 80;
+        s.protected_paths = vec!["/preferences".into()];
+        s.protected_paths.clear();
+        let objects = render(&s).unwrap();
+        let route = objects.last().unwrap();
+        let names = middleware_names(route, 0);
+        let auth = names.iter().position(|n| n == FORWARD_AUTH_NAME);
+        let strip = names.iter().position(|n| n == STRIP_AUTH_COOKIE_NAME);
+        assert!(strip.is_some(), "the route must strip the cookie");
+        assert!(
+            auth.is_none() || strip > auth,
+            "forwardAuth must still receive the cookie before it is stripped"
+        );
+        assert_eq!(names.last().unwrap(), STRIP_AUTH_COOKIE_NAME);
+
+        // The protected-prefix route (auth off) strips after forwardAuth too.
+        s.auth = false;
+        s.protected_paths = vec!["/preferences".into()];
+        let objects = render(&s).unwrap();
+        let route = objects.last().unwrap();
+        let names = middleware_names(route, 0);
+        let auth = names.iter().position(|n| n == FORWARD_AUTH_NAME);
+        let strip = names.iter().position(|n| n == STRIP_AUTH_COOKIE_NAME);
+        assert!(strip.is_some() && auth.is_some());
+        assert!(strip > auth);
+        assert_eq!(names.last().unwrap(), STRIP_AUTH_COOKIE_NAME);
+        let strip = objects
+            .iter()
+            .find(|o| o["metadata"]["name"] == STRIP_AUTH_COOKIE_NAME)
+            .expect("strip middleware");
+        assert_eq!(
+            strip["spec"]["plugin"][STRIP_AUTH_COOKIE_PLUGIN],
+            serde_json::json!({})
+        );
     }
 
     #[test]

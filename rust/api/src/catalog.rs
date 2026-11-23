@@ -186,6 +186,10 @@ struct Candidate {
 #[derive(Default)]
 pub struct Catalog {
     apps: HashMap<String, App>,
+    /// Every candidate keyed by its exact `(source, channel, name)`. An
+    /// installed app is upgraded from the source/channel it was confirmed
+    /// with, never from whichever source happens to win the name now (R-051).
+    pinned: HashMap<(String, String, String), App>,
 }
 
 impl Catalog {
@@ -199,7 +203,18 @@ impl Catalog {
         }
 
         let mut apps = HashMap::new();
+        let mut pinned = HashMap::new();
         for (name, candidates) in by_name {
+            for candidate in &candidates {
+                pinned.insert(
+                    (
+                        candidate.ref_.name.clone(),
+                        candidate.ref_.channel.clone(),
+                        name.clone(),
+                    ),
+                    candidate.app.clone(),
+                );
+            }
             let winner = pick_winner(&candidates);
             let mut app = winner.app.clone();
 
@@ -219,7 +234,49 @@ impl Catalog {
 
             apps.insert(name, app);
         }
-        Self { apps }
+        Self { apps, pinned }
+    }
+
+    /// One app pinned to the exact source and channel the operator confirmed.
+    pub fn get_pinned(&self, name: &str, source: &str, channel: &str) -> Result<App, String> {
+        if source.trim().is_empty() {
+            return Err(format!("app {name:?} has no source to resolve"));
+        }
+        let channel = if channel.trim().is_empty() {
+            DEFAULT_CHANNEL
+        } else {
+            channel.trim()
+        };
+        self.pinned
+            .get(&(source.to_string(), channel.to_string(), name.to_string()))
+            .cloned()
+            .ok_or_else(|| {
+                format!("app {name:?} is not offered by source {source:?} channel {channel:?}")
+            })
+    }
+
+    /// One app from a source, preferring `channel` and falling back to the
+    /// source's Prod candidate when no channel was pinned.
+    pub fn get_from_source(&self, name: &str, source: &str, channel: &str) -> Result<App, String> {
+        if !channel.trim().is_empty() {
+            return self.get_pinned(name, source, channel);
+        }
+        if let Ok(app) = self.get_pinned(name, source, DEFAULT_CHANNEL) {
+            return Ok(app);
+        }
+        let mut candidates: Vec<&App> = self
+            .pinned
+            .iter()
+            .filter(|((candidate_source, _, candidate_name), _)| {
+                candidate_source == source && candidate_name == name
+            })
+            .map(|(_, app)| app)
+            .collect();
+        candidates.sort_by(|a, b| a.channel.cmp(&b.channel));
+        candidates
+            .first()
+            .map(|app| (*app).clone())
+            .ok_or_else(|| format!("app {name:?} is not offered by source {source:?}"))
     }
 
     /// All catalog entries as a summary list, sorted by name.
@@ -632,6 +689,54 @@ mod tests {
         let app = c.get("app").unwrap();
         assert_eq!(app.channels, vec!["Develop", "Prod"]);
         assert_eq!(app.channel, "Prod", "Prod wins");
+    }
+
+    #[test]
+    fn an_app_is_pinned_to_its_exact_source_and_channel() {
+        let official = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        write_app(official.path(), "app", "name: app\nversion: 1.0.0\n", "");
+        write_app(user.path(), "app", "name: app\nversion: 9.9.9\n", "");
+        let c = Catalog::load(&[
+            ref_(
+                "official",
+                "Prod",
+                &official.path().display().to_string(),
+                true,
+            ),
+            ref_("mine", "Prod", &user.path().display().to_string(), false),
+        ]);
+        // The winner is still the user source for new installs.
+        assert_eq!(c.get("app").unwrap().source, "mine");
+        // An installed app keeps resolving from the source it confirmed.
+        let pinned = c.get_pinned("app", "official", "Prod").unwrap();
+        assert_eq!(pinned.source, "official");
+        assert_eq!(pinned.version, "1.0.0");
+        assert!(c.get_pinned("app", "official", "Develop").is_err());
+        assert_eq!(
+            c.get_from_source("app", "mine", "").unwrap().version,
+            "9.9.9"
+        );
+    }
+
+    #[test]
+    fn an_explicit_channel_is_not_swapped_for_prod() {
+        let prod = tempfile::tempdir().unwrap();
+        let dev = tempfile::tempdir().unwrap();
+        write_app(prod.path(), "app", "name: app\nversion: 1.0.0\n", "");
+        write_app(dev.path(), "app", "name: app\nversion: 2.0.0-rc.1\n", "");
+        let c = Catalog::load(&[
+            ref_("mine", "Prod", &prod.path().display().to_string(), false),
+            ref_("mine", "Develop", &dev.path().display().to_string(), false),
+        ]);
+        assert_eq!(
+            c.get_pinned("app", "mine", "Develop").unwrap().version,
+            "2.0.0-rc.1"
+        );
+        assert_eq!(
+            c.get_pinned("app", "mine", "Prod").unwrap().version,
+            "1.0.0"
+        );
     }
 
     #[test]

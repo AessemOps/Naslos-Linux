@@ -92,17 +92,29 @@ required. Signature verification is still a follow-up.
 Allowed URL forms are `https://`, `ssh://` and `git@host:path`. `git://` is
 refused: it is unauthenticated and unencrypted, so an on-path attacker could
 serve an arbitrary chart to an install that runs with cluster identity. Other
-transports (`file://`, `ext::`) are refused as well.
+transports (`file://`, `ext::`) are refused as well. Credentials must never be
+embedded in the URL (an HTTPS `user:pass@` is rejected, as is an SSH password):
+they belong in the credential Secret. A git error is sanitized before it is
+stored/returned, so a URL credential cannot leak through `lastError`.
 
 - The **official** source is seeded from `apps.officialSource` in the chart
-  (`SOURCES_OFFICIAL_URL`); it cannot be recreated through the API as official.
+  (`SOURCES_OFFICIAL_URL`); its name (by default `naslos`, and always the
+  literal `official`) is reserved: an admin source cannot overwrite it.
 - Admin-added sources are created via `POST /api/sources`. A source's channel
   map defaults to `Prod`/`Develop`/`Experimental` → same-named branches.
-- On a name collision, a **user source overrides the official source**.
+- On a name collision, a **user source overrides the official source** for new
+  installs. An installed app is different: its record pins the source, channel
+  and chart version it was confirmed with, and upgrades resolve that exact
+  entry. Moving an app to another source requires an explicit source in the
+  upgrade request; it never happens because a different source now wins the
+  name.
 - Clones live in `CHARTS_CACHE_DIR` (`/var/lib/naslos/charts`) with one working
-  tree per `(source, channel)`. A refresh uses `CHARTS_TTL` (default `15m`);
-  when the remote is unreachable the stale clone is served and `lastError` is
-  recorded. The API also refreshes every source in the background at that TTL
+  tree per `(source, channel)`; freshness is tracked per **exact channel**, so a
+  refresh of one channel does not make another look fresh. An install copies
+  the resolved chart to a private per-job directory while holding a per-source
+  read lock, so a concurrent refresh cannot change the tree Helm is reading.
+  A refresh uses `CHARTS_TTL` (default `15m`); when the remote is unreachable
+  the stale clone is served and `lastError` is recorded. The API also refreshes every source in the background at that TTL
   (rebuilding the catalog snapshot each cycle), so new chart versions surface
   without pressing Refresh; a failed cycle keeps the previous snapshot.
   `POST /api/sources/refresh` forces a refresh now (the Installed tab's
@@ -115,6 +127,18 @@ transports (`file://`, `ext::`) are refused as well.
   device, fifo, file over 5 MiB, or tree over 5000 entries. This matters because
   the Helm loader reads chart files; a symlinked file would have let a chart
   render `/var/lib/naslos/buddy-identity.json` into a manifest.
+
+## Secret redaction
+
+Values the catalog marks as secret (`format: password` or `writeOnly: true`)
+are masked in API responses at every nesting depth by their JSON-pointer path
+(for example `/postgresql/auth/password` and `/smtp/credentials/token`), and the
+pointer list is persisted on the installed-app record as `secretPaths` and
+returned as `redactedKeys`. The
+config form receives the same list and an untouched field is sent back as
+`null`, which the API treats as "keep the stored value" on upgrade. If the
+catalog entry is missing and the record has no persisted pointer list, the API
+omits the value map entirely and sets `valuesOmitted: true` rather than guess.
 
 ## Environment variables
 
@@ -175,7 +199,7 @@ app that declares `privileged: true` installs into `naslos-apps-priv` (PSA
 | Install | `POST /api/apps {name, values, exposure, baseDomain, confirmed, privilegedConfirmed?, datasets?, env?}` | `confirmed` MUST be `true`; a catalog entry with `privileged: true` also requires `privilegedConfirmed: true`, and the UI shows a second, red confirmation (SEC-2026-D8). Defaults are merged and the result is validated against the catalog's JSON schema inside the install job; a violation fails the job (the request is still `202`) (SEC-2026-D7). `env` is rejected with a 400 when the chart lacks the `env` capability. `datasets` selects any number of registered datasets; with `apps.isolation.enabled` the app gets its own namespace, a PV/PVC per dataset (baseline) or host paths (privileged), and the chart receives the platform-owned `datasets` value (one `{name, mountPath: "/datasets/<name>", claim|hostPath}` entry each, plus the legacy `datasetsClaim`/`datasetsClaims` or first `hostPath`). Chart loaded from the clone. Enqueues an install job → `202 {jobId, state}` |
 | List installed | `GET /api/apps` | Records + live status, orphan flag, URL |
 | Detail | `GET /api/apps/{name}` | Record + status |
-| Reconfigure | `PUT /api/apps/{name} {values, datasets?, env?}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}`. An omitted `env` keeps the variables, `[]` removes them; a submitted list replaces them (a `secret` with `value:null` keeps the stored value). `datasets` omitted keeps the selection, `[]` detaches all (an isolated app must keep at least one), a list reconciles adds/removes; removed claims are deleted after Helm succeeds. The merged values are validated against the catalog schema and their `resources` CPU/memory quantities and namespace quota before Helm. A dataset change on a record outside a per-app isolation namespace fails the job with a reinstall message |
+| Reconfigure | `PUT /api/apps/{name} {values, datasets?, env?}` | Enqueues a `helm upgrade` job with the full value set → `202 {jobId, state}`. An omitted `env` keeps the variables, `[]` removes them; a submitted list replaces them (a `secret` with `value:null` keeps the stored value). `datasets` omitted keeps the selection, `[]` detaches all (an isolated app must keep at least one), a list reconciles adds/removes; removed claims are deleted after Helm succeeds. The submitted `resources` object replaces the stored one (an omitted key is a cleared field, `{}` clears all limits; explicit nulls are pruned). The merged values are validated against the catalog schema and their `resources` CPU/memory quantities and namespace quota before Helm. A dataset change on a record outside a per-app isolation namespace fails the job with a reinstall message |
 | Exposure | `GET`/`PUT /api/apps/{name}/exposure` | Orthogonal toggles + `baseDomain`, re-renders the route (synchronous) |
 | Route targets | `GET /api/apps/{name}/services` | Services the release rendered (discovery fallback / UI picker) |
 | Logs | `GET /api/apps/{name}/pods` + `GET /api/ws/logs` | Pods/containers of the app for the drawer's live log pane (read-only; tail 200 + follow). The API's `pods/log` grant is `get`-only in the app namespace |
@@ -270,9 +294,15 @@ or a total above that quota is rejected before Helm.
 
 ## Exposure → routing
 
-The API owns one `IngressRoute` per app plus the middlewares it references, and
-one Internet-egress `NetworkPolicy` per app, all in the app's namespace, and
-converges them on startup.
+The API owns one `IngressRoute` per app plus the middlewares it references in
+the platform apps namespace (where the domain TLS `Secret` was issued), and one
+Internet-egress `NetworkPolicy` per app in the app's namespace, and converges
+them on startup. The route targets the app `Service` in its own namespace through
+Traefik's `allowCrossNamespace`; the wildcard private key is never copied into
+an app namespace. Every app route ends with the `naslos-app-strip-authelia-cookie`
+middleware, a chart-shipped Traefik local plugin that deletes `authelia_session`
+after `forwardAuth` has validated it, so an app backend never receives the
+parent-domain SSO cookie.
 
 | Setting | Effect |
 | --- | --- |
@@ -396,17 +426,22 @@ charts, or `hostPath` for privileged charts.
   A failed clone is surfaced as the source's `lastError`.
 - **Wildcard DNS is a prerequisite** for app subdomains: point `*.<domain>` at
   the node (router/dnsmasq/registrar). Without it, app hostnames do not resolve.
-- **TLS apps need a certificate Secret** in `naslos-apps`. The route references
-  the base domain's wildcard Certificate `secretName` (from its domain record);
-  `APPS_TLS_SECRET` is only the fallback when no domain record exists. A `.local`
-  domain can never get a public cert — keep TLS off or self-sign for `.local`.
+- **TLS apps reference a certificate Secret in `naslos-apps`.** The route lives
+  in that namespace and references the base domain's wildcard Certificate
+  `secretName` (from its domain record); `APPS_TLS_SECRET` is only the fallback
+  name when no domain record exists. Nothing is copied into the app namespace:
+  when no Secret exists the route still requests TLS and Traefik serves its
+  default certificate. A `.local` domain can never get a public cert — keep TLS
+  off or expect the self-signed warning for `.local`.
 - **Third-party charts are privileged, but cannot own routing.** Helm runs as
   the reduced `naslos-helm` ServiceAccount (SEC-2026-D1/D4): it can create
-  workloads, Services, ConfigMaps, Secrets, PVCs and Ingresses but **not**
-  Traefik `IngressRoute`/`Middleware` objects, cert-manager objects, RBAC or
-  cluster-scoped resources. The API creates and reconciles the app route and
-  certificate itself. A chart that ships its own `IngressRoute` now fails
-  (403) instead of silently becoming same-origin with the UI.
+  workloads, Services, ConfigMaps, Secrets and PVCs but **not** Traefik
+  `IngressRoute`/`Middleware`, `Ingress`, `NetworkPolicy`, cert-manager objects,
+  RBAC or cluster-scoped resources. Native Kubernetes Ingress is disabled and a
+  fail-closed admission policy rejects any Helm `Ingress`/`NetworkPolicy` write.
+  The API creates and reconciles the app route and policy itself. A chart that
+  ships its own `IngressRoute` or `Ingress` now fails instead of silently
+  becoming same-origin with the UI or racing the platform isolation policy.
 - Charts can create their own Secrets/PVCs; the platform mounts the datasets
   the operator attached to the app at `/datasets/<name>`. The threat model and
   migration notes are in [datasets-isolation.md](datasets-isolation.md).
@@ -440,6 +475,9 @@ The install wizard reflects the backend rules instead of silently installing an
 unsafe exposure. A catalog entry with `exposure.auth: false` or
 `exposure.tls: false` shows a red warning in review and requires a second,
 explicit checkbox before Install enables; an entry with both off is preselected
-as cluster-internal (`localOnly`). Password fields are masked in the review
+as cluster-internal (`localOnly`). The installed-app **Exposure** editor applies
+the same rule: turning auth or TLS off requires the acknowledgement, and
+changing to a non-SSO base domain warns that Authelia login was turned off
+instead of clearing it silently. Password fields are masked in the review
 step. Dismissing a running app job is disabled (it only hid the "already
 running" conflict), and a job evicted from the server's list stops polling.

@@ -47,6 +47,10 @@ pub struct Dataset {
     /// The dataset whose key this dataset uses (`zfs get encryptionroot`).
     #[serde(default, rename = "encryptionRoot")]
     pub encryption_root: String,
+    /// ZFS's stable object GUID. The API binds a destroy (and the key Secret
+    /// it deletes) to this value instead of the reusable dataset name.
+    #[serde(default)]
+    pub guid: String,
 }
 
 /// The encryption state of one dataset (`GET /api/v1/encryption/status/…`).

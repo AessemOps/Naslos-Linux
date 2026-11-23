@@ -156,6 +156,18 @@ retrying or using the browser path worked around it. Worth watching.
   `naslos-auto-*` pruning lasts one release. The API still uses `Recreate`;
   the chart now clears a pre-0.6.0 `rollingUpdate` block so UI/installer
   upgrades from 0.5.x work.
+- **0.7.1 remediation (in progress, not deployed):** the platform-chart branch
+  (`fix/0.7.1-platform-chart`) changes deploy behavior that the next release
+  must carry: `make install-vm` now requires `VM_IP=<node-ip>` and installs
+  `local-path` + the `naslos-talosconfig` Secret itself; Traefik runs with
+  namespaced RBAC (no cluster-wide Secret read) watching only
+  `naslos-apps`/`naslos-apps-priv`; the production overlay no longer renders
+  the shared `/var/mnt` datasets PV/PVC (per-app claims only); Authelia,
+  Samba, NFS, the OpenLDAP backup Job and the upgrader admission policy are
+  hardened; the state and OpenLDAP-backup PVCs are kept on uninstall; git/DDNS
+  egress is scoped to the API pod; and base images/local-path are digest
+  pinned. The node keeps 0.7.0 revision 62 until the 0.7.1 pack is released
+  and deployed.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:

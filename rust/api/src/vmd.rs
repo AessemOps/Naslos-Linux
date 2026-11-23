@@ -9,6 +9,7 @@
 //! image library relay.
 
 use serde::{Deserialize, Serialize};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 /// Used when `VMD_BASE_URL` is unset; `{}` is the workload namespace.
 pub const DEFAULT_BASE_URL_PATTERN: &str = "https://naslos-vmd.{}.svc.cluster.local:9091";
@@ -18,6 +19,30 @@ pub const DEFAULT_BASE_URL_PATTERN: &str = "https://naslos-vmd.{}.svc.cluster.lo
 pub const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The byte stream under the console tunnel (TLS or plain TCP).
+pub trait TunnelStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> TunnelStream for T {}
+
+/// The API side of the console tunnel: a WebSocket carrying RFB bytes.
+pub type VncTunnel = tokio_tungstenite::WebSocketStream<Box<dyn TunnelStream>>;
+
+/// Build the tunnel URL from the client base URL, mapping https/http to
+/// wss/ws and keeping the exact authority (including a non-default port).
+pub fn vnc_tunnel_url(base_url: &str, name: &str, port: u16) -> Result<String, String> {
+    let url = reqwest::Url::parse(base_url).map_err(|e| format!("parsing the vmd URL: {e}"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| "the vmd URL has no host".to_string())?;
+    let authority = match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    };
+    let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
+    Ok(format!(
+        "{scheme}://{authority}/api/v1/vms/{name}/vnc?port={port}"
+    ))
+}
 
 /// A vmd-side failure carrying the upstream HTTP status.
 #[derive(Debug, Clone)]
@@ -100,6 +125,8 @@ pub struct ImageEntry {
 pub struct Client {
     base_url: String,
     token: String,
+    /// PEM CA used for both reqwest and the console tunnel's TLS handshake.
+    ca_file: String,
     http: reqwest::Client,
     /// Streaming uploads: no total deadline, only connect + per-read idle, so
     /// a large chunk on a slow LAN is not cut mid-body.
@@ -153,6 +180,7 @@ impl Client {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             token: token.to_string(),
+            ca_file: ca_file.to_string(),
             http,
             stream_http,
         })
@@ -231,6 +259,80 @@ impl Client {
     /// console bridge opens its TCP leg there.
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// Open the authenticated console tunnel to vmd: a WebSocket on vmd's
+    /// existing TLS listener whose payload is proxied to QEMU's loopback VNC
+    /// port. The API no longer dials the node's VNC port directly, so QEMU can
+    /// stay bound to 127.0.0.1.
+    pub async fn vnc_tunnel(&self, name: &str, port: u16) -> Result<VncTunnel, String> {
+        let url =
+            reqwest::Url::parse(&self.base_url).map_err(|e| format!("parsing the vmd URL: {e}"))?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| "the vmd URL has no host".to_string())?
+            .to_string();
+        let connect_port = url
+            .port_or_known_default()
+            .ok_or_else(|| "the vmd URL has no port".to_string())?;
+        let tls = url.scheme() == "https";
+        let tcp = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            tokio::net::TcpStream::connect((host.as_str(), connect_port)),
+        )
+        .await
+        .map_err(|_| "connecting to vmd timed out".to_string())?
+        .map_err(|e| format!("connecting to vmd: {e}"))?;
+        let stream: Box<dyn TunnelStream> = if tls {
+            let config = self.tunnel_tls_config()?;
+            let server_name = rustls::pki_types::ServerName::try_from(host.clone())
+                .map_err(|_| "the vmd host name is not a valid TLS server name".to_string())?;
+            let tls_stream = tokio_rustls::TlsConnector::from(config)
+                .connect(server_name, tcp)
+                .await
+                .map_err(|e| format!("the vmd console tunnel TLS handshake failed: {e}"))?;
+            Box::new(tls_stream)
+        } else {
+            Box::new(tcp)
+        };
+
+        let mut request = vnc_tunnel_url(&self.base_url, name, port)?
+            .into_client_request()
+            .map_err(|e| format!("building the vmd console tunnel request: {e}"))?;
+        let bearer = axum::http::HeaderValue::from_str(&format!("Bearer {}", self.token))
+            .map_err(|_| "the vmd token is not a valid header value".to_string())?;
+        request
+            .headers_mut()
+            .insert(axum::http::header::AUTHORIZATION, bearer);
+        let (tunnel, _response) = tokio_tungstenite::client_async(request, stream)
+            .await
+            .map_err(|e| format!("opening the vmd console tunnel: {e}"))?;
+        Ok(tunnel)
+    }
+
+    /// Trust only the configured vmd CA for the tunnel (fail closed, same
+    /// posture as the reqwest client).
+    fn tunnel_tls_config(&self) -> Result<std::sync::Arc<rustls::ClientConfig>, String> {
+        if self.ca_file.trim().is_empty() {
+            return Err("VMD_CA_FILE is required for the https console tunnel".to_string());
+        }
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let pem = std::fs::read(&self.ca_file)
+            .map_err(|e| format!("reading the vmd CA {}: {e}", self.ca_file))?;
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in rustls_pemfile::certs(&mut std::io::BufReader::new(pem.as_slice())) {
+            roots
+                .add(cert.map_err(|e| format!("parsing the vmd CA certificate: {e}"))?)
+                .map_err(|e| format!("adding the vmd CA certificate: {e}"))?;
+        }
+        if roots.is_empty() {
+            return Err("the vmd CA file contains no usable certificate".to_string());
+        }
+        Ok(std::sync::Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        ))
     }
 
     // ---- Capabilities ----------------------------------------------------
@@ -409,5 +511,23 @@ mod tests {
         let legacy: Capabilities =
             serde_json::from_value(serde_json::json!({ "kvm": true })).unwrap();
         assert!(!legacy.secure_boot);
+    }
+}
+
+#[cfg(test)]
+mod vnc_tunnel_url_tests {
+    use super::vnc_tunnel_url;
+
+    #[test]
+    fn the_tunnel_keeps_the_vmd_authority_and_maps_the_scheme() {
+        assert_eq!(
+            vnc_tunnel_url("https://naslos-vmd.naslos-privileged.svc:9091", "vm1", 5901).unwrap(),
+            "wss://naslos-vmd.naslos-privileged.svc:9091/api/v1/vms/vm1/vnc?port=5901"
+        );
+        assert_eq!(
+            vnc_tunnel_url("http://127.0.0.1:9091", "vm1", 5902).unwrap(),
+            "ws://127.0.0.1:9091/api/v1/vms/vm1/vnc?port=5902"
+        );
+        assert!(vnc_tunnel_url("not a url", "vm1", 5901).is_err());
     }
 }

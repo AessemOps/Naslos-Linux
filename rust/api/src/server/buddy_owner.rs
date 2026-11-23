@@ -88,27 +88,18 @@ struct PeerRequest {
     enabled: Option<bool>,
 }
 
-pub async fn peers_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
-    let Some(receiver) = state.buddy.as_ref() else {
-        return unavailable();
-    };
-    let req: PeerRequest = match super::zfs::read_json(body).await {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    if req.name.trim().is_empty() || req.public_key.trim().is_empty() {
-        return bad_request("name and publicKey are required");
-    }
-    let existing = receiver.peers.get(&req.name);
+/// Merge a partial peer update into the stored entry. `enabled` is preserved
+/// unless the request explicitly supplies it (R-058).
+fn apply_peer_request(prev: Option<&Peer>, req: &PeerRequest) -> Peer {
     let mut peer = Peer {
         name: req.name.clone(),
         public_key: req.public_key.clone(),
         allowed_sources: req.allowed_sources.clone().unwrap_or_default(),
         quota_bytes: req.quota_bytes,
-        enabled: true,
+        enabled: prev.map(|p| p.enabled).unwrap_or(true),
         ..Default::default()
     };
-    if let Some(prev) = &existing {
+    if let Some(prev) = prev {
         peer.created_at = prev.created_at;
         if req.allowed_sources.is_none() {
             peer.allowed_sources = prev.allowed_sources.clone();
@@ -120,6 +111,21 @@ pub async fn peers_post(State(state): State<Arc<AppState>>, body: Body) -> Respo
     if let Some(enabled) = req.enabled {
         peer.enabled = enabled;
     }
+    peer
+}
+
+pub async fn peers_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    let Some(receiver) = state.buddy.as_ref() else {
+        return unavailable();
+    };
+    let req: PeerRequest = match super::zfs::read_json(body).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if req.name.trim().is_empty() || req.public_key.trim().is_empty() {
+        return bad_request("name and publicKey are required");
+    }
+    let peer = apply_peer_request(receiver.peers.get(&req.name).as_ref(), &req);
     match receiver.peers.add(peer.clone()) {
         Ok(()) => json(
             StatusCode::OK,
@@ -252,4 +258,37 @@ struct IdentityRequest {
     name: String,
     #[serde(default)]
     replace: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_peer_request, PeerRequest};
+    use crate::buddy::peers::Peer;
+
+    fn request(enabled: Option<bool>) -> PeerRequest {
+        PeerRequest {
+            name: "peer-a".to_string(),
+            public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest".to_string(),
+            allowed_sources: None,
+            quota_bytes: 0,
+            enabled,
+        }
+    }
+
+    #[test]
+    fn a_partial_update_preserves_a_disabled_peer() {
+        let mut prev = Peer {
+            name: "peer-a".to_string(),
+            enabled: false,
+            quota_bytes: 100,
+            ..Default::default()
+        };
+        prev.allowed_sources = vec!["tank/data".to_string()];
+        let merged = apply_peer_request(Some(&prev), &request(None));
+        assert!(!merged.enabled, "an omitted enabled must not re-enable");
+        assert_eq!(merged.quota_bytes, 100);
+        assert_eq!(merged.allowed_sources, vec!["tank/data".to_string()]);
+        assert!(apply_peer_request(Some(&prev), &request(Some(true))).enabled);
+        assert!(apply_peer_request(None, &request(None)).enabled);
+    }
 }

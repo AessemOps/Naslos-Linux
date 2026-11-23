@@ -7,12 +7,15 @@ use crate::capabilities;
 use crate::images;
 use crate::model::{DesiredConfig, ImageEntry};
 use axum::body::Body;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
+use futures::{SinkExt, StreamExt};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub async fn health() -> Response {
     json_response(StatusCode::OK, &serde_json::json!({ "status": "ok" }))
@@ -43,6 +46,93 @@ pub async fn vms_config_put(State(state): State<Arc<AppState>>, body: Body) -> R
     match Arc::clone(&state.supervisor).apply(config).await {
         Ok(()) => json_response(StatusCode::OK, &serde_json::json!({ "status": "applied" })),
         Err(e) => write_error(StatusCode::CONFLICT, e),
+    }
+}
+
+/// Authenticated console tunnel: the API bridges browser RFB bytes here
+/// instead of dialing QEMU's port directly (QEMU VNC binds loopback only).
+/// The target is a port inside the configured VNC display range; the bearer
+/// token is enforced by the router-wide auth middleware.
+pub async fn vm_vnc_tunnel(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let Some(raw) = query.get("port") else {
+        return write_error(
+            StatusCode::BAD_REQUEST,
+            "a VNC port is required".to_string(),
+        );
+    };
+    let Ok(port) = raw.parse::<u16>() else {
+        return write_error(
+            StatusCode::BAD_REQUEST,
+            format!("VNC port {raw:?} is not a valid TCP port"),
+        );
+    };
+    if !state.supervisor.vnc_port_in_range(port) {
+        return write_error(
+            StatusCode::FORBIDDEN,
+            format!("port {port} is outside the configured VNC display range"),
+        );
+    }
+    ws.on_upgrade(move |socket| tunnel_vnc(socket, name, port))
+}
+
+async fn tunnel_vnc(socket: WebSocket, name: String, port: u16) {
+    let stream = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::net::TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await
+    {
+        Ok(Ok(stream)) => stream,
+        _ => {
+            tracing::warn!("console tunnel for {name}: cannot reach 127.0.0.1:{port}");
+            let mut socket = socket;
+            let _ = socket.close().await;
+            return;
+        }
+    };
+    let (mut tcp_read, mut tcp_write) = stream.into_split();
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    let browser_to_vnc = async {
+        while let Some(Ok(message)) = ws_rx.next().await {
+            match message {
+                Message::Binary(data) => {
+                    if tcp_write.write_all(&data).await.is_err() {
+                        break;
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+        let _ = tcp_write.shutdown().await;
+    };
+    let vnc_to_browser = async {
+        let mut buf = vec![0u8; 16 * 1024];
+        loop {
+            match tcp_read.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    if ws_tx
+                        .send(Message::Binary(buf[..n].to_vec().into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    };
+    tokio::select! {
+        _ = browser_to_vnc => {}
+        _ = vnc_to_browser => {}
     }
 }
 

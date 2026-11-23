@@ -340,8 +340,38 @@ fn scan_file(path: &Path) -> std::io::Result<Scan> {
     Ok(scan)
 }
 
+/// Visit every whole record in the store without materializing a `Vec`.
+/// Queries and retention passes only need one record at a time, which keeps a
+/// full history scan from doubling peak memory during rollups.
+fn for_each_record(path: &Path, mut visit: impl FnMut(Record)) -> std::io::Result<()> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let mut magic = [0u8; HEADER_LEN as usize];
+    if file.read_exact(&mut magic).is_err() || magic != MAGIC {
+        return Ok(());
+    }
+    let mut buf = [0u8; RECORD_SIZE];
+    loop {
+        match file.read_exact(&mut buf) {
+            Ok(()) => match decode_record(&buf) {
+                Some(record) => visit(record),
+                None => break,
+            },
+            Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn read_records(path: &Path) -> std::io::Result<Vec<Record>> {
-    Ok(scan_file(path)?.records)
+    let mut records = Vec::new();
+    for_each_record(path, |record| records.push(record))?;
+    Ok(records)
 }
 
 fn now_string(timestamp: i64) -> String {
@@ -599,6 +629,10 @@ impl Store {
             warned_size: false,
         };
         let now = Utc::now().timestamp();
+        // Release the startup scan before the rollup rebuild reads the same
+        // file again; retaining both copies doubles peak memory on a large
+        // history.
+        drop(scan);
         if let Err(e) = store.rebuild_rollups(now) {
             tracing::warn!("reporting rollup rebuild: {e}");
         }
@@ -750,28 +784,25 @@ impl Store {
     /// Fill in rollups that were not derived before a restart, then load the
     /// in-memory windows. Runs once at open.
     fn rebuild_rollups(&mut self, now: i64) -> Result<(), String> {
-        let mut all = read_records(&self.path).map_err(|e| e.to_string())?;
-
         let mut five: BTreeMap<(u32, i64), Sample> = BTreeMap::new();
         let mut existing_five: HashSet<(u32, i64)> = HashSet::new();
         let mut existing_hour: HashSet<(u32, i64)> = HashSet::new();
-        for record in &all {
-            match record.resolution {
-                RES_RAW if record.bucket >= now - RAW_RETENTION => {
-                    let bucket = floor_bucket(record.bucket, RES_5M);
-                    five.entry((record.id, bucket))
-                        .or_insert_with(Sample::empty)
-                        .merge_after(record.sample);
-                }
-                RES_5M => {
-                    existing_five.insert((record.id, record.bucket));
-                }
-                RES_1H => {
-                    existing_hour.insert((record.id, record.bucket));
-                }
-                _ => {}
+        for_each_record(&self.path, |record| match record.resolution {
+            RES_RAW if record.bucket >= now - RAW_RETENTION => {
+                let bucket = floor_bucket(record.bucket, RES_5M);
+                five.entry((record.id, bucket))
+                    .or_insert_with(Sample::empty)
+                    .merge_after(record.sample);
             }
-        }
+            RES_5M => {
+                existing_five.insert((record.id, record.bucket));
+            }
+            RES_1H => {
+                existing_hour.insert((record.id, record.bucket));
+            }
+            _ => {}
+        })
+        .map_err(|e| format!("reading reporting store: {e}"))?;
         for ((id, bucket), sample) in five {
             if bucket + i64::from(RES_5M) > now || !existing_five.insert((id, bucket)) {
                 continue;
@@ -783,12 +814,10 @@ impl Store {
                 sample,
             };
             self.append(record, now)?;
-            existing_five.insert((id, bucket));
-            all.push(record);
         }
 
         let mut hours: BTreeMap<(u32, i64), Sample> = BTreeMap::new();
-        for record in &all {
+        for_each_record(&self.path, |record| {
             if record.resolution == RES_5M {
                 let bucket = floor_bucket(record.bucket, RES_1H);
                 hours
@@ -796,7 +825,8 @@ impl Store {
                     .or_insert_with(Sample::empty)
                     .merge_after(record.sample);
             }
-        }
+        })
+        .map_err(|e| format!("reading reporting store: {e}"))?;
         for ((id, bucket), sample) in hours {
             if bucket + i64::from(RES_1H) > now || !existing_hour.insert((id, bucket)) {
                 continue;
@@ -808,50 +838,49 @@ impl Store {
                 sample,
             };
             self.append(record, now)?;
-            all.push(record);
         }
 
+        self.load_recent(now)
+            .map_err(|e| format!("reading reporting store: {e}"))?;
         self.prune(now, false)?;
-        self.load_recent(&all, now);
         Ok(())
     }
 
-    fn load_recent(&mut self, records: &[Record], now: i64) {
+    fn load_recent(&mut self, now: i64) -> std::io::Result<()> {
         self.recent_raw.clear();
         self.recent_five.clear();
         self.recent_hour.clear();
-        for record in records {
-            match record.resolution {
-                RES_RAW if record.bucket >= now - RAW_MEMORY => self.recent_raw.push_back(*record),
-                RES_5M if record.bucket >= now - FIVE_MIN_MEMORY => {
-                    self.recent_five.push_back(*record)
-                }
-                RES_1H if record.bucket >= now - HOUR_MEMORY => self.recent_hour.push_back(*record),
-                _ => {}
-            }
-        }
+        let path = self.path.clone();
+        for_each_record(&path, |record| match record.resolution {
+            RES_RAW if record.bucket >= now - RAW_MEMORY => self.recent_raw.push_back(record),
+            RES_5M if record.bucket >= now - FIVE_MIN_MEMORY => self.recent_five.push_back(record),
+            RES_1H if record.bucket >= now - HOUR_MEMORY => self.recent_hour.push_back(record),
+            _ => {}
+        })
     }
 
     /// Enforce the age retention and the hard size cap by rewriting the file
     /// atomically. Runs hourly (and once at startup).
     fn prune(&mut self, now: i64, aggressive: bool) -> Result<(), String> {
-        let all = read_records(&self.path).map_err(|e| e.to_string())?;
-        let before = all.len();
-        let mut kept: Vec<Record> = all
-            .into_iter()
-            .filter(|record| {
-                let age = now.saturating_sub(record.bucket);
-                if record.bucket > now + 3600 {
-                    return false;
-                }
-                match record.resolution {
-                    RES_RAW => age <= RAW_RETENTION,
-                    RES_5M => age <= FIVE_MIN_RETENTION,
-                    RES_1H => age <= HOUR_RETENTION,
-                    _ => false,
-                }
-            })
-            .collect();
+        let mut before = 0usize;
+        let mut kept: Vec<Record> = Vec::new();
+        for_each_record(&self.path, |record| {
+            before += 1;
+            let age = now.saturating_sub(record.bucket);
+            if record.bucket > now + 3600 {
+                return;
+            }
+            let retain = match record.resolution {
+                RES_RAW => age <= RAW_RETENTION,
+                RES_5M => age <= FIVE_MIN_RETENTION,
+                RES_1H => age <= HOUR_RETENTION,
+                _ => false,
+            };
+            if retain {
+                kept.push(record);
+            }
+        })
+        .map_err(|e| e.to_string())?;
         let mut changed = kept.len() != before;
 
         let over_cap = self.file_len().map_err(|e| e.to_string())? > self.max_bytes;
@@ -902,10 +931,15 @@ impl Store {
                 .map_err(|e| format!("syncing reporting rewrite: {e}"))?;
         }
         set_mode(&tmp, 0o600).map_err(|e| format!("setting reporting rewrite mode: {e}"))?;
+        // Open the replacement handle before the rename: after a rename the
+        // path names the new inode, so reopening afterwards can fail and leave
+        // `self.file` pointing at the unlinked old inode (appends would then be
+        // lost). With the handle already open the rename is the commit point.
+        let replacement =
+            open_append(&tmp).map_err(|e| format!("reopening reporting store: {e}"))?;
         std::fs::rename(&tmp, &self.path).map_err(|e| format!("replacing reporting store: {e}"))?;
         sync_directory(&self.path);
-        self.file =
-            open_append(&self.path).map_err(|e| format!("reopening reporting store: {e}"))?;
+        self.file = replacement;
         Ok(())
     }
 
@@ -1159,23 +1193,23 @@ impl Store {
             selected.push(meta.clone());
         }
 
-        let records = read_records(&self.path).map_err(|e| format!("reading history: {e}"))?;
         let mut groups: HashMap<(u32, i64), Sample> = HashMap::new();
-        for record in records {
+        for_each_record(&self.path, |record| {
             // Half-open lower bound: `from` is the start of the requested
             // window, so a full window is exactly max_points buckets rather
             // than max_points + 1 and never needs a forced 2x downsample.
             if record.resolution != resolution || record.bucket <= from || record.bucket > now {
-                continue;
+                return;
             }
             if !ids.contains_key(&record.id) {
-                continue;
+                return;
             }
             groups
                 .entry((record.id, record.bucket))
                 .or_insert_with(Sample::empty)
                 .merge_after(record.sample);
-        }
+        })
+        .map_err(|e| format!("reading history: {e}"))?;
 
         let mut collected: Vec<(SeriesMeta, Vec<(i64, Sample)>)> =
             Vec::with_capacity(selected.len());
@@ -1865,6 +1899,35 @@ mod tests {
         assert!(after > before);
         let len = std::fs::metadata(&path).unwrap().len();
         assert_eq!((len - HEADER_LEN) % RECORD_SIZE as u64, 0);
+    }
+
+    #[test]
+    fn a_failed_rewrite_keeps_the_store_appendable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.bin");
+        let mut store = Store::open(&path, DEFAULT_MAX_BYTES).unwrap();
+        let now = Utc::now().timestamp();
+        let record = Record {
+            id: 1,
+            resolution: RES_RAW,
+            bucket: floor_bucket(now, RES_RAW),
+            sample: Sample::single(1.0),
+        };
+        store.append(record, now).unwrap();
+
+        // Occupy the rewrite temp path with a directory so the replacement
+        // handle cannot be opened. The live store handle must stay usable.
+        let tmp = path.with_extension("bin.tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let error = store.rewrite(&[record]).unwrap_err();
+        assert!(
+            error.contains("reporting rewrite") || error.contains("reopening"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(&tmp).unwrap();
+
+        store.append(record, now).unwrap();
+        assert_eq!(read_records(&path).unwrap().len(), 2);
     }
 
     #[test]

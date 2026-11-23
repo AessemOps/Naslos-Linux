@@ -343,16 +343,18 @@ async fn import_pool_validates_a_named_pool() {
     let calls = runner.calls();
     let c = client(&host, runner);
 
-    assert!(c.import_pool("-f").await.is_err());
-    assert!(c.import_pool("tank/name").await.is_err());
+    assert!(c.import_pool("-f", false).await.is_err());
+    assert!(c.import_pool("tank/name", false).await.is_err());
     assert!(calls.lock().unwrap().is_empty());
 
     let host = FakeHost::new();
     let runner = Arc::new(FakeRunner::new(&[]));
     let calls = runner.calls();
     let c = client(&host, runner);
-    c.import_pool("").await.expect("import-all is accepted");
-    assert!(ran_command(&calls, "/usr/local/sbin/zpool import -f"));
+    c.import_pool("", false)
+        .await
+        .expect("import-all is accepted");
+    assert!(ran_command(&calls, "/usr/local/sbin/zpool import -N"));
 }
 
 #[tokio::test]

@@ -442,7 +442,12 @@ fn urlencode(s: &str) -> String {
 /// What to do with the records already present at the app's hostname.
 #[derive(Debug, PartialEq, Eq)]
 enum Action {
-    Keep(String),
+    /// Keep the matching record. `adopted` means the platform did not create
+    /// it and must never delete it.
+    Keep {
+        id: String,
+        adopted: bool,
+    },
     Update(String),
     Create,
     Conflict(String),
@@ -463,8 +468,12 @@ fn plan_action(
         .find(|record| !record.record_type.eq_ignore_ascii_case("CNAME"));
     match cname {
         Some(record) if normalize_target(&record.target) == normalize_target(target) => {
-            // Adopt a matching pre-existing record.
-            Action::Keep(record.id.clone())
+            // Adopt a matching pre-existing record unless this is the record
+            // the platform itself created.
+            Action::Keep {
+                id: record.id.clone(),
+                adopted: owned_id != Some(record.id.as_str()),
+            }
         }
         Some(record) if owned_id == Some(record.id.as_str()) || owned_same_name => {
             Action::Update(record.id.clone())
@@ -805,27 +814,6 @@ impl AppDns for DnsService {
             }
         };
 
-        // A renamed app or a changed base domain leaves the old record behind.
-        if let Some(previous) = &rec.dns {
-            if previous.owned
-                && !previous.record_id.is_empty()
-                && (previous.fqdn != desired_fqdn
-                    || previous.base_domain != base
-                    || previous.provider != domain.dns_provider)
-            {
-                if let Err(e) = self.delete_state(previous).await {
-                    return Some(Self::error_state(
-                        Some(previous),
-                        &desired_fqdn,
-                        &target,
-                        &domain.dns_provider,
-                        &base,
-                        e,
-                    ));
-                }
-            }
-        }
-
         let existing = match api.find(&zone, &desired_fqdn).await {
             Ok(records) => records,
             Err(e) => {
@@ -865,17 +853,17 @@ impl AppDns for DnsService {
             &target,
             &desired_fqdn,
         );
-        let (record_id, changed) = match action {
-            Action::Keep(id) => (id, false),
+        let (record_id, changed, owned) = match action {
+            Action::Keep { id, adopted } => (id, false, !adopted),
             Action::Update(id) => {
                 if let Err(e) = api.update_cname(&zone, &id, &target).await {
                     return Some(write_error(e));
                 }
-                (id, true)
+                (id, true, true)
             }
             Action::Conflict(error) => return Some(write_error(error)),
             Action::Create => match api.create_cname(&zone, &desired_fqdn, &target).await {
-                Ok(id) => (id, true),
+                Ok(id) => (id, true, true),
                 Err(e) => return Some(write_error(e)),
             },
         };
@@ -886,18 +874,42 @@ impl AppDns for DnsService {
             }
         }
 
-        Some(DnsState {
+        let state = DnsState {
             fqdn: desired_fqdn,
             target,
             provider: domain.dns_provider.clone(),
             zone,
             record_id,
-            owned: true,
+            owned,
             status: "ok".to_string(),
             error: String::new(),
             updated_at: Some(chrono::Utc::now()),
             base_domain: base,
-        })
+        };
+
+        // Only after the new record exists and the new state is built, remove
+        // the previous record left behind by a rename or a domain move. An
+        // adopted record is never owned, so it is never deleted. A cleanup
+        // failure does not fail the new state: the stale record is reported in
+        // the log for a later reconcile to revisit.
+        if let Some(previous) = &rec.dns {
+            if previous.owned
+                && !previous.record_id.is_empty()
+                && previous.record_id != state.record_id
+                && (previous.fqdn != state.fqdn
+                    || previous.base_domain != state.base_domain
+                    || previous.provider != state.provider)
+            {
+                if let Err(e) = self.delete_state(previous).await {
+                    tracing::warn!(
+                        "could not remove the previous DNS record {}: {e}",
+                        previous.fqdn
+                    );
+                }
+            }
+        }
+
+        Some(state)
     }
 
     async fn remove(&self, rec: &Record) -> Result<(), String> {
@@ -957,7 +969,23 @@ mod tests {
                 "naslos.example.net",
                 "app.example.com"
             ),
-            Action::Keep("9".into())
+            Action::Keep {
+                id: "9".into(),
+                adopted: true
+            }
+        );
+        assert_eq!(
+            plan_action(
+                std::slice::from_ref(&cname),
+                Some("9"),
+                true,
+                "naslos.example.net",
+                "app.example.com"
+            ),
+            Action::Keep {
+                id: "9".into(),
+                adopted: false
+            }
         );
         assert!(matches!(
             plan_action(

@@ -92,11 +92,15 @@ and imported:
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/volumes/zfs/import` | List importable pools (name, state, topology, disks) |
-| POST | `/api/volumes/zfs/import` | `{"name":"tank"}` imports one; `{}` imports all |
+| POST | `/api/volumes/zfs/import` | `{"name":"tank"}` imports one; `{"all":true}` imports all; add `force:true, confirm:"<name>|all"` for a forced import |
 
 The agent runs `zpool import` (dry-run) to list candidates, then
-`zpool import -f <name>` (or `zpool import -f` for all) to import. Already-imported
-pools are excluded from the list.
+`zpool import -N <name>` (or `zpool import -N` for all) to import without
+mounting. It enumerates the stored mountpoints, remaps every dataset to
+`/var/mnt/<pool>/…`, and mounts each dataset deliberately. `zpool import -f` is
+never automatic: it requires the explicit `force` + `confirm` pair because it
+can take over a pool another node still serves. Already-imported pools are
+excluded from the list.
 
 The UI offers **Import Pool** on the `/pools` page: a modal shows each importable
 pool's name, topology (Mirror/RAIDZ1/etc.), state, and member disks with a
@@ -120,7 +124,10 @@ The agent exposes dataset and snapshot operations:
   `dataset@snap` paths; `DELETE ?name=` destroys one snapshot)
 
 Datasets are how shares get structured sizes/quota boundaries and are the unit
-of snapshots (`zfs snapshot pool/ds@name`). Shares previously used AFP/Time
+of snapshots (`zfs snapshot pool/ds@name`). Every dataset delete in the pool
+page asks the operator to type the dataset name; `DELETE /api/datasets` carries
+`confirm=<dataset name>` only after that prompt (FR-STO-09), for plain and
+encrypted datasets alike. Shares previously used AFP/Time
 Machine; the modern path is SMB + `fruit` VFS (see [shares.md](shares.md)).
 Snapshots that should appear as SMB previous versions must be named
 `naslos-YYYY-MM-DD_HH-MM-SS` (UTC); scheduled snapshots use that format, and
@@ -173,11 +180,16 @@ the agent's `zfs send` stream into `zfs receive`; `recursive` uses `zfs send -r`
   implicitly), and identical or nested paths are refused.
 - Incremental vs full is chosen from the newest **snapshot GUID** the source and
   destination share, not from snapshot names.
+- Every receive uses `-u` and excludes `mountpoint`, `canmount`, `sharenfs` and
+  `sharesmb` from the stream; after a successful receive the API sets
+  `/var/mnt/<pool>/…` as the mountpoint and mounts it deliberately.
 - A full send replaces the destination dataset's contents, so the destination is
   a replica target: it is refused if the destination has a snapshot that does
-  not carry this pair's `naslos-rep-…` prefix, or any child dataset. Incremental
-  receives never use `-F`, so a user snapshot on the destination is never
-  deleted.
+  not carry this pair's `naslos-rep-…` prefix, or any child dataset. `-F` is
+  never implicit: the API only sends it after that gate and the agent also
+  requires a matching `confirm` and re-checks for foreign snapshots/children.
+  Incremental receives never use `-F`, so a user snapshot on the destination is
+  never deleted.
 - `pruneKeep` retains the newest N destination snapshots carrying this pair's
   prefix; only those names are eligible for deletion. Source snapshots created
   by replication are not pruned here.
@@ -201,7 +213,12 @@ reaches ZFS:
 | Options limited to `compression`, `quota`, `recordsize`, `atime`, `copies`, `readonly` with validated values | `zfs create -o` accepts arbitrary properties; `mountpoint=/` would put the dataset somewhere unexpected |
 | Encryption is raw-key only for now | `encryption` + `keyformat=raw` creates an encrypted dataset whose 32-byte key lives in a Secret in `naslos-keys`; an administrator must unlock it after every boot. Passphrase keys, encrypted send/receive and in-place conversion are `[OPEN]` (FR-ENC, [dataset-encryption.md](dataset-encryption.md)) |
 | The pool must exist | Otherwise the failure surfaces after the name was accepted |
-| Destroy needs `recursive=true` for a non-empty dataset, never applies to a pool's root dataset, and is refused (409) while a share serves the dataset's path | A dataset picker must not delete data or quietly break a share |
+| Every destroy needs `confirm=<full dataset name>`; a non-empty dataset also needs `recursive=true`; a pool's root dataset is never destroyable through the dataset API | A dataset picker must not delete data with one unconfirmed click |
+| A zvol is refused (409) and only deletes through `/api/zvols`; a VM dataset (`<pool>/vms/…`), an app-attached registered dataset, or a replication source/destination is refused (409) naming the owner | Destroying a backing dataset must not silently break a VM, app, or running replica |
+| The share guard matches component boundaries in both directions (dataset inside a share path or a share path inside the dataset) and fails closed when the share store is not loaded | A parent dataset destroy must not remove a child that a share serves, and a corrupt share store must not be read as "no shares" |
+| The destroy is bound to the dataset GUID the API listed and the path is re-validated immediately before the call; a busy dataset returns 409 naming the consumer | A name that was destroyed and recreated in between must not be destroyed by mistake, and a failed destroy must leave the mountpoint/canmount intact |
+| Create, destroy, zvol create/destroy, receive and rollback are serialized per dataset name in both the API and the agent | Two mutations of one name must not interleave |
+| A pool create accepts no `encryption`/`keyformat`/`keylocation` (create-only properties); a follow-up property failure returns a structured partial report with repair commands | A pool must not be left half-configured with no way to see it |
 
 The UI's dataset form only asks for what matters (name, compression, quota) and
 the pool page shows used/free per dataset.

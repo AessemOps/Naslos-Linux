@@ -835,6 +835,11 @@ kind: PersistentVolumeClaim
 metadata:
   name: naslos-shares-config
   namespace: {{ .Release.Namespace }}
+  annotations:
+    # R-070: this is the state volume (buddy-identity.json, vms.json and the
+    # other config files). Helm deletes release resources even when the
+    # namespace is kept, so keep the claim itself across `helm uninstall`.
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteOnce

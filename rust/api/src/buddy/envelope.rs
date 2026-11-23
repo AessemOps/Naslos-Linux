@@ -292,6 +292,22 @@ impl Manifest {
     pub fn canonical(&self) -> Result<Vec<u8>, String> {
         let mut copy = self.clone();
         copy.signature = String::new();
+        // `createdAt` must have one fixed precision: chrono and Go both vary
+        // the fractional digits by the value, so a manifest signed at
+        // nanosecond precision would not verify after a round trip through the
+        // other implementation. Buddy canonicalizes to whole milliseconds
+        // (R-059).
+        copy.created_at = DateTime::from_timestamp_millis(self.created_at.timestamp_millis())
+            .unwrap_or(self.created_at);
+        let json = serde_json::to_string(&copy).map_err(|e| e.to_string())?;
+        Ok(go_json_escape(&json))
+    }
+
+    /// The pre-canonicalization signed form, kept so manifests signed by an
+    /// older sender (full timestamp precision) still verify.
+    fn canonical_legacy(&self) -> Result<Vec<u8>, String> {
+        let mut copy = self.clone();
+        copy.signature = String::new();
         let json = serde_json::to_string(&copy).map_err(|e| e.to_string())?;
         Ok(go_json_escape(&json))
     }
@@ -322,6 +338,16 @@ impl Manifest {
             .decode(&self.signature)
             .map_err(|e| format!("decoding manifest signature: {e}"))?;
         let canonical = self.canonical()?;
+        if verify(authorized_key, &canonical, &sig).is_ok() {
+            return Ok(());
+        }
+        // Accept a manifest signed before `createdAt` was pinned to
+        // milliseconds (R-059) without accepting a tampered one: only the
+        // timestamp representation differs, everything else is identical.
+        let legacy = self.canonical_legacy()?;
+        if legacy != canonical {
+            return verify(authorized_key, &legacy, &sig);
+        }
         verify(authorized_key, &canonical, &sig)
     }
 
@@ -422,6 +448,7 @@ pub fn validate_manifest_shape(m: &Manifest) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buddy::keys::new_identity;
 
     #[test]
     fn seal_open_round_trip() {
@@ -469,6 +496,42 @@ mod tests {
         let mut m = sample_manifest();
         m.kind = "exec".to_string();
         assert!(validate_manifest_shape(&m).is_err());
+    }
+
+    #[test]
+    fn created_at_is_canonicalized_to_milliseconds() {
+        let mut a = sample_manifest();
+        a.created_at = DateTime::from_timestamp(1_700_000_000, 123_456_789).unwrap();
+        let mut b = sample_manifest();
+        b.created_at = DateTime::from_timestamp(1_700_000_000, 123_999_999).unwrap();
+        let canonical = String::from_utf8(a.canonical().unwrap()).unwrap();
+        assert!(
+            canonical.contains("\"createdAt\":\"2023-11-14T22:13:20.123Z\""),
+            "unexpected canonical createdAt: {canonical}"
+        );
+        assert_eq!(
+            a.canonical().unwrap(),
+            b.canonical().unwrap(),
+            "sub-millisecond precision must not change the signed bytes"
+        );
+        // A different millisecond is a different signed manifest.
+        b.created_at = DateTime::from_timestamp(1_700_000_000, 124_000_000).unwrap();
+        assert_ne!(a.canonical().unwrap(), b.canonical().unwrap());
+    }
+
+    #[test]
+    fn a_legacy_full_precision_manifest_still_verifies() {
+        let id = new_identity("legacy").unwrap();
+        let mut m = sample_manifest();
+        m.created_at = DateTime::from_timestamp(1_700_000_000, 123_456_789).unwrap();
+        m.key_id = id.fingerprint().unwrap();
+        let legacy = m.canonical_legacy().unwrap();
+        m.signature = base64::engine::general_purpose::STANDARD.encode(id.sign(&legacy).unwrap());
+        m.verify_signature(&id.public_key).unwrap();
+        // Tampering still fails, including after the canonicalization fallback.
+        let mut bad = m.clone();
+        bad.sequence += 1;
+        assert!(bad.verify_signature(&id.public_key).is_err());
     }
 
     #[test]

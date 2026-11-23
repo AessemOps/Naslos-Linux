@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::apps::{InstallRequest, View};
+use crate::apps::{ChartPin, InstallRequest, View};
 
 /// The lifecycle of one app job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -85,6 +85,8 @@ pub struct AppJob {
     pub datasets: Option<Vec<String>>,
     /// Environment variables for an upgrade. `None` keeps the stored Secret.
     pub env: Option<Vec<crate::app_env::EnvVar>>,
+    /// Source/channel/version confirmed by the request for an upgrade.
+    pub pin: ChartPin,
     pub result: Mutex<Option<View>>,
 }
 
@@ -187,6 +189,34 @@ impl AppJobManager {
         self.inner.lock().unwrap().jobs.get(id).cloned()
     }
 
+    /// Register a running job without spawning one (handler tests).
+    #[cfg(test)]
+    pub(crate) fn add_running_for_test(&self, app: &str) {
+        let job = Arc::new(AppJob {
+            public: Mutex::new(JobPublic {
+                id: random_job_id(),
+                kind: JobKind::Upgrade,
+                app: app.to_string(),
+                state: JobState::Running,
+                stage: JobStage::Preparing,
+                message: String::new(),
+                started_at: Utc::now(),
+                finished_at: None,
+                base_domain: String::new(),
+                error: String::new(),
+            }),
+            kind: JobKind::Upgrade,
+            app: app.to_string(),
+            request: None,
+            values: None,
+            datasets: None,
+            env: None,
+            pin: ChartPin::default(),
+            result: Mutex::new(None),
+        });
+        self.add(job);
+    }
+
     pub fn list(&self) -> Vec<JobPublic> {
         let inner = self.inner.lock().unwrap();
         inner
@@ -209,6 +239,7 @@ impl AppJobManager {
         values: Option<serde_json::Map<String, serde_json::Value>>,
         datasets: Option<Vec<String>>,
         env: Option<Vec<crate::app_env::EnvVar>>,
+        pin: ChartPin,
         manager: Option<Arc<crate::apps::Manager>>,
     ) -> Result<JobPublic, JobPublic> {
         let mut inner = self.inner.lock().unwrap();
@@ -238,6 +269,7 @@ impl AppJobManager {
             values,
             datasets,
             env,
+            pin,
             result: Mutex::new(None),
         });
         let snapshot = job.snapshot();
@@ -284,6 +316,7 @@ async fn run_job(
                 job.values.as_ref(),
                 job.datasets.as_deref(),
                 job.env.as_deref(),
+                &job.pin,
                 progress_ref,
             )
             .await
@@ -337,6 +370,7 @@ mod tests {
             values: None,
             datasets: None,
             env: None,
+            pin: ChartPin::default(),
             result: Mutex::new(None),
         });
         manager.add(job.clone());

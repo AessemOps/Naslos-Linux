@@ -1,5 +1,9 @@
 //! User and group tools (FR-MCP). `user_enable`/`user_disable` are separate
 //! tools over the `{action}` route so the registry stays a pure table.
+//!
+//! R-009: every identity/credential mutation is `Full`. A `write` token is
+//! an operator and must never create, update, password, enable or disable an
+//! account or group.
 
 use super::{arr, confirm_field, no_args, s, schema, Confirm, Method, Scope, Special, ToolDef};
 
@@ -39,7 +43,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "user_create",
         "Create a user (LDAP + the Samba account mirror).",
-        Write,
+        Full,
         POST,
         "/api/users",
         || schema(
@@ -64,7 +68,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "user_update",
         "Change one user's profile and group membership.",
-        Write,
+        Full,
         PUT,
         "/api/users/{uid}",
         || schema(
@@ -88,7 +92,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "user_set_password",
         "Set a user's password (SMB mirror included).",
-        Write,
+        Full,
         POST,
         "/api/users/{uid}/password",
         || schema(
@@ -105,7 +109,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "user_enable",
         "Enable a user's LDAP and Samba account.",
-        Write,
+        Full,
         POST,
         "/api/users/{uid}/enable",
         || schema(&["uid"], &[("uid", s("The user to enable."))])
@@ -113,7 +117,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "user_disable",
         "Disable a user's LDAP and Samba account (keeps the records).",
-        Write,
+        Full,
         POST,
         "/api/users/{uid}/disable",
         || schema(&["uid"], &[("uid", s("The user to disable."))])
@@ -121,7 +125,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "group_create",
         "Create an LDAP group.",
-        Write,
+        Full,
         POST,
         "/api/groups",
         || schema(
@@ -135,7 +139,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "group_update",
         "Set a group's member list (replaces the current membership).",
-        Write,
+        Full,
         PUT,
         "/api/groups/{cn}",
         || schema(

@@ -23,8 +23,9 @@ pub use types::{
 };
 pub use validation::{ZfsError, ZfsResult};
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Absolute paths inside the Talos host.
 pub const ZPOOL_BIN: &str = "/usr/local/sbin/zpool";
@@ -40,6 +41,11 @@ pub struct ZfsClient {
     /// Without it two concurrent requests both pass the ownership check and
     /// wipe the same device.
     mutation_lock: tokio::sync::Mutex<()>,
+    /// One async mutex per dataset name. Create, destroy, zvol create/destroy,
+    /// receive and rollback all take it, so a destroy cannot race a create or
+    /// a stream for the same name. A plain `Mutex` guards the map; the guard
+    /// itself is async and is held across host commands.
+    dataset_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl ZfsClient {
@@ -48,7 +54,22 @@ impl ZfsClient {
             runner,
             host_root: host_root.into(),
             mutation_lock: tokio::sync::Mutex::new(()),
+            dataset_locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Serialize every mutation of one dataset name (create, destroy, zvol
+    /// create/destroy, receive, rollback). The guard is owned so a stream can
+    /// hold it until the last byte is written.
+    pub async fn lock_dataset_mutation(&self, name: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.dataset_locks.lock().unwrap();
+            locks
+                .entry(name.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
     }
 
     /// Run a command inside the host namespace via chroot.

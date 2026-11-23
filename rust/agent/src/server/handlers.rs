@@ -78,10 +78,23 @@ pub async fn pools_post(State(state): State<Arc<AppState>>, body: Body) -> Respo
         Err(resp) => return resp,
     };
     match zfs.create_pool(&cfg).await {
-        Ok(()) => json_response(
-            StatusCode::CREATED,
-            &json!({ "status": "pool created", "name": cfg.name }),
-        ),
+        Ok(report) => {
+            let status = if report.partial {
+                "pool created with warnings"
+            } else {
+                "pool created"
+            };
+            json_response(
+                StatusCode::CREATED,
+                &json!({
+                    "status": status,
+                    "name": cfg.name,
+                    "partial": report.partial,
+                    "warnings": report.warnings,
+                    "repair": report.repair,
+                }),
+            )
+        }
         Err(e) => write_client_error(&e),
     }
 }
@@ -102,6 +115,12 @@ struct ImportRequest {
     name: String,
     #[serde(default)]
     all: bool,
+    /// Explicit confirmation for `zpool import -f`.
+    #[serde(default)]
+    force: bool,
+    /// Must repeat the pool name (or `all`) when `force` is set.
+    #[serde(default)]
+    confirm: String,
 }
 
 pub async fn pool_import_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
@@ -121,7 +140,20 @@ pub async fn pool_import_post(State(state): State<Arc<AppState>>, body: Body) ->
             "name is required (or set \"all\": true to import every importable pool)",
         );
     }
-    match zfs.import_pool(&req.name).await {
+    if req.force {
+        let expected = if req.name.trim().is_empty() {
+            "all"
+        } else {
+            req.name.trim()
+        };
+        if req.confirm != expected {
+            return write_error(
+                StatusCode::BAD_REQUEST,
+                "a forced import requires confirm=<pool name> (or confirm=all); it can take over a pool another node still serves",
+            );
+        }
+    }
+    match zfs.import_pool(&req.name, req.force).await {
         Ok(()) => {
             if req.name.is_empty() {
                 json_response(StatusCode::OK, &json!({ "status": "all pools imported" }))
@@ -345,7 +377,7 @@ pub async fn datasets_post(
                 &json!({ "status": "dataset created", "name": dataset_name }),
             )
         }
-        Err(e) => write_error(StatusCode::BAD_REQUEST, e.to_string()),
+        Err(e) => write_client_error(&e),
     }
 }
 
@@ -363,7 +395,11 @@ pub async fn datasets_delete(
         return zfs_unavailable();
     };
     let recursive = query.get("recursive").map(|v| v == "true").unwrap_or(false);
-    match zfs.destroy_dataset(&rest, recursive).await {
+    let guid = query
+        .get("guid")
+        .map(|g| g.trim())
+        .filter(|g| !g.is_empty());
+    match zfs.destroy_dataset_with_guid(&rest, recursive, guid).await {
         Ok(()) => {
             tracing::info!("destroyed dataset {} (recursive={})", rest, recursive);
             json_response(
@@ -371,7 +407,7 @@ pub async fn datasets_delete(
                 &json!({ "status": "dataset destroyed", "name": rest }),
             )
         }
-        Err(e) => write_error(StatusCode::BAD_REQUEST, e.to_string()),
+        Err(e) => write_client_error(&e),
     }
 }
 
@@ -506,7 +542,7 @@ pub async fn zvols_post(State(state): State<Arc<AppState>>, body: Body) -> Respo
                 &json!({ "status": "zvol created", "name": req.name }),
             )
         }
-        Err(e) => write_error(StatusCode::BAD_REQUEST, e.to_string()),
+        Err(e) => write_client_error(&e),
     }
 }
 
@@ -540,7 +576,7 @@ pub async fn zvols_resize(
                 &json!({ "status": "zvol resized", "name": name, "size": req.size.trim() }),
             )
         }
-        Err(e) => write_error(StatusCode::BAD_REQUEST, e.to_string()),
+        Err(e) => write_client_error(&e),
     }
 }
 
@@ -569,7 +605,7 @@ pub async fn zvols_delete(
                 &json!({ "status": "zvol destroyed", "name": name }),
             )
         }
-        Err(e) => write_error(StatusCode::BAD_REQUEST, e.to_string()),
+        Err(e) => write_client_error(&e),
     }
 }
 
@@ -1004,6 +1040,12 @@ pub async fn zfs_receive(
         return backup_unavailable();
     };
     let force = query.get("force").map(|v| v == "true").unwrap_or(false);
+    if force && query.get("confirm").map(String::as_str) != Some(dataset.as_str()) {
+        return write_error(
+            StatusCode::BAD_REQUEST,
+            "a forced receive (-F) requires confirm=<dataset name>; it can replace the destination's contents",
+        );
+    }
     let _permit = match state.stream_slots.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
@@ -1013,10 +1055,13 @@ pub async fn zfs_receive(
             )
         }
     };
+    // Hold the dataset lock until the last byte is written and the mountpoint
+    // is set; a create/destroy/rollback of the same name must wait.
+    let _dataset_guard = zfs.lock_dataset_mutation(&dataset).await;
 
     let (mut stdin, wait) = match zfs.receive_stream(&dataset, force).await {
         Ok(pair) => pair,
-        Err(e) => return write_error(StatusCode::BAD_REQUEST, e.to_string()),
+        Err(e) => return write_client_error(&e),
     };
 
     let mut written: u64 = 0;
@@ -1075,7 +1120,13 @@ pub async fn zfs_receive(
 
     match wait.await {
         Ok(()) => {
-            tracing::info!("zfs receive {dataset} restored {written} bytes (force={force})");
+            let (mountpoint, warnings) = match zfs.finalize_receive(&dataset).await {
+                Ok(done) => (done.mountpoint, done.warnings),
+                Err(e) => (String::new(), vec![e.to_string()]),
+            };
+            tracing::info!(
+                "zfs receive {dataset} restored {written} bytes (force={force}, mountpoint={mountpoint:?})"
+            );
             json_response(
                 StatusCode::OK,
                 &json!({
@@ -1083,6 +1134,8 @@ pub async fn zfs_receive(
                     "dataset": dataset,
                     "bytes": written,
                     "force": force,
+                    "mountpoint": mountpoint,
+                    "warnings": warnings,
                 }),
             )
         }

@@ -1,0 +1,55 @@
+{{- /*
+Admission guard for the Helm install identity (R-001).
+
+RBAC already withholds Ingress/NetworkPolicy writes from `naslos-helm`, but a
+future Role edit, an aggregated role or `helm --force-conflicts` must not turn
+that into a silent exposure path: this ValidatingAdmissionPolicy refuses any
+Ingress or NetworkPolicy CREATE/UPDATE from the Helm identity, and refuses any
+object that declares a namespace other than the one in the request. The API is
+the only writer of routes (IngressRoute), the app's Internet-egress
+NetworkPolicy and the chart env Secrets.
+
+Deny-only chart NetworkPolicies are rejected too: the platform base policy is
+the isolation contract, and admitting partial policies would reintroduce a
+chart-controlled routing/policy surface.
+*/}}
+{{- $ans := .Values.apps.namespace | default "naslos-apps" }}
+{{- if and .Values.ui.enabled (ne $ans .Release.Namespace) (ne $ans (include "naslos.workloadNamespace" .)) }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: naslos-helm-app-isolation
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: app-isolation
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["*"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["*"]
+        scope: Namespaced
+  matchConditions:
+    - name: helm-identity
+      expression: "request.userInfo.username == 'system:serviceaccount:{{ .Release.Namespace }}:naslos-helm'"
+  validations:
+    - expression: "!has(object.metadata.namespace) || object.metadata.namespace == request.namespace"
+      message: "The Helm identity may not create or update an object whose metadata.namespace differs from the request namespace."
+      reason: Forbidden
+    - expression: "!(request.resource.group == 'networking.k8s.io' && (request.resource.resource == 'ingresses' || request.resource.resource == 'networkpolicies'))"
+      message: "The Helm identity may not create or update Ingress or NetworkPolicy objects; the Naslos API owns app routing and isolation policy."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: naslos-helm-app-isolation
+  labels:
+    app.kubernetes.io/name: naslos
+    app.kubernetes.io/component: app-isolation
+spec:
+  policyName: naslos-helm-app-isolation
+  validationActions: ["Deny"]
+{{- end }}

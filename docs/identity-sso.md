@@ -29,7 +29,8 @@ changes flow through the Naslos API, which updates both stores atomically.
 dc=naslos,dc=local
 ├── ou=people      (inetOrgPerson + posixAccount + shadowAccount)
 ├── ou=groups      (groupOfNames: naslos_admins, naslos_users, …)
-└── ou=services    (cn=naslos-service — the API's LDAP bind account)
+└── ou=services    (cn=naslos-service — the API's write bind account;
+                    cn=authelia-service — Authelia's read-only bind account)
 ```
 
 Users are created with objectClasses `inetOrgPerson`, `posixAccount`,
@@ -167,6 +168,9 @@ in the page).
 - Sessions: 1 h expiry, 5 min inactivity, 1 M "remember me"; stored in local
   SQLite (`/config/db.sqlite3`) for single-node.
 - Regulation: 3 retries → 2 min window → 5 min ban.
+- UI sign-out posts to `/authelia/api/logout`. A failed request keeps the page
+  open, shows the error, and offers the portal as the fallback instead of
+  redirecting as if the session had ended.
 - Password policy: ≥8 chars ≤72, upper + lower + number required.
 - Authelia's own password reset is disabled; resets happen in the Naslos UI → LDAP.
 - **Elevated session / identity verification.** Registering or removing a second
@@ -206,7 +210,13 @@ in the page).
 
 The same directory can back apps (e.g. Plex, Nextcloud) configured with the
 OpenLDAP server (`ldaps://naslos-openldap:636`, `dc=naslos,dc=local`) and the
-`naslos-service` bind account — avoiding per-app user databases.
+`naslos-service` bind account — avoiding per-app user databases. Authelia
+itself uses the separate `authelia-service` account, which has `auth` on
+`userPassword` and `read` elsewhere but no `write` ACL (FR-IDN-17): a
+compromised Authelia cannot change groups or passwords. The account and its
+`authelia-password` Secret key are created by the bootstrap Job; the ACL ships
+in the OpenLDAP image, so an existing directory needs it applied out of band
+(`openldap/image/test-authelia-acl.sh` is the drill).
 
 ## Deployment & first admin
 

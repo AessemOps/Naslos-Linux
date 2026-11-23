@@ -125,7 +125,7 @@ fn envelope_version_and_kind_are_strict() {
 
 #[tokio::test]
 async fn secret_shaped_app_values_are_rejected() {
-    let state = AppState::for_test("test-secret");
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
     let mut value = base_doc();
     value["apps"] = json!([app(
         "demo",
@@ -148,7 +148,7 @@ async fn secret_shaped_app_values_are_rejected() {
 
 #[tokio::test]
 async fn secret_and_free_form_provider_fields_are_rejected() {
-    let state = AppState::for_test("test-secret");
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
     let mut value = base_doc();
     value["domains"] = json!([{
         "baseDomain": "example.test",
@@ -203,7 +203,7 @@ async fn secret_and_free_form_provider_fields_are_rejected() {
 
 #[tokio::test]
 async fn invalid_paths_datasets_pools_and_providers_are_rejected() {
-    let state = AppState::for_test("test-secret");
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
 
     let mut value = base_doc();
     value["shares"] = json!([share("outside", "/etc/outside")]);
@@ -265,7 +265,7 @@ async fn invalid_paths_datasets_pools_and_providers_are_rejected() {
 
 #[tokio::test]
 async fn dry_run_plan_is_pure_and_apply_is_idempotent() {
-    let state = AppState::for_test("test-secret");
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
     state
         .shares
         .lock()
@@ -288,7 +288,7 @@ async fn dry_run_plan_is_pure_and_apply_is_idempotent() {
     assert!(matches!(plan.shares[0].outcome, Outcome::Created(None)));
     assert!(state.shares.lock().unwrap().get("added").is_err());
 
-    apply_plan(&state, &mut plan);
+    apply_plan(&state, &mut plan).await;
     assert!(state.shares.lock().unwrap().get("added").is_ok());
     assert!(state.shares.lock().unwrap().get("keep").is_ok());
 
@@ -335,6 +335,7 @@ async fn the_same_zone_record_and_type_can_use_different_providers() {
 async fn exported_ids_are_never_reused_for_new_records() {
     let mut state = AppState::for_test("test-secret");
     state.ddns = Some(Arc::new(ddns_manager(&state)));
+    let state = std::sync::Arc::new(state);
     let mut value = base_doc();
     value["storageSchedules"] = json!([{
         "id": "evil-storage-id",
@@ -368,7 +369,7 @@ async fn exported_ids_are_never_reused_for_new_records() {
     }]);
 
     let mut plan = build_plan(&state, &parse(value)).await.unwrap();
-    apply_plan(&state, &mut plan);
+    apply_plan(&state, &mut plan).await;
 
     let storage = state.storage_schedules.list();
     assert_eq!(storage.len(), 1);
@@ -391,6 +392,7 @@ async fn exported_ids_are_never_reused_for_new_records() {
 async fn domain_references_follow_the_server_generated_ddns_id() {
     let mut state = AppState::for_test("test-secret");
     state.ddns = Some(Arc::new(ddns_manager(&state)));
+    let state = std::sync::Arc::new(state);
     let mut value = base_doc();
     value["ddnsEntries"] = json!([{
         "id": "exported-ddns",
@@ -414,7 +416,7 @@ async fn domain_references_follow_the_server_generated_ddns_id() {
     }]);
 
     let mut plan = build_plan(&state, &parse(value)).await.unwrap();
-    apply_plan(&state, &mut plan);
+    apply_plan(&state, &mut plan).await;
 
     let ddns_id = state.ddns.as_ref().unwrap().store().list()[0].id.clone();
     let domain = state.domains.get("example.test").unwrap();
@@ -427,7 +429,7 @@ async fn domain_references_follow_the_server_generated_ddns_id() {
 
 #[tokio::test]
 async fn ambiguous_existing_schedules_are_skipped() {
-    let state = AppState::for_test("test-secret");
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
     for id in ["one", "two"] {
         state
             .storage_schedules
@@ -461,7 +463,7 @@ async fn ambiguous_existing_schedules_are_skipped() {
 
 #[tokio::test]
 async fn apps_are_validated_then_reported_as_skipped() {
-    let state = AppState::for_test("test-secret");
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
     let mut value = base_doc();
     value["apps"] = json!([app("demo", json!({"replicas": 2}))]);
     let document = parse(value);
@@ -474,7 +476,7 @@ async fn apps_are_validated_then_reported_as_skipped() {
 
 #[tokio::test]
 async fn an_app_without_values_is_valid_even_when_the_catalog_was_missing() {
-    let state = AppState::for_test("test-secret");
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
     let mut value = base_doc();
     let mut record = app("demo", json!({}));
     record.as_object_mut().unwrap().remove("values");
@@ -510,6 +512,7 @@ async fn existing_free_form_provider_config_is_preserved() {
             ..Default::default()
         })
         .unwrap();
+    let state = std::sync::Arc::new(state);
 
     let mut value = base_doc();
     value["ddnsEntries"] = json!([{
@@ -523,7 +526,7 @@ async fn existing_free_form_provider_config_is_preserved() {
         "providerConfig": {"method": "GET"}
     }]);
     let mut plan = build_plan(&state, &parse(value)).await.unwrap();
-    apply_plan(&state, &mut plan);
+    apply_plan(&state, &mut plan).await;
 
     let stored = state.ddns.as_ref().unwrap().store().list();
     assert_eq!(stored.len(), 1);
@@ -558,6 +561,7 @@ async fn an_existing_domain_links_to_a_ddns_entry_created_by_the_import() {
             ..Default::default()
         })
         .unwrap();
+    let state = std::sync::Arc::new(state);
     let mut value = base_doc();
     value["ddnsEntries"] = json!([{
         "id": "exported-ddns",
@@ -586,7 +590,7 @@ async fn an_existing_domain_links_to_a_ddns_entry_created_by_the_import() {
         "{:?}",
         plan.domains[0].outcome
     );
-    apply_plan(&state, &mut plan);
+    apply_plan(&state, &mut plan).await;
 
     let ddns_id = state.ddns.as_ref().unwrap().store().list()[0].id.clone();
     let domain = state.domains.get("example.test").unwrap();
@@ -598,7 +602,7 @@ async fn an_existing_domain_links_to_a_ddns_entry_created_by_the_import() {
 
 #[tokio::test]
 async fn duplicate_storage_schedules_are_skipped_not_fatal() {
-    let state = AppState::for_test("test-secret");
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
     let mut value = base_doc();
     value["storageSchedules"] = json!([
         {
@@ -626,13 +630,180 @@ async fn duplicate_storage_schedules_are_skipped_not_fatal() {
     assert_eq!(plan.storage.len(), 2);
     assert!(matches!(plan.storage[0].outcome, Outcome::Created(_)));
     assert!(matches!(plan.storage[1].outcome, Outcome::Skipped(_)));
-    apply_plan(&state, &mut plan);
+    apply_plan(&state, &mut plan).await;
     assert_eq!(state.storage_schedules.list().len(), 1);
 }
 
 #[tokio::test]
+async fn duplicate_shares_are_skipped_not_fatal() {
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
+    let mut value = base_doc();
+    value["shares"] = json!([
+        share("media", "/var/mnt/tank/media"),
+        share("media", "/var/mnt/tank/other")
+    ]);
+    let mut plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert_eq!(plan.shares.len(), 2);
+    assert!(matches!(plan.shares[0].outcome, Outcome::Created(_)));
+    assert!(matches!(plan.shares[1].outcome, Outcome::Skipped(_)));
+    apply_plan(&state, &mut plan).await;
+    let shares = state.shares.lock().unwrap();
+    assert_eq!(shares.list().len(), 1);
+    assert_eq!(shares.get("media").unwrap().path, "/var/mnt/tank/media");
+}
+
+#[tokio::test]
+async fn duplicate_ddns_entries_are_skipped_not_fatal() {
+    let mut state = AppState::for_test("test-secret");
+    state.ddns = Some(Arc::new(ddns_manager(&state)));
+    let state = std::sync::Arc::new(state);
+    let mut value = base_doc();
+    let entry = json!({
+        "id": "first",
+        "provider": "cloudflare",
+        "zone": "example.test",
+        "record": "home",
+        "recordType": "A",
+        "ttl": 300,
+        "enabled": true,
+        "providerConfig": {}
+    });
+    let mut duplicate = entry.clone();
+    duplicate["id"] = json!("second");
+    value["ddnsEntries"] = json!([entry, duplicate]);
+    let mut plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert_eq!(plan.ddns.len(), 2);
+    assert!(matches!(plan.ddns[0].outcome, Outcome::Created(_)));
+    assert!(matches!(plan.ddns[1].outcome, Outcome::Skipped(_)));
+    apply_plan(&state, &mut plan).await;
+    assert_eq!(state.ddns.as_ref().unwrap().store().list().len(), 1);
+}
+
+#[tokio::test]
+async fn duplicate_dataset_records_are_skipped_not_fatal() {
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
+    let mut value = base_doc();
+    value["datasetRegistry"] = json!([
+        {"name": "media", "hostPath": "/var/mnt/tank/media", "shared": false, "warningAcknowledged": false},
+        {"name": "media", "hostPath": "/var/mnt/tank/other", "shared": false, "warningAcknowledged": false}
+    ]);
+    let mut plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert_eq!(plan.datasets.len(), 2);
+    assert!(matches!(plan.datasets[0].outcome, Outcome::Created(_)));
+    assert!(matches!(plan.datasets[1].outcome, Outcome::Skipped(_)));
+    apply_plan(&state, &mut plan).await;
+    assert_eq!(state.datasets_registry.list().len(), 1);
+}
+
+#[tokio::test]
+async fn duplicate_apps_are_skipped_not_fatal() {
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
+    let mut value = base_doc();
+    value["apps"] = json!([
+        app("demo", json!({"replicas": 1})),
+        app("demo", json!({"replicas": 2}))
+    ]);
+    let plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert_eq!(plan.apps.len(), 2);
+    let report = build_report(&plan, 1, true);
+    assert_eq!(report.sections["apps"].skipped.len(), 2);
+    assert!(report.sections["apps"].failed.is_empty());
+}
+
+#[tokio::test]
+async fn imported_overlapping_snapshot_schedules_are_skipped() {
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
+    let mut value = base_doc();
+    value["storageSchedules"] = json!([
+        {
+            "id": "s1",
+            "kind": "snapshot",
+            "target": "tank/media",
+            "cadence": "daily",
+            "runAt": "02:30",
+            "keep": 3,
+            "recursive": true,
+            "enabled": true
+        },
+        {
+            "id": "s2",
+            "kind": "snapshot",
+            "target": "tank/media/child",
+            "cadence": "daily",
+            "runAt": "02:30",
+            "keep": 3,
+            "recursive": false,
+            "enabled": true
+        }
+    ]);
+    let mut plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert_eq!(plan.storage.len(), 2);
+    assert!(matches!(plan.storage[0].outcome, Outcome::Created(_)));
+    assert!(
+        matches!(&plan.storage[1].outcome, Outcome::Skipped(reason) if reason.contains("already covers")),
+        "{:?}",
+        plan.storage[1].outcome
+    );
+    apply_plan(&state, &mut plan).await;
+    assert_eq!(state.storage_schedules.list().len(), 1);
+}
+
+#[tokio::test]
+async fn a_symlink_planted_after_the_plan_is_refused_at_apply() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("mnt");
+    std::fs::create_dir_all(base.join("tank/media")).unwrap();
+    let mut state = AppState::for_test("test-secret");
+    state.shares = std::sync::Mutex::new(crate::shares::Manager::new("", base.to_str().unwrap()));
+    let state = std::sync::Arc::new(state);
+    let path = base.join("tank/media");
+    let mut value = base_doc();
+    value["shares"] = json!([share("media", path.to_str().unwrap())]);
+    let mut plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert!(matches!(plan.shares[0].outcome, Outcome::Created(_)));
+
+    std::fs::remove_dir_all(&path).unwrap();
+    std::os::unix::fs::symlink("/etc", &path).unwrap();
+
+    apply_plan(&state, &mut plan).await;
+    assert!(
+        matches!(&plan.shares[0].outcome, Outcome::Failed(reason) if reason.contains("symlink")),
+        "{:?}",
+        plan.shares[0].outcome
+    );
+    assert!(state.shares.lock().unwrap().get("media").is_err());
+}
+
+#[tokio::test]
+async fn an_unreachable_agent_marks_the_plan_structural_only() {
+    let mut state = AppState::for_test("test-secret");
+    state.agent = Some(Arc::new(
+        crate::agent::Client::with_timeouts(
+            "http://127.0.0.1:9",
+            "token",
+            "",
+            std::time::Duration::from_millis(150),
+            std::time::Duration::from_millis(150),
+        )
+        .unwrap(),
+    ));
+    let state = std::sync::Arc::new(state);
+    let mut value = base_doc();
+    value["shares"] = json!([share("media", "/var/mnt/tank/media")]);
+    let plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert!(plan.structural_only);
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|warning| warning.contains("unreachable")),
+        "{:?}",
+        plan.warnings
+    );
+}
+
+#[tokio::test]
 async fn duplicate_buddy_schedules_are_skipped_not_fatal() {
-    let state = AppState::for_test("test-secret");
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
     let mut value = base_doc();
     value["buddySchedules"] = json!([
         {
@@ -660,13 +831,13 @@ async fn duplicate_buddy_schedules_are_skipped_not_fatal() {
     assert_eq!(plan.buddy.len(), 2);
     assert!(matches!(plan.buddy[0].outcome, Outcome::Created(_)));
     assert!(matches!(plan.buddy[1].outcome, Outcome::Skipped(_)));
-    apply_plan(&state, &mut plan);
+    apply_plan(&state, &mut plan).await;
     assert_eq!(state.buddy_schedules.list().len(), 1);
 }
 
 #[tokio::test]
-async fn trimmed_domain_duplicates_are_rejected() {
-    let state = AppState::for_test("test-secret");
+async fn trimmed_domain_duplicates_are_skipped() {
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
     let mut value = base_doc();
     value["domains"] = json!([
         {
@@ -690,18 +861,17 @@ async fn trimmed_domain_duplicates_are_rejected() {
             "appRecordsDdnsEntry": null
         }
     ]);
-    let errors = build_plan(&state, &parse(value)).await.unwrap_err();
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.contains("duplicate base domain")),
-        "{errors:?}"
-    );
+    let mut plan = build_plan(&state, &parse(value)).await.unwrap();
+    assert_eq!(plan.domains.len(), 2);
+    assert!(matches!(plan.domains[0].outcome, Outcome::Created(_)));
+    assert!(matches!(plan.domains[1].outcome, Outcome::Skipped(_)));
+    apply_plan(&state, &mut plan).await;
+    assert_eq!(state.domains.list().len(), 1);
 }
 
 #[tokio::test]
 async fn legacy_afp_shares_are_skipped() {
-    let state = AppState::for_test("test-secret");
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
     let mut afp = share("legacy", "/var/mnt/tank/legacy");
     afp["protocol"] = json!("afp");
     let mut value = base_doc();
@@ -709,14 +879,14 @@ async fn legacy_afp_shares_are_skipped() {
     let mut plan = build_plan(&state, &parse(value)).await.unwrap();
     assert_eq!(plan.shares.len(), 2);
     assert!(matches!(plan.shares[0].outcome, Outcome::Skipped(_)));
-    apply_plan(&state, &mut plan);
+    apply_plan(&state, &mut plan).await;
     assert!(state.shares.lock().unwrap().get("legacy").is_err());
     assert!(state.shares.lock().unwrap().get("media").is_ok());
 }
 
 #[tokio::test]
 async fn a_provider_change_clears_the_old_credentials() {
-    let state = AppState::for_test("test-secret");
+    let state = std::sync::Arc::new(AppState::for_test("test-secret"));
     state
         .domains
         .upsert(Domain {
@@ -753,7 +923,7 @@ async fn a_provider_change_clears_the_old_credentials() {
         .iter()
         .any(|note| note.contains("re-enter")));
 
-    apply_plan(&state, &mut plan);
+    apply_plan(&state, &mut plan).await;
     let domain = state.domains.get("example.test").unwrap();
     assert!(domain.credentials_secret.is_empty());
     assert_eq!(domain.dns_provider.as_str(), "ovh");
@@ -902,8 +1072,9 @@ async fn an_exported_document_round_trips_through_import() {
 
     let mut target = AppState::for_test("test-secret");
     target.ddns = Some(Arc::new(ddns_manager(&target)));
+    let target = std::sync::Arc::new(target);
     let mut plan = build_plan(&target, &document).await.unwrap();
-    apply_plan(&target, &mut plan);
+    apply_plan(&target, &mut plan).await;
 
     let reexported = serde_json::to_value(config_export::build(&target, Utc::now())).unwrap();
     assert_eq!(reexported["shares"][0]["name"], "media");

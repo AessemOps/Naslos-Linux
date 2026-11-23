@@ -120,9 +120,16 @@ pub async fn users_post(State(state): State<Arc<AppState>>, body: Body) -> Respo
     }
     for group in &req.groups {
         if let Err(e) = client.add_member(group, &req.uid).await {
+            // The account exists now; a later group add failed. Report a
+            // partial failure (500) so the caller cannot mistake it for a
+            // clean create (R-077).
+            tracing::error!(
+                "user {} created but group membership failed: {e}",
+                crate::logsafe::field(&req.uid)
+            );
             return json(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({ "error": e }),
+                serde_json::json!({ "error": e, "partial": true }),
             );
         }
     }
@@ -446,25 +453,35 @@ pub async fn group_detail_put(
         Err(e) => return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
     };
     let (add, remove) = membership_delta(&group.members, &req.members, extract_uid);
-    if let Err(e) = apply_membership_changes(
+    let membership_err = apply_membership_changes(
         &client,
         &MembershipTarget::GroupMembers { cn: cn.clone() },
         &add,
         &remove,
     )
-    .await
-    {
-        tracing::warn!(
-            "group {} updated with errors: {e}",
-            crate::logsafe::field(&cn)
-        );
-    }
+    .await;
+    // A partially applied membership change still has to reach the node so
+    // the share mirror matches LDAP, but the request must not report success
+    // (R-077): the end record and the response both carry the failure.
     if let Err(e) = super::shares::apply_shares_config(&state).await {
         tracing::warn!("group membership changed but pushing it to the node failed: {e}");
         return json(
             StatusCode::BAD_GATEWAY,
             serde_json::json!({
                 "error": format!("group membership changed in LDAP but the node was not updated: {e}")
+            }),
+        );
+    }
+    if let Err(e) = membership_err {
+        tracing::error!(
+            "group {} membership update failed (partial): {e}",
+            crate::logsafe::field(&cn)
+        );
+        return json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({
+                "error": format!("group membership updated only partially: {e}"),
+                "partial": true
             }),
         );
     }

@@ -11,13 +11,36 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// A domain create/update body: the domain fields plus the selected provider's
-/// credential `fields`.
+/// credential `fields`. `solver` is write-only in responses, so an update that
+/// omits it must preserve the stored value; `solver_submitted` distinguishes
+/// an omitted key from an explicit `null`/empty object.
 #[derive(Default, serde::Deserialize)]
 struct DomainRequest {
     #[serde(flatten)]
     domain: Domain,
     #[serde(default)]
     fields: Option<HashMap<String, String>>,
+    #[serde(skip)]
+    solver_submitted: bool,
+}
+
+/// Decode a domain request while recording whether `solver` was present.
+#[allow(clippy::result_large_err)]
+async fn read_domain_request(body: Body) -> Result<DomainRequest, Response> {
+    let value: serde_json::Value = super::zfs::read_json(body).await?;
+    let solver_submitted = value.get("solver").is_some();
+    let mut req: DomainRequest = serde_json::from_value(value).map_err(|e| {
+        json(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({ "error": e.to_string() }),
+        )
+    })?;
+    req.solver_submitted = solver_submitted;
+    Ok(req)
+}
+
+fn solver_is_explicitly_empty(solver: &serde_json::Value) -> bool {
+    solver.is_null() || solver.as_object().map(|m| m.is_empty()).unwrap_or(false)
 }
 
 fn bad_request(msg: &str) -> Response {
@@ -100,6 +123,48 @@ async fn sync_sso_state(state: &AppState) -> Result<(), String> {
     sso.sync(&effective_sso_domains(state)).await
 }
 
+/// The GET projection of a domain. The cert-manager `solver` and any
+/// credential-bearing `providerConfig` values are never echoed; only their
+/// presence is reported.
+fn domain_view(domain: &Domain) -> serde_json::Value {
+    let mut value = serde_json::to_value(domain).unwrap_or_default();
+    let mut safe = serde_json::Map::new();
+    let mut redacted: Vec<String> = Vec::new();
+    for (key, val) in &domain.provider_config {
+        if crate::server::config_export::is_sensitive_key(key)
+            || crate::server::config_export::is_free_form_value_key(key)
+            || crate::server::config_export::value_looks_sensitive(val)
+        {
+            redacted.push(key.clone());
+        } else {
+            safe.insert(key.clone(), serde_json::json!(val));
+        }
+    }
+    redacted.sort();
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("solver");
+        obj.insert(
+            "solverConfigured".to_string(),
+            serde_json::json!(domain.solver.is_some()),
+        );
+        if safe.is_empty() {
+            obj.remove("providerConfig");
+        } else {
+            obj.insert(
+                "providerConfig".to_string(),
+                serde_json::Value::Object(safe),
+            );
+        }
+        if !redacted.is_empty() {
+            obj.insert(
+                "redactedProviderConfigKeys".to_string(),
+                serde_json::json!(redacted),
+            );
+        }
+    }
+    value
+}
+
 /// `GET|POST /api/domains`
 pub async fn domains_get(State(state): State<Arc<AppState>>) -> Response {
     let domains: Vec<serde_json::Value> = state
@@ -107,7 +172,7 @@ pub async fn domains_get(State(state): State<Arc<AppState>>) -> Response {
         .list()
         .iter()
         .map(|domain| {
-            let mut value = serde_json::to_value(domain).unwrap_or_default();
+            let mut value = domain_view(domain);
             value["appRecordsSupported"] =
                 serde_json::json!(crate::dnsrecords::provider_supported(&domain.dns_provider));
             value
@@ -126,7 +191,7 @@ pub async fn domains_get(State(state): State<Arc<AppState>>) -> Response {
 }
 
 pub async fn domains_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
-    let mut req: DomainRequest = match super::zfs::read_json(body).await {
+    let mut req = match read_domain_request(body).await {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -141,7 +206,7 @@ pub async fn domain_detail_get(
 ) -> Response {
     match state.domains.get(&name) {
         Ok(d) => {
-            let mut value = serde_json::to_value(&d).unwrap_or_default();
+            let mut value = domain_view(&d);
             value["appRecordsSupported"] =
                 serde_json::json!(crate::dnsrecords::provider_supported(&d.dns_provider));
             json(StatusCode::OK, value)
@@ -155,7 +220,7 @@ pub async fn domain_detail_put(
     Path(name): Path<String>,
     body: Body,
 ) -> Response {
-    let mut req: DomainRequest = match super::zfs::read_json(body).await {
+    let mut req = match read_domain_request(body).await {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -249,8 +314,8 @@ pub async fn domain_sso_post(
     json(
         StatusCode::OK,
         serde_json::json!({
-            "domain": domain,
-            "domains": state.domains.list(),
+            "domain": domain_view(&domain),
+            "domains": state.domains.list().iter().map(domain_view).collect::<Vec<_>>(),
             "ssoDomains": effective_sso_domains(&state),
         }),
     )
@@ -282,7 +347,11 @@ pub async fn domain_certificate_get(
 }
 
 async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: StatusCode) -> Response {
-    let mut domain = req.domain;
+    let DomainRequest {
+        mut domain,
+        fields,
+        solver_submitted,
+    } = req;
     if domain.environment.is_empty() {
         domain.environment = "staging".to_string();
     }
@@ -295,11 +364,35 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
     {
         domain.app_records_ddns_entry = None;
     }
+    let existing = state.domains.get(&domain.base_domain).ok();
+    // Preserve write-only fields that an update omitted. The UI never receives
+    // the solver or credential values back, so omission must not erase them.
+    if let Some(prev) = &existing {
+        if domain.credentials_secret.is_empty() {
+            domain.credentials_secret = prev.credentials_secret.clone();
+        }
+        if !solver_submitted {
+            domain.solver = prev.solver.clone();
+        }
+        if fields.is_none() {
+            domain.provider_config = prev.provider_config.clone();
+        }
+    }
+    // An explicit empty solver clears it only for provider-rendered solvers;
+    // passthrough still needs one and is rejected by `validate` below.
+    if solver_submitted
+        && domain
+            .solver
+            .as_ref()
+            .map(solver_is_explicitly_empty)
+            .unwrap_or(false)
+    {
+        domain.solver = None;
+    }
     if let Err(e) = validate_app_records(state, &domain) {
         return bad_request(&e);
     }
-    let existing = state.domains.get(&domain.base_domain).ok();
-    if let Some(fields) = &req.fields {
+    if let Some(fields) = &fields {
         if let Err(e) = apply_domain_fields(state, &mut domain, fields, existing.as_ref()).await {
             return bad_request(&e);
         }
@@ -333,7 +426,7 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
     if let Some(manager) = &state.app_manager {
         manager.reconcile_dns_for_domain(&domain.base_domain).await;
     }
-    let mut value = serde_json::to_value(&domain).unwrap_or_default();
+    let mut value = domain_view(&domain);
     value["appRecordsSupported"] =
         serde_json::json!(crate::dnsrecords::provider_supported(&domain.dns_provider));
     json(status, value)
@@ -398,16 +491,28 @@ async fn apply_domain_fields(
         domain.credentials_secret.clone()
     };
     p.validate_solver(&secret_name, &resolved.config)?;
-    if resolved.secret_values.is_empty() {
+    if resolved.secret_values.is_empty() && resolved.removed_secret_keys.is_empty() {
         return Ok(());
     }
     let Some(kube) = &state.kube else {
         return Err("cannot reach the Kubernetes API to store credentials".to_string());
     };
-    kube.write_secret(&state.apps_namespace, &secret_name, &resolved.secret_values)
+    if !resolved.secret_values.is_empty() {
+        kube.write_secret(&state.apps_namespace, &secret_name, &resolved.secret_values)
+            .await
+            .map_err(|e| format!("storing credentials: {e}"))?;
+        domain.credentials_secret = secret_name.clone();
+    }
+    if !resolved.removed_secret_keys.is_empty() {
+        crate::ddns::remove_secret_keys(
+            kube,
+            &state.apps_namespace,
+            &secret_name,
+            &resolved.removed_secret_keys,
+        )
         .await
-        .map_err(|e| format!("storing credentials: {e}"))?;
-    domain.credentials_secret = secret_name;
+        .map_err(|e| format!("revoking credentials: {e}"))?;
+    }
     Ok(())
 }
 
@@ -430,6 +535,26 @@ fn sanitize_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn domain_view_redacts_solver_and_credentials() {
+        let domain = Domain {
+            base_domain: "example.com".into(),
+            solver: Some(serde_json::json!({ "webhook": { "token": "leak" } })),
+            provider_config: HashMap::from([
+                ("endpoint".to_string(), "ovh-eu".to_string()),
+                ("applicationKey".to_string(), "legacy-key".to_string()),
+            ]),
+            ..Default::default()
+        };
+        let value = domain_view(&domain);
+        let text = value.to_string();
+        assert!(!text.contains("leak"), "{text}");
+        assert!(!text.contains("legacy-key"), "{text}");
+        assert_eq!(value["solverConfigured"], true);
+        assert_eq!(value["providerConfig"]["endpoint"], "ovh-eu");
+        assert!(value.get("solver").is_none(), "{text}");
+    }
 
     #[test]
     fn sanitize_name_reduces_domains() {

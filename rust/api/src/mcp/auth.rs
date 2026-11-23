@@ -52,21 +52,35 @@ pub async fn guard(State(state): State<Arc<AppState>>, mut req: Request, next: N
         return forbidden("Origin header is not allowed");
     }
 
-    if state.mcp.failures.is_blocked(ip) {
-        return too_many_requests();
-    }
-
-    let plaintext = bearer_token(req.headers());
-    match plaintext.and_then(|t| state.mcp.store.verify(&t)) {
+    // Verify first: a valid token is never blocked by another client's failed
+    // attempts (R-024). Only an invalid token consults the backoff table, and
+    // its failures are counted against both the socket peer and the presented
+    // token digest so one noisy client cannot lock out every token behind the
+    // same proxy address.
+    let presented = bearer_token(req.headers()).unwrap_or_default();
+    match state.mcp.store.verify(&presented) {
         Some(auth) => {
-            state.mcp.failures.record_success(ip);
+            state
+                .mcp
+                .failures
+                .record_success(&crate::mcp::FailureTrack::ip_key(ip));
+            state
+                .mcp
+                .failures
+                .record_success(&crate::mcp::FailureTrack::token_key(&presented));
             // Debounced flush inside the store.
             state.mcp.store.record_last_used(&auth.id);
             req.extensions_mut().insert(Arc::new(auth));
             next.run(req).await
         }
         None => {
-            state.mcp.failures.record_failure(ip);
+            let ip_key = crate::mcp::FailureTrack::ip_key(ip);
+            let token_key = crate::mcp::FailureTrack::token_key(&presented);
+            if state.mcp.failures.is_blocked(&ip_key) || state.mcp.failures.is_blocked(&token_key) {
+                return too_many_requests();
+            }
+            state.mcp.failures.record_failure(&ip_key);
+            state.mcp.failures.record_failure(&token_key);
             unauthorized()
         }
     }
@@ -82,13 +96,8 @@ fn bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
 /// A present `Origin` must be the configured apex (or the request's own
 /// host, which is the apex behind Traefik). Non-browser MCP clients send no
 /// `Origin` and always pass — same rule as the terminal WebSockets.
-fn origin_is_apex(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
-    let extra = if state.base_domain.is_empty() {
-        Vec::new()
-    } else {
-        vec![state.base_domain.clone()]
-    };
-    crate::server::ws::origin_allowed(headers, &extra)
+fn origin_is_apex(_state: &AppState, headers: &axum::http::HeaderMap) -> bool {
+    crate::server::ws::origin_allowed(headers, &[])
 }
 
 fn unauthorized() -> Response {
@@ -209,7 +218,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ten_failures_block_the_source_ip() {
+    async fn failures_block_the_bad_token_but_never_a_valid_one() {
         let (app, _, token) = app();
         for _ in 0..10 {
             let resp = app
@@ -219,14 +228,21 @@ mod tests {
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         }
-        // Blocked even with the *valid* token now.
+        // The bad token is throttled.
+        let resp = app
+            .clone()
+            .oneshot(request(Some("test-secret"), Some("nmcp_no")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(resp.headers().contains_key(header::RETRY_AFTER));
+        // A valid token from the same peer still works (R-024).
         let resp = app
             .clone()
             .oneshot(request(Some("test-secret"), Some(&token)))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert!(resp.headers().contains_key(header::RETRY_AFTER));
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

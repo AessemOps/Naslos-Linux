@@ -6,7 +6,7 @@
 #
 # Runs as a hostNetwork DaemonSet so clients reach it on the node's :2049.
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 LABEL maintainer="Naslos <team@naslos.dev>"
 LABEL description="NFS-Ganesha userspace NFSv4 server for Naslos"

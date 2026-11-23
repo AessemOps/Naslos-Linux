@@ -140,7 +140,7 @@ fn snapshot_targets_overlap(
         || (b_recursive && a_target.starts_with(&format!("{b_target}/")))
 }
 
-fn snapshot_schedules_overlap(a: &StorageSchedule, b: &StorageSchedule) -> bool {
+pub(crate) fn snapshot_schedules_overlap(a: &StorageSchedule, b: &StorageSchedule) -> bool {
     a.kind == ScheduleKind::Snapshot
         && b.kind == ScheduleKind::Snapshot
         && snapshot_targets_overlap(&a.target, a.recursive, &b.target, b.recursive)
@@ -286,10 +286,17 @@ pub fn scrub_finished(scan: &str) -> Option<Result<String, String>> {
     }
 }
 
+/// How long a scheduled run keeps retrying a transient agent failure before
+/// the attempt is recorded as a normal failure and the cadence advances.
+const AGENT_RETRY_WINDOW_SECS: i64 = 60 * 60;
+
 /// Persists schedule entries as JSON.
 pub struct StorageScheduleStore {
     path: String,
     entries: Mutex<HashMap<String, StorageSchedule>>,
+    /// Set when the backing file could not be parsed. Mutations are refused so
+    /// a corrupt store is never overwritten with an empty one.
+    load_error: Mutex<Option<String>>,
 }
 
 impl StorageScheduleStore {
@@ -297,6 +304,7 @@ impl StorageScheduleStore {
         Self {
             path: path.to_string(),
             entries: Mutex::new(HashMap::new()),
+            load_error: Mutex::new(None),
         }
     }
 
@@ -310,16 +318,44 @@ impl StorageScheduleStore {
     pub fn load(&self) -> Result<(), String> {
         let mut guard = self.entries.lock().unwrap();
         guard.clear();
+        *self.load_error.lock().unwrap() = None;
         if self.path.is_empty() {
             return Ok(());
         }
         let data = match std::fs::read(&self.path) {
             Ok(d) => d,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e.to_string()),
+            Err(e) => {
+                let message = format!("reading storage schedule store {}: {e}", self.path);
+                *self.load_error.lock().unwrap() = Some(message.clone());
+                return Err(message);
+            }
         };
-        let list: Vec<StorageSchedule> = serde_json::from_slice(&data)
-            .map_err(|e| format!("parsing storage schedule store {}: {e}", self.path))?;
+        let list: Vec<StorageSchedule> = match serde_json::from_slice(&data) {
+            Ok(list) => list,
+            Err(e) => {
+                // Keep the operator's data recoverable: move the unparseable
+                // file aside, refuse mutations, and report the backup path.
+                let backup = format!("{}.corrupt-{}", self.path, Utc::now().timestamp());
+                let backup = match std::fs::rename(&self.path, &backup) {
+                    Ok(()) => backup,
+                    Err(rename_error) => {
+                        let message = format!(
+                            "parsing storage schedule store {}: {e} (could not preserve a backup: {rename_error})",
+                            self.path
+                        );
+                        *self.load_error.lock().unwrap() = Some(message.clone());
+                        return Err(message);
+                    }
+                };
+                let message = format!(
+                    "parsing storage schedule store {}: {e}; preserved the corrupt file at {backup} and refusing mutations",
+                    self.path
+                );
+                *self.load_error.lock().unwrap() = Some(message.clone());
+                return Err(message);
+            }
+        };
         for e in list {
             if e.id.is_empty() {
                 continue;
@@ -347,6 +383,10 @@ impl StorageScheduleStore {
         crate::chartsrepo::write_atomic(&self.path, &data, 0o600, 0o750)
     }
 
+    fn mutation_error(&self) -> Option<String> {
+        self.load_error.lock().unwrap().clone()
+    }
+
     pub fn list(&self) -> Vec<StorageSchedule> {
         let guard = self.entries.lock().unwrap();
         let mut out: Vec<StorageSchedule> = guard.values().cloned().collect();
@@ -359,12 +399,18 @@ impl StorageScheduleStore {
     }
 
     pub fn put(&self, e: StorageSchedule) -> Result<(), String> {
+        if let Some(error) = self.mutation_error() {
+            return Err(error);
+        }
         let mut guard = self.entries.lock().unwrap();
         guard.insert(e.id.clone(), e);
         self.save(&guard)
     }
 
     pub fn remove(&self, id: &str) -> Result<(), String> {
+        if let Some(error) = self.mutation_error() {
+            return Err(error);
+        }
         let mut guard = self.entries.lock().unwrap();
         if guard.remove(id).is_none() {
             return Err(format!("schedule {id:?} not found"));
@@ -377,6 +423,9 @@ impl StorageScheduleStore {
     /// merge happens under the store lock so a result recorded while the
     /// request was being validated is not overwritten.
     pub fn update_config(&self, e: StorageSchedule) -> Result<StorageSchedule, String> {
+        if let Some(error) = self.mutation_error() {
+            return Err(error);
+        }
         let mut guard = self.entries.lock().unwrap();
         let Some(existing) = guard.get_mut(&e.id) else {
             return Err(format!("schedule {:?} not found", e.id));
@@ -419,13 +468,26 @@ impl StorageScheduleStore {
     }
 
     /// Record a failed attempt that must be retried on the next tick (the agent
-    /// was unreachable), without consuming the schedule's interval.
+    /// was unreachable), without consuming the schedule's interval. The retry
+    /// window is bounded: after an hour of transient failures the attempt is
+    /// recorded as a normal failure and the cadence advances, so a permanently
+    /// broken agent does not retry forever.
     pub fn record_failure_keep_next(&self, id: &str, err: &str) {
+        let now = Utc::now();
         let mut guard = self.entries.lock().unwrap();
         let Some(e) = guard.get_mut(id) else { return };
-        e.last_run = Some(Utc::now());
+        let failed_since = if e.last_result == "failed" {
+            e.last_run
+        } else {
+            None
+        };
+        e.last_run = Some(now);
         e.last_result = "failed".to_string();
         e.last_error = err.to_string();
+        if failed_since.is_some_and(|since| (now - since).num_seconds() >= AGENT_RETRY_WINDOW_SECS)
+        {
+            e.next_run = Some(next_run(e.cadence, &e.run_at, now));
+        }
         if let Err(save_err) = self.save(&guard) {
             tracing::warn!("storage scheduler: could not persist schedule state: {save_err}");
         }
@@ -646,7 +708,15 @@ pub async fn schedules_delete(
             StatusCode::OK,
             serde_json::json!({ "status": "deleted", "id": id.trim() }),
         ),
-        Err(e) => json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
+        // A missing id is a 404, but a corrupt/unwritable store is a server
+        // failure: the record may still exist.
+        Err(e) if e.contains("not found") => {
+            json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e }))
+        }
+        Err(e) => json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "error": format!("saving the schedule store: {e}") }),
+        ),
     }
 }
 
@@ -735,10 +805,10 @@ pub async fn run_due_schedules(state: &Arc<AppState>, now: DateTime<Utc>) {
 }
 
 /// Whether an agent error means "try again" rather than "this request is
-/// wrong". Transport failures and degraded/unavailable upstreams are retryable;
+/// wrong". Transport failures and every 5xx upstream response are retryable;
 /// a validation error (400) or a real conflict is not.
 fn retryable_agent_error(err: &crate::agent::AgentError) -> bool {
-    matches!(err.status, 0 | 502 | 503 | 504)
+    err.status == 0 || (500..=599).contains(&err.status)
 }
 
 /// Remove the snapshots a snapshot run just created after its ownership
@@ -917,6 +987,25 @@ async fn run_scrub_schedule(state: &Arc<AppState>, entry: &StorageSchedule) {
     let health = match agent.pool_health(&entry.target).await {
         Ok(health) => health,
         Err(e) => {
+            if entry.last_result == "started" {
+                // The scrub may still be running. A failed health read must not
+                // replace `started`, or the completion could never be derived.
+                if retryable_agent_error(&e) {
+                    tracing::warn!(
+                        "storage scheduler: could not read the scrub status for {} (will retry): {e}",
+                        entry.id
+                    );
+                } else {
+                    tracing::warn!(
+                        "storage scheduler: could not read the scrub status for {}; keeping started and deferring: {e}",
+                        entry.id
+                    );
+                    state
+                        .storage_schedules
+                        .advance_next_run(&entry.id, Utc::now());
+                }
+                return;
+            }
             if retryable_agent_error(&e) {
                 state
                     .storage_schedules
@@ -1008,6 +1097,74 @@ mod tests {
         assert_ne!(snapshot_prefix("a-b"), snapshot_prefix("ab"));
         assert_ne!(snapshot_prefix("AB"), snapshot_prefix("ab"));
         assert!(naslos_agent_snapshot_charset(&snapshot_prefix("a-b:.")));
+    }
+
+    #[test]
+    fn legacy_060_prefix_matches_the_captured_release_fixture() {
+        // Literal fixture captured from the 0.6.0 derivation: the token is the
+        // lower-case hex of the UTF-8 id, not a sanitized label.
+        assert_eq!(snapshot_prefix("a-b"), "naslos-auto-612d62-");
+        assert_eq!(snapshot_prefix("abcd1234"), "naslos-auto-6162636431323334-");
+        assert_eq!(snapshot_prefix(""), "naslos-auto-schedule-");
+    }
+
+    #[test]
+    fn a_corrupt_store_is_preserved_and_refuses_mutations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("storage-schedules.json");
+        std::fs::write(&path, b"{this is not json").unwrap();
+        let store = StorageScheduleStore::new(path.to_str().unwrap());
+        let error = store.load().unwrap_err();
+        assert!(error.contains("refusing mutations"), "{error}");
+
+        let backups: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("storage-schedules.json.corrupt-")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            std::fs::read(backups[0].path()).unwrap(),
+            b"{this is not json"
+        );
+
+        let mut entry = stored_schedule("new", "tank/data", false, true);
+        entry.kind = ScheduleKind::Snapshot;
+        assert!(store.put(entry).is_err());
+        assert!(store.remove("new").is_err());
+    }
+
+    #[test]
+    fn a_transient_failure_retries_then_records_a_failure_after_the_window() {
+        let store = StorageScheduleStore::new("");
+        let mut entry = stored_schedule("retry", "tank/data", false, true);
+        entry.cadence = Cadence::Daily;
+        entry.run_at = "02:30".into();
+        entry.next_run = Some(Utc.with_ymd_and_hms(2026, 1, 5, 2, 30, 0).unwrap());
+        store.put(entry).unwrap();
+
+        // First attempt records the failure but keeps `nextRun` so the next
+        // tick retries it.
+        store.record_failure_keep_next("retry", "agent unavailable");
+        let first = store.get("retry").unwrap();
+        assert_eq!(first.last_result, "failed");
+        assert_eq!(
+            first.next_run,
+            Some(Utc.with_ymd_and_hms(2026, 1, 5, 2, 30, 0).unwrap())
+        );
+
+        // Pretend the failure started more than the retry window ago.
+        let mut aged = first;
+        aged.last_run = Some(Utc::now() - chrono::Duration::seconds(AGENT_RETRY_WINDOW_SECS + 1));
+        store.put(aged).unwrap();
+        store.record_failure_keep_next("retry", "agent unavailable");
+        let last = store.get("retry").unwrap();
+        assert!(last.next_run.unwrap() > Utc::now());
     }
 
     fn naslos_agent_snapshot_charset(name: &str) -> bool {

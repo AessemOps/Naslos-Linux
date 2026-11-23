@@ -42,6 +42,11 @@ pub struct Receiver {
     pub peers: Arc<PeerStore>,
     pub auth: Arc<Authenticator>,
     pub name: String,
+    /// Audience that signed peer requests must name. It was the operator-chosen
+    /// `name`, which is not unique, so two receivers called "naslos" accepted
+    /// each other's replayed requests (R-017). A per-instance random id makes
+    /// it unique; it is published by the read-only `/status` discovery call.
+    pub audience: String,
     pub version: String,
     pub enroll_token: String,
     pub enroll_open: bool,
@@ -61,6 +66,7 @@ impl Receiver {
             peers,
             auth,
             name: name.to_string(),
+            audience: instance_audience(name),
             version: std::env::var("BUDDY_VERSION").unwrap_or_else(|_| "0.1.0".to_string()),
             enroll_token: String::new(),
             enroll_open: false,
@@ -68,6 +74,25 @@ impl Receiver {
             enroll_used: Mutex::new(false),
         }
     }
+}
+
+/// Build the signing audience for this receiver instance. The receiver has no
+/// mandatory keypair of its own, so use a per-process random id rather than the
+/// non-unique display name (R-017). The name is kept as a readable prefix.
+fn instance_audience(name: &str) -> String {
+    let name = match name.trim() {
+        "" => "receiver",
+        name => name,
+    };
+    let mut id = [0u8; 16];
+    if getrandom::fill(&mut id).is_err() {
+        return format!(
+            "naslos-buddy:{name}:{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+    }
+    let id: String = id.iter().map(|b| format!("{b:02x}")).collect();
+    format!("naslos-buddy:{name}:{id}")
 }
 
 fn bad_request(msg: &str) -> Response {
@@ -116,7 +141,7 @@ fn authenticate(
             body_digest,
             method,
             uri,
-            &receiver.name,
+            &receiver.audience,
             chrono::Utc::now(),
         )
         .map_err(|e| json(StatusCode::UNAUTHORIZED, serde_json::json!({ "error": e })))
@@ -215,6 +240,7 @@ pub async fn status(
         serde_json::json!({
             "version": receiver.version,
             "receiver": receiver.name,
+            "audience": receiver.audience,
             "keyId": peer.fingerprint,
             "freeBytes": free,
             "usedBytes": used,
@@ -294,6 +320,19 @@ pub async fn enroll(State(receiver): State<BuddyState>, body: Body) -> Response 
     // A peer may not grant itself more than the receiver's configured default
     // (PF-M10 / SEC-2026-C9).
     let quota = enrollment_quota(req.quota_bytes, receiver.default_quota_bytes);
+    let actor = match public_key_of(&req.public_key) {
+        Ok((_, fingerprint)) => fingerprint,
+        Err(e) => return bad_request(&e),
+    };
+    let pending = match receiver.begin_mutation(
+        &actor,
+        "buddy.enroll",
+        Some(req.name.clone()),
+        serde_json::json!({ "quotaBytes": quota, "sources": req.sources }),
+    ) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
     let peer = crate::buddy::Peer {
         name: req.name.clone(),
         public_key: req.public_key.clone(),
@@ -306,6 +345,7 @@ pub async fn enroll(State(receiver): State<BuddyState>, body: Body) -> Response 
         // Record single use before the key is authorized. If the marker cannot
         // be written the enrollment fails closed (SEC-2026-C21).
         if let Err(e) = receiver.store.mark_enrollment_used() {
+            let _ = receiver.finish_mutation(pending, StatusCode::INTERNAL_SERVER_ERROR);
             return json(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 serde_json::json!({ "error": format!("cannot record the enrollment token as used: {e}") }),
@@ -315,13 +355,19 @@ pub async fn enroll(State(receiver): State<BuddyState>, body: Body) -> Response 
     }
     match receiver.peers.add(peer) {
         Ok(()) => {
+            if let Err(resp) = receiver.finish_mutation(pending, StatusCode::CREATED) {
+                return resp;
+            }
             let added = receiver.peers.get(&req.name).unwrap_or_default();
             json(
                 StatusCode::CREATED,
                 serde_json::json!({ "status": "enrolled", "name": added.name, "fingerprint": added.fingerprint }),
             )
         }
-        Err(e) => bad_request(&e),
+        Err(e) => {
+            let _ = receiver.finish_mutation(pending, StatusCode::BAD_REQUEST);
+            bad_request(&e)
+        }
     }
 }
 
@@ -450,6 +496,15 @@ pub async fn chunks(
     if chain.is_empty() {
         return bad_request("chain is required");
     }
+    let pending = match receiver.pending_mutation(
+        &peer.fingerprint,
+        "buddy.chunk.put",
+        Some(format!("{source}@{chain}#{index}")),
+        serde_json::json!({ "index": index, "sealedBytes": body.len() }),
+    ) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
     match receiver.store.put_chunk_within(
         &peer.fingerprint,
         &source,
@@ -458,12 +513,18 @@ pub async fn chunks(
         &body,
         peer.quota_bytes,
     ) {
-        Ok(()) => json(
-            StatusCode::CREATED,
-            serde_json::json!({ "source": source, "chain": chain, "index": index, "storedBytes": body.len() }),
-        ),
+        Ok(()) => {
+            if let Err(resp) = receiver.record_mutation(pending, StatusCode::CREATED) {
+                return resp;
+            }
+            json(
+                StatusCode::CREATED,
+                serde_json::json!({ "source": source, "chain": chain, "index": index, "storedBytes": body.len() }),
+            )
+        }
         Err(e) => {
             let status = store_status(&e);
+            let _ = receiver.record_mutation(pending, status);
             let msg = match &e {
                 StoreError::Quota { .. } | StoreError::NoSpace => e.to_string(),
                 StoreError::Other(m) => m.clone(),
@@ -699,10 +760,25 @@ pub async fn manifest(
             }),
         );
     }
+    let pending = match receiver.begin_mutation(
+        &peer.fingerprint,
+        "buddy.manifest.put",
+        Some(format!("{source}@{}", manifest.chain)),
+        serde_json::json!({
+            "sequence": manifest.sequence,
+            "chunks": manifest.chunks.len(),
+            "fromSnapshot": manifest.from_snapshot,
+            "toSnapshot": manifest.to_snapshot,
+        }),
+    ) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
     if let Err(e) = receiver
         .store
         .put_manifest(&peer.fingerprint, &source, &manifest)
     {
+        let _ = receiver.finish_mutation(pending, StatusCode::INTERNAL_SERVER_ERROR);
         return json(
             StatusCode::INTERNAL_SERVER_ERROR,
             serde_json::json!({ "error": e.to_string() }),
@@ -710,6 +786,9 @@ pub async fn manifest(
     }
     receiver.store.invalidate_usage(&peer.fingerprint);
     let sealed: i64 = manifest.chunks.iter().map(|c| c.sealed_bytes).sum();
+    if let Err(resp) = receiver.finish_mutation(pending, StatusCode::OK) {
+        return resp;
+    }
     json(
         StatusCode::OK,
         serde_json::json!({ "source": source, "chain": manifest.chain, "chunks": manifest.chunks.len(), "storedByte": sealed }),
@@ -755,47 +834,193 @@ pub async fn prune(
     if req.keep < 1 {
         return bad_request("keep must be at least 1");
     }
+    let pending = match receiver.begin_mutation(
+        &peer.fingerprint,
+        "buddy.prune",
+        Some(source.clone()),
+        serde_json::json!({ "keep": req.keep }),
+    ) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
     match receiver.store.prune(&peer.fingerprint, &source, req.keep) {
-        Ok(removed) => json(
-            StatusCode::OK,
-            serde_json::json!({ "source": source, "keep": req.keep, "removedChains": removed }),
-        ),
-        Err(e) => json(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            serde_json::json!({ "error": e.to_string() }),
-        ),
+        Ok(removed) => {
+            if let Err(resp) = receiver.finish_mutation(pending, StatusCode::OK) {
+                return resp;
+            }
+            json(
+                StatusCode::OK,
+                serde_json::json!({ "source": source, "keep": req.keep, "removedChains": removed }),
+            )
+        }
+        Err(e) => {
+            let _ = receiver.finish_mutation(pending, StatusCode::INTERNAL_SERVER_ERROR);
+            json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "error": e.to_string() }),
+            )
+        }
     }
 }
 
 /// Per-router state for the buddy handlers.
 ///
 /// The API mounts them under the full `AppState`; the standalone receiver
-/// mounts them with just this value. A local wrapper keeps the `FromRef`
-/// impl legal (both `Arc` and axum's trait are foreign).
+/// mounts them with just the receiver and has no audit log. A local wrapper
+/// keeps the `FromRef` impl legal (both `Arc` and axum's trait are foreign).
 #[derive(Clone)]
-pub struct BuddyState(pub Arc<Receiver>);
+pub struct BuddyState {
+    pub receiver: Arc<Receiver>,
+    app: Option<Arc<AppState>>,
+}
+
+impl BuddyState {
+    pub fn new(receiver: Arc<Receiver>) -> Self {
+        Self {
+            receiver,
+            app: None,
+        }
+    }
+
+    fn audit(&self) -> Option<&crate::audit::AuditLog> {
+        self.app.as_ref().map(|state| &state.audit)
+    }
+
+    /// Refuse a receiver mutation before it happens when the audit log cannot
+    /// record it (R-027). The standalone receiver has no audit log, so it is
+    /// unaffected.
+    #[allow(clippy::result_large_err)]
+    fn begin_mutation(
+        &self,
+        actor: &str,
+        action: &str,
+        target: Option<String>,
+        params: serde_json::Value,
+    ) -> Result<Option<crate::audit::Pending>, Response> {
+        let Some(audit) = self.audit() else {
+            return Ok(None);
+        };
+        if let Some(reason) = audit.degraded_reason() {
+            return Err(json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({ "error": format!("the audit log is degraded ({reason}); refusing the receiver mutation") }),
+            ));
+        }
+        let pending = crate::audit::Pending::system(actor, action, target, params);
+        audit.begin(pending.clone()).map_err(|e| {
+            audit.mark_degraded(&e);
+            json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({ "error": format!("audit unavailable: {e}") }),
+            )
+        })?;
+        Ok(Some(pending))
+    }
+
+    /// Like `begin_mutation` but for high-volume mutations (chunk uploads):
+    /// check the log before the write and record one end record afterwards.
+    #[allow(clippy::result_large_err)]
+    fn pending_mutation(
+        &self,
+        actor: &str,
+        action: &str,
+        target: Option<String>,
+        params: serde_json::Value,
+    ) -> Result<Option<crate::audit::Pending>, Response> {
+        let Some(audit) = self.audit() else {
+            return Ok(None);
+        };
+        if let Some(reason) = audit.degraded_reason() {
+            return Err(json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({ "error": format!("the audit log is degraded ({reason}); refusing the receiver mutation") }),
+            ));
+        }
+        Ok(Some(crate::audit::Pending::system(
+            actor, action, target, params,
+        )))
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn record_mutation(
+        &self,
+        pending: Option<crate::audit::Pending>,
+        status: StatusCode,
+    ) -> Result<(), Response> {
+        let (Some(audit), Some(pending)) = (self.audit(), pending) else {
+            return Ok(());
+        };
+        audit.record_once(&pending, status.as_u16()).map_err(|e| {
+            audit.mark_degraded(&e);
+            json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "error": format!("the audit record failed ({e}); the mutation may have applied") }),
+            )
+        })
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn finish_mutation(
+        &self,
+        pending: Option<crate::audit::Pending>,
+        status: StatusCode,
+    ) -> Result<(), Response> {
+        let (Some(audit), Some(pending)) = (self.audit(), pending) else {
+            return Ok(());
+        };
+        audit.finish(&pending, status.as_u16()).map_err(|e| {
+            audit.mark_degraded(&e);
+            json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "error": format!("the audit end record failed ({e}); the mutation may have applied") }),
+            )
+        })
+    }
+}
 
 impl std::ops::Deref for BuddyState {
     type Target = Receiver;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.receiver
     }
 }
 
 impl axum::extract::FromRef<Arc<AppState>> for BuddyState {
     fn from_ref(state: &Arc<AppState>) -> Self {
-        BuddyState(
-            state
+        BuddyState {
+            receiver: state
                 .buddy
                 .clone()
                 .expect("buddy routes are only mounted when the receiver is configured"),
-        )
+            app: Some(state.clone()),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::enrollment_quota;
+    use super::{enrollment_quota, instance_audience, Receiver};
+    use std::sync::Arc;
+
+    fn receiver_named(name: &str) -> Receiver {
+        let peers = Arc::new(crate::buddy::peers::PeerStore::new(""));
+        let auth = Arc::new(crate::buddy::auth::Authenticator::new(peers.clone()));
+        let store = Arc::new(crate::buddy::store::Store::new("/nonexistent-buddy-test"));
+        Receiver::new(store, peers, auth, name)
+    }
+
+    #[test]
+    fn two_receivers_with_the_same_name_get_distinct_audiences() {
+        let a = receiver_named("naslos");
+        let b = receiver_named("naslos");
+        assert_eq!(a.name, b.name);
+        assert_ne!(
+            a.audience, b.audience,
+            "equal operator names must not share a signing audience"
+        );
+        assert!(!a.audience.is_empty());
+        assert_eq!(instance_audience("  ").matches(':').count(), 2);
+    }
 
     #[test]
     fn enrollment_cannot_raise_its_own_quota() {

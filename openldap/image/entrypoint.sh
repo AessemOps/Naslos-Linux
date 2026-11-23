@@ -9,11 +9,16 @@ SLAPD_DATA_DIR="/var/lib/ldap"
 CERT_DIR="/container/service/slapd/assets/certs"
 LDAP_DOMAIN="${LDAP_DOMAIN:-naslos.local}"
 LDAP_ORGANISATION="${LDAP_ORGANISATION:-Naslos}"
-# No default (NAS-010): the manifests always inject this from the
+# No default (NAS-010): the manifests always supply this from the
 # naslos-openldap Secret (key admin-password). A fallback of "admin" meant a
 # standalone `docker run` of this image initialised the directory with a
-# documented root password.
-LDAP_ADMIN_PASSWORD="${LDAP_ADMIN_PASSWORD:?LDAP_ADMIN_PASSWORD must be set (from the naslos-openldap Secret)}"
+# documented root password. R-037: the chart mounts the value as a file so it
+# is not part of the process environment; the env form stays for standalone
+# use.
+if [ -z "${LDAP_ADMIN_PASSWORD:-}" ] && [ -n "${LDAP_ADMIN_PASSWORD_FILE:-}" ]; then
+    LDAP_ADMIN_PASSWORD="$(cat "${LDAP_ADMIN_PASSWORD_FILE}")"
+fi
+LDAP_ADMIN_PASSWORD="${LDAP_ADMIN_PASSWORD:?LDAP_ADMIN_PASSWORD or LDAP_ADMIN_PASSWORD_FILE must be set (from the naslos-openldap Secret)}"
 LDAP_TLS="${LDAP_TLS:-true}"
 
 # Generate domain components from LDAP_DOMAIN (e.g. naslos.local -> dc=naslos,dc=local)
@@ -126,6 +131,7 @@ olcRootPW: ${ADMIN_PW_HASH}
 olcAccess: {0}to attrs=userPassword,shadowLastChange
   by dn="cn=admin,${BASE_DN}" write
   by dn="cn=naslos-service,ou=services,${BASE_DN}" write
+  by dn="cn=authelia-service,ou=services,${BASE_DN}" auth
   by self write
   by anonymous auth
   by * none
@@ -133,8 +139,11 @@ olcAccess: {1}to dn.base="" by * read
 olcAccess: {2}to *
   by dn="cn=admin,${BASE_DN}" write
   by dn="cn=naslos-service,ou=services,${BASE_DN}" write
+  by dn="cn=authelia-service,ou=services,${BASE_DN}" read
   by users read
   by * none
+# R-010: cn=authelia-service is read/auth only. It never appears in a "write"
+# clause, so an Authelia compromise cannot change groups or passwords.
 olcDbIndex: objectClass eq
 olcDbIndex: cn,uid eq
 olcDbIndex: mail eq

@@ -97,10 +97,62 @@ use by `buddyctl identity`:
   mounts it as `BUDDY_KEK`. The generated Secret carries
   `helm.sh/resource-policy: keep`, so `helm uninstall` does not delete the key
   that unwraps the received chunks; back it up out of band and remove it
-  explicitly when you really mean to destroy the backup store. The API strips the `kek` field from an existing
-  `buddy-identity.json` on load, so a read of the state volume no longer yields
+  explicitly when you really mean to destroy the backup store. When
+  `BUDDY_KEK` matches the `kek` field in an existing `buddy-identity.json`, the
+  API strips that field on load, so a read of the state volume no longer yields
   the key that unwraps every backup. The resume state still holds each
   in-flight chain's DEK in plaintext until that push finishes.
+
+### 2.1 KEK backup and migration (mandatory before upgrading)
+
+The KEK is the only copy of the key that unwraps every chain's DEK. There are two
+places it can live: the `kek` field of `buddy-identity.json`, and the KEK Secret
+(`naslos-buddy-kek`, or `buddy.kekSecret`). They must agree. Never delete or
+overwrite either copy "to clean up", and never generate a new Secret while an old
+identity file still has a KEK.
+
+**Back up both before any upgrade that touches Buddy:**
+
+```bash
+# The identity file (contains privateKey and, on older installs, the KEK).
+kubectl -n naslos exec deploy/naslos-api -- cat /var/lib/naslos/buddy-identity.json   > buddy-identity.json.backup
+chmod 600 buddy-identity.json.backup
+
+# The KEK Secret that unwraps received chunks.
+kubectl -n naslos get secret naslos-buddy-kek -o yaml > naslos-buddy-kek.backup.yaml
+chmod 600 naslos-buddy-kek.backup.yaml
+```
+
+Keep the two backups in different places from the receiver's chunk dataset: a
+receiver that holds the ciphertext, the KEK and the identity is a receiver that
+holds the plaintext.
+
+**Migration.** Older charts generated the Secret on first render but left the old
+KEK in `buddy-identity.json`. Import the file KEK into the Secret once, instead of
+letting the chart generate a different key:
+
+1. Read the base64 `kek` value from the identity file (it is a 32-byte base64
+   string, not a passphrase).
+2. Set it in the release values and upgrade:
+
+   ```yaml
+   buddy:
+     enabled: true
+     kekImport: "<base64 kek from buddy-identity.json>"
+   ```
+
+   `buddy.kekImport` takes precedence when the chart renders
+   `naslos-buddy-kek`; it is not a permanent setting. If an existing Secret holds
+   a *different* KEK, take the backup above first: the import overwrites that
+   Secret, and the old value may be the only way to read older chunks.
+3. Verify one restore/verify call, then remove `buddy.kekImport` from the values
+   and upgrade again. The Secret (kept by `helm.sh/resource-policy: keep`) is now
+   the single source.
+
+If the API logs `BUDDY_KEK does not match the KEK stored in the identity file`,
+nothing was deleted: restore the correct Secret, or unset `BUDDY_KEK` to keep
+using the file KEK, then re-run the import. Do not delete the identity file; its
+private key and its KEK may be the only copies left.
 - The receiver never sees this file. It stores an authorized-keys line per sender
   and nothing else secret.
 
@@ -129,14 +181,17 @@ PUT
 5c2nQw==
 ```
 
-The second line is the **audience**: the receiver's own identity (`BUDDY_NAME`).
-A sender learns it from the read-only `/status` call and signs every later
+The second line is the **audience**: a per-instance random id derived from the
+receiver's process instance and published, with the display name, by the
+read-only `/status` call. A sender learns it from `/status` and signs every later
 request with it, so a request captured for buddy A does not verify at buddy B
-even if both authorize the same sender key — the cross-receiver replay that
-`BUDDY1` allowed. `/status` is the one call a sender may sign with an empty
-audience (it cannot know the name yet); the receiver accepts that only there.
-Give each receiver a distinct `BUDDY_NAME` (`naslos-a`, `naslos-b`, …): the
-default `naslos` is identical everywhere and weakens this binding.
+even if both authorize the same sender key and share a display name — the
+cross-receiver replay that `BUDDY1` allowed. The audience is unique per receiver
+instance; the `BUDDY_NAME` value (`naslos-a`, `naslos-b`, …) is display text and
+no longer part of the security binding. `/status` is the one call a sender may
+sign with an empty audience (it cannot know the id yet); the receiver accepts
+that only there. A receiver restarted with a new instance id invalidates captured
+requests; a sender discovers the new id on its next `/status` call.
 
 Because the audience, method, full URI (query string and mount prefix included),
 body digest, timestamp and nonce are all inside it, a captured request cannot be
@@ -277,7 +332,9 @@ The manifest carries the chain's metadata, a monotonic **sequence** per
 generation, SHA-256 of the **plaintext**), the wrapped DEK, the sender's key id,
 and an Ed25519 signature over all of it. The receiver can verify the signature and
 the presence of every chunk; only the owner can check the plaintext digests — which
-is exactly the intended asymmetry.
+is exactly the intended asymmetry. `createdAt` is canonicalized to millisecond
+precision before signing and verification, so a Rust sender and a Go sender sign
+identical bytes for the same timestamp.
 
 Owners verify the manifest is the one they asked for: the restore sequence must
 start at a full send (`fromGUID` empty), be contiguous (`fromGUID` of each chain
@@ -338,6 +395,11 @@ helm upgrade --install naslos charts/naslos -n naslos \
   --set buddy.receiveHostPath=/var/mnt/test/naslos-buddy \
   --set buddy.name=naslos-b
 
+Receiver mutations — enroll, chunk upload, manifest publish and prune — are
+written to the audit log with the peer's key fingerprint as the actor. While the
+audit log is degraded the receiver answers `503` and refuses the mutation instead
+of storing data it cannot account for.
+
 # 3. Optional: let the first peer authorize itself with a one-time token.
 kubectl -n naslos create secret generic naslos-buddy \
   --from-literal=enrollToken="$(openssl rand -hex 16)"
@@ -388,6 +450,13 @@ buddyctl prune https://naslos-b --source naslos-a/data --keep 7
 
 `buddyctl` is built from the repo (`make buddyctl` → `bin/buddyctl`) and needs only
 network access to the receiver: it is not a cluster component.
+
+Every chain is verified end-to-end **before** the first `zfs receive`. When the
+destination dataset already exists the API snapshots it first, records the
+applied-chain index beside the identity, and on any failure rolls the dataset
+back to that snapshot and deletes it; a failed restore therefore leaves the
+destination as it was and is never reported as successful. A successful restore
+destroys the pre-restore snapshot.
 
 An interrupted push is continued, not restarted:
 
@@ -446,7 +515,10 @@ What the send does, in order:
    not names, are what make the incremental decision safe - a renamed snapshot still
    counts, and a destroyed one is *known* to be gone.
 2. Snapshots the dataset (`buddy-<UTC>-<4 hex>`; the random suffix exists because two
-   sends in the same second would otherwise collide).
+   sends in the same second would otherwise collide). After a successful publish it
+   keeps the newest Buddy snapshot (the base for the next incremental) plus the
+   job's `pruneKeep` older ones, and destroys the rest, so repeated sends do not
+   leak snapshots.
 3. Asks the node for a dry-run size (`zfs send -nP`), streams the send, encrypts and
    uploads it, and only then publishes the signed manifest.
 4. If the stream came in short of that estimate by more than the allowance, **no

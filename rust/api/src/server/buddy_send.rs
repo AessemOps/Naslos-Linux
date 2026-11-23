@@ -575,27 +575,16 @@ async fn run_send_job(
         }
     };
     let before_publish = |pushed: &crate::buddy::client::PushResult| -> Result<(), String> {
-        if expected <= 0 && !force {
-            return Err(format!(
-                "refusing to publish chain {}: the agent could not estimate {dataset}@{snapshot}, so a truncated send would go unnoticed",
-                send_state.chain.chain
-            ));
-        }
-        if expected > 0 && pushed.plain_bytes + send_shortfall_allowance(expected) < expected {
-            return Err(format!(
-                "the send stream ended early ({} of at least {expected} bytes), so nothing was published. Retry the same send to continue chain {}",
-                pushed.plain_bytes, send_state.chain.chain
-            ));
-        }
-        if let Some((_, _, used)) = &mount_state {
-            require_stream_matches_dataset(&dataset, *used, pushed.plain_bytes)?;
-        } else if !force {
-            return Err(format!(
-                "refusing to publish chain {}: the dataset's used space could not be read, so the content check cannot run",
-                send_state.chain.chain
-            ));
-        }
-        Ok(())
+        require_publish_evidence(
+            &dataset,
+            &snapshot,
+            &send_state.chain.chain,
+            mount_state.as_ref().map(|(_, _, used)| *used),
+            pushed.plain_bytes,
+            !base.is_empty(),
+            expected,
+            force,
+        )
     };
 
     let persist_template = send_state.clone();
@@ -631,6 +620,10 @@ async fn run_send_job(
         fail!(e);
     }
     let _ = std::fs::remove_file(&state_path);
+
+    // Keep one Buddy snapshot by default (the base for the next incremental)
+    // and honour the caller's retention; older ones leaked forever (R-059).
+    prune_buddy_snapshots(&agent, &dataset, prune_keep).await;
 
     let res = SendResult {
         status: "backed up".to_string(),
@@ -675,6 +668,42 @@ async fn run_send_job(
     notify(&state, &job.snapshot()).await;
 }
 
+/// Destroy older `buddy-*` snapshots of `dataset`, keeping the newest `keep`
+/// (at least one, so the next incremental has a base).
+async fn prune_buddy_snapshots(agent: &crate::agent::Client, dataset: &str, keep: usize) {
+    let keep = keep.max(1);
+    let paths = match agent.snapshot_paths(dataset).await {
+        Ok(paths) => paths,
+        Err(e) => {
+            tracing::warn!("buddy send: cannot list snapshots of {dataset} for pruning: {e}");
+            return;
+        }
+    };
+    for name in buddy_snapshots_to_prune(&paths, dataset, keep) {
+        if let Err(e) = agent.destroy_snapshot(dataset, &name).await {
+            tracing::warn!("buddy send: cannot destroy old snapshot {dataset}@{name}: {e}");
+        }
+    }
+}
+
+/// The oldest `buddy-*` snapshots of `dataset` beyond the newest `keep`, in
+/// creation order (as returned by the agent).
+fn buddy_snapshots_to_prune(paths: &[String], dataset: &str, keep: usize) -> Vec<String> {
+    let prefix = format!("{dataset}@");
+    let names: Vec<&str> = paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(&prefix))
+        .filter(|name| name.starts_with("buddy-"))
+        .collect();
+    if names.len() <= keep {
+        return Vec::new();
+    }
+    names[..names.len() - keep]
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
 fn save_send_state(path: &std::path::Path, state: &InstanceSendState) -> Result<(), String> {
     let data = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
     if let Some(dir) = path.parent() {
@@ -692,6 +721,46 @@ async fn dataset_mount_state(
         .into_iter()
         .find(|d| d.name == dataset)
         .map(|d| (d.mounted, d.mountpoint.clone(), d.used_bytes))
+}
+
+/// Decide whether an uploaded stream may be published. A full send must carry a
+/// sizeable fraction of the dataset, which catches the mount-namespace trap
+/// where `zfs send` captures an empty filesystem. An incremental send is
+/// legitimately small next to the dataset, so it is checked against the
+/// `zfs send -nP` estimate for the `base..snapshot` range instead
+/// (R-005: applying the full-send ratio to increments rejected every real one).
+#[allow(clippy::too_many_arguments)]
+fn require_publish_evidence(
+    dataset: &str,
+    snapshot: &str,
+    chain: &str,
+    used: Option<i64>,
+    plain: i64,
+    incremental: bool,
+    expected: i64,
+    force: bool,
+) -> Result<(), String> {
+    if expected <= 0 && !force {
+        return Err(format!(
+            "refusing to publish chain {chain}: the agent could not estimate {dataset}@{snapshot}, so a truncated send would go unnoticed"
+        ));
+    }
+    if expected > 0 && plain + send_shortfall_allowance(expected) < expected {
+        return Err(format!(
+            "the send stream ended early ({plain} of at least {expected} bytes), so nothing was published. Retry the same send to continue chain {chain}"
+        ));
+    }
+    if incremental {
+        return Ok(());
+    }
+    if let Some(used) = used {
+        require_stream_matches_dataset(dataset, used, plain)?;
+    } else if !force {
+        return Err(format!(
+            "refusing to publish chain {chain}: the dataset's used space could not be read, so the content check cannot run"
+        ));
+    }
+    Ok(())
 }
 
 fn require_stream_matches_dataset(dataset: &str, used: i64, plain: i64) -> Result<(), String> {
@@ -874,7 +943,87 @@ const _: Duration = Duration::from_secs(0);
 
 #[cfg(test)]
 mod tests {
-    use super::send_shortfall_allowance;
+    use super::{
+        buddy_snapshots_to_prune, require_publish_evidence, require_stream_matches_dataset,
+        send_shortfall_allowance,
+    };
+
+    #[test]
+    fn only_old_buddy_snapshots_of_the_dataset_are_pruned() {
+        let paths = vec![
+            "tank/data@buddy-1".to_string(),
+            "tank/data@manual".to_string(),
+            "tank/data@buddy-2".to_string(),
+            "tank/other@buddy-3".to_string(),
+            "tank/data@buddy-4".to_string(),
+        ];
+        assert_eq!(
+            buddy_snapshots_to_prune(&paths, "tank/data", 2),
+            vec!["buddy-1".to_string()]
+        );
+        assert!(buddy_snapshots_to_prune(&paths, "tank/data", 5).is_empty());
+    }
+
+    #[test]
+    fn a_full_send_still_requires_dataset_contents() {
+        let used = 10 * 1024 * 1024;
+        assert!(require_publish_evidence(
+            "tank/data",
+            "buddy-1",
+            "4",
+            Some(used),
+            used,
+            false,
+            used,
+            false
+        )
+        .is_ok());
+        // An empty full send is still refused (mount-propagation trap).
+        assert!(require_publish_evidence(
+            "tank/data",
+            "buddy-1",
+            "4",
+            Some(used),
+            0,
+            false,
+            used,
+            false
+        )
+        .is_err());
+        assert!(require_stream_matches_dataset("tank/data", used, 1).is_err());
+    }
+
+    #[test]
+    fn a_small_incremental_after_a_full_send_is_published() {
+        let used = 10 * 1024 * 1024;
+        let incremental = 64 * 1024;
+        assert!(
+            require_publish_evidence(
+                "tank/data",
+                "buddy-2",
+                "4",
+                Some(used),
+                incremental,
+                true,
+                incremental,
+                false
+            )
+            .is_ok(),
+            "an incremental must not be measured against the whole dataset"
+        );
+        // The same size is still refused when the range estimate says it was truncated.
+        assert!(require_publish_evidence(
+            "tank/data",
+            "buddy-2",
+            "4",
+            Some(used),
+            incremental,
+            true,
+            used,
+            false
+        )
+        .is_err());
+    }
 
     #[test]
     fn a_half_truncated_small_send_is_refused() {

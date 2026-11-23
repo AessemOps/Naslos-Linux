@@ -237,11 +237,22 @@ namespace so the API never needs Secret read access in the release namespace
    Cilium NetworkPolicies are enforced, but because the agent is `hostNetwork`
    pod-level policy does not cover it; see the AUDIT-M4 residual.
 3. **Authelia ⇄ LDAP.** All directory access is LDAPS (`:636`) with the CA from
-   the `naslos-openldap-tls` secret; Authelia verifies the server name. The bind
-   password comes from the `naslos-openldap` Secret, not the ConfigMap.
+   the `naslos-openldap-ca` Secret (a `ca.crt`-only copy; the LDAP server
+   private key in `naslos-openldap-tls` is never mounted into Authelia);
+   Authelia verifies the server name. The bind password comes from the
+   `naslos-openldap` Secret, not the ConfigMap, and the admin password is a
+   mounted file, not an env value.
 4. **Samba NT-hash sync.** The agent pushes a `smbusers` mirror which the Samba
-   container imports with `pdbedit -i smbpasswd:`; the Samba container must
-   constrain `root` usage and should enforce host allow lists on exports.
+   container imports with `pdbedit -i smbpasswd:`; the Samba and NFS containers
+   run as root only for their datastore operations, drop ALL capabilities and
+   add back the required set, disable privilege escalation, use RuntimeDefault
+   seccomp and a read-only image root with explicit writable volumes.
+5. **Traefik RBAC.** Traefik runs with namespaced RBAC: a Role in the release
+   namespace, the shared app namespaces and the fixed per-app isolation pool,
+   and no ClusterRole/ClusterRoleBinding. It can read Secrets only there (the
+   per-domain TLS copies need dynamic names, so a `secretResourceNames`
+   allowlist is not possible). The watched list lives in the VM/installer
+   overlays and must match `apps.isolation.*` when the pool changes.
 
 ## Layer 5 — Key Data Flows
 
@@ -351,3 +362,17 @@ Talos upgrades are unaffected because:
   `talosctl apply-config` / `scripts/deploy-vm.sh`. The one in-product exception
   is the guarded day-2 network change path (`FR-NET`) described in
   [deployment.md](deployment.md#day-2-network-changes-fr-net).
+
+The web upgrader runs an in-cluster `naslos-upgrade` Job rather than upgrading
+from the API pod (the API cannot replace its own release). That Job needs
+cluster-admin for `helm upgrade`, CRD/cert-manager provisioning and
+`talosctl upgrade`, so the chart pins it through a ValidatingAdmissionPolicy
+(`naslos-upgrader-guard`): only a single `ghcr.io/aessemops/naslos-api@sha256:`
+container running the `naslos-upgrade` entrypoint, only the documented
+operation flags, only the NASLOS_/HELM_/TALOS_ env names, only the tmp,
+talosconfig and state volumes (no hostPath/subPath), and a fixed non-root,
+no-privilege, read-only, RuntimeDefault-seccomp pod. The API's own Role is
+limited to Jobs, pod/log reads and the operation ConfigMap, so the API cannot
+use the upgrader identity as a general pod launcher; the cluster-admin binding
+itself remains the residual, bounded by that policy and the owner-only
+upgrade endpoints.
