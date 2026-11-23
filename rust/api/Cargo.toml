@@ -55,7 +55,7 @@ rustls-pemfile = "2"
 tokio-rustls = "0.26"
 webpki-roots = "1"
 serde = { version = "1", features = ["derive"] }
-sha1 = "0.10"
+sha1 = "0.11"
 ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "alloc", "rand_core", "std"] }
 sha2 = "0.11"
 tempfile = "3"
