@@ -388,13 +388,30 @@ impl Store {
                     )));
                 }
                 if m.sequence == cur.sequence {
-                    let existing = std::fs::read(dir.join("manifest.json")).unwrap_or_default();
-                    if existing != data {
+                    // A retried publish regenerates `createdAt`, the nonce
+                    // generation and therefore the signature, so compare the
+                    // content-bearing fields instead of the raw bytes.
+                    let stored = std::fs::read(dir.join("manifest.json")).map_err(|e| {
+                        other(format!(
+                            "cannot compare the retried manifest for {source} with the stored one: {e}"
+                        ))
+                    })?;
+                    let stored_manifest: Manifest =
+                        serde_json::from_slice(&stored).map_err(|e| {
+                            other(format!("parsing the stored manifest for {source}: {e}"))
+                        })?;
+                    if manifest_content_fingerprint(&stored_manifest)?
+                        != manifest_content_fingerprint(m)?
+                    {
                         return Err(other(format!(
-                            "refusing a different manifest for {source} at sequence {}: an equal sequence is only accepted for an identical re-PUT",
+                            "refusing a different manifest for {source} at sequence {}: an equal sequence is only accepted for the same content",
                             m.sequence
                         )));
                     }
+                    // Same publish, retried. Keep the stored manifest: it pins
+                    // the nonce generation the stored chunks were sealed with,
+                    // and `current.json` already points at this chain.
+                    return Ok(());
                 }
             }
         }
@@ -471,7 +488,10 @@ impl Store {
                 Ok(())
             }
             Err(e) => {
-                self.release_usage(key_id, estimated);
+                // manifest.json may already have landed before a later write
+                // failed. Releasing the whole reservation would leave the
+                // cached total below disk; recompute from disk instead.
+                self.invalidate_usage(key_id);
                 Err(e)
             }
         }
@@ -981,6 +1001,20 @@ fn validate_sealed_chunk(sealed: &[u8]) -> SResult<()> {
     }
 }
 
+/// The manifest fields that identify what it covers, excluding values the
+/// sender regenerates on every attempt (`createdAt`, the nonce generation and
+/// the signature over those fields). Used to recognise a retried publish.
+fn manifest_content_fingerprint(m: &Manifest) -> SResult<Vec<u8>> {
+    let mut copy = m.clone();
+    copy.created_at = DateTime::<Utc>::MIN_UTC;
+    copy.generation = 0;
+    for chunk in &mut copy.chunks {
+        chunk.generation = 0;
+    }
+    copy.signature.clear();
+    serde_json::to_vec(&copy).map_err(|e| other(format!("encoding a manifest for comparison: {e}")))
+}
+
 /// Block-round a size for quota accounting.
 fn billed_len(len: usize) -> i64 {
     let len = i64::try_from(len).unwrap_or(i64::MAX);
@@ -1086,15 +1120,23 @@ fn dir_bytes(dir: &Path, charge_blocks: bool) -> SResult<i64> {
         for entry in entries {
             let entry = entry.map_err(|e| StoreError::Other(e.to_string()))?;
             let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .map_err(|e| StoreError::Other(format!("stat {}: {e}", path.display())))?;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                // A concurrent chunk/manifest replacement can rename an entry
+                // away between `read_dir` and this call; that is transient,
+                // not a store failure.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(StoreError::Other(format!("stat {}: {e}", path.display()))),
+            };
             if file_type.is_dir() {
                 stack.push(path);
                 continue;
             }
-            let meta = std::fs::symlink_metadata(&path)
-                .map_err(|e| StoreError::Other(format!("stat {}: {e}", path.display())))?;
+            let meta = match std::fs::symlink_metadata(&path) {
+                Ok(meta) => meta,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(StoreError::Other(format!("stat {}: {e}", path.display()))),
+            };
             let len = meta.len() as i64;
             total = total.saturating_add(if charge_blocks {
                 billed_len(meta.len() as usize)
@@ -1432,14 +1474,88 @@ mod tests {
             .put_manifest(&kid, "src", &manifest_titled("bbb", 8))
             .unwrap();
 
-        // Same chain, same sequence: only a byte-identical re-PUT is allowed.
+        // Same chain, same sequence: only the same content may be re-PUT.
         let mut changed = manifest_titled("bbb", 8);
         changed.to_snapshot = "different".into();
         let err = store.put_manifest(&kid, "src", &changed).unwrap_err();
-        assert!(format!("{err:?}").contains("identical re-PUT"), "{err:?}");
+        assert!(format!("{err:?}").contains("same content"), "{err:?}");
         store
             .put_manifest(&kid, "src", &manifest_titled("bbb", 8))
             .unwrap();
+    }
+
+    #[test]
+    fn a_retried_publish_may_regenerate_volatile_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(&dir.path().display().to_string());
+        let kid = key_id();
+        let original = manifest_titled("chain", 3);
+        store.put_manifest(&kid, "src", &original).unwrap();
+
+        // A retry after a lost response rebuilds the manifest with a new
+        // timestamp, a new nonce generation and a new signature.
+        let mut retried = original.clone();
+        retried.created_at = DateTime::from_timestamp(1_700_100_000, 0).unwrap();
+        retried.generation = original.generation.saturating_add(9);
+        retried.signature = "cmVzaWduZWQ=".into();
+        store.put_manifest(&kid, "src", &retried).unwrap();
+
+        // The stored manifest is the original one: it pins the generation the
+        // stored chunks were sealed with.
+        let stored = store.manifest(&kid, "src").unwrap();
+        assert_eq!(stored.created_at, original.created_at);
+        assert_eq!(stored.generation, original.generation);
+        assert_eq!(stored.signature, original.signature);
+
+        // A changed chunk list at the same sequence is different content.
+        let mut changed = manifest_titled("chain", 3);
+        changed.chunks = vec![super::super::envelope::ManifestChunk {
+            index: 0,
+            plain_bytes: 1,
+            sealed_bytes: 36,
+            generation: 0,
+            sha256_plain: "b".repeat(64),
+        }];
+        let err = store.put_manifest(&kid, "src", &changed).unwrap_err();
+        assert!(format!("{err:?}").contains("same content"), "{err:?}");
+    }
+
+    #[test]
+    fn a_partial_manifest_write_does_not_leave_usage_below_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().display().to_string();
+        let store = Store::new(&root);
+        let kid = key_id();
+        let sealed = sealed_for(64, 7);
+        store.put_chunk(&kid, "src", "chain", 0, &sealed).unwrap();
+
+        // manifest.json lands first; the final current.json write then fails
+        // because its target path is a directory.
+        let source_dir = store.source_dir(&kid, "src").unwrap();
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::create_dir(source_dir.join("current.json")).unwrap();
+
+        let mut manifest = manifest_titled("chain", 1);
+        manifest.chunks = vec![super::super::envelope::ManifestChunk {
+            index: 0,
+            plain_bytes: 64,
+            sealed_bytes: sealed.len() as i64,
+            generation: 0,
+            sha256_plain: "a".repeat(64),
+        }];
+        store.put_manifest(&kid, "src", &manifest).unwrap_err();
+        assert!(store
+            .chain_dir(&kid, "src", "chain")
+            .unwrap()
+            .join("manifest.json")
+            .is_file());
+
+        // The cached total must match a fresh scan (manifest bytes included),
+        // not drop to the pre-reservation value.
+        let cached = store.usage(&kid).unwrap();
+        let fresh = Store::new(&root).usage(&kid).unwrap();
+        assert_eq!(cached, fresh);
+        assert!(cached >= billed_len(sealed.len()));
     }
 
     #[test]

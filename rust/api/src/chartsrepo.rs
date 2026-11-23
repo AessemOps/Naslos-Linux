@@ -1345,17 +1345,21 @@ pub(crate) fn write_atomic(
     )
     .map_err(|e| format!("setting mode: {e}"))?;
     std::fs::rename(&tmp_path, target).map_err(|e| format!("replacing: {e}"))?;
-    // The rename itself must be durable: without the parent-directory fsync a
-    // crash can lose the new name (or resurrect the old file) even though the
-    // data was synced (B-3).
+    // The rename itself should be durable: without the parent-directory fsync
+    // a crash can lose the new name (or resurrect the old file) even though
+    // the data was synced (B-3). It is best effort: the rename already
+    // committed the new content, so reporting a failed save here would make a
+    // caller retry a mutation that did land and diverge memory from disk
+    // (matching shares::Manager::write_snapshot, which has no directory
+    // fsync at all).
     let sync_dir = if dir.as_os_str().is_empty() {
         Path::new(".")
     } else {
         dir
     };
-    std::fs::File::open(sync_dir)
-        .and_then(|handle| handle.sync_all())
-        .map_err(|e| format!("syncing directory: {e}"))?;
+    if let Err(e) = std::fs::File::open(sync_dir).and_then(|handle| handle.sync_all()) {
+        tracing::warn!("could not fsync the directory for {path} after rename: {e}");
+    }
     Ok(())
 }
 

@@ -242,3 +242,58 @@ async fn enroll_status_chunk_and_manifest() {
         "{resp}"
     );
 }
+
+#[tokio::test]
+async fn one_enrollment_token_authorizes_only_one_peer_under_concurrency() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().display().to_string();
+    let state = state_with_receiver(&root);
+    let id_a = new_identity("peer-a").unwrap();
+    let id_b = new_identity("peer-b").unwrap();
+
+    let enroll = |state: Arc<AppState>, name: &'static str, public_key: String| async move {
+        let body = serde_json::json!({
+            "token": TOKEN, "name": name, "publicKey": public_key
+        })
+        .to_string();
+        send(
+            state,
+            Request::builder()
+                .method("POST")
+                .uri("/api/buddy/v1/enroll")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+    };
+
+    let (first, second) = tokio::join!(
+        enroll(state.clone(), "peer-a", id_a.public_key.clone()),
+        enroll(state.clone(), "peer-b", id_b.public_key.clone())
+    );
+    let statuses = [first.0, second.0];
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::CREATED)
+            .count(),
+        1,
+        "{first:?} {second:?}"
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::FORBIDDEN)
+            .count(),
+        1,
+        "{first:?} {second:?}"
+    );
+    let receiver = state.buddy.as_ref().expect("receiver is mounted");
+    assert_eq!(
+        receiver.peers.count(),
+        1,
+        "a single-use token must authorize exactly one key"
+    );
+    assert!(receiver.store.enrollment_used());
+}

@@ -312,8 +312,8 @@ pub async fn enroll(State(receiver): State<BuddyState>, body: Body) -> Response 
     }
 
     {
-        // Scoped so the guard is not held across an `.await` (the handler
-        // future must stay Send).
+        // Fast path. The authoritative single-use check is the one below,
+        // inside the enrollment lock.
         let used = receiver.enroll_used.lock().unwrap();
         if (*used || receiver.store.enrollment_used()) && !receiver.enroll_open {
             return json(
@@ -349,36 +349,56 @@ pub async fn enroll(State(receiver): State<BuddyState>, body: Body) -> Response 
         enabled: true,
         ..Default::default()
     };
-    if !receiver.enroll_open {
-        // Record single use before the key is authorized. If the marker cannot
-        // be written the enrollment fails closed (SEC-2026-C21).
-        if let Err(e) = receiver.store.mark_enrollment_used() {
-            let _ = receiver
-                .finish_mutation(pending, StatusCode::INTERNAL_SERVER_ERROR)
-                .await;
-            return json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({ "error": format!("cannot record the enrollment token as used: {e}") }),
-            );
+    // The check, the spent-token marker and the key insertion are one atomic
+    // step under the enrollment lock: two enroll requests with the same token
+    // can never both pass. The block is synchronous, so the guard is released
+    // before any later `.await` and the handler future stays Send.
+    let outcome: Result<crate::buddy::Peer, Response> = {
+        let mut used = receiver.enroll_used.lock().unwrap();
+        if (*used || receiver.store.enrollment_used()) && !receiver.enroll_open {
+            Err(json(
+                StatusCode::FORBIDDEN,
+                serde_json::json!({ "error": "this enrollment token has already been used" }),
+            ))
+        } else {
+            // Record single use before the key is authorized. If the marker
+            // cannot be written the enrollment fails closed (SEC-2026-C21).
+            let marker = if receiver.enroll_open {
+                Ok(())
+            } else {
+                receiver.store.mark_enrollment_used()
+            };
+            match marker {
+                Err(e) => Err(json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({ "error": format!("cannot record the enrollment token as used: {e}") }),
+                )),
+                Ok(()) => match receiver.peers.add(peer) {
+                    Ok(()) => {
+                        if !receiver.enroll_open {
+                            *used = true;
+                        }
+                        Ok(receiver.peers.get(&req.name).unwrap_or_default())
+                    }
+                    Err(e) => Err(bad_request(&e)),
+                },
+            }
         }
-        *receiver.enroll_used.lock().unwrap() = true;
-    }
-    match receiver.peers.add(peer) {
-        Ok(()) => {
+    };
+    match outcome {
+        Ok(added) => {
             if let Err(resp) = receiver.finish_mutation(pending, StatusCode::CREATED).await {
                 return resp;
             }
-            let added = receiver.peers.get(&req.name).unwrap_or_default();
             json(
                 StatusCode::CREATED,
                 serde_json::json!({ "status": "enrolled", "name": added.name, "fingerprint": added.fingerprint }),
             )
         }
-        Err(e) => {
-            let _ = receiver
-                .finish_mutation(pending, StatusCode::BAD_REQUEST)
-                .await;
-            bad_request(&e)
+        Err(resp) => {
+            let status = resp.status();
+            let _ = receiver.finish_mutation(pending, status).await;
+            resp
         }
     }
 }
