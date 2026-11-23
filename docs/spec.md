@@ -1917,7 +1917,9 @@ A node installed from an installer pack can be upgraded from the web UI. A
   new pack, MUST force server-side apply conflicts (`--force-conflicts`) so a
   release first installed by the desktop engine can be upgraded by the
   in-cluster Helm CLI, MUST verify the running images against the pack's
-  digests, and MUST roll back to the previous Helm revision on failure. A
+  digests, and MUST roll back to the previous Helm revision on failure. The
+  workload readiness window MUST cover the Authelia LDAP startup backoff (at
+  least ten minutes) before a timeout rolls the release back. A
   failed command MUST report the end of stderr: Helm prints a PodSecurity
   warning per workload before the actionable error. A Talos upgrade MUST
   detect the A/B rollback after reboot. A Kubernetes upgrade MUST dry-run first
