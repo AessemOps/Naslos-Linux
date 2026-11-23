@@ -140,10 +140,12 @@ deleting the keys on uninstall would destroy the data.
   `encryptionRoot`; `GET /api/datasets/keystatus?name=…` is the authoritative
   single-dataset read. The pool UI marks locked datasets and offers
   Unlock/Lock buttons.
-- **Destroy:** destroying an encrypted dataset (or a subtree containing one)
-  requires `confirm=<dataset name>`. Only after `zfs destroy` succeeds does the
-  API delete each encryption root's Secret (crypto-shredding); a failed destroy
-  keeps every key.
+- **Destroy:** every dataset destroy (encrypted or not) requires
+  `confirm=<full dataset name>`. For an encrypted subtree the API captures the
+  encryption roots and their dataset GUIDs before the call, re-verifies them
+  immediately before `zfs destroy`, and only after the GUID-bound destroy
+  succeeds does it delete each root's Secret (crypto-shredding). A failed or
+  changed dataset keeps every key.
 - **Key material never** appears in argv, environment variables, `-o`
   properties, logs, error messages, API responses, or a persistent host file.
   The only transient copies are the 0600 tmpfs file used by `zfs create` /
@@ -227,8 +229,8 @@ data-moving operation, not a property change.
 - `POST /api/datasets` with `encryption` + `keyformat=raw` creates the Secret,
   then the encrypted dataset. `POST /api/datasets/unlock`,
   `POST /api/datasets/lock` and `GET /api/datasets/keystatus` are the day-2
-  routes; `DELETE /api/datasets` enforces the destroy confirmation and removes
-  the key Secret after a successful destroy.
+  routes; `DELETE /api/datasets` enforces the destroy confirmation, verifies the
+  GUID, and removes the key Secret after a successful destroy.
 - The agent routes are `GET /api/v1/encryption/status/<dataset>`,
   `POST /api/v1/encryption/unlock` and `POST /api/v1/encryption/lock`. They are
   behind the existing bearer-token guard.
