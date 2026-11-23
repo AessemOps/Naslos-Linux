@@ -770,15 +770,6 @@ later phases and are marked **[OPEN]** below.
   reject line-continuation characters (`\`) and comment starts (`#` in a
   description), so one field cannot inject a directive.
   *(agent validation + render tests)*
-- **FR-SHR-17** — An unparsable share or SMB account store MUST NOT be
-  overwritten. The API MUST preserve a `.corrupt-<timestamp>` copy of the
-  unparsed file, MUST fail closed with `503` on every mutation and apply, and
-  MUST NOT change in-memory state until the candidate has been written to disk.
-  *(store regression tests)*
-- **FR-SHR-18** — Share applies MUST be ordered: each render carries a
-  monotonically increasing revision with a nonce, applies are serialised in the
-  API, and the agent MUST refuse a revision that is not newer than the applied
-  one (surfaced as `409 Conflict`). *(revision tests)*
 - **FR-SHR-07** — Share access MUST be restrictable by **user and by LDAP
   group**. Group entries MUST be rendered as `@group`, and the group's real
   membership MUST be resolvable on the node (see FR-IDN-13). A name MUST NOT be
@@ -831,6 +822,17 @@ later phases and are marked **[OPEN]** below.
   *(render + validation + contract + UI tests)*
 - **FR-SHR-16** — A share path MUST NOT contain a `.zfs` component: the ZFS
   snapshot directory MUST NOT be exportable as a share. *(validation test)*
+- **FR-SHR-17** — A share or SMB account store that is missing, zero-byte, or
+  an empty JSON array MUST load as a valid empty store, so a fresh install can
+  create its first share/account and the file is written on that first save.
+  An existing unparsable store MUST NOT be overwritten: the API MUST preserve a
+  `.corrupt-<timestamp>` copy, MUST fail closed with `503` on every mutation and
+  apply, and MUST NOT change in-memory state until the candidate has been
+  written to disk. *(store regression tests)*
+- **FR-SHR-18** — Share applies MUST be ordered: each render carries a
+  monotonically increasing revision with a nonce, applies are serialised in the
+  API, and the agent MUST refuse a revision that is not newer than the applied
+  one (surfaced as `409 Conflict`). *(revision tests)*
 
 #### NFSv3 (`FR-NFS3`) — all `[OPEN]`
 

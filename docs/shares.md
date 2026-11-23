@@ -170,7 +170,10 @@ Guarantees, checked on both sides:
 ## Corrupt stores
 
 The share list (`shares.json`) and the SMB account mirror (`smbusers.json`) are
-loaded once at startup. If either file cannot be parsed, the API:
+loaded once at startup. A missing file, a zero-byte file, or an empty JSON array
+is a **valid empty store**: this is the fresh-install case, so the first create
+or account upsert is allowed and writes the file. Only an existing file that
+cannot be parsed fails closed. In that case the API:
 
 - keeps the unparsed file untouched and writes a copy next to it named
   `<store>.corrupt-<unix-timestamp>` (an existing backup is never overwritten);
@@ -182,10 +185,9 @@ loaded once at startup. If either file cannot be parsed, the API:
 
 Recovery is explicit: repair the file, restore a repaired `.corrupt-*` copy, or
 replace the store at the documented path with a valid one (`[]` for an empty
-store), then restart the API. Deleting the file alone is not recovery: a missing
-store is also treated as unloaded, precisely so a restart cannot silently turn
-it into an empty configuration. Until then reads still show the last
-successfully loaded state.
+store), then restart the API. Until then reads still show the last successfully
+loaded state. (Removing a corrupt file makes the next start treat the store as
+empty; keep the backup if the definitions should be recovered instead.)
 
 ## Account synchronisation (SMB ⇄ LDAP)
 

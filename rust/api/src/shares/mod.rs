@@ -154,9 +154,11 @@ pub struct Manager {
     shares: HashMap<String, Share>,
     config_path: String,
     zfs_base: String,
-    /// Whether the persisted share list was read successfully (an empty path
-    /// is treated as loaded). A missing or corrupt file must not be rendered
-    /// and pushed as "no shares" over a working node configuration.
+    /// Whether the persisted share list was read successfully. A missing,
+    /// empty or empty-array file is a valid empty store (fresh install) and
+    /// loads; only an existing unparsable file fails closed. A failed store
+    /// must not be rendered and pushed as "no shares" over a working node
+    /// configuration.
     loaded: bool,
     /// Why the store failed to load, with recovery guidance. Present exactly
     /// when `loaded` is false.
@@ -260,10 +262,9 @@ impl Manager {
         let data = match std::fs::read(&self.config_path) {
             Ok(data) => data,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.load_error = Some(format!(
-                    "share store {} does not exist; restore it or create a valid store containing [] before changing shares",
-                    self.config_path
-                ));
+                // Fresh install: no store yet. Start empty and create the
+                // file on the first save; this must not block share creation.
+                self.loaded = true;
                 return;
             }
             Err(e) => {
@@ -274,6 +275,12 @@ impl Manager {
                 return;
             }
         };
+        if data.iter().all(|b| b.is_ascii_whitespace()) {
+            // An empty file (for example a freshly provisioned volume) is a
+            // valid empty store, not a corruption.
+            self.loaded = true;
+            return;
+        }
         let list = match serde_json::from_slice::<Vec<Share>>(&data) {
             Ok(list) => list,
             Err(e) => {
@@ -836,7 +843,10 @@ mod tests {
     fn manager_reports_whether_the_share_file_loaded() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("shares.json");
-        assert!(!Manager::new(missing.to_str().unwrap(), "/var/mnt").loaded());
+        assert!(
+            Manager::new(missing.to_str().unwrap(), "/var/mnt").loaded(),
+            "a missing store is a valid empty store on a fresh install"
+        );
 
         let corrupt = dir.path().join("corrupt.json");
         std::fs::write(&corrupt, "{not json").unwrap();
@@ -846,8 +856,33 @@ mod tests {
         std::fs::write(&empty, "[]").unwrap();
         assert!(Manager::new(empty.to_str().unwrap(), "/var/mnt").loaded());
 
+        let zero_byte = dir.path().join("zero.json");
+        std::fs::write(&zero_byte, "").unwrap();
+        assert!(Manager::new(zero_byte.to_str().unwrap(), "/var/mnt").loaded());
+
         // An empty path is an in-memory test manager, not a failed load.
         assert!(Manager::new("", "/var/mnt").loaded());
+    }
+
+    #[test]
+    fn missing_store_allows_the_first_share_and_is_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("shares.json");
+        let mut mgr = Manager::new(store.to_str().unwrap(), "/var/mnt");
+        assert!(mgr.loaded());
+
+        let req = CreateShareRequest {
+            name: "media".into(),
+            path: "/var/mnt/tank/media".into(),
+            ..Default::default()
+        };
+        mgr.create(&req).unwrap();
+        assert!(store.exists(), "the first save must create the store");
+
+        let reloaded = Manager::new(store.to_str().unwrap(), "/var/mnt");
+        assert!(reloaded.loaded());
+        assert_eq!(reloaded.list().len(), 1);
+        assert_eq!(reloaded.list()[0].name, "media");
     }
 
     #[test]

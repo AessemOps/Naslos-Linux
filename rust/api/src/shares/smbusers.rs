@@ -55,9 +55,10 @@ pub struct NssGroup {
 pub struct SambaUserStore {
     path: String,
     users: HashMap<String, SambaUser>,
-    /// Whether the persisted mirror was read successfully (an empty path is
-    /// treated as loaded). A missing or corrupt file must not be rendered and
-    /// pushed as "no accounts" over a working node mirror.
+    /// Whether the persisted mirror was read successfully. A missing or empty
+    /// file is a valid empty mirror (fresh install); only an existing
+    /// unparsable file fails closed, so it is never pushed as "no accounts"
+    /// over a working node mirror.
     loaded: bool,
     /// Why the store failed to load, with recovery guidance.
     load_error: Option<String>,
@@ -91,10 +92,8 @@ impl SambaUserStore {
         let data = match std::fs::read(&self.path) {
             Ok(data) => data,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.load_error = Some(format!(
-                    "SMB account store {} does not exist; restore it or create a valid store containing [] before changing accounts",
-                    self.path
-                ));
+                // Fresh install: the mirror is created on the first upsert.
+                self.loaded = true;
                 return;
             }
             Err(e) => {
@@ -105,6 +104,10 @@ impl SambaUserStore {
                 return;
             }
         };
+        if data.iter().all(|b| b.is_ascii_whitespace()) {
+            self.loaded = true;
+            return;
+        }
         let list = match serde_json::from_slice::<Vec<SambaUser>>(&data) {
             Ok(list) => list,
             Err(e) => {
@@ -648,14 +651,51 @@ mod tests {
     fn load_reports_an_unreadable_mirror() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing.json");
-        assert!(!SambaUserStore::new(missing.to_str().unwrap()).loaded());
+        assert!(
+            SambaUserStore::new(missing.to_str().unwrap()).loaded(),
+            "a missing mirror is a valid empty mirror on a fresh install"
+        );
 
         let corrupt = dir.path().join("corrupt.json");
         std::fs::write(&corrupt, "{not json").unwrap();
         assert!(!SambaUserStore::new(corrupt.to_str().unwrap()).loaded());
 
+        let empty = dir.path().join("empty.json");
+        std::fs::write(&empty, "[]").unwrap();
+        assert!(SambaUserStore::new(empty.to_str().unwrap()).loaded());
+
+        let zero_byte = dir.path().join("zero.json");
+        std::fs::write(&zero_byte, "").unwrap();
+        assert!(SambaUserStore::new(zero_byte.to_str().unwrap()).loaded());
+
         // An empty path is an in-memory test store, not a failed load.
         assert!(SambaUserStore::new("").loaded());
+    }
+
+    #[test]
+    fn missing_mirror_allows_the_first_account_and_is_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("smbusers.json");
+        let mut store = SambaUserStore::new(store_path.to_str().unwrap());
+        assert!(store.loaded());
+
+        store
+            .upsert(
+                &PosixIdentity {
+                    uid: "elisa".into(),
+                    uid_num: 10003,
+                    gid_num: 10000,
+                    ..Default::default()
+                },
+                "8846F7EAEE8FB117AD06BDD830B7586C",
+            )
+            .unwrap();
+        assert!(store_path.exists(), "the first save must create the mirror");
+
+        let reloaded = SambaUserStore::new(store_path.to_str().unwrap());
+        assert!(reloaded.loaded());
+        assert_eq!(reloaded.count(), 1);
+        assert!(reloaded.get("elisa").is_some());
     }
 
     #[test]
