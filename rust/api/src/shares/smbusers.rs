@@ -92,7 +92,7 @@ impl SambaUserStore {
             Ok(data) => data,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 self.load_error = Some(format!(
-                    "SMB account store {} does not exist; restore it before changing accounts",
+                    "SMB account store {} does not exist; restore it or create a valid store containing [] before changing accounts",
                     self.path
                 ));
                 return;
@@ -113,7 +113,7 @@ impl SambaUserStore {
                     Err(backup_err) => format!(" ({backup_err})"),
                 };
                 self.load_error = Some(format!(
-                    "SMB account store {} is corrupt: {e}{backup}; repair or remove it before changing accounts",
+                    "SMB account store {} is corrupt: {e}{backup}; repair it or replace it with a valid store before changing accounts",
                     self.path
                 ));
                 return;

@@ -261,7 +261,7 @@ impl Manager {
             Ok(data) => data,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 self.load_error = Some(format!(
-                    "share store {} does not exist; create it or restore it before changing shares",
+                    "share store {} does not exist; restore it or create a valid store containing [] before changing shares",
                     self.config_path
                 ));
                 return;
@@ -282,7 +282,7 @@ impl Manager {
                     Err(backup_err) => format!(" ({backup_err})"),
                 };
                 self.load_error = Some(format!(
-                    "share store {} is corrupt: {e}{backup}; repair or remove it before changing shares",
+                    "share store {} is corrupt: {e}{backup}; repair it or replace it with a valid store before changing shares",
                     self.config_path
                 ));
                 return;

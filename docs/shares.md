@@ -180,9 +180,12 @@ loaded once at startup. If either file cannot be parsed, the API:
 - refuses to save before the in-memory state has been swapped, so a failed disk
   write leaves memory and disk in agreement (no phantom share in the list).
 
-Recovery is explicit: repair the file, restore the `.corrupt-*` copy, or remove
-the store file at the documented path, then restart the API. Until then reads
-still show the last successfully loaded state.
+Recovery is explicit: repair the file, restore a repaired `.corrupt-*` copy, or
+replace the store at the documented path with a valid one (`[]` for an empty
+store), then restart the API. Deleting the file alone is not recovery: a missing
+store is also treated as unloaded, precisely so a restart cannot silently turn
+it into an empty configuration. Until then reads still show the last
+successfully loaded state.
 
 ## Account synchronisation (SMB ⇄ LDAP)
 
