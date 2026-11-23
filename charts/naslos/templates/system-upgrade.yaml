@@ -179,8 +179,9 @@ spec:
     # needs. This stops a caller from gaining host namespaces or a writable
     # root through a mutated Job.
     - expression: >-
-        !has(object.spec.hostNetwork) && !has(object.spec.hostPID) &&
-        !has(object.spec.hostIPC) &&
+        (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+        (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC == false) &&
         object.spec.securityContext.runAsNonRoot == true &&
         object.spec.securityContext.runAsUser == 65532 &&
         object.spec.securityContext.seccompProfile.type == 'RuntimeDefault'
