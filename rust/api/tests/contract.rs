@@ -1008,6 +1008,71 @@ async fn domain_create_accepts_an_out_of_band_credentials_secret() {
 }
 
 #[tokio::test]
+async fn domain_provider_change_accepts_an_out_of_band_credentials_secret() {
+    let st = Arc::new(AppState::for_test(SECRET));
+    st.domains
+        .upsert(naslos_api::certs::Domain {
+            base_domain: "example.test".into(),
+            dns_provider: "cloudflare".into(),
+            credentials_secret: "naslos-domain-example-test-creds".into(),
+            provider_config: std::collections::HashMap::from([(
+                "proxied".to_string(),
+                "true".to_string(),
+            )]),
+            environment: "staging".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // MCP domain_update shape: a provider change with only credentialsSecret
+    // and providerConfig (no fields); the Secret is provisioned out of band.
+    let switch = r#"{"baseDomain":"example.test","dnsProvider":"ovh","credentialsSecret":"naslos-domain-ovh-creds","providerConfig":{"endpoint":"ovh-ca"},"environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(switch)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = st.domains.get("example.test").unwrap();
+    assert_eq!(stored.dns_provider, "ovh");
+    assert_eq!(stored.credentials_secret, "naslos-domain-ovh-creds");
+    // The submitted config is validated and kept; the old provider's keys are
+    // not inherited.
+    assert_eq!(
+        stored.provider_config.get("endpoint").map(String::as_str),
+        Some("ovh-ca")
+    );
+    assert!(!stored.provider_config.contains_key("proxied"));
+
+    // The submitted Secret name is still format-validated.
+    let bad_secret = r#"{"baseDomain":"example.test","dnsProvider":"cloudflare","credentialsSecret":"other-secret","providerConfig":{},"environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(bad_secret)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("naslos-"),
+        "{body}"
+    );
+    assert_eq!(st.domains.get("example.test").unwrap().dns_provider, "ovh");
+
+    // Without fields, a credentialsSecret or a passthrough solver a
+    // credential-bearing provider change is still rejected.
+    let bare =
+        r#"{"baseDomain":"example.test","dnsProvider":"cloudflare","environment":"staging"}"#;
+    let (status, body, _raw) = send_state(
+        st.clone(),
+        admin_request("PUT", "/api/domains/example.test", Some(bare)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("dnsProvider"));
+    assert_eq!(st.domains.get("example.test").unwrap().dns_provider, "ovh");
+}
+
+#[tokio::test]
 async fn notification_test_route_requires_enabled_and_bypasses_the_severity_floor() {
     // Disabled: an explicit client error, not a false "sent".
     let (status, body, _r) = send(admin_request("POST", "/api/notifications/test", None)).await;

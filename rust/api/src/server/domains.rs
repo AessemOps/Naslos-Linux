@@ -464,11 +464,13 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
         .unwrap_or(false);
     // A provider change swaps the credential model. Demand the new provider's
     // fields unless the target renders no provider-supplied credentials:
-    // passthrough uses the submitted raw solver, and a provider with no secret
-    // credential fields (rfc2136) renders from config/defaults plus the stored
-    // Secret name. Everything else would point the new solver at the old
-    // provider's Secret keys.
+    // passthrough uses the submitted raw solver, a provider with no secret
+    // credential fields (rfc2136) renders from config/defaults, and a caller
+    // may name an out-of-band credentials Secret with its providerConfig (the
+    // MCP `domain_update` path). Everything else would point the new solver at
+    // the old provider's Secret keys.
     let no_fields = fields.as_ref().map(|f| f.is_empty()).unwrap_or(true);
+    let submitted_credentials = !domain.credentials_secret.is_empty();
     if provider_changed {
         let solver_ready = solver_submitted
             && domain
@@ -485,7 +487,10 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
                         "changing dnsProvider to passthrough requires submitting a solver",
                     );
                 }
-            } else if no_fields && provider_change_requires_fields(provider) {
+            } else if no_fields
+                && !submitted_credentials
+                && provider_change_requires_fields(provider)
+            {
                 return bad_request(
                     "changing dnsProvider requires submitting the new provider's fields",
                 );
@@ -501,7 +506,10 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
         if !solver_submitted {
             domain.solver = prev.solver.clone();
         }
-        if fields.is_none() {
+        // A provider change never inherits the old provider's config: the
+        // submitted config is either used as-is (out-of-band Secret) or
+        // recomputed from the new provider's fields/defaults.
+        if fields.is_none() && !provider_changed {
             domain.provider_config = prev.provider_config.clone();
         }
     }
@@ -519,13 +527,14 @@ async fn upsert_domain(state: &Arc<AppState>, req: DomainRequest, status: Status
     if let Err(e) = validate_app_records(state, &domain) {
         return bad_request(&e);
     }
-    // A create may name a credentials Secret the operator already provisioned
-    // out of band (the documented MCP `domain_create` path: credentialsSecret
-    // plus providerConfig, no fields). In that case the Secret name and the
-    // submitted config are validated, but the provider's fields are not
-    // required because the resolver cannot write the Secret it cannot see.
+    // A create or provider change may name a credentials Secret the operator
+    // already provisioned out of band (the documented MCP `domain_create` and
+    // `domain_update` paths: credentialsSecret plus providerConfig, no fields).
+    // In that case the Secret name and the submitted config are validated, but
+    // the provider's fields are not required because the resolver cannot write
+    // the Secret it cannot see.
     let supplied_credentials_only =
-        existing.is_none() && no_fields && !domain.credentials_secret.is_empty();
+        no_fields && submitted_credentials && (existing.is_none() || provider_changed);
     // Resolve the provider fields on every write, not only when `fields` was
     // submitted: an omitted key preserves the stored config, but a create or a
     // provider change must still satisfy the provider's required secret fields
@@ -651,17 +660,16 @@ async fn apply_domain_fields(
     if !domain.credentials_secret.is_empty() {
         crate::kube::validate_credentials_secret(&domain.credentials_secret)?;
     }
-    // Never inherit the previous provider's config after a provider switch: its
-    // keys mean something else to the new provider. A create that only names an
-    // out-of-band Secret keeps and validates the submitted providerConfig.
-    let existing_config = if provider_changed {
-        None
-    } else if let Some(prev) = existing {
-        Some(prev.provider_config.clone())
-    } else if supplied_credentials_only {
+    // An out-of-band Secret keeps and validates the submitted providerConfig.
+    // Otherwise a provider switch never inherits the previous provider's config
+    // (its keys mean something else to the new provider), and a plain update
+    // falls back to the stored config.
+    let existing_config = if supplied_credentials_only {
         Some(domain.provider_config.clone())
-    } else {
+    } else if provider_changed {
         None
+    } else {
+        existing.map(|d| d.provider_config.clone())
     };
     let resolved = p.resolve_fields(
         "cert",
