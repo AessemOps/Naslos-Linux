@@ -193,8 +193,14 @@ impl SambaUserStore {
         data.push(b'\n');
 
         let path = Path::new(&self.path);
-        let dir = path.parent().unwrap_or_else(|| Path::new("."));
-        if !dir.as_os_str().is_empty() && dir != Path::new(".") {
+        // A single-component relative store path has an empty parent; the
+        // directory to fsync (and to place the temp file in) is the working
+        // directory itself, never "".
+        let dir = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        if dir != Path::new(".") {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("creating SMB account directory: {e}"))?;
         }

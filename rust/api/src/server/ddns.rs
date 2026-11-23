@@ -199,6 +199,11 @@ pub async fn ddns_detail_delete(
             serde_json::json!({ "error": "ddns entry not found" }),
         );
     };
+    // Fail closed before the lookup: a store that did not load must answer
+    // 503, not "not found" from the empty in-memory map.
+    if let Some(response) = store_unavailable(manager) {
+        return response;
+    }
     let entry = match manager.store().get(&id) {
         Ok(e) => e,
         Err(e) => return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
@@ -214,9 +219,6 @@ pub async fn ddns_detail_delete(
                 ),
             }),
         );
-    }
-    if let Some(response) = store_unavailable(manager) {
-        return response;
     }
     if let Err(e) = manager.store().delete(&id) {
         return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e }));

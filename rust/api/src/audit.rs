@@ -682,9 +682,13 @@ impl AuditLog {
     /// so callers can raise exactly one alert.
     pub fn mark_degraded(&self, reason: &str) -> bool {
         let mut state = self.inner.state.lock().unwrap();
-        if state.degraded.is_some() {
+        if state.degraded.is_some() && !state.degraded_retryable {
+            // Already permanently degraded; alert exactly once.
             return false;
         }
+        // A permanent failure escalates over an active capacity refusal:
+        // reclaiming space must never resume mutations on a chain that
+        // failed verification.
         state.degraded = Some(sanitize_text(reason, 512));
         state.degraded_retryable = false;
         true
@@ -707,18 +711,6 @@ impl AuditLog {
         state.degraded = Some(sanitize_text(reason, 512));
         state.degraded_retryable = true;
         true
-    }
-
-    /// Whether the volume has at least `incoming` bytes of room above the
-    /// configured free-space reserve. An unreadable `statvfs` is treated as
-    /// "unknown, proceed": the append itself still surfaces a real failure.
-    fn capacity_reclaimed(&self, incoming: u64) -> bool {
-        match available_bytes(&self.inner.dir) {
-            Some(available) => {
-                available >= self.inner.config.min_free_bytes.saturating_add(incoming)
-            }
-            None => true,
-        }
     }
 
     /// Durably write the begin record. On failure the caller must mark the log
@@ -820,17 +812,22 @@ impl AuditLog {
 
     fn append(&self, pending: &Pending, phase: &str, outcome: &Outcome) -> Result<(), String> {
         let mut state = self.inner.state.lock().unwrap();
-        if let Some(reason) = state.degraded.clone() {
-            // A capacity refusal clears itself once the operator reclaims
-            // space; a chain failure never does.
-            if state.degraded_retryable && self.capacity_reclaimed(0) {
-                state.degraded = None;
-                state.degraded_retryable = false;
-            } else {
-                return Err(format!("audit log is degraded: {reason}"));
-            }
+        let was_retryable = state.degraded.is_some() && state.degraded_retryable;
+        if state.degraded.is_some() && !was_retryable {
+            let reason = state.degraded.clone().unwrap_or_default();
+            return Err(format!("audit log is degraded: {reason}"));
         }
-        self.append_inner(&mut state, pending, phase, outcome, true)
+        // A capacity refusal clears itself only when a real append succeeds
+        // under `ensure_capacity` with the record's actual size — never on a
+        // free-space probe — so a partially reclaimed volume neither flaps
+        // the degraded alert nor claims recovery while writes still fail.
+        let result = self.append_inner(&mut state, pending, phase, outcome, true);
+        if result.is_ok() && was_retryable {
+            state.degraded = None;
+            state.degraded_retryable = false;
+            tracing::info!("audit log recovered: an append succeeded after the capacity refusal");
+        }
+        result
     }
 
     /// Rotate before writing if the active segment would exceed its bound.
@@ -1119,16 +1116,11 @@ impl AuditLog {
             if transitioned {
                 tracing::error!("audit chain verification failed: {reason}");
             }
-        } else {
-            // Explicit recovery path: a chain that verifies and a volume with
-            // room again clears a capacity-only degradation without a restart.
-            let mut state = self.inner.state.lock().unwrap();
-            if state.degraded.is_some() && state.degraded_retryable && self.capacity_reclaimed(0) {
-                state.degraded = None;
-                state.degraded_retryable = false;
-                tracing::info!("audit log recovered: the volume has free space again");
-            }
         }
+        // Recovery is never claimed here: a degraded-but-valid chain stays
+        // degraded until a real append succeeds against the actual record
+        // size, so a verify on a still-full volume does not report the log
+        // as recovered while writes keep failing.
         (report, transitioned)
     }
 
@@ -1883,12 +1875,19 @@ pub async fn middleware(State(state): State<Arc<AppState>>, req: Request, next: 
                     if audit_read {
                         // Reads stay available while the chain is degraded so
                         // an operator can inspect and repair it. The read's
-                        // own record is best effort.
+                        // own record is best effort, but its failure is still
+                        // classified so a permanent error is never silently
+                        // swallowed.
                         let response = next.run(req).await;
-                        let _ = state
+                        if let Err(e) = state
                             .audit
                             .record_once_async(&fallback, response.status().as_u16())
-                            .await;
+                            .await
+                        {
+                            if state.audit.note_write_failure(&e) {
+                                spawn_degraded_alert(state.clone(), e);
+                            }
+                        }
                         return with_request_id(response, &request_id);
                     }
                     return with_request_id(
@@ -2466,19 +2465,55 @@ mod tests {
         assert!(!log.degraded_is_retryable());
         assert_eq!(log.read_records().unwrap().len(), 2);
 
-        // Verify is the explicit recovery path for a degraded-but-valid chain.
+        // Verify is a read path: it never claims recovery. The retryable
+        // degradation stays until a real append succeeds.
         assert!(log.note_write_failure(capacity));
         let (report, transitioned) = log.verify_with_transition();
         assert!(report.ok, "{:?}", report.errors);
         assert!(!transitioned);
-        assert_eq!(log.status(), "ok", "verify clears a capacity degradation");
+        assert_eq!(
+            log.status(),
+            "degraded",
+            "verify must not clear a capacity degradation"
+        );
+        let pending = begin_post(&log, "req-after-second-reclaim");
+        log.finish(&pending, 201)
+            .expect("a successful append clears the retryable degradation");
+        assert_eq!(log.status(), "ok");
 
-        // A real chain failure stays permanent: verify must not clear it.
+        // A real chain failure stays permanent: neither verify nor a
+        // successful append path may clear it.
         assert!(log.mark_degraded("simulated verification failure"));
         let (report, _) = log.verify_with_transition();
         assert!(report.ok);
         assert_eq!(log.status(), "degraded");
         assert!(!log.degraded_is_retryable());
+    }
+
+    #[test]
+    fn a_chain_failure_escalates_over_a_capacity_refusal() {
+        let log = AuditLog::for_test();
+        let capacity = "the audit volume is full; refusing mutations until space is reclaimed";
+        assert!(log.note_write_failure(capacity), "first transition alerts");
+        assert!(log.degraded_is_retryable());
+
+        // A verification failure while capacity-degraded is permanent and
+        // alerts exactly once; reclaiming space must never resume a chain
+        // that failed verification.
+        assert!(
+            log.mark_degraded("audit chain verification failed"),
+            "escalation over a retryable degradation must alert"
+        );
+        assert!(!log.degraded_is_retryable());
+        let err = log
+            .begin(pending_post("req-escalated"))
+            .err()
+            .expect("mutations stay refused on the failed chain");
+        assert!(err.contains("degraded"), "{err}");
+        assert!(
+            !log.mark_degraded("a second verification failure"),
+            "a second permanent failure does not re-alert"
+        );
     }
 
     #[test]
