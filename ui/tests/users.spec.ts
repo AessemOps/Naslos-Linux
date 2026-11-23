@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test('users page loads and can open new user form', async ({ page }) => {
   await page.goto('/users');
   await expect(page.getByRole('heading', { name: 'Users', exact: true })).toBeVisible();
-  await page.click('text=+ New User');
+  await page.getByRole('button', { name: '+ New User' }).click();
   await expect(page.getByRole('heading', { name: 'New User', exact: true })).toBeVisible();
   await page.fill('input[type="text"]', 'testuser');
   await page.fill('input[type="password"]', 'TestPass123!');
@@ -98,7 +98,7 @@ test('editing a user with a password calls the password endpoint', async ({ page
 // shown when editing an existing user.
 test('new user dialog states the timing but not stale sessions', async ({ page }) => {
   await page.goto('/users');
-  await page.click('text=+ New User');
+  await page.getByRole('button', { name: '+ New User' }).click();
   await expect(page.getByRole('heading', { name: 'New User' })).toBeVisible();
 
   await expect(page.getByText(/about 3 seconds/)).toBeVisible();

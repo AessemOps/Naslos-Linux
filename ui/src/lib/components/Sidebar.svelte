@@ -167,7 +167,7 @@
       <button
         type="button"
         class="icon-btn ml-auto text-gray-400 hover:text-naslos-strong hover:bg-naslos-border"
-        aria-expanded="false"
+        aria-expanded="true"
         aria-controls="sidebar-nav"
         aria-label="Collapse the sidebar"
         title="Collapse the sidebar"
@@ -183,7 +183,7 @@
       <button
         type="button"
         class="icon-btn text-gray-400 hover:text-naslos-strong hover:bg-naslos-border"
-        aria-expanded="true"
+        aria-expanded="false"
         aria-controls="sidebar-nav"
         aria-label="Expand the sidebar"
         title="Expand the sidebar"

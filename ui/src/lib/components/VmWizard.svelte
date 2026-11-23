@@ -1,29 +1,75 @@
 <script lang="ts">
   // Create/edit wizard (FR-VMT). Everything is validated server-side too;
   // this form just keeps the payload shapes honest.
+  import { createEventDispatcher } from 'svelte';
   import { modal } from '$lib/actions/modal';
+  import type {
+    VmForm,
+    VmImage,
+    VmPayload,
+    VmPortForward,
+    VmView
+  } from '$lib/vmTypes';
 
   export let open: boolean;
-  export let vm: any | null; // null = create, object = edit
+  export let vm: VmView | null; // null = create, object = edit
   export let pools: string[] = [];
-  export let images: any[] = []; // library entries of the selected pool
+  export let images: VmImage[] = []; // library entries of the selected pool
   // The supervisor image ships the OVMF Secure Boot pair (capabilities).
   export let secureBootAvailable = false;
 
   export let close: () => void = () => {};
-  export let submit: (payload: any, edited: boolean) => Promise<string | null>;
+  export let submit: (payload: VmPayload, edited: boolean) => Promise<string | null>;
+
+  const dispatch = createEventDispatcher<{ poolchange: string }>();
 
   let busy = false;
   let error = '';
-  let form: any = blank();
+  let form: VmForm = blank();
+
+  // Normalize the server view into the form shape. The server omits an empty
+  // forwards list and has no cloud-init "enabled" flag, so a raw clone made the
+  // wizard crash on VMs without cloud-init and silently drop it on save.
+  function fromVm(record: VmView): VmForm {
+    return {
+      name: record.name,
+      pool: record.pool,
+      cpu: record.cpu,
+      memMiB: record.memMiB,
+      autostart: !!record.autostart,
+      firmware: record.firmware,
+      secureBoot: !!record.secureBoot,
+      desired: record.desired ?? 'stopped',
+      disk: {
+        sizeGB: record.disk.sizeGB,
+        format: record.disk.format,
+        bus: record.disk.bus,
+        sourceImage: record.disk.sourceImage ?? null
+      },
+      net: {
+        mode: record.net?.mode ?? 'nat',
+        forwards: (record.net?.forwards ?? []).map((fwd) => ({
+          host: fwd.host,
+          dst: fwd.dst
+        }))
+      },
+      cloudInit: {
+        enabled: !!record.cloudInit,
+        hostname: record.cloudInit?.hostname ?? '',
+        user: record.cloudInit?.user || 'admin',
+        sshKeys: (record.cloudInit?.sshKeys ?? []).join('\n')
+      },
+      iso: record.iso ?? null,
+      bootMode: record.disk?.sourceImage ? 'image' : 'iso'
+    };
+  }
 
   $: if (open) {
     error = '';
-    form = vm ? structuredClone(vm) : blank();
-    form.secureBoot = !!form.secureBoot;
+    form = vm ? fromVm(vm) : blank();
   }
 
-  function blank() {
+  function blank(): VmForm {
     return {
       name: '',
       pool: pools[0] ?? '',
@@ -41,20 +87,20 @@
     };
   }
 
-  $: if (vm && open) {
-    // Edit mode: derive the wizard's bootMode from the record.
-    form.bootMode = vm.disk?.sourceImage ? 'image' : 'iso';
-  }
-
   $: isEdit = vm !== null;
-  $: isos = images.filter((i: any) => /\.(iso)$/i.test(i.name));
-  $: diskImages = images.filter((i: any) => !/\.(iso)$/i.test(i.name));
+  $: isos = images.filter((i) => /\.(iso)$/i.test(i.name));
+  $: diskImages = images.filter((i) => !/\.(iso)$/i.test(i.name));
+
+  function selectPool(event: Event) {
+    form.pool = (event.currentTarget as HTMLSelectElement).value;
+    dispatch('poolchange', form.pool);
+  }
 
   function addForward() {
     form.net.forwards = [...form.net.forwards, { host: 5900, dst: 80 }];
   }
   function removeForward(index: number) {
-    form.net.forwards = form.net.forwards.filter((_: any, i: number) => i !== index);
+    form.net.forwards = form.net.forwards.filter((_, i) => i !== index);
   }
 
   async function onSave() {
@@ -62,7 +108,7 @@
     busy = true;
     error = '';
     try {
-      const payload: any = {
+      const payload: VmPayload = {
         name: form.name.trim(),
         pool: form.pool,
         cpu: Number(form.cpu),
@@ -73,7 +119,7 @@
         secureBoot: form.firmware === 'uefi' && !!form.secureBoot,
         // Keep the persisted desired state in edit mode; a new VM starts
         // stopped (start it explicitly from the detail view).
-        desired: isEdit ? (vm.desired ?? 'stopped') : 'stopped',
+        desired: isEdit ? (vm?.desired ?? 'stopped') : 'stopped',
         disk: {
           sizeGB: Number(form.disk.sizeGB),
           format: form.disk.format,
@@ -82,14 +128,14 @@
         },
         net: {
           mode: form.net.mode,
-          forwards: form.net.forwards.map((f: any) => ({ host: Number(f.host), dst: Number(f.dst) }))
+          forwards: form.net.forwards.map((f) => ({ host: Number(f.host), dst: Number(f.dst) }))
         },
         iso: form.bootMode === 'iso' ? form.iso : null
       };
       if (form.cloudInit.enabled) {
         const keys = String(form.cloudInit.sshKeys)
           .split('\n')
-          .map((k: string) => k.trim())
+          .map((k) => k.trim())
           .filter(Boolean);
         payload.cloudInit = {
           hostname: form.cloudInit.hostname.trim() || form.name.trim(),
@@ -103,8 +149,8 @@
       } else {
         close();
       }
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     } finally {
       busy = false;
     }
@@ -116,7 +162,7 @@
   <div class="fixed inset-0 bg-black/60 z-40 flex items-start justify-center overflow-y-auto py-8" use:modal={{ onClose: close }} on:click|self={close}>
     <div class="card w-full max-w-2xl">
       <div class="flex items-center justify-between mb-4">
-        <h2 class="text-xl font-bold">{isEdit ? `Edit ${vm.name}` : 'New virtual machine'}</h2>
+        <h2 class="text-xl font-bold">{isEdit ? `Edit ${vm?.name}` : 'New virtual machine'}</h2>
         <button class="btn btn-secondary" on:click={close}>Close</button>
       </div>
 
@@ -132,7 +178,7 @@
         </div>
         <div>
           <label class="label" for="vm-pool">Pool *</label>
-          <select id="vm-pool" class="input w-full" bind:value={form.pool} disabled={isEdit}>
+          <select id="vm-pool" class="input w-full" value={form.pool} on:change={selectPool} disabled={isEdit}>
             {#each pools as p}
               <option value={p}>{p}</option>
             {/each}
@@ -215,9 +261,23 @@
         </div>
         {#each form.net.forwards as fwd, index}
           <div class="flex items-center gap-2 mt-2">
-            <input type="number" min="1" max="65535" class="input w-32" bind:value={fwd.host} />
+            <input
+              type="number"
+              min="1"
+              max="65535"
+              class="input w-32"
+              aria-label={`Node port for forward ${index + 1}`}
+              bind:value={fwd.host}
+            />
             <span class="text-gray-400">→</span>
-            <input type="number" min="1" max="65535" class="input w-32" bind:value={fwd.dst} />
+            <input
+              type="number"
+              min="1"
+              max="65535"
+              class="input w-32"
+              aria-label={`Guest port for forward ${index + 1}`}
+              bind:value={fwd.dst}
+            />
             <button class="btn btn-secondary" on:click={() => removeForward(index)}>Remove</button>
           </div>
         {/each}
