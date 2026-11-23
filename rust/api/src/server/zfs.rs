@@ -2049,9 +2049,12 @@ mod tests {
 
     #[test]
     fn destroy_guard_fails_closed_when_shares_are_not_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shares.json");
+        std::fs::write(&path, "{not json").unwrap();
         let state = AppState::for_test("s");
         *state.shares.lock().unwrap() =
-            crate::shares::Manager::new("/nonexistent/naslos/shares.json", "/var/mnt");
+            crate::shares::Manager::new(&path.display().to_string(), "/var/mnt");
         assert!(!state.shares.lock().unwrap().loaded());
         let datasets = vec![plain_dataset("tank/media", "/var/mnt/tank/media", "1")];
         let err = require_destroy_unblocked(&state, "tank/media", &datasets)
