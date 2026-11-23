@@ -166,7 +166,7 @@ pub fn seal_chunk(
     let aad = chunk_aad(source, chain, generation, index, plain.len());
     let sealed = aead
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: plain,
                 aad: &aad,
@@ -219,9 +219,11 @@ pub fn open_chunk(
     }
     let aead = aead_for(dek)?;
     let aad = chunk_aad(source, chain, generation, index, plain_len);
+    let nonce = Nonce::try_from(&sealed[8..8 + NONCE_SIZE])
+        .map_err(|_| format!("chunk {index} carries an invalid nonce"))?;
     let plain = aead
         .decrypt(
-            Nonce::from_slice(&sealed[8..8 + NONCE_SIZE]),
+            &nonce,
             Payload {
                 msg: &sealed[8 + NONCE_SIZE..],
                 aad: &aad,
@@ -247,7 +249,7 @@ pub fn wrap_dek(kek: &[u8], dek: &[u8], source: &str, chain: &str) -> Result<Str
     let aad = format!("{AEAD_LABEL}|dek|{source}|{chain}");
     let sealed = aead
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: dek,
                 aad: aad.as_bytes(),
@@ -269,8 +271,10 @@ pub fn unwrap_dek(kek: &[u8], wrapped: &str, source: &str, chain: &str) -> Resul
     }
     let aead = aead_for(kek)?;
     let aad = format!("{AEAD_LABEL}|dek|{source}|{chain}");
+    let nonce =
+        Nonce::try_from(&raw[..12]).map_err(|_| "wrapped key nonce is invalid".to_string())?;
     aead.decrypt(
-        Nonce::from_slice(&raw[..12]),
+        &nonce,
         Payload {
             msg: &raw[12..],
             aad: aad.as_bytes(),
