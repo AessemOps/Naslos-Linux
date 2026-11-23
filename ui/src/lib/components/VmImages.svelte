@@ -7,13 +7,13 @@
   export let pool: string;
   export let refreshKey: number = 0;
 
-  let images: any[] = [];
+  let images: { name: string; sizeBytes: number }[] = [];
   let importing: string[] = [];
-  let importErrors: any = {};
+  let importErrors: Record<string, string> = {};
   let error = '';
   let loading = false;
 
-  let uploadFile: any = null;
+  let uploadFile: FileList | null = null;
   let uploadProgress = 0;
   let uploading = false;
   // The last offset the server confirmed for the selected file, so retrying a
@@ -30,30 +30,43 @@
 
   $: pool, refreshKey, load();
 
+  // A pool switch starts a new request while the previous one is still in
+  // flight; a late answer for the old pool must never overwrite the new one.
+  let loadSeq = 0;
+
   async function load() {
-    if (!pool) return;
+    const requested = pool;
+    const seq = ++loadSeq;
+    if (!requested) {
+      images = [];
+      importing = [];
+      importErrors = {};
+      return;
+    }
     loading = true;
     error = '';
     try {
-      const res = await fetch(`/api/virt/images?pool=${encodeURIComponent(pool)}`);
+      const res = await fetch(`/api/virt/images?pool=${encodeURIComponent(requested)}`);
       const data = await res.json();
+      if (seq !== loadSeq || requested !== pool) return;
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       images = Array.isArray(data.images) ? data.images : [];
       importing = Array.isArray(data.importing) ? data.importing : [];
       importErrors = data.errors ?? {};
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      if (seq !== loadSeq || requested !== pool) return;
+      error = e instanceof Error ? e.message : String(e);
       images = [];
     } finally {
-      loading = false;
+      if (seq === loadSeq) loading = false;
     }
   }
 
   // The repo's first browser file upload: XHR (progress events), chunked into
   // 8 MiB octet-stream requests the API relays to vmd.
   function upload() {
-    if (!uploadFile || uploading) return;
-    const file = uploadFile;
+    const file = uploadFile?.[0];
+    if (!file || uploading) return;
     const name = file.name;
     const key = `${file.name}:${file.size}:${file.lastModified}`;
     if (uploadKey !== key) {
@@ -151,8 +164,8 @@
       importSha = '';
       // The import runs server-side; poll until it lands in the listing.
       pollImport(name);
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     } finally {
       importingUrl = false;
     }
@@ -189,8 +202,8 @@
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       await load();
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 </script>

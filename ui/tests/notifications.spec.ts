@@ -82,11 +82,15 @@ test.describe('notification settings contract', () => {
     await expect(page.locator('#notify-field-1')).toHaveAttribute('placeholder', /Stored/);
     await expect(page.locator('#notify-field-2')).toHaveAttribute('placeholder', /Stored/);
     await expect(page.locator('#notify-field-4')).toHaveAttribute('placeholder', /Stored/);
+    await expect(page.locator('#notify-field-3')).toHaveAttribute('autocomplete', 'new-password');
     await expect(page.getByText('A server URL is configured but not shown')).toBeVisible();
 
     await page.locator('select[aria-label="Minimum severity"]').selectOption('error');
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect.poll(() => puts.length).toBe(1);
+    // Wait for the post-save reload to finish before drafting the next edit;
+    // it resets the write-only drafts by design.
+    await expect(page.getByRole('button', { name: 'Save Settings' })).toBeEnabled();
     expect(puts[0].body.minSeverity).toBe('error');
     for (const key of ['serverUrl', 'topic', 'email', 'authToken']) {
       expect(puts[0].body).not.toHaveProperty(key);
@@ -98,6 +102,7 @@ test.describe('notification settings contract', () => {
     await page.getByLabel('Allow plaintext HTTP with credentials').first().check();
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect.poll(() => puts.length).toBe(2);
+    await expect(page.getByRole('button', { name: 'Save Settings' })).toBeEnabled();
     expect(puts[1].body.serverUrl).toBe('https://ntfy.example.test');
     expect(puts[1].body.authToken).toBe('new-token');
     expect(puts[1].body.allowInsecureHttp).toBe(true);
@@ -109,6 +114,7 @@ test.describe('notification settings contract', () => {
     await page.getByLabel('Clear the stored token').first().check();
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect.poll(() => puts.length).toBe(3);
+    await expect(page.getByRole('button', { name: 'Save Settings' })).toBeEnabled();
     expect(puts[2].body.serverUrl).toBe('');
     expect(puts[2].body.authToken).toBe('');
     expect(puts[2].body).not.toHaveProperty('topic');
@@ -121,10 +127,12 @@ test.describe('notification settings contract', () => {
     await expect(page.locator('#webhook-field-1')).toHaveValue('');
     await expect(page.locator('#webhook-field-1')).toHaveAttribute('placeholder', /Stored/);
     await expect(page.locator('#webhook-field-2')).toHaveValue('');
+    await expect(page.locator('#webhook-field-2')).toHaveAttribute('autocomplete', 'new-password');
 
     await page.locator('#webhook-field-3').selectOption('error');
     await card.getByRole('button', { name: 'Save Webhook' }).click();
     await expect.poll(() => puts.length).toBe(1);
+    await expect(card.getByRole('button', { name: 'Save Webhook' })).toBeEnabled();
     expect(puts[0].path).toBe('/api/notifications/webhook');
     expect(puts[0].body.minSeverity).toBe('error');
     expect(puts[0].body).not.toHaveProperty('url');
@@ -135,6 +143,7 @@ test.describe('notification settings contract', () => {
     await card.getByLabel('Allow plaintext HTTP with credentials').check();
     await card.getByRole('button', { name: 'Save Webhook' }).click();
     await expect.poll(() => puts.length).toBe(2);
+    await expect(card.getByRole('button', { name: 'Save Webhook' })).toBeEnabled();
     expect(puts[1].body.url).toBe('https://hooks.example.test/naslos');
     expect(puts[1].body.authToken).toBe('hook-token');
     expect(puts[1].body.allowInsecureHttp).toBe(true);
@@ -143,7 +152,58 @@ test.describe('notification settings contract', () => {
     await card.getByLabel('Clear the stored token').check();
     await card.getByRole('button', { name: 'Save Webhook' }).click();
     await expect.poll(() => puts.length).toBe(3);
+    await expect(card.getByRole('button', { name: 'Save Webhook' })).toBeEnabled();
     expect(puts[2].body.url).toBe('');
     expect(puts[2].body.authToken).toBe('');
+  });
+});
+
+test.describe('notification failure handling', () => {
+  test('a failed channel GET cannot overwrite the stored configuration', async ({ page }) => {
+    const puts: any[] = [];
+    await page.route(/\/api\/notifications(\/.*)?$/, async (route) => {
+      const request = route.request();
+      if (request.method() === 'PUT') {
+        puts.push(request.postDataJSON());
+        return route.fulfill({ json: { status: 'ok' } });
+      }
+      return route.fulfill({ status: 502, json: { error: 'bad gateway' } });
+    });
+
+    await page.goto('/notifications');
+    await expect(page.getByText(/Failed to load notification settings/)).toBeVisible();
+    // The default form is not editable and every save is disabled/absent.
+    await expect(page.locator('#notify-field-1')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Save Settings' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Save Webhook' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Save SMTP' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Save Syslog' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Retry' })).toHaveCount(4);
+    expect(puts).toHaveLength(0);
+  });
+
+  test('an ntfy save surfaces the server validation body', async ({ page }) => {
+    await page.route(/\/api\/notifications(\/.*)?$/, async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (request.method() === 'PUT') {
+        return route.fulfill({
+          status: 400,
+          json: {
+            error:
+              'allowInsecureHttp is required when the server URL uses plain http'
+          }
+        });
+      }
+      if (path === '/api/notifications') return route.fulfill({ json: ntfySettings });
+      if (path === '/api/notifications/webhook') return route.fulfill({ json: webhookSettings });
+      if (path === '/api/notifications/smtp') return route.fulfill({ json: smtpSettings });
+      return route.fulfill({ json: syslogSettings });
+    });
+
+    await page.goto('/notifications');
+    await expect(page.getByText('Loading settings...')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    await expect(page.getByRole('alert')).toContainText(/allowInsecureHttp is required/);
   });
 });
