@@ -215,7 +215,9 @@ data:
         - domain: {{ .Values.domain | quote }}
           policy: bypass
           resources:
-            - "^/mcp([/?].*)?$"
+            # Exactly the Traefik route matcher (Path('/mcp') ||
+            # PathPrefix('/mcp/')): /mcp and /mcp/... only, never /mcpfoo.
+            - "^/mcp(/.*)?$"
         {{- end }}
         # The portal (page, assets and its own /authelia/api/* XHR calls) is
         # routed to Authelia by its own IngressRoute with no forwardAuth, so it

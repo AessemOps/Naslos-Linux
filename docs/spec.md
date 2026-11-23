@@ -2137,10 +2137,13 @@ Naslos 0.4.4 ships a first-party MCP (Model Context Protocol) endpoint: a
 Streamable HTTP server **inside the existing `naslos-api` pod** — no new
 image, Service, deployment or NetworkPolicy — that exposes the API's
 owner routes to AI assistants and other programmatic clients through
-scoped bearer tokens. Traefik routes `Host(apex) && PathPrefix('/mcp')`
-to the API without the Authelia forwardAuth (a programmatic client cannot
-complete an interactive 2FA login); the Authelia bypass lives next to the
-buddy bypass, and the API's own guard keeps SEC-10 in force. See
+scoped bearer tokens. Traefik routes `Host(apex) && (Path('/mcp') ||
+PathPrefix('/mcp/'))` to the API without the Authelia forwardAuth (a
+programmatic client cannot complete an interactive 2FA login); the
+matching Authelia bypass (`^/mcp(/.*)?$`) lives next to the buddy bypass,
+and the API's own guard keeps SEC-10 in force. The exact-match pair means
+a path like `/mcpfoo` never matches the route or the bypass, so nothing
+outside the MCP endpoint shares its unauthenticated posture. See
 `docs/mcp.md` for the operator guide.
 
 - **FR-MCP-01** — The endpoint MUST be off by default: state persists in

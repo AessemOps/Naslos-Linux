@@ -490,11 +490,25 @@ traefik:
   ingressClass:
     enabled: false
     isDefaultClass: false
-  # R-011: no cluster-wide RBAC. The chart renders a Role/RoleBinding in each
-  # namespace listed above (and the release namespace) instead of the upstream
-  # ClusterRole/ClusterRoleBinding. `rbac.secretResourceNames` is deliberately
-  # left empty: Traefik must get TLS Secrets whose names are per-domain, so a
-  # fixed allowlist would break app certificates.
+  # R-011/C-5: no cluster-wide RBAC. The subchart renders a Role/RoleBinding in
+  # each watched namespace (and the release namespace) instead of an upstream
+  # ClusterRole/ClusterRoleBinding.
+  #
+  # Accepted residual (C-5): that Role grants get,list,watch on every Secret in
+  # every watched namespace, including the release namespace's Talos config,
+  # proxy secret, LDAP passwords, agent/vmd tokens and Buddy KEK. It cannot be
+  # narrowed: Traefik's kubernetesCRD client unconditionally starts a Secret
+  # informer for each watched namespace and refuses to start the provider if
+  # any cache fails to sync
+  # (pkg/provider/kubernetes/crd/client.go, factoriesSecret/WaitForCacheSync).
+  # Kubernetes RBAC `resourceNames` does not match list/watch (the request has
+  # no name and Traefik sends no metadata.name field selector), and dropping
+  # the rules or the namespace breaks routing entirely. Per-domain TLS Secret
+  # names are dynamic anyway (naslos-<domain>-tls), so `secretResourceNames`
+  # cannot enumerate them. The real fix is to stop storing platform
+  # credentials in watched namespaces (or give Traefik its own watch topology);
+  # that is a platform change, not a values edit. Do not "fix" this by adding
+  # resourceNames or removing secrets rules: the provider will not start.
   rbac:
     namespaced: true
   # Local middleware that deletes the parent-domain `authelia_session` cookie
@@ -887,6 +901,12 @@ openldap:
   # real value here.
   adminPassword: ""
   bindPassword: ""
+  # Install-time immutable. The StatefulSet's volumeClaimTemplates create the
+  # data/config PVCs once; changing these values or storageClassName on an
+  # existing install does NOT resize or move them (expand the PVC with the
+  # storage class first). The directory's mdb map is also fixed at bootstrap:
+  # olcDbMaxsize is capped at 1 GiB in openldap/image/entrypoint.sh, so raising
+  # dataSize alone does not raise the database limit.
   storageClassName: local-path
   dataSize: 1Gi
   configSize: 100Mi
@@ -904,7 +924,9 @@ openldap:
       # generation + full schema/module/database slapadd bootstrap) and caused
       # the container to be OOMKilled before slapd ever finished starting.
       memory: 1Gi
-  # Nightly slapcat backup onto the config volume; keeps the last `retain`.
+  # Nightly slapcat backup onto the dedicated backups volume; keeps the last
+  # `retain`. slapcat reads the live server (it is not an offline dump), so the
+  # data/config PVCs are mounted read-write for mdb's lock file.
   backup:
     enabled: true
     schedule: "0 3 * * *"
@@ -913,7 +935,8 @@ openldap:
     # storageClassName uses the cluster default.
     size: 2Gi
     storageClassName: ""
-    # R-037: the slapcat Job is a short-lived offline dump; bound it.
+    # R-037: the slapcat Job is short-lived; bound it. It runs against the
+    # live server, so its dump is consistent but not an offline file copy.
     resources:
       requests:
         cpu: 50m

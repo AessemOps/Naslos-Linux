@@ -388,20 +388,29 @@ kubectl create secret generic naslos-talosconfig -n naslos \
 # samba, nfs and terminal come from values-vm.yaml and the API's LDAP wait init
 # container uses openldap.image, so a fresh tag suffix otherwise leaves them
 # pulling a tag that no longer exists (ErrImagePull on a fresh install).
+# A digest pin wins over a tag in the chart's image helper, so every
+# `*.image.digest` in values-vm.yaml must be cleared here as well; clearing only
+# virt.image.digest silently kept the six other images on their pinned digests.
 echo "=== Installing Naslos on the VM ==="
 make install-vm VM_IP="$VM_IP" HELM_FLAGS="$HELM_FLAGS \
   --set api.image.repository=$REGISTRY/naslos-api \
   --set api.image.tag=$IMAGE_TAG \
+  --set api.image.digest= \
   --set agent.image.repository=$REGISTRY/naslos-agent \
   --set agent.image.tag=$IMAGE_TAG \
+  --set agent.image.digest= \
   --set ui.image.repository=$REGISTRY/naslos-ui \
   --set ui.image.tag=$IMAGE_TAG \
+  --set ui.image.digest= \
   --set shares.smb.image.repository=$REGISTRY/naslos-samba \
   --set shares.smb.image.tag=$IMAGE_TAG \
+  --set shares.smb.image.digest= \
   --set shares.nfs.image.repository=$REGISTRY/naslos-nfs \
   --set shares.nfs.image.tag=$IMAGE_TAG \
+  --set shares.nfs.image.digest= \
   --set terminal.image.repository=$REGISTRY/naslos-terminal \
   --set terminal.image.tag=$IMAGE_TAG \
+  --set terminal.image.digest= \
   --set virt.image.repository=$REGISTRY/naslos-vmd \
   --set virt.image.tag=$IMAGE_TAG \
   --set virt.image.digest= \
