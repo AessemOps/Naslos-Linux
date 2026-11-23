@@ -90,6 +90,13 @@
   `0.0.0.0/0`; narrow `networkPolicy.gitEgressCIDRs` for an air-gapped or
   egress-restricted network. `apps.officialSource.channels` maps channels to
   branches (e.g. `{Prod: main}` for a repository with only `main`).
+- **Cilium node access (R5).** The `naslos-allow-host` policies grant
+  node-local services only on 6443 (API server), 10250 (kubelet) and 50000
+  (the upgrader's `talosctl`); the agent `:9090` and vmd `:9091` listeners are
+  granted to the API pod alone by `naslos-api-host-egress`. The optional host
+  firewall (`networkPolicy.cilium.hostFirewall`) follows the same split and
+  additionally admits public 80/443 from `networkPolicy.publicIngressCIDR`;
+  keep it off unless you have console access (see the template header).
 - **Datasets for apps.** `apps.datasets` publishes the host datasets root
   (default `/var/mnt`) as a static RWX `naslos-datasets` PV/PVC that baseline
   apps mount, because PSA `baseline` forbids `hostPath` in `naslos-apps`.
@@ -340,6 +347,44 @@ The production profile (`charts/naslos/values-vm.yaml`) sets
 versions and schematic id, so the API polls releases and the System page can
 apply them. Bump those facts with every deployed release; without them the
 updater will not start (`Checker::from_env` ignores a non-installer profile).
+
+The operation itself runs in a Job (`naslos-system-op-*`) as the
+`naslos-upgrader` cluster-admin ServiceAccount. Its admission policy
+(`system-upgrade.yaml`) pins the exact surface the binary needs: the published
+API image, `command: ["naslos-upgrade"]`, the documented flags and env names,
+no lifecycle/probes/envFrom, no init/ephemeral containers, no host namespaces,
+no added capabilities, a non-root read-only container, and the Talos Secret /
+state claim named by the chart values. Any other Job using that ServiceAccount
+is denied.
+
+**Pack handoff (why the upgrade does not re-download).** The update check
+downloads the release pack, verifies its sha256 (and detached Ed25519 signature
+when `SYSTEM_UPDATES_PACK_PUBKEY` is configured) and caches it on the state
+volume at `/var/lib/naslos/updates/pack-<version>.tar.gz` plus `.sig`. The Job
+mounts the same `naslos-shares-config` claim at `/var/lib/naslos` and reads
+that already-verified file, re-checking the approved sha256 and signature
+before extracting; a cached file that does not match fails the operation
+instead of falling back. This keeps the upgrade working under the namespace
+default-deny and across a Talos reboot retry. `naslos-system-op-egress` allows
+HTTPS `443` for the Job as a fallback when the cache is absent (a profile
+without `api.sharesConfig.enabled`, or an overridden `SYSTEM_UPDATES_CACHE`
+outside `/var/lib/naslos`); in that case the pack is downloaded and verified in
+the Job instead. Downloads never follow more than five redirects and every hop
+must stay on the update source or a GitHub asset host; the body is streamed
+under a 512 MiB cap after a `Content-Length` check.
+
+Signature enforcement is fail-closed: a release that publishes `.sig` requires
+`SYSTEM_UPDATES_PACK_PUBKEY`, and a configured key requires every release to be
+signed. The chart does not set that variable, so a signed release channel needs
+it added through a values overlay (the API reads it from its environment, and
+the Job re-verifies the cached signature with the same key passed in
+`--pack-pubkey`).
+
+**Failure handling.** A failed Helm upgrade, a workload that does not become
+ready (including the agent/samba/nfs DaemonSets), or a pack-digest mismatch on
+the *running* pods all roll the release back to the previous Helm revision
+(FR-UPD-06). A rollback failure is reported in the operation log with the
+revision to restore manually.
 
 ### 4. Access the UI
 

@@ -20,6 +20,8 @@ into an arbitrary pod launcher.
 {{- $updates := $system.updates | default dict }}
 {{- $sa := $upgrade.serviceAccount | default "naslos-upgrader" }}
 {{- $cm := $upgrade.configMap | default "naslos-system-operation" }}
+{{- $talosSecret := .Values.api.talosConfigSecret | default "" }}
+{{- $statePvc := ternary "naslos-shares-config" "" .Values.api.sharesConfig.enabled }}
 {{- if and .Values.ui.enabled $release.profile }}
 apiVersion: v1
 kind: ServiceAccount
@@ -127,24 +129,39 @@ spec:
         pods using the naslos-upgrader ServiceAccount must run exactly one
         ghcr.io/aessemops/naslos-api@sha256: container
     - expression: >-
-        object.spec.containers.all(c,
-        c.command.size() > 0 && c.command[0] == 'naslos-upgrade')
+        object.spec.containers.all(c, c.command == ['naslos-upgrade'])
       message: >-
         pods using the naslos-upgrader ServiceAccount must run the
-        naslos-upgrade entrypoint
+        naslos-upgrade entrypoint and nothing else
     - expression: >-
         !has(object.spec.initContainers) &&
         !has(object.spec.ephemeralContainers)
       message: >-
         the upgrader pod may not run init or ephemeral containers
+    # C-1b: the policy admitted a lifecycle hook, an exec probe or envFrom
+    # before, each of which turns this cluster-admin Job into an arbitrary
+    # command runner (a probe can read the Talos config Secret and the Buddy
+    # KEK). None of them is used by the operation.
+    - expression: >-
+        object.spec.containers.all(c,
+        !has(c.lifecycle) &&
+        !has(c.livenessProbe) &&
+        !has(c.readinessProbe) &&
+        !has(c.startupProbe) &&
+        !has(c.envFrom))
+      message: >-
+        the upgrader container may not declare lifecycle hooks, probes or
+        envFrom
     # R-030: the API chooses the Job spec, so pin the arguments to the
     # documented flags (the operation cannot turn the Job into an arbitrary
     # command) and env names to the NASLOS_*/HELM_* set the binary consumes.
+    # Keep this list identical to the flags rust/api/src/system.rs emits: a
+    # flag missing here denies every web upgrade at admission (C-1a).
     - expression: >-
         object.spec.containers.all(c,
         c.args.all(a,
         !a.startsWith('--') ||
-        a.matches('^--(op|operation-id|from|version|pack-url|sha256|namespace|release)(=|$)')))
+        a.matches('^--(op|operation-id|from|version|pack-url|sha256|pack-sig-url|pack-pubkey|pack-file|pack-sig-file|namespace|release)(=|$)')))
       message: >-
         upgrader args may only use the operation flags
     - expression: >-
@@ -153,25 +170,40 @@ spec:
         e.name in ['NASLOS_NAMESPACE', 'NASLOS_RELEASE',
         'NASLOS_WORKLOAD_NAMESPACE', 'NASLOS_STATE_DIR', 'TALOSCONFIG',
         'TALOS_NODES', 'HOME', 'HELM_CACHE_HOME', 'HELM_CONFIG_HOME',
-        'HELM_DATA_HOME']))
+        'HELM_DATA_HOME'] &&
+        !has(e.valueFrom)))
       message: >-
         upgrader env may only set the documented NASLOS_/HELM_/TALOS_ variables
-    # Volumes: tmp emptyDir, the Talos Secret, and the state claim/emptyDir.
-    # No hostPath, no extra volume, no subPath mount.
+        to literal values
+    # Volumes: tmp emptyDir, the configured Talos Secret, and the configured
+    # state claim (or an emptyDir when the chart has no state volume). The
+    # Secret and claim names are pinned to the chart configuration: before
+    # this, a mutated Job could mount any Secret in the namespace, including
+    # the Buddy KEK, and read it through an exec probe.
     - expression: >-
         object.spec.volumes.all(v,
         v.name in ['tmp', 'talosconfig', 'state'] &&
         !has(v.hostPath) &&
         ((v.name == 'tmp' && has(v.emptyDir)) ||
-        (v.name == 'talosconfig' && has(v.secret)) ||
-        (v.name == 'state' && (has(v.persistentVolumeClaim) || has(v.emptyDir)))))
+        (v.name == 'talosconfig' && has(v.secret) &&
+        v.secret.secretName == '{{ $talosSecret }}' &&
+        v.secret.items.size() == 1 &&
+        v.secret.items[0].key == 'talosconfig' &&
+        v.secret.items[0].path == 'config') ||
+        (v.name == 'state' && ((has(v.persistentVolumeClaim) &&
+        v.persistentVolumeClaim.claimName == '{{ $statePvc }}') ||
+        ('{{ $statePvc }}' == '' && has(v.emptyDir))))))
       message: >-
-        upgrader volumes are limited to tmp, talosconfig and state (no hostPath)
+        upgrader volumes are limited to tmp, the configured Talos Secret and
+        the configured state claim
     - expression: >-
         object.spec.containers.all(c,
         c.volumeMounts.all(m,
-        m.mountPath in ['/tmp', '/var/run/secrets/talos.dev', '/var/lib/naslos'] &&
-        !has(m.subPath)))
+        !has(m.subPath) && !has(m.subPathExpr) &&
+        ((m.name == 'tmp' && m.mountPath == '/tmp') ||
+        (m.name == 'talosconfig' &&
+        m.mountPath == '/var/run/secrets/talos.dev' && m.readOnly == true) ||
+        (m.name == 'state' && m.mountPath == '/var/lib/naslos'))))
       message: >-
         upgrader mounts may only target /tmp, /var/run/secrets/talos.dev and
         /var/lib/naslos without subPath
@@ -182,20 +214,39 @@ spec:
         (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
         (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
         (!has(object.spec.hostIPC) || object.spec.hostIPC == false) &&
+        object.spec.restartPolicy == 'Never' &&
         object.spec.securityContext.runAsNonRoot == true &&
         object.spec.securityContext.runAsUser == 65532 &&
+        object.spec.securityContext.runAsGroup == 65532 &&
+        object.spec.securityContext.fsGroup == 65532 &&
+        (!has(object.spec.securityContext.sysctls) ||
+        object.spec.securityContext.sysctls.size() == 0) &&
+        !has(object.spec.securityContext.supplementalGroups) &&
         object.spec.securityContext.seccompProfile.type == 'RuntimeDefault'
       message: >-
         upgrader pods must be non-root (65532), without host namespaces, with
-        RuntimeDefault seccomp
+        RuntimeDefault seccomp and restartPolicy Never
     - expression: >-
         object.spec.containers.all(c,
+        has(c.securityContext) &&
         c.securityContext.allowPrivilegeEscalation == false &&
         c.securityContext.readOnlyRootFilesystem == true &&
-        c.securityContext.capabilities.drop.exists(cap, cap == 'ALL'))
+        has(c.securityContext.capabilities) &&
+        c.securityContext.capabilities.drop.exists(cap, cap == 'ALL') &&
+        (!has(c.securityContext.capabilities.add) ||
+        c.securityContext.capabilities.add.size() == 0) &&
+        (!has(c.securityContext.privileged) ||
+        c.securityContext.privileged == false) &&
+        !has(c.securityContext.runAsUser) &&
+        !has(c.securityContext.runAsGroup) &&
+        !has(c.securityContext.runAsNonRoot) &&
+        !has(c.securityContext.seccompProfile) &&
+        !has(c.securityContext.procMount) &&
+        !has(c.securityContext.seLinuxOptions) &&
+        !has(c.securityContext.windowsOptions))
       message: >-
-        upgrader containers must drop ALL, forbid privilege escalation and use
-        a read-only root
+        upgrader containers must drop ALL, forbid privilege escalation, use a
+        read-only root and may not override the pod security context
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
