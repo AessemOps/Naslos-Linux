@@ -92,17 +92,29 @@ required. Signature verification is still a follow-up.
 Allowed URL forms are `https://`, `ssh://` and `git@host:path`. `git://` is
 refused: it is unauthenticated and unencrypted, so an on-path attacker could
 serve an arbitrary chart to an install that runs with cluster identity. Other
-transports (`file://`, `ext::`) are refused as well.
+transports (`file://`, `ext::`) are refused as well. Credentials must never be
+embedded in the URL (an HTTPS `user:pass@` is rejected, as is an SSH password):
+they belong in the credential Secret. A git error is sanitized before it is
+stored/returned, so a URL credential cannot leak through `lastError`.
 
 - The **official** source is seeded from `apps.officialSource` in the chart
-  (`SOURCES_OFFICIAL_URL`); it cannot be recreated through the API as official.
+  (`SOURCES_OFFICIAL_URL`); its name (by default `naslos`, and always the
+  literal `official`) is reserved: an admin source cannot overwrite it.
 - Admin-added sources are created via `POST /api/sources`. A source's channel
   map defaults to `Prod`/`Develop`/`Experimental` → same-named branches.
-- On a name collision, a **user source overrides the official source**.
+- On a name collision, a **user source overrides the official source** for new
+  installs. An installed app is different: its record pins the source, channel
+  and chart version it was confirmed with, and upgrades resolve that exact
+  entry. Moving an app to another source requires an explicit source in the
+  upgrade request; it never happens because a different source now wins the
+  name.
 - Clones live in `CHARTS_CACHE_DIR` (`/var/lib/naslos/charts`) with one working
-  tree per `(source, channel)`. A refresh uses `CHARTS_TTL` (default `15m`);
-  when the remote is unreachable the stale clone is served and `lastError` is
-  recorded. The API also refreshes every source in the background at that TTL
+  tree per `(source, channel)`; freshness is tracked per **exact channel**, so a
+  refresh of one channel does not make another look fresh. An install copies
+  the resolved chart to a private per-job directory while holding a per-source
+  read lock, so a concurrent refresh cannot change the tree Helm is reading.
+  A refresh uses `CHARTS_TTL` (default `15m`); when the remote is unreachable
+  the stale clone is served and `lastError` is recorded. The API also refreshes every source in the background at that TTL
   (rebuilding the catalog snapshot each cycle), so new chart versions surface
   without pressing Refresh; a failed cycle keeps the previous snapshot.
   `POST /api/sources/refresh` forces a refresh now (the Installed tab's
@@ -115,6 +127,18 @@ transports (`file://`, `ext::`) are refused as well.
   device, fifo, file over 5 MiB, or tree over 5000 entries. This matters because
   the Helm loader reads chart files; a symlinked file would have let a chart
   render `/var/lib/naslos/buddy-identity.json` into a manifest.
+
+## Secret redaction
+
+Values the catalog marks as secret (`format: password` or `writeOnly: true`)
+are masked in API responses at every nesting depth by their JSON-pointer path
+(for example `/postgresql/auth/password` and `/smtp/credentials/token`), and the
+pointer list is persisted on the installed-app record as `secretPaths` and
+returned as `redactedKeys`. The
+config form receives the same list and an untouched field is sent back as
+`null`, which the API treats as "keep the stored value" on upgrade. If the
+catalog entry is missing and the record has no persisted pointer list, the API
+omits the value map entirely and sets `valuesOmitted: true` rather than guess.
 
 ## Environment variables
 

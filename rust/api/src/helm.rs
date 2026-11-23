@@ -14,6 +14,15 @@ use std::time::Duration;
 
 /// Matches the Go client's `5 * time.Minute`.
 const WAIT_TIMEOUT: &str = "5m0s";
+/// How long a read-only Helm call may run.
+const READ_TIMEOUT: Duration = Duration::from_secs(120);
+/// A write can wait for its rollout and then roll back with another full wait
+/// (`--rollback-on-failure`), so the outer guard must exceed two Helm waits.
+/// The previous 360 s guard killed the process in the middle of Helm's own
+/// rollback and left a pending release behind (R-022).
+const WRITE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+/// How long a detached cleanup waits before retrying a timed-out release.
+const CLEANUP_DELAY: Duration = Duration::from_secs(30);
 
 /// Write flags shared by install and upgrade.
 ///
@@ -65,6 +74,7 @@ pub struct App {
 }
 
 /// Helm CLI adapter, scoped to one namespace.
+#[derive(Clone)]
 pub struct Client {
     namespace: String,
     binary: String,
@@ -104,6 +114,16 @@ impl Client {
     }
 
     async fn run(&self, args: &[String]) -> Result<String, String> {
+        self.run_with_timeout(args, READ_TIMEOUT).await
+    }
+
+    /// Run a mutating Helm command with a guard that outlives its `--wait`
+    /// plus the automatic rollback's own wait.
+    async fn run_write(&self, args: &[String]) -> Result<String, String> {
+        self.run_with_timeout(args, WRITE_TIMEOUT).await
+    }
+
+    async fn run_with_timeout(&self, args: &[String], timeout: Duration) -> Result<String, String> {
         let mut full = self.base_args();
         full.extend(args.iter().cloned());
 
@@ -113,15 +133,18 @@ impl Client {
         cmd.args(&full);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        let output = tokio::time::timeout(Duration::from_secs(360), cmd.output())
-            .await
-            .map_err(|_| {
-                format!(
-                    "helm {}: timed out",
-                    args.first().cloned().unwrap_or_default()
-                )
-            })?
-            .map_err(|e| format!("running helm: {e}"))?;
+        let output = match tokio::time::timeout(timeout, cmd.output()).await {
+            Ok(output) => output.map_err(|e| format!("running helm: {e}"))?,
+            Err(_) => {
+                let command = args.first().cloned().unwrap_or_default();
+                // The process is killed on drop, but Helm may have already
+                // created the release (or started a rollback). Schedule a
+                // detached cleanup so a timed-out write cannot leave a
+                // `pending-*` release that blocks the next attempt.
+                self.spawn_detached_cleanup(args);
+                return Err(format!("helm {command}: timed out"));
+            }
+        };
 
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
@@ -132,6 +155,61 @@ impl Client {
             ));
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Best-effort cleanup after the outer guard killed a write. This runs on
+    /// its own task and never blocks the request path.
+    fn spawn_detached_cleanup(&self, args: &[String]) {
+        let Some(name) = args.get(1).cloned() else {
+            return;
+        };
+        let Some(command) = args.first().cloned() else {
+            return;
+        };
+        let client = self.clone();
+        if command == "install" {
+            tokio::spawn(async move {
+                tokio::time::sleep(CLEANUP_DELAY).await;
+                if let Err(e) = client
+                    .run_with_timeout(
+                        &[
+                            "uninstall".into(),
+                            name.clone(),
+                            "-n".into(),
+                            client.namespace.clone(),
+                        ],
+                        Duration::from_secs(120),
+                    )
+                    .await
+                {
+                    tracing::warn!("helm: detached cleanup of {name} failed: {e}");
+                } else {
+                    tracing::warn!("helm: detached cleanup removed the timed-out release {name}");
+                }
+            });
+        } else if command == "upgrade" {
+            tokio::spawn(async move {
+                tokio::time::sleep(CLEANUP_DELAY).await;
+                if let Err(e) = client
+                    .run_with_timeout(
+                        &[
+                            "rollback".into(),
+                            name.clone(),
+                            "0".into(),
+                            "-n".into(),
+                            client.namespace.clone(),
+                            "--wait".into(),
+                            "--timeout".into(),
+                            WAIT_TIMEOUT.into(),
+                        ],
+                        Duration::from_secs(10 * 60),
+                    )
+                    .await
+                {
+                    tracing::warn!("helm: detached rollback of {name} failed: {e}");
+                }
+            });
+        }
     }
 
     /// Write values to a temp file and return `-f <path>` args.
@@ -203,7 +281,7 @@ impl Client {
         ];
         full.extend(write_flags(false));
         full.append(&mut args);
-        self.run(&full).await?;
+        self.run_write(&full).await?;
         self.get(name).await
     }
 
@@ -225,13 +303,13 @@ impl Client {
         ];
         full.extend(write_flags(true));
         full.append(&mut args);
-        self.run(&full).await?;
+        self.run_write(&full).await?;
         self.get(name).await
     }
 
     /// Uninstall a release (`--wait`, 5m timeout).
     pub async fn uninstall(&self, name: &str) -> Result<(), String> {
-        self.run(&[
+        self.run_write(&[
             "uninstall".into(),
             name.into(),
             "-n".into(),
@@ -296,7 +374,7 @@ impl Client {
 
     /// Roll back a release to a revision.
     pub async fn rollback(&self, name: &str, revision: i64) -> Result<(), String> {
-        self.run(&[
+        self.run_write(&[
             "rollback".into(),
             name.into(),
             revision.to_string(),
@@ -323,12 +401,69 @@ pub fn release_status(status: &str) -> &str {
     }
 }
 
-/// Split a `helm list` chart string ("nginx-15.0.0") into (name, version).
+/// Split a `helm list` chart string into (name, version).
+///
+/// The chart part is `"<name>-<version>"`, but both may contain hyphens:
+/// `my-app-1.2.3` is chart `my-app`, while `nginx-1.2.3-rc.1+build.5` is chart
+/// `nginx` with a prerelease/build suffix. Splitting on the last hyphen (the
+/// old behavior) reported `1.2.3-rc.1` as the chart name and `rc.1` as the
+/// version. Scan hyphens from the right and accept the first suffix that is a
+/// complete semver, including prerelease/build identifiers (R-066).
 pub fn split_chart(chart: &str) -> (String, String) {
-    match chart.rfind('-') {
-        Some(i) => (chart[..i].to_string(), chart[i + 1..].to_string()),
-        None => (chart.to_string(), String::new()),
+    let chart = chart.trim();
+    if chart.is_empty() {
+        return (String::new(), String::new());
     }
+    for (index, _) in chart.match_indices('-').rev() {
+        let candidate = &chart[index + 1..];
+        if is_semver_with_suffix(candidate) {
+            return (chart[..index].to_string(), candidate.to_string());
+        }
+    }
+    (chart.to_string(), String::new())
+}
+
+/// `X.Y.Z` with optional `-prerelease` and `+build` suffixes. Helm chart
+/// versions are semver 2.0, so the strict release-only `crate::semver` parser
+/// is not enough here.
+fn is_semver_with_suffix(value: &str) -> bool {
+    let (core_and_pre, build) = match value.split_once('+') {
+        Some((left, right)) => (left, Some(right)),
+        None => (value, None),
+    };
+    if let Some(build) = build {
+        if !valid_semver_identifiers(build) {
+            return false;
+        }
+    }
+    let (core, prerelease) = match core_and_pre.split_once('-') {
+        Some((left, right)) => (left, Some(right)),
+        None => (core_and_pre, None),
+    };
+    if let Some(prerelease) = prerelease {
+        if !valid_semver_identifiers(prerelease) {
+            return false;
+        }
+    }
+    let mut parts = core.split('.');
+    let valid_number = |part: Option<&str>| {
+        part.is_some_and(|part| {
+            !part.is_empty()
+                && part.bytes().all(|b| b.is_ascii_digit())
+                && (part.len() == 1 || !part.starts_with('0'))
+        })
+    };
+    valid_number(parts.next())
+        && valid_number(parts.next())
+        && valid_number(parts.next())
+        && parts.next().is_none()
+}
+
+fn valid_semver_identifiers(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|part| {
+            !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
 }
 
 /// Parse `helm list`'s `updated` field ("2026-10-04 12:00:00.000000 +0000 UTC").
@@ -555,6 +690,26 @@ mod tests {
         assert_eq!(
             split_chart("standalone"),
             ("standalone".to_string(), String::new())
+        );
+        assert_eq!(
+            split_chart("nginx-1.2.3-rc.1"),
+            ("nginx".to_string(), "1.2.3-rc.1".to_string())
+        );
+        assert_eq!(
+            split_chart("my-app-1.2.3-rc.1+build.5"),
+            ("my-app".to_string(), "1.2.3-rc.1+build.5".to_string())
+        );
+        assert_eq!(
+            split_chart("nginx-1.2.3+build.5"),
+            ("nginx".to_string(), "1.2.3+build.5".to_string())
+        );
+        assert_eq!(
+            split_chart("suffix-only-1.2"),
+            ("suffix-only-1.2".to_string(), String::new())
+        );
+        assert_eq!(
+            split_chart("not-a-version-x.y.z"),
+            ("not-a-version-x.y.z".to_string(), String::new())
         );
     }
 

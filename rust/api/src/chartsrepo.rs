@@ -89,6 +89,15 @@ pub struct Source {
     pub added_at: Option<DateTime<Utc>>,
     #[serde(default, rename = "lastSync", skip_serializing_if = "Option::is_none")]
     pub last_sync: Option<DateTime<Utc>>,
+    /// Exact-channel freshness. A source-level `lastSync` made every channel
+    /// look fresh after one channel refreshed, so a new branch could serve a
+    /// stale (or missing) clone until its own TTL expired.
+    #[serde(
+        default,
+        rename = "channelSync",
+        skip_serializing_if = "HashMap::is_empty"
+    )]
+    pub channel_sync: HashMap<String, DateTime<Utc>>,
     #[serde(
         default,
         rename = "lastError",
@@ -98,6 +107,15 @@ pub struct Source {
 }
 
 impl Source {
+    /// A copy safe for API responses: `lastError` may echo a git URL with the
+    /// token embedded by the transport, so URL credentials are always masked.
+    pub fn sanitized(&self) -> Source {
+        let mut source = self.clone();
+        source.last_error = redact_source_credentials(&source.last_error);
+        source.url = redact_source_credentials(&source.url);
+        source
+    }
+
     pub fn channels_for(&self) -> HashMap<String, String> {
         if !self.channels.is_empty() {
             let filtered: HashMap<String, String> = self
@@ -193,7 +211,59 @@ pub fn validate_source_url(url: &str) -> Result<(), String> {
     if !allowed {
         return Err("url must use https://, ssh:// or git@host:path".to_string());
     }
+    // Userinfo in an HTTPS URL is a plain-text credential: it is persisted in
+    // sources.json and returned by GET /api/sources. Tokens belong in
+    // `credentialsSecret`. SSH keeps the `git@` user (not a secret) but a
+    // password before the host is refused.
+    if let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    {
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        if authority.contains('@') {
+            return Err("url must not embed credentials; use credentialsSecret".to_string());
+        }
+    } else if let Some(rest) = url.strip_prefix("ssh://") {
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        if let Some((userinfo, _host)) = authority.rsplit_once('@') {
+            if userinfo.contains(':') {
+                return Err("url must not embed a password".to_string());
+            }
+        }
+    }
     Ok(())
+}
+
+/// Mask `scheme://user:pass@host` credentials that a git error may echo.
+pub fn redact_source_credentials(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(scheme_end) = rest.find("://") {
+        let (before, after_scheme) = rest.split_at(scheme_end + 3);
+        out.push_str(before);
+        let authority_end = after_scheme
+            .find(['/', ' ', '\n', '\t', '\''])
+            .unwrap_or(after_scheme.len());
+        let authority = &after_scheme[..authority_end];
+        let https = before.to_ascii_lowercase().ends_with("https://");
+        if let Some(at) = authority.rfind('@') {
+            let userinfo = &authority[..at];
+            // `ssh://git@host` carries a non-secret user name; any password
+            // there and every HTTPS userinfo are credentials.
+            if https || userinfo.contains(':') {
+                out.push_str("[redacted]@");
+            } else {
+                out.push_str(userinfo);
+                out.push('@');
+            }
+            out.push_str(&authority[at + 1..]);
+        } else {
+            out.push_str(authority);
+        }
+        rest = &after_scheme[authority_end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A lowercase RFC 1123 label (DNS-1123).
@@ -710,7 +780,10 @@ pub struct Manager {
     ttl: Duration,
     creds: Option<Arc<dyn CredentialsProvider>>,
     git: Arc<dyn GitBackend>,
-    refresh_mu: tokio::sync::Mutex<()>,
+    /// One reader/writer lock per source. A refresh mutates the working tree;
+    /// an install holds the read side while it copies the chart, so the copy
+    /// can never observe a half-applied `git checkout` (R-051).
+    source_locks: Mutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
 }
 
 impl Manager {
@@ -727,12 +800,12 @@ impl Manager {
             ttl: if ttl.is_zero() { DEFAULT_TTL } else { ttl },
             creds,
             git,
-            refresh_mu: tokio::sync::Mutex::new(()),
+            source_locks: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn sources(&self) -> Vec<Source> {
-        self.store.list()
+        self.store.list().iter().map(Source::sanitized).collect()
     }
 
     /// The cache freshness window (the `CHARTS_TTL` value). The background
@@ -742,7 +815,7 @@ impl Manager {
     }
 
     pub fn get_source(&self, name: &str) -> Result<Source, String> {
-        self.store.get(name)
+        self.store.get(name).map(|source| source.sanitized())
     }
 
     pub fn store(&self) -> &Arc<Store> {
@@ -751,8 +824,37 @@ impl Manager {
 
     pub fn add_source(&self, mut src: Source) -> Result<Source, String> {
         src.normalize()?;
+        if !src.official {
+            if src.name == "official" {
+                return Err(
+                    "source name \"official\" is reserved for the seeded official source"
+                        .to_string(),
+                );
+            }
+            if let Ok(existing) = self.store.get(&src.name) {
+                if existing.official {
+                    return Err(format!(
+                        "source name {:?} belongs to the official source; pick another name",
+                        src.name
+                    ));
+                }
+            }
+        }
         self.store.upsert(src.clone())?;
-        self.store.get(&src.name)
+        self.store.get(&src.name).map(|source| source.sanitized())
+    }
+
+    /// The read guard an install holds while it snapshots a chart.
+    pub async fn source_read_lock(&self, name: &str) -> tokio::sync::OwnedRwLockReadGuard<()> {
+        self.source_lock(name).read_owned().await
+    }
+
+    fn source_lock(&self, name: &str) -> Arc<tokio::sync::RwLock<()>> {
+        let mut locks = self.source_locks.lock().unwrap();
+        locks
+            .entry(name.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::RwLock::new(())))
+            .clone()
     }
 
     pub fn delete_source(&self, name: &str) -> Result<(), String> {
@@ -805,7 +907,8 @@ impl Manager {
         let branch = branch_for(src, channel)?;
         let dir = self.dir(&src.name, channel)?;
 
-        let _guard = self.refresh_mu.lock().await;
+        let lock = self.source_lock(&src.name);
+        let _guard = lock.write().await;
 
         let auth = self.auth_for(src)?;
         if let Err(e) = self
@@ -813,15 +916,15 @@ impl Manager {
             .sync(&src.url, &branch, &src.commit, &dir, &auth)
             .await
         {
-            self.record_sync(&src.name, Some(&e));
+            self.record_sync(&src.name, channel, Some(&e));
             return Err(format!("refreshing {}/{channel}: {e}", src.name));
         }
         if let Err(e) = stat_repo(&dir) {
             let _ = std::fs::remove_dir_all(&dir);
-            self.record_sync(&src.name, Some(&e));
+            self.record_sync(&src.name, channel, Some(&e));
             return Err(format!("refreshing {}/{channel}: {e}", src.name));
         }
-        self.record_sync(&src.name, None);
+        self.record_sync(&src.name, channel, None);
         Ok(())
     }
 
@@ -859,11 +962,14 @@ impl Manager {
         }
     }
 
-    fn record_sync(&self, name: &str, sync_err: Option<&String>) {
+    fn record_sync(&self, name: &str, channel: &str, sync_err: Option<&String>) {
+        let now = Utc::now();
         let _ = self.store.update(name, |src| {
-            src.last_error = sync_err.cloned().unwrap_or_default();
+            src.last_error =
+                redact_source_credentials(sync_err.map(String::as_str).unwrap_or_default());
             if sync_err.is_none() {
-                src.last_sync = Some(Utc::now());
+                src.last_sync = Some(now);
+                src.channel_sync.insert(channel.to_string(), now);
             }
         });
     }
@@ -878,8 +984,9 @@ impl Manager {
         let cached = self.has_clone(name, channel);
         let fresh = cached
             && src
-                .last_sync
-                .map(|t| (Utc::now() - t).num_seconds() < self.ttl.as_secs() as i64)
+                .channel_sync
+                .get(channel)
+                .map(|t| (Utc::now() - *t).num_seconds() < self.ttl.as_secs() as i64)
                 .unwrap_or(false);
         if fresh {
             return Ok(src);
@@ -928,6 +1035,76 @@ impl Manager {
         let dir = self.dir(name, channel)?;
         safe_join(&dir, &format!("{APPS_DIR}/{app}"))
     }
+
+    /// Copy a resolved chart into a private temporary directory owned by one
+    /// install/upgrade job. Helm reads the chart repeatedly; without the copy a
+    /// concurrent refresh could rewrite it mid-read (R-051).
+    pub fn snapshot_app(
+        &self,
+        name: &str,
+        channel: &str,
+        app: &str,
+    ) -> Result<ChartSnapshot, String> {
+        let source = self.app_dir(name, channel, app)?;
+        let dir = tempfile::Builder::new()
+            .prefix("naslos-chart-")
+            .tempdir()
+            .map_err(|e| format!("creating a private chart directory: {e}"))?;
+        copy_tree(Path::new(&source), dir.path())?;
+        let path = dir.path().display().to_string();
+        Ok(ChartSnapshot { _dir: dir, path })
+    }
+}
+
+/// A chart copy scoped to one job; dropping it removes the private directory.
+pub struct ChartSnapshot {
+    _dir: tempfile::TempDir,
+    pub path: String,
+}
+
+/// Read the chart's `Chart.yaml` version (the version Helm will install).
+pub fn chart_version(dir: &str) -> Option<String> {
+    #[derive(Default, serde::Deserialize)]
+    struct ChartYaml {
+        #[serde(default)]
+        version: String,
+    }
+    let data = std::fs::read(Path::new(dir).join("Chart.yaml")).ok()?;
+    let meta: ChartYaml = serde_yaml::from_slice(&data).ok()?;
+    Some(meta.version.trim().to_string()).filter(|version| !version.is_empty())
+}
+
+fn copy_tree(source: &Path, target: &Path) -> Result<(), String> {
+    for entry in
+        std::fs::read_dir(source).map_err(|e| format!("reading chart {}: {e}", source.display()))?
+    {
+        let entry = entry.map_err(|e| format!("reading chart {}: {e}", source.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("stat {}: {e}", path.display()))?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "chart contains a symlink ({}); refusing to copy it",
+                path.display()
+            ));
+        }
+        let destination = target.join(entry.file_name());
+        if file_type.is_dir() {
+            std::fs::create_dir_all(&destination)
+                .map_err(|e| format!("creating {}: {e}", destination.display()))?;
+            copy_tree(&path, &destination)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&path, &destination)
+                .map_err(|e| format!("copying {}: {e}", path.display()))?;
+        } else {
+            return Err(format!(
+                "chart contains a non-regular file ({}); refusing to copy it",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn branch_for(src: &Source, channel: &str) -> Result<String, String> {
@@ -1196,6 +1373,98 @@ mod tests {
         );
         assert_eq!(m.dir("official", "Prod").unwrap(), "/cache/official/prod");
         assert!(m.dir("Bad Name", "Prod").is_err());
+    }
+
+    #[test]
+    fn source_urls_reject_embedded_credentials() {
+        for bad in [
+            "https://user:secret@example.com/r.git",
+            "https://token@example.com/r.git",
+            "ssh://git:secret@example.com/r.git",
+        ] {
+            assert!(validate_source_url(bad).is_err(), "{bad}");
+        }
+        for ok in ["ssh://git@example.com/r.git", "git@example.com:o/r.git"] {
+            assert!(validate_source_url(ok).is_ok(), "{ok}");
+        }
+        assert_eq!(
+            redact_source_credentials(
+                "fatal: https://user:token@example.com/r.git not found; ssh://git@example.com/r.git ok"
+            ),
+            "fatal: https://[redacted]@example.com/r.git not found; ssh://git@example.com/r.git ok"
+        );
+        let mut legacy = source("legacy");
+        legacy.url = "https://user:token@example.com/r.git".into();
+        assert_eq!(
+            legacy.sanitized().url,
+            "https://[redacted]@example.com/r.git"
+        );
+    }
+
+    #[test]
+    fn the_official_source_name_cannot_be_taken_over() {
+        let store = Arc::new(Store::new(""));
+        let manager = Manager::new(
+            store.clone(),
+            "/cache",
+            DEFAULT_TTL,
+            None,
+            Arc::new(GitCliBackend::new()),
+        );
+        let mut seeded = source("official");
+        seeded.official = true;
+        manager.add_source(seeded).unwrap();
+        let mut impostor = source("official");
+        impostor.url = "https://evil.example/r.git".into();
+        assert!(manager.add_source(impostor).is_err());
+
+        let reserved = source("mine");
+        let store2 = Arc::new(Store::new(""));
+        let manager2 = Manager::new(
+            store2,
+            "/cache",
+            DEFAULT_TTL,
+            None,
+            Arc::new(GitCliBackend::new()),
+        );
+        manager2.add_source(reserved.clone()).unwrap();
+        let mut named_official = source("official");
+        named_official.official = false;
+        assert!(manager2.add_source(named_official).is_err());
+    }
+
+    #[test]
+    fn a_chart_snapshot_is_a_private_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_dir = dir.path().join("official/prod/apps/nginx");
+        std::fs::create_dir_all(app_dir.join("templates")).unwrap();
+        std::fs::write(
+            app_dir.join("Chart.yaml"),
+            "apiVersion: v2\nname: nginx\nversion: 1.2.3\n",
+        )
+        .unwrap();
+        std::fs::write(app_dir.join("templates/cm.yaml"), "kind: ConfigMap\n").unwrap();
+        let store = Arc::new(Store::new(""));
+        let manager = Manager::new(
+            store,
+            &dir.path().display().to_string(),
+            DEFAULT_TTL,
+            None,
+            Arc::new(GitCliBackend::new()),
+        );
+        let snapshot = manager.snapshot_app("official", "Prod", "nginx").unwrap();
+        assert_ne!(
+            snapshot.path,
+            app_dir.display().to_string(),
+            "the install must not read the shared clone"
+        );
+        assert!(std::path::Path::new(&snapshot.path)
+            .join("Chart.yaml")
+            .is_file());
+        assert_eq!(chart_version(&snapshot.path).as_deref(), Some("1.2.3"));
+        let snapshot_path = snapshot.path.clone();
+        drop(snapshot);
+        assert!(!std::path::Path::new(&snapshot_path).exists());
     }
 
     #[test]

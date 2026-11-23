@@ -14,7 +14,8 @@
 //! chart release.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
@@ -258,6 +259,11 @@ impl ImageDigestCache {
             .timeout(REQUEST_TIMEOUT)
             // A registry must not redirect the digest lookup somewhere else.
             .redirect(reqwest::redirect::Policy::none())
+            // Every hostname (registry and token realm) is resolved through a
+            // public-only resolver: a chart cannot point the lookup at a
+            // private/metadata address and read the response through an error
+            // message (R-032).
+            .dns_resolver(Arc::new(PublicDns))
             .user_agent(concat!("naslos-api/", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap_or_default();
@@ -289,6 +295,10 @@ impl ImageDigestCache {
     pub async fn check(&self, image: &str, running: &str) -> Option<ImageDrift> {
         let reference = parse_image_ref(image)?;
         if reference.pinned {
+            return None;
+        }
+        if let Err(e) = validate_registry_host(&reference.registry) {
+            tracing::debug!(image = %reference.cache_key(), "image digest lookup refused: {e}");
             return None;
         }
         let latest = match self.resolve(&reference).await {
@@ -344,6 +354,7 @@ pub async fn resolve_digest(
     client: &reqwest::Client,
     reference: &ImageRef,
 ) -> Result<ResolvedDigest, String> {
+    validate_registry_host(&reference.registry)?;
     let url = format!(
         "https://{}/v2/{}/manifests/{}",
         reference.registry_host(),
@@ -426,6 +437,68 @@ pub async fn resolve_digest(
         .unwrap_or(false);
     let platform = is_index.then(|| platform_manifest_digest(&body)).flatten();
     Ok(ResolvedDigest { digest, platform })
+}
+
+/// Refuse a registry that is an IP literal or an internal/single-label name.
+/// The DNS resolver below rejects private answers for named registries; this
+/// check also covers literal addresses, which never reach DNS (R-032).
+pub fn validate_registry_host(registry: &str) -> Result<(), String> {
+    let registry = registry.trim().to_ascii_lowercase();
+    let (host, _port) = match registry.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+            (host.to_string(), Some(port))
+        }
+        _ => (registry.clone(), None),
+    };
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        if crate::ddns::drivers::blocked_ip(&ip) {
+            return Err(format!("registry {host:?} is not a public address"));
+        }
+        return Ok(());
+    }
+    if host == "localhost"
+        || !host.contains('.')
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host.ends_with(".localhost")
+        || host.ends_with(".svc")
+    {
+        return Err(format!("registry {host:?} is not a public hostname"));
+    }
+    Ok(())
+}
+
+/// A resolver that refuses any name with a private, loopback, link-local,
+/// metadata or otherwise blocked address. reqwest uses the returned addresses
+/// for the connection, so a second DNS answer cannot rebind the lookup.
+#[derive(Debug, Clone, Copy)]
+struct PublicDns;
+
+impl reqwest::dns::Resolve for PublicDns {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+            let mut public: Vec<SocketAddr> = Vec::new();
+            for addr in addrs {
+                if crate::ddns::drivers::blocked_ip(&addr.ip()) {
+                    return Err(format!(
+                        "refusing to resolve {host:?} to the non-public address {}",
+                        addr.ip()
+                    )
+                    .into());
+                }
+                public.push(addr);
+            }
+            if public.is_empty() {
+                return Err(format!("{host:?} did not resolve").into());
+            }
+            Ok(Box::new(public.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
 }
 
 fn platform_manifest_digest(body: &[u8]) -> Option<String> {
@@ -643,6 +716,39 @@ mod tests {
         };
         assert!(single.matches("sha256:single"));
         assert!(!single.matches("sha256:amd64"));
+    }
+
+    #[test]
+    fn rejects_private_registry_hosts() {
+        for bad in [
+            "127.0.0.1",
+            "127.0.0.1:5000",
+            "10.0.0.5",
+            "172.16.0.2",
+            "169.254.169.254",
+            "[::1]",
+            "[fd00::1]",
+            "localhost",
+            "localhost:5000",
+            "registry",
+            "registry:5000",
+            "registry.local",
+            "metadata.internal",
+            "api.svc",
+        ] {
+            assert!(validate_registry_host(bad).is_err(), "{bad}");
+        }
+        for ok in ["ghcr.io", "lscr.io:443", "registry-1.docker.io"] {
+            assert!(validate_registry_host(ok).is_ok(), "{ok}");
+        }
+        let parse = parse_image_ref("127.0.0.1:5000/repo:tag").unwrap();
+        assert!(validate_registry_host(&parse.registry).is_err());
+        let local = parse_image_ref("localhost/repo:tag").unwrap();
+        assert!(validate_registry_host(&local.registry).is_err());
+        let single_label = parse_image_ref("registry:5000/repo:tag").unwrap();
+        assert!(validate_registry_host(&single_label.registry).is_err());
+        let public = parse_image_ref("ghcr.io/aessemops/app:latest").unwrap();
+        assert!(validate_registry_host(&public.registry).is_ok());
     }
 
     #[test]

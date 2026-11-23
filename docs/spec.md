@@ -1069,6 +1069,48 @@ with a sibling `naslos-app.yaml` install-config. See
   `lastError` while keeping the drift for retry. The chart MUST allow API-only
   egress to HTTPS registries (`networkPolicy.imageEgress`, default on).
   *(images tests, apps update tests, chart render gate, live drill)*
+- **FR-APP-28** — App values marked secret by the catalog schema (`format:
+  password` or `writeOnly: true`) MUST be redacted at every nesting depth by
+  walking the schema's JSON-pointer paths, not by comparing leaf names with
+  top-level keys. The pointer list MUST be persisted on the record
+  (`secretPaths`) and returned to the UI as `redactedKeys` so a later read can
+  still redact when the catalog entry is unavailable; a client echoing a redacted nested value back as `null` on an
+  upgrade MUST keep the stored value. When the catalog has no entry and the
+  record has no persisted pointer list, every value MUST be omitted from the
+  response (`valuesOmitted: true`) rather than returned unredacted. *(apps
+  record/redaction tests)*
+- **FR-APP-29** — An install MUST record the source, channel and exact chart
+  version it resolved, and an upgrade MUST resolve the chart from that recorded
+  source/channel; a different source is only used when the request pins it
+  explicitly, so a user source that later wins the bare app name cannot silently
+  take over an installed app. A request MAY pin `source`, `channel` and
+  `chartVersion`; a pinned version MUST match the version in the copied chart.
+  Every install/upgrade MUST render from a private copy of the chart taken under
+  a per-source read lock, so a concurrent refresh cannot change the tree while
+  Helm reads it, and cache freshness MUST be tracked per exact channel rather
+  than per source. *(catalog pinning tests, chartsrepo snapshot tests)*
+- **FR-APP-30** — An install MUST roll back every resource the attempt created
+  when it fails after provisioning: dataset claims/PVs, their registry
+  attachments, the env Secret and any pre-created egress policy. A namespace
+  handed back by a failed attempt MUST be swept by platform label before reuse
+  (claims/PVs and env Secrets of apps with no record), and a release with the
+  same name left by a timed-out attempt MUST be removed first. A Helm write
+  MUST have an outer guard longer than its wait plus rollback, and a timed-out
+  write MUST schedule a detached uninstall/rollback. Startup MUST backfill
+  releases that have no record as orphaned records so they stay visible and
+  uninstallable. *(apps lifecycle tests, helm tests)*
+- **FR-APP-31** — Exposure updates MUST serialize with the app's lifecycle lock
+  and be refused with `409` while an install/upgrade/uninstall job for the app
+  is running, and MUST write only the exposure-owned fields. The app store MUST
+  behave transactionally: a failed durable save MUST restore the in-memory
+  record (upsert/update/delete). A registry image lookup MUST reject a
+  non-public registry host (IP literal, loopback/private, single-label or
+  `.local`/`.internal`/`.svc`) and resolve names through a public-only resolver
+  so DNS cannot rebind the request. The seeded official source name MUST be
+  reserved (an admin source cannot overwrite it), source URLs MUST NOT embed
+  credentials, and a source's `lastError` MUST have URL credentials redacted.
+  `split_chart` MUST parse a trailing semver including prerelease/build
+  suffixes. *(apps store tests, images tests, chartsrepo tests, helm tests)*
 - **FR-APP-19** — Chart installs MUST run as a namespaced identity that cannot
   create Traefik `IngressRoute`/`Middleware` or cert-manager objects; the API
   MUST own the app's route and certificate. *(chart render gate:
@@ -2481,6 +2523,11 @@ Dynamic DNS and the provider registry are verified by
 | `shares::acl::tests::*` | FR-ACL-01/02 (fixed preset allow-list, POSIX mode/entry mapping, no world-write, owner/group/other resolution, service-account lockout refusal) |
 | `apps::dataset_layout_tests::*` | FR-APP-20 (selection normalisation, one claim/hostPath entry per dataset, client value stripping, chart support scan) |
 | `apps::resource_quantity_tests::*` | FR-APP-25 (flat and per-component resources, quantity grammar, non-quantity types, unrelated keys) |
+| `apps::lifecycle_hardening_tests::*` | FR-APP-28/30/31 (nested pointer redaction, no-catalog fail-closed, persisted pointers, nested null restore, transactional store, field-wise exposure, orphan label sweep) |
+| `catalog::tests::an_app_is_pinned_to_its_exact_source_and_channel`, `an_explicit_channel_is_not_swapped_for_prod` | FR-APP-29 (source/channel pinning for installed apps and updates) |
+| `chartsrepo::tests::a_chart_snapshot_is_a_private_copy`, `the_official_source_name_cannot_be_taken_over`, `source_urls_reject_embedded_credentials` | FR-APP-29/31 (private chart snapshot, reserved official source, no URL credentials, redacted lastError) |
+| `helm::tests::split_chart_name_and_version` | FR-APP-31 (trailing semver with prerelease/build suffixes) |
+| `images::tests::rejects_private_registry_hosts` | FR-APP-31 (registry SSRF: IP literals/private/single-label hosts refused) |
 | `TestManagerUpdateSkipsUnchangedAndHidesSecrets`, `TestDdnsNeverReturnsCredentialValues` | FR-DNS-02/03/06 (skip-when-unchanged, force-run, no credential values) |
 | `TestManagerRecordsCredentialErrors`, `TestDetectIPValidatesResponse` | FR-DNS-03 (errors recorded, IP response validated) |
 | `TestOVHDriverUpdate`, `TestCloudflareDriverCreateAndUpdate`, `TestHTTPDriverRendersAndAuthenticates` | FR-DNS-01 (drivers: URL/method/body/signature/auth) |
