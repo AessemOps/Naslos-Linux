@@ -1,13 +1,23 @@
 {{- /*
-Admission guard for the Helm install identity (R-001).
+Admission guard for the Helm install identity (R-001, C-4).
 
-RBAC already withholds Ingress/NetworkPolicy writes from `naslos-helm`, but a
-future Role edit, an aggregated role or `helm --force-conflicts` must not turn
-that into a silent exposure path: this ValidatingAdmissionPolicy refuses any
-Ingress or NetworkPolicy CREATE/UPDATE from the Helm identity, and refuses any
-object that declares a namespace other than the one in the request. The API is
-the only writer of routes (IngressRoute), the app's Internet-egress
-NetworkPolicy and the chart env Secrets.
+RBAC already withholds Ingress/NetworkPolicy, traefik.io and cert-manager.io
+writes from `naslos-helm`, and only lets it create ClusterIP Services and
+non-platform Secrets. A future Role edit, an aggregated role or
+`helm --force-conflicts` must not turn that into a silent exposure path, so
+this ValidatingAdmissionPolicy independently enforces the same boundary:
+
+  - no Ingress or NetworkPolicy (the API owns routing and isolation policy);
+  - no traefik.io IngressRoute/Middleware/etc. (the API is the only route
+    writer, so a chart can never hijack the UI's host or bypass forwardAuth);
+  - no cert-manager.io/acme.cert-manager.io writes (the API owns certificates
+    and issuers; a chart must not mint one for a host it does not own);
+  - no Services other than ClusterIP without externalIPs (no NodePort,
+    LoadBalancer or ExternalName exposure from a chart);
+  - no writes to the platform Secrets (the shared app TLS/wildcard Secrets,
+    DDNS credentials and the platform identities); a chart may only manage
+    its own non-`naslos-` Secrets;
+  - no object whose metadata.namespace differs from the request namespace.
 
 Deny-only chart NetworkPolicies are rejected too: the platform base policy is
 the isolation contract, and admitting partial policies would reintroduce a
@@ -40,6 +50,18 @@ spec:
       reason: Forbidden
     - expression: "!(request.resource.group == 'networking.k8s.io' && (request.resource.resource == 'ingresses' || request.resource.resource == 'networkpolicies'))"
       message: "The Helm identity may not create or update Ingress or NetworkPolicy objects; the Naslos API owns app routing and isolation policy."
+      reason: Forbidden
+    - expression: "request.resource.group != 'traefik.io'"
+      message: "The Helm identity may not create or update traefik.io objects (IngressRoute, Middleware, TLSOption, ...); the Naslos API owns every route, so a chart cannot hijack a host or bypass forwardAuth."
+      reason: Forbidden
+    - expression: "request.resource.group != 'cert-manager.io' && request.resource.group != 'acme.cert-manager.io'"
+      message: "The Helm identity may not create or update cert-manager objects; the Naslos API owns certificates and issuers."
+      reason: Forbidden
+    - expression: "!(request.resource.group == '' && request.resource.resource == 'secrets' && (object.metadata.name == 'naslos-apps-tls' || object.metadata.name == 'naslos-tls' || object.metadata.name == 'naslos-talosconfig' || object.metadata.name == 'naslos-helm-token' || object.metadata.name.startsWith('naslos-ddns-') || object.metadata.name.startsWith('naslos-openldap') || object.metadata.name.startsWith('naslos-proxy') || object.metadata.name.startsWith('naslos-agent') || object.metadata.name.startsWith('naslos-vmd') || object.metadata.name.startsWith('naslos-buddy') || object.metadata.name.startsWith('naslos-authelia')))"
+      message: "The Helm identity may not create or update a platform Secret (app TLS/wildcard, DDNS, OpenLDAP, proxy/agent/vmd tokens, Buddy keys or Authelia state)."
+      reason: Forbidden
+    - expression: "!(request.resource.group == '' && request.resource.resource == 'services' && ((has(object.spec.type) && object.spec.type != 'ClusterIP') || (has(object.spec.externalIPs) && size(object.spec.externalIPs) > 0)))"
+      message: "The Helm identity may only create ClusterIP Services without externalIPs; exposure goes through the Naslos API's IngressRoute."
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

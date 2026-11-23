@@ -3,7 +3,8 @@
 #
 # Renders the chart with the hardened app-isolation overlay and checks the
 # security invariants that a values/template edit could silently undo:
-#   - the Helm identity can never write Ingress/NetworkPolicy;
+#   - the Helm identity can never write Ingress/NetworkPolicy, traefik.io,
+#     cert-manager.io, non-ClusterIP Services or platform Secrets (C-4);
 #   - native Kubernetes Ingress is disabled;
 #   - the admission policy and its binding exist;
 #   - the Authelia session-cookie strip plugin is wired into Traefik.
@@ -22,7 +23,7 @@ fi
 out=$(mktemp)
 trap 'rm -f "$out"' EXIT
 
-helm template naslos "$chart" \
+helm template naslos "$chart" -n naslos \
   -f "$chart/values.yaml" \
   -f "$chart/values-vm.yaml" \
   --set openldap.bindPassword=lint-only >"$out"
@@ -55,9 +56,12 @@ for kind in ("Role", "ClusterRole"):
                 "ingresses" in resources or "networkpolicies" in resources
             ):
                 fail(f"{kind}/{role['metadata']['name']} still grants {resources}")
+            for forbidden in ("traefik.io", "cert-manager.io", "acme.cert-manager.io"):
+                if forbidden in groups:
+                    fail(f"{kind}/{role['metadata']['name']} grants {forbidden}")
 
-# R-001: the admission policy denies Helm Ingress/NetworkPolicy and namespace
-# spoofing, and is enforced (Deny), not audit-only.
+# R-001/C-4: the admission policy denies the whole Helm exposure surface and is
+# enforced (Deny), not audit-only.
 policies = {d["metadata"]["name"]: d for d in by_kind("ValidatingAdmissionPolicy")}
 binding = {
     d["metadata"]["name"]: d
@@ -71,11 +75,42 @@ if not any("networking.k8s.io" in e and "ingresses" in e for e in ex):
     fail("admission policy does not deny Helm Ingress/NetworkPolicy writes")
 if not any("request.namespace" in e for e in ex):
     fail("admission policy does not reject cross-namespace metadata")
+for needle, what in (
+    ("traefik.io", "traefik.io IngressRoute/Middleware writes"),
+    ("cert-manager.io", "cert-manager.io writes"),
+    ("acme.cert-manager.io", "acme.cert-manager.io writes"),
+    ("ClusterIP", "non-ClusterIP Services"),
+    ("externalIPs", "Services with externalIPs"),
+    ("naslos-apps-tls", "the shared app TLS Secret"),
+    ("naslos-ddns-", "the DDNS credential Secrets"),
+):
+    if not any(needle in e for e in ex):
+        fail(f"admission policy does not deny {what}")
 b = binding.get("naslos-helm-app-isolation")
 if not b:
     fail("ValidatingAdmissionPolicyBinding/naslos-helm-app-isolation is missing")
 if "Deny" not in b.get("spec", {}).get("validationActions", []):
     fail("admission policy binding is not Deny-enforced")
+
+# R-011: Traefik stays namespaced; every watched namespace gets a Role/RoleBinding
+# (the Secret access in them is a documented residual, see values.yaml).
+traefik_roles = {
+    d["metadata"].get("namespace")
+    for d in by_kind("Role")
+    if d["metadata"]["name"] == "naslos-traefik"
+}
+traefik_bindings = {
+    d["metadata"].get("namespace")
+    for d in by_kind("RoleBinding")
+    if d["metadata"]["name"] == "naslos-traefik"
+}
+for ns in ("naslos", "naslos-apps", "naslos-apps-priv", "naslos-app-1", "naslos-app-p1"):
+    if ns not in traefik_roles or ns not in traefik_bindings:
+        fail(f"Traefik Role/RoleBinding missing in {ns}")
+if any(d["metadata"]["name"] == "naslos-traefik" for d in by_kind("ClusterRole")):
+    fail("Traefik must not render a ClusterRole")
+if any(d["metadata"]["name"] == "naslos-traefik" for d in by_kind("ClusterRoleBinding")):
+    fail("Traefik must not render a ClusterRoleBinding")
 
 # R-001: native Ingress provider/class is off; the CRD provider still serves
 # the API's IngressRoutes and allows cross-namespace Service targets.
