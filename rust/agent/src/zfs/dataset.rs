@@ -437,17 +437,26 @@ impl ZfsClient {
 
         // A volume and a filesystem can share a name; only the filesystem API
         // may destroy a filesystem, and only `/api/zvols` may destroy a volume.
-        match self.dataset_type(name).await? {
-            None => return Ok(()),
-            Some(kind) if kind == "volume" => {
+        // The same read returns the GUID, so the expected generation is
+        // verified before the first destructive command.
+        let Some((kind, guid)) = self.dataset_identity(name).await? else {
+            return Ok(());
+        };
+        match kind.as_str() {
+            "volume" => {
                 return Err(conflict!(
                     "{name} is a zvol; block volumes are only deletable through /api/zvols"
                 ))
             }
-            Some(kind) if kind != "filesystem" => {
-                return Err(conflict!("{name} is a {kind}, not a filesystem dataset"))
+            "filesystem" => {}
+            other => return Err(conflict!("{name} is a {other}, not a filesystem dataset")),
+        }
+        if let Some(expected) = expected_guid {
+            if guid != expected {
+                return Err(conflict!(
+                    "dataset {name} changed before the destroy (GUID {guid} != expected {expected}); retry the request"
+                ));
             }
-            Some(_) => {}
         }
 
         let mut argv: Vec<String> = vec!["destroy".into()];
@@ -573,20 +582,21 @@ impl ZfsClient {
         }
     }
 
-    /// `zfs list -o type` for one path. `None` means the path does not exist
-    /// (or the host could not report it, which a destroy treats as absent).
-    async fn dataset_type(&self, name: &str) -> ZfsResult<Option<String>> {
+    /// `zfs list -o type,guid` for one path. `None` means the path does not
+    /// exist (or the host could not report it, which a destroy treats as
+    /// absent).
+    async fn dataset_identity(&self, name: &str) -> ZfsResult<Option<(String, String)>> {
         match self
-            .host_exec(ZFS_BIN, &strings(&["list", "-H", "-o", "type", name]))
+            .host_exec(ZFS_BIN, &strings(&["list", "-H", "-o", "type,guid", name]))
             .await
         {
             Ok(out) => {
-                let kind = out.trim();
-                if kind.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some(kind.to_string()))
+                let line = out.trim();
+                if line.is_empty() {
+                    return Ok(None);
                 }
+                let (kind, guid) = line.split_once('\t').unwrap_or((line, ""));
+                Ok(Some((kind.trim().to_string(), guid.trim().to_string())))
             }
             Err(e) => {
                 if e.output.to_ascii_lowercase().contains("does not exist") {
@@ -952,6 +962,7 @@ impl ZfsClient {
     pub async fn rollback(&self, dataset: &str, snap_name: &str) -> ZfsResult<()> {
         validate_dataset_path(dataset)?;
         super::backup::validate_snapshot_name(snap_name)?;
+        let _guard = self.lock_dataset_mutation(dataset).await;
         let name = format!("{dataset}@{snap_name}");
         match self
             .host_exec(ZFS_BIN, &strings(&["rollback", "-r", &name]))

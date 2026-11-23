@@ -6,10 +6,15 @@ mod handlers;
 
 use crate::shares::SharesClient;
 use crate::zfs::{SmartClient, ZfsClient};
+use axum::extract::Request;
+use axum::http::{Method, StatusCode};
+use axum::middleware::Next;
+use axum::response::Response;
 use axum::routing::{get, post, put};
 use axum::{middleware, Router};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Authentication options. `tls_*` empty means plain HTTP (local development).
 #[derive(Debug, Clone, Default)]
@@ -182,13 +187,13 @@ impl Server {
                 "/api/v1/zfs/snapshots/{*dataset}",
                 get(handlers::zfs_snapshots),
             )
-            // Non-streaming calls are bounded below the API client's 180 s
-            // timeout. `zfs send`/`receive` are long-lived streams and are
-            // merged after this layer, so they keep no deadline (SEC-2026-D9).
-            .layer(tower_http::timeout::TimeoutLayer::with_status_code(
-                axum::http::StatusCode::GATEWAY_TIMEOUT,
-                std::time::Duration::from_secs(170),
-            ))
+            // Ordinary calls are bounded below the API client's 180 s timeout.
+            // Host mutations (pool create/destroy/import, dataset create/
+            // destroy, zvol changes, rollback, snapshot destroy) and the
+            // `zfs send`/`receive` streams keep no total deadline: killing an
+            // irreversible wipe/destroy halfway through the HTTP layer would
+            // leave an unknown partial state (R-045, SEC-2026-D9).
+            .layer(middleware::from_fn(host_mutation_timeout))
             .merge(
                 Router::new()
                     .route("/api/v1/zfs/send/", get(handlers::zfs_send_empty))
@@ -239,6 +244,50 @@ impl Server {
     }
 }
 
+/// Ordinary request deadline. Host mutations are excluded: an HTTP timeout
+/// must never cancel a wipe, destroy or receive midway.
+const GENERIC_REQUEST_TIMEOUT: Duration = Duration::from_secs(170);
+
+/// Whether a request mutates the host destructively (or irreversibly) and
+/// therefore must not be killed by the generic HTTP deadline.
+pub(crate) fn is_destructive_host_mutation(method: &Method, path: &str) -> bool {
+    match *method {
+        Method::POST => {
+            path == "/api/v1/pools"
+                || path == "/api/v1/pools/import"
+                || path.starts_with("/api/v1/datasets/")
+                || path.starts_with("/api/v1/rollback/")
+                || path == "/api/v1/zvols"
+                || path.starts_with("/api/v1/zvols?")
+                || (path.starts_with("/api/v1/pools/") && path.ends_with("/devices"))
+        }
+        Method::PUT => path == "/api/v1/zvols" || path.starts_with("/api/v1/zvols?"),
+        Method::DELETE => {
+            path.starts_with("/api/v1/pools/")
+                || path.starts_with("/api/v1/datasets/")
+                || path.starts_with("/api/v1/snapshots/")
+                || path == "/api/v1/zvols"
+                || path.starts_with("/api/v1/zvols?")
+        }
+        _ => false,
+    }
+}
+
+/// Apply the generic deadline only to ordinary calls; host mutations run until
+/// the host command finishes.
+async fn host_mutation_timeout(req: Request, next: Next) -> Response {
+    if is_destructive_host_mutation(req.method(), req.uri().path()) {
+        return next.run(req).await;
+    }
+    match tokio::time::timeout(GENERIC_REQUEST_TIMEOUT, next.run(req)).await {
+        Ok(response) => response,
+        Err(_) => crate::server::error::write_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "the agent call exceeded its deadline; check the node state before retrying",
+        ),
+    }
+}
+
 /// Install a timer (axum-server sets none, which disables hyper's default
 /// header-read timeout) and restore the Go server's 10s `ReadHeaderTimeout`.
 fn configure_http(
@@ -258,4 +307,43 @@ fn parse_addr(addr: &str) -> anyhow::Result<SocketAddr> {
     normalized
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid listen address {addr:?}: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_mutations_are_excluded_from_the_generic_deadline() {
+        for (method, path) in [
+            (Method::POST, "/api/v1/pools"),
+            (Method::POST, "/api/v1/pools/import"),
+            (Method::POST, "/api/v1/pools/tank/devices"),
+            (Method::DELETE, "/api/v1/pools/tank"),
+            (Method::POST, "/api/v1/datasets/tank"),
+            (Method::DELETE, "/api/v1/datasets/tank/data"),
+            (Method::POST, "/api/v1/zvols"),
+            (Method::PUT, "/api/v1/zvols"),
+            (Method::DELETE, "/api/v1/zvols"),
+            (Method::POST, "/api/v1/rollback/tank/data"),
+            (Method::DELETE, "/api/v1/snapshots/tank/data"),
+        ] {
+            assert!(
+                is_destructive_host_mutation(&method, path),
+                "{method} {path}"
+            );
+        }
+        for (method, path) in [
+            (Method::GET, "/api/v1/pools"),
+            (Method::GET, "/api/v1/datasets/tank"),
+            (Method::POST, "/api/v1/pools/tank/scrub"),
+            (Method::GET, "/api/v1/zvols"),
+            (Method::GET, "/api/v1/system/disk"),
+        ] {
+            assert!(
+                !is_destructive_host_mutation(&method, path),
+                "{method} {path}"
+            );
+        }
+    }
 }

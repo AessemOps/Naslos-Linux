@@ -523,3 +523,107 @@ async fn unlock_response_never_echoes_the_key() {
         }
     }
 }
+
+#[tokio::test]
+async fn dataset_delete_forwards_the_expected_guid() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&["filesystem\t42\n", ""]));
+    let calls = runner.calls();
+    let zfs = ZfsClient::new(runner, host.root.clone());
+    let server = server_with(Some(zfs), None, TOKEN);
+
+    let resp = server
+        .router()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/datasets/tank/data?guid=42")
+                .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let calls = calls.lock().unwrap();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c == "/usr/local/sbin/zfs list -H -o type,guid tank/data"),
+        "{calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c == "/usr/local/sbin/zfs destroy tank/data"),
+        "{calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_busy_zvol_delete_is_409() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[
+        "volume\n", // require_zvol
+        "ERR:cannot destroy 'tank/vol': volume is busy\n",
+    ]));
+    let zfs = ZfsClient::new(runner, host.root.clone());
+    let server = server_with(Some(zfs), None, TOKEN);
+
+    let resp = server
+        .router()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/zvols?name=tank/vol&confirm=tank/vol")
+                .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn a_forced_receive_requires_confirmation() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[]));
+    let zfs = ZfsClient::new(runner, host.root.clone());
+    let server = server_with(Some(zfs), None, TOKEN);
+
+    let (status, body) = send(
+        &server,
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/zfs/receive/tank/data?force=true")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap().contains("confirm"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_forced_import_requires_confirmation() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[]));
+    let zfs = ZfsClient::new(runner, host.root.clone());
+    let server = server_with(Some(zfs), None, TOKEN);
+
+    let (status, body) = send(
+        &server,
+        post_json("/api/v1/pools/import", r#"{"name":"tank","force":true}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap().contains("confirm"),
+        "{body}"
+    );
+}

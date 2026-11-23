@@ -46,7 +46,7 @@ async fn main() {
         None
     } else {
         // Import any existing pools (idempotent).
-        if let Err(e) = client.import_pool("").await {
+        if let Err(e) = client.import_pool("", false).await {
             tracing::info!("Note: zpool import returned: {e}");
         }
         Some(client)

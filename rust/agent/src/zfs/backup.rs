@@ -120,6 +120,59 @@ pub fn parse_send_size(out: &str) -> ZfsResult<i64> {
     Err(ZfsError::Other("zfs send -nP did not report a size".into()))
 }
 
+/// Snapshot prefixes owned by Naslos features. A destination snapshot outside
+/// this set is a user snapshot and a forced receive must not delete it.
+pub const OWNED_SNAPSHOT_PREFIXES: [&str; 3] = ["naslos-rep-", "naslos-", "buddy-"];
+
+/// The `zfs receive` argv. `-u` pauses mounting and `-x` drops the stream's
+/// host layout so a peer cannot choose where the dataset lands.
+pub fn receive_command_line(dataset: &str, force: bool) -> Vec<String> {
+    let mut argv: Vec<String> = vec!["receive".into(), "-u".into()];
+    for prop in ["mountpoint", "canmount", "sharenfs", "sharesmb"] {
+        argv.push("-x".into());
+        argv.push(prop.into());
+    }
+    if force {
+        argv.push("-F".into());
+    }
+    argv.push(dataset.to_string());
+    argv
+}
+
+/// The server-chosen mountpoint for a received dataset:
+/// `/var/mnt/<pool>/<relative path>`. `None` when the path is not
+/// `<pool>/<dataset>`.
+pub fn receive_mountpoint(dataset: &str) -> Option<String> {
+    let (pool, rest) = dataset.split_once('/')?;
+    if pool.is_empty() || rest.is_empty() {
+        return None;
+    }
+    Some(format!("/var/mnt/{pool}/{rest}"))
+}
+
+/// The first destination snapshot whose name is not a Naslos-owned prefix.
+pub fn foreign_snapshot(listing: &str) -> Option<String> {
+    for line in listing.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let Some((_, snap)) = line.split_once('@') else {
+            continue;
+        };
+        if !OWNED_SNAPSHOT_PREFIXES
+            .iter()
+            .any(|prefix| snap.starts_with(prefix))
+        {
+            return Some(snap.to_string());
+        }
+    }
+    None
+}
+
+/// What [`ZfsClient::finalize_receive`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReceiveFinalize {
+    pub mountpoint: String,
+    pub warnings: Vec<String>,
+}
+
 impl ZfsClient {
     /// Start a `zfs send` and return its stdout plus a waiter.
     pub async fn send_stream(&self, opts: &SendStreamOptions) -> ZfsResult<(BoxedRead, Waiter)> {
@@ -182,18 +235,140 @@ impl ZfsClient {
     }
 
     /// Start `zfs receive` and return its stdin plus a waiter.
+    ///
+    /// The stream must not choose the host mount layout: `-u` defers mounting
+    /// and `-x` drops the stream's `mountpoint`, `canmount`, `sharenfs` and
+    /// `sharesmb`. The API sets a server-chosen mountpoint after a successful
+    /// receive ([`Self::finalize_receive`]).
+    ///
+    /// `-F` is only accepted after the destination passed
+    /// [`Self::receive_force_gate`]: a stream may replace this feature's own
+    /// snapshots, never a user snapshot or a foreign child dataset.
     pub async fn receive_stream(
         &self,
         dataset: &str,
         force: bool,
     ) -> ZfsResult<(BoxedWrite, Waiter)> {
         validate_dataset_path(dataset)?;
-        let mut argv = vec!["receive".to_string()];
         if force {
-            argv.push("-F".into());
+            self.receive_force_gate(dataset).await?;
         }
-        argv.push(dataset.to_string());
+        let argv = receive_command_line(dataset, force);
         self.runner_spawn_in(&argv).await
+    }
+
+    /// Verify a forced receive cannot destroy anything this feature did not
+    /// create: every existing snapshot must carry a Naslos-owned prefix and
+    /// the destination must have no child datasets.
+    pub async fn receive_force_gate(&self, dataset: &str) -> ZfsResult<()> {
+        let snapshots = match self
+            .host_exec(
+                ZFS_BIN,
+                &[
+                    "list".to_string(),
+                    "-H".to_string(),
+                    "-o".to_string(),
+                    "name".to_string(),
+                    "-t".to_string(),
+                    "snapshot".to_string(),
+                    "-r".to_string(),
+                    dataset.to_string(),
+                ],
+            )
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => {
+                if e.output.to_ascii_lowercase().contains("does not exist") {
+                    return Ok(());
+                }
+                return Err(ZfsError::Other(format!(
+                    "listing destination snapshots: {}: {}",
+                    e.output.trim(),
+                    e.message
+                )));
+            }
+        };
+        if let Some(foreign) = foreign_snapshot(&snapshots) {
+            return Err(crate::conflict!(
+                "destination {dataset} holds snapshot {foreign:?} that Naslos did not create; refusing a forced receive. Remove that snapshot or receive into another dataset"
+            ));
+        }
+
+        let children = match self
+            .host_exec(
+                ZFS_BIN,
+                &[
+                    "list".to_string(),
+                    "-H".to_string(),
+                    "-o".to_string(),
+                    "name".to_string(),
+                    "-r".to_string(),
+                    dataset.to_string(),
+                ],
+            )
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => {
+                if e.output.to_ascii_lowercase().contains("does not exist") {
+                    return Ok(());
+                }
+                return Err(ZfsError::Other(format!(
+                    "listing destination children: {}: {e}",
+                    e.output.trim()
+                )));
+            }
+        };
+        for line in children.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            if line != dataset {
+                return Err(crate::conflict!(
+                    "destination {dataset} has child dataset {line}; a forced receive could replace it. Destroy the replica dataset first"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Set the server-chosen mountpoint after a successful receive and mount
+    /// the dataset deliberately. A mount failure is reported as a warning: the
+    /// received data is already durable and must not be reported as lost.
+    pub async fn finalize_receive(&self, dataset: &str) -> ZfsResult<ReceiveFinalize> {
+        validate_dataset_path(dataset)?;
+        let mountpoint = receive_mountpoint(dataset).ok_or_else(|| {
+            invalid!("cannot choose a mountpoint for {dataset}: expected /var/mnt/<pool>/<dataset>")
+        })?;
+        let prop = format!("mountpoint={mountpoint}");
+        if let Err(e) = self
+            .host_exec(ZFS_BIN, &["set".to_string(), prop, dataset.to_string()])
+            .await
+        {
+            return Err(ZfsError::Other(format!(
+                "setting the receive mountpoint to {mountpoint}: {}: {}",
+                e.output.trim(),
+                e.message
+            )));
+        }
+        let mut warnings = Vec::new();
+        match self
+            .host_exec(ZFS_BIN, &["mount".to_string(), dataset.to_string()])
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                let lower = e.output.to_ascii_lowercase();
+                if !lower.contains("already mounted") {
+                    warnings.push(format!(
+                        "received {dataset} but could not mount it at {mountpoint}: {}",
+                        e.output.trim()
+                    ));
+                }
+            }
+        }
+        Ok(ReceiveFinalize {
+            mountpoint,
+            warnings,
+        })
     }
 
     async fn runner_spawn_out(&self, argv: &[String]) -> ZfsResult<(BoxedRead, Waiter)> {

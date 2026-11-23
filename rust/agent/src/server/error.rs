@@ -22,13 +22,17 @@ pub fn write_error(status: StatusCode, msg: impl Into<String>) -> Response {
     json_response(status, &serde_json::json!({ "error": msg.into() }))
 }
 
-/// Caller-fixable input is 400; anything else is a 500 (NAS-003).
+/// Caller-fixable input is 400, a live consumer is 409; anything else is a 500
+/// (NAS-003). A 409 names the consumer/share/job so the operator can stop it.
 ///
 /// A 500's message can contain host paths, device names and zfs stderr, which
 /// the browser does not need. Log it with a reference id and return that id.
 pub fn write_client_error(err: &ZfsError) -> Response {
     if err.is_validation() {
         return write_error(StatusCode::BAD_REQUEST, err.to_string());
+    }
+    if err.is_conflict() {
+        return write_error(StatusCode::CONFLICT, err.to_string());
     }
     let reference = error_reference();
     tracing::error!(reference, error = %err, "agent command failed");
