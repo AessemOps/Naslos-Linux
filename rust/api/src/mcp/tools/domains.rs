@@ -57,7 +57,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "domain_create",
         "Add a domain (with its DNS provider credentials for certificates).",
-        Write,
+        Full,
         POST,
         "/api/domains",
         || schema(
@@ -92,7 +92,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "domain_update",
         "Change a domain's DNS provider or credentials.",
-        Write,
+        Full,
         PUT,
         "/api/domains/{name}",
         || schema(
@@ -127,7 +127,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "domain_sso_set",
         "Make a domain an Authelia SSO domain (or stop using it as one).",
-        Write,
+        Full,
         POST,
         "/api/domains/{name}/sso",
         || schema(
@@ -141,7 +141,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "ddns_create",
         "Create a dynamic-DNS record that follows the public IP.",
-        Write,
+        Full,
         POST,
         "/api/ddns",
         || schema(
@@ -166,7 +166,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "ddns_update",
         "Change a dynamic-DNS entry (any subset of ddns_create fields).",
-        Write,
+        Full,
         PUT,
         "/api/ddns/{id}",
         || schema(
@@ -189,7 +189,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "ddns_run",
         "Run one dynamic-DNS update now (don't wait for the interval).",
-        Write,
+        Full,
         POST,
         "/api/ddns/{id}/run",
         || schema(&["id"], &[("id", s("The DDNS entry to run."))])

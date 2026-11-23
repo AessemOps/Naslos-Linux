@@ -198,7 +198,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "source_add",
         "Add a chart source (a git repository with channels).",
-        Write,
+        Full,
         POST,
         "/api/sources",
         || schema(
@@ -216,7 +216,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "source_refresh",
         "Refresh every chart source now and rebuild the catalog.",
-        Write,
+        Full,
         POST,
         "/api/sources/refresh",
         no_args

@@ -34,6 +34,36 @@ pub enum Scope {
     Full,
 }
 
+/// `now + days` with the full `u64 -> i64` and `DateTime + Duration`
+/// range checked. An out-of-range request is rejected instead of wrapping.
+fn expiry_in_days(
+    now: chrono::DateTime<chrono::Utc>,
+    days: Option<u64>,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, String> {
+    match days {
+        Some(days) if days > 0 => {
+            let days =
+                i64::try_from(days).map_err(|_| "expiresInDays is out of range".to_string())?;
+            let span = chrono::Duration::try_days(days)
+                .ok_or_else(|| "expiresInDays is out of range".to_string())?;
+            now.checked_add_signed(span)
+                .map(Some)
+                .ok_or_else(|| "expiresInDays is out of range".to_string())
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Fail closed: a token with an unparsable or past `expiresAt` is expired.
+fn token_not_expired(token: &TokenRecord, now: &chrono::DateTime<chrono::Utc>) -> bool {
+    match token.expires_at.as_deref() {
+        None => true,
+        Some(raw) => chrono::DateTime::parse_from_rfc3339(raw)
+            .map(|expires| expires.with_timezone(&chrono::Utc) > *now)
+            .unwrap_or(false),
+    }
+}
+
 impl Scope {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -55,6 +85,28 @@ impl Scope {
     /// Whether a token with this scope may use a tool requiring `need`.
     pub fn allows(self, need: Scope) -> bool {
         self >= need
+    }
+
+    /// The synthetic RBAC role a token of this scope acts as. A `write`
+    /// token is an operator, never an administrator: identity, credential and
+    /// egress tools are `full` for exactly this reason (R-009).
+    pub fn synthetic_role(self) -> crate::rbac::Role {
+        match self {
+            Scope::Read => crate::rbac::Role::ReadOnly,
+            Scope::Write => crate::rbac::Role::Operator,
+            Scope::Full => crate::rbac::Role::Admin,
+        }
+    }
+
+    /// The trusted group list for a call under this scope. Used as the
+    /// synthetic identity of the internal dispatch.
+    pub fn synthetic_groups(self) -> Vec<String> {
+        vec![match self {
+            Scope::Read => "naslos_readonly",
+            Scope::Write => "naslos_operators",
+            Scope::Full => "naslos_admins",
+        }
+        .to_string()]
     }
 }
 
@@ -247,6 +299,7 @@ impl Store {
         let mut id_bytes = [0u8; 8];
         getrandom::fill(&mut id_bytes).map_err(|e| format!("generating token id: {e}"))?;
         let now = chrono::Utc::now();
+        let expires_at = expiry_in_days(now, expires_in_days)?;
         let record = TokenRecord {
             id: hex(&id_bytes),
             name: name.to_string(),
@@ -254,9 +307,7 @@ impl Store {
             scope,
             created_by: created_by.to_string(),
             created_at: now.to_rfc3339(),
-            expires_at: expires_in_days
-                .filter(|d| *d > 0)
-                .map(|d| (now + chrono::Duration::days(d as i64)).to_rfc3339()),
+            expires_at: expires_at.map(|at| at.to_rfc3339()),
             last_used_at: None,
         };
         inner.tokens.push(record.clone());
@@ -279,15 +330,9 @@ impl Store {
         for token in &inner.tokens {
             let hash_match = token.hash.as_bytes().ct_eq(provided.as_bytes()).unwrap_u8();
             // Constant-time select over the whole list: the loop body's work
-            // is identical for every token whatever matches.
-            if hash_match == 1
-                && token
-                    .expires_at
-                    .as_ref()
-                    .and_then(|e| chrono::DateTime::parse_from_rfc3339(e).ok())
-                    .map(|expires| expires.with_timezone(&chrono::Utc) > now)
-                    .unwrap_or(true)
-            {
+            // is identical for every token whatever matches. A malformed
+            // `expiresAt` fails closed (the token is treated as expired).
+            if hash_match == 1 && token_not_expired(token, &now) {
                 found = Some((token.id.clone(), token.name.clone(), token.scope));
             }
         }
@@ -380,6 +425,10 @@ impl Store {
             })
             .collect()
     }
+}
+
+pub(crate) fn sha256_hex_for_tracking(data: &[u8]) -> String {
+    sha256_hex(data)
 }
 
 fn sha256_hex(data: &[u8]) -> String {
@@ -476,6 +525,53 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
         let store = Store::new(&path);
         assert!(store.verify(&plaintext).is_none());
+    }
+
+    #[test]
+    fn an_out_of_range_expiry_is_rejected_not_wrapped() {
+        let store = Store::new("");
+        store.set_enabled(true).unwrap();
+        let err = store
+            .create_token("overflow", Scope::Read, Some(u64::MAX), "admin")
+            .unwrap_err();
+        assert!(err.contains("out of range"), "{err}");
+        assert_eq!(store.token_count(), 0);
+    }
+
+    #[test]
+    fn a_malformed_expiry_fails_closed() {
+        let path = tmp_path("malformed-expiry");
+        let store = Store::new(&path);
+        store.set_enabled(true).unwrap();
+        let (record, plaintext) = store
+            .create_token("broken", Scope::Read, Some(1), "admin")
+            .unwrap();
+        let data = std::fs::read(&path).unwrap();
+        let mut doc: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        for token in doc["tokens"].as_array_mut().unwrap() {
+            if token["id"] == serde_json::json!(record.id) {
+                token["expiresAt"] = serde_json::json!("not-a-timestamp");
+            }
+        }
+        std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        // A reload sees the persisted (unparsable) value; it must not verify.
+        let store = Store::new(&path);
+        assert!(store.verify(&plaintext).is_none());
+    }
+
+    #[test]
+    fn synthetic_roles_never_make_write_an_admin() {
+        assert_eq!(Scope::Read.synthetic_role(), crate::rbac::Role::ReadOnly);
+        assert_eq!(Scope::Write.synthetic_role(), crate::rbac::Role::Operator);
+        assert_eq!(Scope::Full.synthetic_role(), crate::rbac::Role::Admin);
+        assert!(!Scope::Write
+            .synthetic_groups()
+            .iter()
+            .any(|g| g == "naslos_admins"));
+        assert!(Scope::Full
+            .synthetic_groups()
+            .iter()
+            .any(|g| g == "naslos_admins"));
     }
 
     #[test]
