@@ -54,7 +54,7 @@ jobs:
   # Shared with ci.yml (`.github/image-matrix.json`): the two workflows cannot
   # drift on which images exist or how they are built.
   image-matrix:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     outputs:
       images: ${{ steps.read.outputs.images }}
     steps:
@@ -63,7 +63,7 @@ jobs:
         run: echo "images=$(jq -c . .github/image-matrix.json)" >> "$GITHUB_OUTPUT"
 
   guard:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -121,7 +121,7 @@ jobs:
 
   images:
     needs: [guard, image-matrix]
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -210,7 +210,7 @@ jobs:
 
   pack:
     needs: [guard, images]
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       checks: read
