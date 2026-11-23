@@ -8,7 +8,7 @@
 # The QEMU binaries are unmodified distro packages; Naslos only orchestrates
 # them, so the GPL does not extend to the Naslos sources (AGPL) or images.
 
-FROM rust:1.100-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9ae AS builder
+FROM rust:1.100-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe AS builder
 
 WORKDIR /build
 COPY rust/Cargo.toml Cargo.toml
