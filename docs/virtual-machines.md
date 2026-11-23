@@ -257,9 +257,10 @@ The full gate from the plan, for the record:
    confirm the guest reports Secure Boot enabled (`mokutil --sb-state`, or
    `dmesg | grep -i secure` for a Linux guest). A `secureBoot` request on an
    image without the firmware pair must fail with an actionable error.
-7. Stop (graceful ACPI), snapshot, restore with `?confirm=<name>`
-   (refuses while running and destroys newer snapshots), force stop, delete
-   with `?confirm=<name>` → dataset destroyed.
+7. Stop (graceful ACPI), snapshot, restore with `?confirm=<name>` and a
+   typed VM-name prompt (refuses while running and destroys newer snapshots),
+   force stop, delete with `?confirm=<name>` and a typed-name prompt → dataset
+   destroyed.
 8. Kill the vmd pod → its QEMU children die with it (they live in the pod's
    PID namespace); the API watcher notices the supervisor's return and
    re-pushes the desired state, so desired-running VMs restart — an

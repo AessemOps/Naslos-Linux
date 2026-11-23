@@ -355,6 +355,20 @@
     kubernetes: 'Upgrade Kubernetes'
   };
 
+  // Release metadata is remote input. Only an absolute https URL may become a
+  // clickable link; anything else (javascript:, http:, relative) is dropped.
+  function safeNotesUrl(value: unknown): string {
+    if (typeof value !== 'string') return '';
+    try {
+      const parsed = new URL(value.trim());
+      return parsed.protocol === 'https:' ? parsed.href : '';
+    } catch {
+      return '';
+    }
+  }
+
+  $: notesUrl = safeNotesUrl(updates?.available?.notesUrl);
+
   onMount(refresh);
   onDestroy(() => {
     destroyed = true;
@@ -484,12 +498,12 @@
             Talos {updates.available.talosVersion} · Kubernetes
             {updates.available.kubernetesVersion}
           </p>
-          {#if updates.available.notesUrl}
+          {#if notesUrl}
             <a
               class="text-sm text-naslos-accent underline mt-2 inline-block"
-              href={updates.available.notesUrl}
+              href={notesUrl}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
             >Release notes</a>
           {/if}
         </div>

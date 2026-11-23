@@ -80,7 +80,7 @@ test('a snapshot schedule can be created, listed and removed from the pool page'
         await request.delete(`/api/storage/schedules?id=${encodeURIComponent(s.id)}`);
       }
     }
-    await request.delete(`/api/datasets?name=${encodeURIComponent(full)}`);
+    await request.delete(`/api/datasets?name=${encodeURIComponent(full)}&confirm=${encodeURIComponent(full)}`);
   }
 });
 

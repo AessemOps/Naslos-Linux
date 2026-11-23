@@ -16,6 +16,8 @@
     lastError?: string;
     appRecordsDdnsEntry?: string;
     appRecordsSupported?: boolean;
+    solverConfigured?: boolean;
+    redactedProviderConfigKeys?: string[];
   }
 
   let domains: Domain[] = [];
@@ -167,6 +169,15 @@
             <p class="text-xs text-gray-500">
               Secret {domain.credentialsSecret || '(none)'}{domain.acmeEmail ? ` • ${domain.acmeEmail}` : ''}
             </p>
+            {#if domain.solverConfigured || (domain.redactedProviderConfigKeys?.length ?? 0) > 0}
+              <p class="text-xs text-gray-500 mt-1">
+                {#if domain.solverConfigured}Solver configured (value hidden).{/if}
+                {#if (domain.redactedProviderConfigKeys?.length ?? 0) > 0}
+                  Configured (values hidden):
+                  <span class="font-mono">{domain.redactedProviderConfigKeys?.join(', ')}</span>.
+                {/if}
+              </p>
+            {/if}
             {#if domain.appRecordsDdnsEntry}
               <p class="text-xs text-emerald-300 mt-1">
                 App DNS records → <span class="font-mono">{appRecordsTarget(domain)}</span>

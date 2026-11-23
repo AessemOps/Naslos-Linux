@@ -168,6 +168,9 @@ in the page).
 - Sessions: 1 h expiry, 5 min inactivity, 1 M "remember me"; stored in local
   SQLite (`/config/db.sqlite3`) for single-node.
 - Regulation: 3 retries → 2 min window → 5 min ban.
+- UI sign-out posts to `/authelia/api/logout`. A failed request keeps the page
+  open, shows the error, and offers the portal as the fallback instead of
+  redirecting as if the session had ended.
 - Password policy: ≥8 chars ≤72, upper + lower + number required.
 - Authelia's own password reset is disabled; resets happen in the Naslos UI → LDAP.
 - **Elevated session / identity verification.** Registering or removing a second

@@ -332,7 +332,13 @@
             </p>
           </div>
         {:else if activeStep === 'exposure'}
-          <ExposureForm bind:exposure bind:baseDomain {selectableDomains} {ssoDomains} />
+          <ExposureForm
+            bind:exposure
+            bind:baseDomain
+            {selectableDomains}
+            {ssoDomains}
+            on:change={() => (unsafeConfirmed = false)}
+          />
           {#if exposure.subdomain && appRecordDomains.has(baseDomain)}
             <p class="mt-4 p-3 rounded-lg border border-naslos-border bg-naslos-dark/40 text-xs text-gray-300">
               A CNAME <span class="font-mono">{exposure.subdomain}.{baseDomain}</span> will be created on
@@ -431,6 +437,19 @@
           {:else if activeStep === 'review'}<button class="btn btn-secondary" on:click={() => activeStep = 'exposure'}>← Back</button><button class="btn btn-primary" on:click={() => activeStep = 'confirm'}>Confirm →</button>
           {:else}<button class="btn btn-secondary" on:click={() => activeStep = 'review'}>← Back</button><button class="btn btn-primary" on:click={install} disabled={installing || !confirmed || (unsafeExposure && !unsafeConfirmed) || (app.privileged && !privilegedConfirmed)}>{installing ? 'Starting...' : 'Install'}</button>{/if}
         </div>
+      </div>
+    {:else}
+      <div class="p-6 border-b border-naslos-border flex items-center justify-between gap-4">
+        <h2 class="text-xl font-bold">Install {appName}</h2>
+        <button class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border" aria-label="Close" on:click={() => dispatch('close')}><Icon name="x" /></button>
+      </div>
+      <div class="flex-1 overflow-y-auto p-6">
+        <div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">
+          {error || 'The catalog entry could not be loaded.'}
+        </div>
+      </div>
+      <div class="p-6 border-t border-naslos-border flex justify-end">
+        <button class="btn btn-secondary" on:click={() => dispatch('close')}>Close</button>
       </div>
     {/if}
   </div>

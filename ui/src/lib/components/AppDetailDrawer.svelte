@@ -195,13 +195,29 @@
     }
   }
 
+  // Send the complete `resources` object, built from scratch, instead of a
+  // sparse patch. A cleared field is simply absent from the object, so the API
+  // replaces the stored `resources` value and the limit/request disappears;
+  // no JSON null is needed (and the API rejects null quantities). Keys the
+  // form does not edit are carried over unchanged.
   function buildResources(): Record<string, any> {
-    const out: Record<string, any> = JSON.parse(JSON.stringify(resourcesSource));
+    const out: Record<string, any> = {};
+    if (!resourcesFlat) {
+      // Preserve root keys that are not per-component resources (the form
+      // only edits components with requests/limits sections).
+      for (const [key, value] of Object.entries(resourcesSource)) {
+        if (!(isRecord(value) && hasSections(value))) out[key] = value;
+      }
+    }
     for (const group of resourceGroups) {
-      let target: Record<string, any> = out;
-      if (!resourcesFlat) {
-        if (!isRecord(out[group.key])) out[group.key] = {};
-        target = out[group.key];
+      const source: Record<string, any> = resourcesFlat
+        ? resourcesSource
+        : isRecord(resourcesSource[group.key])
+          ? resourcesSource[group.key]
+          : {};
+      const target: Record<string, any> = {};
+      for (const [key, value] of Object.entries(source)) {
+        if (key !== 'requests' && key !== 'limits') target[key] = value;
       }
       const fields: [string, string, string][] = [
         ['requests', 'cpu', group.requestsCpu],
@@ -211,17 +227,19 @@
       ];
       for (const [section, field, raw] of fields) {
         const value = raw.trim();
-        if (!isRecord(target[section])) {
-          if (!value) continue;
-          target[section] = {};
-        }
-        if (value) {
-          target[section][field] = value;
-        } else {
-          delete target[section][field];
-          if (Object.keys(target[section]).length === 0) delete target[section];
-        }
+        if (!isRecord(target[section])) target[section] = {};
+        if (value) target[section][field] = value;
       }
+      for (const section of ['requests', 'limits']) {
+        if (!isRecord(target[section])) continue;
+        const existing = isRecord(source[section]) ? source[section] : {};
+        for (const [key, value] of Object.entries(existing)) {
+          if (key !== 'cpu' && key !== 'memory') target[section][key] = value;
+        }
+        if (Object.keys(target[section]).length === 0) delete target[section];
+      }
+      if (resourcesFlat) Object.assign(out, target);
+      else if (Object.keys(target).length > 0) out[group.key] = target;
     }
     return out;
   }
@@ -248,7 +266,12 @@
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       if (data.jobId) trackAppJob(data.jobId);
+      // Paint the value that was sent; a re-open/reload reads the persisted
+      // record back once the upgrade job finishes.
       resourcesSource = resources;
+      const parsed = groupsFor(resources);
+      resourcesFlat = parsed.flat;
+      resourceGroups = parsed.groups;
       editingResources = false;
       resourceMessage = 'Resource change queued — the app will restart.';
     } catch (e: any) {
