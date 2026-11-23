@@ -190,5 +190,56 @@ EOF
     chown -R openldap:openldap "${SLAPD_DATA_DIR}"
 fi
 
+# R-010 upgrade path: the ACL is written only when the directory is first
+# initialised, so an existing directory keeps its old olcAccess. The
+# cn=authelia-service entry then exists but cannot bind, and Authelia
+# crashloops forever. Reconcile the ACL on every start, before the pod is
+# declared ready. A fresh directory already has the clauses and is untouched.
+ensure_authelia_acl() {
+    local current
+    current="$(ldapsearch -H ldapi:/// -Y EXTERNAL -o nettimeout=1 \
+        -b 'olcDatabase={1}mdb,cn=config' -s base olcAccess 2>/dev/null || true)"
+    case "$current" in
+        *authelia-service*) return 0 ;;
+    esac
+    echo "Adding the read-only Authelia bind ACL to the existing directory..."
+    ldapmodify -Y EXTERNAL -H ldapi:/// >/dev/null <<EOF
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+replace: olcAccess
+olcAccess: {0}to attrs=userPassword,shadowLastChange
+  by dn="cn=admin,${BASE_DN}" write
+  by dn="cn=naslos-service,ou=services,${BASE_DN}" write
+  by dn="cn=authelia-service,ou=services,${BASE_DN}" auth
+  by self write
+  by anonymous auth
+  by * none
+olcAccess: {1}to dn.base="" by * read
+olcAccess: {2}to *
+  by dn="cn=admin,${BASE_DN}" write
+  by dn="cn=naslos-service,ou=services,${BASE_DN}" write
+  by dn="cn=authelia-service,ou=services,${BASE_DN}" read
+  by users read
+  by * none
+EOF
+}
+
 echo "Starting slapd..."
-exec "$@"
+"$@" &
+slapd_pid=$!
+term() {
+    kill -TERM "$slapd_pid" 2>/dev/null || true
+    wait "$slapd_pid" 2>/dev/null || true
+    exit 0
+}
+trap term TERM INT
+# Root over the local LDAPI socket has manage on cn=config (peercred).
+for _ in $(seq 1 100); do
+    if ldapsearch -H ldapi:/// -Y EXTERNAL -o nettimeout=1 \
+        -b 'olcDatabase={1}mdb,cn=config' -s base olcDatabase >/dev/null 2>&1; then
+        break
+    fi
+    sleep 0.2
+done
+ensure_authelia_acl
+wait "$slapd_pid"
