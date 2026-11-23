@@ -72,6 +72,10 @@ struct ReplicationResult {
     estimated_bytes: i64,
     #[serde(rename = "prunedSnapshots")]
     pruned_snapshots: usize,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    mountpoint: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
     #[serde(rename = "retentionError", skip_serializing_if = "String::is_empty")]
     retention_error: String,
     #[serde(rename = "durationSeconds")]
@@ -209,11 +213,24 @@ impl ReplicationJobManager {
         inner.1 = kept;
     }
 
-    /// Test-only seam: record a finished job so unconditional ownership
-    /// guards (dataset destroy) can be exercised without running a stream.
+    /// Test-only seam: record a finished job so the ownership guards can be
+    /// exercised without running a stream.
     #[cfg(test)]
     pub(crate) fn remember_for_test(&self, source: &str, destination: &str) {
+        self.remember_with_state_for_test(source, destination, JobState::Succeeded);
+    }
+
+    /// Test-only seam: a job that is still writing, which must block a
+    /// dataset destroy.
+    #[cfg(test)]
+    pub(crate) fn remember_running_for_test(&self, source: &str, destination: &str) {
+        self.remember_with_state_for_test(source, destination, JobState::Running);
+    }
+
+    #[cfg(test)]
+    fn remember_with_state_for_test(&self, source: &str, destination: &str, state: JobState) {
         let now = Utc::now();
+        let finished = (state != JobState::Running).then_some(now);
         let public = JobPublic {
             id: "test-job".to_string(),
             source: source.to_string(),
@@ -221,9 +238,9 @@ impl ReplicationJobManager {
             snapshot: String::new(),
             recursive: false,
             prune_keep: 0,
-            state: JobState::Succeeded,
+            state,
             started_at: now,
-            finished_at: Some(now),
+            finished_at: finished,
             progress: ProgressView::default(),
             incremental: false,
             estimated_bytes: 0,
@@ -547,6 +564,7 @@ async fn replacement_gate(
 }
 
 async fn destination_can_be_replaced(
+    state: &AppState,
     agent: &crate::agent::Client,
     destination: &str,
     prefix: &str,
@@ -555,12 +573,16 @@ async fn destination_can_be_replaced(
         .list_datasets()
         .await
         .map_err(|e| format!("listing datasets: {e}"))?;
+    // A forced full receive replaces the destination exactly like a destroy:
+    // hold it to the same share/app/VM ownership guards (S-9).
+    crate::server::zfs::dataset_consumer_conflict(state, destination, &datasets)?;
     let names: Vec<String> = datasets.into_iter().map(|d| d.name).collect();
     replacement_gate(agent, destination, prefix, &names).await
 }
 
 /// Pipe one agent send stream into one receive call and add its bytes to the
-/// job progress. Returns the number of bytes streamed.
+/// job progress. Returns the bytes streamed plus the agent's receive report
+/// (mountpoint and warnings).
 async fn stream_one(
     agent: &crate::agent::Client,
     job: &Arc<ReplicationJob>,
@@ -568,7 +590,7 @@ async fn stream_one(
     destination: &str,
     force: bool,
     progress: &Arc<AtomicI64>,
-) -> Result<i64, String> {
+) -> Result<(i64, crate::agent::ReceiveOutcome), String> {
     let before = progress.load(Ordering::Relaxed);
     let stream = agent
         .send_stream(&opts)
@@ -588,12 +610,13 @@ async fn stream_one(
     });
     let reader = tokio_util::io::StreamReader::new(stream);
     // `receive_stream_body` takes the API dataset lock for the destination;
-    // the agent holds the same lock until the last byte is written.
-    agent
-        .receive_stream_body(destination, force, reader)
+    // the agent holds the same lock until the last byte is written. A mount
+    // failure is an error, not a silent warning (P-6).
+    let outcome = agent
+        .receive_stream_body_outcome(destination, force, reader)
         .await
         .map_err(|e| format!("zfs receive into {destination} failed: {e}"))?;
-    Ok(progress.load(Ordering::Relaxed) - before)
+    Ok((progress.load(Ordering::Relaxed) - before, outcome))
 }
 
 fn bad_request(msg: &str) -> Response {
@@ -739,6 +762,7 @@ fn finish_succeeded(job: &ReplicationJob, result: ReplicationResult) {
 
 #[allow(clippy::too_many_arguments)]
 async fn run_job(
+    state: Arc<AppState>,
     job: Arc<ReplicationJob>,
     agent: Arc<crate::agent::Client>,
     source: String,
@@ -832,7 +856,8 @@ async fn run_job(
         };
         let force = plan == SendPlan::Full;
         if force {
-            if let Err(e) = destination_can_be_replaced(&agent, &destination, &prefix).await {
+            if let Err(e) = destination_can_be_replaced(&state, &agent, &destination, &prefix).await
+            {
                 fail!(e);
             }
         }
@@ -859,8 +884,14 @@ async fn run_job(
         }
         result.estimated_bytes = expected;
 
-        result.bytes = match stream_one(&agent, &job, opts, &destination, force, &progress).await {
-            Ok(bytes) => bytes,
+        match stream_one(&agent, &job, opts, &destination, force, &progress).await {
+            Ok((bytes, received)) => {
+                result.bytes = bytes;
+                if !received.mountpoint.is_empty() {
+                    result.mountpoint = received.mountpoint;
+                }
+                result.warnings.extend(received.warnings);
+            }
             Err(e) => fail!(e),
         };
         result.status = "replicated".to_string();
@@ -875,12 +906,17 @@ async fn run_job(
             Ok(datasets) => datasets,
             Err(e) => fail!(format!("listing datasets: {e}")),
         };
-        let dataset_names: Vec<String> = datasets.into_iter().map(|d| d.name).collect();
+        let dataset_names: Vec<String> = datasets.iter().map(|d| d.name.clone()).collect();
         for dataset in &repair_datasets {
             let relative = dataset.strip_prefix(&source).unwrap_or_default();
             let replica = format!("{destination}{relative}");
             let exists = dataset_names.iter().any(|name| name == &replica);
             if exists {
+                if let Err(e) =
+                    crate::server::zfs::dataset_consumer_conflict(&state, &replica, &datasets)
+                {
+                    fail!(e);
+                }
                 if let Err(e) = replacement_gate(&agent, &replica, &prefix, &dataset_names).await {
                     fail!(e);
                 }
@@ -902,11 +938,13 @@ async fn run_job(
                 p.estimated_bytes = result.estimated_bytes;
                 p.progress.estimated_bytes = result.estimated_bytes;
             }
-            let sent = match stream_one(&agent, &job, opts, &replica, exists, &progress).await {
-                Ok(bytes) => bytes,
-                Err(e) => fail!(e),
-            };
+            let (sent, received) =
+                match stream_one(&agent, &job, opts, &replica, exists, &progress).await {
+                    Ok(v) => v,
+                    Err(e) => fail!(e),
+                };
             result.bytes += sent;
+            result.warnings.extend(received.warnings);
         }
         result.status = "replicated".to_string();
         result.incremental = false;
@@ -971,8 +1009,10 @@ fn enqueue_job(
     state.replication_jobs.add_if_free(&id, job.clone())?;
     let job_for_task = job.clone();
     let snapshot_for_task = snapshot.clone();
+    let state_for_task = state.clone();
     let handle = tokio::spawn(async move {
         run_job(
+            state_for_task,
             job_for_task,
             agent,
             source,
