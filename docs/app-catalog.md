@@ -270,9 +270,15 @@ or a total above that quota is rejected before Helm.
 
 ## Exposure → routing
 
-The API owns one `IngressRoute` per app plus the middlewares it references, and
-one Internet-egress `NetworkPolicy` per app, all in the app's namespace, and
-converges them on startup.
+The API owns one `IngressRoute` per app plus the middlewares it references in
+the platform apps namespace (where the domain TLS `Secret` was issued), and one
+Internet-egress `NetworkPolicy` per app in the app's namespace, and converges
+them on startup. The route targets the app `Service` in its own namespace through
+Traefik's `allowCrossNamespace`; the wildcard private key is never copied into
+an app namespace. Every app route ends with the `naslos-app-strip-authelia-cookie`
+middleware, a chart-shipped Traefik local plugin that deletes `authelia_session`
+after `forwardAuth` has validated it, so an app backend never receives the
+parent-domain SSO cookie.
 
 | Setting | Effect |
 | --- | --- |
@@ -396,17 +402,22 @@ charts, or `hostPath` for privileged charts.
   A failed clone is surfaced as the source's `lastError`.
 - **Wildcard DNS is a prerequisite** for app subdomains: point `*.<domain>` at
   the node (router/dnsmasq/registrar). Without it, app hostnames do not resolve.
-- **TLS apps need a certificate Secret** in `naslos-apps`. The route references
-  the base domain's wildcard Certificate `secretName` (from its domain record);
-  `APPS_TLS_SECRET` is only the fallback when no domain record exists. A `.local`
-  domain can never get a public cert — keep TLS off or self-sign for `.local`.
+- **TLS apps reference a certificate Secret in `naslos-apps`.** The route lives
+  in that namespace and references the base domain's wildcard Certificate
+  `secretName` (from its domain record); `APPS_TLS_SECRET` is only the fallback
+  name when no domain record exists. Nothing is copied into the app namespace:
+  when no Secret exists the route still requests TLS and Traefik serves its
+  default certificate. A `.local` domain can never get a public cert — keep TLS
+  off or expect the self-signed warning for `.local`.
 - **Third-party charts are privileged, but cannot own routing.** Helm runs as
   the reduced `naslos-helm` ServiceAccount (SEC-2026-D1/D4): it can create
-  workloads, Services, ConfigMaps, Secrets, PVCs and Ingresses but **not**
-  Traefik `IngressRoute`/`Middleware` objects, cert-manager objects, RBAC or
-  cluster-scoped resources. The API creates and reconciles the app route and
-  certificate itself. A chart that ships its own `IngressRoute` now fails
-  (403) instead of silently becoming same-origin with the UI.
+  workloads, Services, ConfigMaps, Secrets and PVCs but **not** Traefik
+  `IngressRoute`/`Middleware`, `Ingress`, `NetworkPolicy`, cert-manager objects,
+  RBAC or cluster-scoped resources. Native Kubernetes Ingress is disabled and a
+  fail-closed admission policy rejects any Helm `Ingress`/`NetworkPolicy` write.
+  The API creates and reconciles the app route and policy itself. A chart that
+  ships its own `IngressRoute` or `Ingress` now fails instead of silently
+  becoming same-origin with the UI or racing the platform isolation policy.
 - Charts can create their own Secrets/PVCs; the platform mounts the datasets
   the operator attached to the app at `/datasets/<name>`. The threat model and
   migration notes are in [datasets-isolation.md](datasets-isolation.md).

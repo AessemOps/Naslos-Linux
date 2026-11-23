@@ -35,7 +35,7 @@ spec:
     - name: helm-identity
       expression: "request.userInfo.username == 'system:serviceaccount:{{ .Release.Namespace }}:naslos-helm'"
   validations:
-    - expression: "object.metadata.namespace == '' || object.metadata.namespace == request.namespace"
+    - expression: "!has(object.metadata.namespace) || object.metadata.namespace == request.namespace"
       message: "The Helm identity may not create or update an object whose metadata.namespace differs from the request namespace."
       reason: Forbidden
     - expression: "!(request.resource.group == 'networking.k8s.io' && (request.resource.resource == 'ingresses' || request.resource.resource == 'networkpolicies'))"

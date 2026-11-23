@@ -539,10 +539,11 @@ fn build_app_manager(
             authelia_namespace: std::env::var("NASLOS_NAMESPACE")
                 .unwrap_or_else(|_| "naslos".to_string()),
             local_only_cidr: std::env::var("EXPOSURE_LOCAL_ONLY_CIDR").unwrap_or_default(),
-            release_namespace: std::env::var("NASLOS_NAMESPACE")
-                .unwrap_or_else(|_| "naslos".to_string()),
-            fallback_tls_secret: std::env::var("PLATFORM_TLS_SECRET")
-                .unwrap_or_else(|_| "naslos-tls".to_string()),
+            // Domain wildcard Certificates are issued into the platform apps
+            // namespace (the router's route namespace). The resolver therefore
+            // only ever yields a Secret that already lives beside the
+            // IngressRoute; app routes never copy it into an isolated app
+            // namespace (R-002).
             tls_secret_for: Some(Arc::new(move |base: &str| {
                 domains_for_tls
                     .get(base)

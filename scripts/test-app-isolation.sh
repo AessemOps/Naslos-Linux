@@ -118,3 +118,74 @@ if "plugin.go" not in plugin_cms[0].get("data", {}):
 
 print("app-isolation chart assertions: ok")
 PY
+
+# R-003: execute the shipped plugin source when a Go toolchain is available.
+# The plugin is interpreted by Traefik at runtime, so a compile-only check is
+# not enough: drive it with a request and assert the cookie handling.
+plugin_dir=$(mktemp -d)
+trap 'rm -rf "$plugin_dir"; rm -f "$out"' EXIT
+python3 - "$out" "$plugin_dir" <<'PY'
+import sys
+import yaml
+
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+for d in docs:
+    name = d.get("metadata", {}).get("name", "")
+    if d.get("kind") == "ConfigMap" and "local-plugin-naslos-cookie-strip" in name:
+        for key, value in d.get("data", {}).items():
+            with open(f"{sys.argv[2]}/{key}", "w") as fh:
+                fh.write(value)
+        break
+PY
+cat >"$plugin_dir/plugin_test.go" <<'GO'
+package cookiestrip
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func run(t *testing.T, cookie string) string {
+	t.Helper()
+	var got string
+	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Cookie")
+	})
+	h, err := New(context.Background(), next, CreateConfig(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://app.example/", nil)
+	if cookie != "" {
+		req.Header.Set("Cookie", cookie)
+	}
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	return got
+}
+
+func TestStripsOnlyTheAutheliaSessionCookie(t *testing.T) {
+	if got := run(t, "authelia_session=abc; theme=dark"); got != "theme=dark" {
+		t.Fatalf("cookie = %q, want %q", got, "theme=dark")
+	}
+}
+
+func TestRemovesTheHeaderWhenOnlyTheSessionCookieIsPresent(t *testing.T) {
+	if got := run(t, "authelia_session=abc"); got != "" {
+		t.Fatalf("cookie = %q, want empty", got)
+	}
+}
+
+func TestLeavesOtherCookiesAlone(t *testing.T) {
+	if got := run(t, "theme=dark"); got != "theme=dark" {
+		t.Fatalf("cookie = %q, want %q", got, "theme=dark")
+	}
+}
+GO
+if command -v go >/dev/null 2>&1; then
+  (cd "$plugin_dir" && GO111MODULE=on GOFLAGS=-mod=mod go test ./... >/dev/null)
+  echo "cookie-strip plugin tests: ok"
+else
+  echo "go not found; skipped cookie-strip plugin execution test" >&2
+fi
