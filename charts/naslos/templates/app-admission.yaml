@@ -14,11 +14,14 @@ this ValidatingAdmissionPolicy independently enforces the same boundary:
     and issuers; a chart must not mint one for a host it does not own);
   - no Services other than ClusterIP without externalIPs (no NodePort,
     LoadBalancer or ExternalName exposure from a chart);
-  - no writes to any Secret whose name starts with `naslos-`: that prefix is
-    reserved for platform Secrets (app TLS/wildcard, DDNS credentials, LDAP,
-    proxy/agent/vmd tokens, Buddy keys, Authelia state) and the API-written
-    `naslos-env-*` app environment Secrets. App charts create only their own
-    `<release>-...` Secrets, so no legitimate app needs the prefix;
+  - no writes to the platform's reserved Secrets, enumerated below (proxy
+    and wildcard TLS, agent/vmd tokens and their pinned TLS CAs, Buddy
+    identity and KEK, Authelia, OpenLDAP, Talos config, the chart deploy
+    key, DDNS credentials, the API-written `naslos-env-*` app environment
+    Secrets and the `naslos-dataset-key-*` dataset encryption keys). The
+    list is enumerated rather than a blanket `naslos-` prefix because a Helm
+    release whose own name starts with `naslos-` is legal and must be able
+    to create its `<release>-...` Secrets;
   - no object whose metadata.namespace differs from the request namespace.
 
 Deny-only chart NetworkPolicies are rejected too: the platform base policy is
@@ -61,11 +64,12 @@ spec:
       reason: Forbidden
     - expression: >-
         !(request.resource.group == '' && request.resource.resource == 'secrets' && (
-        ['naslos-proxy', 'naslos-tls', 'naslos-agent', 'naslos-vmd', 'naslos-buddy',
+        ['naslos-proxy', 'naslos-tls', 'naslos-agent', 'naslos-agent-tls', 'naslos-agent-ca',
+        'naslos-vmd', 'naslos-vmd-tls', 'naslos-vmd-ca', 'naslos-buddy',
         'naslos-buddy-kek', 'naslos-authelia', 'naslos-authelia-jwt', 'naslos-openldap',
         'naslos-openldap-tls', 'naslos-openldap-ca', 'naslos-talosconfig',
         'naslos-charts-deploy-key'].exists(n, object.metadata.name == n)
-        || ['naslos-ddns-', 'naslos-env-'].exists(p, object.metadata.name.startsWith(p))))
+        || ['naslos-ddns-', 'naslos-env-', 'naslos-dataset-key-'].exists(p, object.metadata.name.startsWith(p))))
       message: "The Helm identity may not create or update the platform's reserved Secrets (proxy/TLS, agent and vmd tokens, Buddy identity and KEK, Authelia, OpenLDAP, DDNS credentials, per-app env, Talos config, chart deploy key). Name chart Secrets `<release>-...`. A release whose own name collides with one of these reserved names or prefixes is refused."
       reason: Forbidden
     - expression: "!(request.resource.group == '' && request.resource.resource == 'services' && ((has(object.spec.type) && object.spec.type != 'ClusterIP') || (has(object.spec.externalIPs) && size(object.spec.externalIPs) > 0)))"

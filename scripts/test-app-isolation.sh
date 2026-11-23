@@ -94,7 +94,11 @@ for reserved in (
     "naslos-proxy",
     "naslos-tls",
     "naslos-agent",
+    "naslos-agent-tls",
+    "naslos-agent-ca",
     "naslos-vmd",
+    "naslos-vmd-tls",
+    "naslos-vmd-ca",
     "naslos-buddy",
     "naslos-buddy-kek",
     "naslos-authelia",
@@ -106,6 +110,7 @@ for reserved in (
     "naslos-charts-deploy-key",
     "naslos-ddns-",
     "naslos-env-",
+    "naslos-dataset-key-",
 ):
     if f"'{reserved}'" not in secret_expr:
         fail(f"admission policy does not reserve the Secret {reserved}")
