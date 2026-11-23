@@ -113,6 +113,113 @@ pub fn kubeconfig() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn run_returns_stdout() {
+        let out = run_str("sh", &["-c", "printf hello"], Duration::from_secs(5))
+            .await
+            .expect("printf hello must succeed");
+        assert_eq!(out, "hello", "stdout must be captured verbatim");
+    }
+
+    #[tokio::test]
+    async fn run_reports_exit_status_and_stderr() {
+        let err = run_str(
+            "sh",
+            &["-c", "echo boom >&2; exit 7"],
+            Duration::from_secs(5),
+        )
+        .await
+        .expect_err("a non-zero exit must be an error");
+        assert!(
+            err.contains("exited 7"),
+            "error must carry the exit code, got: {err}"
+        );
+        assert!(
+            err.contains("boom"),
+            "error must carry the trimmed stderr, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_reports_a_missing_binary() {
+        let err = run_str(
+            "naslos-definitely-missing-binary",
+            &[],
+            Duration::from_secs(5),
+        )
+        .await
+        .expect_err("a missing binary must be an error");
+        assert!(
+            err.contains("running naslos-definitely-missing-binary"),
+            "spawn failure must name the binary, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_times_out() {
+        let err = run_str("sh", &["-c", "sleep 5"], Duration::from_millis(100))
+            .await
+            .expect_err("a command exceeding the timeout must be an error");
+        assert!(
+            err.contains("timed out after"),
+            "timeout error must be reported, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_stdin_feeds_the_child() {
+        let args: Vec<String> = vec!["-c".into(), "cat".into()];
+        let out = run_stdin("sh", &args, "payload", Duration::from_secs(5))
+            .await
+            .expect("cat must echo its stdin");
+        assert_eq!(out, "payload", "stdin must reach the child");
+    }
+
+    #[tokio::test]
+    async fn stderr_is_truncated_to_four_kib() {
+        let err = run_str(
+            "sh",
+            &[
+                "-c",
+                "head -c 5000 /dev/zero | tr \"\\0\" \"\\170\" >&2; exit 1",
+            ],
+            Duration::from_secs(5),
+        )
+        .await
+        .expect_err("the forced exit 1 must be an error");
+        let (_, captured) = err
+            .split_once("exited 1: ")
+            .expect("error must report the exit status before the captured stderr");
+        assert_eq!(
+            captured.matches('x').count(),
+            4096,
+            "captured stderr must be truncated to exactly 4096 x chars, got {} (message len {})",
+            captured.matches('x').count(),
+            err.len()
+        );
+        assert!(
+            !err.contains(&"x".repeat(4097)),
+            "error must not contain a run of more than 4096 x chars"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_stdin_reports_a_missing_binary() {
+        let err = run_stdin(
+            "naslos-definitely-missing-binary",
+            &[],
+            "payload",
+            Duration::from_secs(5),
+        )
+        .await
+        .expect_err("a missing binary must be a spawn error");
+        assert!(
+            err.contains("running"),
+            "spawn failure must be reported, got: {err}"
+        );
+    }
 
     #[test]
     fn stderr_truncation_keeps_the_failure_at_the_end() {

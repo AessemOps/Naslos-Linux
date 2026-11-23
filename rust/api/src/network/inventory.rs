@@ -612,4 +612,110 @@ mod tests {
         assert_eq!(view.value, "node-1");
         assert_eq!(view.source, "auto-stable");
     }
+
+    #[test]
+    fn group_addresses_by_link_and_classifies_sources() {
+        let values = serde_json::json!([
+            {"spec": {"linkName": "eth0", "address": "127.0.0.1/8"}},
+            {"spec": {"linkName": "eth0", "address": "fe80::1/64"}},
+            {"spec": {"linkName": "eth0", "address": "10.0.0.10/24"}},
+            {"spec": {"linkName": "eth0", "address": "10.0.0.10/24"}},
+            {"spec": {"linkName": "eth1", "name": "ignored", "addr": "192.168.1.5/24"}},
+            {"spec": {"linkName": "", "address": "10.0.0.99/24"}},
+            {"spec": {"address": "10.0.0.98/24"}},
+            {"spec": {"linkName": "eth2", "address": ""}},
+            {"spec": {"linkName": "eth2"}},
+            {"spec": {"linkName": "eth2", "addr": ""}},
+            {"notSpec": {"linkName": "eth3", "address": "10.0.0.97/24"}}
+        ]);
+        let grouped = group_addresses(values.as_array().unwrap());
+        assert_eq!(
+            grouped.keys().cloned().collect::<Vec<_>>(),
+            vec!["eth0".to_string(), "eth1".to_string()]
+        );
+        assert!(!grouped.contains_key("eth2"));
+        let eth0 = &grouped["eth0"];
+        assert_eq!(eth0.len(), 4);
+        assert_eq!(eth0[0].address, "127.0.0.1/8");
+        assert_eq!(eth0[0].source, "loopback");
+        assert_eq!(eth0[1].address, "fe80::1/64");
+        assert_eq!(eth0[1].source, "link");
+        assert_eq!(eth0[2].address, "10.0.0.10/24");
+        assert_eq!(eth0[2].source, "other");
+        assert_eq!(eth0[3].address, "10.0.0.10/24");
+        assert_eq!(eth0[3].source, "other");
+        let eth1 = &grouped["eth1"];
+        assert_eq!(eth1.len(), 1);
+        assert_eq!(eth1[0].address, "192.168.1.5/24");
+        assert_eq!(eth1[0].source, "other");
+    }
+
+    #[test]
+    fn resolvers_inherit_live_status_when_unconfigured() {
+        let cfg = MachineConfig::default();
+        let status = serde_json::json!([
+            {"spec": {"resolvers": [
+                "10.0.0.53",
+                {"address": "10.0.0.54"},
+                "10.0.0.53"
+            ]}},
+            {"spec": {"nameservers": [
+                "10.0.0.55",
+                {"address": "10.0.0.54"}
+            ]}},
+            {"spec": {"dnsServers": [
+                {"addr": "10.0.0.56"}
+            ]}},
+            {"spec": {"searchDomains": ["lan", "example.test", "lan"]}}
+        ]);
+        let view = resolvers_view(&cfg, status.as_array().unwrap());
+        assert!(view.inherit);
+        assert!(view.search_inherit);
+        let addresses: Vec<&str> = view
+            .nameservers
+            .iter()
+            .map(|resolver| resolver.address.as_str())
+            .collect();
+        assert_eq!(
+            addresses,
+            vec!["10.0.0.53", "10.0.0.54", "10.0.0.55", "10.0.0.56"]
+        );
+        assert!(view
+            .nameservers
+            .iter()
+            .all(|resolver| resolver.protocol == "Do53"));
+        assert_eq!(
+            view.search_domains,
+            vec!["lan".to_string(), "example.test".to_string()]
+        );
+        assert!(!view.host_dns.enabled);
+        assert!(!view.host_dns.forward_kube_dns_to_host);
+    }
+
+    #[test]
+    fn configured_resolvers_override_live_status() {
+        let mut cfg = MachineConfig::default();
+        cfg.resolver.nameservers = Some(vec!["10.0.0.53".to_string()]);
+        cfg.resolver.search_domains = Some(vec!["example.test".to_string()]);
+        cfg.resolver.host_dns_enabled = Some(true);
+        cfg.resolver.forward_kube_dns_to_host = Some(true);
+        let status = serde_json::json!([
+            {"spec": {
+                "resolvers": ["10.9.9.9"],
+                "nameservers": ["10.9.9.10"],
+                "dnsServers": ["10.9.9.11"],
+                "searchDomains": ["ignored.test"],
+                "hostDNS": {"enabled": false, "forwardKubeDNSToHost": false}
+            }}
+        ]);
+        let view = resolvers_view(&cfg, status.as_array().unwrap());
+        assert!(!view.inherit);
+        assert!(!view.search_inherit);
+        assert_eq!(view.nameservers.len(), 1);
+        assert_eq!(view.nameservers[0].address, "10.0.0.53");
+        assert_eq!(view.nameservers[0].protocol, "Do53");
+        assert_eq!(view.search_domains, vec!["example.test".to_string()]);
+        assert!(view.host_dns.enabled);
+        assert!(view.host_dns.forward_kube_dns_to_host);
+    }
 }

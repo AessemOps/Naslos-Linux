@@ -465,3 +465,85 @@ pub fn extract_uid(dn: &str) -> String {
     }
     value.trim().to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::extract_uid;
+
+    #[test]
+    fn empty_and_plain_values_are_returned_as_is() {
+        assert_eq!(extract_uid(""), "", "an empty DN should stay empty");
+        assert_eq!(
+            extract_uid("alice"),
+            "alice",
+            "a bare uid should be returned unchanged"
+        );
+    }
+
+    #[test]
+    fn a_leading_uid_rdn_is_reduced_to_the_uid() {
+        assert_eq!(
+            extract_uid("uid=alice,ou=people,dc=example,dc=test"),
+            "alice",
+            "the leading uid RDN should be extracted from a full DN"
+        );
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed() {
+        assert_eq!(
+            extract_uid("  uid=alice,ou=people  "),
+            "alice",
+            "whitespace around a DN should be ignored"
+        );
+        assert_eq!(
+            extract_uid(" alice "),
+            "alice",
+            "whitespace around a bare uid should be ignored"
+        );
+    }
+
+    #[test]
+    fn a_uid_inside_the_first_rdn_is_extracted() {
+        assert_eq!(
+            extract_uid("cn=uid=carol,ou=people"),
+            "carol",
+            "the rfind fallback should extract a uid embedded in the first RDN"
+        );
+    }
+
+    #[test]
+    fn a_cn_first_dn_keeps_the_first_rdn() {
+        // Only the first comma-separated RDN is considered; a later uid is
+        // not reached by the production contract.
+        assert_eq!(
+            extract_uid("cn=group,uid=carol,ou=people"),
+            "cn=group",
+            "a leading cn RDN is returned unchanged"
+        );
+    }
+
+    #[test]
+    fn escaped_dn_values_are_unescaped() {
+        assert_eq!(
+            extract_uid("uid=weird\\2Cname,ou=people"),
+            "weird,name",
+            "an escaped comma should be decoded"
+        );
+        assert_eq!(
+            extract_uid("uid=weird\\3Dname,ou=people"),
+            "weird=name",
+            "an escaped equals sign should be decoded"
+        );
+        assert_eq!(
+            extract_uid("uid=weird\\2cname,ou=people"),
+            "weird,name",
+            "a lowercase escaped comma should be decoded"
+        );
+        assert_eq!(
+            extract_uid("uid=weird\\3dname,ou=people"),
+            "weird=name",
+            "a lowercase escaped equals sign should be decoded"
+        );
+    }
+}

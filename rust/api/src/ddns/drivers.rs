@@ -1497,4 +1497,138 @@ mod tests {
         let url = reqwest::Url::parse("http://user:pass@dns.example/update").unwrap();
         assert!(require_secure_transport(&url, &r).is_err());
     }
+
+    fn rb() -> reqwest::RequestBuilder {
+        reqwest::Client::new().post("https://dns.example/update")
+    }
+
+    fn request(config: &[(&str, &str)], secret: &[(&str, &str)]) -> UpdateRequest {
+        let config = config
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let secret = secret
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        UpdateRequest {
+            config,
+            secret,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn apply_auth_without_a_type_adds_nothing() {
+        for config in [&[][..], &[("authType", "none")][..]] {
+            let r = request(config, &[("token", "ignored")]);
+            let built = apply_auth(rb(), &r).unwrap().build().unwrap();
+            assert!(
+                built
+                    .headers()
+                    .get(reqwest::header::AUTHORIZATION)
+                    .is_none(),
+                "{config:?}"
+            );
+            assert!(built.url().query().is_none(), "{config:?}");
+        }
+    }
+
+    #[test]
+    fn apply_auth_basic_encodes_user_and_password() {
+        let r = request(
+            &[("authType", "basic"), ("username", "user")],
+            &[("password", "pass")],
+        );
+        let built = apply_auth(rb(), &r).unwrap().build().unwrap();
+        assert_eq!(
+            built.headers().get(reqwest::header::AUTHORIZATION).unwrap(),
+            "Basic dXNlcjpwYXNz"
+        );
+    }
+
+    #[test]
+    fn apply_auth_bearer_requires_a_token() {
+        let r = request(&[("authType", "bearer")], &[("token", "tok")]);
+        let built = apply_auth(rb(), &r).unwrap().build().unwrap();
+        assert_eq!(
+            built.headers().get(reqwest::header::AUTHORIZATION).unwrap(),
+            "Bearer tok"
+        );
+        for secret in [&[][..], &[("token", "   ")][..]] {
+            let r = request(&[("authType", "bearer")], secret);
+            let err = apply_auth(rb(), &r).expect_err("missing token");
+            assert!(err.contains("bearer auth needs a token"), "{err}");
+        }
+    }
+
+    #[test]
+    fn apply_auth_header_uses_the_configured_name() {
+        let r = request(
+            &[("authType", "header"), ("headerName", "X-Api-Key")],
+            &[("headerValue", "sekret")],
+        );
+        let built = apply_auth(rb(), &r).unwrap().build().unwrap();
+        assert_eq!(built.headers().get("X-Api-Key").unwrap(), "sekret");
+
+        let r = request(&[("authType", "header")], &[("headerValue", "sekret")]);
+        let built = apply_auth(rb(), &r).unwrap().build().unwrap();
+        assert_eq!(
+            built.headers().get(reqwest::header::AUTHORIZATION).unwrap(),
+            "sekret"
+        );
+        for secret in [&[][..], &[("headerValue", "  ")][..]] {
+            let r = request(&[("authType", "header")], secret);
+            let err = apply_auth(rb(), &r).expect_err("missing headerValue");
+            assert!(err.contains("header auth needs headerValue"), "{err}");
+        }
+    }
+
+    #[test]
+    fn apply_auth_query_appends_the_token() {
+        let r = request(
+            &[("authType", "query"), ("headerName", "key")],
+            &[("token", "abc")],
+        );
+        let built = apply_auth(rb(), &r).unwrap().build().unwrap();
+        assert_eq!(built.url().query(), Some("key=abc"));
+
+        let r = request(&[("authType", "query")], &[("token", "abc")]);
+        let built = apply_auth(rb(), &r).unwrap().build().unwrap();
+        assert_eq!(built.url().query(), Some("token=abc"));
+
+        for secret in [&[][..], &[("token", "  ")][..]] {
+            let r = request(&[("authType", "query")], secret);
+            let err = apply_auth(rb(), &r).expect_err("missing token");
+            assert!(err.contains("query auth needs a token"), "{err}");
+        }
+    }
+
+    #[test]
+    fn apply_auth_rejects_an_unknown_type() {
+        let r = request(&[("authType", "digest")], &[]);
+        let err = apply_auth(rb(), &r).expect_err("unknown authType");
+        assert!(err.contains("unknown authType"), "{err}");
+    }
+
+    #[test]
+    fn default_driver_builds_every_builtin() {
+        for name in [
+            "ovh",
+            "cloudflare",
+            "digitalocean",
+            "godaddy",
+            "porkbun",
+            "http",
+        ] {
+            assert!(
+                default_driver(name, reqwest::Client::new()).is_ok(),
+                "{name}"
+            );
+        }
+        let err = default_driver("route53", reqwest::Client::new())
+            .err()
+            .expect("route53 is not a driver");
+        assert!(err.contains("unknown DDNS driver"), "{err}");
+    }
 }

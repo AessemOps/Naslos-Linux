@@ -987,3 +987,46 @@ pub fn parse_io_stats(out: &str, pool_name: &str) -> PoolIOStats {
     }
     stats
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn io_stats_are_read_from_the_pool_row() {
+        // A realistic `zpool iostat -v <pool> 1 1` block: a header, the
+        // pool row, and indented vdev rows that must not win the match.
+        let out = "\
+              capacity     operations     bandwidth
+pool        alloc   free   read  write   read  write
+----------  -----  -----  -----  -----  -----  -----
+tank        1.2T   3.4T    123    456  1.2M   3.4M
+  mirror-0  1.2T   3.4T    123    456  1.2M   3.4M
+    sda     1.2T   3.4T    111    222  1.1M   3.3M
+    sdb     1.2T   3.4T     12     34  100K   100K
+----------  -----  -----  -----  -----  -----  -----
+";
+        let stats = parse_io_stats(out, "tank");
+        assert_eq!(stats.read_ops, "123", "read ops come from field 4");
+        assert_eq!(stats.write_ops, "456", "write ops come from field 5");
+        assert_eq!(stats.read_bw, "1.2M", "read bandwidth comes from field 6");
+        assert_eq!(stats.write_bw, "3.4M", "write bandwidth comes from field 7");
+    }
+
+    #[test]
+    fn io_stats_of_another_pool_are_left_empty() {
+        // A different pool name, the header row and a short row must all be
+        // ignored, leaving the default (empty) stats.
+        let out = "\
+pool        alloc   free   read  write   read  write
+----------  -----  -----  -----  -----  -----  -----
+other       1.2T   3.4T    123    456  1.2M   3.4M
+tank        1.2T   3.4T
+";
+        let stats = parse_io_stats(out, "tank");
+        assert_eq!(stats.read_ops, "", "a short pool row must be ignored");
+        assert_eq!(stats.write_ops, "", "a short pool row must be ignored");
+        assert_eq!(stats.read_bw, "", "a short pool row must be ignored");
+        assert_eq!(stats.write_bw, "", "a short pool row must be ignored");
+    }
+}

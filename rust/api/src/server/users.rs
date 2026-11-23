@@ -670,3 +670,81 @@ async fn set_smb_user_enabled(state: &AppState, uid: &str, enabled: bool) -> Res
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::membership_delta;
+
+    fn normalize(s: &str) -> String {
+        s.trim().to_lowercase()
+    }
+
+    fn owned(values: &[&str]) -> Vec<String> {
+        values.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn case_whitespace_duplicates_and_empties_are_normalized() {
+        let current = owned(&[" Alice ", "bob", ""]);
+        let desired = owned(&["alice", "CAROL", "carol"]);
+        let (add, remove) = membership_delta(&current, &desired, normalize);
+        assert_eq!(
+            add,
+            vec!["carol".to_string()],
+            "only the new normalized name should be added: {add:?}"
+        );
+        assert_eq!(
+            remove,
+            vec!["bob".to_string()],
+            "only the missing normalized name should be removed: {remove:?}"
+        );
+    }
+
+    #[test]
+    fn identical_sets_produce_empty_deltas() {
+        let current = owned(&["a", "b"]);
+        let desired = owned(&["b", "a"]);
+        let (add, remove) = membership_delta(&current, &desired, normalize);
+        assert!(add.is_empty(), "no additions expected: {add:?}");
+        assert!(remove.is_empty(), "no removals expected: {remove:?}");
+    }
+
+    #[test]
+    fn additions_only_report_new_names() {
+        let desired = owned(&["alpha", "Beta"]);
+        let (add, remove) = membership_delta(&[], &desired, normalize);
+        assert_eq!(
+            add,
+            vec!["alpha".to_string(), "beta".to_string()],
+            "new names should be added normalized: {add:?}"
+        );
+        assert!(
+            remove.is_empty(),
+            "nothing to remove from an empty set: {remove:?}"
+        );
+    }
+
+    #[test]
+    fn removals_only_report_missing_names() {
+        let current = owned(&["alpha", "Beta"]);
+        let (add, remove) = membership_delta(&current, &[], normalize);
+        assert!(
+            add.is_empty(),
+            "nothing to add when the desired set is empty: {add:?}"
+        );
+        assert_eq!(
+            remove,
+            vec!["alpha".to_string(), "beta".to_string()],
+            "removed names should be reported normalized: {remove:?}"
+        );
+    }
+
+    #[test]
+    fn empty_inputs_produce_empty_deltas() {
+        let (add, remove) = membership_delta(&[], &[], normalize);
+        assert!(
+            add.is_empty() && remove.is_empty(),
+            "empty inputs should yield empty deltas: add={add:?} remove={remove:?}"
+        );
+    }
+}

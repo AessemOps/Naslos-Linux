@@ -588,4 +588,68 @@ mod tests {
         assert!(radarr.cpu_millicores.is_none());
         assert!(radarr.memory_bytes.is_none());
     }
+
+    fn pod_key(namespace: &str, name: &str) -> PodKey {
+        (namespace.to_string(), name.to_string())
+    }
+
+    #[test]
+    fn rates_by_app_sums_all_rated_pods_of_an_app() {
+        let mut pod_map = PodAppMap::new();
+        pod_map.insert(
+            pod_key("naslos-app-4", "jellyfin-abc"),
+            "jellyfin".to_string(),
+        );
+        pod_map.insert(
+            pod_key("naslos-app-4", "jellyfin-def"),
+            "jellyfin".to_string(),
+        );
+        pod_map.insert(pod_key("naslos-app-5", "radarr-abc"), "radarr".to_string());
+
+        let mut pod_rates = HashMap::new();
+        pod_rates.insert(pod_key("naslos-app-4", "jellyfin-abc"), (100.0, 10.0));
+        pod_rates.insert(pod_key("naslos-app-4", "jellyfin-def"), (50.0, 5.0));
+
+        let rates = rates_by_app(&pod_map, &pod_rates);
+        assert_eq!(rates.len(), 2, "one rate entry per app in the pod map");
+        assert_eq!(
+            rates.get("jellyfin"),
+            Some(&(Some(150.0), Some(15.0))),
+            "both jellyfin pods should be summed"
+        );
+        assert_eq!(
+            rates.get("radarr"),
+            Some(&(None, None)),
+            "a pod with no rate sample should yield null rates"
+        );
+    }
+
+    #[test]
+    fn rates_by_app_reports_sums_when_only_one_pod_is_rated() {
+        let mut pod_map = PodAppMap::new();
+        pod_map.insert(
+            pod_key("naslos-app-4", "jellyfin-abc"),
+            "jellyfin".to_string(),
+        );
+        pod_map.insert(
+            pod_key("naslos-app-4", "jellyfin-def"),
+            "jellyfin".to_string(),
+        );
+
+        let mut pod_rates = HashMap::new();
+        pod_rates.insert(pod_key("naslos-app-4", "jellyfin-abc"), (42.0, 24.0));
+
+        let rates = rates_by_app(&pod_map, &pod_rates);
+        assert_eq!(
+            rates.get("jellyfin"),
+            Some(&(Some(42.0), Some(24.0))),
+            "the one rated pod should provide the app sums"
+        );
+    }
+
+    #[test]
+    fn rates_by_app_is_empty_without_pods() {
+        let rates = rates_by_app(&PodAppMap::new(), &HashMap::new());
+        assert!(rates.is_empty(), "an empty pod map should yield no rates");
+    }
 }

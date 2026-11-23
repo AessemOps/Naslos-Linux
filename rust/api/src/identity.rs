@@ -785,4 +785,74 @@ mod tests {
         assert_eq!(person_cn("", "Al", "Ice", "alice"), "Al Ice");
         assert_eq!(person_cn("Alice", "Al", "Ice", "alice"), "Alice");
     }
+
+    #[test]
+    fn connection_error_fragments_are_retryable_in_any_case() {
+        for fragment in [
+            "connection reset",
+            "broken pipe",
+            "use of closed network connection",
+            "response channel closed",
+            "connection refused",
+            "no such host",
+            "ldap: connection closed",
+            "connection closed",
+            "unexpected eof",
+            "eof",
+        ] {
+            let lower = format!("ldap error: {fragment}");
+            assert!(
+                is_connection_error(&lower),
+                "{lower:?} contains the connection-error fragment {fragment:?}"
+            );
+            let upper = format!("LDAP ERROR: {}", fragment.to_uppercase());
+            assert!(
+                is_connection_error(&upper),
+                "{upper:?} is the uppercase form of {fragment:?} and must still match"
+            );
+        }
+        for other in ["", "invalid credentials", "LDAP bind failed", "invalid DN"] {
+            assert!(
+                !is_connection_error(other),
+                "{other:?} is not a connection error and must not be retried"
+            );
+        }
+    }
+
+    #[test]
+    fn tls_config_with_an_empty_ca_path_builds() {
+        assert!(
+            build_tls_config("naslos.example", "").is_ok(),
+            "an empty CA path must build a default-roots client config"
+        );
+    }
+
+    #[test]
+    fn tls_config_refuses_a_missing_ca_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-ca.pem");
+        let err = match build_tls_config("naslos.example", missing.to_str().unwrap()) {
+            Ok(_) => panic!("a nonexistent CA path must fail"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("reading CA cert"),
+            "the error must name the read failure, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn tls_config_refuses_a_garbage_ca_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let garbage = dir.path().join("garbage-ca.pem");
+        std::fs::write(&garbage, "not a certificate").unwrap();
+        let err = match build_tls_config("naslos.example", garbage.to_str().unwrap()) {
+            Ok(_) => panic!("a CA file without a PEM certificate must fail"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("CA certificate"),
+            "the error must say the CA certificate could not be parsed, got {err:?}"
+        );
+    }
 }

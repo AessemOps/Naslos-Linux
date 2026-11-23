@@ -501,6 +501,11 @@ pub(crate) fn parse_go_duration(s: &str) -> Option<std::time::Duration> {
         };
         total += std::time::Duration::from_secs_f64(value * unit);
     }
+    // Go requires a unit for every component: a trailing bare number (for
+    // example "5" or "1h30") is not a valid duration.
+    if !num.is_empty() {
+        return None;
+    }
     Some(total)
 }
 
@@ -729,7 +734,7 @@ pub fn base_domain_from_env() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_channels;
+    use super::{parse_channels, parse_go_duration};
 
     #[test]
     fn official_channel_mapping_is_parsed() {
@@ -737,5 +742,26 @@ mod tests {
         assert_eq!(c.get("Prod").map(String::as_str), Some("main"));
         assert_eq!(c.get("Develop").map(String::as_str), Some("dev"));
         assert_eq!(c.len(), 2);
+    }
+
+    #[test]
+    fn parses_valid_go_durations() {
+        use std::time::Duration;
+        assert_eq!(parse_go_duration("30s"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_go_duration(" 15m "), Some(Duration::from_secs(900)));
+        assert_eq!(parse_go_duration("1h30m"), Some(Duration::from_secs(5400)));
+        assert_eq!(parse_go_duration("1.5h"), Some(Duration::from_secs(5400)));
+        assert_eq!(
+            parse_go_duration("2h15m30s"),
+            Some(Duration::from_secs(8130))
+        );
+        assert_eq!(parse_go_duration("0s"), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn rejects_invalid_go_durations() {
+        for input in ["", "   ", "abc", "1x", "m", "1h30", "5", "-1h", "1h-30m"] {
+            assert_eq!(parse_go_duration(input), None, "input {input:?}");
+        }
     }
 }

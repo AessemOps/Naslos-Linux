@@ -712,7 +712,7 @@ async fn exec_session(
 
 #[cfg(test)]
 mod tests {
-    use super::{logs_slots, origin_allowed, session_limits};
+    use super::{logs_slots, origin_allowed, resolve_container, session_limits, shell_command};
     use axum::http::{header::HOST, HeaderMap};
 
     #[test]
@@ -820,5 +820,118 @@ mod tests {
         let mut h = headers(Some("https://evil.example"), "naslos.local");
         h.insert("x-forwarded-host", "evil.example".parse().unwrap());
         assert!(!origin_allowed(&h, &[]));
+    }
+
+    #[test]
+    fn an_empty_or_blank_shell_defaults_to_sh() {
+        let expected = vec!["/usr/bin/env", "TERM=xterm-256color", "/bin/sh"];
+        assert_eq!(
+            shell_command("").unwrap(),
+            expected,
+            "an empty shell should default to sh"
+        );
+        assert_eq!(
+            shell_command("   ").unwrap(),
+            expected,
+            "a blank shell should default to sh"
+        );
+    }
+
+    #[test]
+    fn supported_shells_are_trimmed_and_case_insensitive() {
+        assert_eq!(
+            shell_command(" Bash ").unwrap(),
+            vec!["/usr/bin/env", "TERM=xterm-256color", "/bin/bash", "-l"],
+            "bash should run as a login shell"
+        );
+        assert_eq!(
+            shell_command("ZSH").unwrap(),
+            vec!["/usr/bin/env", "TERM=xterm-256color", "/bin/zsh", "-l"],
+            "zsh should run as a login shell"
+        );
+        assert_eq!(
+            shell_command("ash").unwrap(),
+            vec!["/usr/bin/env", "TERM=xterm-256color", "/bin/ash"],
+            "ash should map to /bin/ash"
+        );
+    }
+
+    #[test]
+    fn unsupported_shells_list_the_supported_set() {
+        let err = shell_command("fish").expect_err("fish is not a supported shell");
+        assert!(
+            err.contains("unsupported shell"),
+            "error should say the shell is unsupported: {err}"
+        );
+        for shell in ["bash", "sh", "ash", "zsh"] {
+            assert!(
+                err.contains(shell),
+                "error should list the supported shell {shell}: {err}"
+            );
+        }
+    }
+
+    fn pod_with_containers(names: &[&str]) -> serde_json::Value {
+        let containers: Vec<serde_json::Value> = names
+            .iter()
+            .map(|name| serde_json::json!({ "name": name }))
+            .collect();
+        serde_json::json!({ "spec": { "containers": containers } })
+    }
+
+    #[test]
+    fn a_requested_container_must_exist_in_the_pod() {
+        let pod = pod_with_containers(&["app", "sidecar"]);
+        assert_eq!(
+            resolve_container(&pod, "app"),
+            Ok("app".to_string()),
+            "an existing container should resolve to its own name"
+        );
+        let err = resolve_container(&pod, "missing").expect_err("a missing container must fail");
+        assert!(
+            err.contains("no container"),
+            "error should say the container was not found: {err}"
+        );
+        assert!(
+            err.contains("app") && err.contains("sidecar"),
+            "error should list both pod containers: {err}"
+        );
+    }
+
+    #[test]
+    fn an_empty_request_asks_for_a_container_when_several_exist() {
+        let pod = pod_with_containers(&["app", "sidecar"]);
+        let err = resolve_container(&pod, "").expect_err("several containers need a choice");
+        assert!(
+            err.contains("pick one"),
+            "error should ask the caller to pick a container: {err}"
+        );
+    }
+
+    #[test]
+    fn an_empty_request_resolves_the_only_container() {
+        let pod = pod_with_containers(&["solo"]);
+        assert_eq!(
+            resolve_container(&pod, ""),
+            Ok("solo".to_string()),
+            "a single container should resolve without an explicit request"
+        );
+    }
+
+    #[test]
+    fn pods_without_containers_are_rejected() {
+        let empty = pod_with_containers(&[]);
+        assert_eq!(
+            resolve_container(&empty, ""),
+            Err("pod has no containers".to_string()),
+            "a pod with no containers must be rejected"
+        );
+
+        let malformed = serde_json::json!({ "metadata": { "name": "no-spec" } });
+        assert_eq!(
+            resolve_container(&malformed, ""),
+            Err("pod has no containers".to_string()),
+            "a pod without a spec should behave like a pod with no containers"
+        );
     }
 }

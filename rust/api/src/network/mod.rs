@@ -142,3 +142,28 @@ impl Node for UnavailableNode {
         Err("Talos is not configured on this instance".into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unavailable_node_fails_closed() {
+        let node = UnavailableNode;
+        let want = "Talos is not configured on this instance";
+        assert_eq!(node.machine_config().await.unwrap_err(), want);
+        assert_eq!(node.probe_config(None).await.unwrap_err(), want);
+        assert_eq!(node.probe_config(Some("10.0.0.1")).await.unwrap_err(), want);
+        assert_eq!(node.physical_links().await.unwrap_err(), want);
+        assert_eq!(node.primary_ip().await, None);
+        assert_eq!(node.patch(None, "x", "noop").await.unwrap_err(), want);
+        assert_eq!(node.replace(None, "x", "noop").await.unwrap_err(), want);
+        assert_eq!(
+            node.replace(Some("10.0.0.1"), "x", "noop")
+                .await
+                .unwrap_err(),
+            want
+        );
+        assert_eq!(node.restart_cilium().await.unwrap_err(), want);
+    }
+}
