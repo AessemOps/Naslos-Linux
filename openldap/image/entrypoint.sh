@@ -131,6 +131,7 @@ olcRootPW: ${ADMIN_PW_HASH}
 olcAccess: {0}to attrs=userPassword,shadowLastChange
   by dn="cn=admin,${BASE_DN}" write
   by dn="cn=naslos-service,ou=services,${BASE_DN}" write
+  by dn="cn=authelia-service,ou=services,${BASE_DN}" auth
   by self write
   by anonymous auth
   by * none
@@ -138,8 +139,11 @@ olcAccess: {1}to dn.base="" by * read
 olcAccess: {2}to *
   by dn="cn=admin,${BASE_DN}" write
   by dn="cn=naslos-service,ou=services,${BASE_DN}" write
+  by dn="cn=authelia-service,ou=services,${BASE_DN}" read
   by users read
   by * none
+# R-010: cn=authelia-service is read/auth only. It never appears in a "write"
+# clause, so an Authelia compromise cannot change groups or passwords.
 olcDbIndex: objectClass eq
 olcDbIndex: cn,uid eq
 olcDbIndex: mail eq

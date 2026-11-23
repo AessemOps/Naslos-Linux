@@ -103,8 +103,12 @@ unmodified Talos installation, administered through a web UI.
   `application/json`; non-browser clients that send neither header remain
   supported.
 - **SEC-16** — A WebSocket upgrade MUST be refused unless a present `Origin`
-  matches the request host (ports aside) or a configured Naslos domain.
-  Non-browser clients that send no `Origin` remain supported.
+  is exactly `https://<request Host>` including the port. `http` is refused,
+  SSO domains are not an expansion, and a path/query in the header is
+  refused. Non-browser clients that send no `Origin` remain supported.
+  *(R-028a; tests `same_authority_over_https_is_allowed`,
+  `a_port_mismatch_is_refused`, `http_and_opaque_origins_are_refused`,
+  `an_sso_domain_is_not_an_origin_expansion`)*
 - **SEC-17** — The MCP endpoint MUST authenticate clients with operator-created
   bearer tokens: the stored form is a SHA-256 hash compared in constant time,
   the plaintext is shown exactly once at creation, every token carries one
@@ -113,11 +117,17 @@ unmodified Talos installation, administered through a web UI.
   to the resolved target before dispatch. The endpoint MUST refuse every
   request while MCP is disabled (404), apply the SEC-10 proxy trust checks
   with no opt-out, refuse a foreign `Origin` (SEC-16 rules), and block a
-  source address after ten failed attempts inside five minutes. *(contract
+  presented token digest and a source address after ten failed attempts
+  inside five minutes. A valid token is verified before the backoff table and
+  MUST NOT be blocked by another client's failures; expiry is range-checked
+  on create and an unparsable stored `expiresAt` fails closed. *(contract
   tests: `the_full_chain_rejects_every_shortcut`, `disabled_answers_404`,
-  `ten_failures_block_the_source_ip`, `a_read_token_cannot_call_a_write_tool`,
+  `failures_block_the_bad_token_but_never_a_valid_one`,
+  `a_read_token_cannot_call_a_write_tool`,
   `a_full_tool_without_confirm_is_refused_before_dispatch`,
-  `forged_identity_cannot_bypass_the_public_auth_layers`)*
+  `forged_identity_cannot_bypass_the_public_auth_layers`,
+  `an_out_of_range_expiry_is_rejected_not_wrapped`,
+  `a_malformed_expiry_fails_closed`)*
 - **SEC-18** — Traefik MUST NOT hold cluster-wide Secret read: it MUST run with
   namespaced RBAC (a Role/RoleBinding in the release namespace, the shared app
   namespaces and every per-app isolation namespace), watch only those
@@ -712,6 +722,13 @@ cloud sync remain `[OPEN]` below.
   passdb account and its NSS entry.
 - **FR-IDN-16** — Change detection for the node's mirror MUST NOT rely on
   whole-second timestamps: two writes in the same second MUST both take effect.
+- **FR-IDN-17** — Authelia MUST bind with a dedicated read-only account
+  (`cn=authelia-service,ou=services,…`: `auth` on `userPassword`, `read`
+  elsewhere, no `write` ACL), separate from the API/bootstrap write account
+  (`cn=naslos-service`), so an Authelia compromise cannot modify groups or
+  passwords. Existing directories need the new ACL applied out of band
+  (fresh installs get it from the image); the account is created/updated by
+  the bootstrap Job. *(drill: `openldap/image/test-authelia-acl.sh`)*
 
 ### 3.2.1 External directory (`FR-EXT`)
 
@@ -1756,7 +1773,15 @@ A node installed from an installer pack can be upgraded from the web UI. A
 - **FR-UPD-02** — The API MUST check the newest strict `vX.Y.Z` GitHub release
   (or a configured mirror), MUST download the pack and its `.sha256`, MUST
   verify the tarball sha256 and every member checksum, and MUST cache nothing
-  that fails. The source is `system.updates.source`.
+  that fails. The source is `system.updates.source`. Pack and signature URLs
+  MUST be `https` and their host MUST be the update source or a GitHub asset
+  host; the download MUST be capped (512 MiB). When the release publishes
+  `<pack>.sig`, it MUST verify against `SYSTEM_UPDATES_PACK_PUBKEY` (Ed25519);
+  when a key is configured but the release is unsigned, the candidate MUST be
+  rejected. The Job MUST re-verify the sha256 (and the signature when passed)
+  before extraction, and `--version`/`--from` MUST be strict semver.
+  *(tests: `pack_urls_are_https_and_host_allowlisted`,
+  `pack_signature_roundtrip_and_tamper`)*
 - **FR-UPD-03** — The API MUST offer the newest release whose `talosVersion` and
   `kubernetesVersion` are each at most one minor ahead of the running versions,
   MUST name the blocking reason otherwise, and MUST block a Naslos upgrade while
@@ -1990,22 +2015,38 @@ buddy bypass, and the API's own guard keeps SEC-10 in force. See
   shows the plaintext exactly once and every other view (Settings UI,
   `GET /api/mcp`) omits both the plaintext and the hash. Tokens verify by
   SHA-256 hash with constant-time comparison, may expire, and revoke via
-  `DELETE /api/mcp/tokens/{id}`. New tokens default to the `read` scope:
+  `DELETE /api/mcp/tokens/{id}`. `expiresInDays` MUST fit a `DateTime`
+  (`try_days` + `checked_add_signed`); a stored `expiresAt` that cannot be
+  parsed is treated as expired. New tokens default to the `read` scope:
   a `full` token is an administrator without 2FA. *(SEC-17)*
 - **FR-MCP-03** — Scopes: every tool declares `read` < `write` < `full`.
   `tools/list` MUST only list the tools the calling token's scope allows,
   and `tools/call` MUST re-check the scope (a client can call an unlisted
-  tool). Refusals return tool errors the caller's LLM can read, never a
-  protocol-level failure.
+  tool). Every tool reachable at `write` MUST be on the reviewed allowlist
+  (`WRITE_ALLOWLIST` in `rust/api/src/mcp/tools/mod.rs`); identity,
+  credential, trust-enrollment and arbitrary-egress tools MUST be `full`
+  (`FULL_ONLY_TOOLS`), so a `write` token cannot create/update users,
+  passwords or groups or enroll a Buddy peer. **Breaking change (0.7.1):
+  existing `write` tokens must be reissued as `full` for that access.**
+  Refusals return tool errors the caller's LLM can read, never a
+  protocol-level failure. *(tests:
+  `every_write_tool_is_on_the_reviewed_allowlist`,
+  `identity_credential_and_egress_tools_are_full`,
+  `write_token_cannot_create_or_update_identities`)*
 - **FR-MCP-04** — Destructive (full-scope) tools MUST require a `confirm`
   argument equal to the resolved target (the same resolved value used in
   the path or query, never a second lookup), checked before any dispatch.
-  The `initialize` instructions MUST state the rule.
+  A missing or empty target MUST be refused, never treated as "no check
+  needed". `buddy_identity_create` with `{"replace": true}` MUST require the
+  literal `confirm: "replace"`. The `initialize` instructions MUST state the
+  rule. *(tests: `destructive_tools_refuse_an_empty_target`,
+  `replacing_the_buddy_identity_requires_the_literal_confirm`)*
 - **FR-MCP-05** — Tool dispatch MUST call the real handlers through the
   same router surface `build_router` mounts (split into `owner_routes()`
-  and `user_routes()`), with a synthetic `mcp:<token>` admin identity
-  injected per call — the internal router is never reachable from the
-  HTTP listener. Tools get API behavior for free: validation, JSON error
+  and `user_routes()`), with a synthetic `mcp:<token>` identity whose role
+  is the token scope's role (`read` → read-only, `write` → operator,
+  `full` → admin) injected per call — the internal router is never
+  reachable from the HTTP listener. Tools get API behavior for free: validation, JSON error
   bodies, and 503 for absent subsystems; the registry stays a declarative
   table plus one dispatcher. *(contract tests:
   `every_registry_tool_matches_a_real_route`,
@@ -2217,11 +2258,13 @@ parity (FR-RBAC-07) remain open.
   NOT become a role escalation path: `read`, `write` and `full` stay
   authoritative (FR-MCP-03/04), `tools/list` filtering is not enforcement,
   and `tools/call` MUST re-check the token scope against the route's minimum
-  role before dispatch. The synthetic MCP identity MUST carry the effective
-  role for audit, and the internal router MUST stay unreachable from the HTTP
-  listener. **[OPEN — phase 4]** Token scopes and `confirm` stay authoritative
-  and every call is durably audited now; scope-to-route-role parity waits
-  until routes are delegated. Existing regression test:
+  role before dispatch. The synthetic MCP identity MUST carry the scope's
+  effective role (`read` → read-only, `write` → operator, `full` → admin),
+  and the internal router MUST stay unreachable from the HTTP listener.
+  **[IMPLEMENTED — scope level + synthetic role] [OPEN — phase 4]** Token
+  scopes and `confirm` stay authoritative and every call is durably audited;
+  identity/credential/egress tools are `full`, so a `write` token cannot
+  reach them even before routes are delegated. Existing regression test:
   `internal_router_answers_with_a_synthetic_identity_and_hides_public_routes`.*
 - **FR-RBAC-08** — Migration MUST be behavior-preserving for existing admins:
   `naslos_admins` keeps full access without joining a new group, every
@@ -2271,13 +2314,14 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
   `record_shape_and_chain`, `request_ids_are_validated`)*
 - **FR-AUD-03** — The audit log MUST cover every unsafe `/api` request that
   reaches a handler (including 4xx/5xx outcomes and authorization denials
-  with a known actor), every MCP `tools/call`, terminal/VNC session
-  open/close, Buddy peer mutations, and background mutations (snapshots,
-  scrub, SMART, replication/cloud sync, DDNS, certificates, Buddy schedules,
-  network watchdog, upgrades). Ordinary safe reads, health probes and
-  unauthenticated `401`s MUST NOT flood the durable log.
-  **[IMPLEMENTED — HTTP/MCP] [OPEN — terminal/VNC sessions, Buddy peer
-  mutations, background/system jobs]** *(tests:
+  with a known actor, plus role-denied safe methods), every MCP `tools/call`,
+  terminal session open/close, Buddy peer mutations, and background mutations
+  (snapshots, scrub, SMART, replication/cloud sync, DDNS, certificates,
+  Buddy schedules, network watchdog, upgrades). Ordinary safe reads, health
+  probes and unauthenticated `401`s MUST NOT flood the durable log. A
+  WebSocket upgrade MUST be refused with `503` while the log is degraded.
+  **[IMPLEMENTED — HTTP/MCP/terminal] [OPEN — VNC (WP-03), Buddy peer
+  mutations (WP-06), background/system jobs]** *(tests:
   `denied_mutations_are_audited_with_the_actor`,
   `audit_records_a_mutation_and_refuses_after_degrade`,
   `mcp_read_calls_are_audited_without_arguments`)*
@@ -2308,11 +2352,14 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
   detect edited, reordered, deleted, inserted or truncated records. A keyed
   MAC or off-box checkpoint SHOULD be added because a plain hash chain cannot
   stop a writer with full volume access. Verification failure MUST NOT
-  auto-repair or truncate the log. **[IMPLEMENTED]** The plain hash chain
-  remains the baseline; a keyed MAC/off-box checkpoint is still a SHOULD.
-  *(tests: `chain_detects_edited_and_deleted_records`,
+  auto-repair or truncate the log; an on-demand verify that fails MUST mark
+  the log degraded and raise one alert **before** returning, so mutations
+  are refused from then on. **[IMPLEMENTED]** The plain hash chain remains
+  the baseline; a keyed MAC/off-box checkpoint is still a SHOULD. *(tests:
+  `chain_detects_edited_and_deleted_records`,
   `truncating_the_active_tail_fails_verification`,
-  `a_missing_checkpoint_fails_verification`)*
+  `a_missing_checkpoint_fails_verification`,
+  `tampering_after_startup_degrades_and_refuses_mutations`)*
 - **FR-AUD-07** — Retention MUST be bounded by age and bytes (proposed
   defaults 90 days / 16 MiB, 8 MiB segments, below the shared state
   volume). Pruning MUST remove only the oldest sealed segments, MUST never remove the active segment or the newest
@@ -2327,12 +2374,15 @@ coverage in FR-AUD-03/10 and are marked `[OPEN]` below.
   subsequent mutations and return an explicit error that the action may have
   applied; it MUST NOT return a success response with an unaudited outcome.
   While degraded, reads MAY proceed and `/api/ready` MUST report the audit
-  state. A missing/unwritable audit directory at startup MUST be a fatal
+  state. Durable appends (fsync included) MUST run on the Tokio blocking pool,
+  never on an async worker, and no `std::sync::Mutex` may be held across an
+  `.await`. A missing/unwritable audit directory at startup MUST be a fatal
   configuration error for the API. **[IMPLEMENTED]** *(tests:
   `degraded_log_refuses_begin`, `audit_begin_failure_refuses_the_mutation_without_a_record`,
   `audit_end_failure_degrades_and_reports_may_have_applied`,
   `audit_records_a_mutation_and_refuses_after_degrade`,
-  `mcp_mutations_fail_closed_when_audit_is_degraded`)*
+  `mcp_mutations_fail_closed_when_audit_is_degraded`,
+  `durable_appends_do_not_block_the_async_runtime`)*
 - **FR-AUD-09** — Audit access MUST be admin-only and owner-gated: a bounded
   query, chain verification and JSONL export MAY be exposed at
   `/api/audit`, `/api/audit/verify` and `/api/audit/export`; there MUST be no

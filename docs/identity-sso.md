@@ -29,7 +29,8 @@ changes flow through the Naslos API, which updates both stores atomically.
 dc=naslos,dc=local
 ├── ou=people      (inetOrgPerson + posixAccount + shadowAccount)
 ├── ou=groups      (groupOfNames: naslos_admins, naslos_users, …)
-└── ou=services    (cn=naslos-service — the API's LDAP bind account)
+└── ou=services    (cn=naslos-service — the API's write bind account;
+                    cn=authelia-service — Authelia's read-only bind account)
 ```
 
 Users are created with objectClasses `inetOrgPerson`, `posixAccount`,
@@ -206,7 +207,13 @@ in the page).
 
 The same directory can back apps (e.g. Plex, Nextcloud) configured with the
 OpenLDAP server (`ldaps://naslos-openldap:636`, `dc=naslos,dc=local`) and the
-`naslos-service` bind account — avoiding per-app user databases.
+`naslos-service` bind account — avoiding per-app user databases. Authelia
+itself uses the separate `authelia-service` account, which has `auth` on
+`userPassword` and `read` elsewhere but no `write` ACL (FR-IDN-17): a
+compromised Authelia cannot change groups or passwords. The account and its
+`authelia-password` Secret key are created by the bootstrap Job; the ACL ships
+in the OpenLDAP image, so an existing directory needs it applied out of band
+(`openldap/image/test-authelia-acl.sh` is the drill).
 
 ## Deployment & first admin
 

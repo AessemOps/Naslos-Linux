@@ -785,7 +785,7 @@ authelia:
         enabled: true
         password:
           secret_name: naslos-openldap
-          path: service-password
+          path: authelia-password
   # Mount that Secret where the password-file env var points. The subchart
   # mounts each additionalSecrets entry at /secrets/<path>, and its env helper
   # builds /secrets/<secret_name>/<password.path>, so `path` here has to be the
@@ -796,8 +796,8 @@ authelia:
       naslos-openldap:
         path: naslos-openldap
         items:
-          - key: service-password
-            path: service-password
+          - key: authelia-password
+            path: authelia-password
   # Trust the openldap self-signed CA for the ldaps:// connection. R-036:
   # mount the CA-only Secret, never `naslos-openldap-tls`, whose `ldap.key` is
   # the LDAP server private key. The authelia chart mounts every key of this
@@ -855,6 +855,12 @@ openldap:
   host: ldap.naslos.local
   baseDN: "dc=naslos,dc=local"
   bindDN: "cn=naslos-service,ou=services,dc=naslos,dc=local"
+  # R-010: Authelia binds with a read-only account. It may authenticate and
+  # read the directory but never write groups or passwords; the API/bootstrap
+  # keeps cn=naslos-service above. Authelia's password comes from the
+  # `authelia-password` key of the naslos-openldap Secret.
+  autheliaBindDN: "cn=authelia-service,ou=services,dc=naslos,dc=local"
+  autheliaBindPassword: ""
   organisation: "Naslos"
   # Explicit credentials, used ONLY when the chart's `naslos-openldap` Secret
   # (or the specific key) does not already exist — i.e. a dry run or the very

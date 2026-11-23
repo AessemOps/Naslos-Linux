@@ -52,8 +52,8 @@ Non-goals for this stage:
 | Groups | `naslos_admins` (owner gate), `naslos_users` (authenticated baseline), and the parsed-but-not-yet-admitted `naslos_operators`/`naslos_readonly`. Authelia's `users_filter` still admits only the first two (FR-RBAC-09) |
 | Role enforcement | One `require_role` middleware after `require_auth`, reading the authoritative `(method, path) → minimum` table in `rust/api/src/rbac.rs`; an unknown route/method is admin. Phase 2 keeps every owner route admin |
 | Route groups | `public` (`/api/health`, `/api/ready`), the Buddy peer API and `/mcp` with their own guards, the authenticated user+owner routers, and the in-process `internal_router` used only by MCP dispatch |
-| MCP | Bearer tokens with `read` < `write` < `full` scopes; `tools/list` and `tools/call` re-check the scope; the dispatcher injects a synthetic admin identity and now writes a durable audit record per call (no arguments) |
-| Audit | `rust/api/src/audit.rs`: append-only JSONL segments, SHA-256 chain, begin/end for HTTP mutations, denied requests, MCP calls and audit reads; admin-only `GET /api/audit`, `/verify`, `/export`; retention and fail-closed failure semantics |
+| MCP | Bearer tokens with `read` < `write` < `full` scopes; `tools/list` and `tools/call` re-check the scope; identity/credential/egress tools are `full` behind a reviewed `write` allowlist; the dispatcher injects the scope's synthetic role (read-only/operator/admin) and writes a durable audit record per call (no arguments) |
+| Audit | `rust/api/src/audit.rs`: append-only JSONL segments, SHA-256 chain, begin/end for HTTP mutations (appends run on the blocking pool, never under the async runtime), denied requests including role-denied safe GETs, MCP calls, terminal session open/close and audit reads; admin-only `GET /api/audit`, `/verify`, `/export`; retention and fail-closed failure semantics; a failed verify marks the log degraded before returning |
 
 The UI still labels `naslos_users` as “read-only”, but that group only reaches
 the dashboard, metrics and `/api/auth/me`; every inventory GET (shares, pools,
@@ -252,13 +252,18 @@ client cannot complete 2FA), so the dispatcher must not become a privilege
 escalation path:
 
 - Existing scope rules stay authoritative: `read` cannot call write tools,
-  `write` cannot call destructive tools, and `full` tools still require the
-  `confirm` argument (FR-MCP-03/04).
-- When the role model ships, the tool registry's declared level must be
-  compared with the token scope **and** the route's minimum role. A `read`
-  token can only reach tools whose route is read-only; a `write` token cannot
-  reach an owner-only admin tool. `full` remains administrator-equivalent
-  without 2FA and must be documented as such.
+  `write` cannot call identity/credential/egress tools or destructive tools,
+  and `full` tools still require the `confirm` argument (FR-MCP-03/04).
+  Every `write` tool is on the reviewed allowlist in
+  `rust/api/src/mcp/tools/mod.rs`; identity, credential, trust-enrollment and
+  arbitrary-egress tools are `full` (R-009). Existing `write` tokens must be
+  reissued as `full` for that access.
+- The dispatcher injects the scope's synthetic role (`read` → read-only,
+  `write` → operator, `full` → admin). The registry level is checked first,
+  so a `write` token cannot reach an owner-only admin tool today; when Phase 4
+  lowers routes to operator/read-only, the route's minimum role remains the
+  second check. `full` remains administrator-equivalent without 2FA and must
+  be documented as such.
 - The dispatcher must keep re-checking on `tools/call`; `tools/list` filtering
   is not enforcement.
 - The synthetic identity injected into `internal_router` must carry the
@@ -664,13 +669,42 @@ Still open (deferred, not silently accepted):
   2FA subject list, add `role` to `/api/auth/me`, and correct the
   `naslos_users` UI label.
 - **Phase 4** — lower `ROUTES` entries from admin to operator/read-only per
-  §3.2/§4, one family per change, with contract tests and docs. Then enforce
-  MCP scope-to-route-role parity (FR-RBAC-07) so a `write` token cannot reach
-  an owner-only admin tool.
+  §3.2/§4, one family per change, with contract tests and docs. The MCP
+  registry level and the synthetic scope role already prevent a `write` token
+  from reaching an owner-only tool; Phase 4 adds the route-minimum comparison
+  for the routes it delegates (FR-RBAC-07).
 - **Phase 5** — role-aware UI controls and the audit viewer.
-- **Audit coverage** — terminal/VNC session open/close, Buddy peer mutations
-  (key fingerprint instead of user), and background/system job actors
+- **Audit coverage** — terminal session open/close is implemented in
+  `server/ws.rs` through `audit::SessionAudit` (refuse the upgrade with 503
+  when the log is degraded); VNC (WP-03) and Buddy peer mutations (WP-06)
+  must call the same helper, and background/system job actors remain
   (FR-AUD-03/10).
+- **Residual risk — shared agent bearer token (R-029)** — the agent
+  DaemonSet still authenticates the API with one shared bearer token in a
+  Secret; it is not per-caller and cannot be revoked for one compromised
+  component. Recommended follow-up: mTLS or projected, rotated credentials
+  (design task, not a quick fix). This is documented here rather than
+  silently changed.
+
+### 10.1 Reusable audit helper (WP-03 / WP-06)
+
+`rust/api/src/audit.rs` exports the session helper:
+
+```rust
+pub struct SessionAudit { /* pending */ }
+impl SessionAudit {
+    pub async fn begin(state: &Arc<AppState>, pending: Pending) -> Result<Self, String>;
+    pub async fn finish(&self, state: &Arc<AppState>, status: u16);
+}
+// Pending::session(user, kind, method, route, target)
+```
+
+`begin` returns `Err` when the durable begin cannot be written: the caller
+must refuse the upgrade/stream with `503` and must not open the session.
+`finish` writes the end record and degrades + alerts if that fails. Use
+`status = 101` for an upgraded WebSocket. Role-denied safe methods are
+recorded by `require_role` via `audit::record_role_denied`; do not add a
+duplicate record in a handler.
 
 ## 11. References
 

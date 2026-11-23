@@ -414,7 +414,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // handler -> audit end, so a denied mutation is recorded too.
     let authenticated = user_routes()
         .merge(owner_routes())
-        .layer(middleware::from_fn(crate::rbac::require_role))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::rbac::require_role,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             crate::audit::middleware,
@@ -932,7 +935,12 @@ mod tests {
             match tool.confirm {
                 crate::mcp::tools::Confirm::No => {
                     if tool.level == crate::mcp::store::Scope::Full {
-                        panic!("{} is full but has no confirm target", tool.name);
+                        assert!(
+                            crate::mcp::tools::FULL_NO_CONFIRM_ALLOWLIST.contains(&tool.name),
+                            "{} is full but has no confirm target and is not on the reviewed \
+                             no-confirm allowlist",
+                            tool.name
+                        );
                     }
                 }
                 crate::mcp::tools::Confirm::Arg(param) => {
@@ -948,6 +956,18 @@ mod tests {
                     );
                 }
                 crate::mcp::tools::Confirm::Literal(_) => {
+                    assert!(
+                        props.contains_key("confirm"),
+                        "{}: the schema does not declare the confirm argument",
+                        tool.name
+                    );
+                }
+                crate::mcp::tools::Confirm::ArgOrLiteral { arg, .. } => {
+                    assert!(
+                        props.contains_key(arg),
+                        "{}: confirm target {arg} is missing from the schema",
+                        tool.name
+                    );
                     assert!(
                         props.contains_key("confirm"),
                         "{}: the schema does not declare the confirm argument",

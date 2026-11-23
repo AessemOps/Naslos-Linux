@@ -165,7 +165,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "vm_image_import_url",
         "Import a disk image/ISO into the library from a public http(s) URL.",
-        Write,
+        Full,
         POST,
         "/api/virt/images/import",
         || schema(

@@ -12,7 +12,7 @@
 //! display name, path, query, body or a client-supplied header) grants a
 //! role, and the result is never cached.
 
-use axum::extract::Request;
+use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
@@ -326,7 +326,15 @@ fn trim_path(path: &str) -> Vec<&str> {
 /// `require_auth` (a missing identity stays `401`) and before the handler; an
 /// authenticated user with an insufficient role gets the existing JSON
 /// `"Forbidden"` body with `403`.
-pub async fn require_role(mut req: Request, next: Next) -> Response {
+///
+/// A denied **safe** method (GET/HEAD/OPTIONS) is recorded as a durable
+/// `denied`/`role` audit end record; unsafe methods are already covered by the
+/// audit middleware's begin/end pair (R-027-core).
+pub async fn require_role(
+    State(state): State<std::sync::Arc<crate::state::AppState>>,
+    mut req: Request,
+    next: Next,
+) -> Response {
     let Some(user) = crate::auth::user_from_request(&req) else {
         return crate::auth::unauthorized();
     };
@@ -336,6 +344,9 @@ pub async fn require_role(mut req: Request, next: Next) -> Response {
     // presentation. Enforcement stays in this middleware.
     req.extensions_mut().insert(role);
     if !role.allows(minimum) {
+        if !is_unsafe(req.method()) {
+            crate::audit::record_role_denied(&state, &user, req.method(), req.uri().path()).await;
+        }
         return crate::json(StatusCode::FORBIDDEN, serde_json::json!("Forbidden"));
     }
     next.run(req).await

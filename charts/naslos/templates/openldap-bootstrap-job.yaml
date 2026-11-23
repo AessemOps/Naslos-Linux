@@ -103,6 +103,34 @@ spec:
 
               ldapmodify -x -H "$LDAP_URI" -D "cn=admin,{{ $baseDN }}" -y /run/secrets/admin-password -f /tmp/update-service-pw.ldif
 
+              # R-010: read-only Authelia bind account. The ACL (auth on
+              # userPassword, read elsewhere, never write) lives in the openldap
+              # image's entrypoint. Create the entry if missing so an upgraded
+              # directory gets it too; only its password is replaced.
+              AUTHELIA_PW=$(cat /run/secrets/authelia-password)
+              AUTHELIA_PW_HASH=$(slappasswd -h "{SSHA}" -s "$AUTHELIA_PW")
+              if ldapsearch -x -H "$LDAP_URI" -D "cn=admin,{{ $baseDN }}" \
+                -y /run/secrets/admin-password -b "cn=authelia-service,ou=services,{{ $baseDN }}" \
+                -s base "(objectClass=*)" cn >/dev/null 2>&1; then
+                cat > /tmp/authelia-service.ldif <<EOF
+              dn: cn=authelia-service,ou=services,{{ $baseDN }}
+              changetype: modify
+              replace: userPassword
+              userPassword: $AUTHELIA_PW_HASH
+              EOF
+                ldapmodify -x -H "$LDAP_URI" -D "cn=admin,{{ $baseDN }}" -y /run/secrets/admin-password -f /tmp/authelia-service.ldif
+              else
+                cat > /tmp/authelia-service.ldif <<EOF
+              dn: cn=authelia-service,ou=services,{{ $baseDN }}
+              objectClass: simpleSecurityObject
+              objectClass: organizationalRole
+              cn: authelia-service
+              description: Authelia read-only bind account
+              userPassword: $AUTHELIA_PW_HASH
+              EOF
+                ldapadd -x -H "$LDAP_URI" -D "cn=admin,{{ $baseDN }}" -y /run/secrets/admin-password -f /tmp/authelia-service.ldif
+              fi
+
               # Verify groups exist (created by bootstrap.ldif)
               echo "Verifying groups..."
               ldapsearch -x -H "$LDAP_URI" -D "cn=admin,{{ $baseDN }}" -y /run/secrets/admin-password \
@@ -125,6 +153,8 @@ spec:
                 path: admin-password
               - key: service-password
                 path: service-password
+              - key: authelia-password
+                path: authelia-password
         - name: ldap-ca
           secret:
             secretName: naslos-openldap-tls

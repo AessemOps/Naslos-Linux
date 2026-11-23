@@ -25,27 +25,46 @@ interactive 2FA login). It is:
 2. An `Authorization: Bearer nmcp_…` token created by an admin in Settings.
    Only the SHA-256 hash is stored; the plaintext is shown exactly once at
    creation, and comparison is constant-time.
-3. An Origin check: a present `Origin` must be the NAS's own domain, so a
-   browser page cannot drive the endpoint cross-site (MCP DNS-rebinding
-   guidance). Non-browser clients send no `Origin` and pass.
-4. Failure backoff: ten failed attempts from one source address inside five
-   minutes block that address for five minutes.
+3. An Origin check: a present `Origin` must be exactly
+   `https://<request Host>` (port included) — no `http`, no SSO-domain
+   expansion — so a browser page cannot drive the endpoint cross-site (MCP
+   DNS-rebinding guidance). Non-browser clients send no `Origin` and pass.
+4. Failure backoff: ten failed attempts inside five minutes block the
+   presented token and the source address for five minutes. The token is
+   verified **before** the backoff table, so a valid token is never blocked
+   by another client's failures.
 
 ### Scopes
 
 Every tool declares the minimum scope it needs, and every token carries one
 scope:
 
-| Scope | Reads | Changes | Destructive |
-| --- | --- | --- | --- |
-| `read` | yes | no | no |
-| `write` | yes | yes (create a share, install an app, start a VM, …) | no |
-| `full` | yes | yes | yes (destroy a pool, uninstall an app, reboot, …) |
+| Scope | Reads | Changes | Identity/credentials/egress | Destructive |
+| --- | --- | --- | --- | --- |
+| `read` | yes | no | no | no |
+| `write` | yes | yes (create a share, install an app, start a VM, …) | **no** | no |
+| `full` | yes | yes | yes | yes (destroy a pool, uninstall an app, reboot, …) |
 
 `tools/list` hides tools above the token's scope, and `tools/call` re-checks
-(a client can call an unlisted tool). A **`full` token is an administrator
-without two-factor authentication**: default new tokens to `read`, prefer an
-expiry for anything stronger, and revoke tokens you no longer use.
+(a client can call an unlisted tool). Every `write` tool is on an explicit
+reviewed allowlist in `rust/api/src/mcp/tools/mod.rs`; anything that touches
+identities (users, groups, passwords), credentials (SMTP/notification
+secrets), trust enrollments (Buddy peers, DNS/SSO domains) or arbitrary
+egress (URL imports, chart sources) is `full`. The synthetic identity a call
+runs as is the scope's role (`read` → read-only, `write` → operator,
+`full` → admin), so a `write` token cannot create or update a user even if a
+future tool classification is wrong.
+
+> **Breaking change (0.7.1):** the identity/credential/egress tools used to
+> be reachable with a `write` token. Existing `write` tokens must be
+> **reissued as `full`** if that access is still wanted; they keep working at
+> `write` for the remaining allowlisted changes and nothing else.
+
+A **`full` token is an administrator without two-factor authentication**:
+default new tokens to `read`, prefer an expiry for anything stronger, and
+revoke tokens you no longer use. Expiry is range-checked (`expiresInDays`
+must fit a `DateTime`); a stored `expiresAt` that cannot be parsed is treated
+as expired.
 
 ### The `confirm` rule
 
@@ -59,8 +78,12 @@ extra argument:
 `confirm` must equal the **exact target** of the action — the same resolved
 value used in the call (the pool name, app name, version, or the literal
 `reboot`). The server checks it before dispatching anything, so a wrong or
-missing `confirm` never reaches the API. This is the guard that keeps an
-enthusiastic LLM from destroying "old-media" when the user asked about it.
+missing `confirm` never reaches the API. The target argument must be a
+non-empty string: an absent/empty target is refused rather than skipping the
+check. `buddy_identity_create` with `"replace": true` requires the literal
+`confirm: "replace"` (the identity name alone is not enough). This is the
+guard that keeps an enthusiastic LLM from destroying "old-media" when the
+user asked about it.
 
 ## Connect a client
 

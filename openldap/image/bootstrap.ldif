@@ -53,3 +53,13 @@ objectClass: organizationalRole
 cn: naslos-service
 description: Naslos API service account for LDAP operations
 userPassword: {SSHA}placeholder
+
+# Read-only bind account for Authelia (R-010). It may read the directory and
+# authenticate, but must never modify groups or passwords; cn=naslos-service
+# stays the write account for the API/bootstrap.
+dn: cn=authelia-service,ou=services,dc=naslos,dc=local
+objectClass: simpleSecurityObject
+objectClass: organizationalRole
+cn: authelia-service
+description: Authelia read-only bind account
+userPassword: {SSHA}placeholder

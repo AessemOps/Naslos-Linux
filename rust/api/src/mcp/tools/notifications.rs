@@ -15,7 +15,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "notifications_set",
         "Update the notification settings.",
-        Write,
+        Full,
         PUT,
         "/api/notifications",
         || schema(
@@ -46,7 +46,7 @@ pub const TOOLS: &[ToolDef] = &[
     tool!(
         "notifications_test",
         "Send a test notification with the current settings.",
-        Write,
+        Full,
         POST,
         "/api/notifications/test",
         no_args

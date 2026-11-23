@@ -46,10 +46,20 @@ pub enum Confirm {
     #[default]
     /// Not a destructive tool.
     No,
-    /// The named argument (also used in the path/query), e.g. `name`.
+    /// The named argument (also used in the path/query), e.g. `name`. The
+    /// argument must be a non-empty string; an absent/empty target is
+    /// refused rather than silently skipping the confirm check (R-025).
     Arg(&'static str),
     /// A fixed literal, for targets that are not an argument (`reboot`).
     Literal(&'static str),
+    /// The named argument normally, but a fixed literal when `flag` is true,
+    /// so an irreversible variant cannot be confirmed by repeating a name
+    /// (R-025, `buddy_identity_create {replace: true}`).
+    ArgOrLiteral {
+        arg: &'static str,
+        flag: &'static str,
+        literal: &'static str,
+    },
 }
 
 #[derive(Default, Clone, Copy, PartialEq)]
@@ -73,6 +83,92 @@ impl ToolDef {
         tool
     }
 }
+
+/// Every tool an operator may reach with a `write` token. Reviewed one by
+/// one (R-009): identity, credential and egress tools are `full`, so adding a
+/// `Write` tool means adding it here (and reviewing the entry) or the
+/// registry test fails.
+pub const WRITE_ALLOWLIST: &[&str] = &[
+    // App lifecycle. Chart sources are operator-configured; no identity,
+    // credential or arbitrary-URL field is writable through these.
+    "app_install",
+    "app_update",
+    "app_exposure_set",
+    "app_dns_reconcile",
+    "app_namespaces_set",
+    // Storage.
+    "dataset_create",
+    "dataset_register",
+    "pool_import",
+    // Shares (data access, not identities).
+    "share_create",
+    "share_update",
+    "share_apply",
+    "share_folder_create",
+    // Virtual machines. `vm_image_import_url` is `full` (egress).
+    "vm_create",
+    "vm_update",
+    "vm_start",
+    "vm_stop",
+    "vm_restart",
+    "vm_snapshot_create",
+    // Buddy backup runs and schedules (the trust enrollment is `full`).
+    "buddy_send",
+    "buddy_schedule_create",
+];
+
+/// `Full` tools whose control is the scope itself rather than a repeat-the-
+/// target confirm. They still need an explicit reviewed entry so a new
+/// `Full` tool cannot silently ship without one or the other.
+pub const FULL_NO_CONFIRM_ALLOWLIST: &[&str] = &[
+    "user_create",
+    "user_update",
+    "user_set_password",
+    "user_enable",
+    "user_disable",
+    "group_create",
+    "group_update",
+    "notifications_set",
+    "notifications_test",
+    "domain_create",
+    "domain_update",
+    "domain_sso_set",
+    "ddns_create",
+    "ddns_update",
+    "ddns_run",
+    "source_add",
+    "source_refresh",
+    "vm_image_import_url",
+    "buddy_peer_add",
+    "system_updates_check",
+];
+
+/// Tools whose classification must stay `full`: identities, credentials and
+/// egress (R-009). Kept explicit so a future level change is a test failure.
+pub const FULL_ONLY_TOOLS: &[&str] = &[
+    "user_create",
+    "user_update",
+    "user_set_password",
+    "user_enable",
+    "user_disable",
+    "group_create",
+    "group_update",
+    "user_delete",
+    "group_delete",
+    "notifications_set",
+    "notifications_test",
+    "domain_create",
+    "domain_update",
+    "domain_sso_set",
+    "ddns_create",
+    "ddns_update",
+    "ddns_run",
+    "source_add",
+    "source_refresh",
+    "vm_image_import_url",
+    "buddy_peer_add",
+    "system_updates_check",
+];
 
 pub fn all_tools() -> &'static [ToolDef] {
     use std::sync::OnceLock;
@@ -115,6 +211,7 @@ pub enum CallError {
     UnknownTool,
     Scope { have: Scope, need: Scope },
     Confirm { target: String },
+    ConfirmTarget { param: &'static str },
     BadPath { param: &'static str },
     AuditUnavailable(String),
     AuditWriteFailed(String),
@@ -133,6 +230,10 @@ impl CallError {
             CallError::Confirm { target } => format!(
                 "destructive tool: the 'confirm' argument must be exactly {target:?} \
                  (the target you intend to act on)"
+            ),
+            CallError::ConfirmTarget { param } => format!(
+                "destructive tool: the {param:?} argument is required and must be a \
+                 non-empty string, and 'confirm' must repeat it exactly"
             ),
             CallError::BadPath { param } => {
                 format!("the {param:?} argument is required and must be a string")
@@ -173,6 +274,14 @@ fn resolve_path(template: &str, args: &JsonObject) -> Result<String, CallError> 
     }
     out.push_str(rest);
     Ok(out)
+}
+
+/// A confirm target argument: present, a string and non-empty.
+fn confirm_target(args: &JsonObject, param: &str) -> Option<String> {
+    args.get(param)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 /// The registry only uses a fixed set of placeholder names; map any future
@@ -242,14 +351,14 @@ pub async fn dispatch(
     args: &JsonObject,
 ) -> Result<Outcome, CallError> {
     let Some(tool) = find_tool(name) else {
-        record_mcp_refusal(state, token, name, None, "failed", "unknown_tool");
+        record_mcp_refusal(state, token, name, None, "failed", "unknown_tool").await;
         return Err(CallError::UnknownTool);
     };
 
     // Scope: re-checked here even though tools/list filtered, because a
     // client may call an unlisted tool.
     if !token.scope.allows(tool.level) {
-        record_mcp_refusal(state, token, name, Some(tool), "denied", "scope");
+        record_mcp_refusal(state, token, name, Some(tool), "denied", "scope").await;
         return Err(CallError::Scope {
             have: token.scope,
             need: tool.level,
@@ -258,20 +367,49 @@ pub async fn dispatch(
 
     // Destructive tools: confirm must equal the resolved target, checked
     // before any dispatch. The target comes from the same resolved argument
-    // used in the path/query, never a second lookup.
+    // used in the path/query, never a second lookup. A missing or empty
+    // target is refused: it must never make the check vacuous (R-025).
     let target = match tool.confirm {
         Confirm::No => String::new(),
-        Confirm::Arg(param) => args
-            .get(param)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
+        Confirm::Arg(param) => match confirm_target(args, param) {
+            Some(value) => value,
+            None => {
+                record_mcp_refusal(state, token, name, Some(tool), "denied", "confirm_target")
+                    .await;
+                return Err(CallError::ConfirmTarget {
+                    param: static_param(param),
+                });
+            }
+        },
         Confirm::Literal(lit) => lit.to_string(),
+        Confirm::ArgOrLiteral { arg, flag, literal } => {
+            if args.get(flag).and_then(Value::as_bool).unwrap_or(false) {
+                literal.to_string()
+            } else {
+                match confirm_target(args, arg) {
+                    Some(value) => value,
+                    None => {
+                        record_mcp_refusal(
+                            state,
+                            token,
+                            name,
+                            Some(tool),
+                            "denied",
+                            "confirm_target",
+                        )
+                        .await;
+                        return Err(CallError::ConfirmTarget {
+                            param: static_param(arg),
+                        });
+                    }
+                }
+            }
+        }
     };
     if !target.is_empty() {
         let confirm = args.get("confirm").and_then(Value::as_str).unwrap_or("");
         if confirm != target {
-            record_mcp_refusal(state, token, name, Some(tool), "denied", "confirm_required");
+            record_mcp_refusal(state, token, name, Some(tool), "denied", "confirm_required").await;
             return Err(CallError::Confirm { target });
         }
     }
@@ -283,7 +421,7 @@ pub async fn dispatch(
                 Ok(result) => result.status,
                 Err(_) => 400,
             };
-            record_mcp_read(state, token, tool, tool.path, status);
+            record_mcp_read(state, token, tool, tool.path, status).await;
             return outcome;
         }
         Special::None => {}
@@ -292,7 +430,7 @@ pub async fn dispatch(
     let path = match resolve_path(tool.path, args) {
         Ok(path) => path,
         Err(err) => {
-            record_mcp_refusal(state, token, name, Some(tool), "failed", "bad_path");
+            record_mcp_refusal(state, token, name, Some(tool), "failed", "bad_path").await;
             return Err(err);
         }
     };
@@ -311,7 +449,7 @@ pub async fn dispatch(
     // A mutation is never dispatched without a durable begin record. Reads
     // get one durable end record after dispatch instead.
     let mut audit = if crate::rbac::is_unsafe(&tool.method) {
-        Some(state.audit.begin(audit).map_err(|e| {
+        Some(state.audit.begin_async(audit).await.map_err(|e| {
             degrade_mcp(state, &e);
             CallError::AuditUnavailable(e)
         })?)
@@ -338,9 +476,9 @@ pub async fn dispatch(
     // as on `/api`.
     let identity = Arc::new(UserInfo {
         username: format!("mcp:{}", token.name),
-        groups: vec!["naslos_admins".to_string()],
+        groups: token.scope.synthetic_groups(),
         email: String::new(),
-        display_name: format!("MCP token {}", token.name),
+        display_name: format!("MCP token {} ({})", token.name, token.scope.as_str()),
     });
 
     let request = builder
@@ -371,7 +509,7 @@ pub async fn dispatch(
 
     match audit.take() {
         Some(pending) => {
-            if let Err(e) = state.audit.finish(&pending, status) {
+            if let Err(e) = state.audit.finish_async(&pending, status).await {
                 degrade_mcp(state, &e);
                 return Err(CallError::AuditWriteFailed(e));
             }
@@ -379,14 +517,14 @@ pub async fn dispatch(
         None => {
             // A read: the outcome is useful even if the log write fails, but
             // the subsystem still has to degrade so mutations stop.
-            record_mcp_read(state, token, tool, &path, status);
+            record_mcp_read(state, token, tool, &path, status).await;
         }
     }
     Ok(outcome)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn record_mcp_refusal(
+async fn record_mcp_refusal(
     state: &Arc<AppState>,
     token: &TokenAuth,
     tool_name: &str,
@@ -408,13 +546,14 @@ fn record_mcp_refusal(
     );
     if let Err(e) = state
         .audit
-        .record_refusal(&pending, outcome_state, error_code)
+        .record_refusal_async(&pending, outcome_state, error_code)
+        .await
     {
         degrade_mcp(state, &e);
     }
 }
 
-fn record_mcp_read(
+async fn record_mcp_read(
     state: &Arc<AppState>,
     token: &TokenAuth,
     tool: &ToolDef,
@@ -431,7 +570,7 @@ fn record_mcp_read(
         path,
         crate::rbac::action_target(tool.path, path),
     );
-    if let Err(e) = state.audit.record_once(&pending, status) {
+    if let Err(e) = state.audit.record_once_async(&pending, status).await {
         degrade_mcp(state, &e);
     }
 }
@@ -699,6 +838,122 @@ mod tests {
         let serialized = serde_json::to_string(&records).unwrap();
         assert!(!serialized.contains("canary-refused"));
         assert!(!serialized.contains("canary-refused-password"));
+    }
+
+    #[test]
+    fn every_write_tool_is_on_the_reviewed_allowlist() {
+        for tool in all_tools() {
+            if tool.level == Scope::Write {
+                assert!(
+                    WRITE_ALLOWLIST.contains(&tool.name),
+                    "{} is a Write tool but is not on the reviewed allowlist; \
+                     classify it Full or add it with a rationale",
+                    tool.name
+                );
+            } else {
+                assert!(
+                    !WRITE_ALLOWLIST.contains(&tool.name),
+                    "{} is allowlisted for Write but is classified {:?}",
+                    tool.name,
+                    tool.level
+                );
+            }
+        }
+        for name in WRITE_ALLOWLIST {
+            let tool = find_tool(name).unwrap_or_else(|| panic!("{name} is not a tool"));
+            assert_eq!(tool.level, Scope::Write, "{name} must be Write");
+        }
+    }
+
+    #[test]
+    fn identity_credential_and_egress_tools_are_full() {
+        for name in FULL_ONLY_TOOLS {
+            let tool = find_tool(name).unwrap_or_else(|| panic!("{name} is not a tool"));
+            assert_eq!(tool.level, Scope::Full, "{name} must be Full (R-009)");
+        }
+    }
+
+    #[tokio::test]
+    async fn write_token_cannot_create_or_update_identities() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let writer = token("writer", Scope::Write);
+        // An empty argument object is enough: the scope check runs before any
+        // path/confirm validation, so a Scope error proves nothing reached
+        // the internal router.
+        let args = JsonObject::new();
+        for name in FULL_ONLY_TOOLS {
+            let err = dispatch(&state, &writer, name, &args)
+                .await
+                .expect_err("a write token must not reach a Full tool");
+            assert!(
+                matches!(err, CallError::Scope { .. }),
+                "{name} dispatched under a write token: {err:?}"
+            );
+        }
+        let records = state
+            .audit
+            .query(&crate::audit::AuditQuery::default())
+            .unwrap()
+            .records;
+        assert_eq!(records.len(), FULL_ONLY_TOOLS.len());
+        assert!(records.iter().all(|r| r["outcome"]["errorCode"] == "scope"));
+    }
+
+    #[tokio::test]
+    async fn destructive_tools_refuse_an_empty_target() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let full = token("full", Scope::Full);
+
+        let mut missing = JsonObject::new();
+        missing.insert("confirm".into(), serde_json::json!(""));
+        let err = dispatch(&state, &full, "share_delete", &missing)
+            .await
+            .expect_err("a missing target must not skip the confirm check");
+        assert!(matches!(err, CallError::ConfirmTarget { .. }), "{err:?}");
+
+        let mut empty = JsonObject::new();
+        empty.insert("name".into(), serde_json::json!(""));
+        empty.insert("confirm".into(), serde_json::json!(""));
+        let err = dispatch(&state, &full, "share_delete", &empty)
+            .await
+            .expect_err("an empty target must not skip the confirm check");
+        assert!(matches!(err, CallError::ConfirmTarget { .. }), "{err:?}");
+
+        let mut no_confirm = JsonObject::new();
+        no_confirm.insert("name".into(), serde_json::json!("data"));
+        let err = dispatch(&state, &full, "share_delete", &no_confirm)
+            .await
+            .expect_err("confirm is still required");
+        assert!(matches!(err, CallError::Confirm { .. }), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn replacing_the_buddy_identity_requires_the_literal_confirm() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let full = token("full", Scope::Full);
+
+        let mut args = JsonObject::new();
+        args.insert("name".into(), serde_json::json!("naslos"));
+        args.insert("replace".into(), serde_json::json!(true));
+        args.insert("confirm".into(), serde_json::json!("naslos"));
+        let err = dispatch(&state, &full, "buddy_identity_create", &args)
+            .await
+            .expect_err("replace needs the literal confirm, not the name");
+        assert!(
+            matches!(&err, CallError::Confirm { target } if target == "replace"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn system_upgrade_start_accepts_the_real_operation_enum() {
+        let tool = find_tool("system_upgrade_start").expect("the tool exists");
+        let schema = (tool.schema)();
+        let ops = schema["properties"]["op"]["enum"]
+            .as_array()
+            .expect("op is an enum");
+        let values: Vec<&str> = ops.iter().filter_map(serde_json::Value::as_str).collect();
+        assert_eq!(values, vec!["naslos", "talos", "kubernetes"]);
     }
 
     #[tokio::test]
