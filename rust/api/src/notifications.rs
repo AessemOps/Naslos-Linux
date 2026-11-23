@@ -36,6 +36,10 @@ pub struct Settings {
     pub enabled_events: Vec<EventType>,
     #[serde(rename = "minSeverity", default)]
     pub min_severity: Severity,
+    /// Explicit acknowledgement that a plaintext `http` server URL is
+    /// acceptable even though the bearer token would travel unencrypted.
+    #[serde(rename = "allowInsecureHttp", default)]
+    pub allow_insecure_http: bool,
 }
 
 impl Default for Settings {
@@ -48,6 +52,7 @@ impl Default for Settings {
             email: String::new(),
             enabled_events: vec![EVENT_ZFS_HEALTH.to_string(), EVENT_DISK_FAILURE.to_string()],
             min_severity: SEVERITY_WARNING.to_string(),
+            allow_insecure_http: false,
         }
     }
 }
@@ -123,13 +128,22 @@ impl Manager {
         mut settings: Settings,
         auth_token: Option<&str>,
     ) -> Result<(), String> {
-        let mut guard = self.settings.lock().unwrap();
+        let existing = self.settings.lock().unwrap().auth_token.clone();
         settings.auth_token = match auth_token {
             Some(v) => v.to_string(),
-            None => guard.auth_token.clone(),
+            None => existing,
         };
-        *guard = settings.clone();
-        self.save(&settings)
+        settings.server_url = settings.server_url.trim().to_string();
+        settings.topic = settings.topic.trim().to_string();
+        if settings.min_severity.trim().is_empty() {
+            settings.min_severity = SEVERITY_WARNING.to_string();
+        }
+        validate_settings(&settings)?;
+        // Persist first: a failed write must not leave the in-memory settings
+        // mutated (and apparently saved).
+        self.save(&settings)?;
+        *self.settings.lock().unwrap() = settings;
+        Ok(())
     }
 
     /// Whether an event type is one the operator subscribes to.
@@ -151,11 +165,12 @@ impl Manager {
         if !severity_meets_threshold(&notif.severity, &settings.min_severity) {
             return Ok(());
         }
+        validate_settings(&settings)?;
         let target = notification_url(&settings.server_url, &settings.topic)?;
         // Resolve once more at send time and pin the connection to the vetted
         // address, so the host cannot be rebound between validation and the
         // request (AUD-2611-T7-1).
-        let client = self.pinned_client(&target)?;
+        let client = self.pinned_client(&target, &settings).await?;
 
         let mut rb = client
             .post(&target)
@@ -171,41 +186,38 @@ impl Manager {
         if !settings.email.is_empty() {
             rb = rb.header("X-Email", &settings.email);
         }
-        let resp = rb
-            .send()
-            .await
-            .map_err(|e| format!("sending notification: {e}"))?;
-        if resp.status().as_u16() >= 400 {
-            return Err(format!("ntfy returned status {}", resp.status().as_u16()));
-        }
-        Ok(())
+        let resp = rb.send().await.map_err(|e| transport_error(&e))?;
+        check_status(resp.status())
     }
 
     /// A client pinned to the checked address of `target`; a literal address
     /// uses the shared client (it cannot be rebound).
-    fn pinned_client(&self, target: &str) -> Result<reqwest::Client, String> {
-        let parsed =
-            reqwest::Url::parse(target).map_err(|e| format!("invalid ntfy target: {e}"))?;
-        let host = parsed.host_str().ok_or("ntfy target has no host")?;
+    async fn pinned_client(
+        &self,
+        target: &str,
+        settings: &Settings,
+    ) -> Result<reqwest::Client, String> {
+        let parsed = reqwest::Url::parse(target).map_err(|_| "invalid ntfy target".to_string())?;
+        require_secure_transport(&parsed, settings)?;
+        let host = parsed
+            .host_str()
+            .ok_or("ntfy target has no host".to_string())?;
         let port = parsed.port_or_known_default().unwrap_or(443);
         if host.parse::<std::net::IpAddr>().is_ok() {
             return Ok(self.client.clone());
         }
-        use std::net::ToSocketAddrs;
-        let addrs: Vec<std::net::SocketAddr> = (host, port)
-            .to_socket_addrs()
-            .map_err(|e| format!("cannot resolve the ntfy host {host:?}: {e}"))?
+        let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|_| "cannot resolve the ntfy host".to_string())?
             .collect();
         let Some(pinned) = addrs.first().copied() else {
-            return Err(format!("{host:?} did not resolve"));
+            return Err("the ntfy host did not resolve".to_string());
         };
         if addrs
             .iter()
             .any(|addr| crate::ddns::drivers::blocked_ip(&addr.ip()))
         {
-            return Err(format!(
-                "refusing to send notifications to {host} (resolves to a non-public address)"
-            ));
+            return Err("refusing to send notifications to a non-public address".to_string());
         }
         reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
@@ -227,15 +239,38 @@ impl Manager {
     }
 }
 
-/// Validate the operator-configured ntfy target and render the publish URL.
-pub fn notification_url(server_url: &str, topic: &str) -> Result<String, String> {
-    let server_url = if server_url.trim().is_empty() {
-        "https://ntfy.sh"
-    } else {
-        server_url.trim()
-    };
-    let mut parsed =
-        reqwest::Url::parse(server_url).map_err(|e| format!("invalid ntfy server URL: {e}"))?;
+/// Validate settings at save time. A disabled channel may keep an empty
+/// destination; an enabled one needs a non-empty server URL and topic.
+pub fn validate_settings(settings: &Settings) -> Result<(), String> {
+    if !settings.min_severity.trim().is_empty() && !valid_severity(settings.min_severity.trim()) {
+        return Err(format!(
+            "unknown minimum severity {:?}",
+            settings.min_severity
+        ));
+    }
+    let server_url = settings.server_url.trim();
+    if settings.enabled && server_url.is_empty() {
+        return Err("ntfy server URL is required when the channel is enabled".to_string());
+    }
+    if !server_url.is_empty() {
+        let parsed = parse_server_url(server_url)?;
+        require_secure_transport(&parsed, settings)?;
+    }
+    let topic = settings.topic.trim();
+    if settings.enabled && topic.is_empty() {
+        return Err("ntfy topic is required when the channel is enabled".to_string());
+    }
+    if !topic.is_empty() && !valid_topic(topic) {
+        return Err("ntfy topic may only contain letters, digits, '-' and '_'".to_string());
+    }
+    Ok(())
+}
+
+/// Parse and syntax-check an ntfy server URL (no network resolution here; the
+/// send path resolves with `tokio::net::lookup_host`).
+fn parse_server_url(server_url: &str) -> Result<reqwest::Url, String> {
+    let parsed =
+        reqwest::Url::parse(server_url).map_err(|_| "invalid ntfy server URL".to_string())?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err(format!(
             "ntfy server URL must use http or https, got {:?}",
@@ -245,37 +280,98 @@ pub fn notification_url(server_url: &str, topic: &str) -> Result<String, String>
     let host = parsed
         .host_str()
         .ok_or("ntfy server URL has no host")?
-        .to_string();
+        .trim_start_matches('[')
+        .trim_end_matches(']');
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
         if crate::ddns::drivers::blocked_ip(&ip) {
-            return Err(format!(
-                "refusing to send notifications to a non-public address ({host})"
-            ));
-        }
-    } else {
-        use std::net::ToSocketAddrs;
-        let addrs = (host.as_str(), 443)
-            .to_socket_addrs()
-            .map_err(|e| format!("cannot resolve the ntfy host {host:?}: {e}"))?;
-        for addr in addrs {
-            if crate::ddns::drivers::blocked_ip(&addr.ip()) {
-                return Err(format!(
-                    "refusing to send notifications to {host} (resolves to a non-public address)"
-                ));
-            }
+            return Err("refusing to target a non-public address".to_string());
         }
     }
+    Ok(parsed)
+}
+
+/// Reject plaintext `http` when a bearer token would travel over it, unless
+/// the operator explicitly acknowledged `allowInsecureHttp`.
+fn require_secure_transport(parsed: &reqwest::Url, settings: &Settings) -> Result<(), String> {
+    if parsed.scheme() == "http" && !settings.auth_token.is_empty() {
+        if !settings.allow_insecure_http {
+            return Err(
+                "refusing to send an ntfy auth token over plaintext http; use https or set allowInsecureHttp"
+                    .to_string(),
+            );
+        }
+        tracing::warn!(
+            "ntfy auth token is being sent over plaintext http (allowInsecureHttp acknowledged)"
+        );
+    }
+    Ok(())
+}
+
+/// The redacted GET projection. Destination values and the token are never
+/// echoed; only their presence is reported.
+pub fn public_view(settings: &Settings) -> serde_json::Value {
+    serde_json::json!({
+        "enabled": settings.enabled,
+        "category": "ntfy",
+        "hasServerUrl": !settings.server_url.trim().is_empty(),
+        "hasTopic": !settings.topic.trim().is_empty(),
+        "hasAuthToken": !settings.auth_token.is_empty(),
+        "hasUrlToken": !settings.auth_token.is_empty()
+            || !settings.server_url.trim().is_empty()
+            || !settings.topic.trim().is_empty(),
+        "hasEmail": !settings.email.trim().is_empty(),
+        "allowInsecureHttp": settings.allow_insecure_http,
+        "enabledEvents": settings.enabled_events,
+        "minSeverity": settings.min_severity,
+    })
+}
+
+/// Validate the operator-configured ntfy target and render the publish URL.
+/// The URL is syntax-checked here; DNS/SSRF re-checks happen at send time.
+pub fn notification_url(server_url: &str, topic: &str) -> Result<String, String> {
+    let server_url = if server_url.trim().is_empty() {
+        "https://ntfy.sh"
+    } else {
+        server_url.trim()
+    };
+    let mut parsed = parse_server_url(server_url)?;
     if topic.is_empty() {
         return Err("ntfy topic is empty".to_string());
     }
     if !valid_topic(topic) {
-        return Err(format!(
-            "ntfy topic {topic:?} may only contain letters, digits, '-' and '_'"
-        ));
+        return Err("ntfy topic may only contain letters, digits, '-' and '_'".to_string());
     }
     let base_path = parsed.path().trim_end_matches('/').to_string();
     parsed.set_path(&format!("{base_path}/{topic}"));
     Ok(parsed.to_string())
+}
+
+/// A transport failure without the publish URL or topic in it.
+fn transport_error(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        "the ntfy request timed out".to_string()
+    } else if e.is_connect() {
+        "could not connect to the ntfy server".to_string()
+    } else if e.is_redirect() {
+        "the ntfy server redirected (redirects are disabled)".to_string()
+    } else {
+        "the ntfy request failed".to_string()
+    }
+}
+
+/// A 3xx is a failed delivery: redirects are disabled, so only a 2xx accepted
+/// the notification.
+fn check_status(status: reqwest::StatusCode) -> Result<(), String> {
+    if status.is_success() {
+        Ok(())
+    } else if status.is_redirection() {
+        Err("the ntfy server redirected (redirects are disabled)".to_string())
+    } else {
+        Err(format!(
+            "the ntfy server rejected the notification (HTTP {})",
+            status.as_u16()
+        ))
+    }
 }
 
 /// Enforce ntfy's topic charset.
@@ -338,6 +434,71 @@ mod tests {
         assert!(notification_url("http://10.0.0.5", "t").is_err());
         assert!(notification_url("http://192.168.1.10", "t").is_err());
         assert!(notification_url("http://100.64.0.1", "t").is_err());
+    }
+
+    #[test]
+    fn enabled_channel_requires_destination_and_valid_topic() {
+        let mut s = Settings {
+            enabled: true,
+            server_url: String::new(),
+            topic: "alerts".into(),
+            ..Default::default()
+        };
+        assert!(validate_settings(&s).is_err());
+        s.server_url = "https://ntfy.sh".into();
+        s.topic = "bad topic".into();
+        assert!(validate_settings(&s).is_err());
+        s.topic = "alerts".into();
+        assert!(validate_settings(&s).is_ok());
+        // A disabled channel may keep an empty destination.
+        s.enabled = false;
+        s.server_url.clear();
+        s.topic.clear();
+        assert!(validate_settings(&s).is_ok());
+    }
+
+    #[test]
+    fn plaintext_http_needs_an_acknowledgement_for_a_token() {
+        let mut s = Settings {
+            enabled: true,
+            server_url: "http://1.1.1.1:8080".into(),
+            topic: "alerts".into(),
+            auth_token: "secret".into(),
+            ..Default::default()
+        };
+        assert!(validate_settings(&s).is_err());
+        s.allow_insecure_http = true;
+        assert!(validate_settings(&s).is_ok());
+        // Without a token plaintext is allowed.
+        s.allow_insecure_http = false;
+        s.auth_token.clear();
+        assert!(validate_settings(&s).is_ok());
+    }
+
+    #[test]
+    fn redirect_status_is_not_success() {
+        assert!(check_status(reqwest::StatusCode::OK).is_ok());
+        assert!(check_status(reqwest::StatusCode::NO_CONTENT).is_ok());
+        assert!(check_status(reqwest::StatusCode::FOUND).is_err());
+        assert!(check_status(reqwest::StatusCode::MOVED_PERMANENTLY).is_err());
+        assert!(check_status(reqwest::StatusCode::BAD_GATEWAY).is_err());
+    }
+
+    #[test]
+    fn public_view_never_echoes_the_destination_or_token() {
+        let s = Settings {
+            enabled: true,
+            server_url: "https://user:pw@ntfy.example/".into(),
+            topic: "private-topic".into(),
+            auth_token: "secret".into(),
+            ..Default::default()
+        };
+        let value = public_view(&s).to_string();
+        assert!(!value.contains("private-topic"), "{value}");
+        assert!(!value.contains("ntfy.example"), "{value}");
+        assert!(!value.contains("secret"), "{value}");
+        assert!(value.contains("\"hasAuthToken\":true"), "{value}");
+        assert!(value.contains("\"category\":\"ntfy\""), "{value}");
     }
 
     #[test]

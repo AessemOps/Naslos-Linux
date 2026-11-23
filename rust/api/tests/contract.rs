@@ -613,8 +613,10 @@ async fn webhook_channel_crud_never_returns_the_token() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["enabled"], false);
-    assert_eq!(body["url"], "");
+    assert_eq!(body["hasUrl"], false);
     assert_eq!(body["hasAuthToken"], false);
+    assert_eq!(body["category"], "webhook");
+    assert!(body.get("url").is_none());
     assert!(body.get("authToken").is_none());
 
     // Bad scheme and an SSRF-blocked address are both client errors.
@@ -645,12 +647,14 @@ async fn webhook_channel_crud_never_returns_the_token() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["enabled"], true);
-    assert_eq!(body["url"], "https://1.1.1.1/hook");
+    assert_eq!(body["hasUrl"], true);
     assert_eq!(body["hasAuthToken"], true);
     assert_eq!(body["minSeverity"], "error");
     assert_eq!(body["enabledEvents"][0], "disk_failure");
     assert!(body.get("authToken").is_none());
+    assert!(body.get("url").is_none());
     assert!(!raw.contains("contract-secret"));
+    assert!(!raw.contains("1.1.1.1"));
 
     // Omitting authToken keeps the stored one (the UI's default save shape).
     let payload = r#"{"enabled":true,"url":"https://1.1.1.1/hook","enabledEvents":["disk_failure"],"minSeverity":"error"}"#;

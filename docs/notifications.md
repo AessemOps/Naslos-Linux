@@ -15,13 +15,23 @@ another.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | Master on/off switch |
-| `serverUrl` | `https://ntfy.sh` | ntfy server URL; empty falls back to the public `https://ntfy.sh` (there is no bundled ntfy chart). Only `http`/`https` are accepted, and link-local/metadata addresses are refused |
-| `topic` | `naslos-alerts` | Topic to publish to (path-escaped when sent) |
+| `serverUrl` | `https://ntfy.sh` | **Write-only.** ntfy server URL; required when enabled (there is no bundled ntfy chart). Only `http`/`https` are accepted; link-local/metadata addresses are refused. An omitted field keeps the stored value, `""` clears it |
+| `topic` | `naslos-alerts` | **Write-only.** Topic to publish to; required when enabled and restricted to letters, digits, `-` and `_` |
+| `hasServerUrl` / `hasTopic` | — | **Read-only.** Whether a destination is stored; the values are never returned |
 | `hasAuthToken` | `false` | **Read-only.** Whether a bearer token is stored; the token itself is never returned |
+| `hasUrlToken` | — | **Read-only.** Whether a destination and/or bearer token is configured |
+| `hasEmail` | — | **Read-only.** Whether an `X-Email` address is stored |
 | `authToken` | — | **Write-only.** Omitted on save keeps the stored token; `""` clears it; any other value replaces it |
-| `email` | — | `X-Email` header (server-side email sending) |
+| `email` | — | **Write-only.** `X-Email` header (server-side email sending) |
+| `allowInsecureHttp` | `false` | Explicit acknowledgement for a bearer token over plaintext `http`; audited as `notifications` / `insecure_http_acknowledged` |
 | `enabledEvents` | `[zfs_health, disk_failure]` | Which event types fire |
 | `minSeverity` | `warning` | Only send at/above this severity |
+
+`GET /api/notifications` returns only `category: "ntfy"`, the presence flags
+above, `enabled`, `allowInsecureHttp`, `enabledEvents` and `minSeverity` — never
+the server URL, topic, email or token. `PUT /api/notifications` returns `400`
+for an unreachable configuration at save time (enabled with no server URL or
+topic, an invalid URL/topic/severity, or an unacknowledged token over `http`).
 
 ## Event types
 
@@ -66,7 +76,10 @@ Otherwise it POSTs to `{serverUrl}/{topic}` with headers:
 - `Authorization: Bearer <token>` — if configured
 - `X-Email` — if configured
 
-HTTP client timeout is 10 s.
+HTTP client timeout is 10 s. Redirects are disabled, so a 3xx response is a
+failed delivery, not a success. Delivery errors are category-only (timeout,
+connect, redirect, rejected status); they never contain the publish URL, the
+topic or the token.
 
 ## External server
 
@@ -76,10 +89,13 @@ external ntfy server:
 
 | `serverUrl` | Behavior |
 | --- | --- |
-| empty | Falls back to `https://ntfy.sh` in code |
+| empty | Accepted only while the channel is disabled; enabling it requires a URL |
 | `https://ntfy.sh` (or any URL) | Publish to that server / topic |
 
-Default setting in code is `https://ntfy.sh` with topic `naslos-alerts`.
+Default setting in code is `https://ntfy.sh` with topic `naslos-alerts`. A
+bearer token over plaintext `http` is refused unless `allowInsecureHttp` is
+explicitly set; the acknowledgement is written to the audit log and every send
+emits a warning.
 
 ## Webhook channel
 
@@ -92,8 +108,10 @@ token), set by the chart value `api.webhookFile`.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | Channel on/off switch |
-| `url` | — | Target `http`/`https` URL. Required when enabled. Validated at save **and** at send time |
+| `url` | — | **Write-only.** Target `http`/`https` URL; required when enabled. Syntax-checked at save and resolved at send time |
+| `hasUrl` / `hasUrlToken` | — | **Read-only.** Whether a URL and/or bearer token is configured; the values are never returned |
 | `hasAuthToken` | `false` | **Read-only.** Whether a bearer token is stored; the token itself is never returned |
+| `allowInsecureHttp` | `false` | Explicit acknowledgement for a bearer token over plaintext `http`; audited as `notifications` / `insecure_http_acknowledged` |
 | `authToken` | — | **Write-only.** Omitted on save keeps the stored token; `""` clears it; any other value replaces it |
 | `enabledEvents` | `[zfs_health, disk_failure]` | Which event types this channel receives |
 | `minSeverity` | `warning` | Only send at/above this severity |
@@ -110,10 +128,13 @@ The URL guard is the shared one used by ntfy (`blocked_ip`):
 - embedded credentials (`https://user:pass@host/…`) are refused;
 - loopback, private, link-local, CGNAT, benchmark, reserved, metadata and ULA
   addresses are refused, including IPv4-mapped IPv6 forms;
-- a hostname is resolved at save time and again at send time, and the send is
+- a literal address is checked at save time; a hostname is resolved
+  asynchronously at send time with `tokio::net::lookup_host`, and the send is
   pinned to the vetted address so DNS cannot be rebound between the check and
   the request;
-- redirects are disabled.
+- redirects are disabled, so a 3xx is a failed delivery;
+- a bearer token over plaintext `http` requires `allowInsecureHttp: true`
+  (audited, warned at send time).
 
 There is no private-target allowlist, so a receiver on a LAN address is not
 reachable by this channel.
@@ -154,8 +175,8 @@ No channel settings (`url`, token) are part of the payload.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/notifications/webhook` | Current webhook settings (never the token) |
-| PUT | `/api/notifications/webhook` | Update settings (`400` for a bad URL/severity) |
+| GET | `/api/notifications/webhook` | Redacted settings (`category`, presence flags only) |
+| PUT | `/api/notifications/webhook` | Update settings (`400` for a bad URL/severity or unacknowledged token over `http`) |
 | DELETE | `/api/notifications/webhook` | Reset the channel to defaults (disabled, no URL/token) |
 | POST | `/api/notifications/webhook/test` | Send a test payload (`400` when disabled, `502` on delivery failure) |
 
@@ -302,8 +323,8 @@ severities:
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/notifications` | Current ntfy settings |
-| PUT | `/api/notifications` | Update ntfy settings |
+| GET | `/api/notifications` | Redacted ntfy settings (destination/token never returned) |
+| PUT | `/api/notifications` | Update ntfy settings (`400` for an invalid or incomplete target) |
 | POST | `/api/notifications/test` | Send a test notification ("Naslos Test", info severity) |
 | GET/PUT/DELETE | `/api/notifications/webhook` | Generic webhook channel settings / reset |
 | POST | `/api/notifications/webhook/test` | Send a test webhook |

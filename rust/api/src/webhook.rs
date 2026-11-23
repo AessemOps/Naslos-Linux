@@ -34,6 +34,10 @@ pub struct Settings {
     pub enabled_events: Vec<EventType>,
     #[serde(rename = "minSeverity", default)]
     pub min_severity: Severity,
+    /// Explicit acknowledgement that a plaintext `http` URL may carry the
+    /// bearer token.
+    #[serde(rename = "allowInsecureHttp", default)]
+    pub allow_insecure_http: bool,
 }
 
 impl Default for Settings {
@@ -47,6 +51,7 @@ impl Default for Settings {
                 crate::notifications::EVENT_DISK_FAILURE.to_string(),
             ],
             min_severity: SEVERITY_WARNING.to_string(),
+            allow_insecure_http: false,
         }
     }
 }
@@ -85,9 +90,10 @@ pub fn render_payload(event: &str, notif: &Notification) -> Payload {
 
 /// Validate an operator-supplied webhook target.
 ///
-/// The same guard as the ntfy channel: `http`/`https` only, a host that
-/// resolves, and no loopback/private/link-local/metadata address. Credentials
-/// in the URL are refused so they cannot leak through an error path.
+/// The same guard as the ntfy channel: `http`/`https` only, no
+/// loopback/private/link-local/metadata literal address, and no credentials in
+/// the URL. Hostname resolution happens at send time with
+/// `tokio::net::lookup_host`, so save-time validation never blocks a runtime.
 pub fn validate_webhook_url(raw: &str) -> Result<reqwest::Url, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -107,31 +113,11 @@ pub fn validate_webhook_url(raw: &str) -> Result<reqwest::Url, String> {
         .host_str()
         .ok_or("webhook URL has no host")?
         .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_string();
-    let port = parsed.port_or_known_default().unwrap_or(443);
+        .trim_end_matches(']');
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
         if crate::ddns::drivers::blocked_ip(&ip) {
             return Err("refusing to send alerts to a non-public address".to_string());
         }
-        return Ok(parsed);
-    }
-    use std::net::ToSocketAddrs;
-    let addrs = (host.as_str(), port)
-        .to_socket_addrs()
-        .map_err(|_| "cannot resolve the webhook host".to_string())?;
-    let mut any = false;
-    for addr in addrs {
-        any = true;
-        if crate::ddns::drivers::blocked_ip(&addr.ip()) {
-            return Err(
-                "refusing to send alerts to a target that resolves to a non-public address"
-                    .to_string(),
-            );
-        }
-    }
-    if !any {
-        return Err("the webhook host did not resolve".to_string());
     }
     Ok(parsed)
 }
@@ -154,7 +140,32 @@ pub fn validate_settings(settings: &Settings) -> Result<(), String> {
         }
         return Ok(());
     }
-    validate_webhook_url(url).map(|_| ())
+    let parsed = validate_webhook_url(url)?;
+    if parsed.scheme() == "http" && !settings.auth_token.is_empty() {
+        if !settings.allow_insecure_http {
+            return Err(
+                "refusing to send a webhook bearer token over plaintext http; use https or set allowInsecureHttp"
+                    .to_string(),
+            );
+        }
+        tracing::warn!("webhook bearer token is being sent over plaintext http (allowInsecureHttp acknowledged)");
+    }
+    Ok(())
+}
+
+/// The redacted GET projection: never echo the URL (which may embed a token in
+/// its path or query).
+pub fn public_view(settings: &Settings) -> serde_json::Value {
+    serde_json::json!({
+        "enabled": settings.enabled,
+        "category": "webhook",
+        "hasUrl": !settings.url.trim().is_empty(),
+        "hasAuthToken": !settings.auth_token.is_empty(),
+        "hasUrlToken": !settings.auth_token.is_empty() || !settings.url.trim().is_empty(),
+        "allowInsecureHttp": settings.allow_insecure_http,
+        "enabledEvents": settings.enabled_events,
+        "minSeverity": settings.min_severity,
+    })
 }
 
 /// Manages the persisted webhook channel.
@@ -283,7 +294,8 @@ impl Manager {
         notif: &Notification,
     ) -> Result<(), String> {
         let target = validate_webhook_url(&settings.url)?;
-        let client = self.pinned_client(&target)?;
+        validate_settings(settings)?;
+        let client = self.pinned_client(&target).await?;
         let body = serde_json::to_vec(&render_payload(event, notif))
             .map_err(|e| format!("encoding the webhook payload: {e}"))?;
         let mut rb = client
@@ -307,7 +319,7 @@ impl Manager {
 
     /// A client pinned to the address that validation vetted, so DNS cannot be
     /// rebound between the check and the request.
-    fn pinned_client(&self, target: &reqwest::Url) -> Result<reqwest::Client, String> {
+    async fn pinned_client(&self, target: &reqwest::Url) -> Result<reqwest::Client, String> {
         let host = target
             .host_str()
             .ok_or("webhook URL has no host")?
@@ -317,9 +329,8 @@ impl Manager {
         if host.parse::<std::net::IpAddr>().is_ok() {
             return Ok(self.client.clone());
         }
-        use std::net::ToSocketAddrs;
-        let addrs: Vec<std::net::SocketAddr> = (host, port)
-            .to_socket_addrs()
+        let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+            .await
             .map_err(|_| "cannot resolve the webhook host".to_string())?
             .collect();
         let Some(pinned) = addrs.first().copied() else {
@@ -497,6 +508,39 @@ mod tests {
     }
 
     #[test]
+    fn plaintext_http_needs_an_acknowledgement_for_a_token() {
+        let mut settings = Settings {
+            enabled: true,
+            url: "http://1.1.1.1/hook".to_string(),
+            auth_token: "secret".to_string(),
+            ..Default::default()
+        };
+        assert!(validate_settings(&settings).is_err());
+        settings.allow_insecure_http = true;
+        assert!(validate_settings(&settings).is_ok());
+        settings.allow_insecure_http = false;
+        settings.auth_token.clear();
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn public_view_never_echoes_the_url_or_token() {
+        let settings = Settings {
+            enabled: true,
+            url: "https://hooks.example/secret-path".to_string(),
+            auth_token: "secret".to_string(),
+            ..Default::default()
+        };
+        let value = public_view(&settings).to_string();
+        assert!(!value.contains("hooks.example"), "{value}");
+        assert!(!value.contains("secret-path"), "{value}");
+        assert!(!value.contains("secret"), "{value}");
+        assert!(value.contains("\"hasUrl\":true"), "{value}");
+        assert!(value.contains("\"hasAuthToken\":true"), "{value}");
+        assert!(value.contains("\"category\":\"webhook\""), "{value}");
+    }
+
+    #[test]
     fn routing_honours_events_and_severity() {
         let mut settings = Settings {
             enabled: true,
@@ -631,6 +675,7 @@ mod tests {
             auth_token: "do-not-leak-this".to_string(),
             enabled_events: vec![EVENT_DISK_FAILURE.to_string()],
             min_severity: SEVERITY_WARNING.to_string(),
+            allow_insecure_http: false,
         };
         let (_dir, webhook) = temp_manager(Some(&blocked));
         let ntfy = crate::notifications::Manager::new("");
