@@ -190,7 +190,23 @@ pub async fn domains_get(State(state): State<Arc<AppState>>) -> Response {
     )
 }
 
+/// 503 while the domain store did not load: mutations must fail closed
+/// BEFORE any cluster side effect (credential Secrets, Issuers,
+/// Certificates, DNS records), so a corrupt registry cannot leave partial
+/// cluster state behind.
+fn domain_store_unavailable(state: &AppState) -> Option<Response> {
+    state.domains.require_loaded().err().map(|error| {
+        json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": error }),
+        )
+    })
+}
+
 pub async fn domains_post(State(state): State<Arc<AppState>>, body: Body) -> Response {
+    if let Some(response) = domain_store_unavailable(&state) {
+        return response;
+    }
     let mut req = match read_domain_request(body).await {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -220,6 +236,9 @@ pub async fn domain_detail_put(
     Path(name): Path<String>,
     body: Body,
 ) -> Response {
+    if let Some(response) = domain_store_unavailable(&state) {
+        return response;
+    }
     let mut req = match read_domain_request(body).await {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -234,6 +253,9 @@ pub async fn domain_detail_delete(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Response {
+    if let Some(response) = domain_store_unavailable(&state) {
+        return response;
+    }
     let domain = match state.domains.get(&name) {
         Ok(d) => d,
         Err(e) => return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e })),
@@ -271,6 +293,9 @@ pub async fn domain_sso_post(
     Path(name): Path<String>,
     body: Body,
 ) -> Response {
+    if let Some(response) = domain_store_unavailable(&state) {
+        return response;
+    }
     #[derive(Default, serde::Deserialize)]
     struct Req {
         #[serde(default)]

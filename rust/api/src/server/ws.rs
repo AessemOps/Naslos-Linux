@@ -100,6 +100,16 @@ fn exec_slots() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
     })
 }
 
+/// Log streams have their own session cap (A-6): each one spawns a `kubectl
+/// logs -f` process, so a tab farm must be bounded like the exec sessions.
+fn logs_slots() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
+    static SLOTS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| {
+        std::sync::Arc::new(tokio::sync::Semaphore::new(session_limits().max_sessions))
+    })
+}
+
 /// `GET /api/ws/logs?namespace&pod&container`
 pub async fn logs_ws(
     State(state): State<Arc<AppState>>,
@@ -136,6 +146,17 @@ pub async fn logs_ws(
         return json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": e }));
     }
 
+    // Acquire the session slot before the durable begin record, so a refused
+    // attach never leaves an orphan begin.
+    let permit = match logs_slots().clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return json(
+                StatusCode::TOO_MANY_REQUESTS,
+                serde_json::json!({ "error": "too many log streams; close one and retry" }),
+            )
+        }
+    };
     let target = format!("{namespace}/{pod}/{container}");
     let pending = crate::audit::Pending::session(
         &user,
@@ -151,12 +172,18 @@ pub async fn logs_ws(
     ws.max_message_size(4 << 20)
         .max_frame_size(1 << 20)
         .on_upgrade(move |socket| async move {
-            logs_stream(socket, namespace, pod, container).await;
+            logs_stream(socket, namespace, pod, container, permit).await;
             audit.finish(&state, 101).await;
         })
 }
 
-async fn logs_stream(socket: WebSocket, namespace: String, pod: String, container: String) {
+async fn logs_stream(
+    socket: WebSocket,
+    namespace: String,
+    pod: String,
+    container: String,
+    _slot: tokio::sync::OwnedSemaphorePermit,
+) {
     let (mut sender, mut receiver) = socket.split();
     let mut args = kubeconfig_args();
     args.extend([
@@ -365,6 +392,17 @@ pub async fn exec_ws(
     if let Some(response) = audit_degraded(&state) {
         return response;
     }
+    // Take the session slot first: a 429 must not leave an orphan begin
+    // record behind (A-7).
+    let permit = match exec_slots().clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            return json(
+                StatusCode::TOO_MANY_REQUESTS,
+                serde_json::json!({ "error": "too many terminal sessions; close one and retry" }),
+            )
+        }
+    };
     let target = format!("{namespace}/{pod}/{resolved}");
     let pending = crate::audit::Pending::session(
         &user,
@@ -376,15 +414,6 @@ pub async fn exec_ws(
     let audit = match SessionAudit::begin(&state, pending).await {
         Ok(audit) => audit,
         Err(_) => return audit_refused(),
-    };
-    let permit = match exec_slots().clone().try_acquire_owned() {
-        Ok(p) => p,
-        Err(_) => {
-            return json(
-                StatusCode::TOO_MANY_REQUESTS,
-                serde_json::json!({ "error": "too many terminal sessions; close one and retry" }),
-            )
-        }
     };
 
     ws.max_message_size(1 << 20)
@@ -683,8 +712,30 @@ async fn exec_session(
 
 #[cfg(test)]
 mod tests {
-    use super::origin_allowed;
+    use super::{logs_slots, origin_allowed, session_limits};
     use axum::http::{header::HOST, HeaderMap};
+
+    #[test]
+    fn log_streams_are_bounded_by_a_session_slot_pool() {
+        let limit = session_limits().max_sessions;
+        let held: Vec<_> = (0..limit)
+            .map(|_| {
+                logs_slots()
+                    .clone()
+                    .try_acquire_owned()
+                    .expect("a free log slot")
+            })
+            .collect();
+        assert!(
+            logs_slots().clone().try_acquire_owned().is_err(),
+            "a full pool must refuse another log stream (429 path)"
+        );
+        drop(held);
+        assert!(
+            logs_slots().clone().try_acquire_owned().is_ok(),
+            "released slots are reusable"
+        );
+    }
 
     fn headers(origin: Option<&str>, host: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
