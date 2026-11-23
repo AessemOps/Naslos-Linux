@@ -1002,12 +1002,24 @@ fn validate_sealed_chunk(sealed: &[u8]) -> SResult<()> {
 }
 
 /// The manifest fields that identify what it covers, excluding values the
-/// sender regenerates on every attempt (`createdAt`, the nonce generation and
-/// the signature over those fields). Used to recognise a retried publish.
+/// sender regenerates on every attempt:
+///
+/// - `createdAt` is the publish time;
+/// - `generation` (manifest and per chunk) is bumped per attempt;
+/// - `dekWrapped` re-wraps the same chain DEK under a fresh random wrapping
+///   nonce, so the bytes differ every attempt while the content does not;
+/// - `signature` covers all of the above.
+///
+/// The chain metadata and the chunk list (indices, plain/sealed sizes,
+/// plaintext digests) stay in the fingerprint, so a genuinely different
+/// payload at the same sequence is still refused. Used to recognise a retried
+/// publish; the stored manifest is kept, so a retried wrap can never replace
+/// the one the stored chunks were published with.
 fn manifest_content_fingerprint(m: &Manifest) -> SResult<Vec<u8>> {
     let mut copy = m.clone();
     copy.created_at = DateTime::<Utc>::MIN_UTC;
     copy.generation = 0;
+    copy.dek_wrapped.clear();
     for chunk in &mut copy.chunks {
         chunk.generation = 0;
     }
@@ -1486,29 +1498,36 @@ mod tests {
 
     #[test]
     fn a_retried_publish_may_regenerate_volatile_fields() {
+        use base64::Engine as _;
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(&dir.path().display().to_string());
         let kid = key_id();
-        let original = manifest_titled("chain", 3);
+        let mut original = manifest_titled("chain", 3);
+        original.dek_wrapped = base64::engine::general_purpose::STANDARD.encode([1u8; 60]);
         store.put_manifest(&kid, "src", &original).unwrap();
 
         // A retry after a lost response rebuilds the manifest with a new
-        // timestamp, a new nonce generation and a new signature.
+        // timestamp, a new nonce generation, a fresh DEK-wrapping nonce and a
+        // new signature.
         let mut retried = original.clone();
         retried.created_at = DateTime::from_timestamp(1_700_100_000, 0).unwrap();
         retried.generation = original.generation.saturating_add(9);
+        retried.dek_wrapped = base64::engine::general_purpose::STANDARD.encode([2u8; 60]);
         retried.signature = "cmVzaWduZWQ=".into();
+        assert_ne!(retried.dek_wrapped, original.dek_wrapped);
         store.put_manifest(&kid, "src", &retried).unwrap();
 
-        // The stored manifest is the original one: it pins the generation the
-        // stored chunks were sealed with.
+        // The stored manifest is the original one: it pins the generation and
+        // the wrapped DEK the stored chunks were published with.
         let stored = store.manifest(&kid, "src").unwrap();
         assert_eq!(stored.created_at, original.created_at);
         assert_eq!(stored.generation, original.generation);
+        assert_eq!(stored.dek_wrapped, original.dek_wrapped);
         assert_eq!(stored.signature, original.signature);
 
         // A changed chunk list at the same sequence is different content.
         let mut changed = manifest_titled("chain", 3);
+        changed.dek_wrapped = original.dek_wrapped.clone();
         changed.chunks = vec![super::super::envelope::ManifestChunk {
             index: 0,
             plain_bytes: 1,
