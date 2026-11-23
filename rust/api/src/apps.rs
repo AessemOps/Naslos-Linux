@@ -4681,9 +4681,9 @@ mod exposure_patch_tests {
 #[cfg(test)]
 mod value_schema_tests {
     use super::{
-        clamp_pool_limit, load_pool_settings, pick_namespace, pool_storage_class,
-        secret_value_keys, set_persistence_storage_class, validate_install_values,
-        validate_pool_for_storage, validate_pool_limit,
+        clamp_pool_limit, load_pool_settings, pick_namespace, pool_provisioner_objects,
+        pool_storage_class, secret_value_keys, set_persistence_storage_class,
+        validate_install_values, validate_pool_for_storage, validate_pool_limit,
     };
     use crate::catalog::App;
     use serde_json::json;
@@ -4832,6 +4832,82 @@ mod value_schema_tests {
             "naslos-pool-ssd"
         );
         assert_eq!(values["other"]["storageClass"], "keep-me");
+    }
+
+    #[test]
+    fn pool_provisioner_objects_are_scoped_and_locked_down() {
+        let class = "naslos-pool-tank-12345678";
+        let image = "ghcr.io/example/local-path:v1";
+        let (configmap, deployment, storage_class) = pool_provisioner_objects("tank", class, image);
+        let config_name = format!("{class}-config");
+        let deployment_name = format!("{class}-provisioner");
+
+        assert_eq!(configmap["apiVersion"], "v1");
+        assert_eq!(configmap["kind"], "ConfigMap");
+        assert_eq!(configmap["metadata"]["name"], config_name.as_str());
+        assert_eq!(configmap["metadata"]["namespace"], "local-path-storage");
+
+        let config: serde_json::Value =
+            serde_json::from_str(configmap["data"]["config.json"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            config["nodePathMap"][0]["node"],
+            "DEFAULT_PATH_FOR_NON_LISTED_NODES"
+        );
+        assert_eq!(config["nodePathMap"][0]["paths"][0], "/var/mnt/tank/apps");
+
+        let setup = configmap["data"]["setup"].as_str().unwrap();
+        assert!(setup.contains("mkdir -m 0777 -p \"$VOL_DIR\""), "{setup}");
+        let teardown = configmap["data"]["teardown"].as_str().unwrap();
+        assert!(teardown.contains("rm -rf \"$VOL_DIR\""), "{teardown}");
+        let helper = configmap["data"]["helperPod.yaml"].as_str().unwrap();
+        assert!(helper.contains("helper-pod"), "{helper}");
+
+        assert_eq!(deployment["kind"], "Deployment");
+        assert_eq!(deployment["metadata"]["name"], deployment_name.as_str());
+        assert_eq!(deployment["metadata"]["namespace"], "local-path-storage");
+        assert_eq!(deployment["spec"]["replicas"], 1);
+        let pod = &deployment["spec"]["template"]["spec"];
+        assert_eq!(
+            pod["serviceAccountName"],
+            "local-path-provisioner-service-account"
+        );
+        let container = &pod["containers"][0];
+        assert_eq!(container["image"], image);
+        let command: Vec<&str> = container["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry.as_str().unwrap())
+            .collect();
+        assert!(command.contains(&"--provisioner-name"), "{command:?}");
+        assert!(command.contains(&class), "{command:?}");
+        assert!(command.contains(&"--configmap-name"), "{command:?}");
+        assert!(command.contains(&config_name.as_str()), "{command:?}");
+        let env = container["env"].as_array().unwrap();
+        let namespace_env = env
+            .iter()
+            .find(|entry| entry["name"] == "POD_NAMESPACE")
+            .expect("POD_NAMESPACE env");
+        assert_eq!(
+            namespace_env["valueFrom"]["fieldRef"]["fieldPath"],
+            "metadata.namespace"
+        );
+        let volumes = pod["volumes"].as_array().unwrap();
+        assert_eq!(volumes[0]["configMap"]["name"], config_name.as_str());
+
+        assert_eq!(storage_class["kind"], "StorageClass");
+        assert_eq!(storage_class["metadata"]["name"], class);
+        assert_eq!(storage_class["provisioner"], class);
+        assert_eq!(storage_class["volumeBindingMode"], "WaitForFirstConsumer");
+        assert_eq!(storage_class["reclaimPolicy"], "Delete");
+
+        for object in [&configmap, &deployment, &storage_class] {
+            assert_eq!(object["metadata"]["labels"]["naslos.local/pool"], "tank");
+            assert_eq!(
+                object["metadata"]["labels"]["app.kubernetes.io/component"],
+                "app-pool-storage"
+            );
+        }
     }
 }
 

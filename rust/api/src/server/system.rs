@@ -632,6 +632,27 @@ fn system_namespace() -> String {
 mod tests {
     use super::*;
 
+    fn facts() -> ReleaseFacts {
+        ReleaseFacts {
+            profile: "installer".into(),
+            naslos_version: "0.3.0".into(),
+            chart_version: "0.3.0".into(),
+            talos_version: "v1.14.1".into(),
+            schematic_id: "abc".into(),
+            kubernetes_version: "v1.37.0".into(),
+        }
+    }
+
+    fn candidate() -> Candidate {
+        Candidate {
+            version: "0.3.1".into(),
+            talos_version: "v1.14.2".into(),
+            kubernetes_version: "v1.37.1".into(),
+            api_image: "ghcr.io/aessemops/naslos-api@sha256:dead".into(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn missing_talos_nodes_is_a_precondition() {
         assert!(operation_nodes(None).is_err());
@@ -654,5 +675,115 @@ mod tests {
         assert!(value.get("stepping").is_some());
         assert!(value.get("available").is_some());
         assert!(value.get("blocked").is_some());
+    }
+
+    #[test]
+    fn check_order_rejects_a_non_semver_candidate() {
+        let mut c = candidate();
+        c.version = "latest".into();
+        let err = check_order("naslos", &facts(), &c, "v1.14.1", "v1.37.0").unwrap_err();
+        assert!(err.contains("not strict semver"), "{err}");
+    }
+
+    #[test]
+    fn check_order_naslos_requires_newer_and_matching_pins() {
+        let f = facts();
+        let mut c = candidate();
+        c.version = f.naslos_version.clone();
+        let err = check_order("naslos", &f, &c, "v1.14.1", "v1.37.0").unwrap_err();
+        assert!(err.contains("not newer"), "{err}");
+
+        c.version = candidate().version;
+        c.talos_version = "v1.15.0".into();
+        let mut f_talos = facts();
+        f_talos.talos_version = c.talos_version.clone();
+        let err = check_order("naslos", &f_talos, &c, "v1.14.1", "v1.37.0").unwrap_err();
+        assert!(err.contains("Talos is v1.14.1"), "{err}");
+        assert!(err.contains("this release pins v1.15.0"), "{err}");
+
+        c.kubernetes_version = "v1.38.0".into();
+        let mut f_kubernetes = facts();
+        f_kubernetes.kubernetes_version = c.kubernetes_version.clone();
+        let err = check_order("naslos", &f_kubernetes, &c, "v1.14.1", "v1.37.0").unwrap_err();
+        assert!(err.contains("Kubernetes is v1.37.0"), "{err}");
+    }
+
+    #[test]
+    fn check_order_naslos_accepts_a_current_pin_and_one_minor_step() {
+        let f = facts();
+        let mut c = candidate();
+        assert!(check_order("naslos", &f, &c, "v1.14.1", "v1.37.0").is_ok());
+        c.talos_version = "v1.15.0".into();
+        c.kubernetes_version = "v1.38.0".into();
+        assert!(check_order("naslos", &f, &c, "v1.14.1", "v1.37.0").is_ok());
+    }
+
+    #[test]
+    fn check_order_talos_requires_naslos_first_and_a_real_step() {
+        let f = facts();
+        let mut c = candidate();
+        c.version = "0.4.0".into();
+        let err = check_order("talos", &f, &c, "v1.14.1", "v1.37.0").unwrap_err();
+        assert!(
+            err.contains("upgrade Naslos to this release before upgrading Talos"),
+            "{err}"
+        );
+
+        c.version = f.naslos_version.clone();
+        c.talos_version = "v1.15.0".into();
+        assert!(check_order("talos", &f, &c, "v1.14.1", "v1.37.0").is_ok());
+
+        let err = check_order("talos", &f, &c, "v1.15.0", "v1.37.0").unwrap_err();
+        assert!(err.contains("already at or ahead"), "{err}");
+
+        c.talos_version = "v1.16.0".into();
+        let err = check_order("talos", &f, &c, "v1.14.1", "v1.37.0").unwrap_err();
+        assert!(err.contains("more than one minor ahead"), "{err}");
+
+        let err = check_order("talos", &f, &c, "nope", "v1.37.0").unwrap_err();
+        assert!(
+            err.contains("cannot read the running Talos version"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_order_kubernetes_requires_naslos_talos_and_a_real_step() {
+        let f = facts();
+        let mut c = candidate();
+        c.version = "0.4.0".into();
+        let err = check_order("kubernetes", &f, &c, "v1.14.1", "v1.37.0").unwrap_err();
+        assert!(
+            err.contains("upgrade Naslos to this release before upgrading Kubernetes"),
+            "{err}"
+        );
+
+        c.version = f.naslos_version.clone();
+        c.talos_version = f.talos_version.clone();
+        c.kubernetes_version = "v1.38.0".into();
+        assert!(check_order("kubernetes", &f, &c, "v1.14.1", "v1.37.0").is_ok());
+
+        let err = check_order("kubernetes", &f, &c, "v1.16.0", "v1.37.0").unwrap_err();
+        assert!(err.contains("upgrade Talos first"), "{err}");
+
+        c.kubernetes_version = "v1.37.0".into();
+        let err = check_order("kubernetes", &f, &c, "v1.14.1", "v1.37.0").unwrap_err();
+        assert!(err.contains("already at or ahead"), "{err}");
+
+        c.kubernetes_version = "v1.39.0".into();
+        let err = check_order("kubernetes", &f, &c, "v1.14.1", "v1.37.0").unwrap_err();
+        assert!(err.contains("more than one minor ahead"), "{err}");
+
+        let err = check_order("kubernetes", &f, &c, "v1.14.1", "nope").unwrap_err();
+        assert!(
+            err.contains("cannot read the running Kubernetes version"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_order_rejects_an_unknown_operation() {
+        let err = check_order("bogus", &facts(), &candidate(), "v1.14.1", "v1.37.0").unwrap_err();
+        assert!(err.contains("unknown operation"), "{err}");
     }
 }

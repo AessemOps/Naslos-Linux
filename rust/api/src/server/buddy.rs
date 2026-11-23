@@ -999,7 +999,8 @@ impl axum::extract::FromRef<Arc<AppState>> for BuddyState {
 
 #[cfg(test)]
 mod tests {
-    use super::{enrollment_quota, instance_audience, Receiver};
+    use super::{chain_summaries, enrollment_quota, instance_audience, Receiver};
+    use crate::buddy::envelope::{Manifest, ManifestChunk, ENVELOPE_VERSION};
     use std::sync::Arc;
 
     fn receiver_named(name: &str) -> Receiver {
@@ -1007,6 +1008,38 @@ mod tests {
         let auth = Arc::new(crate::buddy::auth::Authenticator::new(peers.clone()));
         let store = Arc::new(crate::buddy::store::Store::new("/nonexistent-buddy-test"));
         Receiver::new(store, peers, auth, name)
+    }
+
+    fn chunk(index: i64) -> ManifestChunk {
+        ManifestChunk {
+            index,
+            plain_bytes: 1024,
+            sealed_bytes: 1088,
+            generation: 1,
+            sha256_plain: format!("sha-{index}"),
+        }
+    }
+
+    fn manifest(chain: &str) -> Manifest {
+        Manifest {
+            version: ENVELOPE_VERSION,
+            source: "peer-a".to_string(),
+            chain: chain.to_string(),
+            kind: "snapshot".to_string(),
+            from_snapshot: String::new(),
+            to_snapshot: format!("{chain}-snap"),
+            from_guid: String::new(),
+            to_guid: format!("{chain}-guid"),
+            created_at: "2026-01-02T03:04:05Z".parse().unwrap(),
+            key_id: "key-1".to_string(),
+            sequence: 7,
+            generation: 1,
+            stream_prefix: "prefix".to_string(),
+            chunk_plain_size: 1024,
+            chunks: vec![chunk(0), chunk(1)],
+            dek_wrapped: "dek".to_string(),
+            signature: String::new(),
+        }
     }
 
     #[test]
@@ -1028,5 +1061,46 @@ mod tests {
         assert_eq!(enrollment_quota(50, 100), 50);
         assert_eq!(enrollment_quota(10_000, 100), 100);
         assert_eq!(enrollment_quota(i64::MAX, 0), 1i64 << 40);
+    }
+
+    #[test]
+    fn chain_summaries_use_camel_case_keys_and_manifest_values() {
+        let summaries = chain_summaries(&[manifest("one"), manifest("two")]);
+        assert_eq!(summaries.len(), 2, "one summary per manifest");
+
+        let first = &summaries[0];
+        assert_eq!(first["chain"], serde_json::json!("one"), "chain");
+        assert_eq!(first["kind"], serde_json::json!("snapshot"), "kind");
+        assert_eq!(
+            first["createdAt"],
+            serde_json::json!("2026-01-02T03:04:05Z"),
+            "createdAt should be the RFC 3339 timestamp"
+        );
+        assert_eq!(
+            first["fromSnapshot"],
+            serde_json::json!(""),
+            "fromSnapshot should be present even when empty"
+        );
+        assert_eq!(
+            first["toSnapshot"],
+            serde_json::json!("one-snap"),
+            "toSnapshot"
+        );
+        assert_eq!(first["fromGUID"], serde_json::json!(""), "fromGUID");
+        assert_eq!(first["toGUID"], serde_json::json!("one-guid"), "toGUID");
+        assert_eq!(
+            first["chunks"],
+            serde_json::json!(2),
+            "chunks should be the chunk count, not the chunk list"
+        );
+        assert_eq!(first["sequence"], serde_json::json!(7), "sequence");
+
+        let second = &summaries[1];
+        assert_eq!(second["chain"], serde_json::json!("two"), "second chain");
+        assert_eq!(
+            second["toGUID"],
+            serde_json::json!("two-guid"),
+            "second toGUID"
+        );
     }
 }

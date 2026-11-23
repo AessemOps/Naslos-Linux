@@ -392,3 +392,120 @@ fn person_from_entry(entry: &SearchEntry) -> Person {
         enabled: is_person_enabled(&attr(entry, "shadowExpire")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// A `SearchEntry` carrying only string attributes (the same shape
+    /// `SearchEntry::construct` produces for an LDAP search result).
+    fn make_entry(dn: &str, attrs: Vec<(&str, Vec<&str>)>) -> SearchEntry {
+        SearchEntry {
+            dn: dn.to_string(),
+            attrs: attrs
+                .into_iter()
+                .map(|(name, values)| {
+                    (
+                        name.to_string(),
+                        values.into_iter().map(str::to_string).collect(),
+                    )
+                })
+                .collect(),
+            bin_attrs: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn person_from_entry_maps_every_field() {
+        let entry = make_entry(
+            "uid=alice,ou=people,dc=example,dc=test",
+            vec![
+                ("uid", vec!["alice"]),
+                // Deliberately different case: the `attr` helper is
+                // case-insensitive for LDAP attribute names.
+                ("DisplayName", vec!["Alice Example"]),
+                ("mail", vec!["alice@example.test"]),
+                ("givenName", vec!["Alice"]),
+                ("sn", vec!["Example"]),
+                (
+                    "memberOf",
+                    vec![
+                        "cn=naslos_admins,ou=groups,dc=example,dc=test",
+                        "CN=Media,ou=groups,dc=example,dc=test",
+                    ],
+                ),
+                ("shadowExpire", vec!["-1"]),
+            ],
+        );
+        let person = person_from_entry(&entry);
+        assert_eq!(
+            person.dn, "uid=alice,ou=people,dc=example,dc=test",
+            "the entry DN must be copied verbatim"
+        );
+        assert_eq!(person.uid, "alice", "uid must map from the uid attribute");
+        assert_eq!(
+            person.display_name, "Alice Example",
+            "displayName must map regardless of its attribute-name case"
+        );
+        assert_eq!(person.email, "alice@example.test", "email maps from mail");
+        assert_eq!(person.first_name, "Alice", "firstName maps from givenName");
+        assert_eq!(person.last_name, "Example", "lastName maps from sn");
+        assert_eq!(
+            person.groups,
+            vec!["naslos_admins", "media"],
+            "memberOf DNs must reduce to lowercase short names"
+        );
+        assert!(
+            person.enabled,
+            "shadowExpire=-1 means the account is enabled"
+        );
+    }
+
+    #[test]
+    fn person_from_entry_with_no_attributes_is_empty_and_enabled() {
+        let entry = make_entry("uid=bob,ou=people,dc=example,dc=test", vec![]);
+        let person = person_from_entry(&entry);
+        assert_eq!(person.dn, "uid=bob,ou=people,dc=example,dc=test");
+        assert!(
+            person.uid.is_empty(),
+            "a missing uid must be an empty string"
+        );
+        assert!(
+            person.display_name.is_empty(),
+            "a missing displayName must be an empty string"
+        );
+        assert!(
+            person.email.is_empty(),
+            "a missing mail must be an empty string"
+        );
+        assert!(
+            person.first_name.is_empty(),
+            "a missing givenName must be an empty string"
+        );
+        assert!(
+            person.last_name.is_empty(),
+            "a missing sn must be an empty string"
+        );
+        assert!(
+            person.groups.is_empty(),
+            "a missing memberOf must produce no groups"
+        );
+        assert!(
+            person.enabled,
+            "an absent shadowExpire means the account is enabled"
+        );
+    }
+
+    #[test]
+    fn person_from_entry_with_a_past_shadow_expire_is_disabled() {
+        let entry = make_entry(
+            "uid=carol,ou=people,dc=example,dc=test",
+            vec![("shadowExpire", vec!["1"])],
+        );
+        assert!(
+            !person_from_entry(&entry).enabled,
+            "shadowExpire=1 is a day in 1970, so the account must be disabled"
+        );
+    }
+}

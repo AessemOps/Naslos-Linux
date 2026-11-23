@@ -1194,4 +1194,150 @@ mod tests {
         assert_eq!(v.len(), 2);
         assert_eq!(v[0]["a"], 1);
     }
+
+    fn write_talosconfig(dir: &std::path::Path, contents: &str) -> String {
+        let path = dir.join("talosconfig");
+        std::fs::write(&path, contents).unwrap();
+        path.display().to_string()
+    }
+
+    #[test]
+    fn talosconfig_endpoints_come_from_the_named_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_talosconfig(
+            dir.path(),
+            "context: prod\n\
+             contexts:\n  \
+               prod:\n    \
+                 endpoints:\n      - \"10.0.0.1\"\n      - \"10.0.0.2\"\n  \
+               other:\n    \
+                 endpoints:\n      - \"10.0.0.9\"\n",
+        );
+        assert_eq!(
+            endpoints_from_talosconfig(&path),
+            vec!["10.0.0.1".to_string(), "10.0.0.2".to_string()]
+        );
+    }
+
+    #[test]
+    fn talosconfig_unknown_context_falls_back_to_the_first_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_talosconfig(
+            dir.path(),
+            "context: missing\n\
+             contexts:\n  \
+               first:\n    \
+                 endpoints:\n      - \"10.0.0.7\"\n  \
+               second:\n    \
+                 endpoints:\n      - \"10.0.0.8\"\n",
+        );
+        assert_eq!(
+            endpoints_from_talosconfig(&path),
+            vec!["10.0.0.7".to_string()]
+        );
+    }
+
+    #[test]
+    fn talosconfig_missing_file_has_no_endpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("absent").display().to_string();
+        assert!(endpoints_from_talosconfig(&path).is_empty());
+    }
+
+    #[test]
+    fn talosconfig_invalid_yaml_has_no_endpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_talosconfig(dir.path(), "context: [unterminated\ncontexts: {}\n");
+        assert!(endpoints_from_talosconfig(&path).is_empty());
+    }
+
+    #[test]
+    fn talosconfig_without_contexts_has_no_endpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_talosconfig(dir.path(), "context: prod\n");
+        assert!(endpoints_from_talosconfig(&path).is_empty());
+    }
+
+    #[test]
+    fn talosconfig_drops_non_string_endpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_talosconfig(
+            dir.path(),
+            "context: prod\n\
+             contexts:\n  \
+               prod:\n    \
+                 endpoints:\n      - \"10.0.0.3\"\n      - 42\n      - null\n",
+        );
+        assert_eq!(
+            endpoints_from_talosconfig(&path),
+            vec!["10.0.0.3".to_string()]
+        );
+    }
+
+    fn disk(path: &str, is_system_disk: bool) -> DiskInfo {
+        DiskInfo {
+            device_path: path.to_string(),
+            is_system_disk,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn volume_advisor_rejects_an_empty_disk_list() {
+        assert_eq!(
+            VolumeAdvisor::recommend(&[]).unwrap_err(),
+            "no disks provided"
+        );
+    }
+
+    #[test]
+    fn volume_advisor_rejects_a_list_of_only_system_disks() {
+        let disks = [disk("/dev/sda", true), disk("/dev/sdb", true)];
+        assert_eq!(
+            VolumeAdvisor::recommend(&disks).unwrap_err(),
+            "no disks provided"
+        );
+    }
+
+    #[test]
+    fn volume_advisor_ignores_system_disks_and_keeps_the_usable_paths() {
+        let disks = [
+            disk("/dev/sda", true),
+            disk("/dev/sdb", false),
+            disk("/dev/sdc", false),
+        ];
+        let recommendation = VolumeAdvisor::recommend(&disks).unwrap();
+        assert_eq!(recommendation.topology, "mirror");
+        assert_eq!(
+            recommendation.disks,
+            vec!["/dev/sdb".to_string(), "/dev/sdc".to_string()]
+        );
+        assert!(recommendation.human_readable_size.is_empty());
+    }
+
+    #[test]
+    fn volume_advisor_maps_usable_disk_counts_to_topologies() {
+        let cases: [(usize, &str); 8] = [
+            (1, "single"),
+            (2, "mirror"),
+            (3, "raidz1"),
+            (5, "raidz1"),
+            (6, "raidz2"),
+            (10, "raidz2"),
+            (11, "raidz3"),
+            (12, "raidz3"),
+        ];
+        for (count, topology) in cases {
+            let disks: Vec<DiskInfo> = (0..count)
+                .map(|i| disk(&format!("/dev/sd{}", (b'a' + i as u8) as char), false))
+                .collect();
+            let recommendation = VolumeAdvisor::recommend(&disks).unwrap();
+            assert_eq!(recommendation.topology, topology, "{count} disks");
+            let expected: Vec<String> = (0..count)
+                .map(|i| format!("/dev/sd{}", (b'a' + i as u8) as char))
+                .collect();
+            assert_eq!(recommendation.disks, expected);
+            assert!(recommendation.human_readable_size.is_empty());
+        }
+    }
 }

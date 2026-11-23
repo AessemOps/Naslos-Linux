@@ -1484,4 +1484,49 @@ mod tests {
         );
         assert_eq!(m.app_names("official", "Prod").unwrap(), vec!["nginx"]);
     }
+
+    #[test]
+    fn stat_repo_requires_a_readable_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        assert!(stat_repo(&missing.display().to_string()).is_err());
+
+        let file = dir.path().join("not-a-dir");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(stat_repo(&file.display().to_string()).is_err());
+    }
+
+    #[test]
+    fn stat_repo_accepts_empty_and_nested_trees() {
+        let empty = tempfile::tempdir().unwrap();
+        assert!(stat_repo(&empty.path().display().to_string()).is_ok());
+
+        let nested = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(nested.path().join("apps/nginx/templates")).unwrap();
+        std::fs::write(
+            nested.path().join("apps/nginx/Chart.yaml"),
+            "apiVersion: v2\nname: nginx\nversion: 1.0.0\n",
+        )
+        .unwrap();
+        std::fs::write(
+            nested.path().join("apps/nginx/templates/cm.yaml"),
+            "kind: ConfigMap\n",
+        )
+        .unwrap();
+        assert!(stat_repo(&nested.path().display().to_string()).is_ok());
+    }
+
+    #[test]
+    fn stat_repo_refuses_an_oversized_tree_but_skips_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = std::fs::File::create(dir.path().join("big.bin")).unwrap();
+        big.set_len(MAX_REPO_BYTES + 1).unwrap();
+        let err = stat_repo(&dir.path().display().to_string())
+            .expect_err("an oversized clone must be refused");
+        assert!(err.contains("larger than"), "{err}");
+
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::rename(dir.path().join("big.bin"), dir.path().join(".git/big.bin")).unwrap();
+        assert!(stat_repo(&dir.path().display().to_string()).is_ok());
+    }
 }

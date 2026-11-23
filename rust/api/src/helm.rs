@@ -732,4 +732,62 @@ mod tests {
         assert_eq!(app.version, "15.0.0");
         assert_eq!(app.status, "running");
     }
+
+    #[test]
+    fn values_args_skip_null_and_empty_objects() {
+        let (args, file) = Client::values_args(&serde_json::Value::Null).unwrap();
+        assert!(args.is_empty());
+        assert!(file.is_none());
+
+        let (args, file) = Client::values_args(&serde_json::json!({})).unwrap();
+        assert!(args.is_empty());
+        assert!(file.is_none());
+    }
+
+    #[test]
+    fn values_args_write_a_temp_json_file() {
+        let values = serde_json::json!({"replicaCount": 2, "image": {"tag": "x"}});
+        let (args, file) = Client::values_args(&values).unwrap();
+        let file = file.expect("a values file");
+        assert_eq!(args[0], "-f");
+        assert_eq!(args[1], file.path().display().to_string());
+        assert!(std::path::Path::new(&args[1]).exists());
+        let contents = std::fs::read_to_string(&args[1]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(parsed, values);
+    }
+
+    #[test]
+    fn status_maps_to_app_with_values_and_timestamp() {
+        let status = serde_json::json!({
+            "name": "nginx",
+            "namespace": "naslos-apps",
+            "chart": "nginx-15.0.0",
+            "info": {"status": "deployed", "last_deployed": "2026-10-04T12:34:56Z"}
+        });
+        let values = serde_json::json!({"replicaCount": 2});
+        let app = app_from_status(&status, values.clone(), "fallback");
+        assert_eq!(app.name, "nginx");
+        assert_eq!(app.namespace, "naslos-apps");
+        assert_eq!(app.chart, "nginx");
+        assert_eq!(app.version, "15.0.0");
+        assert_eq!(app.status, "running");
+        assert_eq!(
+            app.updated_at.unwrap().to_rfc3339(),
+            "2026-10-04T12:34:56+00:00"
+        );
+        assert_eq!(app.values, values);
+    }
+
+    #[test]
+    fn status_without_namespace_falls_back_and_missing_fields_stay_empty() {
+        let app = app_from_status(&serde_json::json!({}), serde_json::json!({}), "naslos-apps");
+        assert_eq!(app.namespace, "naslos-apps");
+        assert!(app.name.is_empty());
+        assert!(app.chart.is_empty());
+        assert!(app.version.is_empty());
+        assert_eq!(app.status, release_status(""));
+        assert!(app.updated_at.is_none());
+        assert_eq!(app.values, serde_json::json!({}));
+    }
 }

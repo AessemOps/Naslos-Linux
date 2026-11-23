@@ -1268,7 +1268,7 @@ fn describe_error(status: u16, data: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_restore_sequence, ChainSummary};
+    use super::{describe_error, validate_restore_sequence, ChainSummary};
 
     fn chain(name: &str, from: &str, to: &str, sequence: u64) -> ChainSummary {
         ChainSummary {
@@ -1319,5 +1319,45 @@ mod tests {
     fn a_repeated_chain_is_refused() {
         let seq = vec![chain("a", "", "g1", 1), chain("a", "g1", "g2", 2)];
         assert!(validate_restore_sequence("s", &seq, 0).is_err());
+    }
+
+    #[test]
+    fn describe_error_prefers_the_json_error_field() {
+        assert_eq!(describe_error(500, br#"{"error":"boom"}"#), "boom (500)");
+    }
+
+    #[test]
+    fn describe_error_falls_back_to_the_raw_body_for_an_empty_error() {
+        let message = describe_error(400, br#"{"error":""}"#);
+        assert!(message.ends_with(" (400)"), "{message}");
+        assert!(message.contains("error"), "{message}");
+    }
+
+    #[test]
+    fn describe_error_trims_a_plain_text_body() {
+        assert_eq!(describe_error(418, b"  nope  "), "nope (418)");
+    }
+
+    #[test]
+    fn describe_error_reports_an_empty_body() {
+        assert_eq!(describe_error(502, b""), "<no body> (502)");
+    }
+
+    #[test]
+    fn describe_error_truncates_a_long_body() {
+        let body = "a".repeat(350);
+        let message = describe_error(500, body.as_bytes());
+        assert!(
+            message.starts_with(&format!("{}...", "a".repeat(300))),
+            "{message}"
+        );
+        assert!(message.ends_with(" (500)"), "{message}");
+    }
+
+    #[test]
+    fn describe_error_lossily_decodes_non_utf8_bytes() {
+        let message = describe_error(500, &[0xff, 0xfe]);
+        assert!(message.ends_with(" (500)"), "{message}");
+        assert_eq!(message, "\u{FFFD}\u{FFFD} (500)");
     }
 }
