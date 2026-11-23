@@ -213,6 +213,13 @@ pub fn library_path(root: &Path, pool: &str, name: &str) -> PathBuf {
     isos_dir(root, pool).join(name)
 }
 
+/// Upload-session owner tokens: 1-128 printable ASCII characters (the Images
+/// panel sends a UUID). Shared with the API so both layers reject the same
+/// values before vmd has to explain itself.
+pub fn valid_upload_owner(owner: &str) -> bool {
+    !owner.is_empty() && owner.len() <= 128 && owner.chars().all(|c| c.is_ascii_graphic())
+}
+
 /// Library file names are flat basenames; no path traversal may reach the
 /// command line or the filesystem (SEC-1).
 pub fn valid_library_name(file: &str) -> bool {
@@ -545,6 +552,17 @@ mod tests {
             spec.disk.size_gb = gb;
             assert_eq!(validate_vm(&spec).is_ok(), ok, "size {gb}");
         }
+    }
+
+    #[test]
+    fn upload_owner_tokens_are_printable_ascii() {
+        assert!(valid_upload_owner("6c1f3a4e-0b2d-4c3f-9a8e-0123456789ab"));
+        assert!(!valid_upload_owner(""));
+        assert!(!valid_upload_owner("two words"));
+        assert!(!valid_upload_owner("café"));
+        assert!(!valid_upload_owner("line\nbreak"));
+        assert!(!valid_upload_owner(&"x".repeat(129)));
+        assert!(valid_upload_owner(&"x".repeat(128)));
     }
 
     #[test]

@@ -389,6 +389,25 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
     )
 }
 
+/// `DELETE /api/v1/images/upload?pool=&name=&owner=` — abandon this owner's
+/// upload session and delete its staged file. A different owner is refused;
+/// a missing session is an idempotent success (and clears a stale stage).
+pub async fn image_upload_cancel(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let pool = query.get("pool").cloned().unwrap_or_default();
+    let name = query.get("name").cloned().unwrap_or_default();
+    let owner = query.get("owner").map(String::as_str).unwrap_or_default();
+    match images::cancel_upload(&state.datasets_root, &pool, &name, owner).await {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &serde_json::json!({ "status": "cancelled", "name": name }),
+        ),
+        Err(e) => image_error(e),
+    }
+}
+
 pub async fn image_delete(
     State(state): State<Arc<AppState>>,
     Query(query): Query<HashMap<String, String>>,

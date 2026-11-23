@@ -182,14 +182,22 @@ boots straight to SSH.
     removes its staged file, and the next upload (or URL import) start
     sweeps any orphaned `.part` files left by a crash.
   - `offset` must equal the current staged size, so chunks are strictly
-    contiguous. The browser generates one owner token per upload and echoes
-    it on every chunk; a chunk from a different owner is refused (`409`)
-    instead of discarding the active upload's progress. A stale offset, a
-    lost staging file and an expired session all tell the caller to restart
-    from offset 0: the same owner may then restart its own session, and only
-    an idle session (two hours; each chunk refreshes it) may be superseded by
-    another owner. A retried chunk rewinds the staged file to the request's
-    start offset. A chunk can never attach to a URL import's staging file.
+    contiguous. The browser generates one owner token per upload (mandatory
+    `owner` query parameter on every chunk) and echoes it; a chunk from a
+    different owner is refused (`409`) instead of discarding the active
+    upload's progress. The token is stored in `sessionStorage` per pool+name,
+    so a panel reload resumes the same server session; a fresh browser starts
+    clean only once the old session is reclaimable (an idle session expires
+    after two hours, and each chunk refreshes it). A stale offset, a lost
+    staging file and an expired session all tell the caller to restart from
+    offset 0: the same owner may then restart its own session, and only an
+    idle session may be superseded by another owner. A retried chunk rewinds
+    the staged file to the request's start offset. A chunk can never attach to
+    a URL import's staging file.
+  - `DELETE /api/virt/images/upload?pool=&name=&owner=` releases a session:
+    only its owner may delete the staged `.part` (409 for another client or a
+    URL import; an absent session is an idempotent `200`). The panel calls it
+    from its "Cancel upload" action and after an owner-mismatch conflict.
   - The 32 GiB cap applies to the whole upload (`offset + bytes`), not to
     one request; an over-cap upload is removed and returns `413`.
   - Replacing an existing library image requires `confirm=<name>`; the

@@ -706,13 +706,10 @@ pub async fn image_upload_post(
     let owner = query
         .get("owner")
         .map(|v| v.trim())
-        .filter(|v| !v.is_empty());
+        .filter(|v| naslos_vmd::model::valid_upload_owner(v));
     let Some(owner) = owner else {
-        return bad_request("an upload owner token is required");
+        return bad_request("the owner parameter must be 1-128 printable ASCII characters");
     };
-    if owner.len() > 128 || owner.chars().any(|c| c.is_control()) {
-        return bad_request("the upload owner token is not valid");
-    }
     let client = match vmd_client(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -795,6 +792,41 @@ pub async fn image_import_post(State(state): State<Arc<AppState>>, body: Body) -
                 "name": req.name,
                 "note": "poll GET /api/virt/images for completion or the last error"
             }),
+        ),
+        Err(e) => json(
+            vmd_error_status(&e),
+            serde_json::json!({ "error": e.to_string() }),
+        ),
+    }
+}
+
+/// `DELETE /api/virt/images/upload?pool=&name=&owner=` — release this
+/// client's upload session (and its staged file). Only the owner may cancel;
+/// a missing session is an idempotent success.
+pub async fn image_upload_cancel(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let pool = query.get("pool").cloned().unwrap_or_default();
+    let name = query.get("name").cloned().unwrap_or_default();
+    if !naslos_vmd::model::valid_pool_component(&pool) {
+        return bad_request(&format!("pool {pool:?} is not a valid dataset component"));
+    }
+    let owner = query
+        .get("owner")
+        .map(|v| v.trim())
+        .filter(|v| naslos_vmd::model::valid_upload_owner(v));
+    let Some(owner) = owner else {
+        return bad_request("the owner parameter must be 1-128 printable ASCII characters");
+    };
+    let client = match vmd_client(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    match client.cancel_upload(&pool, &name, owner).await {
+        Ok(()) => json(
+            StatusCode::OK,
+            serde_json::json!({ "status": "cancelled", "name": name }),
         ),
         Err(e) => json(
             vmd_error_status(&e),

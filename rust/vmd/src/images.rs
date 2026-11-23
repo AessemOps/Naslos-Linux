@@ -17,7 +17,9 @@
 //! of the staged file, and replacing an existing image needs an explicit
 //! `confirm=<name>`.
 
-use crate::model::{library_path, valid_library_name, valid_pool_component, ImageEntry};
+use crate::model::{
+    library_path, valid_library_name, valid_pool_component, valid_upload_owner, ImageEntry,
+};
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -72,15 +74,23 @@ fn registry_guard() -> std::sync::MutexGuard<'static, UploadRegistry> {
 }
 
 async fn upload_lock(path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
-    let lock = {
-        let mut registry = registry_guard();
-        registry
-            .locks
-            .entry(path.to_path_buf())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
-    };
-    lock.lock_owned().await
+    path_lock(path).lock_owned().await
+}
+
+fn path_lock(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    let mut registry = registry_guard();
+    registry
+        .locks
+        .entry(path.to_path_buf())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
+/// A non-blocking per-name lock: `None` means another request is actively
+/// writing that name. Used by the orphan sweep so it never waits on (or
+/// deadlocks with) a concurrent upload while holding its own name's lock.
+fn try_upload_lock(path: &Path) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    path_lock(path).try_lock_owned().ok()
 }
 
 fn begin_upload(path: &Path, kind: SessionKind, owner: &str) -> Result<(), String> {
@@ -129,16 +139,6 @@ fn session_kind(path: &Path) -> Option<SessionKind> {
 
 fn upload_active(path: &Path) -> bool {
     session_kind(path) == Some(SessionKind::Upload)
-}
-
-/// A client token identifying one upload session (the Images panel sends a
-/// UUID). Printable ASCII keeps it safe in a query string and in logs.
-fn valid_owner(owner: &str) -> bool {
-    !owner.is_empty()
-        && owner.len() <= 128
-        && owner
-            .chars()
-            .all(|c| c.is_ascii_graphic() && !c.is_control())
 }
 
 /// Refresh an active session so the TTL is an idle timeout, not a hard cap on
@@ -292,7 +292,18 @@ async fn sweep_orphan_parts(dir: &Path) {
         let Some(base) = name.strip_suffix(".part") else {
             continue;
         };
-        if live_session(&dir.join(base)).is_some() {
+        let final_path = dir.join(base);
+        // The liveness check and the unlink must be atomic with respect to an
+        // upload of this name: a concurrent offset-0 restart can recreate the
+        // staged file between the check and the unlink, and that writer would
+        // then append to an unlinked inode and lose the transfer. Skip busy
+        // names entirely (try-lock, never wait): waiting here while holding
+        // the caller's own name lock could deadlock two uploads that sweep
+        // each other.
+        let Some(_guard) = try_upload_lock(&final_path) else {
+            continue;
+        };
+        if live_session(&final_path).is_some() {
             continue;
         }
         let Ok(meta) = tokio::fs::symlink_metadata(entry.path()).await else {
@@ -427,7 +438,7 @@ async fn write_chunk_capped(
             "offset {offset} is past the {max_bytes}-byte library limit"
         ));
     }
-    if !valid_owner(owner) {
+    if !valid_upload_owner(owner) {
         return Err("a 1-128 character upload owner token is required on every chunk".to_string());
     }
     let parent = path
@@ -567,6 +578,10 @@ async fn write_chunk_capped(
         ));
     }
     if let Err(e) = file.sync_all().await {
+        drop(file);
+        // Every other terminal failure removes the staged file; a sync error
+        // must not leave a full-size invisible part behind.
+        let _ = tokio::fs::remove_file(&part).await;
         finish_upload(&path);
         return Err(format!("syncing {}: {e}", part.display()));
     }
@@ -580,6 +595,45 @@ async fn write_chunk_capped(
     }
     finish_upload(&path);
     Ok(total)
+}
+
+/// Abandon an upload session owned by `owner`, deleting its staged file.
+///
+/// Only the owner may release a live session; a different client gets a
+/// conflict (the same rule that prevents chunk stealing), and a URL import
+/// cannot be cancelled from the upload path. With no live session the call is
+/// an idempotent success and removes any orphaned staged file, so a client
+/// retrying a cancel after a crash converges.
+pub async fn cancel_upload(root: &Path, pool: &str, name: &str, owner: &str) -> Result<(), String> {
+    if !valid_pool_component(pool) {
+        return Err(format!("pool {pool:?} is not a valid dataset component"));
+    }
+    if !valid_library_name(name) {
+        return Err(format!("{name:?} is not a valid library file name"));
+    }
+    if !valid_upload_owner(owner) {
+        return Err(
+            "a 1-128 character upload owner token is required to cancel an upload".to_string(),
+        );
+    }
+    let path = library_path(root, pool, name);
+    let part = part_path(&path);
+    // The same lock every chunk takes: cancellation cannot interleave with a
+    // streaming chunk of this name.
+    let _guard = upload_lock(&path).await;
+    match live_session(&path) {
+        None => clear_stale_part(&part).await,
+        Some(session) if session.kind == SessionKind::Import => Err(format!(
+            "an import of {name:?} is in progress; wait for it to finish"
+        )),
+        Some(session) if session.owner != owner => Err(format!(
+            "another upload of {name:?} is in progress from a different client; wait for it to finish"
+        )),
+        Some(_) => {
+            finish_upload(&path);
+            clear_stale_part(&part).await
+        }
+    }
 }
 
 /// Import an image from a URL. The target is re-resolved and re-checked on
@@ -1087,6 +1141,136 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("no upload"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_can_cancel_a_live_upload() {
+        let dir = root();
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            false,
+            false,
+            "owner-a",
+            body(b"1234"),
+        )
+        .await
+        .unwrap();
+
+        let err = cancel_upload(dir.path(), "tank", "a.iso", "owner-b")
+            .await
+            .unwrap_err();
+        assert!(err.contains("different client"), "{err}");
+        assert!(
+            dir.path().join("tank/vms/isos/a.iso.part").exists(),
+            "a different client must not be able to delete the staged file"
+        );
+
+        // The owner can still finish, and a repeated cancel of the finished
+        // session is an idempotent success.
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            4,
+            true,
+            false,
+            "owner-a",
+            body(b"56"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tokio::fs::read(dir.path().join("tank/vms/isos/a.iso"))
+                .await
+                .unwrap(),
+            b"123456"
+        );
+        cancel_upload(dir.path(), "tank", "a.iso", "owner-a")
+            .await
+            .expect("an already released session is a no-op");
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_upload_removes_its_staged_file() {
+        let dir = root();
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            false,
+            false,
+            "owner-a",
+            body(b"partial"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            dir.path().join("tank/vms/isos/a.iso.part").exists(),
+            "the staged file exists before the cancel"
+        );
+
+        cancel_upload(dir.path(), "tank", "a.iso", "owner-a")
+            .await
+            .expect("the owner cancels");
+        assert!(!dir.path().join("tank/vms/isos/a.iso.part").exists());
+        assert!(list(dir.path(), "tank").await.is_empty());
+        assert!(live_session(&library_path(dir.path(), "tank", "a.iso")).is_none());
+
+        // The cancelled owner can start a new upload at offset 0.
+        write_chunk(
+            dir.path(),
+            "tank",
+            "a.iso",
+            0,
+            true,
+            false,
+            "owner-a",
+            body(b"fresh"),
+        )
+        .await
+        .expect("a new upload after a cancel");
+    }
+
+    #[tokio::test]
+    async fn an_import_session_cannot_be_cancelled_as_an_upload() {
+        let dir = root();
+        let path = library_path(dir.path(), "tank", "a.iso");
+        begin_upload(&path, SessionKind::Import, "").unwrap();
+        let err = cancel_upload(dir.path(), "tank", "a.iso", "owner-a")
+            .await
+            .unwrap_err();
+        assert!(err.contains("import"), "{err}");
+        finish_upload(&path);
+    }
+
+    #[tokio::test]
+    async fn a_sweep_skips_a_busy_upload_name() {
+        let dir = root();
+        let isos = dir.path().join("tank/vms/isos");
+        tokio::fs::create_dir_all(&isos).await.unwrap();
+        tokio::fs::write(isos.join("busy.iso.part"), b"streaming")
+            .await
+            .unwrap();
+        let path = library_path(dir.path(), "tank", "busy.iso");
+
+        // Simulate an in-flight chunk: it holds the per-name lock but the
+        // session may look expired to a concurrent liveness check.
+        let guard = upload_lock(&path).await;
+        sweep_orphan_parts(&isos).await;
+        assert!(
+            isos.join("busy.iso.part").exists(),
+            "a busy name must never be swept"
+        );
+        drop(guard);
+
+        // Once no writer is active and no session owns it, the same sweep
+        // removes the orphan.
+        sweep_orphan_parts(&isos).await;
+        assert!(!isos.join("busy.iso.part").exists());
     }
 
     #[tokio::test]

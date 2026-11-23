@@ -21,8 +21,15 @@
   let uploadKey = '';
   let uploadOffset = 0;
   // One owner token per upload session, echoed on every chunk so vmd can
-  // refuse a different client instead of discarding active progress.
+  // refuse a different client instead of discarding active progress. It is
+  // mirrored into sessionStorage per pool+name so a panel remount (reload,
+  // tab switch) resumes the same server session instead of minting a new
+  // token that the live session would refuse.
   let uploadOwner = '';
+  let ownerScope = '';
+  let uploadGeneration = 0;
+  let uploadXhr: XMLHttpRequest | null = null;
+  let cancelling = false;
   // Replacing a library file needs an explicit acknowledgement (vmd requires
   // confirm=<name>); the checkbox appears only when the target name is already
   // in the loaded library.
@@ -49,6 +56,79 @@
       return crypto.randomUUID();
     }
     return `upload-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+
+  function ownerStorageKey(poolName: string, name: string): string {
+    return `naslos:upload-owner:${poolName}/${name}`;
+  }
+
+  function storedOwner(poolName: string, name: string): string {
+    if (!name) return '';
+    try {
+      return sessionStorage.getItem(ownerStorageKey(poolName, name)) ?? '';
+    } catch {
+      // Blocked storage only costs reload persistence; the upload still works.
+      return '';
+    }
+  }
+
+  function rememberOwner(poolName: string, name: string, owner: string) {
+    if (!name) return;
+    try {
+      if (owner) sessionStorage.setItem(ownerStorageKey(poolName, name), owner);
+      else sessionStorage.removeItem(ownerStorageKey(poolName, name));
+    } catch {
+      // See storedOwner.
+    }
+  }
+
+  // Restore the token whenever the selected target (or pool) changes, so the
+  // cancel action is available before the first retry.
+  $: {
+    const scope = `${pool}/${uploadTarget}`;
+    if (scope !== ownerScope) {
+      ownerScope = scope;
+      uploadOwner = uploadTarget ? storedOwner(pool, uploadTarget) : '';
+    }
+  }
+
+  async function releaseUpload(name: string, owner: string): Promise<boolean> {
+    if (!name || !owner) return false;
+    try {
+      const res = await fetch(
+        `/api/virt/images/upload?pool=${encodeURIComponent(pool)}&name=${encodeURIComponent(name)}&owner=${encodeURIComponent(owner)}`,
+        { method: 'DELETE' }
+      );
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async function cancelUpload() {
+    if (cancelling) return;
+    const name = uploadTarget || uploadFile?.[0]?.name || '';
+    const owner = uploadOwner || storedOwner(pool, name);
+    cancelling = true;
+    // Invalidate every callback of the aborted transfer before the DELETE
+    // releases the server session.
+    uploadGeneration += 1;
+    uploadXhr?.abort();
+    uploadXhr = null;
+    const released = await releaseUpload(name, owner);
+    if (released) rememberOwner(pool, name, '');
+    uploadOwner = '';
+    uploading = false;
+    uploadProgress = 0;
+    uploadKey = '';
+    uploadOffset = 0;
+    cancelling = false;
+    // Reload first: load() clears the error banner, and the operator should
+    // still see the cancellation result.
+    await load();
+    error = released
+      ? 'Upload cancelled; the staged file was removed.'
+      : 'Upload cancelled locally; the server session will expire if it was not released.';
   }
 
   // The upload target is the selected file's name; the import target is the
@@ -99,17 +179,21 @@
   // 8 MiB octet-stream requests the API relays to vmd.
   function upload() {
     const file = uploadFile?.[0];
-    if (!file || uploading) return;
+    if (!file || uploading || cancelling) return;
     const name = file.name;
     const key = `${file.name}:${file.size}:${file.lastModified}`;
+    const stored = storedOwner(pool, name);
     if (uploadKey !== key) {
       uploadKey = key;
       uploadOffset = 0;
-      uploadOwner = newUploadOwner();
+      uploadOwner = stored || newUploadOwner();
+      rememberOwner(pool, name, uploadOwner);
     } else if (!uploadOwner) {
-      uploadOwner = newUploadOwner();
+      uploadOwner = stored || newUploadOwner();
+      rememberOwner(pool, name, uploadOwner);
     }
     const owner = uploadOwner;
+    const generation = ++uploadGeneration;
     let offset = uploadOffset;
     const total = file.size || 1;
     uploading = true;
@@ -121,6 +205,7 @@
       ? `&confirm=${encodeURIComponent(name)}`
       : '';
     const xhr = new XMLHttpRequest();
+    uploadXhr = xhr;
     const sendChunk = () => {
       const slice = file.slice(offset, offset + CHUNK);
       const final = offset + CHUNK >= file.size;
@@ -132,6 +217,8 @@
         }
       };
       xhr.onload = () => {
+        if (generation !== uploadGeneration) return;
+        if (uploadXhr === xhr) uploadXhr = null;
         if (xhr.status >= 200 && xhr.status < 300) {
           // Trust the size the server reports: it is the confirmed file length,
           // not just what the browser believes it sent.
@@ -151,6 +238,7 @@
             uploadProgress = 100;
             uploadKey = '';
             uploadOffset = 0;
+            rememberOwner(pool, name, '');
             uploadOwner = '';
             uploadFile = null;
             load();
@@ -180,15 +268,26 @@
               // must start over (the same file will still be too large).
               uploadKey = '';
               uploadOffset = 0;
+              rememberOwner(pool, name, '');
               uploadOwner = '';
               uploadProgress = 0;
             }
             if (xhr.status === 409) {
+              if (/different client/i.test(detail)) {
+                // Another client owns the live session: release any session
+                // this token still owns (best effort) and surface the reason.
+                void releaseUpload(name, owner).then((released) => {
+                  if (released) {
+                    rememberOwner(pool, name, '');
+                    uploadOwner = '';
+                  }
+                });
+              }
               // The loaded listing was stale (the image already exists) or
               // another client owns the name: refresh so the replace checkbox
               // can appear, then keep the server's reason visible.
               load().finally(() => {
-                error = detail;
+                if (generation === uploadGeneration) error = detail;
               });
             } else {
               error = detail;
@@ -197,6 +296,8 @@
         }
       };
       xhr.onerror = () => {
+        if (generation !== uploadGeneration) return;
+        if (uploadXhr === xhr) uploadXhr = null;
         uploading = false;
         error = 'The upload connection failed; retry to resume from the last confirmed chunk.';
       };
@@ -293,9 +394,14 @@
       <input id="img-file" type="file" class="input" bind:files={uploadFile} disabled={uploading} />
     </div>
     <button class="btn btn-primary" on:click={upload}
-      disabled={!uploadFile || uploading || (uploadReplaces && !replaceUpload)}>
+      disabled={!uploadFile || uploading || cancelling || (uploadReplaces && !replaceUpload)}>
       {uploading ? `Uploading… ${uploadProgress}%` : 'Upload'}
     </button>
+    {#if uploading || (uploadTarget && (uploadOwner || storedOwner(pool, uploadTarget)))}
+      <button class="btn btn-secondary" on:click={cancelUpload} disabled={cancelling}>
+        {cancelling ? 'Cancelling…' : 'Cancel upload'}
+      </button>
+    {/if}
     {#if uploading}
       <progress class="w-48" value={uploadProgress} max="100"></progress>
     {/if}

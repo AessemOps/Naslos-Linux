@@ -82,7 +82,10 @@ impl Server {
             )
             .route("/api/v1/vms/{name}/vnc", get(handlers::vm_vnc_tunnel))
             .route("/api/v1/images", get(handlers::images_get))
-            .route("/api/v1/images/upload", post(handlers::image_upload_post))
+            .route(
+                "/api/v1/images/upload",
+                post(handlers::image_upload_post).delete(handlers::image_upload_cancel),
+            )
             .route("/api/v1/images/import", post(handlers::image_import_post))
             // DELETE only: a mutating GET (a link, a prefetch, a browser
             // retry) must not be able to delete a library image.

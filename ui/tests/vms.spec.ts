@@ -347,6 +347,7 @@ test.describe('image library confirmations', () => {
       owner: string | null;
     }[] = [];
     const imports: any[] = [];
+    const cancels: { name: string | null; owner: string | null }[] = [];
     let calls = 0;
     let libraryCalls = 0;
     await page.route(/\/api\//, async (route: any) => {
@@ -367,6 +368,11 @@ test.describe('image library confirmations', () => {
             ? options.imagesAfter
             : options.images ?? [existing];
         return route.fulfill({ json: { images, importing: [], errors: {} } });
+      }
+      if (path === '/api/virt/images/upload' && request.method() === 'DELETE') {
+        const name = url.searchParams.get('name');
+        cancels.push({ name, owner: url.searchParams.get('owner') });
+        return route.fulfill({ json: { status: 'cancelled', name } });
       }
       if (path === '/api/virt/images/upload') {
         const offset = Number(url.searchParams.get('offset') ?? '0');
@@ -390,7 +396,7 @@ test.describe('image library confirmations', () => {
       }
       return route.fulfill({ json: {} });
     });
-    return { uploads, imports };
+    return { uploads, imports, cancels };
   }
 
   test('uploading over an existing image needs the explicit replace confirmation', async ({ page }) => {
@@ -433,6 +439,68 @@ test.describe('image library confirmations', () => {
     await expect.poll(() => uploads.length).toBe(1);
     expect(uploads[0].confirm).toBeNull();
     expect(uploads[0].owner).toBeTruthy();
+  });
+
+  test('the upload owner token survives a panel reload', async ({ page }) => {
+    const { uploads } = await mockImages(page, {
+      images: [],
+      upload: () => ({ status: 500, json: { error: 'transient failure' } })
+    });
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+    await page.locator('#img-file').setInputFiles({
+      name: 'debian.iso',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('data')
+    });
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('transient failure');
+    await expect.poll(() => uploads.length).toBe(1);
+    const owner = uploads[0].owner;
+    expect(owner).toBeTruthy();
+
+    // Reloading the SPA remounts the panel. The token comes back from
+    // sessionStorage instead of minting one the live vmd session would refuse.
+    await page.reload();
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+    await page.locator('#img-file').setInputFiles({
+      name: 'debian.iso',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('data')
+    });
+    await expect(page.getByRole('button', { name: /cancel upload/i })).toBeVisible();
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await expect.poll(() => uploads.length).toBe(2);
+    expect(uploads[1].owner).toBe(owner);
+  });
+
+  test('cancelling an upload releases the server session', async ({ page }) => {
+    const { uploads, cancels } = await mockImages(page, {
+      images: [],
+      upload: (offset, _final, call) =>
+        call === 1
+          ? { json: { name: 'big.iso', sizeBytes: offset + 8 * 1024 * 1024 } }
+          : { status: 500, json: { error: 'transient failure' } }
+    });
+    await page.goto('/vms');
+    await expect(page.getByText('Loading virtual machines…')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Images', exact: true }).click();
+    await page.locator('#img-file').setInputFiles({
+      name: 'big.iso',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.alloc(9 * 1024 * 1024)
+    });
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('transient failure');
+    expect(uploads.length).toBe(2);
+
+    await page.getByRole('button', { name: /cancel upload/i }).click();
+    await expect.poll(() => cancels.length).toBe(1);
+    expect(cancels[0].name).toBe('big.iso');
+    expect(cancels[0].owner).toBe(uploads[0].owner);
+    await expect(page.getByRole('alert')).toContainText('cancelled');
   });
 
   test('a 409 refreshes a stale listing so the replace confirmation appears', async ({ page }) => {

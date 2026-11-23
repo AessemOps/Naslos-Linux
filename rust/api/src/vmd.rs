@@ -482,6 +482,18 @@ impl Client {
         self.do_json::<serde_json::Value>(rb).await.map(|_| ())
     }
 
+    /// Abandon this owner's upload session and remove its staged file.
+    pub async fn cancel_upload(&self, pool: &str, name: &str, owner: &str) -> Result<(), VmdError> {
+        let path = format!(
+            "/api/v1/images/upload?pool={}&name={}&owner={}",
+            crate::agent::escape_component(pool),
+            crate::agent::escape_component(name),
+            crate::agent::escape_component(owner)
+        );
+        let rb = self.request(reqwest::Method::DELETE, &path);
+        self.do_json::<serde_json::Value>(rb).await.map(|_| ())
+    }
+
     pub async fn delete_image(&self, pool: &str, name: &str) -> Result<(), VmdError> {
         let path = format!(
             "/api/v1/images/{}?pool={}",
