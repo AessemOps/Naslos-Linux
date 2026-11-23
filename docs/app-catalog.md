@@ -403,18 +403,25 @@ and the rest is validated against the schema. Four classes of chart value are
 never accepted from a client, even when a schema lists them: `image`,
 `privileged`, `hostPath`, `serviceAccount`, plus every key whose name
 identifies a container/pod-spec control — `command`, `args`, `extraContainers`,
-`sidecars`, `tolerations`, `nodeSelector`, `priorityClassName`,
-`podSecurityContext`, `securityContext`, `imagePullPolicy`, `hostNetwork`,
-`hostPID`, `hostIPC`, `volumes`, `volumeMounts`, `containers`,
-`initContainers`, `serviceAccountName`, `automountServiceAccountToken` and
-similarly named variants (matched case-insensitively by name fragment and by a
+`sidecars`, `tolerations`, `nodeSelector`, `priorityClassName`, pod affinity
+(`podAffinity`, `nodeAffinity`, `podAntiAffinity`), `hostAliases`, `hostPort`,
+`runtimeClassName`, `capabilities`, `allowPrivilegeEscalation`,
+`seccompProfile`, `lifecycle`, `dnsPolicy`, `dnsConfig`,
+`topologySpreadConstraints`, `hostUsers`, `sysctls`, `podSecurityContext`,
+`securityContext`, `imagePullPolicy`, `hostNetwork`, `hostPID`, `hostIPC`,
+`volumes`, `volumeMounts`, `containers`, `initContainers`,
+`serviceAccountName`, `automountServiceAccountToken` and similarly named
+variants (matched case-insensitively by name fragment and by a
 `…Command`/`…Args` suffix). Charts may still set those through their own
 `values.yaml` or the manifest `defaultValues`; only operator-supplied values
 are filtered. A map-typed `additionalProperties` schema is preserved as the
 per-key whitelist for dynamic fields, and a composed schema (`$ref`, `allOf`,
 `anyOf`, `oneOf`) is resolved when whitelisting and validating; composed nodes
 are not force-hardened with `additionalProperties: false`, which would reject
-sibling properties. Values outside
+sibling properties. `allOf`/`$ref` union their property maps (a key missing
+from one branch is still stripped unless every branch allows it), an `anyOf`/
+`oneOf` key is allowed when any branch allows it, and an empty or
+`required`-only branch never disables the whitelist. Values outside
 the schema that come from the chart/catalog defaults are still sent to Helm —
 they are simply not validated by the catalog schema. The drawer's `resources`
 editor is the one client value accepted outside the schema (no catalog declares

@@ -33,26 +33,38 @@ pub const PLATFORM_ENV_KEYS: [&str; 1] = [app_env::CHECKSUM_VALUE];
 /// Chart value keys that control platform-sensitive Kubernetes fields. Even a
 /// catalog schema that lists one of them does not authorize a client to set
 /// it: only the catalog/chart defaults may (SEC-2026-D7, S-1).
-pub const PLATFORM_SENSITIVE_VALUE_KEYS: [&str; 21] = [
+pub const PLATFORM_SENSITIVE_VALUE_KEYS: [&str; 33] = [
     "affinity",
+    "allowprivilegeescalation",
     "args",
     "automountserviceaccounttoken",
+    "capabilities",
     "command",
     "containers",
+    "dnsconfig",
+    "dnspolicy",
+    "hostaliases",
     "hostipc",
     "hostnetwork",
     "hostpath",
     "hostpid",
+    "hostport",
+    "hostusers",
     "image",
     "imagepullpolicy",
     "initcontainers",
+    "lifecycle",
     "nodename",
     "podsecuritycontext",
     "privileged",
     "priorityclassname",
+    "runtimeclassname",
+    "seccompprofile",
     "securitycontext",
     "serviceaccount",
     "serviceaccountname",
+    "sysctls",
+    "topologyspreadconstraints",
     "volumemounts",
     "volumes",
 ];
@@ -61,25 +73,47 @@ pub const PLATFORM_SENSITIVE_VALUE_KEYS: [&str; 21] = [
 /// chart's naming (`extraContainers`, `sidecarContainers`, `podSpec`, …), plus
 /// fields that can execute code or change the runtime environment. Matching is
 /// case-insensitive.
-pub const PLATFORM_SENSITIVE_KEY_FRAGMENTS: [&str; 18] = [
+pub const PLATFORM_SENSITIVE_KEY_FRAGMENTS: [&str; 40] = [
+    "affinity",
+    "allowprivilegeescalation",
+    "apparmor",
     "automount",
+    "capabilit",
     "container",
+    "dnsconfig",
+    "dnspolicy",
     "envfrom",
     "extraenv",
+    "hostalias",
     "hostipc",
     "hostnetwork",
     "hostpath",
     "hostpid",
+    "hostport",
+    "hostusers",
     "imagepull",
+    "lifecycle",
     "nodeselector",
     "podsecurity",
     "podspec",
     "priorityclass",
+    "procmount",
+    "readonlyrootfilesystem",
+    "restartpolicy",
+    "runas",
+    "runtimeclass",
+    "seccomp",
     "securitycontext",
+    "selinux",
     "serviceaccount",
+    "shareprocess",
     "sidecar",
+    "supplementalgroups",
+    "sysctl",
+    "terminationgrace",
     "tolerations",
-    "volumemount",
+    "topologyspread",
+    "windowsoptions",
 ];
 
 /// Helm status reads are subprocess calls; run them concurrently so the
@@ -3892,16 +3926,18 @@ fn sanitize_submitted_values(
 }
 
 /// The property tree one schema node exposes, with local `$ref`s resolved and
-/// `allOf`/`anyOf`/`oneOf` property maps merged. `additional` is `false` when
-/// undeclared keys are denied, `true` when they are allowed, and an object
-/// schema when they are delegated to an element schema.
+/// `allOf`/`anyOf`/`oneOf` property maps merged. `allow_extra` means undeclared
+/// keys are positively allowed; `deny_extra` means this node/branch rejects
+/// them. A node with none of those flags (an empty or `required`-only branch)
+/// is unconstrained for key names.
 #[derive(Default)]
 struct SchemaShape {
     properties: serde_json::Map<String, serde_json::Value>,
+    has_properties: bool,
     items: Option<serde_json::Value>,
-    additional: Option<serde_json::Value>,
-    patterns: bool,
-    unconstrained: bool,
+    additional_schema: Option<serde_json::Value>,
+    allow_extra: bool,
+    deny_extra: bool,
 }
 
 impl SchemaShape {
@@ -3909,82 +3945,135 @@ impl SchemaShape {
         root: &serde_json::Value,
         schema: &serde_json::Map<String, serde_json::Value>,
         depth: usize,
-        out: &mut Self,
-    ) {
+    ) -> Self {
         if depth > 32 {
             // A self-referential `$ref` cannot be expanded further; treat the
             // node as unconstrained rather than dropping a legitimate field.
-            out.unconstrained = true;
-            return;
+            return Self::default();
         }
+        let mut shape = Self::default();
         if let Some(reference) = schema.get("$ref").and_then(|r| r.as_str()) {
-            if let Some(pointer) = reference.strip_prefix('#') {
-                if let Some(resolved) = root.pointer(pointer).and_then(|r| r.as_object()) {
-                    Self::collect(root, resolved, depth + 1, out);
+            let resolved = reference
+                .strip_prefix('#')
+                .and_then(|pointer| root.pointer(pointer))
+                .and_then(|r| r.as_object());
+            match resolved {
+                // A `$ref` target applies conjunctively, like `allOf`.
+                Some(resolved) => {
+                    shape = shape.merge_all(Self::collect(root, resolved, depth + 1));
                 }
+                None => shape.deny_extra = true,
             }
         }
-        let properties = schema.get("properties").and_then(|p| p.as_object());
-        if let Some(properties) = properties {
+        if let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) {
+            shape.has_properties = true;
             for (key, value) in properties {
-                out.properties
+                shape
+                    .properties
                     .entry(key.clone())
                     .or_insert_with(|| value.clone());
             }
         }
-        if out.items.is_none() {
-            out.items = schema.get("items").cloned();
+        if shape.items.is_none() {
+            shape.items = schema.get("items").cloned();
         }
         if schema
             .get("patternProperties")
             .and_then(|p| p.as_object())
             .is_some_and(|p| !p.is_empty())
         {
-            out.patterns = true;
+            shape.allow_extra = true;
         }
         match schema.get("additionalProperties") {
             Some(serde_json::Value::Object(element)) => {
-                out.additional = Some(serde_json::Value::Object(element.clone()));
+                shape.allow_extra = true;
+                shape.additional_schema = Some(serde_json::Value::Object(element.clone()));
             }
-            Some(serde_json::Value::Bool(true)) => {
-                if !matches!(out.additional, Some(serde_json::Value::Object(_))) {
-                    out.additional = Some(serde_json::Value::Bool(true));
-                }
-            }
-            Some(serde_json::Value::Bool(false)) => {
-                if out.additional.is_none() {
-                    out.additional = Some(serde_json::Value::Bool(false));
-                }
-            }
-            Some(_) => {
-                if out.additional.is_none() {
-                    out.additional = Some(serde_json::Value::Bool(false));
-                }
-            }
+            Some(serde_json::Value::Bool(true)) => shape.allow_extra = true,
+            Some(serde_json::Value::Bool(false)) => shape.deny_extra = true,
+            Some(_) => shape.deny_extra = true,
             None => {
-                let composed = schema.get("$ref").is_some()
-                    || ["allOf", "anyOf", "oneOf"].iter().any(|key| {
-                        schema
-                            .get(*key)
-                            .and_then(|b| b.as_array())
-                            .is_some_and(|b| !b.is_empty())
-                    });
-                if properties.is_none() && !composed {
-                    out.unconstrained = true;
-                } else if out.additional.is_none() {
-                    out.additional = Some(serde_json::Value::Bool(false));
+                if shape.has_properties {
+                    shape.deny_extra = true;
                 }
             }
         }
         for key in ["allOf", "anyOf", "oneOf"] {
-            if let Some(branches) = schema.get(key).and_then(|b| b.as_array()) {
-                for branch in branches {
-                    if let Some(branch) = branch.as_object() {
-                        Self::collect(root, branch, depth + 1, out);
-                    }
-                }
-            }
+            let Some(branches) = schema.get(key).and_then(|b| b.as_array()) else {
+                continue;
+            };
+            let mut shapes = branches
+                .iter()
+                .filter_map(|branch| branch.as_object())
+                .map(|branch| Self::collect(root, branch, depth + 1));
+            let Some(first) = shapes.next() else {
+                continue;
+            };
+            let composed = if key == "allOf" {
+                shapes.fold(first, Self::merge_all)
+            } else {
+                shapes.fold(first, Self::merge_any)
+            };
+            // The node's own keywords apply to the composed instance too.
+            shape = shape.merge_all(composed);
         }
+        shape
+    }
+
+    /// A node that declares nothing about key names constrains none of them.
+    fn unconstrained(&self) -> bool {
+        !self.has_properties && !self.allow_extra && !self.deny_extra
+    }
+
+    /// Conjunctive merge (`allOf`, `$ref`, own keywords): a key must be
+    /// allowed by both sides. Properties are unioned so a key declared by
+    /// either side stays whitelisted; undeclared keys are kept only when both
+    /// sides allow them (an unconstrained side does not deny).
+    fn merge_all(mut self, other: Self) -> Self {
+        let self_unconstrained = self.unconstrained();
+        let other_unconstrained = other.unconstrained();
+        for (key, value) in other.properties {
+            self.properties.entry(key).or_insert(value);
+        }
+        self.has_properties |= other.has_properties;
+        if self.items.is_none() {
+            self.items = other.items;
+        }
+        let allow =
+            (self.allow_extra || self_unconstrained) && (other.allow_extra || other_unconstrained);
+        let deny = self.deny_extra || other.deny_extra;
+        self.allow_extra = allow;
+        self.deny_extra = deny;
+        if !allow {
+            self.additional_schema = None;
+        } else if self.additional_schema.is_none() {
+            self.additional_schema = other.additional_schema;
+        }
+        self
+    }
+
+    /// Disjunctive merge (`anyOf`/`oneOf`): a key is allowed when any branch
+    /// allows it. An empty or `required`-only branch contributes nothing, so
+    /// it cannot turn the whole node unconstrained while another branch has a
+    /// property map.
+    fn merge_any(mut self, other: Self) -> Self {
+        for (key, value) in other.properties {
+            self.properties.entry(key).or_insert(value);
+        }
+        self.has_properties |= other.has_properties;
+        if self.items.is_none() {
+            self.items = other.items;
+        }
+        let allow = self.allow_extra || other.allow_extra;
+        let deny = self.deny_extra && other.deny_extra;
+        self.allow_extra = allow;
+        self.deny_extra = deny;
+        if !allow {
+            self.additional_schema = None;
+        } else if self.additional_schema.is_none() {
+            self.additional_schema = other.additional_schema;
+        }
+        self
     }
 }
 
@@ -3999,11 +4088,10 @@ fn project_schema_values(
     schema: Option<&serde_json::Map<String, serde_json::Value>>,
     values: &serde_json::Value,
 ) -> serde_json::Value {
-    let mut shape = SchemaShape::default();
-    match schema {
-        Some(schema) => SchemaShape::collect(root, schema, 0, &mut shape),
-        None => shape.unconstrained = true,
-    }
+    let shape = match schema {
+        Some(schema) => SchemaShape::collect(root, schema, 0),
+        None => SchemaShape::default(),
+    };
     match values {
         serde_json::Value::Object(map) => {
             let mut out = serde_json::Map::new();
@@ -4015,17 +4103,15 @@ fn project_schema_values(
                     );
                     continue;
                 }
-                if let Some(element) = shape.additional.as_ref().and_then(|a| a.as_object()) {
+                if let Some(element) = shape.additional_schema.as_ref().and_then(|a| a.as_object())
+                {
                     out.insert(
                         key.clone(),
                         project_schema_values(root, Some(element), value),
                     );
                     continue;
                 }
-                if shape.patterns
-                    || shape.unconstrained
-                    || matches!(shape.additional, Some(serde_json::Value::Bool(true)))
-                {
+                if shape.allow_extra || shape.unconstrained() {
                     out.insert(key.clone(), value.clone());
                 }
             }
@@ -4413,11 +4499,10 @@ fn sanitize_value(
     path: &str,
     stripped: &mut Vec<String>,
 ) {
-    let mut shape = SchemaShape::default();
-    match schema {
-        Some(schema) => SchemaShape::collect(root, schema, 0, &mut shape),
-        None => shape.unconstrained = true,
-    }
+    let shape = match schema {
+        Some(schema) => SchemaShape::collect(root, schema, 0),
+        None => SchemaShape::default(),
+    };
     match value {
         serde_json::Value::Object(map) => {
             let mut remove = Vec::new();
@@ -4432,14 +4517,12 @@ fn sanitize_value(
                     sanitize_value(root, child_schema.as_object(), child, &child_path, stripped);
                     continue;
                 }
-                if let Some(element) = shape.additional.as_ref().and_then(|a| a.as_object()) {
+                if let Some(element) = shape.additional_schema.as_ref().and_then(|a| a.as_object())
+                {
                     sanitize_value(root, Some(element), child, &child_path, stripped);
                     continue;
                 }
-                if shape.patterns
-                    || shape.unconstrained
-                    || matches!(shape.additional, Some(serde_json::Value::Bool(true)))
-                {
+                if shape.allow_extra || shape.unconstrained() {
                     // No per-key schema: only the sensitive-key rule applies
                     // beneath this node.
                     sanitize_value(root, None, child, &child_path, stripped);
@@ -5750,6 +5833,150 @@ mod values_whitelist_tests {
         }
         assert!(stripped.contains(&"/command".to_string()));
         assert!(stripped.contains(&"/startupCommand".to_string()));
+    }
+
+    #[test]
+    fn schema_listed_pod_spec_controls_are_stripped_on_install_and_update() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "podAffinity": { "type": "object" },
+                "nodeAffinity": { "type": "object" },
+                "podAntiAffinity": { "type": "object" },
+                "hostAliases": { "type": "array" },
+                "hostPort": { "type": "integer" },
+                "runtimeClassName": { "type": "string" },
+                "capabilities": { "type": "object" },
+                "allowPrivilegeEscalation": { "type": "boolean" },
+                "seccompProfile": { "type": "object" },
+                "lifecycle": { "type": "object" },
+                "dnsPolicy": { "type": "string" },
+                "dnsConfig": { "type": "object" },
+                "topologySpreadConstraints": { "type": "array" },
+                "hostUsers": { "type": "boolean" },
+                "sysctls": { "type": "array" },
+                "allowed": { "type": "string" }
+            }
+        });
+        let hostile = json!({
+            "podAffinity": { "requiredDuringSchedulingIgnoredDuringExecution": [] },
+            "nodeAffinity": {},
+            "podAntiAffinity": {},
+            "hostAliases": [{ "ip": "203.0.113.10", "hostnames": ["evil"] }],
+            "hostPort": 22,
+            "runtimeClassName": "privileged",
+            "capabilities": { "add": ["SYS_ADMIN"] },
+            "allowPrivilegeEscalation": true,
+            "seccompProfile": { "type": "Unconfined" },
+            "lifecycle": { "postStart": { "exec": { "command": ["id"] } } },
+            "dnsPolicy": "None",
+            "dnsConfig": {},
+            "topologySpreadConstraints": [],
+            "hostUsers": false,
+            "sysctls": [{ "name": "kernel.unprivileged_userns_clone", "value": "1" }],
+            "allowed": "yes"
+        });
+        let keys = [
+            "podAffinity",
+            "nodeAffinity",
+            "podAntiAffinity",
+            "hostAliases",
+            "hostPort",
+            "runtimeClassName",
+            "capabilities",
+            "allowPrivilegeEscalation",
+            "seccompProfile",
+            "lifecycle",
+            "dnsPolicy",
+            "dnsConfig",
+            "topologySpreadConstraints",
+            "hostUsers",
+            "sysctls",
+        ];
+
+        // Install path: the submitted values.
+        let mut install = map(hostile.clone());
+        let stripped = sanitize_client_values(&schema, &mut install);
+        assert_eq!(install["allowed"], "yes");
+        for key in keys {
+            assert!(install.get(key).is_none(), "{key} must be stripped");
+        }
+        assert!(stripped.contains(&"/podAffinity".to_string()));
+        assert!(stripped.contains(&"/lifecycle".to_string()));
+        assert!(stripped.contains(&"/capabilities".to_string()));
+
+        // Update path: the same filter runs over a legacy stored record.
+        let mut stored = map(hostile);
+        sanitize_client_values(&schema, &mut stored);
+        assert_eq!(stored["allowed"], "yes");
+        for key in keys {
+            assert!(stored.get(key).is_none(), "{key} must be stripped");
+        }
+    }
+
+    #[test]
+    fn a_required_only_branch_does_not_disable_the_whitelist() {
+        let all_of = json!({
+            "type": "object",
+            "allOf": [
+                { "properties": { "port": { "type": "integer" } } },
+                { "required": ["port"] }
+            ]
+        });
+        let mut client = map(json!({ "port": 8080, "evil": "injected" }));
+        sanitize_client_values(&all_of, &mut client);
+        assert_eq!(client["port"], 8080);
+        assert!(
+            client.get("evil").is_none(),
+            "a required-only branch must not turn the composed node unconstrained"
+        );
+
+        let any_of = json!({
+            "type": "object",
+            "anyOf": [
+                { "properties": { "a": { "type": "string" } } },
+                {}
+            ]
+        });
+        let mut client = map(json!({ "a": "ok", "evil": "injected" }));
+        sanitize_client_values(&any_of, &mut client);
+        assert_eq!(client["a"], "ok");
+        assert!(client.get("evil").is_none());
+
+        // Projection uses the same shape, so chart defaults outside the
+        // composed property maps are not carried into validation.
+        let values = json!({ "port": 8080, "chartExtra": true });
+        let projected = project_schema_values(&all_of, all_of.as_object(), &values);
+        assert_eq!(projected["port"], 8080);
+        assert!(projected.get("chartExtra").is_none());
+    }
+
+    #[test]
+    fn a_key_allowed_by_one_any_of_branch_passes() {
+        let schema = json!({
+            "type": "object",
+            "anyOf": [
+                { "properties": { "a": { "type": "string" } } },
+                { "properties": { "b": { "type": "integer" } } }
+            ]
+        });
+        let mut client = map(json!({ "a": "x", "b": 1, "evil": "injected" }));
+        sanitize_client_values(&schema, &mut client);
+        assert_eq!(client["a"], "x");
+        assert_eq!(client["b"], 1);
+        assert!(client.get("evil").is_none());
+
+        // An explicit map-typed branch still authorizes undeclared keys.
+        let open = json!({
+            "type": "object",
+            "anyOf": [
+                { "properties": { "a": { "type": "string" } } },
+                { "additionalProperties": true }
+            ]
+        });
+        let mut client = map(json!({ "a": "x", "extra": "kept" }));
+        sanitize_client_values(&open, &mut client);
+        assert_eq!(client["extra"], "kept");
     }
 
     #[test]
