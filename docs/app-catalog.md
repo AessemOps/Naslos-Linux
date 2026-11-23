@@ -140,7 +140,10 @@ config form receives the same list and an untouched field is sent back as
 uses the **union** of the persisted pointers and the pointers the current
 catalog schema declares: a catalog entry that declares no secret (or has no
 schema at all) cannot un-mask a value the record knows is secret, and a schema
-that adds a pointer masks it immediately. If the catalog entry is missing and
+that adds a pointer masks it immediately. A redacted field whose value came
+from the chart or catalog defaults (so it is not in the stored override diff)
+is restored from those defaults on reconfigure instead of being overwritten
+with the `null` the form echoed back. If the catalog entry is missing and
 the record has no persisted pointer list, the API omits the value map entirely
 and sets `valuesOmitted: true` rather than guess.
 
@@ -398,12 +401,20 @@ arbitrary keys. On install and reconfigure, any submitted key that is not in
 the schema's property tree is dropped (the job log lists the stripped paths)
 and the rest is validated against the schema. Four classes of chart value are
 never accepted from a client, even when a schema lists them: `image`,
-`privileged`, `hostPath`, `serviceAccount`, plus the related container/security
-keys (`podSecurityContext`, `securityContext`, `imagePullPolicy`,
-`hostNetwork`, `hostPID`, `hostIPC`, `volumes`, `volumeMounts`, `containers`,
-`initContainers`, `serviceAccountName`, `automountServiceAccountToken`). Charts
-may still set those through their own `values.yaml` or the manifest
-`defaultValues`; only operator-supplied values are filtered. Values outside
+`privileged`, `hostPath`, `serviceAccount`, plus every key whose name
+identifies a container/pod-spec control — `command`, `args`, `extraContainers`,
+`sidecars`, `tolerations`, `nodeSelector`, `priorityClassName`,
+`podSecurityContext`, `securityContext`, `imagePullPolicy`, `hostNetwork`,
+`hostPID`, `hostIPC`, `volumes`, `volumeMounts`, `containers`,
+`initContainers`, `serviceAccountName`, `automountServiceAccountToken` and
+similarly named variants (matched case-insensitively by name fragment and by a
+`…Command`/`…Args` suffix). Charts may still set those through their own
+`values.yaml` or the manifest `defaultValues`; only operator-supplied values
+are filtered. A map-typed `additionalProperties` schema is preserved as the
+per-key whitelist for dynamic fields, and a composed schema (`$ref`, `allOf`,
+`anyOf`, `oneOf`) is resolved when whitelisting and validating; composed nodes
+are not force-hardened with `additionalProperties: false`, which would reject
+sibling properties. Values outside
 the schema that come from the chart/catalog defaults are still sent to Helm —
 they are simply not validated by the catalog schema. The drawer's `resources`
 editor is the one client value accepted outside the schema (no catalog declares
@@ -494,7 +505,9 @@ charts, or `hostPath` for privileged charts.
   defaults are applied (S-2).
 - **A host has one owner.** Install and exposure updates reject a
   `subdomain.<baseDomain>` that another installed app already claims, naming
-  the owning app (S-8).
+  the owning app (S-8). The comparison and the record write happen under one
+  store lock, so two concurrent installs (or an install racing an exposure
+  update) cannot both claim the same host.
 - **Secret values are not returned.** Catalog fields marked
   `format: password` (or `writeOnly: true`) are masked as `null` in
   `GET /api/apps` and `GET /api/apps/{name}`, with the names listed in

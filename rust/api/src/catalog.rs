@@ -381,7 +381,7 @@ fn load_app(ref_: &SourceRef, folder: &str) -> Result<App, String> {
         Some(s) => {
             let mut schema = serde_json::to_value(s)
                 .map_err(|e| format!("encoding schema for {:?}: {e}", m.name))?;
-            enforce_schema_whitelist(&mut schema);
+            enforce_schema_whitelist(&mut schema, true);
             schema
         }
         None => serde_json::Value::Null,
@@ -426,39 +426,61 @@ fn load_app(ref_: &SourceRef, folder: &str) -> Result<App, String> {
 /// JSON Schema default, so every object node that declares `properties` is
 /// hardened to reject them (SEC-2026-D7, S-1). Chart and catalog defaults are
 /// trusted and are not routed through this whitelist.
-fn enforce_schema_whitelist(schema: &mut serde_json::Value) {
+fn enforce_schema_whitelist(schema: &mut serde_json::Value, inject: bool) {
     match schema {
         serde_json::Value::Object(map) => {
-            if map.get("properties").is_some_and(|p| p.is_object()) {
-                map.insert(
-                    "additionalProperties".to_string(),
-                    serde_json::Value::Bool(false),
+            // A composed node's properties can live in `$ref`/`allOf`/`anyOf`/
+            // `oneOf`; forcing `additionalProperties: false` there would make
+            // the validator reject sibling properties. Client values are still
+            // whitelisted by `sanitize_client_values`, which resolves the same
+            // composition.
+            let composed = map.get("$ref").is_some()
+                || ["allOf", "anyOf", "oneOf"].iter().any(|key| {
+                    map.get(*key)
+                        .and_then(|b| b.as_array())
+                        .is_some_and(|b| !b.is_empty())
+                });
+            if inject && !composed && map.get("properties").is_some_and(|p| p.is_object()) {
+                // An explicit map-typed schema is the per-key whitelist for
+                // dynamic fields; only absent/true needs hardening. Forcing
+                // `false` here would silently drop a supported map field.
+                let map_typed = matches!(
+                    map.get("additionalProperties"),
+                    Some(serde_json::Value::Object(_))
                 );
+                if !map_typed {
+                    map.insert(
+                        "additionalProperties".to_string(),
+                        serde_json::Value::Bool(false),
+                    );
+                }
             }
             for key in ["properties", "patternProperties", "$defs", "definitions"] {
                 if let Some(serde_json::Value::Object(children)) = map.get_mut(key) {
                     for child in children.values_mut() {
-                        enforce_schema_whitelist(child);
+                        enforce_schema_whitelist(child, true);
                     }
                 }
             }
             if let Some(items) = map.get_mut("items") {
-                enforce_schema_whitelist(items);
+                enforce_schema_whitelist(items, true);
             }
             for key in ["allOf", "anyOf", "oneOf"] {
                 if let Some(serde_json::Value::Array(items)) = map.get_mut(key) {
                     for item in items {
-                        enforce_schema_whitelist(item);
+                        // A branch-level `false` would reject properties that
+                        // sibling branches or the parent declare.
+                        enforce_schema_whitelist(item, false);
                     }
                 }
             }
             if let Some(additional) = map.get_mut("additionalProperties") {
-                enforce_schema_whitelist(additional);
+                enforce_schema_whitelist(additional, true);
             }
         }
         serde_json::Value::Array(items) => {
             for item in items {
-                enforce_schema_whitelist(item);
+                enforce_schema_whitelist(item, inject);
             }
         }
         _ => {}
@@ -821,6 +843,34 @@ mod tests {
         assert!(schema["properties"]["port"]
             .get("additionalProperties")
             .is_none());
+    }
+
+    #[test]
+    fn a_map_typed_additional_properties_schema_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        write_app(
+            dir.path(),
+            "app",
+            "name: app\nschema:\n  type: object\n  properties:\n    labels:\n      type: object\n      additionalProperties: { type: string }\n  additionalProperties: { type: string }\n",
+            "",
+        );
+        let c = Catalog::load(&[ref_(
+            "official",
+            "Prod",
+            &dir.path().display().to_string(),
+            true,
+        )]);
+        let schema = c.get("app").unwrap().schema;
+        assert_eq!(
+            schema["additionalProperties"],
+            serde_json::json!({ "type": "string" }),
+            "an explicit map schema is the per-key whitelist"
+        );
+        assert_eq!(
+            schema["properties"]["labels"]["additionalProperties"],
+            serde_json::json!({ "type": "string" }),
+            "nested map schemas are preserved too"
+        );
     }
 
     #[test]
