@@ -70,7 +70,7 @@ tokio-tungstenite = "0.30"
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-jsonschema = { version = "0.60", default-features = false }
+jsonschema = { version = "0.61", default-features = false }
 
 [dev-dependencies]
 http-body-util = "0.1"
