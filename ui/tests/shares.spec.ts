@@ -109,7 +109,7 @@ test('a share can be linked to a new folder created from the share form', async 
 
   try {
     await page.goto('/shares');
-    await page.click('text=+ New Share');
+    await page.getByRole('button', { name: '+ New Share' }).click();
 
     const dialog = page.locator('.fixed.inset-0');
     await expect(dialog.getByRole('heading', { name: 'New Share' })).toBeVisible();
@@ -180,7 +180,7 @@ test('a share can be restricted to an LDAP group from the form', async ({ page, 
 
   try {
     await page.goto('/shares');
-    await page.click('text=+ New Share');
+    await page.getByRole('button', { name: '+ New Share' }).click();
     await expect(page.getByRole('heading', { name: 'New Share' })).toBeVisible();
 
     await page.fill('input[type="text"]', name);
@@ -228,7 +228,7 @@ test('shares can only be created on a ZFS dataset', async ({ page, request }) =>
   // asynchronously from /api/shares/paths, so wait for it.
   const paths = await (await request.get('/api/shares/paths')).json();
   await page.goto('/shares');
-  await page.click('text=+ New Share');
+  await page.getByRole('button', { name: '+ New Share' }).click();
   await expect(page.getByRole('heading', { name: 'New Share' })).toBeVisible();
 
   const pathSelect = page.locator('select').first();
@@ -241,7 +241,7 @@ test('shares can only be created on a ZFS dataset', async ({ page, request }) =>
 
 test('share form does not offer AFP, which the API rejects', async ({ page }) => {
   await page.goto('/shares');
-  await page.click('text=+ New Share');
+  await page.getByRole('button', { name: '+ New Share' }).click();
   await expect(page.getByRole('heading', { name: 'New Share' })).toBeVisible();
 
   const protocols = page.locator('select').nth(1);

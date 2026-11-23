@@ -23,6 +23,7 @@
   let ssoDomains: string[] = [];
   let services: { name: string; port: number; scheme: string }[] = [];
   let loading = true;
+  let loaded = false;
   let saving = false;
   let error = '';
   let unsafeAcknowledged = false;
@@ -39,6 +40,8 @@
   const dispatch = createEventDispatcher();
 
   async function load() {
+    loading = true;
+    error = '';
     try {
       const res = await fetch(`/api/apps/${encodeURIComponent(appName)}/exposure`);
       if (!res.ok) {
@@ -49,19 +52,26 @@
       baseDomain = data.baseDomain || '';
       selectableDomains = Array.isArray(data.selectableDomains) ? data.selectableDomains : [];
       ssoDomains = Array.isArray(data.ssoDomains) ? data.ssoDomains : [];
+      loaded = true;
       const servicesRes = await fetch(`/api/apps/${encodeURIComponent(appName)}/services`);
       if (servicesRes.ok) {
         const discovered = await servicesRes.json();
         services = Array.isArray(discovered) ? discovered : [];
       }
     } catch (e) {
-      error = 'Failed to load exposure: ' + e;
+      // Never leave an editable default exposure behind: saving it would
+      // silently unexpose the app.
+      error = 'Failed to load exposure: ' + (e instanceof Error ? e.message : String(e));
     } finally {
       loading = false;
     }
   }
 
   async function save() {
+    if (!loaded) {
+      error = 'The exposure could not be loaded; retry before saving.';
+      return;
+    }
     if (unsafeExposure && !unsafeAcknowledged) {
       error = 'Confirm that this app will be exposed without full protection before saving.';
       return;
@@ -72,7 +82,20 @@
       const res = await fetch(`/api/apps/${encodeURIComponent(appName)}/exposure`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ exposure, baseDomain })
+        // Build the body explicitly: a stale default must never be sent.
+        body: JSON.stringify({
+          exposure: {
+            subdomain: exposure.subdomain,
+            tls: exposure.tls,
+            auth: exposure.auth,
+            localOnly: exposure.localOnly,
+            internet: exposure.internet,
+            service: exposure.service,
+            port: exposure.port,
+            scheme: exposure.scheme
+          },
+          baseDomain
+        })
       });
       if (!res.ok) {
         const data = await res.json();
@@ -99,6 +122,11 @@
     <div class="flex-1 overflow-y-auto p-6">
       {#if loading}
         <p class="text-gray-400">Loading exposure...</p>
+      {:else if !loaded}
+        <div role="alert" class="card border-red-700 bg-red-900/20 text-red-300 text-sm">
+          <p>{error || 'The exposure could not be loaded.'}</p>
+          <button type="button" class="btn btn-secondary mt-3" on:click={load}>Retry</button>
+        </div>
       {:else}
         <ExposureForm
           bind:exposure
@@ -126,11 +154,11 @@
           </label>
         {/if}
       {/if}
-      {#if error}<div role="alert" class="mt-4 p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
+      {#if error && loaded}<div role="alert" class="mt-4 p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
     </div>
     <div class="p-6 border-t border-naslos-border flex justify-end gap-3">
       <button class="btn btn-secondary" on:click={() => dispatch('close')}>Cancel</button>
-      <button class="btn btn-primary" on:click={save} disabled={saving || loading || (unsafeExposure && !unsafeAcknowledged)}>{saving ? 'Saving...' : 'Save'}</button>
+      <button class="btn btn-primary" on:click={save} disabled={saving || loading || !loaded || (unsafeExposure && !unsafeAcknowledged)}>{saving ? 'Saving...' : 'Save'}</button>
     </div>
   </div>
 </div>

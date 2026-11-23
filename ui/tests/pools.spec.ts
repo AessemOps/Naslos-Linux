@@ -21,7 +21,9 @@ test('a dataset can be created and destroyed from the pool page', async ({ page,
     await expect(page.getByRole('heading', { name: pool.name, exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Datasets' })).toBeVisible();
 
-    await page.click('text=New Dataset');
+    // The page has a header action and an empty-list action; both open the
+    // same dialog, so the header one is enough.
+    await page.getByRole('button', { name: 'New Dataset' }).first().click();
     const dialog = page.locator('.fixed.inset-0');
     await expect(dialog.getByRole('heading', { name: 'New Dataset' })).toBeVisible();
 
@@ -53,8 +55,12 @@ test('a dataset can be created and destroyed from the pool page', async ({ page,
     expect(deletes).toHaveLength(0);
 
     // A typed name that does not match is refused locally (prompt + alert).
-    page.once('dialog', (dialog) => dialog.accept('not-the-name'));
-    page.once('dialog', (dialog) => dialog.accept());
+    // Register the alert handler only after accepting the prompt, or both
+    // `once` handlers would fire on the same dialog event.
+    page.once('dialog', async (dialog) => {
+      page.once('dialog', (alert) => alert.accept());
+      await dialog.accept('not-the-name');
+    });
     await row.getByTitle('Destroy this dataset').click();
     await expect(row).toHaveCount(1);
     expect(deletes).toHaveLength(0);
@@ -138,7 +144,7 @@ test('the add drive dialog shows in-use disks as unavailable', async ({ page, re
   const pool = await firstPool(request);
 
   await page.goto(`/pools/${pool.name}`);
-  await page.click('text=Add Drive');
+  await page.getByRole('button', { name: 'Add Drive' }).click();
 
   const dialog = page.locator('.fixed.inset-0');
   await expect(dialog.getByRole('heading', { name: `Add Drive to ${pool.name}` })).toBeVisible();
