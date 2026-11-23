@@ -84,8 +84,33 @@ for needle, what in (
 ):
     if not any(needle in e for e in ex):
         fail(f"admission policy does not deny {what}")
-if not any("secrets" in e and "startsWith('naslos-')" in e for e in ex):
-    fail("admission policy does not deny the naslos-* platform Secret prefix")
+if not any("secrets" in e for e in ex):
+    fail("admission policy does not deny platform Secrets")
+# The reserved list is enumerated (a blanket naslos-* prefix would also block
+# app releases whose own names start with naslos-): every platform Secret
+# name and the two API-managed prefixes must appear in the expression.
+secret_expr = next((e for e in ex if "secrets" in e), "")
+for reserved in (
+    "naslos-proxy",
+    "naslos-tls",
+    "naslos-agent",
+    "naslos-vmd",
+    "naslos-buddy",
+    "naslos-buddy-kek",
+    "naslos-authelia",
+    "naslos-authelia-jwt",
+    "naslos-openldap",
+    "naslos-openldap-tls",
+    "naslos-openldap-ca",
+    "naslos-talosconfig",
+    "naslos-charts-deploy-key",
+    "naslos-ddns-",
+    "naslos-env-",
+):
+    if f"'{reserved}'" not in secret_expr:
+        fail(f"admission policy does not reserve the Secret {reserved}")
+if "startsWith('naslos-')" in secret_expr:
+    fail("admission policy uses the blanket naslos-* prefix, which blocks naslos-* release names")
 b = binding.get("naslos-helm-app-isolation")
 if not b:
     fail("ValidatingAdmissionPolicyBinding/naslos-helm-app-isolation is missing")

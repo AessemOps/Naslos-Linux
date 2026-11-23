@@ -99,7 +99,7 @@ EOF
 kubectl -n naslos exec naslos-openldap-restore -- sh -c '
   cd /var/lib/ldap
   for f in data.mdb lock.mdb; do
-    [ -f "$f" ] && mv "$f" "$f.pre-restore-<timestamp>"
+    if [ -f "$f" ]; then mv "$f" "$f.pre-restore-<timestamp>"; fi
   done'
 
 # 5. Restore the data.
