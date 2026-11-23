@@ -335,29 +335,43 @@ pub async fn kubernetes(cli: &Cli, writer: &mut Writer) -> Result<String, String
 }
 
 async fn download_and_extract(cli: &Cli) -> Result<(PackMetadata, PathBuf), String> {
+    // R-063: the URL is https-only and its host must be the configured update
+    // source or a GitHub asset host. The sha256 is compared inside the Job
+    // (never trusted from the API response), and an available signature is
+    // verified against the configured key.
+    let source = std::env::var("SYSTEM_UPDATES_SOURCE").unwrap_or_default();
+    crate::system::pack_url_allowed(&cli.pack_url, &source)?;
+    if cli.sha256.len() != 64 || !cli.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("--sha256 must be 64 hex characters".into());
+    }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(600))
         .build()
         .map_err(|e| format!("building the download client: {e}"))?;
-    let resp = client
-        .get(&cli.pack_url)
-        .header("User-Agent", "naslos-upgrade")
-        .send()
-        .await
-        .map_err(|e| format!("GET {}: {e}", cli.pack_url))?;
-    if !resp.status().is_success() {
-        return Err(format!("GET {}: HTTP {}", cli.pack_url, resp.status()));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("reading the pack: {e}"))?;
+    let bytes = download_capped(&client, &cli.pack_url, "pack").await?;
     let got = crate::pack::hex_sha256(&bytes);
     if !got.eq_ignore_ascii_case(&cli.sha256) {
         return Err(format!(
             "pack sha256 mismatch: got {got}, approved {}",
             cli.sha256
         ));
+    }
+    match (cli.pack_sig_url.is_empty(), cli.pack_pubkey.is_empty()) {
+        (false, false) => {
+            crate::system::pack_url_allowed(&cli.pack_sig_url, &source)?;
+            let signature = String::from_utf8(
+                download_capped(&client, &cli.pack_sig_url, "pack signature").await?,
+            )
+            .map_err(|_| "the pack signature is not UTF-8".to_string())?;
+            crate::upgrade::verify_pack_signature(&bytes, &signature, &cli.pack_pubkey)?;
+        }
+        (false, true) => {
+            return Err("a pack signature URL is set but no --pack-pubkey is configured".into())
+        }
+        (true, false) => {
+            return Err("a pack public key is configured but the release has no signature".into())
+        }
+        (true, true) => {}
     }
     let dest = Path::new(&cli.state_dir)
         .join("updates")
@@ -368,6 +382,48 @@ async fn download_and_extract(cli: &Cli) -> Result<(PackMetadata, PathBuf), Stri
     std::fs::create_dir_all(&dest).map_err(|e| format!("creating {}: {e}", dest.display()))?;
     let meta = crate::pack::extract_pack(&bytes, &dest)?;
     Ok((meta, dest))
+}
+
+/// Download with a hard size cap and a matching Content-Length check, so a
+/// hostile or broken asset cannot exhaust the Job's memory (R-063).
+async fn download_capped(
+    client: &reqwest::Client,
+    url: &str,
+    what: &str,
+) -> Result<Vec<u8>, String> {
+    let resp = client
+        .get(url)
+        .header("User-Agent", "naslos-upgrade")
+        .send()
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("GET {url}: HTTP {}", resp.status()));
+    }
+    if let Some(length) = resp.content_length() {
+        if length > crate::upgrade::MAX_PACK_BYTES as u64 {
+            return Err(format!(
+                "{what} is {length} bytes, larger than the {} byte cap",
+                crate::upgrade::MAX_PACK_BYTES
+            ));
+        }
+    }
+    let mut out = Vec::new();
+    let mut resp = resp;
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("reading the {what}: {e}"))?
+    {
+        if out.len().saturating_add(chunk.len()) > crate::upgrade::MAX_PACK_BYTES {
+            return Err(format!(
+                "{what} exceeds the {} byte cap",
+                crate::upgrade::MAX_PACK_BYTES
+            ));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
 }
 
 struct ReleaseFacts {
