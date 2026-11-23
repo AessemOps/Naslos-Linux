@@ -22,6 +22,30 @@ into an arbitrary pod launcher.
 {{- $cm := $upgrade.configMap | default "naslos-system-operation" }}
 {{- $talosSecret := .Values.api.talosConfigSecret | default "" }}
 {{- $statePvc := ternary "naslos-shares-config" "" .Values.api.sharesConfig.enabled }}
+{{- /*
+Optional strict signature mode. Set system.updates.packPubkey (and give the API
+the same key as SYSTEM_UPDATES_PACK_PUBKEY) to require every web upgrade to
+pass both --pack-sig-url and --pack-pubkey. Left empty, the policy still
+rejects a half-filled pair; see the positional validation below.
+*/}}
+{{- $packPubkey := $updates.packPubkey | default "" }}
+{{- /*
+The operation may only fetch a pack from this release channel. The API's
+update check (and the Job's own fallback download) accepts the configured
+update source or a GitHub release asset host; the policy pins the same idea at
+admission time: a GitHub source resolves to its repo's release-download prefix,
+any other (mirror) source to its https host. Changing SYSTEM_UPDATES_SOURCE
+outside this value would make the policy deny the Job, so override the value.
+*/}}
+{{- $updateSource := $updates.source | default "https://api.github.com/repos/AessemOps/Naslos-Linux/releases" }}
+{{- $packUrlPrefix := $updateSource }}
+{{- if regexMatch "^https://api\\.github\\.com/repos/[^/]+/[^/]+" $updateSource }}
+{{- $repo := regexReplaceAll "^https://api\\.github\\.com/repos/([^/]+/[^/]+).*$" $updateSource "${1}" }}
+{{- $packUrlPrefix = printf "https://github.com/%s/releases/download/" $repo }}
+{{- else }}
+{{- $host := regexFind "^https://[^/]+" $updateSource }}
+{{- if $host }}{{ $packUrlPrefix = printf "%s/" $host }}{{ end }}
+{{- end }}
 {{- if and .Values.ui.enabled $release.profile }}
 apiVersion: v1
 kind: ServiceAccount
@@ -164,6 +188,55 @@ spec:
         a.matches('^--(op|operation-id|from|version|pack-url|sha256|pack-sig-url|pack-pubkey|pack-file|pack-sig-file|namespace|release)(=|$)')))
       message: >-
         upgrader args may only use the operation flags
+    # The flag allowlist above is not enough on its own: the values decide what
+    # the cluster-admin operation installs. A Job creator with the upgrader
+    # ServiceAccount could otherwise pass an arbitrary --pack-url with a
+    # matching --sha256 and no signature and run attacker-authored charts.
+    # Pin every position job_spec emits: the release-channel URL prefix, the
+    # cached-pack path the API writes, the chart namespace/release, and the
+    # signature flags (a half-filled signature pair is denied; the optional
+    # packPubkey strict mode also rejects an empty pair). Positional pinning
+    # makes the Job layout itself part of the contract.
+    - expression: >-
+        object.spec.containers.all(c,
+        {{- if .Values.api.sharesConfig.enabled }}
+        c.args.size() == 24 &&
+        c.args[20] == '--pack-file' &&
+        c.args[21] == '/var/lib/naslos/updates/pack-' + c.args[7] + '.tar.gz' &&
+        c.args[22] == '--pack-sig-file' &&
+        c.args[23] == c.args[21] + '.sig' &&
+        {{- else }}
+        c.args.size() == 20 &&
+        {{- end }}
+        c.args[0] == '--op' &&
+        c.args[1] in ['naslos', 'talos', 'kubernetes'] &&
+        c.args[2] == '--operation-id' &&
+        c.args[3].matches('^[0-9]+-[0-9a-f]{8}$') &&
+        c.args[4] == '--from' &&
+        c.args[5].matches('^v?[0-9]+\\.[0-9]+\\.[0-9]+$') &&
+        c.args[6] == '--version' &&
+        c.args[7].matches('^v?[0-9]+\\.[0-9]+\\.[0-9]+$') &&
+        c.args[8] == '--pack-url' &&
+        c.args[9].startsWith('{{ $packUrlPrefix }}') &&
+        c.args[10] == '--sha256' &&
+        c.args[11].matches('^[0-9a-f]{64}$') &&
+        c.args[12] == '--pack-sig-url' &&
+        (c.args[13] == '' || c.args[13].startsWith('{{ $packUrlPrefix }}')) &&
+        c.args[14] == '--pack-pubkey' &&
+        (c.args[15] == '' || c.args[15].matches('^[A-Za-z0-9+/=_-]{40,120}$')) &&
+        (c.args[13] == '') == (c.args[15] == '') &&
+        {{- if $packPubkey }}
+        c.args[13] != '' &&
+        c.args[15] != '' &&
+        {{- end }}
+        c.args[16] == '--namespace' &&
+        c.args[17] == '{{ .Release.Namespace }}' &&
+        c.args[18] == '--release' &&
+        c.args[19] == '{{ .Release.Name }}')
+      message: >-
+        upgrader args must carry the documented flags with pinned values: the
+        configured release channel for the pack, the API's cached pack path and
+        the matching signature pair
     - expression: >-
         object.spec.containers.all(c,
         c.env.all(e,
@@ -175,14 +248,15 @@ spec:
       message: >-
         upgrader env may only set the documented NASLOS_/HELM_/TALOS_ variables
         to literal values
-    # Volumes: tmp emptyDir, the configured Talos Secret, and the configured
-    # state claim (or an emptyDir when the chart has no state volume). The
-    # Secret and claim names are pinned to the chart configuration: before
-    # this, a mutated Job could mount any Secret in the namespace, including
-    # the Buddy KEK, and read it through an exec probe.
+    # Volumes: tmp emptyDir, the configured Talos Secret, the configured state
+    # claim (or an emptyDir when the chart has no state volume), and the
+    # ServiceAccount token projection the API server injects before this policy
+    # runs. That injected volume/mount is required (the Job's helm/kubectl use
+    # the in-cluster config), and it is admitted only in its standard shape:
+    # name prefix `kube-api-access-`, exactly three sources (bound SA token,
+    # the root-CA ConfigMap, the namespace downward API). Nothing broader.
     - expression: >-
         object.spec.volumes.all(v,
-        v.name in ['tmp', 'talosconfig', 'state'] &&
         !has(v.hostPath) &&
         ((v.name == 'tmp' && has(v.emptyDir)) ||
         (v.name == 'talosconfig' && has(v.secret) &&
@@ -192,10 +266,22 @@ spec:
         v.secret.items[0].path == 'config') ||
         (v.name == 'state' && ((has(v.persistentVolumeClaim) &&
         v.persistentVolumeClaim.claimName == '{{ $statePvc }}') ||
-        ('{{ $statePvc }}' == '' && has(v.emptyDir))))))
+        ('{{ $statePvc }}' == '' && has(v.emptyDir)))) ||
+        (v.name.startsWith('kube-api-access-') &&
+        has(v.projected) &&
+        v.projected.sources.size() == 3 &&
+        v.projected.sources[0].serviceAccountToken.path == 'token' &&
+        v.projected.sources[1].configMap.name == 'kube-root-ca.crt' &&
+        v.projected.sources[1].configMap.items.size() == 1 &&
+        v.projected.sources[1].configMap.items[0].key == 'ca.crt' &&
+        v.projected.sources[1].configMap.items[0].path == 'ca.crt' &&
+        v.projected.sources[2].downwardAPI.items.size() == 1 &&
+        v.projected.sources[2].downwardAPI.items[0].path == 'namespace' &&
+        v.projected.sources[2].downwardAPI.items[0].fieldRef.fieldPath ==
+        'metadata.namespace')))
       message: >-
-        upgrader volumes are limited to tmp, the configured Talos Secret and
-        the configured state claim
+        upgrader volumes are limited to tmp, the configured Talos Secret, the
+        configured state claim and the standard ServiceAccount token projection
     - expression: >-
         object.spec.containers.all(c,
         c.volumeMounts.all(m,
@@ -203,10 +289,13 @@ spec:
         ((m.name == 'tmp' && m.mountPath == '/tmp') ||
         (m.name == 'talosconfig' &&
         m.mountPath == '/var/run/secrets/talos.dev' && m.readOnly == true) ||
-        (m.name == 'state' && m.mountPath == '/var/lib/naslos'))))
+        (m.name == 'state' && m.mountPath == '/var/lib/naslos') ||
+        (m.name.startsWith('kube-api-access-') &&
+        m.mountPath == '/var/run/secrets/kubernetes.io/serviceaccount' &&
+        m.readOnly == true))))
       message: >-
-        upgrader mounts may only target /tmp, /var/run/secrets/talos.dev and
-        /var/lib/naslos without subPath
+        upgrader mounts may only target /tmp, /var/run/secrets/talos.dev (read
+        only), /var/lib/naslos and the standard ServiceAccount token mount
     # Pod and container isolation, pinned to what naslos-upgrade actually
     # needs. This stops a caller from gaining host namespaces or a writable
     # root through a mutated Job.

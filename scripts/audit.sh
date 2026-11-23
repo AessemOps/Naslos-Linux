@@ -917,15 +917,27 @@ check_system_upgrade_render() {
       rc=1
     fi
   done
-  python3 - "$f" <<'PY' || rc=1
+  python3 - "$f" "$root/charts/naslos/values.yaml" <<'PY' || rc=1
 import re, sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+values = yaml.safe_load(open(sys.argv[2]))
 
 def find(kind, name):
     for d in docs:
         if d.get("kind") == kind and d.get("metadata", {}).get("name") == name:
             return d
     return None
+
+# The same derivation the template performs: the configured release channel
+# decides which pack URLs the Job may be handed.
+source = ((values.get("system") or {}).get("updates") or {}).get("source") \
+    or "https://api.github.com/repos/AessemOps/Naslos-Linux/releases"
+github = re.match(r"^https://api\.github\.com/repos/([^/]+/[^/]+)", source)
+if github:
+    pack_prefix = f"https://github.com/{github.group(1)}/releases/download/"
+else:
+    host = re.match(r"^https://[^/]+", source)
+    pack_prefix = f"{host.group(0)}/" if host else source
 
 # C-1a: the arg allowlist must admit exactly the flags job_spec emits. The
 # check used to grep a truncated regex, so the policy could deny every upgrade
@@ -946,6 +958,30 @@ for flag in flags:
 # Negative control: it is a flag set, not a prefix match.
 for bad in ("--privileged", "--pack-url-evil", "--command", "--mount"):
     assert not allow.search(bad), f"the upgrader arg allowlist admits {bad}"
+
+# C-1a follow-up: the policy pins the values, not just the flag names. An
+# attacker with the upgrader ServiceAccount must not be able to point the
+# operation at an arbitrary pack. The render has api.sharesConfig enabled, so
+# the cached-pack layout (24 args) is the expected one.
+for fragment in (
+    "c.args.size() == 24",
+    "c.args[20] == '--pack-file'",
+    "c.args[21] == '/var/lib/naslos/updates/pack-' + c.args[7] + '.tar.gz'",
+    "c.args[22] == '--pack-sig-file'",
+    "c.args[23] == c.args[21] + '.sig'",
+    "c.args[8] == '--pack-url'",
+    f"c.args[9].startsWith('{pack_prefix}')",
+    f"c.args[13].startsWith('{pack_prefix}')",
+    "c.args[11].matches('^[0-9a-f]{64}$')",
+    "(c.args[13] == '') == (c.args[15] == '')",
+    "c.args[17] == 'naslos'",
+    "c.args[19] == 'naslos'",
+):
+    assert fragment in expr, f"upgrader policy is missing value pin {fragment!r}"
+# The rendered policy must take exactly one layout branch, not both, and the
+# optional strict signature mode is off until a key is configured.
+assert expr.count("c.args.size() ==") == 1, expr
+assert "c.args[13] != ''" not in expr, "strict signature mode must be opt-in"
 
 # C-1b: containment. Each of these closes a way to run arbitrary code with the
 # cluster-admin ServiceAccount: a shell probe, a lifecycle hook, envFrom, a
@@ -976,6 +1012,29 @@ for fragment in (
 ):
     assert fragment in expr, f"upgrader policy is missing {fragment!r}"
 
+# C-1c follow-up: the API server injects the ServiceAccount token projection
+# before admission, so the exact injected shape must be admitted. The negative
+# case is structural: the only prefix-based admission is `kube-api-access-`
+# with the pinned three-source projection, and every other volume name is an
+# exact literal, so a differently-named injected volume matches nothing.
+for fragment in (
+    "v.name.startsWith('kube-api-access-')",
+    "has(v.projected)",
+    "v.projected.sources.size() == 3",
+    "v.projected.sources[0].serviceAccountToken.path == 'token'",
+    "v.projected.sources[1].configMap.name == 'kube-root-ca.crt'",
+    "v.projected.sources[1].configMap.items[0].key == 'ca.crt'",
+    "v.projected.sources[2].downwardAPI.items[0].path == 'namespace'",
+    "v.projected.sources[2].downwardAPI.items[0].fieldRef.fieldPath == 'metadata.namespace'",
+    "m.name.startsWith('kube-api-access-')",
+    "m.mountPath == '/var/run/secrets/kubernetes.io/serviceaccount'",
+):
+    assert fragment in expr, f"upgrader policy does not admit the injected token: {fragment!r}"
+assert re.findall(r"v\.name\.startsWith\('([^']+)'\)", expr) == ["kube-api-access-"], expr
+assert re.findall(r"m\.name\.startsWith\('([^']+)'\)", expr) == ["kube-api-access-"], expr
+assert re.findall(r"v\.name == '([^']+)'", expr) == ["tmp", "talosconfig", "state"], expr
+assert re.findall(r"m\.name == '([^']+)'", expr) == ["tmp", "talosconfig", "state"], expr
+
 # The API creates the upgrader Job with kubectl apply, so its namespaced
 # Role must include patch (the 0.3.3 live upgrade failed without it).
 role = find("Role", "naslos-api-system")
@@ -998,6 +1057,36 @@ assert 443 in ports, ports
 print("system upgrade render ok")
 PY
   rm -f "$f"
+  # Optional strict signature mode: configuring a pack key must render the
+  # "signature required" pins, and a Job that omits the pair must be denied.
+  f2=$(mktemp) || return 1
+  if ! helm template naslos "$root/charts/naslos" -n naslos \
+    -f "$root/charts/naslos/values.yaml" \
+    -f "$root/charts/naslos/values-installer.yaml" \
+    --set release.profile=installer \
+    --set release.naslosVersion=0.3.0 \
+    --set release.chartVersion=0.3.0 \
+    --set release.talosVersion=v1.14.6 \
+    --set release.schematicId=abc \
+    --set release.kubernetesVersion=v1.37.0 \
+    --set system.updates.packPubkey=abc >"$f2" 2>/dev/null; then
+    rm -f "$f2"
+    return 1
+  fi
+  python3 - "$f2" <<'PY' || rc=1
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+vap = next(
+    d for d in docs
+    if d.get("kind") == "ValidatingAdmissionPolicy"
+    and d["metadata"]["name"] == "naslos-upgrader-guard"
+)
+expr = "\n".join(v.get("expression", "") for v in vap["spec"]["validations"])
+for fragment in ("c.args[13] != ''", "c.args[15] != ''"):
+    assert fragment in expr, f"strict signature mode is missing {fragment!r}"
+print("strict signature render ok")
+PY
+  rm -f "$f2"
   return "$rc"
 }
 

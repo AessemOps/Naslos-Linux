@@ -354,8 +354,22 @@ The operation itself runs in a Job (`naslos-system-op-*`) as the
 API image, `command: ["naslos-upgrade"]`, the documented flags and env names,
 no lifecycle/probes/envFrom, no init/ephemeral containers, no host namespaces,
 no added capabilities, a non-root read-only container, and the Talos Secret /
-state claim named by the chart values. Any other Job using that ServiceAccount
-is denied.
+state claim named by the chart values. The argument **values** are pinned too
+(a flag-name allowlist alone would let a Job creator point the cluster-admin
+operation at an arbitrary pack): `--pack-url`/`--pack-sig-url` must live under
+the release channel derived from `system.updates.source` (a GitHub source maps
+to its `github.com/<owner>/<repo>/releases/download/` prefix, a mirror source
+to its https host), `--pack-file`/`--pack-sig-file` must be the API's cached
+path, `--namespace`/`--release` must be the chart values, and the signature
+pair must be both empty or both present. Setting `system.updates.packPubkey`
+(and giving the API the same key as `SYSTEM_UPDATES_PACK_PUBKEY`) turns on the
+strict mode: the Job must then carry both signature values. The API server
+injects the ServiceAccount token projection before admission; the policy admits
+exactly that volume and mount (`kube-api-access-*`, three pinned sources,
+mounted at `/var/run/secrets/kubernetes.io/serviceaccount`) and nothing
+broader. Any other Job using that ServiceAccount is denied. Changing
+`SYSTEM_UPDATES_SOURCE` outside the chart value makes the policy deny the Job,
+so override the value instead of only the environment.
 
 **Pack handoff (why the upgrade does not re-download).** The update check
 downloads the release pack, verifies its sha256 (and detached Ed25519 signature
@@ -381,10 +395,14 @@ the Job re-verifies the cached signature with the same key passed in
 `--pack-pubkey`).
 
 **Failure handling.** A failed Helm upgrade, a workload that does not become
-ready (including the agent/samba/nfs DaemonSets), or a pack-digest mismatch on
-the *running* pods all roll the release back to the previous Helm revision
-(FR-UPD-06). A rollback failure is reported in the operation log with the
-revision to restore manually.
+ready, or a pack-digest mismatch on the *running* pods all roll the release
+back to the previous Helm revision (FR-UPD-06). The workload gate waits for the
+API, UI, OpenLDAP, Authelia, the terminal and the agent/samba/nfs DaemonSets;
+a workload the chart did not render (SMB/NFS disabled, terminal off) is skipped
+instead of failing the upgrade. The image check reads only live pods (pods
+being deleted by the rollout are ignored, so their old digest is not drift) and
+runs after every one of those workloads has been waited for. A rollback failure
+is reported in the operation log with the revision to restore manually.
 
 ### 4. Access the UI
 

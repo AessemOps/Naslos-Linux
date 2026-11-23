@@ -691,19 +691,25 @@ async fn rollback(cli: &Cli, revision: i64) -> Result<(), String> {
 }
 
 async fn wait_for_workloads(cli: &Cli) -> Result<(), String> {
+    let workload_ns =
+        std::env::var("NASLOS_WORKLOAD_NAMESPACE").unwrap_or_else(|_| "naslos-privileged".into());
     for (namespace, kind, name) in [
         (cli.namespace.as_str(), "statefulset", "naslos-openldap"),
         (cli.namespace.as_str(), "statefulset", "naslos-authelia"),
         (cli.namespace.as_str(), "deployment", "naslos-api"),
         (cli.namespace.as_str(), "deployment", "naslos-ui"),
+        // The terminal is in the same image-check set below; waiting for it
+        // too keeps the two lists identical, so a Recreate window (its
+        // strategy) cannot make the image check see no running pod and fail a
+        // good upgrade. A workload the chart did not render is skipped by
+        // `wait_rollout`, like every optional workload here.
+        (workload_ns.as_str(), "deployment", "naslos-terminal"),
     ] {
         wait_rollout(cli, namespace, kind, name).await?;
     }
     // I-5: the privileged DaemonSets carry the pack's digests too, so a
     // successful rollout there is part of the workload gate (and the source
     // for the running-image check below).
-    let workload_ns =
-        std::env::var("NASLOS_WORKLOAD_NAMESPACE").unwrap_or_else(|_| "naslos-privileged".into());
     for name in ["naslos-agent", "naslos-samba", "naslos-nfs"] {
         wait_rollout(cli, &workload_ns, "daemonset", name).await?;
     }
@@ -711,7 +717,7 @@ async fn wait_for_workloads(cli: &Cli) -> Result<(), String> {
 }
 
 async fn wait_rollout(cli: &Cli, namespace: &str, kind: &str, name: &str) -> Result<(), String> {
-    run_kubectl(
+    match run_kubectl(
         cli,
         &[
             "rollout".into(),
@@ -724,7 +730,15 @@ async fn wait_rollout(cli: &Cli, namespace: &str, kind: &str, name: &str) -> Res
         KUBECTL_TIMEOUT,
     )
     .await
-    .map(|_| ())
+    {
+        Ok(_) => Ok(()),
+        // The chart renders SMB, NFS, the terminal and the DaemonSets
+        // conditionally. A workload that is not part of this install has no
+        // rollout to wait for; treating that as a failure rolled back a good
+        // upgrade (I-5 follow-up).
+        Err(e) if e.contains("NotFound") || e.contains("not found") => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 async fn wait_for_node(cli: &Cli) -> Result<(), String> {
@@ -891,9 +905,7 @@ async fn verify_images(cli: &Cli, meta: &PackMetadata) -> Result<(), String> {
             .map(|items| {
                 items
                     .iter()
-                    .filter(|pod| {
-                        pod.pointer("/status/phase").and_then(Value::as_str) == Some("Running")
-                    })
+                    .filter(|pod| is_live_running_pod(pod))
                     .collect()
             })
             .unwrap_or_default();
@@ -935,6 +947,17 @@ async fn verify_images(cli: &Cli, meta: &PackMetadata) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Whether a pod is a live replica the image check should compare. A
+/// terminating pod (`deletionTimestamp` set) is being replaced by the rollout,
+/// so its old digest is not drift; this is the same live-pod rule the app
+/// image check uses (FR-APP-27).
+fn is_live_running_pod(pod: &Value) -> bool {
+    pod.pointer("/status/phase").and_then(Value::as_str) == Some("Running")
+        && !pod
+            .pointer("/metadata/deletionTimestamp")
+            .is_some_and(|stamp| !stamp.is_null())
 }
 
 /// After a reboot the Talos API can lag the kubelet; retry briefly instead of
@@ -1085,5 +1108,23 @@ mod tests {
         assert!(!full.iter().any(|arg| arg == "--nodes"));
         assert_eq!(full[0], "--talosconfig");
         assert_eq!(full[2], "etcd");
+    }
+
+    #[test]
+    fn terminating_pods_are_not_live_replicas() {
+        let running = serde_json::json!({"status": {"phase": "Running"}});
+        assert!(is_live_running_pod(&running));
+        let terminating = serde_json::json!({
+            "metadata": {"deletionTimestamp": "2026-01-01T00:00:00Z"},
+            "status": {"phase": "Running"},
+        });
+        assert!(!is_live_running_pod(&terminating));
+        let explicit_null = serde_json::json!({
+            "metadata": {"deletionTimestamp": null},
+            "status": {"phase": "Running"},
+        });
+        assert!(is_live_running_pod(&explicit_null));
+        let pending = serde_json::json!({"status": {"phase": "Pending"}});
+        assert!(!is_live_running_pod(&pending));
     }
 }

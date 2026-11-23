@@ -1282,6 +1282,41 @@ mod tests {
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
     }
 
+    fn sample_job_args(
+        state_pvc: &str,
+        pack_sig_url: &str,
+        pack_pubkey: &str,
+        talos_secret: &str,
+    ) -> Vec<String> {
+        let spec = job_spec(&JobOptions {
+            name: "naslos-system-op-1-ab",
+            namespace: "naslos",
+            image: "ghcr.io/aessemops/naslos-api@sha256:dead",
+            op: "naslos",
+            operation_id: "1-ab",
+            from: "0.3.0",
+            version: "0.3.1",
+            pack_url: "https://github.com/o/r/releases/download/v0.3.1/pack.tar.gz",
+            pack_sha256: "abababababababababababababababababababababababababababababababab",
+            pack_sig_url,
+            pack_pubkey,
+            release_name: "naslos",
+            service_account: "naslos-upgrader",
+            talos_secret,
+            talos_nodes: "10.0.0.1",
+            state_pvc,
+            workload_namespace: "naslos-privileged",
+            backoff_limit: 3,
+            ttl_seconds: 3600,
+        });
+        spec["spec"]["template"]["spec"]["containers"][0]["args"]
+            .as_array()
+            .expect("container args")
+            .iter()
+            .map(|arg| arg.as_str().expect("string arg").to_string())
+            .collect()
+    }
+
     /// The VAP carries its arg allowlist as a CEL `a.matches('<regex>')` literal.
     fn policy_arg_regex(source: &str) -> &str {
         let marker = "a.matches('";
@@ -1313,6 +1348,24 @@ mod tests {
         }
     }
 
+    /// All quoted operands following `marker` (which ends with its opening
+    /// quote), in source order.
+    fn quoted_operands(source: &str, marker: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = source;
+        while let Some(pos) = rest.find(marker) {
+            let after = &rest[pos + marker.len()..];
+            match after.find('\'') {
+                Some(end) => {
+                    out.push(after[..end].to_string());
+                    rest = &after[end + 1..];
+                }
+                None => break,
+            }
+        }
+        out
+    }
+
     /// C-1a: the chart's admission policy must admit every flag `job_spec`
     /// emits. The two drifted once (`--pack-sig-url`/`--pack-pubkey` were
     /// emitted but not allowed), which denied every web upgrade at admission.
@@ -1332,36 +1385,11 @@ mod tests {
             ("", "", "", "naslos-talosconfig"),
             ("", "https://github.com/o/r/pack.sig", "abc", ""),
         ] {
-            let spec = job_spec(&JobOptions {
-                name: "naslos-system-op-1-ab",
-                namespace: "naslos",
-                image: "ghcr.io/aessemops/naslos-api@sha256:dead",
-                op: "naslos",
-                operation_id: "1-ab",
-                from: "0.3.0",
-                version: "0.3.1",
-                pack_url: "https://github.com/o/r/pack.tar.gz",
-                pack_sha256: "abc",
-                pack_sig_url,
-                pack_pubkey,
-                release_name: "naslos",
-                service_account: "naslos-upgrader",
-                talos_secret,
-                talos_nodes: "10.0.0.1",
-                state_pvc,
-                workload_namespace: "naslos-privileged",
-                backoff_limit: 3,
-                ttl_seconds: 3600,
-            });
-            for arg in spec["spec"]["template"]["spec"]["containers"][0]["args"]
-                .as_array()
-                .expect("container args")
-            {
-                let arg = arg.as_str().expect("string arg");
-                if arg.starts_with("--") {
-                    emitted.push(arg.to_string());
-                }
-            }
+            emitted.extend(
+                sample_job_args(state_pvc, pack_sig_url, pack_pubkey, talos_secret)
+                    .into_iter()
+                    .filter(|arg| arg.starts_with("--")),
+            );
         }
         for flag in [
             "--pack-url",
@@ -1385,5 +1413,143 @@ mod tests {
         for denied in ["--privileged", "--pack-url-evil", "--command"] {
             assert!(!policy_allows(&regex, denied), "{denied} must stay denied");
         }
+    }
+
+    /// Every `c.args[<n>] == '<literal>'` pin in the policy, as (index, value).
+    fn positional_arg_pins(source: &str) -> Vec<(usize, String)> {
+        let mut pins = Vec::new();
+        let mut rest = source;
+        while let Some(pos) = rest.find("c.args[") {
+            rest = &rest[pos + "c.args[".len()..];
+            let Some(end) = rest.find(']') else { break };
+            let Ok(index) = rest[..end].parse::<usize>() else {
+                continue;
+            };
+            let after = rest[end + 1..].trim_start();
+            let Some(after) = after.strip_prefix("==") else {
+                continue;
+            };
+            let after = after.trim_start();
+            let Some(after) = after.strip_prefix('\'') else {
+                continue;
+            };
+            let Some(literal_end) = after.find('\'') else {
+                continue;
+            };
+            pins.push((index, after[..literal_end].to_string()));
+            rest = &after[literal_end..];
+        }
+        pins
+    }
+
+    /// C-1a follow-up: the policy no longer pins only flag names. A Job creator
+    /// with the upgrader ServiceAccount could otherwise pass an arbitrary
+    /// `--pack-url` plus a matching sha256 and no signature. The emitted layout
+    /// (flag at every even index, value at the next) and the cached-pack path
+    /// must stay identical in both files.
+    #[test]
+    fn job_argument_positions_match_the_policy() {
+        let source = chart_policy_source();
+        let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        let pins: HashMap<usize, String> = positional_arg_pins(&source).into_iter().collect();
+        for state_pvc in ["naslos-shares-config", ""] {
+            let args = sample_job_args(state_pvc, "", "", "naslos-talosconfig");
+            for (index, arg) in args.iter().enumerate() {
+                if arg.starts_with("--") {
+                    assert_eq!(
+                        pins.get(&index),
+                        Some(arg),
+                        "the policy's positional pin for args[{index}] drifted from job_spec"
+                    );
+                }
+            }
+        }
+        // Layout sizes and the paths composed from the version argument.
+        for fragment in [
+            "c.args.size() == 24",
+            "c.args.size() == 20",
+            "(c.args[13] == '') == (c.args[15] == '')",
+            "c.args[9].startsWith('{{ $packUrlPrefix }}')",
+            "c.args[13].startsWith('{{ $packUrlPrefix }}')",
+            "c.args[17] == '{{ .Release.Namespace }}'",
+            "c.args[19] == '{{ .Release.Name }}'",
+        ] {
+            assert!(
+                flat.contains(fragment),
+                "the policy lost the value pin {fragment:?}"
+            );
+        }
+        let pack_pin =
+            format!("c.args[21] == '{STATE_MOUNT}/updates/pack-' + c.args[7] + '.tar.gz'");
+        assert!(flat.contains(&pack_pin), "missing {pack_pin:?}");
+        assert!(flat.contains("c.args[23] == c.args[21] + '.sig'"));
+        // Optional strict mode: with a configured pack key, a Job that omits
+        // the signature pair (or passes empty values) is denied.
+        for fragment in [
+            "$packPubkey := $updates.packPubkey",
+            "c.args[13] != ''",
+            "c.args[15] != ''",
+        ] {
+            assert!(
+                flat.contains(fragment),
+                "the strict signature pin is missing {fragment:?}"
+            );
+        }
+        let args = sample_job_args("naslos-shares-config", "", "", "naslos-talosconfig");
+        assert_eq!(args[20], "--pack-file");
+        assert_eq!(
+            args[21],
+            format!("{STATE_MOUNT}/updates/pack-{}.tar.gz", args[7])
+        );
+        assert_eq!(args[23], format!("{}.sig", args[21]));
+        let args = sample_job_args("", "", "", "naslos-talosconfig");
+        assert_eq!(args.len(), 20);
+    }
+
+    /// C-1c follow-up: the API server injects the ServiceAccount token
+    /// projection before admission, so the volume/mount allowlists must admit
+    /// its exact shape - and nothing broader. The only prefix-based admission
+    /// is the injected name; every other name must match an exact literal, so a
+    /// differently-named injected volume is denied.
+    #[test]
+    fn policy_admits_only_the_injected_service_account_volume() {
+        let source = chart_policy_source();
+        // Line wrapping is cosmetic inside the folded CEL literal.
+        let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        for fragment in [
+            "v.name.startsWith('kube-api-access-')",
+            "has(v.projected)",
+            "v.projected.sources.size() == 3",
+            "v.projected.sources[0].serviceAccountToken.path == 'token'",
+            "v.projected.sources[1].configMap.name == 'kube-root-ca.crt'",
+            "v.projected.sources[1].configMap.items.size() == 1",
+            "v.projected.sources[1].configMap.items[0].key == 'ca.crt'",
+            "v.projected.sources[2].downwardAPI.items[0].path == 'namespace'",
+            "v.projected.sources[2].downwardAPI.items[0].fieldRef.fieldPath == 'metadata.namespace'",
+            "m.name.startsWith('kube-api-access-')",
+            "m.mountPath == '/var/run/secrets/kubernetes.io/serviceaccount'",
+            "m.readOnly == true",
+        ] {
+            assert!(
+                flat.contains(fragment),
+                "the policy does not admit the injected ServiceAccount token shape: {fragment:?}"
+            );
+        }
+        assert_eq!(
+            quoted_operands(&source, "v.name.startsWith('"),
+            ["kube-api-access-"]
+        );
+        assert_eq!(
+            quoted_operands(&source, "v.name == '"),
+            ["tmp", "talosconfig", "state"]
+        );
+        assert_eq!(
+            quoted_operands(&source, "m.name.startsWith('"),
+            ["kube-api-access-"]
+        );
+        assert_eq!(
+            quoted_operands(&source, "m.name == '"),
+            ["tmp", "talosconfig", "state"]
+        );
     }
 }
