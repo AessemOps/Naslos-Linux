@@ -14,9 +14,11 @@ this ValidatingAdmissionPolicy independently enforces the same boundary:
     and issuers; a chart must not mint one for a host it does not own);
   - no Services other than ClusterIP without externalIPs (no NodePort,
     LoadBalancer or ExternalName exposure from a chart);
-  - no writes to the platform Secrets (the shared app TLS/wildcard Secrets,
-    DDNS credentials and the platform identities); a chart may only manage
-    its own non-`naslos-` Secrets;
+  - no writes to any Secret whose name starts with `naslos-`: that prefix is
+    reserved for platform Secrets (app TLS/wildcard, DDNS credentials, LDAP,
+    proxy/agent/vmd tokens, Buddy keys, Authelia state) and the API-written
+    `naslos-env-*` app environment Secrets. App charts create only their own
+    `<release>-...` Secrets, so no legitimate app needs the prefix;
   - no object whose metadata.namespace differs from the request namespace.
 
 Deny-only chart NetworkPolicies are rejected too: the platform base policy is
@@ -57,8 +59,8 @@ spec:
     - expression: "request.resource.group != 'cert-manager.io' && request.resource.group != 'acme.cert-manager.io'"
       message: "The Helm identity may not create or update cert-manager objects; the Naslos API owns certificates and issuers."
       reason: Forbidden
-    - expression: "!(request.resource.group == '' && request.resource.resource == 'secrets' && (object.metadata.name == 'naslos-apps-tls' || object.metadata.name == 'naslos-tls' || object.metadata.name == 'naslos-talosconfig' || object.metadata.name == 'naslos-helm-token' || object.metadata.name.startsWith('naslos-ddns-') || object.metadata.name.startsWith('naslos-openldap') || object.metadata.name.startsWith('naslos-proxy') || object.metadata.name.startsWith('naslos-agent') || object.metadata.name.startsWith('naslos-vmd') || object.metadata.name.startsWith('naslos-buddy') || object.metadata.name.startsWith('naslos-authelia')))"
-      message: "The Helm identity may not create or update a platform Secret (app TLS/wildcard, DDNS, OpenLDAP, proxy/agent/vmd tokens, Buddy keys or Authelia state)."
+    - expression: "!(request.resource.group == '' && request.resource.resource == 'secrets' && object.metadata.name.startsWith('naslos-'))"
+      message: "The Helm identity may not create or update a Secret whose name starts with `naslos-`; the prefix is reserved for platform Secrets (app TLS/wildcard, DDNS, LDAP, proxy/agent/vmd tokens, Buddy keys, Authelia state). Name chart Secrets `<release>-...`."
       reason: Forbidden
     - expression: "!(request.resource.group == '' && request.resource.resource == 'services' && ((has(object.spec.type) && object.spec.type != 'ClusterIP') || (has(object.spec.externalIPs) && size(object.spec.externalIPs) > 0)))"
       message: "The Helm identity may only create ClusterIP Services without externalIPs; exposure goes through the Naslos API's IngressRoute."

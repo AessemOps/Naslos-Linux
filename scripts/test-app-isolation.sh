@@ -81,11 +81,11 @@ for needle, what in (
     ("acme.cert-manager.io", "acme.cert-manager.io writes"),
     ("ClusterIP", "non-ClusterIP Services"),
     ("externalIPs", "Services with externalIPs"),
-    ("naslos-apps-tls", "the shared app TLS Secret"),
-    ("naslos-ddns-", "the DDNS credential Secrets"),
 ):
     if not any(needle in e for e in ex):
         fail(f"admission policy does not deny {what}")
+if not any("secrets" in e and "startsWith('naslos-')" in e for e in ex):
+    fail("admission policy does not deny the naslos-* platform Secret prefix")
 b = binding.get("naslos-helm-app-isolation")
 if not b:
     fail("ValidatingAdmissionPolicyBinding/naslos-helm-app-isolation is missing")
@@ -146,23 +146,40 @@ for r in mcp_routes:
         fail(f"naslos-mcp matcher is not the exact /mcp pair: {match}")
     if "PathPrefix(`/mcp`)" in match:
         fail(f"naslos-mcp matcher still contains the bare PathPrefix(`/mcp`): {match}")
-# The Authelia configuration is rendered as a ConfigMap named authelia-config
-# (consumed by the subchart); scan both kinds for the bypass either way.
-authelia_cfg = [
-    d
-    for kind in ("ConfigMap", "Secret")
-    for d in by_kind(kind)
-    if "authelia" in d["metadata"]["name"]
+# The Authelia configuration is the `authelia-config` ConfigMap's
+# configuration.yml. Parse it and compare the MCP bypass rule's resource list
+# to the exact expected string: a widened regex (for example ^/mcp.* or
+# ^/mcp([/?].*)?$) must fail, not merely lack the expected substring.
+authelia_cms = [
+    d for d in by_kind("ConfigMap") if d["metadata"]["name"] == "authelia-config"
 ]
-bypass_ok = any(
-    "^/mcp(/.*)?$" in str(doc) for doc in authelia_cfg
+if not authelia_cms:
+    fail("ConfigMap/authelia-config is missing")
+raw_cfg = authelia_cms[0].get("data", {}).get("configuration.yml", "")
+# Authelia's own `{{ fileContent ".../rules.yml" | nindent 4 }}` directives
+# inject the runtime SSO fragments; they are not YAML, so drop those
+# placeholder lines before parsing the static rules.
+static_cfg = "\n".join(
+    line for line in raw_cfg.splitlines() if not line.strip().startswith("{{")
 )
-if not bypass_ok:
-    fail("the Authelia bypass regex ^/mcp(/.*)?$ is missing")
-bare_bypass = any("`^/mcp" in str(doc) or "PathPrefix('/mcp')" in str(doc)
-                  for doc in authelia_cfg)
-if bare_bypass:
-    fail("the Authelia MCP bypass is wider than the Traefik route matcher")
+authelia_cfg = yaml.safe_load(static_cfg)
+if not isinstance(authelia_cfg, dict):
+    fail("authelia-config configuration.yml did not parse to a mapping")
+mcp_bypass = [
+    rule
+    for rule in authelia_cfg.get("access_control", {}).get("rules", [])
+    if any(str(res).startswith("^/mcp") for res in rule.get("resources", []))
+]
+if len(mcp_bypass) != 1:
+    fail(f"expected exactly one Authelia MCP bypass rule, found {len(mcp_bypass)}")
+mcp_rule = mcp_bypass[0]
+if mcp_rule.get("policy") != "bypass":
+    fail(f"the Authelia MCP rule is not a bypass: {mcp_rule.get('policy')!r}")
+if mcp_rule.get("resources") != ["^/mcp(/.*)?$"]:
+    fail(
+        "the Authelia MCP bypass is not exactly ^/mcp(/.*)?$: "
+        f"{mcp_rule.get('resources')!r}"
+    )
 if by_kind("IngressClass"):
     fail("an IngressClass is still created")
 
