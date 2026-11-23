@@ -93,15 +93,31 @@ pub fn sign_request_for(
     })
 }
 
+/// The on-disk replay cache state, serialized with every append and
+/// compaction so no nonce can be lost between the snapshot and the rename.
+#[derive(Default)]
+struct NonceFile {
+    path: Option<String>,
+    /// Lines in the file since the last compaction.
+    lines: usize,
+    /// Unexpired nonces written by the last compaction (the growth baseline).
+    compacted_live: usize,
+    /// Set when the file exists but cannot be parsed; verification is refused
+    /// rather than silently dropping replay protection.
+    error: Option<String>,
+}
+
 /// Verifies incoming peer requests and remembers nonces.
 pub struct Authenticator {
     peers: Arc<PeerStore>,
     seen: Mutex<HashMap<String, HashMap<String, i64>>>,
-    nonce_file: Mutex<Option<String>>,
+    nonce_file: Mutex<NonceFile>,
     warned: Mutex<bool>,
     /// Unexpired nonces kept per key before requests are refused. Kept as a
     /// field so the refusal can be tested at a small value.
     max_nonces_per_key: usize,
+    /// Floor for the growth factor that triggers compaction.
+    nonce_compact_threshold: usize,
 }
 
 impl Authenticator {
@@ -109,9 +125,10 @@ impl Authenticator {
         Self {
             peers,
             seen: Mutex::new(HashMap::new()),
-            nonce_file: Mutex::new(None),
+            nonce_file: Mutex::new(NonceFile::default()),
             warned: Mutex::new(false),
             max_nonces_per_key: MAX_NONCES_PER_KEY,
+            nonce_compact_threshold: NONCE_FILE_COMPACT_THRESHOLD,
         }
     }
 
@@ -121,6 +138,13 @@ impl Authenticator {
         let mut a = Self::new(peers);
         a.max_nonces_per_key = cap;
         a
+    }
+
+    /// Test-only: compact at a small file size.
+    #[cfg(test)]
+    pub(crate) fn with_compact_threshold(mut self, threshold: usize) -> Self {
+        self.nonce_compact_threshold = threshold;
+        self
     }
 
     /// Make the replay cache survive a restart by recording nonces under `dir`
@@ -133,77 +157,142 @@ impl Authenticator {
             .join(".nonces")
             .display()
             .to_string();
-        *self.nonce_file.lock().unwrap() = Some(path.clone());
-        self.load_nonces(&path, Utc::now());
+        {
+            let mut state = self.nonce_file.lock().unwrap();
+            state.path = Some(path.clone());
+            state.lines = 0;
+            state.compacted_live = 0;
+            state.error = None;
+        }
+        match self.load_nonces(&path, Utc::now()) {
+            Ok(restored) => {
+                let mut state = self.nonce_file.lock().unwrap();
+                state.lines = restored;
+                state.compacted_live = restored;
+                if restored > 0 {
+                    tracing::info!("buddy auth: restored {restored} unexpired nonces from {path}");
+                }
+            }
+            Err(e) => {
+                tracing::error!("buddy auth: {e}");
+                self.nonce_file.lock().unwrap().error = Some(e);
+            }
+        }
     }
 
-    fn load_nonces(&self, path: &str, now: DateTime<Utc>) {
-        let Ok(raw) = std::fs::read_to_string(path) else {
-            return;
+    /// Restore the cache. A malformed line fails the whole load: skipping it
+    /// would silently un-arm replay protection for that request (B-11).
+    fn load_nonces(&self, path: &str, now: DateTime<Utc>) -> Result<usize, String> {
+        let raw = match std::fs::read_to_string(path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => {
+                return Err(format!(
+                    "the replay cache at {path} could not be read ({e}); refusing requests until it is repaired"
+                ))
+            }
         };
-        let mut guard = self.seen.lock().unwrap();
         let mut restored = 0;
-        for line in raw.split('\n') {
-            let mut fields = line.splitn(3, ' ');
-            let (Some(exp), Some(key_id), Some(nonce)) =
-                (fields.next(), fields.next(), fields.next())
-            else {
+        let mut guard = self.seen.lock().unwrap();
+        for (number, line) in raw.split('\n').enumerate() {
+            if line.trim().is_empty() {
                 continue;
-            };
-            let Ok(expiry_nanos) = exp.parse::<i64>() else {
-                continue;
-            };
+            }
+            let fields: Vec<&str> = line.split(' ').collect();
+            if fields.len() != 3 || fields.iter().any(|field| field.is_empty()) {
+                return Err(format!(
+                    "the replay cache at {path} is malformed on line {}; remove or repair it before accepting peers",
+                    number + 1
+                ));
+            }
+            let expiry_nanos = fields[0].parse::<i64>().map_err(|_| {
+                format!(
+                    "the replay cache at {path} has an invalid expiry on line {}; remove or repair it before accepting peers",
+                    number + 1
+                )
+            })?;
             if DateTime::from_timestamp_nanos(expiry_nanos) < now {
                 continue;
             }
             guard
-                .entry(key_id.to_string())
+                .entry(fields[1].to_string())
                 .or_default()
-                .insert(nonce.to_string(), expiry_nanos);
+                .insert(fields[2].to_string(), expiry_nanos);
             restored += 1;
         }
-        if restored > 0 {
-            tracing::info!("buddy auth: restored {restored} unexpired nonces from {path}");
-        }
+        Ok(restored)
     }
 
-    fn persist_nonce(
-        &self,
-        key_id: &str,
-        nonce: &str,
-        expiry_nanos: i64,
-        live_entries: usize,
-    ) -> Result<(), String> {
-        let file = self.nonce_file.lock().unwrap().clone();
-        let Some(path) = file else {
+    /// Append one nonce durably, then compact when the file has doubled since
+    /// the last compaction. The append and the compaction run under the one
+    /// nonce-file lock, so an append can never land between the compaction's
+    /// snapshot and its rename and be lost.
+    fn persist_nonce(&self, key_id: &str, nonce: &str, expiry_nanos: i64) -> Result<(), String> {
+        let mut state = self.nonce_file.lock().unwrap();
+        if let Some(error) = &state.error {
+            return Err(format!(
+                "the replay cache is unusable ({error}); refusing the request"
+            ));
+        }
+        let Some(path) = state.path.clone() else {
             return Ok(());
         };
         let line = format!("{expiry_nanos} {key_id} {nonce}\n");
+        let created = !std::path::Path::new(&path).exists();
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
+        let append = std::fs::OpenOptions::new()
             .append(true)
             .create(true)
             .mode(0o600)
             .open(&path)
-            .and_then(|mut f| f.write_all(line.as_bytes()))
-            .map_err(|e| {
-                format!("the replay cache at {path} is not writable ({e}); refusing the request")
-            })?;
-        if live_entries < NONCE_FILE_COMPACT_THRESHOLD {
+            .and_then(|mut f| {
+                f.write_all(line.as_bytes())?;
+                f.sync_data()
+            });
+        append.map_err(|e| {
+            format!("the replay cache at {path} is not writable ({e}); refusing the request")
+        })?;
+        if created {
+            // The first append also creates the name: sync the directory so a
+            // crash cannot lose the whole cache after its data was durable.
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                std::fs::File::open(parent)
+                    .and_then(|handle| handle.sync_all())
+                    .map_err(|e| {
+                        format!(
+                            "the replay cache directory for {path} cannot be synced ({e}); refusing the request"
+                        )
+                    })?;
+            }
+        }
+        state.lines += 1;
+
+        // Compact on a growth factor: the file must at least double since the
+        // last rewrite (never on every request once past a fixed threshold).
+        let baseline = state.compacted_live.max(self.nonce_compact_threshold);
+        if state.lines < baseline.saturating_mul(2) {
             return Ok(());
         }
         let mut builder = String::new();
+        let mut live = 0;
         {
+            // `seen` is always taken after the nonce-file lock (never before),
+            // so the two locks have one order.
             let guard = self.seen.lock().unwrap();
             for (k, nonces) in guard.iter() {
                 for (n, exp) in nonces {
                     builder.push_str(&format!("{exp} {k} {n}\n"));
+                    live += 1;
                 }
             }
         }
-        if crate::chartsrepo::write_atomic(&path, builder.as_bytes(), 0o600, 0o750).is_err() {
-            self.warn_once("cannot compact the nonce cache");
+        match crate::chartsrepo::write_atomic(&path, builder.as_bytes(), 0o600, 0o750) {
+            Ok(()) => {
+                state.lines = live;
+                state.compacted_live = live;
+            }
+            Err(_) => self.warn_once("cannot compact the nonce cache"),
         }
         Ok(())
     }
@@ -292,8 +381,15 @@ impl Authenticator {
 
     /// Record a nonce; returns true if it was already seen.
     fn replay(&self, key_id: &str, nonce: &str, now: DateTime<Utc>) -> Result<bool, String> {
+        {
+            let state = self.nonce_file.lock().unwrap();
+            if let Some(error) = &state.error {
+                return Err(format!(
+                    "the replay cache is unusable ({error}); refusing the request until it is repaired"
+                ));
+            }
+        }
         let now_nanos = now.timestamp_nanos_opt().unwrap_or(0);
-        let live;
         {
             let mut guard = self.seen.lock().unwrap();
             let nonces = guard.entry(key_id.to_string()).or_default();
@@ -310,11 +406,9 @@ impl Authenticator {
                         .to_string(),
                 );
             }
-            let expiry = now_nanos + NONCE_TTL.as_nanos() as i64;
-            nonces.insert(nonce.to_string(), expiry);
-            live = nonces.len();
+            nonces.insert(nonce.to_string(), now_nanos + NONCE_TTL.as_nanos() as i64);
         }
-        self.persist_nonce(key_id, nonce, now_nanos + NONCE_TTL.as_nanos() as i64, live)?;
+        self.persist_nonce(key_id, nonce, now_nanos + NONCE_TTL.as_nanos() as i64)?;
         Ok(false)
     }
 }
@@ -525,5 +619,69 @@ mod tests {
         assert!(
             validate_nonce(&base64::engine::general_purpose::STANDARD.encode([0u8; 8])).is_err()
         );
+    }
+
+    #[test]
+    fn a_malformed_nonce_file_refuses_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".nonces"), "not-a-cache-line\n").unwrap();
+        let id = new_identity("a").unwrap();
+        let auth = authenticator_with(&id, "p");
+        auth.persist_nonces(dir.path().to_str().unwrap());
+        let now = Utc::now();
+        let digest = body_digest(b"");
+        let path = format!("{}/status", crate::buddy::PATH_PREFIX);
+        let headers = sign_request_for(&id, "GET", &path, &digest, "r", now).unwrap();
+        let err = auth
+            .verify(&headers, &digest, "GET", &path, "r", now)
+            .unwrap_err();
+        assert!(err.contains("replay cache"), "{err}");
+    }
+
+    #[test]
+    fn concurrent_appends_and_compactions_keep_every_nonce() {
+        const THREADS: usize = 6;
+        const PER_THREAD: usize = 25;
+        let dir = tempfile::tempdir().unwrap();
+        let auth =
+            Arc::new(Authenticator::new(Arc::new(PeerStore::new(""))).with_compact_threshold(8));
+        auth.persist_nonces(dir.path().to_str().unwrap());
+        let now = Utc::now();
+        let mut handles = Vec::new();
+        for thread in 0..THREADS {
+            let auth = auth.clone();
+            handles.push(std::thread::spawn(move || {
+                for index in 0..PER_THREAD {
+                    auth.replay("key", &format!("nonce-{thread}-{index}"), now)
+                        .expect("append");
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Every line is a complete record after interleaved compactions.
+        let raw = std::fs::read_to_string(dir.path().join(".nonces")).unwrap();
+        for line in raw.split('\n').filter(|line| !line.trim().is_empty()) {
+            let fields: Vec<&str> = line.split(' ').collect();
+            assert_eq!(fields.len(), 3, "malformed line {line:?}");
+            fields[0].parse::<i64>().expect("expiry is a number");
+        }
+
+        // A restart restores every nonce: a compaction never dropped an
+        // append that raced with it.
+        let reloaded = Authenticator::new(Arc::new(PeerStore::new("")));
+        reloaded.persist_nonces(dir.path().to_str().unwrap());
+        for thread in 0..THREADS {
+            for index in 0..PER_THREAD {
+                assert!(
+                    reloaded
+                        .replay("key", &format!("nonce-{thread}-{index}"), now)
+                        .expect("replay check"),
+                    "nonce {thread}/{index} was lost by an interleaved compaction"
+                );
+            }
+        }
     }
 }

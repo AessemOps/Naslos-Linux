@@ -971,6 +971,75 @@ mod tests {
         }
     }
 
+    /// A mock agent that answers the receive route with `body`.
+    async fn spawn_receive_agent(body: serde_json::Value) -> String {
+        let app = Router::new().route(
+            "/api/v1/zfs/receive/{*dataset}",
+            axum::routing::post(move |req: axum::extract::Request| {
+                let body = body.clone();
+                async move {
+                    let _ = axum::body::to_bytes(req.into_body(), usize::MAX).await;
+                    axum::Json(body)
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn receive_surfaces_the_mountpoint_and_warnings() {
+        let base = spawn_receive_agent(serde_json::json!({
+            "status": "received",
+            "dataset": "tank/data",
+            "bytes": 4096,
+            "mountpoint": "/var/mnt/tank/data",
+            "warnings": ["received tank/data/child but left it unmounted"]
+        }))
+        .await;
+        let client = Client::new(&base, "token", "").unwrap();
+        let outcome = client
+            .receive_stream_body_outcome("tank/data", false, tokio::io::empty())
+            .await
+            .expect("a warning without a mount failure is not an error");
+        assert_eq!(outcome.mountpoint, "/var/mnt/tank/data");
+        assert_eq!(outcome.bytes, 4096);
+        assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_receive_that_could_not_mount_fails_the_job() {
+        let base = spawn_receive_agent(serde_json::json!({
+            "status": "received",
+            "dataset": "tank/data",
+            "bytes": 4096,
+            "mountpoint": "",
+            "warnings": ["received tank/data but could not mount it at /var/mnt/tank/data: permission denied"]
+        }))
+        .await;
+        let client = Client::new(&base, "token", "").unwrap();
+        let err = client
+            .receive_stream_body("tank/data", false, tokio::io::empty())
+            .await
+            .expect_err("an unmounted receive must fail");
+        assert!(err.message.contains("not mounted"), "{}", err.message);
+        assert!(err.message.contains("could not mount"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn an_old_agent_body_without_mount_details_is_accepted() {
+        let base = spawn_receive_agent(serde_json::json!({ "status": "received" })).await;
+        let client = Client::new(&base, "token", "").unwrap();
+        let outcome = client
+            .receive_stream_body_outcome("tank/data", false, tokio::io::empty())
+            .await
+            .expect("no report must not fail the receive");
+        assert!(outcome.mountpoint.is_empty());
+        assert!(outcome.warnings.is_empty());
+    }
+
     /// The stream client ignores the total deadline: with a 50 ms total (the
     /// old behaviour would abort here) a 500 ms body still completes.
     #[tokio::test]
@@ -1271,12 +1340,28 @@ impl Client {
 
     /// Stream a restore body into `zfs receive`. The reader is consumed as the
     /// request body; the call resolves when the agent finishes the receive.
+    /// A receive that completed but could not mount the result is an error:
+    /// the data would live in a shadow directory, invisible to shares/apps.
     pub async fn receive_stream_body(
         &self,
         dataset: &str,
         force: bool,
         reader: impl tokio::io::AsyncRead + Send + 'static,
     ) -> Result<(), AgentError> {
+        self.receive_stream_body_outcome(dataset, force, reader)
+            .await
+            .map(|_| ())
+    }
+
+    /// Like [`receive_stream_body`](Self::receive_stream_body), returning the
+    /// agent's report (mountpoint and warnings) so a job can surface where the
+    /// replica was mounted and why a child may still be unmounted.
+    pub async fn receive_stream_body_outcome(
+        &self,
+        dataset: &str,
+        force: bool,
+        reader: impl tokio::io::AsyncRead + Send + 'static,
+    ) -> Result<ReceiveOutcome, AgentError> {
         // Serialize receive against create/destroy/rollback for this name.
         // Both replication and Buddy restore call this one place.
         let _guard = crate::server::zfs::lock_dataset(dataset).await;
@@ -1310,8 +1395,74 @@ impl Client {
                 message: String::from_utf8_lossy(&body).trim().to_string(),
             });
         }
-        Ok(())
+        let body = resp.bytes().await.unwrap_or_default();
+        receive_outcome(&body, dataset)
     }
+}
+
+/// The agent's report for one `zfs receive`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReceiveOutcome {
+    #[serde(default)]
+    pub dataset: String,
+    #[serde(default)]
+    pub bytes: u64,
+    #[serde(default)]
+    pub mountpoint: String,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// Parse the agent's 2xx receive body. Older agents answer with a body that
+/// has no `mountpoint`/`warnings`; that is accepted as "no report" rather than
+/// a failure. A body that reports an empty mountpoint, or a warning saying the
+/// dataset could not be mounted, fails the receive: the replica would not be
+/// visible at its mountpoint.
+fn receive_outcome(body: &[u8], dataset: &str) -> Result<ReceiveOutcome, AgentError> {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return Ok(ReceiveOutcome {
+            dataset: dataset.to_string(),
+            ..ReceiveOutcome::default()
+        });
+    };
+    let warnings: Vec<String> = value
+        .get("warnings")
+        .and_then(|w| w.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|w| w.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mountpoint = value
+        .get("mountpoint")
+        .and_then(|m| m.as_str())
+        .map(str::to_string);
+    let mount_failed = mountpoint.as_deref().is_some_and(str::is_empty)
+        || warnings.iter().any(|w| w.contains("could not mount"));
+    if mount_failed {
+        let detail = if warnings.is_empty() {
+            "the agent reported no mountpoint".to_string()
+        } else {
+            warnings.join("; ")
+        };
+        return Err(AgentError {
+            status: 200,
+            message: format!(
+                "zfs receive into {dataset} completed but the dataset is not mounted: {detail}"
+            ),
+        });
+    }
+    Ok(ReceiveOutcome {
+        dataset: value
+            .get("dataset")
+            .and_then(|d| d.as_str())
+            .unwrap_or(dataset)
+            .to_string(),
+        bytes: value.get("bytes").and_then(|b| b.as_u64()).unwrap_or(0),
+        mountpoint: mountpoint.unwrap_or_default(),
+        warnings,
+    })
 }
 
 /// Host filesystem usage, reported by the agent (it can statvfs the host).
