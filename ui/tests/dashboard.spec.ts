@@ -21,7 +21,7 @@ test('dashboard shows live node metrics', async ({ page }) => {
   // phrase anywhere in the line and compare it against the API snapshot.
   await expect(cpuCard.getByText(/cores/)).toContainText(`${metrics.cpu.cores} cores`);
 
-  const memCard = page.locator('.card').filter({ hasText: 'Memory' });
+  const memCard = page.locator('.card').filter({ hasText: 'Memory' }).first();
   await expect(memCard).not.toContainText('0 B / 0 B');
 
   // --- UI: system information is populated ---

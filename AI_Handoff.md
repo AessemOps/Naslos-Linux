@@ -122,27 +122,40 @@ retrying or using the browser path worked around it. Worth watching.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.6.0`**, revision 60
-  (2026-11-22), deployed with `make install-vm`; the node runs the v0.6.0
-  release images, digest-pinned (public GHCR): API `44c1f95f…`,
-  UI `8d619cdf…`, agent `e1bbf478…`, OpenLDAP `a077deaf…`, Samba
-  `9b9b34c4…`, NFS `2c32e7e3…`, terminal `c503eaf9…`, vmd `8f34e315…`.
-  `virt.enabled: true`. `/api/system/version` reports the `release.*`
-  facts from `values-vm.yaml`: Naslos/chart **0.6.0**, profile
+- **Deployed release:** Helm `naslos` chart **`naslos-0.7.0`**, revision 62
+  (2026-11-22), deployed with `make install-vm` after a UI upgrade applied the
+  installer profile; the node runs the v0.7.0 release images, digest-pinned
+  (public GHCR): API `97e7b80f…`, UI `43dd2f64…`, agent `1c7e42b5…`, OpenLDAP
+  `3795e1ab…`, Samba `d3559d89…`, NFS `b3a8a0c3…`, terminal `f3ee4584…`, vmd
+  `24f36e0c…`. `virt.enabled: true`. `/api/system/version` reports the
+  `release.*` facts from `values-vm.yaml`: Naslos/chart **0.7.0**, profile
   `installer`, Talos pin **v1.14.6** and k8s v1.37.0; the node runs Talos
   **v1.14.6**. The web upgrader is enabled (SA `naslos-upgrader` +
   cluster-admin binding, the `naslos-api-system` Role/RoleBinding, and the
   upgrader admission policy). The private registry `192.168.1.2:30095` is
-  retired — do not build/push local images. `/api/health` is green, both
-  ZFS pools are ONLINE with no data errors, and the full Playwright suite
-  passed on revision 60: **80 passed, 5 skipped, 0 failed**.
+  retired — do not build/push local images. `/api/health` is green, both ZFS
+  pools are ONLINE with no data errors, the ZFS inventory is identical to the
+  pre-0.6.0 snapshot (24 entries), and the full Playwright suite passed on
+  revision 62: **80 passed, 5 skipped, 0 failed**. Live checks passed for
+  encryption create/unlock/lock-refusal/destroy with key deletion, the audit
+  hash chain (`/api/audit/verify`), reporting metadata, SMTP/syslog settings,
+  and a config export → import dry-run (25 unchanged, 13 skipped, 0 changes).
 - **Latest release:** `v0.7.0` (2026-11-22) and installer `naslos-v0.7.0`
   are published; the pack `naslos-install-pack-0.7.0.tar.gz` is attached and
   its images are digest-pinned. It completes the P0/P1 runtime slices: raw-key
   ZFS encryption with Secret custody and explicit unlock/lock, SMTP + syslog
   alerts, config import/restore, RBAC phase 2 plus append-only audit v1,
   bounded historical reporting, and shadow-copy-compatible scheduled
-  snapshots. It is **not yet deployed**; the node remains on 0.6.0 revision 60
+  snapshots. The node is on 0.7.0 revision 62. Caveats: RBAC only admits
+  admins until Authelia admission for the new groups ships; encryption keys
+  live in Kubernetes Secrets (etcd at-rest encryption is not configured) and
+  require manual unlock after boot; audit is fail-closed on the state volume
+  (16 MiB/90 d); reporting adds a 256 MiB PVC; config import does not reinstall
+  apps or inject credentials; SMTP/syslog LAN targets need `nodeCIDR` or
+  `extraEgressCIDRs`; scheduled snapshots were renamed and legacy
+  `naslos-auto-*` pruning lasts one release. The API still uses `Recreate`;
+  the chart now clears a pre-0.6.0 `rollingUpdate` block so UI/installer
+  upgrades from 0.5.x work.
 - **0.7.1 remediation (in progress, not deployed):** the platform-chart branch
   (`fix/0.7.1-platform-chart`) changes deploy behavior that the next release
   must carry: `make install-vm` now requires `VM_IP=<node-ip>` and installs
@@ -153,18 +166,8 @@ retrying or using the browser path worked around it. Worth watching.
   Samba, NFS, the OpenLDAP backup Job and the upgrader admission policy are
   hardened; the state and OpenLDAP-backup PVCs are kept on uninstall; git/DDNS
   egress is scoped to the API pod; and base images/local-path are digest
-  pinned. The node keeps its current revision/digests until the 0.7.1 pack is
-  released and deployed.
-  until the next install. Caveats: RBAC only admits admins until Authelia
-  admission for the new groups ships; encryption keys live in Kubernetes
-  Secrets (etcd at-rest encryption is not configured) and require manual
-  unlock after boot; audit is fail-closed on the state volume (16 MiB/90 d);
-  reporting adds a 256 MiB PVC; config import does not reinstall apps or inject
-  credentials; SMTP/syslog LAN targets need `nodeCIDR` or
-  `extraEgressCIDRs`; scheduled snapshots were renamed and legacy
-  `naslos-auto-*` pruning lasts one release. The API still uses `Recreate`;
-  the chart now clears a pre-0.6.0 `rollingUpdate` block so UI/installer
-  upgrades from 0.5.x work.
+  pinned. The node keeps 0.7.0 revision 62 until the 0.7.1 pack is released
+  and deployed.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
@@ -598,6 +601,15 @@ sh scripts/audit.sh
     repaired live with the same flags (revisions 8, 9 and 12). Any other app
     that has been image-refreshed once will fail its next update until the fix
     ships.
+
+20. **The web/installer upgrader can reset node-only values** (found
+    2026-11-22). The UI upgrade to 0.7.0 applied the installer profile, so
+    `buddy.enabled` became `false` and `buddy.receiveHostPath` disappeared while
+    `virt` and networking survived; Playwright caught it as a Buddy 503.
+    Re-running `make install-vm` (values.yaml + values-vm.yaml) restored Buddy
+    at revision 62. After any UI-driven upgrade, compare `helm get values
+    naslos` with `values-vm.yaml` (buddy, virt, nodeCIDR and storage/dataset
+    settings) and re-run `make install-vm` if a node-only value was lost.
 
 ## History
 
