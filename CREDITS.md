@@ -59,7 +59,7 @@ adds the same set plus the agent-pattern token/TLS server. Direct dependencies:
 
 | Component | Version | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
-| aes-gcm | 0.10 | Apache-2.0 OR MIT | https://github.com/RustCrypto/AEADs |
+| aes-gcm | 0.11 | Apache-2.0 OR MIT | https://github.com/RustCrypto/AEADs |
 | anyhow | 1 | MIT OR Apache-2.0 | https://github.com/dtolnay/anyhow |
 | base64 | 0.22 | MIT OR Apache-2.0 | https://github.com/marshallpierce/rust-base64 |
 | async-trait | 0.1 | MIT OR Apache-2.0 | https://github.com/dtolnay/async-trait |
