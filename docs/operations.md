@@ -205,6 +205,10 @@ The admin password is only required while the `admin` step is still pending.
   `helm rollback`; an older release without that flag must be upgraded to a
   build that has it. The Helm history description carries the full conflict
   list (`helm -n naslos history naslos --max 2`).
+- **Authelia not ready after an upgrade**: it fatals when `ldaps://` is not
+  listening yet and restarts with container backoff while OpenLDAP initialises.
+  The upgrader now allows ten minutes for that rollout before rolling back; a
+  repeated timeout points at the LDAP pod logs, not Helm.
 - **Talos A/B rollback**: Talos boots the previous slot automatically. Confirm
   with `talosctl -n <node> get version`; the operation reports `failed` with
   "rolled back". Fix the cause (image/schematic) before retrying.

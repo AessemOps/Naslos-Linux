@@ -16,8 +16,13 @@ use std::time::Duration;
 
 const TALOS_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const HELM_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-const KUBECTL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const KUBECTL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+// Authelia fatals when LDAP is not listening yet and restarts with container
+// backoff; the old 5m window expired while OpenLDAP and Authelia were still
+// settling on a real node (0.7.2 upgrade, 2026-11-23). The kubectl wrapper
+// timeout is longer so the rollout timeout, not the wrapper, is authoritative.
+const ROLLOUT_TIMEOUT: &str = "10m";
 
 pub async fn naslos(cli: &Cli, writer: &mut Writer) -> Result<String, String> {
     writer
@@ -736,7 +741,7 @@ async fn wait_rollout(cli: &Cli, namespace: &str, kind: &str, name: &str) -> Res
             format!("{kind}/{name}"),
             "-n".into(),
             namespace.into(),
-            "--timeout=5m".into(),
+            format!("--timeout={ROLLOUT_TIMEOUT}"),
         ],
         KUBECTL_TIMEOUT,
     )
@@ -1137,6 +1142,15 @@ mod tests {
         assert!(is_live_running_pod(&explicit_null));
         let pending = serde_json::json!({"status": {"phase": "Pending"}});
         assert!(!is_live_running_pod(&pending));
+    }
+
+    #[test]
+    fn the_rollout_window_covers_the_authelia_ldap_backoff() {
+        assert_eq!(ROLLOUT_TIMEOUT, "10m");
+        assert!(
+            KUBECTL_TIMEOUT > Duration::from_secs(10 * 60),
+            "the kubectl wrapper must outlive the rollout timeout"
+        );
     }
 
     #[test]
