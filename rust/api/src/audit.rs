@@ -681,6 +681,19 @@ impl AuditLog {
     /// Mark the chain degraded. Returns `true` only for the first transition,
     /// so callers can raise exactly one alert.
     pub fn mark_degraded(&self, reason: &str) -> bool {
+        // A capacity-classified reason belongs on the retryable path: callers
+        // that hand mark_degraded a raw append error must not turn a full
+        // volume into a permanent failure (that would wedge every audited
+        // mutation until a restart).
+        if is_capacity_refusal(reason) {
+            let mut state = self.inner.state.lock().unwrap();
+            if state.degraded.is_some() {
+                return false;
+            }
+            state.degraded = Some(sanitize_text(reason, 512));
+            state.degraded_retryable = true;
+            return true;
+        }
         let mut state = self.inner.state.lock().unwrap();
         if state.degraded.is_some() && !state.degraded_retryable {
             // Already permanently degraded; alert exactly once.
@@ -2514,6 +2527,29 @@ mod tests {
             !log.mark_degraded("a second verification failure"),
             "a second permanent failure does not re-alert"
         );
+    }
+
+    #[test]
+    fn mark_degraded_never_permanently_escalates_a_capacity_reason() {
+        let log = AuditLog::for_test();
+        let capacity = "the audit volume is full; refusing mutations until space is reclaimed";
+        // A caller handing mark_degraded the raw capacity error must land on
+        // the retryable path, not permanently degrade.
+        assert!(log.mark_degraded(capacity), "first transition alerts");
+        assert!(log.degraded_is_retryable(), "capacity stays retryable");
+        assert!(
+            !log.mark_degraded(capacity),
+            "a repeated capacity reason does not re-alert"
+        );
+        assert!(
+            log.degraded_is_retryable(),
+            "still retryable, not permanent"
+        );
+        // Recovery is the same as for note_write_failure: the next
+        // successful append clears it.
+        let pending = begin_post(&log, "req-capacity-recovered");
+        log.finish(&pending, 201).expect("append after reclaim");
+        assert_eq!(log.status(), "ok");
     }
 
     #[test]
