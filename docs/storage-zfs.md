@@ -190,13 +190,14 @@ supplied and pipes the agent's `zfs send` stream into `zfs receive`;
   receive: a raw full stream creates the dataset and `zfs receive -F` is refused
   for encryption, so a full send into an existing replica is refused (a stale
   child replica in a recursive repair is refused the same way). The replica
-  keeps the source key, so the job claims the destination, copies the source key
-  Secret to it (an existing destination Secret is refused, never overwritten)
-  and the agent loads it (`zfs load-key` from a 0600 tmpfs file) before
-  finalizing the mount; the key never enters argv or a log. A destination whose
-  encryption state or key differs is refused, a recursive raw send must have one
-  encryption root, and a recursive plain send over a tree with an encrypted
-  descendant is refused rather than decrypted.
+  keeps the source key, so the job claims the destination, creates the source
+  key Secret for it (create-only; a matching leftover is reused, a foreign one
+  is refused and never overwritten) and the agent loads it (`zfs load-key` from
+  a 0600 tmpfs file) before finalizing the mount; the key never enters argv or a
+  log. A destination whose encryption state or key differs is refused, a
+  recursive raw send must have one encryption root, and a recursive plain send
+  over a tree with an encrypted descendant (filesystem or zvol) is refused
+  rather than decrypted.
 - Every receive uses `-u` and excludes exactly `mountpoint`, `canmount`,
   `sharenfs` and `sharesmb` from the stream (`-x`). The policy is deliberate:
   the first two would let a peer choose this node's host paths or hide a

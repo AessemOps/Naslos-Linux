@@ -279,13 +279,15 @@ Rules:
   keeps the source key: after the destination slot is claimed, the job writes
   the source key Secret under the destination and the agent loads it before
   finalizing the mount, so a reboot leaves the replica locked until the normal
-  unlock. An existing destination key Secret is never overwritten: it is `409`,
-  since it may belong to another dataset at that name. A destination whose
-  encryption state or key differs from the source is refused (no mixed chains),
-  a recursive raw send must have a single encryption root, and a recursive send
-  over a plain tree containing an encrypted descendant is refused rather than
-  decrypted (`400`, `409` for a key mismatch or an existing Secret, `503` when
-  the key client is unavailable).
+  unlock. The replica Secret is created create-only: a leftover that parses for
+  the destination and holds the source key is reused, any other existing Secret
+  is `409` and never overwritten (it may belong to another dataset at that
+  name). A destination whose encryption state or key differs from the source is
+  refused (no mixed chains), a recursive raw send must have a single encryption
+  root, and a recursive send over a plain tree containing an encrypted
+  descendant (filesystem or zvol) is refused rather than decrypted (`400`,
+  `409` for a key mismatch or a foreign Secret, `503` when the key client is
+  unavailable).
 - A recursive job still verifies every descendant when the root target already
   exists. Each missing child subtree is sent as its own full stream rather than
   rolling the destination back to an older base; a child carrying a same-named

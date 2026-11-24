@@ -345,11 +345,12 @@ retrying or using the browser path worked around it. Worth watching.
 - **Encrypted replication (implemented on `feat/encrypted-replication`, needs a
   release + live drill):** FR-ENC-07. An encrypted source is sent raw
   (`zfs send -w`) into a destination the job creates (its parent must exist);
-  the source key Secret is copied to the destination and the agent loads it
-  before the mount, so the replica mounts immediately and is locked after a
-  reboot until the normal unlock. A full send into an existing encrypted
-  replica, a mixed-chain pair, a key mismatch and a multi-root recursive send
-  are refused. OpenZFS refuses `zfs receive -F` for encrypted datasets, which is
+  the job creates the source key Secret for the destination (create-only; a
+  matching leftover is reused) and the agent loads it before the mount, so the
+  replica mounts immediately and is locked after a reboot until the normal
+  unlock. A full send into an existing encrypted replica, a mixed-chain pair, a
+  key mismatch, a multi-root recursive send and a recursive send over an
+  encrypted descendant (filesystem or zvol) in a plain tree are refused. OpenZFS refuses `zfs receive -F` for encrypted datasets, which is
   why the first send must target a new name. The drill on a deployed build must
   confirm: create an encrypted dataset → replicate to a new name → replica is
   `keystatus=available` and mounted → rerun sends an incremental → reboot leaves

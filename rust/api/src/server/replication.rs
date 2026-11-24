@@ -282,6 +282,9 @@ fn is_zero_i64(n: &i64) -> bool {
 pub struct ReplicationJob {
     public: Mutex<JobPublic>,
     handle: Mutex<Option<JoinHandle<()>>>,
+    /// The job created (or is creating) the destination with a raw receive, so
+    /// its replica key Secret must be cleaned up if the dataset never lands.
+    created_destination: bool,
 }
 
 impl ReplicationJob {
@@ -397,6 +400,7 @@ impl ReplicationJobManager {
         let job = Arc::new(ReplicationJob {
             public: Mutex::new(public),
             handle: Mutex::new(None),
+            created_destination: false,
         });
         let mut inner = self.inner.lock().unwrap();
         Self::insert_locked(&mut inner, "test-job", job);
@@ -858,11 +862,19 @@ pub async fn send_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
             ));
         }
     }
-    let prepared =
-        match prepare_encryption(&state, &datasets, &source, &destination, req.recursive).await {
-            Ok(prepared) => prepared,
-            Err(resp) => return resp,
-        };
+    let prepared = match prepare_encryption(
+        &state,
+        &agent,
+        &datasets,
+        &source,
+        &destination,
+        req.recursive,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(resp) => return resp,
+    };
     if !prepared.raw && !prepared.destination_exists {
         return bad_request(&format!(
             "destination dataset {destination:?} does not exist; create it before replicating into it"
@@ -880,6 +892,7 @@ pub async fn send_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
         req.recursive,
         req.prune_keep,
         prepared.raw,
+        prepared.created_destination,
     ) {
         Ok(reserved) => reserved,
         Err(conflict) => {
@@ -889,23 +902,9 @@ pub async fn send_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
             )
         }
     };
-    if prepared.created_destination {
-        let key = match prepared.unlock_key.as_ref() {
-            Some(key) => key,
-            None => {
-                finish_failed(&job, "the replica key is missing".to_string());
-                return json(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({ "error": "the replica key is missing" }),
-                );
-            }
-        };
-        if let Err(resp) = write_replica_secret(&state, &destination, key).await {
-            finish_failed(&job, "could not store the replica key".to_string());
-            return resp;
-        }
-    }
-
+    // From here to the spawn there is no await: the reserved job is always
+    // backed by a task, so a cancel can abort it and a dropped request cannot
+    // leave a Running job that blocks the destination forever.
     spawn_job(
         &state,
         job,
@@ -924,25 +923,32 @@ pub async fn send_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
 }
 
 /// The validated encryption decision for one request, including the raw key
-/// the agent must load after a raw receive and the destination Secret written
-/// for a first raw replica.
+/// the agent must load after a raw receive and whether the replica Secret is
+/// already in place.
 struct PreparedEncryption {
     raw: bool,
     created_destination: bool,
     destination_exists: bool,
     unlock_key: Option<RawKey>,
+    replica_secret_ready: bool,
 }
 
 /// Resolve [`EncryptionPlan`] and, for a raw pair, the key the receive needs:
 ///
-/// - a first raw replica will get the source key written as its own Secret
-///   (see [`write_replica_secret`], called after the destination slot is
-///   claimed), so unlock-after-boot works;
+/// - a first raw replica needs the source key written as its own Secret (in the
+///   job, after the destination slot is claimed); a matching leftover Secret is
+///   reused, a different one is refused;
 /// - an existing replica must hold exactly the source key, or the chain is
 ///   mixed and refused.
+///
+/// The agent's dataset list covers filesystems only, so a recursive job also
+/// checks the pool's zvols: an encrypted volume under a plain source (or under
+/// a different encryption root) would otherwise be streamed decrypted or fail
+/// late.
 #[allow(clippy::result_large_err)]
 async fn prepare_encryption(
     state: &AppState,
+    agent: &crate::agent::Client,
     datasets: &[Dataset],
     source: &str,
     destination: &str,
@@ -952,6 +958,35 @@ async fn prepare_encryption(
         Ok(plan) => plan,
         Err(e) => return Err(bad_request(&e)),
     };
+    if recursive {
+        let volumes = match encrypted_volumes_under(agent, source).await {
+            Ok(volumes) => volumes,
+            Err(e) => {
+                return Err(json(
+                    StatusCode::BAD_GATEWAY,
+                    serde_json::json!({ "error": e }),
+                ))
+            }
+        };
+        match plan.source_root() {
+            None => {
+                if let Some((name, _)) = volumes.first() {
+                    return Err(bad_request(&format!(
+                        "recursive replication of {source:?} would send the encrypted volume {name:?} as plaintext; replicate that volume separately"
+                    )));
+                }
+            }
+            Some(root) => {
+                if let Some((name, volume_root)) =
+                    volumes.iter().find(|(_, volume_root)| volume_root != root)
+                {
+                    return Err(bad_request(&format!(
+                        "recursive raw replication requires one encryption root; the volume {name:?} uses {volume_root:?}. Replicate it separately"
+                    )));
+                }
+            }
+        }
+    }
     let destination_exists = datasets.iter().any(|d| d.name == destination);
     let Some(root) = plan.source_root().map(str::to_string) else {
         return Ok(PreparedEncryption {
@@ -959,11 +994,18 @@ async fn prepare_encryption(
             created_destination: false,
             destination_exists,
             unlock_key: None,
+            replica_secret_ready: false,
         });
     };
 
     let source_key = super::zfs::read_dataset_key(state, &root).await?;
-    if !plan.creates_destination() {
+    let mut replica_secret_ready = false;
+    if plan.creates_destination() {
+        replica_secret_ready = match check_replica_secret(state, destination, &source_key).await {
+            Ok(ready) => ready,
+            Err(resp) => return Err(resp),
+        };
+    } else {
         let replica_key = super::zfs::read_dataset_key(state, destination).await?;
         if replica_key.as_bytes() != source_key.as_bytes() {
             return Err(json(
@@ -981,21 +1023,54 @@ async fn prepare_encryption(
         created_destination: plan.creates_destination(),
         destination_exists,
         unlock_key: Some(source_key),
+        replica_secret_ready,
     })
 }
 
-/// Write the replica key Secret for a first raw receive.
+/// Encrypted volumes under `source`, with their encryption roots. The agent's
+/// dataset list excludes volumes, so a recursive send must ask separately.
+async fn encrypted_volumes_under(
+    agent: &crate::agent::Client,
+    source: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let Some(pool) = source.split('/').next() else {
+        return Ok(Vec::new());
+    };
+    let zvols = agent
+        .list_pool_zvols(pool)
+        .await
+        .map_err(|e| format!("listing volumes under {source:?}: {e}"))?;
+    let prefix = format!("{source}/");
+    let mut encrypted = Vec::new();
+    for zvol in zvols.iter().filter(|z| z.name.starts_with(&prefix)) {
+        let status = agent
+            .encryption_status(&zvol.name)
+            .await
+            .map_err(|e| format!("checking the encryption state of {:?}: {e}", zvol.name))?;
+        if status.is_encrypted() {
+            let root = if status.encryption_root.is_empty() {
+                status.name.clone()
+            } else {
+                status.encryption_root.clone()
+            };
+            encrypted.push((status.name, root));
+        }
+    }
+    Ok(encrypted)
+}
+
+/// Whether the replica key Secret is already usable for `destination`.
 ///
-/// Called only after the destination slot is claimed, so two replication
-/// requests cannot race here. A Secret that already exists is refused rather
-/// than overwritten: it may belong to a dataset another actor created at this
-/// name, and replacing it would destroy that dataset's only key copy.
+/// A Secret that parses for this destination and holds the source key is a
+/// leftover from an earlier failed first run: reuse it, so a cancel or restart
+/// cannot deadlock the pair. Anything else is refused, never overwritten: it
+/// may belong to a dataset another actor created at this name.
 #[allow(clippy::result_large_err)]
-async fn write_replica_secret(
+async fn check_replica_secret(
     state: &AppState,
     destination: &str,
-    key: &RawKey,
-) -> Result<(), Response> {
+    source_key: &RawKey,
+) -> Result<bool, Response> {
     let Some(kube) = state.kube.as_ref() else {
         return Err(json(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1008,35 +1083,45 @@ async fn write_replica_secret(
         Err(e) => return Err(bad_request(&e)),
     };
     match kube.get_json("secret", &secret_name, &namespace).await {
-        Ok(None) => {}
-        Ok(Some(_)) => {
-            return Err(json(
+        Ok(None) => Ok(false),
+        Ok(Some(secret)) => match dataset_encryption::parse_key_secret(&secret, destination) {
+            Ok(existing) if existing.as_bytes() == source_key.as_bytes() => Ok(true),
+            _ => Err(json(
                 StatusCode::CONFLICT,
                 serde_json::json!({
                     "error": format!(
-                        "a key Secret for the destination {destination:?} already exists; if it is a leftover from a failed first run, remove it before retrying"
+                        "a key Secret for the destination {destination:?} already exists with a different key; it may belong to another dataset at that name. Remove it before retrying"
                     )
                 }),
-            ))
-        }
-        Err(e) => {
-            return Err(json(
-                StatusCode::BAD_GATEWAY,
-                serde_json::json!({ "error": format!("checking the destination key Secret: {e}") }),
-            ))
-        }
-    }
-    let object = match dataset_encryption::key_secret_object(destination, key, &namespace) {
-        Ok(object) => object,
-        Err(e) => return Err(bad_request(&e)),
-    };
-    if let Err(e) = kube.apply(&object).await {
-        return Err(json(
+            )),
+        },
+        Err(e) => Err(json(
             StatusCode::BAD_GATEWAY,
-            serde_json::json!({ "error": format!("writing the destination key Secret: {e}") }),
-        ));
+            serde_json::json!({ "error": format!("checking the destination key Secret: {e}") }),
+        )),
     }
-    Ok(())
+}
+
+/// Create the replica key Secret for a first raw receive. This is create-only:
+/// an upsert could overwrite a Secret another actor just created at this name.
+/// The job treats an existing Secret as a failed preflight (no rollback, since
+/// the Secret is not ours).
+async fn write_replica_secret(
+    state: &AppState,
+    destination: &str,
+    key: &RawKey,
+) -> Result<(), String> {
+    let Some(kube) = state.kube.as_ref() else {
+        return Err(
+            "encrypted replication needs the Kubernetes client to store the replica key; none is configured"
+                .to_string(),
+        );
+    };
+    let namespace = dataset_encryption::keys_namespace();
+    let object = dataset_encryption::key_secret_object(destination, key, &namespace)?;
+    kube.create(&object)
+        .await
+        .map_err(|e| format!("creating the replica key Secret: {e}"))
 }
 
 /// Remove the destination key Secret after a failed first raw receive, but only
@@ -1108,8 +1193,22 @@ async fn run_job(
         created_destination,
         destination_exists,
         unlock_key,
+        replica_secret_ready,
     } = prepared;
     let started = Instant::now();
+    // A first raw replica needs its key Secret before the stream so a reboot can
+    // unlock it. Create-only: if another writer appeared after the preflight,
+    // fail without deleting its Secret.
+    if created_destination && !replica_secret_ready {
+        let Some(key) = unlock_key.as_ref() else {
+            finish_failed(&job, "the replica key is missing".to_string());
+            return;
+        };
+        if let Err(e) = write_replica_secret(&state, &destination, key).await {
+            finish_failed(&job, e);
+            return;
+        }
+    }
     macro_rules! fail {
         ($msg:expr) => {{
             let msg = $msg;
@@ -1276,12 +1375,21 @@ async fn run_job(
             let replica = format!("{destination}{relative}");
             let exists = dataset_names.iter().any(|name| name == &replica);
             // A child's own encryption decides the stream: an encrypted child in
-            // a raw tree needs `-w` and a key, an unencrypted child does not.
-            let child_encrypted = datasets
-                .iter()
-                .find(|d| &d.name == dataset)
-                .map(is_encrypted)
-                .unwrap_or(false);
+            // a raw tree needs `-w` and a key, an unencrypted child does not. A
+            // zvol is absent from the dataset list, so ask the agent instead of
+            // assuming it is plain (fail closed).
+            let child_encrypted = match datasets.iter().find(|d| &d.name == dataset) {
+                Some(child) => is_encrypted(child),
+                None => match agent.encryption_status(dataset).await {
+                    Ok(status) => status.is_encrypted(),
+                    Err(e) => fail!(format!("checking the encryption state of {dataset}: {e}")),
+                },
+            };
+            if child_encrypted && !raw {
+                fail!(format!(
+                    "recursive replication of {dataset:?} would send an encrypted dataset as plaintext; replicate that dataset separately"
+                ));
+            }
             let child_raw = raw && child_encrypted;
             if let Some(encrypted_child) = plain_subtree_with_encryption(&datasets, dataset) {
                 fail!(format!(
@@ -1386,6 +1494,7 @@ fn reserve_job(
     recursive: bool,
     prune_keep: usize,
     raw: bool,
+    created_destination: bool,
 ) -> Result<(String, Arc<ReplicationJob>), JobPublic> {
     let id = random_job_id();
     let job = Arc::new(ReplicationJob {
@@ -1407,6 +1516,7 @@ fn reserve_job(
             error: String::new(),
         }),
         handle: Mutex::new(None),
+        created_destination,
     });
     state.replication_jobs.add_if_free(&id, job.clone())?;
     Ok((id, job))
@@ -1502,6 +1612,18 @@ pub async fn job_detail_delete(
     }
     if let Some(handle) = job.handle.lock().unwrap().take() {
         handle.abort();
+    }
+    // A cancelled first raw send may leave the replica key Secret with no
+    // dataset. Reconcile it like a failed job does, off the response path and
+    // only when the dataset is absent.
+    if job.created_destination {
+        if let Some(agent) = state.agent.clone() {
+            let state = state.clone();
+            let destination = job.snapshot().destination;
+            tokio::spawn(async move {
+                rollback_created_destination(&state, &agent, &destination).await;
+            });
+        }
     }
     json(
         StatusCode::OK,
@@ -1697,6 +1819,7 @@ mod tests {
                 error: String::new(),
             }),
             handle: Mutex::new(None),
+            created_destination: false,
         }
     }
 
