@@ -214,6 +214,11 @@ are in-memory (a restart abandons a running job; the app record and
 | PUT | `/api/zvols?name=<pool>/<zvol>` | Resize `{size}` → `zfs set volsize`; growth only, refused while the zvol is in use (FR-ZVOL-03) |
 | DELETE | `/api/zvols?name=<pool>/<zvol>&confirm=<pool>/<zvol>` | Destroy a zvol. `confirm` must repeat the full name; a path that is not a `type=volume` and an in-use zvol are refused with 409 (FR-ZVOL-03) |
 
+The pool page (`Pools → <pool> → Block volumes (zvols)`) is the UI for these
+routes: it lists the pool's zvols, creates one with the `volblocksize`/
+`compression` surface, grows one, and destroys one only after the full name is
+typed as confirmation (FR-ZVOL-04); iSCSI export is still `[OPEN]`.
+
 The actual ZFS work is delegated to `naslos-agent` on each node:
 `chroot /host zpool …` / `chroot /host zfs …`. The API reaches the agent
 through the headless `naslos-agent` Service in `naslos-privileged` (`:9090`, one
@@ -238,7 +243,8 @@ Local replication copies one ZFS dataset to another dataset on the same node.
 It is asynchronous: the request validates and enqueues, then the transfer runs
 as a server-owned task with the agent's `zfs send` stream piped straight into
 `zfs receive` (never buffered in the API). Jobs are in memory; the received
-snapshots are the durable outcome.
+snapshots are the durable outcome. The `/replication` page uses these routes
+for create, live progress, cancel and history (FR-REP-10).
 
 | Method | Path | Description |
 | --- | --- | --- |

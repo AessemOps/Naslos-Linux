@@ -7,6 +7,7 @@
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
+  import { formatBytes } from '$lib/format';
 
   interface PoolDevice {
     name: string;
@@ -60,6 +61,33 @@
   let datasetEncrypted = false;
   let datasetSaving = false;
   let datasetError = '';
+
+  // Block volumes (FR-ZVOL). A zvol is a raw block device, not a mounted
+  // dataset, so it is listed separately from the dataset table. There is no
+  // iSCSI export yet: a zvol is only usable by a local consumer.
+  interface Zvol {
+    name: string;
+    volsize: string;
+    volsizeBytes: number;
+    volblocksize: string;
+    compression: string;
+    used: string;
+    avail: string;
+    refer: string;
+  }
+  let zvols: Zvol[] = [];
+  let zvolsError = '';
+  let showZvolModal = false;
+  let zvolName = '';
+  let zvolSize = '';
+  let zvolBlocksize = '';
+  let zvolCompression = 'lz4';
+  let zvolSaving = false;
+  let zvolError = '';
+  let resizeZvol: Zvol | null = null;
+  let resizeSize = '';
+  let resizeSaving = false;
+  let resizeError = '';
 
   // Scheduled snapshots and scrubs (FR-STO-10/11). Schedules are stored by the
   // API and survive restarts; this page only edits them.
@@ -118,12 +146,18 @@
     error = '';
     datasets = [];
     datasetsError = '';
+    zvols = [];
+    zvolsError = '';
     schedules = [];
     schedulesError = '';
     showDatasetModal = false;
+    showZvolModal = false;
+    resizeZvol = null;
     showScheduleModal = false;
     showAddDriveModal = false;
     datasetError = '';
+    zvolError = '';
+    resizeError = '';
     scheduleError = '';
     addError = '';
   }
@@ -287,6 +321,117 @@
     } catch (e: any) {
       alert(e.message);
     }
+  }
+
+  // ---- Block volumes (FR-ZVOL) ------------------------------------------
+
+  async function loadZvols() {
+    const requested = poolName;
+    try {
+      const res = await fetch(`/api/zvols?pool=${encodeURIComponent(requested)}`);
+      if (poolName !== requested) return;
+      if (!res.ok) {
+        zvolsError = `Failed to load zvols (HTTP ${res.status})`;
+        return;
+      }
+      const data = await res.json();
+      if (poolName !== requested) return;
+      zvols = Array.isArray(data) ? data : [];
+      zvolsError = '';
+    } catch {
+      if (poolName === requested) zvolsError = 'Failed to connect to API';
+    }
+  }
+
+  function openZvol() {
+    zvolName = '';
+    zvolSize = '';
+    zvolBlocksize = '';
+    zvolCompression = 'lz4';
+    zvolError = '';
+    showZvolModal = true;
+  }
+
+  async function createZvol() {
+    zvolSaving = true;
+    zvolError = '';
+    try {
+      const options: Record<string, string> = {};
+      // The zvol property surface is deliberately narrow (FR-ZVOL-02): only
+      // volblocksize and compression are accepted here.
+      if (zvolBlocksize) options.volblocksize = zvolBlocksize;
+      if (zvolCompression) options.compression = zvolCompression;
+
+      const res = await fetch('/api/zvols', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pool: poolName, name: zvolName, size: zvolSize.trim(), options })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not create the zvol');
+
+      showZvolModal = false;
+      await loadZvols();
+    } catch (e: any) {
+      zvolError = e.message;
+    } finally {
+      zvolSaving = false;
+    }
+  }
+
+  function openResize(zvol: Zvol) {
+    resizeZvol = zvol;
+    resizeSize = zvol.volsize;
+    resizeError = '';
+  }
+
+  async function submitResize() {
+    if (!resizeZvol) return;
+    resizeSaving = true;
+    resizeError = '';
+    const name = resizeZvol.name;
+    try {
+      const res = await fetch(`/api/zvols?name=${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ size: resizeSize.trim() })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not resize the zvol');
+      resizeZvol = null;
+      await loadZvols();
+    } catch (e: any) {
+      resizeError = e.message;
+    } finally {
+      resizeSaving = false;
+    }
+  }
+
+  async function deleteZvol(zvol: Zvol) {
+    // The API requires `confirm` equal to the full name; the typed prompt is
+    // what authorizes this unrecoverable destroy.
+    const typed = prompt(
+      `Destroy zvol ${zvol.name}?\n\nThe block device and everything stored on it are destroyed. Type the full name to confirm.`
+    );
+    if (typed === null) return;
+    if (typed.trim() !== zvol.name) {
+      alert('Zvol name did not match; nothing was destroyed.');
+      return;
+    }
+    try {
+      const url = `/api/zvols?name=${encodeURIComponent(zvol.name)}&confirm=${encodeURIComponent(zvol.name)}`;
+      const res = await fetch(url, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Could not destroy ${zvol.name}`);
+      await loadZvols();
+    } catch (e: any) {
+      alert(e.message);
+    }
+  }
+
+  function zvolBlocksizeLabel(value: string): string {
+    const bytes = Number(value);
+    return value && Number.isFinite(bytes) && bytes > 0 ? formatBytes(bytes) : '—';
   }
 
   // ---- Scheduled snapshots and scrubs -----------------------------------
@@ -554,6 +699,7 @@
     resetPoolView();
     void loadHealth();
     void loadDatasets();
+    void loadZvols();
     void loadSchedules();
   }
 </script>
@@ -691,6 +837,53 @@
                   class="btn btn-sm rounded border border-naslos-border text-red-300 hover:bg-red-900/30 whitespace-nowrap"
                   on:click={() => deleteDataset(ds.name, false)}
                   title="Destroy this dataset"
+                >Delete</button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
+    <!-- Block volumes (FR-ZVOL) -->
+    <div class="card mt-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-bold">Block volumes (zvols)</h2>
+        <button class="btn btn-secondary btn-sm" on:click={openZvol}>New zvol</button>
+      </div>
+      <p class="text-xs text-gray-500 mb-3">
+        A zvol is a raw block device (<code class="text-xs">/dev/zvol/{poolName}/…</code>), not a
+        folder you can share over SMB/NFS. Resize only grows a zvol and is refused while it is in
+        use; iSCSI export is not implemented yet (see <code class="text-xs">docs/iscsi.md</code>).
+      </p>
+
+      {#if zvolsError}
+        <p role="alert" class="text-red-400 text-sm">{zvolsError}</p>
+      {:else if zvols.length === 0}
+        <p class="text-gray-400 text-sm">No block volumes in this pool.</p>
+      {:else}
+        <div class="space-y-2">
+          {#each zvols as zvol (zvol.name)}
+            <div class="bg-naslos-dark rounded-lg p-3 flex flex-wrap items-center justify-between gap-3">
+              <div class="min-w-0">
+                <div class="font-medium truncate">{zvol.name}</div>
+                <div class="text-xs text-gray-500">
+                  volblocksize {zvolBlocksizeLabel(zvol.volblocksize)} · compression {zvol.compression || '—'}
+                </div>
+              </div>
+              <div class="text-xs text-gray-400 whitespace-nowrap">
+                {zvol.volsize || '—'} size · {zvol.used || '0'} used · {zvol.avail || '0'} free
+              </div>
+              <div class="flex gap-1">
+                <button
+                  class="btn btn-sm rounded border border-naslos-border text-gray-200 hover:bg-naslos-dark whitespace-nowrap"
+                  on:click={() => openResize(zvol)}
+                  title="Grow this zvol"
+                >Resize</button>
+                <button
+                  class="btn btn-sm rounded border border-naslos-border text-red-300 hover:bg-red-900/30 whitespace-nowrap"
+                  on:click={() => deleteZvol(zvol)}
+                  title="Destroy this zvol"
                 >Delete</button>
               </div>
             </div>
@@ -1036,3 +1229,88 @@
     </div>
   </Modal>
 {/if}
+
+<!-- New zvol modal (FR-ZVOL) -->
+{#if showZvolModal}
+  <Modal title="New zvol" onClose={() => (showZvolModal = false)}>
+    <p class="text-sm text-gray-400">
+      A zvol inside <span class="text-naslos-link">{poolName}</span> is a raw block device. It has
+      no filesystem until a consumer formats it, and it cannot be shared over SMB/NFS.
+    </p>
+
+    <div>
+      <label class="label" for="zvol-name">Name *</label>
+      <input id="zvol-name" type="text" bind:value={zvolName} placeholder="e.g. vm-disk1" class="input w-full" />
+      <p class="text-xs text-gray-500 mt-1">Nested names work: <code class="text-xs">vms/disk1</code>.</p>
+    </div>
+
+    <div>
+      <label class="label" for="zvol-size">Size *</label>
+      <input id="zvol-size" type="text" bind:value={zvolSize} placeholder="e.g. 10G" class="input w-full" />
+      <p class="text-xs text-gray-500 mt-1">A ZFS size such as <code class="text-xs">512M</code>, <code class="text-xs">10G</code> or <code class="text-xs">1.5T</code>.</p>
+    </div>
+
+    <div>
+      <label class="label" for="zvol-blocksize">Block size</label>
+      <select id="zvol-blocksize" bind:value={zvolBlocksize} class="input w-full">
+        <option value="">Default (leave to ZFS)</option>
+        <option value="4096">4 KiB</option>
+        <option value="8192">8 KiB</option>
+        <option value="16384">16 KiB</option>
+        <option value="32768">32 KiB</option>
+        <option value="65536">64 KiB</option>
+        <option value="131072">128 KiB</option>
+        <option value="1048576">1 MiB</option>
+      </select>
+    </div>
+
+    <div>
+      <label class="label" for="zvol-compression">Compression</label>
+      <select id="zvol-compression" bind:value={zvolCompression} class="input w-full">
+        <option value="lz4">lz4 (fast, good default)</option>
+        <option value="zstd">zstd (better ratio, more CPU)</option>
+        <option value="off">off</option>
+        <option value="gzip">gzip</option>
+      </select>
+    </div>
+
+    {#if zvolError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{zvolError}</div>{/if}
+
+    <div slot="footer">
+      <button class="btn btn-secondary" on:click={() => (showZvolModal = false)}>Cancel</button>
+      <button
+        class="btn btn-primary"
+        on:click={createZvol}
+        disabled={zvolSaving || !zvolName.trim() || !zvolSize.trim()}
+      >
+        {zvolSaving ? 'Creating…' : 'Create zvol'}
+      </button>
+    </div>
+  </Modal>
+{/if}
+
+<!-- Resize zvol modal (FR-ZVOL-03) -->
+{#if resizeZvol}
+  <Modal title={`Resize ${resizeZvol.name}`} onClose={() => (resizeZvol = null)}>
+    <p class="text-sm text-gray-400">
+      Current size: <strong>{resizeZvol.volsize}</strong>. Resizing only grows a zvol: a shrink is
+      refused because it can corrupt the filesystem inside it, and a resize is refused while the
+      zvol is in use.
+    </p>
+
+    <div>
+      <label class="label" for="zvol-resize-size">New size *</label>
+      <input id="zvol-resize-size" type="text" bind:value={resizeSize} placeholder="e.g. 20G" class="input w-full" />
+    </div>
+
+    {#if resizeError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{resizeError}</div>{/if}
+
+    <div slot="footer">
+      <button class="btn btn-secondary" on:click={() => (resizeZvol = null)}>Cancel</button>
+      <button class="btn btn-primary" on:click={submitResize} disabled={resizeSaving || !resizeSize.trim()}>
+        {resizeSaving ? 'Resizing…' : 'Resize'}
+      </button>
+    </div>
+  </Modal>
+{/if}
+

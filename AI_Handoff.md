@@ -342,6 +342,15 @@ retrying or using the browser path worked around it. Worth watching.
 
 ### Open items
 
+- **Replication + zvol UI (implemented on `fix/replication-zvol-ui`, needs a
+  release):** the `/replication` page (create from two existing datasets, live
+  progress, cancel, history with the terminal result) and the Block volumes
+  (zvols) section on the pool page (create, grow, typed-name destroy) now front
+  the existing FR-REP and FR-ZVOL APIs. Covered by
+  `ui/tests/replication.spec.ts` and `ui/tests/zvols.spec.ts`, and `/replication`
+  is in the a11y route scan. The deployed 0.7.62 node does not have either page
+  yet, so both tests fail against it until the next release.
+
 - **Phantom image update after an app upgrade (fixed on
   `fix/app-image-drift-stale-pods`, needs a release):** image drift counted
   every pod in the app namespace, including a lingering `Succeeded`/`Failed`

@@ -172,9 +172,12 @@ upgrade does not consume a daily or weekly snapshot.
 `POST /api/replication/send` copies a source dataset to a destination dataset
 on the **same node** as an async job (`202 {jobId}`), with
 `GET /api/replication/jobs[/{id}]` for progress and
-`DELETE /api/replication/jobs/{id}` to cancel. The API creates a
-`naslos-rep-<pair token>-<UTC>-<random>` snapshot when none is supplied and pipes
-the agent's `zfs send` stream into `zfs receive`; `recursive` uses `zfs send -r` (descendants, no property propagation).
+`DELETE /api/replication/jobs/{id}` to cancel. The `/replication` page creates a
+pair from two existing datasets, shows running jobs with live progress and a
+cancel action, and keeps the last finished jobs with their result. The API
+creates a `naslos-rep-<pair token>-<UTC>-<random>` snapshot when none is
+supplied and pipes the agent's `zfs send` stream into `zfs receive`;
+`recursive` uses `zfs send -r` (descendants, no property propagation).
 
 - Both datasets must already exist (the destination is never created
   implicitly), and identical or nested paths are refused.
@@ -258,9 +261,12 @@ Rules the API and the agent both enforce (FR-ZVOL):
 | Delete/resize is refused while the zvol is mounted, held by a sysfs holder, or open by a visible host/agent process; a ZFS `volume is busy` is mapped to the same refusal | A consumer has no chance to rescan or flush |
 | A busy destroy is never retried with a forced unmount (unlike the dataset stale-mount ladder) | A busy zvol has a live consumer; taking it away is data loss |
 
-There is no zvol UI yet and no iSCSI export: both are `[OPEN]` (FR-ZVOL-04).
-The iSCSI spike, including the in-use consumer-registration requirement, is in
-[iscsi.md](iscsi.md).
+The UI lives on the pool page (`Pools → <pool> → Block volumes (zvols)`): it
+lists the pool's zvols, creates one with a name, a size and the
+`volblocksize`/`compression` surface, grows one, and destroys one only after the
+full `<pool>/<name>` is typed as confirmation. An iSCSI export remains `[OPEN]`
+(FR-ZVOL-04); the iSCSI spike, including the in-use consumer-registration
+requirement, is in [iscsi.md](iscsi.md).
 
 ### Growing a pool (adding disks)
 
