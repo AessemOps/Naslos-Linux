@@ -122,15 +122,25 @@ retrying or using the browser path worked around it. Worth watching.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.7.6`**, revision 73
-  (2026-11-23), upgraded in place from 0.7.0 through the web upgrader. The node
-  runs the v0.7.6 images (public GHCR, digest-pinned by the pack): API
-  `6a10d41d…`, agent `90b8101b…`, UI `02737a6e…`, OpenLDAP `d19a44fd…`, Samba
-  `7260852a…`, NFS `91e7bf19…`, terminal `7f2190bb…`, vmd `58436c61…`.
-  `/api/system/version` reports Naslos/chart 0.7.6, profile `installer`, Talos
-  v1.14.6 and k8s v1.37.0. The upgrade live drill reached `succeeded`;
-  API/Authelia/OpenLDAP/Traefik/UI and the privileged Samba/NFS/agent/terminal
-  pods are Running. `values-vm.yaml` carries the 0.7.6 digests.
+- **Deployed release:** Helm `naslos` chart **`naslos-0.7.6`**, revision 74
+  (2026-11-24). Revision 73 was the in-place web upgrade from 0.7.0, running
+  the v0.7.6 pack images digest-pinned (API `6a10d41d…`, agent `90b8101b…`, UI
+  `02737a6e…`, OpenLDAP `d19a44fd…`, Samba `7260852a…`, NFS `91e7bf19…`,
+  terminal `7f2190bb…`, vmd `58436c61…`). Revision 74 re-ran
+  `make install-vm VM_IP=<node-ip>` (values.yaml + values-vm.yaml) to repair
+  two 0.7.6 regressions: the upgrade had dropped `naslos` from Traefik's
+  watched namespaces (gotcha #21) so the domain root answered a bare 404, and
+  it re-applied the installer profile (buddy off). Revision 74 restores the
+  platform routes, `buddy.enabled: true` and `virt.enabled: true`; the branch
+  values carried no digests at deploy time, so the running pods resolve the
+  `0.7.6` tag, and `values-vm.yaml` on master pins the v0.7.6 digests again for
+  the next deploy. `/api/health` is green, `/` redirects to the Authelia portal
+  and `/authelia/` answers 200. The running API image predates the
+  LDAP-reconnect fix (gotcha #22): after the 0.7.6 rollout its cached LDAP
+  handle died and `/api/users` + `/api/groups` returned 500
+  `op send error: channel closed`; `kubectl -n naslos rollout restart
+  deploy/naslos-api` reconnected them, and the code fix ships in the next
+  release.
 - **Latest release:** `v0.7.6` (2026-11-23) and installer `naslos-v0.7.6` are
   published; `naslos-install-pack-0.7.6.tar.gz` is attached with every image
   digest-pinned. It carries the 0.7.1 security/data-integrity remediation and
@@ -140,17 +150,22 @@ retrying or using the browser path worked around it. Worth watching.
   chown init container for the legacy Authelia `/config` PVC, and Samba's
   `NET_BIND_SERVICE`. Operator actions: reissue MCP `write` tokens as `full`,
   migrate catalog charts off native Ingress, and back up `buddy-identity.json`
-  plus the Buddy KEK Secret before the next identity change.
+  plus the Buddy KEK Secret before the next identity change. **Known 0.7.6
+  regressions (fixed on `fix/traefik-watch-release-namespace`, next release):**
+  the chart's Traefik watch list omitted the release namespace (platform
+  routes 404, gotcha #21) and the API did not reconnect a closed ldap3 channel
+  after the OpenLDAP restart (users/groups 500, gotcha #22).
 - **0.7.1–0.7.6 deploy behavior:** `make install-vm` requires
   `VM_IP=<node-ip>` and installs `local-path` + the `naslos-talosconfig`
-  Secret; Traefik uses namespaced RBAC watching only the shared/per-app
-  namespaces; the production overlay renders no shared `/var/mnt` datasets
-  PV/PVC; Authelia, Samba, NFS, OpenLDAP/backup and the upgrader policy are
-  hardened; state/backup PVCs are kept on uninstall; git/DDNS egress is scoped
-  to the API pod; base images and local-path are digest-pinned. Traefik still
-  reads Secrets inside its watched namespaces (dynamic per-domain TLS names
-  defeat a fixed allowlist); legacy shared-namespace app installs still hold
-  the wildcard Secret and should move to per-app namespaces.
+  Secret; Traefik uses namespaced RBAC watching the release namespace plus the
+  shared/per-app namespaces; the production overlay renders no shared
+  `/var/mnt` datasets PV/PVC; Authelia, Samba, NFS, OpenLDAP/backup and the
+  upgrader policy are hardened; state/backup PVCs are kept on uninstall;
+  git/DDNS egress is scoped to the API pod; base images and local-path are
+  digest-pinned. Traefik still reads Secrets inside its watched namespaces
+  (dynamic per-domain TLS names defeat a fixed allowlist); legacy
+  shared-namespace app installs still hold the wildcard Secret and should move
+  to per-app namespaces.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
@@ -590,9 +605,44 @@ sh scripts/audit.sh
     `buddy.enabled` became `false` and `buddy.receiveHostPath` disappeared while
     `virt` and networking survived; Playwright caught it as a Buddy 503.
     Re-running `make install-vm` (values.yaml + values-vm.yaml) restored Buddy
-    at revision 62. After any UI-driven upgrade, compare `helm get values
-    naslos` with `values-vm.yaml` (buddy, virt, nodeCIDR and storage/dataset
-    settings) and re-run `make install-vm` if a node-only value was lost.
+    at revision 62. The 0.7.6 UI upgrade repeated the pattern and also applied
+    the installer Traefik values; the node lost `naslos` from the watched
+    namespaces (gotcha #21), which only a chart/values fix plus
+    `make install-vm` repairs. After any UI-driven upgrade, compare
+    `helm get values naslos` with `values-vm.yaml` (buddy, virt, nodeCIDR,
+    Traefik namespaces and storage/dataset settings) and re-run `make
+    install-vm` if a node-only value was lost.
+
+21. **Traefik's CRD provider does not watch the release namespace
+    automatically** (found 2026-11-24: `https://naslos.local/` answered a bare
+    404 after the 0.7.6 upgrade while every app domain kept working). With
+    `rbac.namespaced: true` the upstream chart adds the release namespace to
+    the Role/RoleBinding list, but the `providers.kubernetesCRD.namespaces`
+    helper emits the values list verbatim when it is non-empty and never
+    prepends the release namespace. Every platform IngressRoute (UI, API,
+    Authelia portal, MCP, dashboard) lives in `naslos`, so omitting `naslos`
+    from `traefik.providers.kubernetesCRD.namespaces` leaves them all unread —
+    Traefik has no matching router and returns its own 404 for `/`, `/api/*`
+    and `/authelia/*`. The base values and both overlays now list `naslos`
+    first, and `scripts/audit.sh` (`check_security_rendering`) asserts the
+    rendered `--providers.kubernetescrd.namespaces=naslos,…` arg. If the
+    domain root 404s after an upgrade, check that argument before anything
+    else.
+
+22. **A closed ldap3 channel must count as a dead connection** (found
+    2026-11-24: after the 0.7.6 upgrade the Users and Groups pages returned 500
+    `listing people: op send error: channel closed`). The upgrade restarted
+    OpenLDAP after the API had connected; slapd closed the TLS connection
+    (`socket receive error: peer closed connection`), the ldap3 connection task
+    exited, and the API kept reusing the dead `Ldap` handle. `identity::run`
+    reconnects only when `is_connection_error` matches, and its fragment list
+    had `response channel closed` but not the actual `op send error: channel
+    closed` rendering, so every later users/groups request failed until a pod
+    restart. The classifier now matches `channel closed` (test asserts the exact
+    ldap3 string); the running 0.7.6 API image predates the fix, so a
+    `kubectl -n naslos rollout restart deploy/naslos-api` is the live remedy
+    until the next release. Any future LDAP-serving component that caches a
+    connection needs the same reconnect-on-error behavior.
 
 ## History
 

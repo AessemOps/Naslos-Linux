@@ -470,15 +470,23 @@ traefik:
       # wildcard private key therefore never needs a copy in an app namespace
       # (R-002), and no chart can shadow the route.
       allowCrossNamespace: true
-      # R-011: watch only the release namespace (implicit) and the shared app
-      # namespaces. The upstream chart's ClusterRole grants Secret read in every
-      # namespace; `rbac.namespaced` below turns that into a Role per watched
-      # namespace, so a compromised Traefik pod can read Secrets only in
-      # `naslos` and these namespaces. The VM/installer overlays replace this
-      # list with the shared namespaces plus the fixed per-app isolation pool
-      # (Traefik needs Service access there for cross-namespace routes); see
-      # docs/deployment.md "Traefik RBAC".
+      # R-011: watch the release namespace plus the shared app namespaces. The
+      # upstream chart's ClusterRole grants Secret read in every namespace;
+      # `rbac.namespaced` below turns that into a Role per watched namespace,
+      # so a compromised Traefik pod can read Secrets only in `naslos` and
+      # these namespaces. The VM/installer overlays replace this list with the
+      # release namespace, the shared namespaces and the fixed per-app
+      # isolation pool (Traefik needs Service access there for cross-namespace
+      # routes); see docs/deployment.md "Traefik RBAC".
+      #
+      # The release namespace MUST be listed first. The upstream chart's
+      # `providers.kubernetesCRD.namespaces` helper uses this value verbatim
+      # when it is non-empty and does NOT prepend the release namespace (only
+      # the Role/RoleBinding helper does), so leaving it out makes Traefik skip
+      # every platform IngressRoute (UI, API, Authelia portal, MCP, dashboard)
+      # and the domain root answers a Traefik 404.
       namespaces:
+        - naslos
         - naslos-apps
         - naslos-apps-priv
     # Native Ingress is disabled: the API owns routing through IngressRoute,

@@ -556,7 +556,12 @@ pub fn is_connection_error(msg: &str) -> bool {
         "connection reset",
         "broken pipe",
         "use of closed network connection",
-        "response channel closed",
+        // ldap3's `LdapError::OpSend` renders as `op send error: channel
+        // closed` once the connection task has exited (the peer closed the TLS
+        // connection or slapd restarted). The channel is never reopened, so it
+        // must be treated as a dead connection and retried on a fresh one;
+        // otherwise every later users/groups request fails until a pod restart.
+        "channel closed",
         "connection refused",
         "no such host",
         "ldap: connection closed",
@@ -793,6 +798,7 @@ mod tests {
             "broken pipe",
             "use of closed network connection",
             "response channel closed",
+            "channel closed",
             "connection refused",
             "no such host",
             "ldap: connection closed",
@@ -811,6 +817,9 @@ mod tests {
                 "{upper:?} is the uppercase form of {fragment:?} and must still match"
             );
         }
+        // The exact ldap3 rendering when the connection task has exited: the
+        // send half is closed and never reopens, so this must force a reconnect.
+        assert!(is_connection_error("op send error: channel closed"));
         for other in ["", "invalid credentials", "LDAP bind failed", "invalid DN"] {
             assert!(
                 !is_connection_error(other),

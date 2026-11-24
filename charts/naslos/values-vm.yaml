@@ -167,7 +167,9 @@ traefik:
   service:
     type: ClusterIP
   # R-011: namespaced RBAC. The list replaces the base value and names every
-  # namespace Traefik reads: the shared app namespaces plus the fixed per-app
+  # namespace Traefik reads: the release namespace (the platform IngressRoutes
+  # live there, and the upstream namespaces helper does not add it
+  # automatically) plus the shared app namespaces and the fixed per-app
   # isolation pool (baseline 1-32, privileged p1-p4), whose Services the
   # cross-namespace IngressRoutes target. Keep it in step with
   # apps.isolation.namespaces/privilegedNamespaces.
@@ -176,6 +178,7 @@ traefik:
   providers:
     kubernetesCRD:
       namespaces:
+        - naslos
         - naslos-apps
         - naslos-apps-priv
         - naslos-app-1

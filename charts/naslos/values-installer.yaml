@@ -84,13 +84,16 @@ traefik:
       hostPort: 443
   service:
     type: ClusterIP
-  # R-011: namespaced RBAC; watch the shared app namespaces and the fixed
-  # per-app isolation pool (same list as the VM overlay).
+  # R-011: namespaced RBAC; watch the release namespace (the platform
+  # IngressRoutes live there and the upstream namespaces helper does not add it
+  # automatically), the shared app namespaces and the fixed per-app isolation
+  # pool (same list as the VM overlay).
   rbac:
     namespaced: true
   providers:
     kubernetesCRD:
       namespaces:
+        - naslos
         - naslos-apps
         - naslos-apps-priv
         - naslos-app-1
