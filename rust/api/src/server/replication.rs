@@ -1036,6 +1036,8 @@ async fn encrypted_volumes_under(
     let Some(pool) = source.split('/').next() else {
         return Ok(Vec::new());
     };
+    // One bulk listing carries `encryption`/`encryptionroot` per volume, so the
+    // send request does not make a status round trip per zvol.
     let zvols = agent
         .list_pool_zvols(pool)
         .await
@@ -1043,18 +1045,16 @@ async fn encrypted_volumes_under(
     let prefix = format!("{source}/");
     let mut encrypted = Vec::new();
     for zvol in zvols.iter().filter(|z| z.name.starts_with(&prefix)) {
-        let status = agent
-            .encryption_status(&zvol.name)
-            .await
-            .map_err(|e| format!("checking the encryption state of {:?}: {e}", zvol.name))?;
-        if status.is_encrypted() {
-            let root = if status.encryption_root.is_empty() {
-                status.name.clone()
-            } else {
-                status.encryption_root.clone()
-            };
-            encrypted.push((status.name, root));
+        let encryption = zvol.encryption.as_str();
+        if encryption.is_empty() || encryption == "off" || encryption == "-" {
+            continue;
         }
+        let root = if zvol.encryption_root.is_empty() {
+            zvol.name.clone()
+        } else {
+            zvol.encryption_root.clone()
+        };
+        encrypted.push((zvol.name.clone(), root));
     }
     Ok(encrypted)
 }

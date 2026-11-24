@@ -32,7 +32,6 @@ struct MockAgent {
     sends: Arc<Mutex<Vec<Value>>>,
     receives: Arc<Mutex<Vec<Value>>>,
     zvols: Arc<Mutex<Vec<Value>>>,
-    encryption: Arc<Mutex<HashMap<String, Value>>>,
     send_body: Arc<Vec<u8>>,
     send_delay: Duration,
 }
@@ -48,7 +47,6 @@ impl Default for MockAgent {
             sends: Arc::new(Mutex::new(Vec::new())),
             receives: Arc::new(Mutex::new(Vec::new())),
             zvols: Arc::new(Mutex::new(Vec::new())),
-            encryption: Arc::new(Mutex::new(HashMap::new())),
             send_body: Arc::new(b"zfs-stream".to_vec()),
             send_delay: Duration::ZERO,
         }
@@ -183,23 +181,6 @@ async fn spawn_mock(mock: MockAgent) -> String {
             get(
                 |State(m): State<MockAgent>, Query(_q): Query<HashMap<String, String>>| async move {
                     Json(m.zvols.lock().unwrap().clone())
-                },
-            ),
-        )
-        .route(
-            "/api/v1/encryption/status/{*dataset}",
-            get(
-                |State(m): State<MockAgent>, Path(dataset): Path<String>| async move {
-                    let status = m
-                        .encryption
-                        .lock()
-                        .unwrap()
-                        .get(&dataset)
-                        .cloned()
-                        .unwrap_or_else(
-                            || json!({ "name": dataset, "encryption": "off", "keystatus": "none" }),
-                        );
-                    Json(status)
                 },
             ),
         )
@@ -559,6 +540,10 @@ async fn a_destination_that_already_has_the_target_is_up_to_date() {
 #[tokio::test]
 async fn a_recursive_job_repairs_a_missing_descendant_replica() {
     let mock = MockAgent::with_pair();
+    mock.datasets
+        .lock()
+        .unwrap()
+        .push(json!({ "name": "tank/src/child" }));
     mock.set_snapshots("tank/src", &[("base", "g0"), ("snap", "g1")]);
     mock.set_snapshots("backup/dst", &[("base", "g0"), ("snap", "g1")]);
     mock.set_snapshots(
@@ -644,10 +629,10 @@ async fn a_child_snapshot_with_a_different_guid_is_not_up_to_date() {
     mock.set_snapshots("backup/dst", &[("snap", "g1")]);
     mock.set_snapshots("tank/src/child", &[("snap", "g1-child")]);
     mock.set_snapshots("backup/dst/child", &[("snap", "g-DIFFERENT")]);
-    mock.datasets
-        .lock()
-        .unwrap()
-        .push(json!({ "name": "backup/dst/child" }));
+    mock.datasets.lock().unwrap().extend([
+        json!({ "name": "tank/src/child" }),
+        json!({ "name": "backup/dst/child" }),
+    ]);
     mock.set_paths("tank/src", &["tank/src@snap", "tank/src/child@snap"]);
     mock.set_paths("backup/dst", &["backup/dst@snap", "backup/dst/child@snap"]);
     mock.set_paths("backup/dst/child", &["backup/dst/child@snap"]);
@@ -686,10 +671,10 @@ async fn a_stale_child_replica_is_replaced_only_after_the_full_send_gate() {
     // The child exists but holds only this pair's own old snapshot, so it is
     // safe to replace with -F.
     mock.set_snapshots("backup/dst/child", &[(&format!("{prefix}old"), "g-old")]);
-    mock.datasets
-        .lock()
-        .unwrap()
-        .push(json!({ "name": "backup/dst/child" }));
+    mock.datasets.lock().unwrap().extend([
+        json!({ "name": "tank/src/child" }),
+        json!({ "name": "backup/dst/child" }),
+    ]);
     mock.set_paths("tank/src", &["tank/src@snap", "tank/src/child@snap"]);
     mock.set_paths(
         "backup/dst",
@@ -1205,19 +1190,12 @@ async fn a_recursive_plain_source_never_streams_an_encrypted_volume() {
         json!({ "name": "tank/src" }),
         json!({ "name": "backup/dst" }),
     ]);
-    mock.zvols
-        .lock()
-        .unwrap()
-        .push(json!({ "name": "tank/src/disk", "volsize": "1G" }));
-    mock.encryption.lock().unwrap().insert(
-        "tank/src/disk".to_string(),
-        json!({
-            "name": "tank/src/disk",
-            "encryption": "aes-256-gcm",
-            "encryptionRoot": "tank/src/disk",
-            "keystatus": "available"
-        }),
-    );
+    mock.zvols.lock().unwrap().push(json!({
+        "name": "tank/src/disk",
+        "volsize": "1G",
+        "encryption": "aes-256-gcm",
+        "encryptionRoot": "tank/src/disk"
+    }));
     let base = spawn_mock(mock.clone()).await;
     let state = state_with_agent(&base);
 
@@ -1251,19 +1229,12 @@ async fn a_raw_tree_with_a_foreign_volume_root_is_refused() {
         encrypted("tank/src", "tank/src"),
         json!({ "name": "backup" }),
     ]);
-    mock.zvols
-        .lock()
-        .unwrap()
-        .push(json!({ "name": "tank/src/disk", "volsize": "1G" }));
-    mock.encryption.lock().unwrap().insert(
-        "tank/src/disk".to_string(),
-        json!({
-            "name": "tank/src/disk",
-            "encryption": "aes-256-gcm",
-            "encryptionRoot": "tank/src/disk",
-            "keystatus": "available"
-        }),
-    );
+    mock.zvols.lock().unwrap().push(json!({
+        "name": "tank/src/disk",
+        "volsize": "1G",
+        "encryption": "aes-256-gcm",
+        "encryptionRoot": "tank/src/disk"
+    }));
     let base = spawn_mock(mock.clone()).await;
     let state = state_with_agent(&base);
 

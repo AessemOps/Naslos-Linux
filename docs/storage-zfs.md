@@ -197,7 +197,8 @@ supplied and pipes the agent's `zfs send` stream into `zfs receive`;
   log. A destination whose encryption state or key differs is refused, a
   recursive raw send must have one encryption root, and a recursive plain send
   over a tree with an encrypted descendant (filesystem or zvol) is refused
-  rather than decrypted.
+  rather than decrypted. The zvol listing carries `encryption`/`encryptionroot`,
+  so the recursive gate needs no per-volume round trip.
 - Every receive uses `-u` and excludes exactly `mountpoint`, `canmount`,
   `sharenfs` and `sharesmb` from the stream (`-x`). The policy is deliberate:
   the first two would let a peer choose this node's host paths or hide a

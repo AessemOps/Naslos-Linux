@@ -130,7 +130,7 @@ impl ZfsClient {
             "-H",
             "-p",
             "-o",
-            "name,volsize,volblocksize,used,avail,refer,compression",
+            "name,volsize,volblocksize,used,avail,refer,compression,encryption,encryptionroot",
             "-t",
             "volume",
             "-r",
@@ -166,6 +166,10 @@ impl ZfsClient {
                 used: human_bytes(used_bytes),
                 avail: human_bytes(avail_bytes),
                 refer: human_bytes(refer_bytes),
+                // Older fixtures and agents may not report the encryption
+                // columns; an absent value is treated as not encrypted.
+                encryption: fields.get(7).copied().unwrap_or_default().to_string(),
+                encryption_root: fields.get(8).copied().unwrap_or_default().to_string(),
             });
         }
         Ok(zvols)

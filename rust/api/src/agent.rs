@@ -167,6 +167,10 @@ pub struct Zvol {
     pub avail: String,
     #[serde(default)]
     pub refer: String,
+    #[serde(default)]
+    pub encryption: String,
+    #[serde(default, rename = "encryptionRoot")]
+    pub encryption_root: String,
 }
 
 /// An importable pool.
