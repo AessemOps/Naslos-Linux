@@ -83,8 +83,13 @@ virt:
   image:
     repository: ghcr.io/aessemops/naslos-vmd
     # v0.7.61 release image (NAT-only networking; keeps the supervisor fixes).
+    # The digest is the bookworm-builder rebuild of sha-0418446: the published
+    # 0.7.61 vmd image (and every release since the 1.100 toolchain bump) linked
+    # against Debian 13's glibc 2.41 and crash-looped on this Debian 12 runtime
+    # with "GLIBC_2.38 not found". vmd/Dockerfile now pins the bookworm builder;
+    # repin to the release digest when the fix ships in 0.7.62.
     tag: "0.7.61"
-    digest: "sha256:6fdb2f97b088793a1946d9bc013b619a6486bbe0f854baabb03c14f10b70f089"
+    digest: "sha256:d257d173f1fa0371c3cf74cb701e967f240858ac4c7f128bf3ec5f0e3e3ab46e"
 openldap:
   # Debian 13 / slapd 2.6.10 with /var/run/slapd created in the image and
   # LDAPS-only listening (LDAP_TLS_ENFORCE; no plaintext ldap:///).
