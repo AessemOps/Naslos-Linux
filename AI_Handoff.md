@@ -122,34 +122,29 @@ retrying or using the browser path worked around it. Worth watching.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.7.61`**, revision 76
+- **Deployed release:** Helm `naslos` chart **`naslos-0.7.62`**, revision 77
   (2026-11-24), every image digest-pinned by `values-vm.yaml`. Revision 75 was
-  the in-place upgrade from 0.7.6 (`make install-vm VM_IP=<node-ip>`);
-  revision 76 repinned vmd to the corrected rebuild below. Verified after
-  deploy: `/api/health` green, `/` redirects to the Authelia portal,
-  `/authelia/` answers 200, `/api/users` + `/api/groups` return 200 (the 0.7.61
-  LDAP-reconnect fix survives the OpenLDAP restart, gotcha #22), and
-  `/api/virt/capabilities` reports KVM + both NICs.
-- **vmd image packaging defect (fix on `fix/vmd-bookworm-builder`, PR #278):**
-  every
-  vmd image built since the 1.100 toolchain bump linked against the
-  `rust:1.100-slim` builder's Debian 13 glibc 2.41 while the runtime stage is
-  Debian 12 (glibc 2.36), so the published `0.7.61` vmd image crash-looped
-  with `version GLIBC_2.38 not found` (the node had been running an older
-  drill build). `vmd/Dockerfile` now pins `rust:1.100-slim-bookworm`; a
-  `publish=false` release dry run built and pushed the corrected image
-  (`sha-0418446`), and revision 76 pins its digest `d257d173…`. Ship the fix
-  in 0.7.62 so the release pack and `values-vm.yaml` agree again.
-- **Latest release:** `v0.7.61` (2026-11-24) and installer `naslos-v0.7.61` are
-  published; `naslos-install-pack-0.7.61.tar.gz` is attached with every image
-  digest-pinned. It is a hotfix for the two 0.7.6 regressions found on the
-  node: Traefik's namespaced CRD provider now watches the release namespace
-  (the platform routes and the domain root 404'd without it, gotcha #21), and
-  the API treats ldap3's `op send error: channel closed` as a dead connection
-  and reconnects (the Users and Groups pages 500'd after the upgrade's
-  OpenLDAP restart, gotcha #22). The node runs it at revision 76, except vmd
-  which uses the corrected rebuild described above.
-- **0.7.1–0.7.61 deploy behavior:** `make install-vm` requires
+  the in-place upgrade from 0.7.6 to 0.7.61, revision 76 the vmd stopgap, and
+  revision 77 the 0.7.62 upgrade. Verified after deploy: `/api/health` green,
+  `/` redirects to the Authelia portal, `/authelia/` answers 200,
+  `/api/users` + `/api/groups` return 200 (the LDAP-reconnect fix survives the
+  OpenLDAP restart, gotcha #22), and `/api/virt/capabilities` reports KVM +
+  both NICs.
+- **vmd image packaging defect (fixed in 0.7.62, PR #278):** every vmd image
+  built since the 1.100 toolchain bump linked against the `rust:1.100-slim`
+  builder's Debian 13 glibc 2.41 while the runtime stage is Debian 12
+  (glibc 2.36), so the published 0.7.6 and 0.7.61 vmd images crash-looped with
+  `version GLIBC_2.38 not found` (the node had been running an older drill
+  build). `vmd/Dockerfile` now pins `rust:1.100-slim-bookworm`; the 0.7.62 vmd
+  image (`7a223872…`) starts cleanly and revision 77 runs it.
+- **Latest release:** `v0.7.62` (2026-11-24) and installer `naslos-v0.7.62` are
+  published; `naslos-install-pack-0.7.62.tar.gz` is attached with every image
+  digest-pinned. It carries the vmd glibc fix plus the 0.7.61 hotfixes:
+  Traefik's namespaced CRD provider watches the release namespace (the
+  platform routes and the domain root 404'd without it, gotcha #21), and the
+  API treats ldap3's `op send error: channel closed` as a dead connection and
+  reconnects (gotcha #22). The node runs it at revision 77.
+- **0.7.1–0.7.62 deploy behavior:** `make install-vm` requires
   `VM_IP=<node-ip>` and installs `local-path` + the `naslos-talosconfig`
   Secret; Traefik uses namespaced RBAC watching the release namespace plus the
   shared/per-app namespaces; the production overlay renders no shared
@@ -171,6 +166,10 @@ retrying or using the browser path worked around it. Worth watching.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.7.62` (2026-11-24) — packaging fix: the vmd image is built in a
+    Debian 12 builder (`rust:1.100-slim-bookworm`) so it runs on the Debian 12
+    runtime instead of crash-looping with `GLIBC_2.38 not found`. No other
+    behavior changes.
   - `0.7.61` (2026-11-24) — regression hotfix: Traefik's namespaced CRD
     provider watches the release namespace again (the UI/API/Authelia/MCP
     routes and the domain root 404'd without it), and the API reconnects a
