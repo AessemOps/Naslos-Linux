@@ -2888,6 +2888,7 @@ Local replication (`FR-REP`) is verified by the unit tests in
 | `a_raw_new_destination_with_an_existing_key_secret_is_refused` | FR-ENC-07 (a foreign replica Secret with a different key is 409 and no stream starts) |
 | `a_matching_leftover_replica_secret_is_reused` | FR-ENC-07 (a matching leftover Secret is reused, so cancel/restart cannot deadlock the pair) |
 | `a_recursive_plain_source_never_streams_an_encrypted_volume`, `a_raw_tree_with_a_foreign_volume_root_is_refused` | FR-ENC-07 (zvol descendants: plaintext refusal under a plain source, one-root rule under a raw source) |
+| `an_older_agent_volume_listing_still_fails_closed` | FR-ENC-07 (a zvol listing without encryption columns falls back to the status route, so an older agent still refuses a plaintext send) |
 Dataset encryption is verified by the pure planners, key-custody tests and
 the agent's command/keyfile tests (FR-ENC-05/08/09-consumers/10 remain
 `[OPEN]`; their tests ship with the implementation):

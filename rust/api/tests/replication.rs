@@ -32,6 +32,7 @@ struct MockAgent {
     sends: Arc<Mutex<Vec<Value>>>,
     receives: Arc<Mutex<Vec<Value>>>,
     zvols: Arc<Mutex<Vec<Value>>>,
+    encryption: Arc<Mutex<HashMap<String, Value>>>,
     send_body: Arc<Vec<u8>>,
     send_delay: Duration,
 }
@@ -47,6 +48,7 @@ impl Default for MockAgent {
             sends: Arc::new(Mutex::new(Vec::new())),
             receives: Arc::new(Mutex::new(Vec::new())),
             zvols: Arc::new(Mutex::new(Vec::new())),
+            encryption: Arc::new(Mutex::new(HashMap::new())),
             send_body: Arc::new(b"zfs-stream".to_vec()),
             send_delay: Duration::ZERO,
         }
@@ -181,6 +183,23 @@ async fn spawn_mock(mock: MockAgent) -> String {
             get(
                 |State(m): State<MockAgent>, Query(_q): Query<HashMap<String, String>>| async move {
                     Json(m.zvols.lock().unwrap().clone())
+                },
+            ),
+        )
+        .route(
+            "/api/v1/encryption/status/{*dataset}",
+            get(
+                |State(m): State<MockAgent>, Path(dataset): Path<String>| async move {
+                    let status = m
+                        .encryption
+                        .lock()
+                        .unwrap()
+                        .get(&dataset)
+                        .cloned()
+                        .unwrap_or_else(
+                            || json!({ "name": dataset, "encryption": "off", "keystatus": "none" }),
+                        );
+                    Json(status)
                 },
             ),
         )
@@ -1255,6 +1274,50 @@ async fn a_raw_tree_with_a_foreign_volume_root_is_refused() {
             .as_str()
             .unwrap()
             .contains("one encryption root"),
+        "{body}"
+    );
+    assert!(mock.sends.lock().unwrap().is_empty());
+}
+
+/// An older agent's zvol listing has no encryption columns; the API must ask
+/// the status route and still refuse an encrypted volume under a plain source.
+#[tokio::test]
+async fn an_older_agent_volume_listing_still_fails_closed() {
+    let mock = MockAgent::default();
+    mock.datasets.lock().unwrap().extend([
+        json!({ "name": "tank/src" }),
+        json!({ "name": "backup/dst" }),
+    ]);
+    mock.zvols
+        .lock()
+        .unwrap()
+        .push(json!({ "name": "tank/src/disk", "volsize": "1G" }));
+    mock.encryption.lock().unwrap().insert(
+        "tank/src/disk".to_string(),
+        json!({
+            "name": "tank/src/disk",
+            "encryption": "aes-256-gcm",
+            "encryptionRoot": "tank/src/disk",
+            "keystatus": "available"
+        }),
+    );
+    let base = spawn_mock(mock.clone()).await;
+    let state = state_with_agent(&base);
+
+    let (status, body) = call(
+        state,
+        "POST",
+        "/api/replication/send",
+        Some(json!({
+            "source": "tank/src",
+            "destination": "backup/dst",
+            "recursive": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("plaintext"),
         "{body}"
     );
     assert!(mock.sends.lock().unwrap().is_empty());

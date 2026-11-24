@@ -1045,8 +1045,26 @@ async fn encrypted_volumes_under(
     let prefix = format!("{source}/");
     let mut encrypted = Vec::new();
     for zvol in zvols.iter().filter(|z| z.name.starts_with(&prefix)) {
-        let encryption = zvol.encryption.as_str();
-        if encryption.is_empty() || encryption == "off" || encryption == "-" {
+        // An empty value means this agent's listing predates the encryption
+        // columns (a plain volume reports `off`). Ask the status route, which
+        // every release ships, so an older agent still fails closed.
+        if zvol.encryption.is_empty() {
+            let status = agent
+                .encryption_status(&zvol.name)
+                .await
+                .map_err(|e| format!("checking the encryption state of {:?}: {e}", zvol.name))?;
+            if !status.is_encrypted() {
+                continue;
+            }
+            let root = if status.encryption_root.is_empty() {
+                status.name.clone()
+            } else {
+                status.encryption_root.clone()
+            };
+            encrypted.push((status.name, root));
+            continue;
+        }
+        if zvol.encryption == "off" || zvol.encryption == "-" {
             continue;
         }
         let root = if zvol.encryption_root.is_empty() {
