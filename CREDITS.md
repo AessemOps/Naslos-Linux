@@ -18,7 +18,7 @@ and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
-**Last reviewed: 2026-11-23.** Maintenance: update this file whenever a direct dependency changes in
+**Last reviewed: 2026-11-24.** Maintenance: update this file whenever a direct dependency changes in
 `rust/api/Cargo.toml`, `rust/agent/Cargo.toml`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
 It also lists the GitHub Actions used by the CI/release workflows.
 
@@ -44,7 +44,7 @@ It also lists the GitHub Actions used by the CI/release workflows.
 | Alpine Linux | `alpine:3.24` | Alpine (musl MIT, BusyBox GPL-2.0-only, apk-tools GPL-2.0-only) | https://alpinelinux.org/ |
 | distroless static | `gcr.io/distroless/static-debian12:nonroot` | Apache-2.0 | https://github.com/GoogleContainerTools/distroless |
 | nginx unprivileged | `nginxinc/nginx-unprivileged:1.31.7-alpine-slim` | BSD-2-Clause | https://github.com/nginxinc/docker-nginx-unprivileged |
-| Rust toolchain | `rust:1.100-alpine`, `rust:1.100-slim` (the vmd builder) | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
+| Rust toolchain | `rust:1.100-alpine`, `rust:1.100-slim-bookworm` (the vmd builder) | MIT OR Apache-2.0 | https://www.rust-lang.org/ |
 | Node.js toolchain | `node:24-bookworm-slim` | MIT | https://nodejs.org/ |
 
 ## Rust crates — direct (`rust/agent` + `rust/api` + `rust/vmd`)

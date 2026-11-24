@@ -114,7 +114,7 @@ the **workstation→apiserver LAN path flaked** with intermittent
 in-cluster access stayed healthy and Talos services reported 337h uptime;
 retrying or using the browser path worked around it. Worth watching.
 
-## Production instance (2026-11-23)
+## Production instance (2026-11-24)
 
 - **Hardware:** the production NAS is the bare-metal node `talos-zgr-9yg` at
   `192.168.1.38` (Talos v1.14.6, Kubernetes v1.37.0, control-plane Ready). The
@@ -122,35 +122,32 @@ retrying or using the browser path worked around it. Worth watching.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.7.6`**, revision 74
-  (2026-11-24). Revision 73 was the in-place web upgrade from 0.7.0, running
-  the v0.7.6 pack images digest-pinned (API `6a10d41d…`, agent `90b8101b…`, UI
-  `02737a6e…`, OpenLDAP `d19a44fd…`, Samba `7260852a…`, NFS `91e7bf19…`,
-  terminal `7f2190bb…`, vmd `58436c61…`). Revision 74 re-ran
-  `make install-vm VM_IP=<node-ip>` (values.yaml + values-vm.yaml) to repair
-  two 0.7.6 regressions: the upgrade had dropped `naslos` from Traefik's
-  watched namespaces (gotcha #21) so the domain root answered a bare 404, and
-  it re-applied the installer profile (buddy off). Revision 74 restores the
-  platform routes, `buddy.enabled: true` and `virt.enabled: true`; the branch
-  values carried no digests at deploy time, so the running pods resolve the
-  `0.7.6` tag, and `values-vm.yaml` now pins the v0.7.61 digests for the next
-  deploy. `/api/health` is green, `/` redirects to the Authelia portal and
-  `/authelia/` answers 200. The running API image predates the LDAP-reconnect
-  fix (gotcha #22): after the 0.7.6 rollout its cached LDAP handle died and
-  `/api/users` + `/api/groups` returned 500 `op send error: channel closed`;
-  `kubectl -n naslos rollout restart deploy/naslos-api` reconnected them. The
-  0.7.61 release ships the fix; the node gets it on the next `make install-vm`
-  with the 0.7.61 pack.
+- **Deployed release:** Helm `naslos` chart **`naslos-0.7.61`**, revision 76
+  (2026-11-24), every image digest-pinned by `values-vm.yaml`. Revision 75 was
+  the in-place upgrade from 0.7.6 (`make install-vm VM_IP=<node-ip>`);
+  revision 76 repinned vmd to the corrected rebuild below. Verified after
+  deploy: `/api/health` green, `/` redirects to the Authelia portal,
+  `/authelia/` answers 200, `/api/users` + `/api/groups` return 200 (the 0.7.61
+  LDAP-reconnect fix survives the OpenLDAP restart, gotcha #22), and
+  `/api/virt/capabilities` reports KVM + both NICs.
+- **vmd image packaging defect (fix on `fix/vmd-bookworm-builder`):** every
+  vmd image built since the 1.100 toolchain bump linked against the
+  `rust:1.100-slim` builder's Debian 13 glibc 2.41 while the runtime stage is
+  Debian 12 (glibc 2.36), so the published `0.7.61` vmd image crash-looped
+  with `version GLIBC_2.38 not found` (the node had been running an older
+  drill build). `vmd/Dockerfile` now pins `rust:1.100-slim-bookworm`; a
+  `publish=false` release dry run built and pushed the corrected image
+  (`sha-0418446`), and revision 76 pins its digest `d257d173…`. Ship the fix
+  in 0.7.62 so the release pack and `values-vm.yaml` agree again.
 - **Latest release:** `v0.7.61` (2026-11-24) and installer `naslos-v0.7.61` are
   published; `naslos-install-pack-0.7.61.tar.gz` is attached with every image
-  digest-pinned, and `values-vm.yaml` pins the same digests. It is a hotfix for
-  the two 0.7.6 regressions found on the node: Traefik's namespaced CRD
-  provider now watches the release namespace (the platform routes and the
-  domain root 404'd without it, gotcha #21), and the API treats ldap3's
-  `op send error: channel closed` as a dead connection and reconnects (the
-  Users and Groups pages 500'd after the upgrade's OpenLDAP restart,
-  gotcha #22). The node still runs 0.7.6 revision 74 until `make install-vm`
-  pulls the 0.7.61 release images.
+  digest-pinned. It is a hotfix for the two 0.7.6 regressions found on the
+  node: Traefik's namespaced CRD provider now watches the release namespace
+  (the platform routes and the domain root 404'd without it, gotcha #21), and
+  the API treats ldap3's `op send error: channel closed` as a dead connection
+  and reconnects (the Users and Groups pages 500'd after the upgrade's
+  OpenLDAP restart, gotcha #22). The node runs it at revision 76, except vmd
+  which uses the corrected rebuild described above.
 - **0.7.1–0.7.61 deploy behavior:** `make install-vm` requires
   `VM_IP=<node-ip>` and installs `local-path` + the `naslos-talosconfig`
   Secret; Traefik uses namespaced RBAC watching the release namespace plus the
