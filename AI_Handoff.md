@@ -130,7 +130,8 @@ retrying or using the browser path worked around it. Worth watching.
   `/authelia/` answers 200, `/api/users` + `/api/groups` return 200 (the 0.7.61
   LDAP-reconnect fix survives the OpenLDAP restart, gotcha #22), and
   `/api/virt/capabilities` reports KVM + both NICs.
-- **vmd image packaging defect (fix on `fix/vmd-bookworm-builder`):** every
+- **vmd image packaging defect (fix on `fix/vmd-bookworm-builder`, PR #278):**
+  every
   vmd image built since the 1.100 toolchain bump linked against the
   `rust:1.100-slim` builder's Debian 13 glibc 2.41 while the runtime stage is
   Debian 12 (glibc 2.36), so the published `0.7.61` vmd image crash-looped
