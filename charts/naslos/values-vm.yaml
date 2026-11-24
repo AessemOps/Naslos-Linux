@@ -25,10 +25,9 @@ api:
   image:
     repository: ghcr.io/aessemops/naslos-api
     # v0.7.61 release image (NAT-only VM networking; per-namespace app status);
-    # the digest pin is added after the release images are pushed
-    # (FR-INSTALL-13).
+    # the digest is the pin that actually gets pulled (FR-INSTALL-13).
     tag: "0.7.61"
-    digest: ""
+    digest: "sha256:f2298cd11be54e327db6ec66809ef3b0a0b9e5bdddd5c7b60435033d570c2093"
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -46,24 +45,22 @@ api:
 agent:
   image:
     repository: ghcr.io/aessemops/naslos-agent
-    # Tagged for the v0.7.61 release (NAS-022); the digest pin is added
-    # after the release images are pushed.
+    # Pinned by digest from the v0.7.61 release (NAS-022).
     tag: "0.7.61"
-    digest: ""
+    digest: "sha256:8ffa28fa37e299c3306950f348a99462213db73d320223bdb455781828f0aed1"
 ui:
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    # v0.7.61 release image (FR-INSTALL-13); the digest pin is added after
-    # the release images are pushed.
+    # v0.7.61 release image; the digest is the pin (FR-INSTALL-13).
     tag: "0.7.61"
-    digest: ""
+    digest: "sha256:90bfe67b796495d0b7ae795ad8fadfbb9bd8ddefdf381ed350786f893021f200"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
     image:
       repository: ghcr.io/aessemops/naslos-samba
       tag: "0.7.61"
-      digest: ""
+      digest: "sha256:fa506dd0623dee8412df10507d61c2cd3abc3655b3f52bd85dca93c594e79a4d"
   nfs:
     image:
       repository: ghcr.io/aessemops/naslos-nfs
@@ -71,12 +68,12 @@ shares:
       # nfs-daemonset.yaml); with that, Ganesha 6.5 starts with the same
       # rendered ganesha.conf as 4.x.
       tag: "0.7.61"
-      digest: ""
+      digest: "sha256:26eabaa723e8f8295cbbd977d3c5c5a47bbf25fa76cb41252739cb0528ee44cb"
 terminal:
   image:
     repository: ghcr.io/aessemops/naslos-terminal
     tag: "0.7.61"
-    digest: ""
+    digest: "sha256:aeac35111aa2789168dc6bb993ba0f457dbf4110fa4b12b52829eff83f109234"
 # Virtual machines (FR-VMT). The vmd image fixes the startup panic (an
 # explicit rustls crypto provider), so the supervisor is enabled and pinned
 # to the release image (NAS-022); the API env wiring and /api/virt/* go
@@ -87,11 +84,11 @@ virt:
     repository: ghcr.io/aessemops/naslos-vmd
     # v0.7.61 release image (NAT-only networking; keeps the supervisor fixes).
     tag: "0.7.61"
-    digest: ""
+    digest: "sha256:6fdb2f97b088793a1946d9bc013b619a6486bbe0f854baabb03c14f10b70f089"
 openldap:
   # Debian 13 / slapd 2.6.10 with /var/run/slapd created in the image and
   # LDAPS-only listening (LDAP_TLS_ENFORCE; no plaintext ldap:///).
-  image: ghcr.io/aessemops/naslos-openldap:0.7.61
+  image: ghcr.io/aessemops/naslos-openldap@sha256:430537dc03360d04f35b2a90c83d2c21594942088f27a19791fb70cffc119108
   # OpenLDAP host is the service name for internal cluster references.
   host: naslos-openldap
   # No bindPassword here. The chart reads the service password from the

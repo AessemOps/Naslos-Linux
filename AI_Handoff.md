@@ -133,29 +133,25 @@ retrying or using the browser path worked around it. Worth watching.
   it re-applied the installer profile (buddy off). Revision 74 restores the
   platform routes, `buddy.enabled: true` and `virt.enabled: true`; the branch
   values carried no digests at deploy time, so the running pods resolve the
-  `0.7.6` tag, and `values-vm.yaml` on master pins the v0.7.6 digests again for
-  the next deploy. `/api/health` is green, `/` redirects to the Authelia portal
-  and `/authelia/` answers 200. The running API image predates the
-  LDAP-reconnect fix (gotcha #22): after the 0.7.6 rollout its cached LDAP
-  handle died and `/api/users` + `/api/groups` returned 500
-  `op send error: channel closed`; `kubectl -n naslos rollout restart
-  deploy/naslos-api` reconnected them, and the code fix ships in the next
-  release.
-- **Latest release:** `v0.7.6` (2026-11-23) and installer `naslos-v0.7.6` are
-  published; `naslos-install-pack-0.7.6.tar.gz` is attached with every image
-  digest-pinned. It carries the 0.7.1 security/data-integrity remediation and
-  the five live upgrade blockers found on the node: forced Helm field conflicts
-  (`--force-conflicts`, `naslos-install.exe` ownership), Authelia's read-only
-  LDAP ACL applied on upgrade, a 10-minute workload readiness window, a bounded
-  chown init container for the legacy Authelia `/config` PVC, and Samba's
-  `NET_BIND_SERVICE`. Operator actions: reissue MCP `write` tokens as `full`,
-  migrate catalog charts off native Ingress, and back up `buddy-identity.json`
-  plus the Buddy KEK Secret before the next identity change. **Known 0.7.6
-  regressions (fixed on `fix/traefik-watch-release-namespace`, next release):**
-  the chart's Traefik watch list omitted the release namespace (platform
-  routes 404, gotcha #21) and the API did not reconnect a closed ldap3 channel
-  after the OpenLDAP restart (users/groups 500, gotcha #22).
-- **0.7.1–0.7.6 deploy behavior:** `make install-vm` requires
+  `0.7.6` tag, and `values-vm.yaml` now pins the v0.7.61 digests for the next
+  deploy. `/api/health` is green, `/` redirects to the Authelia portal and
+  `/authelia/` answers 200. The running API image predates the LDAP-reconnect
+  fix (gotcha #22): after the 0.7.6 rollout its cached LDAP handle died and
+  `/api/users` + `/api/groups` returned 500 `op send error: channel closed`;
+  `kubectl -n naslos rollout restart deploy/naslos-api` reconnected them. The
+  0.7.61 release ships the fix; the node gets it on the next `make install-vm`
+  with the 0.7.61 pack.
+- **Latest release:** `v0.7.61` (2026-11-24) and installer `naslos-v0.7.61` are
+  published; `naslos-install-pack-0.7.61.tar.gz` is attached with every image
+  digest-pinned, and `values-vm.yaml` pins the same digests. It is a hotfix for
+  the two 0.7.6 regressions found on the node: Traefik's namespaced CRD
+  provider now watches the release namespace (the platform routes and the
+  domain root 404'd without it, gotcha #21), and the API treats ldap3's
+  `op send error: channel closed` as a dead connection and reconnects (the
+  Users and Groups pages 500'd after the upgrade's OpenLDAP restart,
+  gotcha #22). The node still runs 0.7.6 revision 74 until `make install-vm`
+  pulls the 0.7.61 release images.
+- **0.7.1–0.7.61 deploy behavior:** `make install-vm` requires
   `VM_IP=<node-ip>` and installs `local-path` + the `naslos-talosconfig`
   Secret; Traefik uses namespaced RBAC watching the release namespace plus the
   shared/per-app namespaces; the production overlay renders no shared
@@ -177,6 +173,18 @@ retrying or using the browser path worked around it. Worth watching.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.7.61` (2026-11-24) — regression hotfix: Traefik's namespaced CRD
+    provider watches the release namespace again (the UI/API/Authelia/MCP
+    routes and the domain root 404'd without it), and the API reconnects a
+    closed ldap3 channel instead of failing users/groups until a pod restart.
+    No other behavior changes.
+  - `0.7.6` (2026-11-24) — the in-place web upgrade from 0.7.0, carrying the
+    0.7.1 security/data-integrity remediation and five live upgrade blockers:
+    forced Helm field conflicts, Authelia's read-only LDAP ACL on upgrade, a
+    10-minute readiness window, the bounded `/config` chown init container, and
+    Samba `NET_BIND_SERVICE`. Operator actions: reissue MCP `write` tokens as
+    `full`, migrate catalog charts off native Ingress, back up
+    `buddy-identity.json` and the Buddy KEK Secret.
   - `0.7.0` (2026-11-22) — P0/P1 runtime completion: raw-key ZFS encryption
     with Secret custody and explicit unlock/lock, SMTP + syslog alerts,
     config import/restore (dry-run + apply), RBAC phase 2 and hash-chained
