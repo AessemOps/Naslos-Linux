@@ -32,6 +32,7 @@
       items: [
         { name: 'Pools', path: '/pools', icon: 'database' },
         { name: 'Datasets', path: '/datasets', icon: 'folder-tree' },
+        { name: 'Replication', path: '/replication', icon: 'copy' },
         { name: 'Disks', path: '/disks', icon: 'hard-drive' },
         { name: 'Disk Health', path: '/disks/health', icon: 'heart-pulse' }
       ]

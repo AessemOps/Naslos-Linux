@@ -585,10 +585,14 @@ executable tests.
   `destroy_refuses_a_filesystem_and_a_busy_volume`,
   `in_use_detection_covers_mounts_holders_and_open_files`; rust/api/tests/
   zfs_agent.rs: `zvol_refusals_from_the_agent_are_forwarded`)*
-- **FR-ZVOL-04 [OPEN]** — A zvol management UI (Pools → zvols: create, list,
-  resize, delete with a destructive confirmation) and an iSCSI target export
-  are not implemented. The iSCSI spike, privilege/network review and go/no-go
-  gates are in [iscsi.md](iscsi.md). *(No UI or iSCSI test yet)*
+- **FR-ZVOL-04** — A zvol management UI MUST live on the pool page (Pools →
+  zvols) and list the pool's zvols, create one (name, size and the
+  `volblocksize`/`compression` surface), resize one (growth only), and destroy
+  one only after the operator types the full `<pool>/<name>` as confirmation.
+  *(ui/tests/zvols.spec.ts: create → resize → typed-confirm destroy, plus the
+  API validation refusals)* An iSCSI target export is `[OPEN]`; the iSCSI
+  spike, privilege/network review and go/no-go gates are in
+  [iscsi.md](iscsi.md).
 ### 3.1.5 Local replication (`FR-REP`)
 
 Local replication copies a ZFS dataset to another dataset on the **same node**
@@ -680,8 +684,14 @@ cloud sync remain `[OPEN]` below.
   in this slice.
 - **FR-REP-09** — `[OPEN]` S3-compatible or provider cloud-sync tasks are not
   implemented in this slice; Buddy remains the zero-knowledge off-site path.
-- **FR-REP-10** — `[OPEN]` A replication UI (create/history/progress) is not
-  part of this slice; the routes above are the API surface.
+- **FR-REP-10** — A replication UI MUST be available at `/replication`: it
+  creates a pair from two existing datasets (an identical or nested pair is
+  refused in the browser before any request), shows running jobs with live
+  progress and a cancel action, and keeps the last finished jobs with their
+  result, retention warnings and errors. Jobs are visibly described as
+  in-memory, so the list may be empty after an API restart. *(ui/tests/
+  replication.spec.ts: pair validation, a job reaching `succeeded`, the history
+  result; the API refusals are covered by the Rust tests above)*
 ### 3.2 Identity & SSO (`FR-IDN`)
 
 - **FR-IDN-01** — Users and groups MUST be stored in OpenLDAP under
@@ -2747,6 +2757,8 @@ The authoritative executable acceptance suite is the Playwright suite in
 | `dashboard.spec.ts` — live node metrics | FR-MET-03/04/05, FR-IDN-08 (live values, non-zero memory/cores, no zero-time) |
 | `dashboard.spec.ts` — zfs pools | FR-STO-06, FR-MET-07 |
 | `storage-schedules.spec.ts` — schedules | FR-STO-10/11 (create/edit/remove a snapshot schedule on a dataset, scrub schedule validation, API refusals; no user snapshot is touched) |
+| `replication.spec.ts` — replication page | FR-REP-10 (identical pair refused in the browser, nested pairs and the retention bound refused by the API, a job to a terminal result, the history row; throwaway datasets only) |
+| `zvols.spec.ts` — block volumes on the pool page | FR-ZVOL-04 (create → resize → typed-confirm destroy, API validation refusals; a throwaway zvol only) |
 | `disk-health.spec.ts` — per-disk inventory | FR-DHK-02/03/04 (API/UI shape, SMART-unavailable path) |
 | `dashboard.spec.ts` — auto-refresh | FR-MET-08 (5 s re-render without reload) |
 | `dashboard.spec.ts` — CPU detail | FR-MET-11/12 (model, load averages, one bar per core, unavailable-temperature note) |
