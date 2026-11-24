@@ -8,7 +8,12 @@
 # The QEMU binaries are unmodified distro packages; Naslos only orchestrates
 # them, so the GPL does not extend to the Naslos sources (AGPL) or images.
 
-FROM rust:1.100-slim@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe AS builder
+# The builder MUST match the runtime distro's glibc: `rust:1.100-slim` tracks
+# Debian 13 (glibc 2.41) while the runtime below is Debian 12 (glibc 2.36), and
+# a dynamically linked binary built on 13 fails on 12 with
+# "version `GLIBC_2.38' not found". Pin the bookworm variant so the binary only
+# requires the runtime's glibc.
+FROM rust:1.100-slim-bookworm@sha256:bb875b0f8ce726053e259034848c471840e96bfe591fd52556178ae9a05e6126 AS builder
 
 WORKDIR /build
 COPY rust/Cargo.toml Cargo.toml
