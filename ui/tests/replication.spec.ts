@@ -16,19 +16,28 @@ test('a local replication job runs to completion from the replication page', asy
   page,
   request
 }) => {
+  // Job polling can legitimately take longer than the 30 s default test budget
+  // on a busy node, and the budget must exceed the poll timeout below.
+  test.setTimeout(90_000);
   const pool = await firstPool(request);
   const suffix = Date.now().toString().slice(-6);
   const source = `${pool.name}/e2e-rep-src-${suffix}`;
   const destination = `${pool.name}/e2e-rep-dst-${suffix}`;
 
-  for (const name of [source, destination]) {
-    const res = await request.post('/api/datasets', {
-      data: { pool: pool.name, name: name.slice(pool.name.length + 1), options: { compression: 'lz4' } }
-    });
-    expect(res.ok(), await res.text()).toBeTruthy();
-  }
-
   try {
+    // Create the pair inside the try: a partially failed setup must still hit
+    // the cleanup below instead of leaking the first dataset into the pool.
+    for (const name of [source, destination]) {
+      const res = await request.post('/api/datasets', {
+        data: {
+          pool: pool.name,
+          name: name.slice(pool.name.length + 1),
+          options: { compression: 'lz4' }
+        }
+      });
+      expect(res.ok(), await res.text()).toBeTruthy();
+    }
+
     await page.goto('/replication');
     await expect(page.getByRole('heading', { name: 'Replication', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Running' })).toBeVisible();

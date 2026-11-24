@@ -2757,7 +2757,7 @@ The authoritative executable acceptance suite is the Playwright suite in
 | `dashboard.spec.ts` — live node metrics | FR-MET-03/04/05, FR-IDN-08 (live values, non-zero memory/cores, no zero-time) |
 | `dashboard.spec.ts` — zfs pools | FR-STO-06, FR-MET-07 |
 | `storage-schedules.spec.ts` — schedules | FR-STO-10/11 (create/edit/remove a snapshot schedule on a dataset, scrub schedule validation, API refusals; no user snapshot is touched) |
-| `replication.spec.ts` — replication page | FR-REP-10 (identical/nested pair refused in the browser, a job to a terminal result, the history row; throwaway datasets only) |
+| `replication.spec.ts` — replication page | FR-REP-10 (identical pair refused in the browser, nested pairs and the retention bound refused by the API, a job to a terminal result, the history row; throwaway datasets only) |
 | `zvols.spec.ts` — block volumes on the pool page | FR-ZVOL-04 (create → resize → typed-confirm destroy, API validation refusals; a throwaway zvol only) |
 | `disk-health.spec.ts` — per-disk inventory | FR-DHK-02/03/04 (API/UI shape, SMART-unavailable path) |
 | `dashboard.spec.ts` — auto-refresh | FR-MET-08 (5 s re-render without reload) |

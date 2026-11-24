@@ -12,6 +12,9 @@ async function firstPool(request: any): Promise<{ name: string }> {
 }
 
 test('a zvol can be created, resized and destroyed from the pool page', async ({ page, request }) => {
+  // Create, resize and destroy each wait for the agent; keep the budget above
+  // the per-step timeouts below.
+  test.setTimeout(90_000);
   const pool = await firstPool(request);
   const name = `e2e-zvol-${Date.now().toString().slice(-6)}`;
   const full = `${pool.name}/${name}`;
@@ -44,15 +47,22 @@ test('a zvol can be created, resized and destroyed from the pool page', async ({
     await row.getByRole('button', { name: 'Resize' }).click();
     const resizeDialog = page.locator('.fixed.inset-0');
     await expect(resizeDialog.getByRole('heading', { name: `Resize ${full}` })).toBeVisible();
+    // The prefill is the exact size, not the rounded listing label.
+    await expect(resizeDialog.getByLabel('New size *', { exact: true })).toHaveValue('64M');
     await resizeDialog.getByLabel('New size *', { exact: true }).fill('128M');
     await resizeDialog.getByRole('button', { name: 'Resize', exact: true }).click();
     await expect(resizeDialog).toBeHidden({ timeout: 20_000 });
 
     await expect
-      .poll(async () => {
-        const after = await (await request.get(`/api/zvols?pool=${encodeURIComponent(pool.name)}`)).json();
-        return after.find((z: any) => z.name === full)?.volsizeBytes;
-      })
+      .poll(
+        async () => {
+          const after = await (
+            await request.get(`/api/zvols?pool=${encodeURIComponent(pool.name)}`)
+          ).json();
+          return after.find((z: any) => z.name === full)?.volsizeBytes;
+        },
+        { timeout: 20_000 }
+      )
       .toBe(128 * 1024 * 1024);
 
     // Destroying needs the full name typed; a dismissed prompt sends nothing.

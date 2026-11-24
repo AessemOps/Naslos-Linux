@@ -365,7 +365,12 @@
       const res = await fetch('/api/zvols', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pool: poolName, name: zvolName, size: zvolSize.trim(), options })
+        body: JSON.stringify({
+          pool: poolName,
+          name: zvolName.trim(),
+          size: zvolSize.trim(),
+          options
+        })
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Could not create the zvol');
@@ -381,7 +386,10 @@
 
   function openResize(zvol: Zvol) {
     resizeZvol = zvol;
-    resizeSize = zvol.volsize;
+    // Prefill the exact size: the listing's `volsize` is rounded for display,
+    // so resubmitting it can be unparseable (1.2M) or a silent shrink (1.0M
+    // for 1048577 bytes). The API accepts a plain byte count or an exact unit.
+    resizeSize = zfsExactSize(zvol.volsizeBytes);
     resizeError = '';
   }
 
@@ -432,6 +440,29 @@
   function zvolBlocksizeLabel(value: string): string {
     const bytes = Number(value);
     return value && Number.isFinite(bytes) && bytes > 0 ? formatBytes(bytes) : '—';
+  }
+
+  // The zvol size parser takes `[0-9]+(\.[0-9]+)?[KMGTPE]?` (binary units) or a
+  // plain byte count. Render the exact byte size in the first unit that divides
+  // evenly, so the prefilled value never rounds into a shrink or an invalid
+  // size; anything else stays a plain byte count.
+  function zfsExactSize(bytes: number): string {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '';
+    const units: Array<[number, string]> = [
+      [1024 ** 4, 'T'],
+      [1024 ** 3, 'G'],
+      [1024 ** 2, 'M'],
+      [1024, 'K']
+    ];
+    for (const [unit, suffix] of units) {
+      if (bytes < unit) continue;
+      const value = bytes / unit;
+      const text = Number.isInteger(value)
+        ? String(value)
+        : value.toFixed(2).replace(/\.?0+$/, '');
+      if (Number(text) * unit === bytes) return `${text}${suffix}`;
+    }
+    return String(bytes);
   }
 
   // ---- Scheduled snapshots and scrubs -----------------------------------
@@ -1293,7 +1324,10 @@
 {#if resizeZvol}
   <Modal title={`Resize ${resizeZvol.name}`} onClose={() => (resizeZvol = null)}>
     <p class="text-sm text-gray-400">
-      Current size: <strong>{resizeZvol.volsize}</strong>. Resizing only grows a zvol: a shrink is
+      Current size: <strong>{resizeZvol.volsize}</strong>
+      {#if resizeZvol.volsizeBytes > 0}
+        (<code class="text-xs">{resizeZvol.volsizeBytes}</code> bytes)
+      {/if}. Resizing only grows a zvol: a shrink is
       refused because it can corrupt the filesystem inside it, and a resize is refused while the
       zvol is in use.
     </p>
