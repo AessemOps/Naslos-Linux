@@ -255,10 +255,12 @@ for create, live progress, cancel and history (FR-REP-10).
 
 Rules:
 
-- `source` and `destination` must be existing datasets (`<pool>/<name>`); an
-  exact match against the agent's dataset list is required, and the destination
-  is never created implicitly. Identical paths, or either path nested inside the
-  other, are refused with `400`.
+- `source` must be an existing dataset (`<pool>/<name>`); an exact match against
+  the agent's dataset list is required. For an unencrypted source the destination
+  must also exist and is never created implicitly; for an encrypted source the
+  first raw send creates the destination, so it must not exist then (its parent
+  must exist) and later runs target that existing replica. Identical paths, or
+  either path nested inside the other, are refused with `400`.
 - Without `snapshot`, the job creates
   `naslos-rep-<pair token>-<UTC timestamp>-<random>` on the source (recursive
   when `recursive` is true). A supplied snapshot must exist on the source.
@@ -269,7 +271,17 @@ Rules:
   destination as a replica target); it is refused when the destination holds a
   snapshot that does not carry this pair's `naslos-rep-…` prefix or a child
   dataset. Incremental receives never use `-F`, so replication cannot delete a
-  user snapshot. Encrypted (`-w`) replication is not implemented yet.
+  user snapshot.
+- **Encrypted sources are sent raw** (`zfs send -w`; `-U` is never used) and the
+  job reports `raw`. A raw full stream creates the destination, and
+  `zfs receive -F` is refused for encrypted datasets, so a full send into an
+  existing encrypted replica is refused (incrementals are fine). The replica
+  keeps the source key: the job writes the source key Secret under the
+  destination and the agent loads it before finalizing the mount, so a reboot
+  leaves the replica locked until the normal unlock. A destination whose
+  encryption state or key differs from the source is refused (no mixed chains),
+  and a recursive raw send must have a single encryption root (`400`, `409` for
+  a key mismatch, `503` when the key client is unavailable).
 - A recursive job still verifies every descendant when the root target already
   exists. Each missing child subtree is sent as its own full stream rather than
   rolling the destination back to an older base; a child carrying a same-named
@@ -280,16 +292,19 @@ Rules:
 - A second job writing the same destination (or a nested one) is `409` while it
   runs.
 
-Job shape: `{id, source, destination, snapshot?, recursive, pruneKeep?, state:
+Job shape: `{id, source, destination, snapshot?, recursive, raw, pruneKeep?, state:
 "running"|"succeeded"|"failed"|"cancelled", startedAt, finishedAt?, progress:
 {bytes, estimatedBytes}, incremental, estimatedBytes?, result?: {status:
 "replicated"|"up-to-date", baseSnapshot?, baseGUID?, toGUID?, bytes,
-estimatedBytes, prunedSnapshots, retentionError?, durationSeconds}, error?}`.
+estimatedBytes, incremental, recursive, raw, prunedSnapshots, retentionError?,
+durationSeconds}, error?}`.
 
 The agent's streaming routes gained one optional argument each: `zfs send`
-accepts `recursive=true` (`-r`), and `/api/v1/zfs/snapshots/{dataset}` accepts
-`recursive=false` to list only the dataset's own snapshots (the default stays
-recursive for Buddy).
+accepts `recursive=true` (`-r`), `/api/v1/zfs/receive/{dataset}` accepts
+`raw=true` plus an `x-naslos-unlock-key` header (64 hex characters) that loads
+the replicated key before the mount, and
+`/api/v1/zfs/snapshots/{dataset}` accepts `recursive=false` to list only the
+dataset's own snapshots (the default stays recursive for Buddy).
 
 ### Shares
 
@@ -734,7 +749,7 @@ rule, client configuration).
 | GET/PUT | `/api/v1/snapshot-properties/{dataset}` | List snapshots as `{path, schedule}` from `user:naslos:schedule` / record the owner (`{name, schedule, recursive}`). Only that fixed property; the value is validated and argv-only (FR-STO-10) |
 | POST | `/api/v1/pools/{pool}/scrub` | Start `zpool scrub <pool>` (pool name validated; no other arguments) |
 | GET | `/api/v1/zfs/send/{dataset}?to=&from=&raw=&estimate=` | Stream a `zfs send` (or report its size with `estimate=true`) |
-| POST | `/api/v1/zfs/receive/{dataset}?force=&confirm=` | Stream a restore into `zfs receive -u -x mountpoint,canmount,sharenfs,sharesmb`. `force=true` requires `confirm=<dataset>` and is refused when the destination has a foreign snapshot or child dataset; after success the agent sets `/var/mnt/<pool>/…` and mounts it |
+| POST | `/api/v1/zfs/receive/{dataset}?force=&confirm=&raw=` | Stream a restore into `zfs receive -u -x mountpoint,canmount,sharenfs,sharesmb`. `force=true` requires `confirm=<dataset>` and is refused when the destination has a foreign snapshot or child dataset. `raw=true` accepts an `x-naslos-unlock-key` header (64 hex chars) and loads that key before the mount; a key without `raw=true`, or together with `force=true`, is refused with `400`. After success the agent sets `/var/mnt/<pool>/…` and mounts it |
 | GET | `/api/v1/zfs/snapshots/{dataset}` | Snapshots as `{dataset, name, guid, created}` (the owning dataset matters for recursive listings; the GUID is how an incremental base is found) |
 
 ## Environment variables (`naslos-api`)

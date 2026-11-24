@@ -415,12 +415,24 @@ and `zfs change-key` only rewraps an existing key.
   whose only key copy is in process memory. Verified by
   `create_rolls_back_a_dataset_that_did_not_verify` and
   `encrypted_create_requires_a_32_byte_key_and_never_runs_zfs`.
-- **FR-ENC-07** — **[OPEN]** Encrypted send/receive: replication of an
-  encrypted source MUST use `zfs send -w`; `-U` (no-preserve-encryption) MUST
-  NOT be used, and a property-bearing send without `-w` MUST be refused
-  instead of sending plaintext. A raw-received dataset keeps the source key and
-  MUST be unlocked with it; raw and non-raw streams MUST NOT be mixed in one
-  chain.
+- **FR-ENC-07** — Encrypted send/receive: replication of an encrypted source
+  MUST use `zfs send -w`; `-U` (no-preserve-encryption) MUST NOT be used, and a
+  non-raw send of an encrypted source MUST be refused instead of sending
+  plaintext. Because a raw full stream always creates its destination and
+  `zfs receive -F` is refused for encrypted datasets, the first replication of
+  an encrypted source MUST target a destination that does not exist (its parent
+  MUST exist), and later incrementals MUST receive into that same replica; a
+  full send into an existing encrypted replica MUST be refused. A raw-received
+  dataset keeps the source key: the job MUST copy the source key Secret to the
+  destination (so unlock-after-boot works) and the agent MUST load that key
+  before finalizing the mount. A destination whose encryption state or key
+  differs from the source MUST be refused, so raw and non-raw chains are never
+  mixed, and a recursive raw send MUST have a single encryption root. *(tests:
+  `replication::encryption_plan_*`,
+  `replication::an_encrypted_source_is_refused_before_streaming_without_a_key_client`,
+  `replication::a_plain_source_never_replicates_into_an_encrypted_destination`,
+  `replication::a_recursive_encrypted_source_with_two_roots_is_refused`,
+  `http_contract::a_raw_receive_unlock_key_is_validated_before_any_stream`)*
 - **FR-ENC-08** — FR-BUD-02 remains in force: ZFS encryption MUST NOT be
   treated as a substitute for Buddy's client-side encryption, the receiver MUST
   NOT receive or derive the KEK, and a ZFS-encrypted source MUST still be
@@ -614,11 +626,14 @@ cloud sync remain `[OPEN]` below.
 - **FR-REP-02** — The request body MUST be
   `{source, destination, snapshot?, recursive?, pruneKeep?}`. Both dataset paths
   MUST pass the existing dataset validator; an identical pair, or either path
-  nested inside the other, MUST be refused. The source and destination MUST
-  already exist (an exact agent dataset-list match; replication MUST NOT create
-  the destination implicitly), `snapshot` when supplied MUST exist on the
-  source and pass the snapshot-name validator, and `pruneKeep` MUST be at most
-  1000. No arbitrary ZFS property or free-form argument is accepted. *(tests:
+  nested inside the other, MUST be refused. The source MUST already exist. For
+  an unencrypted source the destination MUST already exist (an exact agent
+  dataset-list match; replication MUST NOT create the destination implicitly);
+  for an encrypted source the destination MUST NOT exist on the first raw send
+  and is created by the receive (FR-ENC-07), while later runs target that
+  existing replica. `snapshot` when supplied MUST exist on the source and pass
+  the snapshot-name validator, and `pruneKeep` MUST be at most 1000. No
+  arbitrary ZFS property or free-form argument is accepted. *(tests:
   `replication::invalid_pairs_and_missing_datasets_are_refused`,
   `replication::send_needs_the_agent_and_valid_input`,
   `zfs::tests::snapshot_names_cannot_become_flags_or_paths`)*
@@ -629,9 +644,10 @@ cloud sync remain `[OPEN]` below.
   snapshot name, so a copy renamed on either side still matches; without a
   common GUID it MUST send a full stream. The stream MUST be piped from the
   agent's `zfs send` endpoint into its `zfs receive` endpoint without buffering
-  the dataset in API memory, and `recursive` MUST use `zfs send -r` (descendants without property propagation, so the source mountpoint cannot shadow the same-node replica). Encrypted
-  (`-w`) replication is `[OPEN]` until FR-ENC-07 ships; dataset encryption
-  itself is implemented for create/unlock/lock (P0-3).
+  the dataset in API memory, and `recursive` MUST use `zfs send -r` (descendants without property propagation, so the source mountpoint cannot shadow the same-node replica). An encrypted
+  source MUST be sent raw (`zfs send -w`) and the result MUST report `raw`; the
+  destination is created by the first raw stream (FR-ENC-07). Plain dataset
+  encryption itself is implemented for create/unlock/lock (P0-3).
   *(tests: `replication::planner_matches_by_guid_not_name`,
   `replication::a_full_replication_job_snapshots_streams_and_finishes`,
   `replication::a_common_guid_makes_the_send_incremental`,
@@ -648,7 +664,10 @@ cloud sync remain `[OPEN]` below.
   success with unmounted children.
   An incremental receive MUST NOT use `zfs receive -F`; a forced (`-F`) receive
   MUST require explicit confirmation and MUST be refused when the destination
-  holds any snapshot Naslos did not create or any child dataset. A full stream
+  holds any snapshot Naslos did not create or any child dataset. A raw receive
+  MUST never use `-F`; it MUST load the replicated key before finalizing the
+  mount, and a failed key load MUST keep the received data while failing the
+  job with the error. A full stream
   replaces the destination dataset's contents, so the destination is a replica
   target: the full send MUST be refused when the destination holds any snapshot
   not carrying this pair's replication prefix, or any child dataset. A user
@@ -670,16 +689,16 @@ cloud sync remain `[OPEN]` below.
   `replication::retention_keeps_the_newest_own_snapshots_per_dataset`)*
 - **FR-REP-06** — A job MUST report `state`
   (`running|succeeded|failed|cancelled`), source, destination, target snapshot,
-  `recursive`, `pruneKeep`, `startedAt`/`finishedAt`, live and estimated bytes,
-  `incremental`, and on success a `result` with the base snapshot/GUID, target
-  GUID, byte count, pruned count and duration. A second job writing the same
-  destination (or a nested destination) MUST be refused with `409` while one
-  runs. *(tests:
+  `recursive`, `raw`, `pruneKeep`, `startedAt`/`finishedAt`, live and estimated
+  bytes, `incremental`, and on success a `result` with the base snapshot/GUID,
+  target GUID, byte count, pruned count and duration. A second job writing the
+  same destination (or a nested destination) MUST be refused with `409` while
+  one runs. *(tests:
   `replication::a_full_replication_job_snapshots_streams_and_finishes`,
   `replication::a_second_job_for_the_destination_conflicts_and_cancels`)*
 - **FR-REP-07** — `[OPEN]` Remote replication (another node or a standalone
-  receiver), including auto-resume of an interrupted transfer and encrypted
-  replication, is not implemented in this slice.
+  receiver), including auto-resume of an interrupted transfer and remote
+  encrypted replication, is not implemented in this slice.
 - **FR-REP-08** — `[OPEN]` rsync-over-SSH tasks (pull/push) are not implemented
   in this slice.
 - **FR-REP-09** — `[OPEN]` S3-compatible or provider cloud-sync tasks are not
@@ -689,9 +708,12 @@ cloud sync remain `[OPEN]` below.
   refused in the browser before any request), shows running jobs with live
   progress and a cancel action, and keeps the last finished jobs with their
   result, retention warnings and errors. Jobs are visibly described as
-  in-memory, so the list may be empty after an API restart. *(ui/tests/
-  replication.spec.ts: pair validation, a job reaching `succeeded`, the history
-  result; the API refusals are covered by the Rust tests above)*
+  in-memory, so the list may be empty after an API restart. When the selected
+  source is encrypted the destination becomes a free `<pool>/<name>` path (the
+  first run creates it) and the dialog MUST state that the send is raw with the
+  source key. *(ui/tests/replication.spec.ts: pair validation, a job reaching
+  `succeeded`, the history result, the encrypted-source path; the API refusals
+  are covered by the Rust tests above)*
 ### 3.2 Identity & SSO (`FR-IDN`)
 
 - **FR-IDN-01** — Users and groups MUST be stored in OpenLDAP under
@@ -2757,7 +2779,7 @@ The authoritative executable acceptance suite is the Playwright suite in
 | `dashboard.spec.ts` — live node metrics | FR-MET-03/04/05, FR-IDN-08 (live values, non-zero memory/cores, no zero-time) |
 | `dashboard.spec.ts` — zfs pools | FR-STO-06, FR-MET-07 |
 | `storage-schedules.spec.ts` — schedules | FR-STO-10/11 (create/edit/remove a snapshot schedule on a dataset, scrub schedule validation, API refusals; no user snapshot is touched) |
-| `replication.spec.ts` — replication page | FR-REP-10 (identical pair refused in the browser, nested pairs and the retention bound refused by the API, a job to a terminal result, the history row; throwaway datasets only) |
+| `replication.spec.ts` — replication page | FR-REP-10 (identical pair refused in the browser, nested pairs and the retention bound refused by the API, a job to a terminal result, the history row, and the encrypted-source free-path/raw hint with a mocked API; throwaway datasets only) |
 | `zvols.spec.ts` — block volumes on the pool page | FR-ZVOL-04 (create → resize → typed-confirm destroy, API validation refusals; a throwaway zvol only) |
 | `disk-health.spec.ts` — per-disk inventory | FR-DHK-02/03/04 (API/UI shape, SMART-unavailable path) |
 | `dashboard.spec.ts` — auto-refresh | FR-MET-08 (5 s re-render without reload) |
@@ -2851,8 +2873,12 @@ Local replication (`FR-REP`) is verified by the unit tests in
 | `planner_matches_by_guid_not_name`, `plan_uses_the_newest_common_guid` | FR-REP-03 (GUID matching and ordering) |
 | `send_command_line_recursive_replication_stream` | FR-REP-03 (`zfs send -r`, incremental `-i`, no flag injection) |
 | `snapshot_listing_is_recursive_only_when_requested` | FR-REP-03 (shallow snapshot listing for GUID base selection) |
+| `encryption_plan_*` (unit) | FR-ENC-07 (raw-new vs incremental, destination parent, dedicated root, inheritance, one encryption root for recursive) |
+| `an_encrypted_source_is_refused_before_streaming_without_a_key_client` | FR-ENC-07 (fail closed with `503` before any send/receive when key custody is unavailable) |
+| `a_plain_source_never_replicates_into_an_encrypted_destination`, `a_recursive_encrypted_source_with_two_roots_is_refused` | FR-ENC-07 (chains are never mixed; recursive raw needs one root) |
+| `a_raw_new_job_writes_the_replica_key_and_loads_it_before_mounting` | FR-ENC-07 (source key Secret → replica Secret → `raw=true` receive with the same key in the unlock header) |
 Dataset encryption is verified by the pure planners, key-custody tests and
-the agent's command/keyfile tests (FR-ENC-05/07/08/09-consumers/10 remain
+the agent's command/keyfile tests (FR-ENC-05/08/09-consumers/10 remain
 `[OPEN]`; their tests ship with the implementation):
 
 | Test | Verifies |
@@ -2865,6 +2891,7 @@ the agent's command/keyfile tests (FR-ENC-05/07/08/09-consumers/10 remain
 | `create_encrypted_dataset_never_puts_the_key_in_argv`, `create_rolls_back_a_dataset_that_did_not_verify`, `encrypted_create_requires_a_32_byte_key_and_never_runs_zfs`, `passphrase_creation_is_refused_before_any_zfs_call` (`rust/agent/tests/zfs_encryption.rs`) | FR-ENC-02/03/06 (key never in argv, exact-dataset verification/rollback, refusal before `zfs`) |
 | `unlock_loads_the_key_from_the_private_file_and_removes_it`, `unlock_is_idempotent`, `lock_is_refused_while_mounted`, `lock_refuses_a_mounted_child`, `lock_unloads_the_key_and_removes_the_keyfile`, `lock_is_idempotent` (`rust/agent/tests/zfs_encryption.rs`) | FR-ENC-04 (explicit unlock/lock, idempotence, mounted refusal, keyfile cleanup) |
 | `encryption_status_route_reports_the_raw_properties`, `unlock_response_never_echoes_the_key` (`rust/agent/tests/http_contract.rs`) | FR-ENC-03/04 (agent status contract and no key in a response) |
+| `a_raw_receive_unlock_key_is_validated_before_any_stream` (`rust/agent/tests/http_contract.rs`) | FR-ENC-07 (the receive key header requires `raw=true`, is exactly 32 hex bytes, and never mixes with `-F`) |
 | `docs/dataset-encryption.md` | FR-ENC-11 (threat model and the key-custody decision) |
 
 Dynamic DNS and the provider registry are verified by

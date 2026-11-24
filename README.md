@@ -20,7 +20,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 ## Features
 
 - **ZFS** — official `siderolabs/zfs` extension; pools auto-import at boot via `zfs-service`
-- **Dataset encryption at rest** — raw-key ZFS native encryption created with the dataset; the API generates the 32-byte key into a Secret in `naslos-keys`, and an administrator explicitly unlocks after boot (no auto-unlock). Passphrase keys, encrypted send/receive and in-place conversion are `[OPEN]` (see [docs/dataset-encryption.md](docs/dataset-encryption.md))
+- **Dataset encryption at rest** — raw-key ZFS native encryption created with the dataset; the API generates the 32-byte key into a Secret in `naslos-keys`, and an administrator explicitly unlocks after boot (no auto-unlock). Replication of an encrypted dataset is raw-only (`zfs send -w`), creates the replica and unlocks it with the copied source key. Passphrase keys, raw Buddy sends and in-place conversion are `[OPEN]` (see [docs/dataset-encryption.md](docs/dataset-encryption.md))
 - **Block volumes (zvol)** — create, list, resize and delete ZFS zvols through a validated API/agent surface (growth-only resize, in-use refusals, no arbitrary properties) with a management section on each pool page; iSCSI export is still `[OPEN]` (see [docs/iscsi.md](docs/iscsi.md))
 - **Accessible UI** — Svelte 5 + Tailwind design-token system with a persisted
   light/dark theme (no-FOUC bootstrap, `prefers-color-scheme` default), a
@@ -30,7 +30,7 @@ Talos is an immutable, API-driven, minimal Linux OS purpose-built for Kubernetes
 - **Disk setup wizard** — topology advisor (mirror / RAIDZ1 / RAIDZ2), best-practice tuning (`ashift=12`, `compression=zstd`, `xattr=sa`, `acltype=posixacl`, `atime=off`)
 - **Pool health page** — live device tree, IO stats, scan state, and error summary from `zpool status` / `zpool iostat`
 - **Scheduled storage maintenance** — periodic snapshot tasks per dataset (hourly/daily/weekly, keep-N retention, optional recursive) named in the SMB previous-versions format and owned through a ZFS user property, plus per-pool scrub schedules, with a manual "scrub now", last/next-run state and results on the pool page
-- **Local ZFS replication** — async dataset-to-dataset `zfs send`/`receive` on the same node, GUID-based incrementals, recursive sends, cancellable jobs and prefix-scoped destination retention that never touches user snapshots, with a replication page (create, live progress, history)
+- **Local ZFS replication** — async dataset-to-dataset `zfs send`/`receive` on the same node, GUID-based incrementals, recursive sends, cancellable jobs and prefix-scoped destination retention that never touches user snapshots, with a replication page (create, live progress, history) and raw-only replication for encrypted sources
 - **Disk health** — per-disk SMART (read-only, standby-safe) plus ZFS vdev state/error counters, with temperature/wear threshold alerts
 - **CPU detail** — model, per-core load/frequency, load averages and CPU temperature (when the hardware exposes it) on the dashboard
 - **Import existing pools** — discover and import pools already on disk via `zpool import`

@@ -1116,7 +1116,7 @@ fn encryption_roots_in_subtree(
 
 /// Read and validate the key Secret for one encryption root.
 #[allow(clippy::result_large_err)]
-async fn read_dataset_key(state: &AppState, root: &str) -> Result<RawKey, Response> {
+pub(crate) async fn read_dataset_key(state: &AppState, root: &str) -> Result<RawKey, Response> {
     let kube = state.kube.as_ref().ok_or_else(|| {
         json(
             StatusCode::SERVICE_UNAVAILABLE,

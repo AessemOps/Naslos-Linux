@@ -1146,6 +1146,20 @@ pub struct SnapshotSchedule {
     pub schedule: String,
 }
 
+/// Header carrying a raw dataset key for a raw (encrypted) receive. The agent
+/// reads it only on the authenticated, cluster-internal channel; the key never
+/// enters a URL, argv or log line.
+pub const RECEIVE_UNLOCK_HEADER: &str = "x-naslos-unlock-key";
+
+/// Lowercase hex for the receive-key header (the agent decodes 32 bytes).
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
 /// Options for a `zfs send`.
 #[derive(Debug, Clone, Default)]
 pub struct SendStreamOptions {
@@ -1362,31 +1376,48 @@ impl Client {
         force: bool,
         reader: impl tokio::io::AsyncRead + Send + 'static,
     ) -> Result<ReceiveOutcome, AgentError> {
+        self.receive_stream_body_outcome_raw(dataset, force, false, None, reader)
+            .await
+    }
+
+    /// Receive one stream, optionally raw and with the raw key the agent loads
+    /// before finalizing the mount (encrypted replication, FR-ENC-07). A raw
+    /// receive is never forced: `zfs receive -F` cannot replace an encrypted
+    /// dataset, and the API never mixes the two.
+    pub async fn receive_stream_body_outcome_raw(
+        &self,
+        dataset: &str,
+        force: bool,
+        raw: bool,
+        unlock_key: Option<&[u8]>,
+        reader: impl tokio::io::AsyncRead + Send + 'static,
+    ) -> Result<ReceiveOutcome, AgentError> {
         // Serialize receive against create/destroy/rollback for this name.
         // Both replication and Buddy restore call this one place.
         let _guard = crate::server::zfs::lock_dataset(dataset).await;
         // `force=true` is the API's explicit confirmation: the agent refuses
         // `-F` without a matching `confirm` query.
         let mut path = format!(
-            "/api/v1/zfs/receive/{}?force={}",
+            "/api/v1/zfs/receive/{}?force={}&raw={}",
             escape_dataset_path(dataset),
-            force
+            force,
+            raw
         );
         if force {
             path.push_str(&format!("&confirm={}", query_escape(dataset)));
         }
         let stream = tokio_util::io::ReaderStream::new(reader);
         let body = reqwest::Body::wrap_stream(stream);
-        let resp = self
+        let mut request = self
             .stream_request(reqwest::Method::POST, &path)
-            .header("Content-Type", "application/octet-stream")
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| AgentError {
-                status: 0,
-                message: format!("zfs receive: {e}"),
-            })?;
+            .header("Content-Type", "application/octet-stream");
+        if let Some(key) = unlock_key {
+            request = request.header(RECEIVE_UNLOCK_HEADER, hex_encode(key));
+        }
+        let resp = request.body(body).send().await.map_err(|e| AgentError {
+            status: 0,
+            message: format!("zfs receive: {e}"),
+        })?;
         let status = resp.status().as_u16();
         if !(200..300).contains(&status) {
             let body = resp.bytes().await.unwrap_or_default();

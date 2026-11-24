@@ -205,10 +205,18 @@ async fn spawn_mock(mock: MockAgent) -> String {
                 |State(m): State<MockAgent>,
                  Path(dataset): Path<String>,
                  Query(q): Query<HashMap<String, String>>,
+                 headers: axum::http::HeaderMap,
                  body: Body| async move {
+                    let unlock = headers
+                        .get("x-naslos-unlock-key")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
                     m.receives.lock().unwrap().push(json!({
                         "dataset": dataset,
                         "force": q.get("force"),
+                        "raw": q.get("raw"),
+                        "unlock": unlock,
                     }));
                     let data = axum::body::to_bytes(body, 8 << 20).await.unwrap();
                     Json(json!({ "status": "received", "bytes": data.len() }))
@@ -225,6 +233,13 @@ async fn spawn_mock(mock: MockAgent) -> String {
 }
 
 fn state_with_agent(base_url: &str) -> Arc<AppState> {
+    state_with_agent_and_kube(base_url, None)
+}
+
+fn state_with_agent_and_kube(
+    base_url: &str,
+    kube: Option<Arc<naslos_api::kube::Client>>,
+) -> Arc<AppState> {
     let agent = AgentClient::new(base_url, "token", "").unwrap();
     Arc::new(AppState {
         proxy_secret: SECRET.to_string(),
@@ -248,7 +263,7 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         domains: Arc::new(naslos_api::certs::Store::new("")),
         certs: None,
         sso: None,
-        kube: None,
+        kube,
         sso_domains: Vec::new(),
         apps_namespace: "naslos-apps".to_string(),
         ddns: None,
@@ -824,4 +839,175 @@ fn planner_matches_by_guid_not_name() {
             base: src[0].clone()
         }
     );
+}
+
+fn encrypted(name: &str, root: &str) -> Value {
+    json!({
+        "name": name,
+        "encryption": "aes-256-gcm",
+        "encryptionRoot": root,
+        "keystatus": "unavailable"
+    })
+}
+
+#[tokio::test]
+async fn an_encrypted_source_is_refused_before_streaming_without_a_key_client() {
+    let mock = MockAgent::default();
+    mock.datasets.lock().unwrap().extend([
+        encrypted("tank/src", "tank/src"),
+        json!({ "name": "backup" }),
+    ]);
+    let base = spawn_mock(mock.clone()).await;
+    let state = state_with_agent(&base);
+
+    let (status, body) = call(
+        state,
+        "POST",
+        "/api/replication/send",
+        Some(json!({ "source": "tank/src", "destination": "backup/replica" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("Kubernetes client"),
+        "{body}"
+    );
+    assert!(mock.sends.lock().unwrap().is_empty(), "no send may start");
+    assert!(
+        mock.receives.lock().unwrap().is_empty(),
+        "no receive may start"
+    );
+}
+
+#[tokio::test]
+async fn a_plain_source_never_replicates_into_an_encrypted_destination() {
+    let mock = MockAgent::default();
+    mock.datasets.lock().unwrap().extend([
+        json!({ "name": "tank/src" }),
+        encrypted("backup/dst", "backup/dst"),
+    ]);
+    let base = spawn_mock(mock.clone()).await;
+    let state = state_with_agent(&base);
+
+    let (status, body) = call(
+        state,
+        "POST",
+        "/api/replication/send",
+        Some(json!({ "source": "tank/src", "destination": "backup/dst" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("never mixed"));
+    assert!(mock.sends.lock().unwrap().is_empty());
+    assert!(mock.receives.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_recursive_encrypted_source_with_two_roots_is_refused() {
+    let mock = MockAgent::default();
+    mock.datasets.lock().unwrap().extend([
+        encrypted("tank/src", "tank/src"),
+        encrypted("tank/src/child", "tank/src/child"),
+        json!({ "name": "backup" }),
+    ]);
+    let base = spawn_mock(mock.clone()).await;
+    let state = state_with_agent(&base);
+
+    let (status, body) = call(
+        state,
+        "POST",
+        "/api/replication/send",
+        Some(json!({
+            "source": "tank/src",
+            "destination": "backup/replica",
+            "recursive": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("one encryption root"));
+    assert!(mock.sends.lock().unwrap().is_empty());
+}
+
+static KUBECTL_LOCK: Mutex<()> = Mutex::new(());
+
+/// End-to-end raw-new path with a stub `kubectl`: the API reads the source key
+/// from a Secret, writes the replica Secret, and hands the same key to the
+/// agent's receive header (which the agent loads before mounting).
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_raw_new_job_writes_the_replica_key_and_loads_it_before_mounting() {
+    let _guard = KUBECTL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let key = [7u8; 32];
+    let key_hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+    let key_b64 = naslos_api::dataset_encryption::RawKey::from_slice(&key)
+        .unwrap()
+        .to_base64();
+    let secret = json!({
+        "metadata": { "annotations": { "naslos.local/dataset": "tank/src" } },
+        "data": { "key": key_b64 }
+    });
+
+    let dir = std::env::temp_dir().join(format!("naslos-kubectl-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let stub = dir.join("kubectl");
+    let script = "#!/bin/sh\n\
+                  if [ \"$1\" = get ]; then\n\
+                    cat <<'JSON'\n\
+                  __SECRET__\n\
+                  JSON\n\
+                    exit 0\n\
+                  fi\n\
+                  cat >/dev/null 2>&1\n\
+                  echo '{}'\n\
+                  exit 0\n"
+        .replace("__SECRET__", &secret.to_string());
+    std::fs::write(&stub, script).unwrap();
+    let mut perms = std::fs::metadata(&stub).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&stub, perms).unwrap();
+
+    let previous = std::env::var_os("KUBECTL_BIN");
+    std::env::set_var("KUBECTL_BIN", &stub);
+
+    let mock = MockAgent::default();
+    mock.datasets.lock().unwrap().extend([
+        encrypted("tank/src", "tank/src"),
+        json!({ "name": "backup" }),
+    ]);
+    let base = spawn_mock(mock.clone()).await;
+    let kube = Arc::new(naslos_api::kube::Client::new("naslos"));
+    let state = state_with_agent_and_kube(&base, Some(kube));
+
+    let (status, body) = call(
+        state.clone(),
+        "POST",
+        "/api/replication/send",
+        Some(json!({ "source": "tank/src", "destination": "backup/replica" })),
+    )
+    .await;
+
+    match previous {
+        Some(value) => std::env::set_var("KUBECTL_BIN", value),
+        None => std::env::remove_var("KUBECTL_BIN"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let id = body["jobId"].as_str().unwrap().to_string();
+    let job = wait_job(state, &id).await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    assert_eq!(job["raw"], json!(true), "{job}");
+
+    let receives = mock.receives.lock().unwrap();
+    assert_eq!(receives.len(), 1, "{receives:?}");
+    assert_eq!(receives[0]["raw"], json!("true"), "{receives:?}");
+    assert_eq!(receives[0]["unlock"], json!(key_hex), "{receives:?}");
 }

@@ -17,6 +17,7 @@
     destination: string;
     snapshot?: string;
     recursive: boolean;
+    raw?: boolean;
     pruneKeep?: number;
     state: 'running' | 'succeeded' | 'failed' | 'cancelled';
     startedAt: string;
@@ -34,6 +35,7 @@
       toGUID?: string;
       incremental: boolean;
       recursive: boolean;
+      raw?: boolean;
       bytes: number;
       estimatedBytes: number;
       prunedSnapshots: number;
@@ -50,6 +52,9 @@
     used?: string;
     avail?: string;
     mountpoint?: string;
+    encryption?: string;
+    keystatus?: string;
+    encryptionRoot?: string;
   }
 
   let loading = true;
@@ -77,6 +82,28 @@
   $: pairDatasets = datasets.filter((d) => d.name.includes('/'));
   $: runningJobs = jobs.filter((j) => j.state === 'running');
   $: finishedJobs = jobs.filter((j) => j.state !== 'running').slice().reverse();
+  // An encrypted source is sent raw and the job creates the destination on the
+  // first run (a raw receive cannot overwrite an existing dataset).
+  $: encryptedSource = pairDatasets.some(
+    (d) => d.name === source && isEncryptedDataset(d)
+  );
+
+  // The destination input switches between a select (both datasets exist) and a
+  // free path (raw pair creates it). Clear a value that no longer matches the
+  // mode so a stale name cannot be submitted unseen.
+  let previousEncrypted: boolean | null = null;
+  $: if (encryptedSource !== previousEncrypted) {
+    previousEncrypted = encryptedSource;
+    destination = '';
+  }
+
+  function isEncryptedDataset(dataset: Dataset): boolean {
+    return (
+      !!dataset.encryption &&
+      dataset.encryption !== 'off' &&
+      dataset.encryption !== '-'
+    );
+  }
 
   function fmtTime(s?: string): string {
     if (!s) return '—';
@@ -108,7 +135,12 @@
 
   // Svelte's legacy reactivity only tracks variables named in the statement
   // itself, so the fields are passed in rather than read inside the function.
-  function pairError(src: string, dst: string, keep: number): string {
+  function pairError(
+    src: string,
+    dst: string,
+    keep: number,
+    encrypted: boolean
+  ): string {
     if (!src || !dst) return 'Choose a source and a destination dataset.';
     if (src === dst) return 'The source and the destination must be different datasets.';
     if (dst.startsWith(`${src}/`)) {
@@ -117,13 +149,16 @@
     if (src.startsWith(`${dst}/`)) {
       return 'The source cannot be inside the destination dataset.';
     }
+    if (encrypted && !dst.includes('/')) {
+      return 'The destination must be a <pool>/<name> path.';
+    }
     if (!Number.isInteger(keep) || keep < 0 || keep > 1000) {
       return 'Retention must be a whole number from 0 to 1000 (0 keeps every replication snapshot).';
     }
     return '';
   }
 
-  $: validationError = pairError(source, destination, pruneKeep);
+  $: validationError = pairError(source, destination, pruneKeep, encryptedSource);
 
   async function loadDatasets() {
     try {
@@ -175,7 +210,7 @@
 
   async function startReplication() {
     formError = '';
-    const invalid = pairError(source, destination, pruneKeep);
+    const invalid = pairError(source, destination, pruneKeep, encryptedSource);
     if (invalid) {
       formError = invalid;
       return;
@@ -198,6 +233,9 @@
       showModal = false;
       notice = `Replication started: ${source} → ${destination}.`;
       await loadJobs();
+      // A raw first send creates the destination; refresh so it is selectable
+      // as an existing replica on the next run.
+      void loadDatasets();
     } catch (e: any) {
       formError = e.message;
     } finally {
@@ -280,7 +318,7 @@
                 <div class="min-w-0">
                   <div class="font-medium truncate">{job.source} → {job.destination}</div>
                   <div class="text-xs text-gray-400">
-                    {job.incremental ? 'incremental' : 'full'}{job.recursive ? ' · recursive' : ''}
+                    {job.raw ? 'raw encrypted' : job.incremental ? 'incremental' : 'full'}{job.recursive ? ' · recursive' : ''}
                     {#if job.snapshot}· target {job.snapshot}{/if}
                     {#if job.pruneKeep}· keep {job.pruneKeep}{/if}
                     · started {fmtTime(job.startedAt)}
@@ -339,7 +377,7 @@
                 <div class="min-w-0">
                   <div class="font-medium truncate">{job.source} → {job.destination}</div>
                   <div class="text-xs text-gray-400">
-                    {job.incremental ? 'incremental' : 'full'}{job.recursive ? ' · recursive' : ''}
+                    {job.raw ? 'raw encrypted' : job.incremental ? 'incremental' : 'full'}{job.recursive ? ' · recursive' : ''}
                     {#if job.snapshot}· {job.snapshot}{/if}
                     · {fmtTime(job.startedAt)}{#if job.finishedAt} → {fmtTime(job.finishedAt)}{/if}
                   </div>
@@ -351,7 +389,7 @@
                 <div class="text-xs text-gray-300 mt-2">
                   <strong>{job.result.status}</strong>
                   {#if job.result.bytes > 0}· {formatBytes(job.result.bytes)} sent{/if}
-                  · {job.result.incremental ? 'incremental' : 'full'}
+                  · {job.result.raw ? 'raw encrypted' : job.result.incremental ? 'incremental' : 'full'}
                   · {job.result.durationSeconds.toFixed(1)}s
                   {#if job.result.baseSnapshot}· base {job.result.baseSnapshot}{/if}
                   {#if job.result.prunedSnapshots > 0}· pruned {job.result.prunedSnapshots}{/if}
@@ -378,33 +416,58 @@
 {#if showModal}
   <Modal title="New replication" onClose={() => (showModal = false)}>
     <p class="text-sm text-gray-400">
-      Both datasets must already exist. Without a snapshot, the job creates a
-      <code class="text-xs">naslos-rep-…</code> snapshot on the source. A full send
-      <strong>replaces the destination's contents</strong>, so treat the destination as a replica
-      target.
+      Without a snapshot, the job creates a <code class="text-xs">naslos-rep-…</code> snapshot on
+      the source. A full send <strong>replaces the destination's contents</strong>, so treat the
+      destination as a replica target.
     </p>
+    {#if encryptedSource}
+      <div class="p-3 rounded-lg bg-naslos-dark border border-naslos-border text-sm text-gray-300">
+        The source is encrypted, so it is sent <strong>raw</strong>
+        (<code class="text-xs">zfs send -w</code>): the data is never decrypted by this node. The
+        first run <strong>creates</strong> the destination encrypted with the source key and
+        unlocks it; later runs receive incrementals into that same replica. The replica keeps the
+        source key, so after a reboot it stays locked until you unlock it like any encrypted
+        dataset.
+      </div>
+    {:else}
+      <p class="text-sm text-gray-400">Both datasets must already exist.</p>
+    {/if}
 
     <div>
       <label class="label" for="replication-source">Source dataset *</label>
       <select id="replication-source" class="input w-full" bind:value={source}>
         <option value="">Choose a source…</option>
         {#each pairDatasets as d}
-          <option value={d.name}>{d.name}</option>
+          <option value={d.name}>{d.name}{isEncryptedDataset(d) ? ' (encrypted)' : ''}</option>
         {/each}
       </select>
     </div>
 
     <div>
       <label class="label" for="replication-destination">Destination dataset *</label>
-      <select id="replication-destination" class="input w-full" bind:value={destination}>
-        <option value="">Choose a destination…</option>
-        {#each pairDatasets as d}
-          <option value={d.name}>{d.name}</option>
-        {/each}
-      </select>
-      <p class="text-xs text-gray-500 mt-1">
-        The destination is not created here; add one from its pool page first.
-      </p>
+      {#if encryptedSource}
+        <input
+          id="replication-destination"
+          type="text"
+          bind:value={destination}
+          placeholder="e.g. backup/encrypted-replica"
+          class="input w-full"
+        />
+        <p class="text-xs text-gray-500 mt-1">
+          The first run creates this dataset (its parent must exist). A full raw stream cannot
+          overwrite an existing dataset; later runs use the same existing replica name.
+        </p>
+      {:else}
+        <select id="replication-destination" class="input w-full" bind:value={destination}>
+          <option value="">Choose a destination…</option>
+          {#each pairDatasets as d}
+            <option value={d.name}>{d.name}</option>
+          {/each}
+        </select>
+        <p class="text-xs text-gray-500 mt-1">
+          The destination is not created here; add one from its pool page first.
+        </p>
+      {/if}
     </div>
 
     <div>

@@ -12,7 +12,7 @@ use crate::zfs::{
 };
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::Response;
 use futures::StreamExt;
 use serde::Deserialize;
@@ -22,6 +22,26 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 
 type QueryMap = HashMap<String, String>;
+
+/// Header carrying the raw dataset key for a raw (encrypted) receive. The value
+/// is 64 lowercase hex characters and travels only over the authenticated,
+/// cluster-internal API→agent channel: never a URL, argv or log line.
+pub const RECEIVE_UNLOCK_HEADER: &str = "x-naslos-unlock-key";
+
+/// Decode the 32-byte raw key carried in [`RECEIVE_UNLOCK_HEADER`].
+fn decode_key_hex(value: &str) -> Option<Vec<u8>> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 64 {
+        return None;
+    }
+    let mut key = Vec::with_capacity(32);
+    for pair in bytes.chunks(2) {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        key.push(((hi << 4) | lo) as u8);
+    }
+    Some(key)
+}
 
 /// Zeroes raw key bytes on every handler exit path, including early returns.
 struct KeyBuffer(Vec<u8>);
@@ -1034,18 +1054,62 @@ pub async fn zfs_receive(
     State(state): State<Arc<AppState>>,
     Path(dataset): Path<String>,
     Query(query): Query<QueryMap>,
+    headers: HeaderMap,
     body: Body,
 ) -> Response {
     let Some(zfs) = state.zfs.as_ref() else {
         return backup_unavailable();
     };
     let force = query.get("force").map(|v| v == "true").unwrap_or(false);
+    let raw = query.get("raw").map(|v| v == "true").unwrap_or(false);
     if force && query.get("confirm").map(String::as_str) != Some(dataset.as_str()) {
         return write_error(
             StatusCode::BAD_REQUEST,
             "a forced receive (-F) requires confirm=<dataset name>; it can replace the destination's contents",
         );
     }
+    // A raw (encrypted) receive may carry the dataset key so the agent can load
+    // it before finalize/mount; the key is validated here, before any ZFS call,
+    // and zeroed on every exit path.
+    let unlock_key = match headers.get(RECEIVE_UNLOCK_HEADER) {
+        Some(value) => {
+            if !raw {
+                return write_error(
+                    StatusCode::BAD_REQUEST,
+                    "an unlock key requires raw=true: only a raw stream can be encrypted",
+                );
+            }
+            if force {
+                return write_error(
+                    StatusCode::BAD_REQUEST,
+                    "a forced receive (-F) cannot be combined with an unlock key; a raw stream never replaces an existing dataset",
+                );
+            }
+            let value = match value.to_str() {
+                Ok(value) => value.trim(),
+                Err(_) => {
+                    return write_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid unlock key header: expected 64 hex characters",
+                    )
+                }
+            };
+            let key = match decode_key_hex(value) {
+                Some(key) => key,
+                None => {
+                    return write_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid unlock key header: expected 64 hex characters",
+                    )
+                }
+            };
+            if let Err(e) = crate::zfs::encryption::validate_raw_key(&key) {
+                return write_error(StatusCode::BAD_REQUEST, e.to_string());
+            }
+            Some(KeyBuffer(key))
+        }
+        None => None,
+    };
     let _permit = match state.stream_slots.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
@@ -1128,12 +1192,24 @@ pub async fn zfs_receive(
 
     match wait.await {
         Ok(()) => {
+            // A raw receive leaves the dataset locked (keylocation=prompt). Load
+            // the replicated key before finalize so the following mount works;
+            // a failed unlock keeps the received data and reports the error.
+            if let Some(key) = unlock_key.as_ref() {
+                if let Err(e) = zfs.unlock_dataset(&dataset, &key.0).await {
+                    tracing::warn!("received {dataset} but could not unlock it: {}", e);
+                    return write_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        format!("received {dataset} but could not unlock it: {e}"),
+                    );
+                }
+            }
             let (mountpoint, warnings) = match zfs.finalize_receive(&dataset).await {
                 Ok(done) => (done.mountpoint, done.warnings),
                 Err(e) => (String::new(), vec![e.to_string()]),
             };
             tracing::info!(
-                "zfs receive {dataset} restored {written} bytes (force={force}, mountpoint={mountpoint:?})"
+                "zfs receive {dataset} restored {written} bytes (force={force}, raw={raw}, mountpoint={mountpoint:?})"
             );
             json_response(
                 StatusCode::OK,
@@ -1142,6 +1218,8 @@ pub async fn zfs_receive(
                     "dataset": dataset,
                     "bytes": written,
                     "force": force,
+                    "raw": raw,
+                    "unlocked": unlock_key.is_some(),
                     "mountpoint": mountpoint,
                     "warnings": warnings,
                 }),
