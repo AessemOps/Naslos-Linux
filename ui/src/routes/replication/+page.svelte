@@ -417,8 +417,7 @@
   <Modal title="New replication" onClose={() => (showModal = false)}>
     <p class="text-sm text-gray-400">
       Without a snapshot, the job creates a <code class="text-xs">naslos-rep-…</code> snapshot on
-      the source. A full send <strong>replaces the destination's contents</strong>, so treat the
-      destination as a replica target.
+      the source.
     </p>
     {#if encryptedSource}
       <div class="p-3 rounded-lg bg-naslos-dark border border-naslos-border text-sm text-gray-300">
@@ -430,7 +429,10 @@
         dataset.
       </div>
     {:else}
-      <p class="text-sm text-gray-400">Both datasets must already exist.</p>
+      <p class="text-sm text-gray-400">
+        Both datasets must already exist. A full send <strong>replaces the destination's
+        contents</strong>, so treat the destination as a replica target.
+      </p>
     {/if}
 
     <div>
