@@ -24,10 +24,10 @@
 api:
   image:
     repository: ghcr.io/aessemops/naslos-api
-    # v0.7.61 release image (NAT-only VM networking; per-namespace app status);
+    # v0.7.62 release image (NAT-only VM networking; per-namespace app status);
     # the digest is the pin that actually gets pulled (FR-INSTALL-13).
-    tag: "0.7.61"
-    digest: "sha256:f2298cd11be54e327db6ec66809ef3b0a0b9e5bdddd5c7b60435033d570c2093"
+    tag: "0.7.62"
+    digest: ""
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -45,35 +45,35 @@ api:
 agent:
   image:
     repository: ghcr.io/aessemops/naslos-agent
-    # Pinned by digest from the v0.7.61 release (NAS-022).
-    tag: "0.7.61"
-    digest: "sha256:8ffa28fa37e299c3306950f348a99462213db73d320223bdb455781828f0aed1"
+    # Pinned by digest from the v0.7.62 release (NAS-022).
+    tag: "0.7.62"
+    digest: ""
 ui:
   image:
     repository: ghcr.io/aessemops/naslos-ui
-    # v0.7.61 release image; the digest is the pin (FR-INSTALL-13).
-    tag: "0.7.61"
-    digest: "sha256:90bfe67b796495d0b7ae795ad8fadfbb9bd8ddefdf381ed350786f893021f200"
+    # v0.7.62 release image; the digest is the pin (FR-INSTALL-13).
+    tag: "0.7.62"
+    digest: ""
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
     image:
       repository: ghcr.io/aessemops/naslos-samba
-      tag: "0.7.61"
-      digest: "sha256:fa506dd0623dee8412df10507d61c2cd3abc3655b3f52bd85dca93c594e79a4d"
+      tag: "0.7.62"
+      digest: ""
   nfs:
     image:
       repository: ghcr.io/aessemops/naslos-nfs
       # The NFS image needs CAP_SYS_RESOURCE for PR_SET_IO_FLUSHER (added in
       # nfs-daemonset.yaml); with that, Ganesha 6.5 starts with the same
       # rendered ganesha.conf as 4.x.
-      tag: "0.7.61"
-      digest: "sha256:26eabaa723e8f8295cbbd977d3c5c5a47bbf25fa76cb41252739cb0528ee44cb"
+      tag: "0.7.62"
+      digest: ""
 terminal:
   image:
     repository: ghcr.io/aessemops/naslos-terminal
-    tag: "0.7.61"
-    digest: "sha256:aeac35111aa2789168dc6bb993ba0f457dbf4110fa4b12b52829eff83f109234"
+    tag: "0.7.62"
+    digest: ""
 # Virtual machines (FR-VMT). The vmd image fixes the startup panic (an
 # explicit rustls crypto provider), so the supervisor is enabled and pinned
 # to the release image (NAS-022); the API env wiring and /api/virt/* go
@@ -82,18 +82,16 @@ virt:
   enabled: true
   image:
     repository: ghcr.io/aessemops/naslos-vmd
-    # v0.7.61 release image (NAT-only networking; keeps the supervisor fixes).
-    # The digest is the bookworm-builder rebuild of sha-0418446: the published
-    # 0.7.61 vmd image (and every release since the 1.100 toolchain bump) linked
+    # v0.7.62 release image (NAT-only networking; keeps the supervisor fixes).
+    # Built with the bookworm builder since 0.7.62: the earlier images linked
     # against Debian 13's glibc 2.41 and crash-looped on this Debian 12 runtime
-    # with "GLIBC_2.38 not found". vmd/Dockerfile now pins the bookworm builder;
-    # repin to the release digest when the fix ships in 0.7.62.
-    tag: "0.7.61"
-    digest: "sha256:d257d173f1fa0371c3cf74cb701e967f240858ac4c7f128bf3ec5f0e3e3ab46e"
+    # with "GLIBC_2.38 not found".
+    tag: "0.7.62"
+    digest: ""
 openldap:
   # Debian 13 / slapd 2.6.10 with /var/run/slapd created in the image and
   # LDAPS-only listening (LDAP_TLS_ENFORCE; no plaintext ldap:///).
-  image: ghcr.io/aessemops/naslos-openldap@sha256:430537dc03360d04f35b2a90c83d2c21594942088f27a19791fb70cffc119108
+  image: ghcr.io/aessemops/naslos-openldap:0.7.62
   # OpenLDAP host is the service name for internal cluster references.
   host: naslos-openldap
   # No bindPassword here. The chart reads the service password from the
@@ -270,8 +268,8 @@ ovhWebhook:
 # SA/RBAC/Job resources render. Keep these in step with the deployed release.
 release:
   profile: installer
-  naslosVersion: "0.7.61"
-  chartVersion: "0.7.61"
+  naslosVersion: "0.7.62"
+  chartVersion: "0.7.62"
   talosVersion: "v1.14.6"
   kubernetesVersion: "v1.37.0"
   schematicId: "4dd8e3a8b6203d3c14f049da8db4d3bb0d6d3e70c5e89dfcc1e709e81914f63c"
