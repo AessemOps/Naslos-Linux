@@ -276,12 +276,16 @@ Rules:
   job reports `raw`. A raw full stream creates the destination, and
   `zfs receive -F` is refused for encrypted datasets, so a full send into an
   existing encrypted replica is refused (incrementals are fine). The replica
-  keeps the source key: the job writes the source key Secret under the
-  destination and the agent loads it before finalizing the mount, so a reboot
-  leaves the replica locked until the normal unlock. A destination whose
+  keeps the source key: after the destination slot is claimed, the job writes
+  the source key Secret under the destination and the agent loads it before
+  finalizing the mount, so a reboot leaves the replica locked until the normal
+  unlock. An existing destination key Secret is never overwritten: it is `409`,
+  since it may belong to another dataset at that name. A destination whose
   encryption state or key differs from the source is refused (no mixed chains),
-  and a recursive raw send must have a single encryption root (`400`, `409` for
-  a key mismatch, `503` when the key client is unavailable).
+  a recursive raw send must have a single encryption root, and a recursive send
+  over a plain tree containing an encrypted descendant is refused rather than
+  decrypted (`400`, `409` for a key mismatch or an existing Secret, `503` when
+  the key client is unavailable).
 - A recursive job still verifies every descendant when the root target already
   exists. Each missing child subtree is sent as its own full stream rather than
   rolling the destination back to an older base; a child carrying a same-named

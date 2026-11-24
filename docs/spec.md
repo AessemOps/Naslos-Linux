@@ -425,9 +425,14 @@ and `zfs change-key` only rewraps an existing key.
   full send into an existing encrypted replica MUST be refused. A raw-received
   dataset keeps the source key: the job MUST copy the source key Secret to the
   destination (so unlock-after-boot works) and the agent MUST load that key
-  before finalizing the mount. A destination whose encryption state or key
-  differs from the source MUST be refused, so raw and non-raw chains are never
-  mixed, and a recursive raw send MUST have a single encryption root. *(tests:
+  before finalizing the mount. The copy MUST happen only after the destination
+  slot is claimed, and an existing destination key Secret MUST be refused rather
+  than overwritten (it may belong to another dataset at that name). A
+  destination whose encryption state or key differs from the source MUST be
+  refused, so raw and non-raw chains are never mixed; a recursive raw send MUST
+  have a single encryption root, and a recursive send MUST refuse a plain tree
+  that contains an encrypted descendant instead of streaming it decrypted.
+  *(tests:
   `replication::encryption_plan_*`,
   `replication::an_encrypted_source_is_refused_before_streaming_without_a_key_client`,
   `replication::a_plain_source_never_replicates_into_an_encrypted_destination`,
@@ -2875,8 +2880,9 @@ Local replication (`FR-REP`) is verified by the unit tests in
 | `snapshot_listing_is_recursive_only_when_requested` | FR-REP-03 (shallow snapshot listing for GUID base selection) |
 | `encryption_plan_*` (unit) | FR-ENC-07 (raw-new vs incremental, destination parent, dedicated root, inheritance, one encryption root for recursive) |
 | `an_encrypted_source_is_refused_before_streaming_without_a_key_client` | FR-ENC-07 (fail closed with `503` before any send/receive when key custody is unavailable) |
-| `a_plain_source_never_replicates_into_an_encrypted_destination`, `a_recursive_encrypted_source_with_two_roots_is_refused` | FR-ENC-07 (chains are never mixed; recursive raw needs one root) |
+| `a_plain_source_never_replicates_into_an_encrypted_destination`, `a_recursive_encrypted_source_with_two_roots_is_refused`, `encryption_plan_refuses_a_recursive_plain_send_over_an_encrypted_child` | FR-ENC-07 (chains are never mixed; recursive raw needs one root; a plain tree with an encrypted descendant is refused) |
 | `a_raw_new_job_writes_the_replica_key_and_loads_it_before_mounting` | FR-ENC-07 (source key Secret → replica Secret → `raw=true` receive with the same key in the unlock header) |
+| `a_raw_new_destination_with_an_existing_key_secret_is_refused` | FR-ENC-07 (a leftover or foreign replica Secret is 409 and no stream starts) |
 Dataset encryption is verified by the pure planners, key-custody tests and
 the agent's command/keyfile tests (FR-ENC-05/08/09-consumers/10 remain
 `[OPEN]`; their tests ship with the implementation):

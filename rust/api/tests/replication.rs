@@ -935,6 +935,32 @@ async fn a_recursive_encrypted_source_with_two_roots_is_refused() {
     assert!(mock.sends.lock().unwrap().is_empty());
 }
 
+fn kubectl_stub(dir: &std::path::Path, secrets: &[(&str, Value)]) -> std::path::PathBuf {
+    let mut cases = String::new();
+    for (name, value) in secrets {
+        cases.push_str(&format!(
+            "    {name})\n      cat <<'JSON'\n{value}\nJSON\n      exit 0\n      ;;\n"
+        ));
+    }
+    let script = format!(
+        "#!/bin/sh\n\
+         if [ \"$1\" = get ]; then\n\
+           case \"$3\" in\n\
+         {cases}    *) exit 0 ;;\n\
+           esac\n\
+         fi\n\
+         cat >/dev/null 2>&1\n\
+         echo '{{}}'\n\
+         exit 0\n"
+    );
+    let path = dir.join("kubectl");
+    std::fs::write(&path, script).unwrap();
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&path, perms).unwrap();
+    path
+}
+
 static KUBECTL_LOCK: Mutex<()> = Mutex::new(());
 
 /// End-to-end raw-new path with a stub `kubectl`: the API reads the source key
@@ -955,24 +981,11 @@ async fn a_raw_new_job_writes_the_replica_key_and_loads_it_before_mounting() {
         "data": { "key": key_b64 }
     });
 
+    let source_secret =
+        naslos_api::dataset_encryption::secret_name_for_dataset("tank/src").unwrap();
     let dir = std::env::temp_dir().join(format!("naslos-kubectl-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let stub = dir.join("kubectl");
-    let script = "#!/bin/sh\n\
-                  if [ \"$1\" = get ]; then\n\
-                    cat <<'JSON'\n\
-                  __SECRET__\n\
-                  JSON\n\
-                    exit 0\n\
-                  fi\n\
-                  cat >/dev/null 2>&1\n\
-                  echo '{}'\n\
-                  exit 0\n"
-        .replace("__SECRET__", &secret.to_string());
-    std::fs::write(&stub, script).unwrap();
-    let mut perms = std::fs::metadata(&stub).unwrap().permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    std::fs::set_permissions(&stub, perms).unwrap();
+    let stub = kubectl_stub(&dir, &[(&source_secret, secret)]);
 
     let previous = std::env::var_os("KUBECTL_BIN");
     std::env::set_var("KUBECTL_BIN", &stub);
@@ -1010,4 +1023,74 @@ async fn a_raw_new_job_writes_the_replica_key_and_loads_it_before_mounting() {
     assert_eq!(receives.len(), 1, "{receives:?}");
     assert_eq!(receives[0]["raw"], json!("true"), "{receives:?}");
     assert_eq!(receives[0]["unlock"], json!(key_hex), "{receives:?}");
+}
+
+/// A leftover replica-key Secret is refused, never overwritten: it could belong
+/// to a dataset another actor created at the same name.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_raw_new_destination_with_an_existing_key_secret_is_refused() {
+    let _guard = KUBECTL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let key = [3u8; 32];
+    let key_b64 = naslos_api::dataset_encryption::RawKey::from_slice(&key)
+        .unwrap()
+        .to_base64();
+    let source_secret =
+        naslos_api::dataset_encryption::secret_name_for_dataset("tank/src").unwrap();
+    let replica_secret =
+        naslos_api::dataset_encryption::secret_name_for_dataset("backup/replica").unwrap();
+    let source_value = json!({
+        "metadata": { "annotations": { "naslos.local/dataset": "tank/src" } },
+        "data": { "key": key_b64 }
+    });
+    let replica_value = json!({
+        "metadata": { "annotations": { "naslos.local/dataset": "backup/replica" } },
+        "data": { "key": key_b64 }
+    });
+
+    let dir = std::env::temp_dir().join(format!("naslos-kubectl-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let stub = kubectl_stub(
+        &dir,
+        &[
+            (&source_secret, source_value),
+            (&replica_secret, replica_value),
+        ],
+    );
+    let previous = std::env::var_os("KUBECTL_BIN");
+    std::env::set_var("KUBECTL_BIN", &stub);
+
+    let mock = MockAgent::default();
+    mock.datasets.lock().unwrap().extend([
+        encrypted("tank/src", "tank/src"),
+        json!({ "name": "backup" }),
+    ]);
+    let base = spawn_mock(mock.clone()).await;
+    let kube = Arc::new(naslos_api::kube::Client::new("naslos"));
+    let state = state_with_agent_and_kube(&base, Some(kube));
+
+    let (status, body) = call(
+        state,
+        "POST",
+        "/api/replication/send",
+        Some(json!({ "source": "tank/src", "destination": "backup/replica" })),
+    )
+    .await;
+
+    match previous {
+        Some(value) => std::env::set_var("KUBECTL_BIN", value),
+        None => std::env::remove_var("KUBECTL_BIN"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("already exists"),
+        "{body}"
+    );
+    assert!(mock.sends.lock().unwrap().is_empty(), "no send may start");
+    assert!(
+        mock.receives.lock().unwrap().is_empty(),
+        "no receive may start"
+    );
 }

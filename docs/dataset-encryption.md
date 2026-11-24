@@ -178,10 +178,14 @@ deleting the keys on uninstall would destroy the data.
   - `zfs receive -F` is refused for encrypted datasets, so a full stream into an
     existing replica is refused (incrementals are fine); the same applies to a
     stale child replica in a recursive repair;
-  - the replica keeps the source key, so the job writes the source key Secret
-    under the destination and the agent loads it before finalizing the mount;
+  - the replica keeps the source key, so the job claims the destination, then
+    writes the source key Secret under the destination and the agent loads it
+    before finalizing the mount; an existing destination Secret is refused
+    rather than overwritten (it may belong to another dataset at that name);
   - a destination whose encryption state or key differs is refused (no mixed
-    chains), and a recursive raw send must have a single encryption root.
+    chains), a recursive raw send must have a single encryption root, and a
+    recursive send of a plain tree that contains an encrypted descendant is
+    refused instead of streaming that child decrypted.
 - **Buddy:** see the next section. The recommendation is that Buddy sends raw
   ciphertext for an encrypted dataset (`zfs send -w`) so the API never handles
   plaintext, then keeps its own AES-256-GCM envelope. That is a change to the

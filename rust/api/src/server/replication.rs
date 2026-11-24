@@ -42,6 +42,20 @@ fn is_encrypted(dataset: &Dataset) -> bool {
     !dataset.encryption.is_empty() && dataset.encryption != "off" && dataset.encryption != "-"
 }
 
+/// A plain dataset whose subtree contains an encrypted dataset: a recursive send
+/// without `-w` would decrypt that child, so the pair is refused.
+fn plain_subtree_with_encryption<'a>(datasets: &'a [Dataset], root: &str) -> Option<&'a str> {
+    let root_dataset = datasets.iter().find(|d| d.name == root)?;
+    if is_encrypted(root_dataset) {
+        return None;
+    }
+    let prefix = format!("{root}/");
+    datasets
+        .iter()
+        .find(|d| d.name.starts_with(&prefix) && is_encrypted(d))
+        .map(|d| d.name.as_str())
+}
+
 fn encryption_root_of(dataset: &Dataset) -> String {
     if dataset.encryption_root.is_empty() {
         dataset.name.clone()
@@ -99,7 +113,18 @@ pub fn plan_encryption(
         .find(|d| d.name == source)
         .ok_or_else(|| format!("source dataset {source:?} does not exist"))?;
     let dst = datasets.iter().find(|d| d.name == destination);
-    if !is_encrypted(src) {
+    let prefix = format!("{source}/");
+    let src_encrypted = is_encrypted(src);
+    if recursive && !src_encrypted {
+        // A recursive plain send of a tree containing an encrypted dataset
+        // decrypts that child; refuse rather than stream plaintext.
+        if let Some(child) = plain_subtree_with_encryption(datasets, source) {
+            return Err(format!(
+                "recursive replication of {source:?} would send the encrypted dataset {child:?} as plaintext; replicate that dataset separately"
+            ));
+        }
+    }
+    if !src_encrypted {
         if let Some(dst) = dst {
             if is_encrypted(dst) {
                 return Err(format!(
@@ -112,7 +137,6 @@ pub fn plan_encryption(
 
     let source_root = encryption_root_of(src);
     if recursive {
-        let prefix = format!("{source}/");
         let foreign_root = datasets
             .iter()
             .filter(|d| d.name == source || d.name.starts_with(&prefix))
@@ -845,15 +869,46 @@ pub async fn send_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
         ));
     }
 
-    if let Some(conflict) = state.replication_jobs.conflicting(&destination) {
-        return json(
-            StatusCode::CONFLICT,
-            serde_json::json!({ "error": format!("a replication job is already writing this destination (job {}, started {})", conflict.id, conflict.started_at.to_rfc3339()) }),
-        );
+    // Claim the destination before any key material is written: two requests
+    // for one destination cannot both reach the Secret write, and a rejected
+    // second request has written nothing.
+    let (id, job) = match reserve_job(
+        &state,
+        source.clone(),
+        destination.clone(),
+        snapshot.clone(),
+        req.recursive,
+        req.prune_keep,
+        prepared.raw,
+    ) {
+        Ok(reserved) => reserved,
+        Err(conflict) => {
+            return json(
+                StatusCode::CONFLICT,
+                serde_json::json!({ "error": format!("a replication job is already writing this destination (job {}, started {})", conflict.id, conflict.started_at.to_rfc3339()) }),
+            )
+        }
+    };
+    if prepared.created_destination {
+        let key = match prepared.unlock_key.as_ref() {
+            Some(key) => key,
+            None => {
+                finish_failed(&job, "the replica key is missing".to_string());
+                return json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({ "error": "the replica key is missing" }),
+                );
+            }
+        };
+        if let Err(resp) = write_replica_secret(&state, &destination, key).await {
+            finish_failed(&job, "could not store the replica key".to_string());
+            return resp;
+        }
     }
 
-    match enqueue_job(
+    spawn_job(
         &state,
+        job,
         agent,
         source,
         destination,
@@ -861,16 +916,11 @@ pub async fn send_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
         req.recursive,
         req.prune_keep,
         prepared,
-    ) {
-        Ok(id) => json(
-            StatusCode::ACCEPTED,
-            serde_json::json!({ "jobId": id, "status": "started" }),
-        ),
-        Err(conflict) => json(
-            StatusCode::CONFLICT,
-            serde_json::json!({ "error": format!("a replication job is already writing this destination (job {}, started {})", conflict.id, conflict.started_at.to_rfc3339()) }),
-        ),
-    }
+    );
+    json(
+        StatusCode::ACCEPTED,
+        serde_json::json!({ "jobId": id, "status": "started" }),
+    )
 }
 
 /// The validated encryption decision for one request, including the raw key
@@ -883,10 +933,11 @@ struct PreparedEncryption {
     unlock_key: Option<RawKey>,
 }
 
-/// Resolve [`EncryptionPlan`] and, for a raw pair, the key custody:
+/// Resolve [`EncryptionPlan`] and, for a raw pair, the key the receive needs:
 ///
-/// - a first raw replica gets the source key written as its own Secret (the
-///   raw-received dataset keeps the source key), so unlock-after-boot works;
+/// - a first raw replica will get the source key written as its own Secret
+///   (see [`write_replica_secret`], called after the destination slot is
+///   claimed), so unlock-after-boot works;
 /// - an existing replica must hold exactly the source key, or the chain is
 ///   mixed and refused.
 #[allow(clippy::result_large_err)]
@@ -912,30 +963,7 @@ async fn prepare_encryption(
     };
 
     let source_key = super::zfs::read_dataset_key(state, &root).await?;
-    if plan.creates_destination() {
-        let Some(kube) = state.kube.as_ref() else {
-            return Err(json(
-                StatusCode::SERVICE_UNAVAILABLE,
-                serde_json::json!({ "error": "encrypted replication needs the Kubernetes client to store the replica key; none is configured" }),
-            ));
-        };
-        let namespace = dataset_encryption::keys_namespace();
-        let object =
-            match dataset_encryption::key_secret_object(destination, &source_key, &namespace) {
-                Ok(object) => object,
-                Err(e) => return Err(bad_request(&e)),
-            };
-        // The destination does not exist (the plan guarantees a raw-new pair),
-        // so an existing Secret for it is a leftover from a failed first run.
-        // Replacing it with the same source key is safe and avoids stranding
-        // the pair on a stale key.
-        if let Err(e) = kube.apply(&object).await {
-            return Err(json(
-                StatusCode::BAD_GATEWAY,
-                serde_json::json!({ "error": format!("writing the destination key Secret: {e}") }),
-            ));
-        }
-    } else {
+    if !plan.creates_destination() {
         let replica_key = super::zfs::read_dataset_key(state, destination).await?;
         if replica_key.as_bytes() != source_key.as_bytes() {
             return Err(json(
@@ -954,6 +982,61 @@ async fn prepare_encryption(
         destination_exists,
         unlock_key: Some(source_key),
     })
+}
+
+/// Write the replica key Secret for a first raw receive.
+///
+/// Called only after the destination slot is claimed, so two replication
+/// requests cannot race here. A Secret that already exists is refused rather
+/// than overwritten: it may belong to a dataset another actor created at this
+/// name, and replacing it would destroy that dataset's only key copy.
+#[allow(clippy::result_large_err)]
+async fn write_replica_secret(
+    state: &AppState,
+    destination: &str,
+    key: &RawKey,
+) -> Result<(), Response> {
+    let Some(kube) = state.kube.as_ref() else {
+        return Err(json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": "encrypted replication needs the Kubernetes client to store the replica key; none is configured" }),
+        ));
+    };
+    let namespace = dataset_encryption::keys_namespace();
+    let secret_name = match dataset_encryption::secret_name_for_dataset(destination) {
+        Ok(name) => name,
+        Err(e) => return Err(bad_request(&e)),
+    };
+    match kube.get_json("secret", &secret_name, &namespace).await {
+        Ok(None) => {}
+        Ok(Some(_)) => {
+            return Err(json(
+                StatusCode::CONFLICT,
+                serde_json::json!({
+                    "error": format!(
+                        "a key Secret for the destination {destination:?} already exists; if it is a leftover from a failed first run, remove it before retrying"
+                    )
+                }),
+            ))
+        }
+        Err(e) => {
+            return Err(json(
+                StatusCode::BAD_GATEWAY,
+                serde_json::json!({ "error": format!("checking the destination key Secret: {e}") }),
+            ))
+        }
+    }
+    let object = match dataset_encryption::key_secret_object(destination, key, &namespace) {
+        Ok(object) => object,
+        Err(e) => return Err(bad_request(&e)),
+    };
+    if let Err(e) = kube.apply(&object).await {
+        return Err(json(
+            StatusCode::BAD_GATEWAY,
+            serde_json::json!({ "error": format!("writing the destination key Secret: {e}") }),
+        ));
+    }
+    Ok(())
 }
 
 /// Remove the destination key Secret after a failed first raw receive, but only
@@ -1192,10 +1275,23 @@ async fn run_job(
             let relative = dataset.strip_prefix(&source).unwrap_or_default();
             let replica = format!("{destination}{relative}");
             let exists = dataset_names.iter().any(|name| name == &replica);
+            // A child's own encryption decides the stream: an encrypted child in
+            // a raw tree needs `-w` and a key, an unencrypted child does not.
+            let child_encrypted = datasets
+                .iter()
+                .find(|d| &d.name == dataset)
+                .map(is_encrypted)
+                .unwrap_or(false);
+            let child_raw = raw && child_encrypted;
+            if let Some(encrypted_child) = plain_subtree_with_encryption(&datasets, dataset) {
+                fail!(format!(
+                    "recursive replication of {dataset:?} would send the encrypted dataset {encrypted_child:?} as plaintext; replicate that dataset separately"
+                ));
+            }
             if exists {
                 // A raw stream cannot replace an existing child either: the
                 // replacement path is `-F`, which ZFS refuses for encryption.
-                if raw {
+                if child_raw {
                     fail!(format!(
                         "encrypted replication cannot replace the existing child replica {replica} with a full stream; destroy it first"
                     ));
@@ -1213,7 +1309,7 @@ async fn run_job(
                 dataset: dataset.clone(),
                 to: target.clone(),
                 from: String::new(),
-                raw,
+                raw: child_raw,
                 recursive: true,
             };
             let expected = agent.estimate_send(&opts).await.unwrap_or_else(|e| {
@@ -1226,15 +1322,8 @@ async fn run_job(
                 p.estimated_bytes = result.estimated_bytes;
                 p.progress.estimated_bytes = result.estimated_bytes;
             }
-            let child_force = exists && !raw;
-            // A raw recursive tree may contain an unencrypted child; its replica
-            // is unencrypted too, so it must be received without a key.
-            let child_encrypted = datasets
-                .iter()
-                .find(|d| &d.name == dataset)
-                .map(is_encrypted)
-                .unwrap_or(false);
-            let child_key = if raw && child_encrypted {
+            let child_force = exists && !child_raw;
+            let child_key = if child_raw {
                 unlock_key.as_ref().map(|k| k.as_bytes())
             } else {
                 None
@@ -1245,7 +1334,7 @@ async fn run_job(
                 opts,
                 &replica,
                 child_force,
-                raw,
+                child_raw,
                 child_key,
                 &progress,
             )
@@ -1286,27 +1375,27 @@ async fn run_job(
     finish_succeeded(&job, result);
 }
 
-/// Create and start a replication job.
+/// Claim a destination: build the job and register it before any key material
+/// or stream work happens.
 #[allow(clippy::result_large_err, clippy::too_many_arguments)]
-fn enqueue_job(
+fn reserve_job(
     state: &Arc<AppState>,
-    agent: Arc<crate::agent::Client>,
     source: String,
     destination: String,
     snapshot: String,
     recursive: bool,
     prune_keep: usize,
-    prepared: PreparedEncryption,
-) -> Result<String, JobPublic> {
+    raw: bool,
+) -> Result<(String, Arc<ReplicationJob>), JobPublic> {
     let id = random_job_id();
     let job = Arc::new(ReplicationJob {
         public: Mutex::new(JobPublic {
             id: id.clone(),
-            source: source.clone(),
-            destination: destination.clone(),
-            snapshot: snapshot.clone(),
+            source,
+            destination,
+            snapshot,
             recursive,
-            raw: prepared.raw,
+            raw,
             prune_keep,
             state: JobState::Running,
             started_at: Utc::now(),
@@ -1320,8 +1409,23 @@ fn enqueue_job(
         handle: Mutex::new(None),
     });
     state.replication_jobs.add_if_free(&id, job.clone())?;
+    Ok((id, job))
+}
+
+/// Start a reserved job once its preflight (the replica key Secret) succeeded.
+#[allow(clippy::too_many_arguments)]
+fn spawn_job(
+    state: &Arc<AppState>,
+    job: Arc<ReplicationJob>,
+    agent: Arc<crate::agent::Client>,
+    source: String,
+    destination: String,
+    snapshot: String,
+    recursive: bool,
+    prune_keep: usize,
+    prepared: PreparedEncryption,
+) {
     let job_for_task = job.clone();
-    let snapshot_for_task = snapshot.clone();
     let state_for_task = state.clone();
     let handle = tokio::spawn(async move {
         run_job(
@@ -1330,7 +1434,7 @@ fn enqueue_job(
             agent,
             source,
             destination,
-            snapshot_for_task,
+            snapshot,
             recursive,
             prune_keep,
             prepared,
@@ -1338,7 +1442,6 @@ fn enqueue_job(
         .await;
     });
     *job.handle.lock().unwrap() = Some(handle);
-    Ok(id)
 }
 
 /// `GET /api/replication/jobs`
@@ -1737,6 +1840,28 @@ mod tests {
             plan_encryption(&two_roots, "tank/src", "backup/replica", false).unwrap(),
             EncryptionPlan::RawNew { .. }
         ));
+    }
+
+    #[test]
+    fn encryption_plan_refuses_a_recursive_plain_send_over_an_encrypted_child() {
+        let datasets = vec![
+            plain("tank/src"),
+            plain("tank/src/child"),
+            ds(
+                "tank/src/child/secret",
+                "aes-256-gcm",
+                "tank/src/child/secret",
+            ),
+            plain("backup/dst"),
+        ];
+        // A recursive non-raw send would decrypt the grandchild.
+        let err = plan_encryption(&datasets, "tank/src", "backup/dst", true).unwrap_err();
+        assert!(err.contains("plaintext"), "{err}");
+        // A shallow send never touches it.
+        assert_eq!(
+            plan_encryption(&datasets, "tank/src", "backup/dst", false).unwrap(),
+            EncryptionPlan::Plain
+        );
     }
 
     #[test]
