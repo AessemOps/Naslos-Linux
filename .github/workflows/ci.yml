@@ -27,7 +27,7 @@ jobs:
   # Single source of truth for the 8 image build contexts. release.yml reads the
   # same file, so the CI and release matrices cannot drift.
   image-matrix:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     outputs:
       images: ${{ steps.read.outputs.images }}
     steps:
@@ -36,7 +36,7 @@ jobs:
         run: echo "images=$(jq -c . .github/image-matrix.json)" >> "$GITHUB_OUTPUT"
 
   supply-chain:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -84,7 +84,7 @@ jobs:
             --skip-dirs ui/node_modules --skip-dirs rust/target --skip-dirs bootstrap/vm --skip-dirs .git . --ignorefile .trivyignore
 
   audit:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -120,7 +120,7 @@ jobs:
         run: bash scripts/audit.sh
 
   gitleaks:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -157,7 +157,7 @@ jobs:
 
   images-build:
     needs: image-matrix
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -212,7 +212,7 @@ jobs:
           path: sbom-${{ matrix.name }}.cdx.json
 
   pack:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
