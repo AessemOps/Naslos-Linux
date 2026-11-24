@@ -132,7 +132,12 @@ retrying or using the browser path worked around it. Worth watching.
   `/api/health` is green, `/` redirects to the Authelia portal and `/authelia/`
   answers 200; OpenLDAP/Authelia settled after the rollout. Images resolve by
   the `0.7.6` tag: the repo values carry no digests (the released pack does), so
-  a local `make install-vm` renders `digest: ""`.
+  a local `make install-vm` renders `digest: ""`. The running API image predates
+  the LDAP-reconnect fix (gotcha #22): after the 0.7.6 rollout its cached LDAP
+  handle died and `/api/users` + `/api/groups` returned 500
+  `op send error: channel closed`; `kubectl -n naslos rollout restart
+  deploy/naslos-api` reconnected them, and the code fix ships in the next
+  release.
 - **Latest release:** `v0.7.6` (2026-11-24) and installer `naslos-v0.7.6` are
   published; the pack `naslos-install-pack-0.7.6.tar.gz` is attached and its
   images are digest-pinned. The 0.7.x series completed the 0.7.1
@@ -618,6 +623,21 @@ sh scripts/audit.sh
     rendered `--providers.kubernetescrd.namespaces=naslos,…` arg. If the
     domain root 404s after an upgrade, check that argument before anything
     else.
+
+22. **A closed ldap3 channel must count as a dead connection** (found
+    2026-11-24: after the 0.7.6 upgrade the Users and Groups pages returned 500
+    `listing people: op send error: channel closed`). The upgrade restarted
+    OpenLDAP after the API had connected; slapd closed the TLS connection
+    (`socket receive error: peer closed connection`), the ldap3 connection task
+    exited, and the API kept reusing the dead `Ldap` handle. `identity::run`
+    reconnects only when `is_connection_error` matches, and its fragment list
+    had `response channel closed` but not the actual `op send error: channel
+    closed` rendering, so every later users/groups request failed until a pod
+    restart. The classifier now matches `channel closed` (test asserts the exact
+    ldap3 string); the running 0.7.6 API image predates the fix, so a
+    `kubectl -n naslos rollout restart deploy/naslos-api` is the live remedy
+    until the next release. Any future LDAP-serving component that caches a
+    connection needs the same reconnect-on-error behavior.
 
 ## History
 
