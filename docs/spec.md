@@ -1983,7 +1983,13 @@ A node installed from an installer pack can be upgraded from the web UI. A
 - **FR-UPD-08** — The status/lock MUST live in the
   `naslos-system-operation` ConfigMap (`phase`, `steps`, timestamps, result)
   and MUST survive API restarts and node reboots. The API's RBAC MUST be
-  limited to the operation Jobs, their pods/logs and that ConfigMap.
+  limited to the operation Jobs, their pods/logs and that ConfigMap. A Job that
+  reached a terminal condition (`Complete`, `SuccessCriteriaMet` with no active
+  pod, `Failed`, `FailureTarget`) or whose completed pod is only in
+  `uncountedTerminatedPods` MUST NOT keep the lock, even when Kubernetes did
+  not record `status.succeeded`/`failed`. *(tests:
+  `system::tests::a_finished_job_with_an_uncounted_pod_is_terminal`,
+  `system::tests::job_phase_reads_counts_and_conditions`)*
 - **FR-UPD-09** — The API MUST expose admin-only `GET /api/system/version`,
   `GET|POST /api/system/updates[/check]`,
   `POST /api/system/operations` and `GET /api/system/operations/current`.
