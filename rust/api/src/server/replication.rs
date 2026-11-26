@@ -27,7 +27,8 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 
-use crate::agent::{SendStreamOptions, SnapshotInfo};
+use crate::agent::{Dataset, SendStreamOptions, SnapshotInfo};
+use crate::dataset_encryption::{self, RawKey};
 use crate::json;
 use crate::state::AppState;
 
@@ -36,6 +37,148 @@ pub const SNAPSHOT_PREFIX: &str = "naslos-rep-";
 
 /// Upper bound on retained destination snapshots per pair.
 pub const MAX_PRUNE_KEEP: usize = 1000;
+
+fn is_encrypted(dataset: &Dataset) -> bool {
+    !dataset.encryption.is_empty() && dataset.encryption != "off" && dataset.encryption != "-"
+}
+
+/// A plain dataset whose subtree contains an encrypted dataset: a recursive send
+/// without `-w` would decrypt that child, so the pair is refused.
+fn plain_subtree_with_encryption<'a>(datasets: &'a [Dataset], root: &str) -> Option<&'a str> {
+    let root_dataset = datasets.iter().find(|d| d.name == root)?;
+    if is_encrypted(root_dataset) {
+        return None;
+    }
+    let prefix = format!("{root}/");
+    datasets
+        .iter()
+        .find(|d| d.name.starts_with(&prefix) && is_encrypted(d))
+        .map(|d| d.name.as_str())
+}
+
+fn encryption_root_of(dataset: &Dataset) -> String {
+    if dataset.encryption_root.is_empty() {
+        dataset.name.clone()
+    } else {
+        dataset.encryption_root.clone()
+    }
+}
+
+/// How encryption constrains a replication pair (FR-ENC-07).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EncryptionPlan {
+    /// Neither side is encrypted: the existing property-less stream.
+    Plain,
+    /// An encrypted source goes raw (`zfs send -w`) into a destination the job
+    /// creates. A raw full stream cannot overwrite an existing dataset, and
+    /// `zfs receive -F` is refused for encrypted datasets.
+    RawNew { source_root: String },
+    /// An existing raw replica receives an incremental with the same key.
+    RawIncremental { source_root: String },
+}
+
+impl EncryptionPlan {
+    pub fn is_raw(&self) -> bool {
+        !matches!(self, EncryptionPlan::Plain)
+    }
+
+    pub fn creates_destination(&self) -> bool {
+        matches!(self, EncryptionPlan::RawNew { .. })
+    }
+
+    pub fn source_root(&self) -> Option<&str> {
+        match self {
+            EncryptionPlan::Plain => None,
+            EncryptionPlan::RawNew { source_root }
+            | EncryptionPlan::RawIncremental { source_root } => Some(source_root),
+        }
+    }
+}
+
+/// Decide how encryption affects a pair from the agent's dataset list.
+///
+/// The rules follow OpenZFS: a raw full receive always creates the destination
+/// (an existing destination needs `-F`, which ZFS refuses for encrypted
+/// datasets), a raw stream cannot land on an unencrypted dataset, and a raw
+/// chain keeps the source key, so a replica whose key differs must be refused
+/// rather than mixed.
+pub fn plan_encryption(
+    datasets: &[Dataset],
+    source: &str,
+    destination: &str,
+    recursive: bool,
+) -> Result<EncryptionPlan, String> {
+    let src = datasets
+        .iter()
+        .find(|d| d.name == source)
+        .ok_or_else(|| format!("source dataset {source:?} does not exist"))?;
+    let dst = datasets.iter().find(|d| d.name == destination);
+    let prefix = format!("{source}/");
+    let src_encrypted = is_encrypted(src);
+    if recursive && !src_encrypted {
+        // A recursive plain send of a tree containing an encrypted dataset
+        // decrypts that child; refuse rather than stream plaintext.
+        if let Some(child) = plain_subtree_with_encryption(datasets, source) {
+            return Err(format!(
+                "recursive replication of {source:?} would send the encrypted dataset {child:?} as plaintext; replicate that dataset separately"
+            ));
+        }
+    }
+    if !src_encrypted {
+        if let Some(dst) = dst {
+            if is_encrypted(dst) {
+                return Err(format!(
+                    "destination {destination:?} is encrypted but the source is not; plain and raw replication are never mixed"
+                ));
+            }
+        }
+        return Ok(EncryptionPlan::Plain);
+    }
+
+    let source_root = encryption_root_of(src);
+    if recursive {
+        let foreign_root = datasets
+            .iter()
+            .filter(|d| d.name == source || d.name.starts_with(&prefix))
+            .filter(|d| is_encrypted(d))
+            .map(encryption_root_of)
+            .find(|root| root != &source_root);
+        if let Some(root) = foreign_root {
+            return Err(format!(
+                "recursive raw replication requires one encryption root; the source tree also uses {root:?}. Replicate that dataset separately"
+            ));
+        }
+    }
+
+    match dst {
+        Some(dst) => {
+            if !is_encrypted(dst) {
+                return Err(format!(
+                    "destination {destination:?} exists and is not encrypted; a raw stream cannot be received on top of an unencrypted dataset. Destroy it or choose a new destination"
+                ));
+            }
+            if encryption_root_of(dst) != dst.name {
+                return Err(format!(
+                    "destination {destination:?} inherits its key from {:?}; raw replication needs a dedicated encrypted dataset",
+                    encryption_root_of(dst)
+                ));
+            }
+            Ok(EncryptionPlan::RawIncremental { source_root })
+        }
+        None => {
+            let parent = destination
+                .rsplit_once('/')
+                .map(|(parent, _)| parent)
+                .ok_or_else(|| format!("destination {destination:?} must be <pool>/<name>"))?;
+            if !datasets.iter().any(|d| d.name == parent) {
+                return Err(format!(
+                    "destination parent {parent:?} does not exist; encrypted replication creates the destination, so its parent dataset must already exist"
+                ));
+            }
+            Ok(EncryptionPlan::RawNew { source_root })
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -67,6 +210,7 @@ struct ReplicationResult {
     to_guid: String,
     incremental: bool,
     recursive: bool,
+    raw: bool,
     bytes: i64,
     #[serde(rename = "estimatedBytes")]
     estimated_bytes: i64,
@@ -90,6 +234,8 @@ pub struct JobPublic {
     #[serde(skip_serializing_if = "String::is_empty")]
     snapshot: String,
     recursive: bool,
+    /// The stream is raw (`zfs send -w`) for an encrypted source.
+    raw: bool,
     #[serde(rename = "pruneKeep", skip_serializing_if = "is_zero_usize")]
     prune_keep: usize,
     state: JobState,
@@ -136,6 +282,9 @@ fn is_zero_i64(n: &i64) -> bool {
 pub struct ReplicationJob {
     public: Mutex<JobPublic>,
     handle: Mutex<Option<JoinHandle<()>>>,
+    /// The job created (or is creating) the destination with a raw receive, so
+    /// its replica key Secret must be cleaned up if the dataset never lands.
+    created_destination: bool,
 }
 
 impl ReplicationJob {
@@ -237,6 +386,7 @@ impl ReplicationJobManager {
             destination: destination.to_string(),
             snapshot: String::new(),
             recursive: false,
+            raw: false,
             prune_keep: 0,
             state,
             started_at: now,
@@ -250,6 +400,7 @@ impl ReplicationJobManager {
         let job = Arc::new(ReplicationJob {
             public: Mutex::new(public),
             handle: Mutex::new(None),
+            created_destination: false,
         });
         let mut inner = self.inner.lock().unwrap();
         Self::insert_locked(&mut inner, "test-job", job);
@@ -583,12 +734,15 @@ async fn destination_can_be_replaced(
 /// Pipe one agent send stream into one receive call and add its bytes to the
 /// job progress. Returns the bytes streamed plus the agent's receive report
 /// (mountpoint and warnings).
+#[allow(clippy::too_many_arguments)]
 async fn stream_one(
     agent: &crate::agent::Client,
     job: &Arc<ReplicationJob>,
     opts: SendStreamOptions,
     destination: &str,
     force: bool,
+    raw: bool,
+    unlock_key: Option<&[u8]>,
     progress: &Arc<AtomicI64>,
 ) -> Result<(i64, crate::agent::ReceiveOutcome), String> {
     let before = progress.load(Ordering::Relaxed);
@@ -611,9 +765,10 @@ async fn stream_one(
     let reader = tokio_util::io::StreamReader::new(stream);
     // `receive_stream_body` takes the API dataset lock for the destination;
     // the agent holds the same lock until the last byte is written. A mount
-    // failure is an error, not a silent warning (P-6).
+    // failure is an error, not a silent warning (P-6). For a raw stream the
+    // agent loads the key before finalizing so the mount can succeed.
     let outcome = agent
-        .receive_stream_body_outcome(destination, force, reader)
+        .receive_stream_body_outcome_raw(destination, force, raw, unlock_key, reader)
         .await
         .map_err(|e| format!("zfs receive into {destination} failed: {e}"))?;
     Ok((progress.load(Ordering::Relaxed) - before, outcome))
@@ -694,11 +849,8 @@ pub async fn send_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
     if !datasets.iter().any(|d| d.name == source) {
         return bad_request(&format!("source dataset {source:?} does not exist"));
     }
-    if !datasets.iter().any(|d| d.name == destination) {
-        return bad_request(&format!(
-            "destination dataset {destination:?} does not exist; create it before replicating into it"
-        ));
-    }
+    // Validate the supplied snapshot before the raw-key preflight writes the
+    // destination Secret, so a bad request cannot leave key material behind.
     if !snapshot.is_empty() {
         let snaps = match agent.snapshots_with_guid_shallow(&source).await {
             Ok(s) => s,
@@ -710,31 +862,313 @@ pub async fn send_post(State(state): State<Arc<AppState>>, body: Body) -> Respon
             ));
         }
     }
-
-    if let Some(conflict) = state.replication_jobs.conflicting(&destination) {
-        return json(
-            StatusCode::CONFLICT,
-            serde_json::json!({ "error": format!("a replication job is already writing this destination (job {}, started {})", conflict.id, conflict.started_at.to_rfc3339()) }),
-        );
+    let prepared = match prepare_encryption(
+        &state,
+        &agent,
+        &datasets,
+        &source,
+        &destination,
+        req.recursive,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(resp) => return resp,
+    };
+    if !prepared.raw && !prepared.destination_exists {
+        return bad_request(&format!(
+            "destination dataset {destination:?} does not exist; create it before replicating into it"
+        ));
     }
 
-    match enqueue_job(
+    // Claim the destination before any key material is written: two requests
+    // for one destination cannot both reach the Secret write, and a rejected
+    // second request has written nothing.
+    let (id, job) = match reserve_job(
         &state,
+        source.clone(),
+        destination.clone(),
+        snapshot.clone(),
+        req.recursive,
+        req.prune_keep,
+        prepared.raw,
+        prepared.created_destination,
+    ) {
+        Ok(reserved) => reserved,
+        Err(conflict) => {
+            return json(
+                StatusCode::CONFLICT,
+                serde_json::json!({ "error": format!("a replication job is already writing this destination (job {}, started {})", conflict.id, conflict.started_at.to_rfc3339()) }),
+            )
+        }
+    };
+    // From here to the spawn there is no await: the reserved job is always
+    // backed by a task, so a cancel can abort it and a dropped request cannot
+    // leave a Running job that blocks the destination forever.
+    spawn_job(
+        &state,
+        job,
         agent,
         source,
         destination,
         snapshot,
         req.recursive,
         req.prune_keep,
-    ) {
-        Ok(id) => json(
-            StatusCode::ACCEPTED,
-            serde_json::json!({ "jobId": id, "status": "started" }),
-        ),
-        Err(conflict) => json(
-            StatusCode::CONFLICT,
-            serde_json::json!({ "error": format!("a replication job is already writing this destination (job {}, started {})", conflict.id, conflict.started_at.to_rfc3339()) }),
-        ),
+        prepared,
+    );
+    json(
+        StatusCode::ACCEPTED,
+        serde_json::json!({ "jobId": id, "status": "started" }),
+    )
+}
+
+/// The validated encryption decision for one request, including the raw key
+/// the agent must load after a raw receive and whether the replica Secret is
+/// already in place.
+struct PreparedEncryption {
+    raw: bool,
+    created_destination: bool,
+    destination_exists: bool,
+    unlock_key: Option<RawKey>,
+    replica_secret_ready: bool,
+}
+
+/// Resolve [`EncryptionPlan`] and, for a raw pair, the key the receive needs:
+///
+/// - a first raw replica needs the source key written as its own Secret (in the
+///   job, after the destination slot is claimed); a matching leftover Secret is
+///   reused, a different one is refused;
+/// - an existing replica must hold exactly the source key, or the chain is
+///   mixed and refused.
+///
+/// The agent's dataset list covers filesystems only, so a recursive job also
+/// checks the pool's zvols: an encrypted volume under a plain source (or under
+/// a different encryption root) would otherwise be streamed decrypted or fail
+/// late.
+#[allow(clippy::result_large_err)]
+async fn prepare_encryption(
+    state: &AppState,
+    agent: &crate::agent::Client,
+    datasets: &[Dataset],
+    source: &str,
+    destination: &str,
+    recursive: bool,
+) -> Result<PreparedEncryption, Response> {
+    let plan = match plan_encryption(datasets, source, destination, recursive) {
+        Ok(plan) => plan,
+        Err(e) => return Err(bad_request(&e)),
+    };
+    if recursive {
+        let volumes = match encrypted_volumes_under(agent, source).await {
+            Ok(volumes) => volumes,
+            Err(e) => {
+                return Err(json(
+                    StatusCode::BAD_GATEWAY,
+                    serde_json::json!({ "error": e }),
+                ))
+            }
+        };
+        match plan.source_root() {
+            None => {
+                if let Some((name, _)) = volumes.first() {
+                    return Err(bad_request(&format!(
+                        "recursive replication of {source:?} would send the encrypted volume {name:?} as plaintext; replicate that volume separately"
+                    )));
+                }
+            }
+            Some(root) => {
+                if let Some((name, volume_root)) =
+                    volumes.iter().find(|(_, volume_root)| volume_root != root)
+                {
+                    return Err(bad_request(&format!(
+                        "recursive raw replication requires one encryption root; the volume {name:?} uses {volume_root:?}. Replicate it separately"
+                    )));
+                }
+            }
+        }
+    }
+    let destination_exists = datasets.iter().any(|d| d.name == destination);
+    let Some(root) = plan.source_root().map(str::to_string) else {
+        return Ok(PreparedEncryption {
+            raw: false,
+            created_destination: false,
+            destination_exists,
+            unlock_key: None,
+            replica_secret_ready: false,
+        });
+    };
+
+    let source_key = super::zfs::read_dataset_key(state, &root).await?;
+    let mut replica_secret_ready = false;
+    if plan.creates_destination() {
+        replica_secret_ready = match check_replica_secret(state, destination, &source_key).await {
+            Ok(ready) => ready,
+            Err(resp) => return Err(resp),
+        };
+    } else {
+        let replica_key = super::zfs::read_dataset_key(state, destination).await?;
+        if replica_key.as_bytes() != source_key.as_bytes() {
+            return Err(json(
+                StatusCode::CONFLICT,
+                serde_json::json!({
+                    "error": format!(
+                        "the replica {destination:?} uses a different key than the source; raw replication keeps the source key and never mixes chains. Destroy the replica or choose a new destination"
+                    )
+                }),
+            ));
+        }
+    }
+    Ok(PreparedEncryption {
+        raw: plan.is_raw(),
+        created_destination: plan.creates_destination(),
+        destination_exists,
+        unlock_key: Some(source_key),
+        replica_secret_ready,
+    })
+}
+
+/// Encrypted volumes under `source`, with their encryption roots. The agent's
+/// dataset list excludes volumes, so a recursive send must ask separately.
+async fn encrypted_volumes_under(
+    agent: &crate::agent::Client,
+    source: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let Some(pool) = source.split('/').next() else {
+        return Ok(Vec::new());
+    };
+    // One bulk listing carries `encryption`/`encryptionroot` per volume, so the
+    // send request does not make a status round trip per zvol.
+    let zvols = agent
+        .list_pool_zvols(pool)
+        .await
+        .map_err(|e| format!("listing volumes under {source:?}: {e}"))?;
+    let prefix = format!("{source}/");
+    let mut encrypted = Vec::new();
+    for zvol in zvols.iter().filter(|z| z.name.starts_with(&prefix)) {
+        // An empty value means this agent's listing predates the encryption
+        // columns (a plain volume reports `off`). Ask the status route, which
+        // every release ships, so an older agent still fails closed.
+        if zvol.encryption.is_empty() {
+            let status = agent
+                .encryption_status(&zvol.name)
+                .await
+                .map_err(|e| format!("checking the encryption state of {:?}: {e}", zvol.name))?;
+            if !status.is_encrypted() {
+                continue;
+            }
+            let root = if status.encryption_root.is_empty() {
+                status.name.clone()
+            } else {
+                status.encryption_root.clone()
+            };
+            encrypted.push((status.name, root));
+            continue;
+        }
+        if zvol.encryption == "off" || zvol.encryption == "-" {
+            continue;
+        }
+        let root = if zvol.encryption_root.is_empty() {
+            zvol.name.clone()
+        } else {
+            zvol.encryption_root.clone()
+        };
+        encrypted.push((zvol.name.clone(), root));
+    }
+    Ok(encrypted)
+}
+
+/// Whether the replica key Secret is already usable for `destination`.
+///
+/// A Secret that parses for this destination and holds the source key is a
+/// leftover from an earlier failed first run: reuse it, so a cancel or restart
+/// cannot deadlock the pair. Anything else is refused, never overwritten: it
+/// may belong to a dataset another actor created at this name.
+#[allow(clippy::result_large_err)]
+async fn check_replica_secret(
+    state: &AppState,
+    destination: &str,
+    source_key: &RawKey,
+) -> Result<bool, Response> {
+    let Some(kube) = state.kube.as_ref() else {
+        return Err(json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": "encrypted replication needs the Kubernetes client to store the replica key; none is configured" }),
+        ));
+    };
+    let namespace = dataset_encryption::keys_namespace();
+    let secret_name = match dataset_encryption::secret_name_for_dataset(destination) {
+        Ok(name) => name,
+        Err(e) => return Err(bad_request(&e)),
+    };
+    match kube.get_json("secret", &secret_name, &namespace).await {
+        Ok(None) => Ok(false),
+        Ok(Some(secret)) => match dataset_encryption::parse_key_secret(&secret, destination) {
+            Ok(existing) if existing.as_bytes() == source_key.as_bytes() => Ok(true),
+            _ => Err(json(
+                StatusCode::CONFLICT,
+                serde_json::json!({
+                    "error": format!(
+                        "a key Secret for the destination {destination:?} already exists with a different key; it may belong to another dataset at that name. Remove it before retrying"
+                    )
+                }),
+            )),
+        },
+        Err(e) => Err(json(
+            StatusCode::BAD_GATEWAY,
+            serde_json::json!({ "error": format!("checking the destination key Secret: {e}") }),
+        )),
+    }
+}
+
+/// Create the replica key Secret for a first raw receive. This is create-only:
+/// an upsert could overwrite a Secret another actor just created at this name.
+/// The job treats an existing Secret as a failed preflight (no rollback, since
+/// the Secret is not ours).
+async fn write_replica_secret(
+    state: &AppState,
+    destination: &str,
+    key: &RawKey,
+) -> Result<(), String> {
+    let Some(kube) = state.kube.as_ref() else {
+        return Err(
+            "encrypted replication needs the Kubernetes client to store the replica key; none is configured"
+                .to_string(),
+        );
+    };
+    let namespace = dataset_encryption::keys_namespace();
+    let object = dataset_encryption::key_secret_object(destination, key, &namespace)?;
+    kube.create(&object)
+        .await
+        .map_err(|e| format!("creating the replica key Secret: {e}"))
+}
+
+/// Remove the destination key Secret after a failed first raw receive, but only
+/// when the dataset never landed: destroying the only key of an existing
+/// replica would make it unrecoverable.
+async fn rollback_created_destination(
+    state: &AppState,
+    agent: &crate::agent::Client,
+    destination: &str,
+) {
+    let exists = match agent.list_datasets().await {
+        Ok(datasets) => datasets.iter().any(|d| d.name == destination),
+        Err(_) => true,
+    };
+    if exists {
+        return;
+    }
+    let Some(kube) = state.kube.as_ref() else {
+        return;
+    };
+    let Ok(name) = dataset_encryption::secret_name_for_dataset(destination) else {
+        return;
+    };
+    let namespace = dataset_encryption::keys_namespace();
+    if let Err(e) = kube.delete("secret", &name, &namespace).await {
+        tracing::warn!(
+            "could not remove the destination key Secret {} after a failed replication: {e}",
+            crate::logsafe::field(&name)
+        );
     }
 }
 
@@ -770,11 +1204,36 @@ async fn run_job(
     requested_snapshot: String,
     recursive: bool,
     prune_keep: usize,
+    prepared: PreparedEncryption,
 ) {
+    let PreparedEncryption {
+        raw,
+        created_destination,
+        destination_exists,
+        unlock_key,
+        replica_secret_ready,
+    } = prepared;
     let started = Instant::now();
+    // A first raw replica needs its key Secret before the stream so a reboot can
+    // unlock it. Create-only: if another writer appeared after the preflight,
+    // fail without deleting its Secret.
+    if created_destination && !replica_secret_ready {
+        let Some(key) = unlock_key.as_ref() else {
+            finish_failed(&job, "the replica key is missing".to_string());
+            return;
+        };
+        if let Err(e) = write_replica_secret(&state, &destination, key).await {
+            finish_failed(&job, e);
+            return;
+        }
+    }
     macro_rules! fail {
         ($msg:expr) => {{
-            finish_failed(&job, $msg);
+            let msg = $msg;
+            if created_destination {
+                rollback_created_destination(&state, &agent, &destination).await;
+            }
+            finish_failed(&job, msg);
             return;
         }};
     }
@@ -814,9 +1273,14 @@ async fn run_job(
     };
     job.public.lock().unwrap().snapshot = target.clone();
 
-    let destination_snaps = match agent.snapshots_with_guid_shallow(&destination).await {
-        Ok(s) => s,
-        Err(e) => fail!(format!("listing destination snapshots: {e}")),
+    let destination_snaps = if destination_exists {
+        match agent.snapshots_with_guid_shallow(&destination).await {
+            Ok(s) => s,
+            Err(e) => fail!(format!("listing destination snapshots: {e}")),
+        }
+    } else {
+        // A raw-new pair has no destination yet; the stream creates it.
+        Vec::new()
     };
     let plan = match plan_send(&source_snaps, &destination_snaps, &target) {
         Ok(p) => p,
@@ -842,6 +1306,7 @@ async fn run_job(
         snapshot: target.clone(),
         to_guid: target_info.guid.clone(),
         recursive,
+        raw,
         ..Default::default()
     };
 
@@ -854,7 +1319,12 @@ async fn run_job(
             }
             _ => (String::new(), String::new(), String::new()),
         };
-        let force = plan == SendPlan::Full;
+        let force = plan == SendPlan::Full && destination_exists && !raw;
+        // A full raw stream cannot replace an existing replica: ZFS refuses
+        // `zfs receive -F` when it would destroy/overwrite an encrypted dataset.
+        if raw && plan == SendPlan::Full && destination_exists {
+            fail!("encrypted replication cannot replace an existing replica with a full stream (zfs receive -F is refused for encrypted datasets); destroy the replica or choose a new destination".to_string());
+        }
         if force {
             if let Err(e) = destination_can_be_replaced(&state, &agent, &destination, &prefix).await
             {
@@ -870,7 +1340,7 @@ async fn run_job(
             dataset: source.clone(),
             to: target.clone(),
             from,
-            raw: false,
+            raw,
             recursive,
         };
         let expected = agent.estimate_send(&opts).await.unwrap_or_else(|e| {
@@ -884,7 +1354,18 @@ async fn run_job(
         }
         result.estimated_bytes = expected;
 
-        match stream_one(&agent, &job, opts, &destination, force, &progress).await {
+        match stream_one(
+            &agent,
+            &job,
+            opts,
+            &destination,
+            force,
+            raw,
+            unlock_key.as_ref().map(|k| k.as_bytes()),
+            &progress,
+        )
+        .await
+        {
             Ok((bytes, received)) => {
                 result.bytes = bytes;
                 if !received.mountpoint.is_empty() {
@@ -911,7 +1392,36 @@ async fn run_job(
             let relative = dataset.strip_prefix(&source).unwrap_or_default();
             let replica = format!("{destination}{relative}");
             let exists = dataset_names.iter().any(|name| name == &replica);
+            // A child's own encryption decides the stream: an encrypted child in
+            // a raw tree needs `-w` and a key, an unencrypted child does not. A
+            // zvol is absent from the dataset list, so ask the agent instead of
+            // assuming it is plain (fail closed).
+            let child_encrypted = match datasets.iter().find(|d| &d.name == dataset) {
+                Some(child) => is_encrypted(child),
+                None => match agent.encryption_status(dataset).await {
+                    Ok(status) => status.is_encrypted(),
+                    Err(e) => fail!(format!("checking the encryption state of {dataset}: {e}")),
+                },
+            };
+            if child_encrypted && !raw {
+                fail!(format!(
+                    "recursive replication of {dataset:?} would send an encrypted dataset as plaintext; replicate that dataset separately"
+                ));
+            }
+            let child_raw = raw && child_encrypted;
+            if let Some(encrypted_child) = plain_subtree_with_encryption(&datasets, dataset) {
+                fail!(format!(
+                    "recursive replication of {dataset:?} would send the encrypted dataset {encrypted_child:?} as plaintext; replicate that dataset separately"
+                ));
+            }
             if exists {
+                // A raw stream cannot replace an existing child either: the
+                // replacement path is `-F`, which ZFS refuses for encryption.
+                if child_raw {
+                    fail!(format!(
+                        "encrypted replication cannot replace the existing child replica {replica} with a full stream; destroy it first"
+                    ));
+                }
                 if let Err(e) =
                     crate::server::zfs::dataset_consumer_conflict(&state, &replica, &datasets)
                 {
@@ -925,7 +1435,7 @@ async fn run_job(
                 dataset: dataset.clone(),
                 to: target.clone(),
                 from: String::new(),
-                raw: false,
+                raw: child_raw,
                 recursive: true,
             };
             let expected = agent.estimate_send(&opts).await.unwrap_or_else(|e| {
@@ -938,11 +1448,27 @@ async fn run_job(
                 p.estimated_bytes = result.estimated_bytes;
                 p.progress.estimated_bytes = result.estimated_bytes;
             }
-            let (sent, received) =
-                match stream_one(&agent, &job, opts, &replica, exists, &progress).await {
-                    Ok(v) => v,
-                    Err(e) => fail!(e),
-                };
+            let child_force = exists && !child_raw;
+            let child_key = if child_raw {
+                unlock_key.as_ref().map(|k| k.as_bytes())
+            } else {
+                None
+            };
+            let (sent, received) = match stream_one(
+                &agent,
+                &job,
+                opts,
+                &replica,
+                child_force,
+                child_raw,
+                child_key,
+                &progress,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => fail!(e),
+            };
             result.bytes += sent;
             result.warnings.extend(received.warnings);
         }
@@ -975,25 +1501,28 @@ async fn run_job(
     finish_succeeded(&job, result);
 }
 
-/// Create and start a replication job.
-#[allow(clippy::result_large_err)]
-fn enqueue_job(
+/// Claim a destination: build the job and register it before any key material
+/// or stream work happens.
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
+fn reserve_job(
     state: &Arc<AppState>,
-    agent: Arc<crate::agent::Client>,
     source: String,
     destination: String,
     snapshot: String,
     recursive: bool,
     prune_keep: usize,
-) -> Result<String, JobPublic> {
+    raw: bool,
+    created_destination: bool,
+) -> Result<(String, Arc<ReplicationJob>), JobPublic> {
     let id = random_job_id();
     let job = Arc::new(ReplicationJob {
         public: Mutex::new(JobPublic {
             id: id.clone(),
-            source: source.clone(),
-            destination: destination.clone(),
-            snapshot: snapshot.clone(),
+            source,
+            destination,
+            snapshot,
             recursive,
+            raw,
             prune_keep,
             state: JobState::Running,
             started_at: Utc::now(),
@@ -1005,10 +1534,26 @@ fn enqueue_job(
             error: String::new(),
         }),
         handle: Mutex::new(None),
+        created_destination,
     });
     state.replication_jobs.add_if_free(&id, job.clone())?;
+    Ok((id, job))
+}
+
+/// Start a reserved job once its preflight (the replica key Secret) succeeded.
+#[allow(clippy::too_many_arguments)]
+fn spawn_job(
+    state: &Arc<AppState>,
+    job: Arc<ReplicationJob>,
+    agent: Arc<crate::agent::Client>,
+    source: String,
+    destination: String,
+    snapshot: String,
+    recursive: bool,
+    prune_keep: usize,
+    prepared: PreparedEncryption,
+) {
     let job_for_task = job.clone();
-    let snapshot_for_task = snapshot.clone();
     let state_for_task = state.clone();
     let handle = tokio::spawn(async move {
         run_job(
@@ -1017,14 +1562,14 @@ fn enqueue_job(
             agent,
             source,
             destination,
-            snapshot_for_task,
+            snapshot,
             recursive,
             prune_keep,
+            prepared,
         )
         .await;
     });
     *job.handle.lock().unwrap() = Some(handle);
-    Ok(id)
 }
 
 /// `GET /api/replication/jobs`
@@ -1085,6 +1630,18 @@ pub async fn job_detail_delete(
     }
     if let Some(handle) = job.handle.lock().unwrap().take() {
         handle.abort();
+    }
+    // A cancelled first raw send may leave the replica key Secret with no
+    // dataset. Reconcile it like a failed job does, off the response path and
+    // only when the dataset is absent.
+    if job.created_destination {
+        if let Some(agent) = state.agent.clone() {
+            let state = state.clone();
+            let destination = job.snapshot().destination;
+            tokio::spawn(async move {
+                rollback_created_destination(&state, &agent, &destination).await;
+            });
+        }
     }
     json(
         StatusCode::OK,
@@ -1268,6 +1825,7 @@ mod tests {
                 destination: String::new(),
                 snapshot: String::new(),
                 recursive: false,
+                raw: false,
                 prune_keep: 0,
                 state,
                 started_at: Utc::now(),
@@ -1279,6 +1837,7 @@ mod tests {
                 error: String::new(),
             }),
             handle: Mutex::new(None),
+            created_destination: false,
         }
     }
 
@@ -1306,5 +1865,157 @@ mod tests {
         assert!(destinations_overlap("backup/a/child", "backup/a"));
         assert!(!destinations_overlap("backup/a", "backup/b"));
         assert!(!destinations_overlap("backup/a", "backup/ab"));
+    }
+
+    fn ds(name: &str, encryption: &str, root: &str) -> Dataset {
+        Dataset {
+            name: name.into(),
+            encryption: encryption.into(),
+            encryption_root: root.into(),
+            ..Default::default()
+        }
+    }
+
+    fn plain(name: &str) -> Dataset {
+        Dataset {
+            name: name.into(),
+            encryption: "off".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn encryption_plan_keeps_plain_pairs_unchanged() {
+        let datasets = vec![plain("tank/src"), plain("backup/dst")];
+        assert_eq!(
+            plan_encryption(&datasets, "tank/src", "backup/dst", false).unwrap(),
+            EncryptionPlan::Plain
+        );
+        // The destination existence rule stays the caller's job for a plain pair.
+        assert_eq!(
+            plan_encryption(&datasets, "tank/src", "backup/new", false).unwrap(),
+            EncryptionPlan::Plain
+        );
+    }
+
+    #[test]
+    fn encryption_plan_creates_a_raw_destination_only_under_an_existing_parent() {
+        let datasets = vec![ds("tank/src", "aes-256-gcm", "tank/src"), plain("backup")];
+        assert_eq!(
+            plan_encryption(&datasets, "tank/src", "backup/replica", false).unwrap(),
+            EncryptionPlan::RawNew {
+                source_root: "tank/src".into()
+            }
+        );
+        let err = plan_encryption(&datasets, "tank/src", "missing/replica", false).unwrap_err();
+        assert!(err.contains("parent"), "{err}");
+        assert!(plan_encryption(&datasets, "tank/src", "backup", false).is_err());
+    }
+
+    #[test]
+    fn encryption_plan_uses_the_inherited_source_root_and_refuses_mixed_chains() {
+        // The source inherits the key of an ancestor; the replication key is the root's.
+        let datasets = vec![
+            ds("tank/enc", "aes-256-gcm", "tank/enc"),
+            ds("tank/enc/src", "aes-256-gcm", "tank/enc"),
+            plain("backup"),
+        ];
+        assert_eq!(
+            plan_encryption(&datasets, "tank/enc/src", "backup/replica", false).unwrap(),
+            EncryptionPlan::RawNew {
+                source_root: "tank/enc".into()
+            }
+        );
+
+        // An unencrypted destination can never take a raw stream.
+        let mut mixed = datasets.clone();
+        mixed.push(plain("backup/dst"));
+        let err = plan_encryption(&mixed, "tank/enc/src", "backup/dst", false).unwrap_err();
+        assert!(err.contains("not encrypted"), "{err}");
+
+        // A plain source must not land in an encrypted destination.
+        let err = plan_encryption(
+            &[
+                plain("tank/src"),
+                ds("backup/dst", "aes-256-gcm", "backup/dst"),
+            ],
+            "tank/src",
+            "backup/dst",
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("never mixed"), "{err}");
+
+        // A destination that inherits a parent key is not a dedicated replica.
+        let err = plan_encryption(
+            &[
+                ds("tank/src", "aes-256-gcm", "tank/src"),
+                ds("tank/enc/dst", "aes-256-gcm", "tank/enc"),
+            ],
+            "tank/src",
+            "tank/enc/dst",
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("inherits its key"), "{err}");
+    }
+
+    #[test]
+    fn encryption_plan_requires_one_root_for_a_recursive_raw_send() {
+        let datasets = vec![
+            ds("tank/src", "aes-256-gcm", "tank/src"),
+            ds("tank/src/inherits", "aes-256-gcm", "tank/src"),
+            plain("backup"),
+        ];
+        assert!(matches!(
+            plan_encryption(&datasets, "tank/src", "backup/replica", true).unwrap(),
+            EncryptionPlan::RawNew { .. }
+        ));
+
+        let mut two_roots = datasets.clone();
+        two_roots.push(ds("tank/src/own", "aes-256-gcm", "tank/src/own"));
+        let err = plan_encryption(&two_roots, "tank/src", "backup/replica", true).unwrap_err();
+        assert!(err.contains("one encryption root"), "{err}");
+        // A non-recursive send does not touch the child, so it stays allowed.
+        assert!(matches!(
+            plan_encryption(&two_roots, "tank/src", "backup/replica", false).unwrap(),
+            EncryptionPlan::RawNew { .. }
+        ));
+    }
+
+    #[test]
+    fn encryption_plan_refuses_a_recursive_plain_send_over_an_encrypted_child() {
+        let datasets = vec![
+            plain("tank/src"),
+            plain("tank/src/child"),
+            ds(
+                "tank/src/child/secret",
+                "aes-256-gcm",
+                "tank/src/child/secret",
+            ),
+            plain("backup/dst"),
+        ];
+        // A recursive non-raw send would decrypt the grandchild.
+        let err = plan_encryption(&datasets, "tank/src", "backup/dst", true).unwrap_err();
+        assert!(err.contains("plaintext"), "{err}");
+        // A shallow send never touches it.
+        assert_eq!(
+            plan_encryption(&datasets, "tank/src", "backup/dst", false).unwrap(),
+            EncryptionPlan::Plain
+        );
+    }
+
+    #[test]
+    fn encryption_plan_allows_incrementals_into_an_existing_raw_replica() {
+        let datasets = vec![
+            ds("tank/src", "aes-256-gcm", "tank/src"),
+            ds("backup/replica", "aes-256-gcm", "backup/replica"),
+        ];
+        assert_eq!(
+            plan_encryption(&datasets, "tank/src", "backup/replica", false).unwrap(),
+            EncryptionPlan::RawIncremental {
+                source_root: "tank/src".into()
+            }
+        );
     }
 }

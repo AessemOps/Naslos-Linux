@@ -139,6 +139,15 @@ impl Client {
         .map(|_| ())
     }
 
+    /// Create one object (JSON), failing when it already exists. Used where an
+    /// upsert would overwrite someone else's object (the replica key Secret).
+    pub async fn create(&self, object: &serde_json::Value) -> Result<(), String> {
+        let data = serde_json::to_string(object).map_err(|e| e.to_string())?;
+        self.run(&["create".into(), "-f".into(), "-".into()], Some(data))
+            .await
+            .map(|_| ())
+    }
+
     /// Delete a resource, ignoring a missing one.
     pub async fn delete(&self, kind: &str, name: &str, namespace: &str) -> Result<(), String> {
         self.run(

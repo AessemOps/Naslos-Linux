@@ -128,3 +128,56 @@ test('replication pairs are validated before any stream starts', async ({ reques
   expect(retention.status(), await retention.text()).toBe(400);
   expect(await retention.text()).toContain('at most 1000');
 });
+
+test('an encrypted source is sent raw into a destination the job creates', async ({ page }) => {
+  // Pure UI contract with a mocked API: no dataset is created on the node.
+  const datasets = [
+    { name: 'tank', encryption: 'off' },
+    { name: 'tank/plain', encryption: 'off' },
+    { name: 'tank/secret', encryption: 'aes-256-gcm', keystatus: 'unavailable' },
+    { name: 'backup', encryption: 'off' },
+    { name: 'backup/replica', encryption: 'aes-256-gcm', keystatus: 'available' }
+  ];
+  await page.route('**/api/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const json = (body: unknown) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path === '/api/auth/me') return json({ username: 'admin', groups: 'naslos_admins' });
+    if (path === '/api/system/updates') return json({ available: false });
+    if (path === '/api/apps/updates') return json({ count: 0, apps: [] });
+    if (path === '/api/datasets') return json(datasets);
+    if (path === '/api/replication/jobs') return json({ jobs: [] });
+    return json({});
+  });
+
+  await page.goto('/replication');
+  await expect(page.getByRole('heading', { name: 'Replication', exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'New replication' }).click();
+  const dialog = page.locator('.fixed.inset-0');
+  const sourceSelect = dialog.getByLabel('Source dataset *');
+  // Encrypted datasets are marked in the picker.
+  await expect(
+    sourceSelect.locator('option', { hasText: 'tank/secret (encrypted)' })
+  ).toHaveCount(1);
+
+  await sourceSelect.selectOption('tank/secret');
+  await expect(dialog.getByText('The source is encrypted')).toBeVisible();
+  await expect(dialog.getByText(/zfs send -w/)).toBeVisible();
+  await expect(dialog.getByText('The first run creates this dataset')).toBeVisible();
+
+  // The destination is a free path, not a list of existing datasets.
+  await expect(dialog.locator('select#replication-destination')).toHaveCount(0);
+  const destination = dialog.getByRole('textbox', { name: 'Destination dataset *' });
+  await destination.fill('tank/secret');
+  await expect(dialog.getByText('must be different datasets')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Start replication' })).toBeDisabled();
+
+  await destination.fill('backup/new-replica');
+  await expect(dialog.getByRole('button', { name: 'Start replication' })).toBeEnabled();
+
+  // Switching back to a plain source restores the existing-dataset picker.
+  await sourceSelect.selectOption('tank/plain');
+  await expect(dialog.locator('select#replication-destination')).toHaveCount(1);
+  await expect(dialog.getByRole('textbox', { name: 'Destination dataset *' })).toHaveCount(0);
+});

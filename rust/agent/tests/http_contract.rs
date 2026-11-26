@@ -627,3 +627,41 @@ async fn a_forced_import_requires_confirmation() {
         "{body}"
     );
 }
+
+#[tokio::test]
+async fn a_raw_receive_unlock_key_is_validated_before_any_stream() {
+    let host = FakeHost::new();
+    let runner = Arc::new(FakeRunner::new(&[]));
+    let argv = runner.argv();
+    let zfs = ZfsClient::new(runner, host.root.clone());
+    let server = server_with(Some(zfs), None, TOKEN);
+
+    let key = "11".repeat(32);
+    let cases = [
+        // A key without raw=true could only belong to a plaintext stream.
+        ("/api/v1/zfs/receive/tank/data", key.clone()),
+        // Wrong length and non-hex values are refused.
+        ("/api/v1/zfs/receive/tank/data?raw=true", "ab".to_string()),
+        ("/api/v1/zfs/receive/tank/data?raw=true", "zz".repeat(32)),
+        // A forced receive is never combined with a raw key.
+        (
+            "/api/v1/zfs/receive/tank/data?raw=true&force=true&confirm=tank/data",
+            key,
+        ),
+    ];
+    for (uri, value) in cases {
+        let (status, body) = send(
+            &server,
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                .header("x-naslos-unlock-key", &value)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+    }
+    assert!(argv.lock().unwrap().is_empty(), "no zfs command may run");
+}

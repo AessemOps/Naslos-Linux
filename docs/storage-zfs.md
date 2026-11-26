@@ -180,9 +180,27 @@ supplied and pipes the agent's `zfs send` stream into `zfs receive`;
 `recursive` uses `zfs send -r` (descendants, no property propagation).
 
 - Both datasets must already exist (the destination is never created
-  implicitly), and identical or nested paths are refused.
+  implicitly), and identical or nested paths are refused. The exception is an
+  encrypted source: the first raw send creates the destination, so it must not
+  exist then (its parent must exist) and later runs target that existing replica.
 - Incremental vs full is chosen from the newest **snapshot GUID** the source and
   destination share, not from snapshot names.
+- An encrypted source is always sent **raw** (`zfs send -w`) and the job reports
+  `raw`; `-U` and plaintext sends are refused. OpenZFS constraints shape the
+  receive: a raw full stream creates the dataset and `zfs receive -F` is refused
+  for encryption, so a full send into an existing replica is refused (a stale
+  child replica in a recursive repair is refused the same way). The replica
+  keeps the source key, so the job claims the destination, creates the source
+  key Secret for it (create-only; a matching leftover is reused, a foreign one
+  is refused and never overwritten) and the agent loads it (`zfs load-key` from
+  a 0600 tmpfs file) before finalizing the mount; the key never enters argv or a
+  log. A destination whose encryption state or key differs is refused, a
+  recursive raw send must have one encryption root, and a recursive plain send
+  over a tree with an encrypted descendant (filesystem or zvol) is refused
+  rather than decrypted. The zvol listing carries `encryption`/`encryptionroot`,
+  so the recursive gate needs no per-volume round trip; a listing without those
+  columns (an older agent) falls back to the per-volume status route, which
+  fails closed.
 - Every receive uses `-u` and excludes exactly `mountpoint`, `canmount`,
   `sharenfs` and `sharesmb` from the stream (`-x`). The policy is deliberate:
   the first two would let a peer choose this node's host paths or hide a
@@ -207,8 +225,8 @@ supplied and pipes the agent's `zfs send` stream into `zfs receive`;
 - `pruneKeep` retains the newest N destination snapshots carrying this pair's
   prefix; only those names are eligible for deletion. Source snapshots created
   by replication are not pruned here.
-- Encrypted/raw replication, remote replication, rsync and cloud sync are
-  `[OPEN]` (see the spec's `FR-REP` group).
+- Remote replication, rsync and cloud sync are `[OPEN]` (see the spec's
+  `FR-REP` group); local encrypted replication is implemented (FR-ENC-07).
 
 Plumbing added for this path: `zfs send` accepts `recursive=true` (`-r`) and
 `/api/v1/zfs/snapshots/{dataset}` accepts `recursive=false`; every dataset and

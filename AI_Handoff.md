@@ -342,9 +342,22 @@ retrying or using the browser path worked around it. Worth watching.
 
 ### Open items
 
-- **Replication + zvol UI (implemented on `fix/replication-zvol-ui`, needs a
-  release):** the `/replication` page (create from two existing datasets, live
-  progress, cancel, history with the terminal result) and the Block volumes
+- **Encrypted replication (implemented on `feat/encrypted-replication`, needs a
+  release + live drill):** FR-ENC-07. An encrypted source is sent raw
+  (`zfs send -w`) into a destination the job creates (its parent must exist);
+  the job creates the source key Secret for the destination (create-only; a
+  matching leftover is reused) and the agent loads it before the mount, so the
+  replica mounts immediately and is locked after a reboot until the normal
+  unlock. A full send into an existing encrypted replica, a mixed-chain pair, a
+  key mismatch, a multi-root recursive send and a recursive send over an
+  encrypted descendant (filesystem or zvol) in a plain tree are refused. OpenZFS refuses `zfs receive -F` for encrypted datasets, which is
+  why the first send must target a new name. The drill on a deployed build must
+  confirm: create an encrypted dataset → replicate to a new name → replica is
+  `keystatus=available` and mounted → rerun sends an incremental → reboot leaves
+  it locked until unlock. Not deployed yet, so the node still has no raw path.
+- **Replication + zvol UI (implemented on `fix/replication-zvol-ui`, merged,
+  needs a release):** the `/replication` page (create from two existing datasets,
+  live progress, cancel, history with the terminal result) and the Block volumes
   (zvols) section on the pool page (create, grow, typed-name destroy) now front
   the existing FR-REP and FR-ZVOL APIs. Covered by
   `ui/tests/replication.spec.ts` and `ui/tests/zvols.spec.ts`, and `/replication`

@@ -1,10 +1,11 @@
 # Dataset encryption at rest (FR-ENC)
 
 **Status:** raw-key custody, encrypted dataset create, `keystatus`, explicit
-unlock and lock are implemented (FR-ENC-01/02/03/04/06). Passphrase keys,
-encrypted send/receive, raw Buddy sends, live consumer refusal, key rotation/export
-and migration tooling remain `[OPEN]`. The normative requirements and their
-markers are in [spec.md](spec.md#312-dataset-encryption-at-rest-fr-enc).
+unlock and lock, and encrypted (raw) replication are implemented
+(FR-ENC-01/02/03/04/06/07). Passphrase keys, raw Buddy sends, live consumer
+refusal, key rotation/export and migration tooling remain `[OPEN]`. The
+normative requirements and their markers are in
+[spec.md](spec.md#312-dataset-encryption-at-rest-fr-enc).
 
 This document records the decision the parity backlog asked for (key custody for
 an unattended Talos boot), the ZFS facts the implementation must respect, the
@@ -166,9 +167,25 @@ deleting the keys on uninstall would destroy the data.
   decrypted for the transfer (which requires the source key and exposes
   plaintext to the replicating host).
 - **Incremental raw sends** require the destination to hold the raw-received
-  chain; the existing replication GUID bookkeeping is unchanged, but the job
-  must record that the chain is encrypted and must never mix raw and non-raw
-  streams.
+  chain; the replication GUID bookkeeping is unchanged, but the job records that
+  the chain is encrypted and never mixes raw and non-raw streams.
+- **Local replication (implemented, FR-ENC-07):** an encrypted source is always
+  sent raw (`zfs send -w`) and the job records `raw`. OpenZFS limits what the
+  receive can do, and the API encodes those limits:
+  - a raw **full** stream always **creates** the destination, so the first run
+    must name a dataset that does not exist (its parent must exist); the UI
+    switches the destination to a free path for an encrypted source;
+  - `zfs receive -F` is refused for encrypted datasets, so a full stream into an
+    existing replica is refused (incrementals are fine); the same applies to a
+    stale child replica in a recursive repair;
+  - the replica keeps the source key, so the job claims the destination, then
+    creates the source key Secret under the destination (create-only; a matching
+    leftover is reused, any other existing Secret is refused rather than
+    overwritten) and the agent loads it before finalizing the mount;
+  - a destination whose encryption state or key differs is refused (no mixed
+    chains), a recursive raw send must have a single encryption root, and a
+    recursive send of a plain tree that contains an encrypted descendant (a
+    filesystem or a zvol) is refused instead of streaming that child decrypted.
 - **Buddy:** see the next section. The recommendation is that Buddy sends raw
   ciphertext for an encrypted dataset (`zfs send -w`) so the API never handles
   plaintext, then keeps its own AES-256-GCM envelope. That is a change to the
@@ -248,7 +265,7 @@ data-moving operation, not a property change.
 | Passphrase option | FR-ENC-05 | `[OPEN]`: stdin transport through the agent runner, UI one-time entry, no-persistence tests |
 | Status/UI | FR-ENC-04 | **Implemented** (`encryption`/`keystatus`/`encryptionRoot`, keystatus route, pool UI Unlock/Lock) |
 | Create atomicity | FR-ENC-06 | **Implemented** (Secret-first ordering, exact-dataset verification, agent rollback, safe Secret cleanup) |
-| Encrypted send | FR-ENC-07 | `[OPEN]`: raw-send job flag, `-U` prohibition, same-key receive UX, mixed-chain refusal |
+| Encrypted send | FR-ENC-07 | **Implemented** (raw-only local replication, destination created by the first raw send, same-key Secret copy, unlock-before-mount, mixed-chain refusal, single-root rule) |
 | Buddy raw send | FR-ENC-08 | `[OPEN]`: decide and implement `-w` for encrypted sources without changing the receiver's zero-knowledge guarantee |
 | Shares/apps | FR-ENC-09 | `[OPEN]`: refuse locked paths in share/app preflight and reconciliation; destroy confirmation and key deletion are implemented |
 | Key rotation/backup | FR-ENC-10 | `[OPEN]`: `zfs change-key` flow and the config/secret export story |

@@ -104,6 +104,12 @@ pub struct Zvol {
     pub used: String,
     pub avail: String,
     pub refer: String,
+    /// `encryption` property (`off` for a plain volume).
+    #[serde(default)]
+    pub encryption: String,
+    /// `encryptionroot` property; empty for a plain volume.
+    #[serde(default, rename = "encryptionRoot")]
+    pub encryption_root: String,
 }
 
 /// A pool discovered by `zpool import` but not currently imported.

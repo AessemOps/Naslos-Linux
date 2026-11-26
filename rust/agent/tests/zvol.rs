@@ -135,8 +135,8 @@ async fn create_zvol_refusals() {
 async fn list_zvols_parses_rows_and_pool_filter() {
     let host = FakeHost::new();
     let runner = Arc::new(FakeRunner::new(&[
-        "tank/vol\t10737418240\t16384\t1048576\t9663676416\t10737418240\toff\n",
-        "tank/vol\t10737418240\t16384\t1048576\t9663676416\t10737418240\toff\n",
+        "tank/vol\t10737418240\t16384\t1048576\t9663676416\t10737418240\toff\taes-256-gcm\ttank/enc\n",
+        "tank/vol\t10737418240\t16384\t1048576\t9663676416\t10737418240\toff\taes-256-gcm\ttank/enc\n",
     ]));
     let calls = runner.calls();
     let c = client(&host, runner);
@@ -148,17 +148,19 @@ async fn list_zvols_parses_rows_and_pool_filter() {
     assert_eq!(all[0].volsize_bytes, 10 * 1024 * 1024 * 1024);
     assert_eq!(all[0].volblocksize, "16384");
     assert_eq!(all[0].compression, "off");
+    assert_eq!(all[0].encryption, "aes-256-gcm");
+    assert_eq!(all[0].encryption_root, "tank/enc");
 
     let pool = c.zvols("tank").await.expect("pool zvols");
     assert_eq!(pool.len(), 1);
     let calls = calls.lock().unwrap();
     assert_eq!(
         calls[0],
-        "/usr/local/sbin/zfs list -H -p -o name,volsize,volblocksize,used,avail,refer,compression -t volume -r"
+        "/usr/local/sbin/zfs list -H -p -o name,volsize,volblocksize,used,avail,refer,compression,encryption,encryptionroot -t volume -r"
     );
     assert_eq!(
         calls[1],
-        "/usr/local/sbin/zfs list -H -p -o name,volsize,volblocksize,used,avail,refer,compression -t volume -r tank"
+        "/usr/local/sbin/zfs list -H -p -o name,volsize,volblocksize,used,avail,refer,compression,encryption,encryptionroot -t volume -r tank"
     );
 }
 
