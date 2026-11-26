@@ -1363,7 +1363,7 @@ with a sibling `naslos-app.yaml` install-config. See
                  "perCore": [ { "core": 0, "usagePercent": 1.2, "frequencyMhz": 3600 } ] },
     "memory":  { "total": 10441696256, "used": 3108004864, "free": 3217534976,
                  "available": 7153684480, "usagePercent": 29.7, "swapTotal": 0, "swapUsed": 0,
-                 "arcSize": 8698923240, "arcMax": 15597793280 },
+                 "arcSize": 2147483648, "arcMax": 6442450944 },
     "disk":    { "total": 43580284928, "used": 5165384704, "free": 38414900224, "usagePercent": 11.8 },
     "network": { "bytesSent": 462901472, "bytesRecv": 1348276586,
                  "packetsSent": 755373, "packetsRecv": 797224,

@@ -152,12 +152,12 @@ Do not raise `ulimit -n` back to the runtime default in the image or in a live
 patch; verify the result with:
 
 ```bash
-kubectl -n naslos exec statefulset/naslos-openldap -- \
-  grep -E '^(VmRSS|RssAnon|RssFile):' /proc/1/status
+kubectl -n naslos exec statefulset/naslos-openldap -- sh -c 'p=$(pidof slapd); grep -E "^(VmRSS|RssAnon|RssFile):" /proc/$p/status; grep "Max open files" /proc/$p/limits'
 ```
 
-The command shows the entrypoint shell; read the slapd child's status instead
-when it is not PID 1. A healthy idle value is tens of MiB, not hundreds.
+The first line is the slapd child, not PID 1 (the entrypoint shell). A healthy
+idle value is tens of MiB with a soft `Max open files` of 8192, not hundreds of
+MiB with 1048576.
 
 ## Upgrading
 

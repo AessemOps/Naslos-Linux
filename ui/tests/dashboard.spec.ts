@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { formatBytes } from '../src/lib/format';
 
 test('dashboard shows live node metrics', async ({ page }) => {
   await page.goto('/');
@@ -26,8 +27,13 @@ test('dashboard shows live node metrics', async ({ page }) => {
   // ARC is reclaimable cache; when the API publishes it the card must separate
   // it from anonymous application memory instead of hiding it in "used".
   if (metrics.memory.arcSize > 0) {
-    await expect(memCard.getByTestId('memory-arc')).toContainText('ZFS ARC');
-    await expect(memCard).toContainText('Apps & system');
+    const arcCard = memCard.getByTestId('memory-arc');
+    const arcPercent = ((metrics.memory.arcSize / metrics.memory.total) * 100).toFixed(1);
+    await expect(arcCard).toContainText(`ZFS ARC ${formatBytes(metrics.memory.arcSize)}`);
+    await expect(arcCard).toContainText(`${arcPercent}%`);
+    await expect(memCard).toContainText(
+      `Apps & system ${formatBytes(Math.max(0, metrics.memory.used - metrics.memory.arcSize))}`
+    );
   }
 
   // --- UI: system information is populated ---

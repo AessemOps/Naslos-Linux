@@ -946,18 +946,18 @@ openldap:
   resources:
     requests:
       cpu: 100m
-      # The old ~673 MiB idle figure was slapd sizing its connection table
-      # from the container runtime's 1M RLIMIT_NOFILE, not real working set.
-      # The image now caps the soft nofile limit (entrypoint.sh), so idle RSS
-      # is in the low tens of MiB. 256Mi request leaves ample headroom; the
-      # 512Mi limit covers the one-off first-boot TLS/schema/slapadd burst.
-      memory: 256Mi
+      # Keep this until the nofile-capped image is the pinned chart image: the
+      # current image still reserves ~666 MiB for its connection table, so a
+      # lower limit (or a request below that usage) can OOMKill or evict slapd
+      # when a chart apply removes the live ulimit override. The cap ships in
+      # openldap/image/entrypoint.sh; lower these to 256Mi/512Mi in the same
+      # release that bumps the OpenLDAP image tag.
+      memory: 768Mi
     limits:
       cpu: 500m
-      # 512Mi was previously too tight only because the unbounded connection
-      # table consumed ~666 MiB. With the nofile cap in place this limit is
-      # sufficient for initialization and normal directory operation.
-      memory: 512Mi
+      # 512Mi/1Gi were sized for the uncapped image. Do not lower the limit
+      # until the release that carries the entrypoint nofile cap.
+      memory: 1Gi
   # Nightly slapcat backup onto the dedicated backups volume; keeps the last
   # `retain`. slapcat reads the live server (it is not an offline dump), so the
   # data/config PVCs are mounted read-write for mdb's lock file.

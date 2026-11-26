@@ -23,7 +23,8 @@ be deleted — `make install-vm` does that as a one-time migration. The
 ```text
 SystemMetrics
 ├── cpu     { usagePercent, cores, loadAvg1/5/15 }
-├── memory  { total, used, free, available, usagePercent, swapTotal, swapUsed }
+├── memory  { total, used, free, available, usagePercent, swapTotal, swapUsed,
+│             arcSize, arcMax }
 ├── disk    { total, used, free, usagePercent }
 ├── network { bytesSent, bytesRecv, packetsSent, packetsRecv,
 │             interfaces[ { name, ipAddress, macAddress, bytesSent, bytesRecv } ] }
@@ -35,6 +36,11 @@ SystemMetrics
 - `GET /api/metrics` returns the whole object.
 - `GET /api/dashboard` returns the home-screen projection (CPU/memory/disk
   usage, ZFS pool list, hostname/uptime/OS, `updatedAt`).
+
+`memory.arcSize`/`arcMax` are the ZFS ARC size and upper bound in bytes, read
+from `/proc/spl/kstat/zfs/arcstats`. They are zero when the host exposes no ARC
+stats. The dashboard shows ARC separately from application memory, and the
+history store records `memory.arc_bytes` only when ARC is present.
 
 The manager is intentionally a pass-through: a collector process fills the
 snapshot; the API serves it under a mutex. The payload is JSON, so it is not a
