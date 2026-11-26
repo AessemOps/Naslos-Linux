@@ -141,6 +141,24 @@ fixed at directory initialisation: `olcDbMaxsize` is 1 GiB in
 `openldap/image/entrypoint.sh`, so a larger `dataSize` alone does not raise
 the database limit.
 
+### Memory use
+
+slapd allocates its connection table from `getdtablesize()` (roughly 650 bytes
+per descriptor). The container runtime's default `RLIMIT_NOFILE` of 1048576
+therefore made an otherwise idle slapd reserve ~666 MiB, which looked like a
+leak and could trip the pod memory limit. The image entrypoint caps the soft
+limit at 8192 before starting slapd, so idle RSS is in the low tens of MiB.
+Do not raise `ulimit -n` back to the runtime default in the image or in a live
+patch; verify the result with:
+
+```bash
+kubectl -n naslos exec statefulset/naslos-openldap -- sh -c 'p=$(pidof slapd); grep -E "^(VmRSS|RssAnon|RssFile):" /proc/$p/status; grep "Max open files" /proc/$p/limits'
+```
+
+The first line is the slapd child, not PID 1 (the entrypoint shell). A healthy
+idle value is tens of MiB with a soft `Max open files` of 8192, not hundreds of
+MiB with 1048576.
+
 ## Upgrading
 
 ### From the web UI (installer-provisioned nodes)

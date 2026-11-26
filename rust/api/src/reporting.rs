@@ -1034,6 +1034,17 @@ impl Store {
             "bytes",
             metrics.memory.swap_used as f64,
         ));
+        // Only record ARC when the host exposes it; a permanent zero series on
+        // a non-ZFS host would contradict the documented "when available"
+        // contract and waste a series slot.
+        if metrics.memory.arc_size > 0 {
+            values.push((
+                "memory.arc_bytes".to_string(),
+                "memory",
+                "bytes",
+                metrics.memory.arc_size as f64,
+            ));
+        }
 
         let mut interfaces: Vec<&NetworkInterface> = metrics
             .network
@@ -2058,6 +2069,29 @@ mod tests {
             .unwrap();
         let rx = &response.series[0];
         assert_eq!(rx.points.len(), 1);
+    }
+
+    #[test]
+    fn arc_series_is_only_recorded_when_stats_are_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir);
+        store.ingest(0, &sample(), None).unwrap();
+        let absent = store
+            .query(ReportRange::Hours24, &["memory.arc_bytes".to_string()], 0)
+            .unwrap();
+        assert!(
+            absent.series.is_empty() || absent.series[0].points.is_empty(),
+            "a non-ZFS sample must not create a zero ARC series"
+        );
+
+        let mut with_arc = sample();
+        with_arc.memory.arc_size = 1024;
+        store.ingest(60, &with_arc, None).unwrap();
+        let present = store
+            .query(ReportRange::Hours24, &["memory.arc_bytes".to_string()], 60)
+            .unwrap();
+        assert_eq!(present.series.len(), 1);
+        assert_eq!(present.series[0].points.last().unwrap().3, 1024.0);
     }
 
     #[test]

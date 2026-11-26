@@ -23,6 +23,14 @@ test('dashboard shows live node metrics', async ({ page }) => {
 
   const memCard = page.locator('.card').filter({ hasText: 'Memory' }).first();
   await expect(memCard).not.toContainText('0 B / 0 B');
+  // ARC is reclaimable cache; when the API publishes it the card must separate
+  // it from anonymous application memory instead of hiding it in "used". The
+  // exact split is asserted against a deterministic fixture in the dedicated
+  // test below; this live check only requires the field to be rendered.
+  if (metrics.memory.arcSize > 0) {
+    await expect(memCard.getByTestId('memory-arc')).toContainText('ZFS ARC');
+    await expect(memCard).toContainText('Apps & system');
+  }
 
   // --- UI: system information is populated ---
   const hostnameValue = page
@@ -35,6 +43,46 @@ test('dashboard shows live node metrics', async ({ page }) => {
     .locator('xpath=following-sibling::div[1]');
   await expect(updatedValue).not.toHaveText('—');
   await expect(updatedValue).not.toContainText('0001-01-01');
+});
+
+test('dashboard splits ZFS ARC from application memory', async ({ page, request }) => {
+  // Skip until the deployed API advertises ARC; the live card test above then
+  // starts checking presence. The fixture below is deterministic so the exact
+  // split does not race the 5 s dashboard poll.
+  const live = await request.get('/api/dashboard');
+  const liveData = await live.json();
+  test.skip(!(liveData.memory?.arcSize > 0), 'ARC dashboard fields are not deployed yet');
+
+  const gib = 1024 ** 3;
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        cpu: { usage: 0, cores: 1 },
+        memory: {
+          usage: 75,
+          total: 16 * gib,
+          used: 12 * gib,
+          available: 4 * gib,
+          arcSize: 8 * gib,
+          arcMax: 14 * gib
+        },
+        disk: { usage: 0, total: 0, used: 0, free: 0 },
+        zfs: { poolCount: 0, pools: [] },
+        system: { hostname: 'test-node', uptime: 60 },
+        updatedAt: new Date().toISOString()
+      })
+    });
+  });
+
+  await page.goto('/');
+  await expect(page.getByText('Loading dashboard...')).toBeHidden();
+
+  const memCard = page.locator('.card').filter({ hasText: 'Memory' }).first();
+  await expect(memCard.getByTestId('memory-arc')).toContainText('ZFS ARC 8.0 GiB (50.0%)');
+  await expect(memCard).toContainText('Apps & system 4.0 GiB');
+  await expect(memCard).toContainText('ARC max 14 GiB');
 });
 
 test('dashboard shows CPU temperature, load averages and per-core usage', async ({ page, request }) => {

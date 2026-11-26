@@ -4,6 +4,14 @@ set -e
 # Naslos OpenLDAP Entrypoint
 # Handles TLS certificate generation, bootstrap, and slapd startup.
 
+# slapd sizes its connection table from getdtablesize() (~650 bytes per file
+# descriptor). The container runtime's default RLIMIT_NOFILE of 1048576 made
+# an idle slapd allocate ~666 MiB of anonymous memory, which pushed the pod
+# against its 1 GiB limit. An 8192-descriptor soft limit is ample for this
+# single-node directory and keeps idle RSS in the low tens of MiB. Keep the
+# hard limit unchanged so an operator can still raise it for a large directory.
+ulimit -Sn 8192 2>/dev/null || ulimit -Sn 4096 2>/dev/null || true
+
 SLAPD_CONFIG_DIR="/etc/ldap/slapd.d"
 SLAPD_DATA_DIR="/var/lib/ldap"
 CERT_DIR="/container/service/slapd/assets/certs"

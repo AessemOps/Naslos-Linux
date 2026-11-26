@@ -222,6 +222,11 @@ impl TalosClient {
         let total = kb("MemTotal");
         let free = kb("MemFree");
         let available = kb("MemAvailable");
+        // ZFS publishes its cache size separately; without this the dashboard
+        // reports ARC as anonymous "used" memory and the operator cannot see
+        // that most of the pressure is reclaimable cache. A missing arcstats
+        // file (non-ZFS host) is normal and leaves both fields at zero.
+        let (arc_size, arc_max) = self.zfs_arc_metrics().await.unwrap_or((0, 0));
         let used = total.saturating_sub(available);
         let usage = if total > 0 {
             used as f64 / total as f64 * 100.0
@@ -238,7 +243,15 @@ impl TalosClient {
             usage_percent: usage,
             swap_total,
             swap_used: swap_total.saturating_sub(swap_free),
+            arc_size,
+            arc_max,
         })
+    }
+
+    /// Read the ZFS ARC size and upper bound from the host kstat.
+    async fn zfs_arc_metrics(&self) -> Result<(u64, u64), String> {
+        let out = self.read("/proc/spl/kstat/zfs/arcstats").await?;
+        Ok(parse_arcstats(&out))
     }
 
     async fn cpu_metrics(&self) -> Result<CpuMetrics, String> {
@@ -990,6 +1003,27 @@ pub fn parse_meminfo(out: &str) -> std::collections::HashMap<String, u64> {
     map
 }
 
+/// Parse `/proc/spl/kstat/zfs/arcstats` into `(size, c_max)` bytes. Each data
+/// row is `name type value`; malformed or missing rows leave that value at 0.
+pub fn parse_arcstats(out: &str) -> (u64, u64) {
+    let mut size = 0;
+    let mut max = 0;
+    for line in out.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(name) = parts.next() else { continue };
+        let _kind = parts.next();
+        let Some(value) = parts.next().and_then(|v| v.parse::<u64>().ok()) else {
+            continue;
+        };
+        match name {
+            "size" => size = value,
+            "c_max" => max = value,
+            _ => {}
+        }
+    }
+    (size, max)
+}
+
 /// Pick one address per link: IPv4 over IPv6, routable over link-local, no
 /// loopback (port of `addressesByLink`).
 pub fn addresses_by_link(
@@ -1130,6 +1164,12 @@ mod tests {
         let m = parse_meminfo(out);
         assert_eq!(m["MemTotal"], 6042848);
         assert_eq!(m["MemAvailable"], 3427816);
+    }
+
+    #[test]
+    fn arcstats_parses_size_and_max() {
+        let out = "13 1 0x01 88 5312 46628037679 1309447431\nname                            type data\nsize                            4    8698923240\nc_max                           4    15597793280\nc                               4    8747485040\n";
+        assert_eq!(parse_arcstats(out), (8_698_923_240, 15_597_793_280));
     }
 
     #[test]

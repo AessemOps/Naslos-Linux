@@ -367,6 +367,14 @@ and [nfsv3.md](nfsv3.md) for NFSv3 (not served).
 Temperature is `null` when the node exposes no CPU sensor; the rest of the
 metrics are unaffected.
 
+`SystemMetrics.memory` carries the `/proc/meminfo` totals plus `arcSize` and
+`arcMax`, the current ZFS ARC size and its upper bound (bytes). Both are `0`
+when the host does not expose `/proc/spl/kstat/zfs/arcstats`.
+`/api/dashboard` exposes them as `memory.arcSize` and `memory.arcMax`; the
+dashboard shows ARC separately from application memory because the kernel
+counts reclaimable ARC cache as used. The history store also records
+`memory.arc_bytes` when ARC stats are available.
+
 ### Historical reporting (`FR-RPT`, see [reporting.md](reporting.md))
 
 Admin-only, read-only routes over the bounded local history store. There is no

@@ -55,13 +55,15 @@ default file cap (chart value `api.reporting.maxBytes`).
 | Family | Series (per key) | Cap |
 | --- | --- | --- |
 | CPU | `cpu.usage_percent`, `cpu.load1`, `cpu.load5`, `cpu.load15`, `cpu.temperature_c` | 5 |
-| Memory | `memory.total_bytes`, `memory.used_bytes`, `memory.available_bytes`, `memory.usage_percent`, `memory.swap_used_bytes` | 5 |
+| Memory | `memory.total_bytes`, `memory.used_bytes`, `memory.available_bytes`, `memory.usage_percent`, `memory.swap_used_bytes`, `memory.arc_bytes` | 6 |
 | Network | `network.<if>.rx_bytes_per_s`, `network.<if>.tx_bytes_per_s` | 16 interfaces × 2 |
 | ZFS pools | `zfs.<pool>.used_bytes`, `.alloc_bytes`, `.free_bytes` | 8 pools × 3 |
 | Disks | `disk.<device>.temperature_c`, `disk.<device>.wear_percent` | 64 disks × 2 |
 
 Rules:
 
+- `memory.arc_bytes` is recorded only when the host exposes ZFS ARC stats, so
+  a non-ZFS system never gets a permanent zero series.
 - Interface names are filtered to likely physical NICs (loopback, `veth`,
   `docker`, `cni`, `flannel`, `cali`, Kubernetes/overlay/tunnel/bridge prefixes
   are excluded), sorted and capped at 16. The filter is deliberately

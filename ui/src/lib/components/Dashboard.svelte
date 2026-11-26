@@ -47,7 +47,14 @@
       loadAvg15?: number;
       perCore?: Array<{ core: number; usagePercent: number; frequencyMhz?: number }>;
     };
-    memory?: { usage: number; total: number; used: number; available: number };
+    memory?: {
+      usage: number;
+      total: number;
+      used: number;
+      available: number;
+      arcSize?: number;
+      arcMax?: number;
+    };
     disk?: { usage: number; total: number; used: number; free: number };
     zfs?: { poolCount: number; pools: any[] };
     system?: { hostname: string; uptime: number; os: string };
@@ -66,6 +73,13 @@
   let data: DashboardData = {};
   let loading = true;
   let error = '';
+
+  // ZFS ARC is reclaimable cache, so show it beside the raw used figure instead
+  // of letting it look like anonymous application memory.
+  $: memoryArc = data.memory?.arcSize ?? 0;
+  $: memoryArcPercent =
+    data.memory && data.memory.total > 0 ? (memoryArc / data.memory.total) * 100 : 0;
+  $: memoryNonArc = Math.max(0, (data.memory?.used ?? 0) - memoryArc);
 
   // Auto-refresh: poll the dashboard API every 5 seconds. A request that is
   // still in flight when the next tick fires is skipped (inFlight guard).
@@ -217,6 +231,7 @@
       if (tail === 'available_bytes') return 'Memory available';
       if (tail === 'total_bytes') return 'Memory total';
       if (tail === 'swap_used_bytes') return 'Swap used';
+      if (tail === 'arc_bytes') return 'ZFS ARC used';
     }
     if (family === 'network') {
       const metric = rest[rest.length - 1] ?? '';
@@ -365,6 +380,14 @@
         <div class="text-sm text-gray-400 mb-1">Memory</div>
         <div class="text-3xl font-bold text-green-400">{data.memory?.usage?.toFixed(1) || '—'}%</div>
         <div class="text-xs text-gray-500">{formatBytes(data.memory?.used || 0)} / {formatBytes(data.memory?.total || 0)}</div>
+        {#if memoryArc > 0}
+          <div class="text-xs text-gray-500 mt-1" data-testid="memory-arc">
+            ZFS ARC {formatBytes(memoryArc)} ({memoryArcPercent.toFixed(1)}%)
+          </div>
+          <div class="text-xs text-gray-500">
+            Apps &amp; system {formatBytes(memoryNonArc)}{data.memory?.arcMax ? ` · ARC max ${formatBytes(data.memory.arcMax)}` : ''}
+          </div>
+        {/if}
       </div>
       <div class="card">
         <div class="text-sm text-gray-400 mb-1">Disk</div>
