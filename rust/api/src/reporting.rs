@@ -1034,6 +1034,12 @@ impl Store {
             "bytes",
             metrics.memory.swap_used as f64,
         ));
+        values.push((
+            "memory.arc_bytes".to_string(),
+            "memory",
+            "bytes",
+            metrics.memory.arc_size as f64,
+        ));
 
         let mut interfaces: Vec<&NetworkInterface> = metrics
             .network

@@ -62,6 +62,13 @@ pub struct MemoryMetrics {
     pub swap_total: u64,
     #[serde(rename = "swapUsed")]
     pub swap_used: u64,
+    /// Current ZFS ARC size in bytes (`size` in `/proc/spl/kstat/zfs/arcstats`).
+    /// Zero when the host does not expose ZFS ARC stats.
+    #[serde(rename = "arcSize", default)]
+    pub arc_size: u64,
+    /// ZFS ARC upper bound in bytes (`c_max`); zero when unavailable.
+    #[serde(rename = "arcMax", default)]
+    pub arc_max: u64,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -193,6 +200,8 @@ impl Manager {
                 "total": m.memory.total,
                 "used": m.memory.used,
                 "available": m.memory.available,
+                "arcSize": m.memory.arc_size,
+                "arcMax": m.memory.arc_max,
             },
             "disk": {
                 "usage": m.disk.usage_percent,
@@ -236,7 +245,7 @@ impl Manager {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_zfs_size, CpuCore, CpuMetrics, Manager, SystemMetrics};
+    use super::{parse_zfs_size, CpuCore, CpuMetrics, Manager, MemoryMetrics, SystemMetrics};
 
     #[test]
     fn dashboard_cpu_carries_temperature_and_per_core() {
@@ -268,6 +277,26 @@ mod tests {
         assert_eq!(view["cpu"]["temperatureC"], 45.0);
         assert_eq!(view["cpu"]["perCore"].as_array().unwrap().len(), 2);
         assert_eq!(view["cpu"]["perCore"][0]["frequencyMhz"], 3600);
+    }
+
+    #[test]
+    fn dashboard_memory_carries_arc_size_and_max() {
+        let manager = Manager::new();
+        manager.update(SystemMetrics {
+            memory: MemoryMetrics {
+                total: 16_000,
+                used: 12_000,
+                available: 4_000,
+                usage_percent: 75.0,
+                arc_size: 8_000,
+                arc_max: 14_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let view = manager.dashboard_data();
+        assert_eq!(view["memory"]["arcSize"], 8_000);
+        assert_eq!(view["memory"]["arcMax"], 14_000);
     }
 
     #[test]

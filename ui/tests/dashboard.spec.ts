@@ -23,6 +23,12 @@ test('dashboard shows live node metrics', async ({ page }) => {
 
   const memCard = page.locator('.card').filter({ hasText: 'Memory' }).first();
   await expect(memCard).not.toContainText('0 B / 0 B');
+  // ARC is reclaimable cache; when the API publishes it the card must separate
+  // it from anonymous application memory instead of hiding it in "used".
+  if (metrics.memory.arcSize > 0) {
+    await expect(memCard.getByTestId('memory-arc')).toContainText('ZFS ARC');
+    await expect(memCard).toContainText('Apps & system');
+  }
 
   // --- UI: system information is populated ---
   const hostnameValue = page

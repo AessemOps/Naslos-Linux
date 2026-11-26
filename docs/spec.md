@@ -1362,7 +1362,8 @@ with a sibling `naslos-app.yaml` install-config. See
                  "temperatureC": 45.0,
                  "perCore": [ { "core": 0, "usagePercent": 1.2, "frequencyMhz": 3600 } ] },
     "memory":  { "total": 10441696256, "used": 3108004864, "free": 3217534976,
-                 "available": 7153684480, "usagePercent": 29.7, "swapTotal": 0, "swapUsed": 0 },
+                 "available": 7153684480, "usagePercent": 29.7, "swapTotal": 0, "swapUsed": 0,
+                 "arcSize": 8698923240, "arcMax": 15597793280 },
     "disk":    { "total": 43580284928, "used": 5165384704, "free": 38414900224, "usagePercent": 11.8 },
     "network": { "bytesSent": 462901472, "bytesRecv": 1348276586,
                  "packetsSent": 755373, "packetsRecv": 797224,
@@ -1379,7 +1380,12 @@ with a sibling `naslos-app.yaml` install-config. See
   mount (EPHEMERAL partition) and fall back to `/` only if `/var` has zero
   size.
 - **FR-MET-05** — Memory MUST be converted from Talos `MemInfo` (KB units,
-  mirroring `/proc/meminfo`) to bytes.
+  mirroring `/proc/meminfo`) to bytes. The collector MUST also publish the ZFS
+  ARC size (`arcSize`) and upper bound (`arcMax`) from
+  `/proc/spl/kstat/zfs/arcstats` when the host exposes them, and MUST leave both
+  at zero (without failing the rest of the snapshot) on a host without ZFS ARC
+  stats. The dashboard MUST show the ARC figure separately from application
+  memory so reclaimable cache is not mistaken for anonymous pressure.
 - **FR-MET-06** — Network totals MUST be summed from `/proc/net/dev` using
   the real byte/packet columns; the header line MUST NOT be parsed as an
   interface.
