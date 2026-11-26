@@ -137,13 +137,16 @@ retrying or using the browser path worked around it. Worth watching.
   `version GLIBC_2.38 not found` (the node had been running an older drill
   build). `vmd/Dockerfile` now pins `rust:1.100-slim-bookworm`; the 0.7.62 vmd
   image (`7a223872…`) starts cleanly and revision 77 runs it.
-- **Latest release:** `v0.7.62` (2026-11-24) and installer `naslos-v0.7.62` are
-  published; `naslos-install-pack-0.7.62.tar.gz` is attached with every image
-  digest-pinned. It carries the vmd glibc fix plus the 0.7.61 hotfixes:
-  Traefik's namespaced CRD provider watches the release namespace (the
-  platform routes and the domain root 404'd without it, gotcha #21), and the
-  API treats ldap3's `op send error: channel closed` as a dead connection and
-  reconnects (gotcha #22). The node runs it at revision 77.
+- **Latest release:** `v0.7.64` (2026-11-26) and installer `naslos-v0.7.64` are
+  published; `naslos-install-pack-0.7.64.tar.gz` is attached with every image
+  digest-pinned. It ships the `/replication` page with zvol management
+  (PR #279) and raw encrypted replication for encrypted datasets
+  (FR-ENC-07, PR #280). The node still runs **0.7.62 at revision 77**; 0.7.64
+  needs `make install-vm`. The 0.7.63 attempt published its image tags but
+  failed the pack verifier before attaching a pack (a stale values-vm OpenLDAP
+  digest), and the mutable image tags then blocked a retry, so its tag was
+  removed and the release moved to 0.7.64. The 0.7.62 vmd glibc fix and the
+  0.7.61 Traefik/LDAP hotfixes (gotchas #21/#22) remain in effect.
 - **0.7.1–0.7.62 deploy behavior:** `make install-vm` requires
   `VM_IP=<node-ip>` and installs `local-path` + the `naslos-talosconfig`
   Secret; Traefik uses namespaced RBAC watching the release namespace plus the
@@ -166,6 +169,13 @@ retrying or using the browser path worked around it. Worth watching.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.7.64` (2026-11-26) — the `/replication` page with zvol management on the
+    pool page (PR #279) and raw encrypted replication (FR-ENC-07, PR #280): an
+    encrypted source is sent `zfs send -w` into a destination the job creates,
+    the replica key Secret is created create-only and loaded before the mount,
+    and mixed chains, a full send into an existing encrypted replica, multi-root
+    recursive trees and encrypted descendants in a plain tree are refused. The
+    0.7.63 attempt published images but no pack and is superseded.
   - `0.7.62` (2026-11-24) — packaging fix: the vmd image is built in a
     Debian 12 builder (`rust:1.100-slim-bookworm`) so it runs on the Debian 12
     runtime instead of crash-looping with `GLIBC_2.38 not found`. No other
@@ -342,8 +352,8 @@ retrying or using the browser path worked around it. Worth watching.
 
 ### Open items
 
-- **Encrypted replication (implemented on `feat/encrypted-replication`, needs a
-  release + live drill):** FR-ENC-07. An encrypted source is sent raw
+- **Encrypted replication (released in 0.7.64, needs deploy + live drill):**
+  FR-ENC-07. An encrypted source is sent raw
   (`zfs send -w`) into a destination the job creates (its parent must exist);
   the job creates the source key Secret for the destination (create-only; a
   matching leftover is reused) and the agent loads it before the mount, so the
@@ -354,15 +364,16 @@ retrying or using the browser path worked around it. Worth watching.
   why the first send must target a new name. The drill on a deployed build must
   confirm: create an encrypted dataset → replicate to a new name → replica is
   `keystatus=available` and mounted → rerun sends an incremental → reboot leaves
-  it locked until unlock. Not deployed yet, so the node still has no raw path.
-- **Replication + zvol UI (implemented on `fix/replication-zvol-ui`, merged,
-  needs a release):** the `/replication` page (create from two existing datasets,
+  it locked until unlock. Not deployed yet: the node runs 0.7.62 and has no raw
+  path.
+- **Replication + zvol UI (released in 0.7.64, needs deploy):** the
+  `/replication` page (create from two existing datasets,
   live progress, cancel, history with the terminal result) and the Block volumes
   (zvols) section on the pool page (create, grow, typed-name destroy) now front
   the existing FR-REP and FR-ZVOL APIs. Covered by
   `ui/tests/replication.spec.ts` and `ui/tests/zvols.spec.ts`, and `/replication`
   is in the a11y route scan. The deployed 0.7.62 node does not have either page
-  yet, so both tests fail against it until the next release.
+  yet, so both tests fail against it until 0.7.64 is installed.
 
 - **Phantom image update after an app upgrade (fixed on
   `fix/app-image-drift-stale-pods`, needs a release):** image drift counted
