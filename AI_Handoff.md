@@ -137,15 +137,14 @@ retrying or using the browser path worked around it. Worth watching.
   `version GLIBC_2.38 not found` (the node had been running an older drill
   build). `vmd/Dockerfile` now pins `rust:1.100-slim-bookworm`; the 0.7.62 vmd
   image (`7a223872…`) starts cleanly and revision 77 runs it.
-- **Latest release:** `v0.7.64` (2026-11-26) and installer `naslos-v0.7.64` are
-  published; `naslos-install-pack-0.7.64.tar.gz` is attached with every image
-  digest-pinned. It ships the `/replication` page with zvol management
-  (PR #279) and raw encrypted replication for encrypted datasets
-  (FR-ENC-07, PR #280). The node still runs **0.7.62 at revision 77**; 0.7.64
-  needs `make install-vm`. The 0.7.63 attempt published its image tags but
-  failed the pack verifier before attaching a pack (a stale values-vm OpenLDAP
-  digest), and the mutable image tags then blocked a retry, so its tag was
-  removed and the release moved to 0.7.64. The 0.7.62 vmd glibc fix and the
+- **Latest release:** `v0.7.65` (2026-11-26) and installer `naslos-v0.7.65`
+  are published; `naslos-install-pack-0.7.65.tar.gz` is attached with every
+  image digest-pinned. It ships the ZFS ARC split in `/api/metrics` and the
+  dashboard (PR #281) and the OpenLDAP `RLIMIT_NOFILE` cap that drops idle
+  slapd RSS from ~666 MiB to ~10 MiB (PR #281). The node still runs **0.7.62
+  at revision 77**; 0.7.65 needs `make install-vm`. The live StatefulSet
+  currently carries a temporary `ulimit` command override; installing 0.7.65
+  removes it and uses the capped image. The 0.7.62 vmd glibc fix and the
   0.7.61 Traefik/LDAP hotfixes (gotchas #21/#22) remain in effect.
 - **0.7.1–0.7.62 deploy behavior:** `make install-vm` requires
   `VM_IP=<node-ip>` and installs `local-path` + the `naslos-talosconfig`
@@ -158,19 +157,19 @@ retrying or using the browser path worked around it. Worth watching.
   (dynamic per-domain TLS names defeat a fixed allowlist); legacy
   shared-namespace app installs still hold the wildcard Secret and should move
   to per-app namespaces.
-- **OpenLDAP idle-memory hotfix (2026-11-26, live):** slapd sizes its
-  connection table from `getdtablesize()`; the runtime's 1M `RLIMIT_NOFILE`
-  made an idle slapd reserve ~666 MiB. The live StatefulSet carries a
-  `command` override that runs `ulimit -Sn 8192` before the entrypoint; idle
-  RSS fell from ~708 MiB to **9.8 MiB**. The permanent same cap is in
-  `openldap/image/entrypoint.sh` and ships with the next image release
-  (#281). A `make install-vm` before that release removes the live override
-  and restores the ~666 MiB allocation.
-- **Dashboard ARC split (pending API/UI release):** `/api/metrics`
-  and `/api/dashboard` now carry `memory.arcSize`/`arcMax` from the ZFS
-  `arcstats`, and the dashboard shows `ZFS ARC …` plus `Apps & system …`
-  beside the memory total (#281). Not visible on the node until the next
-  API/UI images are released and installed.
+- **OpenLDAP idle-memory cap (released in 0.7.65, live override pending
+  deploy):** slapd sizes its connection table from `getdtablesize()`; the
+  runtime's 1M `RLIMIT_NOFILE` made an idle slapd reserve ~666 MiB. The live
+  StatefulSet carries a temporary `command` override that runs
+  `ulimit -Sn 8192` before the entrypoint; idle RSS fell from ~708 MiB to
+  **~10 MiB**. The permanent cap is in `openldap/image/entrypoint.sh` and
+  shipped in 0.7.65 (#281). Installing 0.7.65 removes the override and uses
+  the capped image; a `make install-vm` of an older chart restores the ~666
+  MiB allocation.
+- **Dashboard ARC split (released in 0.7.65, needs deploy):** `/api/metrics`
+  and `/api/dashboard` carry `memory.arcSize`/`arcMax` from the ZFS `arcstats`,
+  and the dashboard shows `ZFS ARC …` plus `Apps & system …` beside the memory
+  total (#281). Not visible on the node until 0.7.65 is installed.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
@@ -182,6 +181,10 @@ retrying or using the browser path worked around it. Worth watching.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.7.65` (2026-11-26) — the dashboard separates ZFS ARC from application
+    memory (`memory.arcSize`/`arcMax`, plus history `memory.arc_bytes`), and
+    the OpenLDAP image caps its soft nofile limit at 8192, eliminating the
+    ~666 MiB idle connection table (PR #281).
   - `0.7.64` (2026-11-26) — the `/replication` page with zvol management on the
     pool page (PR #279) and raw encrypted replication (FR-ENC-07, PR #280): an
     encrypted source is sent `zfs send -w` into a destination the job creates,
