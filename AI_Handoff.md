@@ -163,14 +163,14 @@ retrying or using the browser path worked around it. Worth watching.
   made an idle slapd reserve ~666 MiB. The live StatefulSet carries a
   `command` override that runs `ulimit -Sn 8192` before the entrypoint; idle
   RSS fell from ~708 MiB to **9.8 MiB**. The permanent same cap is in
-  `openldap/image/entrypoint.sh` and ships with the next image release. A
-  `make install-vm` before that release removes the live override and restores
-  the ~666 MiB allocation.
+  `openldap/image/entrypoint.sh` and ships with the next image release
+  (#281). A `make install-vm` before that release removes the live override
+  and restores the ~666 MiB allocation.
 - **Dashboard ARC split (pending API/UI release):** `/api/metrics`
   and `/api/dashboard` now carry `memory.arcSize`/`arcMax` from the ZFS
   `arcstats`, and the dashboard shows `ZFS ARC …` plus `Apps & system …`
-  beside the memory total. Not visible on the node until the next API/UI
-  images are released and installed.
+  beside the memory total (#281). Not visible on the node until the next
+  API/UI images are released and installed.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
