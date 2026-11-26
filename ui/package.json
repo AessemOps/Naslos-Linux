@@ -1,6 +1,6 @@
 {
   "name": "naslos-ui",
-  "version": "0.7.62",
+  "version": "0.7.63",
   "description": "Naslos web interface for Talos Linux NAS",
   "type": "module",
   "scripts": {
