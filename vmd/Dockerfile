@@ -47,8 +47,13 @@ FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d
 # ovmf/seabios: UEFI (default) and BIOS firmware blobs.
 # genisoimage: the cloud-init NoCloud `cidata` seed.
 # ca-certificates: the URL importer verifies TLS.
+# dist-upgrade pulls the current Debian security pocket over the pinned base
+# image (same as the samba/nfs/openldap images), so a fixed base-library HIGH
+# such as linux-pam CVE-2025-6020 does not fail the trivy gate until the next
+# base digest bump.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         qemu-system-x86 \
         qemu-utils \
         ovmf \
