@@ -63,6 +63,9 @@ function inertBackground(instance: ModalInstance) {
     for (const sibling of Array.from(parent.children)) {
       if (sibling === child || !(sibling instanceof HTMLElement)) continue;
       if (sibling.hasAttribute('inert')) continue;
+      // Layers that paint above modals (toasts) must stay interactive and
+      // announced while a dialog is open.
+      if (sibling.hasAttribute('data-modal-exempt')) continue;
       sibling.setAttribute('inert', '');
       instance.inerted.push({ el: sibling, wasInert: false });
     }
