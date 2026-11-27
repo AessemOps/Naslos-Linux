@@ -565,6 +565,15 @@ async fn write_chunk_capped(
         written += chunk.len() as u64;
     }
 
+    // tokio::fs::File hands writes to the blocking pool: `write_all` can
+    // return before the bytes reach the file, and dropping the handle does not
+    // wait for them. Without this flush the next chunk can see a short staged
+    // file and refuse its offset ("restart from offset 0").
+    if let Err(e) = file.flush().await {
+        let _ = file.set_len(offset).await;
+        return Err(format!("writing {}: {e}", path.display()));
+    }
+
     let total = offset.saturating_add(written);
     if !final_chunk {
         return Ok(total);
@@ -1005,6 +1014,50 @@ mod tests {
         assert!(validate_target("https://10.0.0.5/x").is_err());
         assert!(validate_target("file:///etc/passwd").is_err());
         assert!(validate_target("https:///nohost").is_err());
+    }
+
+    #[test]
+    fn non_final_chunks_are_on_disk_before_the_next_chunk() {
+        // Regression: a non-final chunk returned before tokio's background
+        // write landed, so the next chunk saw a short staged file and was
+        // refused. The next chunk's metadata check runs on another blocking
+        // thread, so large chunks across concurrent uploads expose it.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let dir = Arc::new(root());
+            let mut uploads = Vec::new();
+            let chunk = vec![b'x'; 1 << 20];
+            for n in 0..16 {
+                let chunk = chunk.clone();
+                let dir = dir.clone();
+                uploads.push(tokio::spawn(async move {
+                    let name = format!("race-{n}.iso");
+                    let len = chunk.len() as u64;
+                    for i in 0..4u64 {
+                        let total = write_chunk(
+                            dir.path(),
+                            "tank",
+                            &name,
+                            i * len,
+                            i == 3,
+                            false,
+                            TEST_OWNER,
+                            body(&chunk),
+                        )
+                        .await
+                        .unwrap_or_else(|e| panic!("{name} chunk {i}: {e}"));
+                        assert_eq!(total, (i + 1) * len);
+                    }
+                }));
+            }
+            for upload in uploads {
+                upload.await.unwrap();
+            }
+        });
     }
 
     #[tokio::test]
