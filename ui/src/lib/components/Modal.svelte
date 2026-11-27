@@ -23,6 +23,18 @@
     xl: 'max-w-4xl'
   };
 
+  // Close on a backdrop click only when the press also started on the
+  // backdrop: a text-selection drag that begins in the panel and ends over the
+  // overlay dispatches `click` on the overlay and would discard form input.
+  let pressedOnBackdrop = false;
+  function onBackdropDown(event: MouseEvent) {
+    pressedOnBackdrop = event.target === event.currentTarget;
+  }
+  function onBackdropClick(event: MouseEvent) {
+    if (pressedOnBackdrop && event.target === event.currentTarget) onClose();
+    pressedOnBackdrop = false;
+  }
+
   $: resolvedSize = (size || (wide ? 'lg' : 'md')) as 'sm' | 'md' | 'lg' | 'xl';
 </script>
 
@@ -32,7 +44,8 @@
   <div
     class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-0 sm:p-4"
     use:modal={{ onClose }}
-    on:click|self={onClose}
+    on:mousedown={onBackdropDown}
+    on:click={onBackdropClick}
   >
     <div
       class="flex h-full max-h-full w-full flex-col overflow-hidden border border-naslos-border bg-naslos-surface shadow-xl sm:h-auto sm:rounded-2xl {widths[

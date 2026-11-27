@@ -27,7 +27,7 @@
         {f.label || f.key}{#if f.required}<span class="text-red-400"> *</span>{/if}
       </label>
       {#if f.type === 'enum'}
-        <select id={`${idPrefix}-field-${f.key}`} class="input" bind:value={values[f.key]}>
+        <select id={`${idPrefix}-field-${f.key}`} class="input w-full" bind:value={values[f.key]}>
           {#each f.enum || [] as v (v)}
             <option value={v}>{v}</option>
           {/each}
@@ -52,7 +52,7 @@
       {:else if f.secret}
         <input
           id={`${idPrefix}-field-${f.key}`}
-          class="input"
+          class="input w-full"
           type="password"
           autocomplete="new-password"
           bind:value={values[f.key]}
@@ -61,7 +61,7 @@
       {:else}
         <input
           id={`${idPrefix}-field-${f.key}`}
-          class="input"
+          class="input w-full"
           bind:value={values[f.key]}
           placeholder={redactedConfigured.has(f.key) ? 'Configured — leave blank to keep' : ''}
         />
