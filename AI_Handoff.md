@@ -397,13 +397,13 @@ retrying or using the browser path worked around it. Worth watching.
 ### Open items
 
 - **Stale upgrader Job held the system-operation lock (fixed in 0.7.66,
-  #282; deployed since revision 80):** the 0.7.6 upgrade Job finished its pod but Kubernetes left it at
+  #282; deployed since revision 79):** the 0.7.6 upgrade Job finished its pod but Kubernetes left it at
   `SuccessCriteriaMet` with the pod only in `uncountedTerminatedPods` and no
   `succeeded` count, so `read_job_status` reported `pending` forever and every
   later upgrade/revert/reboot failed with "another system operation is
   starting". The stale Job was removed on 2026-11-27 so the 0.7.65 upgrade
   could start. 0.7.66 fixed the check and the node has carried it since the
-  0.7.68 deploy (revision 80), so such a Job no longer blocks operations.
+  0.7.66 deploy (revision 79), so such a Job no longer blocks operations.
 - **Encrypted replication (released in 0.7.64, now deployed in 0.7.65;
   live drill pending):**
   FR-ENC-07. An encrypted source is sent raw
