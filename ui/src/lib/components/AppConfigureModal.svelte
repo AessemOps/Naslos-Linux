@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { modal } from '$lib/actions/modal';
-  import Icon from '$lib/components/Icon.svelte';
   import { onMount, createEventDispatcher } from 'svelte';
+  import AsyncState from './AsyncState.svelte';
+  import Button from './Button.svelte';
+  import Modal from './Modal.svelte';
   import SchemaForm from './SchemaForm.svelte';
   import EnvVarEditor from './EnvVarEditor.svelte';
-  import type { EnvRow } from '$lib/appEnv';
+  import type { EnvRow, ManagedDataset } from '$lib/appEnv';
+  import { datasetBlocked, validateEnvRows } from '$lib/appEnv';
   import { trackAppJob } from '$lib/stores/appJobs';
 
   export let appName: string;
@@ -15,7 +17,7 @@
   } | null = null;
   let values: Record<string, any> = {};
   let redactedKeys: string[] = [];
-  let managedDatasets: { name: string; hostPath: string; shared: boolean; attachedTo?: string[] }[] = [];
+  let managedDatasets: ManagedDataset[] = [];
   let selectedDatasets: string[] = [];
   // Records outside a per-app isolation namespace cannot gain datasets without
   // a reinstall (the API rejects a dataset change for them).
@@ -28,6 +30,12 @@
     { value: 1000, label: 'default (1000)' }
   ];
   let loading = true;
+  // The installed record must load before Save can send anything: a failed GET
+  // used to leave the defaults in place and Save then wiped the stored values
+  // and dataset selection.
+  let loaded = false;
+  let loadError = '';
+  let datasetsError = '';
   let saving = false;
   let error = '';
   let env: EnvRow[] = [];
@@ -40,57 +48,20 @@
 
   $: envSupported = app?.capabilities?.includes('env') ?? false;
 
-  function envPayload(): EnvRow[] | null {
-    if (!envSupported) return [];
-    const out: EnvRow[] = [];
-    const seen = new Set<string>();
-    for (const row of env) {
-      const name = row.name.trim();
-      if (!name) {
-        error = 'Every environment variable needs a name.';
-        return null;
-      }
-      if (name.length > 128 || !/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) {
-        error = `Invalid environment variable name ${name}.`;
-        return null;
-      }
-      if (name.startsWith('NASLOS_')) {
-        error = `Environment variable ${name} uses the reserved NASLOS_ prefix.`;
-        return null;
-      }
-      if (seen.has(name)) {
-        error = `Environment variable ${name} is defined twice.`;
-        return null;
-      }
-      seen.add(name);
-      if (row.value === null || row.value === '') {
-        if (!(row.secret && storedNames.has(name))) {
-          error = `Environment variable ${name} needs a value.`;
-          return null;
-        }
-        out.push({ name, value: null, secret: true });
-      } else {
-        out.push({ name, value: row.value, secret: row.secret });
-      }
-    }
-    return out;
-  }
-
-  function datasetBlocked(dataset: { name: string; shared: boolean; attachedTo?: string[] }): boolean {
-    return (
-      !dataset.shared &&
-      (dataset.attachedTo?.length ?? 0) > 0 &&
-      !(dataset.attachedTo ?? []).includes(appName)
-    );
-  }
-
-  $: sharedSelected = managedDatasets.filter((d) => d.shared && selectedDatasets.includes(d.name));
+  $: sharedSelected = managedDatasets.filter(
+    (d) => d.shared && selectedDatasets.includes(d.name)
+  );
   $: datasetError =
     !legacy && hasDatasets && selectedDatasets.length === 0
       ? 'An isolated app needs at least one dataset. Keep one or uninstall the app to remove its storage.'
       : '';
 
   async function load() {
+    loading = true;
+    loaded = false;
+    loadError = '';
+    datasetsError = '';
+    error = '';
     try {
       const [catalogRes, installedRes, registryRes] = await Promise.all([
         fetch(`/api/catalog/${encodeURIComponent(appName)}`),
@@ -101,36 +72,50 @@
         throw new Error(`catalog HTTP ${catalogRes.status}`);
       }
       app = await catalogRes.json();
+      if (!installedRes.ok) {
+        // Blocking: saving the defaults here would overwrite the real values.
+        throw new Error(`the installed record is unavailable (HTTP ${installedRes.status})`);
+      }
+      const installed = await installedRes.json();
+      values = { ...(installed.values || {}) };
+      redactedKeys = Array.isArray(installed.redactedKeys) ? installed.redactedKeys : [];
+      selectedDatasets = Array.isArray(installed.datasets) ? [...installed.datasets] : [];
+      hasDatasets = selectedDatasets.length > 0;
+      legacy = installed.isolated === false;
+      const installedEnv = Array.isArray(installed.env) ? installed.env : [];
+      env = installedEnv.map((row: any) => ({
+        name: String(row.name ?? ''),
+        value: row.value === null || row.value === undefined ? null : String(row.value),
+        secret: !!row.secret
+      }));
+      storedNames = new Set(env.map((row) => row.name));
+      envUnsupported = installedEnv.length > 0 && !(app?.capabilities?.includes('env') ?? false);
       if (registryRes.ok) {
         const registry = await registryRes.json();
         if (Array.isArray(registry)) managedDatasets = registry;
+      } else {
+        // The current selection is already loaded; the registry only feeds the
+        // picker, so warn instead of blocking the whole form.
+        datasetsError = `Registered datasets are unavailable (HTTP ${registryRes.status}).`;
       }
-      if (installedRes.ok) {
-        const installed = await installedRes.json();
-        values = { ...(installed.values || {}) };
-        redactedKeys = Array.isArray(installed.redactedKeys) ? installed.redactedKeys : [];
-        selectedDatasets = Array.isArray(installed.datasets) ? [...installed.datasets] : [];
-        hasDatasets = selectedDatasets.length > 0;
-        legacy = installed.isolated === false;
-        const installedEnv = Array.isArray(installed.env) ? installed.env : [];
-        env = installedEnv.map((row: any) => ({
-          name: String(row.name ?? ''),
-          value: row.value === null || row.value === undefined ? null : String(row.value),
-          secret: !!row.secret
-        }));
-        storedNames = new Set(env.map((row) => row.name));
-        envUnsupported = installedEnv.length > 0 && !(app?.capabilities?.includes('env') ?? false);
-      }
+      loaded = true;
     } catch (e) {
-      error = 'Failed to load app configuration: ' + e;
+      loadError = 'Failed to load app configuration: ' + (e instanceof Error ? e.message : String(e));
     } finally {
       loading = false;
     }
   }
 
   async function save() {
-    const submittedEnv = envPayload();
-    if (submittedEnv === null) return;
+    if (!loaded || !app) {
+      error = 'The app configuration could not be loaded; retry before saving.';
+      return;
+    }
+    const submittedEnv = validateEnvRows(env, { supported: envSupported });
+    if (submittedEnv.rows === null) {
+      error = submittedEnv.error;
+      return;
+    }
     saving = true;
     error = '';
     try {
@@ -139,7 +124,7 @@
       // be sent a different list (the API rejects it).
       if (!legacy) body.datasets = selectedDatasets;
       // Omitting env keeps the stored Secret; an array replaces it.
-      if (envSupported) body.env = submittedEnv;
+      if (envSupported) body.env = submittedEnv.rows;
       const res = await fetch(`/api/apps/${encodeURIComponent(appName)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -163,34 +148,37 @@
   onMount(load);
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" use:modal={{ onClose: () => dispatch('close') }} on:click|self={() => dispatch('close')}>
-  <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
-    <div class="p-6 border-b border-naslos-border flex items-center justify-between">
-      <h2 class="text-xl font-bold">Configure — {appName}</h2>
-      <button class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border" aria-label="Close" on:click={() => dispatch('close')}><Icon name="x" /></button>
-    </div>
-    <div class="flex-1 overflow-y-auto p-6">
-      {#if loading}
-        <p class="text-gray-400">Loading configuration...</p>
-      {:else if app}
+<Modal title="Configure — {appName}" onClose={() => dispatch('close')}>
+  <AsyncState
+    {loading}
+    error={loadError}
+    loadingText="Loading configuration..."
+    onRetry={load}
+  >
+    {#if app}
+      <form id="app-configure-form" on:submit|preventDefault={save} class="space-y-4">
         <SchemaForm {app} {redactedKeys} bind:values {groupOptions} />
         {#if envSupported}
-          <div class="mt-4">
-            <span class="label">Environment variables</span>
+          <div>
+            <h3 class="label">Environment variables</h3>
             <EnvVarEditor bind:env {storedNames} />
           </div>
         {:else if envUnsupported}
-          <p class="mt-4 text-xs text-amber-300">
+          <p class="text-xs text-amber-300">
             This chart no longer supports custom environment variables. The existing values are kept in the
             app Secret but are no longer mounted into the containers.
           </p>
         {/if}
-        <div class="mt-4">
-          <span class="label">Datasets</span>
+        <fieldset>
+          <legend class="label">Datasets</legend>
           {#if legacy}
             <p class="text-xs text-amber-300">
               This app predates per-app isolation. Reinstall it to attach or change datasets.
+            </p>
+          {:else if datasetsError}
+            <p role="alert" class="text-xs text-red-300">
+              {datasetsError}
+              <Button variant="ghost" size="sm" on:click={load}>Retry</Button>
             </p>
           {:else if managedDatasets.length === 0}
             <p class="text-xs text-gray-500">No datasets are registered yet.</p>
@@ -203,12 +191,12 @@
                     class="mt-1"
                     value={dataset.name}
                     bind:group={selectedDatasets}
-                    disabled={datasetBlocked(dataset)}
+                    disabled={datasetBlocked(dataset, appName)}
                   />
                   <span class="text-sm">
                     <span class="font-mono">{dataset.name}</span> — {dataset.hostPath}
                     ({dataset.shared ? 'shared' : 'private'})
-                    {#if datasetBlocked(dataset)}
+                    {#if datasetBlocked(dataset, appName)}
                       <span class="text-amber-300">attached to {dataset.attachedTo?.join(', ')}</span>
                     {/if}
                   </span>
@@ -227,14 +215,26 @@
               </p>
             {/each}
           {/if}
-        </div>
-      {/if}
-      {#if datasetError}<div role="alert" class="mt-4 p-3 rounded-lg bg-amber-900/30 border border-amber-700 text-amber-200 text-sm">{datasetError}</div>{/if}
-      {#if error}<div role="alert" class="mt-4 p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
-    </div>
-    <div class="p-6 border-t border-naslos-border flex justify-end gap-3">
-      <button class="btn btn-secondary" on:click={() => dispatch('close')}>Cancel</button>
-      <button class="btn btn-primary" on:click={save} disabled={saving || loading || !!datasetError}>{saving ? 'Saving...' : 'Save'}</button>
-    </div>
-  </div>
-</div>
+        </fieldset>
+        {#if datasetError}
+          <p role="alert" class="callout callout-warn mb-0">{datasetError}</p>
+        {/if}
+        {#if error}
+          <p role="alert" class="callout callout-bad mb-0">{error}</p>
+        {/if}
+      </form>
+    {/if}
+  </AsyncState>
+
+  <svelte:fragment slot="footer">
+    <Button variant="secondary" on:click={() => dispatch('close')}>Cancel</Button>
+    <Button
+      type="submit"
+      form="app-configure-form"
+      loading={saving}
+      disabled={!loaded || loading || !!datasetError}
+    >
+      {saving ? 'Saving...' : 'Save'}
+    </Button>
+  </svelte:fragment>
+</Modal>

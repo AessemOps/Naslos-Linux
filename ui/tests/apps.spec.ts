@@ -748,6 +748,35 @@ test.describe('app UI safety', () => {
     expect(saved).toBeNull();
   });
 
+  test('a failed installed-record GET blocks configure saving', async ({ page }) => {
+    let saved: any = null;
+    await mockInstalledApp(page, async (route, path, request) => {
+      if (path === '/api/apps/demo-app' && request.method() === 'GET') {
+        await route.fulfill({ status: 502, json: { error: 'backend unavailable' } });
+        return true;
+      }
+      if (path === '/api/apps/demo-app' && request.method() === 'PUT') {
+        saved = request.postDataJSON();
+        await route.fulfill({ status: 202, json: { jobId: 'job-configure', state: 'running' } });
+        return true;
+      }
+      return false;
+    });
+
+    await page.goto('/apps');
+    await expect(page.getByText('Loading installed apps...')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Open Demo App details', exact: true }).click();
+    await page.getByRole('button', { name: 'Configure', exact: true }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByRole('heading', { name: 'Configure — demo-app' })).toBeVisible();
+    // The defaults must never be saved over the real configuration.
+    await expect(dialog.getByRole('alert')).toContainText(/Failed to load app configuration|installed record/);
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Retry' })).toBeVisible();
+    expect(saved).toBeNull();
+  });
+
   test('clearing a resource field drops it from the whole resources object', async ({ page }) => {
     let saved: any = null;
     await mockInstalledApp(page, async (route, path, request) => {
