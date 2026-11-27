@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { modal } from '$lib/actions/modal';
-  import Icon from '$lib/components/Icon.svelte';
   import { createEventDispatcher } from 'svelte';
+  import { api, ApiError } from '$lib/api';
+  import Button from '$lib/components/Button.svelte';
+  import FormField from '$lib/components/FormField.svelte';
+  import Modal from '$lib/components/Modal.svelte';
   import ProviderFields from './ProviderFields.svelte';
   import { changedProviderFields, providerDefaults, visibleFields } from '$lib/providerFields';
   import type { DdnsEntryView, DnsProviderView } from '$lib/dnsTypes';
@@ -77,7 +79,7 @@
     initialValues = { ...fieldValues };
   }
 
-  const dispatch = createEventDispatcher();
+  const dispatch = createEventDispatcher<{ close: void }>();
 
   function body(): Record<string, unknown> {
     return {
@@ -115,29 +117,27 @@
         }
       }
       const path = entry ? `/api/ddns/${encodeURIComponent(entry.id)}` : '/api/ddns';
-      const res = await fetch(path, {
+      const data = await api<{ id?: string }>(path, {
         method: entry ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body())
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || `HTTP ${res.status}`);
-      }
       if (runAfter && data.id) {
         running = true;
-        const run = await fetch(`/api/ddns/${encodeURIComponent(data.id)}/run`, { method: 'POST' });
-        const runData = await run.json().catch(() => ({}));
-        if (!run.ok) {
-          throw new Error(runData.error || `HTTP ${run.status}`);
+        try {
+          const runData = await api<{ lastIP?: string }>(
+            `/api/ddns/${encodeURIComponent(data.id)}/run`,
+            { method: 'POST' }
+          );
+          notice = `Updated: ${runData.lastIP || 'record applied'}`;
+        } finally {
+          running = false;
         }
-        notice = `Updated: ${runData.lastIP || 'record applied'}`;
-        running = false;
         return;
       }
       dispatch('close');
-    } catch (e: unknown) {
-      error = e instanceof Error ? e.message : String(e);
+    } catch (e) {
+      error = e instanceof ApiError || e instanceof Error ? e.message : String(e);
     } finally {
       saving = false;
       running = false;
@@ -145,83 +145,92 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" use:modal={{ onClose: () => dispatch('close') }} on:click|self={() => dispatch('close')}>
-  <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
-    <div class="p-6 border-b border-naslos-border flex items-center justify-between">
-      <h2 class="text-xl font-bold">{entry ? 'Edit DDNS Entry' : 'Add DDNS Entry'}</h2>
-      <button class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border" aria-label="Close" on:click={() => dispatch('close')}><Icon name="x" /></button>
+<Modal
+  open={true}
+  title={entry ? 'Edit DDNS Entry' : 'Add DDNS Entry'}
+  size="md"
+  onClose={() => dispatch('close')}
+>
+  <form id="ddns-form" class="space-y-4" on:submit|preventDefault={() => save(false)}>
+    <FormField label="Provider" id="ddns-provider" hint={currentProvider?.description || ''}>
+      <select id="ddns-provider" class="input w-full" value={providerName} on:change={onProviderChange}>
+        {#each ddnsProviders as p (p.name)}
+          <option value={p.name}>{p.displayName || p.name}</option>
+        {/each}
+      </select>
+    </FormField>
+
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <FormField label="Zone" id="ddns-zone">
+        <input id="ddns-zone" class="input w-full" bind:value={zone} placeholder="example.com" />
+      </FormField>
+      <FormField label="Record" id="ddns-record">
+        <input id="ddns-record" class="input w-full" bind:value={record} placeholder="home (@ for apex)" />
+      </FormField>
     </div>
-    <div class="flex-1 overflow-y-auto p-6 space-y-4">
-      <div>
-        <label class="label" for="ddns-provider">Provider</label>
-        <select id="ddns-provider" class="input" value={providerName} on:change={onProviderChange}>
-          {#each ddnsProviders as p}
-            <option value={p.name}>{p.displayName || p.name}</option>
-          {/each}
+
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <FormField label="Type" id="ddns-type">
+        <select id="ddns-type" class="input w-full" bind:value={recordType}>
+          <option value="A">A (IPv4)</option>
+          <option value="AAAA">AAAA (IPv6)</option>
         </select>
-        {#if currentProvider?.description}<p class="text-xs text-gray-500 mt-1">{currentProvider?.description}</p>{/if}
-      </div>
-
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <label class="label" for="ddns-zone">Zone</label>
-          <input id="ddns-zone" class="input" bind:value={zone} placeholder="example.com" />
-        </div>
-        <div>
-          <label class="label" for="ddns-record">Record</label>
-          <input id="ddns-record" class="input" bind:value={record} placeholder="home (@ for apex)" />
-        </div>
-      </div>
-
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <label class="label" for="ddns-type">Type</label>
-          <select id="ddns-type" class="input" bind:value={recordType}>
-            <option value="A">A (IPv4)</option>
-            <option value="AAAA">AAAA (IPv6)</option>
-          </select>
-        </div>
-        <div>
-          <label class="label" for="ddns-ttl">TTL</label>
-          <input id="ddns-ttl" class="input" type="number" min="0" bind:value={ttl} placeholder="0 = provider default" />
-        </div>
-      </div>
-
-      <label class="flex items-center gap-2 text-sm w-fit cursor-pointer select-none">
-        <input type="checkbox" bind:checked={enabled} />
-        Enabled
-      </label>
-
-      <div class="border-t border-naslos-border pt-4 space-y-3">
-        <p class="text-xs uppercase tracking-wide text-gray-500">Provider credentials</p>
-        <ProviderFields
-          fields={ddnsFields}
-          values={fieldValues}
-          idPrefix="ddns"
-          secretSet={!providerChanged ? entry?.credentialFields || [] : []}
-          redactedKeys={redactedKeys}
-          cleared={clearedFields}
-          unchangedPlaceholder="•••••• (unchanged)"
-          on:change={() => (fieldValues = { ...fieldValues })}
+      </FormField>
+      <FormField label="TTL" id="ddns-ttl">
+        <input
+          id="ddns-ttl"
+          class="input w-full"
+          type="number"
+          min="0"
+          bind:value={ttl}
+          placeholder="0 = provider default"
         />
-        {#if redactedKeys.length > 0}
-          <p class="text-xs text-gray-500">
-            Stored and redacted: <span class="font-mono">{redactedKeys.join(', ')}</span>.
-            Their values are not returned; leave a field blank to keep it, or tick Clear to revoke it.
-          </p>
-        {/if}
-      </div>
+      </FormField>
+    </div>
 
-      {#if notice}<div class="p-3 rounded-lg bg-green-900/30 border border-green-700 text-green-300 text-sm">{notice}</div>{/if}
-      {#if error}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
+    <label class="flex min-h-10 w-fit cursor-pointer select-none items-center gap-2 text-sm">
+      <input type="checkbox" bind:checked={enabled} />
+      Enabled
+    </label>
+
+    <div class="space-y-3 border-t border-naslos-border pt-4">
+      <p class="text-xs uppercase tracking-wide text-gray-500">Provider credentials</p>
+      <ProviderFields
+        fields={ddnsFields}
+        values={fieldValues}
+        idPrefix="ddns"
+        secretSet={!providerChanged ? entry?.credentialFields || [] : []}
+        redactedKeys={redactedKeys}
+        cleared={clearedFields}
+        unchangedPlaceholder="•••••• (unchanged)"
+        on:change={() => (fieldValues = { ...fieldValues })}
+      />
+      {#if redactedKeys.length > 0}
+        <p class="text-xs text-gray-500">
+          Stored and redacted: <span class="font-mono">{redactedKeys.join(', ')}</span>.
+          Their values are not returned; leave a field blank to keep it, or tick Clear to revoke it.
+        </p>
+      {/if}
     </div>
-    <div class="p-6 border-t border-naslos-border flex justify-end gap-3">
-      <button class="btn btn-secondary" on:click={() => dispatch('close')}>Cancel</button>
-      <button class="btn btn-secondary" on:click={() => save(true)} disabled={saving || !entry}>
-        {running ? 'Updating...' : 'Update now'}
-      </button>
-      <button class="btn btn-primary" on:click={() => save(false)} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
-    </div>
-  </div>
-</div>
+
+    {#if notice}
+      <div class="callout callout-ok mb-0" role="status">{notice}</div>
+    {/if}
+    {#if error}
+      <div role="alert" class="callout callout-bad mb-0">{error}</div>
+    {/if}
+  </form>
+
+  <svelte:fragment slot="footer">
+    <Button variant="secondary" on:click={() => dispatch('close')}>Cancel</Button>
+    <Button
+      variant="secondary"
+      loading={running}
+      disabled={saving || !entry}
+      on:click={() => save(true)}
+    >{running ? 'Updating...' : 'Update now'}</Button>
+    <Button type="submit" form="ddns-form" loading={saving}>
+      {saving ? 'Saving...' : 'Save'}
+    </Button>
+  </svelte:fragment>
+</Modal>

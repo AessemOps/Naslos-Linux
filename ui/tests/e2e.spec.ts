@@ -6,8 +6,6 @@ test('full user and group lifecycle', async ({ page }) => {
   const uid = 'jdoe' + unique();
   const cn = 'testgroup' + unique();
 
-  page.on('dialog', dialog => dialog.accept());
-
   // Create a user
   await page.goto('/users');
   await page.getByRole('button', { name: '+ New User' }).click();
@@ -39,12 +37,14 @@ test('full user and group lifecycle', async ({ page }) => {
   // Verify the full DN is NOT shown (the fix we made)
   await expect(page.locator('div.card', { hasText: cn }).getByText(/ou=people,dc=naslos/)).not.toBeVisible();
 
-  // Delete the group
+  // Delete the group; the page asks for confirmation in its own dialog.
   await page.locator('div.card', { hasText: cn }).getByRole('button', { name: 'Delete' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(page.locator('div.card', { hasText: cn })).not.toBeVisible();
 
-  // Delete the user
+  // Delete the user the same way.
   await page.goto('/users');
   await page.locator('tr', { hasText: uid }).getByRole('button', { name: 'Delete' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(page.locator('tr', { hasText: uid })).not.toBeVisible();
 });

@@ -97,10 +97,10 @@ test('schedules can be created and deleted', async ({ page, request }) => {
     await page.reload();
     await expect(page.getByText(source)).toBeVisible({ timeout: 10_000 });
 
-    // Deleting from the UI asks for confirmation; accept it.
-    page.on('dialog', (d) => d.accept());
+    // Deleting from the UI asks for confirmation in the app's own dialog.
     const row = page.locator('tr').filter({ hasText: source });
     await row.getByRole('button', { name: 'Delete' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
     await expect(page.getByText(source)).toBeHidden({ timeout: 10_000 });
   } finally {
     await request.delete(`/api/buddy/schedules?id=${encodeURIComponent(id)}`);

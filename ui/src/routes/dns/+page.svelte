@@ -1,9 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import EmptyState from '$lib/components/EmptyState.svelte';
-  import LoadingState from '$lib/components/LoadingState.svelte';
-  import StatusBadge from '$lib/components/StatusBadge.svelte';
+  import { api } from '$lib/api';
+  import AsyncState from '$lib/components/AsyncState.svelte';
+  import Button from '$lib/components/Button.svelte';
   import DdnsForm from '$lib/components/DdnsForm.svelte';
+  import PageHeader from '$lib/components/PageHeader.svelte';
+  import StatusBadge from '$lib/components/StatusBadge.svelte';
+  import { confirmAction } from '$lib/stores/confirm';
 
   interface Entry {
     id: string;
@@ -23,58 +26,94 @@
     nextRunAt?: string;
   }
 
+  interface Provider {
+    name: string;
+    displayName?: string;
+    ddns?: boolean;
+  }
+
+  interface DdnsResponse {
+    entries?: Entry[];
+    enabled?: boolean;
+    intervalSeconds?: number;
+  }
+
+  interface DomainSummary {
+    baseDomain: string;
+    appRecordsDdnsEntry?: string;
+  }
+
   let entries: Entry[] = [];
-  let providers: any[] = [];
+  let providers: Provider[] = [];
   let enabled = true;
   let intervalSeconds = 300;
   let loading = true;
-  let error = '';
+  let loadError = '';
+  let actionError = '';
+  let providersError = '';
   let showForm = false;
   let editing: Entry | null = null;
   let busy = '';
+  let removing = '';
   let usedTargets = new Set<string>();
   let targetDomains = new Map<string, string[]>();
 
+  function message(e: unknown): string {
+    return e instanceof Error ? e.message : String(e);
+  }
+
+  // Provider metadata is a secondary source: entries can still be listed and
+  // run without it, but the failure must be visible with a retry instead of
+  // silently degrading the provider names.
+  async function loadProviders() {
+    providersError = '';
+    try {
+      const data = await api<{ providers?: Provider[] }>('/api/providers');
+      providers = Array.isArray(data.providers) ? data.providers : [];
+    } catch (e) {
+      providers = [];
+      providersError = message(e);
+    }
+  }
+
+  async function loadDomains() {
+    try {
+      const data = await api<{ domains?: DomainSummary[] }>('/api/domains');
+      const domains = Array.isArray(data.domains) ? data.domains : [];
+      usedTargets = new Set(
+        domains.map((domain) => domain.appRecordsDdnsEntry).filter((id): id is string => !!id)
+      );
+      targetDomains = new Map();
+      for (const domain of domains) {
+        if (!domain.appRecordsDdnsEntry) continue;
+        const list = targetDomains.get(domain.appRecordsDdnsEntry) || [];
+        list.push(domain.baseDomain);
+        targetDomains.set(domain.appRecordsDdnsEntry, list);
+      }
+    } catch {
+      // The app-record hint is best effort; entries stay manageable.
+      usedTargets = new Set();
+      targetDomains = new Map();
+    }
+  }
+
   async function load() {
     loading = true;
-    error = '';
+    loadError = '';
     try {
-      const [ddnsRes, providerRes, domainsRes] = await Promise.all([
-        fetch('/api/ddns'),
-        fetch('/api/providers'),
-        fetch('/api/domains')
-      ]);
-      if (!ddnsRes.ok) {
-        throw new Error(`HTTP ${ddnsRes.status}`);
-      }
-      const data = await ddnsRes.json();
+      const data = await api<DdnsResponse>('/api/ddns');
       entries = Array.isArray(data.entries) ? data.entries : [];
       enabled = data.enabled !== false;
       intervalSeconds = data.intervalSeconds || 300;
-      if (providerRes.ok) {
-        const providersData = await providerRes.json();
-        providers = Array.isArray(providersData.providers) ? providersData.providers : [];
-      }
-      if (domainsRes.ok) {
-        const domainData = await domainsRes.json();
-        const domains = Array.isArray(domainData.domains) ? domainData.domains : [];
-        usedTargets = new Set(
-          domains.map((domain: any) => domain.appRecordsDdnsEntry).filter(Boolean)
-        );
-        targetDomains = new Map();
-        for (const domain of domains) {
-          if (!domain.appRecordsDdnsEntry) continue;
-          const list = targetDomains.get(domain.appRecordsDdnsEntry) || [];
-          list.push(domain.baseDomain);
-          targetDomains.set(domain.appRecordsDdnsEntry, list);
-        }
-      }
     } catch (e) {
-      error = 'Failed to load dynamic DNS: ' + e;
       entries = [];
-    } finally {
-      loading = false;
+      loadError = 'Failed to load dynamic DNS: ' + message(e);
     }
+    // Keep the page in its loading state until the secondary data the add form
+    // snapshots (providers) and the app-record hints are settled, so the form
+    // cannot open with an empty provider select.
+    await Promise.all([loadProviders(), loadDomains()]);
+    loading = false;
   }
 
   function providerName(name: string): string {
@@ -82,44 +121,46 @@
     return p?.displayName || name;
   }
 
-  async function remove(id: string) {
-    const domains = targetDomains.get(id) || [];
+  function entryHost(entry: Entry): string {
+    return entry.record === '@' || !entry.record ? entry.zone : `${entry.record}.${entry.zone}`;
+  }
+
+  async function remove(entry: Entry) {
+    const domains = targetDomains.get(entry.id) || [];
     if (
-      !confirm(
-        domains.length
+      !(await confirmAction({
+        title: 'Remove DDNS entry',
+        message: domains.length
           ? `This entry is the app-record target for ${domains.join(', ')}. Disable app records there first. Remove it anyway?`
-          : 'Remove this dynamic DNS entry? Its credential Secret is deleted too.'
-      )
+          : 'Remove this dynamic DNS entry? Its credential Secret is deleted too.',
+        confirmLabel: 'Remove',
+        tone: 'danger'
+      }))
     ) {
       return;
     }
-    busy = id;
+    busy = entry.id;
+    removing = entry.id;
+    actionError = '';
     try {
-      const res = await fetch(`/api/ddns/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `HTTP ${res.status}`);
-      }
+      await api(`/api/ddns/${encodeURIComponent(entry.id)}`, { method: 'DELETE' });
       await load();
-    } catch (e: any) {
-      error = `Failed to remove ${id}: ${e.message || e}`;
+    } catch (e) {
+      actionError = `Failed to remove ${entry.id}: ${message(e)}`;
     } finally {
       busy = '';
+      removing = '';
     }
   }
 
-  async function runNow(id: string) {
-    busy = id;
-    error = '';
+  async function runNow(entry: Entry) {
+    busy = entry.id;
+    actionError = '';
     try {
-      const res = await fetch(`/api/ddns/${encodeURIComponent(id)}/run`, { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || `HTTP ${res.status}`);
-      }
+      await api(`/api/ddns/${encodeURIComponent(entry.id)}/run`, { method: 'POST' });
       await load();
     } catch (e) {
-      error = `Run failed: ` + e;
+      actionError = `Run failed: ${message(e)}`;
       await load();
     } finally {
       busy = '';
@@ -129,72 +170,119 @@
   onMount(load);
 </script>
 
-<div class="max-w-6xl mx-auto">
-  <div class="flex justify-between items-start mb-6">
-    <div>
-      <h1 class="text-3xl font-bold mb-2">Dynamic DNS</h1>
-      <p class="text-gray-400">
-        Keep A/AAAA records pointed at the appliance's public IP. Checked every {intervalSeconds}s;
-        the provider is updated only when the IP changes.
-      </p>
-    </div>
-    <button class="btn btn-primary" on:click={() => { editing = null; showForm = true; }} disabled={!enabled}>+ Add Entry</button>
-  </div>
+<div class="mx-auto max-w-6xl">
+  <PageHeader
+    title="Dynamic DNS"
+    subtitle={`Keep A/AAAA records pointed at the appliance's public IP. Checked every ${intervalSeconds}s; the provider is updated only when the IP changes.`}
+    breadcrumbs={[{ label: 'Networking' }, { label: 'Dynamic DNS' }]}
+  >
+    <Button
+      slot="actions"
+      on:click={() => {
+        editing = null;
+        showForm = true;
+      }}
+      disabled={!enabled}
+    >+ Add Entry</Button>
+  </PageHeader>
 
   {#if !enabled}
-    <div class="card border-amber-700 bg-amber-900/30 text-amber-200 p-4 mb-6" role="status">
+    <div class="callout callout-warn" role="status">
       Dynamic DNS is disabled. Enable <span class="font-mono">ddns.enabled</span> and redeploy.
     </div>
   {/if}
 
-  {#if error}
-    <div role="alert" class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
+  {#if actionError}
+    <div role="alert" class="callout callout-bad">{actionError}</div>
   {/if}
 
-  {#if loading}
-    <LoadingState label="Loading dynamic DNS..." />
-  {:else if entries.length === 0}
-    <EmptyState icon="earth" title="No Dynamic DNS Entries" detail="Add an entry to keep a record pointed at your public IP." />
-  {:else}
+  {#if providersError}
+    <div role="alert" class="callout callout-warn flex flex-wrap items-center justify-between gap-3">
+      <span>Provider names and credential fields could not be loaded ({providersError}).</span>
+      <Button size="sm" variant="secondary" on:click={loadProviders}>Retry</Button>
+    </div>
+  {/if}
+
+  <AsyncState
+    {loading}
+    error={loadError}
+    empty={entries.length === 0}
+    loadingText="Loading dynamic DNS..."
+    emptyIcon="earth"
+    emptyTitle="No Dynamic DNS Entries"
+    emptyDetail="Add an entry to keep a record pointed at your public IP."
+    onRetry={load}
+  >
     <div class="space-y-3">
       {#each entries as entry (entry.id)}
-        <div class="card flex items-center gap-4">
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 mb-1">
-              <h3 class="font-bold">{entry.record === '@' || !entry.record ? entry.zone : `${entry.record}.${entry.zone}`}</h3>
-              <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{entry.recordType}</span>
-              <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{providerName(entry.provider)}</span>
+        <div class="card flex flex-col gap-4 sm:flex-row sm:items-start">
+          <div class="min-w-0 flex-1">
+            <div class="mb-1 flex flex-wrap items-center gap-2">
+              <h2 class="font-bold">{entryHost(entry)}</h2>
+              <span class="badge badge-neutral">{entry.recordType}</span>
+              <span class="badge badge-neutral">{providerName(entry.provider)}</span>
               <StatusBadge state={entry.lastStatus || 'never run'} />
-              {#if !entry.enabled}<span class="text-xs px-2 py-0.5 rounded bg-gray-800 text-gray-400">disabled</span>{/if}
+              {#if !entry.enabled}
+                <StatusBadge state="disabled" label="disabled" tone="neutral" />
+              {/if}
               {#if usedTargets.has(entry.id)}
                 <span
-                  class="text-xs px-2 py-0.5 rounded bg-emerald-900/50 text-emerald-300"
+                  class="badge badge-ok"
                   title={`App DNS records on ${(targetDomains.get(entry.id) || []).join(', ')}`}
                 >app records target</span>
               {/if}
             </div>
             <p class="text-xs text-gray-500">
-              {#if entry.lastIP}IP {entry.lastIP}{/if}{entry.ttl ? ` • TTL ${entry.ttl}` : ''}{entry.nextRunAt ? ` • next ${new Date(entry.nextRunAt).toLocaleTimeString()}` : ''}
+              {#if entry.lastIP}IP <span class="font-mono">{entry.lastIP}</span>{/if}{entry.ttl ? ` • TTL ${entry.ttl}` : ''}{entry.nextRunAt ? ` • next ${new Date(entry.nextRunAt).toLocaleTimeString()}` : ''}
             </p>
             {#if (entry.redactedProviderConfigKeys?.length ?? 0) > 0}
-              <p class="text-xs text-gray-500 mt-1">
+              <p class="mt-1 text-xs text-gray-500">
                 Configured (values hidden):
                 <span class="font-mono">{entry.redactedProviderConfigKeys?.join(', ')}</span>.
               </p>
             {/if}
-            {#if entry.lastError}<p class="text-xs text-amber-400 mt-1">{entry.lastError}</p>{/if}
+            {#if entry.lastError}
+              <p class="mt-1 text-xs text-amber-400">{entry.lastError}</p>
+            {/if}
           </div>
-          <div class="flex gap-2">
-            <button class="btn btn-secondary" on:click={() => runNow(entry.id)} disabled={busy === entry.id}>Update now</button>
-            <button class="btn btn-secondary" on:click={() => { editing = entry; showForm = true; }}>Edit</button>
-            <button class="btn btn-danger" on:click={() => remove(entry.id)} disabled={busy === entry.id}>Remove</button>
+          <div class="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              loading={busy === entry.id && removing !== entry.id}
+              disabled={(busy === entry.id && removing === entry.id) || (!!busy && busy !== entry.id)}
+              on:click={() => runNow(entry)}
+            >Update now</Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              on:click={() => {
+                editing = entry;
+                showForm = true;
+              }}
+            >Edit</Button>
+            <Button
+              size="sm"
+              variant="danger"
+              loading={removing === entry.id}
+              disabled={(busy === entry.id && removing !== entry.id) || (!!busy && busy !== entry.id)}
+              on:click={() => remove(entry)}
+            >Remove</Button>
           </div>
         </div>
       {/each}
     </div>
-  {/if}
-
-  {#if showForm}
-    <DdnsForm entry={editing} {providers} on:close={() => { showForm = false; editing = null; load(); }} />
-  {/if}
+  </AsyncState>
 </div>
+
+{#if showForm}
+  <DdnsForm
+    entry={editing}
+    {providers}
+    on:close={() => {
+      showForm = false;
+      editing = null;
+      load();
+    }}
+  />
+{/if}
