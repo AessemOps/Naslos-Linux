@@ -7,8 +7,11 @@
   export let retry: (() => void) | null = null;
 </script>
 
-<div role="alert" class="card border-red-700 bg-red-900/20 text-red-300 p-4 mb-4 flex items-start justify-between gap-4">
-  <div class="flex items-start gap-3 min-w-0">
+<div
+  role="alert"
+  class="card mb-4 flex items-start justify-between gap-4 border-red-700 bg-red-900/20 p-4 text-red-300"
+>
+  <div class="flex min-w-0 items-start gap-3">
     <Icon name="triangle-alert" size={20} />
     <span class="break-words">{message}</span>
   </div>

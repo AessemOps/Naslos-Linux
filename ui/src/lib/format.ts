@@ -42,3 +42,32 @@ export function formatUsage(usage: AppUsage | undefined): string {
     `↑ ${formatBytesPerSec(usage.networkTxBytesPerSec)}`
   ].join(' · ');
 }
+
+/** Localized timestamp for the pre-formatted date strings the API returns.
+ * An absent or invalid value renders as an em dash; an unparseable non-string
+ * is returned unchanged, which keeps raw API copy visible during a drill. */
+export function fmtTime(ts: string | number | Date | null | undefined): string {
+  if (ts == null || ts === '') return '—';
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (Number.isNaN(d.getTime())) return String(ts);
+  return d.toLocaleString();
+}
+
+/** Compact relative time (`just now`, `5m ago`, `3h ago`, `2d ago`). Values
+ * in the future read as `in …`, matching fmtTime's tolerance for clock skew. */
+export function fmtRelative(ts: string | number | Date | null | undefined): string {
+  if (ts == null || ts === '') return '—';
+  const date = ts instanceof Date ? ts : new Date(ts);
+  if (Number.isNaN(date.getTime())) return String(ts);
+  const deltaMs = date.getTime() - Date.now();
+  const abs = Math.abs(deltaMs);
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  let value: string;
+  if (abs < 45_000) return 'just now';
+  if (abs < hour) value = `${Math.round(abs / minute)}m`;
+  else if (abs < day) value = `${Math.round(abs / hour)}h`;
+  else value = `${Math.round(abs / day)}d`;
+  return deltaMs < 0 ? `${value} ago` : `in ${value}`;
+}
