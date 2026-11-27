@@ -340,17 +340,17 @@
     @apply p-4 rounded-lg border mb-4;
   }
   .callout-ok {
-    border-color: rgb(var(--n-ok-text) / 0.45);
+    border-color: color-mix(in srgb, var(--n-ok-text) 45%, transparent);
     background: var(--n-ok-bg);
     color: var(--n-ok-text);
   }
   .callout-warn {
-    border-color: rgb(var(--n-warn-text) / 0.45);
+    border-color: color-mix(in srgb, var(--n-warn-text) 45%, transparent);
     background: var(--n-warn-bg);
     color: var(--n-warn-text);
   }
   .callout-bad {
-    border-color: rgb(var(--n-bad-text) / 0.45);
+    border-color: color-mix(in srgb, var(--n-bad-text) 45%, transparent);
     background: var(--n-bad-bg);
     color: var(--n-bad-text);
   }

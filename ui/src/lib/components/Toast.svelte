@@ -6,6 +6,7 @@
 <div
   class="fixed right-4 top-4 z-[60] flex w-[min(20rem,calc(100vw-2rem))] flex-col gap-2"
   aria-live="polite"
+  data-modal-exempt
 >
   {#each $appToasts as toast (toast.id)}
     <div
