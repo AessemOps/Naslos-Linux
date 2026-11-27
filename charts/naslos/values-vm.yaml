@@ -27,7 +27,7 @@ api:
     # v0.7.66 release image (NAT-only VM networking; per-namespace app status);
     # the digest is the pin that actually gets pulled (FR-INSTALL-13).
     tag: "0.7.66"
-    digest: ""
+    digest: "sha256:fc42d95d6e648e67f6dbb9fda6465104f4e863c9b9b22a7b3eef70e60511f84d"
   # The API manages the node via the Talos API; without this it crashes at
   # startup with "Failed to create Talos client: failed to determine
   # endpoints". Create the secret first:
@@ -47,20 +47,20 @@ agent:
     repository: ghcr.io/aessemops/naslos-agent
     # Pinned by digest from the v0.7.66 release (NAS-022).
     tag: "0.7.66"
-    digest: ""
+    digest: "sha256:758a0225db37d0174ac923a3166198d4d001c7fdc45ae14412ff589bd5aceacb"
 ui:
   image:
     repository: ghcr.io/aessemops/naslos-ui
     # v0.7.66 release image; the digest is the pin (FR-INSTALL-13).
     tag: "0.7.66"
-    digest: ""
+    digest: "sha256:9b37bd063a4d13e601c81e1d759f844beb70d40b857a4cda0bf3258507e18674"
 # Share services (SMB + NFS) for the single-node VM.
 shares:
   smb:
     image:
       repository: ghcr.io/aessemops/naslos-samba
       tag: "0.7.66"
-      digest: ""
+      digest: "sha256:8be01e91f8be28a88f3569c199d01223b91ec97e5d8f7fea11c7ed2b2ce0b848"
   nfs:
     image:
       repository: ghcr.io/aessemops/naslos-nfs
@@ -68,12 +68,12 @@ shares:
       # nfs-daemonset.yaml); with that, Ganesha 6.5 starts with the same
       # rendered ganesha.conf as 4.x.
       tag: "0.7.66"
-      digest: ""
+      digest: "sha256:846d06f9127b757ac97901c9fc798eeebecdc64e0ea09d192de5da8a3057828e"
 terminal:
   image:
     repository: ghcr.io/aessemops/naslos-terminal
     tag: "0.7.66"
-    digest: ""
+    digest: "sha256:63970a42bb7891633bb7af2e70ae748c4704cf66d319c928ac3c4e9cd605d204"
 # Virtual machines (FR-VMT). The vmd image fixes the startup panic (an
 # explicit rustls crypto provider), so the supervisor is enabled and pinned
 # to the release image (NAS-022); the API env wiring and /api/virt/* go
@@ -87,11 +87,11 @@ virt:
     # against Debian 13's glibc 2.41 and crash-looped on this Debian 12 runtime
     # with "GLIBC_2.38 not found".
     tag: "0.7.66"
-    digest: ""
+    digest: "sha256:8d812fc9e01b7df23585f230f41bc22d5e52695669f48f11356b6d5b16a878a8"
 openldap:
   # Debian 13 / slapd 2.6.10 with /var/run/slapd created in the image and
   # LDAPS-only listening (LDAP_TLS_ENFORCE; no plaintext ldap:///).
-  image: ghcr.io/aessemops/naslos-openldap:0.7.66
+  image: ghcr.io/aessemops/naslos-openldap@sha256:1a7c11381a654c926f2c452ac3b74ce97b6940031852f1084c7ce17433439800
   # OpenLDAP host is the service name for internal cluster references.
   host: naslos-openldap
   # No bindPassword here. The chart reads the service password from the

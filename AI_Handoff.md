@@ -122,10 +122,13 @@ retrying or using the browser path worked around it. Worth watching.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.7.62`**, revision 77
-  (2026-11-24), every image digest-pinned by `values-vm.yaml`. Revision 75 was
-  the in-place upgrade from 0.7.6 to 0.7.61, revision 76 the vmd stopgap, and
-  revision 77 the 0.7.62 upgrade. Verified after deploy: `/api/health` green,
+- **Deployed release:** Helm `naslos` chart **`naslos-0.7.65`**, revision 78
+  (2026-11-27), every image digest-pinned by `values-vm.yaml`. Revision 75 was
+  the in-place upgrade from 0.7.6 to 0.7.61, revision 76 the vmd stopgap,
+  revision 77 the 0.7.62 upgrade, and revision 78 the in-app 0.7.65 upgrade
+  (`/api/system/version` reports 0.7.65; the API runs the 0.7.65 digest). The
+  upgrade only started after the stale 0.7.6 Job was removed from the
+  namespace (see Open items). Verified after deploy: `/api/health` green,
   `/` redirects to the Authelia portal, `/authelia/` answers 200,
   `/api/users` + `/api/groups` return 200 (the LDAP-reconnect fix survives the
   OpenLDAP restart, gotcha #22), and `/api/virt/capabilities` reports KVM +
@@ -136,16 +139,20 @@ retrying or using the browser path worked around it. Worth watching.
   (glibc 2.36), so the published 0.7.6 and 0.7.61 vmd images crash-looped with
   `version GLIBC_2.38 not found` (the node had been running an older drill
   build). `vmd/Dockerfile` now pins `rust:1.100-slim-bookworm`; the 0.7.62 vmd
-  image (`7a223872…`) starts cleanly and revision 77 runs it.
-- **Latest release:** `v0.7.65` (2026-11-26) and installer `naslos-v0.7.65`
-  are published; `naslos-install-pack-0.7.65.tar.gz` is attached with every
-  image digest-pinned. It ships the ZFS ARC split in `/api/metrics` and the
-  dashboard (PR #281) and the OpenLDAP `RLIMIT_NOFILE` cap that drops idle
-  slapd RSS from ~666 MiB to ~10 MiB (PR #281). The node still runs **0.7.62
-  at revision 77**; 0.7.65 needs `make install-vm`. The live StatefulSet
-  currently carries a temporary `ulimit` command override; installing 0.7.65
-  removes it and uses the capped image. The 0.7.62 vmd glibc fix and the
-  0.7.61 Traefik/LDAP hotfixes (gotchas #21/#22) remain in effect.
+  image (`7a223872…`) starts cleanly and revision 77 ran it.
+- **Latest release:** `v0.7.66` (2026-11-27) and installer `naslos-v0.7.66`
+  are published; `naslos-install-pack-0.7.66.tar.gz` is attached with every
+  image digest-pinned. It ships the upgrader-lock fix (#282): a Job left at
+  `SuccessCriteriaMet` with only an uncounted terminated pod no longer reports
+  `pending`, so it cannot block later operations. The node runs **0.7.65 at
+  revision 78**, so its API still has the pre-fix check; upgrade to 0.7.66
+  (which includes 0.7.65's ARC split, dashboard split and OpenLDAP cap, #281)
+  to carry the fix. The StatefulSet still carries the temporary `ulimit`
+  `command` override: the in-app upgrade does not remove a live-only command
+  field, and the override is redundant now that the 0.7.65 image
+  (`2d3d3ef4…`) caps `RLIMIT_NOFILE` itself; `make install-vm` or patching the
+  StatefulSet command away removes it. The 0.7.62 vmd glibc fix and the 0.7.61
+  Traefik/LDAP hotfixes (gotchas #21/#22) remain in effect.
 - **0.7.1–0.7.62 deploy behavior:** `make install-vm` requires
   `VM_IP=<node-ip>` and installs `local-path` + the `naslos-talosconfig`
   Secret; Traefik uses namespaced RBAC watching the release namespace plus the
@@ -157,19 +164,19 @@ retrying or using the browser path worked around it. Worth watching.
   (dynamic per-domain TLS names defeat a fixed allowlist); legacy
   shared-namespace app installs still hold the wildcard Secret and should move
   to per-app namespaces.
-- **OpenLDAP idle-memory cap (released in 0.7.65, live override pending
-  deploy):** slapd sizes its connection table from `getdtablesize()`; the
-  runtime's 1M `RLIMIT_NOFILE` made an idle slapd reserve ~666 MiB. The live
-  StatefulSet carries a temporary `command` override that runs
-  `ulimit -Sn 8192` before the entrypoint; idle RSS fell from ~708 MiB to
-  **~10 MiB**. The permanent cap is in `openldap/image/entrypoint.sh` and
-  shipped in 0.7.65 (#281). Installing 0.7.65 removes the override and uses
-  the capped image; a `make install-vm` of an older chart restores the ~666
-  MiB allocation.
-- **Dashboard ARC split (released in 0.7.65, needs deploy):** `/api/metrics`
+- **OpenLDAP idle-memory cap (released in 0.7.65, deployed):** slapd sizes
+  its connection table from `getdtablesize()`; the runtime's 1M
+  `RLIMIT_NOFILE` made an idle slapd reserve ~666 MiB. The permanent cap is in
+  `openldap/image/entrypoint.sh` and shipped in 0.7.65 (#281); revision 78
+  runs that image (`2d3d3ef4…`), and idle RSS stays near 10 MiB. The
+  StatefulSet still carries the older temporary `command` override
+  (`ulimit -Sn 8192` before the entrypoint) because Helm keeps live-only
+  fields across an in-app upgrade; it is harmless and a `make install-vm` or a
+  patch of the StatefulSet command removes it.
+- **Dashboard ARC split (released and deployed in 0.7.65):** `/api/metrics`
   and `/api/dashboard` carry `memory.arcSize`/`arcMax` from the ZFS `arcstats`,
   and the dashboard shows `ZFS ARC …` plus `Apps & system …` beside the memory
-  total (#281). Not visible on the node until 0.7.65 is installed.
+  total (#281). Live since revision 78.
 - **Deployed since 0.3.22:** per-app custom environment variables (FR-APP-26,
   #158; charts PR NaslosCharts#19/20) and automatic per-domain app CNAMEs
   pointing at a DDNS hostname (FR-DNS-09, #159/#161). Both live drills passed:
@@ -181,6 +188,11 @@ retrying or using the browser path worked around it. Worth watching.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.7.66` (2026-11-27) — the upgrader lock releases on a terminal Job
+    (#282): `Complete`, `SuccessCriteriaMet` with no active pod,
+    `Failed`/`FailureTarget` and a pod recorded only in
+    `uncountedTerminatedPods` are terminal, so a finished upgrade can no
+    longer block later upgrades, reverts or reboots.
   - `0.7.65` (2026-11-26) — the dashboard separates ZFS ARC from application
     memory (`memory.arcSize`/`arcMax`, plus history `memory.arc_bytes`), and
     the OpenLDAP image caps its soft nofile limit at 8192, eliminating the
@@ -363,21 +375,23 @@ retrying or using the browser path worked around it. Worth watching.
   `naslos-shail-ovh-tls` are present. The baseline pool has **32 provisioned
   slots with a usable limit of 20** (`GET /api/apps/namespaces`: 9 used, 11
   available); the privileged pool has 2 used of 4, `naslos-app-p3..p4` free.
-- **Update check:** current deployed `0.3.23`; the GitHub check reports no
-  newer release (the `v0.3.22` offer was resolved by deploying 0.3.23).
+- **Update check:** current deployed `0.7.65`; the GitHub check offers
+  `0.7.66` after a refresh (`/api/system/updates`).
 
 ### Open items
 
-- **Stale upgrader Job held the system-operation lock (fixed on
-  `fix/upgrader-job-terminal-phase`, needs a release after 0.7.64):** the
-  0.7.6 upgrade Job finished its pod but Kubernetes left it at
+- **Stale upgrader Job held the system-operation lock (fixed in 0.7.66,
+  #282):** the 0.7.6 upgrade Job finished its pod but Kubernetes left it at
   `SuccessCriteriaMet` with the pod only in `uncountedTerminatedPods` and no
   `succeeded` count, so `read_job_status` reported `pending` forever and every
   later upgrade/revert/reboot failed with "another system operation is
-  starting". The 0.7.62 API has this bug; the fix treats terminal Job
-  conditions (and an uncounted succeeded pod) as terminal. Removed the stale
-  Job from the node so 0.7.64 can start.
-- **Encrypted replication (released in 0.7.64, needs deploy + live drill):**
+  starting". The stale Job was removed on 2026-11-27 so the 0.7.65 upgrade
+  could start. The running 0.7.65 API still has the bug (the next upgrade Job
+  runs that API); 0.7.66 fixes it. Until the node is on 0.7.66, a finished
+  operation Job stuck at `SuccessCriteriaMet` is cleared the same way
+  (`kubectl delete job`).
+- **Encrypted replication (released in 0.7.64, now deployed in 0.7.65;
+  live drill pending):**
   FR-ENC-07. An encrypted source is sent raw
   (`zfs send -w`) into a destination the job creates (its parent must exist);
   the job creates the source key Secret for the destination (create-only; a
@@ -389,9 +403,10 @@ retrying or using the browser path worked around it. Worth watching.
   why the first send must target a new name. The drill on a deployed build must
   confirm: create an encrypted dataset → replicate to a new name → replica is
   `keystatus=available` and mounted → rerun sends an incremental → reboot leaves
-  it locked until unlock. Not deployed yet: the node runs 0.7.62 and has no raw
-  path.
-- **Replication + zvol UI (released in 0.7.64, needs deploy):** the
+  it locked until unlock. Now deployed: the node runs 0.7.65 and exposes the raw
+  path; only the drill is pending.
+- **Replication + zvol UI (released in 0.7.64, now deployed in 0.7.65; live
+  drill pending):** the
   `/replication` page (create from two existing datasets,
   live progress, cancel, history with the terminal result) and the Block volumes
   (zvols) section on the pool page (create, grow, typed-name destroy) now front
