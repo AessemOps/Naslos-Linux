@@ -122,28 +122,20 @@ retrying or using the browser path worked around it. Worth watching.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.7.68`**, revision 80
+- **Deployed release:** Helm `naslos` chart **`naslos-0.7.69`**, revision 81
   (2026-11-27, `make install-vm VM_IP=<node-ip>` from `master` at the
-  0.7.68 digest pins), every image digest-pinned by `values-vm.yaml`. It
-  ships the UI redesign (#284-#288), the vmd libpam security update (#289)
-  and the chunked-upload flush fix (#290). Revision 79 was 0.7.66. Verified after deploy: every `naslos`/`naslos-privileged` pod
-  Running on the 0.7.68 digests, `/api/health` 200, `/` redirects to the
-  Authelia portal.
-- **Live Playwright on 0.7.68 (2026-11-27):** 117 passed, 1 failed, 6 skipped
-  across all 24 specs. The failure and one skip were test-contract issues
-  (`apps.spec.ts`: an Env Demo heading ambiguous with the inert catalog card;
-  the dataset helper refusing a 400 "already exists" for leftover
-  `e2e-apps-*` datasets), fixed on `fix/live-drill-0.7.68`, where
-  `apps.spec.ts` re-ran 20/20 live. Remaining skips: the VM console
-  preflight (no VM on the node), the opt-in MTU apply drill, and two network
-  CIDR/gateway tests that found no links (next item).
-- **Network page shows no links (API defect, fix pending release):**
-  `/api/network` returned `links: []` although Talos reports two `ether`
-  links. Talos `LinkStatus` keeps the name in `metadata.id` (empty
-  `spec.name`) and carrier in `linkState`, not `up`;
-  `rust/api/src/network/inventory.rs` now reads both, with a unit test on the
-  live shape (`fix/live-drill-0.7.68`). Needs the next release to go live;
-  then re-run `ui/tests/network.spec.ts`.
+  0.7.69 digest pins), every image digest-pinned by `values-vm.yaml`. 0.7.69
+  ships the network inventory fix (#291) on top of 0.7.68 (UI redesign
+  #284-#288, vmd libpam update #289, chunked-upload flush #290; revision 80).
+  Verified after deploy: `naslos`/`naslos-privileged` pods Running on the
+  0.7.69 digests, `/api/health` 200, and `/api/network` now lists both
+  `ether` links with the correct up/down state.
+- **Live Playwright:** on 0.7.68 the full suite ran 117 passed / 1 failed /
+  6 skipped; the failure and the apps skip were test contracts fixed in #291.
+  On 0.7.69 `ui/tests/network.spec.ts` runs 5 passed / 1 skipped (the opt-in
+  MTU apply drill); its two link tests no longer skip once the spec waits for
+  the inventory to render (`fix/network-spec-wait`). Remaining expected skip
+  elsewhere: the VM console preflight (no VM on the node).
 - **vmd image packaging defect (fixed in 0.7.62, PR #278):** every vmd image
   built since the 1.100 toolchain bump linked against the `rust:1.100-slim`
   builder's Debian 13 glibc 2.41 while the runtime stage is Debian 12
@@ -151,18 +143,14 @@ retrying or using the browser path worked around it. Worth watching.
   `version GLIBC_2.38 not found` (the node had been running an older drill
   build). `vmd/Dockerfile` now pins `rust:1.100-slim-bookworm`; the 0.7.62 vmd
   image (`7a223872…`) starts cleanly and revision 77 ran it.
-- **Latest release:** `v0.7.68` (2026-11-27), deployed (revision 80);
-  `naslos-install-pack-0.7.68.tar.gz` is attached with every image
-  digest-pinned, and the installer rebuild for `naslos-v0.7.68` was
+- **Latest release:** `v0.7.69` (2026-11-27), deployed (revision 81);
+  `naslos-install-pack-0.7.69.tar.gz` is attached with every image
+  digest-pinned, and the installer rebuild for `naslos-v0.7.69` was
   dispatched. **0.7.67 was skipped:** its first run pushed the `:0.7.67`
-  images, then the pack guard rejected a stale openldap digest pin left in
-  `values-vm.yaml` (the bump must also turn the inline
-  `openldap.image: …@sha256:` back into the `:X.Y.Z` tag); the retry refused
-  to move existing image tags, so the packless `v0.7.67` tag was deleted and
-  the version bumped. The `:0.7.67` GHCR images still exist but no release or
-  pack references them. Also note: the pack job needs CI green on the tagged
-  commit, so tagging right after pushing the release commit fails `pack`
-  until CI finishes; re-run the failed job.
+  images, then the pack guard rejected a stale inline
+  `openldap.image: …@sha256:` pin; a release bump must turn it back into the
+  `:X.Y.Z` tag with the other pins. Tag only after CI on the release commit
+  is green: the pack job refuses a commit whose CI has not finished.
 - **0.7.1–0.7.62 deploy behavior:** `make install-vm` requires
   `VM_IP=<node-ip>` and installs `local-path` + the `naslos-talosconfig`
   Secret; Traefik uses namespaced RBAC watching the release namespace plus the
@@ -199,6 +187,9 @@ retrying or using the browser path worked around it. Worth watching.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.7.69` (2026-11-27) — `/api/network` lists Talos links by
+    `metadata.id` and reads up/down from `linkState`/`operationalState`
+    (unknown stays up), so the network page shows the node's links (#291).
   - `0.7.68` (2026-11-27) — UI redesign: shared design system and tokens, a
     responsive shell with a mobile drawer and skip link, shared page, form,
     table and state components, every page rebuilt with WCAG AA contrast,
@@ -392,7 +383,7 @@ retrying or using the browser path worked around it. Worth watching.
   `naslos-shail-ovh-tls` are present. The baseline pool has **32 provisioned
   slots with a usable limit of 20** (`GET /api/apps/namespaces`: 9 used, 11
   available); the privileged pool has 2 used of 4, `naslos-app-p3..p4` free.
-- **Update check:** current deployed `0.7.68`, the latest release.
+- **Update check:** current deployed `0.7.69`, the latest release.
 
 ### Open items
 
