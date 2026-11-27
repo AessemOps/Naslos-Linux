@@ -1,5 +1,9 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import AsyncState from './AsyncState.svelte';
+  import Button from './Button.svelte';
+  import DataTable from './DataTable.svelte';
+  import { confirmAction } from '$lib/stores/confirm';
   import { formatBytes } from '$lib/format';
 
   // ISO/disk-image library (FR-VMT): chunked browser upload with progress,
@@ -11,11 +15,13 @@
   let importing: string[] = [];
   let importErrors: Record<string, string> = {};
   let error = '';
+  let loadError = '';
   let loading = false;
 
   let uploadFile: FileList | null = null;
   let uploadProgress = 0;
   let uploading = false;
+  let deleting = '';
   // The last offset the server confirmed for the selected file, so retrying a
   // failed upload resumes instead of truncating and starting at zero.
   let uploadKey = '';
@@ -157,7 +163,7 @@
       return;
     }
     loading = true;
-    error = '';
+    loadError = '';
     try {
       const res = await fetch(`/api/virt/images?pool=${encodeURIComponent(requested)}`);
       const data = await res.json();
@@ -168,7 +174,7 @@
       importErrors = data.errors ?? {};
     } catch (e: unknown) {
       if (seq !== loadSeq || requested !== pool) return;
-      error = e instanceof Error ? e.message : String(e);
+      loadError = e instanceof Error ? e.message : String(e);
       images = [];
     } finally {
       if (seq === loadSeq) loading = false;
@@ -364,7 +370,14 @@
   });
 
   async function remove(name: string) {
-    if (!confirm(`Delete ${name} from the ${pool} library?`)) return;
+    const confirmed = await confirmAction({
+      title: 'Delete image',
+      message: `Delete ${name} from the ${pool} library?`,
+      confirmLabel: 'Delete',
+      tone: 'danger'
+    });
+    if (!confirmed) return;
+    deleting = name;
     error = '';
     try {
       const res = await fetch(`/api/virt/images/${encodeURIComponent(name)}?pool=${encodeURIComponent(pool)}`, {
@@ -377,6 +390,8 @@
       await load();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
+    } finally {
+      deleting = '';
     }
   }
 </script>
@@ -384,30 +399,33 @@
 <h2 class="text-lg font-bold mb-3">Images — {pool}/vms/isos</h2>
 
 {#if error}
-  <div role="alert" class="card mb-4 border-red-700 bg-red-900/20 text-red-300 text-sm">{error}</div>
+  <div role="alert" class="callout callout-bad">{error}</div>
 {/if}
 
-<div class="card mb-4">
-  <div class="flex items-end gap-3 flex-wrap">
+<form class="card mb-4" on:submit|preventDefault={upload}>
+  <div class="flex flex-wrap items-end gap-3">
     <div>
       <label class="label" for="img-file">Upload a file (ISO or cloud image)</label>
       <input id="img-file" type="file" class="input" bind:files={uploadFile} disabled={uploading} />
     </div>
-    <button class="btn btn-primary" on:click={upload}
-      disabled={!uploadFile || uploading || cancelling || (uploadReplaces && !replaceUpload)}>
+    <Button
+      type="submit"
+      loading={uploading}
+      disabled={!uploadFile || cancelling || (uploadReplaces && !replaceUpload)}
+    >
       {uploading ? `Uploading… ${uploadProgress}%` : 'Upload'}
-    </button>
+    </Button>
     {#if uploading || (uploadTarget && (uploadOwner || storedOwner(pool, uploadTarget)))}
-      <button class="btn btn-secondary" on:click={cancelUpload} disabled={cancelling}>
+      <Button variant="secondary" loading={cancelling} on:click={cancelUpload}>
         {cancelling ? 'Cancelling…' : 'Cancel upload'}
-      </button>
+      </Button>
     {/if}
     {#if uploading}
       <progress class="w-48" value={uploadProgress} max="100"></progress>
     {/if}
   </div>
   {#if uploadReplaces}
-    <label class="flex items-center gap-2 text-sm text-amber-300 mt-2">
+    <label class="mt-2 flex items-center gap-2 text-sm text-amber-300">
       <input id="img-replace" type="checkbox" class="w-4 h-4 rounded" bind:checked={replaceUpload} />
       <span>
         Replace the existing image <code class="font-mono text-xs">{uploadTarget}</code>: the current file is
@@ -419,10 +437,10 @@
     Uploaded in 8 MiB chunks; a failed chunk resumes from the last confirmed offset. Names are flat
     (letters, digits, '-', '_', '.').
   </p>
-</div>
+</form>
 
-<div class="card mb-4">
-  <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+<form class="card mb-4" on:submit|preventDefault={importFromUrl}>
+  <div class="grid grid-cols-1 gap-3 items-end md:grid-cols-4">
     <div class="md:col-span-2">
       <label class="label" for="img-url">Import from URL</label>
       <input id="img-url" class="input w-full" bind:value={importUrl}
@@ -432,13 +450,16 @@
       <label class="label" for="img-name">Name (optional)</label>
       <input id="img-name" class="input w-full" bind:value={importName} placeholder="from the URL" disabled={importingUrl} />
     </div>
-    <button class="btn btn-primary" on:click={importFromUrl}
-      disabled={importingUrl || !importUrl.trim() || (importReplaces && !replaceImport)}>
+    <Button
+      type="submit"
+      loading={importingUrl}
+      disabled={!importUrl.trim() || (importReplaces && !replaceImport)}
+    >
       {importingUrl ? 'Starting…' : 'Import'}
-    </button>
+    </Button>
   </div>
   {#if importReplaces}
-    <label class="flex items-center gap-2 text-sm text-amber-300 mt-2">
+    <label class="mt-2 flex items-center gap-2 text-sm text-amber-300">
       <input id="img-import-replace" type="checkbox" class="w-4 h-4 rounded" bind:checked={replaceImport} />
       <span>
         Replace the existing image <code class="font-mono text-xs">{importTarget}</code>: it is overwritten
@@ -454,43 +475,59 @@
   <p class="text-xs text-gray-500 mt-2">
     The node downloads the file itself (public http(s) targets only). Watch the list below for completion.
   </p>
-</div>
+</form>
 
-{#if loading}
-  <p class="text-sm text-gray-400">Loading library…</p>
-{:else}
-  {#if importing.length > 0}
-    <div class="card mb-4 text-sm text-gray-300">
-      Importing: {#each importing as n}<span class="text-naslos-accent">{n}</span> {/each}
-    </div>
-  {/if}
-  {#each Object.entries(importErrors) as [name, err]}
-    <div role="alert" class="card mb-2 border-red-700 bg-red-900/20 text-red-300 text-sm">
-      {name}: {err}
-    </div>
-  {/each}
-  <div class="card overflow-x-auto p-0">
-    <table class="w-full text-sm">
+{#if importing.length > 0}
+  <div class="card mb-4 text-sm text-gray-300">
+    Importing: {#each importing as n}<span class="text-naslos-link">{n}</span> {/each}
+  </div>
+{/if}
+{#each Object.entries(importErrors) as [name, err]}
+  <div role="alert" class="callout callout-bad">
+    {name}: {err}
+  </div>
+{/each}
+
+<AsyncState
+  {loading}
+  error={loadError}
+  empty={!loading && !loadError && images.length === 0}
+  loadingText="Loading library…"
+  emptyTitle="The library is empty."
+  emptyDetail="Upload an ISO or import one from a URL."
+  emptyIcon="hard-drive"
+  onRetry={load}
+>
+  <DataTable label="Image library">
+    <table>
       <thead>
-        <tr class="text-left text-gray-400 border-b border-naslos-border">
-          <th class="px-4 py-3">Name</th>
-          <th class="px-4 py-3">Size</th>
-          <th class="px-4 py-3"></th>
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Size</th>
+          <th scope="col"><span class="sr-only">Actions</span></th>
         </tr>
       </thead>
       <tbody>
         {#each images as img}
-          <tr class="border-b border-naslos-border/50">
-            <td class="px-4 py-3 font-mono text-xs">{img.name}</td>
-            <td class="px-4 py-3">{formatBytes(img.sizeBytes)}</td>
-            <td class="px-4 py-3 text-right">
-              <button class="btn btn-secondary" on:click={() => remove(img.name)}>Delete</button>
+          <tr>
+            <td class="font-mono text-xs">{img.name}</td>
+            <td class="tabular-nums">{formatBytes(img.sizeBytes)}</td>
+            <td>
+              <div class="flex justify-end">
+                <Button
+                  variant="danger"
+                  size="sm"
+                  loading={deleting === img.name}
+                  disabled={!!deleting}
+                  on:click={() => remove(img.name)}
+                >
+                  Delete
+                </Button>
+              </div>
             </td>
           </tr>
-        {:else}
-          <tr><td class="px-4 py-3 text-gray-500" colspan="3">The library is empty.</td></tr>
         {/each}
       </tbody>
     </table>
-  </div>
-{/if}
+  </DataTable>
+</AsyncState>

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import CatalogBrowser from '$lib/components/CatalogBrowser.svelte';
   import InstalledApps from '$lib/components/InstalledApps.svelte';
+  import PageHeader from '$lib/components/PageHeader.svelte';
   import SourceList from '$lib/components/SourceList.svelte';
   import { appUpdates, startAppUpdates } from '$lib/stores/appUpdates';
 
@@ -19,20 +20,21 @@
   });
 </script>
 
-<div class="max-w-6xl mx-auto">
-  <h1 class="text-3xl font-bold mb-2">Apps</h1>
-  <p class="text-gray-400 mb-6">Deploy and manage applications from chart repositories.</p>
+<div class="mx-auto max-w-6xl">
+  <PageHeader
+    title="Apps"
+    subtitle="Deploy and manage applications from chart repositories."
+  />
 
-  <!-- Tabs -->
-  <div class="flex gap-1 mb-6 bg-naslos-surface rounded-lg p-1 w-fit">
+  <div class="mb-6 flex w-fit flex-wrap gap-1 rounded-lg bg-naslos-surface p-1" role="group" aria-label="Apps sections">
     {#each tabs as tab}
       <button
         class="px-4 py-2 rounded-md text-sm font-medium transition-colors"
         class:bg-naslos-primary={activeTab === tab.id}
         class:text-white={activeTab === tab.id}
-        class:text-gray-400={activeTab !== tab.id}
+        class:text-gray-500={activeTab !== tab.id}
         aria-pressed={activeTab === tab.id}
-        on:click={() => activeTab = tab.id}
+        on:click={() => (activeTab = tab.id)}
       >
         {tab.label}
         {#if tab.id === 'installed' && $appUpdates.count > 0}

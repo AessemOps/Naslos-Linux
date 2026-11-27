@@ -187,24 +187,27 @@ test.describe('VM destructive confirmations', () => {
     const row = page.locator('tr').filter({ hasText: 'uitest-vm' });
     await expect(row).toBeVisible();
 
-    page.once('dialog', (dialog) => dialog.dismiss());
+    // Cancelling the shared confirmation dialog sends nothing.
     await row.getByRole('button', { name: 'Delete' }).click();
+    let dialog = page.getByRole('dialog', { name: 'Delete virtual machine' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(row).toBeVisible();
     expect(deletes).toHaveLength(0);
 
-    // A mismatched prompt is followed by an alert: register the alert handler
-    // only after the prompt is accepted, or both `once` handlers would fire on
-    // the same dialog event.
-    page.once('dialog', async (dialog) => {
-      page.once('dialog', (alert) => alert.accept());
-      await dialog.accept('wrong-name');
-    });
+    // The typed confirmation must match exactly; a wrong name keeps Delete
+    // disabled instead of destroying the VM.
     await row.getByRole('button', { name: 'Delete' }).click();
-    await expect(row).toBeVisible();
+    dialog = page.getByRole('dialog', { name: 'Delete virtual machine' });
+    const typed = dialog.getByLabel(/Type uitest-vm to confirm/);
+    await typed.fill('wrong-name');
+    const confirm = dialog.getByRole('button', { name: 'Delete', exact: true });
+    await expect(confirm).toBeDisabled();
     expect(deletes).toHaveLength(0);
 
-    page.once('dialog', (dialog) => dialog.accept('uitest-vm'));
-    await row.getByRole('button', { name: 'Delete' }).click();
+    await typed.fill('uitest-vm');
+    await expect(confirm).toBeEnabled();
+    await confirm.click();
     await expect.poll(() => deletes.some((url) => url.includes('confirm=uitest-vm'))).toBe(true);
   });
 
@@ -314,12 +317,16 @@ test.describe('VM destructive confirmations', () => {
     const restore = page.getByRole('button', { name: 'Restore', exact: true });
     await expect(restore).toBeEnabled({ timeout: 10_000 });
 
-    page.once('dialog', (dialog) => dialog.dismiss());
     await restore.click();
+    let dialog = page.getByRole('dialog', { name: 'Restore snapshot' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     expect(restores).toHaveLength(0);
 
-    page.once('dialog', (dialog) => dialog.accept('uitest-vm'));
     await restore.click();
+    dialog = page.getByRole('dialog', { name: 'Restore snapshot' });
+    await dialog.getByLabel(/Type uitest-vm to confirm/).fill('uitest-vm');
+    await dialog.getByRole('button', { name: 'Restore', exact: true }).click();
     await expect.poll(() => restores.some((url) => url.includes('confirm=uitest-vm'))).toBe(true);
   });
 });

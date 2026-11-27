@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte';
   import type { AppPod, AppPods, AppView } from '$lib/appTypes';
+  import Button from './Button.svelte';
   import Icon from './Icon.svelte';
 
   export let app: AppView;
@@ -138,18 +139,24 @@
       <label class="flex items-center gap-1 text-gray-400">
         <input type="checkbox" bind:checked={follow} /> follow
       </label>
-      <button
-        type="button"
-        class="icon-btn text-gray-400 hover:text-naslos-strong hover:bg-naslos-border"
+      <Button
+        variant="ghost"
+        size="icon"
         title="Reload pods and reconnect"
         aria-label="Reload pods and reconnect"
-        on:click={loadPods}><Icon name="refresh-cw" size={16} /></button
+        on:click={loadPods}
       >
+        <Icon name="refresh-cw" size={16} />
+      </Button>
     </div>
   </div>
 
   {#if loading}
-    <p class="text-xs text-gray-500">Loading pods…</p>
+    <div role="status" aria-busy="true" class="space-y-2 py-1">
+      <span class="sr-only">Loading pods…</span>
+      <div class="skeleton h-3 w-2/3"></div>
+      <div class="skeleton h-3 w-1/2"></div>
+    </div>
   {:else if pods.length === 0}
     <p class="text-xs text-gray-500">No pods are running for this app.</p>
   {:else}

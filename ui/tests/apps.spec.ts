@@ -748,6 +748,185 @@ test.describe('app UI safety', () => {
     expect(saved).toBeNull();
   });
 
+  test('a failed installed-record GET blocks configure saving', async ({ page }) => {
+    let saved: any = null;
+    await mockInstalledApp(page, async (route, path, request) => {
+      if (path === '/api/apps/demo-app' && request.method() === 'GET') {
+        await route.fulfill({ status: 502, json: { error: 'backend unavailable' } });
+        return true;
+      }
+      if (path === '/api/apps/demo-app' && request.method() === 'PUT') {
+        saved = request.postDataJSON();
+        await route.fulfill({ status: 202, json: { jobId: 'job-configure', state: 'running' } });
+        return true;
+      }
+      return false;
+    });
+
+    await page.goto('/apps');
+    await expect(page.getByText('Loading installed apps...')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Open Demo App details', exact: true }).click();
+    await page.getByRole('button', { name: 'Configure', exact: true }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByRole('heading', { name: 'Configure — demo-app' })).toBeVisible();
+    // The defaults must never be saved over the real configuration.
+    await expect(dialog.getByRole('alert')).toContainText(/Failed to load app configuration|installed record/);
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Retry' })).toBeVisible();
+    expect(saved).toBeNull();
+  });
+
+  test('keeps an untouched stored secret when configuring', async ({ page }) => {
+    let saved: any = null;
+    await mockInstalledApp(page, async (route, path, request) => {
+      if (path === '/api/catalog/demo-app') {
+        await route.fulfill({
+          json: {
+            ...app,
+            capabilities: ['env'],
+            schema: { type: 'object', properties: {}, required: [] },
+            defaultValues: {}
+          }
+        });
+        return true;
+      }
+      if (path === '/api/apps/demo-app' && request.method() === 'GET') {
+        await route.fulfill({
+          json: {
+            ...app,
+            values: {},
+            datasets: [],
+            isolated: true,
+            redactedKeys: [],
+            env: [{ name: 'TOKEN', value: null, secret: true }]
+          }
+        });
+        return true;
+      }
+      if (path === '/api/datasets/registry') {
+        await route.fulfill({ json: [] });
+        return true;
+      }
+      if (path === '/api/apps/demo-app' && request.method() === 'PUT') {
+        saved = request.postDataJSON();
+        await route.fulfill({ status: 202, json: { jobId: 'job-configure', state: 'running' } });
+        return true;
+      }
+      if (path === '/api/apps/jobs/job-configure') {
+        await route.fulfill({
+          json: {
+            id: 'job-configure',
+            kind: 'upgrade',
+            app: 'demo-app',
+            state: 'succeeded',
+            stage: 'finalizing',
+            startedAt: new Date().toISOString()
+          }
+        });
+        return true;
+      }
+      return false;
+    });
+
+    await page.goto('/apps');
+    await expect(page.getByText('Loading installed apps...')).toBeHidden({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Open Demo App details', exact: true }).click();
+    await page.getByRole('button', { name: 'Configure', exact: true }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('Loading configuration...')).toBeHidden({ timeout: 10_000 });
+    // The blank secret is an untouched stored value, not a validation error.
+    await expect(dialog.getByLabel('Environment variable value')).toHaveValue('');
+    const save = dialog.getByRole('button', { name: 'Save', exact: true });
+    await expect(save).toBeEnabled();
+    await save.click();
+
+    await expect.poll(() => saved?.env).toEqual([{ name: 'TOKEN', value: null, secret: true }]);
+    expect(saved.datasets).toEqual([]);
+  });
+
+  test('masks schema password and writeOnly values in the install review', async ({ page }) => {
+    const catalogApp = {
+      name: 'secretdemo',
+      displayName: 'Secret Demo',
+      description: 'Secret review fixture',
+      icon: 'S',
+      iconUrl: '',
+      version: '1.0.0',
+      chart: 'secretdemo',
+      source: 'official',
+      channel: 'Prod',
+      chartPath: 'apps/secretdemo',
+      schema: {
+        type: 'object',
+        properties: {
+          timezone: { type: 'string', title: 'Timezone', default: 'UTC' },
+          password: { type: 'string', title: 'Admin password', format: 'password' },
+          token: { type: 'string', title: 'API token', writeOnly: true }
+        },
+        required: []
+      },
+      defaultValues: { timezone: 'UTC' },
+      exposure: { subdomain: 'secretdemo', tls: true, auth: true, localOnly: false, internet: true },
+      services: [{ name: 'secretdemo', port: 8080, scheme: 'http' }]
+    };
+    await page.route(/\/api\//, async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/api/catalog') return route.fulfill({ json: [catalogApp] });
+      if (path === '/api/catalog/secretdemo') return route.fulfill({ json: catalogApp });
+      if (path === '/api/domains') {
+        return route.fulfill({
+          json: {
+            baseDomain: 'example.test',
+            domains: [],
+            selectableDomains: ['example.test'],
+            ssoDomains: ['example.test']
+          }
+        });
+      }
+      if (path === '/api/datasets/registry' || path === '/api/volumes/zfs') {
+        return route.fulfill({ json: [] });
+      }
+      if (path === '/api/apps' || path === '/api/apps/updates' || path === '/api/apps/usage') {
+        return route.fulfill({
+          json:
+            path === '/api/apps/updates'
+              ? { count: 0, apps: [] }
+              : path === '/api/apps/usage'
+                ? { available: false, apps: [] }
+                : []
+        });
+      }
+      if (path === '/api/apps/namespaces') {
+        return route.fulfill({
+          json: {
+            baseline: { provisioned: 0, limit: 0, used: 0, available: 0 },
+            privileged: { provisioned: 0, limit: 0, used: 0, available: 0 }
+          }
+        });
+      }
+      return route.fulfill({ json: [] });
+    });
+
+    await page.goto('/apps');
+    await page.getByRole('button', { name: 'Catalog', exact: true }).click();
+    await page.getByRole('button', { name: 'Install Secret Demo' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByRole('heading', { name: 'Secret Demo' })).toBeVisible();
+
+    await page.locator('#field-password').fill('hunter2');
+    await page.locator('#field-token').fill('tok-123');
+    await page.getByRole('button', { name: 'Exposure →' }).click();
+    await page.getByRole('button', { name: 'Review →' }).click();
+
+    await expect(dialog.getByText('Timezone')).toBeVisible();
+    await expect(dialog.getByText('UTC')).toBeVisible();
+    await expect(dialog.getByText('hunter2')).toBeHidden();
+    await expect(dialog.getByText('tok-123')).toBeHidden();
+    await expect(dialog.getByText('••••••')).toHaveCount(2);
+  });
+
   test('clearing a resource field drops it from the whole resources object', async ({ page }) => {
     let saved: any = null;
     await mockInstalledApp(page, async (route, path, request) => {
