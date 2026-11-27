@@ -368,6 +368,15 @@ retrying or using the browser path worked around it. Worth watching.
 
 ### Open items
 
+- **Stale upgrader Job held the system-operation lock (fixed on
+  `fix/upgrader-job-terminal-phase`, needs a release after 0.7.64):** the
+  0.7.6 upgrade Job finished its pod but Kubernetes left it at
+  `SuccessCriteriaMet` with the pod only in `uncountedTerminatedPods` and no
+  `succeeded` count, so `read_job_status` reported `pending` forever and every
+  later upgrade/revert/reboot failed with "another system operation is
+  starting". The 0.7.62 API has this bug; the fix treats terminal Job
+  conditions (and an uncounted succeeded pod) as terminal. Removed the stale
+  Job from the node so 0.7.64 can start.
 - **Encrypted replication (released in 0.7.64, needs deploy + live drill):**
   FR-ENC-07. An encrypted source is sent raw
   (`zfs send -w`) into a destination the job creates (its parent must exist);
