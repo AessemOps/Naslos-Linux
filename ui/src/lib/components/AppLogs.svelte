@@ -152,7 +152,11 @@
   </div>
 
   {#if loading}
-    <p class="text-xs text-gray-500">Loading pods…</p>
+    <div role="status" aria-busy="true" class="space-y-2 py-1">
+      <span class="sr-only">Loading pods…</span>
+      <div class="skeleton h-3 w-2/3"></div>
+      <div class="skeleton h-3 w-1/2"></div>
+    </div>
   {:else if pods.length === 0}
     <p class="text-xs text-gray-500">No pods are running for this app.</p>
   {:else}

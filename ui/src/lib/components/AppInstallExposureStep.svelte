@@ -32,7 +32,11 @@
     <Button variant="secondary" size="sm" on:click={retryDomains}>Retry</Button>
   </div>
 {:else if !domainsLoaded}
-  <p class="text-sm text-gray-400">Loading domains…</p>
+  <div role="status" aria-busy="true" class="space-y-2 py-1">
+    <span class="sr-only">Loading domains…</span>
+    <div class="skeleton h-3 w-56"></div>
+    <div class="skeleton h-3 w-40"></div>
+  </div>
 {:else}
   <ExposureForm
     bind:exposure

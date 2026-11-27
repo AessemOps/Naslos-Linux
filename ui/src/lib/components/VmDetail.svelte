@@ -21,7 +21,9 @@
   let snapshotsError = '';
   let snapName = '';
   let busy = false;
+  let busyVerb = '';
   let snapshotting = false;
+  let restoring = '';
   let error = '';
   let notice = '';
   // The page's 5s polling replaces the `vm` object wholesale; reload the
@@ -60,6 +62,7 @@
   async function run(verb: string, fn?: () => Promise<string | null>) {
     if (busy) return;
     busy = true;
+    busyVerb = verb;
     error = '';
     notice = '';
     try {
@@ -70,6 +73,7 @@
       error = e.message;
     } finally {
       busy = false;
+      busyVerb = '';
     }
   }
 
@@ -106,12 +110,18 @@
       typedConfirmation: vm.name
     });
     if (!confirmed) return;
-    const err = await restore(vm.name, snap);
-    if (err) {
-      error = err;
-    } else {
-      notice = `Restored ${snap}.`;
-      await loadSnapshots();
+    restoring = snap;
+    error = '';
+    try {
+      const err = await restore(vm.name, snap);
+      if (err) {
+        error = err;
+      } else {
+        notice = `Restored ${snap}.`;
+        await loadSnapshots();
+      }
+    } finally {
+      restoring = '';
     }
   }
 </script>
@@ -149,13 +159,14 @@
         {/if}
 
         <div class="flex flex-wrap gap-2">
-          <Button disabled={busy || vm.state === 'running'} loading={busy} on:click={() => run('start')}>Start</Button>
-          <Button variant="secondary" disabled={busy || vm.state !== 'running'} on:click={() => run('stop')}>Stop</Button>
-          <Button variant="secondary" disabled={busy || vm.state !== 'running'} on:click={() => run('force-stop')}>Force stop</Button>
-          <Button variant="secondary" disabled={busy} on:click={() => run('restart')}>Restart</Button>
+          <Button disabled={busy || vm.state === 'running'} loading={busyVerb === 'start'} on:click={() => run('start')}>Start</Button>
+          <Button variant="secondary" disabled={busy || vm.state !== 'running'} loading={busyVerb === 'stop'} on:click={() => run('stop')}>Stop</Button>
+          <Button variant="secondary" disabled={busy || vm.state !== 'running'} loading={busyVerb === 'force-stop'} on:click={() => run('force-stop')}>Force stop</Button>
+          <Button variant="secondary" disabled={busy} loading={busyVerb === 'restart'} on:click={() => run('restart')}>Restart</Button>
           <Button
             variant="secondary"
             disabled={busy}
+            loading={busyVerb === 'autostart'}
             on:click={() => run('autostart', () => toggleAutostart(vm))}
           >
             Autostart: {vm.autostart ? 'on' : 'off'}
@@ -222,7 +233,11 @@
             (crash-consistent while the VM runs). Restoring requires the VM stopped.
           </p>
           {#if snapshotsLoading}
-            <p class="text-sm text-gray-400">Loading snapshots…</p>
+            <div role="status" aria-busy="true" class="space-y-2 py-1">
+              <span class="sr-only">Loading snapshots…</span>
+              <div class="skeleton h-3 w-48"></div>
+              <div class="skeleton h-3 w-32"></div>
+            </div>
           {:else if snapshotsError}
             <div role="alert" class="callout callout-bad">
               <p>Could not load snapshots: {snapshotsError}</p>
@@ -249,7 +264,8 @@
                             variant="secondary"
                             size="sm"
                             on:click={() => onRestore(snap.name)}
-                            disabled={vm.state === 'running'}
+                            loading={restoring === snap.name}
+                            disabled={(vm.state === 'running' && !restoring) || (!!restoring && restoring !== snap.name)}
                             title={vm.state === 'running' ? 'Stop the VM first' : ''}
                           >
                             Restore

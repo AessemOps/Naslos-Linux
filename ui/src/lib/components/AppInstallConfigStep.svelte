@@ -67,7 +67,11 @@
         <Button variant="ghost" size="sm" on:click={retryDatasets}>Retry</Button>
       </p>
     {:else if !datasetsLoaded}
-      <p class="text-xs text-gray-500">Loading registered datasets…</p>
+      <div role="status" aria-busy="true" class="space-y-2 py-1">
+        <span class="sr-only">Loading registered datasets…</span>
+        <div class="skeleton h-3 w-48"></div>
+        <div class="skeleton h-3 w-36"></div>
+      </div>
     {:else if managedDatasets.length === 0}
       <p class="text-xs text-gray-500">
         No datasets are registered yet. Register one under Datasets to attach it to this app.
@@ -126,6 +130,9 @@
       <Button variant="ghost" size="sm" on:click={retryPools}>Retry</Button>
     </p>
   {:else if !poolsLoaded}
-    <p class="text-xs text-gray-500">Loading storage pools…</p>
+    <div role="status" aria-busy="true" class="space-y-2 py-1">
+      <span class="sr-only">Loading storage pools…</span>
+      <div class="skeleton h-3 w-40"></div>
+    </div>
   {/if}
 </div>
