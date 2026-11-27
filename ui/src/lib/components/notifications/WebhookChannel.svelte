@@ -27,7 +27,10 @@
   let webhookAuthToken = '';
   let clearWebhookAuthToken = false;
 
-  async function load(silent = false) {
+  // `after` names the action a silent refresh follows. A failed refresh
+  // after a save keeps the form (the save landed); after a remove the shown
+  // values are gone server-side, so the form is replaced by Retry.
+  async function load(silent = false, after: 'save' | 'remove' = 'save') {
     if (!silent) loading = true;
     loadError = '';
     try {
@@ -40,8 +43,11 @@
       loaded = true;
     } catch (e) {
       const text = 'Failed to load webhook settings: ' + errorText(e);
-      if (silent && loaded) {
+      if (silent && loaded && after === 'save') {
         loadError = 'Saved, but refreshing the webhook settings failed: ' + text;
+      } else if (silent && after === 'remove') {
+        loadError = 'Removed, but refreshing the webhook settings failed: ' + text;
+        loaded = false;
       } else {
         loadError = text;
         loaded = false;
@@ -118,7 +124,7 @@
       await api('/api/notifications/webhook', { method: 'DELETE' });
       message = 'Webhook channel removed.';
       messageType = 'success';
-      await load(true);
+      await load(true, 'remove');
     } catch (e) {
       message = 'Error: ' + errorText(e);
       messageType = 'error';

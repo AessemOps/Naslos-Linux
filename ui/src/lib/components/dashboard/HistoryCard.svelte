@@ -206,8 +206,12 @@
     // Never label the previous range's points with the new range while the
     // replacement loads.
     historyPoints = [];
-    historyError = '';
-    if (historyMeta?.available) loadHistory();
+    // Keep the "reporting unavailable" message: clearing it would fall
+    // through to a misleading empty chart.
+    if (historyMeta?.available) {
+      historyError = '';
+      loadHistory();
+    }
   }
 
   function setHistoryMetric() {
