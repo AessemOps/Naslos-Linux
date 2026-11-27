@@ -4,48 +4,69 @@
 /* ---------------------------------------------------------------------------
    Design tokens. Every Tailwind color family used by the UI resolves here
    (see tailwind.config.js), so a data-theme flip on <html> re-paints the
-   whole app. Dark values are the exact pre-overhaul palette; the light values
-   pick WCAG-AA ink for text shades and soft tints for the 900/950
-   badge backgrounds.
+   whole app. Dark is the default; light is opt-in through [data-theme='light'].
+
+   The palettes are deliberately contrast-checked: text shades stay at or above
+   4.5:1 on their theme surface, and status tints/flip with the theme. Solid
+   button shades (red-600/700, green-500) keep their saturated value in both
+   themes because they are backgrounds with white or dark ink on top.
    --------------------------------------------------------------------------- */
 :root {
-  /* Brand */
-  --n-primary: 37 99 235;
-  --n-secondary: 30 64 175;
-  --n-accent: 59 130 246;
-  --n-dark: 15 23 42;
-  --n-surface: 30 41 59;
-  --n-border: 51 65 85;
-  --n-strong: 255 255 255;
-  --n-link: 96 165 250;
+  color-scheme: dark;
 
-  /* Neutral text scale (dark: current light inks) */
+  /* Brand. The filled primary is the 600 shade because white text on
+     #3B82F6 is only 3.7:1; the 500 shade stays as the accent/focus color
+     where it is not carrying text. */
+  --n-primary: 37 99 235; /* #2563EB, 5.2:1 with white */
+  --n-primary-hover: 29 78 216; /* #1D4ED8 */
+  --n-secondary: 29 78 216;
+  --n-accent: 59 130 246; /* #3B82F6 focus ring / active nav bar */
+  --n-dark: 11 17 32; /* #0B1120 page background */
+  --n-surface: 15 23 42; /* #0F172A cards, sidebar, modal */
+  --n-surface-raised: 17 24 39; /* #111827 table headers, inset rows */
+  --n-border: 30 41 59; /* #1E293B subtle 1px separators */
+  --n-border-strong: 51 65 85; /* #334155 form controls, hover borders */
+  --n-strong: 255 255 255;
+  --n-link: 96 165 250; /* #60A5FA on the dark surfaces */
+
+  /* Neutral text scale */
   --gray-100: 243 244 246;
   --gray-200: 229 231 235;
   --gray-300: 209 213 219;
   --gray-400: 156 163 175;
-  --gray-500: 148 163 184; /* slate-400: 6.5:1 on the dark bg (was gray-500 3.7:1) */
-  --gray-600: 75 85 99; /* bg/border role only (step dot, stopped badge) */
+  --gray-500: 148 163 184; /* slate-400: 6.5:1 on the dark bg */
+  --gray-600: 75 85 99; /* bg/border role only */
   --gray-800: 31 41 55;
   --gray-900: 17 24 39;
 
-  /* Status text shades (dark) */
+  /* Status shades */
   --green-200: 187 247 208;
   --green-300: 134 239 172;
   --green-400: 74 222 128;
+  --green-500: 34 197 94;
+  --green-700: 21 128 61;
+  --green-800: 22 101 52;
   --green-900: 20 83 45;
   --red-200: 254 202 202;
   --red-300: 252 165 165;
   --red-400: 248 113 113;
+  --red-500: 239 68 68;
+  --red-600: 220 38 38;
+  --red-700: 185 28 28;
+  --red-800: 153 27 27;
   --red-900: 127 29 29;
   --red-950: 69 10 10;
   --yellow-300: 253 224 71;
   --yellow-400: 250 204 21;
   --yellow-500: 234 179 8;
+  --yellow-700: 161 98 7;
   --yellow-900: 113 63 18;
+  --amber-100: 254 243 199;
   --amber-200: 253 230 138;
   --amber-300: 252 211 77;
   --amber-400: 251 191 36;
+  --amber-700: 180 83 9;
+  --amber-800: 146 64 14;
   --amber-900: 120 53 15;
   --amber-950: 69 26 3;
   --blue-300: 147 197 253;
@@ -56,6 +77,7 @@
   --purple-900: 88 28 135;
   --emerald-200: 167 243 208;
   --emerald-300: 110 231 183;
+  --emerald-700: 4 120 87;
   --emerald-900: 6 78 59;
 
   /* Semantic status surfaces (badges, callouts). The *-text vars must be
@@ -75,9 +97,15 @@
 }
 
 [data-theme='light'] {
-  --n-dark: 248 250 252; /* slate-50 page background */
+  color-scheme: light;
+
+  --n-dark: 248 250 252; /* #F8FAFC page background */
   --n-surface: 255 255 255;
-  --n-border: 203 213 225; /* slate-300 */
+  --n-surface-raised: 248 250 252; /* #F8FAFC table headers */
+  --n-border: 226 232 240; /* #E2E8F0 slate-200 */
+  --n-border-strong: 203 213 225; /* #CBD5E1 slate-300 */
+  --n-primary: 37 99 235;
+  --n-primary-hover: 29 78 216;
   --n-secondary: 29 78 216;
   /* Links and accent chips double as text in light, so accent darkens to the
      primary ink instead of blue-400 (2.6:1 on white). */
@@ -85,7 +113,7 @@
   --n-strong: 15 23 42;
   --n-link: 29 78 216;
 
-  /* Neutral text scale (light: slate inks, all ≥ 4.5:1 on white) */
+  /* Neutral text scale (light: slate inks, all >= 4.5:1 on white) */
   --gray-100: 15 23 42;
   --gray-200: 30 41 59;
   --gray-300: 51 65 85;
@@ -99,19 +127,30 @@
   --green-200: 22 101 52;
   --green-300: 21 128 61;
   --green-400: 21 128 61;
+  --green-500: 22 163 74;
+  --green-700: 21 128 61;
+  --green-800: 22 101 52;
   --green-900: 220 252 231;
   --red-200: 153 27 27;
   --red-300: 185 28 28;
   --red-400: 185 28 28;
+  --red-500: 220 38 38;
+  --red-600: 220 38 38;
+  --red-700: 185 28 28;
+  --red-800: 153 27 27;
   --red-900: 254 226 226;
   --red-950: 254 226 226;
   --yellow-300: 133 77 14;
   --yellow-400: 146 64 14;
   --yellow-500: 161 98 7;
+  --yellow-700: 161 98 7;
   --yellow-900: 254 249 195;
-  --amber-200: 180 83 9;
+  --amber-100: 120 53 15;
+  --amber-200: 146 64 14;
   --amber-300: 180 83 9;
   --amber-400: 180 83 9;
+  --amber-700: 180 83 9;
+  --amber-800: 146 64 14;
   --amber-900: 254 243 199;
   --amber-950: 255 251 235;
   --blue-300: 29 78 216;
@@ -122,6 +161,7 @@
   --purple-900: 237 233 254;
   --emerald-200: 6 95 70;
   --emerald-300: 4 120 87;
+  --emerald-700: 4 120 87;
   --emerald-900: 209 250 229;
 
   /* Semantic status surfaces, light tints */
@@ -138,21 +178,30 @@
 }
 
 @layer base {
-  /* Tailwind v4 defaults border-color to currentColor; restore the v3 default
-     (the themed gray-200 token) so bare `border` classes keep their look. */
+  /* Tailwind v4 defaults border-color to currentColor. Use the themed
+     separator token instead: the gray-200 text token intentionally flips to
+     dark ink in the light theme and is wrong for a default hairline. */
   *,
   ::before,
   ::after,
   ::backdrop,
   ::file-selector-button {
-    border-color: rgb(var(--gray-200) / 1);
+    border-color: rgb(var(--n-border) / 1);
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
   }
   :focus-visible {
     outline: 2px solid rgb(var(--n-accent));
     outline-offset: 2px;
   }
   body {
-    @apply bg-naslos-dark text-gray-100 antialiased;
+    @apply bg-naslos-dark text-gray-100 antialiased font-sans;
+    line-height: 1.5;
+  }
+  ::selection {
+    background: rgb(var(--n-accent) / 0.35);
+    color: rgb(var(--n-strong));
   }
   @media (prefers-reduced-motion: reduce) {
     *,
@@ -167,8 +216,43 @@
 }
 
 @layer components {
+  /* Keyboard-only skip link: clipped until focused, then a fixed overlay. */
+  .skip-link {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .skip-link:focus {
+    position: fixed;
+    left: 1rem;
+    top: 1rem;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    z-index: 70;
+    border-radius: 0.5rem;
+    border: 1px solid rgb(var(--n-border));
+    background: rgb(var(--n-surface));
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: rgb(var(--n-strong));
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.2);
+  }
+
+  /* Buttons. `.btn` stays the compatibility base for the many existing
+     `class="btn btn-…"` call sites; the shared Button component adds the same
+     classes with a typed API for new code. */
   .btn {
-    @apply px-4 py-2 rounded-lg font-medium transition-colors cursor-pointer;
+    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors duration-150 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none;
   }
   .btn-primary {
     @apply bg-naslos-primary hover:bg-naslos-secondary text-white;
@@ -179,23 +263,50 @@
   .btn-secondary {
     @apply bg-naslos-surface hover:bg-naslos-border text-gray-200 border border-naslos-border;
   }
+  .btn-ghost {
+    @apply bg-transparent hover:bg-naslos-border/60 text-gray-300 hover:text-naslos-strong border border-transparent;
+  }
   .btn-sm {
-    @apply px-2.5 py-1.5 text-sm min-h-[36px];
+    @apply px-2.5 py-1.5 text-xs min-h-9;
   }
   /* Icon-only control: keeps a 40x40 hit area while the glyph stays small. */
   .icon-btn {
-    @apply inline-flex items-center justify-center rounded-lg transition-colors cursor-pointer;
+    @apply inline-flex items-center justify-center rounded-lg transition-colors duration-150 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none;
     min-width: 40px;
     min-height: 40px;
   }
   .card {
-    @apply bg-naslos-surface rounded-xl border border-naslos-border p-6;
+    @apply bg-naslos-surface rounded-xl border border-naslos-border p-6 shadow-sm;
   }
   .input {
-    @apply bg-naslos-dark border border-naslos-border rounded-lg px-3 py-2 text-gray-100 focus:outline-hidden focus:border-naslos-primary;
+    @apply bg-naslos-dark border border-naslos-border-strong rounded-lg px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 transition-colors duration-150 focus:border-naslos-primary;
+  }
+  .input:focus-visible {
+    outline: 2px solid rgb(var(--n-accent));
+    outline-offset: 2px;
   }
   .label {
     @apply text-sm font-medium text-gray-400 mb-1 block;
+  }
+
+  /* Sidebar navigation links. The left accent bar makes the active route
+     unambiguous without relying on color alone (the row also carries
+     aria-current="page"). */
+  .nav-link {
+    @apply relative flex min-h-10 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150;
+  }
+  .nav-link-active {
+    @apply bg-naslos-primary/15 text-naslos-link;
+  }
+  .nav-link-active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.4rem;
+    bottom: 0.4rem;
+    width: 2px;
+    border-radius: 9999px;
+    background: rgb(var(--n-accent));
   }
 
   /* Status badges. Tone classes reference the semantic surface vars so both
@@ -229,12 +340,91 @@
     @apply p-4 rounded-lg border mb-4;
   }
   .callout-ok {
-    @apply border-green-700 bg-green-900/20 text-green-300;
+    border-color: color-mix(in srgb, var(--n-ok-text) 45%, transparent);
+    background: var(--n-ok-bg);
+    color: var(--n-ok-text);
+  }
+  .callout-warn {
+    border-color: color-mix(in srgb, var(--n-warn-text) 45%, transparent);
+    background: var(--n-warn-bg);
+    color: var(--n-warn-text);
   }
   .callout-bad {
-    @apply border-red-700 bg-red-900/20 text-red-300;
+    border-color: color-mix(in srgb, var(--n-bad-text) 45%, transparent);
+    background: var(--n-bad-bg);
+    color: var(--n-bad-text);
   }
   .callout-info {
-    @apply border-naslos-border bg-naslos-dark text-gray-300;
+    border-color: rgb(var(--n-border));
+    background: var(--n-info-bg);
+    color: var(--n-info-text);
+  }
+  .callout-neutral {
+    border-color: rgb(var(--n-border));
+    background: var(--n-neutral-bg);
+    color: var(--n-neutral-text);
+  }
+
+  /* Data tables: the wrapper owns the frame and horizontal scroll; callers
+     render a real <table> inside it. */
+  .data-table {
+    @apply overflow-x-auto rounded-xl border border-naslos-border bg-naslos-surface shadow-sm;
+  }
+  .data-table table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+  }
+  .data-table thead {
+    background: rgb(var(--n-surface-raised));
+  }
+  .data-table th {
+    padding: 0.75rem 1rem;
+    text-align: left;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: rgb(var(--gray-400));
+    white-space: nowrap;
+  }
+  .data-table td {
+    padding: 0.75rem 1rem;
+    color: rgb(var(--gray-200));
+    vertical-align: top;
+  }
+  .data-table tbody tr {
+    border-top: 1px solid rgb(var(--n-border));
+    transition: background-color 150ms ease;
+  }
+  .data-table tbody tr:hover {
+    background: rgb(var(--n-surface-raised) / 0.7);
+  }
+
+  /* Honest indeterminate job progress: no fake percentage. */
+  @keyframes job-progress {
+    0% {
+      transform: translateX(-110%);
+    }
+    100% {
+      transform: translateX(310%);
+    }
+  }
+  .job-progress {
+    background: rgb(var(--n-primary));
+    animation: job-progress 1.3s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .job-progress {
+      animation: none;
+      transform: none;
+      width: 100%;
+    }
+  }
+
+  /* Skeleton placeholder. The global reduced-motion rule collapses the pulse. */
+  .skeleton {
+    @apply animate-pulse rounded-md bg-naslos-border/60;
   }
 }

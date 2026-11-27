@@ -104,10 +104,12 @@ chart, a Kubernetes workload, or an Image Factory schematic. Nothing is forked.
   NoCloud seeds (keys only), an ISO/cloud-image library with chunked browser
   upload and SSRF-guarded URL import, and ZFS snapshots/rollback per VM (see
   [docs/virtual-machines.md](docs/virtual-machines.md)).
-- **A light and dark UI.** Svelte 5 + Tailwind design tokens, a persisted theme
-  with a no-FOUC bootstrap, a grouped collapsible sidebar, shared
+- **A light and dark UI.** Svelte 5 + Tailwind design tokens, self-hosted Fira
+  Sans/Fira Code, a persisted theme with a no-FOUC bootstrap, a grouped
+  sidebar with a responsive off-canvas drawer, shared
   modal/loading/empty/error/status components, and an axe-core WCAG 2.x scan of
-  every route in both themes in the e2e suite.
+  every route in both themes in the e2e suite (see
+  [docs/ui-design-system.md](docs/ui-design-system.md)).
 
 ### Operations and automation
 
@@ -240,6 +242,7 @@ The full set lives in [`docs/`](docs/README.md). Start with the
 | [installer-contract](docs/installer-contract.md) | Install pack format and installer interfaces |
 | [operations](docs/operations.md) | Backups, restore, troubleshooting |
 | [development](docs/development.md) | Layout, builds, extending the catalog |
+| [ui-design-system](docs/ui-design-system.md) | Tokens, shell, shared components, forms/tables, a11y checklist |
 
 Audit reports, remediation plans, and archived design notes are indexed at the
 end of [`docs/README.md`](docs/README.md).

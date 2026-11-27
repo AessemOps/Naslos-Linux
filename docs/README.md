@@ -50,6 +50,7 @@ order for the full picture, or jump to the topic you need.
 | [installer-contract.md](installer-contract.md) | Install pack format and stable interfaces for the desktop installer (FR-INSTALL) | New |
 | [operations.md](operations.md) | Day-2: LDAP backup/restore, troubleshooting | New |
 | [development.md](development.md) | Repo layout, how to build, extend the catalog and shares | New |
+| [ui-design-system.md](ui-design-system.md) | UI tokens, responsive shell, shared components, forms/tables, a11y checklist | New |
 | [AUDIT-2026-11-23.md](AUDIT-2026-11-23.md) | **Current full code review** (v0.7.1): findings per subsystem, verified blockers, ordered remediation plan | Current |
 | [AUDIT-2026-11-11.md](AUDIT-2026-11-11.md) | Full audit of v0.3.21 against the live node, audit only | Superseded |
 | [AUDIT-2026-10-24.md](AUDIT-2026-10-24.md) | Post-Rust migration security and best-practice audit | Superseded |

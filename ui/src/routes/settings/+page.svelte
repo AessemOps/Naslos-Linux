@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from '$lib/components/Icon.svelte';
+  import PageHeader from '$lib/components/PageHeader.svelte';
   import ThemeToggle from '$lib/components/ThemeToggle.svelte';
   import { theme } from '$lib/stores/theme';
 
@@ -16,8 +17,11 @@
     { href: '/domains', title: 'Domains & TLS', detail: 'Base domains and certificates', icon: 'lock' },
     { href: '/pools', title: 'Pools', detail: 'ZFS pools and datasets', icon: 'database' },
     { href: '/disks', title: 'Disks', detail: 'Devices and pool creation', icon: 'hard-drive' },
+    { href: '/disks/health', title: 'Disk Health', detail: 'SMART and vdev health', icon: 'heart-pulse' },
+    { href: '/replication', title: 'Replication', detail: 'Local dataset copies', icon: 'copy' },
     { href: '/backups', title: 'Backups', detail: 'Buddy peers and schedules', icon: 'cloud' },
     { href: '/apps', title: 'Apps', detail: 'Catalog, installs and exposure', icon: 'puzzle' },
+    { href: '/vms', title: 'Virtual Machines', detail: 'QEMU guests and consoles', icon: 'monitor' },
     { href: '/datasets', title: 'Datasets', detail: 'Datasets apps may mount', icon: 'folder-tree' },
     { href: '/settings/mcp', title: 'MCP', detail: 'AI assistant access and tokens', icon: 'bot' },
     { href: '/terminal', title: 'Terminal', detail: 'Pod logs and shells', icon: 'keyboard' }
@@ -25,8 +29,7 @@
 </script>
 
 <div class="max-w-4xl mx-auto">
-  <h1 class="text-3xl font-bold mb-2">Settings</h1>
-  <p class="text-gray-400 mb-8">Every configuration area in one place.</p>
+  <PageHeader title="Settings" subtitle="Every configuration area in one place." />
 
   <div class="card mb-6 flex flex-wrap items-center justify-between gap-4">
     <div class="flex items-center gap-4">
