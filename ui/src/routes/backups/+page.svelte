@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { api, ApiError } from '$lib/api';
   import AsyncState from '$lib/components/AsyncState.svelte';
+  import Button from '$lib/components/Button.svelte';
   import BackupIdentityCard from '$lib/components/backups/BackupIdentityCard.svelte';
   import BackupReceiverCard from '$lib/components/backups/BackupReceiverCard.svelte';
   import BackupRestoreCard from '$lib/components/backups/BackupRestoreCard.svelte';
@@ -265,6 +266,17 @@
     subtitle="Push encrypted backups to a buddy. The buddy stores ciphertext it cannot read."
     breadcrumbs={[{ label: 'System' }, { label: 'Backups' }]}
   />
+
+  <div class="card mb-6 flex flex-wrap items-center justify-between gap-3">
+    <div class="min-w-0">
+      <h2 class="text-lg font-bold">Cloud backup</h2>
+      <p class="text-sm text-gray-400">
+        Push encrypted backups to an S3-compatible bucket (AWS S3, Backblaze B2,
+        Cloudflare R2, MinIO).
+      </p>
+    </div>
+    <Button href="/backups/cloud" variant="secondary">Open cloud backup</Button>
+  </div>
 
   <AsyncState
     {loading}

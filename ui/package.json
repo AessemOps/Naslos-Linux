@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:mocked": "npm run build && node scripts/run-mocked-tests.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",

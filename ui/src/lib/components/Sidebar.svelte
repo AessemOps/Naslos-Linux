@@ -69,6 +69,7 @@
       label: 'System',
       items: [
         { name: 'Backups', path: '/backups', icon: 'cloud' },
+        { name: 'Cloud backup', path: '/backups/cloud', icon: 'cloud' },
         { name: 'Terminal', path: '/terminal', icon: 'terminal' },
         { name: 'Settings', path: '/settings', icon: 'settings' }
       ]

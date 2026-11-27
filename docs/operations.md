@@ -447,6 +447,25 @@ receive dataset, which is why its namespace must stay `privileged`. Any future
 change that adds a privileged workload should add it to this table in the same
 change.
 
+## UI test modes
+
+The Playwright suite has two modes:
+
+- **Live, authenticated** (`npx playwright test`): the `setup` project logs into
+  Authelia and the `chromium` project runs the specs against `PLAYWRIGHT_BASE_URL`
+  (the production node by default). This mutates the node, so run it in a
+  maintenance window; the credentials file and `NASLOS_RECEIVER_URL` are
+  documented in [deployment.md](deployment.md).
+- **Mocked, local** (`npm run test:mocked`): builds the UI, starts
+  `vite preview` on port 4173 and runs the `mocked` project with an empty
+  `storageState`. The specs answer every `/api/` path with `page.route`, so no
+  node, Authelia session or live fixture is needed. The project's `baseURL`
+  comes from `PLAYWRIGHT_BASE_URL` and defaults to `http://localhost:4173`.
+  `tests/cloud-backup.spec.ts` runs only in this mode; the live `chromium`
+  project ignores it, and the mocked project skips when `PLAYWRIGHT_BASE_URL` is
+  not a local URL or the preview is not running, so a bare `npx playwright test`
+  still runs the live suite.
+
 ## Reference
 
 - [archive: architecture](architecture.md) for trust boundaries.
