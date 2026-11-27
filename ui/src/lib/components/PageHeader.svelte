@@ -35,14 +35,14 @@
   {/if}
 
   <div class="flex flex-wrap items-start justify-between gap-3">
-    <div class="min-w-0">
+    <div class="min-w-0 flex-1 basis-64">
       <h1 class="text-3xl font-bold mb-2">{title}</h1>
       {#if subtitle}
         <p class="text-gray-400">{subtitle}</p>
       {/if}
     </div>
     {#if $$slots.actions}
-      <div class="flex flex-wrap items-center gap-2">
+      <div class="flex shrink-0 flex-wrap items-center gap-2">
         <slot name="actions" />
       </div>
     {/if}

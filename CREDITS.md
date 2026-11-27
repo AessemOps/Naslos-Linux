@@ -112,7 +112,7 @@ Runtime dependencies:
 | --- | --- | --- | --- |
 | @xterm/xterm | ^6.0.0 | MIT | https://github.com/xtermjs/xterm.js |
 | @xterm/addon-fit | ^0.11.0 | MIT | https://github.com/xtermjs/xterm.js |
-| @novnc/novnc | ^1.5.0 (pinned: >=1.6 uses a top-level `await` the UI build target does not support, and QEMU's VNC never streams H.264) | MPL-2.0 | https://github.com/novnc/noVNC |
+| @novnc/novnc | ^1.7.0 | MPL-2.0 | https://github.com/novnc/noVNC |
 | @fontsource/fira-sans | ^5.3.0 (self-hosted @font-face CSS + WOFF/WOFF2 files) | OFL-1.1 | https://github.com/fontsource/font-files |
 | @fontsource/fira-code | ^5.3.0 (self-hosted @font-face CSS + WOFF/WOFF2 files) | OFL-1.1 | https://github.com/fontsource/font-files |
 
@@ -129,17 +129,17 @@ produce the shipped static assets):
 | Component | Version | License (SPDX) | Upstream |
 | --- | --- | --- | --- |
 | @axe-core/playwright | 4.14.0 (dev-only; powers `ui/tests/a11y.spec.ts`, never shipped) | MPL-2.0 | https://github.com/dequelabs/axe-core-npm |
-| @playwright/test | ^1.63.0 | Apache-2.0 | https://github.com/microsoft/playwright |
-| @sveltejs/kit | ^2.0.0 | MIT | https://github.com/sveltejs/kit |
-| @sveltejs/adapter-static | ^3.0.0 | MIT | https://github.com/sveltejs/kit |
-| @sveltejs/vite-plugin-svelte | ^4.0.4 | MIT | https://github.com/sveltejs/vite-plugin-svelte |
+| @playwright/test | ^1.65.1 | Apache-2.0 | https://github.com/microsoft/playwright |
+| @sveltejs/kit | ^3.3.1 | MIT | https://github.com/sveltejs/kit |
+| @sveltejs/adapter-static | ^4.0.1 | MIT | https://github.com/sveltejs/kit |
+| @sveltejs/vite-plugin-svelte | ^7.3.1 | MIT | https://github.com/sveltejs/vite-plugin-svelte |
 | @tailwindcss/vite | ^4.3.5 | MIT | https://github.com/tailwindlabs/tailwindcss |
-| @types/node | ^20.0.0 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
-| svelte | ^5.57.1 | MIT | https://github.com/sveltejs/svelte |
-| svelte-check | ^4.7.6 | MIT | https://github.com/sveltejs/language-tools |
+| @types/node | ^26.6.6 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
+| svelte | ^5.58.0 | MIT | https://github.com/sveltejs/svelte |
+| svelte-check | ^4.7.8 | MIT | https://github.com/sveltejs/language-tools |
 | tailwindcss | ^4.3.5 | MIT | https://github.com/tailwindlabs/tailwindcss |
-| typescript | ^5.0.0 | Apache-2.0 | https://github.com/microsoft/TypeScript |
-| vite | ^5.0.0 | MIT | https://github.com/vitejs/vite |
+| typescript | ^6.0.0 | Apache-2.0 | https://github.com/microsoft/TypeScript |
+| vite | ^8.3.8 | MIT | https://github.com/vitejs/vite |
 
 The full transitive tree is pinned in
 [`ui/package-lock.json`](ui/package-lock.json).

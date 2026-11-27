@@ -66,8 +66,9 @@ export function fmtRelative(ts: string | number | Date | null | undefined): stri
   const day = 24 * hour;
   let value: string;
   if (abs < 45_000) return 'just now';
-  if (abs < hour) value = `${Math.round(abs / minute)}m`;
-  else if (abs < day) value = `${Math.round(abs / hour)}h`;
-  else value = `${Math.round(abs / day)}d`;
+  // Floor so a value never reaches its unit boundary (no `60m ago`/`24h ago`).
+  if (abs < hour) value = `${Math.max(1, Math.floor(abs / minute))}m`;
+  else if (abs < day) value = `${Math.floor(abs / hour)}h`;
+  else value = `${Math.floor(abs / day)}d`;
   return deltaMs < 0 ? `${value} ago` : `in ${value}`;
 }
