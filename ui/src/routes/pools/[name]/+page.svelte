@@ -84,6 +84,10 @@
 
   let schedules: StorageSchedule[] = [];
   let schedulesError = '';
+  // True once /api/storage/schedules answered for this pool. Until then the
+  // maintenance card is not rendered: an empty list would read as
+  // "No scrub schedule" and offer create actions for existing schedules.
+  let schedulesLoaded = false;
 
   let actionError = '';
   let scrubRunning = false;
@@ -120,6 +124,7 @@
     zvolsError = '';
     schedules = [];
     schedulesError = '';
+    schedulesLoaded = false;
     actionError = '';
     scrubMessage = '';
     scrubError = false;
@@ -193,6 +198,7 @@
       const data = await api<{ schedules?: StorageSchedule[] }>('/api/storage/schedules');
       schedules = Array.isArray(data.schedules) ? data.schedules : [];
       schedulesError = '';
+      schedulesLoaded = true;
     } catch (e) {
       schedulesError =
         e instanceof ApiError
@@ -418,7 +424,12 @@
   {#if actionError}
     <div role="alert" class="callout callout-bad">{actionError}</div>
   {/if}
-  {#if schedulesError}
+  {#if schedulesError && schedulesLoaded}
+    <div role="alert" class="callout callout-bad">
+      Could not refresh schedules; showing the last loaded list. {schedulesError}
+      <button type="button" class="ml-2 underline" on:click={loadSchedules}>Retry</button>
+    </div>
+  {:else if schedulesError}
     <ErrorState message={schedulesError} retry={loadSchedules} />
   {/if}
   {#if health && error}
@@ -457,6 +468,7 @@
         on:delete={(e) => deleteZvol(e.detail)}
       />
 
+      {#if schedulesLoaded}
       <PoolSchedulesCard
         {schedules}
         {poolName}
@@ -473,6 +485,7 @@
         on:edit={(e) => openSchedule(e.detail.kind, e.detail.target, e.detail)}
         on:remove={(e) => removeSchedule(e.detail)}
       />
+      {/if}
     {/if}
   </AsyncState>
 </div>
