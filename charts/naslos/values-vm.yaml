@@ -91,7 +91,7 @@ virt:
 openldap:
   # Debian 13 / slapd 2.6.10 with /var/run/slapd created in the image and
   # LDAPS-only listening (LDAP_TLS_ENFORCE; no plaintext ldap:///).
-  image: ghcr.io/aessemops/naslos-openldap@sha256:1a7c11381a654c926f2c452ac3b74ce97b6940031852f1084c7ce17433439800
+  image: ghcr.io/aessemops/naslos-openldap:0.7.67
   # OpenLDAP host is the service name for internal cluster references.
   host: naslos-openldap
   # No bindPassword here. The chart reads the service password from the
