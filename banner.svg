@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 520" width="1600" height="520" role="img" aria-label="Naslos: a NAS on stock Talos Linux">
+  <defs>
+    <radialGradient id="glow" cx="21%" cy="50%" r="40%">
+      <stop offset="0%" stop-color="#2F7CF6" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#2F7CF6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5AA0FF"/>
+      <stop offset="100%" stop-color="#1F63D6"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1600" height="520" fill="#0A101E"/>
+  <circle cx="340" cy="260" r="380" fill="url(#glow)"/>
+
+  <!-- mark -->
+  <g transform="translate(-105,-56) scale(0.85)">
+    <polygon points="512,172 685.2,272 685.2,472 512,572 338.8,472 338.8,272"
+             fill="none" stroke="url(#edge)" stroke-width="26" stroke-linejoin="round"/>
+    <g fill="#2F7CF6" fill-opacity="0.16" stroke="#2F7CF6" stroke-width="9">
+      <rect x="406" y="266" width="96" height="96" rx="18"/>
+      <rect x="522" y="266" width="96" height="96" rx="18"/>
+      <rect x="406" y="382" width="96" height="96" rx="18"/>
+      <rect x="522" y="382" width="96" height="96" rx="18"/>
+    </g>
+    <g fill="#9CC2FF">
+      <circle cx="454" cy="344" r="7"/>
+      <circle cx="570" cy="344" r="7"/>
+      <circle cx="454" cy="460" r="7"/>
+      <circle cx="570" cy="460" r="7"/>
+    </g>
+    <circle cx="454" cy="344" r="7" fill="#6EE7A8"/>
+  </g>
+
+  <!-- copy -->
+  <text x="556" y="196" font-family="DejaVu Sans, Arial, Helvetica, sans-serif"
+        font-size="26" font-weight="600" letter-spacing="12" fill="#2F7CF6">NASLOS LINUX</text>
+  <text x="552" y="292" font-family="DejaVu Sans, Arial, Helvetica, sans-serif"
+        font-size="66" font-weight="700" letter-spacing="-1.5" fill="#F5F8FF">A NAS on stock Talos Linux</text>
+  <text x="556" y="356" font-family="DejaVu Sans, Arial, Helvetica, sans-serif"
+        font-size="30" fill="#9CB4D6">ZFS storage  ·  SMB and NFS shares  ·  SSO  ·  apps  ·  VMs</text>
+  <text x="556" y="404" font-family="DejaVu Sans, Arial, Helvetica, sans-serif"
+        font-size="30" fill="#9CB4D6">One box, managed from the browser.</text>
+</svg>
