@@ -9,12 +9,13 @@
   import { onMount } from 'svelte';
   import AppExposureModal from './AppExposureModal.svelte';
   import AppConfigureModal from './AppConfigureModal.svelte';
-  import EmptyState from './EmptyState.svelte';
-  import InstalledAppRow from './InstalledAppRow.svelte';
   import AppDetailDrawer from './AppDetailDrawer.svelte';
   import AppUpdateModal from './AppUpdateModal.svelte';
   import AppUpdateAllModal from './AppUpdateAllModal.svelte';
-  import LoadingState from './LoadingState.svelte';
+  import AsyncState from './AsyncState.svelte';
+  import Button from './Button.svelte';
+  import FormField from './FormField.svelte';
+  import InstalledAppRow from './InstalledAppRow.svelte';
   import { appJobs } from '$lib/stores/appJobs';
   import { appUpdates, refreshAppUpdates, startAppUpdates } from '$lib/stores/appUpdates';
   import { formatBytes, formatBytesPerSec, formatMillicores } from '$lib/format';
@@ -345,184 +346,172 @@
   });
 </script>
 
-<div>
-  {#if error}
-    <div role="alert" class="callout callout-bad">{error}</div>
-  {/if}
-
-  {#if loading}
-    <LoadingState label="Loading installed apps..." />
-  {:else if apps.length === 0 && !error}
-    <EmptyState icon="package" title="No Apps Installed" detail="Browse the catalog to install your first app." />
-  {:else}
-    <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-      <div class="text-sm text-gray-400">
-        <span class="font-medium text-gray-200">{apps.length} apps</span>
+<AsyncState
+  loading={loading && apps.length === 0}
+  error={error}
+  empty={!loading && apps.length === 0}
+  loadingText="Loading installed apps..."
+  emptyTitle="No Apps Installed"
+  emptyDetail="Browse the catalog to install your first app."
+  emptyIcon="package"
+  onRetry={() => loadApps(true)}
+>
+  <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+    <div class="text-sm text-gray-400">
+      <span class="font-medium text-gray-200">{apps.length} apps</span>
+      <span class="mx-1">·</span>
+      <span class:text-amber-300={updateCount > 0}>{updateCount} {updateCount === 1 ? 'update' : 'updates'}</span>
+      {#if usageAvailable}
         <span class="mx-1">·</span>
-        <span class:text-amber-300={updateCount > 0}>{updateCount} updates</span>
-        {#if usageAvailable}
-          <span class="mx-1">·</span>
-          <span class="tabular-nums">
-            CPU {formatMillicores(aggregate.cpu)} · RAM {formatBytes(aggregate.memory)} · ↓ {formatBytesPerSec(
-              aggregate.rx
-            )}
-            ↑ {formatBytesPerSec(aggregate.tx)}
-          </span>
-        {/if}
-      </div>
-      <div class="flex items-center gap-2">
-        {#if bulkMessage}
-          <span class="text-xs text-green-400" role="status">{bulkMessage}</span>
-        {/if}
-        {#if bulkError}
-          <span class="text-xs text-red-300" role="alert">{bulkError}</span>
-        {/if}
-        {#if refreshMessage}
-          <span class="text-xs text-green-400" role="status">{refreshMessage}</span>
-        {/if}
-        {#if refreshError}
-          <span class="text-xs text-red-300" role="alert">{refreshError}</span>
-        {/if}
-        {#if updateableApps.length > 0}
-          <button
-            class="btn btn-primary text-sm"
-            type="button"
-            disabled={bulkOpen}
-            on:click={openBulkUpdate}
-          >
-            Update all ({updateableApps.length})
-          </button>
-        {/if}
-        <button class="btn btn-secondary text-sm" disabled={refreshing} on:click={checkNow}>
-          {refreshing ? 'Checking…' : 'Check now'}
-        </button>
-      </div>
-    </div>
-
-    {#if !usageAvailable && usageError}
-      <p class="text-xs text-gray-500 mb-3">{usageError}</p>
-    {/if}
-
-    {#if pools && pools.baseline.provisioned > 0}
-      <div class="flex flex-wrap items-center justify-between gap-2 mb-2 text-sm">
-        <span class="text-gray-400">
-          Namespace slots
-          <span class="text-gray-200 font-medium tabular-nums"
-            >{pools.baseline.used}/{pools.baseline.limit}</span
-          >
-          used
-          <span class="mx-1">·</span>
-          <span class="text-gray-500">{pools.baseline.provisioned} provisioned</span>
-          {#if pools.privileged.provisioned > 0}
-            <span class="mx-1">·</span>
-            <span class="text-gray-500"
-              >privileged {pools.privileged.used}/{pools.privileged.provisioned}</span
-            >
-          {/if}
+        <span class="tabular-nums">
+          CPU {formatMillicores(aggregate.cpu)} · RAM {formatBytes(aggregate.memory)} · ↓ {formatBytesPerSec(
+            aggregate.rx
+          )}
+          ↑ {formatBytesPerSec(aggregate.tx)}
         </span>
-        <div class="flex items-center gap-2">
-          {#if limitMessage}
-            <span class="text-xs text-green-400" role="status">{limitMessage}</span>
-          {/if}
-          <button
-            class="btn btn-secondary text-xs"
-            type="button"
-            on:click={editingLimit ? cancelLimitEdit : startLimitEdit}
-          >
-            {editingLimit ? 'Close' : 'Adjust limit'}
-          </button>
-        </div>
-      </div>
-
-      {#if editingLimit}
-        <form
-          class="card mb-3 flex flex-wrap items-end gap-3"
-          on:submit|preventDefault={saveLimit}
-        >
-          <div>
-            <label class="label" for="app-slot-limit">Usable app namespace slots</label>
-            <input
-              id="app-slot-limit"
-              class="input w-28"
-              type="number"
-              min={Math.max(1, pools.baseline.used)}
-              max={pools.baseline.provisioned}
-              bind:value={limitDraft}
-            />
-          </div>
-          <p class="text-xs text-gray-500 max-w-md pb-2">
-            Between {Math.max(1, pools.baseline.used)} (in use) and
-            {pools.baseline.provisioned} (provisioned). Raising the limit takes effect
-            immediately; more than {pools.baseline.provisioned} needs a platform upgrade.
-          </p>
-          {#if limitError}
-            <p class="text-xs text-red-300 pb-2" role="alert">{limitError}</p>
-          {/if}
-          <button
-            class="btn btn-primary text-sm"
-            type="submit"
-            disabled={savingLimit || Number(limitDraft) < Math.max(1, pools.baseline.used)}
-          >
-            {savingLimit ? 'Saving…' : 'Save limit'}
-          </button>
-        </form>
       {/if}
-      {#if poolsError}
-        <p class="text-xs text-amber-300 mb-2" role="alert">{poolsError}</p>
-      {/if}
-    {/if}
-
-    <div class="card p-0 divide-y divide-naslos-border overflow-hidden">
-      {#each apps as app (app.name)}
-        <InstalledAppRow
-          {app}
-          usage={usageByName[app.name]}
-          jobRunning={runningJobApps.has(app.name)}
-          on:open={() => (selected = app)}
-          on:update={() => (updating = app)}
-        />
-      {/each}
     </div>
+    <div class="flex flex-wrap items-center gap-2">
+      {#if bulkMessage}
+        <span class="text-xs text-green-400" role="status">{bulkMessage}</span>
+      {/if}
+      {#if bulkError}
+        <span class="text-xs text-red-300" role="alert">{bulkError}</span>
+      {/if}
+      {#if refreshMessage}
+        <span class="text-xs text-green-400" role="status">{refreshMessage}</span>
+      {/if}
+      {#if refreshError}
+        <span class="text-xs text-red-300" role="alert">{refreshError}</span>
+      {/if}
+      {#if updateableApps.length > 0}
+        <Button size="sm" disabled={bulkOpen} on:click={openBulkUpdate}>
+          Update all ({updateableApps.length})
+        </Button>
+      {/if}
+      <Button variant="secondary" size="sm" loading={refreshing} on:click={checkNow}>
+        {refreshing ? 'Checking…' : 'Check now'}
+      </Button>
+    </div>
+  </div>
+
+  {#if !usageAvailable && usageError}
+    <p class="text-xs text-gray-500 mb-3">{usageError}</p>
   {/if}
 
-  {#if selected}
-    <AppDetailDrawer
-      app={selected}
-      usage={usageByName[selected.name]}
-      history={historyByName[selected.name]}
-      jobRunning={runningJobApps.has(selected.name)}
-      on:close={() => (selected = null)}
-      on:update={openUpdateFromDrawer}      on:configure={() => openFromDrawer('config')}
-      on:exposure={() => openFromDrawer('exposure')}
-    />
+  {#if pools && pools.baseline.provisioned > 0}
+    <div class="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm">
+      <span class="text-gray-400">
+        Namespace slots
+        <span class="text-gray-200 font-medium tabular-nums"
+          >{pools.baseline.used}/{pools.baseline.limit}</span
+        >
+        used
+        <span class="mx-1">·</span>
+        <span class="text-gray-500">{pools.baseline.provisioned} provisioned</span>
+        {#if pools.privileged.provisioned > 0}
+          <span class="mx-1">·</span>
+          <span class="text-gray-500"
+            >privileged {pools.privileged.used}/{pools.privileged.provisioned}</span
+          >
+        {/if}
+      </span>
+      <div class="flex items-center gap-2">
+        {#if limitMessage}
+          <span class="text-xs text-green-400" role="status">{limitMessage}</span>
+        {/if}
+        <Button variant="secondary" size="sm" on:click={editingLimit ? cancelLimitEdit : startLimitEdit}>
+          {editingLimit ? 'Close' : 'Adjust limit'}
+        </Button>
+      </div>
+    </div>
+
+    {#if editingLimit}
+      <form class="card mb-3 flex flex-wrap items-end gap-3" on:submit|preventDefault={saveLimit}>
+        <FormField label="Usable app namespace slots" id="app-slot-limit">
+          <input
+            id="app-slot-limit"
+            class="input w-28"
+            type="number"
+            min={Math.max(1, pools.baseline.used)}
+            max={pools.baseline.provisioned}
+            bind:value={limitDraft}
+          />
+        </FormField>
+        <p class="text-xs text-gray-500 max-w-md pb-2">
+          Between {Math.max(1, pools.baseline.used)} (in use) and
+          {pools.baseline.provisioned} (provisioned). Raising the limit takes effect
+          immediately; more than {pools.baseline.provisioned} needs a platform upgrade.
+        </p>
+        {#if limitError}
+          <p class="text-xs text-red-300 pb-2" role="alert">{limitError}</p>
+        {/if}
+        <Button
+          type="submit"
+          size="sm"
+          loading={savingLimit}
+          disabled={Number(limitDraft) < Math.max(1, pools.baseline.used)}
+        >
+          {savingLimit ? 'Saving…' : 'Save limit'}
+        </Button>
+      </form>
+    {/if}
+    {#if poolsError}
+      <p class="text-xs text-amber-300 mb-2" role="alert">{poolsError}</p>
+    {/if}
   {/if}
 
-  {#if updating}
-    <AppUpdateModal app={updating} on:close={() => (updating = null)} />
-  {/if}
-  {#if bulkOpen}
-    <AppUpdateAllModal
-      apps={bulkTargets}
-      on:close={() => (bulkOpen = false)}
-      on:done={onBulkDone}
-    />
-  {/if}
-  {#if editingExposure}
-    <AppExposureModal
-      appName={editingExposure}
-      on:close={() => {
-        editingExposure = null;
-        loadApps();
-      }}
-    />
-  {/if}
-  {#if editingConfig}
-    <AppConfigureModal
-      appName={editingConfig}
-      on:close={() => {
-        editingConfig = null;
-        loadApps();
-      }}
-    />
-  {/if}
-</div>
+  <div class="card p-0 divide-y divide-naslos-border overflow-hidden">
+    {#each apps as app (app.name)}
+      <InstalledAppRow
+        {app}
+        usage={usageByName[app.name]}
+        jobRunning={runningJobApps.has(app.name)}
+        on:open={() => (selected = app)}
+        on:update={() => (updating = app)}
+      />
+    {/each}
+  </div>
+</AsyncState>
+
+{#if selected}
+  <AppDetailDrawer
+    app={selected}
+    usage={usageByName[selected.name]}
+    history={historyByName[selected.name]}
+    jobRunning={runningJobApps.has(selected.name)}
+    on:close={() => (selected = null)}
+    on:update={openUpdateFromDrawer}
+    on:configure={() => openFromDrawer('config')}
+    on:exposure={() => openFromDrawer('exposure')}
+  />
+{/if}
+
+{#if updating}
+  <AppUpdateModal app={updating} on:close={() => (updating = null)} />
+{/if}
+{#if bulkOpen}
+  <AppUpdateAllModal
+    apps={bulkTargets}
+    on:close={() => (bulkOpen = false)}
+    on:done={onBulkDone}
+  />
+{/if}
+{#if editingExposure}
+  <AppExposureModal
+    appName={editingExposure}
+    on:close={() => {
+      editingExposure = null;
+      loadApps();
+    }}
+  />
+{/if}
+{#if editingConfig}
+  <AppConfigureModal
+    appName={editingConfig}
+    on:close={() => {
+      editingConfig = null;
+      loadApps();
+    }}
+  />
+{/if}

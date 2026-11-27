@@ -2,7 +2,9 @@
   import { onDestroy } from 'svelte';
   // The official noVNC distribution (MPL-2.0, see CREDITS.md): it speaks RFB
   // over the websocket the API bridges to QEMU's password-protected VNC.
-  import RFB from '@novnc/novnc';
+  // It touches `window` at module scope, so it is imported lazily when the
+  // console is opened instead of on the SSR/preview path.
+  import Button from './Button.svelte';
 
   export let vm: {
     name: string;
@@ -40,6 +42,8 @@
       const info = await res.json();
       // The drawer can close while the preflight is in flight; never attach
       // noVNC to a detached element or after a disconnect.
+      if (destroyed || seq !== connectSeq) return;
+      const { default: RFB } = await import('@novnc/novnc');
       if (destroyed || seq !== connectSeq) return;
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const url = `${proto}//${window.location.host}/api/ws/vm/${encodeURIComponent(vm.name)}/vnc`;
@@ -103,14 +107,14 @@
 <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
   <div class="flex gap-2">
     {#if connected}
-      <button class="btn btn-danger" on:click={disconnect}>Disconnect</button>
-      <button class="btn btn-secondary" on:click={sendKeys} title="Send Ctrl+Alt+Del to the guest">Ctrl+Alt+Del</button>
+      <Button variant="danger" on:click={disconnect}>Disconnect</Button>
+      <Button variant="secondary" on:click={sendKeys} title="Send Ctrl+Alt+Del to the guest">Ctrl+Alt+Del</Button>
     {:else}
-      <button class="btn btn-primary" on:click={connect} disabled={connecting || vm.state !== 'running'}>
+      <Button on:click={connect} loading={connecting} disabled={vm.state !== 'running'}>
         {connecting ? 'Connecting…' : 'Connect console'}
-      </button>
+      </Button>
     {/if}
-    <button class="btn btn-secondary" on:click={fullscreen} disabled={!connected}>Fullscreen</button>
+    <Button variant="secondary" on:click={fullscreen} disabled={!connected}>Fullscreen</Button>
   </div>
   <p class="text-xs text-gray-500">
     The console reaches the VM's VNC through the API; it needs the VM running.
@@ -118,7 +122,7 @@
 </div>
 
 {#if error}
-  <div role="alert" class="card mb-2 border-red-700 bg-red-900/20 text-red-300 text-sm">{error}</div>
+  <div role="alert" class="callout callout-bad">{error}</div>
 {/if}
 
 <div class="card p-0 overflow-hidden">

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FormField from './FormField.svelte';
+
   export let app: {
     schema: { properties: Record<string, any>; required?: string[] };
   };
@@ -54,8 +56,7 @@
   }
 
   function updateValue(key: string, value: any) {
-    values[key] = value;
-    values = values;
+    values = { ...values, [key]: value };
   }
 
   function subEntries(prop: any): [string, any][] {
@@ -67,54 +68,63 @@
 
 <div class="space-y-4">
   {#each entries as [key, prop]}
-    <div>
-      <label class="label" for="field-{key}">
-        {prop.title || key}
-        {#if app.schema.required?.includes(key)}<span class="text-red-400">*</span>{/if}
-      </label>
-
-      {#if prop.type === 'boolean'}
+    {@const required = app.schema.required?.includes(key) ?? false}
+    {#if prop.type === 'boolean'}
+      <FormField label={prop.title || key} id="field-{key}" {required}>
         <label class="flex items-center gap-3 cursor-pointer">
           <input
             type="checkbox"
             id="field-{key}"
             checked={values[key] ?? prop.default ?? false}
-            on:change={(e) => values[key] = e.currentTarget.checked}
+            on:change={(e) => updateValue(key, e.currentTarget.checked)}
             class="w-5 h-5 rounded"
           />
           <span class="text-gray-300">{prop.description || 'Enable'}</span>
         </label>
-      {:else if prop.type === 'object' && prop.properties}
-        <div class="border border-naslos-border rounded-lg p-4 space-y-3">
-          {#if prop.description}<p class="text-sm text-gray-400 mb-2">{prop.description}</p>{/if}
-          {#each subEntries(prop) as [subKey, subProp]}
-            <div>
-              <label class="label" for="field-{key}-{subKey}">{subProp.title || subKey}</label>
-              {#if subProp.type === 'boolean'}
-                <label class="flex items-center gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    id="field-{key}-{subKey}"
-                    checked={values[key]?.[subKey] ?? subProp.default ?? false}
-                    on:change={(e) => updateNested(values, key, subKey, e.currentTarget.checked)}
-                    class="w-5 h-5 rounded"
-                  />
-                  <span class="text-gray-300">{subProp.description || 'Enable'}</span>
-                </label>
-              {:else}
+      </FormField>
+    {:else if prop.type === 'object' && prop.properties}
+      <div class="border border-naslos-border rounded-lg p-4 space-y-3">
+        <h3 class="text-sm font-semibold text-gray-300">{prop.title || key}</h3>
+        {#if prop.description}<p class="text-sm text-gray-400">{prop.description}</p>{/if}
+        {#each subEntries(prop) as [subKey, subProp]}
+          {#if subProp.type === 'boolean'}
+            <FormField label={subProp.title || subKey} id="field-{key}-{subKey}">
+              <label class="flex items-center gap-3 cursor-pointer">
                 <input
-                  type={inputType(subProp)}
+                  type="checkbox"
                   id="field-{key}-{subKey}"
-                  value={values[key]?.[subKey] ?? ''}
-                  on:input={(e) => updateNested(values, key, subKey, coerce(subProp, e.currentTarget.value))}
-                  placeholder={subProp.default || subProp.description || ''}
-                  class="input w-full"
+                  checked={values[key]?.[subKey] ?? subProp.default ?? false}
+                  on:change={(e) => updateNested(values, key, subKey, e.currentTarget.checked)}
+                  class="w-5 h-5 rounded"
                 />
-              {/if}
-            </div>
-          {/each}
-        </div>
-      {:else if isGroupField(key, prop)}
+                <span class="text-gray-300">{subProp.description || 'Enable'}</span>
+              </label>
+            </FormField>
+          {:else}
+            <FormField
+              label={subProp.title || subKey}
+              id="field-{key}-{subKey}"
+              hint={subProp.description || ''}
+            >
+              <input
+                type={inputType(subProp)}
+                id="field-{key}-{subKey}"
+                value={values[key]?.[subKey] ?? ''}
+                on:input={(e) => updateNested(values, key, subKey, coerce(subProp, e.currentTarget.value))}
+                placeholder={subProp.default || subProp.description || ''}
+                class="input w-full"
+              />
+            </FormField>
+          {/if}
+        {/each}
+      </div>
+    {:else if isGroupField(key, prop)}
+      <FormField
+        label={prop.title || key}
+        id="field-{key}"
+        {required}
+        hint="Datasets are owned by group 10000 (naslos_users); an app that mounts datasets must run with that group."
+      >
         <select
           id="field-{key}"
           class="input w-full"
@@ -128,10 +138,9 @@
             <option value={String(currentGroup(key, prop))}>custom ({currentGroup(key, prop)})</option>
           {/if}
         </select>
-        <p class="text-xs text-gray-500 mt-1">
-          Datasets are owned by group 10000 (naslos_users); an app that mounts datasets must run with that group.
-        </p>
-      {:else}
+      </FormField>
+    {:else}
+      <FormField label={prop.title || key} id="field-{key}" {required}>
         <input
           type={inputType(prop)}
           id="field-{key}"
@@ -140,11 +149,10 @@
           placeholder={placeholderFor(key, prop)}
           class="input w-full"
         />
-      {/if}
-
-      {#if prop.description && prop.type !== 'object'}
-        <p class="text-xs text-gray-500 mt-1">{prop.description}</p>
-      {/if}
-    </div>
+      </FormField>
+    {/if}
+    {#if prop.description && prop.type !== 'boolean' && prop.type !== 'object' && !isGroupField(key, prop)}
+      <p class="text-xs text-gray-500">{prop.description}</p>
+    {/if}
   {/each}
 </div>

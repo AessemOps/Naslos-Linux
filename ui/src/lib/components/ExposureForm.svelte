@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
+  import FormField from './FormField.svelte';
 
   interface Exposure {
     subdomain: string;
@@ -71,9 +72,12 @@
 </script>
 
 <div class="space-y-5">
-  <div>
-    <label class="label" for="exposure-subdomain">Subdomain</label>
-    <div class="flex items-center gap-2">
+  <FormField
+    label="Subdomain"
+    id="exposure-subdomain"
+    hint="Leave empty to keep the app cluster-internal (no route is created)."
+  >
+    <div class="flex flex-wrap items-center gap-2">
       <input
         id="exposure-subdomain"
         class="input flex-1"
@@ -99,15 +103,10 @@
         <span class="text-gray-400 text-sm whitespace-nowrap">.{baseDomain}</span>
       {/if}
     </div>
-    <p class="text-xs text-gray-500 mt-1">
-      Leave empty to keep the app cluster-internal (no route is created).
-    </p>
     {#if domainAuthWarning}
-      <p role="alert" class="text-xs text-amber-300 mt-2">
-        {domainAuthWarning}
-      </p>
+      <p role="alert" class="text-xs text-amber-300 mt-2">{domainAuthWarning}</p>
     {/if}
-  </div>
+  </FormField>
 
   {#if services.length > 0}
     <div>

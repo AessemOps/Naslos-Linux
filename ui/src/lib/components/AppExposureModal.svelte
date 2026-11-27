@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { modal } from '$lib/actions/modal';
-  import Icon from '$lib/components/Icon.svelte';
   import { onMount, createEventDispatcher } from 'svelte';
+  import AsyncState from './AsyncState.svelte';
+  import Button from './Button.svelte';
+  import Modal from './Modal.svelte';
   import ExposureForm from './ExposureForm.svelte';
 
   interface Exposure {
@@ -26,6 +27,7 @@
   let loaded = false;
   let saving = false;
   let error = '';
+  let loadError = '';
   let unsafeAcknowledged = false;
 
   // Same rule as the install wizard: an exposed route without Authelia auth or
@@ -41,6 +43,8 @@
 
   async function load() {
     loading = true;
+    loaded = false;
+    loadError = '';
     error = '';
     try {
       const res = await fetch(`/api/apps/${encodeURIComponent(appName)}/exposure`);
@@ -61,7 +65,7 @@
     } catch (e) {
       // Never leave an editable default exposure behind: saving it would
       // silently unexpose the app.
-      error = 'Failed to load exposure: ' + (e instanceof Error ? e.message : String(e));
+      loadError = 'Failed to load exposure: ' + (e instanceof Error ? e.message : String(e));
     } finally {
       loading = false;
     }
@@ -112,22 +116,15 @@
   onMount(load);
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" use:modal={{ onClose: () => dispatch('close') }} on:click|self={() => dispatch('close')}>
-  <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
-    <div class="p-6 border-b border-naslos-border flex items-center justify-between">
-      <h2 class="text-xl font-bold">Exposure — {appName}</h2>
-      <button class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border" aria-label="Close" on:click={() => dispatch('close')}><Icon name="x" /></button>
-    </div>
-    <div class="flex-1 overflow-y-auto p-6">
-      {#if loading}
-        <p class="text-gray-400">Loading exposure...</p>
-      {:else if !loaded}
-        <div role="alert" class="card border-red-700 bg-red-900/20 text-red-300 text-sm">
-          <p>{error || 'The exposure could not be loaded.'}</p>
-          <button type="button" class="btn btn-secondary mt-3" on:click={load}>Retry</button>
-        </div>
-      {:else}
+<Modal title="Exposure — {appName}" onClose={() => dispatch('close')}>
+  <AsyncState
+    {loading}
+    error={loadError}
+    loadingText="Loading exposure..."
+    onRetry={load}
+  >
+    {#if loaded}
+      <form id="app-exposure-form" on:submit|preventDefault={save} class="space-y-5">
         <ExposureForm
           bind:exposure
           bind:baseDomain
@@ -137,7 +134,7 @@
           on:change={onExposureChange}
         />
         {#if unsafeExposure}
-          <div class="mt-5 p-4 rounded-lg border border-red-700 bg-red-900/30 text-red-200 text-sm">
+          <div class="callout callout-bad mb-0">
             <p class="font-medium mb-1">This app will be exposed without full protection</p>
             <p>
               {#if !exposure.auth}Without Naslos login (auth is off).{/if}
@@ -146,19 +143,29 @@
               can use its admin interface.
             </p>
           </div>
-          <label class="mt-3 flex items-start gap-3 cursor-pointer">
+          <label class="flex items-start gap-3 cursor-pointer">
             <input type="checkbox" class="mt-1" bind:checked={unsafeAcknowledged} />
             <span class="font-medium text-red-300">
               I understand this app is reachable without {#if !exposure.auth}Naslos login{/if}{#if !exposure.auth && !exposure.tls} and {/if}{#if !exposure.tls}encryption{/if}.
             </span>
           </label>
         {/if}
-      {/if}
-      {#if error && loaded}<div role="alert" class="mt-4 p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
-    </div>
-    <div class="p-6 border-t border-naslos-border flex justify-end gap-3">
-      <button class="btn btn-secondary" on:click={() => dispatch('close')}>Cancel</button>
-      <button class="btn btn-primary" on:click={save} disabled={saving || loading || !loaded || (unsafeExposure && !unsafeAcknowledged)}>{saving ? 'Saving...' : 'Save'}</button>
-    </div>
-  </div>
-</div>
+        {#if error}
+          <p role="alert" class="callout callout-bad mb-0">{error}</p>
+        {/if}
+      </form>
+    {/if}
+  </AsyncState>
+
+  <svelte:fragment slot="footer">
+    <Button variant="secondary" on:click={() => dispatch('close')}>Cancel</Button>
+    <Button
+      type="submit"
+      form="app-exposure-form"
+      loading={saving}
+      disabled={loading || !loaded || (unsafeExposure && !unsafeAcknowledged)}
+    >
+      {saving ? 'Saving...' : 'Save'}
+    </Button>
+  </svelte:fragment>
+</Modal>

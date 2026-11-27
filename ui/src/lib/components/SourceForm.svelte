@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { modal } from '$lib/actions/modal';
-  import Icon from '$lib/components/Icon.svelte';
   import { createEventDispatcher } from 'svelte';
+  import Button from './Button.svelte';
+  import FormField from './FormField.svelte';
+  import Modal from './Modal.svelte';
 
   export let source: any | null = null;
 
@@ -38,45 +39,51 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" use:modal={{ onClose: () => dispatch('close') }} on:click|self={() => dispatch('close')}>
-  <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
-    <div class="p-6 border-b border-naslos-border flex items-center justify-between">
-      <h2 class="text-xl font-bold">Add Chart Repository</h2>
-      <button class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border" aria-label="Close" on:click={() => dispatch('close')}><Icon name="x" /></button>
-    </div>
-    <div class="flex-1 overflow-y-auto p-6 space-y-4">
-      <div>
-        <label class="label" for="source-name">Name</label>
-        <input id="source-name" class="input" bind:value={name} placeholder="mine" />
-        <p class="text-xs text-gray-500 mt-1">Lowercase DNS-1123 label.</p>
-      </div>
-      <div>
-        <label class="label" for="source-url">Git URL</label>
-        <input id="source-url" class="input" bind:value={url} placeholder="https://github.com/you/charts.git" />
-      </div>
-      <div>
-        <label class="label" for="source-auth">Authentication</label>
-        <select id="source-auth" class="input" bind:value={auth}>
-          <option value="public">Public</option>
-          <option value="token">HTTPS token</option>
-          <option value="ssh">SSH deploy key</option>
-        </select>
-      </div>
-      {#if auth !== 'public'}
-        <div>
-          <label class="label" for="source-secret">Credentials Secret</label>
-          <input id="source-secret" class="input" bind:value={credentialsSecret} placeholder="naslos-charts-creds" />
-          <p class="text-xs text-gray-500 mt-1">
-            Secret in the release namespace holding {auth === 'token' ? 'a `token` key' : 'an `ssh-private-key` key'}.
-          </p>
-        </div>
-      {/if}
-      {#if error}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
-    </div>
-    <div class="p-6 border-t border-naslos-border flex justify-end gap-3">
-      <button class="btn btn-secondary" on:click={() => dispatch('close')}>Cancel</button>
-      <button class="btn btn-primary" on:click={save} disabled={saving}>{saving ? 'Saving...' : 'Add Source'}</button>
-    </div>
-  </div>
-</div>
+<Modal title="Add Chart Repository" onClose={() => dispatch('close')}>
+  <form id="source-form" on:submit|preventDefault={save} class="space-y-4">
+    <FormField label="Name" id="source-name" required hint="Lowercase DNS-1123 label.">
+      <input id="source-name" class="input w-full" bind:value={name} placeholder="mine" autocomplete="off" />
+    </FormField>
+    <FormField label="Git URL" id="source-url" required>
+      <input
+        id="source-url"
+        class="input w-full"
+        bind:value={url}
+        placeholder="https://github.com/you/charts.git"
+        autocomplete="off"
+      />
+    </FormField>
+    <FormField label="Authentication" id="source-auth">
+      <select id="source-auth" class="input w-full" bind:value={auth}>
+        <option value="public">Public</option>
+        <option value="token">HTTPS token</option>
+        <option value="ssh">SSH deploy key</option>
+      </select>
+    </FormField>
+    {#if auth !== 'public'}
+      <FormField
+        label="Credentials Secret"
+        id="source-secret"
+        hint="Secret in the release namespace holding {auth === 'token' ? 'a `token` key' : 'an `ssh-private-key` key'}."
+      >
+        <input
+          id="source-secret"
+          class="input w-full"
+          bind:value={credentialsSecret}
+          placeholder="naslos-charts-creds"
+          autocomplete="off"
+        />
+      </FormField>
+    {/if}
+    {#if error}
+      <p role="alert" class="callout callout-bad mb-0">{error}</p>
+    {/if}
+  </form>
+
+  <svelte:fragment slot="footer">
+    <Button variant="secondary" on:click={() => dispatch('close')}>Cancel</Button>
+    <Button type="submit" form="source-form" loading={saving}>
+      {saving ? 'Saving...' : 'Add Source'}
+    </Button>
+  </svelte:fragment>
+</Modal>

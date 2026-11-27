@@ -1,23 +1,14 @@
-/** Badge classes for a Helm release status (not an app state). */
-export function statusClass(status: string): string {
-  switch (status) {
-    // `helm::release_status` maps a healthy Helm release to `running`; keep
-    // `deployed` as a fallback for any caller that passes the raw status.
-    case 'running':
-    case 'deployed':
-      return 'bg-green-900/50 text-green-400';
-    case 'failed':
-      return 'bg-red-900/50 text-red-400';
-    case 'missing':
-      return 'bg-amber-900/50 text-amber-400';
-    default:
-      if (status.startsWith('pending') || status === 'uninstalling') {
-        return 'bg-yellow-900/50 text-yellow-300';
-      }
-      return 'bg-gray-900/50 text-gray-400';
-  }
-}
+import { toneFor, type Tone } from './status';
 
-export function statusLabel(status: string): string {
-  return status || 'unknown';
+/**
+ * Tone for a Helm release status (not a generic job state). `toneFor` owns the
+ * shared vocabulary; only the app-specific words that differ are handled here,
+ * so app badges and the rest of the console cannot drift apart.
+ */
+export function statusTone(status: string): Tone {
+  const s = (status || '').toLowerCase();
+  // A catalog entry that disappeared is a warning, not a neutral unknown.
+  if (s === 'missing') return 'warn';
+  if (s.startsWith('pending') || s === 'uninstalling') return 'warn';
+  return toneFor(status, 'neutral');
 }

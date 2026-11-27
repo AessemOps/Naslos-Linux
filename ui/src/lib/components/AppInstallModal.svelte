@@ -1,12 +1,15 @@
 <script lang="ts">
-  import { modal } from '$lib/actions/modal';
-  import Icon from '$lib/components/Icon.svelte';
   import { onMount, createEventDispatcher } from 'svelte';
+  import AsyncState from './AsyncState.svelte';
+  import Button from './Button.svelte';
+  import Modal from './Modal.svelte';
+  import AppInstallConfigStep from './AppInstallConfigStep.svelte';
+  import AppInstallExposureStep from './AppInstallExposureStep.svelte';
+  import AppInstallReviewStep from './AppInstallReviewStep.svelte';
+  import AppInstallConfirmStep from './AppInstallConfirmStep.svelte';
   import AppIcon from './AppIcon.svelte';
-  import SchemaForm from './SchemaForm.svelte';
-  import ExposureForm from './ExposureForm.svelte';
-  import EnvVarEditor from './EnvVarEditor.svelte';
-  import type { EnvRow } from '$lib/appEnv';
+  import type { EnvRow, ManagedDataset } from '$lib/appEnv';
+  import { validateEnvRows } from '$lib/appEnv';
   import { trackAppJob } from '$lib/stores/appJobs';
 
   interface Exposure {
@@ -62,74 +65,37 @@
   let confirmed = false;
   let unsafeConfirmed = false;
   let privilegedConfirmed = false;
-  let managedDatasets: { name: string; hostPath: string; shared: boolean; attachedTo?: string[] }[] = [];
+  let managedDatasets: ManagedDataset[] = [];
   let selectedDatasets: string[] = [];
   let storagePools: string[] = [];
   let selectedPool = '';
   let activeStep: 'config' | 'exposure' | 'review' | 'confirm' = 'config';
   let env: EnvRow[] = [];
-  let envError = '';
-  // Naslos datasets are group-owned by `naslos_users` (10000). The schema's
-  // upstream default (1000) cannot read them, so offer the platform groups.
+
   const groupOptions = [
     { value: 10000, label: 'naslos_users (10000) — dataset access' },
     { value: 1000, label: 'default (1000)' }
   ];
-  // Apply the dataset owner once when the first dataset is selected. The user
-  // can still change PUID/PGID afterwards.
-  let datasetOwnerApplied = false;
-
-  function datasetBlocked(dataset: { name: string; shared: boolean; attachedTo?: string[] }): boolean {
-    return !dataset.shared && (dataset.attachedTo?.length ?? 0) > 0 && !(dataset.attachedTo ?? []).includes(appName);
-  }
-
-  $: sharedSelected = managedDatasets.filter((d) => d.shared && selectedDatasets.includes(d.name));
-  $: if (app && selectedDatasets.length > 0 && !datasetOwnerApplied) {
-    datasetOwnerApplied = true;
-    const props = app.schema?.properties ?? {};
-    const next = { ...values };
-    if (props.pgid && Number(next.pgid ?? 0) === Number(props.pgid.default ?? 0)) next.pgid = 10000;
-    if (props.puid && Number(next.puid ?? 0) === Number(props.puid.default ?? 0)) next.puid = 10001;
-    values = next;
-  }
 
   const dispatch = createEventDispatcher();
 
   $: envSupported = app?.capabilities?.includes('env') ?? false;
-
-  /// Build the request payload, validating names and values client-side.
-  function envPayload(): { name: string; value: string | null; secret: boolean }[] | null {
-    envError = '';
-    if (!envSupported) return [];
-    const out: { name: string; value: string | null; secret: boolean }[] = [];
-    const seen = new Set<string>();
-    for (const row of env) {
-      const name = row.name.trim();
-      if (!name) {
-        envError = 'Every environment variable needs a name.';
-        return null;
-      }
-      if (name.length > 128 || !/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) {
-        envError = `Invalid environment variable name ${name}.`;
-        return null;
-      }
-      if (name.startsWith('NASLOS_')) {
-        envError = `Environment variable ${name} uses the reserved NASLOS_ prefix.`;
-        return null;
-      }
-      if (seen.has(name)) {
-        envError = `Environment variable ${name} is defined twice.`;
-        return null;
-      }
-      seen.add(name);
-      if (row.value === null || row.value === '') {
-        envError = `Environment variable ${name} needs a value.`;
-        return null;
-      }
-      out.push({ name, value: row.value, secret: row.secret });
-    }
-    return out;
-  }
+  $: unsafeExposure = !!exposure.subdomain && (!exposure.tls || !exposure.auth);
+  $: canInstall =
+    !installing &&
+    confirmed &&
+    (!unsafeExposure || unsafeConfirmed) &&
+    (!app?.privileged || privilegedConfirmed);
+  // Review must not print a password the operator just typed.
+  $: secretKeys = new Set(
+    Object.entries(app?.schema?.properties ?? {})
+      .filter(([, prop]: [string, any]) => prop?.format === 'password' || prop?.writeOnly === true)
+      .map(([key]) => key)
+  );
+  $: envReview = env
+    .filter((row) => row.name.trim())
+    .map((row) => `${row.name.trim()}=${row.secret ? '••••••' : (row.value ?? '')}`)
+    .join(', ');
 
   async function loadDatasets() {
     datasetsError = '';
@@ -226,9 +192,13 @@
   }
 
   async function install() {
-    const submittedEnv = envPayload();
-    if (submittedEnv === null) {
-      error = envError;
+    const submittedEnv = validateEnvRows(env, {
+      supported: envSupported,
+      requireValues: true
+    });
+    if (submittedEnv.rows === null) {
+      error = submittedEnv.error;
+      activeStep = 'config';
       return;
     }
     installing = true;
@@ -246,7 +216,7 @@
           privilegedConfirmed,
           datasets: selectedDatasets,
           pool: selectedPool,
-          env: submittedEnv
+          env: submittedEnv.rows
         })
       });
       if (!res.ok) {
@@ -265,255 +235,131 @@
     }
   }
 
-  $: valueEntries = Object.entries(values).filter(([_, v]) => typeof v !== 'object');
-  // Review must not print a password the operator just typed.
-  $: secretKeys = new Set(
-    Object.entries(app?.schema?.properties ?? {})
-      .filter(([, prop]: [string, any]) => prop?.format === 'password' || prop?.writeOnly === true)
-      .map(([key]) => key)
-  );
-  $: unsafeExposure =
-    !!exposure.subdomain && (!exposure.tls || !exposure.auth);
-  $: envReview = env
-    .filter((row) => row.name.trim())
-    .map((row) => `${row.name.trim()}=${row.secret ? '••••••' : (row.value ?? '')}`)
-    .join(', ');
+  function onSubmit() {
+    error = '';
+    if (activeStep === 'config') activeStep = 'exposure';
+    else if (activeStep === 'exposure') activeStep = 'review';
+    else if (activeStep === 'review') activeStep = 'confirm';
+    else if (canInstall) void install();
+  }
+
   onMount(loadApp);
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" use:modal={{ onClose: () => dispatch('close') }} on:click|self={() => dispatch('close')}>
-  <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
-    {#if loading}
-      <div class="p-12 text-center text-gray-400">Loading app...</div>
-    {:else if app}
-      <div class="p-6 border-b border-naslos-border flex items-center gap-4">
+<Modal
+  title={app ? app.displayName : `Install ${appName}`}
+  size="lg"
+  onClose={() => dispatch('close')}
+>
+  <AsyncState
+    {loading}
+    error={app ? '' : error}
+    loadingText="Loading app..."
+    onRetry={loadApp}
+  >
+    {#if app}
+      {#if error}
+        <p role="alert" class="callout callout-bad">{error}</p>
+      {/if}
+      <div class="mb-4 flex items-center gap-4">
         <AppIcon icon={app.icon} iconUrl={app.iconUrl} alt={app.displayName} />
-        <div class="flex-1">
-          <h2 class="text-xl font-bold">{app.displayName}</h2>
-          <p class="text-sm text-gray-400">{app.description}</p>
-        </div>
-        <button class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border" aria-label="Close" on:click={() => dispatch('close')}><Icon name="x" /></button>
+        <p class="text-sm text-gray-400">{app.description}</p>
       </div>
-      <div class="px-6 pt-4 flex gap-4">
+      <div class="mb-4 flex flex-wrap gap-4 border-b border-naslos-border">
         {#each [['config', 'Configuration'], ['exposure', 'Exposure'], ['review', 'Review'], ['confirm', 'Confirm']] as [step, label]}
           <button
+            type="button"
             class={`text-sm font-medium pb-2 border-b-2 ${activeStep === step ? 'border-naslos-primary text-naslos-link' : 'border-transparent text-gray-400'}`}
-            on:click={() => activeStep = step as typeof activeStep}
+            on:click={() => {
+              error = '';
+              activeStep = step as typeof activeStep;
+            }}
           >{label}</button>
         {/each}
       </div>
-      <div class="flex-1 overflow-y-auto p-6">
+
+      <form id="install-form" on:submit|preventDefault={onSubmit}>
         {#if activeStep === 'config'}
-          <SchemaForm {app} bind:values {groupOptions} />
-          {#if envSupported}
-            <details class="mt-4 border border-naslos-border rounded-lg p-4" open={env.length > 0}>
-              <summary class="cursor-pointer text-sm font-medium">
-                Environment variables{env.length ? ` (${env.length})` : ''}
-              </summary>
-              <div class="mt-3">
-                <EnvVarEditor bind:env requireValues />
-              </div>
-            </details>
-          {/if}
-          <div class="mt-4">
-            <span class="label">Datasets</span>
-            {#if datasetsError}
-              <p role="alert" class="text-xs text-red-300">
-                Registered datasets are unavailable: {datasetsError}.
-                <button type="button" class="underline hover:text-red-200" on:click={loadDatasets}>Retry</button>
-              </p>
-            {:else if !datasetsLoaded}
-              <p class="text-xs text-gray-500">Loading registered datasets…</p>
-            {:else if managedDatasets.length === 0}
-              <p class="text-xs text-gray-500">
-                No datasets are registered yet. Register one under Datasets to attach it to this app.
-              </p>
-            {:else}
-              <div class="space-y-2">
-                {#each managedDatasets as dataset (dataset.name)}
-                  <label class="flex items-start gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      class="mt-1"
-                      value={dataset.name}
-                      bind:group={selectedDatasets}
-                      disabled={datasetBlocked(dataset)}
-                    />
-                    <span class="text-sm">
-                      <span class="font-mono">{dataset.name}</span> — {dataset.hostPath}
-                      ({dataset.shared ? 'shared' : 'private'})
-                      {#if datasetBlocked(dataset)}
-                        <span class="text-amber-300">attached to {dataset.attachedTo?.join(', ')}</span>
-                      {/if}
-                    </span>
-                  </label>
-                {/each}
-              </div>
-              <p class="text-xs text-gray-500 mt-1">
-                Each selected dataset is mounted at <span class="font-mono">/datasets/&lt;name&gt;</span>. A private
-                dataset is attached to this app only; a shared dataset can be attached to several apps.
-                Datasets are owned by group <span class="font-mono">naslos_users (10000)</span>; selecting one sets
-                PUID/PGID to 10001/10000 so the app can read it.
-              </p>
-              {#each sharedSelected as dataset (dataset.name)}
-                <p role="alert" class="text-xs text-amber-300 mt-1">
-                  Dataset <span class="font-mono">{dataset.name}</span> is shared: every app attached to it can read
-                  and modify its data.
-                </p>
-              {/each}
-            {/if}
-          </div>
-          <div class="mt-4">
-            <label class="label" for="install-pool">Storage pool</label>
-            <select id="install-pool" class="input w-full" bind:value={selectedPool}>
-              <option value="">Default (local-path)</option>
-              {#each storagePools as pool (pool)}
-                <option value={pool}>{pool}</option>
-              {/each}
-            </select>
-            {#if poolsError}
-              <p role="alert" class="text-xs text-red-300 mt-1">
-                Storage pools are unavailable: {poolsError}.
-                <button type="button" class="underline hover:text-red-200" on:click={loadPools}>Retry</button>
-              </p>
-            {:else if !poolsLoaded}
-              <p class="text-xs text-gray-500 mt-1">Loading storage pools…</p>
-            {/if}
-            <p class="text-xs text-gray-500 mt-1">
-              App config, database and upload PVCs are created under /var/mnt/&lt;pool&gt;/apps.
-              The dataset above is separate: it controls the app's media/data volume.
-            </p>
-          </div>
+          <AppInstallConfigStep
+            {app}
+            bind:values
+            bind:selectedDatasets
+            bind:selectedPool
+            {managedDatasets}
+            {datasetsLoaded}
+            {datasetsError}
+            {storagePools}
+            {poolsLoaded}
+            {poolsError}
+            bind:env
+            {groupOptions}
+            retryDatasets={loadDatasets}
+            retryPools={loadPools}
+          />
         {:else if activeStep === 'exposure'}
-          {#if domainsError}
-            <div role="alert" class="card border-red-700 bg-red-900/20 text-red-300 text-sm">
-              <p>Domains are unavailable: {domainsError}.</p>
-              <button type="button" class="btn btn-secondary mt-3" on:click={loadDomains}>Retry</button>
-            </div>
-          {:else if !domainsLoaded}
-            <p class="text-sm text-gray-400">Loading domains…</p>
-          {:else}
-            <ExposureForm
-              bind:exposure
-              bind:baseDomain
-              {selectableDomains}
-              {ssoDomains}
-              on:change={() => (unsafeConfirmed = false)}
-            />
-          {/if}
-          {#if exposure.subdomain && appRecordDomains.has(baseDomain)}
-            <p class="mt-4 p-3 rounded-lg border border-naslos-border bg-naslos-dark/40 text-xs text-gray-300">
-              A CNAME <span class="font-mono">{exposure.subdomain}.{baseDomain}</span> will be created on
-              this domain and removed when the app is uninstalled or the subdomain changes.
-            </p>
-          {/if}
+          <AppInstallExposureStep
+            bind:exposure
+            bind:baseDomain
+            {selectableDomains}
+            {ssoDomains}
+            {appRecordDomains}
+            {domainsLoaded}
+            {domainsError}
+            retryDomains={loadDomains}
+            on:change={() => (unsafeConfirmed = false)}
+          />
         {:else if activeStep === 'review'}
-          <div class="space-y-3">
-            <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">App</span><span class="font-medium">{app.displayName}</span></div>
-            <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Source</span><span class="font-medium text-sm">{app.source} / {app.channel}</span></div>
-            <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Chart</span><span class="font-medium text-sm">{app.chart}</span></div>
-            <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Version</span><span class="font-medium">{app.version}</span></div>
-            <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Datasets</span><span class="font-medium text-sm text-right">{selectedDatasets.length ? selectedDatasets.map((name) => `${name} → /datasets/${name}`).join(', ') : 'none'}</span></div>
-            <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Storage pool</span><span class="font-medium text-sm">{selectedPool || 'default (local-path)'}</span></div>
-            {#if envReview}
-              <div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">Environment</span><span class="font-medium text-sm text-right font-mono">{envReview}</span></div>
-            {/if}
-            <div class="flex justify-between py-2 border-b border-naslos-border">
-              <span class="text-gray-400">Exposure</span>
-              <span class="font-medium text-sm text-right">
-                {exposure.subdomain ? `${exposure.subdomain}.${baseDomain}` : 'cluster-internal only'}<br />
-                TLS {exposure.tls ? 'on' : 'off'} · Auth {exposure.auth ? 'on' : 'off'} · Local-only {exposure.localOnly ? 'on' : 'off'} · Internet {exposure.internet ? 'on' : 'off'}
-              </span>
-            </div>
-            {#each valueEntries as [key, value]}<div class="flex justify-between py-2 border-b border-naslos-border"><span class="text-gray-400">{key}</span><span class="font-medium text-sm">{secretKeys.has(key) && value ? '••••••' : (value || '(empty)')}</span></div>{/each}
-          </div>
+          <AppInstallReviewStep
+            {app}
+            {values}
+            {selectedDatasets}
+            {selectedPool}
+            {exposure}
+            {baseDomain}
+            {envReview}
+          />
         {:else}
-          <div class="space-y-4">
-            {#if unsafeExposure}
-              <div class="p-4 rounded-lg border border-red-700 bg-red-900/30 text-red-200 text-sm">
-                <p class="font-medium mb-1">This app will be exposed without full protection</p>
-                <p>
-                  {#if !exposure.auth}Without Naslos login (auth is off).{/if}
-                  {#if !exposure.tls}Without TLS (traffic is cleartext).{/if}
-                  Anything that can reach <span class="font-mono">{exposure.subdomain}.{baseDomain}</span>
-                  can use its admin interface.
-                </p>
-              </div>
-            {/if}
-            <div class="p-4 rounded-lg border border-amber-700 bg-amber-900/30 text-amber-200 text-sm">
-              <p class="font-medium mb-1">Third-party chart trust boundary</p>
-              <p>
-                This installs <span class="font-mono">{app.source}</span> /
-                <span class="font-mono">{app.chartPath || app.chart}</span> into
-                <span class="font-mono">{app.privileged ? 'the privileged app pool' : 'an app namespace'}</span>. The chart's manifests
-                run in-cluster under the API's namespaced permissions. Charts that
-                request the datasets volume can read every Naslos dataset mounted
-                below the platform's datasets root.
-              </p>
-            </div>
-            {#if app.privileged}
-              <div class="p-4 rounded-lg border border-red-700 bg-red-900/30 text-red-200 text-sm">
-                <p class="font-medium mb-1">This app requests privileged mode</p>
-                <p>
-                  It will be installed into <span class="font-mono">naslos-apps-priv</span>,
-                  the namespace that allows privileged pods and host access. Only install
-                  it if you trust the chart source completely.
-                </p>
-              </div>
-            {/if}
-            <label class="flex items-start gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                class="mt-1"
-                bind:checked={confirmed}
-              />
-              <span>I have reviewed the source and confirm this install.</span>
-            </label>
-            {#if unsafeExposure}
-              <label class="flex items-start gap-3 cursor-pointer">
-                <input type="checkbox" class="mt-1" bind:checked={unsafeConfirmed} />
-                <span class="font-medium text-red-300">
-                  I understand this app is reachable without {#if !exposure.auth}Naslos login{/if}{#if !exposure.auth && !exposure.tls} and {/if}{#if !exposure.tls}encryption{/if}.
-                </span>
-              </label>
-            {/if}
-            {#if app.privileged}
-              <label class="flex items-start gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  class="mt-1"
-                  bind:checked={privilegedConfirmed}
-                />
-                <span class="font-medium">I understand this app runs privileged and may access the host.</span>
-              </label>
-            {/if}
-          </div>
+          <AppInstallConfirmStep
+            {app}
+            {exposure}
+            {baseDomain}
+            {unsafeExposure}
+            bind:confirmed
+            bind:unsafeConfirmed
+            bind:privilegedConfirmed
+          />
+          {#if envReview && !envSupported}
+            <p class="text-xs text-gray-500 mt-4">Environment: <span class="font-mono">{envReview}</span></p>
+          {/if}
         {/if}
-        {#if error}<div role="alert" class="mt-4 p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
-      </div>
-      <div class="p-6 border-t border-naslos-border flex justify-between">
-        <button class="btn btn-secondary" on:click={() => dispatch('close')}>Cancel</button>
-        <div class="flex gap-3">
-          {#if activeStep === 'config'}<button class="btn btn-primary" on:click={() => activeStep = 'exposure'}>Exposure →</button>
-          {:else if activeStep === 'exposure'}<button class="btn btn-secondary" on:click={() => activeStep = 'config'}>← Back</button><button class="btn btn-primary" on:click={() => activeStep = 'review'}>Review →</button>
-          {:else if activeStep === 'review'}<button class="btn btn-secondary" on:click={() => activeStep = 'exposure'}>← Back</button><button class="btn btn-primary" on:click={() => activeStep = 'confirm'}>Confirm →</button>
-          {:else}<button class="btn btn-secondary" on:click={() => activeStep = 'review'}>← Back</button><button class="btn btn-primary" on:click={install} disabled={installing || !confirmed || (unsafeExposure && !unsafeConfirmed) || (app.privileged && !privilegedConfirmed)}>{installing ? 'Starting...' : 'Install'}</button>{/if}
-        </div>
-      </div>
-    {:else}
-      <div class="p-6 border-b border-naslos-border flex items-center justify-between gap-4">
-        <h2 class="text-xl font-bold">Install {appName}</h2>
-        <button class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border" aria-label="Close" on:click={() => dispatch('close')}><Icon name="x" /></button>
-      </div>
-      <div class="flex-1 overflow-y-auto p-6">
-        <div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">
-          {error || 'The catalog entry could not be loaded.'}
-        </div>
-      </div>
-      <div class="p-6 border-t border-naslos-border flex justify-end">
-        <button class="btn btn-secondary" on:click={() => dispatch('close')}>Close</button>
-      </div>
+      </form>
     {/if}
-  </div>
-</div>
+  </AsyncState>
+
+  <svelte:fragment slot="footer">
+    {#if !app}
+      <Button variant="secondary" on:click={() => dispatch('close')}>Close</Button>
+    {:else}
+      <Button variant="secondary" on:click={() => dispatch('close')}>Cancel</Button>
+      {#if activeStep === 'config'}
+        <Button type="submit" form="install-form">Exposure →</Button>
+      {:else if activeStep === 'exposure'}
+        <Button variant="secondary" on:click={() => (activeStep = 'config')}>← Back</Button>
+        <Button type="submit" form="install-form">Review →</Button>
+      {:else if activeStep === 'review'}
+        <Button variant="secondary" on:click={() => (activeStep = 'exposure')}>← Back</Button>
+        <Button type="submit" form="install-form">Confirm →</Button>
+      {:else}
+        <Button variant="secondary" on:click={() => (activeStep = 'review')}>← Back</Button>
+        <Button
+          type="submit"
+          form="install-form"
+          loading={installing}
+          disabled={!canInstall}
+        >
+          {installing ? 'Starting...' : 'Install'}
+        </Button>
+      {/if}
+    {/if}
+  </svelte:fragment>
+</Modal>

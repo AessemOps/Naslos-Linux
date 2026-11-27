@@ -1,8 +1,10 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import AppIcon from './AppIcon.svelte';
+  import Button from './Button.svelte';
+  import StatusBadge from './StatusBadge.svelte';
   import { formatUsage } from '$lib/format';
-  import { statusClass, statusLabel } from '$lib/appStatus';
+  import { statusTone } from '$lib/appStatus';
   import type { AppView, AppUsage } from '$lib/appTypes';
 
   export let app: AppView;
@@ -14,7 +16,7 @@
   $: displayName = app.displayName || app.name;
 </script>
 
-<div class="flex items-start gap-3 px-4 py-2.5">
+<div class="flex flex-wrap items-start gap-3 px-4 py-2.5">
   <AppIcon icon={app.icon} iconUrl={app.iconUrl} alt="" size="text-2xl" imgClass="h-7 w-7" />
 
   <div class="flex-1 min-w-0">
@@ -24,18 +26,12 @@
           {displayName}
         </button>
       </h3>
-      <span class={`text-xs px-2 py-0.5 rounded ${statusClass(app.status)}`}>{statusLabel(app.status)}</span>
+      <StatusBadge state={app.status} tone={statusTone(app.status)} />
       {#if app.orphaned}
-        <span
-          class="text-xs px-2 py-0.5 rounded bg-amber-900/50 text-amber-300"
-          title="Found in the cluster without a catalog entry">orphaned</span
-        >
+        <span class="badge badge-warn" title="Found in the cluster without a catalog entry">orphaned</span>
       {/if}
       {#if jobRunning}
-        <span
-          class="text-xs px-2 py-0.5 rounded bg-yellow-900/50 text-yellow-300"
-          title="A lifecycle job is running for this app">job running</span
-        >
+        <span class="badge badge-warn" title="A lifecycle job is running for this app">job running</span>
       {/if}
     </div>
 
@@ -51,25 +47,25 @@
 
   <div class="flex items-center gap-2 shrink-0">
     {#if app.updateAvailable || app.imageUpdateAvailable}
-      <button
-        type="button"
-        class="text-xs px-2 py-1 rounded bg-amber-900/50 text-amber-300 hover:bg-amber-800/60 tabular-nums"
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled={jobRunning}
         aria-label={app.updateAvailable
           ? `→ v${app.latestVersion}: update ${displayName} to version ${app.latestVersion}`
           : 'new image: update to the newly released image'}
-        disabled={jobRunning}
         on:click={() => dispatch('update')}
       >
         {app.updateAvailable ? `→ v${app.latestVersion}` : 'new image'}
-      </button>
+      </Button>
     {/if}
-    <button
-      type="button"
-      class="text-gray-400 hover:text-naslos-strong px-2 py-1.5 rounded"
+    <Button
+      variant="ghost"
+      size="icon"
       aria-label={`Open ${displayName} details`}
       on:click={() => dispatch('open')}
     >
       ›
-    </button>
+    </Button>
   </div>
 </div>

@@ -1,13 +1,35 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { get } from 'svelte/store';
   // The xterm packages were deprecated and renamed to the @xterm scope (CR-31).
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import '@xterm/xterm/css/xterm.css';
+  import Button from '$lib/components/Button.svelte';
+  import FormField from '$lib/components/FormField.svelte';
+  import PageHeader from '$lib/components/PageHeader.svelte';
+  import { theme } from '$lib/stores/theme';
 
   // Shell names mirror the API's allowlist (api/internal/server/websocket.go):
   // the terminal cannot run an arbitrary command, only a shell.
   const SHELLS = ['bash', 'sh', 'ash', 'zsh'];
+
+  // xterm renders to a canvas, so it cannot inherit the CSS variables; keep the
+  // two palettes in sync with the --n-* tokens in app.css.
+  const XTERM_THEMES = {
+    dark: {
+      background: '#0f172a',
+      foreground: '#e2e8f0',
+      cursor: '#3b82f6',
+      selectionBackground: '#334155'
+    },
+    light: {
+      background: '#ffffff',
+      foreground: '#0f172a',
+      cursor: '#2563eb',
+      selectionBackground: '#dbeafe'
+    }
+  } as const;
 
   interface Pod {
     name: string;
@@ -223,12 +245,8 @@
     term = new Terminal({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-      theme: {
-        background: '#0f172a',
-        foreground: '#e2e8f0',
-        cursor: '#3b82f6'
-      },
+      fontFamily: '"Fira Code", monospace',
+      theme: { ...XTERM_THEMES[get(theme)] },
       scrollback: 10000
     });
 
@@ -236,6 +254,13 @@
     term.loadAddon(fitAddon);
     term.open(terminalEl);
     fitAddon.fit();
+    // Fira Code may finish loading after the first measure; refit so the
+    // mobile console does not keep the fallback font's wider cell grid.
+    document.fonts?.ready.then(() => {
+      if (!term) return;
+      fitAddon.fit();
+      sendSize();
+    });
     writeBanner();
 
     // Keystrokes go out as BINARY frames: text frames are reserved for control
@@ -255,7 +280,13 @@
 
     loadNamespaces().then(loadPods);
 
+    // Live theme flip: the canvas palette must follow the persisted theme.
+    const unsubscribeTheme = theme.subscribe((value) => {
+      if (term) term.options.theme = { ...XTERM_THEMES[value] };
+    });
+
     return () => {
+      unsubscribeTheme();
       disconnect();
       term.dispose();
       resizeObserver.disconnect();
@@ -265,29 +296,25 @@
   onDestroy(disconnect);
 </script>
 
-<div class="max-w-6xl mx-auto">
-  <div class="flex items-start justify-between gap-4 mb-4">
-    <div>
-      <h1 class="text-3xl font-bold mb-2">Terminal</h1>
-      <p class="text-gray-400">
-        A shell inside a container on the node. Talos itself has no shell, so node work
-        happens from here: <code class="text-xs">zpool status</code> works directly, and
-        <code class="text-xs">chroot /host …</code> runs the host's own tools.
-      </p>
-    </div>
-    <div>
+<div class="mx-auto max-w-6xl">
+  <PageHeader
+    title="Terminal"
+    subtitle="A shell inside a container on the node. Talos itself has no shell, so node work happens from here: zpool status works directly, and chroot /host … runs the host's own tools."
+  >
+    <div slot="actions">
       {#if connected}
-        <button class="btn btn-danger" on:click={disconnect}>Disconnect</button>
+        <Button variant="danger" on:click={disconnect}>Disconnect</Button>
       {:else}
-        <button class="btn btn-primary" on:click={connect} disabled={connecting || !pod}>
-          {connecting ? 'Connecting...' : 'Connect'}
-        </button>
+        <Button on:click={connect} loading={connecting} disabled={!pod}>Connect</Button>
       {/if}
     </div>
-  </div>
+  </PageHeader>
 
   {#if error}
-    <div role="alert" class="card mb-4 border-red-700 bg-red-900/20 text-red-300 text-sm">{error}</div>
+    <div role="alert" class="callout callout-bad">
+      <p>{error}</p>
+      <Button variant="secondary" size="sm" on:click={loadPods}>Retry</Button>
+    </div>
   {/if}
 
   {#if !loadingTargets && !terminalPod}
@@ -301,16 +328,14 @@
   <!-- Target selection -->
   <div class="card mb-4">
     <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
-      <div>
-        <label class="label" for="term-field-1">Namespace</label>
+      <FormField label="Namespace" id="term-field-1">
         <select id="term-field-1" class="input w-full" bind:value={namespace} on:change={onNamespaceChange}>
           {#each namespaces as ns}
             <option value={ns}>{ns}</option>
           {/each}
         </select>
-      </div>
-      <div class="md:col-span-2">
-        <label class="label" for="term-field-2">Pod *</label>
+      </FormField>
+      <FormField label="Pod" id="term-field-2" required>
         <select id="term-field-2" class="input w-full" bind:value={pod} on:change={onPodChange} disabled={loadingTargets}>
           {#if pods.length === 0}
             <option value="">{loadingTargets ? 'Loading pods...' : 'No pods'}</option>
@@ -319,28 +344,28 @@
             <option value={p.name}>{p.name}{p.terminal ? ' — shell' : ''}{p.ready ? '' : ` (${p.phase})`}</option>
           {/each}
         </select>
-      </div>
-      <div>
-        <label class="label" for="term-field-3">Container</label>
+      </FormField>
+      <FormField label="Container" id="term-field-3">
         <select id="term-field-3" class="input w-full" bind:value={container}>
           {#each containersFor(pod) as c}
             <option value={c}>{c}</option>
           {/each}
         </select>
-      </div>
+      </FormField>
     </div>
 
     <div class="flex items-end gap-3 mt-3 flex-wrap">
       <div class="w-32">
-        <label class="label" for="term-field-4">Shell</label>
-        <select id="term-field-4" class="input w-full" bind:value={shell}>
-          {#each SHELLS as s}
-            <option value={s}>{s}</option>
-          {/each}
-        </select>
+        <FormField label="Shell" id="term-field-4">
+          <select id="term-field-4" class="input w-full" bind:value={shell}>
+            {#each SHELLS as s}
+              <option value={s}>{s}</option>
+            {/each}
+          </select>
+        </FormField>
       </div>
-      <button class="btn btn-secondary" on:click={loadPods} disabled={loadingTargets}>Refresh</button>
-      <button class="btn btn-secondary" on:click={() => term?.clear()}>Clear</button>
+      <Button variant="secondary" loading={loadingTargets} on:click={loadPods}>Refresh</Button>
+      <Button variant="secondary" on:click={() => term?.clear()}>Clear</Button>
       <p class="text-xs text-gray-500">
         {selectedPod()?.terminal
           ? 'The terminal container: root, privileged, with the host mounted.'

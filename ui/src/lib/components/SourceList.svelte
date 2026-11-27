@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import EmptyState from './EmptyState.svelte';
-  import LoadingState from './LoadingState.svelte';
+  import AsyncState from './AsyncState.svelte';
+  import Button from './Button.svelte';
   import SourceForm from './SourceForm.svelte';
+  import StatusBadge from './StatusBadge.svelte';
+  import { confirmAction } from '$lib/stores/confirm';
 
   interface Source {
     name: string;
@@ -18,6 +20,7 @@
   let loading = true;
   let error = '';
   let refreshing = false;
+  let removing = '';
   let showForm = false;
 
   async function load() {
@@ -56,17 +59,24 @@
   }
 
   async function remove(name: string) {
-    if (!confirm(`Remove source ${name}? Its cached clones are deleted.`)) {
-      return;
-    }
+    const confirmed = await confirmAction({
+      title: 'Remove source',
+      message: `Remove source ${name}? Its cached clones are deleted.`,
+      confirmLabel: 'Remove',
+      tone: 'danger'
+    });
+    if (!confirmed) return;
+    removing = name;
     try {
       const res = await fetch(`/api/sources/${encodeURIComponent(name)}`, { method: 'DELETE' });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
-      load();
+      await load();
     } catch (e) {
       error = `Failed to remove ${name}: ` + e;
+    } finally {
+      removing = '';
     }
   }
 
@@ -74,36 +84,41 @@
 </script>
 
 <div>
-  <div class="flex justify-between items-center mb-4">
+  <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
     <p class="text-sm text-gray-400">
       Git repositories the catalog is cloned from. A user source overrides the
       official source on name collision.
     </p>
-    <div class="flex gap-2">
-      <button class="btn btn-secondary" on:click={refresh} disabled={refreshing}>{refreshing ? 'Refreshing...' : 'Refresh'}</button>
-      <button class="btn btn-primary" on:click={() => showForm = true}>+ Add Source</button>
+    <div class="flex flex-wrap gap-2">
+      <Button variant="secondary" loading={refreshing} on:click={refresh}>
+        {refreshing ? 'Refreshing...' : 'Refresh'}
+      </Button>
+      <Button on:click={() => (showForm = true)}>+ Add Source</Button>
     </div>
   </div>
 
-  {#if error}
-    <div role="alert" class="callout callout-bad">{error}</div>
-  {/if}
-
-  {#if loading}
-    <LoadingState label="Loading sources..." />
-  {:else if sources.length === 0}
-    <EmptyState icon="link" title="No Chart Repositories" detail="Add a source, then refresh to populate the catalog." />
-  {:else}
+  <AsyncState
+    {loading}
+    error={error}
+    empty={!loading && sources.length === 0}
+    loadingText="Loading sources..."
+    emptyTitle="No Chart Repositories"
+    emptyDetail="Add a source, then refresh to populate the catalog."
+    emptyIcon="link"
+    onRetry={load}
+  >
     <div class="space-y-3">
       {#each sources as source (source.name)}
-        <div class="card flex items-center gap-4">
+        <div class="card flex flex-wrap items-center gap-4">
           <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 mb-1">
+            <div class="flex flex-wrap items-center gap-2 mb-1">
               <h3 class="font-bold">{source.name}</h3>
-              {#if source.official}<span class="text-xs px-2 py-0.5 rounded bg-blue-900/40 text-blue-300">official</span>{/if}
-              <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{source.auth}</span>
+              {#if source.official}
+                <StatusBadge state="official" label="official" tone="info" />
+              {/if}
+              <StatusBadge state={source.auth} label={source.auth} tone="neutral" />
             </div>
-            <p class="text-sm text-gray-400 truncate">{source.url}</p>
+            <p class="text-sm text-gray-400 truncate font-mono">{source.url}</p>
             {#if source.lastError}
               <p class="text-xs text-amber-400 mt-1">{source.lastError}</p>
             {:else if source.lastSync}
@@ -112,13 +127,20 @@
           </div>
           <div class="flex gap-2">
             {#if !source.official}
-              <button class="btn btn-danger" on:click={() => remove(source.name)}>Remove</button>
+              <Button
+                variant="danger"
+                size="sm"
+                loading={removing === source.name}
+                on:click={() => remove(source.name)}
+              >
+                Remove
+              </Button>
             {/if}
           </div>
         </div>
       {/each}
     </div>
-  {/if}
+  </AsyncState>
 
   {#if showForm}
     <SourceForm on:close={() => { showForm = false; load(); }} />
