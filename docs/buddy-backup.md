@@ -686,7 +686,9 @@ error instead of writing damaged data. The Rust buddy suite in
   `BUDDY_SCHEDULES`) run sends through the async job path, prune to `pruneKeep`
   on success and notify via ntfy (`backup_success` / `backup_failure`). The
   `/backups` page manages them, starts manual sends with live progress and
-  verifies restores.
+  verifies restores. A schedule file that cannot be parsed is preserved as
+  `BUDDY_SCHEDULES.corrupt-<epoch>` and mutations are refused until it is
+  repaired, so a corrupt store is never silently replaced with an empty one.
 - **Retention never breaks a sequence.** `pruneKeep` counts *chains*, but an
   incremental chain needs every chain below it, so the receiver always keeps the
   dependency chain of the newest backup. Asking for `keep=1` on an incremental
