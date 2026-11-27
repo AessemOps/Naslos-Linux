@@ -127,9 +127,11 @@ Props: `label: string`, `id: string`, `required?: boolean`, `hint?: string`,
 
 ### `DataTable.svelte`
 
-No props; default slot. Wraps a real `<table>` in a horizontal-scroll frame
-with rounded borders, muted uppercase headers and hover rows (`.data-table` in
-`app.css`).
+Props: `label?: string` (default `Table`). Default slot. Wraps a real
+`<table>` in a horizontal-scroll frame with rounded borders, muted uppercase
+headers and hover rows (`.data-table` in `app.css`). The frame is a labelled,
+focusable `role="region"` so keyboard users can scroll wide read-only tables;
+pass a meaningful `label` (for example `Users`).
 
 ### `AsyncState.svelte`
 
@@ -137,7 +139,8 @@ Props: `loading?: boolean`, `error?: string`, `empty?: boolean`,
 `loadingText?: string` (default `Loading…`), `emptyTitle?: string`,
 `emptyDetail?: string`, `emptyIcon?: string`, `onRetry?: (() => void) | null`.
 States are mutually exclusive in this order: loading → error → empty → default
-slot. `LoadingState` keeps `data-testid="page-loading"` and renders the exact
+slot. Named slot `emptyAction` renders buttons/links inside the empty state
+(for example `Create Your First Pool`). `LoadingState` keeps `data-testid="page-loading"` and renders the exact
 string passed.
 
 ### `LoadingState.svelte`
@@ -233,6 +236,10 @@ without adjacent text. No emoji icons.
    render data.
 2. Render `<AsyncState loading={loading} error={error} empty={items.length === 0}
    loadingText="Loading users..." onRetry={load}>` around the real content.
+   Retries set `loading = true` again so the empty state never flashes.
+   Background polls and refreshes must not blank loaded data: pass
+   `error={hasData ? '' : error}` and show later failures as an inline
+   `.callout-bad` (`role="alert"`) above the last good content.
 3. Report mutations with a Toast. Do not use `alert()`.
 4. Confirm destructive actions with `confirmAction()`; do not use
    `window.confirm()`. Use `typedConfirmation` for irreversible deletes when
