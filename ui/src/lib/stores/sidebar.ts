@@ -10,8 +10,9 @@ function initial(): boolean {
   }
 }
 
-/** Sidebar collapsed state, persisted across sessions. Read by both
- * Sidebar.svelte (width) and +layout.svelte (content margin). */
+/** Desktop sidebar collapsed state, persisted across sessions. The mobile
+ * drawer ignores it and always shows labels. Read by both Sidebar.svelte
+ * (width) and +layout.svelte (content offset). */
 export const sidebarCollapsed = writable<boolean>(initial());
 
 export function toggleSidebar() {
@@ -24,4 +25,19 @@ export function toggleSidebar() {
     }
     return next;
   });
+}
+
+/** Off-canvas navigation state below the lg breakpoint. */
+export const mobileNavOpen = writable<boolean>(false);
+
+export function openMobileNav() {
+  mobileNavOpen.set(true);
+}
+
+export function closeMobileNav() {
+  mobileNavOpen.set(false);
+}
+
+export function toggleMobileNav() {
+  mobileNavOpen.update((open) => !open);
 }

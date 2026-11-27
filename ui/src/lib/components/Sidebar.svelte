@@ -1,8 +1,16 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { onMount } from 'svelte';
+  import { mobileDrawer } from '$lib/actions/drawer';
   import { appUpdates, startAppUpdates } from '$lib/stores/appUpdates';
-  import { sidebarCollapsed, toggleSidebar } from '$lib/stores/sidebar';
+  import {
+    closeMobileNav,
+    mobileNavOpen,
+    sidebarCollapsed,
+    toggleMobileNav,
+    toggleSidebar
+  } from '$lib/stores/sidebar';
+  import { refreshSystemUpdates, systemUpdates } from '$lib/stores/systemUpdates';
   import Icon from './Icon.svelte';
   import ThemeToggle from './ThemeToggle.svelte';
 
@@ -17,8 +25,6 @@
     items: NavItem[];
   }
 
-  // Grouped navigation. Group membership is a proposal from the UI plan; the
-  // items themselves are exactly the pre-overhaul set of routes.
   const navGroups: NavGroup[] = [
     {
       label: 'Overview',
@@ -89,9 +95,9 @@
   // posture with auth off) the extra link simply stays hidden.
   let isAdmin = false;
   let username = '';
-  let updateAvailable = false;
 
-  onMount(async () => {    try {
+  onMount(async () => {
+    try {
       const res = await fetch('/api/auth/me');
       if (!res.ok) return;
       const data = await res.json();
@@ -103,15 +109,10 @@
     } catch {
       // Hidden when the identity cannot be read.
     }
-    try {
-      const res = await fetch('/api/system/updates');
-      if (res.ok) {
-        const updates = await res.json();
-        updateAvailable = Boolean(updates?.available && updates?.stepping?.allowed);
-      }
-    } catch {
-      // No update badge when the API cannot answer (e.g. during a reboot).
-    }
+  });
+
+  onMount(() => {
+    void refreshSystemUpdates();
   });
 
   // The update summary is shared with the Apps page (Installed tab badge) and
@@ -120,6 +121,24 @@
     const stop = startAppUpdates();
     return stop;
   });
+
+  // A resize past lg means the off-canvas drawer is no longer the active
+  // surface; closing it keeps its dialog semantics and focus trap off desktop.
+  onMount(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const onChange = () => {
+      if (mq.matches) closeMobileNav();
+    };
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  });
+
+  function onWindowKeydown(event: KeyboardEvent) {
+    if (!$mobileNavOpen || event.key !== 'Escape') return;
+    event.preventDefault();
+    closeMobileNav();
+  }
 
   // The session belongs to Authelia's forwardAuth portal, so signing out is a
   // POST to its logout endpoint (same origin, routed straight to the portal).
@@ -149,45 +168,92 @@
       loggingOut = false;
     }
   }
+
+  $: updateAvailable = $systemUpdates.available && $systemUpdates.steppingAllowed;
 </script>
 
-<aside
-  class="fixed left-0 top-0 h-screen bg-naslos-surface border-r border-naslos-border flex flex-col z-40 transition-[width] duration-200 {$sidebarCollapsed
-    ? 'w-16'
-    : 'w-64'}"
+<svelte:window on:keydown={onWindowKeydown} />
+
+<!-- Mobile top bar: the only shell chrome below lg. -->
+<header
+  class="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-naslos-border bg-naslos-surface/95 px-3 backdrop-blur lg:hidden"
 >
-  <div class="p-4 border-b border-naslos-border flex items-center gap-3 {$sidebarCollapsed ? 'justify-center' : ''}">
-    <img src="/logo.png" alt="Naslos logo" class="w-10 h-10 shrink-0" />
-    <div class="min-w-0">
-      <!-- Kept in the DOM (sr-only) when collapsed so the brand heading is
-           always exposed to assistive tech. -->
-      <h1 class="text-2xl font-bold text-naslos-link {$sidebarCollapsed ? 'sr-only' : ''}">Naslos</h1>
-      <p class="text-xs text-gray-500 mt-1 {$sidebarCollapsed ? 'sr-only' : ''}">Talos Linux NAS</p>
+  <button
+    type="button"
+    class="icon-btn text-gray-300 hover:bg-naslos-border hover:text-naslos-strong"
+    aria-label="Open navigation"
+    aria-expanded={$mobileNavOpen}
+    aria-controls="sidebar-nav"
+    on:click={toggleMobileNav}
+  >
+    <Icon name="menu" />
+  </button>
+  <a href="/" class="flex min-w-0 items-center gap-2" aria-label="Naslos home" on:click={closeMobileNav}>
+    <img src="/logo.png" alt="Naslos logo" class="h-8 w-8 shrink-0" />
+    <span class="truncate text-lg font-bold text-naslos-link">Naslos</span>
+  </a>
+</header>
+
+{#if $mobileNavOpen}
+  <div
+    class="fixed inset-0 z-40 bg-black/60 lg:hidden"
+    aria-hidden="true"
+    on:click={closeMobileNav}
+  ></div>
+{/if}
+
+<aside
+  id="sidebar"
+  class="fixed inset-y-0 left-0 z-40 flex w-64 max-w-[85vw] flex-col border-r border-naslos-border bg-naslos-surface transition-[transform,width] duration-200 lg:z-30 lg:max-w-none lg:visible lg:translate-x-0 {$mobileNavOpen
+    ? 'visible translate-x-0'
+    : 'invisible -translate-x-full'} {$sidebarCollapsed ? 'lg:w-16' : 'lg:w-64'}"
+  role={$mobileNavOpen ? 'dialog' : undefined}
+  aria-modal={$mobileNavOpen ? 'true' : undefined}
+  aria-label={$mobileNavOpen ? 'Navigation' : undefined}
+  use:mobileDrawer={{ open: $mobileNavOpen }}
+>
+  <div
+    class="flex items-center gap-3 border-b border-naslos-border p-4 {$sidebarCollapsed
+      ? 'lg:justify-center'
+      : ''}"
+  >
+    <img src="/logo.png" alt="Naslos logo" class="h-10 w-10 shrink-0" />
+    <div class="min-w-0 {$sidebarCollapsed ? 'lg:sr-only' : ''}">
+      <span class="block truncate text-2xl font-bold leading-tight text-naslos-link">Naslos</span>
+      <p class="mt-1 text-xs text-gray-500">Talos Linux NAS</p>
     </div>
     {#if !$sidebarCollapsed}
       <button
         type="button"
-        class="icon-btn ml-auto text-gray-400 hover:text-naslos-strong hover:bg-naslos-border"
-        aria-expanded="true"
-        aria-controls="sidebar-nav"
+        class="icon-btn ml-auto hidden text-gray-400 hover:bg-naslos-border hover:text-naslos-strong lg:inline-flex"
         aria-label="Collapse the sidebar"
         title="Collapse the sidebar"
+        aria-expanded={true}
+        aria-controls="sidebar-nav"
         on:click={toggleSidebar}
       >
         <Icon name="chevrons-left" />
       </button>
     {/if}
+    <button
+      type="button"
+      class="icon-btn ml-auto text-gray-400 hover:bg-naslos-border hover:text-naslos-strong lg:hidden"
+      aria-label="Close navigation"
+      on:click={closeMobileNav}
+    >
+      <Icon name="x" />
+    </button>
   </div>
 
   {#if $sidebarCollapsed}
-    <div class="p-2 border-b border-naslos-border flex justify-center">
+    <div class="hidden justify-center border-b border-naslos-border p-2 lg:flex">
       <button
         type="button"
-        class="icon-btn text-gray-400 hover:text-naslos-strong hover:bg-naslos-border"
-        aria-expanded="false"
-        aria-controls="sidebar-nav"
+        class="icon-btn text-gray-400 hover:bg-naslos-border hover:text-naslos-strong"
         aria-label="Expand the sidebar"
         title="Expand the sidebar"
+        aria-expanded={!$sidebarCollapsed}
+        aria-controls="sidebar-nav"
         on:click={toggleSidebar}
       >
         <Icon name="chevron-right" />
@@ -195,10 +261,14 @@
     </div>
   {/if}
 
-  <nav id="sidebar-nav" class="flex-1 overflow-y-auto p-2 space-y-4" aria-label="Main navigation">
+  <nav id="sidebar-nav" class="flex-1 space-y-4 overflow-y-auto p-2" aria-label="Main navigation">
     {#each navGroups as group}
       <div>
-        <div class="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-500 {$sidebarCollapsed ? 'sr-only' : ''}">
+        <div
+          class="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-500 {$sidebarCollapsed
+            ? 'lg:sr-only'
+            : ''}"
+        >
           {group.label}
         </div>
         <div class="space-y-0.5">
@@ -206,26 +276,29 @@
             {@const active = activePath(page.url.pathname) === item.path}
             <a
               href={item.path}
-              class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors {$sidebarCollapsed
-                ? 'justify-center'
-                : ''} {active
-                ? 'bg-naslos-primary text-white'
-                : 'text-gray-400 hover:bg-naslos-border hover:text-naslos-strong'}"
+              class="nav-link {$sidebarCollapsed ? 'lg:justify-center lg:px-2' : ''} {active
+                ? 'nav-link-active'
+                : 'text-gray-400 hover:bg-naslos-border/60 hover:text-naslos-strong'}"
               aria-current={active ? 'page' : undefined}
               title={$sidebarCollapsed ? item.name : undefined}
+              on:click={closeMobileNav}
             >
               <Icon name={item.icon} />
-              <span class="font-medium {$sidebarCollapsed ? 'sr-only' : ''}">{item.name}</span>
+              <span class="truncate {$sidebarCollapsed ? 'lg:sr-only' : ''}">{item.name}</span>
               {#if item.path === '/settings' && updateAvailable}
                 <span
-                  class="ml-auto w-2 h-2 rounded-full bg-naslos-accent shrink-0"
+                  class="ml-auto h-2 w-2 shrink-0 rounded-full bg-naslos-accent {$sidebarCollapsed
+                    ? 'lg:hidden'
+                    : ''}"
                   role="status"
                   aria-label="A system update is available"
                   title="A system update is available"
                 ></span>
               {:else if item.path === '/apps' && $appUpdates.count > 0}
                 <span
-                  class="ml-auto w-2 h-2 rounded-full bg-naslos-accent shrink-0"
+                  class="ml-auto h-2 w-2 shrink-0 rounded-full bg-naslos-accent {$sidebarCollapsed
+                    ? 'lg:hidden'
+                    : ''}"
                   role="status"
                   aria-label={`${$appUpdates.count} app update${$appUpdates.count === 1 ? '' : 's'} available`}
                   title={`${$appUpdates.count} app update${$appUpdates.count === 1 ? '' : 's'} available`}
@@ -242,13 +315,14 @@
         href="/traefik/dashboard/"
         target="_blank"
         rel="noreferrer"
-        class="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-gray-400 hover:bg-naslos-border hover:text-naslos-strong {$sidebarCollapsed
-          ? 'justify-center'
+        class="nav-link text-gray-400 hover:bg-naslos-border/60 hover:text-naslos-strong {$sidebarCollapsed
+          ? 'lg:justify-center lg:px-2'
           : ''}"
         title={$sidebarCollapsed ? 'Traefik' : undefined}
+        on:click={closeMobileNav}
       >
         <Icon name="compass" />
-        <span class="font-medium {$sidebarCollapsed ? 'sr-only' : ''}">Traefik</span>
+        <span class="truncate {$sidebarCollapsed ? 'lg:sr-only' : ''}">Traefik</span>
         {#if !$sidebarCollapsed}
           <span class="ml-auto"><Icon name="external-link" size={14} /></span>
         {/if}
@@ -256,35 +330,37 @@
     {/if}
   </nav>
 
-  <div class="p-2 border-t border-naslos-border space-y-1">
+  <div class="space-y-1 border-t border-naslos-border p-2">
     {#if logoutError}
-      <p role="alert" class="px-2 py-1 text-xs text-red-300 break-words">
+      <p role="alert" class="break-words px-2 py-1 text-xs text-red-300">
         {logoutError}
-        <a class="underline text-naslos-link" href="/authelia/" data-sveltekit-reload>Open the portal</a>
+        <a class="text-naslos-link underline" href="/authelia/" data-sveltekit-reload>Open the portal</a>
       </p>
     {/if}
     <button
       type="button"
-      class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-gray-400 hover:bg-naslos-border hover:text-naslos-strong disabled:opacity-50 disabled:cursor-not-allowed {$sidebarCollapsed
-        ? 'justify-center'
+      class="nav-link w-full text-gray-400 hover:bg-naslos-border/60 hover:text-naslos-strong disabled:cursor-not-allowed disabled:opacity-50 {$sidebarCollapsed
+        ? 'lg:justify-center lg:px-2'
         : ''}"
       on:click={logout}
       disabled={loggingOut}
     >
       <Icon name="log-out" />
       {#if loggingOut}
-        <span class="font-medium {$sidebarCollapsed ? 'sr-only' : ''}">Signing out…</span>
+        <span class="truncate {$sidebarCollapsed ? 'lg:sr-only' : ''}">Signing out…</span>
       {:else}
-        <span class="font-medium {$sidebarCollapsed ? 'sr-only' : ''}">Sign out</span>
+        <span class="truncate {$sidebarCollapsed ? 'lg:sr-only' : ''}">Sign out</span>
       {/if}
     </button>
-    <div class="flex items-center gap-1 px-1 {$sidebarCollapsed ? 'justify-center' : 'justify-between'}">
+    <div
+      class="flex items-center gap-1 px-1 {$sidebarCollapsed
+        ? 'lg:justify-center'
+        : 'justify-between'}"
+    >
       <ThemeToggle />
-      {#if !$sidebarCollapsed}
-        <p class="text-xs text-gray-500 truncate">
-          {#if username}{username} · {/if}Naslos v{__APP_VERSION__}
-        </p>
-      {/if}
+      <p class="truncate text-xs text-gray-500 {$sidebarCollapsed ? 'lg:sr-only' : ''}">
+        {#if username}{username} · {/if}Naslos v{__APP_VERSION__}
+      </p>
     </div>
   </div>
 </aside>
